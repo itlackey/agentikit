@@ -39,10 +39,8 @@ describe("HARNESS_REGISTRY — P2 adapter integration", () => {
       if (!h.agentBuilder) continue;
       expect(getCommandBuilder(h.id)).toBe(h.agentBuilder);
       expect(() => getCommandBuilder(`${h.id}-headless`)).toThrow();
-      for (const alias of h.aliases) {
-        expect(() => getCommandBuilder(alias)).toThrow();
-      }
     }
+    expect(() => getCommandBuilder("claude-code")).toThrow();
   });
 
   test("every registry entry declares the P2 descriptor fields (pattern + structuredOutput)", () => {

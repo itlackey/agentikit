@@ -1,0 +1,11 @@
+version: 2
+schedule: "0 6 * * *"
+enabled: true
+workflow: workflows/contract-review
+params:
+  target: packages/core
+  strict: true
+timeoutMs: 3600000
+maxSteps: 8
+maxRetries: 2
+redact: [CONTRACT_FIXTURE_TOKEN]

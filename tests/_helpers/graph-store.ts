@@ -1,7 +1,7 @@
 import path from "node:path";
 import { deleteStoredGraph, loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
 import type { GraphFile } from "../../src/indexer/graph/graph-types";
-import { deriveEntryProvenance } from "../../src/indexer/installations";
+import { deriveEntryProvenance, deriveInstallations } from "../../src/indexer/installations";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
@@ -19,29 +19,22 @@ import { setMeta } from "../../src/storage/repositories/index-meta-repository";
 export function seedStoredGraph(graph: GraphFile, dbPath: string): void {
   const db = openIndexDatabase(dbPath);
   try {
+    const installation = deriveInstallations([{ path: graph.stashRoot, writable: true }])[0];
+    const component = installation?.components[0];
+    if (!installation || !component) throw new Error(`Unable to derive graph fixture owner for ${graph.stashRoot}`);
     for (const file of graph.files) {
       const name = path.basename(file.path, path.extname(file.path));
-      const dirPath = path.dirname(file.path);
       const entry = { name, type: file.type, filename: path.basename(file.path) };
       try {
         // Seed the durable bundle-adapter identity (item_ref/concept_id/bundle_id)
         // that the graph-boost related-ref reader now resolves from — mirroring
         // the real indexer so seeded rows are not NULL-provenance stragglers.
         const provenance = deriveEntryProvenance(
-          { bundleId: "local", componentId: "local", adapterId: "akm" },
+          { bundleId: installation.id, componentId: component.id, adapterId: component.adapter },
           file.type,
           name,
         );
-        upsertEntry(
-          db,
-          `${graph.stashRoot}:${file.type}:${name}`,
-          dirPath,
-          file.path,
-          graph.stashRoot,
-          entry as Parameters<typeof upsertEntry>[5],
-          buildSearchText(entry as Parameters<typeof buildSearchText>[0]),
-          provenance,
-        );
+        upsertEntry(db, file.path, entry, buildSearchText(entry), provenance);
       } catch {
         /* entry may already exist with a different key — fall through */
       }

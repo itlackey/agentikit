@@ -5,7 +5,7 @@
 /**
  * SPEC-6 (docs/architecture/specs/stash-conventions-code-spec.md) — deterministic
  * MEASUREMENT + regression test for convention-fact crowding of domain-term
- * queries, plus the index-capture (entry_json) round-trip for the fact
+ * queries, plus the index-capture (document_json) round-trip for the fact
  * `category:` frontmatter key.
  *
  * Fixture: a sandbox stash containing the FULL shipped stash-skeleton
@@ -27,7 +27,7 @@
  * only when the stash has NO exact match at all (see the companion
  * "facts-only stash" test below). Crowding as hypothesized by the intake item
  * is therefore NOT confirmed. These tests stay as regression pins for that
- * invariant; the capture test (entry.category → entry_json) is the RED
+ * invariant; the capture test (entry.category → document_json) is the RED
  * groundwork SPEC-6/SPEC-8 need either way.
  */
 
@@ -199,7 +199,7 @@ describe("SPEC-6 measurement: convention facts vs a real domain asset on an unty
     expect(hits.some((h) => h.ref.startsWith("facts/conventions/"))).toBe(true);
   });
 
-  test("index captures category: convention onto fact entries (entry_json round-trip)", async () => {
+  test("index captures category: convention onto fact entries (document_json round-trip)", async () => {
     await buildFixture();
 
     // Read the freshly built index back: every skeleton convention fact must

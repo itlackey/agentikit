@@ -195,22 +195,23 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
     expect(shownBare.path).toBe(bare?.filePath as string);
   });
 
-  test("lookup does not fall back to entry_key for an incomplete provenance row", async () => {
-    writeFile(path.join(stashDir, "knowledge", "legacy.md"), "# Legacy\n");
+  test("lookup keys on canonical item_ref even when presentation metadata diverges", async () => {
+    writeFile(path.join(stashDir, "knowledge", "identity.md"), "# Identity\n");
     await akmIndex({ stashDir, full: true });
 
     const dbPath = path.join(process.env.XDG_DATA_HOME as string, "akm", "index.db");
     const db = openIndexDatabase(dbPath);
     try {
       db.prepare(
-        "UPDATE entries SET item_ref = NULL, bundle_id = NULL, concept_id = NULL WHERE entry_type = 'knowledge'",
+        "UPDATE entries SET document_json = json_set(document_json, '$.name', 'presentation-only') WHERE type = 'knowledge'",
       ).run();
     } finally {
       closeDatabase(db);
     }
 
-    const indexed = await lookupBundleRef(parseBundleRef("knowledge/legacy"));
-    expect(indexed).toBeNull();
+    const indexed = await lookupBundleRef(parseBundleRef("knowledge/identity"));
+    expect(indexed).not.toBeNull();
+    expect(indexed?.itemRef).toEndWith("//knowledge/identity");
   });
 
   test("lookup and show do not downgrade embedding dimension metadata", async () => {
@@ -336,15 +337,15 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
     expect(shown.content).toContain('schedule: "@daily"');
   });
 
-  test("OpenCode singular command and instruction paths keep their indexed native types", async () => {
+  test("OpenCode command and instruction paths keep their indexed native types", async () => {
     await indexAdapterBundle("opencode-fixture", copyFixtureToTmp(OPENCODE_ROOT), "opencode", true);
 
-    const command = await akmShowUnified({ ref: "opencode-fixture//command/legacy", skipLogging: true });
+    const command = await akmShowUnified({ ref: "opencode-fixture//commands/test", skipLogging: true });
     const indexedInstruction = await lookupBundleRef(parseBundleRef("opencode-fixture//AGENTS"));
     const instruction = await akmShowUnified({ ref: "opencode-fixture//AGENTS", skipLogging: true });
 
-    expect(command).toMatchObject({ type: "command", name: "legacy", ref: "opencode-fixture//command/legacy" });
-    expect(command.template).toContain("Run the legacy migration");
+    expect(command).toMatchObject({ type: "command", name: "test", ref: "opencode-fixture//commands/test" });
+    expect(command.template).toContain("Run the tests");
     expect(indexedInstruction?.document?.ownsPresentation).toBe(true);
     expect(instruction).toMatchObject({ type: "instruction", name: "AGENTS", ref: "opencode-fixture//AGENTS" });
     expect(instruction.content).toContain("# Sample AGENTS.md");
@@ -379,6 +380,78 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
     expect(shown.type).toBe("workflow");
     expect(shown.action).toContain("'workflow-fixture//release'");
     expect(shown.action).not.toContain("workflow-fixture//workflows/release");
+  });
+
+  test.each([
+    "ordinary",
+    "standalone",
+  ] as const)("%s GitHub YAML workflow indexes and shows through its owning adapter", async (kind) => {
+    const yaml = `name: YAML show
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: verify
+        run: bun test
+        shell: bash
+        working-directory: packages/cli
+`;
+    if (kind === "ordinary") {
+      writeFile(path.join(stashDir, "workflows", "yaml-show.yml"), yaml);
+      await akmIndex({ stashDir, full: true });
+      const shown = await akmShowUnified({ ref: "workflows/yaml-show", skipLogging: true });
+      expect(shown).toMatchObject({
+        type: "workflow",
+        name: "yaml-show",
+        steps: [
+          {
+            id: "verify",
+            orchestration: { exec: { command: ["bash", "-c", "bun test"], cwd: "packages/cli" } },
+          },
+        ],
+      });
+      return;
+    }
+
+    const root = _createTmpDir("akm-yaml-show-");
+    writeFile(path.join(root, "yaml-show.yml"), yaml);
+    await indexAdapterBundle("workflow-yaml", root, "akm-workflow", true);
+    const shown = await akmShowUnified({ ref: "workflow-yaml//yaml-show", skipLogging: true });
+    expect(shown).toMatchObject({
+      type: "workflow",
+      name: "yaml-show",
+      steps: [
+        {
+          id: "verify",
+          orchestration: { exec: { command: ["bash", "-c", "bun test"], cwd: "packages/cli" } },
+        },
+      ],
+    });
+  });
+
+  test("invalid owned YAML is not indexed and show does not parse an unindexed file", async () => {
+    const invalidPath = path.join(stashDir, "workflows", "invalid-template.yml");
+    writeFile(
+      invalidPath,
+      `name: Invalid template
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: invalid
+        uses: akm/command
+        with:
+          content: echo $HOME
+`,
+    );
+    await akmIndex({ stashDir, full: true });
+
+    expect(await lookupBundleRef(parseBundleRef("workflows/invalid-template"))).toBeNull();
+    await expect(akmShowUnified({ ref: "workflows/invalid-template", skipLogging: true })).rejects.toThrow(
+      /not found/i,
+    );
   });
 
   test("non-Markdown indexed files reject Markdown heading fragments", async () => {

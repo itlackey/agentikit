@@ -101,17 +101,17 @@ describe("resolveStashDir", () => {
     }
   });
 
-  test("refuses an unmigrated stashDir-only config with the migrate hint", () => {
-    // 0.9.0 cutover: a retired top-level `stashDir` (no bundles) is no longer
-    // silently honoured — resolveStashDir refuses it with the same `akm-migrate
-    // apply` hint the schema hard-reject uses, instead of split-brain success.
+  test("refuses the deleted stashDir-only config shape", () => {
+    // The general config migrator is gone. A retired top-level `stashDir`
+    // cannot enter the current runtime or be redirected into the task-only
+    // migrator; operators must author the current bundles shape explicitly.
     delete process.env.AKM_BUNDLE_DIR;
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-stash-"));
     try {
       const configDir = path.join(testConfigHome, "akm");
       fs.mkdirSync(configDir, { recursive: true });
       fs.writeFileSync(path.join(configDir, "config.json"), JSON.stringify({ stashDir: tmpDir }));
-      expect(() => resolveStashDir()).toThrow(/migrate apply/);
+      expect(() => resolveStashDir()).toThrow(/stashDir is not supported.*current bundles shape/i);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

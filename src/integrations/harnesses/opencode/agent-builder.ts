@@ -17,31 +17,37 @@
  */
 
 import { type AgentCommandBuilder, assertNotFlag, resolveDispatchModel } from "../../agent/builder-shared";
+import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /**
  * OpenCode builder.
- * Command shape: opencode run [--system-prompt "..."] [--model <m>] "<prompt>"
+ * Command shape: opencode run [--system-prompt "..."] [--agent <name>] [--model <m>] "<prompt>"
  *
  * Tool policy is omitted — opencode manages tool access through its own agent
  * config files, not via CLI flags.
  */
 export const opencodeBuilder: AgentCommandBuilder = {
   platform: "opencode",
+  personaChannel: "native",
+  lower: createAgentRequestLowerer({
+    adapter: "opencode",
+    personaChannel: "native",
+    nativeAgentSelector: true,
+    tools: "none",
+    outputSchema: false,
+  }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");
-    let configuredModel: string | undefined;
+    assertNotFlag(req.agent, "agent");
     const args: string[] = req.model ? [] : [...profile.args];
     if (req.model) {
       for (let index = 0; index < profile.args.length; index += 1) {
         const arg = profile.args[index];
         if (arg === undefined) continue;
         if (arg === "--model") {
-          configuredModel = profile.args[index + 1];
           index += 1;
-        } else if (arg.startsWith("--model=")) {
-          configuredModel = arg.slice("--model=".length);
-        } else {
+        } else if (!arg.startsWith("--model=")) {
           args.push(arg);
         }
       }
@@ -49,10 +55,12 @@ export const opencodeBuilder: AgentCommandBuilder = {
     if (req.systemPrompt) {
       args.push("--system-prompt", req.systemPrompt);
     }
+    if (req.agent) {
+      args.push("--agent", req.agent);
+    }
     if (req.model) {
       const resolved = resolveDispatchModel(req, profile, "opencode") as string;
-      const provider = configuredModel?.split("/", 1)[0];
-      args.push("--model", provider && !resolved.includes("/") ? `${provider}/${resolved}` : resolved);
+      args.push("--model", resolved);
     }
     args.push("--");
     args.push(req.prompt);

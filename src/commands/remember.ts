@@ -13,13 +13,16 @@
 import { serializeFrontmatter } from "../core/asset/asset-serialize";
 import { toErrorMessage, tryReadStdinText } from "../core/common";
 import { loadConfig } from "../core/config/config";
-import { UsageError } from "../core/errors";
+import { ConfigError, UsageError } from "../core/errors";
 import { parseEmbeddedJsonResponse } from "../core/parse";
 import { DURATION_UNITS, parseDuration as parseDurationSpec } from "../core/time";
 import { warn } from "../core/warn";
+import type { LoweringNotice } from "../execution/resolved-request";
 import type { StashEntryScope } from "../indexer/passes/metadata";
 import { SCOPE_KEYS } from "../indexer/passes/metadata";
-import { getDefaultLlmConfig } from "../integrations/agent/engine-resolution";
+import { callStructured } from "../llm/structured-call";
+import { withLlmStage } from "../llm/usage-telemetry";
+import { resolveImproveLlmExecution } from "./improve/execution";
 
 /**
  * Fields the CLI collects via `--tag`, `--expires`, `--source`, `--auto`,
@@ -207,13 +210,16 @@ function detectObservedAt(body: string): string | undefined {
  *
  * `tags` is always an array (possibly empty). `description` and
  * `observed_at` are optional — only populated when the model returns them
- * in the expected shape. On any failure (LLM not configured, timeout,
- * invalid JSON), the result is `{ tags: [] }` and a warning was emitted.
+ * in the expected shape. An absent engine, provider failure, timeout, or
+ * invalid JSON yields `{ tags: [] }` with a warning. Invalid configuration is
+ * a hard pre-write error.
  */
 export interface EnrichmentResult {
   tags: string[];
   description?: string;
   observed_at?: string;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 /** Hard timeout for the `--enrich` LLM call. Write-path must not block on a misbehaving endpoint. */
@@ -221,21 +227,21 @@ const LLM_ENRICH_TIMEOUT_MS = 10_000;
 
 /**
  * Attempt LLM enrichment of memory metadata. Returns merged metadata
- * fields on success. On timeout, unreachable, or invalid JSON — returns
- * empty result and emits a warning. Never throws; always resolves.
+ * fields on success. Provider, timeout, and parse failures return an empty
+ * result and emit a warning. Invalid configuration remains a hard pre-write
+ * error and preserves its original {@link ConfigError}.
  */
 export async function runLlmEnrich(body: string): Promise<EnrichmentResult> {
   const config = loadConfig();
-  const llmConfig = getDefaultLlmConfig(config);
-  if (!llmConfig) {
+  const resolved = resolveImproveLlmExecution({ config, processName: "remember-enrich" });
+  if (!resolved) {
     warn("Warning: --enrich requires an LLM to be configured. Run `akm setup` to configure one.");
     return { tags: [] };
   }
-  const { chatCompletion } = await import("../llm/client");
-  // #576: attribute this entry point's LLM call to the `remember` stage. The
-  // wrapper is ambient — if a usage sink is active it tags the record; if not,
-  // it is a no-op.
-  const { withLlmStage } = await import("../llm/usage-telemetry");
+  const runner = resolved.runner;
+  const noticesByKey = new Map(resolved.notices.map((notice) => [JSON.stringify(notice), notice]));
+  const noticeFields = (): { notices?: readonly Readonly<LoweringNotice>[] } =>
+    noticesByKey.size > 0 ? { notices: Object.freeze([...noticesByKey.values()]) } : {};
 
   const prompt = `You are a memory tagger for a developer knowledge base.
 Given the memory text below, return ONLY a JSON object with these fields:
@@ -254,14 +260,21 @@ Return ONLY the JSON object, no prose, no markdown fences.`;
       try {
         return await Promise.race([
           withLlmStage("remember", () =>
-            chatCompletion(
-              llmConfig,
-              [
+            callStructured<string>({
+              feature: "remember_enrich",
+              runner,
+              messages: [
                 { role: "system", content: "Return only valid JSON. No prose." },
                 { role: "user", content: prompt },
               ],
-              { maxTokens: 256, temperature: 0.1 },
-            ),
+              request: { maxTokens: 256, temperature: 0.1 },
+              onNotices: (value) => {
+                for (const notice of value) noticesByKey.set(JSON.stringify(notice), notice);
+              },
+              parse: (raw) => raw ?? "",
+              onError: () => "",
+              fallback: "",
+            }),
           ),
           new Promise<never>((_, reject) => {
             timeoutHandle = setTimeout(() => reject(new Error("LLM enrichment timed out")), LLM_ENRICH_TIMEOUT_MS);
@@ -277,7 +290,7 @@ Return ONLY the JSON object, no prose, no markdown fences.`;
     const parsed = parseEmbeddedJsonResponse<Record<string, unknown>>(result);
     if (!parsed) {
       warn("Warning: --enrich received invalid JSON from the LLM. Writing memory without enrichment.");
-      return { tags: [] };
+      return { tags: [], ...noticeFields() };
     }
 
     const tags = Array.isArray(parsed.tags)
@@ -292,10 +305,11 @@ Return ONLY the JSON object, no prose, no markdown fences.`;
         ? parsed.observed_at.trim()
         : undefined;
 
-    return { tags, description, observed_at };
+    return { tags, description, observed_at, ...noticeFields() };
   } catch (err) {
+    if (err instanceof ConfigError) throw err;
     warn(`Warning: --enrich failed (${toErrorMessage(err)}). Writing memory without enrichment.`);
-    return { tags: [] };
+    return { tags: [], ...noticeFields() };
   }
 }
 

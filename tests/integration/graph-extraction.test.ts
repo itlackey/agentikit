@@ -18,11 +18,15 @@ import os from "node:os";
 import path from "node:path";
 
 import type { AkmConfig } from "../../src/core/config/config";
-import { loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
+import { ConfigError } from "../../src/core/errors";
+import { enqueueGraphExtraction, loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { buildSearchText } from "../../src/indexer/search/search-fields";
 import type { SearchSource } from "../../src/indexer/search/search-source";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
+import { computeBodyHash } from "../../src/storage/repositories/index-llm-cache-repository";
+import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
 
 // ── Local LLM server ────────────────────────────────────────────────────────
 
@@ -35,6 +39,7 @@ let extractor: (body: string) => {
   relations: [],
 });
 let extractorCallCount = 0;
+let onLlmRequest: ((request: Request) => void) | undefined;
 
 /**
  * Detect a batched graph-extract prompt and split it back into per-asset bodies.
@@ -64,6 +69,7 @@ function parseBatchBodies(userContent: string): string[] {
 const llmServer = Bun.serve({
   port: 0,
   async fetch(request) {
+    onLlmRequest?.(request);
     const payload = (await request.json()) as {
       messages?: Array<{ role?: string; content?: string }>;
     };
@@ -126,6 +132,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmpStateHome;
   extractor = () => ({ entities: [], relations: [] });
   extractorCallCount = 0;
+  onLlmRequest = undefined;
 });
 
 afterEach(() => {
@@ -170,7 +177,6 @@ function writeFile(rel: string, frontmatter: Record<string, unknown>, body: stri
   const typeDir = rel.split("/")[0] ?? "";
   const type = typeDir === "memories" ? "memory" : typeDir === "knowledge" ? "knowledge" : typeDir;
   const name = path.basename(rel, path.extname(rel));
-  const dirPath = path.dirname(filePath);
   const entry = {
     name,
     type,
@@ -181,12 +187,10 @@ function writeFile(rel: string, frontmatter: Record<string, unknown>, body: stri
   try {
     upsertEntry(
       db,
-      `${tmpStash}:${type}:${name}`,
-      dirPath,
       filePath,
-      tmpStash,
-      entry as Parameters<typeof upsertEntry>[5],
+      entry,
       buildSearchText(entry as Parameters<typeof buildSearchText>[0]),
+      deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, type, name),
     );
   } finally {
     closeDatabase(db);
@@ -383,6 +387,360 @@ describe("runGraphExtractionPass — disabled paths", () => {
 // ── runGraphExtractionPass — standalone index engine gating ────────────────
 
 describe("runGraphExtractionPass — standalone index engine gating", () => {
+  test.each([
+    { name: "empty primary stash", withCacheSource: false },
+    { name: "cache-only secondary source", withCacheSource: true },
+  ])("does not materialize a required credential for an $name", async ({ withCacheSource }) => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-no-work-cache-"));
+    try {
+      if (withCacheSource) {
+        fs.mkdirSync(path.join(cacheDir, "memories"), { recursive: true });
+        fs.writeFileSync(path.join(cacheDir, "memories", "cached.md"), "---\n---\n\nCache-only body.\n");
+      }
+      const cfg = configWithLlm({
+        engines: {
+          index: {
+            kind: "llm",
+            ...SAMPLE_LLM,
+            apiKey: "$AKM_GRAPH_NO_WORK_REQUIRED_KEY",
+          },
+        },
+        index: { defaults: { engine: "index" }, graph: { enabled: true } },
+      });
+
+      const result = await withEnv({ AKM_GRAPH_NO_WORK_REQUIRED_KEY: undefined }, () =>
+        withGraphDb("required-key-no-work", (db) =>
+          runGraphExtractionPass({
+            config: cfg,
+            sources: withCacheSource ? [{ path: tmpStash }, { path: cacheDir }] : sources(),
+            db,
+          }),
+        ),
+      );
+
+      expect(result).toMatchObject({ written: false, considered: 0, extracted: 0 });
+      expect(extractorCallCount).toBe(0);
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  test("returns initial lowering notices from standalone symbolic selection", async () => {
+    writeFile("memories/m1.md", {}, "Body.");
+    extractor = () => ({ entities: ["E"], relations: [] });
+    const cfg = configWithLlm({
+      index: {
+        defaults: { engine: "index" },
+        graph: { enabled: true, llm: { effort: "high" } },
+      },
+    });
+
+    const result = await withGraphDb("standalone-selection-notices", (db) =>
+      runGraphExtractionPass({ config: cfg, sources: sources(), db }),
+    );
+
+    expect(result.notices).toEqual([
+      expect.objectContaining({
+        code: "untranslated-field",
+        adapter: "llm",
+        field: "inference.effort",
+      }),
+    ]);
+  });
+
+  test("missing required credential writes neither graph cache nor graph row", async () => {
+    writeFile("memories/m1.md", {}, "Body one.");
+    writeFile("knowledge/k1.md", {}, "Body two.");
+    const cfg = configWithLlm({
+      engines: {
+        index: {
+          kind: "llm",
+          ...SAMPLE_LLM,
+          apiKey: "$AKM_GRAPH_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 2 } },
+    });
+
+    await withGraphDb("missing-required-credential", async (db) => {
+      const failure = withEnv({ AKM_GRAPH_REQUIRED_KEY: undefined }, () =>
+        runGraphExtractionPass({ config: cfg, sources: sources(), db }),
+      );
+      await expect(failure).rejects.toBeInstanceOf(ConfigError);
+      await expect(failure).rejects.toMatchObject({ code: "INVALID_CONFIG_FILE" });
+      expect(extractorCallCount).toBe(0);
+      const cacheCount = (db.prepare("SELECT COUNT(*) AS cnt FROM llm_enrichment_cache").get() as { cnt: number }).cnt;
+      const graphCount = (
+        db.prepare("SELECT COUNT(*) AS cnt FROM graph_files WHERE stash_root = ?").get(tmpStash) as { cnt: number }
+      ).cnt;
+      expect(cacheCount).toBe(0);
+      expect(graphCount).toBe(0);
+    });
+  });
+
+  test("single-file graph dispatches keep the preflight credential after removal", async () => {
+    writeFile("memories/a.md", {}, "Alice works with Bob.");
+    writeFile("memories/b.md", {}, "Carol supports Service C.");
+    extractor = (body) => ({ entities: [body.includes("Alice") ? "Alice" : "Carol"], relations: [] });
+    const cfg = configWithLlm({
+      engines: { index: { kind: "llm", ...SAMPLE_LLM, apiKey: "$AKM_GRAPH_LEASE_SINGLE_KEY" } },
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 1 } },
+    });
+    const secret = "graph-single-original-092";
+    const authorization: Array<string | null> = [];
+    onLlmRequest = (request) => {
+      authorization.push(request.headers.get("authorization"));
+      if (authorization.length === 1) mutateScopedEnv("AKM_GRAPH_LEASE_SINGLE_KEY", undefined);
+    };
+
+    const result = await withEnv({ AKM_GRAPH_LEASE_SINGLE_KEY: secret }, () =>
+      withGraphDb("single-lease", (db) => runGraphExtractionPass({ config: cfg, sources: sources(), db })),
+    );
+    expect(result).toMatchObject({ considered: 2, extracted: 2, written: true });
+    expect(authorization).toEqual([`Bearer ${secret}`, `Bearer ${secret}`]);
+  });
+
+  test("batched graph dispatches keep the original credential after replacement", async () => {
+    for (const name of ["a", "b", "c", "d"]) writeFile(`memories/${name}.md`, {}, `Body about ${name}.`);
+    extractor = (body) => ({ entities: [body.slice(-2)], relations: [] });
+    const cfg = configWithLlm({
+      engines: { index: { kind: "llm", ...SAMPLE_LLM, apiKey: "$AKM_GRAPH_LEASE_BATCH_KEY" } },
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 2 } },
+    });
+    const secret = "graph-batch-original-092";
+    const replacement = "graph-batch-replacement-092";
+    const authorization: Array<string | null> = [];
+    onLlmRequest = (request) => {
+      authorization.push(request.headers.get("authorization"));
+      if (authorization.length === 1) mutateScopedEnv("AKM_GRAPH_LEASE_BATCH_KEY", replacement);
+    };
+
+    const result = await withEnv({ AKM_GRAPH_LEASE_BATCH_KEY: secret }, () =>
+      withGraphDb("batch-lease", (db) => runGraphExtractionPass({ config: cfg, sources: sources(), db })),
+    );
+    expect(result).toMatchObject({ considered: 4, extracted: 4, written: true });
+    expect(authorization).toEqual([`Bearer ${secret}`, `Bearer ${secret}`]);
+  });
+
+  test("queued and sweep graph calls share one credential snapshot", async () => {
+    const queuedPath = writeFile("memories/a-queued.md", {}, "Queued Alice body.");
+    writeFile("memories/b-sweep.md", {}, "Sweep Bob body.");
+    extractor = (body) => ({ entities: [body.includes("Alice") ? "Alice" : "Bob"], relations: [] });
+    const cfg = configWithLlm({
+      engines: { index: { kind: "llm", ...SAMPLE_LLM, apiKey: "$AKM_GRAPH_LEASE_QUEUE_KEY" } },
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 1 } },
+    });
+    const secret = "graph-queue-original-092";
+    const authorization: Array<string | null> = [];
+    onLlmRequest = (request) => {
+      authorization.push(request.headers.get("authorization"));
+      if (authorization.length === 1) mutateScopedEnv("AKM_GRAPH_LEASE_QUEUE_KEY", undefined);
+    };
+
+    const result = await withEnv({ AKM_GRAPH_LEASE_QUEUE_KEY: secret }, () =>
+      withGraphDb("queue-lease", (db) => {
+        enqueueGraphExtraction(db, tmpStash, queuedPath, computeBodyHash("Queued Alice body."), 10);
+        return runGraphExtractionPass({ config: cfg, sources: sources(), db });
+      }),
+    );
+    expect(result.written).toBe(true);
+    expect(authorization).toEqual([`Bearer ${secret}`, `Bearer ${secret}`]);
+  });
+
+  test("an all-cache-hit sweep does not materialize a required credential", async () => {
+    writeFile("memories/cache-hit.md", {}, "Alice works with Bob.");
+    extractor = () => ({ entities: ["Alice", "Bob"], relations: [{ from: "Alice", to: "Bob" }] });
+    const cfg = configWithLlm({
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 1 } },
+    });
+
+    await withGraphDb("prime-cache-hit", (db) => runGraphExtractionPass({ config: cfg, sources: sources(), db }));
+    expect(extractorCallCount).toBe(1);
+    const engine = cfg.engines?.index;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the index LLM engine");
+    engine.apiKey = "$AKM_GRAPH_CACHE_HIT_REQUIRED_KEY";
+
+    const result = await withEnv({ AKM_GRAPH_CACHE_HIT_REQUIRED_KEY: undefined }, () =>
+      withGraphDb("required-key-cache-hit", (db) => runGraphExtractionPass({ config: cfg, sources: sources(), db })),
+    );
+
+    expect(result).toMatchObject({ written: true, considered: 1, extracted: 1 });
+    expect(result.telemetry).toMatchObject({ cacheHits: 1, cacheMisses: 0 });
+    expect(extractorCallCount).toBe(1);
+  });
+
+  test("a cache-hit plus cache-miss batch fails before changing graph or cache state", async () => {
+    writeFile("memories/a-hit.md", {}, "Alice works with Bob.");
+    extractor = () => ({ entities: ["Alice", "Bob"], relations: [{ from: "Alice", to: "Bob" }] });
+    const cfg = configWithLlm({
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 1 } },
+    });
+
+    await withGraphDb("prime-mixed-cache", (db) => runGraphExtractionPass({ config: cfg, sources: sources(), db }));
+    writeFile("memories/b-miss.md", {}, "Carol supports Service C.");
+    const engine = cfg.engines?.index;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the index LLM engine");
+    engine.apiKey = "$AKM_GRAPH_MIXED_REQUIRED_KEY";
+
+    await withGraphDb("required-key-mixed-cache", async (db) => {
+      const snapshot = () => ({
+        cache: db.prepare("SELECT * FROM llm_enrichment_cache ORDER BY asset_ref, cache_variant").all(),
+        files: db.prepare("SELECT * FROM graph_files ORDER BY stash_root, file_path").all(),
+        entities: db.prepare("SELECT * FROM graph_file_entities ORDER BY stash_root, file_path, entity_order").all(),
+        relations: db
+          .prepare("SELECT * FROM graph_file_relations ORDER BY stash_root, file_path, relation_order")
+          .all(),
+        meta: db.prepare("SELECT * FROM graph_meta ORDER BY stash_root").all(),
+      });
+      const before = snapshot();
+      const failure = withEnv({ AKM_GRAPH_MIXED_REQUIRED_KEY: undefined }, () =>
+        runGraphExtractionPass({ config: cfg, sources: sources(), db }),
+      );
+
+      await expect(failure).rejects.toBeInstanceOf(ConfigError);
+      expect(snapshot()).toEqual(before);
+      expect(extractorCallCount).toBe(1);
+    });
+  });
+
+  test.each([
+    1, 2,
+  ])("a queued stored hit cannot be acknowledged before a classified sweep cache hit is consumed (batch size %i)", async (batchSize) => {
+    const queuedBody = "Alice works with Bob.";
+    const sweepBody = "Carol supports Service C.";
+    const queuedPath = writeFile("memories/a-queued.md", {}, queuedBody);
+    const sweepPath = writeFile("memories/b-sweep.md", {}, sweepBody);
+    const cfg = configWithLlm({
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: batchSize } },
+    });
+    extractor = (body) =>
+      body.includes("Alice")
+        ? { entities: ["Alice", "Bob"], relations: [{ from: "Alice", to: "Bob" }] }
+        : { entities: ["Carol", "Service C"], relations: [{ from: "Carol", to: "Service C" }] };
+
+    await withGraphDb("prime-queue-cache-race", (db) =>
+      runGraphExtractionPass({ config: cfg, sources: sources(), db }),
+    );
+    expect(extractorCallCount).toBe(batchSize === 1 ? 2 : 1);
+    const engine = cfg.engines?.index;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the index LLM engine");
+    engine.apiKey = "$AKM_GRAPH_QUEUE_CACHE_RACE_REQUIRED_KEY";
+
+    await withGraphDb("queue-cache-race", async (db) => {
+      // Queue classification accepts the stored node independently of extractor
+      // identity. The sweep must use its validated LLM cache entry instead.
+      db.prepare("UPDATE graph_meta SET extractor_id = ? WHERE stash_root = ?").run("stale-extractor", tmpStash);
+      enqueueGraphExtraction(db, tmpStash, queuedPath, computeBodyHash(queuedBody), 10);
+      let invalidated = false;
+
+      const result = await withEnv({ AKM_GRAPH_QUEUE_CACHE_RACE_REQUIRED_KEY: undefined }, () =>
+        runGraphExtractionPass({
+          config: cfg,
+          sources: sources(),
+          db,
+          onProgress: (event) => {
+            if (!invalidated && event.processed === 0) {
+              db.prepare("DELETE FROM llm_enrichment_cache WHERE asset_ref = ?").run(sweepPath);
+              invalidated = true;
+            }
+          },
+        }),
+      );
+
+      expect(result).toMatchObject({ considered: 1, extracted: 1, written: true });
+      expect(result.telemetry).toMatchObject({ cacheHits: 1, cacheMisses: 0 });
+      expect(extractorCallCount).toBe(batchSize === 1 ? 2 : 1);
+      const queueCount = (
+        db.prepare("SELECT COUNT(*) AS n FROM graph_extraction_queue WHERE stash_root = ?").get(tmpStash) as {
+          n: number;
+        }
+      ).n;
+      expect(queueCount).toBe(0);
+      const stored = loadStoredGraphSnapshot(tmpStash, db);
+      expect(stored?.files.find((file) => file.path === sweepPath)?.entities).toEqual(["Carol", "Service C"]);
+    });
+  });
+
+  test("a queued model extraction preserves a newer revision enqueued during dispatch", async () => {
+    const originalBody = "Original body about Alice.";
+    const revisedBody = "Revised body about Bob.";
+    const queuedPath = writeFile("memories/queued-revision.md", {}, originalBody);
+    const cfg = configWithLlm({
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 1 } },
+    });
+
+    await withGraphDb("queue-concurrent-revision", async (db) => {
+      enqueueGraphExtraction(db, tmpStash, queuedPath, computeBodyHash(originalBody), 10);
+      let revised = false;
+      extractor = () => {
+        if (!revised) {
+          fs.writeFileSync(queuedPath, `---\n---\n\n${revisedBody}\n`, "utf8");
+          enqueueGraphExtraction(db, tmpStash, queuedPath, computeBodyHash(revisedBody), 10);
+          revised = true;
+        }
+        return { entities: ["Alice"], relations: [] };
+      };
+
+      await runGraphExtractionPass({
+        config: cfg,
+        sources: sources(),
+        db,
+        options: { candidatePaths: new Set() },
+      });
+
+      const queued = db
+        .prepare("SELECT body_hash FROM graph_extraction_queue WHERE stash_root = ? AND file_path = ?")
+        .get(tmpStash, queuedPath) as { body_hash: string };
+      expect(queued.body_hash).toBe(computeBodyHash(revisedBody));
+      const stored = loadStoredGraphSnapshot(tmpStash, db);
+      expect(stored?.files.find((file) => file.path === queuedPath)?.bodyHash).toBe(computeBodyHash(originalBody));
+    });
+  });
+
+  test("a queued model extraction does not acknowledge a revision deleted during dispatch", async () => {
+    const body = "Temporary body about Alice.";
+    const queuedPath = writeFile("memories/queued-deletion.md", {}, body);
+    const cfg = configWithLlm({
+      index: { defaults: { engine: "index" }, graph: { enabled: true, graphExtractionBatchSize: 1 } },
+    });
+
+    await withGraphDb("queue-concurrent-deletion", async (db) => {
+      enqueueGraphExtraction(db, tmpStash, queuedPath, computeBodyHash(body), 10);
+      extractor = () => {
+        fs.rmSync(queuedPath);
+        return { entities: ["Alice"], relations: [] };
+      };
+
+      await runGraphExtractionPass({
+        config: cfg,
+        sources: sources(),
+        db,
+        options: { candidatePaths: new Set() },
+      });
+
+      const queued = db
+        .prepare("SELECT body_hash FROM graph_extraction_queue WHERE stash_root = ? AND file_path = ?")
+        .get(tmpStash, queuedPath) as { body_hash: string };
+      expect(queued.body_hash).toBe(computeBodyHash(body));
+
+      extractor = () => {
+        throw new Error("a deletion-only recovery pass dispatched an LLM request");
+      };
+      await runGraphExtractionPass({
+        config: cfg,
+        sources: sources(),
+        db,
+        options: { candidatePaths: new Set() },
+      });
+      const queueCount = (
+        db.prepare("SELECT COUNT(*) AS n FROM graph_extraction_queue WHERE stash_root = ?").get(tmpStash) as {
+          n: number;
+        }
+      ).n;
+      expect(queueCount).toBe(0);
+    });
+  });
+
   test("runs when the pass is enabled and its index engine resolves", async () => {
     writeFile("memories/m1.md", {}, "Body.");
     extractor = () => ({ entities: ["E"], relations: [] });

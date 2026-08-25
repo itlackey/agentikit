@@ -13,6 +13,7 @@ import type {
 } from "../commands/improve/memory/memory-improve";
 import type { EligibilitySource, Proposal } from "../commands/proposal/proposal-types";
 import type { DeadUrl } from "../commands/url-checker";
+import type { LoweringNotice } from "../execution/resolved-request";
 import type { GraphExtractionResult } from "../indexer/graph/graph-extraction";
 import type { MemoryInferenceResult } from "../indexer/passes/memory-inference";
 import type { AgentFailureReason } from "../integrations/agent/spawn";
@@ -42,6 +43,93 @@ export interface ImproveEligibleRef {
    * {@link EligibilitySource} for the lane vocabulary and precedence rule.
    */
   eligibilitySource?: EligibilitySource;
+}
+
+/** Operator-facing lane reported by the improve execution planner. */
+export type ImprovePlanLane = EligibilitySource | "distill-only";
+
+export interface ImprovePlanGate {
+  name: "profile" | "cleanup" | "validation" | "signal" | "disk" | "limit";
+  removed: number;
+  reason: string;
+}
+
+/** Read-side index boundary used to build an improve plan. */
+export interface ImproveIndexSnapshot {
+  status: "ready" | "missing" | "incompatible" | "unknown";
+  reason: string;
+}
+
+export interface ImproveExecutionPlan {
+  /** A plan is an estimate until the live loop dispatches it. */
+  mode: "estimate" | "execution";
+  /** Always false for dry-run; true only on a live result. */
+  dispatch: boolean;
+  /** Whether the existing index could be queried without creating or migrating it. */
+  snapshot: ImproveIndexSnapshot;
+  candidates: {
+    /** Every in-scope ref before profile/process gates. */
+    rawInScope: number;
+    /** Refs surviving selectors and disk checks, before the global limit. */
+    selected: number;
+    /** Final ranked refs the improve loop is allowed to dispatch. */
+    effective: number;
+  };
+  limits: {
+    /** Authored values, kept separate so precedence is visible. */
+    configured: { cli?: number; profile?: number; reflect?: number };
+    /** Base cap for ordinary (non-replay) refs, resolved from CLI -> reflect process -> profile. */
+    effective?: number;
+    /** Separately configured replay refs that may be appended beyond the base cap. */
+    additiveReplayAllowance: number;
+    /** Finite maximum dispatch count when a base cap exists; base cap + replay allowance. */
+    totalCeiling?: number;
+  };
+  gates: ImprovePlanGate[];
+  effectiveRefs: Array<{ ref: string; lane: ImprovePlanLane; reason: ImproveEligibleRef["reason"] }>;
+  proactive?: {
+    configured: { dueDays?: number; maxPerRun?: number; limit?: number };
+    effective: { dueDays: number; maxPerRun: number };
+    candidatePool: number;
+    dueTotal: number;
+    neverReflected: number;
+    selected: number;
+    selectedRefs: string[];
+  };
+  consolidation: {
+    configured: {
+      enabled?: boolean;
+      minPoolSize?: number;
+      limit?: number;
+      maxChunkSize?: number;
+      incrementalSince?: string;
+    };
+    effective: { enabled: boolean; minPoolSize: number; limit?: number; chunkSize: number };
+    poolSize: number;
+    candidatePoolSize: number;
+    gates: {
+      profile: { passed: boolean; reason: string };
+      minimumPool: { passed: boolean; reason: string };
+      delta: { passed: boolean; reason: string };
+    };
+    wouldRun: boolean;
+    reason: string;
+    estimatedChunks: number;
+  };
+  stages: Array<{
+    name: "consolidation" | "extract" | "graph-extraction" | "memory-inference";
+    wouldRun: boolean;
+    reason: string;
+  }>;
+  triage: {
+    enabled: boolean;
+    /** Authored mode before autonomy/config resolution. */
+    configuredMode: "queue" | "promote";
+    /** Effective mode the live pre-pass will execute. */
+    mode: "queue" | "promote";
+    maxAcceptsPerRun: number;
+    maxDiffLines?: number;
+  };
 }
 
 /**
@@ -214,6 +302,8 @@ export interface ConsolidateResult {
   planned?: ConsolidateOperation[];
   warnings: string[];
   durationMs: number;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
   /**
    * WS-5 perf telemetry (Part V). Always emitted when consolidation runs —
    * these are health VIEWS of the pipeline, not truth sources. Omitted on the
@@ -343,6 +433,8 @@ export interface AkmDistillResult {
    * Only present when at least one swap was applied.
    */
   descriptionSwapped?: number;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface ExtractedSessionResult {
@@ -375,6 +467,8 @@ export interface ExtractedSessionResult {
    * rows stay eligible for retry.
    */
   contentHash?: string;
+  /** Stable, secret-free execution-lowering diagnostics for this session. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface AkmExtractResult {
@@ -390,6 +484,8 @@ export interface AkmExtractResult {
   sessions: ExtractedSessionResult[];
   warnings: string[];
   durationMs: number;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface AkmReflectFailure {
@@ -402,6 +498,8 @@ export interface AkmReflectFailure {
   exitCode: number | null;
   stdout?: string;
   stderr?: string;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface AkmReflectSuccess {
@@ -411,6 +509,8 @@ export interface AkmReflectSuccess {
   ref: string;
   engine: string;
   durationMs: number;
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export type AkmReflectResult = AkmReflectSuccess | AkmReflectFailure;
@@ -516,6 +616,8 @@ export interface AkmImproveResult {
     value?: string;
   };
   dryRun: boolean;
+  /** Deduplicated, secret-free execution-lowering diagnostics from this run. */
+  notices?: readonly Readonly<LoweringNotice>[];
   /**
    * Present when the run did no work because another improve held the whole-run
    * lock and `skipIfLocked` was set. The run exits 0; `reason` is `"lock-held"`.
@@ -528,6 +630,8 @@ export interface AkmImproveResult {
   };
   memoryCleanup?: ImproveMemoryCleanupResult;
   plannedRefs: ImproveEligibleRef[];
+  /** Effective planner projection shared by dry-run preview and live execution. */
+  plan?: ImproveExecutionPlan;
   /**
    * Refs the planner considered but excluded because every per-ref pass on
    * the active profile (reflect + distill) would refuse them. Additive
@@ -636,7 +740,7 @@ export interface AkmImproveResult {
    * `maxPerRun`); `dueTotal` is the full due pool before the bound;
    * `neverReflected` is the subset of the due pool never previously reflected.
    */
-  proactiveMaintenance?: { selected: number; dueTotal: number; neverReflected: number };
+  proactiveMaintenance?: { selected: number; dueTotal: number; neverReflected: number; selectedRefs: string[] };
   /**
    * R5 — the collapse/churn detector's cycle snapshot (mirrors one
    * improve_cycle_metrics row), present when this run qualified (consolidate

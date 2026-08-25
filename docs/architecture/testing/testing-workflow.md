@@ -148,6 +148,19 @@ can be:
 These cases are covered by `tests/integration/setup-run.test.ts` and the focused
 semantic/config suites.
 
+The real-model gate (`AKM_SEMANTIC_TESTS=1`) honors an explicit `HF_HOME` and
+otherwise uses the ignored, repo-local `.ci-cache/huggingface` directory. That
+path is outside the preload's disposable test `HOME`, so a second local run
+reuses the model without exposing the developer's normal AKM cache. Gated CI
+sets the same path and restores it from a model/source-identified Actions
+cache. Candidate tags and manual runs are restore-only; only the scheduled
+default-branch run may save a cache entry.
+
+The same gate runs real semantic index/search round-trips against the declared
+external dependency. Package acceptance separately verifies the ordinary npm
+package surface; there is no installed-consumer compatibility architecture or
+copied semantic runtime to audit.
+
 ### What to test explicitly
 
 - config stays `off` only when the user disables semantic search intentionally
@@ -258,6 +271,15 @@ For a local release gate without Docker, use:
 
 That script now runs a dedicated install/setup regression suite before the full
 test run so first-run, installer, and wizard failures surface early.
+
+The local script is only one half of release validation. Follow the
+[maintainer release checklist](../../maintainers/release-checklist.md) to
+run **Gated CI** from a `gated-ci/candidate-*` tag targeting the exact candidate
+commit, or manually dispatch it with `gated_suite: all` and the full candidate
+SHA after the workflow reaches the default branch. Its real-embedding, Docker,
+and Linux/macOS/Windows scheduler jobs must all succeed, and the release PR
+must link the resulting Actions run. The weekly scheduled run detects
+default-branch drift; it cannot attest a different release-candidate commit.
 
 ## Manual QA Authority
 

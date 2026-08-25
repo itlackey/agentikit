@@ -71,7 +71,7 @@ import {
   txnNamespaceDir,
 } from "../../core/fs-txn";
 import { canonicalBundleIdForTarget, resolveBundleWriteTarget } from "../../core/mutation-target";
-import { withImmediateTransaction, withStateDb } from "../../core/state-db";
+import { getStateDbPath, withImmediateTransaction, withStateDb } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import { recordWrittenPath } from "../../core/write-provenance";
 import {
@@ -95,11 +95,11 @@ import type { Database } from "../../storage/database";
 import { insertEventOnce } from "../../storage/repositories/events-repository";
 import {
   getStateProposal,
-  getStateProposalLenient,
   listStateProposalIdsByPrefix,
   listStateProposals,
   upsertProposal,
 } from "../../storage/repositories/proposals-repository";
+import { openSqliteReadSnapshot } from "../../storage/sqlite-read-snapshot";
 import { pkgVersion } from "../../version";
 import { runBaseChecks } from "../lint/base-linter";
 import type { LintIssue, LintIssueType } from "../lint/types";
@@ -374,57 +374,6 @@ function newId(ctx?: ProposalsContext): string {
  */
 function withProposalsDb<T>(_stashDir: string, ctx: ProposalsContext | undefined, fn: (db: Database) => T): T {
   return withStateDb(fn, { path: ctx?.dbPath });
-}
-
-function persistProposalUpdate(db: Database, proposal: Proposal, stashDir: string): void {
-  // Only take the full re-serialize (upsertProposal -> proposalToRowValues)
-  // path when `changes` is well-formed enough to survive it — a non-empty
-  // path on every entry, matching proposalToRowValues' own validation. A
-  // legacy row with a present `proposedTarget` but an empty/missing
-  // `changes[].path` (e.g. a malformed 0.8-era row) would otherwise die in
-  // proposalToRowValues; falling through to the targeted UPDATE below keeps
-  // `changes`/`proposedTarget` untouched in metadata_json and only flips the
-  // status/review/etc. fields the terminal transition actually needs.
-  const changesAreWellFormed =
-    proposal.changes.length > 0 && proposal.changes.every((change) => change.path.length > 0);
-  if (changesAreWellFormed && proposal.proposedTarget) {
-    upsertProposal(db, proposal, stashDir);
-    return;
-  }
-  const row = db
-    .prepare("SELECT metadata_json FROM proposals WHERE id = ? AND stash_dir = ?")
-    .get(proposal.id, stashDir) as { metadata_json: string } | undefined;
-  if (!row) throw new NotFoundError(`Proposal "${proposal.id}" not found.`, "PROPOSAL_NOT_FOUND");
-  const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-  for (const field of [
-    "sourceRun",
-    "beforeHash",
-    "review",
-    "confidence",
-    "gateDecision",
-    "backupContent",
-    "acceptedTarget",
-    "eligibilitySource",
-  ] as const) {
-    const value = proposal[field];
-    if (value === undefined) delete metadata[field];
-    else metadata[field] = value;
-  }
-  db.prepare(
-    `UPDATE proposals
-     SET ref = ?, status = ?, source = ?, updated_at = ?, content = ?, frontmatter_json = ?, metadata_json = ?
-     WHERE id = ? AND stash_dir = ?`,
-  ).run(
-    proposal.ref,
-    proposal.status,
-    proposal.source,
-    proposal.updatedAt,
-    proposal.payload.content,
-    proposal.payload.frontmatter ? JSON.stringify(proposal.payload.frontmatter) : null,
-    JSON.stringify(metadata),
-    proposal.id,
-    stashDir,
-  );
 }
 
 /**
@@ -911,6 +860,48 @@ export function listProposals(
 }
 
 /**
+ * Read proposal context without creating or migrating state.db.
+ *
+ * Prompt-building consumers call this before their first model dispatch. A
+ * missing proposal store is therefore an empty snapshot, not a reason to
+ * create durable state before a required symbolic credential is validated at
+ * the dispatch boundary.
+ */
+export function listProposalsReadOnly(
+  stashDir: string,
+  options: { includeArchive?: boolean; status?: ProposalStatus; ref?: string; type?: string } = {},
+  ctx?: ProposalsContext,
+): Proposal[] {
+  const dbPath = ctx?.dbPath ?? getStateDbPath();
+  if (!fs.existsSync(dbPath)) return [];
+
+  let db: Database | undefined;
+  try {
+    db = openSqliteReadSnapshot(dbPath);
+    if (!db) return [];
+    if (!options.includeArchive && options.status !== undefined && options.status !== "pending") return [];
+    const status = options.includeArchive ? options.status : "pending";
+    const wantRef = options.ref !== undefined ? filterRefIdentity(options.ref) : undefined;
+    return listStateProposals(db, {
+      stashDir,
+      ...(status !== undefined ? { status } : {}),
+    }).filter((proposal) => {
+      if (wantRef !== undefined && !proposalMatchesRef(proposal.ref, wantRef)) return false;
+      if (!options.type) return true;
+      try {
+        return parseRefInput(proposal.ref).type === options.type;
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return [];
+  } finally {
+    db?.close();
+  }
+}
+
+/**
  * Look up a proposal by id (live or archived).
  * Throws `NotFoundError` when no match exists in this stash.
  */
@@ -924,27 +915,6 @@ function requireProposal(db: Database, stashDir: string, id: string): Proposal {
     throw new NotFoundError(`Proposal "${id}" not found.`, "PROPOSAL_NOT_FOUND");
   }
   return proposal;
-}
-
-/**
- * Lenient counterpart to {@link requireProposal} / {@link getProposal}, used
- * ONLY on the terminal-status (reject/archive) read paths — `archiveProposal`
- * and the reject-transaction machinery (`rejectProposalDurably`,
- * `finalizeRejectTransaction`). Those paths must succeed even when the row's
- * metadata fails strict decoding (see {@link proposalRowToProposalLenient});
- * every other reader (accept, revert, show, list's pending branch) keeps
- * strict decoding via `getProposal`/`requireProposal` unchanged.
- */
-function requireProposalLenient(db: Database, stashDir: string, id: string): Proposal {
-  const proposal = getStateProposalLenient(db, id, stashDir);
-  if (!proposal) {
-    throw new NotFoundError(`Proposal "${id}" not found.`, "PROPOSAL_NOT_FOUND");
-  }
-  return proposal;
-}
-
-function getProposalLenient(stashDir: string, id: string, ctx?: ProposalsContext): Proposal {
-  return withProposalsDb(stashDir, ctx, (db) => requireProposalLenient(db, stashDir, id));
 }
 
 /**
@@ -995,22 +965,6 @@ export function resolveProposalId(stashDir: string, idOrRef: string, ctx?: Propo
 }
 
 /**
- * Resolve a reject target's id, tolerating a legacy row whose metadata fails
- * strict decoding. `akm proposal reject` only needs the id — but
- * {@link resolveProposalId}'s exact-UUID fast path decodes the FULL proposal
- * just to hand it back, which throws on those rows before the
- * terminal-status machinery (which reads leniently — see
- * `requireProposalLenient`) ever runs. Falls back to `resolveProposalId`
- * unchanged for ref / uuid-prefix inputs, where existing resolution
- * (including its error semantics) is preserved.
- */
-export function resolveProposalIdForReject(stashDir: string, idOrRef: string, ctx?: ProposalsContext): string {
-  const exact = withProposalsDb(stashDir, ctx, (db) => getStateProposalLenient(db, idOrRef, stashDir));
-  if (exact) return exact.id;
-  return resolveProposalId(stashDir, idOrRef, ctx).id;
-}
-
-/**
  * Archive a proposal: flip its status to `accepted` / `rejected`, bump
  * `updatedAt`, and record the review block. Used by both accept and reject
  * paths so the live queue only contains pending entries.
@@ -1025,10 +979,7 @@ export function archiveProposal(
 ): Proposal {
   return withProposalsDb(stashDir, ctx, (db) => {
     return withImmediateTransaction(db, () => {
-      // Lenient: archiving (accept OR reject) a legacy row with malformed
-      // changes/proposedTarget metadata must still be able to flip status —
-      // see requireProposalLenient.
-      const existing = requireProposalLenient(db, stashDir, id);
+      const existing = requireProposal(db, stashDir, id);
       if (existing.status !== "pending") {
         throw new UsageError(
           `Proposal ${id} is not pending (current status: ${existing.status}). Only pending proposals can be ${status}.`,
@@ -1047,7 +998,7 @@ export function archiveProposal(
         },
         ...(gateDecision ? { gateDecision: { ...gateDecision, decidedAt: gateDecision.decidedAt ?? decidedAt } } : {}),
       };
-      persistProposalUpdate(db, updated, stashDir);
+      upsertProposal(db, updated, stashDir);
       return updated;
     });
   });
@@ -1082,7 +1033,7 @@ export function recordGateDecision(
         ...existing,
         gateDecision: { ...decision, decidedAt: decision.decidedAt ?? nowIso(ctx) },
       };
-      persistProposalUpdate(db, updated, stashDir);
+      upsertProposal(db, updated, stashDir);
       return updated;
     });
   });
@@ -1651,9 +1602,7 @@ const REJECT_TXN_PHASES = ["prepared", "state-persisted", "event-finalized", "co
 function finalizeRejectTransaction(txn: RejectTxn, ctx?: ProposalsContext): Proposal {
   const p = txn.journal.payload;
   const decidedAt = txn.journal.decidedAt;
-  // Lenient: a reject transaction must run to completion even on a legacy
-  // row whose metadata fails strict decoding — see requireProposalLenient.
-  let proposal = getProposalLenient(p.stashDir, p.proposalId, ctx);
+  let proposal = getProposal(p.stashDir, p.proposalId, ctx);
   if (txn.journal.phase === "prepared") {
     if (proposal.status === "pending") {
       proposal = archiveProposal(
@@ -1671,7 +1620,7 @@ function finalizeRejectTransaction(txn: RejectTxn, ctx?: ProposalsContext): Prop
     txnMutationHook("reject-state-persisted");
   }
   if (txn.journal.phase === "state-persisted") {
-    proposal = getProposalLenient(p.stashDir, p.proposalId, ctx);
+    proposal = getProposal(p.stashDir, p.proposalId, ctx);
     const eventRef = proposal.ref;
     const eventMeta = {
       proposalId: proposal.id,
@@ -1728,9 +1677,7 @@ export function rejectProposalDurably(
 ): Proposal {
   const recovered = recoverRejectTransaction(stashDir, proposalId, ctx);
   if (recovered) return recovered;
-  // Lenient: see requireProposalLenient — the reject decision itself must not
-  // be blocked by a legacy row's malformed changes/proposedTarget metadata.
-  const proposal = getProposalLenient(stashDir, proposalId, ctx);
+  const proposal = getProposal(stashDir, proposalId, ctx);
   if (proposal.status !== "pending") {
     throw new UsageError(
       `Proposal ${proposalId} is not pending (current status: ${proposal.status}). Only pending proposals can be rejected.`,
@@ -2315,7 +2262,7 @@ async function promoteProposalWithLease(
   // final promoted payload (not the defective original).
   if (repairedContent !== proposalContent(proposal)) {
     withProposalsDb(stashDir, ctx, (db) => {
-      persistProposalUpdate(db, proposalToValidate, stashDir);
+      upsertProposal(db, proposalToValidate, stashDir);
     });
   }
 

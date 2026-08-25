@@ -10,7 +10,6 @@
  * itself lives in `indexer/feedback/utility-policy`; this repo only reads/writes.
  */
 
-import path from "node:path";
 import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { computeNextUtility, type FeedbackUtilityResult } from "../../indexer/feedback/utility-policy";
 import type { Database, SqlValue } from "../database";
@@ -191,7 +190,7 @@ export function getRetrievalCounts(
 ): Map<string, number> {
   if (refs.length === 0) return new Map();
 
-  if (options.sourceName || options.stashDir) {
+  if (options.sourceName) {
     return getSourceScopedRetrievalCounts(indexDb, stateDb, refs, options);
   }
 
@@ -272,20 +271,18 @@ function getSourceScopedRetrievalCounts(
     }
   }
 
-  // Cross-DB (Chunk-8 WI-8.3): usage_events rows come from state.db; the
-  // per-row `stash_dir` (formerly a LEFT JOIN on entries) is resolved from
-  // index.db by entry_id. Read the usage rows first, then batch-look-up the
-  // stash_dir for their entry_ids and join in JS.
-  const entryStashDir = indexDb.prepare("SELECT stash_dir FROM entries WHERE id = ?");
-  const stashDirFor = (entryId: number | null): string | null => {
+  // Cross-DB: usage rows come from state.db; resolve the linked entry's
+  // canonical bundle identity from index.db by entry_id.
+  const entryBundle = indexDb.prepare("SELECT bundle_id FROM entries WHERE id = ?");
+  const bundleFor = (entryId: number | null): string | null => {
     if (entryId === null) return null;
-    const row = entryStashDir.get(entryId) as { stash_dir: string | null } | undefined;
-    return row?.stash_dir ?? null;
+    const row = entryBundle.get(entryId) as { bundle_id: string } | undefined;
+    return row?.bundle_id ?? null;
   };
 
   const countsByBare = new Map<string, number>();
   const bareForms = [...bareToInputs.keys()];
-  const selectedRoot = options.stashDir ? path.resolve(options.stashDir) : undefined;
+  const selectedBundle = options.sourceName;
   for (let i = 0; i < bareForms.length; i += SQLITE_CHUNK_SIZE) {
     const chunk = bareForms.slice(i, i + SQLITE_CHUNK_SIZE);
     const placeholders = chunk.map(() => "?").join(", ");
@@ -307,18 +304,15 @@ function getSourceScopedRetrievalCounts(
       entry_ref: string;
       entry_id: number | null;
     }>;
-    const rows = rawRows.map((r) => ({ ...r, stash_dir: stashDirFor(r.entry_id) }));
+    const rows = rawRows.map((r) => ({ ...r, bundle_id: bundleFor(r.entry_id) }));
 
     for (const row of rows) {
       const bare = bareRef(row.entry_ref);
-      const linkedToSelectedRoot =
-        row.entry_id !== null && selectedRoot !== undefined && row.stash_dir !== null
-          ? path.resolve(row.stash_dir) === selectedRoot
-          : false;
-      const detached = row.entry_id === null || selectedRoot === undefined;
+      const linkedToSelectedBundle = row.entry_id !== null && row.bundle_id === selectedBundle;
+      const detached = row.entry_id === null;
       const qualifiedForSource =
         detached && options.sourceName !== undefined && row.entry_ref === `${options.sourceName}//${bare}`;
-      if (!linkedToSelectedRoot && !qualifiedForSource) continue;
+      if (!linkedToSelectedBundle && !qualifiedForSource) continue;
       countsByBare.set(bare, (countsByBare.get(bare) ?? 0) + 1);
     }
   }

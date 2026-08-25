@@ -13,11 +13,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { applyUtilityContributors, type UtilityRankingContext } from "../../src/indexer/search/ranking-contributors";
 import type { RankedEntryInput } from "../../src/indexer/search/ranking-types";
 import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 import type { ScopedUtilityRow, UtilityScoreRow } from "../../src/storage/repositories/index-entry-types";
 import { bumpUtilityScoresBatch, getUtilityScoresByIds } from "../../src/storage/repositories/index-utility-repository";
 
@@ -28,6 +30,16 @@ function makeTempDb(label: string): { db: Database; dbPath: string } {
   const dbPath = path.join(dir, "index.db");
   const db = openIndexDatabase(dbPath);
   return { db, dbPath };
+}
+
+function seedSkill(db: Database, name: string): number {
+  return upsertEntry(
+    db,
+    `/s/${name}.md`,
+    { name, type: "skill" },
+    name,
+    deriveEntryProvenance({ bundleId: "s", componentId: "s", adapterId: "akm" }, "skill", name),
+  );
 }
 
 function makeRankedItem(id: number, baseScore = 1): RankedEntryInput {
@@ -79,10 +91,8 @@ describe("scoped utility scores — DB isolation", () => {
 
   beforeEach(() => {
     ({ db, dbPath } = makeTempDb("isolation"));
-    // Insert a minimal entry so foreign key constraints are satisfied
-    db.prepare(
-      "INSERT INTO entries (id, entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (1, 'skill:foo', '/s', '/s/foo.md', '/s', '{}', 'foo', 'skill')",
-    ).run();
+    // Insert a minimal entry so foreign key constraints are satisfied.
+    expect(seedSkill(db, "foo")).toBe(1);
   });
 
   afterEach(() => {
@@ -129,12 +139,8 @@ describe("getUtilityScoresByIds — dual maps", () => {
 
   beforeEach(() => {
     ({ db, dbPath } = makeTempDb("getutil"));
-    db.prepare(
-      "INSERT INTO entries (id, entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (1, 'skill:foo', '/s', '/s/foo.md', '/s', '{}', 'foo', 'skill')",
-    ).run();
-    db.prepare(
-      "INSERT INTO entries (id, entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (2, 'skill:bar', '/s', '/s/bar.md', '/s', '{}', 'bar', 'skill')",
-    ).run();
+    expect(seedSkill(db, "foo")).toBe(1);
+    expect(seedSkill(db, "bar")).toBe(2);
   });
 
   afterEach(() => {
@@ -287,11 +293,7 @@ describe("schema migration safety", () => {
     const { db: existingDb, dbPath: existingPath } = makeTempDb("existing");
     try {
       // Add an entry and bump its global utility
-      existingDb
-        .prepare(
-          "INSERT INTO entries (id, entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (1, 'skill:foo', '/s', '/s/foo.md', '/s', '{}', 'foo', 'skill')",
-        )
-        .run();
+      expect(seedSkill(existingDb, "foo")).toBe(1);
       bumpUtilityScoresBatch(existingDb, [1], 1.0, 0.1);
       const { global: before } = getUtilityScoresByIds(existingDb, [1]);
       const beforeUtility = before.get(1)?.utility;

@@ -15,7 +15,7 @@ import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computeStepWorkList, type GateFeedback } from "../../../src/workflows/exec/step-work";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../../src/workflows/ir/schema-v4";
 import { getWorkflowStatus, resumeWorkflowRun } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";
 import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
@@ -89,7 +89,7 @@ function useFrozenPlan(frozen: WorkflowPlanGraph): () => Promise<WorkflowPlanGra
   } finally {
     db.close();
   }
-  return async () => frozen;
+  return async () => JSON.parse(JSON.stringify(frozen)) as WorkflowPlanGraph;
 }
 
 beforeEach(() => {
@@ -378,9 +378,17 @@ describe("gate max_loops — evaluator-optimizer re-execution with feedback", ()
   test("reject-then-accept: loop 2 re-dispatches with the feedback in the prompt, because the input hash changed", async () => {
     seedRun({ steps: LOOPED_STEPS });
     const prompts: string[] = [];
+    const notice = {
+      code: "conversation-prompt-composed",
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "conversation",
+      message: "conversation was composed safely",
+      details: { strategy: "system-prefix" },
+    };
     const dispatcher = async (req: UnitDispatchRequest): Promise<UnitDispatchResult> => {
       if (req.nodeId === "work") prompts.push(req.prompt);
-      return { ok: true, text: `did ${req.unitId}` };
+      return { ok: true, text: `did ${req.unitId}`, notices: [notice] };
     };
     let judgeCalls = 0;
     const judge: SummaryJudge = async () => {
@@ -411,6 +419,8 @@ describe("gate max_loops — evaluator-optimizer re-execution with feedback", ()
 
     // Both attempts are recorded in the executed report, in loop order.
     expect(result.executed.map((s) => s.stepId)).toEqual(["work", "work", "wrap-up"]);
+    expect(result.executed.every((step) => step.notices?.length === 1)).toBe(true);
+    expect(result.notices).toEqual([notice]);
 
     await withWorkflowRunsRepo((repo) => {
       const rows = repo.getUnitsForStep(RUN_ID, "work");
@@ -434,6 +444,8 @@ describe("gate max_loops — evaluator-optimizer re-execution with feedback", ()
         feedback: "Add the frobnicator analysis.",
       });
       expect(JSON.parse(byId.get("work.gate:l2")?.result_json ?? "null")).toEqual({ complete: true, missing: [] });
+      expect(rows.every((row) => !(row.result_json ?? "").includes("notices"))).toBe(true);
+      expect(repo.getStep(RUN_ID, "work")?.evidence_json).not.toContain("notices");
     });
   });
 
@@ -587,14 +599,11 @@ every file reviewed thoroughly
         .getUnitsForStep(RUN_ID, "review")
         .map((r) => r.unit_id)
         .sort();
-      expect(ids).toEqual([
-        "review.gate:l1",
-        "review.gate:l2",
-        "review.unit:ac8d8342bbb2", // "a"
-        "review.unit:ac8d8342bbb2~l2",
-        "review.unit:c100f95c1913", // "b"
-        "review.unit:c100f95c1913~l2",
-      ]);
+      const firstLoop = ids.filter((id) => id.startsWith("review.unit:") && !id.endsWith("~l2"));
+      expect(firstLoop).toHaveLength(2);
+      expect(ids).toEqual(
+        ["review.gate:l1", "review.gate:l2", ...firstLoop, ...firstLoop.map((id) => `${id}~l2`)].sort(),
+      );
     });
   });
 });
@@ -640,7 +649,7 @@ describe("exec steps under a completion gate — judged once, never looped", () 
     const result = await runWorkflowSteps({
       target: RUN_ID,
       dispatcher: async (req: UnitDispatchRequest): Promise<UnitDispatchResult> => {
-        if (req.exec) execDispatches++;
+        if (req.frozenTarget.kind === "shell") execDispatches++;
         return { ok: true, text: "deployed" };
       },
       loadPlan: usePlan(EXEC_GATED_WF),
@@ -757,21 +766,30 @@ async function journalRow(row: {
   stepId?: string;
 }): Promise<void> {
   await withWorkflowRunsRepo((repo) => {
-    repo.insertUnit({
+    const now = new Date().toISOString();
+    const claimHolder = `direct:${row.unitId}`;
+    const reserved = repo.reserveUnitAttempt({
       runId: RUN_ID,
       unitId: row.unitId,
       stepId: row.stepId ?? "work",
       nodeId: row.nodeId,
       parentUnitId: null,
-      phase: row.phase,
+      phase: row.phase === "gate" ? "gate" : "unit",
       runner: row.phase === "gate" ? "llm" : "agent",
+      engine: null,
       model: null,
-      inputHash: row.inputHash,
-      startedAt: new Date().toISOString(),
-    });
-    repo.finishUnit({
+      inputHash: row.inputHash ?? `test:${row.unitId}`,
+      now,
+      claimHolder,
+      claimExpiresAt: new Date(Date.parse(now) + 90_000).toISOString(),
+      leaseMode: "direct",
+    }).attempt;
+    repo.finishUnitAttempt({
       runId: RUN_ID,
       unitId: row.unitId,
+      attempt: reserved.attempt,
+      dispatchId: reserved.dispatch_id,
+      claimHolder,
       status: row.status,
       resultJson: row.resultJson,
       tokens: null,
@@ -788,7 +806,6 @@ function loop1Hash(p: WorkflowPlanGraph): string {
     params: {},
     stepOutputs: {},
     gateLoop: 1,
-    engines: p.execution?.engines,
   });
   if (!c.ok) throw new Error(c.error);
   return c.list.units[0]!.inputHash;
@@ -802,7 +819,6 @@ function loop2Unit(p: WorkflowPlanGraph, gateFeedback: GateFeedback): { unitId: 
     stepOutputs: {},
     gateLoop: 2,
     gateFeedback,
-    engines: p.execution?.engines,
   });
   if (!c.ok) throw new Error(c.error);
   const u = c.list.units[0]!;

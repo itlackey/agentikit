@@ -44,6 +44,12 @@ export function validateTaskId(id: string): string {
       "INVALID_FLAG_VALUE",
     );
   }
+  if (id.endsWith(".")) {
+    throw new UsageError(
+      `Task id "${id}" is invalid. Trailing periods are not portable across native schedulers.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
   if (WINDOWS_RESERVED_DEVICE_RE.test(id)) {
     throw new UsageError(
       `Task id "${id}" uses a reserved Windows device name. Choose a different task id.`,
@@ -55,4 +61,33 @@ export function validateTaskId(id: string): string {
 
 export function normaliseTaskId(raw: string): string {
   return validateTaskId(raw.trim());
+}
+
+/**
+ * Validate an adapter component-relative task identity.
+ *
+ * Native `akm` task authoring remains deliberately flat and continues to use
+ * {@link validateTaskId}. The standalone `akm-task` adapter, however, derives
+ * identity from the complete extensionless path beneath its configured
+ * component root. Validate every path segment with the portable task-id rules
+ * without collapsing the `/` separators that distinguish physical owners.
+ */
+export function validateTaskConceptId(id: string): string {
+  if (!id) throw new UsageError("Task id must be non-empty.", "MISSING_REQUIRED_ARGUMENT");
+  if (id.includes("\\")) {
+    throw new UsageError(
+      `Task id "${id}" is invalid. Use canonical forward slashes between path segments.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  const segments = id.split("/");
+  if (segments.some((segment) => segment.length === 0)) {
+    throw new UsageError(`Task id "${id}" is invalid. Empty path segments are not allowed.`, "INVALID_FLAG_VALUE");
+  }
+  for (const segment of segments) validateTaskId(segment);
+  return id;
+}
+
+export function normaliseTaskConceptId(raw: string): string {
+  return validateTaskConceptId(raw.trim());
 }

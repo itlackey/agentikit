@@ -26,8 +26,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { registerBuiltinAdapters } from "../../../src/core/adapter/adapters";
-import { adapterForId, resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
+import { adapterForId } from "../../../src/core/adapter/registry";
 import { getDbPath } from "../../../src/core/paths";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
@@ -35,7 +34,7 @@ import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../../_
 
 const LLM_WIKI_ROOT = path.resolve(__dirname, "../../fixtures/bundles/llm-wiki");
 
-/** Persisted `(entry_type, adapter_id, concept_id)` rows for the indexed stash. */
+/** Persisted `(type, adapter_id, concept_id)` rows for the indexed stash. */
 interface Row {
   entryType: string;
   adapterId: string | null;
@@ -47,14 +46,14 @@ function readEntries(): Row[] {
   const db = openIndexDatabase();
   try {
     return (
-      db.prepare("SELECT entry_type, adapter_id, concept_id, item_ref FROM entries").all() as Array<{
-        entry_type: string;
+      db.prepare("SELECT type, adapter_id, concept_id, item_ref FROM entries").all() as Array<{
+        type: string;
         adapter_id: string | null;
         concept_id: string;
         item_ref: string | null;
       }>
     ).map((r) => ({
-      entryType: r.entry_type,
+      entryType: r.type,
       adapterId: r.adapter_id,
       conceptId: r.concept_id,
       itemRef: r.item_ref,
@@ -80,8 +79,6 @@ describe("indexer dispatch — a detected llm-wiki component is recognized by th
   let rows: Row[] = [];
 
   beforeAll(async () => {
-    resetAdapterRegistryForTests();
-    registerBuiltinAdapters();
     const cache = sandboxXdgCacheHome();
     const cfg = sandboxXdgConfigHome(cache.cleanup);
     cleanup = cfg.cleanup;
@@ -135,11 +132,6 @@ describe("indexer dispatch — a detected llm-wiki component is recognized by th
 });
 
 describe("indexer dispatch — unknown adapter id skip contract (§4)", () => {
-  beforeAll(() => {
-    resetAdapterRegistryForTests();
-    registerBuiltinAdapters();
-  });
-
   test("adapterForId returns undefined for an unknown id (the production skip+warn condition)", () => {
     expect(adapterForId("no-such-adapter")).toBeUndefined();
     // A known id still resolves — the loop dispatches it rather than skipping.

@@ -260,6 +260,10 @@ export const agentSkillsAdapter: BundleAdapter = {
   recognize,
   validate,
 
+  readCandidates(c: BundleComponent, conceptId: string) {
+    return [{ path: path.join(c.root, conceptId, SKILL_MANIFEST), conceptId }];
+  },
+
   /** A skill places to `<name>/SKILL.md`; the conceptId IS the package directory (spec §4.5). */
   placeNew(c: BundleComponent, conceptId: string): string {
     return path.join(c.root, conceptId, SKILL_MANIFEST);

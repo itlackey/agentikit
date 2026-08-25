@@ -35,6 +35,11 @@ export interface MetaRef {
   name: string;
 }
 
+export interface ResolvedMetaFile {
+  path: string;
+  content: string;
+}
+
 /**
  * Parse a `meta` show target. Returns `null` when `ref` is not a meta ref so
  * callers can fall through to normal asset resolution.
@@ -109,15 +114,100 @@ export function resolveMetaFilePath(sourceRoot: string, name: string): string | 
     if (resolved !== metaRoot && !resolved.startsWith(metaRoot + path.sep)) {
       throw new UsageError("Meta ref resolves outside the stash .meta directory.", "PATH_ESCAPE_VIOLATION");
     }
-    if (isRegularFile(resolved)) return resolved;
+    if (isSafeRegularMetaFile(sourceRoot, metaRoot, resolved)) return resolved;
   }
   return null;
 }
 
-function isRegularFile(p: string): boolean {
+/**
+ * Resolve and read a meta doc from one stable, no-follow file descriptor.
+ * The descriptor/path identity check closes the swap window between path
+ * validation and reading: even if a writable local bundle changes the path
+ * concurrently, bytes are returned only when the opened inode is still the
+ * validated file inside the bundle's real `.meta/` directory.
+ */
+export function readMetaFile(sourceRoot: string, name: string): ResolvedMetaFile | null {
+  const filePath = resolveMetaFilePath(sourceRoot, name);
+  if (!filePath) return null;
+
+  let fd: number | undefined;
   try {
-    return fs.statSync(p).isFile();
-  } catch {
-    return false;
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const opened = fs.fstatSync(fd);
+    if (!opened.isFile()) throw metaPathEscape();
+
+    const metaRoot = path.resolve(sourceRoot, META_DIR);
+    if (!isSafeRegularMetaFile(sourceRoot, metaRoot, filePath)) throw metaPathEscape();
+    const current = fs.statSync(filePath);
+    if (opened.dev !== current.dev || opened.ino !== current.ino) throw metaPathEscape();
+
+    return { path: filePath, content: fs.readFileSync(fd, "utf8") };
+  } catch (error) {
+    if (error instanceof UsageError) throw error;
+    const code = typeof error === "object" && error !== null && "code" in error ? String(error.code) : "";
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    if (code === "ELOOP") throw metaPathEscape();
+    throw new UsageError("Meta doc could not be read safely.", "PATH_ESCAPE_VIOLATION");
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
+}
+
+function isSafeRegularMetaFile(sourceRoot: string, metaRoot: string, filePath: string): boolean {
+  const sourceRootReal = realPathOrNull(sourceRoot);
+  if (!sourceRootReal) return false;
+
+  const metaStat = lstatOrNull(metaRoot);
+  if (!metaStat) return false;
+  if (metaStat.isSymbolicLink()) throw metaPathEscape();
+  if (!metaStat.isDirectory()) return false;
+
+  const relative = path.relative(metaRoot, filePath);
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw metaPathEscape();
+  }
+
+  let current = metaRoot;
+  for (const segment of relative.split(path.sep)) {
+    current = path.join(current, segment);
+    const stat = lstatOrNull(current);
+    if (!stat) return false;
+    if (stat.isSymbolicLink()) throw metaPathEscape();
+  }
+
+  const finalStat = lstatOrNull(filePath);
+  if (!finalStat?.isFile()) return false;
+  const metaRootReal = realPathOrNull(metaRoot);
+  const fileReal = realPathOrNull(filePath);
+  if (!metaRootReal || !fileReal) return false;
+  if (!isWithin(sourceRootReal, metaRootReal) || !isWithin(metaRootReal, fileReal)) throw metaPathEscape();
+  return true;
+}
+
+function lstatOrNull(filePath: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function realPathOrNull(filePath: string): string | null {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function metaPathEscape(): UsageError {
+  return new UsageError(
+    "Meta doc must be a regular file inside the stash .meta directory; symlinks are refused.",
+    "PATH_ESCAPE_VIOLATION",
+  );
 }

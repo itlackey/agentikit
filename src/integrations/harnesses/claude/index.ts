@@ -14,16 +14,8 @@
  * It also defines {@link ClaudeHarness}, the {@link AkmHarness} descriptor that
  * `HARNESS_REGISTRY` registers.
  *
- * ## id normalization bridge ('claude' vs 'claude-code')
- *
- * The canonical, persisted id is `'claude'` (used by the agent runner, agent
- * profiles, the Zod config schema and `--type` resolution after normalization).
- * `'claude-code'` is the historical RUNTIME identity — the string stamped on
- * session-log events/refs, the extracted-session dedup key, and the value
- * `resolveAgentIdentity` reports. It is registered as an `alias` and exposed as
- * `runtimeId` so BOTH directions round-trip via `normalizeHarnessId()` /
- * `denormalizeRuntimeIdentity()`. Existing persisted configs and session logs
- * that say `'claude-code'` keep working unchanged.
+ * The single identifier for config, dispatch, workflow attribution, and
+ * session logs is `claude`.
  */
 
 import type { SessionLogHarness } from "../../session-logs/types";
@@ -41,14 +33,11 @@ export { ClaudeCodeProvider } from "./session-log";
 /**
  * Claude Code.
  *
- * Canonical id is `'claude'`; `'claude-code'` is the runtime/session-log
- * identity and is registered as an alias so both directions round-trip.
+ * `claude` is the sole runtime and persisted id.
  */
 export class ClaudeHarness extends BaseHarness {
   readonly id = "claude" as const;
   readonly displayName = "Claude Code";
-  readonly aliases = ["claude-code"] as const;
-  readonly runtimeId = "claude-code";
   // Home-relative config dir scanned by `akm setup` (#567). Claude Code has a
   // session-log provider, so offering it as a stash source is functional.
   readonly setupDetectionDir = ".claude";
@@ -78,6 +67,5 @@ export class ClaudeHarness extends BaseHarness {
     agentDispatch: true,
     detection: true,
     configImport: true,
-    runtimeIdentity: true,
   });
 }

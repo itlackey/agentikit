@@ -3,54 +3,52 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `akm agent [--engine <name>] [--prompt <text>] [--command <ref>] [--workflow <ref>] [args...]`
+ * `akm agent [--engine <name>] [--prompt <text>]`
  *
- * Dispatch an agent by named engine, optionally injecting a prompt from
- * inline text, a stash command: asset, or a stash workflow: asset.
+ * Dispatch an agent by named engine, optionally injecting an inline prompt.
+ * Stored commands execute only through `akm command run`; workflows execute
+ * only through the workflow runtime.
  *
- * When none of --prompt, --command, or --workflow are given, the agent is
- * launched interactively (no injected prompt).
+ * When no prompt, agent selector, or model is given, the
+ * native agent is launched interactively with no dispatch payload.
  *
- * Template placeholders (`{{0}}`, `{{1}}`, ...) in the loaded asset body are
- * filled from the extra positional args in order.
+ * Every noninteractive arm uses the canonical command invocation path. The
+ * prompt-free arm uses the shared payload-free interactive execution lowerer.
  */
 
-import fs from "node:fs";
-import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig } from "../../core/config/config";
-import { NotFoundError, UsageError } from "../../core/errors";
+import { UsageError } from "../../core/errors";
 import { warn } from "../../core/warn";
-import type { AgentDispatchRequest } from "../../integrations/agent/builder-shared";
+import type { LoweringNotice } from "../../execution/resolved-request";
+import { isPortableExecutionAgentSelector, type UnresolvedExecutionDefaults } from "../../execution/source";
 import {
   fallbackAnnouncement,
   NO_ENGINE_MESSAGE_SUFFIX,
   NO_ENGINE_REMEDY,
   withEngineFallback,
 } from "../../integrations/agent/engine-fallback";
-import { resolveEngine } from "../../integrations/agent/engine-resolution";
-import { executeRunner } from "../../integrations/agent/runner-dispatch";
-import type { AgentRunResult } from "../../integrations/agent/spawn";
+import { executeInteractiveAgentInvocation } from "../../integrations/agent/execution-lowering";
+import { executeCommandInvocation, type PrepareCommandInvocationOptions } from "../command/command-execution";
 
 export interface AkmAgentDispatchOptions {
   engine?: string;
   prompt?: string;
-  commandRef?: string;
-  workflowRef?: string;
-  args?: string[];
+  /** Portable agent asset ref used by the canonical command path. */
+  agentRef?: string;
   agentConfig?: AkmConfig;
   timeoutMs?: number;
   /**
-   * Working directory for the spawned agent CLI. Not honoured by the
-   * opencode-sdk path (the SDK server is process-wide; see the plan's open
-   * seam decision on per-call cwd).
+   * Working directory resolved into the canonical execution runtime. The SDK
+   * forwards it as its per-session directory query.
    */
   cwd?: string;
-  /**
-   * When present, the platform-specific AgentCommandBuilder uses these fields
-   * to construct the argv (system prompt, model alias, tool policy). When
-   * absent, uses positional-prompt dispatch.
-   */
-  dispatch?: AgentDispatchRequest;
+  /** Current invocation-layer selections consumed by the execution cascade. */
+  selection?: Pick<UnresolvedExecutionDefaults, "model" | "inference" | "outputSchema" | "tools">;
+}
+
+export interface AkmAgentDispatchSeams {
+  readonly executeCommand?: (options: PrepareCommandInvocationOptions) => Promise<AkmAgentDispatchResult>;
+  readonly executeInteractive?: typeof executeInteractiveAgentInvocation;
 }
 
 export interface AkmAgentDispatchResult {
@@ -69,58 +67,67 @@ export interface AkmAgentDispatchResult {
    * fallback (`integrations/agent/engine-fallback.ts`), surfaced here so JSON
    * consumers see it alongside the stderr `warn()`.
    */
-  warnings?: string[];
+  warnings?: readonly string[];
+  /** Secret-free optimistic-lowering diagnostics from the selected engine adapter. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
-/**
- * Fill `{{0}}`, `{{1}}`, ... placeholders in `template` with the
- * corresponding entries in `args`. Any placeholder index that exceeds the
- * args array is left as-is.
- */
-function fillPlaceholders(template: string, args: string[]): string {
-  return template.replace(/\{\{(\d+)\}\}/g, (match, idx) => {
-    const i = Number.parseInt(idx, 10);
-    return i < args.length ? args[i]! : match;
+function canonicalCurrent(options: AkmAgentDispatchOptions): UnresolvedExecutionDefaults {
+  const current: Record<string, unknown> = {};
+  if (options.agentRef !== undefined) current.agent = options.agentRef;
+  if (options.engine !== undefined) current.engine = options.engine;
+  if (options.selection?.model !== undefined) current.model = options.selection.model;
+  if (Object.hasOwn(options.selection ?? {}, "inference")) current.inference = options.selection?.inference;
+  if (options.selection?.outputSchema !== undefined) current.outputSchema = options.selection.outputSchema;
+  if (options.selection?.tools !== undefined) current.tools = options.selection.tools;
+  if (options.timeoutMs !== undefined) current.timeout = options.timeoutMs;
+  if (options.cwd !== undefined) current.workspace = options.cwd;
+  return current as UnresolvedExecutionDefaults;
+}
+
+function rejectInvalidAgentRef(agentRef: string | undefined): void {
+  if (agentRef === undefined || isPortableExecutionAgentSelector(agentRef)) return;
+  throw new UsageError(
+    `agent expects an agent asset ref under agents/...; received ${JSON.stringify(agentRef)}.`,
+    "INVALID_FLAG_VALUE",
+  );
+}
+
+async function delegateCanonicalCommand(
+  options: AkmAgentDispatchOptions,
+  seams: AkmAgentDispatchSeams,
+  action: { readonly ref: string; readonly arguments?: string } | { readonly content: string },
+): Promise<AkmAgentDispatchResult> {
+  const execute = seams.executeCommand ?? executeCommandInvocation;
+  const result = await execute({
+    action,
+    config: options.agentConfig as AkmConfig,
+    current: canonicalCurrent(options),
   });
+  for (const message of result.warnings ?? []) warn(message);
+  return result;
 }
 
-/**
- * Resolve the body of an asset by ref string. The ref must parse as a
- * valid asset ref (e.g. `command:my-cmd`, `workflow:my-flow`). The file
- * must exist on disk (the index provides the file path).
- *
- * Throws `NotFoundError` when the ref cannot be resolved.
- */
-async function resolveAssetBody(ref: string): Promise<string> {
-  let parsed: ReturnType<typeof parseRefInput>;
-  try {
-    parsed = parseRefInput(ref);
-  } catch (err) {
-    throw new UsageError(
-      `Invalid asset ref "${ref}": ${err instanceof Error ? err.message : String(err)}`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-
-  // Lazy import to avoid pulling the full indexer at startup.
-  const { lookup } = await import("../../indexer/indexer.js");
-  const entry = await lookup(parsed);
-  if (!entry) {
-    throw new NotFoundError(`Asset "${ref}" not found in the index. Run \`akm index\` to rebuild the index.`);
-  }
-
-  try {
-    return fs.readFileSync(entry.filePath, "utf8");
-  } catch (err) {
-    throw new NotFoundError(
-      `Asset "${ref}" is indexed but the file could not be read (${entry.filePath}): ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-}
-
-export async function akmAgentDispatch(options: AkmAgentDispatchOptions): Promise<AkmAgentDispatchResult> {
+export async function akmAgentDispatch(
+  options: AkmAgentDispatchOptions,
+  seams: AkmAgentDispatchSeams = {},
+): Promise<AkmAgentDispatchResult> {
   if (!options.agentConfig)
     throw new UsageError("agent requires a valid config with an agent engine.", "MISSING_REQUIRED_ARGUMENT");
+
+  rejectInvalidAgentRef(options.agentRef);
+
+  const hasResolvedSelection = options.agentRef !== undefined || options.selection !== undefined;
+  if (options.prompt !== undefined || hasResolvedSelection) {
+    if (options.prompt === undefined) {
+      throw new UsageError(
+        "Agent persona/model/tool/schema/inference selection requires an explicit task from --prompt or --prompt-stdin; it cannot fabricate an empty command. Omit those selections for a prompt-free interactive launch.",
+        "MISSING_REQUIRED_ARGUMENT",
+      );
+    }
+    return delegateCanonicalCommand(options, seams, { content: options.prompt });
+  }
+
   // Same implicit opencode-sdk fallback the workflow and task surfaces apply,
   // so an engine-less install is usable everywhere or nowhere — not a mix.
   const { config: agentConfig, fallbackEngineName } = withEngineFallback(options.agentConfig);
@@ -131,51 +138,20 @@ export async function akmAgentDispatch(options: AkmAgentDispatchOptions): Promis
   if (engineAnnouncement) warn(engineAnnouncement);
   if (!engineName)
     throw new UsageError(`agent ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "MISSING_REQUIRED_ARGUMENT");
-  const runner = resolveEngine(engineName, agentConfig);
-  if (runner.kind === "llm") {
-    throw new UsageError(
-      `Engine "${engineName}" is an LLM engine; akm agent requires an agent engine.`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  const profile = runner.profile;
-
-  // Resolve the prompt text from whichever source was provided.
-  let prompt: string | undefined;
-
-  if (options.commandRef) {
-    const body = await resolveAssetBody(options.commandRef);
-    prompt = options.args?.length ? fillPlaceholders(body, options.args) : body;
-  } else if (options.workflowRef) {
-    const body = await resolveAssetBody(options.workflowRef);
-    prompt = options.args?.length ? fillPlaceholders(body, options.args) : body;
-  } else if (options.prompt !== undefined) {
-    prompt = options.prompt;
-  }
-  // When prompt is undefined, the agent is launched interactively.
-
-  const stdio = prompt === undefined && runner.kind !== "sdk" ? ("interactive" as const) : profile.stdio;
-  // Build the final dispatch request: merge the caller-supplied dispatch with
-  // the resolved prompt so the builder has all context in one place.
-  const dispatchRequest: AgentDispatchRequest | undefined = options.dispatch
-    ? { ...options.dispatch, prompt: prompt ?? options.dispatch.prompt }
-    : undefined;
-
-  const runOptions = {
-    stdio,
-    parseOutput: "text" as const,
-    ...(options.args?.length && !options.commandRef && !options.workflowRef ? { args: options.args } : {}),
+  const executeInteractive = seams.executeInteractive ?? executeInteractiveAgentInvocation;
+  const execution = await executeInteractive({
+    config: agentConfig,
+    engine: engineName,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-    ...(options.cwd ? { cwd: options.cwd } : {}),
-    ...(dispatchRequest !== undefined ? { dispatch: dispatchRequest } : {}),
-  };
-  const result: AgentRunResult = await executeRunner(runner, prompt ?? "", runOptions);
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+  });
+  const result = execution.result;
 
   return {
     schemaVersion: 2 as const,
     ok: result.ok,
     shape: "agent-result",
-    engine: engineName,
+    engine: execution.engine,
     exitCode: result.exitCode,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",

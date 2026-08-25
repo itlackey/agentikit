@@ -2,8 +2,7 @@
  * Proposal-quality runner — computes acceptance rate, validation pass rate,
  * and accept-rate-by-source from the existing proposal queue and events.
  *
- * Reads state.db when available; falls back to filesystem scan of
- * <stash>/.akm/proposals/.
+ * Reads the current proposal queue and rejection events from state.db.
  *
  * Inputs:  { since?: string; source?: string }
  *   - `since` accepts an ISO timestamp ("2026-05-20T00:00:00Z") or a
@@ -24,7 +23,6 @@
 
 import type { EvalCase, EvalCaseResult, EvalContext } from "../types";
 import { makeStateDbSources, type ProposalRow } from "../sources/state-db";
-import { StashFsSources } from "../sources/stash-fs";
 
 /**
  * Resolve a `since` input to an ISO-8601 timestamp string suitable for
@@ -71,18 +69,12 @@ export async function runProposalQualityCase(c: EvalCase, ctx: EvalContext): Pro
   const stateDb = makeStateDbSources({ dbPath: `${ctx.dataDir}/state.db`, record: ctx.recording });
   let proposals: ProposalRow[] = [];
   let creationRejected = 0;
-  let dbAvailable = stateDb.available();
+  const dbAvailable = stateDb.available();
 
   try {
-    if (dbAvailable) {
-      proposals = stateDb.readProposals({ since, source: filterSource });
-      creationRejected = stateDb
-        .readEvents({ types: ["proposal_creation_rejected"], since })
-        .length;
-    } else {
-      const fs = new StashFsSources(ctx.stashRoot);
-      proposals = fs.readProposals({ source: filterSource, since });
-    }
+    if (!dbAvailable) return errorResult(c, "proposal-quality requires the current state.db proposal queue", start);
+    proposals = stateDb.readProposals({ since, source: filterSource });
+    creationRejected = stateDb.readEvents({ types: ["proposal_creation_rejected"], since }).length;
   } catch (err) {
     return errorResult(c, err instanceof Error ? err.message : String(err), start);
   } finally {
@@ -190,7 +182,7 @@ export async function runProposalQualityCase(c: EvalCase, ctx: EvalContext): Pro
       creationRejectedRate,
       bySource,
       checks,
-      sourceMode: dbAvailable ? "state-db" : "stash-fs",
+      sourceMode: "state-db",
     },
     evidence: {
       sampleProposalIds: proposals.slice(0, 5).map((p) => p.id),

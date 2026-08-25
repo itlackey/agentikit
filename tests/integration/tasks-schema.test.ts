@@ -1,97 +1,253 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 import { expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { EXTRA_PARAMS_CREDENTIAL_KEYS, EXTRA_PARAMS_PROTECTED_TOP_LEVEL_KEYS } from "../../src/core/extra-params";
-import { parseTaskDocument } from "../../src/tasks/parser";
-import { TASK_MAX_TIMEOUT_MS } from "../../src/tasks/schema";
-import { WORKFLOW_MAX_RETRIES } from "../../src/workflows/resource-limits";
+import Ajv from "ajv";
+import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
+import {
+  classifyTaskV3Uses,
+  parseTaskV3Yaml,
+  TASK_V3_HOST_SHELLS,
+  TASK_V3_MAX_COLLECTION_ITEMS,
+  TASK_V3_MAX_SCHEDULES,
+  TASK_V3_MAX_STRING_BYTES,
+  TASK_V3_SCHEMA_VERSION,
+} from "../../src/tasks/source-v3";
+import { WORKFLOW_MAX_EXEC_PASS_ENV, WORKFLOW_MAX_RETRIES } from "../../src/workflows/resource-limits";
 
 const root = path.resolve(import.meta.dir, "..", "..");
 
-/** The slice of `schemas/akm-task.json` these tests assert against. */
-interface TaskSchemaDoc {
-  properties: Record<string, { minimum?: number; maximum?: number }>;
-  oneOf: Array<{ required: string[]; not: { anyOf: Array<{ required: string[] }> } }>;
+interface JsonSchema {
+  [key: string]: unknown;
+  properties: Record<string, JsonSchema>;
+  definitions: Record<string, JsonSchema>;
+  oneOf: unknown[];
+  allOf: unknown[];
 }
 
-function readTaskSchema(): TaskSchemaDoc {
-  return JSON.parse(fs.readFileSync(path.join(root, "schemas", "akm-task.json"), "utf8")) as TaskSchemaDoc;
+function readTaskSchema(): JsonSchema {
+  return JSON.parse(fs.readFileSync(path.join(root, "schemas", "akm-task.json"), "utf8")) as JsonSchema;
 }
 
-/** Fields the published schema's `oneOf` branch for `target` forbids. */
-function forbiddenFieldsFor(schema: TaskSchemaDoc, target: string): string[] {
-  const branch = schema.oneOf.find((entry) => entry.required.includes(target));
-  if (!branch) throw new Error(`no oneOf branch requires "${target}"`);
-  return branch.not.anyOf.map((entry) => entry.required[0] as string);
-}
-
-test("task schema and package contents pin the strict v2 public artifact", () => {
-  const schema = JSON.parse(fs.readFileSync(path.join(root, "schemas", "akm-task.json"), "utf8"));
+test("published task schema pins the strict v3 source vocabulary", () => {
+  const schema = readTaskSchema();
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
-  expect(schema.properties.version.const).toBe(2);
+  expect(schema.properties.version?.const).toBe(TASK_V3_SCHEMA_VERSION);
+  expect(schema.required).toEqual(["version"]);
   expect(schema.additionalProperties).toBe(false);
-  expect(schema.required).toContain("version");
-  expect(schema.properties).not.toHaveProperty("profile");
+  expect(Object.keys(schema.properties).sort()).toEqual(
+    ["akm", "env", "name", "on", "run", "shell", "uses", "version", "with", "working-directory"].sort(),
+  );
   expect(schema.oneOf).toHaveLength(3);
+  expect(schema.allOf).toHaveLength(1);
+  expect(schema.properties.shell?.enum).toEqual(TASK_V3_HOST_SHELLS);
+  expect(schema.properties.with?.$ref).toBe("#/definitions/jsonObject");
   expect(pkg.files).toContain("schemas");
-  expect(pkg.files).toContain("docs/migration/v0.8-to-v0.9.md");
-  const extraParams = schema.definitions.extraParams;
-  expect(extraParams["x-akm-protectedTopLevelNormalizedKeys"]).toEqual(EXTRA_PARAMS_PROTECTED_TOP_LEVEL_KEYS);
-  expect(extraParams["x-akm-recursivelyForbiddenNormalizedKeys"]).toEqual(EXTRA_PARAMS_CREDENTIAL_KEYS);
-  expect(schema.definitions.extraParamValue.anyOf[1].items.$ref).toBe("#/definitions/extraParamValue");
 });
 
-// ── issue 11: workflow-task run bounds ──────────────────────────────────────
-//
-// `schemas/akm-task.json` is the published contract for the same YAML the
-// parser reads, so a field the parser now accepts (or a restriction it dropped)
-// has to move in lockstep or an editor validates a file the runner rejects.
-
-test("published task schema exposes the workflow run bounds the parser accepts", () => {
+test("published task schema closes AKM controls and trigger shapes at parser bounds", () => {
   const schema = readTaskSchema();
+  const akm = schema.properties.akm;
+  const on = schema.properties.on;
+  if (!akm || !on) throw new Error("Published task schema must define akm and on properties");
 
-  expect(schema.properties).toHaveProperty("maxSteps");
-  expect(schema.properties).toHaveProperty("maxRetries");
-  expect(schema.properties.maxSteps?.minimum).toBe(1);
-  expect(schema.properties.maxRetries?.minimum).toBe(0);
-  // Bounds mirror the constants the parser enforces — pinned, not restated.
-  expect(schema.properties.maxRetries?.maximum).toBe(WORKFLOW_MAX_RETRIES);
-  expect(schema.properties.timeoutMs?.maximum).toBe(TASK_MAX_TIMEOUT_MS);
+  expect(akm.additionalProperties).toBe(false);
+  expect(Object.keys(akm.properties).sort()).toEqual(
+    [
+      "agent",
+      "description",
+      "enabled",
+      "engine",
+      "inference",
+      "maxRetries",
+      "maxSteps",
+      "model",
+      "outputSchema",
+      "redact",
+      "schedule",
+      "tags",
+      "timeout",
+      "tools",
+      "when_to_use",
+    ].sort(),
+  );
+  expect(akm.properties.maxRetries?.maximum).toBe(WORKFLOW_MAX_RETRIES);
+  expect(akm.properties.redact?.maxItems).toBe(WORKFLOW_MAX_EXEC_PASS_ENV);
+  expect((akm.properties.timeout?.oneOf as JsonSchema[])[0]?.maximum).toBe(EXECUTION_MAX_TIMEOUT_MS);
 
-  // A workflow task may now set `timeoutMs` (its whole-run timeout) but still
-  // no engine/model/llm — those come from the workflow's frozen plan.
-  expect(forbiddenFieldsFor(schema, "workflow")).toEqual(["prompt", "command", "engine", "model", "llm"]);
-  // The run bounds are workflow-only on both other branches.
-  expect(forbiddenFieldsFor(schema, "prompt")).toContain("maxSteps");
-  expect(forbiddenFieldsFor(schema, "prompt")).toContain("maxRetries");
-  expect(forbiddenFieldsFor(schema, "command")).toContain("maxSteps");
-  expect(forbiddenFieldsFor(schema, "command")).toContain("maxRetries");
-});
-
-test("the parser accepts exactly the workflow-task fields the schema declares", () => {
-  const schema = readTaskSchema();
-  const yaml = [
-    "version: 2",
-    'schedule: "@daily"',
-    "workflow: workflows/daily-backup",
-    "timeoutMs: 1800000",
-    "maxSteps: 8",
-    "maxRetries: 1",
-    "",
-  ].join("\n");
-  const task = parseTaskDocument({ yaml, filePath: "/stash/tasks/daily.yml", id: "daily" });
-
-  expect(task.target).toEqual({
-    kind: "workflow",
-    ref: "workflows/daily-backup",
-    params: {},
-    timeoutMs: 1800000,
-    maxSteps: 8,
-    maxRetries: 1,
+  expect(on.additionalProperties).toBe(false);
+  expect(Object.keys(on.properties).sort()).toEqual(["schedule", "workflow_dispatch"]);
+  expect(on.properties.schedule?.minItems).toBe(1);
+  expect(on.properties.schedule?.maxItems).toBe(TASK_V3_MAX_SCHEDULES);
+  expect(on.properties.schedule?.items).toMatchObject({
+    type: "object",
+    required: ["cron"],
+    additionalProperties: false,
   });
-  for (const key of ["timeoutMs", "maxSteps", "maxRetries"]) {
-    expect(schema.properties).toHaveProperty(key);
-    expect(forbiddenFieldsFor(schema, "workflow")).not.toContain(key);
+  expect(schema.definitions.jsonArray?.maxItems).toBe(TASK_V3_MAX_COLLECTION_ITEMS);
+  expect(schema.definitions.jsonValue?.oneOf).toContainEqual({
+    type: "string",
+    maxLength: TASK_V3_MAX_STRING_BYTES,
+  });
+});
+
+test("every published pattern is valid ECMAScript and representative uses refs agree with the production parser", () => {
+  const schema = readTaskSchema();
+  const patterns: string[] = [];
+  const stack: unknown[] = [schema];
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (Array.isArray(value)) {
+      stack.push(...value);
+      continue;
+    }
+    if (value === null || typeof value !== "object") continue;
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (key === "pattern" && typeof child === "string") patterns.push(child);
+      else stack.push(child);
+    }
   }
+  expect(patterns.length).toBeGreaterThan(0);
+  for (const pattern of patterns) expect(() => new RegExp(pattern), pattern).not.toThrow();
+
+  const executableRef = new RegExp(schema.definitions.akmExecutableRef?.pattern as string);
+  const githubActionRef = new RegExp(schema.definitions.githubActionRef?.pattern as string);
+  expect(executableRef.test("commands/review")).toBe(true);
+  expect(executableRef.test("team//workflows/release")).toBe(true);
+  expect(executableRef.test("agents/reviewer")).toBe(false);
+  expect(executableRef.test("commands/review//nested")).toBe(false);
+  expect(executableRef.test("commands/review/")).toBe(false);
+  expect(executableRef.test("commands/my command")).toBe(false);
+  for (const candidate of ["commands/./review", "commands/../review", "commands/review\0"]) {
+    expect(executableRef.test(candidate), candidate).toBe(false);
+    expect(() => classifyTaskV3Uses(candidate), candidate).toThrow();
+  }
+  expect(githubActionRef.test("actions/checkout@v4")).toBe(true);
+  expect(githubActionRef.test("owner/repo@@v1")).toBe(false);
+  for (const candidate of ["owner/.@v1", "owner/..@v1", "owner/repo/.@v1", "owner/repo/..@v1", "owner/repo@v1\u007f"]) {
+    expect(githubActionRef.test(candidate), candidate).toBe(false);
+    expect(() => classifyTaskV3Uses(candidate), candidate).toThrow();
+  }
+
+  const workingDirectory = new RegExp(schema.properties["working-directory"]?.pattern as string);
+  expect(workingDirectory.test("scripts/release")).toBe(true);
+  expect(workingDirectory.test("scripts/release/")).toBe(false);
+  expect(workingDirectory.test("\\absolute-on-windows")).toBe(false);
+});
+
+test("draft-07 validation follows the parser's exact uses-classification precedence", () => {
+  const schema = readTaskSchema();
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+  const executableRef = new RegExp(schema.definitions.akmExecutableRef?.pattern as string);
+  const githubActionRef = new RegExp(schema.definitions.githubActionRef?.pattern as string);
+  const cases = [
+    ["akm/command", { with: { content: "" } }, 0],
+    ["commands/review", {}, 1],
+    ["commands/review@v1", {}, 1],
+    ["commands/tools/review@v1", {}, 1],
+    ["workflows/release@v1", {}, 1],
+    ["scripts/check@v1", {}, 1],
+    ["team//commands/review@v1", {}, 1],
+    ["actions/checkout@v4", {}, 1],
+  ] as const;
+
+  for (const [uses, extra, expectedPatternMatches] of cases) {
+    expect(() => classifyTaskV3Uses(uses), uses).not.toThrow();
+    const patternMatches = Number(executableRef.test(uses)) + Number(githubActionRef.test(uses));
+    expect(patternMatches, `${uses} must select exactly its parser-precedence schema arm`).toBe(expectedPatternMatches);
+    expect(
+      validate({ version: 3, uses, ...extra, akm: { schedule: "@daily" } }),
+      `${uses}: ${JSON.stringify(validate.errors)}`,
+    ).toBe(true);
+  }
+});
+
+test("published schema declares the authoritative runtime-only resource constraints", () => {
+  const schema = readTaskSchema();
+  expect(schema["x-akm-runtimeConstraints"]).toEqual({
+    authoritativeParser: "src/tasks/source-v3.ts",
+    maxSourceUtf8Bytes: 1_048_576,
+    maxStringUtf8Bytes: TASK_V3_MAX_STRING_BYTES,
+    maxJsonDepth: 64,
+    maxJsonNodes: 10_000,
+    canonicalRefsRequireNfc: true,
+    workingDirectoryRequiresWorkspaceRoot: true,
+  });
+
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+  const byteBounded = { version: 3, name: "😀".repeat(70_000), uses: "commands/review", akm: { schedule: "@daily" } };
+  expect(validate(byteBounded), JSON.stringify(validate.errors)).toBe(true);
+  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(byteBounded), filePath: "utf8-bytes.yml" })).toThrow(
+    /byte|string/i,
+  );
+
+  const noncanonicalRef = { version: 3, uses: "commands/cafe\u0301", akm: { schedule: "@daily" } };
+  expect(validate(noncanonicalRef), JSON.stringify(validate.errors)).toBe(true);
+  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(noncanonicalRef), filePath: "canonical-ref.yml" })).toThrow(
+    /canonical|ref|uses/i,
+  );
+});
+
+test("published outputSchema grammar rejects keywords the runtime subset cannot enforce", () => {
+  const schema = readTaskSchema();
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+  const validTask = {
+    version: 3,
+    uses: "commands/review",
+    akm: {
+      schedule: "@daily",
+      outputSchema: {
+        type: "object",
+        properties: { result: { type: "string", minLength: 1 } },
+        required: ["result"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const unsupported = structuredClone(validTask);
+  unsupported.akm.outputSchema.properties.result = { type: "string", pattern: "^ok$" } as never;
+
+  expect(validate(validTask), JSON.stringify(validate.errors)).toBe(true);
+  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(validTask), filePath: "valid.yml" })).not.toThrow();
+  expect(validate(unsupported), JSON.stringify(validate.errors)).toBe(false);
+  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(unsupported), filePath: "unsupported.yml" })).toThrow(
+    /pattern|unsupported/i,
+  );
+});
+
+test("the production parser consumes the same strict v3 spellings the schema publishes", () => {
+  const task = parseTaskV3Yaml({
+    filePath: "/stash/tasks/daily.yml",
+    yaml: [
+      "version: 3",
+      "name: Daily",
+      "uses: workflows/daily-backup",
+      "with:",
+      "  keep: 7",
+      "env:",
+      "  QUIET: false",
+      "akm:",
+      "  enabled: false",
+      "  timeout: 20m",
+      "  maxSteps: 8",
+      "  maxRetries: 1",
+      "on:",
+      "  schedule:",
+      "    - cron: '0 3 * * *'",
+      "  workflow_dispatch: {}",
+      "",
+    ].join("\n"),
+  });
+
+  expect(task.version).toBe(3);
+  expect(task.target).toMatchObject({ kind: "uses", uses: { kind: "workflow", ref: "workflows/daily-backup" } });
+  expect(task.akm).toMatchObject({ enabled: false, timeout: "20m", maxSteps: 8, maxRetries: 1 });
+  expect(task.triggers).toEqual({
+    manual: true,
+    schedules: [{ cron: "0 3 * * *", source: "on.schedule[0].cron", ordinal: 0 }],
+  });
 });

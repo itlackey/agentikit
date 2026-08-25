@@ -10,9 +10,10 @@ import { akmImprove } from "../../../../src/commands/improve/improve";
 import { resolveImprovePlan } from "../../../../src/commands/improve/improve-strategies";
 import { runImproveLoopStage, runImproveMaintenancePasses } from "../../../../src/commands/improve/loop-stages";
 import { runImprovePreparationStage, runValidationAndRepairPass } from "../../../../src/commands/improve/preparation";
+import { akmReflect } from "../../../../src/commands/improve/reflect";
 import { createRunContext } from "../../../../src/commands/improve/run-context";
 import type { AkmConfig, ImproveProfileConfig } from "../../../../src/core/config/config";
-import { makeStashDir } from "../../../_helpers/sandbox";
+import { makeStashDir, withMockedFetch } from "../../../_helpers/sandbox";
 
 const llm = (model: string) => ({
   kind: "llm" as const,
@@ -197,7 +198,7 @@ describe("improve engine-plan boundaries", () => {
     }
   });
 
-  test("reflect and distill keep the resolved process connections when live config changes", async () => {
+  test("reflect dispatches through its frozen named-engine config when live config changes", async () => {
     const stash = makeStashDir();
     try {
       const memoryDir = path.join(stash.dir, "memories");
@@ -213,7 +214,12 @@ describe("improve engine-plan boundaries", () => {
           strategies: {
             split: {
               processes: disabledProcesses({
-                reflect: { enabled: true, engine: "reflect", allowedTypes: ["memory"] },
+                reflect: {
+                  enabled: true,
+                  engine: "reflect",
+                  model: "process-model",
+                  allowedTypes: ["memory"],
+                },
                 distill: { enabled: true, engine: "distill", allowedTypes: ["memory"] },
               }),
             },
@@ -230,13 +236,13 @@ describe("improve engine-plan boundaries", () => {
       if (liveProcesses?.distill) liveProcesses.distill.engine = "reflect";
       let reflectOptions: Record<string, unknown> | undefined;
       let distillOptions: Record<string, unknown> | undefined;
+      const dispatchedModels: string[] = [];
       await runImproveLoopStage({
         ctx: createRunContext({
           stashDir: stash.dir,
           config,
           eventsCtx: {},
           proposalsCtx: {},
-          getLlmConfig: () => null,
           sourceRun: "test-run",
           dryRun: false,
         }),
@@ -245,15 +251,30 @@ describe("improve engine-plan boundaries", () => {
         options: { config, stashDir: stash.dir },
         reflectFn: async (options) => {
           reflectOptions = options as unknown as Record<string, unknown>;
-          return {
-            schemaVersion: 2,
-            ok: false,
-            reason: "no_change",
-            error: "stable",
-            ref: "memories/source",
-            engine: "reflect",
-            exitCode: null,
-          };
+          return await withMockedFetch(
+            () =>
+              akmReflect({
+                ...options,
+                assetContent: "---\ntype: memory\n---\n\nSource.\n",
+              }),
+            async (_url, init) => {
+              const body = JSON.parse(String(init?.body)) as { model?: string };
+              if (body.model) dispatchedModels.push(body.model);
+              return Response.json({
+                choices: [
+                  {
+                    finish_reason: "stop",
+                    message: {
+                      content: JSON.stringify({
+                        ref: "memories/source",
+                        content: "---\ntype: memory\n---\n\nSource.\n",
+                      }),
+                    },
+                  },
+                ],
+              });
+            },
+          );
         },
         distillFn: async (options) => {
           distillOptions = options as unknown as Record<string, unknown>;
@@ -278,10 +299,20 @@ describe("improve engine-plan boundaries", () => {
         improveProfile: plan.strategy.config,
         resolvedPlan: plan,
       });
-      expect((reflectOptions?.runner as { connection?: { model?: string } }).connection?.model).toBe("reflect-model");
-      expect(reflectOptions?.llmConfig).toBeUndefined();
-      expect(reflectOptions?.config).toBe(config);
-      expect((distillOptions?.llmConfig as { model?: string }).model).toBe("distill-model");
+      expect(reflectOptions).not.toHaveProperty("runner");
+      expect(reflectOptions).not.toHaveProperty("engine");
+      expect(reflectOptions?.config).not.toBe(config);
+      expect((reflectOptions?.config as AkmConfig).engines?.reflect).toMatchObject({ model: "reflect-model" });
+      expect((reflectOptions?.improveProfile as ImproveProfileConfig).processes?.reflect).toMatchObject({
+        engine: "reflect",
+        model: "process-model",
+      });
+      expect(dispatchedModels.length).toBeGreaterThan(0);
+      expect(new Set(dispatchedModels)).toEqual(new Set(["process-model"]));
+      expect((distillOptions?.llmRunner as { connection?: { model?: string } }).connection?.model).toBe(
+        "distill-model",
+      );
+      expect(distillOptions?.llmConfig).toBeUndefined();
       expect(distillOptions?.config).toBe(config);
     } finally {
       stash.cleanup();

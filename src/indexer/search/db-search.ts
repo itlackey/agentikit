@@ -15,7 +15,6 @@
  * implementation, not a "local vs. remote" distinction.
  */
 
-import fs from "node:fs";
 import path from "node:path";
 import { buildActionFromContributors, defaultActionContributors } from "../../core/action-contributors";
 import { stashDirFor } from "../../core/asset/asset-placement";
@@ -23,9 +22,16 @@ import { displayRef } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveConfig } from "../../core/config/config";
 import { classifyPathAccess } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
+import { systemErrorCode } from "../../core/system-error";
 import { defaultRendererRegistry, type RendererRegistry } from "../../core/type-presentation";
-import { warn } from "../../core/warn";
-import type { AkmSearchType, BeliefFilterMode, SearchHitSize, SourceSearchHit } from "../../sources/types";
+import { normalizeEmbeddingEndpoint } from "../../llm/embedders/remote";
+import type {
+  AkmSearchType,
+  BeliefFilterMode,
+  SearchExecutionMode,
+  SearchHitSize,
+  SourceSearchHit,
+} from "../../sources/types";
 import type { Database } from "../../storage/database";
 import {
   assertIndexPathReadable,
@@ -204,8 +210,8 @@ export async function searchLocal(input: {
   warnings?: string[];
   embedMs?: number;
   rankMs?: number;
-  /** Whether embedding-based ranking was used (`'semantic'`) or keyword-only (`'keyword'`). */
-  mode: "semantic" | "keyword";
+  /** Actual ranking mode, including a failed semantic attempt. */
+  mode: SearchExecutionMode;
 }> {
   const { query, searchType, limit, stashDir, sources, config } = input;
   const filters = input.filters;
@@ -304,7 +310,7 @@ export async function searchLocal(input: {
     const staleHint = buildStaleIndexHint(db);
     if (staleHint) warnings.push(staleHint);
 
-    const { hits, embedMs, rankMs, usedSemantic } = await searchDatabase(
+    const { hits, embedMs, rankMs, mode, semanticWarning } = await searchDatabase(
       db,
       query,
       searchType,
@@ -322,6 +328,7 @@ export async function searchLocal(input: {
       disableProjectContext,
       disableScopedUtility,
     );
+    if (semanticWarning) warnings.push(semanticWarning);
     return {
       hits,
       tip: hits.length === 0 ? emptyResultTip(query) : undefined,
@@ -330,7 +337,7 @@ export async function searchLocal(input: {
       rankMs,
       // Report the mode the search ACTUALLY used, carried explicitly from the
       // vector scorer — not inferred from elapsed embedding milliseconds.
-      mode: usedSemantic ? "semantic" : "keyword",
+      mode,
     };
   } finally {
     closeDatabase(db);
@@ -360,8 +367,8 @@ async function searchDatabase(
   hits: SourceSearchHit[];
   embedMs?: number;
   rankMs?: number;
-  /** True only when the embedding/vector search actually executed for ranking. */
-  usedSemantic: boolean;
+  mode: SearchExecutionMode;
+  semanticWarning?: string;
 }> {
   const hasSearchableTokens = query.length > 0 && sanitizeFtsQuery(query).length > 0;
 
@@ -406,7 +413,7 @@ async function searchDatabase(
         conceptIdPrefix: refPrefix.conceptIdPrefix,
         ...(refPrefix.bundle !== undefined ? { bundle: refPrefix.bundle } : {}),
       })),
-      usedSemantic: false,
+      mode: "keyword",
     };
   }
 
@@ -421,24 +428,21 @@ async function searchDatabase(
         typeFilter: searchType === "any" ? undefined : searchType,
         excludeTypes: defaultExcludes,
       })),
-      usedSemantic: false,
+      mode: "keyword",
     };
   }
 
   // Start the async embedding request without awaiting, then run FTS
   // synchronously while the HTTP/local embedding request is in-flight.
   const typeFilter = searchType === "any" ? undefined : searchType;
-  const tEmbed0 = Date.now();
-  const embeddingPromise = tryVecScores(db, query, limit * 3, config);
-  const ftsResults = searchFts(db, query, limit * 3, typeFilter, defaultExcludes);
-  const embeddingScores = await embeddingPromise;
-  const embedMs = Date.now() - tEmbed0;
-  // The vector scorer returns a (possibly empty) Map when the embedding + vector
-  // search actually executed, or null when semantic was not runnable (disabled,
-  // no embeddings, or the embed call threw). This is the AUTHORITATIVE "semantic
-  // mode was used" signal — carried out to telemetry instead of guessing from
-  // elapsed milliseconds (which timed the concurrent FTS work too).
-  const usedSemantic = embeddingScores !== null;
+  const { ftsResults, embeddingScores, embedMs, mode, semanticWarning } = await collectSearchSignals(
+    db,
+    query,
+    limit * 3,
+    typeFilter,
+    defaultExcludes,
+    config,
+  );
 
   const tRank0 = Date.now();
 
@@ -617,7 +621,33 @@ async function searchDatabase(
     }),
   );
 
-  return { embedMs, rankMs, hits, usedSemantic };
+  return { embedMs, rankMs, hits, mode, semanticWarning };
+}
+
+async function collectSearchSignals(
+  db: Database,
+  query: string,
+  candidateLimit: number,
+  typeFilter: string | undefined,
+  excludeTypes: string[],
+  config: AkmConfig,
+) {
+  const startedAt = Date.now();
+  const embeddingPromise = tryVecScores(db, query, candidateLimit, config);
+  const ftsResults = searchFts(db, query, candidateLimit, typeFilter, excludeTypes);
+  const embeddingResult = await embeddingPromise;
+  const mode: SearchExecutionMode = embeddingResult.warning
+    ? "fts-fallback"
+    : embeddingResult.scores !== null
+      ? "semantic"
+      : "keyword";
+  return {
+    ftsResults,
+    embeddingScores: embeddingResult.scores,
+    embedMs: Date.now() - startedAt,
+    mode,
+    semanticWarning: embeddingResult.warning,
+  };
 }
 
 /**
@@ -865,11 +895,11 @@ async function tryVecScores(
   query: string,
   k: number,
   config: AkmConfig,
-): Promise<Map<number, number> | null> {
+): Promise<{ scores: Map<number, number> | null; warning?: string }> {
   const semanticStatus = getEffectiveSemanticStatus(config, readSemanticStatus());
-  if (!isSemanticRuntimeReady(semanticStatus)) return null;
+  if (!isSemanticRuntimeReady(semanticStatus)) return { scores: null };
   const hasEmbeddings = getMeta(db, "hasEmbeddings");
-  if (hasEmbeddings !== "1") return null;
+  if (hasEmbeddings !== "1") return { scores: null };
 
   try {
     const { embed } = await import("../../llm/embedder.js");
@@ -883,11 +913,63 @@ async function tryVecScores(
       const raw = 1 - (distance * distance) / 2;
       scores.set(id, Number.isFinite(raw) ? Math.max(0, raw) : 0);
     }
-    return scores;
+    return { scores };
   } catch (error) {
-    warn("Vector search failed, skipping:", error instanceof Error ? error.message : String(error));
-    return null;
+    return { scores: null, warning: buildVectorFallbackWarning(config, error) };
   }
+}
+
+function buildVectorFallbackWarning(config: AkmConfig, error: unknown): string {
+  const endpoint = safeEmbeddingEndpoint(config);
+  const reason = classifyVectorFailure(error);
+  const target = endpoint
+    ? `embedding endpoint ${endpoint}`
+    : config.embedding?.endpoint
+      ? "configured embedding endpoint"
+      : "local embedding model";
+  const unavailable = reason === "connection failed" ? `cannot reach ${target}` : `${target} is unavailable`;
+  return `Vector search unavailable: ${unavailable} (${reason}) — falling back to keyword search.`;
+}
+
+/**
+ * Name the useful endpoint without ever carrying URL userinfo, query secrets,
+ * or fragments into a warning. Invalid authored values fail closed.
+ */
+function safeEmbeddingEndpoint(config: AkmConfig): string | undefined {
+  const endpoint = config.embedding?.endpoint;
+  if (!endpoint) return undefined;
+  try {
+    const parsed = new URL(normalizeEmbeddingEndpoint(endpoint));
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Map untrusted runtime failures onto a small, non-secret diagnostic set. */
+function classifyVectorFailure(error: unknown): string {
+  const code = systemErrorCode(error);
+  const message = error instanceof Error ? error.message : "";
+  if (
+    code === "ECONNREFUSED" ||
+    code === "ECONNRESET" ||
+    code === "ENETUNREACH" ||
+    code === "EHOSTUNREACH" ||
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    /typo in the url or port|connection (?:refused|failed|reset)|fetch failed/i.test(message)
+  ) {
+    return "connection failed";
+  }
+  if (code === "ETIMEDOUT" || /timed? out|timeout/i.test(message)) return "request timed out";
+  const httpStatus = message.match(/Embedding (?:batch )?request failed \((\d{3})\)/i)?.[1];
+  if (httpStatus) return `HTTP ${httpStatus}`;
+  if (/unexpected embedding response|missing data\[0\]\.embedding/i.test(message)) return "invalid embedding response";
+  return "request failed";
 }
 
 // ── Hit building ────────────────────────────────────────────────────────────
@@ -992,6 +1074,7 @@ export async function buildDbHit(input: {
   await enrichSearchHit(hit, {
     type: input.entry.type,
     stashDir: entryStashDir,
+    bundleId: input.bundleId,
     rendererRegistry,
     db: input.db,
   });

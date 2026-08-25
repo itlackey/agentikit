@@ -24,6 +24,10 @@ import { appendEvent, readEvents } from "../../../../src/core/events";
 import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { akmIndex } from "../../../../src/indexer/indexer";
+import {
+  CONVERSATION_FALLBACK_BEGIN,
+  CONVERSATION_FALLBACK_END,
+} from "../../../../src/integrations/agent/conversation-fallback";
 import { FALLBACK_ANNOUNCEMENT } from "../../../../src/integrations/agent/engine-fallback";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
@@ -45,6 +49,14 @@ function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   fixtureDirs.push(dir);
   return dir;
+}
+
+function extractProposalDraftPath(prompt: string): string | undefined {
+  const prefix = path.join(os.tmpdir(), "akm-propose-");
+  const prefixIndex = prompt.indexOf(prefix);
+  if (prefixIndex < 0) return undefined;
+  const filenameTail = prompt.slice(prefixIndex + prefix.length).match(/^[^\s`"']+\.md/)?.[0];
+  return filenameTail ? `${prefix}${filenameTail}` : undefined;
 }
 
 function makeStashDir(): string {
@@ -130,9 +142,11 @@ const VALID_SKILL_PAYLOAD = JSON.stringify({
 });
 
 let cleanup: Cleanup = () => {};
+let xdgDataDir = "";
 
 beforeEach(() => {
   const dataResult = sandboxXdgDataHome();
+  xdgDataDir = dataResult.dir;
   const cacheResult = sandboxXdgCacheHome(dataResult.cleanup);
   const cfgResult = sandboxXdgConfigHome(cacheResult.cleanup);
   cleanup = cfgResult.cleanup;
@@ -149,6 +163,44 @@ afterEach(() => {
 // ── reflect ─────────────────────────────────────────────────────────────────
 
 describe("akm reflect", () => {
+  test("self-refine preserves direct conversation roles through the agent fallback lowerer", async () => {
+    const stash = makeStashDir();
+    const prompts: string[] = [];
+    const spawn: SpawnFn = (cmd) => {
+      prompts.push(cmd.at(-1) ?? "");
+      return fakeSpawn(VALID_LESSON_PAYLOAD, "", 0)(cmd, {});
+    };
+
+    const result = await akmReflect({
+      ref: "lessons/rg-over-grep",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      maxRefineIters: 2,
+      assetContent:
+        "---\ndescription: Prefer ripgrep for repository search tasks\nwhen_to_use: When locating text across a source repository\n---\n\nPrefer grep.\n",
+      runAgentOptions: { spawn },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(prompts).toHaveLength(2);
+    const second = prompts[1] ?? "";
+    expect(second).toContain(CONVERSATION_FALLBACK_BEGIN);
+    expect(second).toContain(CONVERSATION_FALLBACK_END);
+    const json = second.slice(
+      second.indexOf("\n", second.indexOf(CONVERSATION_FALLBACK_BEGIN)) + 1,
+      second.indexOf(`\n${CONVERSATION_FALLBACK_END}`),
+    );
+    const conversation = JSON.parse(json) as Array<{ role: string; content: string }>;
+    expect(conversation.map(({ role }) => role)).toEqual(["user", "assistant"]);
+    expect(conversation[1]?.content).toBe(VALID_LESSON_PAYLOAD);
+    expect(second.slice(second.indexOf(CONVERSATION_FALLBACK_END))).toContain(
+      "Your previous proposal is shown above. Review it critically",
+    );
+    expect(result.notices).toContainEqual(
+      expect.objectContaining({ code: "conversation-prompt-composed", field: "conversation" }),
+    );
+  });
+
   test("loads a duplicate ref only from the selected source root", async () => {
     const selected = makeStashDir();
     const other = makeStashDir();
@@ -463,6 +515,47 @@ describe("akm reflect", () => {
 // ── propose ────────────────────────────────────────────────────────────────
 
 describe("akm propose", () => {
+  test("missing required credential leaves proposal and event state untouched", async () => {
+    const stash = makeStashDir();
+    const config = quietQualityGateConfig();
+    config.engines = {
+      required: {
+        kind: "llm",
+        endpoint: "https://example.invalid/v1/chat/completions",
+        model: "never-dispatched",
+        apiKey: "$AKM_PROPOSE_REQUIRED_KEY",
+      },
+    };
+    config.defaults = { ...config.defaults, engine: "required" };
+    let spawnCalls = 0;
+
+    await withEnv({ AKM_PROPOSE_REQUIRED_KEY: undefined }, async () => {
+      await expect(
+        akmPropose({
+          type: "skill",
+          name: "credential-boundary",
+          task: "Author a skill without mutating state before dispatch",
+          stashDir: stash,
+          agentConfig: config,
+          runAgentOptions: {
+            spawn: () => {
+              spawnCalls += 1;
+              throw new Error("required-credential proposal reached transport");
+            },
+          },
+        }),
+      ).rejects.toMatchObject({
+        name: "ConfigError",
+        code: "INVALID_CONFIG_FILE",
+        message: "Required engine credential AKM_PROPOSE_REQUIRED_KEY is not set.",
+      });
+    });
+
+    expect(spawnCalls).toBe(0);
+    expect(fs.readdirSync(xdgDataDir, { recursive: true })).toEqual([]);
+    expect(fs.existsSync(path.join(stash, "proposals"))).toBe(false);
+  });
+
   test("redacts an echoed engine environment credential before proposal persistence", async () => {
     const sentinel = "PROPOSE-ECHO-SENTINEL";
     const stash = makeStashDir();
@@ -494,6 +587,7 @@ describe("akm propose", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected ok");
+    expect(result.notices).toBeUndefined();
     expect(result.proposal.source).toBe("propose");
     expect(result.proposal.ref).toBe(durableItemRef(stash, "skill", "hello"));
 
@@ -516,7 +610,8 @@ describe("akm propose", () => {
     } as ReturnType<typeof quietQualityGateConfig>;
     const spawn: SpawnFn = (cmd) => {
       const prompt = cmd.join(" ");
-      const draftPath = prompt.match(/\/tmp\/akm-propose-[^\s`"']+\.md/)?.[0];
+      expect(prompt).toContain(path.join(os.tmpdir(), "akm-propose-"));
+      const draftPath = extractProposalDraftPath(prompt);
       if (!draftPath) throw new Error("draft path missing from propose prompt");
       fs.writeFileSync(draftPath, "---\ndescription: A file-written skill draft\n---\n\nDraft body.\n", "utf8");
       return fakeSpawn("", "", 0)(cmd, {});
@@ -643,6 +738,7 @@ describe("akm propose", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
     expect(result.reason).toBe("spawn_failed");
+    expect(result.notices).toBeUndefined();
     expect(listProposals(stash).length).toBe(0);
   });
 

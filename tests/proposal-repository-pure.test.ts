@@ -60,10 +60,8 @@ describe("proposal repository — pure helpers (post-split)", () => {
     expect(out).toContain("+TWO");
   });
 
-  test("projects valid historical rows with absent envelope fields to sentinels", () => {
-    const proposal = proposalRowToProposal(historicalRow);
-    expect(proposal.changes).toEqual([{ path: "", op: "update", after: historicalRow.content }]);
-    expect(proposal.proposedTarget).toBeUndefined();
+  test("rejects rows without the current proposal envelope", () => {
+    expect(() => proposalRowToProposal(historicalRow)).toThrow(/missing changes/i);
   });
 
   test("rejects malformed JSON and malformed present envelope fields", () => {
@@ -78,14 +76,22 @@ describe("proposal repository — pure helpers (post-split)", () => {
     expect(() =>
       proposalRowToProposal({
         ...historicalRow,
-        metadata_json: JSON.stringify({ proposedTarget: { source: "team" } }),
+        metadata_json: JSON.stringify({
+          changes: [{ path: "lessons/history.md", op: "update" }],
+          proposedTarget: { source: "team" },
+        }),
       }),
     ).toThrow(/proposedTarget/i);
   });
 
-  test("current writers still reject historical sentinels", () => {
-    expect(() => proposalToRowValues(proposalRowToProposal(historicalRow), historicalRow.stash_dir)).toThrow(
-      /invalid file changes/i,
-    );
+  test("current proposal envelopes round-trip", () => {
+    const proposal = proposalRowToProposal({
+      ...historicalRow,
+      metadata_json: JSON.stringify({
+        changes: [{ path: "lessons/history.md", op: "update" }],
+        proposedTarget: { source: "team", root: "/tmp/stash" },
+      }),
+    });
+    expect(proposalToRowValues(proposal, historicalRow.stash_dir).metadata_json).toContain("proposedTarget");
   });
 });

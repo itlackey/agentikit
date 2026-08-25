@@ -214,10 +214,11 @@ describe("createProposal validation", () => {
         source: "reflect",
         force: true,
         payload: {
-          content: 'version: 2\nschedule: "0 1 * * *"\nenabled: true\nprompt: one\ncommand: ["akm", "index"]\n',
+          content:
+            'version: 3\nuses: akm/command\nrun: akm index\nwith:\n  content: one\nakm:\n  schedule: "0 1 * * *"\n  enabled: true\n',
         },
       }),
-    ).toThrow(/invalid task structure.*more than one/is);
+    ).toThrow(/invalid task structure.*exactly one.*uses or run/is);
     expect(listProposals(stash)).toHaveLength(0);
   });
 

@@ -17,11 +17,11 @@
  * admission control: every unit write executes strictly in enqueue order.
  *
  * That is the ONLY invariant the chain owns. In particular it does NOT own
- * per-unit insert→finish ordering: `dispatchJournaledAttempt` awaits its insert
+ * per-unit reserve→finish ordering: `dispatchJournaledAttempt` awaits its reservation
  * before it dispatches and only finishes after the dispatch resolves, so a
  * unit's own writes are ordered by program order, not by queue position. The
- * queue could be reordered arbitrarily between units without breaking
- * `finishUnitFromDispatch`'s row-conditional logic.
+ * queue could be reordered arbitrarily between units without breaking the
+ * attempt claim/dispatch CAS.
  *
  * ## Scope of the serialization (issue B)
  *

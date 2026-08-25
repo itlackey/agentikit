@@ -115,6 +115,39 @@ is why, for example, `proactiveMaintenance` stays off in `default` and
 `reflect-distill`, but a preset that doesn't mention it at all still inherits
 that "off" rather than defaulting to on.
 
+### Dry-run planning boundary
+
+Dry and live improve runs call the same selectors for signal-delta eligibility,
+proactive maintenance, salience ranking, replay, disk presence, and the final
+cap. Each invocation reports a best-effort observation assembled while it
+runs; it is not an atomic cross-store snapshot, a reservation, or a durable
+frozen plan. A later live invocation re-inspects mutable index, state,
+filesystem, and session-log inputs and can therefore differ from an earlier
+dry preview. Given equivalent observed inputs, both paths produce the same
+selection. The public schema-v2 result projects the observation as `plan`: raw
+in-scope count, each gate's removals, configured and effective limits, final
+ranked refs with lane attribution, proactive due statistics, consolidation
+pool/delta/minimum gates and chunk estimate, maintenance-stage decisions,
+triage mode/caps, and the read-side index snapshot status. `plannedRefs` means
+the effective post-limit work set in both modes.
+
+The dry path stops at that projection boundary. It may read indexed assets,
+the filesystem, and an existing `state.db`, but opens state read-only and does
+not create it when absent. It does not acquire the improve lock or write the
+index, state, events, proposals, assets, cache, sync journal, or persisted run
+result, and it never dispatches an LLM. SQLite inputs are inspected through
+disposable main/WAL copies so even a held source SHM file is not touched.
+Consolidation pool inspection and the extract `minNewSessions` gate use shared
+zero-LLM selectors, while live execution re-inspects mutable inputs immediately
+before dispatch. A missing index or one without the current `entries` table
+yields an explicit empty `plan.snapshot` (`missing` or `incompatible`) rather
+than creating or migrating the database.
+
+`plan.limits.effective` is the base cap for ordinary refs. Replay is explicitly
+additive: `additiveReplayAllowance` reports its separate budget, and a finite
+`totalCeiling` is `effective + additiveReplayAllowance`. When the base run is
+unbounded, `totalCeiling` is omitted.
+
 ### The autonomy gate
 
 `akm improve` runs by default and is review-first: reflect, distill, extract
@@ -164,7 +197,7 @@ purged produces no commit at all. The run reports its journal as
 ### Session extraction
 
 `akm proposal extract` is the standalone entry point for mining coding-agent
-session transcripts (`--type claude-code`, `--type opencode`, or `--auto` to
+session transcripts (`--type claude`, `--type opencode`, or `--auto` to
 iterate every harness with a detectable session-log location) into proposals.
 It replaced the legacy session-checkpoint hook and runs independently of
 whether a strategy's own `processes.extract` stage is enabled — the shipped

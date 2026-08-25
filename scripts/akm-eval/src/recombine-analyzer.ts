@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isCanonicalIndexGeneration } from "../../../src/storage/repositories/index-entry-schema";
 import { resolveIndexDbPath, resolveStateDbPath } from "./sources/paths";
 
 export type RecombineRelatedness = "tags" | "graph" | "both";
@@ -169,7 +170,6 @@ const ESTIMATED_OUTPUT_TOKENS_PER_CALL = 800;
 const PROVENANCE_CHANNELS = ["xrefs", "sources", "sourceRefs", "evidenceSources"] as const;
 const DECISION_PROVENANCE_CHANNELS = ["sources", "sourceRefs", "evidenceSources"] as const;
 const SNAPSHOT_BUFFER_BYTES = 1024 * 1024;
-
 function baseGraphStatus(
   availability: RecombineGraphStatus["availability"],
   degradedReason: string | null = null,
@@ -296,6 +296,14 @@ function isConcreteIdentifier(value: string): boolean {
 function normalizedSourceRoot(sourceRoot: string): string {
   const normalized = sourceRoot.replaceAll("\\", "/").replace(/\/+$/, "");
   return normalized || "/";
+}
+
+/** Derive AKM memory ownership from its canonical materialized file path. */
+function sourceRootFromMemoryPath(filePath: string): string {
+  const normalized = path.resolve(filePath);
+  const marker = `${path.sep}memories${path.sep}`;
+  const boundary = normalized.lastIndexOf(marker);
+  return boundary >= 0 ? normalized.slice(0, boundary) || path.parse(normalized).root : path.dirname(normalized);
 }
 
 function sourceFingerprint(sourceRoot: string): string {
@@ -829,7 +837,7 @@ function readGraphEntities(
       .all() as Array<{ stash_root: string; file_path: string; entity_norm: string | null }>;
     const uniqueEntities = new Set<string>();
     for (const row of rows) {
-      const key = `${row.stash_root}\0${row.file_path}`;
+      const key = row.file_path;
       fileKeys.add(key);
       const entity = row.entity_norm?.trim();
       if (!entity) continue;
@@ -1046,29 +1054,25 @@ export function readCurrentRecombineEntries(
     db = new Database(snapshot.databasePath, { readonly: true, create: false });
     db.exec("BEGIN");
     transactionOpen = true;
-    const columns = new Set(
-      (db.query("PRAGMA table_info(entries)").all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    const missingCanonicalColumns = ["item_ref", "bundle_id"].filter((column) => !columns.has(column));
-    if (missingCanonicalColumns.length > 0) {
+    if (!isCanonicalIndexGeneration(db)) {
       throw new Error(
-        `index database lacks current canonical-ref columns (${missingCanonicalColumns.join(", ")}); refusing legacy ref reconstruction`,
+        "index database lacks the current canonical entries schema; rebuild it with `akm index --full`",
       );
     }
     const rows = db
       .query(
-        `SELECT id, item_ref, bundle_id, stash_dir, file_path, entry_json
+        `SELECT id, item_ref, bundle_id, concept_id, file_path, document_json
          FROM entries
-         WHERE entry_type = 'memory'
+         WHERE type = 'memory'
          ORDER BY item_ref, id`,
       )
       .all() as Array<{
       id: number;
-      item_ref: string | null;
-      bundle_id: string | null;
-      stash_dir: string;
+      item_ref: string;
+      bundle_id: string;
+      concept_id: string;
       file_path: string;
-      entry_json: string;
+      document_json: string;
     }>;
     const graph = readGraphEntities(db, relatedness);
     const entries: RecombineAnalyzerEntry[] = [];
@@ -1080,7 +1084,13 @@ export function readCurrentRecombineEntries(
       const boundary = itemRef?.indexOf("//") ?? -1;
       const bundle = boundary > 0 ? itemRef?.slice(0, boundary) : undefined;
       const conceptId = boundary > 0 ? itemRef?.slice(boundary + 2) : undefined;
-      if (!itemRef || !bundle || !conceptId?.startsWith("memories/") || (row.bundle_id && row.bundle_id !== bundle)) {
+      if (
+        !itemRef ||
+        !bundle ||
+        !conceptId?.startsWith("memories/") ||
+        row.bundle_id !== bundle ||
+        row.concept_id !== conceptId
+      ) {
         skippedMissingCanonicalRef += 1;
         continue;
       }
@@ -1088,13 +1098,13 @@ export function readCurrentRecombineEntries(
       seenItemRefs.add(itemRef);
       let document: Record<string, unknown>;
       try {
-        const parsed = JSON.parse(row.entry_json) as unknown;
+        const parsed = JSON.parse(row.document_json) as unknown;
         document = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
       } catch {
         document = {};
       }
       const name = conceptId.slice("memories/".length);
-      if ((graph.entities.get(`${row.stash_dir}\0${row.file_path}`)?.length ?? 0) > 0) coveredMemoryCount += 1;
+      if ((graph.entities.get(row.file_path)?.length ?? 0) > 0) coveredMemoryCount += 1;
       let fileSize =
         typeof document.fileSize === "number" && Number.isFinite(document.fileSize) && document.fileSize >= 0
           ? document.fileSize
@@ -1110,10 +1120,10 @@ export function readCurrentRecombineEntries(
         id: row.id,
         ref: itemRef,
         bundle,
-        sourceRoot: row.stash_dir,
+        sourceRoot: sourceRootFromMemoryPath(row.file_path),
         name,
         tags: stringArray(document.tags),
-        entities: graph.entities.get(`${row.stash_dir}\0${row.file_path}`) ?? [],
+        entities: graph.entities.get(row.file_path) ?? [],
         provenance: {
           xrefs: stringArray(document.xrefs),
           sources: stringArray(document.sources),

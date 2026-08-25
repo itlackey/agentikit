@@ -3,39 +3,41 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import path from "node:path";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import { ensureUsageEventsSchema } from "../../../src/indexer/usage/usage-events";
 import type { Database as AkmDatabase } from "../../../src/storage/database";
-import { relinkUsageEvents } from "../../../src/storage/repositories/index-entries-repository";
+import { openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { relinkUsageEvents, upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
 
 /**
  * Focused tests for {@link relinkUsageEvents}.
  *
- * Post-Chunk-8 WI-8.5c: every `usage_events.entry_ref` is the fully-qualified
- * `bundle//conceptId` item_ref spelling (the one-time legacy→item_ref re-key is
- * owned by the migration cutover). The relink re-resolves detached rows through
- * the canonical `findEntryIdByRef` resolver, which keys on the durable
- * `entries.item_ref`. Bare durable refs are ignored.
+ * Every `usage_events.entry_ref` is the fully-qualified `bundle//conceptId`
+ * item-ref spelling. Relinking resolves detached rows through the canonical
+ * `findEntryIdByRef` resolver; bare durable refs are ignored.
  */
 describe("relinkUsageEvents", () => {
-  // Chunk-8 WI-8.3: usage_events lives in state.db; `entries` in index.db. The
-  // relink now spans both handles.
+  // usage_events lives in state.db while entries lives in index.db, so relink
+  // spans both handles.
   let indexDb: AkmDatabase;
   let stateDb: AkmDatabase;
 
   /**
-   * Minimal `entries` row (index.db) — only the columns the resolver reads. The
-   * durable identity is `item_ref = bundle//conceptId`; `entry_key` carries the
-   * stash root prefix so the id-change on rebuild is modelled.
+   * Seed a current `entries` row through the production writer. The durable
+   * identity is `item_ref = bundle//conceptId`.
    */
   function seedEntry(bundle: string, conceptId: string, stashDir: string): number {
-    const itemRef = `${bundle}//${conceptId}`;
-    const info = indexDb
-      .prepare(
-        "INSERT INTO entries (entry_key, entry_type, stash_dir, entry_json, item_ref, bundle_id, concept_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run(`${stashDir}:${conceptId}`, conceptId.split("/")[0]!, stashDir, "{}", itemRef, bundle, conceptId);
-    return Number(info.lastInsertRowid);
+    const type = conceptId.startsWith("memories/") ? "memory" : "skill";
+    const name = conceptId.split("/").at(-1) ?? conceptId;
+    return upsertEntry(
+      indexDb,
+      path.join(stashDir, conceptId),
+      { name, type },
+      name,
+      deriveEntryProvenance({ bundleId: bundle, componentId: bundle, adapterId: "akm" }, type, name, conceptId),
+    );
   }
 
   function insertEvent(entryRef: string, entryId: number | null): void {
@@ -52,21 +54,14 @@ describe("relinkUsageEvents", () => {
   }
 
   beforeEach(() => {
-    indexDb = new Database(":memory:") as unknown as AkmDatabase;
-    indexDb.exec(`
-      CREATE TABLE entries (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        entry_key  TEXT NOT NULL,
-        entry_type TEXT NOT NULL,
-        stash_dir  TEXT NOT NULL,
-        entry_json TEXT NOT NULL,
-        item_ref   TEXT,
-        bundle_id  TEXT,
-        concept_id TEXT
-      );
-    `);
+    indexDb = openIndexDatabase(":memory:");
     stateDb = new Database(":memory:") as unknown as AkmDatabase;
     ensureUsageEventsSchema(stateDb);
+  });
+
+  afterEach(() => {
+    indexDb.close();
+    stateDb.close();
   });
 
   test("leaves a bare conceptId ref detached", () => {

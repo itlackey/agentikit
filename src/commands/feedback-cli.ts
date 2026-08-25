@@ -386,7 +386,7 @@ export const feedbackCommand = defineJsonCommand({
         throw new UsageError(`Source "${parsedRef.bundle}" is not configured.`, "INVALID_FLAG_VALUE");
       }
       const lookupRef = makeBundleRef(parsedRef.bundle, parsedRef.conceptId);
-      const entryId = findEntryIdByRef(db, lookupRef, requestedSource?.path);
+      const entryId = findEntryIdByRef(db, lookupRef, parsedRef.bundle);
       if (entryId === undefined) {
         // NotFoundError (exit 1), not UsageError (exit 2): the flags parsed
         // fine, the asset just isn't there. The documented exit-code table

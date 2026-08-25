@@ -9,7 +9,6 @@
  * lets `akm index --enrich` skip the LLM call when a file's body is unchanged.
  */
 
-import { bestEffort } from "../../core/best-effort";
 import { sha256Hex } from "../../runtime";
 import type { Database, SqlValue } from "../database";
 import type { LlmCacheEntry } from "./index-entry-types";
@@ -113,20 +112,16 @@ export function upsertLlmCacheEntry(
  * `entries` table. Should be called during the cleanup phase of each index
  * run to prevent the cache from growing unboundedly as assets are removed.
  *
- * The join uses a LIKE match against the entries `file_path` column because
- * graph/memory cache refs are absolute file paths, while enrichment cache
- * refs are entry_key strings — we preserve any entry that still has a
- * corresponding row in either the entries table (by entry_key) or that
- * matches a live file_path.
+ * Graph/memory cache refs are absolute file paths, while metadata-enrichment
+ * refs use canonical `item_ref`; preserve a cache row that matches either
+ * current identity.
  */
 export function clearStaleCacheEntries(db: Database): void {
-  bestEffort(() => {
-    db.exec(`
-      DELETE FROM llm_enrichment_cache
-      WHERE asset_ref NOT IN (SELECT file_path FROM entries)
-        AND asset_ref NOT IN (SELECT entry_key FROM entries)
-    `);
-  }, "llm_enrichment_cache may not exist in very old DBs opened without ensureSchema");
+  db.exec(`
+    DELETE FROM llm_enrichment_cache
+    WHERE asset_ref NOT IN (SELECT file_path FROM entries)
+      AND asset_ref NOT IN (SELECT item_ref FROM entries)
+  `);
 }
 
 /**

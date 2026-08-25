@@ -239,6 +239,7 @@ function installSetupSeams(): void {
         name: "itlackey/akm-stash",
         description: "Official AKM onboarding stash",
         url: "https://github.com/itlackey/akm-stash",
+        installType: "git",
         source: "registry",
         defaultSelected: false,
       },
@@ -354,6 +355,51 @@ describe("runSetupWizard", () => {
     expect(bundles.drop).toBeUndefined();
   });
 
+  test("does not duplicate an existing no-.git bundle when the live registry returns .git", async () => {
+    installSetupSeams();
+    const historicalUrl = "https://github.com/itlackey/akm-stash";
+    const liveUrl = `${historicalUrl}.git`;
+    overrideSeam(_setLoadSetupStashesForTests, async () => [
+      {
+        id: "itlackey/akm-stash",
+        name: "itlackey/akm-stash",
+        description: "Official AKM onboarding stash",
+        url: liveUrl,
+        installType: "git",
+        source: "registry",
+        defaultSelected: true,
+      },
+    ]);
+    fs.mkdirSync(path.dirname(DEFAULT_CONFIG_PATH), { recursive: true });
+    const existingBundle = {
+      git: historicalUrl,
+      writable: false,
+      components: { keep: { root: ".", adapter: "akm", writable: false } },
+    };
+    fs.writeFileSync(
+      DEFAULT_CONFIG_PATH,
+      `${JSON.stringify({
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        bundles: {
+          stash: { path: DEFAULT_STASH_DIR, writable: true },
+          "itlackey-akm-stash": existingBundle,
+        },
+        defaultBundle: "stash",
+      })}\n`,
+    );
+
+    promptState.selects.push("default", "none", "done", "json", "brief", "skip", "none");
+    promptState.confirms.push(false, false, true, false);
+    promptState.multiselects.push([...DEFAULT_REGISTRY_URLS], [`git:${historicalUrl}`], [historicalUrl], []);
+
+    await runSetupWizard();
+
+    const bundles = readSavedConfig().bundles as Record<string, unknown>;
+    expect(bundles["itlackey-akm-stash"]).toEqual(existingBundle);
+    expect(Object.keys(bundles).sort()).toEqual(["itlackey-akm-stash", "stash"]);
+  });
+
   test("warns and completes when indexing fails after saving config", async () => {
     installSetupSeams();
 
@@ -407,16 +453,14 @@ describe("runSetupWizard", () => {
     expect(readSavedConfig().semanticSearchMode).toBe("auto");
   });
 
-  test("warns specifically when transformers package is missing during setup prep", async () => {
+  test("warns specifically when the Transformers dependency is missing during setup prep", async () => {
     installSetupSeams();
-    // transformersAvailable stays true so the wizard skips the `bun add`
-    // auto-install attempt (the install path is environment-dependent and
-    // makes the test flaky). The faked checkEmbeddingAvailability still
-    // reports missing-package, which exercises the "warn and report" path.
+    // The faked availability result exercises the warn-and-report path. Setup
+    // must never mutate the package installation to add dependencies.
     setupState.checkEmbeddingResult = {
       available: false,
       reason: "missing-package",
-      message: "@huggingface/transformers is not installed.",
+      message: "The @huggingface/transformers dependency is unavailable.",
     };
 
     promptState.selects.push("default", "none", "done", "json", "brief", "skip", "none");
@@ -425,9 +469,7 @@ describe("runSetupWizard", () => {
 
     await runSetupWizard();
 
-    expect(promptState.logs.some((entry) => entry.includes("Install it with: bun add @huggingface/transformers"))).toBe(
-      true,
-    );
+    expect(promptState.logs.some((entry) => entry.includes("Reinstall akm-cli"))).toBe(true);
     expect(readSavedConfig().semanticSearchMode).toBe("auto");
   });
 

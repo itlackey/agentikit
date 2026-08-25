@@ -28,7 +28,6 @@ import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { EXIT_CODES, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
-import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
 import { getHyphenatedBoolean } from "../../output/context";
 import { akmLint } from "../lint/index";
 import { akmAgentDispatch } from "./agent-dispatch";
@@ -43,25 +42,23 @@ export const agentCommand = defineCommand({
   meta: {
     name: "agent",
     description:
-      "Dispatch an agent CLI (opencode, claude, …) with an optional agent asset that provides the system prompt, model, and tool policy. Use <agent-ref> to embody a bundle agent, --model to override the model, and --prompt/--command/--workflow to provide the task.",
+      "Dispatch an agent CLI (opencode, claude, …) with an optional agent persona and model defaults. Use --prompt for work; stored commands run through akm command run. Nonempty tool requests require separate operator authorization and are rejected by the current CLI.",
   },
   args: {
     ...GLOBAL_OUTPUT_ARGS,
     "agent-ref": {
       type: "positional",
       description:
-        "Optional agent asset ref (e.g. agents/code-reviewer). Loads system prompt, model, and tool policy from the bundle asset.",
+        "Optional agent asset ref (e.g. agents/code-reviewer). Resolves persona and model defaults; the current CLI rejects a nonempty tool request without separate operator authorization.",
       required: false,
     },
     prompt: { type: "string", description: "Task prompt to pass to the agent" },
     "prompt-stdin": {
       type: "boolean",
-      description: "Read the task prompt from stdin (mutually exclusive with --prompt, --command, and --workflow)",
+      description: "Read the task prompt from stdin (mutually exclusive with --prompt)",
       default: false,
     },
     engine: { type: "string", description: "Agent engine to use (default: defaults.engine)" },
-    command: { type: "string", description: "Load prompt from a command asset" },
-    workflow: { type: "string", description: "Load prompt from a workflow asset" },
     model: {
       type: "string",
       description:
@@ -80,67 +77,28 @@ export const agentCommand = defineCommand({
       const config = loadConfig();
       const agentConfig = config;
 
-      // Resolve agent asset ref → extract system prompt, model, and tool policy.
+      // Preserve the selector; the common execution-source adapter resolves it.
       const agentRef = getStringArg(args, "agent-ref");
 
-      let systemPrompt: string | undefined;
-      let assetModel: string | undefined;
-      let assetTools: import("../../sources/types.js").ShowResponse["toolPolicy"] | undefined;
-
-      if (agentRef) {
-        const { akmShowUnified } = await import("../read/show.js");
-        const asset = await akmShowUnified({ ref: agentRef, detail: "full", eventSource: resolveUsageEventSource() });
-        if (asset.type !== "agent") {
-          throw new UsageError(
-            `Asset ref "${agentRef}" resolves to type "${asset.type}", expected "agent".`,
-            "INVALID_FLAG_VALUE",
-          );
-        }
-        systemPrompt = typeof asset.prompt === "string" ? asset.prompt : undefined;
-        assetModel = typeof asset.modelHint === "string" ? asset.modelHint : undefined;
-        assetTools = asset.toolPolicy;
-      }
-
-      // --model flag wins over the asset's modelHint.
-      const model = getStringArg(args, "model") ?? assetModel;
-
       const promptText = getStringArg(args, "prompt");
-      const commandRef = getStringArg(args, "command");
-      const workflowRef = getStringArg(args, "workflow");
       const promptStdin = args["prompt-stdin"] === true;
-      if (promptStdin && (promptText !== undefined || commandRef !== undefined || workflowRef !== undefined)) {
-        throw new UsageError(
-          "--prompt-stdin cannot be combined with --prompt, --command, or --workflow.",
-          "INVALID_FLAG_VALUE",
-        );
+      if (promptStdin && promptText !== undefined) {
+        throw new UsageError("--prompt-stdin cannot be combined with --prompt.", "INVALID_FLAG_VALUE");
       }
-      const stdinPrompt = promptStdin ? readPromptStdin() : undefined;
       const cwd = getStringArg(args, "cwd");
 
-      // Only build a dispatch request when there is something to dispatch — a
-      // prompt, an agent asset, or a model override. When none of these are
-      // present the agent is launched interactively (no injected prompt, no
-      // platform-specific flags beyond the profile's base args).
-      const hasDispatchContent =
-        stdinPrompt !== undefined || !!(promptText ?? commandRef ?? workflowRef ?? systemPrompt ?? model ?? assetTools);
+      // The common invocation resolver loads a selected agent through its
+      // owning bundle adapter. This CLI never re-reads/show-projects the file.
+      const model = getStringArg(args, "model");
+
+      const stdinPrompt = promptStdin ? readPromptStdin() : undefined;
 
       const result = await akmAgentDispatch({
         engine: getStringArg(args, "engine"),
         prompt: stdinPrompt ?? promptText,
-        commandRef,
-        workflowRef,
+        ...(agentRef === undefined ? {} : { agentRef }),
         agentConfig,
-        ...(hasDispatchContent
-          ? {
-              dispatch: {
-                prompt: stdinPrompt ?? promptText ?? "",
-                systemPrompt,
-                model,
-                tools: assetTools,
-                ...(cwd ? { cwd } : {}),
-              },
-            }
-          : {}),
+        ...(model === undefined ? {} : { selection: { model } }),
         ...(cwd ? { cwd } : {}),
         ...(timeoutMs !== undefined && Number.isFinite(timeoutMs) ? { timeoutMs } : {}),
       });

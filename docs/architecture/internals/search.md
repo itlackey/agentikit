@@ -55,11 +55,23 @@ search automatically retries with prefix matching (appending `*` to tokens of
 ### 2. Semantic (vector)
 
 Cosine similarity between query embedding and stored entry embeddings.
-Requires an embedding model — either local (`@huggingface/transformers`, default
-model `bge-small-en-v1.5`) or a remote OpenAI-compatible endpoint.
+Requires an embedding model — either the declared external
+`@huggingface/transformers` dependency (default model
+`bge-small-en-v1.5`) or a remote OpenAI-compatible endpoint. AKM imports the
+package directly and does not copy, wrap, alias, or hash a second runtime under
+`src/` or `dist/`. Dependency installation and platform support remain the
+upstream package manager's responsibility. Users who need a different runtime
+or native/GPU-class throughput can configure a remote embedding endpoint.
 
 An LRU cache (100 entries) avoids redundant embedding computation for repeated
 queries.
+
+Query-time semantic failure is not conflated with configured keyword search.
+FTS still serves the request, while `searchMode: "fts-fallback"` and one
+sanitized warning name the normalized endpoint without URL userinfo, query
+parameters, fragments, API keys, or raw runtime error text. Curate deduplicates
+that warning across its internal fallback queries. `searchMode: "keyword"`
+means no ready semantic attempt failed for this request.
 
 ### Score Normalization
 

@@ -5,7 +5,6 @@ import { getLockfileLockPath } from "../../src/core/paths";
 import {
   compareAndSwapLockfile,
   type LockfileEntry,
-  mergeLockEntriesSync,
   readLockfile,
   removeLockEntry,
   upsertLockEntry,
@@ -350,43 +349,5 @@ describe("removeLockEntry", () => {
     const finalRaw = fs.readFileSync(lockPath, "utf8");
     expect(finalRaw).toBe(raw.slice(0, Math.floor(raw.length / 2)));
     expect(finalRaw).toContain("team-skills");
-  });
-});
-
-describe("mergeLockEntriesSync", () => {
-  test("a sparse migration entry merges into an existing row instead of replacing it", async () => {
-    // The migrator emits sparse entries (id/source/ref/localRoot); a real
-    // install's row carries resolution metadata the new schema still uses.
-    // Replacing the whole row discarded the user's recorded pin.
-    await writeLockfile([
-      validEntry({
-        id: "team-kit",
-        resolvedVersion: "1.4.2",
-        resolvedRevision: "abc123",
-        integrity: "sha512-deadbeef",
-        installedAt: "2026-01-01T00:00:00.000Z",
-      }),
-    ]);
-
-    mergeLockEntriesSync([{ id: "team-kit", source: "npm", ref: "@scope/pkg", localRoot: "/tmp/kit-root" }]);
-
-    const rows = readLockfile();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      id: "team-kit",
-      localRoot: "/tmp/kit-root", // incoming field applied...
-      resolvedVersion: "1.4.2", // ...existing resolution metadata preserved
-      resolvedRevision: "abc123",
-      integrity: "sha512-deadbeef",
-      installedAt: "2026-01-01T00:00:00.000Z",
-    });
-  });
-
-  test("an entry with no existing row is appended as-is, others untouched", async () => {
-    await writeLockfile([validEntry({ id: "untouched", resolvedVersion: "9.9.9" })]);
-    mergeLockEntriesSync([{ id: "fresh", source: "git", ref: "github:o/r", localRoot: "/tmp/fresh" }]);
-    const rows = readLockfile();
-    expect(rows.map((r) => r.id).sort()).toEqual(["fresh", "untouched"]);
-    expect(rows.find((r) => r.id === "untouched")?.resolvedVersion).toBe("9.9.9");
   });
 });

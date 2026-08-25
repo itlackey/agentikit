@@ -15,8 +15,8 @@
  * two fields that actually carry diagnostic signal the least readable part
  * of the output.
  *
- * This formatter renders those record-arrays (plus `sessionLogAdvisories`,
- * the third one) via the shared `./status-list` helper — worst-status-first,
+ * This formatter renders those record-arrays via the shared `./status-list`
+ * helper — worst-status-first,
  * one glyph-prefixed line per check, with `evidence` gated behind
  * `--detail normal|full` (the default is `brief`; see `resolveOutputMode` in
  * `../context.ts`) so the common case stays scannable while the full
@@ -47,14 +47,6 @@ interface HealthCheckLike {
   message?: string;
   confidence?: string;
   evidence?: Record<string, unknown>;
-}
-
-/** The subset of `SessionLogAdvisory` (`src/commands/health/types-session-log.ts`) this formatter reads. */
-interface SessionLogAdvisoryLike {
-  topic?: string;
-  frequency?: number;
-  source?: string;
-  isFailurePattern?: boolean;
 }
 
 const STATUS_GLYPH: Record<string, string> = { fail: "✗", warn: "⚠", unknown: "?", pass: "✓" };
@@ -97,31 +89,8 @@ function renderCheckSection(title: string, checks: readonly HealthCheckLike[], d
   return [header, ...renderStatusEntries(checks.map((check) => checkStatusEntry(check, detail)))];
 }
 
-function sessionAdvisoryEntry(advisory: SessionLogAdvisoryLike): StatusEntry {
-  const isFailure = advisory.isFailurePattern === true;
-  return {
-    severityRank: isFailure ? 0 : 1,
-    glyph: (isFailure ? STATUS_GLYPH.warn : STATUS_GLYPH.pass) ?? "?",
-    headline: `${advisory.topic ?? "?"}  (x${advisory.frequency ?? 0}, source: ${advisory.source ?? "?"})`,
-  };
-}
-
-function renderSessionLogAdvisories(advisories: readonly SessionLogAdvisoryLike[]): string[] {
-  if (advisories.length === 0) return [];
-  return [`sessionLogAdvisories (${advisories.length})`, ...renderStatusEntries(advisories.map(sessionAdvisoryEntry))];
-}
-
 /** Fields already rendered explicitly above — everything else in `r` falls to the `flattenForText` sweep below. */
-const HANDLED_KEYS = new Set([
-  "ok",
-  "status",
-  "since",
-  "hardChecks",
-  "advisories",
-  "sessionLogAdvisories",
-  "shape",
-  "schemaVersion",
-]);
+const HANDLED_KEYS = new Set(["ok", "status", "since", "hardChecks", "advisories", "shape", "schemaVersion"]);
 
 export function formatHealthPlain(r: Record<string, unknown>, detail: DetailLevel): string | null {
   if (r === null || typeof r !== "object") return null;
@@ -133,14 +102,9 @@ export function formatHealthPlain(r: Record<string, unknown>, detail: DetailLeve
 
   const hardChecks = Array.isArray(r.hardChecks) ? (r.hardChecks as HealthCheckLike[]) : [];
   const advisories = Array.isArray(r.advisories) ? (r.advisories as HealthCheckLike[]) : [];
-  const sessionLogAdvisories = Array.isArray(r.sessionLogAdvisories)
-    ? (r.sessionLogAdvisories as SessionLogAdvisoryLike[])
-    : [];
 
   lines.push("", ...renderCheckSection("hardChecks", hardChecks, detail));
   lines.push("", ...renderCheckSection("advisories", advisories, detail));
-  const sessionLines = renderSessionLogAdvisories(sessionLogAdvisories);
-  if (sessionLines.length > 0) lines.push("", ...sessionLines);
 
   if (
     detail === "brief" &&

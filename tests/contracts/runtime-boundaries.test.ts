@@ -19,11 +19,11 @@ describe("current orchestration documentation contract", () => {
     expect(section).toMatch(/not\s+rank-merged/i);
   });
 
-  test("show resolves through the index and reads from disk without provider fallback", () => {
+  test("show resolves through the index and reads from disk without fallback", () => {
     const section = extractSection(architecture, "## Show Resolution");
     expect(section).toContain("lookup(ref)");
     expect(section).toMatch(/reads? the file from disk/i);
-    expect(section).toContain("no remote provider fallback");
+    expect(section).toMatch(/no provider or local-disk fallback/i);
   });
 
   test("write-target resolution retains explicit, default, working-bundle order", () => {

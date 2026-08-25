@@ -149,6 +149,12 @@ Notes:
 - registry results live in `registryHits`, never in `hits`
 - `--from all` keeps registry results in `registryHits` — they are not
   rank-merged with source hits
+- local search and curate expose the actual execution in `searchMode`:
+  `semantic`, intentional/unavailable `keyword`, or `fts-fallback` when a
+  ready semantic runtime failed during the query; that degradation also
+  surfaces as one sanitized `warnings[]` entry, including in agent shape
+- usage-event writes are best-effort; `EROFS`/`EACCES` from a read-only
+  environment are silent and never affect `searchMode`
 
 `akm search` is implemented in `src/commands/read/search.ts` and queries the
 indexer's local search (`src/indexer/search/db-search.ts`). Provider fan-out is gone.
@@ -164,13 +170,14 @@ Local show flow (`src/commands/read/show.ts`):
 1. parse `[bundle//]conceptId`
 2. `lookup(ref)` by indexed `item_ref` and materialized source root
 3. return the indexed canonical ref and read `file_path` from disk
-4. fall back to on-disk type-dir traversal only when the index has no row
-   (covers the "indexed yet?" gap before `akm index` runs)
+4. report not-found when no index row resolves; physical ownership can prevent
+   a lower-priority source from retargeting a ref, but never authorizes a
+   direct file read
 5. apply generic Markdown content/fragment presentation for OKF, or the owning
    adapter's progressively enhanced native presentation
 
-There is **no remote provider fallback**. The fallback is local disk traversal,
-not a provider read.
+There is **no provider or local-disk fallback** for asset refs. The file is
+read only after an indexed row resolves it.
 
 ### Local access metadata
 
@@ -249,15 +256,14 @@ remember/import.
 path escape hatch: it bypasses managed target resolution and cannot be
 combined with `--bundle`.
 
-### Improve durable-state transition
+### Improve durable-state identity
 
-Improve state written after the source-identity cutover uses
-`source//conceptId` keys. Pre-cutover bare feedback, proposal-cursor, salience,
-and convergence rows are read as a fallback only when the selected source root
-equals the configured historical `stashDir`. A qualified row takes precedence.
-Named sources at any other root never read bare rows, preventing a duplicate ref
-from inheriting the local bundle's history. New writes are always qualified, so
-the fallback naturally becomes irrelevant as local assets accumulate new state.
+Improve readers and writers use one current key for each asset. A resolved
+indexed entry uses its fully qualified `item_ref`; a direct or provenance-free
+ref uses its current concept ID. There is no alternate root-based key, bare alias
+merge, or second state lookup. This prevents a duplicate concept in another
+installation from inheriting unrelated feedback, proposal-cursor, salience, or
+convergence state.
 
 Retrieval demand is scoped separately through usage-event entry IDs and selected
 source roots, with qualified refs covering detached events. Improve never merges
@@ -270,8 +276,9 @@ whose proposal queue is read or adjudicated; it does not override the proposal's
 write destination. Qualified proposals and unqualified proposals created in a
 configured secondary queue record the destination source name and materialized
 root. Diff, accept, and revert use that binding by default and reject an explicit
-`--target` that resolves elsewhere. Historical unbound proposals retain the
-normal write-target fallback.
+`--target` that resolves elsewhere. An unbound short proposal requires either
+an explicit `--target` or an authenticated `--queue` context; it does not
+inherit a default write target.
 
 ---
 
@@ -307,10 +314,10 @@ source.
 ## Workflow Runtime State
 
 Workflow definitions live in `workflows/`, but workflow run state is separate
-durable runtime state. The 0.9.0 cutover folded the former `workflow.db` into
-`state.db`: the `workflow_runs` / `workflow_run_steps` / `workflow_run_units`
-tables now live in `state.db` alongside events, tasks, and proposals, so akm
-keeps three databases (`state.db`, `index.db`, `logs.db`), not four.
+durable runtime state. `workflow_runs`, `workflow_run_steps`,
+`workflow_run_units`, and `workflow_run_unit_attempts` live in `state.db`
+alongside events, tasks, and proposals. `index.db` remains rebuildable search
+state, while `logs.db` stores task/run log lines.
 
 - workflow discovery and search use the shared asset index
 - workflow run records survive index rebuilds
@@ -359,30 +366,78 @@ scripts tell "akm threw unexpectedly" apart from an ordinary `NotFoundError`
 The approved target semantics that connect native agent and command assets to
 this engine boundary are specified in
 [Agent, Command, Engine, and Model Resolution](specs/agent-command-engine-model-design.md).
-That document distinguishes approved behavior from the parts not yet unified
-in 0.9.1; the remainder of this section describes the current implementation.
+The WP2/WP3 model-map and common-cascade path, WP4 command surface, WP5 runtime
+lowering convergence, WP6 task v3, and WP7 source-to-frozen durable workflow
+IR are implemented. Direct commands, task execution, and new workflow freezes
+share this boundary.
 
 Public execution selection uses named `engines`, never profiles. An engine is
 either `kind: "llm"` (an OpenAI-compatible chat-completions connection) or
-`kind: "agent"` (a registered harness platform). `resolveEngine()` lowers the
-selected engine into the internal `RunnerSpec` tagged union; the SDK runtime is
-an internal lowering of an `opencode-sdk` agent engine, not a public engine kind.
-`resolveLlmEngineUse()` selects and overlays one LLM engine without materializing
-its symbolic credential until dispatch.
+`kind: "agent"` (a registered harness platform). The SDK runtime is an
+internal transport kind for an `opencode-sdk` agent engine, not a public engine
+kind.
 
-`executeRunner()` is the sole exhaustive switch over `RunnerSpec`. Callers pass
-their own LLM handler for the LLM arm; agent and SDK arms use the harness runner.
-There is no generic `callAi` adapter: LLM-only processes call the bounded
-`chatCompletion()` client with their frozen connection, while mixed runner
-surfaces dispatch a frozen `RunnerSpec` through `executeRunner()`.
-An explicit missing or incompatible engine is an error and never falls through to
-another configured engine. Workflow v3 plans freeze the configured workflow cap,
-exact models, symbolic credentials, selected LLM-engine concurrency, and effective
-timeout. Dispatch uses the minimum of map width, frozen workflow cap, frozen
-LLM-engine cap, and the current host's CPU-derived safety cap.
-Timeout authority lives on each frozen invocation, not in engine catalog entries;
-an SDK invocation still derives its default timeout from its fallback LLM engine
-when the SDK engine does not set one.
+Current non-interactive execution follows this common shape:
+
+```text
+adapter-rendered or anonymous work
+  -> prepareResolvedExecution / prepareInlineExecution
+  -> planExecutionCascade
+  -> authorized ResolvedExecutionRequestV1 with exact model/inference
+  -> lowerResolvedExecutionRequest
+  -> dispatchLoweredExecutionRequest
+  -> executeRunner -> agent CLI, OpenCode SDK, or direct LLM transport
+```
+
+The cascade applies installation -> selected engine -> selected agent ->
+selected command -> invocation defaults -> current invocation, preserving
+omitted, explicit `null`, zero, and empty values. A recognized model-map alias
+expands as defaults at the layer that selected it; explicit sibling and nearer
+fields then win. The request records the exact final model ID. Lowering calls
+`resolveEngine()` once for symbolic transport/profile material and projects
+that request-owned exact model into it; transports never resolve aliases.
+Tool selection uses the same nearest-explicit rule, while
+operator authorization remains a separate pre-lowering decision.
+
+Agent lowerers are a structural implementation registry derived from
+`HARNESS_REGISTRY`: OpenCode, Claude, OpenCode SDK, Codex, Copilot, Pi, Gemini,
+Aider, Amazon Q, and OpenHands each register a lowerer, and direct LLM is the
+remaining lowering arm. This is not a model/provider capability matrix. Each
+lowerer translates what its transport actually implements, returns sorted
+translated/untranslated field paths, emits a stable structured notice for
+every selected field it does not translate, and still dispatches
+optimistically. A provider or harness rejection is a runtime failure; invalid
+configuration and authorization denial remain pre-dispatch failures.
+
+Lowering notices are fixed, secret-free records (`code`, `severity`,
+`adapter`, optional `field`, fixed `message`, and optional safe structured
+`details`). They never copy prompt content, environment values, credential
+values, or provider error bodies. Command, task, improve, proposal, index, and
+current workflow execution surfaces carry these records in live result or
+diagnostic output. Current persisted workflow result/evidence fields
+deliberately exclude them; no future persistence ownership is implied here.
+
+LLM and SDK-fallback credentials remain symbolic descriptors in engine
+transport and frozen runner material; secret values never enter the resolved
+request. `executeRunner()` materializes the current value only at final
+dispatch and scrubs it from transport results. The
+`lowerResolvedExecutionRequestWithRunner()` entry point lowers an already
+frozen `RunnerSpec` without consulting live config, model maps, environment
+variables, credentials, or transports; current workflow units/judges and
+structured model-work adapters use that config-free path.
+
+`executeRunner()` remains the sole exhaustive low-level switch over the
+`RunnerSpec` transport union. It is below, not instead of, the resolved-request
+lowering boundary. The only public execution exemption is an explicitly
+prompt-free interactive `akm agent` launch, which has no user/model payload to
+resolve or lower. An explicit missing or incompatible engine is an error and
+never falls through to another configured engine.
+
+Task-v3 execution and durable workflow-v4 dispatch use this runtime boundary.
+Markdown and GitHub-shaped YAML compile through source IR v1; new starts freeze
+v4, and only v4 plans execute. Pre-v4 stored plans are rejected; start a new
+run from current source. AKM does not support full GitHub Actions semantics or
+arbitrary remote action execution.
 
 ### In-tree LLM helpers (`src/llm/`)
 
@@ -390,18 +445,23 @@ Every helper under `src/llm/` is a **bounded, single-shot, stateless** call.
 Concretely:
 
 - Each public export is either a pure function (`chatCompletion`,
-  `enhanceMetadata`, `splitMemoryIntoAtomicFacts`, `resolveIndexPassLLM`,
+  `enhanceMetadata`, `splitMemoryIntoAtomicFacts`,
+  `resolveIndexPassExecution`, `resolveIndexPassRunner`,
   `parseJsonResponse`, …) or a factory that returns a one-shot client tied to
-  the connection config the caller passes in.
+  the symbolic runner/config the caller passes in.
 - No module under `src/llm/` keeps session, conversation, or response state at
   module scope. The only module-level singleton is the local embedder
   pipeline in `src/llm/embedder.ts`, which is an expensive-to-build but
   stateless model handle (see the comment in that file). It exposes
   `resetLocalEmbedder()` so tests can construct a fresh pipeline.
-- Improve processes are selected through `improve.strategies` and resolve their
-  engine before dispatch. Index and other non-improve consumers use their own
-  documented engine-use sections. See `docs/reference/configuration.md` for canonical
-  paths.
+- `callStructured()` is the common bounded structured-LLM seam: it adapts an
+  already-resolved symbolic runner into an inline resolved request, lowers it,
+  and dispatches without re-reading aliases or credentials. Index callers use
+  `resolveIndexPassExecution()` to freeze the typed `{ runner, notices }`
+  selection once per invocation. `resolveIndexPassRunner()` is its readiness
+  projection, not a second dispatch seam. Improve processes are selected
+  through `improve.strategies`; see `docs/reference/configuration.md` for
+  canonical config paths.
 
 The seam is locked by `tests/architecture/llm-stateless-seam.test.ts`, which
 inspects the module shape of each `src/llm/*` entry — not the source text.
@@ -432,23 +492,19 @@ External coding agents are reachable via two execution paths:
   startup against its own deadline (including `null`); no caller's timeout is
   stored in the shared lifecycle.
 
-New prompt tasks are versioned task YAML v2 assets. Valid 0.8 task YAML is
-normalized to the v2 runtime shape while reading and is not rewritten. Prompt
-tasks resolve `engine` from the task or `defaults.engine`; LLM prompt tasks use
-plain chat completion and agent prompt tasks use the spawn or SDK runner. Task
-run history writes metadata v2 with an `engine`; historical v1 metadata remains
-readable.
+New tasks are strict task-v3 `.yml` assets. Normal execution rejects v2 and
+directs operators to the explicit preview/apply migrator. Task-v3 command,
+workflow, script, and shell targets use the common resolved/lowered execution
+boundary. Historical task-run metadata remains readable.
 
-Migration restore holds a global maintenance barrier from its final blocker
-check through artifact replacement. Index writers, improve/extract process
-locks, lockfile writers, workflow lease claims, and every canonical `state.db`
-or `workflow.db` handle register under the same barrier before starting. State
-and workflow handles retain their activity registration until close, so task,
-event, proposal, workflow-run, and other durable-state access cannot overlap
-artifact replacement. Restore's own read-only workflow blocker scan uses the
-barrier it already owns rather than recursively registering an activity. Scoped
-barrier ownership is reentrant for nested repository opens in the same sync or
-async execution context; unrelated work and child processes remain excluded.
+Long-lived mutable operations coordinate start ownership through one maintenance
+barrier. Index writers, improve/extract process locks, lockfile writers, and
+workflow lease claims acquire their own lock or lease while holding that short
+barrier section, then release the barrier for the operation's duration.
+Canonical `state.db` handles register an activity the same way and retain that
+activity until close, covering task, event, proposal, workflow-run, and other
+durable-state access. Scoped barrier ownership is reentrant for nested
+repository opens in the same synchronous or asynchronous execution context.
 
 ---
 
@@ -465,6 +521,11 @@ async execution context; unrelated work and child processes remain excluded.
 | `src/core/parse.ts` | shared JSON parsing: think/fence stripping, balanced-brace extraction |
 | `src/core/concurrent.ts` | bounded concurrency pool (`concurrentMap`, default 1 worker) |
 | `src/core/write-source.ts` | the single write helper (branches on `source.kind`) |
+| `src/execution/resolved-request.ts` | branded, versioned resolved execution request and strict canonical wire form |
+| `src/integrations/agent/execution-preparation.ts` | caller adapter into the common cascade/model-map resolver |
+| `src/integrations/agent/execution-lowering.ts` | optimistic engine lowering, structural lowerer inventory, and lowered dispatch authority |
+| `src/integrations/agent/request-lowering.ts` | shared factory used by harness-owned resolved-request lowerers |
+| `src/integrations/agent/inline-execution.ts` | anonymous-work adapters for live config and already-frozen runner material |
 | `src/sources/provider.ts` | minimal `SourceProvider` interface |
 | `src/sources/providers/` | filesystem / git / website / npm implementations |
 | `src/sources/resolve.ts` | filesystem path resolution for refs |
@@ -488,7 +549,7 @@ async execution context; unrelated work and child processes remain excluded.
 | `src/output/shapes/`, `src/output/text/` | JSON-envelope and text-output registries per command (#490) — a parallel concern to `src/output/renderers.ts`'s per-asset-type `show` renderers, which is still live and self-registering, not replaced |
 | `src/workflows/authoring/` | workflow authoring + scope-key helpers |
 | `src/workflows/runtime/runs.ts` | workflow run persistence (raw SQL lives in `src/storage/repositories/workflow-runs-repository.ts`) |
-| `src/workflows/runtime/` | run lifecycle: runs, checkin, document-cache, agent-identity |
+| `src/workflows/runtime/` | run lifecycle: runs, checkin, agent-identity |
 | `src/llm/client.ts` | OpenAI-compatible chat completions client (stateless, single request/response) |
 | `src/llm/index-passes.ts` | per-pass LLM config resolution for `akm index` |
 | `src/llm/memory-infer.ts` | atomic-fact split helper (selected through `improve.strategies.<name>.processes.memoryInference`) |
@@ -496,9 +557,10 @@ async execution context; unrelated work and child processes remain excluded.
 | `src/llm/embedder.ts` | local + remote embedder facade with cached pipeline |
 | `src/integrations/agent/spawn.ts` | agent CLI shell-out entry point (`runAgent`) |
 | `src/integrations/harnesses/opencode-sdk/sdk-runner.ts` | embedded SDK runner selected by an SDK `RunnerSpec` |
-| `src/integrations/agent/runner-dispatch.ts` | exhaustive `RunnerSpec` dispatch to LLM, spawn, or SDK |
+| `src/integrations/agent/runner-dispatch.ts` | low-level exhaustive `RunnerSpec` transport dispatch and dispatch-time credential redaction |
 | `src/integrations/agent/profiles.ts` | internal spawn descriptors used after agent-engine lowering |
-| `src/integrations/agent/engine-resolution.ts` | named engine resolution and `RunnerSpec` lowering |
+| `src/integrations/agent/engine-resolution.ts` | named engine and symbolic transport-material resolution; exact request model projection happens in execution lowering |
+| `src/llm/structured-call.ts` | bounded structured-LLM adapter through the common resolved/lowered execution seam |
 | `src/integrations/agent/detect.ts` | PATH-based agent CLI detection for `akm setup` |
 
 ---

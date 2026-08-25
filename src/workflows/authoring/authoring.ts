@@ -15,8 +15,8 @@ import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../../core/recogn
 import { warn } from "../../core/warn";
 import { prepareWriteTargetForMutation, resolveWriteTarget, withWriteTargetMutation } from "../../core/write-source";
 import { compileWorkflowPlan } from "../ir/compile";
-import { parseWorkflow } from "../parser";
 import type { WorkflowError } from "../schema";
+import { compileWorkflowSource } from "../source-ir/compile";
 
 const DEFAULT_WORKFLOW_TEMPLATE = renderWorkflowTemplate("New Workflow");
 
@@ -27,36 +27,36 @@ export function getWorkflowTemplate(): string {
 export function buildWorkflowTemplate(name?: string): string {
   if (!name) return DEFAULT_WORKFLOW_TEMPLATE;
 
-  // Only the H1 is customized. Step ids are STRUCTURAL under the unified format
+  // Only the H1 is customized. Step ids are STRUCTURAL in the Markdown authoring form
   // — each appears in `steps[].id`, as a body `## <id>` heading, and possibly in
   // another step's `inputs:` — so rewriting them from a name would have to patch
   // three places consistently to stay parseable. Generic `first-step`/
   // `second-step` are the author's to rename.
   const customized = renderWorkflowTemplate(humanizeWorkflowName(name));
-  validateWorkflowContent(customized, `<template:${name}>`);
+  validateWorkflowContent(customized, `<template:${name}>.md`);
   return customized;
 }
 
 /** Parse AND compile `content`, so a create never writes an asset that `show`/`start`/`validate` would then reject. */
 function validateWorkflowContent(content: string, sourcePath: string): void {
-  const result = parseWorkflow(content, { path: sourcePath });
+  const result = compileWorkflowSource(content, { path: sourcePath });
   if (!result.ok) {
     throw new UsageError(formatWorkflowErrors(sourcePath, result.errors));
   }
-  const compiled = compileWorkflowPlan(result.document, slugifyWorkflowStepId(sourcePath));
+  const compiled = compileWorkflowPlan(result.ir, slugifyWorkflowStepId(sourcePath));
   if (!compiled.ok) {
     throw new UsageError(formatWorkflowErrors(sourcePath, compiled.errors));
   }
 }
 
-/** Recognized workflow-program suffixes — creating one is a lint-time usage error (workflow-format-unification). */
+/** Peer YAML is executable, but `akm workflow create` emits the Markdown authoring form only. */
 const YAML_SUFFIX_RE = /\.ya?ml$/i;
 
 export function assertWorkflowMarkdownName(name: string): void {
   if (!YAML_SUFFIX_RE.test(name.trim())) return;
   throw new UsageError(
-    `Workflows are markdown-only now (workflow-format-unification) — "${name}" cannot be created. ` +
-      `Use a plain name (no ".yaml"/".yml" suffix); the orchestration graph lives in the ".md" file's frontmatter.`,
+    `akm workflow create is markdown-only: it emits Markdown and cannot create "${name}". ` +
+      `Use a plain name (no ".yaml"/".yml" suffix), or author a peer GitHub-shaped ".yml" workflow directly.`,
   );
 }
 
@@ -85,11 +85,10 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   ) {
     throw new UsageError(`Resolved workflow path escapes the bundle: "${normalizedName}"`, "PATH_ESCAPE_VIOLATION");
   }
-  // A file whose canonical name matches but whose PATH differs can only be a
-  // case variant now (`upper.MD` vs `upper.md`) — the cross-EXTENSION case this
-  // guard also covered is gone with the unified `.md`-only format. It still
-  // matters: on a case-insensitive filesystem the two spellings are one file,
-  // so writing the target would silently clobber or shadow the existing asset.
+  // A peer `.md` or `.yml` file whose canonical name matches already owns this
+  // ref. Case variants (`upper.MD` vs `upper.md`) may also name one physical
+  // file on a case-insensitive filesystem, so writing the Markdown create
+  // target would silently clobber or shadow the existing asset.
   const shadowing = findExistingWorkflowPaths(typeRoot, normalizedName).find((p) => p !== assetPath);
   if (shadowing !== undefined) {
     throw new UsageError(
@@ -207,30 +206,10 @@ export function formatWorkflowErrors(path: string, errors: WorkflowError[]): str
 }
 
 /**
- * Validate a workflow filesystem path.
- *
- * Returns the parse result plus the source-relative path used. Throws
- * `UsageError` only when the target cannot be located on disk; parse
- * failures are returned as `{ ok: false, errors }` so callers can
- * format them however they like.
- */
-export function validateWorkflowSource(target: string): {
-  path: string;
-  parse: ReturnType<typeof parseWorkflow>;
-} {
-  const resolved = path.resolve(target);
-  if (!fs.existsSync(resolved)) {
-    throw new UsageError(`Workflow file not found: "${target}".`);
-  }
-  const content = fs.readFileSync(resolved, "utf8");
-  return { path: target, parse: parseWorkflow(content, { path: target }) };
-}
-
-/**
  * Every file under `typeRoot` whose canonical workflow name equals
- * `normalizedName`. Extension matching is case-INSENSITIVE, so `foo.MD` and
- * `foo.md` both match — the case-variant collision the create path must refuse
- * rather than silently clobber on a case-insensitive filesystem.
+ * `normalizedName`. Peer `.md`/`.yml` extension matching is case-INSENSITIVE,
+ * so both cross-format owners and case variants are returned for the create
+ * path to refuse rather than silently clobber or shadow them.
  */
 function findExistingWorkflowPaths(typeRoot: string, normalizedName: string): string[] {
   const parent = path.join(typeRoot, path.dirname(normalizedName));

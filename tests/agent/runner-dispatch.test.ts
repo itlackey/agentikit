@@ -51,7 +51,7 @@ describe("executeRunner — unified RunnerSpec dispatch (X3)", () => {
         throw new Error("sdk seam must not be called for an agent spec");
       },
     };
-    const spec: RunnerSpec = { kind: "agent", profile: agentProfile, timeoutMs: 1234 };
+    const spec: RunnerSpec = { kind: "agent", engine: "agent", profile: agentProfile, timeoutMs: 1234 };
 
     const result = await executeRunner(spec, "hello-prompt", {}, seams);
 
@@ -72,7 +72,7 @@ describe("executeRunner — unified RunnerSpec dispatch (X3)", () => {
         return okResult("from-sdk");
       },
     };
-    const spec: RunnerSpec = { kind: "sdk", profile: sdkProfile };
+    const spec: RunnerSpec = { kind: "sdk", engine: "sdk", profile: sdkProfile };
 
     const result = await executeRunner(spec, "sdk-prompt", {}, seams);
 
@@ -116,7 +116,7 @@ describe("executeRunner — unified RunnerSpec dispatch (X3)", () => {
         throw new Error("sdk seam must not be called for an llm spec");
       },
     };
-    const spec: RunnerSpec = { kind: "llm", connection: llmConnection };
+    const spec: RunnerSpec = { kind: "llm", engine: "llm", connection: llmConnection };
 
     const result = await executeRunner(spec, "llm-prompt", {}, seams);
 
@@ -203,6 +203,7 @@ describe("executeRunner — unified RunnerSpec dispatch (X3)", () => {
     };
     const spec: RunnerSpec = {
       kind: "sdk",
+      engine: "sdk",
       profile,
       fallbackConnection: { ...llmConnection, apiKey: values.engine },
     };
@@ -268,7 +269,7 @@ describe("executeRunner — unified RunnerSpec dispatch (X3)", () => {
     const echoed = partialCredentials.join(" | ");
 
     const result = await executeRunner(
-      { kind: "sdk", profile },
+      { kind: "sdk", engine: "sdk", profile },
       "p",
       {
         envSource: {

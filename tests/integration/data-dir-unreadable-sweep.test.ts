@@ -12,7 +12,6 @@
  * gate over a data-dir / DB / lock / managed-asset path turned a permission
  * fault into a confident wrong answer:
  *
- *   - the migration-recovery gate silently CLEARING (`assertNoPendingMigrationOperation`)
  *   - the lockfile write paths reading `[]` and then OVERWRITING the operator's
  *     lock records with it
  *   - `--clean` DELETING index rows for files it merely cannot look at
@@ -32,19 +31,13 @@ import { collectEligibleRefs } from "../../src/commands/improve/eligibility";
 import { akmListSources } from "../../src/commands/sources/installed-stashes";
 import { type AkmConfig, saveConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
-import { assertNoPendingMigrationOperation, getMigrationApplyJournalPath } from "../../src/core/migration-operation";
 import { getDataDir, getDbPath } from "../../src/core/paths";
 import { getStateDbPath } from "../../src/core/state-db";
 import { _setWarnSinkForTests } from "../../src/core/warn";
 import { loadGraphFilesOnly, loadStoredGraphMeta } from "../../src/indexer/db/graph-db";
 import { indexWrittenAssets } from "../../src/indexer/index-written-assets";
 import { akmIndex } from "../../src/indexer/indexer";
-import {
-  assertMigrationLockfileReadable,
-  mergeLockEntriesSync,
-  removeLockEntry,
-  upsertLockEntry,
-} from "../../src/integrations/lockfile";
+import { removeLockEntry, upsertLockEntry } from "../../src/integrations/lockfile";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { rekeyEntryInPlace } from "../../src/storage/repositories/index-entries-repository";
 import { runCliCapture } from "../_helpers/cli";
@@ -97,74 +90,10 @@ function stashConfig(stashDir: string): AkmConfig {
   } as AkmConfig;
 }
 
-// ── The migration-recovery gate ─────────────────────────────────────────────
-
-describe("assertNoPendingMigrationOperation fails closed on an unreadable journal (#791)", () => {
-  test("an unreadable journal refuses canonical DB access instead of clearing the gate", () => {
-    const journalPath = getMigrationApplyJournalPath();
-    makeUnresolvablePath(path.dirname(journalPath), path.basename(journalPath));
-
-    // Pre-sweep this returned normally: `existsSync` said `false`, so the guard
-    // concluded "no recovery pending" and let akm open the canonical databases
-    // on top of a possibly half-applied migration.
-    let raised: unknown;
-    try {
-      assertNoPendingMigrationOperation();
-    } catch (error) {
-      raised = error;
-    }
-    expect(raised).toBeInstanceOf(ConfigError);
-    expect((raised as ConfigError).code).toBe("DATA_DIR_UNREADABLE");
-    expect((raised as Error).message).toContain(journalPath);
-    expect((raised as Error).message).toContain("ELOOP");
-  });
-
-  test("absent still clears the gate and a real pending journal still reports as pending", () => {
-    expect(() => assertNoPendingMigrationOperation()).not.toThrow();
-
-    const journalPath = getMigrationApplyJournalPath();
-    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
-    fs.writeFileSync(journalPath, "{}");
-    let raised: unknown;
-    try {
-      assertNoPendingMigrationOperation();
-    } catch (error) {
-      raised = error;
-    }
-    expect((raised as ConfigError).code).toBe("INVALID_CONFIG_FILE");
-    expect((raised as Error).message).toMatch(/recovery is pending/);
-  });
-});
-
 // ── The lockfile write paths ────────────────────────────────────────────────
 
 describe("the lockfile write paths refuse to overwrite what they cannot read (#791)", () => {
   const entry = { id: "demo", source: "npm", ref: "demo@1.0.0" } as const;
-
-  test("mergeLockEntriesSync throws and leaves the lockfile untouched", () => {
-    const lockfilePath = path.join(getDataDir(), "akm.lock");
-    makeUnresolvablePath(path.dirname(lockfilePath), path.basename(lockfilePath));
-
-    let raised: unknown;
-    try {
-      mergeLockEntriesSync([{ ...entry }]);
-    } catch (error) {
-      raised = error;
-    }
-    expect(raised).toBeInstanceOf(ConfigError);
-    expect((raised as ConfigError).code).toBe("DATA_DIR_UNREADABLE");
-    // The real damage the old code did: it read `[]`, then wrote `[entry]` over
-    // the top — replacing the operator's whole lock record with one row. The
-    // path must still be the symlink we made, not a fresh regular file.
-    expect(fs.lstatSync(lockfilePath).isSymbolicLink()).toBe(true);
-  });
-
-  test("assertMigrationLockfileReadable actually asserts readability", () => {
-    const lockfilePath = path.join(getDataDir(), "akm.lock");
-    makeUnresolvablePath(path.dirname(lockfilePath), path.basename(lockfilePath));
-
-    expect(() => assertMigrationLockfileReadable()).toThrow(ConfigError);
-  });
 
   test("upsertLockEntry rejects rather than replacing an unreadable lockfile", async () => {
     const lockfilePath = path.join(getDataDir(), "akm.lock");
@@ -390,8 +319,6 @@ describe("a rename does not silently drop usage history it cannot reach (#791)",
       // rewrite was skipped without a word and the rename reported success.
       expect(() =>
         rekeyEntryInPlace(db, {
-          oldEntryKey: `${stashDir}:knowledge:note`,
-          newEntryKey: `${stashDir}:knowledge:renamed`,
           newName: "renamed",
           newFilePath: path.join(stashDir, "knowledge", "renamed.md"),
           oldRef: oldRef as string,

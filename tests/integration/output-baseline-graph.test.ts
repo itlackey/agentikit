@@ -8,6 +8,7 @@ import { formatSearchPlain } from "../../src/output/text/helpers";
 import { seedStoredGraph } from "../_helpers/graph-store";
 
 const CLI = path.join(__dirname, "..", "..", "src", "cli.ts");
+const REGISTRY_FIXTURE_PRELOAD = path.join(__dirname, "..", "fixtures", "registry-network", "loopback-preload.ts");
 const tempDirs: string[] = [];
 
 function makeTempDir(prefix: string): string {
@@ -25,26 +26,6 @@ function writeConfig(configDir: string, config: Record<string, unknown>): void {
   const configPath = path.join(configDir, "akm", "config.json");
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
-}
-
-// `akm backup` was removed from the CLI in 0.9.0 (R-029); the recovery bundle
-// is created via the standalone akm-migrate entry point instead.
-const MIGRATE = path.join(__dirname, "..", "..", "scripts", "akm-migrate.ts");
-
-function ensureFreshRecoveryBundle(stashDir: string, dirs: Required<CliEnvDirs>): void {
-  const result = spawnSync("bun", [MIGRATE, "backup", "--for", "0.9.0"], {
-    encoding: "utf8",
-    timeout: 30_000,
-    env: {
-      ...process.env,
-      AKM_BUNDLE_DIR: stashDir,
-      XDG_CACHE_HOME: dirs.xdgCache,
-      XDG_CONFIG_HOME: dirs.xdgConfig,
-      XDG_DATA_HOME: dirs.xdgData,
-      XDG_STATE_HOME: dirs.xdgState,
-    },
-  });
-  expect(result.status).toBe(0);
 }
 
 interface CliEnvDirs {
@@ -68,8 +49,6 @@ function runCli(stashDir: string, args: string[], config?: Record<string, unknow
   const xdgConfig = envDirs?.xdgConfig ?? makeTempDir("akm-output-config-");
   const xdgData = envDirs?.xdgData ?? makeTempDir("akm-output-data-");
   const xdgState = envDirs?.xdgState ?? makeTempDir("akm-output-state-");
-  const dirs = { xdgCache, xdgConfig, xdgData, xdgState };
-  if (config) ensureFreshRecoveryBundle(stashDir, dirs);
   if (config) writeConfig(xdgConfig, config);
   const result = spawnSync("bun", [CLI, ...args], {
     encoding: "utf8",
@@ -92,16 +71,14 @@ async function runCliAsync(stashDir: string, args: string[], config?: Record<str
   const xdgConfig = makeTempDir("akm-output-config-");
   const xdgData = makeTempDir("akm-output-data-");
   const xdgState = makeTempDir("akm-output-state-");
-  const dirs = { xdgCache, xdgConfig, xdgData, xdgState };
   // Semantic off keeps auto-index stderr deterministic: with the default
   // ("auto") the local embedder fetches its model from huggingface.co and a
   // blocked/offline fetch emits "Embedding generation failed" on stderr,
   // tripping the stderr-cleanliness check below. This test suite pins output
   // shapes, not semantic ranking.
-  ensureFreshRecoveryBundle(stashDir, dirs);
   writeConfig(xdgConfig, { configVersion: "0.9.0", semanticSearchMode: "off", ...(config ?? {}) });
 
-  const child = spawn("bun", [CLI, ...args], {
+  const child = spawn("bun", ["--preload", REGISTRY_FIXTURE_PRELOAD, CLI, ...args], {
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,

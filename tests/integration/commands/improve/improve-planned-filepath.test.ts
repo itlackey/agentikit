@@ -79,7 +79,8 @@ const stubReflect = (ref: string): AkmReflectResult => ({
     createdAt: "2026-06-11T00:00:00.000Z",
     updatedAt: "2026-06-11T00:00:00.000Z",
     payload: { content: "# stub reflect" },
-    changes: [{ path: "", after: "# stub reflect", op: "update" }],
+    changes: [{ path: "lessons/proposal.md", after: "# stub reflect", op: "update" }],
+    proposedTarget: { source: "stash", root: "/tmp/stash" },
   },
 });
 
@@ -97,6 +98,11 @@ describe("#591: planned refs carry a pre-resolved filePath", () => {
     const alphaPath = writeLesson(stash, "alpha");
     const betaPath = writeLesson(stash, "beta");
     await indexStash(stash);
+    // `plannedRefs` is the effective post-selector work set. Give both assets
+    // fresh signal so this test reaches the filePath fast path it owns.
+    for (const ref of ["lessons/alpha", "lessons/beta"]) {
+      appendEvent({ eventType: "feedback", ref: durableRef(ref), metadata: { signal: "positive" } });
+    }
 
     const result = await akmImprove({ stashDir: stash, dryRun: true });
 

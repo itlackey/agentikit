@@ -19,9 +19,8 @@ import type { AgentProfile } from "../../src/integrations/agent/profiles";
  *
  * The gate defaults ON (`lesson_quality_gate` → `distill.qualityGate.enabled
  * ?? true`), and after 07 P0-2 it fails CLOSED when the judge can't render a
- * verdict — which is exactly the case in the test sandbox (no LLM configured,
- * so `getDefaultLlmConfig` returns null and the gate rejects before any chat
- * call). Passing this as `options.config` skips the gate so these tests stay
+ * verdict — which is exactly the case in the test sandbox (no LLM is selected,
+ * so the gate rejects before any chat call). Passing this as `options.config` skips the gate so these tests stay
  * focused on reflect/distill mechanics. The dedicated fail-closed behavior is
  * covered by `tests/commands/improve/quality-gate-fail-closed.test.ts`.
  *
@@ -44,11 +43,10 @@ export function quietQualityGateConfig(): AkmConfig {
 
 /**
  * The single-entry `FileChange[]` a payload-shaped proposal fixture carries
- * (WI-6.2 envelope): one `update` whose `after` IS the payload content, with
- * the legacy empty-`path` sentinel (tests don't resolve mint-time paths).
+ * (WI-6.2 envelope): one `update` whose `after` IS the payload content.
  */
 export function payloadChanges(content: string): Proposal["changes"] {
-  return [{ path: "", after: content, op: "update" }];
+  return [{ path: "lessons/proposal.md", after: content, op: "update" }];
 }
 
 /**
@@ -65,6 +63,7 @@ export function makeProposal(ref: string): Proposal {
     updatedAt: "2026-01-01T00:00:00.000Z",
     payload: { content: "# proposal" },
     changes: payloadChanges("# proposal"),
+    proposedTarget: { source: "stash", root: "/tmp/stash" },
   };
 }
 

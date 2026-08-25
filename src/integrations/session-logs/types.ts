@@ -28,7 +28,7 @@ export interface SessionEvent {
  * front. Used by the extractor pipeline + the `akm extract` CLI.
  */
 export interface SessionRef {
-  /** Harness name that produced this ref (e.g. `"claude-code"`, `"opencode"`). */
+  /** Harness name that produced this ref (e.g. `"claude"`, `"opencode"`). */
   harness: string;
   /** Platform-native session identifier. */
   sessionId: string;
@@ -46,7 +46,7 @@ export interface SessionSummary extends SessionRef {
   startedAt?: number;
   /** Session end in ms epoch (from last event or file mtime). */
   endedAt?: number;
-  /** Platform-specific project hint (claude-code: project dir; opencode: working dir). */
+  /** Platform-specific project hint (claude: project dir; opencode: working dir). */
   projectHint?: string;
   /** Human-readable session title when the platform provides one. */
   title?: string;
@@ -83,21 +83,14 @@ export interface SessionLogHarness {
   /** Return true if this harness's log files exist on this machine */
   isAvailable(): boolean;
   /**
-   * Read raw session events since the given timestamp.
-   *
-   * @deprecated (#568) Prefer the richer {@link listSessions} + {@link readSession}
-   * pipeline, which preserves structured message content (tool calls, assistant
-   * content blocks, timing) instead of the flat text scan. `readEvents` remains
-   * the fallback when {@link listSessions} returns no sessions.
-   */
-  readEvents(input: { sinceMs: number }): Iterable<SessionEvent>;
-  /**
    * Enumerate available sessions for this harness, optionally filtered by
    * staleness (`sinceMs`) and overriding the default location. Cheap — does
    * not parse event content. Sessions whose file mtime is older than
-   * `sinceMs` (when provided) are omitted.
+   * `sinceMs` (when provided) are omitted. Planning callers set
+   * `isolatedSnapshot` so database-backed providers never attach SQLite to a
+   * live operator-owned WAL/SHM pair merely to count sessions.
    */
-  listSessions(input?: { sinceMs?: number; location?: string }): SessionSummary[];
+  listSessions(input?: { sinceMs?: number; location?: string; isolatedSnapshot?: boolean }): SessionSummary[];
   /**
    * Read a single session's full event stream + the inline `akm remember`/
    * `akm feedback` invocations the agent made during it. `ref.filePath` must

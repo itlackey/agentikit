@@ -3,13 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Resolve the agent harness + session identity for the current process.
+ * Resolve the invoking harness/session identity for the current process.
  *
- * This is the first concrete slice of #501 / #506: capturing *who* is driving a
- * workflow run so a future (separately-approved) monitor can correlate runs
- * with session activity. It deliberately does NOT start any background thread,
- * timer, or daemon — it only reads identity that the surrounding agent harness
- * already exposes via the environment.
+ * This is the first concrete slice of #501 / #506: capturing the invoking
+ * harness/session identity so a future (separately-approved) monitor can
+ * correlate runs with session activity. It deliberately does NOT start any
+ * background thread, timer, or daemon — it only reads identity that the
+ * surrounding agent harness already exposes via the environment.
  *
  * Resolution is best-effort and environment-driven:
  *   - harness:    AKM_AGENT_HARNESS, else inferred from a harness session-id
@@ -31,7 +31,7 @@
  *
  * @module workflows/agent-identity
  */
-import { denormalizeRuntimeIdentity, HARNESS_REGISTRY } from "../../integrations/harnesses";
+import { HARNESS_REGISTRY } from "../../integrations/harnesses";
 
 export interface AgentIdentity {
   harness: string | null;
@@ -85,15 +85,13 @@ export function resolveAgentIdentity(env: NodeJS.ProcessEnv = process.env): Agen
   if (!harness) {
     // Infer the harness from a harness-specific *session* env var first
     // (registry `identityEnv` markers). A concrete session id is the
-    // strongest evidence of the immediate driver, so it outranks any
+    // strongest evidence of the invoking harness/session context, so it
+    // outranks any
     // presence flag — e.g. opencode launched inside a codex sandbox
     // (OPENCODE_SESSION_ID + CODEX_SANDBOX) attributes to opencode.
     for (const marker of SESSION_MARKERS) {
       if (firstNonEmpty(env, marker.envKeys)) {
-        // Report the harness's RUNTIME identity (e.g. canonical 'claude' →
-        // 'claude-code') via the registry's #562 bridge so the persisted
-        // runtime string can't drift.
-        harness = denormalizeRuntimeIdentity(marker.harnessId);
+        harness = marker.harnessId;
         break;
       }
     }
@@ -105,7 +103,7 @@ export function resolveAgentIdentity(env: NodeJS.ProcessEnv = process.env): Agen
     // but they carry no session id, so sessionId stays null below.
     for (const marker of PRESENCE_MARKERS) {
       if (firstNonEmpty(env, marker.envKeys)) {
-        harness = denormalizeRuntimeIdentity(marker.harnessId);
+        harness = marker.harnessId;
         break;
       }
     }

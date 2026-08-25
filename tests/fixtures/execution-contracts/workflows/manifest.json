@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "equivalent": {
+    "markdown": "equivalent/contract-review.md",
+    "githubYaml": "equivalent/contract-review.yml",
+    "expected": "equivalent/portable-projection.json",
+    "boundary": "Both fixtures intend the same output on a local self-hosted runner, but source IR must retain Markdown direct argv separately from GitHub shell text; argv is never joined into a shell command."
+  },
+  "currentFreeze": "current/agent-unit.md",
+  "currentFreezeWithSchema": "current/agent-unit-schema.md",
+  "rejected": [
+    {
+      "id": "unsupported-service-trigger",
+      "file": "rejected/unsupported-service-trigger.yml",
+      "reasonCode": "unsupported-service-event"
+    },
+    {
+      "id": "unsupported-expression",
+      "file": "rejected/unsupported-expression.yml",
+      "reasonCode": "unsupported-github-expression"
+    },
+    {
+      "id": "unsupported-remote-action",
+      "file": "rejected/unsupported-remote-action.yml",
+      "reasonCode": "remote-action-acquisition-out-of-scope"
+    }
+  ]
+}

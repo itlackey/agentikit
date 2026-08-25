@@ -365,6 +365,10 @@ describe("classifySemanticFailure", () => {
     expect(classifySemanticFailure("Error: missing-package detected")).toBe("missing-package");
   });
 
+  test("declared Transformers dependency unavailable → missing-package", () => {
+    expect(classifySemanticFailure("The @huggingface/transformers dependency is unavailable")).toBe("missing-package");
+  });
+
   // Model download
   test("download keyword without model keyword → local-model-download", () => {
     expect(classifySemanticFailure("Failed to download file from HuggingFace")).toBe("local-model-download");

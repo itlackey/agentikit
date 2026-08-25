@@ -42,7 +42,7 @@ claude             -- root CLAUDE.md + commands/|agents/|skills/
 opencode           -- opencode.json(c), or root AGENTS.md + a tool dir
 dotenv             -- every top-level dir is env/ and/or secrets/
 akm-workflow       -- a top-level .md with explicit type: workflow
-akm-task           -- a top-level .yml with a non-empty schedule key
+akm-task           -- a top-level task-v3 .yml with supported local triggers
 llm-wiki           -- root schema.md + pages/
 akm                -- .stash marker, or 2+ native subdirs, or fallback
 okf                -- root index.md, or any .md with frontmatter type
@@ -96,6 +96,14 @@ interface BundleAdapter {
   // resolveRef for link/xref existence.
   validate(c: BundleComponent, changes: FileChange[], ctx: ValidateContext): Promise<Diagnostic[]>;
 
+  // OPTIONAL — authoritative existing-file placements/read aliases used for
+  // first-owner arbitration without reading authored bytes.
+  readCandidates?(c: BundleComponent, conceptId: string): Array<{ path: string; conceptId: string }>;
+
+  // OPTIONAL — path-only identities for placements that cannot be inverted
+  // from a concept id. The context exposes no byte-reading methods.
+  recognizePathCandidates?(c: BundleComponent, file: AdapterPathContext): readonly string[];
+
   // OPTIONAL — placement / discovery.
   placeNew?(c: BundleComponent, conceptId: string): string;   // where a new item would live
   directoryList?(c: BundleComponent): string[];               // owned dirs; feeds git exact-path staging
@@ -104,11 +112,26 @@ interface BundleAdapter {
 ```
 
 `recognize` and `validate` are required on every adapter; `index`,
-`affectedItems`, `placeNew`, `directoryList`, and `looksLikeRoot` are
-optional capability methods. An adapter overriding `index()` must keep
+`affectedItems`, `readCandidates`, `recognizePathCandidates`, `placeNew`, `directoryList`, and
+`looksLikeRoot` are optional capability methods. An adapter overriding `index()` must keep
 `recognize()` coherent with it (conformance: `index()` == fold of
 `recognize()` over the core walk) or declare component-level
 incrementality.
+
+`readCandidates` is intentionally distinct from both `extensions` and
+`placeNew`: extensions are non-exhaustive walk hints, while placement is a
+write-normalization policy. Read candidates preserve canonical directory
+manifests (for example `skills/<name>/SKILL.md`) so lookup, index-backed show, and workflow runtime share one
+physical-owner decision. Each candidate carries its canonical concept identity,
+so a byte-denying ownership probe never has to infer identity from the query.
+When an adapter accepts noncanonical authored placements that cannot be
+inverted from the concept id, `recognizePathCandidates` supplies the possible
+canonical identities from path fields alone. The shared authority performs one
+contained, deterministic regular-file scan with hard file/directory ceilings,
+never follows directory symlinks, and matches those identities to the query.
+Content-dependent recognition may conservatively report multiple possible
+identities; authored bytes are still denied until the selected show/runtime
+consumer intentionally reads its resolved file.
 
 The core walk — the live indexer's per-dir walk, drained by
 `drainDirDocuments` — is one implementation carrying the security policy
@@ -176,6 +199,15 @@ happens to expose a `placeNew()` implementation.
 
 ---
 
+## Task adapter
+
+The native and standalone `akm-task` paths delegate to the authoritative
+`akm-task` task-v3 parser. A source must declare `version: 3`, exactly one
+executable, and exactly one supported local trigger source. See
+[Tasks](../reference/tasks.md) for the public source contract.
+
+---
+
 ## Implementation caveats
 
 A few adapter-specific behaviors are easy to assume differently from how
@@ -191,24 +223,21 @@ they actually work:
   package's own resource dirs (`pdf-processing/reference/`) are part of the
   item, not candidate packages, and are never considered.
 - **`claude`/`opencode` share one codec** (`tool-dir-shared.ts`) and differ
-  only in instruction filename, accepted subdirectory spellings, and
-  adapter/component ids. `missing-skill-md` is gated on each layout's own
-  accepted spellings, so opencode's singular `skill/` alias is checked
-  exactly like `skills/`.
+  only in instruction filename and adapter/component ids. Both accept only
+  the canonical plural tool directories.
 - **`dotenv` redaction is a hard, adapter-level contract.** No frontmatter
   `type:` override can bypass it: `env` entries surface only key names,
   `secret` entries surface only the file name, never content. A `.env`
   file placed under `secrets/` is a secret (name-only), not an env group —
   the directory gate wins over the `.env` suffix.
-- **`akm-task`'s validation is stricter than the native `akm` adapter's.**
-  Standalone `akm-task` bundles require `version: 2`, a `schedule`, and
-  *exactly one* target; the native `akm` adapter's task check only requires
-  "at least one" target. Both report `invalid-task-yaml` when the YAML does
-  not parse at all — a parse failure is distinguished from an empty document,
-  which the field rules legitimately pass over. `.yaml` is listed in
-  `akm-task`'s `extensions` as a **collection hint only**: `recognize` still
-  gates on `.yml`, so a `.yaml` file is never indexed or scheduled — listing it
-  is what lets `validate` report the near-miss spelling instead of skipping it.
+- **Task adapters share the task-v3 parser.** A standalone `akm-task` bundle
+  and task files owned by the native `akm` adapter require `version: 3`,
+  exactly one `uses` or `run` executable, and exactly one supported trigger
+  source. The parser recognizes `akm/command`, `commands/`, `workflows/`, and
+  `scripts/` targets, while refusing agent/task refs and unsupported actions.
+  `.yaml` is a collection hint only: recognition still gates on `.yml`, so the
+  near miss is diagnosed but never indexed or scheduled. See the
+  [task-v3 reference](../reference/tasks.md).
 - **`llm-wiki`, `akm`, and `okf` all reserve `index.md`/`log.md`** as
   structural files — never indexed as concepts, never valid write targets —
   at any depth.

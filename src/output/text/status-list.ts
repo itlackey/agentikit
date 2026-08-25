@@ -5,7 +5,7 @@
 /**
  * Shared plain-text rendering for "list of status-bearing records" shapes.
  *
- * `akm health`'s `hardChecks`/`advisories`/`sessionLogAdvisories` and `akm
+ * `akm health`'s `hardChecks`/`advisories` and `akm
  * lint`'s `fixed`/`flagged` issues are all, structurally, an array of small
  * uniform records where one field names a severity and a human scanning the
  * output needs the bad ones first, not buried below a wall of passing rows.

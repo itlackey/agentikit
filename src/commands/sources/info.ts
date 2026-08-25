@@ -7,6 +7,7 @@ import { resolveStashDir } from "../../core/common";
 import { getSources, loadConfig } from "../../core/config/config";
 import { classifyPathAccess, describeInaccessiblePath } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
+import { formatRegistryUrl } from "../../core/registry-url";
 import { error } from "../../core/warn";
 import { getEffectiveSemanticStatus, readSemanticStatus } from "../../indexer/search/semantic-status";
 import type { InfoResponse } from "../../sources/types";
@@ -46,7 +47,7 @@ export function assembleInfo(options?: { dbPath?: string }): InfoResponse {
 
   // Registries (strip sensitive fields like apiKey from options)
   const registries = (config.registries ?? []).map((r) => ({
-    url: r.url,
+    url: formatRegistryUrl(r.url),
     ...(r.name ? { name: r.name } : {}),
     ...(r.provider ? { provider: r.provider } : {}),
     ...(r.enabled !== undefined ? { enabled: r.enabled } : {}),

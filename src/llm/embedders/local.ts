@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Local @huggingface/transformers embedder.
+ * Local embedder backed by the external @huggingface/transformers package.
  *
  * Encapsulates the transformer pipeline lifecycle as instance state on a
  * `LocalEmbedder` so tests can construct fresh instances without leaking
@@ -14,7 +14,6 @@
 import path from "node:path";
 import { getCacheDir } from "../../core/paths";
 import { warn } from "../../core/warn";
-import { getDirname, resolveModule } from "../../runtime";
 import type { Embedder, EmbeddingVector } from "./types";
 
 /**
@@ -32,18 +31,14 @@ export const DEFAULT_LOCAL_MODEL = "Xenova/bge-small-en-v1.5";
  */
 interface TransformerBatchTensor {
   data: Float32Array;
-  dims: number[];
+  dims: readonly [number, number];
 }
 
-/**
- * The pipeline accepts both a single string and a string[]. For a single
- * string it returns `{ data: Float32Array }` (single embedding); for a string[]
- * it returns a `TransformerBatchTensor` with `.dims = [batch, dim]`.
- */
-type TransformerPipeline = (
-  input: string | string[],
-  options: { pooling: string; normalize: boolean },
-) => Promise<{ data: Float32Array } | TransformerBatchTensor>;
+/** Exact @huggingface/transformers 4.2 feature-extraction result overloads. */
+interface TransformerPipeline {
+  (input: string, options: { pooling: string; normalize: boolean }): Promise<{ data: Float32Array }>;
+  (input: string[], options: { pooling: string; normalize: boolean }): Promise<TransformerBatchTensor>;
+}
 
 type TransformerPipelineFactory = (
   task: string,
@@ -56,22 +51,38 @@ function isBatchTensor(v: unknown): v is TransformerBatchTensor {
   return (
     v !== null &&
     typeof v === "object" &&
-    "data" in (v as object) &&
+    (v as TransformerBatchTensor).data instanceof Float32Array &&
     "dims" in (v as object) &&
     Array.isArray((v as TransformerBatchTensor).dims) &&
-    (v as TransformerBatchTensor).dims.length >= 2
+    (v as TransformerBatchTensor).dims.length === 2 &&
+    (v as TransformerBatchTensor).dims.every((dim) => Number.isInteger(dim) && dim > 0)
   );
 }
 
 // ── Test seam ────────────────────────────────────────────────────────────────
-// Swap-and-restore override for the dynamic @huggingface/transformers import.
+// Swap-and-restore override for the dynamic Transformers.js import.
 // Inert in production; only tests install fakes, via tests/_helpers/seams.ts
 // (which restores them automatically). See docs/architecture/specs/di-seams-plan.md.
 
-export type TransformersLoader = () => Promise<{ pipeline: unknown }>;
+interface TransformersEnvironment {
+  allowRemoteModels?: boolean;
+  backends?: unknown;
+  cacheDir?: string | null;
+}
+
+function isEnabledEnvironmentFlag(value: string | undefined): boolean {
+  return /^(?:1|true|yes|on)$/i.test(value?.trim() ?? "");
+}
+
+interface TransformersModule {
+  env: TransformersEnvironment;
+  pipeline: unknown;
+}
+
+export type TransformersLoader = () => Promise<TransformersModule>;
 
 const realTransformersLoader: TransformersLoader = () =>
-  import("@huggingface/transformers") as Promise<{ pipeline: unknown }>;
+  import("@huggingface/transformers") as Promise<TransformersModule>;
 
 let transformersLoader: TransformersLoader = realTransformersLoader;
 
@@ -98,29 +109,6 @@ const LOCAL_BATCH_SIZE = 32;
  */
 function resolveLocalModelName(overrideModel?: string): string {
   return overrideModel || DEFAULT_LOCAL_MODEL;
-}
-
-/**
- * Detect whether the current process is running from a Bun-compiled binary
- * (i.e. `bun build --compile` produced a single executable). Bun marks the
- * compiled binary with a synthesized `process.execPath` that ends in the
- * binary name rather than `bun`, AND sets a flag we can probe.
- *
- * Used to gate the "install @huggingface/transformers" hint — that advice
- * is impossible to follow from a single-binary install, so we replace it
- * with the only working remediation (switch to npm/Bun install, or turn
- * semantic search off). See #482.
- */
-function isCompiledBinary(): boolean {
-  try {
-    const flag = (Bun as unknown as { embeddedFiles?: unknown; main?: string }).embeddedFiles;
-    if (flag !== undefined) return true;
-  } catch {
-    // Bun not available (under Node tests, for example) — treat as not-binary.
-  }
-  const exec = (process.execPath || "").toLowerCase();
-  if (exec.endsWith("/akm") || exec.endsWith("\\akm.exe")) return true;
-  return false;
 }
 
 export class LocalEmbedder implements Embedder {
@@ -150,9 +138,7 @@ export class LocalEmbedder implements Embedder {
   /**
    * Embed a batch of texts. Processes in chunks of `LOCAL_BATCH_SIZE` (32) so
    * the transformers pipeline can run genuine batched inference rather than one
-   * call per text. Falls back to one-at-a-time if the pipeline does not support
-   * array input (older versions of @huggingface/transformers). Each chunk is
-   * checked against the AbortSignal between calls.
+   * call per text. Each chunk is checked against the AbortSignal between calls.
    */
   async embedBatch(texts: string[], signal?: AbortSignal): Promise<EmbeddingVector[]> {
     if (texts.length === 0) return [];
@@ -167,39 +153,22 @@ export class LocalEmbedder implements Embedder {
         throw signal.reason instanceof Error ? signal.reason : new Error("embedding interrupted");
       }
       const chunk = texts.slice(i, i + LOCAL_BATCH_SIZE);
-      try {
-        // @huggingface/transformers feature-extraction pipeline accepts a
-        // string[] and returns a batch Tensor (NOT an Array<{data}>).
-        // The Tensor has .data (flat Float32Array, length = batch * dim) and
-        // .dims = [batch, dim]. Slice .data into per-row vectors using .dims.
-        const batchResult = await pipeline(chunk, {
-          pooling: "mean",
-          normalize: true,
-        });
-        if (isBatchTensor(batchResult)) {
-          const dim = batchResult.dims[1] as number;
-          for (let row = 0; row < chunk.length; row++) {
-            results.push(Array.from(batchResult.data.subarray(row * dim, (row + 1) * dim)) as number[]);
-          }
-        } else if (Array.isArray(batchResult)) {
-          // Older versions of @huggingface/transformers returned Array<{data}>.
-          for (const r of batchResult as Array<{ data: Float32Array }>) {
-            results.push(Array.from(r.data) as number[]);
-          }
-        } else {
-          // Single-text result returned for a chunk — should not happen for
-          // string[] input, but handle defensively.
-          throw new Error("unexpected pipeline return shape for batch input");
-        }
-      } catch {
-        // Fallback: process one-at-a-time (older pipeline versions or mismatched
-        // return type). Fail-open per text: a single failure aborts the chunk.
-        for (const text of chunk) {
-          if (signal?.aborted) {
-            throw signal.reason instanceof Error ? signal.reason : new Error("embedding interrupted");
-          }
-          results.push(await this.embedWithModel(text, this.defaultModel));
-        }
+      // @huggingface/transformers 4.2 returns a single batch Tensor. Validate
+      // that exact shape and propagate inference failures without re-executing
+      // the same inputs through a second runtime path.
+      const batchResult = await pipeline(chunk, {
+        pooling: "mean",
+        normalize: true,
+      });
+      if (!isBatchTensor(batchResult)) {
+        throw new Error("unexpected pipeline return shape for batch input");
+      }
+      const [batch, dim] = batchResult.dims;
+      if (batch !== chunk.length || batchResult.data.length !== batch * dim) {
+        throw new Error("unexpected pipeline return shape for batch input");
+      }
+      for (let row = 0; row < chunk.length; row++) {
+        results.push(Array.from(batchResult.data.subarray(row * dim, (row + 1) * dim)) as number[]);
       }
     }
     return results;
@@ -235,24 +204,20 @@ export class LocalEmbedder implements Embedder {
         let pipeline: unknown;
         try {
           const mod = await transformersLoader();
+          // Transformers.js 4.x defaults its filesystem cache underneath the
+          // installed package and no longer derives it from HF_HOME. Point the
+          // public runtime setting at our stable cache explicitly so package
+          // reinstalls and test-sandbox HOME rotation do not re-download the
+          // model. The exact pinned 4.2 module owns this public environment.
+          mod.env.cacheDir = process.env.HF_HOME;
+          if (isEnabledEnvironmentFlag(process.env.HF_HUB_OFFLINE)) {
+            mod.env.allowRemoteModels = false;
+          }
           pipeline = mod.pipeline;
         } catch (importError) {
           const msg = importError instanceof Error ? importError.message : String(importError);
-          if (/Cannot find module|MODULE_NOT_FOUND|Cannot resolve/i.test(msg)) {
-            // #482: the prebuilt binary build is invoked with
-            // `bun install --omit optional` (release.yml), so binary users
-            // can NEVER load @huggingface/transformers. Telling them to
-            // `bun add` it is a dead-end — there is no install target.
-            // Detect the binary execution path and give the only working
-            // remediation: switch to the npm/Bun install of akm-cli, or
-            // turn off semantic search.
-            const isBinary = isCompiledBinary();
-            const hint = isBinary
-              ? "You are running the prebuilt akm binary, which cannot load optional native dependencies. " +
-                "To enable semantic search, install akm-cli via Bun: `curl -fsSL https://bun.sh/install | bash && bun install -g akm-cli`. " +
-                "To keep using the binary, set `semanticSearchMode: off` in your config and use keyword-only FTS."
-              : "Install it with: `bun add @huggingface/transformers` (or `npm install @huggingface/transformers`).";
-            throw new Error(`Semantic search requires @huggingface/transformers. ${hint}`);
+          if (/Cannot find (?:module|package)|MODULE_NOT_FOUND|ERR_MODULE_NOT_FOUND|Cannot resolve/i.test(msg)) {
+            throw new Error("Semantic search requires @huggingface/transformers. Reinstall akm-cli.");
           }
           throw new Error(`Failed to load embedding runtime: ${msg}. Check platform compatibility.`);
         }
@@ -297,15 +262,12 @@ function shouldRetryWithoutExplicitDtype(error: unknown): boolean {
 }
 
 /**
- * Check whether the `@huggingface/transformers` package can be resolved.
- * Uses the runtime boundary's `resolveModule` so we never load the module
- * (which would trigger heavy WASM/model side-effects) just to test
- * availability. `resolveModule` uses `Bun.resolveSync` on Bun and
- * `require.resolve` on Node.
+ * Check whether the declared Transformers dependency can be resolved without
+ * loading a model.
  */
 export function isTransformersAvailable(): boolean {
   try {
-    resolveModule("@huggingface/transformers", getDirname(import.meta.url));
+    import.meta.resolve("@huggingface/transformers");
     return true;
   } catch {
     return false;

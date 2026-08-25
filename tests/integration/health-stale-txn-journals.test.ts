@@ -52,7 +52,7 @@ const VALID_JOURNAL = JSON.stringify({
 
 describe("stale-txn-journals advisory (item 4)", () => {
   test("passes with no signal when $DATA/txn does not exist", () => {
-    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const result = akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "stale-txn-journals");
     expect(advisory.status).toBe("pass");
     expect(advisory.evidence?.count).toBe(0);
@@ -60,7 +60,7 @@ describe("stale-txn-journals advisory (item 4)", () => {
 
   test("fires when a journal is older than the sweep grace period", () => {
     writeJournalFile("txn-old", VALID_JOURNAL, 10 * 60_000); // 10 minutes old
-    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const result = akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "stale-txn-journals");
     expect(advisory.status).toBe("warn");
     expect(advisory.evidence?.count).toBe(1);
@@ -71,7 +71,7 @@ describe("stale-txn-journals advisory (item 4)", () => {
 
   test("stays quiet for a journal younger than the grace period (plausibly still running)", () => {
     writeJournalFile("txn-fresh", VALID_JOURNAL, 60_000); // 1 minute old
-    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const result = akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "stale-txn-journals");
     expect(advisory.status).toBe("pass");
     expect(advisory.evidence?.count).toBe(0);
@@ -80,7 +80,7 @@ describe("stale-txn-journals advisory (item 4)", () => {
   test("survives an unreadable/corrupt journal and counts it separately", () => {
     writeJournalFile("txn-good", VALID_JOURNAL, 10 * 60_000);
     writeJournalFile("txn-corrupt", "{ not valid json", 10 * 60_000);
-    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const result = akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "stale-txn-journals");
     expect(advisory.status).toBe("warn");
     expect(advisory.evidence?.count).toBe(2);

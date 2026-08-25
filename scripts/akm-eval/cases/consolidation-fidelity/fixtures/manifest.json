@@ -216,13 +216,13 @@
       ]
     },
     {
-      "id": "safe-legacy-current-provenance-equivalence",
+      "id": "safe-current-provenance-equivalence",
       "class": "provenance-equivalence",
       "label": "safe",
-      "description": "Legacy and current ref spellings identify the same direct sources in both directions.",
+      "description": "Current ref spellings identify the same direct sources exactly.",
       "sources": [
         {
-          "ref": "memory\u003aprovenance-alpha",
+          "ref": "memories/provenance-alpha",
           "body": "Alpha jobs require a signed request."
         },
         {
@@ -234,7 +234,7 @@
         "body": "Alpha jobs require a signed request, and beta jobs require an expiry timestamp.",
         "directProvenance": [
           "memories/provenance-alpha",
-          "lab//memory\u003aprovenance-beta"
+          "lab//memories/provenance-beta"
         ]
       },
       "requiredClaims": [

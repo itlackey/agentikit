@@ -40,9 +40,10 @@
  * conceptId = `<stash-subdir>/<canonical-name>` — the placement stash-subdir
  * (`stashDirFor(type)`) followed by the winning type's canonical name
  * (`deriveCanonicalAssetNameFromStashRoot`: skill = its dir, script keeps its
- * extension, markdown strips `.md`, env/task strip their ext, secret/session
- * keep the natural path). For markdown types this IS the OKF concept ID
- * (path − `.md`); it is the same spelling {@link placeNew} consumes, so
+ * extension, Markdown strips `.md`, workflow strips its peer `.md`/`.yml`
+ * extension, env/task strip their ext, and secret/session keep the natural
+ * path). For Markdown types this IS the OKF concept ID (path − `.md`); it is
+ * the same spelling {@link placeNew} consumes, so
  * recognize/place share one identity (D-R2 resolved the earlier split). The
  * `type` is carried separately on `IndexDocument.type`, per §0.2 (type ≠
  * identity), and `entry.name` keeps the BARE canonical name for FTS parity.
@@ -82,13 +83,13 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import type { AdapterRenderedExecutionSource } from "../../../execution/source";
 import {
   applyPostContributorFields,
   applyPreContributorFields,
   extractPackageMetadata,
 } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { parseTaskYaml, taskYamlParseDetail } from "../../../tasks/schema";
 import {
   assetPathForName,
   deriveCanonicalAssetNameFromStashRoot,
@@ -98,10 +99,11 @@ import {
 } from "../../asset/asset-placement";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
-import type { BundleAdapter } from "../bundle-adapter";
-import { recognizeMatch } from "../recognize-match";
+import type { AdapterPathContext, BundleAdapter } from "../bundle-adapter";
+import { executionDefaultsFromFrontmatter, renderMarkdownExecutionSource } from "../execution-source";
+import { recognizeMatch, recognizePathCandidateMatches } from "../recognize-match";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
-import { perTypeValidateChecks, skillDirectoryDiagnostics } from "./akm-lint";
+import { perTypeValidateChecks, skillDirectoryDiagnostics, workflowYamlSourceDiagnostics } from "./akm-lint";
 import { applyFoldedMetadata, foldRecognizedMetadata } from "./akm-metadata";
 import { hashContent, type ParsedForValidate, runBaseValidateChecks } from "./shared";
 
@@ -257,6 +259,21 @@ function indexDocumentFromEntry(
   return doc;
 }
 
+function conceptIdForRecognizedType(root: string, filePath: string, type: string): string | undefined {
+  const canonicalName = deriveCanonicalAssetNameFromStashRoot(type, root, filePath);
+  if (canonicalName === undefined) return undefined;
+  const stashDir = stashDirFor(type);
+  return stashDir !== undefined ? `${stashDir}/${canonicalName}` : canonicalName;
+}
+
+function recognizePathCandidates(c: BundleComponent, file: AdapterPathContext): readonly string[] {
+  if (isReservedFileName(file.fileName) || akmStashAbstains(c.root, file.absPath)) return [];
+  return recognizePathCandidateMatches(file).flatMap((match) => {
+    const conceptId = conceptIdForRecognizedType(c.root, file.absPath, match.type);
+    return conceptId === undefined ? [] : [conceptId];
+  });
+}
+
 function recognize(c: BundleComponent, file: FileContext): IndexDocument | null {
   // D-R6 (spec §5.1): `index.md` / `log.md` are OKF reserved structural files at
   // every depth — never items. Excluded BEFORE classification so a directory
@@ -268,22 +285,21 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   if (akmStashAbstains(c.root, file.absPath)) return null;
   const match = recognizeMatch(file);
   if (match === null) return null;
-
   // Canonical name = the winning type's per-type canonical name (§5.1).
   // Invalid placements are not projected onto a different identity.
-  const derived = deriveCanonicalAssetNameFromStashRoot(match.type, c.root, file.absPath);
-  if (derived === undefined) return null;
-  const canonicalName = derived;
+  const conceptId = conceptIdForRecognizedType(c.root, file.absPath, match.type);
+  if (conceptId === undefined) return null;
+  const stashDir = stashDirFor(match.type);
+  const canonicalName = stashDir !== undefined ? conceptId.slice(stashDir.length + 1) : conceptId;
   // conceptId = the QUALIFIED `<stash-subdir>/<canonical-name>` spelling
-  // (ref-grammar decision D-R2): the same form `placeNew` consumes, and for
-  // markdown types the OKF concept ID (path − .md). Both branches now feed a
+  // (ref-grammar decision D-R2): the same form `placeNew` consumes; Markdown
+  // types use the OKF concept ID (path − .md), while workflows strip either
+  // peer source extension. Both branches feed a
   // BARE canonicalName (the abstain fallback is the basename, above), so the
   // stash-subdir is prefixed uniformly — a flat `skills/x.md` yields
   // `skills/x`, never the un-prefixed `x` or the double-prefixed
   // `skills/skills/x`. `entry.name` below keeps the BARE canonical name —
   // identity ≠ search text.
-  const stashDir = stashDirFor(match.type);
-  const conceptId = stashDir !== undefined ? `${stashDir}/${canonicalName}` : canonicalName;
   const dirPath = path.dirname(file.absPath);
 
   // Chunk 5 M-b: recognize now carries the FULL index-time metadata surface
@@ -323,6 +339,30 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     },
     match.renderer,
   );
+}
+
+/** Render AKM-native command/agent Markdown into the shared execution source. */
+function renderExecutionSource(c: BundleComponent, file: FileContext): AdapterRenderedExecutionSource | null {
+  const document = recognize(c, file);
+  if (document?.type !== "command" && document?.type !== "agent") return null;
+  if (!document.ref) return null;
+  const raw = file.content();
+  return renderMarkdownExecutionSource({
+    kind: document.type === "command" ? "command" : "persona",
+    raw,
+    identity: {
+      ref: document.ref,
+      bundle: c.id,
+      adapter: "akm",
+      file: file.relPath,
+    },
+    defaults: (data) =>
+      executionDefaultsFromFrontmatter(data, {
+        kind: document.type === "command" ? "command" : "persona",
+        allowTopLevelEngine: true,
+        toolsKeys: ["tools"],
+      }),
+  });
 }
 
 /**
@@ -378,10 +418,9 @@ function buildOverlayContext(root: string, relPathInput: string, raw: string): F
  *
  * Per change (non-delete, readable): the `type` is recovered by running the
  * SAME sync matcher arbitration ({@link recognizeMatch}) over an OVERLAY
- * FileContext ({@link buildOverlayContext}) — no live-FS read. `task` files are
- * parsed as pure YAML (mirroring `lint/index.ts`'s `subdir === "tasks"` branch)
- * so the TaskLinter's field checks see real data and `missing-updated` never
- * fires (frontmatter is `null`); everything else parses via `parseFrontmatter`.
+ * FileContext ({@link buildOverlayContext}) — no live-FS read. `task` files
+ * keep raw YAML for the canonical task-v3 parser and use no frontmatter;
+ * everything else parses via `parseFrontmatter`.
  * Base checks (shared) then the per-type extra checks run; a `skills/` directory
  * pass reproduces `SkillLinter.lintDirectory` across the change set.
  */
@@ -398,23 +437,18 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
     const match = recognizeMatch(overlay);
     const type = match?.type;
 
-    // Parse strategy per `lint/index.ts`: `task` → pure YAML (frontmatter null),
-    // everything else → `parseFrontmatter`.
+    // A complete GitHub-shaped `on` + `jobs` document is workflow-owned. It
+    // never flows through task-v3 parsing or Markdown base/frontmatter checks.
+    if (type === "workflow" && overlay.ext === ".yml") {
+      diagnostics.push(...workflowYamlSourceDiagnostics(change.path, raw, change.path, c.root).errors);
+      continue;
+    }
+
+    // Task parsing belongs to perTypeValidateChecks' canonical v3 parser. Base
+    // checks need only a frontmatter-free placeholder here.
     let parsed: ParsedForValidate;
     if (type === "task") {
-      const task = parseTaskYaml(raw);
-      // A parse failure is its OWN finding: every task rule short-circuits on
-      // an empty mapping, so collapsing "unparseable" onto `{}` made a broken
-      // task file validate clean (issue #760). Mirrors the CLI sweep.
-      if (!task.ok) {
-        diagnostics.push({
-          file: change.path,
-          issue: "invalid-task-yaml",
-          detail: taskYamlParseDetail(task.error),
-          fixed: false,
-        });
-      }
-      parsed = { data: task.data, content: raw, frontmatter: null };
+      parsed = { data: {}, content: raw, frontmatter: null };
     } else {
       const p = parseFrontmatter(raw);
       parsed = { data: p.data, content: p.content, frontmatter: p.frontmatter };
@@ -431,6 +465,7 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
         body: parsed.content,
         ext: overlay.ext,
         ctx,
+        workspaceRoot: c.root,
       })),
     );
     diagnostics.push(...(await skillDirectoryDiagnostics(change.path, seenSkillDirs, ctx)));
@@ -443,8 +478,9 @@ export const akmAdapter: BundleAdapter = {
   id: "akm",
   version: "0.9.0",
   // Recognized-extension HINT, derived from what the matchers accept (§6):
-  // `.md` (markdown types + skill), `.yaml`/`.yml` (task YAML), `.env` (env
-  // files), and the 16 SCRIPT_EXTENSIONS. This is a
+  // `.md` (Markdown types + workflow peer), `.yml` (task and workflow YAML),
+  // `.yaml` (task near-miss diagnostics), `.env` (env files), and the 16
+  // SCRIPT_EXTENSIONS. This is a
   // NON-EXHAUSTIVE hint for the akm adapter: recognition is directory-driven
   // via `recognize()` (e.g. a bare `secrets/<anything>` file with no extension
   // is a `secret`), so `recognize()` — not this list — is the source of truth.
@@ -472,7 +508,21 @@ export const akmAdapter: BundleAdapter = {
   ],
 
   recognize,
+  recognizePathCandidates,
+  renderExecutionSource,
   validate,
+
+  readCandidates(c: BundleComponent, conceptId: string) {
+    const posix = conceptId.replace(/\\/g, "/");
+    const slash = posix.indexOf("/");
+    if (slash <= 0) return [{ path: path.join(c.root, `${posix}.md`), conceptId: posix }];
+    const head = posix.slice(0, slash);
+    const rest = posix.slice(slash + 1);
+    const type = stashDirToType(head);
+    return type === undefined || rest.length === 0
+      ? []
+      : [{ path: assetPathForName(type, path.join(c.root, head), rest), conceptId: posix }];
+  },
 
   /**
    * Type-driven placement (§5.1), reproducing `path-resolver.ts#buildDiskCandidates`:

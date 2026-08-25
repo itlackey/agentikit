@@ -27,7 +27,7 @@ const EXEMPT_COMMANDS: ReadonlySet<string> = new Set([
   // Emits shell completion script source for eval.
   "completions",
   // `migrate status`/`apply` used to be exempt here too: `runMigrationTool`
-  // (src/commands/migration-tool.ts) spawns the standalone
+  // (src/commands/migration-tool.ts) spawns the task-only standalone
   // `scripts/akm-migrate.ts` tool, which always emitted its own fixed JSON
   // shape and never consulted `--format`. `src/commands/migrate-cli.ts` now
   // parses that child's final result line and renders it through the normal

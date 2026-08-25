@@ -7,12 +7,11 @@
  * unification): orchestration graph in frontmatter, per-step prose in the
  * markdown body, joined by step id.
  *
- * `parseWorkflow` (parser.ts) converts a workflow markdown file into a
- * `WorkflowDocument` plus a list of `WorkflowError`s. The document is the
- * single source of truth consumed by the renderer, the indexer (cached
- * into `workflow_documents` in `index.db`), and the compiler (`ir/compile.ts`).
- * Source markdown is referenced by `SourceRef` line spans so editors and
- * agents can rewrite content in place without a full re-parse.
+ * `parseWorkflow` (parser.ts) converts Markdown syntax into a
+ * `WorkflowDocument` plus a list of `WorkflowError`s. This is an
+ * adapter-internal Markdown parse tree: the compiler immediately projects it
+ * into the shared workflow source IR consumed by indexing, rendering, and
+ * execution. It is neither persisted nor a second runtime architecture.
  *
  * There are no titles anywhere in this shape — a step is its id; the asset's
  * human name is its `description`/H1 like any other asset (spec §2.2).
@@ -91,9 +90,12 @@ export interface WorkflowDocument {
 /**
  * A single problem in the source markdown. CLI and indexer format these
  * uniformly as `path:line — message`. The fix is baked into the message
- * itself; there is no separate hint field, code, or severity.
+ * itself; source adapters may attach a stable code, but there is no separate
+ * hint or severity field.
  */
 export interface WorkflowError {
+  /** Optional stable code supplied by a format adapter's semantic boundary. */
+  code?: string;
   /** 1-indexed line in the source markdown the problem refers to. */
   line: number;
   /** Human-readable message including the offending value and how to fix it. */

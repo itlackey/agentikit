@@ -47,8 +47,8 @@ describe("triage improve-process config schema", () => {
     // maxAcceptsPerRun must be a positive integer
     expect(ImproveProcessConfigSchema.safeParse({ maxAcceptsPerRun: 0 }).success).toBe(false);
     expect(ImproveProcessConfigSchema.safeParse({ maxDiffLines: -1 }).success).toBe(false);
-    // judgment tolerates unknown keys (lenient policy) but still type-checks known ones
-    expect(ImproveProcessConfigSchema.safeParse({ judgment: { engine: "fast", bogus: 1 } }).success).toBe(true);
+    // judgment rejects unknown keys so typos cannot silently change execution policy.
+    expect(ImproveProcessConfigSchema.safeParse({ judgment: { engine: "fast", bogus: 1 } }).success).toBe(false);
     // judgment.mode is retired in favor of a named engine.
     expect(ImproveProcessConfigSchema.safeParse({ judgment: { mode: "llm" } }).success).toBe(false);
     // judgment.timeoutMs accepts null

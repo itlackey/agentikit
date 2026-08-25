@@ -79,7 +79,7 @@ export function buildSearchFields(entry: IndexDocument): {
   // folds into the lowest-weight catch-all column — never name/description/
   // tags/hints — so orientation prose is retrievable without outranking
   // structured-field matches. The fold is unconditional on the entry field:
-  // `rebuildFts` rebuilds FTS rows from stored entry_json and must reproduce
+  // `rebuildFts` rebuilds FTS rows from stored document_json and must reproduce
   // the same fields without re-reading config.
   if (entry.bodyOpening) contentParts.push(entry.bodyOpening);
   const content = contentParts.join(" ").toLowerCase();

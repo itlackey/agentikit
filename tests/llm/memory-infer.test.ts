@@ -47,6 +47,7 @@ let warnCalls: string[] = [];
 const { compressMemoryToDerivedMemory } = await import("../../src/llm/memory-infer");
 const { _setChatCompletionForTests, isContextSizeError, LlmCallError } = await import("../../src/llm/client");
 const { _setWarnSinkForTests } = await import("../../src/core/warn");
+const { testLlmRunner } = await import("../_helpers/llm-runner");
 const { overrideSeam } = await import("../_helpers/seams");
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -64,7 +65,14 @@ const ENABLED_CONFIG: AkmConfig = {
   index: { defaults: { engine: "test" }, memory: { enabled: true } },
 };
 
-const LLM_CONFIG = { timeoutMs: 5_000 } as unknown as LlmConnectionConfig;
+const LLM_CONFIG = testLlmRunner(
+  {
+    endpoint: "http://localhost:1/v1/chat/completions",
+    model: "test-model",
+    timeoutMs: 5_000,
+  } as LlmConnectionConfig,
+  "test-memory-inference",
+);
 
 function validPayload(): string {
   return JSON.stringify({
@@ -100,6 +108,31 @@ afterEach(() => {
 // ── Branch coverage ──────────────────────────────────────────────────────────
 
 describe("compressMemoryToDerivedMemory — characterization", () => {
+  test("optimistic schema fallback reports a stable lowering notice", async () => {
+    chatResponder = () => validPayload();
+    const notices: Array<Record<string, unknown>> = [];
+    const runnerWithoutSchema = {
+      ...LLM_CONFIG,
+      connection: { ...LLM_CONFIG.connection, supportsJsonSchema: false },
+    };
+
+    const result = await compressMemoryToDerivedMemory(
+      runnerWithoutSchema,
+      "some memory body",
+      undefined,
+      ENABLED_CONFIG,
+      undefined,
+      undefined,
+      undefined,
+      (value) => notices.push(...value),
+    );
+
+    expect(result?.title).toBe("Derived title");
+    expect(notices).toContainEqual(
+      expect.objectContaining({ code: "untranslated-field", adapter: "llm", field: "outputSchema" }),
+    );
+  });
+
   test("valid payload -> exact DerivedMemoryDraft, no warn", async () => {
     chatResponder = () => validPayload();
 

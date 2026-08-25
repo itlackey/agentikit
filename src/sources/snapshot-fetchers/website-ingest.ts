@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -15,18 +15,19 @@ import {
 } from "../../core/common";
 import type { SourceConfigEntry } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
-import { getRegistryIndexCacheDir } from "../../core/paths";
 import { warn, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
+import {
+  getWebsiteCachePaths,
+  normalizeSiteUrl,
+  validateWebsiteInputUrl,
+  validateWebsiteUrl,
+  type WebsiteUrlValidationOptions,
+} from "../website-url";
 import { htmlToMarkdownAndLinks } from "./content-extract";
 import { escapeMarkdownStructure } from "./fetcher-util";
-import {
-  assertResolvedHostAllowed,
-  assertWebsiteRequestUrl,
-  type HostnameResolver,
-  isLoopbackWebsiteHostname,
-} from "./host-guard";
+import { assertResolvedHostAllowed, assertWebsiteRequestUrl } from "./host-guard";
 import { loadWikiSnapshotFetchers } from "./registry";
 import {
   createAllowAllRobotsPolicy,
@@ -67,22 +68,14 @@ const WEBSITE_PAGE_BYTE_CAP = 5 * 1024 * 1024;
 const WEBSITE_CRAWL_WALL_CLOCK_MS = 10 * 60 * 1000;
 const WEBSITE_MAX_REDIRECTS = 8;
 
-/**
- * Coerces the user-facing `crawlTimeoutMs` option.
- *
- * Returns `null` for an explicit opt-out (`false`, or `0`), the configured
- * number of milliseconds when positive, and `undefined` to mean "unset, use
- * the default". Anything else is ignored rather than failing a crawl over a
- * malformed knob.
- */
-function coerceCrawlTimeoutMs(value: unknown): number | null | undefined {
-  if (value === false || value === 0) return null;
-  if (value === true || value === undefined || value === null) return undefined;
-  const parsed =
-    typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
-  if (!Number.isFinite(parsed)) return undefined;
-  if (parsed <= 0) return null;
-  return parsed;
+/** Resolve the exact persisted crawl timeout; zero explicitly disables it. */
+export function resolveCrawlTimeoutMs(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === 0) return null;
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  throw new ConfigError(
+    `Invalid value for crawlTimeoutMs: expected a non-negative integer, got ${JSON.stringify(value)}.`,
+  );
 }
 
 /**
@@ -128,14 +121,7 @@ export interface FetchSnapshotOptions {
   resolveSecret?: SecretResolveFn;
 }
 
-interface WebsiteValidationOptions {
-  allowPrivateHosts?: boolean;
-  /**
-   * Override the DNS resolver used by the resolve-then-validate SSRF guard.
-   * Defaults to a real `node:dns` lookup; tests inject a stub so no real DNS
-   * ever runs.
-   */
-  resolveHostname?: HostnameResolver;
+interface WebsiteValidationOptions extends WebsiteUrlValidationOptions {
   /**
    * When set, `fetchWebsitePage` re-checks the *final* (post-redirect) URL
    * against this policy and drops the page (warnVerbose, no error) when
@@ -156,19 +142,6 @@ interface WebsiteValidationOptions {
   signal?: AbortSignal;
 }
 
-export function shouldAllowPrivateWebsiteHostsForTests(): boolean {
-  return process.env.BUN_TEST === "1" || process.env.NODE_ENV === "test";
-}
-
-export function shouldAllowPrivateWebsiteUrlForTests(rawUrl: string): boolean {
-  if (!shouldAllowPrivateWebsiteHostsForTests()) return false;
-  try {
-    return isLoopbackWebsiteHostname(new URL(rawUrl).hostname.toLowerCase());
-  } catch {
-    return false;
-  }
-}
-
 function resolveFetcherStashDir(explicitStashDir?: string): string | null {
   if (explicitStashDir) return explicitStashDir;
   try {
@@ -176,20 +149,6 @@ function resolveFetcherStashDir(explicitStashDir?: string): string | null {
   } catch {
     return null;
   }
-}
-
-export function getWebsiteCachePaths(siteUrl: string): {
-  rootDir: string;
-  stashDir: string;
-  manifestPath: string;
-} {
-  const key = createHash("sha256").update(normalizeSiteUrl(siteUrl)).digest("hex").slice(0, 16);
-  const rootDir = path.join(getRegistryIndexCacheDir(), `website-${key}`);
-  return {
-    rootDir,
-    stashDir: path.join(rootDir, "stash"),
-    manifestPath: path.join(rootDir, "manifest.json"),
-  };
 }
 
 export async function ensureWebsiteMirror(
@@ -209,11 +168,13 @@ export async function ensureWebsiteMirror(
     wallClockCapMs?: number;
     /** See {@link FetchSnapshotOptions.resolveSecret}. */
     resolveSecret?: SecretResolveFn;
+    /** Internal update staging root. Omitted by ordinary provider hydration. */
+    cacheRootDir?: string;
   },
 ): Promise<ReturnType<typeof getWebsiteCachePaths>> {
   const rawUrl = config.url ?? "";
   const normalizedUrl = validateWebsiteUrl(rawUrl, { allowPrivateHosts: options?.allowPrivateHosts });
-  const cachePaths = getWebsiteCachePaths(normalizedUrl);
+  const cachePaths = getWebsiteCachePaths(normalizedUrl, options?.cacheRootDir);
   const requireStashDir = options?.requireStashDir === true;
 
   await withFreshnessCache({
@@ -226,12 +187,12 @@ export async function ensureWebsiteMirror(
       fs.mkdirSync(cachePaths.rootDir, { recursive: true });
       await scrapeWebsiteToStash(normalizedUrl, cachePaths.stashDir, {
         fetcherStashDir: resolveFetcherStashDir(),
-        maxPages: coercePositiveInt(config.options?.maxPages, MAX_PAGES_DEFAULT),
-        maxDepth: coercePositiveInt(config.options?.maxDepth, MAX_DEPTH_DEFAULT),
-        respectRobots: coerceRespectRobots(config.options?.respectRobots),
+        maxPages: resolvePositiveInt(config.options?.maxPages, MAX_PAGES_DEFAULT, "maxPages"),
+        maxDepth: resolvePositiveInt(config.options?.maxDepth, MAX_DEPTH_DEFAULT, "maxDepth"),
+        respectRobots: resolveRespectRobots(config.options?.respectRobots),
         allowPrivateHosts: options?.allowPrivateHosts,
         wallClockCapMs: options?.wallClockCapMs,
-        crawlTimeoutMs: coerceCrawlTimeoutMs(config.options?.crawlTimeoutMs),
+        crawlTimeoutMs: resolveCrawlTimeoutMs(config.options?.crawlTimeoutMs),
         resolveSecret: options?.resolveSecret,
         // As-supplied, pre-normalization start URL (see crawlWebsite's
         // `rawStartUrl` doc comment): threaded through purely for the C-02
@@ -490,7 +451,7 @@ async function scrapeWebsiteToStash(
     rawStartUrl?: string;
     resolveSecret?: SecretResolveFn;
     fetcherStashDir?: string | null;
-    /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
+    /** Hard process cap; `null` disables it. See {@link resolveCrawlTimeoutMs}. */
     crawlTimeoutMs?: number | null;
   },
 ): Promise<void> {
@@ -767,7 +728,7 @@ async function crawlWebsite(
     respectRobots?: boolean;
     allowPrivateHosts?: boolean;
     wallClockCapMs?: number;
-    /** Hard process cap; `null` disables it. See {@link coerceCrawlTimeoutMs}. */
+    /** Hard process cap; `null` disables it. See {@link resolveCrawlTimeoutMs}. */
     crawlTimeoutMs?: number | null;
     /**
      * The start URL exactly as the user supplied it in config, before
@@ -789,7 +750,7 @@ async function crawlWebsite(
   const visited = new Set<string>();
   const pages: WebsitePage[] = [];
   // Precedence: the test-only seam, then the user's `crawlTimeoutMs`, then the
-  // default. `crawlTimeoutMs: 0` / `false` disables the cap outright, for a
+  // default. `crawlTimeoutMs: 0` disables the cap outright, for a
   // deliberately long-running crawl the user is willing to babysit.
   const configuredCapMs =
     options.crawlTimeoutMs === null ? null : (options.crawlTimeoutMs ?? WEBSITE_CRAWL_WALL_CLOCK_MS);
@@ -1178,26 +1139,11 @@ export async function loadRobotsTxt(
   }
 }
 
-/**
- * Coerces `SourceConfigEntry.options.respectRobots` to a boolean. The bundle
- * descriptor is boolean-validated at config load (schema), but the legacy
- * `sources[].options` bag is `z.record(z.unknown())` and accepts anything, so
- * the runtime read still validates. A misspelled non-boolean opt-out fails
- * loudly (`ConfigError`) rather than silently defaulting either way — the
- * user would otherwise think robots.txt handling is something other than
- * what akm is actually doing (spec §4.7).
- */
-export function coerceRespectRobots(value: unknown): boolean {
-  if (value === undefined || value === null) return true;
+/** Resolve the exact persisted robots policy. */
+export function resolveRespectRobots(value: unknown): boolean {
+  if (value === undefined) return true;
   if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true") return true;
-    if (normalized === "false") return false;
-  }
-  throw new ConfigError(
-    `Invalid value for respectRobots: expected a boolean (or "true"/"false"), got ${JSON.stringify(value)}.`,
-  );
+  throw new ConfigError(`Invalid value for respectRobots: expected a boolean, got ${JSON.stringify(value)}.`);
 }
 
 function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[]): string {
@@ -1228,51 +1174,6 @@ function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[])
     content,
     "",
   ].join("\n");
-}
-
-export function validateWebsiteUrl(rawUrl: string, options?: WebsiteValidationOptions): string {
-  return validateWebsiteUrlWithError(rawUrl, ConfigError, options);
-}
-
-export function validateWebsiteInputUrl(rawUrl: string, options?: WebsiteValidationOptions): string {
-  return validateWebsiteUrlWithError(rawUrl, UsageError, options);
-}
-
-function validateWebsiteUrlWithError(
-  rawUrl: string,
-  ErrorType: typeof ConfigError | typeof UsageError,
-  options?: WebsiteValidationOptions,
-): string {
-  if (!rawUrl) {
-    throw new ErrorType("Website provider requires a URL");
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw new ErrorType(`Website URL is not valid: "${rawUrl}"`);
-  }
-
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new ErrorType(`Website URL must use http:// or https://, got "${parsed.protocol}" in "${rawUrl}"`);
-  }
-  if (parsed.username || parsed.password) {
-    throw new ErrorType("Website URL must not contain embedded credentials");
-  }
-  assertWebsiteRequestUrl(parsed.toString(), ErrorType, options);
-
-  parsed.hash = "";
-  return normalizeSiteUrl(parsed.toString());
-}
-
-function normalizeSiteUrl(rawUrl: string): string {
-  const parsed = new URL(rawUrl);
-  parsed.hash = "";
-  if (parsed.pathname !== "/" && parsed.pathname.endsWith("/")) {
-    parsed.pathname = parsed.pathname.replace(/\/+$/, "");
-  }
-  return parsed.toString();
 }
 
 function normalizeCrawlUrl(rawUrl: string): string | null {
@@ -1351,13 +1252,10 @@ function uniqueSlug(base: string, used: Set<string>): string {
   return candidate;
 }
 
-function coercePositiveInt(value: unknown, fallback: number): number {
+export function resolvePositiveInt(value: unknown, fallback: number, optionName: string): number {
+  if (value === undefined) return fallback;
   if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
-  if (typeof value === "string") {
-    const parsed = Number.parseInt(value, 10);
-    if (Number.isInteger(parsed) && parsed > 0) return parsed;
-  }
-  return fallback;
+  throw new ConfigError(`Invalid value for ${optionName}: expected a positive integer, got ${JSON.stringify(value)}.`);
 }
 
 function looksLikeMarkup(body: string): boolean {
@@ -1430,5 +1328,13 @@ function safeCodePointToString(value: number): string | undefined {
   }
 }
 
+export {
+  getWebsiteCachePaths,
+  normalizeSiteUrl,
+  shouldAllowPrivateWebsiteHostsForTests,
+  shouldAllowPrivateWebsiteUrlForTests,
+  validateWebsiteInputUrl,
+  validateWebsiteUrl,
+} from "../website-url";
 // Re-exported for existing importers (the SSRF suite pins these entry points).
 export { assertResolvedHostAllowed, type HostnameResolver } from "./host-guard";

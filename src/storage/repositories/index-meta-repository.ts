@@ -10,7 +10,6 @@
  * layer, not the indexer, so the storage layer owns these primitives.
  */
 
-import path from "node:path";
 import type { Database } from "../database";
 import type { IndexDirState } from "./index-entry-types";
 
@@ -80,11 +79,4 @@ export function upsertIndexDirState(
 
 export function deleteIndexDirState(db: Database, dirPath: string): void {
   db.prepare("DELETE FROM index_dir_state WHERE dir_path = ?").run(dirPath);
-}
-
-export function deleteIndexDirStatesByStashDir(db: Database, stashDir: string): void {
-  db.prepare("DELETE FROM index_dir_state WHERE dir_path = ? OR dir_path LIKE ?").run(
-    stashDir,
-    `${stashDir}${path.sep}%`,
-  );
 }

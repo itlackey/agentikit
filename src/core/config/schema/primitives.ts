@@ -64,37 +64,6 @@ export const ExtraParamsSchema = z.record(z.unknown()).superRefine((value, ctx) 
   }
 });
 
-function normalizeAliasKeys(raw: unknown, ctx: z.RefinementCtx): unknown {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
-  const normalized: Record<string, unknown> = {};
-  const originalByKey = new Map<string, string>();
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    const lower = key.toLowerCase();
-    const previous = originalByKey.get(lower);
-    if (previous !== undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [key],
-        message: `alias collides case-insensitively with ${previous}`,
-      });
-      continue;
-    }
-    originalByKey.set(lower, key);
-    normalized[lower] = value;
-  }
-  return normalized;
-}
-
-export const ModelAliasMapSchema = z.preprocess(
-  (raw, ctx) => normalizeAliasKeys(raw, ctx),
-  z.record(z.string().min(1), z.string().min(1)),
-);
-
-export const GlobalModelAliasesSchema = z.preprocess(
-  (raw, ctx) => normalizeAliasKeys(raw, ctx),
-  z.record(z.string().min(1), z.record(z.string().min(1), z.string().min(1))),
-);
-
 // ── Shared connection/invocation building blocks ────────────────────────────
 
 export const LlmCapabilitiesSchema = z
@@ -111,5 +80,6 @@ export const LlmInvocationOverridesSchema = z
     extraParams: ExtraParamsSchema.optional(),
     contextLength: positiveInt.optional(),
     enableThinking: z.boolean().optional(),
+    reasoningEffort: nonEmptyString.optional(),
   })
   .passthrough();

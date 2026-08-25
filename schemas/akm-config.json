@@ -70,6 +70,10 @@
               },
               "enableThinking": {
                 "type": "boolean"
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
@@ -131,16 +135,6 @@
                   }
                 ]
               },
-              "modelAliases": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "propertyNames": {
-                  "minLength": 1
-                }
-              },
               "llmEngine": {
                 "type": "string",
                 "maxLength": 63,
@@ -180,22 +174,6 @@
         }
       },
       "additionalProperties": true
-    },
-    "modelAliases": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": {
-          "type": "string",
-          "minLength": 1
-        },
-        "propertyNames": {
-          "minLength": 1
-        }
-      },
-      "propertyNames": {
-        "minLength": 1
-      }
     },
     "semanticSearchMode": {
       "type": "string",
@@ -308,6 +286,10 @@
                 },
                 "enableThinking": {
                   "type": "boolean"
+                },
+                "reasoningEffort": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": true
@@ -378,6 +360,10 @@
               },
               "enableThinking": {
                 "type": "boolean"
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "minLength": 1
               }
             },
             "additionalProperties": true
@@ -679,6 +665,10 @@
                   },
                   "enableThinking": {
                     "type": "boolean"
+                  },
+                  "reasoningEffort": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "additionalProperties": true
@@ -725,6 +715,10 @@
                           },
                           "enableThinking": {
                             "type": "boolean"
+                          },
+                          "reasoningEffort": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": true
@@ -810,6 +804,10 @@
                           },
                           "enableThinking": {
                             "type": "boolean"
+                          },
+                          "reasoningEffort": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": true
@@ -911,6 +909,10 @@
                           },
                           "enableThinking": {
                             "type": "boolean"
+                          },
+                          "reasoningEffort": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": true
@@ -1036,6 +1038,10 @@
                           },
                           "enableThinking": {
                             "type": "boolean"
+                          },
+                          "reasoningEffort": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": true
@@ -1109,6 +1115,10 @@
                           },
                           "enableThinking": {
                             "type": "boolean"
+                          },
+                          "reasoningEffort": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": true
@@ -1184,6 +1194,10 @@
                           },
                           "enableThinking": {
                             "type": "boolean"
+                          },
+                          "reasoningEffort": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": true
@@ -1280,6 +1294,10 @@
                           },
                           "enableThinking": {
                             "type": "boolean"
+                          },
+                          "reasoningEffort": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": true
@@ -1336,6 +1354,10 @@
                           },
                           "enableThinking": {
                             "type": "boolean"
+                          },
+                          "reasoningEffort": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": true
@@ -1377,57 +1399,71 @@
                         "type": "boolean"
                       },
                       "judgment": {
-                        "type": "object",
-                        "properties": {
-                          "engine": {
-                            "type": "string",
-                            "maxLength": 63,
-                            "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                        "anyOf": [
+                          {
+                            "type": "boolean"
                           },
-                          "model": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "timeoutMs": {
-                            "anyOf": [
-                              {
-                                "type": "integer",
-                                "exclusiveMinimum": 0
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "llm": {
+                          {
                             "type": "object",
                             "properties": {
-                              "temperature": {
-                                "type": "number"
-                              },
-                              "maxTokens": {
-                                "type": "integer",
-                                "exclusiveMinimum": 0
-                              },
-                              "supportsJsonSchema": {
+                              "enabled": {
                                 "type": "boolean"
                               },
-                              "extraParams": {
+                              "engine": {
+                                "type": "string",
+                                "maxLength": 63,
+                                "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                              },
+                              "model": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "timeoutMs": {
+                                "anyOf": [
+                                  {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "llm": {
                                 "type": "object",
-                                "additionalProperties": {}
-                              },
-                              "contextLength": {
-                                "type": "integer",
-                                "exclusiveMinimum": 0
-                              },
-                              "enableThinking": {
-                                "type": "boolean"
+                                "properties": {
+                                  "temperature": {
+                                    "type": "number"
+                                  },
+                                  "maxTokens": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0
+                                  },
+                                  "supportsJsonSchema": {
+                                    "type": "boolean"
+                                  },
+                                  "extraParams": {
+                                    "type": "object",
+                                    "additionalProperties": {}
+                                  },
+                                  "contextLength": {
+                                    "type": "integer",
+                                    "exclusiveMinimum": 0
+                                  },
+                                  "enableThinking": {
+                                    "type": "boolean"
+                                  },
+                                  "reasoningEffort": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "additionalProperties": false
                               }
                             },
-                            "additionalProperties": true
+                            "additionalProperties": false
                           }
-                        },
-                        "additionalProperties": true
+                        ]
                       }
                     },
                     "additionalProperties": true
@@ -1467,6 +1503,10 @@
                           },
                           "enableThinking": {
                             "type": "boolean"
+                          },
+                          "reasoningEffort": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "additionalProperties": true
@@ -1724,6 +1764,10 @@
                   },
                   "enableThinking": {
                     "type": "boolean"
+                  },
+                  "reasoningEffort": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "required": [
@@ -1785,16 +1829,6 @@
                       }
                     ]
                   },
-                  "modelAliases": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "propertyNames": {
-                      "minLength": 1
-                    }
-                  },
                   "llmEngine": {
                     "type": "string",
                     "maxLength": 63,
@@ -1834,22 +1868,6 @@
             }
           },
           "additionalProperties": true
-        },
-        "modelAliases": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string",
-              "minLength": 1
-            },
-            "propertyNames": {
-              "minLength": 1
-            }
-          },
-          "propertyNames": {
-            "minLength": 1
-          }
         },
         "semanticSearchMode": {
           "type": "string",
@@ -1962,6 +1980,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true
@@ -2032,6 +2054,10 @@
                   },
                   "enableThinking": {
                     "type": "boolean"
+                  },
+                  "reasoningEffort": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "additionalProperties": true
@@ -2333,6 +2359,10 @@
                       },
                       "enableThinking": {
                         "type": "boolean"
+                      },
+                      "reasoningEffort": {
+                        "type": "string",
+                        "minLength": 1
                       }
                     },
                     "additionalProperties": true
@@ -2379,6 +2409,10 @@
                               },
                               "enableThinking": {
                                 "type": "boolean"
+                              },
+                              "reasoningEffort": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "additionalProperties": true
@@ -2464,6 +2498,10 @@
                               },
                               "enableThinking": {
                                 "type": "boolean"
+                              },
+                              "reasoningEffort": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "additionalProperties": true
@@ -2565,6 +2603,10 @@
                               },
                               "enableThinking": {
                                 "type": "boolean"
+                              },
+                              "reasoningEffort": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "additionalProperties": true
@@ -2690,6 +2732,10 @@
                               },
                               "enableThinking": {
                                 "type": "boolean"
+                              },
+                              "reasoningEffort": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "additionalProperties": true
@@ -2763,6 +2809,10 @@
                               },
                               "enableThinking": {
                                 "type": "boolean"
+                              },
+                              "reasoningEffort": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "additionalProperties": true
@@ -2838,6 +2888,10 @@
                               },
                               "enableThinking": {
                                 "type": "boolean"
+                              },
+                              "reasoningEffort": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "additionalProperties": true
@@ -2934,6 +2988,10 @@
                               },
                               "enableThinking": {
                                 "type": "boolean"
+                              },
+                              "reasoningEffort": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "additionalProperties": true
@@ -2990,6 +3048,10 @@
                               },
                               "enableThinking": {
                                 "type": "boolean"
+                              },
+                              "reasoningEffort": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "additionalProperties": true
@@ -3031,57 +3093,71 @@
                             "type": "boolean"
                           },
                           "judgment": {
-                            "type": "object",
-                            "properties": {
-                              "engine": {
-                                "type": "string",
-                                "maxLength": 63,
-                                "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                            "anyOf": [
+                              {
+                                "type": "boolean"
                               },
-                              "model": {
-                                "type": "string",
-                                "minLength": 1
-                              },
-                              "timeoutMs": {
-                                "anyOf": [
-                                  {
-                                    "type": "integer",
-                                    "exclusiveMinimum": 0
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "llm": {
+                              {
                                 "type": "object",
                                 "properties": {
-                                  "temperature": {
-                                    "type": "number"
-                                  },
-                                  "maxTokens": {
-                                    "type": "integer",
-                                    "exclusiveMinimum": 0
-                                  },
-                                  "supportsJsonSchema": {
+                                  "enabled": {
                                     "type": "boolean"
                                   },
-                                  "extraParams": {
+                                  "engine": {
+                                    "type": "string",
+                                    "maxLength": 63,
+                                    "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                                  },
+                                  "model": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "timeoutMs": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "exclusiveMinimum": 0
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "llm": {
                                     "type": "object",
-                                    "additionalProperties": {}
-                                  },
-                                  "contextLength": {
-                                    "type": "integer",
-                                    "exclusiveMinimum": 0
-                                  },
-                                  "enableThinking": {
-                                    "type": "boolean"
+                                    "properties": {
+                                      "temperature": {
+                                        "type": "number"
+                                      },
+                                      "maxTokens": {
+                                        "type": "integer",
+                                        "exclusiveMinimum": 0
+                                      },
+                                      "supportsJsonSchema": {
+                                        "type": "boolean"
+                                      },
+                                      "extraParams": {
+                                        "type": "object",
+                                        "additionalProperties": {}
+                                      },
+                                      "contextLength": {
+                                        "type": "integer",
+                                        "exclusiveMinimum": 0
+                                      },
+                                      "enableThinking": {
+                                        "type": "boolean"
+                                      },
+                                      "reasoningEffort": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "additionalProperties": false
                                   }
                                 },
-                                "additionalProperties": true
+                                "additionalProperties": false
                               }
-                            },
-                            "additionalProperties": true
+                            ]
                           }
                         },
                         "additionalProperties": true
@@ -3121,6 +3197,10 @@
                               },
                               "enableThinking": {
                                 "type": "boolean"
+                              },
+                              "reasoningEffort": {
+                                "type": "string",
+                                "minLength": 1
                               }
                             },
                             "additionalProperties": true
@@ -3368,6 +3448,10 @@
         "enableThinking": {
           "type": "boolean"
         },
+        "reasoningEffort": {
+          "type": "string",
+          "minLength": 1
+        },
         "supportsJsonSchema": {
           "type": "boolean"
         }
@@ -3467,6 +3551,10 @@
             },
             "enableThinking": {
               "type": "boolean"
+            },
+            "reasoningEffort": {
+              "type": "string",
+              "minLength": 1
             }
           },
           "additionalProperties": true
@@ -3683,57 +3771,71 @@
           "type": "boolean"
         },
         "judgment": {
-          "type": "object",
-          "properties": {
-            "engine": {
-              "type": "string",
-              "maxLength": 63,
-              "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          "anyOf": [
+            {
+              "type": "boolean"
             },
-            "model": {
-              "type": "string",
-              "minLength": 1
-            },
-            "timeoutMs": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "exclusiveMinimum": 0
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "llm": {
+            {
               "type": "object",
               "properties": {
-                "temperature": {
-                  "type": "number"
-                },
-                "maxTokens": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0
-                },
-                "supportsJsonSchema": {
+                "enabled": {
                   "type": "boolean"
                 },
-                "extraParams": {
+                "engine": {
+                  "type": "string",
+                  "maxLength": 63,
+                  "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "timeoutMs": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "llm": {
                   "type": "object",
-                  "additionalProperties": {}
-                },
-                "contextLength": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0
-                },
-                "enableThinking": {
-                  "type": "boolean"
+                  "properties": {
+                    "temperature": {
+                      "type": "number"
+                    },
+                    "maxTokens": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    "supportsJsonSchema": {
+                      "type": "boolean"
+                    },
+                    "extraParams": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    },
+                    "contextLength": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0
+                    },
+                    "enableThinking": {
+                      "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
-              "additionalProperties": true
+              "additionalProperties": false
             }
-          },
-          "additionalProperties": true
+          ]
         },
         "dueDays": {
           "type": "integer",
@@ -3792,6 +3894,10 @@
             },
             "enableThinking": {
               "type": "boolean"
+            },
+            "reasoningEffort": {
+              "type": "string",
+              "minLength": 1
             }
           },
           "additionalProperties": true
@@ -3838,6 +3944,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true
@@ -3923,6 +4033,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true
@@ -4024,6 +4138,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true
@@ -4149,6 +4267,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true
@@ -4222,6 +4344,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true
@@ -4297,6 +4423,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true
@@ -4393,6 +4523,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true
@@ -4449,6 +4583,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true
@@ -4490,57 +4628,71 @@
                   "type": "boolean"
                 },
                 "judgment": {
-                  "type": "object",
-                  "properties": {
-                    "engine": {
-                      "type": "string",
-                      "maxLength": 63,
-                      "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                  "anyOf": [
+                    {
+                      "type": "boolean"
                     },
-                    "model": {
-                      "type": "string",
-                      "minLength": 1
-                    },
-                    "timeoutMs": {
-                      "anyOf": [
-                        {
-                          "type": "integer",
-                          "exclusiveMinimum": 0
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "llm": {
+                    {
                       "type": "object",
                       "properties": {
-                        "temperature": {
-                          "type": "number"
-                        },
-                        "maxTokens": {
-                          "type": "integer",
-                          "exclusiveMinimum": 0
-                        },
-                        "supportsJsonSchema": {
+                        "enabled": {
                           "type": "boolean"
                         },
-                        "extraParams": {
+                        "engine": {
+                          "type": "string",
+                          "maxLength": 63,
+                          "pattern": "^(?!akm-)[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+                        },
+                        "model": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "timeoutMs": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "exclusiveMinimum": 0
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "llm": {
                           "type": "object",
-                          "additionalProperties": {}
-                        },
-                        "contextLength": {
-                          "type": "integer",
-                          "exclusiveMinimum": 0
-                        },
-                        "enableThinking": {
-                          "type": "boolean"
+                          "properties": {
+                            "temperature": {
+                              "type": "number"
+                            },
+                            "maxTokens": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0
+                            },
+                            "supportsJsonSchema": {
+                              "type": "boolean"
+                            },
+                            "extraParams": {
+                              "type": "object",
+                              "additionalProperties": {}
+                            },
+                            "contextLength": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0
+                            },
+                            "enableThinking": {
+                              "type": "boolean"
+                            },
+                            "reasoningEffort": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "additionalProperties": false
                         }
                       },
-                      "additionalProperties": true
+                      "additionalProperties": false
                     }
-                  },
-                  "additionalProperties": true
+                  ]
                 }
               },
               "additionalProperties": true
@@ -4580,6 +4732,10 @@
                     },
                     "enableThinking": {
                       "type": "boolean"
+                    },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   },
                   "additionalProperties": true

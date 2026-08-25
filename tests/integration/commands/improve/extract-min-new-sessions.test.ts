@@ -51,7 +51,6 @@ function fakeHarness(count: number): SessionLogHarness {
   return {
     name: "fake",
     isAvailable: () => true,
-    readEvents: () => [],
     listSessions: () => sessions,
     readSession: () => {
       throw new Error("readSession must not be called — extract should have been gated/skipped");

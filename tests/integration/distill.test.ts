@@ -23,10 +23,12 @@ import {
 } from "../../src/commands/proposal/validators/proposal-quality-validators";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
-import { openStateDatabase } from "../../src/core/state-db";
+import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 import { LlmFeatureTimeoutError } from "../../src/llm/feature-gate";
+import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
 
 // ── Test scaffolding ────────────────────────────────────────────────────────
 
@@ -417,6 +419,40 @@ describe("akmDistill — feature gate", () => {
 // ── Acceptance: LLM throws ──────────────────────────────────────────────────
 
 describe("akmDistill — LLM error paths", () => {
+  test("missing required credential leaves source salience, proposals, and state untouched", async () => {
+    const stash = makeStashDir();
+    const inputPath = path.join(stash, "skills", "credential-boundary.md");
+    const original = "---\ndescription: Deploy safely\n---\n\nUse the checklist.\n";
+    fs.writeFileSync(inputPath, original, "utf8");
+    const config = configEnabled(stash);
+    config.engines = {
+      ...config.engines,
+      default: {
+        kind: "llm",
+        endpoint: "http://127.0.0.1:1/v1/chat/completions",
+        model: "never-dispatched",
+        apiKey: "$AKM_DISTILL_REQUIRED_KEY",
+      },
+    };
+    const stateDbPath = getStateDbPath();
+
+    await withEnv({ AKM_DISTILL_REQUIRED_KEY: undefined }, async () => {
+      await expect(
+        akmDistill({
+          ref: "skills/credential-boundary",
+          config,
+          stashDir: stash,
+          lookupFn: async () => inputPath,
+          readEventsFn: emptyEvents,
+          fetchSimilarLessonsFn: async () => [],
+        }),
+      ).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    expect(fs.readFileSync(inputPath, "utf8")).toBe(original);
+    expect(fs.existsSync(stateDbPath)).toBe(false);
+  });
+
   test("chat throws → llm_failed outcome, no proposal, event emitted", async () => {
     const stash = makeStashDir();
     const result = await akmDistill({
@@ -836,6 +872,52 @@ describe("akmDistill — queued proposal", () => {
     expect(events).toHaveLength(1);
     expect(events[0]!.metadata?.proposalKind).toBe("knowledge");
     expect(events[0]!.metadata?.proposalRef).toBe("knowledge/deploy-fact");
+  });
+
+  test("deterministic reinforced-memory promotion does not resolve an unused credential", async () => {
+    const stash = makeStashDir();
+    const memoryFile = path.join(stash, "memories", "credential-free-promotion.md");
+    fs.writeFileSync(
+      memoryFile,
+      [
+        "---",
+        "description: Deterministic promotion needs no model",
+        "source: skill:deploy",
+        "observed_at: 2026-04-20",
+        "confidence: 0.95",
+        "tags: [deploy, ops]",
+        "---",
+        "",
+        "Always validate the deployment manifest before release.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const config = configAbsentFeature(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("expected LLM fixture engine");
+    engine.apiKey = "$AKM_UNUSED_DISTILL_PROMOTION_KEY";
+    let chatCalls = 0;
+
+    const result = await withEnv({ AKM_UNUSED_DISTILL_PROMOTION_KEY: undefined }, () =>
+      akmDistill({
+        ref: "memories/credential-free-promotion",
+        proposalKind: "auto",
+        config,
+        stashDir: stash,
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error("deterministic promotion must not dispatch");
+        },
+        lookupFn: async (ref) => (ref === "memories/credential-free-promotion" ? memoryFile : null),
+        readEventsFn: eventsFor("memories/credential-free-promotion", ["positive", "positive"]),
+      }),
+    );
+
+    expect(result.outcome).toBe("queued");
+    expect(result.proposalKind).toBe("knowledge");
+    expect(chatCalls).toBe(0);
+    expect(listProposals(stash)).toHaveLength(1);
   });
 
   test("explicit knowledge mode uses knowledge validation instead of lesson lint", async () => {
@@ -1743,6 +1825,41 @@ describe("akmDistill — pipeline-fix integration", () => {
 // ── R3/G4: judge-verdict routing + output encoding salience ──────────────────
 
 describe("akmDistill — R3 judge verdict routing + G4 output encoding salience", () => {
+  test("generation and quality judging share the credential captured before distill mutations", async () => {
+    const stash = makeStashDir();
+    const sourcePath = path.join(stash, "skills", "deploy.md");
+    fs.writeFileSync(sourcePath, "---\ndescription: Deploy safely\n---\n\nCheck deployment prerequisites.\n");
+    const config = configJudgeEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_DISTILL_LEASE_KEY";
+    const secret = "distill-lease-original-092";
+    const observed: Array<string | undefined> = [];
+
+    const result = await withEnv({ AKM_DISTILL_LEASE_KEY: secret }, () =>
+      akmDistill({
+        ref: "skills/deploy",
+        config,
+        stashDir: stash,
+        lookupFn: async () => sourcePath,
+        readEventsFn: emptyEvents,
+        chat: async (connection, messages) => {
+          observed.push(connection.apiKey);
+          if (observed.length === 1) mutateScopedEnv("AKM_DISTILL_LEASE_KEY", undefined);
+          const joined = messages.map((message) => message.content).join("\n");
+          if (joined.includes("Score this lesson")) {
+            return JSON.stringify({ score: 4.5, reason: "adds new info" });
+          }
+          return VALID_LESSON;
+        },
+      }),
+    );
+
+    expect(result.outcome).toBe("queued");
+    expect(observed).toEqual([secret, secret]);
+    expect(listProposals(stash)).toHaveLength(1);
+  });
+
   test("queued lesson stamps judgeConfidence on the event and content-scores the OUTPUT ref", async () => {
     const stash = makeStashDir();
     const result = await akmDistill({

@@ -3,6 +3,7 @@
 // platform install needed.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,8 +19,10 @@ import { isValidDescription } from "../../src/commands/proposal/validators/propo
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
 import { ImproveProcessConfigSchema, ImproveProfileConfigSchema } from "../../src/core/config/config-schema";
-import { UsageError } from "../../src/core/errors";
+import { ConfigError, UsageError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
+import { createLockPayload } from "../../src/core/file-lock";
+import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { detectTruncatedDescription } from "../../src/core/text-truncation";
 import type {
   SessionData,
@@ -27,8 +30,12 @@ import type {
   SessionRef,
   SessionSummary,
 } from "../../src/integrations/session-logs/types";
+import {
+  getExtractedSessionsMap,
+  upsertExtractedSession,
+} from "../../src/storage/repositories/extract-sessions-repository";
 import { durableItemRef } from "../_helpers/durable-ref";
-import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 // ── Test scaffolding ────────────────────────────────────────────────────────
 
@@ -45,6 +52,25 @@ function makeStashDir(): string {
     fs.mkdirSync(path.join(stash, dir), { recursive: true });
   }
   return stash;
+}
+function snapshotTree(root: string): Map<string, string> {
+  const snapshot = new Map<string, string>();
+  if (!fs.existsSync(root)) return snapshot;
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const absolute = path.join(dir, entry.name);
+      const relative = path.relative(root, absolute);
+      if (entry.isDirectory()) {
+        snapshot.set(`${relative}/`, "directory");
+        visit(absolute);
+      } else if (entry.isFile()) {
+        const bytes = fs.readFileSync(absolute);
+        snapshot.set(relative, `${bytes.length}:${createHash("sha256").update(bytes).digest("hex")}`);
+      }
+    }
+  };
+  visit(root);
+  return snapshot;
 }
 beforeEach(() => {
   storage = withIsolatedAkmStorage();
@@ -103,7 +129,7 @@ function configDisabled(stashDir: string): AkmConfig {
 function fakeSession(id: string, endedAt: number): SessionData {
   return {
     ref: {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: id,
       filePath: `/tmp/fake/${id}.jsonl`,
       startedAt: endedAt - 3600_000,
@@ -112,7 +138,7 @@ function fakeSession(id: string, endedAt: number): SessionData {
     },
     events: [
       {
-        harness: "claude-code",
+        harness: "claude",
         text: "user message: explain how to recover from VPN-disconnect during deploy",
         ts: endedAt - 3000_000,
         sessionId: id,
@@ -120,7 +146,7 @@ function fakeSession(id: string, endedAt: number): SessionData {
         filePath: `/tmp/fake/${id}.jsonl`,
       },
       {
-        harness: "claude-code",
+        harness: "claude",
         text: "agent: I see the issue — deploy.sh hangs without VPN. The error message is misleading.",
         ts: endedAt - 2000_000,
         sessionId: id,
@@ -135,11 +161,8 @@ function fakeSession(id: string, endedAt: number): SessionData {
 function makeFakeHarness(sessions: SessionData[], available = true): SessionLogHarness {
   const summaries: SessionSummary[] = sessions.map((s) => s.ref);
   return {
-    name: "claude-code",
+    name: "claude",
     isAvailable: () => available,
-    *readEvents() {
-      // not used by extract — keep empty
-    },
     listSessions: (input?: { sinceMs?: number }) => {
       const since = input?.sinceMs ?? 0;
       return summaries.filter((s) => (s.endedAt ?? 0) >= since);
@@ -185,7 +208,7 @@ describe("extract candidate placement", () => {
       confidence: 0.95,
       evidence: "concurrent refresh failure in the session",
     };
-    const source = { harness: "claude-code", sessionId: "s1", filePath: "/tmp/s1", projectHint: "project-a" };
+    const source = { harness: "claude", sessionId: "s1", filePath: "/tmp/s1", projectHint: "project-a" };
 
     expect(deriveExtractCandidateRef(candidate, source)).toBe("knowledge/oauth-refresh-race");
   });
@@ -211,7 +234,7 @@ describe("akmExtract — explicit command is not gated by the improve-stage togg
     const stash = makeStashDir();
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configDisabled(stash), // default.extract.enabled === false
       harnesses: [makeFakeHarness([fakeSession("a", Date.now())])],
@@ -247,39 +270,14 @@ describe("akmExtract — harness resolution", () => {
   test("returns warning when harness reports not-available", async () => {
     const stash = makeStashDir();
     const result = await akmExtract({
-      type: "claude-code",
-      stashDir: stash,
-      config: configEnabled(stash),
-      harnesses: [makeFakeHarness([], /* available */ false)],
-      chat: async () => "{}",
-    });
-    expect(result.ok).toBe(false);
-    expect(result.warnings.join(" ")).toMatch(/not-available/);
-  });
-
-  // Behaviour fix (#563): resolveHarness now normalizes the requested --type
-  // AND each provider's runtime name through the id-normalization bridge, so
-  // the CANONICAL id "claude" resolves to the provider whose runtime name is
-  // "claude-code". Before the fix only the exact runtime string matched, so
-  // `--type claude` (the id used by agent profiles / config schema) silently
-  // resolved to nothing. The legacy `--type claude-code` (asserted elsewhere)
-  // must keep working too.
-  test("--type claude (canonical id) resolves to the claude-code provider via the bridge", async () => {
-    const stash = makeStashDir();
-    const result = await akmExtract({
       type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
-      // provider.name is the runtime id "claude-code"; canonical "claude" must
-      // still resolve to it. `available:false` lets us confirm resolution
-      // happened (we hit the not-available path, not the no-harness path).
       harnesses: [makeFakeHarness([], /* available */ false)],
       chat: async () => "{}",
     });
     expect(result.ok).toBe(false);
-    // Resolved to the provider (not-available), NOT a "no available harness" miss.
     expect(result.warnings.join(" ")).toMatch(/not-available/);
-    expect(result.warnings.join(" ")).not.toMatch(/no available harness/);
   });
 });
 
@@ -292,7 +290,7 @@ describe("akmExtract — discovery mode", () => {
 
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configEnabled(stash),
       harnesses: [makeFakeHarness([recent, old])],
@@ -319,7 +317,7 @@ describe("akmExtract — discovery mode", () => {
 
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: cfg,
       harnesses: [makeFakeHarness(sessions)],
@@ -344,7 +342,7 @@ describe("akmExtract — single-session mode", () => {
     const other = fakeSession("other", now - 5 * 60_000);
 
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "target",
       stashDir: stash,
       config: configEnabled(stash),
@@ -358,7 +356,7 @@ describe("akmExtract — single-session mode", () => {
   test("returns warning when sessionId does not exist", async () => {
     const stash = makeStashDir();
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "missing",
       stashDir: stash,
       config: configEnabled(stash),
@@ -376,7 +374,7 @@ describe("akmExtract — candidate → proposal routing", () => {
     const session = fakeSession("ses_abc", Date.now() - 60_000);
 
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_abc",
       stashDir: stash,
       config: configEnabled(stash),
@@ -433,7 +431,7 @@ describe("akmExtract — candidate → proposal routing", () => {
     if (extractProcess) extractProcess.indexSessions = true;
 
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_live",
       stashDir: stash,
       config,
@@ -470,7 +468,7 @@ describe("akmExtract — candidate → proposal routing", () => {
     session.ref.projectHint = "Project A";
 
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_scoped",
       stashDir: stash,
       config: configEnabled(stash),
@@ -509,7 +507,7 @@ describe("akmExtract — candidate → proposal routing", () => {
     expect(isValidDescription(truncatedDesc, proposalRef).ok).toBe(false);
 
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_trunc",
       stashDir: stash,
       config: configEnabled(stash),
@@ -553,7 +551,7 @@ describe("akmExtract — candidate → proposal routing", () => {
     const session = fakeSession("ses_dry", Date.now() - 60_000);
 
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_dry",
       stashDir: stash,
       config: configEnabled(stash),
@@ -586,7 +584,7 @@ describe("akmExtract — candidate → proposal routing", () => {
     const session = fakeSession("ses_empty", Date.now() - 60_000);
 
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_empty",
       stashDir: stash,
       config: configEnabled(stash),
@@ -614,7 +612,7 @@ describe("akmExtract — LLM call wiring", () => {
     let prompt = "";
 
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_standards",
       stashDir: stash,
       config: configEnabled(stash),
@@ -635,7 +633,7 @@ describe("akmExtract — LLM call wiring", () => {
 
     let receivedSchema: unknown;
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_schema",
       stashDir: stash,
       config: configEnabled(stash),
@@ -645,7 +643,7 @@ describe("akmExtract — LLM call wiring", () => {
         return JSON.stringify({ candidates: [] });
       },
     });
-    expect(receivedSchema).toBe(EXTRACT_JSON_SCHEMA);
+    expect(receivedSchema).toEqual(EXTRACT_JSON_SCHEMA);
   });
 
   test("passes a prompt that mentions the session title + harness", async () => {
@@ -654,7 +652,7 @@ describe("akmExtract — LLM call wiring", () => {
 
     let receivedPrompt = "";
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_prompt",
       stashDir: stash,
       config: configEnabled(stash),
@@ -664,7 +662,7 @@ describe("akmExtract — LLM call wiring", () => {
         return JSON.stringify({ candidates: [] });
       },
     });
-    expect(receivedPrompt).toContain("claude-code");
+    expect(receivedPrompt).toContain("claude");
     expect(receivedPrompt).toContain("Session ses_prompt");
   });
 });
@@ -690,6 +688,587 @@ describe("minContentChars improve-process config schema", () => {
 // ── per-process engine + strategy config support ────────────────────────────
 
 describe("akmExtract — engine + strategy config resolution", () => {
+  test("a live lock created while classification reads the session suppresses credential materialization", async () => {
+    const stash = storage.stashDir;
+    const session = fakeSession("credential-lock-race", Date.now());
+    const config = configEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_EXTRACT_LOCK_RACE_REQUIRED_KEY";
+    const stateDbPath = getStateDbPath();
+    const lockPath = path.join(
+      path.dirname(stateDbPath),
+      "extract-locks",
+      `extract-claude-${session.ref.sessionId}.lock`,
+    );
+    const baseHarness = makeFakeHarness([session]);
+    let lockBytes = "";
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: (ref) => {
+        fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+        lockBytes ||= createLockPayload();
+        if (!fs.existsSync(lockPath)) fs.writeFileSync(lockPath, lockBytes, "utf8");
+        return baseHarness.readSession(ref);
+      },
+    };
+
+    const result = await withEnv({ AKM_EXTRACT_LOCK_RACE_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude",
+        sessionId: session.ref.sessionId,
+        stashDir: stash,
+        stateDbPath,
+        config,
+        harnesses: [harness],
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error("locked session dispatched an LLM request");
+        },
+      }),
+    );
+
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]).toMatchObject({ skipped: true, skipReason: "locked_concurrent" });
+    expect(chatCalls).toBe(0);
+    expect(fs.readFileSync(lockPath, "utf8")).toBe(lockBytes);
+    expect(fs.existsSync(stateDbPath)).toBe(false);
+  });
+
+  test("a newly locked first candidate frees its maxSessionsPerRun slot for the next candidate", async () => {
+    const stash = storage.stashDir;
+    const first = fakeSession("lock-cap-first", Date.now());
+    const second = fakeSession("lock-cap-second", Date.now() - 1);
+    const config = configEnabled(stash);
+    const process = config.improve?.strategies?.extract?.processes?.extract;
+    if (process) process.maxSessionsPerRun = 1;
+    const stateDbPath = getStateDbPath();
+    const firstLockPath = path.join(
+      path.dirname(stateDbPath),
+      "extract-locks",
+      `extract-claude-${first.ref.sessionId}.lock`,
+    );
+    const baseHarness = makeFakeHarness([first, second]);
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: (ref) => {
+        if (ref.sessionId === first.ref.sessionId && !fs.existsSync(firstLockPath)) {
+          fs.mkdirSync(path.dirname(firstLockPath), { recursive: true });
+          fs.writeFileSync(firstLockPath, createLockPayload(), "utf8");
+        }
+        return baseHarness.readSession(ref);
+      },
+    };
+
+    const result = await akmExtract({
+      type: "claude",
+      since: "24h",
+      stashDir: stash,
+      stateDbPath,
+      config,
+      harnesses: [harness],
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+      },
+    });
+
+    expect(result.sessions.map((item) => [item.sessionId, item.skipReason ?? null])).toEqual([
+      [first.ref.sessionId, "locked_concurrent"],
+      [second.ref.sessionId, null],
+    ]);
+    expect(result.sessionsProcessed).toBe(1);
+    expect(result.sessionsSkipped).toBe(1);
+    expect(chatCalls).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("deferred");
+    const stateDb = openStateDatabase(stateDbPath);
+    try {
+      expect(getExtractedSessionsMap(stateDb, "claude", [first.ref.sessionId]).size).toBe(0);
+      expect(getExtractedSessionsMap(stateDb, "claude", [second.ref.sessionId]).size).toBe(1);
+    } finally {
+      stateDb.close();
+    }
+  });
+
+  test("a lock acquired after the final planning probe refills the capped slot at execution", async () => {
+    const stash = storage.stashDir;
+    const first = fakeSession("post-probe-lock-first", Date.now());
+    const second = fakeSession("post-probe-lock-second", Date.now() - 1);
+    const config = configEnabled(stash);
+    const process = config.improve?.strategies?.extract?.processes?.extract;
+    if (process) process.maxSessionsPerRun = 1;
+    const stateDbPath = getStateDbPath();
+    const firstLockPath = path.join(
+      path.dirname(stateDbPath),
+      "extract-locks",
+      `extract-claude-${first.ref.sessionId}.lock`,
+    );
+    const baseHarness = makeFakeHarness([first, second]);
+    let scheduled = false;
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: (ref) => {
+        if (ref.sessionId === first.ref.sessionId && !scheduled) {
+          scheduled = true;
+          queueMicrotask(() => {
+            fs.mkdirSync(path.dirname(firstLockPath), { recursive: true });
+            fs.writeFileSync(firstLockPath, createLockPayload(), "utf8");
+          });
+        }
+        return baseHarness.readSession(ref);
+      },
+    };
+
+    const result = await akmExtract({
+      type: "claude",
+      since: "24h",
+      stashDir: stash,
+      stateDbPath,
+      config,
+      harnesses: [harness],
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+      },
+    });
+
+    expect(result.sessions.map((item) => [item.sessionId, item.skipReason ?? null])).toEqual([
+      [first.ref.sessionId, "locked_concurrent"],
+      [second.ref.sessionId, null],
+    ]);
+    expect(chatCalls).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("deferred");
+  });
+
+  test("execution rereads and gates the current session revision after acquiring its lock", async () => {
+    const stash = storage.stashDir;
+    const initial = fakeSession("content-race", Date.now());
+    const current = fakeSession(initial.ref.sessionId, initial.ref.endedAt ?? Date.now());
+    const currentEvent = current.events[0];
+    if (!currentEvent) throw new Error("test fixture requires a session event");
+    current.events = [
+      { ...currentEvent, text: "CURRENT_REVISION_MARKER durable insight from the latest session bytes" },
+    ];
+    const baseHarness = makeFakeHarness([initial]);
+    let reads = 0;
+    let prompt = "";
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: () => {
+        reads += 1;
+        return reads === 1 ? initial : current;
+      },
+    };
+
+    const result = await akmExtract({
+      type: "claude",
+      sessionId: initial.ref.sessionId,
+      stashDir: stash,
+      config: configEnabled(stash),
+      harnesses: [harness],
+      chat: async (_connection, messages) => {
+        prompt = messages.at(-1)?.content ?? "";
+        return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+      },
+    });
+
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(prompt).toContain("CURRENT_REVISION_MARKER");
+    expect(result.sessions[0]?.contentHash).toBe(
+      createHash("sha256").update(`user\n${current.events[0]?.text}`).digest("hex"),
+    );
+  });
+
+  test("an under-lock content regate frees its capped slot for the next candidate", async () => {
+    const stash = storage.stashDir;
+    const first = fakeSession("content-regate-first", Date.now());
+    const second = fakeSession("content-regate-second", Date.now() - 1);
+    const shortened = fakeSession(first.ref.sessionId, first.ref.endedAt ?? Date.now());
+    const firstEvent = shortened.events[0];
+    if (!firstEvent) throw new Error("test fixture requires a session event");
+    shortened.events = [{ ...firstEvent, text: "tiny" }];
+    const config = configEnabled(stash);
+    const process = config.improve?.strategies?.extract?.processes?.extract;
+    if (process) {
+      process.maxSessionsPerRun = 1;
+      process.minContentChars = 100;
+    }
+    const baseHarness = makeFakeHarness([first, second]);
+    let firstReads = 0;
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      readSession: (ref) => {
+        if (ref.sessionId !== first.ref.sessionId) return baseHarness.readSession(ref);
+        firstReads += 1;
+        return firstReads === 1 ? first : shortened;
+      },
+    };
+
+    const result = await akmExtract({
+      type: "claude",
+      since: "24h",
+      stashDir: stash,
+      config,
+      harnesses: [harness],
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+      },
+    });
+
+    expect(result.sessions.map((item) => [item.sessionId, item.skipReason ?? null])).toEqual([
+      [first.ref.sessionId, "too_short"],
+      [second.ref.sessionId, null],
+    ]);
+    expect(result.sessionsProcessed).toBe(1);
+    expect(result.sessionsSkipped).toBe(1);
+    expect(chatCalls).toBe(1);
+    expect(result.warnings.join(" ")).not.toContain("deferred");
+  });
+
+  test("missing required symbolic credential aborts without proposals, session assets, or session-state rows", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("credential", Date.now());
+    const config = configEnabled(stash);
+    const defaultEngine = config.engines?.default;
+    if (!defaultEngine || defaultEngine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    defaultEngine.apiKey = "$AKM_EXTRACT_REQUIRED_KEY";
+    let chatCalls = 0;
+    const stateDb = openStateDatabase();
+    try {
+      const failure = withEnv({ AKM_EXTRACT_REQUIRED_KEY: undefined }, () =>
+        akmExtract({
+          type: "claude",
+          sessionId: session.ref.sessionId,
+          stashDir: stash,
+          config,
+          harnesses: [makeFakeHarness([session])],
+          stateDb,
+          chat: async () => {
+            chatCalls += 1;
+            return JSON.stringify({ candidates: [] });
+          },
+        }),
+      );
+
+      await expect(failure).rejects.toBeInstanceOf(ConfigError);
+      await expect(failure).rejects.toMatchObject({ code: "INVALID_CONFIG_FILE" });
+      expect(chatCalls).toBe(0);
+      expect(listProposals(stash)).toEqual([]);
+      expect(fs.existsSync(path.join(stash, "sessions")) ? fs.readdirSync(path.join(stash, "sessions")) : []).toEqual(
+        [],
+      );
+      expect(getExtractedSessionsMap(stateDb, "claude", [session.ref.sessionId]).size).toBe(0);
+    } finally {
+      stateDb.close();
+    }
+  });
+
+  test("an extract run keeps its preflight credential snapshot across multiple session mutations", async () => {
+    const stash = makeStashDir();
+    const first = fakeSession("lease-first", Date.now());
+    const second = fakeSession("lease-second", Date.now() - 1);
+    const config = configEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_EXTRACT_LEASE_KEY";
+    const secret = "extract-lease-original-092";
+    const observed: Array<string | undefined> = [];
+    const stateDb = openStateDatabase();
+    try {
+      const result = await withEnv({ AKM_EXTRACT_LEASE_KEY: secret }, () =>
+        akmExtract({
+          type: "claude",
+          since: "24h",
+          stashDir: stash,
+          config,
+          harnesses: [makeFakeHarness([first, second])],
+          stateDb,
+          chat: async (connection) => {
+            observed.push(connection.apiKey);
+            if (observed.length === 1) mutateScopedEnv("AKM_EXTRACT_LEASE_KEY", undefined);
+            return JSON.stringify({ candidates: [], rationale_if_empty: "nothing durable" });
+          },
+        }),
+      );
+
+      expect(result.sessionsProcessed).toBe(2);
+      expect(observed).toEqual([secret, secret]);
+      expect(getExtractedSessionsMap(stateDb, "claude", [first.ref.sessionId, second.ref.sessionId]).size).toBe(2);
+    } finally {
+      stateDb.close();
+    }
+  });
+
+  test("missing required symbolic credential does not create state.db, tracking, session, or proposal assets", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("credential-no-state", Date.now());
+    const config = configEnabled(stash);
+    const defaultEngine = config.engines?.default;
+    if (!defaultEngine || defaultEngine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    defaultEngine.apiKey = "$AKM_EXTRACT_NO_STATE_REQUIRED_KEY";
+    const stateDbPath = getStateDbPath();
+    const beforeTree = fs.readdirSync(stash, { recursive: true }).map(String).sort();
+    let chatCalls = 0;
+
+    const failure = withEnv({ AKM_EXTRACT_NO_STATE_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude",
+        sessionId: session.ref.sessionId,
+        stashDir: stash,
+        config,
+        harnesses: [makeFakeHarness([session])],
+        chat: async () => {
+          chatCalls += 1;
+          return JSON.stringify({ candidates: [] });
+        },
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(chatCalls).toBe(0);
+    expect(fs.existsSync(stateDbPath)).toBe(false);
+    expect(fs.readdirSync(stash, { recursive: true }).map(String).sort()).toEqual(beforeTree);
+  });
+
+  test("default discovery validates a required credential before creating any durable state", async () => {
+    const stash = storage.stashDir;
+    const session = fakeSession("credential-discovery-no-state", Date.now());
+    const config = configEnabled(stash);
+    const defaultEngine = config.engines?.default;
+    if (!defaultEngine || defaultEngine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    defaultEngine.apiKey = "$AKM_EXTRACT_DISCOVERY_REQUIRED_KEY";
+    const stateDbPath = getStateDbPath();
+    const dataTreeBefore = snapshotTree(storage.dataDir);
+    const storageTreeBefore = snapshotTree(storage.root);
+    let chatCalls = 0;
+
+    const failure = withEnv({ AKM_EXTRACT_DISCOVERY_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude",
+        stashDir: stash,
+        config,
+        harnesses: [makeFakeHarness([session])],
+        chat: async () => {
+          chatCalls += 1;
+          return JSON.stringify({ candidates: [] });
+        },
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    await expect(failure).rejects.toMatchObject({
+      code: "INVALID_CONFIG_FILE",
+      message: "Required engine credential AKM_EXTRACT_DISCOVERY_REQUIRED_KEY is not set.",
+    });
+    expect(chatCalls).toBe(0);
+    expect(fs.existsSync(stateDbPath)).toBe(false);
+    expect(fs.existsSync(`${stateDbPath}-wal`)).toBe(false);
+    expect(fs.existsSync(`${stateDbPath}-shm`)).toBe(false);
+    expect(fs.existsSync(path.join(path.dirname(stateDbPath), "maintenance-activities"))).toBe(false);
+    expect(fs.existsSync(path.join(path.dirname(stateDbPath), ".maintenance.barrier.lock.operations.sensitive"))).toBe(
+      false,
+    );
+    expect(snapshotTree(storage.dataDir)).toEqual(dataTreeBefore);
+    expect(snapshotTree(storage.root)).toEqual(storageTreeBefore);
+  });
+
+  test.each([
+    {
+      reason: "too_short" as const,
+      key: "AKM_EXTRACT_TOO_SHORT_REQUIRED_KEY",
+      configure: (config: AkmConfig) => {
+        const process = config.improve?.strategies?.extract?.processes?.extract;
+        if (process) process.minContentChars = 100_000;
+      },
+      harness: (session: SessionData) => makeFakeHarness([session]),
+    },
+    {
+      reason: "triaged_out" as const,
+      key: "AKM_EXTRACT_TRIAGED_REQUIRED_KEY",
+      configure: (config: AkmConfig) => {
+        const process = config.improve?.strategies?.extract?.processes?.extract;
+        if (process) process.triage = { enabled: true, minScore: 10 };
+      },
+      harness: (session: SessionData) => makeFakeHarness([session]),
+    },
+    {
+      reason: "read_failed" as const,
+      key: "AKM_EXTRACT_READ_FAILED_REQUIRED_KEY",
+      configure: (_config: AkmConfig) => {},
+      harness: (session: SessionData): SessionLogHarness => ({
+        ...makeFakeHarness([session]),
+        readSession: () => {
+          throw new Error("fixture read failure");
+        },
+      }),
+    },
+  ])("missing required credential is not materialized for $reason", async ({ reason, key, configure, harness }) => {
+    const stash = storage.stashDir;
+    const session = fakeSession(`credential-${reason}`, Date.now());
+    const config = configEnabled(stash);
+    configure(config);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = `$${key}`;
+    const before = snapshotTree(storage.root);
+    let chatCalls = 0;
+
+    const result = await withEnv({ [key]: undefined }, () =>
+      akmExtract({
+        type: "claude",
+        sessionId: session.ref.sessionId,
+        stashDir: stash,
+        config,
+        harnesses: [harness(session)],
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error(`deterministic ${reason} gate dispatched an LLM request`);
+        },
+      }),
+    );
+
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]).toMatchObject({ skipped: true, skipReason: reason });
+    expect(chatCalls).toBe(0);
+    expect(snapshotTree(storage.root)).toEqual(before);
+  });
+
+  test("missing required credential is not materialized for an unchanged already-extracted session", async () => {
+    const stash = storage.stashDir;
+    const session = fakeSession("credential-already-extracted", Date.now());
+    const config = configEnabled(stash);
+    await akmExtract({
+      type: "claude",
+      sessionId: session.ref.sessionId,
+      stashDir: stash,
+      config,
+      harnesses: [makeFakeHarness([session])],
+      chat: async () => JSON.stringify({ candidates: [] }),
+    });
+
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_EXTRACT_ALREADY_REQUIRED_KEY";
+    const before = snapshotTree(storage.root);
+    let chatCalls = 0;
+
+    const result = await withEnv({ AKM_EXTRACT_ALREADY_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude",
+        sessionId: session.ref.sessionId,
+        stashDir: stash,
+        config,
+        harnesses: [makeFakeHarness([session])],
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error("already-extracted gate dispatched an LLM request");
+        },
+      }),
+    );
+
+    expect(result.sessions[0]).toMatchObject({ skipped: true, skipReason: "already_extracted" });
+    expect(chatCalls).toBe(0);
+    expect(snapshotTree(storage.root)).toEqual(before);
+  });
+
+  test("a deterministic skip plus eligible session fails before any partial tracking, lock, or proposal mutation", async () => {
+    const stash = storage.stashDir;
+    const short = fakeSession("credential-mixed-short", Date.now());
+    const firstEvent = short.events[0];
+    if (!firstEvent) throw new Error("test fixture requires one session event");
+    short.events = [{ ...firstEvent, text: "tiny" }];
+    const eligible = fakeSession("credential-mixed-eligible", Date.now() - 1);
+    const config = configEnabled(stash);
+    const process = config.improve?.strategies?.extract?.processes?.extract;
+    if (process) process.minContentChars = 20;
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.apiKey = "$AKM_EXTRACT_MIXED_REQUIRED_KEY";
+    const before = snapshotTree(storage.root);
+    let chatCalls = 0;
+
+    const failure = withEnv({ AKM_EXTRACT_MIXED_REQUIRED_KEY: undefined }, () =>
+      akmExtract({
+        type: "claude",
+        since: "24h",
+        stashDir: stash,
+        config,
+        harnesses: [makeFakeHarness([short, eligible])],
+        chat: async () => {
+          chatCalls += 1;
+          return JSON.stringify({ candidates: [] });
+        },
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(chatCalls).toBe(0);
+    expect(snapshotTree(storage.root)).toEqual(before);
+  });
+
+  test("default discovery reads a held-WAL watermark without mutating state or materializing a no-work credential", async () => {
+    const stash = storage.stashDir;
+    const stateDbPath = getStateDbPath();
+    const stateDb = openStateDatabase(stateDbPath);
+    const watermark = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    upsertExtractedSession(stateDb, {
+      harness: "claude",
+      sessionId: "prior-watermark",
+      processedAt: new Date(watermark).toISOString(),
+      outcome: "no_candidates",
+      candidateCount: 0,
+      proposalCount: 0,
+      contentHash: "prior-content",
+    });
+    expect(fs.existsSync(stateDbPath)).toBe(true);
+    expect(fs.existsSync(`${stateDbPath}-wal`)).toBe(true);
+    expect(fs.existsSync(`${stateDbPath}-shm`)).toBe(true);
+    const config = configEnabled(stash);
+    const defaultEngine = config.engines?.default;
+    if (!defaultEngine || defaultEngine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    defaultEngine.apiKey = "$AKM_EXTRACT_NO_WORK_REQUIRED_KEY";
+    const baseHarness = makeFakeHarness([]);
+    let observedSinceMs: number | undefined;
+    let chatCalls = 0;
+    const harness: SessionLogHarness = {
+      ...baseHarness,
+      listSessions: (input) => {
+        observedSinceMs = input?.sinceMs;
+        return [];
+      },
+    };
+    const storageTreeBefore = snapshotTree(storage.root);
+
+    try {
+      const result = await withEnv({ AKM_EXTRACT_NO_WORK_REQUIRED_KEY: undefined }, () =>
+        akmExtract({
+          type: "claude",
+          stashDir: stash,
+          stateDbPath,
+          config,
+          harnesses: [harness],
+          chat: async () => {
+            chatCalls += 1;
+            throw new Error("no-work discovery dispatched an LLM request");
+          },
+        }),
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.sessionsProcessed).toBe(0);
+      expect(observedSinceMs).toBe(watermark);
+      expect(chatCalls).toBe(0);
+      expect(snapshotTree(storage.root)).toEqual(storageTreeBefore);
+    } finally {
+      stateDb.close();
+    }
+  });
+
   function configWithStrategy(stashDir: string, processOverride: Record<string, unknown>): AkmConfig {
     return {
       configVersion: "0.9.0",
@@ -746,12 +1325,24 @@ describe("akmExtract — engine + strategy config resolution", () => {
     expect(plan.process.maxTotalChars).toBe(4321);
   });
 
-  test("an unset symbolic credential does not block dry-run planning with no dispatch", async () => {
+  test("standalone planning preserves an explicit unbounded timeout", () => {
     const stash = makeStashDir();
+    const config = configWithStrategy(stash, { timeoutMs: null });
+    const plan = resolveStandaloneExtractPlan(config, { strategy: "extract" });
+
+    expect(plan.timeoutMs).toBeNull();
+    expect(plan.runner?.timeoutMs).toBeNull();
+  });
+
+  test("an unset symbolic credential does not block default-discovery dry-run planning with no dispatch or writes", async () => {
+    const stash = storage.stashDir;
     const config = configWithStrategy(stash, {});
     const engine = config.engines?.["extract-special"];
     if (engine?.kind !== "llm") throw new Error("fixture must use an LLM engine");
     engine.apiKey = "$EXTRACT_REQUIRED_API_KEY";
+    const stateDbPath = getStateDbPath();
+    const storageTreeBefore = snapshotTree(storage.root);
+    let chatCalls = 0;
 
     await withEnv({ EXTRACT_REQUIRED_API_KEY: undefined }, async () => {
       const plan = resolveStandaloneExtractPlan(config, { engine: "extract-special" });
@@ -759,16 +1350,24 @@ describe("akmExtract — engine + strategy config resolution", () => {
       expect(plan.runner?.connection.apiKey).toBeUndefined();
 
       const result = await akmExtract({
-        type: "claude-code",
+        type: "claude",
         dryRun: true,
         stashDir: stash,
         config,
         resolvedPlan: plan,
         harnesses: [makeFakeHarness([])],
-        skipTracking: true,
+        chat: async () => {
+          chatCalls += 1;
+          throw new Error("dry-run with no candidates dispatched an LLM request");
+        },
       });
       expect(result.ok).toBe(true);
       expect(result.sessionsProcessed).toBe(0);
+      expect(chatCalls).toBe(0);
+      expect(fs.existsSync(stateDbPath)).toBe(false);
+      expect(fs.existsSync(`${stateDbPath}-wal`)).toBe(false);
+      expect(fs.existsSync(`${stateDbPath}-shm`)).toBe(false);
+      expect(snapshotTree(storage.root)).toEqual(storageTreeBefore);
     });
   });
 
@@ -826,7 +1425,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
 
     let receivedModel = "";
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "frozen",
       stashDir: stash,
       config,
@@ -862,7 +1461,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const config = configWithStrategy(stash, {});
     await expect(
       akmExtract({
-        type: "claude-code",
+        type: "claude",
         stashDir: stash,
         config,
         resolvedPlan: Object.freeze({
@@ -884,7 +1483,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const session = fakeSession("ses_profile", Date.now() - 60_000);
     let receivedEndpoint = "";
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_profile",
       stashDir: stash,
       config: configWithStrategy(stash, { engine: "extract-special" }),
@@ -902,7 +1501,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const session = fakeSession("ses_default", Date.now() - 60_000);
     let receivedModel = "";
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_default",
       stashDir: stash,
       config: configWithStrategy(stash, {}),
@@ -928,7 +1527,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
     };
     await expect(
       akmExtract({
-        type: "claude-code",
+        type: "claude",
         sessionId: "ses_bad_mode",
         stashDir: stash,
         config,
@@ -943,7 +1542,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const session = fakeSession("ses_to", Date.now() - 60_000);
     let receivedTimeout = 0;
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_to",
       stashDir: stash,
       config: configWithStrategy(stash, { engine: "extract-special", timeoutMs: 45_000 }),
@@ -961,7 +1560,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const session = fakeSession("ses_to2", Date.now() - 60_000);
     let receivedTimeout = 0;
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_to2",
       stashDir: stash,
       config: configWithStrategy(stash, { engine: "extract-special", timeoutMs: 45_000 }),
@@ -983,7 +1582,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const old = fakeSession("ses_5d", now - 5 * 86_400_000);
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir: stash,
       config: configWithStrategy(stash, { defaultSince: "7d" }),
       harnesses: [makeFakeHarness([old])],
@@ -1003,14 +1602,14 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const endedAt = Date.now() - 60_000;
     return {
       ref: {
-        harness: "claude-code",
+        harness: "claude",
         sessionId: id,
         filePath: `/tmp/fake/${id}.jsonl`,
         startedAt: endedAt - 3600_000,
         endedAt,
       },
       events: texts.map((text, i) => ({
-        harness: "claude-code",
+        harness: "claude",
         text,
         ts: endedAt - 60_000 * (texts.length - i),
         sessionId: id,
@@ -1028,7 +1627,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const stash = makeStashDir();
     let chatCalls = 0;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: session.ref.sessionId,
       stashDir: stash,
       config: configWithStrategy(stash, processOverride),
@@ -1102,14 +1701,14 @@ describe("akmExtract — engine + strategy config resolution", () => {
     // a brittle absolute size assertion against the prompt template.
     const fatSession: SessionData = {
       ref: {
-        harness: "claude-code",
+        harness: "claude",
         sessionId: "ses_budget",
         filePath: "/tmp/fake/ses_budget.jsonl",
         startedAt: Date.now() - 3600_000,
         endedAt: Date.now(),
       },
       events: Array.from({ length: 20 }, (_, i) => ({
-        harness: "claude-code",
+        harness: "claude",
         text: `event ${i} `.padEnd(800, "x"),
         ts: Date.now() - 60_000 * (20 - i),
         sessionId: "ses_budget",
@@ -1122,7 +1721,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
     let tightPromptLen = 0;
     let generousPromptLen = 0;
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_budget",
       force: true, // re-extract the same session twice to compare prompt budgets
       stashDir: stash,
@@ -1134,7 +1733,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
       },
     });
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       sessionId: "ses_budget",
       force: true, // --force overrides the content-hash skip on the second run
       stashDir: stash,

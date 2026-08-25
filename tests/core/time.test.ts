@@ -68,10 +68,8 @@ describe("parseDuration", () => {
     expect(parseDuration("5M")).toBe(5 * MONTH_30D);
     expect(parseDuration("12h")).toBe(12 * HOUR);
     expect(parseDuration("7d")).toBe(7 * DAY);
-    // Upper-case H/D aliases retained for specs that relied on the old
-    // case-insensitive health/expires parsers.
-    expect(parseDuration("12H")).toBe(12 * HOUR);
-    expect(parseDuration("7D")).toBe(7 * DAY);
+    expect(parseDuration("12H")).toBeNull();
+    expect(parseDuration("7D")).toBeNull();
   });
 
   test("DURATION_UNITS encodes the canonical multipliers", () => {

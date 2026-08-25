@@ -16,7 +16,7 @@ assistant, including [Claude Code](https://claude.ai/code),
 
 ## Install
 
-**Option 1 — npm package (recommended; requires [Node.js](https://nodejs.org) >= 22):**
+**Option 1 — npm package (recommended; requires [Node.js](https://nodejs.org) >= 24):**
 
 ```sh
 npm install -g akm-cli
@@ -85,6 +85,8 @@ Full docs, CLI reference, and guides are available on [GitHub](https://github.co
 - [Getting Started](https://github.com/itlackey/akm/blob/main/docs/guides/getting-started.md)
 - [Supported Formats](https://github.com/itlackey/akm/blob/main/docs/reference/supported-formats.md)
 - [CLI Reference](https://github.com/itlackey/akm/blob/main/docs/reference/cli.md)
+- [Task v3 Reference](https://github.com/itlackey/akm/blob/main/docs/reference/tasks.md)
+- [0.9.2 Migration Guide](https://github.com/itlackey/akm/blob/main/docs/migration/v0.9.1-to-v0.9.2.md)
 - [Configuration](https://github.com/itlackey/akm/blob/main/docs/reference/configuration.md)
 - [Bundle Authoring Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-bundles.md)
 - [Registry](https://github.com/itlackey/akm/blob/main/docs/reference/registry.md)

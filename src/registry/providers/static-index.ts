@@ -2,11 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { fetchWithRetry, jsonWithByteCap, toErrorMessage } from "../../core/common";
+import { jsonWithByteCap } from "../../core/common";
 import type { RegistryConfigEntry } from "../../core/config/config";
+import {
+  formatRegistryCredentialWarning,
+  formatRegistryError,
+  formatRegistryLabel,
+  hasRegistryUrlCredentials,
+} from "../../core/registry-url";
 import { asString } from "../../integrations/github";
 import { fetchCachedJson } from "../../storage/repositories/registry-cache";
 import { registerRegistryProvider } from "../factory";
+import { allowPrivateRegistryFixtureForTests, cancelRegistryResponse, fetchRegistryResponse } from "../network";
 import { buildInstallRef } from "../resolve";
 import type { InstallKind, RegistryAssetEntry, RegistryAssetSearchHit, RegistrySearchHit } from "../types";
 import type { RegistryProvider, RegistryProviderResult, RegistryProviderSearchOptions } from "./types";
@@ -50,6 +57,9 @@ class StaticIndexProvider implements RegistryProvider {
   }
 
   async search(options: RegistryProviderSearchOptions): Promise<RegistryProviderResult> {
+    if (hasRegistryUrlCredentials(this.config.url)) {
+      return { hits: [], warnings: [formatRegistryCredentialWarning(this.config)] };
+    }
     const warnings: string[] = [];
     const bundles = await this.loadBundles(warnings);
 
@@ -73,12 +83,17 @@ class StaticIndexProvider implements RegistryProvider {
       if (index) {
         const regName = this.config.name;
         for (const stash of index.stashes) {
+          if (stash.source === "git") {
+            warnings.push(
+              `Registry ${formatRegistryLabel(this.config)}: ignored ${stash.id} because registry-provided git transport refs are not installable`,
+            );
+            continue;
+          }
           bundles.push({ stash, registryName: regName });
         }
       }
     } catch (err) {
-      const label = this.config.name ? `${this.config.name} (${this.config.url})` : this.config.url;
-      warnings.push(`Registry ${label}: ${toErrorMessage(err)}`);
+      warnings.push(`Registry ${formatRegistryLabel(this.config)}: ${formatRegistryError(err)}`);
     }
     return bundles;
   }
@@ -98,13 +113,18 @@ async function loadIndex(entry: RegistryConfigEntry): Promise<RegistryIndex | nu
     // cache row lets JSON.parse throw out of the load.
     parseCache: (json) => parseRegistryIndex(JSON.parse(json) as unknown) ?? undefined,
     fetchFresh: async () => {
-      const response = await fetchWithRetry(entry.url, undefined, { timeout: 10_000 });
+      const response = await fetchRegistryResponse(entry.url, undefined, {
+        policy: { kind: "public-registry" },
+        timeoutMs: 10_000,
+        allowPrivateHostsForTesting: allowPrivateRegistryFixtureForTests(entry.url),
+      });
       if (!response.ok) {
+        await cancelRegistryResponse(response);
         throw new Error(`HTTP ${response.status}`);
       }
       // Cap at 50 MB — registry indexes can grow large but unbounded
       // responses from a compromised server would OOM us.
-      const data = await jsonWithByteCap<unknown>(response, 50 * 1024 * 1024);
+      const data = await jsonWithByteCap<unknown>(response, 50 * 1024 * 1024, { bodyTimeoutMs: 10_000 });
       const index = parseRegistryIndex(data);
       if (!index) {
         throw new Error("Invalid registry index format");
@@ -237,7 +257,7 @@ function toSearchHit(stash: RegistryBundleEntry, score: number, registryName?: s
     title: stash.name,
     description: stash.description,
     ref: stash.ref,
-    installRef: buildInstallRef(stash.source, stash.ref),
+    installRef: buildInstallRef(stash.source, stash.ref, "registry"),
     homepage: stash.homepage,
     score: Math.round(score * 1000) / 1000,
     metadata,
@@ -288,7 +308,7 @@ function scoreAssets(
   for (const { stash, registryName } of stashes) {
     if (!stash.assets || stash.assets.length === 0) continue;
 
-    const installRef = buildInstallRef(stash.source, stash.ref);
+    const installRef = buildInstallRef(stash.source, stash.ref, "registry");
 
     for (const asset of stash.assets) {
       const score = scoreAsset(asset, tokens);

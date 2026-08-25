@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AkmConfig } from "../../src/core/config/config";
-import { ConfigError } from "../../src/core/errors";
-import { resolveDefaultEngine, resolveEngine } from "../../src/integrations/agent/engine-resolution";
+import { resolveEngine } from "../../src/integrations/agent/engine-resolution";
 import { BUILTIN_AGENT_PROFILE_NAMES, getBuiltinAgentProfile } from "../../src/integrations/agent/profiles";
 
 function makeConfig(overrides: Partial<AkmConfig> = {}): AkmConfig {
@@ -73,21 +72,7 @@ describe("built-in agent harness profiles", () => {
   });
 });
 
-describe("default engine resolution", () => {
-  test("throws when no default engine is selected", () => {
-    expect(() => resolveDefaultEngine(makeConfig())).toThrow(ConfigError);
-  });
-
-  test("resolves defaults.engine exactly", () => {
-    const runner = resolveDefaultEngine(
-      makeConfig({
-        engines: { claude: { kind: "agent", platform: "claude" } },
-        defaults: { engine: "claude" },
-      }),
-    );
-    expect(runner.engine).toBe("claude");
-  });
-
+describe("engine resolution", () => {
   test("a missing requested engine does not fall back to defaults.engine", () => {
     const config = makeConfig({
       engines: { claude: { kind: "agent", platform: "claude" } },

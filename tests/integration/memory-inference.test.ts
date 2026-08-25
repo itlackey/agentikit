@@ -18,7 +18,13 @@ import os from "node:os";
 import path from "node:path";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
+import type { LoweringNotice } from "../../src/execution/resolved-request";
 import type { SearchSource } from "../../src/indexer/search/search-source";
+import { compressMemoryToDerivedMemory } from "../../src/llm/memory-infer";
+import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
+import { computeBodyHash, upsertLlmCacheEntry } from "../../src/storage/repositories/index-llm-cache-repository";
+import { mutateScopedEnv, withEnv, withMockedFetch } from "../_helpers/sandbox";
 
 type Draft = {
   title: string;
@@ -324,6 +330,331 @@ describe("runMemoryInferencePass — progress", () => {
 // ── runMemoryInferencePass — enabled path ───────────────────────────────────
 
 describe("runMemoryInferencePass — enabled", () => {
+  test("an existing child that disappears after classification leaves its parent retryable", async () => {
+    const parent = writeMemory("vanishing-child", { description: "keep" }, "Parent body.");
+    const child = writeMemory("vanishing-child.derived", { inferred: true }, "Transient derived body.");
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_VANISHING_CHILD_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+    let calls = 0;
+    let removed = false;
+    compressor = () => {
+      calls += 1;
+      throw new Error("vanishing existing-child plan dispatched an LLM request");
+    };
+
+    const result = await withEnv({ AKM_MEMORY_VANISHING_CHILD_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePass({
+        config,
+        sources: sources(),
+        onProgress: (event) => {
+          if (!removed && event.processed === 0) {
+            fs.rmSync(child);
+            removed = true;
+          }
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ considered: 1, skippedNoFacts: 1, skippedChildExists: 0, writtenFacts: 0 });
+    expect(calls).toBe(0);
+    expect(fs.existsSync(child)).toBe(false);
+    expect(parseFrontmatter(fs.readFileSync(parent, "utf8")).data.inferenceProcessed).toBeUndefined();
+    expect(collectPendingMemories(tmpStash).map((record) => record.ref)).toContain("memories/vanishing-child");
+  });
+
+  test("a child that appears after model classification wins without a provider call", async () => {
+    const parent = writeMemory("appearing-child", { description: "keep" }, "Parent body.");
+    const child = path.join(tmpStash, "memories", "appearing-child.derived.md");
+    let calls = 0;
+    let created = false;
+    compressor = () => {
+      calls += 1;
+      throw new Error("appearing child still dispatched an LLM request");
+    };
+
+    const result = await runMemoryInferencePass({
+      config: configWithLlm(),
+      sources: sources(),
+      onProgress: (event) => {
+        if (!created && event.processed === 0) {
+          writeMemory("appearing-child.derived", { inferred: true }, "Externally derived body.");
+          created = true;
+        }
+      },
+    });
+
+    expect(result).toMatchObject({ considered: 1, skippedChildExists: 1, writtenFacts: 0 });
+    expect(calls).toBe(0);
+    expect(fs.existsSync(child)).toBe(true);
+    expect(parseFrontmatter(fs.readFileSync(parent, "utf8")).data.inferenceProcessed).toBe(true);
+  });
+
+  test("all existing children self-heal their parents without materializing a required credential", async () => {
+    const first = writeMemory("existing-a", { description: "first" }, "First body.");
+    const second = writeMemory("existing-b", { description: "second" }, "Second body.");
+    writeMemory("existing-a.derived", { inferred: true }, "First derived body.");
+    writeMemory("existing-b.derived", { inferred: true }, "Second derived body.");
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_EXISTING_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+    let calls = 0;
+    compressor = () => {
+      calls += 1;
+      throw new Error("existing-child batch dispatched an LLM request");
+    };
+
+    const result = await withEnv({ AKM_MEMORY_EXISTING_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePass({ config, sources: sources() }),
+    );
+
+    expect(result).toMatchObject({ considered: 2, skippedChildExists: 2, writtenFacts: 0 });
+    expect(calls).toBe(0);
+    for (const parent of [first, second]) {
+      expect(parseFrontmatter(fs.readFileSync(parent, "utf8")).data.inferenceProcessed).toBe(true);
+    }
+  });
+
+  test("an already-aborted batch does not materialize a required credential or mutate parents", async () => {
+    const parent = writeMemory("aborted-required", { description: "keep" }, "Body.");
+    const before = fs.readFileSync(parent, "utf8");
+    const controller = new AbortController();
+    controller.abort();
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_ABORTED_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+
+    const result = await withEnv({ AKM_MEMORY_ABORTED_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePass({ config, sources: sources(), signal: controller.signal }),
+    );
+
+    expect(result).toMatchObject({ considered: 1, skippedAborted: 1, writtenFacts: 0 });
+    expect(fs.readFileSync(parent, "utf8")).toBe(before);
+    expect(fs.existsSync(path.join(tmpStash, "memories", "aborted-required.derived.md"))).toBe(false);
+  });
+
+  test("a validated cache-only batch writes derived state without materializing a required credential", async () => {
+    const parent = writeMemory("cached-required", { description: "parent" }, "Cached body.");
+    const record = collectPendingMemories(tmpStash)[0];
+    if (!record) throw new Error("test fixture did not collect the pending memory");
+    const db = openIndexDatabase(path.join(tmpStash, "index.db"));
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_CACHE_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+    upsertLlmCacheEntry(
+      db,
+      record.filePath,
+      computeBodyHash(record.body),
+      JSON.stringify(sampleDraft("Cached Derived")),
+      "memory-inference-v2",
+    );
+    let calls = 0;
+    compressor = () => {
+      calls += 1;
+      throw new Error("cache-only batch dispatched an LLM request");
+    };
+
+    try {
+      const result = await withEnv({ AKM_MEMORY_CACHE_REQUIRED_KEY: undefined }, () =>
+        runMemoryInferencePass({ config, sources: sources(), db }),
+      );
+
+      expect(result).toMatchObject({ considered: 1, cacheHits: 1, splitParents: 1, writtenFacts: 1 });
+      expect(calls).toBe(0);
+      expect(fs.existsSync(path.join(tmpStash, "memories", "cached-required.derived.md"))).toBe(true);
+      expect(parseFrontmatter(fs.readFileSync(parent, "utf8")).data.inferenceProcessed).toBe(true);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("required symbolic credential failure escapes the worker pool without writing derived state", async () => {
+    const parentPath = writeMemory("credential", {}, "Body.");
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+
+    const failure = withEnv({ AKM_MEMORY_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePassImpl({ config, sources: sources() }),
+    );
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(fs.existsSync(path.join(tmpStash, "memories", "credential.derived.md"))).toBe(false);
+    expect(parseFrontmatter(fs.readFileSync(parentPath, "utf8")).data.inferenceProcessed).toBeUndefined();
+  });
+
+  test("multiple inferred memories use the operation credential after the environment entry is removed", async () => {
+    const firstParent = writeMemory("lease-first", {}, "First body.");
+    const secondParent = writeMemory("lease-second", {}, "Second body.");
+    const secret = "memory-lease-original-092";
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "https://memory-lease.invalid/v1/chat/completions",
+          model: "provider/exact-memory",
+          apiKey: "$AKM_MEMORY_LEASE_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+    const authorization: Array<string | null> = [];
+
+    const result = await withEnv({ AKM_MEMORY_LEASE_KEY: secret }, () =>
+      withMockedFetch(
+        () =>
+          runMemoryInferencePassImpl({
+            config,
+            sources: sources(),
+            options: { compressMemoryToDerivedMemory },
+          }),
+        (_url, init) => {
+          authorization.push(new Headers(init?.headers).get("authorization"));
+          if (authorization.length === 1) mutateScopedEnv("AKM_MEMORY_LEASE_KEY", undefined);
+          return Response.json({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify(sampleDraft(`Derived ${authorization.length}`)),
+                },
+              },
+            ],
+          });
+        },
+      ),
+    );
+
+    expect(result.writtenFacts).toBe(2);
+    expect(authorization).toEqual([`Bearer ${secret}`, `Bearer ${secret}`]);
+    expect(parseFrontmatter(fs.readFileSync(firstParent, "utf8")).data.inferenceProcessed).toBe(true);
+    expect(parseFrontmatter(fs.readFileSync(secondParent, "utf8")).data.inferenceProcessed).toBe(true);
+  });
+
+  test("required symbolic credential failure leaves every earlier and later parent and derived asset unchanged", async () => {
+    const earlierParent = writeMemory("a-existing-child", { description: "earlier" }, "Earlier body.");
+    const failingParent = writeMemory("b-needs-model", { description: "middle" }, "Middle body.");
+    const laterParent = writeMemory("c-existing-child", { description: "later" }, "Later body.");
+    const earlierChild = writeMemory("a-existing-child.derived", { inferred: true }, "Earlier derived body.");
+    const laterChild = writeMemory("c-existing-child.derived", { inferred: true }, "Later derived body.");
+    const trackedPaths = [earlierParent, earlierChild, failingParent, laterParent, laterChild];
+    const before = new Map(trackedPaths.map((filePath) => [filePath, fs.readFileSync(filePath, "utf8")]));
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        memory: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_MEMORY_BATCH_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "memory" }, memory: { enabled: true } },
+    };
+
+    const failure = withEnv({ AKM_MEMORY_BATCH_REQUIRED_KEY: undefined }, () =>
+      runMemoryInferencePassImpl({ config, sources: sources() }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(fs.readdirSync(path.join(tmpStash, "memories")).sort()).toEqual([
+      "a-existing-child.derived.md",
+      "a-existing-child.md",
+      "b-needs-model.md",
+      "c-existing-child.derived.md",
+      "c-existing-child.md",
+    ]);
+    for (const filePath of trackedPaths) {
+      const original = before.get(filePath);
+      if (original === undefined) throw new Error(`missing baseline snapshot for ${filePath}`);
+      expect(fs.readFileSync(filePath, "utf8"), filePath).toBe(original);
+      expect(parseFrontmatter(fs.readFileSync(filePath, "utf8")).data.inferenceProcessed).toBeUndefined();
+    }
+  });
+
+  test("merges standalone selection and per-call lowering notices in stable deduped order", async () => {
+    writeMemory("parent", {}, "Body.");
+    const perCallNotice: LoweringNotice = {
+      code: "untranslated-field",
+      severity: "warning",
+      adapter: "llm",
+      field: "outputSchema",
+      message: "The selected adapter cannot enforce the requested output schema.",
+    };
+    const cfg: AkmConfig = {
+      ...configWithLlm(),
+      index: {
+        defaults: { engine: "index" },
+        memory: { enabled: true, llm: { effort: "high" } },
+      },
+    };
+
+    const result = await runMemoryInferencePassImpl({
+      config: cfg,
+      sources: sources(),
+      options: {
+        compressMemoryToDerivedMemory: async (...args) => {
+          args[7]?.([perCallNotice, perCallNotice]);
+          return sampleDraft();
+        },
+      },
+    });
+
+    expect(result.notices).toEqual([
+      expect.objectContaining({
+        code: "untranslated-field",
+        adapter: "llm",
+        field: "inference.effort",
+      }),
+      perCallNotice,
+    ]);
+    expect(Object.isFrozen(result.notices)).toBe(true);
+  });
+
   test("does not infer or mutate memories owned by a non-AKM adapter", async () => {
     const parentPath = writeMemory("vendor", { description: "Vendor memory" }, "Do not rewrite this body.");
     let calls = 0;

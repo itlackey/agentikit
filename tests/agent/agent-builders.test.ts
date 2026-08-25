@@ -1,8 +1,6 @@
 /**
  * Tests for the agent command builder feature:
- *   - model-aliases.ts: resolveModel() alias resolution
  *   - builders.ts: opencodeBuilder, claudeBuilder, getCommandBuilder
- *   - config.ts: commandBuilder / modelAliases parsing and resolveAgentProfile merge
  *
  * Coverage follows v1 spec §12.2 and §12.3.
  */
@@ -11,7 +9,7 @@ import type { AgentCommandBuilder, AgentDispatchRequest } from "../../src/integr
 import type { AgentProfile } from "../../src/integrations/agent/profiles";
 
 // NOTE: this file previously carried a full 13-export mock.module fake of
-// src/core/warn. Nothing under test here (builders, model-aliases, profiles)
+// src/core/warn. Nothing under test here (builders and profiles)
 // imports warn, and the captured `warnings` array was never asserted — the
 // fake was dead weight and is gone. If a warn assertion is ever needed, use
 // the `_setWarnSinkForTests` seam via tests/_helpers/seams.ts.
@@ -48,74 +46,6 @@ function makeClaudeProfile(overrides: Partial<AgentProfile> = {}): AgentProfile 
   });
 }
 
-// ── model-aliases.ts ──────────────────────────────────────────────────────────
-
-describe("resolveModel — builtin aliases", () => {
-  test('resolveModel("opus", "opencode") → "opencode/claude-opus-4-7"', async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("opus", "opencode")).toBe("opencode/claude-opus-4-7");
-  });
-
-  test('resolveModel("sonnet", "claude") → "claude-sonnet-4-6"', async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("sonnet", "claude")).toBe("claude-sonnet-4-6");
-  });
-
-  test('resolveModel("haiku", "opencode") → "opencode/claude-haiku-4-5"', async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("haiku", "opencode")).toBe("opencode/claude-haiku-4-5");
-  });
-
-  test('resolveModel("fable", "claude") → "claude-fable-5"', async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("fable", "claude")).toBe("claude-fable-5");
-  });
-
-  test('resolveModel("fable", "opencode") → "opencode/claude-fable-5"', async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("fable", "opencode")).toBe("opencode/claude-fable-5");
-  });
-
-  test('resolveModel("claude-opus-4-7", "opencode") → pass-through (no alias match)', async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    // Exact model ID — not a known alias key, so returned verbatim.
-    expect(resolveModel("claude-opus-4-7", "opencode")).toBe("claude-opus-4-7");
-  });
-
-  test('resolveModel("opus", "unknown-platform") → pass-through (no platform entry)', async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    // "opus" IS a known alias but has no entry for "unknown-platform".
-    expect(resolveModel("opus", "unknown-platform")).toBe("opus");
-  });
-});
-
-describe("resolveModel — custom alias precedence", () => {
-  test("custom alias wins over builtin for the same key", async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    const custom = { fast: "opencode/claude-haiku-4-5" };
-    expect(resolveModel("fast", "opencode", custom)).toBe("opencode/claude-haiku-4-5");
-  });
-
-  test("custom alias overrides builtin when keys collide", async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    // "opus" is a builtin alias — a custom entry with the same key must win.
-    const custom = { opus: "opencode/my-custom-opus" };
-    expect(resolveModel("opus", "opencode", custom)).toBe("opencode/my-custom-opus");
-  });
-});
-
-describe("resolveModel — case-insensitivity", () => {
-  test('resolveModel("OPUS", "claude") is case-insensitive → "claude-opus-4-7"', async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("OPUS", "claude")).toBe("claude-opus-4-7");
-  });
-
-  test('resolveModel("Sonnet", "opencode") is case-insensitive', async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("Sonnet", "opencode")).toBe("opencode/claude-sonnet-4-6");
-  });
-});
-
 // ── builders.ts — opencodeBuilder ────────────────────────────────────────────
 
 describe("opencodeBuilder — basic dispatch", () => {
@@ -134,6 +64,20 @@ describe("opencodeBuilder — basic dispatch", () => {
     const profile = makeOpencodeProfile({ args: ["run", "--model", "openai/gpt-5.4-mini"] });
     const cmd = builder.build(profile, { prompt: "do work" });
     expect(cmd.argv).toEqual(["opencode", "run", "--model", "openai/gpt-5.4-mini", "--", "do work"]);
+  });
+
+  test("forwards an exact native agent selector through --agent", async () => {
+    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
+    const builder = getCommandBuilder("opencode");
+    const req = { prompt: "do work", agent: "Review-Team.Exact" } as AgentDispatchRequest;
+    expect(builder.build(makeOpencodeProfile(), req).argv).toEqual([
+      "opencode",
+      "run",
+      "--agent",
+      "Review-Team.Exact",
+      "--",
+      "do work",
+    ]);
   });
 
   test("with systemPrompt: --system-prompt flag present before prompt", async () => {
@@ -162,7 +106,7 @@ describe("opencodeBuilder — basic dispatch", () => {
     expect(argv[idx + 1]).toBe("opencode/claude-opus-4-7");
   });
 
-  test('with model alias "opus": resolveModel is called and resolved value appears in argv', async () => {
+  test('an exact model selector "opus" is forwarded unchanged', async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const builder = getCommandBuilder("opencode");
     const profile = makeOpencodeProfile();
@@ -171,16 +115,15 @@ describe("opencodeBuilder — basic dispatch", () => {
     const argv = cmd.argv as string[];
     const idx = argv.indexOf("--model");
     expect(idx).toBeGreaterThan(-1);
-    // "opus" resolves to "opencode/claude-opus-4-7" for the opencode platform
-    expect(argv[idx + 1]).toBe("opencode/claude-opus-4-7");
+    expect(argv[idx + 1]).toBe("opus");
   });
 
-  test("bare override replaces the configured model and retains its provider", async () => {
+  test("a bare exact override replaces the configured model without reinterpretation", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const builder = getCommandBuilder("opencode");
     const profile = makeOpencodeProfile({ args: ["run", "--model", "openai/gpt-5.4-mini"] });
     const cmd = builder.build(profile, { prompt: "do work", model: "gpt-5.6-terra" });
-    expect(cmd.argv).toEqual(["opencode", "run", "--model", "openai/gpt-5.6-terra", "--", "do work"]);
+    expect(cmd.argv).toEqual(["opencode", "run", "--model", "gpt-5.6-terra", "--", "do work"]);
   });
 
   test("provider-qualified override replaces the configured model unchanged", async () => {
@@ -191,12 +134,12 @@ describe("opencodeBuilder — basic dispatch", () => {
     expect(cmd.argv).toEqual(["opencode", "run", "--model", "openai/gpt-5.6-terra", "--", "do work"]);
   });
 
-  test("alias override replaces the configured model without provider rewriting", async () => {
+  test("an exact override replaces the configured model without provider rewriting", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const builder = getCommandBuilder("opencode");
     const profile = makeOpencodeProfile({ args: ["run", "--model", "openai/gpt-5.4-mini"] });
     const cmd = builder.build(profile, { prompt: "do work", model: "opus" });
-    expect(cmd.argv).toEqual(["opencode", "run", "--model", "opencode/claude-opus-4-7", "--", "do work"]);
+    expect(cmd.argv).toEqual(["opencode", "run", "--model", "opus", "--", "do work"]);
   });
 
   test("tool policy is NOT emitted (opencode ignores toolPolicy)", async () => {
@@ -234,6 +177,20 @@ describe("claudeBuilder — basic dispatch", () => {
     expect((cmd.argv as string[]).includes("--print")).toBe(true);
   });
 
+  test("forwards an exact native agent selector through --agent", async () => {
+    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
+    const builder = getCommandBuilder("claude");
+    const req = { prompt: "do work", agent: "Review-Team.Exact" } as AgentDispatchRequest;
+    expect(builder.build(makeClaudeProfile(), req).argv).toEqual([
+      "claude",
+      "--agent",
+      "Review-Team.Exact",
+      "--print",
+      "--",
+      "do work",
+    ]);
+  });
+
   test("with systemPrompt: --system-prompt flag present", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const builder = getCommandBuilder("claude");
@@ -246,7 +203,7 @@ describe("claudeBuilder — basic dispatch", () => {
     expect(argv[idx + 1]).toBe("Be concise.");
   });
 
-  test("with model: --model flag present and resolved", async () => {
+  test("with model: exact value appears in --model", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const builder = getCommandBuilder("claude");
     const profile = makeClaudeProfile();
@@ -255,8 +212,7 @@ describe("claudeBuilder — basic dispatch", () => {
     const argv = cmd.argv as string[];
     const idx = argv.indexOf("--model");
     expect(idx).toBeGreaterThan(-1);
-    // "opus" resolves to "claude-opus-4-7" for the claude platform
-    expect(argv[idx + 1]).toBe("claude-opus-4-7");
+    expect(argv[idx + 1]).toBe("opus");
   });
 
   test("with tools string: --allowedTools flag present with value", async () => {
@@ -322,6 +278,7 @@ describe("getCommandBuilder — platform routing", () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const myBuilder: AgentCommandBuilder = {
       platform: "my-platform",
+      personaChannel: "prompt",
       build(_profile, req) {
         return { argv: ["my-cli", req.prompt] };
       },
@@ -335,52 +292,12 @@ describe("getCommandBuilder — platform routing", () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const myBuilder: AgentCommandBuilder = {
       platform: "my-platform",
+      personaChannel: "prompt",
       build(_profile, req) {
         return { argv: ["my-cli", req.prompt] };
       },
     };
     expect(() => getCommandBuilder("other", { "my-platform": myBuilder })).toThrow(/no registered command builder/);
-  });
-});
-
-// ── (removed in 0.8.0) parseAgentConfig / modelAliases / commandBuilder ─────
-//
-// The v1 `parseAgentConfig` parser and the `modelAliases`/`commandBuilder`
-// fields on `AgentProfileConfig` were removed when the unified
-// `profiles.agent` shape replaced the legacy `agent` block. Tests for those
-// pieces lived here and have been removed alongside the code. The model
-// alias feature itself lives on at the builder layer; the builder
-// integration tests in the next describe block still exercise that path.
-
-// ── Integration: builder picks up profile.modelAliases ───────────────────────
-
-describe("builder + profile.modelAliases integration", () => {
-  test("opencodeBuilder uses profile.modelAliases to resolve custom alias", async () => {
-    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
-    const builder = getCommandBuilder("opencode");
-    const profile = makeOpencodeProfile({
-      modelAliases: { fast: "opencode/claude-haiku-4-5" },
-    });
-    const req: AgentDispatchRequest = { prompt: "go fast", model: "fast" };
-    const cmd = builder.build(profile, req);
-    const argv = cmd.argv as string[];
-    const idx = argv.indexOf("--model");
-    expect(idx).toBeGreaterThan(-1);
-    expect(argv[idx + 1]).toBe("opencode/claude-haiku-4-5");
-  });
-
-  test("claudeBuilder uses profile.modelAliases to resolve custom alias", async () => {
-    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
-    const builder = getCommandBuilder("claude");
-    const profile = makeClaudeProfile({
-      modelAliases: { quick: "claude-haiku-4-5-20251001" },
-    });
-    const req: AgentDispatchRequest = { prompt: "be quick", model: "quick" };
-    const cmd = builder.build(profile, req);
-    const argv = cmd.argv as string[];
-    const idx = argv.indexOf("--model");
-    expect(idx).toBeGreaterThan(-1);
-    expect(argv[idx + 1]).toBe("claude-haiku-4-5-20251001");
   });
 });
 
@@ -463,119 +380,6 @@ describe("builders — argument injection guards", () => {
         systemPrompt: "You are a helpful assistant.",
       }),
     ).not.toThrow();
-  });
-});
-
-// ── Global model-alias tiers (config-root `modelAliases`) ─────────────────────
-
-describe("resolveModel — global alias tiers", () => {
-  const global = {
-    fast: { claude: "claude-haiku-4-5-20251001", opencode: "opencode/claude-haiku-4-5", "*": "haiku-generic" },
-    deep: { "*": "deep-generic" },
-    opus: { claude: "my-pinned-opus" },
-  };
-
-  test("platform column wins over '*' fallback", async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("fast", "claude", undefined, global)).toBe("claude-haiku-4-5-20251001");
-    expect(resolveModel("fast", "opencode", undefined, global)).toBe("opencode/claude-haiku-4-5");
-  });
-
-  test("'*' fallback used when no platform column matches", async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("fast", "codex", undefined, global)).toBe("haiku-generic");
-    expect(resolveModel("deep", "claude", undefined, global)).toBe("deep-generic");
-  });
-
-  test("profile-level custom alias beats the global table", async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("fast", "claude", { fast: "profile-wins" }, global)).toBe("profile-wins");
-  });
-
-  test("global table shadows the built-in alias table", async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("opus", "claude", undefined, global)).toBe("my-pinned-opus");
-    // …but only for platforms the global entry names: no column + no '*' falls
-    // through to the built-in table.
-    expect(resolveModel("opus", "opencode", undefined, global)).toBe("opencode/claude-opus-4-7");
-  });
-
-  test("alias lookup is case-insensitive; unknown alias passes through verbatim", async () => {
-    const { resolveModel } = await import("../../src/integrations/agent/model-aliases");
-    expect(resolveModel("FAST", "claude", undefined, global)).toBe("claude-haiku-4-5-20251001");
-    expect(resolveModel("exact-model-id", "claude", undefined, global)).toBe("exact-model-id");
-  });
-});
-
-// ── resolveEngine: modelAliases config wiring ─────────────────────────────────
-
-describe("resolveEngine — modelAliases from config", () => {
-  test("engine.modelAliases reaches the lowered profile", async () => {
-    const { resolveEngine } = await import("../../src/integrations/agent/engine-resolution");
-    const runner = resolveEngine("reviewer", {
-      engines: {
-        reviewer: {
-          kind: "agent",
-          platform: "claude",
-          modelAliases: { quick: "claude-haiku-4-5-20251001" },
-        },
-      },
-    });
-    expect(runner.kind === "agent" && runner.profile.modelAliases).toEqual({
-      quick: "claude-haiku-4-5-20251001",
-    });
-  });
-
-  test("global modelAliases is stamped onto the lowered profile", async () => {
-    const { resolveEngine } = await import("../../src/integrations/agent/engine-resolution");
-    const global = { fast: { "*": "generic-fast" } };
-    const runner = resolveEngine("reviewer", {
-      engines: { reviewer: { kind: "agent", platform: "claude" } },
-      modelAliases: global,
-    });
-    expect(runner.kind === "agent" && runner.profile.globalModelAliases).toEqual(global);
-  });
-
-  test("engine model aliases are resolved during lowering", async () => {
-    const { resolveEngine } = await import("../../src/integrations/agent/engine-resolution");
-    const runner = resolveEngine("reviewer", {
-      engines: {
-        reviewer: {
-          kind: "agent",
-          platform: "claude",
-          model: "quick",
-          modelAliases: { quick: "claude-haiku-4-5-20251001" },
-        },
-      },
-    });
-    expect(runner.kind === "agent" && runner.profile.model).toBe("claude-haiku-4-5-20251001");
-  });
-});
-
-// ── Integration: builder resolves through the global tier table ──────────────
-
-describe("builder + globalModelAliases integration", () => {
-  test("claudeBuilder resolves a global tier alias", async () => {
-    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
-    const builder = getCommandBuilder("claude");
-    const profile = makeClaudeProfile({
-      globalModelAliases: { fast: { claude: "claude-haiku-4-5-20251001" } },
-    });
-    const cmd = builder.build(profile, { prompt: "go", model: "fast" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("claude-haiku-4-5-20251001");
-  });
-
-  test("profile.modelAliases beats globalModelAliases in the builder", async () => {
-    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
-    const builder = getCommandBuilder("opencode");
-    const profile = makeOpencodeProfile({
-      modelAliases: { fast: "opencode/profile-wins" },
-      globalModelAliases: { fast: { opencode: "opencode/global-loses" } },
-    });
-    const cmd = builder.build(profile, { prompt: "go", model: "fast" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("opencode/profile-wins");
   });
 });
 

@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { inspectConsolidationPool } from "../../../../src/commands/improve/consolidate";
 import {
   buildLatestFeedbackTsMap,
   buildLatestProposalTsMap,
@@ -38,6 +39,7 @@ import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/im
 import { openStateDatabase } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../../src/storage/repositories/index-connection";
+import { getAllEntries } from "../../../../src/storage/repositories/index-entries-repository";
 import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
 
 describe("resolveImproveScope syntax classification", () => {
@@ -124,10 +126,13 @@ function durableRef(ref: string): string {
 // deliberately selects never-reflected refs regardless of signal. That separate
 // behaviour is covered by proactive-maintenance-flow.test.ts; leaving it on here
 // would mask the gate each test is asserting.
-function configWithoutPoolGuard(): import("../../../../src/core/config/config").AkmConfig {
+function configWithoutPoolGuard(stashDir: string): import("../../../../src/core/config/config").AkmConfig {
   return withImproveAutonomy(
     withTestImproveLlm({
       semanticSearchMode: "off",
+      bundles: { stash: { path: stashDir, writable: true } },
+      defaultBundle: "stash",
+      defaultWriteTarget: "stash",
       improve: {
         strategies: {
           default: { processes: { consolidate: { minPoolSize: 0 }, proactiveMaintenance: { enabled: false } } },
@@ -148,7 +153,8 @@ const okReflect = (ref: string): AkmReflectResult => ({
     createdAt: "2026-05-26T00:00:00.000Z",
     updatedAt: "2026-05-26T00:00:00.000Z",
     payload: { content: "# proposal" },
-    changes: [{ path: "", after: "# proposal", op: "update" }],
+    changes: [{ path: "lessons/proposal.md", after: "# proposal", op: "update" }],
+    proposedTarget: { source: "stash", root: "/tmp/stash" },
   },
   ref,
   engine: "test",
@@ -195,7 +201,62 @@ test("skips a malformed indexed ref without discarding valid candidates", async 
   expect(result.strategyFilteredRefs).toEqual([]);
 });
 
-test("treats an index without an entries table as an empty candidate plan", async () => {
+test("a read-only nested bundle is never eligible through its writable ancestor", async () => {
+  const stash = makeTempDir("akm-elig-nested-owner-");
+  const nested = path.join(stash, ".read-only-bundle");
+  writeMemory(stash, "writable", "Writable memory.");
+  writeMemory(nested, "readonly", "Read-only nested memory.");
+  process.env.AKM_BUNDLE_DIR = stash;
+  const config = withImproveAutonomy(
+    withTestImproveLlm({
+      semanticSearchMode: "off",
+      bundles: {
+        primary: { path: stash, writable: true },
+        nested: { path: nested, writable: false },
+      },
+      defaultBundle: "primary",
+      defaultWriteTarget: "primary",
+    }),
+  );
+  saveConfig(config);
+  await akmIndex({ stashDir: stash, full: true });
+
+  const db = openExistingDatabase();
+  try {
+    expect(
+      getAllEntries(db)
+        .map((entry) => `${entry.bundleId}//${entry.conceptId}`)
+        .sort(),
+    ).toEqual(["nested//memories/readonly", "primary//memories/writable"]);
+  } finally {
+    closeDatabase(db);
+  }
+
+  const result = await collectEligibleRefs({ mode: "all" }, stash, {}, config);
+  const pool = inspectConsolidationPool(
+    {
+      config,
+      writeTarget: {
+        selector: "primary",
+        source: { kind: "filesystem", name: "primary", path: stash },
+        config: { type: "filesystem", name: "primary", path: stash, writable: true },
+      },
+    },
+    stash,
+    [],
+  );
+  expect({
+    plannedRefs: result.plannedRefs.map((entry) => entry.itemRef),
+    memorySummary: result.memorySummary,
+    consolidationPool: pool.memories.map((memory) => memory.name),
+  }).toEqual({
+    plannedRefs: ["primary//memories/writable"],
+    memorySummary: { eligible: 1, derived: 0 },
+    consolidationPool: ["writable"],
+  });
+});
+
+test("rejects an index without an entries table as an incompatible canonical generation", async () => {
   const stash = makeTempDir("akm-elig-empty-index-");
   writeMemory(stash, "valid", "Valid memory.");
   await buildIndex(stash);
@@ -204,10 +265,8 @@ test("treats an index without an entries table as an empty candidate plan", asyn
   db.exec("DROP TABLE entries");
   closeDatabase(db);
 
-  await expect(collectEligibleRefs({ mode: "all" }, stash, {})).resolves.toEqual({
-    plannedRefs: [],
-    memorySummary: { eligible: 0, derived: 0 },
-    strategyFilteredRefs: [],
+  await expect(collectEligibleRefs({ mode: "all" }, stash, {})).rejects.toMatchObject({
+    code: "INDEX_SCHEMA_INCOMPATIBLE",
   });
 });
 
@@ -338,7 +397,7 @@ describe("reflect signal-delta eligibility", () => {
     await akmImprove({
       scope: "memory",
       stashDir: stash,
-      config: configWithoutPoolGuard(), // isolate the signal-delta gate from proactive selection
+      config: configWithoutPoolGuard(stash), // isolate the signal-delta gate from proactive selection
       ensureIndexFn: async () => false,
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
       reflectFn: async ({ ref }) => {
@@ -502,7 +561,7 @@ describe("consolidate pool-delta eligibility", () => {
 
     await akmImprove({
       scope: "memory",
-      config: configWithoutPoolGuard(),
+      config: configWithoutPoolGuard(stash),
       stashDir: stash,
       ensureIndexFn: async () => false,
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
@@ -531,7 +590,7 @@ describe("consolidate pool-delta eligibility", () => {
 
     await akmImprove({
       scope: "memory",
-      config: configWithoutPoolGuard(),
+      config: configWithoutPoolGuard(stash),
       stashDir: stash,
       ensureIndexFn: async () => false,
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
@@ -572,7 +631,7 @@ describe("#551 consolidation reorder + adjacent-run promotion gate", () => {
 
     await akmImprove({
       scope: "memory",
-      config: configWithoutPoolGuard(),
+      config: configWithoutPoolGuard(stash),
       stashDir: stash,
       ensureIndexFn: async () => false,
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
@@ -628,7 +687,7 @@ describe("#551 consolidation reorder + adjacent-run promotion gate", () => {
 
     await akmImprove({
       scope: "memory",
-      config: configWithoutPoolGuard(),
+      config: configWithoutPoolGuard(stash),
       stashDir: stash,
       ensureIndexFn: async () => false,
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
@@ -661,7 +720,7 @@ describe("#551 consolidation reorder + adjacent-run promotion gate", () => {
 
     await akmImprove({
       scope: "memory",
-      config: configWithoutPoolGuard(),
+      config: configWithoutPoolGuard(stash),
       stashDir: stash,
       ensureIndexFn: async () => false,
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
@@ -781,7 +840,7 @@ describe("high-salience admission gate (#608)", () => {
     await akmImprove({
       scope: "memory",
       stashDir: stash,
-      config: configWithoutPoolGuard(), // isolate the high-salience gate from proactive selection
+      config: configWithoutPoolGuard(stash), // isolate the high-salience gate from proactive selection
       limit: 10, // cap = floor(10 × 0.1) = 1 → exactly one high-salience slot
       ensureIndexFn: async () => false,
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
@@ -814,7 +873,7 @@ describe("high-salience admission gate (#608)", () => {
     await akmImprove({
       scope: "memory",
       stashDir: stash,
-      config: configWithoutPoolGuard(), // isolate the high-salience gate from proactive selection
+      config: configWithoutPoolGuard(stash), // isolate the high-salience gate from proactive selection
       ensureIndexFn: async () => false,
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
       reflectFn: async ({ ref }) => {

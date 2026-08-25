@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { computeStepWorkList } from "../../../src/workflows/exec/step-work";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../../src/workflows/ir/schema-v4";
 
 export const RUNNER = path.join(__dirname, "workflow-chaos-runner.ts");
 
@@ -157,7 +157,6 @@ export async function unitIds(runId: string, params: Record<string, unknown>, st
     runId,
     params,
     stepOutputs: {},
-    engines: plan.execution.engines,
   });
   if (!computed.ok) throw new Error(computed.error);
   return computed.list.units.map((u) => u.journalBaseId);

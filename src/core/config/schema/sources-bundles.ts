@@ -9,6 +9,7 @@
  */
 import { z } from "zod";
 import { isBundleSlug } from "../../asset/asset-ref";
+import { hasRegistryUrlCredentials, REGISTRY_CREDENTIALS_UNSUPPORTED } from "../../registry-url";
 import { httpUrl, nonEmptyString, positiveInt } from "./primitives";
 
 // ── Sources / registries / installed ────────────────────────────────────────
@@ -55,7 +56,11 @@ export const SourceConfigEntrySchema = z
 
 export const RegistryConfigEntrySchema = z
   .object({
-    url: httpUrl,
+    url: httpUrl.superRefine((value, ctx) => {
+      if (hasRegistryUrlCredentials(value)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: REGISTRY_CREDENTIALS_UNSUPPORTED });
+      }
+    }),
     name: z.string().min(1).optional(),
     enabled: z.boolean().optional(),
     provider: z.string().min(1).optional(),
@@ -65,9 +70,8 @@ export const RegistryConfigEntrySchema = z
 
 // ── Bundles (0.9.0 config-shape cutover, spec §10.1 / D-R5) ─────────────────
 //
-// `bundles` + `defaultBundle` are the 0.9.0 desired-configuration shape that
-// supersedes the pre-cutover `stashDir` / `sources[]` / `installed[]` trio. Each
-// bundle entry carries ONE source descriptor (`path` | `git` | `website` | `npm`
+// `bundles` + `defaultBundle` are the desired-configuration shape. Each bundle
+// entry carries ONE source descriptor (`path` | `git` | `website` | `npm`
 // — mirroring today's source types), an optional `writable`, an optional
 // `registryId` locator (the original registry install id, preserved verbatim so
 // a non-slug-legal id like `github:owner/repo` is not lost when its slug-legal
@@ -76,10 +80,7 @@ export const RegistryConfigEntrySchema = z
 // machinery). The map KEY is the workspace bundle slug (spec §11.1 charset: no
 // `/`, `:`, `.`, `#`, whitespace), validated with {@link isBundleSlug}.
 //
-// The config migrator ({@link migrateConfigSourcesToBundles}) emits these keyed
-// by exactly what `deriveInstallations` derives today (D-R5). `bindings` (spec
-// §10.1) is Tier B and is NEVER accepted here (the top-level superRefine rejects
-// it) — it is not part of the 0.9.0 config-shape cutover.
+// `bindings` is not accepted here; the top-level schema rejects it.
 
 /** Website source descriptor for a bundle entry (spec §10.1). */
 const BundleWebsiteDescriptorSchema = z
@@ -120,15 +121,11 @@ export const BundleConfigEntrySchema = z
     npm: z.string().min(1).optional(),
     writable: z.boolean().optional(),
     // Opt a bundle out of indexing, search, refresh, and write targeting
-    // without deleting it. Carried over from the pre-cutover `sources[].enabled`
-    // flag, which the runtime still honors on the derived source entry
-    // (`write-source.ts`, `search-source.ts`); without it here, migrating a
-    // disabled source would silently reactivate it.
+    // without deleting it. The runtime honors the derived value in write and
+    // search source selection.
     enabled: z.boolean().optional(),
-    // The original registry install id when the bundle KEY was slug-derived from
-    // it (e.g. registryId `github:owner/repo` → key `repo`). Preserved so the
-    // source locator survives the config-shape migration (D-R5). Absent when the
-    // bundle key already equals the source's stable id.
+    // The registry install id when the bundle key was slug-derived from it
+    // (e.g. registryId `github:owner/repo` → key `repo`).
     registryId: z.string().min(1).optional(),
     components: z.record(z.string().min(1), BundleComponentConfigSchema).optional(),
   })

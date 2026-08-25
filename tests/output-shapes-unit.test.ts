@@ -38,6 +38,22 @@ describe("pickFields", () => {
   });
 });
 
+describe("command dry-run output shape", () => {
+  test("registers the already-safe canonical envelope without reshaping it", () => {
+    const result = {
+      schemaVersion: 1,
+      shape: "command-dry-run",
+      ok: true,
+      dryRun: true,
+      engine: "reviewer",
+      provenance: [{ field: "engine", layer: "installation-defaults", kind: "installation", via: "explicit" }],
+      notices: [],
+    };
+
+    expect(shapeForCommand("command-dry-run", result, "full")).toEqual(result);
+  });
+});
+
 describe("truncateDescription", () => {
   test("returns short descriptions unchanged", () => {
     expect(truncateDescription("hello", 100)).toBe("hello");
@@ -419,6 +435,24 @@ describe("shapeSearchOutput", () => {
     });
   });
 
+  test("shape=agent preserves machine-visible semantic fallback disclosure", () => {
+    const out = shapeSearchOutput(
+      {
+        hits: [],
+        registryHits: [],
+        searchMode: "fts-fallback",
+        warnings: ["Vector search unavailable — falling back to keyword search."],
+      },
+      "brief",
+      "agent",
+    );
+
+    expect(out).toMatchObject({
+      searchMode: "fts-fallback",
+      warnings: ["Vector search unavailable — falling back to keyword search."],
+    });
+  });
+
   test("agent registry hits never acquire a local path", () => {
     const out = shapeSearchOutput(
       { hits: [], registryHits: [{ type: "registry", name: "kit", id: "kit", action: "akm bundle add kit" }] },
@@ -471,6 +505,26 @@ describe("curate agent access projection", () => {
     });
     expect(out.items[1]).not.toHaveProperty("path");
     expect(out.items[1]).not.toHaveProperty("editable");
+  });
+
+  test("agent projection preserves merged semantic fallback mode and warning", () => {
+    const out = shapeForCommand(
+      "curate",
+      {
+        query: "deploy",
+        summary: "Selected zero",
+        items: [],
+        searchMode: "fts-fallback",
+        warnings: ["Vector search unavailable — falling back to keyword search."],
+      },
+      "brief",
+      "agent",
+    );
+
+    expect(out).toMatchObject({
+      searchMode: "fts-fallback",
+      warnings: ["Vector search unavailable — falling back to keyword search."],
+    });
   });
 });
 

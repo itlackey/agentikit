@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { rethrowIfTestIsolationError } from "../../core/errors";
+import { formatRegistryError } from "../../core/registry-url";
 import { warn } from "../../core/warn";
 import type { Database } from "../database";
 import { closeDatabase, openIndexDatabase } from "./index-connection";
@@ -150,7 +151,7 @@ export async function fetchCachedJson<T>(opts: FetchCachedJsonOptions<T>): Promi
           const stale = parseCache(expiredRow.indexJson, { stale: true });
           if (stale !== undefined) {
             warn(
-              `Registry fetch failed (${err instanceof Error ? err.message : String(err)}); ` +
+              `Registry fetch failed (${formatRegistryError(err)}); ` +
                 "serving the last cached index, which is past its refresh interval.",
             );
             return stale;

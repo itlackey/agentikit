@@ -36,6 +36,13 @@ export interface ResolvedAkmInvocation {
   eligible: boolean;
 }
 
+/** True only for Bun's virtual main path inside a compiled standalone executable. */
+export function isBunStandaloneMain(mainPath: string | undefined = runtimeMainPath): boolean {
+  return (
+    mainPath?.startsWith("/$bunfs/") === true || (mainPath !== undefined && /^[A-Za-z]:[\\/]~BUN[\\/]/i.test(mainPath))
+  );
+}
+
 export function resolveAkmInvocation(
   options: {
     env?: NodeJS.ProcessEnv;
@@ -53,8 +60,7 @@ export function resolveAkmInvocation(
   const runtime = options.runtime ?? (process.versions.bun ? "bun" : "node");
   const execPath = options.execPath ?? process.execPath;
   const mainPath = options.mainPath ?? runtimeMainPath;
-  const isStandaloneMain =
-    mainPath?.startsWith("/$bunfs/") || (mainPath !== undefined && /^[A-Za-z]:[\\/]~BUN[\\/]/i.test(mainPath));
+  const isStandaloneMain = isBunStandaloneMain(mainPath);
   if (runtime === "bun" && isStandaloneMain && execPath) {
     return { argv: [absoluteInvocationPath(execPath)], via: "standalone", kind: "standalone", eligible: true };
   }

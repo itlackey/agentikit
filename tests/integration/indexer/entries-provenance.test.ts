@@ -5,18 +5,17 @@
 /**
  * Chunk-5 Step 2 (spec §14.4): the writer persists the durable bundle-adapter
  * identity + provenance (`item_ref`/`bundle_id`/`component_id`/`concept_id`/
- * `adapter_id`/`type`) into the additive `entries` columns, ALONGSIDE the legacy
- * `entry_key`/`entry_json`/`entry_type` columns that every reader still keys on.
+ * `adapter_id`/`type`) into the canonical `entries` schema.
  *
  * This pins the write-boundary derivation to the exact spelling the Step-3
  * `scanComponent` swap will emit as `IndexDocument.ref` (proven equivalent by
  * `shadow-scan-parity.test.ts`):
- *   - conceptId == the pre-0.9.0 canonical name (`entry_json.name`);
+ *   - conceptId == the qualified placement plus `document_json.name`;
  *   - item_ref  == `<bundle>//<conceptId>` where the bundle id is the
  *     `deriveInstallations` slug of the source root;
  *   - component_id == bundle_id (single-component akm layout);
  *   - adapter_id  == the detected adapter ("akm" for a plain workspace stash);
- *   - type        == the open asset-type token (mirrors `entry_type`).
+ *   - type        == the open asset-type token.
  */
 
 import { Database } from "bun:sqlite";
@@ -51,15 +50,14 @@ function writeSkill(name: string): void {
 }
 
 type ProvRow = {
-  entry_key: string;
-  entry_type: string;
-  entry_json: string;
-  item_ref: string | null;
-  bundle_id: string | null;
-  component_id: string | null;
-  concept_id: string | null;
-  adapter_id: string | null;
-  type: string | null;
+  file_path: string;
+  document_json: string;
+  item_ref: string;
+  bundle_id: string;
+  component_id: string;
+  concept_id: string;
+  adapter_id: string;
+  type: string;
 };
 
 function readRows(): ProvRow[] {
@@ -67,7 +65,7 @@ function readRows(): ProvRow[] {
   try {
     return db
       .query(
-        "SELECT entry_key, entry_type, entry_json, item_ref, bundle_id, component_id, concept_id, adapter_id, type FROM entries",
+        "SELECT file_path, document_json, item_ref, bundle_id, component_id, concept_id, adapter_id, type FROM entries",
       )
       .all() as ProvRow[];
   } finally {
@@ -93,17 +91,16 @@ afterEach(() => {
   cleanup();
 });
 
-describe("entries provenance columns (Chunk-5 Step 2 / DB v18)", () => {
+describe("canonical entries provenance", () => {
   test("every persisted row carries the item_ref/provenance identity", () => {
     const rows = readRows();
     expect(rows.length).toBeGreaterThan(0);
     const expectedBundle = slugForPath(stashDir);
 
     for (const row of rows) {
-      const entry = JSON.parse(row.entry_json) as { name: string; type: string };
+      const entry = JSON.parse(row.document_json) as { name: string; type: string };
 
-      // Legacy + new type columns agree on the open token.
-      expect(row.type, `type for ${row.entry_key}`).toBe(row.entry_type);
+      // The typed column and stored document agree on the open token.
       expect(row.type).toBe(entry.type);
 
       // conceptId == the D-R2 QUALIFIED spelling: `stashDirFor(type)/name`
@@ -111,17 +108,17 @@ describe("entries provenance columns (Chunk-5 Step 2 / DB v18)", () => {
       // with no placement stash-subdir).
       const typeStashDir = stashDirFor(entry.type);
       const expectedConceptId = typeStashDir !== undefined ? `${typeStashDir}/${entry.name}` : entry.name;
-      expect(row.concept_id, `concept_id for ${row.entry_key}`).toBe(expectedConceptId);
+      expect(row.concept_id, `concept_id for ${row.file_path}`).toBe(expectedConceptId);
 
       // Bundle/component provenance: the single-component akm layout couples
       // component id == bundle id == the source-root slug.
-      expect(row.bundle_id, `bundle_id for ${row.entry_key}`).toBe(expectedBundle);
-      expect(row.component_id, `component_id for ${row.entry_key}`).toBe(expectedBundle);
-      expect(row.adapter_id, `adapter_id for ${row.entry_key}`).toBe("akm");
+      expect(row.bundle_id, `bundle_id for ${row.file_path}`).toBe(expectedBundle);
+      expect(row.component_id, `component_id for ${row.file_path}`).toBe(expectedBundle);
+      expect(row.adapter_id, `adapter_id for ${row.file_path}`).toBe("akm");
 
       // item_ref == `<bundle>//<conceptId>` — the canonical stored spelling
       // (== IndexDocument.ref emitted by scanComponent).
-      expect(row.item_ref, `item_ref for ${row.entry_key}`).toBe(`${expectedBundle}//${expectedConceptId}`);
+      expect(row.item_ref, `item_ref for ${row.file_path}`).toBe(`${expectedBundle}//${expectedConceptId}`);
     }
   });
 

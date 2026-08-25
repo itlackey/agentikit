@@ -2,13 +2,53 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmTasksAdd, akmTasksDoctor, akmTasksSync, prepareSchedulerRuntime } from "../../src/commands/tasks/tasks";
-import type { TaskBackend, TaskInstallOptions } from "../../src/tasks/backends/types";
+import type { SchedulerBackend, SchedulerInstallOptions } from "../../src/tasks/backends/types";
 import { schedulerContextDescriptor, writeSchedulerContextDescriptor } from "../../src/tasks/scheduler-invocation";
 import { withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
+function completeSchedulerBackend(options: {
+  binding: readonly string[];
+  contextPath: string;
+  onInstall?: (installOptions: SchedulerInstallOptions | undefined) => void;
+}): SchedulerBackend {
+  const invocation = ["task", "run", "ping", "--bundle", "stash", "--scheduled"] as const;
+  const installed = {
+    id: "ping",
+    nativeId: "ping",
+    signature: "installed",
+    target: "stash",
+    binding: [...options.binding],
+    contextPath: options.contextPath,
+    invocation,
+  };
+  const artifact = {
+    nativeId: "ping",
+    bindingId: "ping",
+    invocation,
+    fingerprint: "installed",
+  };
+  return {
+    name: "cron",
+    install(_task, installOptions) {
+      options.onInstall?.(installOptions);
+    },
+    uninstall() {},
+    setEnabled() {},
+    list: () => [installed],
+    listNativeArtifacts: () => [artifact],
+    inspectBindings: () => ({ installed: [installed], artifacts: [artifact] }),
+    snapshotBindings: (nativeIds) => ({ nativeIds: [...nativeIds], artifacts: [artifact] }),
+    restoreBindings() {},
+    expectedSignature: () => "expected",
+  };
+}
+
 function writeTask(stashDir: string): void {
   fs.mkdirSync(path.join(stashDir, "tasks"), { recursive: true });
-  fs.writeFileSync(path.join(stashDir, "tasks", "ping.yml"), 'version: 2\nschedule: "@daily"\ncommand: echo ping\n');
+  fs.writeFileSync(
+    path.join(stashDir, "tasks", "ping.yml"),
+    'version: 3\nrun: echo ping\nakm:\n  schedule: "@daily"\n',
+  );
 }
 
 function configureStash(stashDir: string): void {
@@ -71,24 +111,12 @@ describe("scheduler runtime binding", () => {
     try {
       configureStash(storage.stashDir);
       writeTask(storage.stashDir);
-      const installs: Array<TaskInstallOptions | undefined> = [];
-      const backend: TaskBackend = {
-        name: "cron",
-        install(_task, options) {
-          installs.push(options);
-        },
-        uninstall() {},
-        setEnabled() {},
-        list: () => [
-          {
-            id: "ping",
-            signature: "installed",
-            binding: ["/old/node", "/old/dist/akm"],
-            contextPath: "/old/context.json",
-          },
-        ],
-        expectedSignature: () => "expected",
-      };
+      const installs: Array<SchedulerInstallOptions | undefined> = [];
+      const backend = completeSchedulerBackend({
+        binding: ["/old/node", "/old/dist/akm"],
+        contextPath: "/old/context.json",
+        onInstall: (options) => installs.push(options),
+      });
 
       await akmTasksSync({ backend });
       expect(installs[0]).toMatchObject({
@@ -118,21 +146,10 @@ describe("scheduler runtime binding", () => {
     try {
       configureStash(storage.stashDir);
       writeTask(storage.stashDir);
-      const backend: TaskBackend = {
-        name: "cron",
-        install() {},
-        uninstall() {},
-        setEnabled() {},
-        list: () => [
-          {
-            id: "ping",
-            signature: "installed",
-            binding: ["/old/node", "/old/dist/akm"],
-            contextPath: "/old/context.json",
-          },
-        ],
-        expectedSignature: () => "expected",
-      };
+      const backend = completeSchedulerBackend({
+        binding: ["/old/node", "/old/dist/akm"],
+        contextPath: "/old/context.json",
+      });
 
       const result = await akmTasksSync(
         {
@@ -163,21 +180,10 @@ describe("scheduler runtime binding", () => {
     try {
       configureStash(storage.stashDir);
       writeTask(storage.stashDir);
-      const backend: TaskBackend = {
-        name: "cron",
-        install() {},
-        uninstall() {},
-        setEnabled() {},
-        list: () => [
-          {
-            id: "ping",
-            signature: "installed",
-            binding: ["/old/node", "/old/dist/akm"],
-            contextPath: "/old/context.json",
-          },
-        ],
-        expectedSignature: () => "expected",
-      };
+      const backend = completeSchedulerBackend({
+        binding: ["/old/node", "/old/dist/akm"],
+        contextPath: "/old/context.json",
+      });
 
       const result = await akmTasksSync(
         {
@@ -199,27 +205,17 @@ describe("scheduler runtime binding", () => {
     }
   });
 
-  test("add --force never replaces an existing binding", async () => {
+  test("add --force --rebind explicitly replaces an existing runtime binding", async () => {
     const storage = withIsolatedAkmStorage();
     try {
       configureStash(storage.stashDir);
       writeTask(storage.stashDir);
-      const installs: Array<TaskInstallOptions | undefined> = [];
-      const backend: TaskBackend = {
-        name: "cron",
-        install(_task, options) {
-          installs.push(options);
-        },
-        uninstall() {},
-        setEnabled() {},
-        list: () => [
-          {
-            id: "ping",
-            binding: ["/old/node", "/old/dist/akm"],
-            contextPath: "/old/context.json",
-          },
-        ],
-      };
+      const installs: Array<SchedulerInstallOptions | undefined> = [];
+      const backend = completeSchedulerBackend({
+        binding: ["/old/node", "/old/dist/akm"],
+        contextPath: "/old/context.json",
+        onInstall: (options) => installs.push(options),
+      });
 
       await akmTasksAdd(
         { id: "ping", schedule: "@daily", command: "echo ping", force: true, rebind: true },
@@ -230,8 +226,8 @@ describe("scheduler runtime binding", () => {
       );
 
       expect(installs[0]).toMatchObject({
-        binding: ["/old/node", "/old/dist/akm"],
-        contextPath: "/old/context.json",
+        binding: ["/new/node", "/new/dist/akm"],
+        contextPath: "/new/context.json",
       });
     } finally {
       storage.cleanup();
@@ -247,18 +243,14 @@ describe("scheduler runtime binding", () => {
       // task's `enabled:` field is now a plain file edit, reconciled by sync.
       fs.writeFileSync(
         path.join(storage.stashDir, "tasks", "ping.yml"),
-        'version: 2\nschedule: "@daily"\ncommand: echo ping\nenabled: false\n',
+        'version: 3\nrun: echo ping\nakm:\n  schedule: "@daily"\n  enabled: false\n',
       );
-      const installs: Array<TaskInstallOptions | undefined> = [];
-      const backend: TaskBackend = {
-        name: "cron",
-        install(_task, options) {
-          installs.push(options);
-        },
-        uninstall() {},
-        setEnabled() {},
-        list: () => [{ id: "ping", binding: ["/current/akm"], contextPath: "/current/context.json" }],
-      };
+      const installs: Array<SchedulerInstallOptions | undefined> = [];
+      const backend = completeSchedulerBackend({
+        binding: ["/current/akm"],
+        contextPath: "/current/context.json",
+        onInstall: (options) => installs.push(options),
+      });
 
       await akmTasksSync({
         backend,
@@ -285,7 +277,7 @@ describe("scheduler runtime binding", () => {
         fs.readFileSync(tamperedContextPath, "utf8").replace("/tampered", "/modified"),
         { mode: 0o600 },
       );
-      const backend: TaskBackend = {
+      const backend: SchedulerBackend = {
         name: "cron",
         install() {},
         uninstall() {},
@@ -335,7 +327,7 @@ describe("scheduler runtime binding", () => {
         process.execPath,
         path.join(process.cwd(), "tests", "integration", "tasks-runtime-binding.test.ts"),
       ];
-      const backend: TaskBackend = {
+      const backend: SchedulerBackend = {
         name: "cron",
         install() {},
         uninstall() {},

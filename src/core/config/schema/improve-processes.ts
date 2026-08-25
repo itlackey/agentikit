@@ -112,15 +112,40 @@ const extractTriageGateField = z
   .passthrough()
   .optional();
 
-/** Triage process: LLM-as-judge triage-apply decision engine override. */
+const triageJudgmentErrorMap: z.ZodErrorMap = (issue, ctx) => {
+  if (issue.code === z.ZodIssueCode.unrecognized_keys) {
+    const retired = issue.keys.find((key) => key === "mode" || key === "profile");
+    if (retired) return { message: `${retired} is retired; use engine` };
+  }
+  return { message: ctx.defaultError };
+};
+
+// Judgment is an explicit opt-in surface, so invocation typos must fail closed.
+// Keep the shared override schema lenient for ordinary cross-version config
+// compatibility, while making this nested surface strict. `extraParams`
+// remains the intentional arbitrary provider-parameter escape hatch.
+const triageJudgmentLlmOverridesField = LlmInvocationOverridesSchema.strict();
+
+const triageJudgmentObjectField = z
+  .object(
+    {
+      enabled: z.boolean().optional(),
+      engine: engineName.optional(),
+      model: nonEmptyString.optional(),
+      timeoutMs: z.union([positiveInt, z.null()]).optional(),
+      llm: triageJudgmentLlmOverridesField.optional(),
+    },
+    { errorMap: triageJudgmentErrorMap },
+  )
+  .strict();
+
+/** Triage process: explicit LLM-as-judge enablement and execution overrides. */
 const triageJudgmentField = z
-  .object({
-    engine: engineName.optional(),
-    model: nonEmptyString.optional(),
-    timeoutMs: z.union([positiveInt, z.null()]).optional(),
-    llm: LlmInvocationOverridesSchema.optional(),
-  })
-  .passthrough()
+  .union([z.boolean(), triageJudgmentObjectField])
+  .transform(
+    (value): z.output<typeof triageJudgmentObjectField> =>
+      typeof value === "boolean" ? { enabled: value } : { ...value, enabled: value.enabled ?? true },
+  )
   .optional();
 
 /**
@@ -277,6 +302,13 @@ function checkRetiredProcessKeys(value: Record<string, unknown>, ctx: z.Refineme
     if (key in value) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is retired; use engine` });
     }
+  }
+  if ("judgement" in value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["judgement"],
+      message: "judgement is not a valid key; use judgment",
+    });
   }
   const judgment = value.judgment as Record<string, unknown> | undefined;
   if (judgment) {

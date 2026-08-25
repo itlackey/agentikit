@@ -47,8 +47,7 @@
  * @module salience
  */
 
-import path from "node:path";
-import { conceptIdFromTypeName } from "../../core/asset/resolve-ref";
+import type { ImproveEligibleRef } from "../../core/improve-types";
 import type { Database as IndexDatabase } from "../../storage/database";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
 import { getUtilityScoresByIds } from "../../storage/repositories/index-utility-repository";
@@ -488,23 +487,23 @@ export function buildRankChangeReport(
  * map should be treated as never retrieved (lastUseMs = 0).
  *
  * @param indexDb - An open read-capable index database connection.
- * @param refs    - The set of asset refs to look up.
+ * @param candidates - Planned refs carrying their canonical durable item_ref.
  */
-export function getLastUseMsByRef(indexDb: IndexDatabase, refs: string[], stashDir?: string): Map<string, number> {
+export function getLastUseMsByRef(
+  indexDb: IndexDatabase,
+  candidates: readonly Pick<ImproveEligibleRef, "ref" | "itemRef">[],
+): Map<string, number> {
   const result = new Map<string, number>();
-  if (refs.length === 0) return result;
+  if (candidates.length === 0) return result;
 
-  const refSet = new Set(refs);
+  const refByItemRef = new Map(
+    candidates.flatMap((candidate) => (candidate.itemRef ? [[candidate.itemRef, candidate.ref] as const] : [])),
+  );
   const allEntries = getAllEntries(indexDb);
-  const selectedRoot = stashDir ? path.resolve(stashDir) : undefined;
   const idToRef = new Map<number, string>();
   for (const indexed of allEntries) {
-    if (selectedRoot && path.resolve(indexed.stashDir) !== selectedRoot) continue;
-    // In-memory correlation key, NOT a durable write: it must match the caller's
-    // `refs` (the `ImproveEligibleRef.ref`, now the SHORT conceptId — Chunk-8
-    // WI-8.5c flipped the candidate-ref spelling to match the display flip).
-    const ref = conceptIdFromTypeName(indexed.entry.type, indexed.entry.name);
-    if (refSet.has(ref)) idToRef.set(indexed.id, ref);
+    const ref = refByItemRef.get(indexed.itemRef);
+    if (ref) idToRef.set(indexed.id, ref);
   }
 
   const ids = [...idToRef.keys()];

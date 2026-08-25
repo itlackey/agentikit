@@ -111,30 +111,6 @@ describe("show projection: exec steps", () => {
     // `pass_env` is a list of variable NAMES; no value is resolved at parse
     // time and none is ever projected.
     expect(orchestration.exec?.passEnv).toEqual(["CARGO_HOME"]);
-    expect(orchestration.exec?.inheritEnv).toBeUndefined();
-  });
-
-  test("`inherit_env: true` is surfaced — it changes what the command can see", async () => {
-    const orchestration = await orchestrationOf(
-      [
-        "---",
-        "type: workflow",
-        "steps:",
-        "  - id: build",
-        "    unit:",
-        "      exec:",
-        '        command: ["make"]',
-        "        inherit_env: true",
-        "---",
-        "",
-        "## build",
-        "",
-        "Build it.",
-        "",
-      ].join("\n"),
-      "build",
-    );
-    expect(orchestration.exec).toEqual({ command: ["make"], inheritEnv: true });
   });
 
   test("timeout still merges the defaults — an exec unit really does inherit `defaults.timeout`", async () => {

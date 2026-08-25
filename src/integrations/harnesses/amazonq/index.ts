@@ -31,7 +31,6 @@ export { amazonqResultExtractor, stripTerminalFraming } from "./result-extractor
 export class AmazonqHarness extends BaseHarness {
   readonly id = "amazonq" as const;
   readonly displayName = "Amazon Q Developer CLI";
-  readonly aliases = [] as const;
   readonly agentBuilder = amazonqBuilder;
   readonly resultExtractor = amazonqResultExtractor;
   // ── Workflow-engine descriptor (plan §"Capability matrix", P2) ────────────

@@ -21,9 +21,12 @@ import path from "node:path";
 import { akmReflect } from "../../../../src/commands/improve/reflect";
 import { listProposals } from "../../../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../../../src/core/config/config";
+import { ConfigError } from "../../../../src/core/errors";
+import { readEvents } from "../../../../src/core/events";
 import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
+import { mutateScopedEnv, withEnv } from "../../../_helpers/sandbox";
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
@@ -306,6 +309,198 @@ describe("Reflect frontmatter preservation — source frontmatter survives rewri
 });
 
 describe("Reflect quality gate — source context", () => {
+  test("validates the separately resolved judge credential before agent generation or reflect events", async () => {
+    const stash = makeStashDir();
+    const sourceContent = `---\ndescription: Judge preflight boundary\n---\n\n${LONG_SOURCE_BODY}\n`;
+    const candidateContent = LONG_SOURCE_BODY.replace("## Required config", "## Required configuration");
+    const config = {
+      ...quietQualityGateConfig(),
+      engines: {
+        "fake-agent": { kind: "agent", platform: "opencode", bin: "fake-agent" },
+        judge: {
+          kind: "llm",
+          endpoint: "http://localhost:11434/v1/chat/completions",
+          model: "judge-model",
+          apiKey: "$AKM_REFLECT_JUDGE_REQUIRED_KEY",
+        },
+      },
+      defaults: { engine: "fake-agent", llmEngine: "judge", improveStrategy: "default" },
+      improve: { strategies: { default: { processes: { reflect: { qualityGate: { enabled: true } } } } } },
+    } as AkmConfig;
+    let spawned = 0;
+
+    await withEnv({ AKM_REFLECT_JUDGE_REQUIRED_KEY: undefined }, async () => {
+      await expect(
+        akmReflect({
+          ref: "knowledge/judge-preflight",
+          stashDir: stash,
+          config,
+          assetContent: sourceContent,
+          runAgentOptions: {
+            spawn: (...args) => {
+              spawned += 1;
+              return fakeSpawn(
+                JSON.stringify({ ref: "knowledge/judge-preflight", content: candidateContent }),
+                "",
+                0,
+              )(...args);
+            },
+          },
+          chat: async () => JSON.stringify({ score: 5, reason: "pass" }),
+        }),
+      ).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    expect(spawned).toBe(0);
+    expect(listProposals(stash)).toEqual([]);
+    expect(readEvents({ type: "reflect_invoked" }).events).toEqual([]);
+  });
+
+  test("fails closed before generation when frozen judge selection has no LLM runner", async () => {
+    const stash = makeStashDir();
+    let spawned = 0;
+    const config = quietQualityGateConfig();
+    const processes = config.improve?.strategies?.default?.processes;
+    if (!processes) throw new Error("quiet quality-gate fixture is missing the default process config");
+    processes.reflect = { qualityGate: { enabled: true } };
+
+    const result = await akmReflect({
+      ref: "knowledge/no-judge-runner",
+      stashDir: stash,
+      config,
+      runAgentOptions: {
+        spawn: (...args) => {
+          spawned += 1;
+          return fakeSpawn(
+            JSON.stringify({ ref: "knowledge/no-judge-runner", content: LONG_SOURCE_BODY }),
+            "",
+            0,
+          )(...args);
+        },
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected frozen no-judge failure");
+    expect(result.error).toContain("no LLM configured");
+    expect(spawned).toBe(0);
+    expect(listProposals(stash)).toEqual([]);
+    expect(readEvents({ type: "reflect_invoked" }).events).toEqual([]);
+  });
+
+  test.each([
+    { mutation: "deletion", nextCredential: undefined },
+    { mutation: "replacement", nextCredential: "replacement-secret" },
+  ])("agent generation and its separately resolved judge survive ambient credential $mutation", async ({
+    nextCredential,
+  }) => {
+    const stash = makeStashDir();
+    const sourceContent = `---\ndescription: Judge lease boundary\n---\n\n${LONG_SOURCE_BODY}\n`;
+    const candidateContent = LONG_SOURCE_BODY.replace("## Required config", "## Required configuration");
+    const config = {
+      ...quietQualityGateConfig(),
+      engines: {
+        "fake-agent": { kind: "agent", platform: "opencode", bin: "fake-agent" },
+        judge: {
+          kind: "llm",
+          endpoint: "http://localhost:11434/v1/chat/completions",
+          model: "judge-model",
+          apiKey: "$AKM_REFLECT_JUDGE_LEASE_KEY",
+        },
+      },
+      defaults: { engine: "fake-agent", llmEngine: "judge", improveStrategy: "default" },
+      improve: { strategies: { default: { processes: { reflect: { qualityGate: { enabled: true } } } } } },
+    } as AkmConfig;
+    const original = "reflect-judge-original-secret";
+    const observed: Array<string | undefined> = [];
+    const spawn = fakeSpawn(JSON.stringify({ ref: "knowledge/judge-lease", content: candidateContent }), "", 0);
+
+    const result = await withEnv({ AKM_REFLECT_JUDGE_LEASE_KEY: original }, () =>
+      akmReflect({
+        ref: "knowledge/judge-lease",
+        stashDir: stash,
+        config,
+        assetContent: sourceContent,
+        runAgentOptions: {
+          spawn: (...args) => {
+            mutateScopedEnv("AKM_REFLECT_JUDGE_LEASE_KEY", nextCredential);
+            return spawn(...args);
+          },
+        },
+        chat: async (connection) => {
+          observed.push(connection.apiKey);
+          return JSON.stringify({ score: 5, reason: "pass" });
+        },
+      }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(observed).toEqual([original]);
+    expect(listProposals(stash)).toHaveLength(1);
+  });
+
+  test("SDK fallback generation and a separate judge snapshot both credentials before invocation", async () => {
+    const stash = makeStashDir();
+    const sourceContent = `---\ndescription: SDK and judge lease boundary\n---\n\n${LONG_SOURCE_BODY}\n`;
+    const candidateContent = LONG_SOURCE_BODY.replace("## Required config", "## Required configuration");
+    const config = {
+      ...quietQualityGateConfig(),
+      engines: {
+        "sdk-generator": { kind: "agent", platform: "opencode-sdk", llmEngine: "sdk-fallback" },
+        "sdk-fallback": {
+          kind: "llm",
+          endpoint: "https://fallback.example.test/v1/chat/completions",
+          model: "fallback",
+          apiKey: "$AKM_REFLECT_SDK_FALLBACK_KEY",
+        },
+        judge: {
+          kind: "llm",
+          endpoint: "http://localhost:11434/v1/chat/completions",
+          model: "judge-model",
+          apiKey: "$AKM_REFLECT_SDK_JUDGE_KEY",
+        },
+      },
+      defaults: { engine: "sdk-generator", llmEngine: "judge", improveStrategy: "default" },
+      improve: { strategies: { default: { processes: { reflect: { qualityGate: { enabled: true } } } } } },
+    } as AkmConfig;
+    const sdkSecret = "reflect-sdk-original-secret";
+    const judgeSecret = "reflect-sdk-judge-original-secret";
+    const observedSdk: Array<string | undefined> = [];
+    const observedJudge: Array<string | undefined> = [];
+
+    const result = await withEnv(
+      { AKM_REFLECT_SDK_FALLBACK_KEY: sdkSecret, AKM_REFLECT_SDK_JUDGE_KEY: judgeSecret },
+      () =>
+        akmReflect({
+          ref: "knowledge/sdk-judge-lease",
+          stashDir: stash,
+          config,
+          assetContent: sourceContent,
+          runSdk: async (_profile, _prompt, _options, fallbackConnection) => {
+            observedSdk.push(fallbackConnection?.apiKey);
+            mutateScopedEnv("AKM_REFLECT_SDK_FALLBACK_KEY", undefined);
+            mutateScopedEnv("AKM_REFLECT_SDK_JUDGE_KEY", undefined);
+            return {
+              ok: true,
+              exitCode: 0,
+              stdout: JSON.stringify({ ref: "knowledge/sdk-judge-lease", content: candidateContent }),
+              stderr: "",
+              durationMs: 1,
+            };
+          },
+          chat: async (connection) => {
+            observedJudge.push(connection.apiKey);
+            return JSON.stringify({ score: 5, reason: "pass" });
+          },
+        }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(observedSdk).toEqual([sdkSecret]);
+    expect(observedJudge).toEqual([judgeSecret]);
+    expect(listProposals(stash)).toHaveLength(1);
+  });
+
   test("judges the proposal against the source content already loaded by reflect", async () => {
     const stash = makeStashDir();
     const sourceContent = `---\ndescription: Source context regression guard\n---\n\nSOURCE_ONLY_MARKER\n\n${LONG_SOURCE_BODY}\n`;

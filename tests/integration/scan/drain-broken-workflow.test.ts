@@ -10,30 +10,22 @@
  * workflow would silently index through the raw recognize path. The live
  * pipeline dropped it via the renderer contributor's throw → skip-with-warning.
  * `drainDirDocuments` restores that drop: it re-runs the workflow parser and
- * drops the entry with a `Skipped workflow …` warning, while caching the valid
- * workflow's parsed document for the `workflow_documents` side-table upsert.
+ * drops the entry with a `Skipped workflow …` warning.
  *
  * This pins the GAP directly (recognize alone does NOT drop; the drain does),
  * complementing the end-to-end coverage in
  * `tests/integration/workflows/indexer-rejection.test.ts`.
  */
 
-import { beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { registerBuiltinAdapters } from "../../../src/core/adapter/adapters";
 import { akmAdapter } from "../../../src/core/adapter/adapters/akm-adapter";
-import { resetAdapterRegistryForTests } from "../../../src/core/adapter/registry";
+import { akmWorkflowAdapter } from "../../../src/core/adapter/adapters/akm-workflow-adapter";
 import type { BundleComponent } from "../../../src/core/adapter/types";
 import { drainDirDocuments } from "../../../src/indexer/scan/drain-dir";
 import { buildFileContext } from "../../../src/indexer/walk/file-context";
-import { takeWorkflowDocument } from "../../../src/workflows/runtime/document-cache";
-
-beforeAll(() => {
-  resetAdapterRegistryForTests();
-  registerBuiltinAdapters();
-});
 
 const VALID_WORKFLOW = `---
 type: workflow
@@ -60,6 +52,22 @@ steps:
 
 do A
 `;
+
+const VALID_YAML_WORKFLOW = `name: YAML drain
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: validate
+        run: echo ok
+        working-directory: packages/cli
+`;
+
+const BROKEN_YAML_WORKFLOW = VALID_YAML_WORKFLOW.replace(
+  "        run: echo ok\n        working-directory: packages/cli",
+  "        uses: actions/checkout@v4",
+);
 
 function makeStash(): { stashDir: string; goodPath: string; badPath: string } {
   const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-drain-wf-"));
@@ -101,7 +109,8 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
     // The broken one produced a workflow-skip warning naming the file.
     expect(drained.warnings).toHaveLength(1);
     const warning = drained.warnings[0];
-    expect(warning!.startsWith("Skipped workflow ")).toBe(true);
+    if (!warning) throw new Error("Expected one workflow warning");
+    expect(warning.startsWith("Skipped workflow ")).toBe(true);
     expect(warning).toContain(badPath);
     // Its concrete parse error (duplicate step id) is carried in the detail.
     expect(warning).toMatch(/Duplicate step id/);
@@ -110,11 +119,72 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
     // one's is not (it never became an entry).
     expect(drained.hashByFile.get(goodPath)).toBeDefined();
     expect(drained.hashByFile.get(badPath)).toBeUndefined();
+  });
 
-    // The valid workflow's parsed document is cached for the persist-time
-    // workflow_documents write (same side channel the live contributor used).
-    const cached = takeWorkflowDocument(drained.entries[0]!);
-    expect(cached).toBeDefined();
-    expect(cached?.steps.map((s) => s.id)).toEqual(["validate"]);
+  test.each([
+    ["ordinary", akmAdapter, "akm", "workflows"],
+    ["standalone", akmWorkflowAdapter, "akm-workflow", "."],
+  ] as const)("%s adapter drains valid YAML and surfaces invalid YAML", (_label, adapter, adapterId, subdir) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-drain-yaml-"));
+    const ownedDir = path.join(root, subdir);
+    fs.mkdirSync(ownedDir, { recursive: true });
+    const goodPath = path.join(ownedDir, "good.yml");
+    const badPath = path.join(ownedDir, "bad.yml");
+    fs.writeFileSync(goodPath, VALID_YAML_WORKFLOW);
+    fs.writeFileSync(badPath, BROKEN_YAML_WORKFLOW);
+    try {
+      const c: BundleComponent = { id: "b", adapter: adapterId, root, writable: true };
+      const contexts = [buildFileContext(root, goodPath), buildFileContext(root, badPath)];
+      const [goodContext, badContext] = contexts;
+      if (!goodContext || !badContext) throw new Error("YAML drain fixture must contain two contexts");
+      expect(adapter.recognize(c, goodContext)).toMatchObject({ type: "workflow" });
+      expect(adapter.recognize(c, badContext)).toMatchObject({ type: "workflow" });
+
+      const drained = drainDirDocuments(adapter, c, contexts);
+      expect(drained.entries.map(({ name }) => name)).toEqual(["good"]);
+      expect(drained.warnings).toHaveLength(1);
+      expect(drained.warnings[0]).toContain(badPath);
+      expect(drained.warnings[0]).toContain("Remote action acquisition");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each([
+    ["ordinary", akmAdapter, "akm", "workflows"],
+    ["standalone", akmWorkflowAdapter, "akm-workflow", "."],
+  ] as const)("%s adapter owns invalid portable command diagnostics without throwing or caching", (_label, adapter, adapterId, subdir) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-drain-template-"));
+    const ownedDir = path.join(root, subdir);
+    fs.mkdirSync(ownedDir, { recursive: true });
+    const invalidPath = path.join(ownedDir, "invalid.yml");
+    fs.writeFileSync(
+      invalidPath,
+      `name: Invalid template
+on: { workflow_dispatch: null }
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: invalid
+        uses: akm/command
+        with:
+          content: echo $HOME
+`,
+    );
+    try {
+      const c: BundleComponent = { id: "b", adapter: adapterId, root, writable: true };
+      const context = buildFileContext(root, invalidPath);
+      expect(adapter.recognize(c, context)).toMatchObject({ type: "workflow" });
+
+      const drained = drainDirDocuments(adapter, c, [context]);
+      expect(drained.entries).toHaveLength(0);
+      expect(drained.hashByFile.has(invalidPath)).toBe(false);
+      expect(drained.warnings).toHaveLength(1);
+      expect(drained.warnings[0]).toContain(invalidPath);
+      expect(drained.warnings[0]).toMatch(/unsupported portable template construct/i);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

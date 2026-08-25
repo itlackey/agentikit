@@ -20,6 +20,7 @@ import path from "node:path";
 
 import { resetConfigCache, saveConfig } from "../../../src/core/config/config";
 import { akmIndex } from "../../../src/indexer/indexer";
+import { resolveProjectContext } from "../../../src/indexer/walk/project-context";
 import { runCliCapture } from "../../_helpers/cli";
 import {
   type Cleanup,
@@ -92,9 +93,9 @@ describe("akm search/curate/show — JSON envelope snapshot (WS6)", () => {
   // be negated by `--no-project-context` — it parsed as "negate
   // `project-context`", a name nothing declared, leaving the real key at its
   // default `false` forever. This test pins REAL suppression instead: it
-  // seeds a hit tagged with this repo's own project-context token ("akm",
-  // derived from `package.json`'s `name: "akm-cli"` after the `-cli` suffix
-  // strip — this in-process harness's `process.cwd()` IS the repo, so no
+  // seeds a hit tagged with this checkout's resolved project-context token
+  // (which intentionally comes from git origin before package.json — this
+  // in-process harness's `process.cwd()` IS the repo, so no
   // `process.chdir()`/subprocess is needed) and asserts the boosted score
   // (`--detail full` is required for `score` to appear in the payload)
   // strictly decreases when `--no-project-context` is passed. A broader,
@@ -102,6 +103,16 @@ describe("akm search/curate/show — JSON envelope snapshot (WS6)", () => {
   // this same regression lives in
   // tests/integration/commands/search-project-context.test.ts.
   test("search --no-project-context measurably suppresses the project-context ranking boost", async () => {
+    // Git-origin context intentionally takes precedence over package.json
+    // context. Derive the fixture token from the checkout under test so this
+    // remains hermetic in GitHub clones (`akm`) and local release clones whose
+    // origin may be a generic path such as `/tmp/.../repo` (`repo`).
+    const projectContext = resolveProjectContext(process.cwd());
+    expect(projectContext).not.toBeNull();
+    expect(projectContext?.tokens.size).toBeGreaterThan(0);
+    const projectToken = projectContext?.tokens.values().next().value;
+    if (!projectToken) throw new Error("Expected this checkout to provide a project-context token");
+
     const sandbox = makeStashDir();
     disposers.push(sandbox);
     const stash = sandbox.dir;
@@ -114,14 +125,13 @@ describe("akm search/curate/show — JSON envelope snapshot (WS6)", () => {
       "---\ndescription: Widget widget widget master control tool for managing every widget\ntags:\n  - widget\nquality: curated\n---\n# Widget master\nManage widget widget widget fleets from one place.\n",
     );
     // `widget-note`: the TARGET, a weaker keyword match tagged with this
-    // repo's own project-context token ("akm", derived from `package.json`'s
-    // `name: "akm-cli"` after the `-cli` suffix strip — this in-process
-    // harness's `process.cwd()` IS the repo, so no `process.chdir()`/
-    // subprocess is needed to exercise a real project-context match).
+    // checkout's actual project-context token. This in-process harness's
+    // `process.cwd()` IS the repo, so no `process.chdir()`/subprocess is
+    // needed to exercise a real project-context match.
     fs.mkdirSync(path.join(stash, "skills", "widget-note"), { recursive: true });
     fs.writeFileSync(
       path.join(stash, "skills", "widget-note", "SKILL.md"),
-      "---\ndescription: widget helper note\ntags:\n  - akm\nquality: curated\n---\n# Widget note\n",
+      `---\ndescription: widget helper note\ntags:\n  - ${projectToken}\nquality: curated\n---\n# Widget note\n`,
     );
     await withEnv({ AKM_BUNDLE_DIR: stash }, async () => {
       resetConfigCache();
@@ -131,14 +141,17 @@ describe("akm search/curate/show — JSON envelope snapshot (WS6)", () => {
 
     // `--detail full` is required for `score` to appear in the payload at
     // all (the default `brief` detail omits it).
-    const withBoost = await runCli(["search", "widget", "--detail=full"], stash);
+    const withBoost = await runCli(["search", "widget", "--detail=full", "--no-track-usage"], stash);
     expect(withBoost.status).toBe(0);
     const boostedHit = (JSON.parse(withBoost.stdout).hits as Array<{ name: string; score: number }>).find(
       (h) => h.name === "widget-note",
     );
     expect(boostedHit).toBeDefined();
 
-    const suppressed = await runCli(["search", "widget", "--detail=full", "--no-project-context"], stash);
+    const suppressed = await runCli(
+      ["search", "widget", "--detail=full", "--no-project-context", "--no-track-usage"],
+      stash,
+    );
     expect(suppressed.status).toBe(0);
     const suppressedHit = (JSON.parse(suppressed.stdout).hits as Array<{ name: string; score: number }>).find(
       (h) => h.name === "widget-note",

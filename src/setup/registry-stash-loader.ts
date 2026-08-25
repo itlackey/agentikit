@@ -9,21 +9,36 @@
  * using a cached result when available. Falls back to FALLBACK_STASHES
  * when the registry is unreachable or returns no results.
  *
- * Adding a new default-selected stash: append its registry ID to
- * DEFAULT_SELECTED_STASH_IDS below. No other change required.
+ * Default-selected registry IDs are also bound to an authenticated install
+ * target below so a configured registry cannot preselect a different source
+ * merely by reusing a trusted display ID.
  */
+
+import { jsonWithByteCap } from "../core/common";
+import { hasRegistryUrlCredentials } from "../core/registry-url";
+import {
+  allowPrivateRegistryFixtureForTests,
+  cancelRegistryResponse,
+  fetchRegistryResponse,
+} from "../registry/network";
+import { parseRegistryRef } from "../registry/resolve";
 
 // ── Default selections ──────────────────────────────────────────────────────
 
 /**
  * Registry stash IDs that are pre-selected by default during setup.
- * To add a new default stash: append its registry ID here.
- * IDs must match the `id` field in the official registry index.
+ * IDs must match the `id` field in the official registry index and have a
+ * matching target in AUTHENTICATED_DEFAULT_TARGETS.
  *
- * This is the single source of truth for which stashes are pre-checked
- * in the setup wizard. No other change is required to adjust defaults.
+ * The target binding is intentionally separate from display metadata.
  */
 export const DEFAULT_SELECTED_STASH_IDS: readonly string[] = ["itlackey/akm-stash"] as const;
+const AUTHENTICATED_DEFAULT_TARGETS: Readonly<Record<string, Pick<SetupBundleEntry, "installType" | "url">>> = {
+  "itlackey/akm-stash": {
+    installType: "git",
+    url: "https://github.com/itlackey/akm-stash",
+  },
+};
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -37,6 +52,8 @@ export interface SetupBundleEntry {
   description: string;
   /** Git clone URL or npm package reference. */
   url: string;
+  /** Source kind persisted by setup; registry data cannot nominate raw Git. */
+  installType: "git" | "npm";
   /** Origin of the entry: live registry data or the built-in fallback list. */
   source: "registry" | "fallback";
   /** Whether this stash is pre-checked on a fresh install. */
@@ -55,6 +72,7 @@ const FALLBACK_STASHES: SetupBundleEntry[] = [
     name: "itlackey/akm-stash",
     description: "Official AKM onboarding bundle",
     url: "https://github.com/itlackey/akm-stash",
+    installType: "git",
     source: "fallback",
     defaultSelected: true,
   },
@@ -63,6 +81,7 @@ const FALLBACK_STASHES: SetupBundleEntry[] = [
     name: "andrewyng/context-hub",
     description: "Optional community prompt and context bundle",
     url: "https://github.com/andrewyng/context-hub",
+    installType: "git",
     source: "fallback",
     defaultSelected: false,
   },
@@ -89,19 +108,31 @@ export function _setLoadSetupStashesForTests(fake?: typeof loadSetupStashesReal)
  * @param timeoutMs    Fetch timeout in ms (default: 4000).
  */
 export async function loadSetupStashes(registryUrl: string, timeoutMs = 4000): Promise<SetupBundleEntry[]> {
+  if (hasRegistryUrlCredentials(registryUrl)) return FALLBACK_STASHES;
   if (loadSetupStashesOverride) return loadSetupStashesOverride(registryUrl, timeoutMs);
   return loadSetupStashesReal(registryUrl, timeoutMs);
 }
 
 async function loadSetupStashesReal(registryUrl: string, timeoutMs = 4000): Promise<SetupBundleEntry[]> {
   try {
-    const response = await fetch(registryUrl, {
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) return FALLBACK_STASHES;
+    const response = await fetchRegistryResponse(
+      registryUrl,
+      { headers: { Accept: "application/json" } },
+      {
+        policy: { kind: "public-registry" },
+        timeoutMs,
+        retries: 0,
+        allowPrivateHostsForTesting: allowPrivateRegistryFixtureForTests(registryUrl),
+      },
+    );
+    if (!response.ok) {
+      await cancelRegistryResponse(response);
+      return FALLBACK_STASHES;
+    }
 
-    const raw = (await response.json()) as { stashes?: unknown[] };
+    const raw = await jsonWithByteCap<{ stashes?: unknown[] }>(response, 10 * 1024 * 1024, {
+      bodyTimeoutMs: timeoutMs,
+    });
     if (!Array.isArray(raw.stashes) || raw.stashes.length === 0) return FALLBACK_STASHES;
 
     const entries: SetupBundleEntry[] = raw.stashes.flatMap((item): SetupBundleEntry[] => {
@@ -110,22 +141,16 @@ async function loadSetupStashesReal(registryUrl: string, timeoutMs = 4000): Prom
       const id = typeof s.id === "string" ? s.id : "";
       const name = typeof s.name === "string" ? s.name : id;
       const description = typeof s.description === "string" ? s.description : "";
-      // Prefer github/git source URL built from the ref; fall back to homepage
-      const url =
-        (s.source === "github" || s.source === "git") && typeof s.ref === "string"
-          ? `https://github.com/${s.ref.replace(/^github:/, "")}`
-          : typeof s.homepage === "string"
-            ? s.homepage
-            : "";
-      if (!id || !url) return [];
+      const target = setupInstallTarget(s.source, s.ref);
+      if (!id || !target) return [];
       return [
         {
           id,
           name,
           description,
-          url,
+          ...target,
           source: "registry",
-          defaultSelected: DEFAULT_SELECTED_STASH_IDS.includes(id),
+          defaultSelected: authenticatedDefaultTarget(id, target),
         },
       ];
     });
@@ -134,4 +159,32 @@ async function loadSetupStashesReal(registryUrl: string, timeoutMs = 4000): Prom
   } catch {
     return FALLBACK_STASHES;
   }
+}
+
+function authenticatedDefaultTarget(id: string, target: Pick<SetupBundleEntry, "installType" | "url">): boolean {
+  const expected = AUTHENTICATED_DEFAULT_TARGETS[id];
+  return expected?.installType === target.installType && expected.url === target.url;
+}
+
+function setupInstallTarget(source: unknown, ref: unknown): Pick<SetupBundleEntry, "installType" | "url"> | undefined {
+  if (typeof ref !== "string") return undefined;
+  try {
+    if (source === "npm") {
+      const candidate = ref.startsWith("npm:") ? ref : `npm:${ref}`;
+      const parsed = parseRegistryRef(candidate);
+      return parsed.source === "npm" ? { installType: "npm", url: candidate } : undefined;
+    }
+    if (source === "github") {
+      const candidate = ref.startsWith("github:") ? ref : `github:${ref}`;
+      const parsed = parseRegistryRef(candidate);
+      if (parsed.source !== "github") return undefined;
+      return {
+        installType: "git",
+        url: `https://github.com/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`,
+      };
+    }
+  } catch {
+    // Malformed registry install refs are omitted without breaking setup.
+  }
+  return undefined;
 }

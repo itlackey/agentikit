@@ -23,13 +23,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import * as graphDb from "../../src/indexer/db/graph-db";
 import { loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import {
   deleteEntriesByIds,
   getEntryIdByFilePath,
   upsertEntry,
 } from "../../src/storage/repositories/index-entries-repository";
-import { getMeta } from "../../src/storage/repositories/index-meta-repository";
+import { getMeta, setMeta } from "../../src/storage/repositories/index-meta-repository";
 import { DB_VERSION, GRAPH_SCHEMA_VERSION } from "../../src/storage/repositories/index-schema";
 
 // hasGraphData (P1 deliverable) is referenced via the namespace for ESM-safety;
@@ -72,15 +73,8 @@ const STASH = "/tmp/akm-rekey-stash";
 /** Insert a minimal entries row for a file so it is not treated as an orphan. */
 function seedEntry(db: Database, filePath: string, name: string, type = "memory"): number {
   const entry = { name, type, filename: path.basename(filePath) };
-  return upsertEntry(
-    db,
-    `${STASH}:${type}:${name}`,
-    path.dirname(filePath),
-    filePath,
-    STASH,
-    entry as Parameters<typeof upsertEntry>[5],
-    buildSearchText(entry as Parameters<typeof buildSearchText>[0]),
-  );
+  const provenance = deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, type, name);
+  return upsertEntry(db, filePath, entry, buildSearchText(entry), provenance);
 }
 
 function fileNode(
@@ -323,14 +317,10 @@ describe("#624-P1 graph re-key on (stash_root, file_path, body_hash)", () => {
   });
 
   // AC#5 — version + graph-schema lock --------------------------------------
-  // The graph re-key is migrated via a TARGETED graph-only path, NOT a DB_VERSION
-  // bump. index.db has no nuclear drop-and-rebuild path (a DB_VERSION mismatch is
-  // a forensic stamp only now), so the graph migration fires on schema shape and
-  // never wipes the index regardless of DB_VERSION. DB_VERSION is 20 (chunk-8
-  // Step 2 / §14.4 additive column bump); GRAPH_SCHEMA_VERSION 4 marks the new
-  // graph shape.
-  test("AC#5: DB_VERSION is 20 (§14.4 bump, still no nuclear wipe), GRAPH_SCHEMA_VERSION is 4, graph DDL is the new shape", () => {
-    expect(DB_VERSION).toBe(20);
+  // DB_VERSION 21 is the canonical entries generation boundary; graph schema
+  // version 4 remains the current independently keyed graph shape.
+  test("AC#5: DB_VERSION is 21, GRAPH_SCHEMA_VERSION is 4, graph DDL is the current shape", () => {
+    expect(DB_VERSION).toBe(21);
     expect(GRAPH_SCHEMA_VERSION).toBe(4);
 
     const db = openIndexDatabase(tmpDbPath());
@@ -358,112 +348,31 @@ describe("#624-P1 graph re-key on (stash_root, file_path, body_hash)", () => {
     }
   });
 
-  // AC#6 — THE SAFETY GUARANTEE: upgrading a legacy (entry_id-keyed) DB must
-  // (a) PRESERVE entries + embeddings (index.db has no nuclear drop, so a schema
-  // change never wipes them), AND (b) MIGRATE
-  // the existing graph data into the new tables rather than dropping it (graph
-  // re-extraction is ~19s/file of LLM work). This locks the targeted, data-
-  // preserving graph-only migration.
-  test("AC#6: legacy entry_id graph schema migrates data + preserves entries/embeddings", () => {
+  // AC#6 — index.db is derived state. Crossing a generation boundary discards
+  // graph and embedding caches together with entries; there is no live legacy
+  // graph rename/copy architecture.
+  test("AC#6: an incompatible generation discards derived entries, embeddings, and graph data", () => {
     const dbPath = tmpDbPath();
     let db = openIndexDatabase(dbPath);
     try {
-      // Seed real index content that must survive: an entry + its embedding.
-      const file = path.join(STASH, "keepme.md");
-      const entryId = seedEntry(db, file, "keepme");
+      const file = path.join(STASH, "discard.md");
+      const entryId = seedEntry(db, file, "discard");
       db.prepare("INSERT OR REPLACE INTO embeddings (id, embedding) VALUES (?, ?)").run(
         entryId,
         new Uint8Array([1, 2, 3, 4]),
       );
-
-      // Downgrade the graph tables to the LEGACY entry_id-keyed shape to simulate
-      // an existing pre-#624 database, and seed real graph data (file + entities +
-      // a relation) that must be MIGRATED, not lost.
-      db.exec("DROP TABLE IF EXISTS graph_file_relations");
-      db.exec("DROP TABLE IF EXISTS graph_file_entities");
-      db.exec("DROP TABLE IF EXISTS graph_files");
-      db.exec(`
-        CREATE TABLE graph_files (
-          entry_id          INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
-          stash_root        TEXT NOT NULL,
-          file_path         TEXT NOT NULL,
-          file_order        INTEGER NOT NULL,
-          file_type         TEXT NOT NULL,
-          body_hash         TEXT NOT NULL,
-          confidence        REAL,
-          status            TEXT NOT NULL DEFAULT 'extracted',
-          reason            TEXT,
-          extraction_run_id TEXT,
-          UNIQUE(stash_root, file_path)
-        );
-        CREATE TABLE graph_file_entities (
-          entry_id     INTEGER NOT NULL,
-          entity_order INTEGER NOT NULL,
-          stash_root   TEXT NOT NULL,
-          entity_norm  TEXT NOT NULL,
-          entity       TEXT NOT NULL,
-          PRIMARY KEY (entry_id, entity_order)
-        );
-        CREATE TABLE graph_file_relations (
-          entry_id       INTEGER NOT NULL,
-          relation_order INTEGER NOT NULL,
-          from_entity_norm TEXT NOT NULL,
-          from_entity    TEXT NOT NULL,
-          to_entity_norm TEXT NOT NULL,
-          to_entity      TEXT NOT NULL,
-          relation_type  TEXT,
-          confidence     REAL,
-          PRIMARY KEY (entry_id, relation_order)
-        );
-      `);
-      db.prepare(
-        "INSERT INTO graph_files (entry_id, stash_root, file_path, file_order, file_type, body_hash) VALUES (?, ?, ?, 0, 'memory', 'bh1')",
-      ).run(entryId, STASH, file);
-      db.prepare(
-        "INSERT INTO graph_file_entities (entry_id, entity_order, stash_root, entity_norm, entity) VALUES (?, 0, ?, 'alpha', 'Alpha'), (?, 1, ?, 'beta', 'Beta')",
-      ).run(entryId, STASH, entryId, STASH);
-      db.prepare(
-        "INSERT INTO graph_file_relations (entry_id, relation_order, from_entity_norm, from_entity, to_entity_norm, to_entity, relation_type) VALUES (?, 0, 'alpha', 'Alpha', 'beta', 'Beta', 'relates')",
-      ).run(entryId);
-      // graph_meta is unchanged by the re-key and is written alongside the data by
-      // replaceStoredGraph in production; seed it so loadStoredGraphSnapshot (which
-      // returns null without a meta row) reflects a realistic legacy DB.
-      db.prepare(
-        "INSERT OR REPLACE INTO graph_meta (stash_root, schema_version, generated_at, extracted_files, entity_count, relation_count) VALUES (?, 3, ?, 1, 2, 1)",
-      ).run(STASH, new Date().toISOString());
-      expect(tableInfoColumns(db, "graph_files")).toContain("entry_id");
-      // Version equals the current binary's DB_VERSION — no nuclear upgrade path;
-      // the graph migration fires on schema shape, independent of DB_VERSION.
-      expect(getMeta(db, "version")).toBe(String(DB_VERSION));
+      replaceStoredGraph(db, graphFor([fileNode(file, "discard-hash", ["alpha", "beta"])]));
+      expect(hasGraphData(db, STASH, file)).toBe(true);
+      setMeta(db, "version", String(DB_VERSION - 1));
       closeDatabase(db);
 
-      // Reopen → ensureSchema → migrateGraphFilesSchema + migrateGraphDataFromLegacy.
       db = openIndexDatabase(dbPath);
-
-      // The graph table is now the NEW shape; legacy tables are gone.
       expect(tableInfoColumns(db, "graph_files")).not.toContain("entry_id");
       expect(tableInfoColumns(db, "graph_files")).toContain("body_hash");
-      const legacyLeft = db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'graph_%_legacy'")
-        .all();
-      expect(legacyLeft).toEqual([]);
-
-      // GUARANTEE (a): entry + embedding UNTOUCHED (no re-embed).
-      expect((db.prepare("SELECT COUNT(*) c FROM entries").get() as { c: number }).c).toBe(1);
-      const embRow = db.prepare("SELECT embedding FROM embeddings WHERE id = ?").get(entryId) as
-        | { embedding: Uint8Array }
-        | undefined;
-      expect(Array.from(embRow?.embedding ?? [])).toEqual([1, 2, 3, 4]);
-
-      // GUARANTEE (b): graph DATA migrated into the new (composite-key) tables —
-      // NOT dropped, NOT re-extracted.
-      const snap = loadStoredGraphSnapshot(STASH, db);
-      expect(snap?.entities.slice().sort()).toEqual(["Alpha", "Beta"]);
-      expect(snap?.relations.length).toBe(1);
-      expect(snap?.relations[0]?.from).toBe("Alpha");
-      expect(snap?.relations[0]?.to).toBe("Beta");
-      // hasGraphData reports true post-migration (no re-extraction needed).
-      expect(hasGraphData(db, STASH, file)).toBe(true);
+      expect((db.prepare("SELECT COUNT(*) c FROM entries").get() as { c: number }).c).toBe(0);
+      expect((db.prepare("SELECT COUNT(*) c FROM embeddings").get() as { c: number }).c).toBe(0);
+      expect((db.prepare("SELECT COUNT(*) c FROM graph_files").get() as { c: number }).c).toBe(0);
+      expect(getMeta(db, "version")).toBe(String(DB_VERSION));
     } finally {
       closeDatabase(db);
     }

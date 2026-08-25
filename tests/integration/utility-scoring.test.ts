@@ -16,9 +16,11 @@ import { saveConfig } from "../../src/core/config/config";
 import { getDbPath } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { akmIndex, recomputeUtilityScores } from "../../src/indexer/indexer";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import { ensureUsageEventsSchema } from "../../src/indexer/usage/usage-events";
 import type { SourceSearchHit } from "../../src/sources/types";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 import { getUtilityScore, upsertUtilityScore } from "../../src/storage/repositories/index-utility-repository";
 import { type Cleanup, sandboxStashDir, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
 import { recordUsageEvent } from "../_helpers/usage-events";
@@ -69,6 +71,21 @@ function expectDefined<T>(value: T | null | undefined): T {
     throw new Error("Expected value to be defined");
   }
   return value;
+}
+
+function seedIndexEntry(
+  db: ReturnType<typeof openIndexDatabase>,
+  name: string,
+  filePath: string,
+  searchText: string,
+): number {
+  return upsertEntry(
+    db,
+    filePath,
+    { name, type: "script" },
+    searchText,
+    deriveEntryProvenance({ bundleId: "test", componentId: "test", adapterId: "akm" }, "script", name),
+  );
 }
 
 // ── Environment isolation ───────────────────────────────────────────────────
@@ -136,14 +153,8 @@ describe("upsertUtilityScore / getUtilityScore", () => {
     const dbPath = path.join(createTmpDir("akm-util-db-"), "test.db");
     const db = openIndexDatabase(dbPath);
     try {
-      // Insert a dummy entry first (utility_scores references entries)
-      db.prepare(
-        "INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run("test:script:foo", "/tmp", "/tmp/foo.sh", "/tmp", '{"name":"foo","type":"script"}', "foo script", "script");
-      const entryRow = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get("test:script:foo") as {
-        id: number;
-      };
-      const entryId = entryRow.id;
+      // Insert a dummy entry first (utility_scores references entries).
+      const entryId = seedIndexEntry(db, "foo", "/tmp/foo.sh", "foo script");
 
       upsertUtilityScore(db, entryId, {
         utility: 0.75,
@@ -169,13 +180,7 @@ describe("upsertUtilityScore / getUtilityScore", () => {
     const dbPath = path.join(createTmpDir("akm-util-db-"), "test.db");
     const db = openIndexDatabase(dbPath);
     try {
-      db.prepare(
-        "INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run("test:script:bar", "/tmp", "/tmp/bar.sh", "/tmp", '{"name":"bar","type":"script"}', "bar script", "script");
-      const entryRow = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get("test:script:bar") as {
-        id: number;
-      };
-      const entryId = entryRow.id;
+      const entryId = seedIndexEntry(db, "bar", "/tmp/bar.sh", "bar script");
 
       upsertUtilityScore(db, entryId, {
         utility: 0.5,
@@ -236,7 +241,7 @@ describe("Utility boost in search scoring", () => {
     const dbPath = getDbPath();
     const db = openIndexDatabase(dbPath);
     try {
-      const boostedEntry = db.prepare("SELECT id FROM entries WHERE entry_key LIKE '%boosted-tool%'").get() as
+      const boostedEntry = db.prepare("SELECT id FROM entries WHERE file_path LIKE '%boosted-tool%'").get() as
         | { id: number }
         | undefined;
       if (boostedEntry) {
@@ -318,7 +323,7 @@ describe("Utility boost cap", () => {
     const dbPath = getDbPath();
     const db = openIndexDatabase(dbPath);
     try {
-      const cappedEntry = db.prepare("SELECT id FROM entries WHERE entry_key LIKE '%capped-a%'").get() as
+      const cappedEntry = db.prepare("SELECT id FROM entries WHERE file_path LIKE '%capped-a%'").get() as
         | { id: number }
         | undefined;
       if (cappedEntry) {
@@ -370,10 +375,10 @@ describe("Recency decay on utility boost", () => {
     const dbPath = getDbPath();
     const db = openIndexDatabase(dbPath);
     try {
-      const recentEntry = db.prepare("SELECT id FROM entries WHERE entry_key LIKE '%recent-use%'").get() as
+      const recentEntry = db.prepare("SELECT id FROM entries WHERE file_path LIKE '%recent-use%'").get() as
         | { id: number }
         | undefined;
-      const oldEntry = db.prepare("SELECT id FROM entries WHERE entry_key LIKE '%old-use%'").get() as
+      const oldEntry = db.prepare("SELECT id FROM entries WHERE file_path LIKE '%old-use%'").get() as
         | { id: number }
         | undefined;
 
@@ -431,22 +436,7 @@ describe("recomputeUtilityScores", () => {
     // stay in index.db (`db`).
     const stateDb = new Database(":memory:") as unknown as typeof db;
     try {
-      // Insert a test entry
-      db.prepare(
-        "INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        "test:script:recompute-test",
-        "/tmp",
-        "/tmp/recompute.sh",
-        "/tmp",
-        '{"name":"recompute-test","type":"script"}',
-        "recompute test script",
-        "script",
-      );
-      const entryRow = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get("test:script:recompute-test") as {
-        id: number;
-      };
-      const entryId = entryRow.id;
+      const entryId = seedIndexEntry(db, "recompute-test", "/tmp/recompute.sh", "recompute test script");
 
       // Record usage events: 5 searches that returned this entry, then 3 shows.
       // last_used_at must preserve the latest event time;
@@ -492,25 +482,12 @@ describe("recomputeUtilityScores", () => {
     const stateDb = new Database(":memory:") as unknown as typeof db;
     ensureUsageEventsSchema(stateDb);
     try {
-      // Insert a test entry with no usage events
-      db.prepare(
-        "INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        "test:script:no-usage-test",
-        "/tmp",
-        "/tmp/no-usage.sh",
-        "/tmp",
-        '{"name":"no-usage-test","type":"script"}',
-        "no usage test script",
-        "script",
-      );
+      // Insert a test entry with no usage events.
+      const entryId = seedIndexEntry(db, "no-usage-test", "/tmp/no-usage.sh", "no usage test script");
 
       recomputeUtilityScores(db, stateDb);
 
-      const entryRow = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get("test:script:no-usage-test") as {
-        id: number;
-      };
-      const score = getUtilityScore(db, entryRow.id);
+      const score = getUtilityScore(db, entryId);
       // Either undefined or zero utility
       if (score) {
         expect(score.utility).toBe(0);
@@ -527,21 +504,8 @@ describe("recomputeUtilityScores", () => {
     const stateDb = new Database(":memory:") as unknown as typeof db;
     ensureUsageEventsSchema(stateDb);
     try {
-      db.prepare(
-        "INSERT INTO entries (entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        "test:script:stale-last-use",
-        "/tmp",
-        "/tmp/stale-last-use.sh",
-        "/tmp",
-        '{"name":"stale-last-use","type":"script"}',
-        "stale last use",
-        "script",
-      );
-      const entry = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get("test:script:stale-last-use") as {
-        id: number;
-      };
-      upsertUtilityScore(db, entry.id, {
+      const entryId = seedIndexEntry(db, "stale-last-use", "/tmp/stale-last-use.sh", "stale last use");
+      upsertUtilityScore(db, entryId, {
         utility: 0.8,
         showCount: 10,
         searchCount: 10,
@@ -551,7 +515,7 @@ describe("recomputeUtilityScores", () => {
 
       recomputeUtilityScores(db, stateDb);
 
-      expect(getUtilityScore(db, entry.id)?.lastUsedAt).toBeUndefined();
+      expect(getUtilityScore(db, entryId)?.lastUsedAt).toBeUndefined();
     } finally {
       closeDatabase(db);
       stateDb.close();
@@ -576,7 +540,7 @@ describe("whyMatched includes usage history boost", () => {
     const dbPath = getDbPath();
     const db = openIndexDatabase(dbPath);
     try {
-      const entry = db.prepare("SELECT id FROM entries WHERE entry_key LIKE '%why-util%'").get() as
+      const entry = db.prepare("SELECT id FROM entries WHERE file_path LIKE '%why-util%'").get() as
         | { id: number }
         | undefined;
       if (entry) {

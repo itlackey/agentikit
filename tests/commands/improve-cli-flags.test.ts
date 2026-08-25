@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { renderUsage } from "citty";
 import { extractCommand } from "../../src/commands/improve/extract-cli";
 import { listEmbeddedTasks } from "../../src/tasks/embedded";
-import { parseTaskDocument } from "../../src/tasks/parser";
+import { parseTaskV3Yaml } from "../../src/tasks/source-v3";
 // These flag-rejection tests run on the in-process harness
 // (tests/_helpers/cli.ts): they fail during arg parsing before any DB access,
 // so they need no stash and carry no subprocess cost.
@@ -26,7 +26,7 @@ describe("standalone extract CLI engine boundary", () => {
       "proposal",
       "extract",
       "--type",
-      "claude-code",
+      "claude",
       "--engine",
       "fast",
       "--strategy",
@@ -45,16 +45,15 @@ describe("standalone extract CLI engine boundary", () => {
       const embedded = listEmbeddedTasks().find((task) => task.id === "extract");
       expect(embedded).toBeDefined();
       if (!embedded) throw new Error("missing embedded extract task");
-      const task = parseTaskDocument({ id: embedded.id, filePath: "embedded:extract", yaml: embedded.yaml });
-      if (task.target.kind !== "command") throw new Error("embedded extract task must be a command");
-      const [executable, ...args] = task.target.cmd;
-      expect(executable).toBe("akm");
+      const task = parseTaskV3Yaml({ filePath: "embedded:extract", yaml: embedded.yaml });
+      if (task.target.kind !== "run") throw new Error("embedded extract task must be an exact shell run");
+      expect(task.target.run).toBe("akm proposal extract --auto");
 
       const bare = await runCli(["proposal", "extract"]);
       expect(bare.status).toBe(2);
       expect(JSON.parse(bare.stderr)).toMatchObject({ code: "MISSING_REQUIRED_ARGUMENT" });
 
-      const result = await runCli(args);
+      const result = await runCli(["proposal", "extract", "--auto"]);
       expect(result.status).toBe(0);
       expect(JSON.parse(result.stdout)).toMatchObject({ shape: "extract-auto-result" });
     } finally {

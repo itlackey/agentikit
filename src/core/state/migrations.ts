@@ -10,10 +10,46 @@
 
 import type { Database } from "../../storage/database";
 import {
+  assertMigrationLedger,
   assertMigrationRegistry,
   type Migration,
   runMigrations as runSqliteMigrations,
 } from "../../storage/engines/sqlite-migrations";
+
+export type StateMigrationSafety = "additive" | "data-preserving-rebuild" | "historical-destructive";
+
+/**
+ * Explicit safety classification for every released state migration ID.
+ *
+ * This registry is deliberately separate from the immutable migration bodies:
+ * released IDs, order, and SQL stay byte-for-byte unchanged. A runtime
+ * assertion below requires this key order to match {@link STATE_MIGRATIONS}
+ * exactly, so appending a migration also requires an explicit safety decision.
+ */
+export const STATE_MIGRATION_SAFETY_BY_ID: Readonly<Record<string, StateMigrationSafety>> = Object.freeze({
+  "001-initial-schema": "additive",
+  "002-task-history-per-run": "data-preserving-rebuild",
+  "003-improve-runs": "additive",
+  "004-extract-sessions-seen": "additive",
+  "005-proposal-fs-imports": "additive",
+  "006-proposals-pending-ref-source": "additive",
+  "007-consolidation-judged": "additive",
+  "008-body-embeddings": "additive",
+  "009-asset-salience": "additive",
+  "010-asset-outcome": "additive",
+  "011-asset-salience-homeostatic-demoted-at": "additive",
+  "012-improve-gate-thresholds": "additive",
+  "013-extract-sessions-content-hash": "additive",
+  "014-recombine-hypotheses": "additive",
+  "015-asset-salience-encoding-source": "additive",
+  "016-collapse-churn-detector": "additive",
+  "017-improve-run-strategy": "additive",
+  "018-drop-dead-lane-schema": "historical-destructive",
+  "019-proposal-fingerprints": "additive",
+  "020-three-db-cutover": "additive",
+  "021-asset-state-missing-since": "additive",
+  "022-workflow-unit-attempts": "additive",
+});
 
 export const STATE_MIGRATIONS: readonly Migration[] = [
   // ── Migration 001 — initial schema ──────────────────────────────────────────
@@ -308,7 +344,7 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
   // captured — but persistent and queryable.
   //
   // Indexed (query) columns:
-  //   harness          TEXT     — harness name (claude-code, opencode, ...).
+  //   harness          TEXT     — harness name (claude, opencode, ...).
   //   session_id       TEXT     — platform-native session identifier.
   //   processed_at     TEXT     — ISO-8601 UTC; when extract last ran on this session.
   //   session_ended_at TEXT     — session.endedAt at processing time. When a
@@ -363,29 +399,11 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
 
   // ── Migration 005 — proposal_fs_imports ─────────────────────────────────────
   //
-  // One-shot ledger for the legacy filesystem→SQLite proposal import (#578).
-  //
-  // VESTIGIAL as of the Chunk-8 fold: the legacy `proposal.json` import moved
-  // OUT of the live per-operation path and INTO the one-time migrator
-  // (`scripts/akm-migrate/migrate/legacy/proposal-fs-import.ts`, wired through
-  // `akm-migrate apply`),
-  // whose idempotency is INSERT OR IGNORE on the proposal UUID plus migrate-apply's
-  // incomplete sentinel — it no longer reads or writes this ledger. The CREATE TABLE
-  // stays because migration IDs are append-only: removing a released migration
-  // would make the schema_migrations ledger of an
-  // already-migrated rc database stop being an exact ordered prefix, and the
-  // runner would refuse to open it. The empty table is harmless.
-  //
-  // Original purpose (pre-fold): the first proposal operation against a stash
-  // imported any legacy `proposal.json` files (INSERT OR IGNORE) and recorded
-  // the stash here so later invocations skipped the directory walk.
-  //
-  // Indexed (query) columns:
-  //   stash_dir    TEXT PK  — absolute stash root the import ran against.
-  //
-  // Non-indexed columns:
-  //   imported_at    TEXT     — ISO-8601 UTC; when the import completed.
-  //   imported_count INTEGER  — rows actually inserted by the import.
+  // Released migration history is immutable. The filesystem proposal importer
+  // has been deleted from the current runtime, but existing databases can
+  // already contain this ledger id and table. Keeping the inert DDL here lets
+  // their migration prefix validate and lets fresh databases reproduce the
+  // same ordered schema history without restoring the importer.
   {
     id: "005-proposal-fs-imports",
     up: `
@@ -853,27 +871,10 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
     `,
   },
 
-  // ── Migration 020 — three-DB cutover baseline DDL (Chunk 8, WI-8.2) ───────────
-  //
-  // The state.db half of the three-DB merge (plan §3.2/§8, normative §11.4,
-  // chunk-8 cutover design §1). This migration is PURE,
-  // IDEMPOTENT DDL ONLY — `CREATE TABLE IF NOT EXISTS` (+ indexes),
-  // never a DROP or a data move. The actual data movement (the workflow.db merge,
-  // the usage_events rescue from index.db, the full old-ref→item_ref re-key, and
-  // the workflow.db delete / index.db quarantine) is idempotent migrate-apply
-  // code driven by
-  // `scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`. See the no-DROP
-  // contract carve-out note in `src/core/state-db.ts`.
-  //
-  // The three workflow tables are the 10 pre-cutover workflow migrations
-  // (the frozen `scripts/akm-migrate/migrate/legacy/workflow-migrations-bodies.ts`
-  // base schema + 001–010) folded into one baseline at their FINAL post-010 shape — column
-  // lists, CHECK constraints, and indexes copied verbatim. `usage_events` mirrors
-  // index.db's former `ensureUsageEventsSchema` (`src/indexer/usage/usage-events.ts`),
-  // its new durable home. `legacy_state` mirrors `ensureLegacyStateTable`
-  // (`src/storage/repositories/index-entries-repository.ts`), the orphan
-  // quarantine archive re-homed from index.db (durable, auditable, purgeable).
-  // Nothing else — NO bindings/lifecycle tables (Tier B / deferred, §3.2).
+  // Migration 020 installs the durable workflow, usage, and quarantine tables
+  // in state.db. It is additive/idempotent DDL only: current managed databases
+  // advance through the ledger automatically, while unknown/divergent ledgers
+  // fail closed. There is no external data-movement coordinator.
   {
     id: "020-three-db-cutover",
     up: `
@@ -1008,9 +1009,86 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       ALTER TABLE asset_outcome ADD COLUMN missing_since INTEGER DEFAULT NULL;
     `,
   },
+
+  // ── Migration 022 — append-only durable workflow dispatch attempts ────────
+  //
+  // `workflow_run_units` is the current status/reuse projection. V4 writes
+  // every external dispatch reservation and terminal result here so
+  // retry/reclaim history, stable dispatch identity, and known usage cannot be
+  // erased by an upsert of that projection row.
+  {
+    id: "022-workflow-unit-attempts",
+    up: `
+      CREATE TABLE workflow_run_unit_attempts (
+        run_id           TEXT NOT NULL,
+        unit_id          TEXT NOT NULL,
+        attempt          INTEGER NOT NULL CHECK (attempt >= 1),
+        dispatch_id      TEXT NOT NULL,
+        step_id          TEXT NOT NULL,
+        node_id          TEXT NOT NULL,
+        phase            TEXT NOT NULL CHECK (phase IN ('unit', 'gate')),
+        runner           TEXT,
+        engine           TEXT,
+        model            TEXT,
+        input_hash       TEXT NOT NULL,
+        status           TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'skipped')),
+        result_json      TEXT,
+        tokens           INTEGER,
+        failure_reason   TEXT,
+        session_id       TEXT,
+        worktree_path    TEXT,
+        started_at       TEXT NOT NULL,
+        finished_at      TEXT,
+        claim_holder     TEXT NOT NULL,
+        claim_expires_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, unit_id, attempt),
+        FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+      );
+      CREATE UNIQUE INDEX idx_workflow_run_unit_attempts_dispatch
+        ON workflow_run_unit_attempts(dispatch_id);
+      CREATE INDEX idx_workflow_run_unit_attempts_run_step
+        ON workflow_run_unit_attempts(run_id, step_id, unit_id, attempt);
+      CREATE INDEX idx_workflow_run_unit_attempts_running_claim
+        ON workflow_run_unit_attempts(run_id, status, claim_expires_at);
+    `,
+  },
 ];
 
 assertMigrationRegistry(STATE_MIGRATIONS);
+
+function assertStateMigrationSafetyRegistry(): void {
+  const migrationIds = STATE_MIGRATIONS.map((migration) => migration.id);
+  const classifiedIds = Object.keys(STATE_MIGRATION_SAFETY_BY_ID);
+  if (
+    migrationIds.length !== classifiedIds.length ||
+    migrationIds.some((migrationId, index) => classifiedIds[index] !== migrationId)
+  ) {
+    throw new Error("State migration safety classifications must match the exact ordered migration registry.");
+  }
+}
+
+assertStateMigrationSafetyRegistry();
+
+export function getStateMigrationSafety(migrationId: string): StateMigrationSafety {
+  const safety = STATE_MIGRATION_SAFETY_BY_ID[migrationId];
+  if (!safety) throw new Error(`State migration ${migrationId} has no safety classification.`);
+  return safety;
+}
+
+export interface RunStateMigrationsOptions {
+  /** A file created by this same open; historical cleanup cannot remove operator state. */
+  freshDatabase?: boolean;
+  /** Revalidates that the path still names the fresh file atomically reserved by this open. */
+  verifyFreshDatabaseOwnership?: () => void;
+  /** An existing file whose preflight found no applied IDs, with the ledger absent or empty. */
+  existingUnversionedDatabase?: boolean;
+  /** Narrow intent owned by the successful `akm upgrade` post-install step. */
+  allowHistoricalDestructiveStateUpgrade?: boolean;
+  /** Required explicit-upgrade snapshot hook, called before a ledger or migration 001 exists. */
+  beforeExistingUnversionedStateMigration?: (migration: Migration) => void;
+  /** Required safety-copy hook, called under the migration writer lock immediately before destructive SQL. */
+  beforeHistoricalDestructiveMigration?: (migration: Migration) => void;
+}
 
 /**
  * Apply every pending migration in a single transaction per migration.
@@ -1020,6 +1098,69 @@ assertMigrationRegistry(STATE_MIGRATIONS);
  *
  * Called automatically by `openStateDatabase()`.
  */
-export function runMigrations(db: Database, options?: { applyPending?: boolean }): void {
-  runSqliteMigrations(db, STATE_MIGRATIONS, { applyPending: options?.applyPending });
+export function runMigrations(db: Database, options?: RunStateMigrationsOptions): void {
+  const initialMigration = STATE_MIGRATIONS[0];
+  if (!initialMigration) throw new Error("State migration registry has no initial migration.");
+  let existingUnversionedSnapshotPrepared = false;
+
+  const prepareExistingUnversionedState = (lockedDb: Database): void => {
+    if (existingUnversionedSnapshotPrepared) return;
+    if (!options?.existingUnversionedDatabase) {
+      throw new Error("Refusing state.db initialization because its migration ledger disappeared after preflight.");
+    }
+    if (!options.allowHistoricalDestructiveStateUpgrade) {
+      throw new Error(
+        "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
+          "Run `akm upgrade --force` to snapshot it before migration 001.",
+      );
+    }
+    const ledger = assertMigrationLedger(lockedDb, STATE_MIGRATIONS);
+    if (ledger.migrationIds.length !== 0) {
+      throw new Error("Refusing an existing unversioned state.db whose migration ledger changed after preflight.");
+    }
+    if (!options.beforeExistingUnversionedStateMigration) {
+      throw new Error("An existing unversioned state.db requires a verified pre-migration safety-copy hook.");
+    }
+    options.beforeExistingUnversionedStateMigration(initialMigration);
+    existingUnversionedSnapshotPrepared = true;
+  };
+
+  runSqliteMigrations(db, STATE_MIGRATIONS, {
+    lockInitialMigrationPrefixThrough: options?.existingUnversionedDatabase ? "002-task-history-per-run" : undefined,
+    beforeLedgerInitializationLocked(lockedDb) {
+      if (options?.freshDatabase) {
+        if (!options.verifyFreshDatabaseOwnership) {
+          throw new Error("A fresh state.db migration requires verified file ownership.");
+        }
+        options.verifyFreshDatabaseOwnership();
+        return;
+      }
+      prepareExistingUnversionedState(lockedDb);
+    },
+    beforeMigrationLocked(migration, lockedDb) {
+      if (options?.freshDatabase) {
+        if (!options.verifyFreshDatabaseOwnership) {
+          throw new Error("A fresh state.db migration requires verified file ownership.");
+        }
+        options.verifyFreshDatabaseOwnership();
+      }
+      if (options?.existingUnversionedDatabase && !existingUnversionedSnapshotPrepared) {
+        prepareExistingUnversionedState(lockedDb);
+      }
+      if (getStateMigrationSafety(migration.id) !== "historical-destructive" || options?.freshDatabase) return;
+      // The writer lock closes the window between this exact-prefix decision,
+      // the recovery snapshot, and the destructive migration transaction.
+      assertMigrationLedger(lockedDb, STATE_MIGRATIONS);
+      if (!options?.allowHistoricalDestructiveStateUpgrade) {
+        throw new Error(
+          `Refusing to apply historical destructive state migration ${migration.id} during an ordinary managed open. ` +
+            "Run `akm upgrade --force` to create a sibling state.db safety copy and apply it deliberately.",
+        );
+      }
+      if (!options.beforeHistoricalDestructiveMigration) {
+        throw new Error(`Historical destructive state migration ${migration.id} requires a verified safety-copy hook.`);
+      }
+      options.beforeHistoricalDestructiveMigration(migration);
+    },
+  });
 }

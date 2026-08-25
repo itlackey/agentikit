@@ -19,27 +19,37 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { recognizeMatch } from "../../core/adapter/recognize-match";
-import { makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
+import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
+import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
 import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
-import { META_DIR, type MetaRef, parseMetaRef, resolveMetaFilePath } from "../../core/asset/stash-meta";
-import { asNonEmptyString } from "../../core/common";
+import { META_DIR, type MetaRef, parseMetaRef, readMetaFile } from "../../core/asset/stash-meta";
+import { asNonEmptyString, isWithin } from "../../core/common";
 import { getIndexPassConfig, loadConfig } from "../../core/config/config";
 import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
-import { appendEvent, readEvents } from "../../core/events";
-import { withStateDbTelemetry } from "../../core/state-db";
+import { appendEvent } from "../../core/events";
+import { SCRIPT_EXTENSIONS } from "../../core/recognition-util";
 import { presentationFor } from "../../core/type-presentation";
+import { warn } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
-import { lookupBundleRef } from "../../indexer/indexer";
+import { lookupBundleRef, lookupBundleRefWithResolution } from "../../indexer/indexer";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
-import { usageEventAttributionMetadata } from "../../indexer/search/search-attribution";
-import { buildEditHint, findSourceForPath, isEditable, resolveSourceEntries } from "../../indexer/search/search-source";
-import { insertUsageEvent, type UsageEventSource } from "../../indexer/usage/usage-events";
+import {
+  buildEditHint,
+  findSourceForPath,
+  isEditable,
+  resolveSourceEntries,
+  type SearchSource,
+} from "../../indexer/search/search-source";
+import { recentShowCount, recordShowUsage } from "../../indexer/usage/show-usage";
+import type { UsageEventSource } from "../../indexer/usage/usage-events";
 import {
   buildFileContext,
   buildRenderContext,
@@ -47,18 +57,11 @@ import {
   getRenderer,
   type MatchResult,
 } from "../../indexer/walk/file-context";
-import { resolveAssetPath } from "../../indexer/walk/path-resolver";
-import { resolveIndexPassLLM } from "../../llm/index-passes";
+import { resolveIndexPassExecution } from "../../llm/index-passes";
 import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { resolveStorageLocations } from "../../storage/locations";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
 import { TELEMETRY_BUSY_TIMEOUT_MS, withIndexDb } from "../../storage/repositories/index-db";
-import {
-  findEntryIdByRef,
-  getEntryById,
-  getEntryIdByFilePath,
-  getItemRefById,
-} from "../../storage/repositories/index-entries-repository";
 import { computeBodyHash } from "../../storage/repositories/index-llm-cache-repository";
 // Eagerly import source providers to trigger self-registration.
 import "../../sources/providers/index";
@@ -68,8 +71,9 @@ import { buildWorkflowAction } from "../../workflows/renderer";
 import { getActiveWorkflowRun } from "../../workflows/runtime/runs";
 
 /**
- * Unified show: queries the local FTS5 index, then falls back to on-disk
- * type-dir resolution if the index has no row. Spec §6.2; no remote provider
+ * Unified show: queries the local FTS5 index, then reads that row's file path.
+ * A physical owner can arbitrate collisions during lookup, but show never
+ * renders an asset without an indexed row. Spec §6.2; no provider or disk
  * fallback.
  *
  * When `detail` is `"brief"` or `"summary"`, the response omits
@@ -106,6 +110,13 @@ export async function akmShowUnified(input: {
     if (metaRef) return showStashMeta(metaRef);
   }
 
+  // Env/secret bodies have no safe fragment surface. Reject from the canonical
+  // ref namespace before auto-index or lookup can touch authored bytes. This is
+  // deliberately independent of on-disk suffix probing: secret filenames keep
+  // their natural extension, and a misspelled extensionless ref must not move
+  // the sensitive-fragment policy behind a not-found result.
+  assertSensitiveFragmentUnsupported(parseBundleRef(ref));
+
   // Auto-index when stale so the index is current before lookup.
   const { primarySource } = resolveReadSources();
   await ensurePrimaryIndexForRead(primarySource);
@@ -123,7 +134,7 @@ export async function akmShowUnified(input: {
   if (!input.skipLogging) {
     const consumedRef = result.ref ?? makeBundleRef(undefined, parseBundleRef(ref).conceptId);
     const priorShowCount = recentShowCount(consumedRef);
-    logShowEvent(consumedRef, result.type, result.name, input.eventSource, result.path);
+    recordShowUsage(consumedRef, result.type, result.name, input.eventSource, result.path);
     if (priorShowCount >= 2) {
       // Agent has shown this same asset 3+ times — inject a loop-break hint.
       (result as unknown as Record<string, unknown>).showLoopWarning = priorShowCount + 1;
@@ -153,17 +164,16 @@ async function showStashMeta(metaRef: MetaRef): Promise<ShowResponse> {
 
   const config = loadConfig();
   for (const source of sources) {
-    const filePath = resolveMetaFilePath(source.path, metaRef.name);
-    if (!filePath) continue;
-    const content = fs.readFileSync(filePath, "utf8");
-    const editable = isEditable(filePath, config, allSources);
+    const metaFile = readMetaFile(source.path, metaRef.name);
+    if (!metaFile) continue;
+    const editable = isEditable(metaFile.path, config, allSources);
     appendEvent({ eventType: "show", ref: `meta:${metaRef.name}`, metadata: { type: "meta", name: metaRef.name } });
     return {
       type: "meta",
       name: metaRef.name,
-      path: filePath,
+      path: metaFile.path,
       ref: `meta:${metaRef.name}`,
-      content,
+      content: metaFile.content,
       origin: source.registryId ?? null,
       editable,
     } as ShowResponse;
@@ -213,95 +223,6 @@ function enforceScopeOrThrow(filePath: string, ref: string, scope: StashEntrySco
   }
 }
 
-/**
- * Count how many times `ref` has been shown in the current session by reading
- * recent events. Returns the count BEFORE the current invocation.
- */
-function recentShowCount(ref: string): number {
-  try {
-    const { events } = readEvents({
-      type: "show",
-      ref,
-      since: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-    });
-    return events.length;
-  } catch {
-    return 0;
-  }
-}
-
-function logShowEvent(
-  ref: string,
-  type: string,
-  name: string,
-  eventSource: UsageEventSource = "user",
-  filePath?: string,
-): void {
-  // Emit a structured event to events.jsonl so workflow-trace consumers
-  // detect akm show invocations without relying on stdout scraping.
-  const eventRef = makeBundleRef(parseBundleRef(ref).bundle, parseBundleRef(ref).conceptId);
-  appendEvent({ eventType: "show", ref: eventRef, metadata: { type, name } });
-
-  // Detect if this show is a selection from a recent search result.
-  try {
-    // D7: bound the query to the last 60 s so we never scan unbounded history
-    const { events: recentSearches } = readEvents({
-      type: "search",
-      since: new Date(Date.now() - 60_000).toISOString(),
-    });
-    const cutoffMs = Date.now() - 60_000;
-    const matchingSearch = [...recentSearches].reverse().find((e) => {
-      if (!e.ts || new Date(e.ts).getTime() < cutoffMs) return false;
-      const refs = (e.metadata?.resultRefs as string[] | undefined) ?? [];
-      return refs.includes(ref);
-    });
-    if (matchingSearch) {
-      appendEvent({
-        eventType: "select",
-        ref,
-        metadata: {
-          query: matchingSearch.metadata?.query as string | undefined,
-          searchTs: matchingSearch.ts,
-          rankPosition: ((matchingSearch.metadata?.resultRefs as string[] | undefined) ?? []).indexOf(ref),
-        },
-      });
-    }
-  } catch {
-    /* fire-and-forget — select is best-effort */
-  }
-
-  try {
-    withIndexDb(
-      (db) => {
-        const entryId = filePath ? getEntryIdByFilePath(db, filePath) : findEntryIdByRef(db, eventRef);
-        if (entryId === undefined) return;
-        // Usage events carry only the resolved row's fully-qualified item_ref.
-        // A disk-only show has no durable indexed identity yet, so it does not
-        // create a per-entry usage row.
-        const entryRef = getItemRefById(db, entryId);
-        if (!entryRef) return;
-        const entry = getEntryById(db, entryId);
-        withStateDbTelemetry((stateDb) => {
-          insertUsageEvent(stateDb, {
-            event_type: "show",
-            entry_ref: entryRef,
-            entry_id: entryId,
-            metadata: usageEventAttributionMetadata(
-              entry?.entry.derivedFrom ? { memoryInference: { exposure: "direct" } } : undefined,
-              entryRef,
-            ),
-            source: eventSource,
-          });
-        }, TELEMETRY_BUSY_TIMEOUT_MS);
-      },
-      { busyTimeoutMs: TELEMETRY_BUSY_TIMEOUT_MS },
-    );
-  } catch (err) {
-    rethrowIfTestIsolationError(err);
-    /* fire-and-forget */
-  }
-}
-
 /** @internal Use akmShowUnified() for all external callers. */
 export async function showLocal(input: {
   ref: string;
@@ -309,6 +230,7 @@ export async function showLocal(input: {
   stashDir?: string;
 }): Promise<ShowResponse> {
   const parsed = parseBundleRef(input.ref);
+  assertSensitiveFragmentUnsupported(parsed);
   const assetParts = typeNameFromConceptId(parsed.conceptId);
   const config = loadConfig();
   const allSources = resolveSourceEntries(input.stashDir);
@@ -316,29 +238,12 @@ export async function showLocal(input: {
 
   const allSourceDirs = searchSources.map((s) => s.path);
 
-  let indexedEntry: Awaited<ReturnType<typeof lookupBundleRef>> = null;
-  try {
-    indexedEntry = await lookupBundleRef(parsed);
-  } catch (err) {
-    rethrowIfTestIsolationError(err);
-    indexedEntry = null;
-  }
-  const resolvedAssetPath =
-    indexedEntry?.filePath ??
-    (assetParts
-      ? await resolveAssetPath(
-          { type: assetParts.type, name: assetParts.name, origin: parsed.bundle },
-          {
-            stashDir: input.stashDir,
-            mode: "disk-only",
-          },
-        )
-      : null);
-  const assetPath = resolvedAssetPath ?? undefined;
-  const displayType = indexedEntry?.type ?? assetParts?.type ?? "asset";
-  const displayName = indexedEntry?.name ?? assetParts?.name ?? parsed.conceptId;
+  const resolution = await lookupBundleRefWithResolution(parsed);
+  if (resolution.indexError !== undefined) throw resolution.indexError;
+  const indexedEntry = resolution.entry;
+  const assetPath = indexedEntry?.filePath;
 
-  if (!assetPath && parsed.bundle && searchSources.length === 0) {
+  if (!indexedEntry && parsed.bundle && searchSources.length === 0) {
     const installCmd = `akm bundle add ${parsed.bundle}`;
     throw new NotFoundError(
       `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
@@ -346,19 +251,30 @@ export async function showLocal(input: {
     );
   }
 
-  if (!assetPath) {
+  if (!indexedEntry && !resolution.owner) {
+    const unsupportedExtension = existingUnsupportedScriptExtension(assetParts, searchSources);
+    if (unsupportedExtension !== undefined) {
+      const displayExtension = unsupportedExtension || "no extension";
+      throw new NotFoundError(
+        `Script ref "${makeBundleRef(parsed.bundle, parsed.conceptId)}" resolves to an existing file with ` +
+          `unsupported extension "${displayExtension}". Script refs must use a supported script extension: ` +
+          `${[...SCRIPT_EXTENSIONS].join(", ")}.`,
+        "ASSET_NOT_FOUND",
+      );
+    }
+  }
+
+  if (!indexedEntry || !assetPath) {
     throw new NotFoundError(
       `Stash asset not found for ref: ${makeBundleRef(parsed.bundle, parsed.conceptId)}. ` +
         "Check the name with `akm search` or verify the asset exists in your stash.",
     );
   }
 
-  if (indexedEntry) {
-    try {
-      fs.accessSync(assetPath, fs.constants.R_OK);
-    } catch (error) {
-      throwIndexedPathNotFound(error, input.ref);
-    }
+  try {
+    fs.accessSync(assetPath, fs.constants.R_OK);
+  } catch (error) {
+    throwIndexedPathNotFound(error, input.ref);
   }
 
   const source = findSourceForPath(assetPath, allSources);
@@ -372,23 +288,22 @@ export async function showLocal(input: {
   }
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
-  const indexedRenderer = indexedEntry ? rendererForIndexedEntry(indexedEntry, fileCtx) : undefined;
+  const presentedName = indexedEntry.name;
+  const indexedRenderer = rendererForIndexedEntry(indexedEntry, fileCtx);
   let response: ShowResponse;
   try {
-    if (indexedEntry && indexedRenderer === null) {
+    if (indexedRenderer === null) {
       response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment);
     } else {
       const match =
-        indexedEntry && typeof indexedRenderer === "string"
-          ? indexedMatch(indexedEntry, indexedRenderer)
-          : recognizeMatch(fileCtx);
+        typeof indexedRenderer === "string" ? indexedMatch(indexedEntry, indexedRenderer) : recognizeMatch(fileCtx);
       if (!match) {
         throw new UsageError(
           `Could not display asset "${makeBundleRef(parsed.bundle, parsed.conceptId)}" — unsupported file type or unrecognized layout`,
         );
       }
 
-      match.meta = { ...match.meta, name: displayName };
+      match.meta = { ...match.meta, name: presentedName };
       const renderer = await getRenderer(match.renderer);
       if (!renderer) {
         throw new UsageError(
@@ -396,7 +311,7 @@ export async function showLocal(input: {
         );
       }
 
-      const renderBundle = indexedEntry ? indexedEntry.bundleId : source?.registryId;
+      const renderBundle = indexedEntry.bundleId;
       const renderDefaultBundle =
         config.defaultBundle ?? (source?.path === allSources[0]?.path ? renderBundle : undefined);
       const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs, renderBundle, renderDefaultBundle);
@@ -408,26 +323,23 @@ export async function showLocal(input: {
             "INVALID_FLAG_VALUE",
           );
         }
-        applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, displayName);
+        applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, presentedName);
       }
     }
   } catch (error) {
-    if (indexedEntry) throwIndexedPathNotFound(error, input.ref);
-    throw error;
+    throwIndexedPathNotFound(error, input.ref);
   }
-  if (indexedEntry) {
-    response.type = indexedEntry.type;
-    response.name = indexedEntry.name;
-  }
+  response.type = indexedEntry.type;
+  response.name = indexedEntry.name;
   const isPrimaryStash = source !== undefined && source.path === allSources[0]?.path;
   const canonicalRef = displayRef(
     {
-      type: displayType,
-      name: displayName,
-      conceptId: indexedEntry?.conceptId,
-      bundleId: indexedEntry ? indexedEntry.bundleId : source?.registryId,
+      type: indexedEntry.type,
+      name: presentedName,
+      conceptId: indexedEntry.conceptId,
+      bundleId: indexedEntry.bundleId,
     },
-    config.defaultBundle ?? (isPrimaryStash ? indexedEntry?.bundleId : undefined),
+    config.defaultBundle ?? (isPrimaryStash ? indexedEntry.bundleId : undefined),
   );
   if (response.type === "workflow") response.action = buildWorkflowAction(canonicalRef);
   // 07 P1-D: provenance-aware toolPolicy CEILING. An agent's self-declared
@@ -490,15 +402,62 @@ export async function showLocal(input: {
   return fullResponse;
 }
 
+/** Reject body fragments for namespaces whose authored bytes are sensitive. */
+function assertSensitiveFragmentUnsupported(ref: BundleRef): void {
+  if (ref.fragment === undefined) return;
+  const type = typeNameFromConceptId(ref.conceptId)?.type;
+  if (type !== "env" && type !== "secret") return;
+  throw new UsageError(
+    `Fragments are not supported for ${makeBundleRef(ref.bundle, ref.conceptId)}. Sensitive ${type} assets do not expose body fragments.`,
+    "INVALID_FLAG_VALUE",
+  );
+}
+
+/**
+ * Return the unsupported extension only when the exact canonical AKM script
+ * path exists as a contained regular file. Physical owner arbitration runs
+ * first; this is a diagnostic for its miss, never an alternate owner or
+ * runnable-file classifier. No authored bytes are read.
+ */
+function existingUnsupportedScriptExtension(
+  assetParts: ReturnType<typeof typeNameFromConceptId>,
+  sources: readonly SearchSource[],
+): string | undefined {
+  if (assetParts?.type !== "script") return undefined;
+  const extension = path.extname(assetParts.name);
+  if (SCRIPT_EXTENSIONS.has(extension.toLowerCase())) return undefined;
+
+  const scriptDir = stashDirFor("script");
+  if (!scriptDir) return undefined;
+  for (const source of sources) {
+    try {
+      if ((source.adapterId ?? detectAdapterId(source.path)) !== "akm") continue;
+      const sourceRoot = path.resolve(source.path);
+      const candidate = path.resolve(assetPathForName("script", path.join(sourceRoot, scriptDir), assetParts.name));
+      if (!isWithin(candidate, sourceRoot)) continue;
+      const authoredStat = fs.lstatSync(candidate);
+      if (!authoredStat.isFile() && !authoredStat.isSymbolicLink()) continue;
+      const realRoot = fs.realpathSync(sourceRoot);
+      const realCandidate = fs.realpathSync(candidate);
+      if (!isWithin(realCandidate, realRoot) || !fs.statSync(realCandidate).isFile()) continue;
+      return extension;
+    } catch {
+      // Missing, unreadable, dangling, or otherwise unsafe paths remain normal
+      // not-found misses; this diagnostic never widens physical ownership.
+    }
+  }
+  return undefined;
+}
+
 /**
  * #624-P3 — opt-in inline graph extraction for `akm show`. Best-effort and
  * timeout-bounded: never throws, never hangs, never mutates the response.
  *
  * Preconditions (caller already checked the flag): a model must be configured
- * (model-available guard via {@link resolveIndexPassLLM}) and the asset must be
- * ungraphed ({@link hasGraphData}). Extraction races a 30s timeout so `show`
- * cannot block on a slow provider; any timeout/error/missing-model path is
- * swallowed and `show` returns its already-assembled response unchanged.
+ * (model-available guard via {@link resolveIndexPassExecution}) and the asset
+ * must be ungraphed ({@link hasGraphData}). Extraction races a 30s timeout so
+ * `show` cannot block on a slow provider; any timeout/error/missing-model path
+ * is swallowed and `show` returns its already-assembled response unchanged.
  */
 async function maybeExtractGraphInline(
   config: ReturnType<typeof loadConfig>,
@@ -506,8 +465,21 @@ async function maybeExtractGraphInline(
   assetPath: string,
 ): Promise<void> {
   try {
-    // Model-available guard — no provider configured ⇒ silent skip, no LLM call.
-    if (!resolveIndexPassLLM("graph", config)) return;
+    // Resolve readiness and the symbolic runner once. The inline dispatch must
+    // consume this same snapshot even if models.json changes while show runs.
+    const graphExecution = resolveIndexPassExecution("graph", config);
+    if (!graphExecution.runner) return;
+    const emittedNoticeKeys = new Set<string>();
+    const reportNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
+      for (const notice of notices) {
+        const key = JSON.stringify(notice);
+        if (emittedNoticeKeys.has(key)) continue;
+        emittedNoticeKeys.add(key);
+        const field = typeof notice.field === "string" ? ` field=${notice.field}` : "";
+        warn(`[akm] lazy graph extraction notice ${notice.code} adapter=${notice.adapter}${field}: ${notice.message}`);
+      }
+    };
+    reportNotices(graphExecution.notices);
 
     let alreadyGraphed = false;
     let bodyHash: string | undefined;
@@ -536,7 +508,14 @@ async function maybeExtractGraphInline(
       timer = setTimeout(resolve, 30_000);
     });
     try {
-      await Promise.race([extractGraphForSingleFile(db, sourceStashDir, assetPath, bodyHash, { config }), timeout]);
+      await Promise.race([
+        extractGraphForSingleFile(db, sourceStashDir, assetPath, bodyHash, {
+          config,
+          llmRunner: graphExecution.runner,
+          onNotices: reportNotices,
+        }),
+        timeout,
+      ]);
     } finally {
       if (timer) clearTimeout(timer);
       closeDatabase(db);

@@ -17,23 +17,23 @@
 import { describe, expect, test } from "bun:test";
 import { getWorkflowTemplate } from "../../src/workflows/authoring/authoring";
 import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
-import { parseWorkflow } from "../../src/workflows/parser";
+import { compileWorkflowSource } from "../../src/workflows/source-ir/compile";
 
 describe("shipped workflow template", () => {
   test("parses and compiles cleanly", () => {
     const markdown = getWorkflowTemplate();
 
-    const parsed = parseWorkflow(markdown, { path: "workflows/template.md" });
-    if (!parsed.ok) {
-      throw new Error(`template parse failed: ${parsed.errors.map((e) => `${e.line}: ${e.message}`).join(" | ")}`);
+    const source = compileWorkflowSource(markdown, { path: "workflows/template.md" });
+    if (!source.ok) {
+      throw new Error(`template compile failed: ${source.errors.map((e) => `${e.line}: ${e.message}`).join(" | ")}`);
     }
 
-    const compiled = compileWorkflowPlan(parsed.document, "template");
+    const compiled = compileWorkflowPlan(source.ir, "template");
     if (!compiled.ok) {
       throw new Error(`template compile failed: ${compiled.errors.map((e) => `${e.line}: ${e.message}`).join(" | ")}`);
     }
 
-    expect(parsed.ok).toBe(true);
+    expect(source.ok).toBe(true);
     expect(compiled.ok).toBe(true);
   });
 });

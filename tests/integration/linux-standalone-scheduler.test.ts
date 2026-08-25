@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { STANDALONE_FROZEN_SCRIPT_ARG } from "../../src/tasks/standalone-script-entry";
 import { makeSandboxDir } from "../_helpers/sandbox";
 
 const REQUESTED = process.env.AKM_STANDALONE_SCHEDULER_TESTS === "1";
@@ -58,14 +59,14 @@ function generatedCronCommand(crontab: string, id: string): string {
 test.skipIf(!ENABLED)(
   "a standalone binary outside PATH installs and executes its generated cron command",
   () => {
-    const binary = path.resolve(process.env.AKM_STANDALONE_TEST_BIN ?? "");
+    const candidateBinary = path.resolve(process.env.AKM_STANDALONE_TEST_BIN ?? "");
     const candidateArch = process.env.AKM_CANDIDATE_ARCH;
     const candidateVersion = process.env.AKM_CANDIDATE_VERSION;
     expect(process.env.AKM_STANDALONE_TEST_BIN, "AKM_STANDALONE_TEST_BIN must name the compiled artifact").toBeTruthy();
     expect(candidateArch, "AKM_CANDIDATE_ARCH must name the compiled artifact architecture").toBeTruthy();
     expect(candidateVersion, "AKM_CANDIDATE_VERSION must name the compiled artifact version").toBeTruthy();
     expect(candidateArch === process.arch).toBe(true);
-    expect(fs.existsSync(binary)).toBe(true);
+    expect(fs.existsSync(candidateBinary)).toBe(true);
 
     const sandbox = makeSandboxDir("akm-linux-standalone-scheduler");
     const id = `akm-ci-linux-${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -77,11 +78,26 @@ test.skipIf(!ENABLED)(
     const cacheHome = path.join(sandbox.dir, "cache");
     const stateHome = path.join(sandbox.dir, "state");
     const stashDir = path.join(sandbox.dir, "stash");
+    const standaloneDir = path.join(sandbox.dir, "standalone");
+    const binary = path.join(standaloneDir, "akm");
     let taskAdded = false;
 
-    for (const dir of [fakeBin, home, path.join(configHome, "akm"), dataHome, cacheHome, stateHome, stashDir]) {
+    for (const dir of [
+      fakeBin,
+      home,
+      path.join(configHome, "akm"),
+      dataHome,
+      cacheHome,
+      stateHome,
+      stashDir,
+      path.join(standaloneDir, "assets"),
+    ]) {
       fs.mkdirSync(dir, { recursive: true });
     }
+    fs.copyFileSync(candidateBinary, binary);
+    fs.chmodSync(binary, 0o755);
+    const adjacentSentinel = "MUTABLE-ADJACENT-STANDALONE-MODEL-MAP-802";
+    fs.writeFileSync(path.join(standaloneDir, "assets", "models.json"), adjacentSentinel);
     fs.writeFileSync(
       path.join(fakeBin, "crontab"),
       [
@@ -123,11 +139,30 @@ test.skipIf(!ENABLED)(
       expectSuccess(version, "standalone candidate --version");
       expect(version.stdout).toContain(candidateVersion as string);
 
+      const copiedModels = run([binary, "models", "copy-defaults"], env);
+      expectSuccess(copiedModels, "standalone models copy-defaults");
+      expect(copiedModels.stdout + copiedModels.stderr).not.toContain(adjacentSentinel);
+      const copiedModelText = fs.readFileSync(path.join(configHome, "akm", "models.json"), "utf8");
+      const authoritativeModelText = fs.readFileSync(
+        path.resolve(import.meta.dir, "../../src/assets/models.json"),
+        "utf8",
+      );
+      expect(copiedModelText).toBe(authoritativeModelText);
+      const modelDocument = JSON.parse(copiedModelText) as {
+        version?: number;
+        aliases?: Record<string, unknown>;
+      };
+      expect(modelDocument.version).toBe(1);
+      expect(Object.keys(modelDocument.aliases ?? {}).sort()).toEqual(["balanced", "fast", "reasoning"]);
+
       const doctor = run([binary, "task", "doctor"], env);
       expectSuccess(doctor, "standalone tasks doctor");
       expect(JSON.parse(doctor.stdout)).toMatchObject({ akm: { argv: [binary], via: "standalone" } });
 
-      const add = run([binary, "task", "add", id, "--schedule", "@daily", "--command", "akm --version"], env);
+      const add = run(
+        [binary, "task", "add", id, "--schedule", "@daily", "--command", "/bin/echo standalone-cron"],
+        env,
+      );
       expectSuccess(add, "standalone tasks add");
       taskAdded = true;
 
@@ -150,8 +185,41 @@ test.skipIf(!ENABLED)(
         }
       ).rows[0];
       expect(row).toMatchObject({ status: "completed", detail: { exitCode: 0 } });
-      expect(fs.readFileSync(row!.log, "utf8")).toContain(candidateVersion as string);
+      expect(fs.readFileSync(row!.log, "utf8")).toContain("standalone-cron");
       expect(fs.readFileSync(taskPath)).toEqual(originalTask);
+
+      fs.mkdirSync(path.join(stashDir, "scripts"), { recursive: true });
+      fs.mkdirSync(path.join(stashDir, "tasks"), { recursive: true });
+      for (const [extension, source, marker] of [
+        [
+          "js",
+          'if (process.argv.length !== 2 || process.argv[1] !== import.meta.path) throw new Error("bad argv"); if (import.meta.main) console.log("standalone-frozen-js")\n',
+          "standalone-frozen-js",
+        ],
+        [
+          "ts",
+          'const marker: string = "standalone-frozen-ts"; if (process.argv.length !== 2 || process.argv[1] !== import.meta.path) throw new Error("bad argv"); if (import.meta.main) console.log(marker)\n',
+          "standalone-frozen-ts",
+        ],
+      ] as const) {
+        const scriptId = `compiled-${extension}`;
+        fs.writeFileSync(path.join(stashDir, "scripts", `${scriptId}.${extension}`), source);
+        fs.writeFileSync(
+          path.join(stashDir, "tasks", `${scriptId}.yml`),
+          `version: 3\nuses: scripts/${scriptId}.${extension}\nakm:\n  schedule: "@daily"\n`,
+        );
+        const scriptRun = run([binary, "task", "run", scriptId, "--bundle", "stash"], env);
+        expectSuccess(scriptRun, `compiled standalone ${extension} task`);
+        const scriptResult = (
+          JSON.parse(scriptRun.stdout) as {
+            result: { status: string; log: string; target: { kind: string; cmd: string[] } };
+          }
+        ).result;
+        expect(scriptResult.status).toBe("completed");
+        expect(scriptResult.target.cmd.slice(0, 2)).toEqual([binary, STANDALONE_FROZEN_SCRIPT_ARG]);
+        expect(fs.readFileSync(scriptResult.log, "utf8")).toContain(marker);
+        expect(fs.existsSync(path.dirname(scriptResult.target.cmd.at(-1) as string))).toBe(false);
+      }
     } finally {
       if (taskAdded) run([binary, "task", "remove", id], env);
       sandbox.cleanup();

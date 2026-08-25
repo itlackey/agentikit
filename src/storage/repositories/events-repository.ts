@@ -12,6 +12,7 @@
  */
 
 import type { EventEnvelope } from "../../core/events-types";
+import { isReadOnlyFilesystemError } from "../../core/system-error";
 import { error } from "../../core/warn";
 import type { Database, SqlValue } from "../database";
 
@@ -80,6 +81,7 @@ export function insertEvent(
   try {
     return insertEventStrict(db, input);
   } catch (err) {
+    if (isReadOnlyFilesystemError(err)) return undefined;
     const message = err instanceof Error ? err.message : String(err);
     error(`akm: state.db event insert failed (${message})`);
     return undefined;

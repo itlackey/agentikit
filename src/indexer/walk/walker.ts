@@ -13,6 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isRelevantAssetFile } from "../../core/asset/asset-placement";
+import { WORKFLOW_EXTENSIONS } from "../../core/recognition-util";
 import { spawnSync } from "../../runtime";
 import { buildFileContext, type FileContext } from "./file-context";
 
@@ -22,6 +23,8 @@ const AKM_SKIP_DIRS = new Set(["node_modules", "bin", ".cache"]);
 export interface WalkStashFlatOptions {
   /** Let the owning adapter see every directory except VCS internals. */
   includeAllDirectories?: boolean;
+  /** Include workflow-file symlinks for the named native adapter without following symlink directories. */
+  workflowSymlinkAdapter?: "akm" | "akm-workflow";
 }
 
 export interface WalkStashFlatResult {
@@ -154,7 +157,8 @@ function walkStashGit(stashRoot: string, options: WalkStashFlatOptions): WalkSta
       // indexed. The manual walk below already skips symlinks for exactly this
       // reason; the two walkers have to agree regardless of whether the stash
       // happens to sit inside a git repo.
-      if (fs.lstatSync(absPath).isFile()) {
+      const stat = fs.lstatSync(absPath);
+      if (stat.isFile() || (stat.isSymbolicLink() && isOwnedWorkflowSymlink(stashRoot, absPath, options))) {
         results.push(buildFileContext(stashRoot, absPath));
       }
     } catch {
@@ -241,7 +245,11 @@ function walkStashManual(stashRoot: string, options: WalkStashFlatOptions): Walk
       if (entry.name === ".stash.json") continue;
       const fullPath = path.join(current, entry.name);
       if (entry.isSymbolicLink()) {
-        // Skip symlinks entirely to prevent potential path traversal outside stashRoot
+        // Native workflow components arbitrate file symlinks explicitly in the
+        // drain before reading them. Directory symlinks remain unfollowed.
+        if (isOwnedWorkflowSymlink(stashRoot, fullPath, options)) {
+          results.push(buildFileContext(stashRoot, fullPath));
+        }
         continue;
       }
       if (entry.isDirectory()) {
@@ -258,4 +266,14 @@ function walkStashManual(stashRoot: string, options: WalkStashFlatOptions): Walk
   }
 
   return { files: results, complete };
+}
+
+function isOwnedWorkflowSymlink(stashRoot: string, candidatePath: string, options: WalkStashFlatOptions): boolean {
+  const adapterId = options.workflowSymlinkAdapter;
+  if (!adapterId) return false;
+  const relativePath = path.relative(path.resolve(stashRoot), path.resolve(candidatePath)).replaceAll("\\", "/");
+  if (!relativePath || relativePath.startsWith("../") || path.posix.isAbsolute(relativePath)) return false;
+  if (adapterId === "akm" && !relativePath.startsWith("workflows/")) return false;
+  const extension = path.posix.extname(relativePath).toLowerCase();
+  return (WORKFLOW_EXTENSIONS as readonly string[]).includes(extension);
 }

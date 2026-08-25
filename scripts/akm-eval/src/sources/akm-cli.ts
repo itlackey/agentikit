@@ -22,8 +22,6 @@
  */
 
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
 import {
   getCurrentPlayer,
   getCurrentRecorder,
@@ -60,12 +58,7 @@ export class AkmCli {
   }
 
   protected run(args: string[]): AkmCliRunResult {
-    // An `akm-migrate` sentinel in args[0] routes the invocation to the
-    // sibling migration binary instead of akm itself. The sentinel stays in
-    // the recorded args so record/replay match without spawning.
-    const [bin, argv] =
-      args[0] === "akm-migrate" ? [this.resolveMigrateBin(), args.slice(1)] : [this.bin, args];
-    const res = spawnSync(bin, argv, { encoding: "utf8", env: this.env });
+    const res = spawnSync(this.bin, args, { encoding: "utf8", env: this.env });
     if (res.error) {
       throw new Error(`failed to spawn ${this.bin}: ${res.error.message}`);
     }
@@ -99,30 +92,6 @@ export class AkmCli {
   /** Run `akm index` against the wrapper's env; used to seed sandbox stashes. */
   index(extraArgs: string[] = []): AkmCliRunResult {
     return this.run(["index", ...extraArgs]);
-  }
-
-  /**
-   * Capture the mandatory pre-cutover recovery bundle before a fixture writes
-   * config. `akm backup` was removed from the CLI in 0.9.0 (R-029); the
-   * capability lives on the standalone `akm-migrate` binary shipped alongside
-   * akm.
-   */
-  createMigrationBackup(): AkmCliRunResult {
-    return this.run(["akm-migrate", "backup", "--for", "0.9.0"]);
-  }
-
-  /**
-   * Locate the `akm-migrate` binary: when the akm bin is a path (relative or
-   * absolute, e.g. `./dist/cli.js` in CI), prefer the sibling install — both
-   * `bun run build` and the npm package place akm-migrate next to akm. A bare
-   * command name falls through to PATH lookup, same as the akm bin itself.
-   */
-  protected resolveMigrateBin(): string {
-    if (this.bin.includes(path.sep)) {
-      const sibling = path.join(path.dirname(this.bin), "akm-migrate");
-      if (fs.existsSync(sibling)) return sibling;
-    }
-    return "akm-migrate";
   }
 
   /**

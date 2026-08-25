@@ -11,7 +11,7 @@ import { resolveStorageLocations } from "../../../src/storage/locations";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { computePlanHash } from "../../../src/workflows/ir/plan-hash";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import type { WorkflowPlanGraphV4 } from "../../../src/workflows/ir/schema-v4";
 import {
   abandonWorkflowRun,
   completeWorkflowStep,
@@ -83,11 +83,19 @@ describe("plan freezing at workflow start (migration 006)", () => {
     expect(row?.plan_json).toBeTruthy();
     expect(row?.plan_hash).toBeTruthy();
 
-    const plan = JSON.parse(row?.plan_json ?? "") as WorkflowPlanGraph;
+    const plan = JSON.parse(row?.plan_json ?? "") as WorkflowPlanGraphV4;
     expect(plan.steps.map((s) => s.stepId)).toEqual(["only-step"]);
-    expect(plan.irVersion).toBe(3);
+    expect(plan.irVersion).toBe(4);
+    if (plan.irVersion !== 4) throw new Error("fresh starts must persist v4");
     expect(plan.steps[0]!.root?.kind).toBe("unit");
-    expect(plan.execution?.engines["test-agent"]?.kind).toBe("agent");
+    expect(Object.hasOwn(plan.execution, "engines")).toBe(false);
+    const root = plan.steps[0]!.root;
+    if (!root || root.kind !== "unit") throw new Error("expected one current runtime unit");
+    expect(root.frozenTarget.kind).toBe("command");
+    if (root.frozenTarget.kind === "command") {
+      expect(root.frozenTarget.request.engine.name).toBe("test-agent");
+      expect(root.frozenTarget.runner.kind).toBe("sdk");
+    }
     expect(computePlanHash(plan)).toBe(row?.plan_hash ?? "");
 
     // Lease columns exist on the row but are unset — enforcement is R2.

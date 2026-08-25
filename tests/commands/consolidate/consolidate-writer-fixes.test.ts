@@ -45,7 +45,8 @@ function makeProposal(content: string, envelopeFm: Record<string, unknown> = {})
       content,
       frontmatter: envelopeFm,
     },
-    changes: [{ path: "", after: content, op: "update" }],
+    changes: [{ path: "lessons/proposal.md", after: content, op: "update" }],
+    proposedTarget: { source: "stash", root: "/tmp/stash" },
   };
 }
 

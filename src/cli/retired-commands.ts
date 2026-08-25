@@ -53,7 +53,8 @@ const RETIRED_COMMAND_HINTS: Record<string, string> = {
 
   // Pre-0.9 removals agents still trip over.
   wiki: "the `akm wiki` family was removed in 0.9 — wikis are ordinary knowledge assets; ingest with `akm import <url> --path <subdir>`.",
-  backup: "`akm backup` was removed in 0.9 — backups belong to the standalone `akm-migrate backup` tool.",
+  backup:
+    "`akm backup` was removed in 0.9 — stop writers and archive current config, data, state, and writable bundles with your normal backup tooling.",
   vault:
     "the `akm vault ...` family was removed in 0.9 — use `akm env list`/`akm env create` for a whole `.env` group, or `akm secret set <name>` for a single sensitive value.",
 

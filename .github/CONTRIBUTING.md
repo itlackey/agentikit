@@ -5,7 +5,7 @@ Thanks for your interest in contributing! This guide will help you get started.
 ## Prerequisites
 
 - [Bun](https://bun.sh/) >= 1.0
-- [Node.js](https://nodejs.org/) >= 22 and npm for npm package acceptance and global-install workflows
+- [Node.js](https://nodejs.org/) >= 24 and npm for npm package acceptance and global-install workflows
 
 ## Setting Up the Dev Environment
 
@@ -83,6 +83,14 @@ to treat `bun run check` as the pre-push gate and to use `bun run check:changed`
 while iterating on output-related changes.
 
 ## Shipping a release — migration notes
+
+Maintainers must also follow the
+[release checklist](../docs/maintainers/release-checklist.md). In particular,
+the semantic, Docker, and Linux/macOS/Windows native-scheduler gates must pass
+in **Gated CI** against the exact candidate SHA. Use a
+`gated-ci/candidate-*` tag when the workflow is not yet on the default branch,
+or manually dispatch it by full SHA once it is; link that Actions run from the
+release record.
 
 `akm help migrate <version>` prints a per-release migration note to the
 terminal. Each note lives as its own markdown file under

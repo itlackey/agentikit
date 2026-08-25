@@ -15,7 +15,8 @@
  *     lesson-frontmatter-metadata, memory-frontmatter-metadata,
  *     script-comment-metadata, env-file-metadata, secret-file-metadata,
  *     task-yaml-metadata, session-md-metadata, fact-md-metadata;
- *   - `workflows/renderer.ts` (1): workflow-document-metadata (workflow-md).
+ *   - `workflows/renderer.ts` (1): workflow-document-metadata (the historical
+ *     `workflow-md` renderer id now presents both peer workflow sources).
  *
  * ── Cycle-safety (chunk-2 ratchet, baseline 18) ──
  *
@@ -23,9 +24,9 @@
  * that file's header), so this leaf can never gain an inbound edge from a cycle
  * participant and therefore can never JOIN a cycle. It VALUE-imports the pure
  * parsers each contributor already uses so the fold cannot drift from them:
- * `parseFrontmatter`, `parseMarkdownToc`, `parseWorkflow`, `parseWorkflowProgram`,
- * `projectProgramParameters`/`programStepInstructions`, and `listKeys`
- * (env key-names). `output/renderers.ts` / `workflows/renderer.ts` are the
+ * `parseFrontmatter`, `parseMarkdownToc`, the peer-source
+ * `compileWorkflowSource` frontend/projection, and env key-name scanning.
+ * `output/renderers.ts` / `workflows/renderer.ts` are the
  * cycle-sensitive modules whose contributor bodies live in this port — their
  * ONE non-importable helper (`metadata.ts#extractDescriptionFromComments`, a
  * heavy cycle-participant module) is copied verbatim below as
@@ -47,20 +48,20 @@
  *
  * Every contributor that reads/parses content is reproduced with the SAME
  * try/catch tolerance it has today (toc/memory/session/fact/task swallow parse
- * errors). The two workflow contributors throw-to-skip in today's pipeline (a
- * broken workflow is dropped by the metadata drain); here the parse is wrapped
+ * errors). Workflow source compilation fails closed in the drain (a broken
+ * workflow is dropped); here the compile/projection is wrapped
  * so a broken workflow yields no folded metadata instead of throwing out of the
  * synchronous `recognize` — the drop-the-entry behavior is an index-drain
  * concern (Chunk 4/5), not recognition's. On the valid Chunk-0b fixture this
  * distinction never triggers.
  */
 
-import fs from "node:fs";
-import { parse as parseYaml } from "yaml";
-import { listKeys } from "../../../commands/env/env";
+import { scanEnvKeyNames } from "../../../commands/env/env";
 import type { IndexDocument } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { parseWorkflow } from "../../../workflows/parser";
+import { parseTaskV3Yaml } from "../../../tasks/source-v3";
+import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
+import { sourceStepInstructions } from "../../../workflows/source-ir/program";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { TocHeading } from "../../asset/markdown";
 import { parseMarkdownToc } from "../../asset/markdown";
@@ -84,14 +85,7 @@ export interface FoldedMetadata {
  * others are imported). Reads a leading JSDoc block or hash-comment run from the
  * script file; returns `null` on read/parse miss.
  */
-function extractDescriptionFromComments(filePath: string): string | null {
-  let content: string;
-  try {
-    content = fs.readFileSync(filePath, "utf8");
-  } catch {
-    return null;
-  }
-
+function extractDescriptionFromComments(content: string): string | null {
   const lines = content.split(/\r?\n/).slice(0, 50);
 
   const blockStart = lines.findIndex((l) => /^\s*\/\*\*/.test(l));
@@ -218,7 +212,7 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
     // ── script-comment-metadata (script-source) ──
     case "script-source": {
       if (file.ext === ".md") return out;
-      const commentDesc = extractDescriptionFromComments(file.absPath);
+      const commentDesc = extractDescriptionFromComments(file.content());
       if (commentDesc && !out.description) {
         out.description = commentDesc;
         out.source = "comments";
@@ -229,7 +223,7 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
 
     // ── env-file-metadata (env-file) ──
     case "env-file": {
-      const { keys } = listKeys(file.absPath);
+      const keys = scanEnvKeyNames(file.content());
       if (keys.length > 0) out.searchHints = keys;
       out.tags = Array.from(new Set([...(out.tags ?? []), "env", "secrets"]));
       return out;
@@ -245,15 +239,18 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
     case "task-yaml": {
       out.tags = Array.from(new Set([...(out.tags ?? []), "task", "scheduled"]));
       try {
-        const doc = parseYaml(file.content());
-        const data = doc && typeof doc === "object" && !Array.isArray(doc) ? (doc as Record<string, unknown>) : {};
+        const task = parseTaskV3Yaml({ yaml: file.content(), filePath: file.absPath, workspaceRoot: file.stashRoot });
         const hints = new Set<string>();
-        const schedule = nonEmptyString(data.schedule);
-        if (schedule) hints.add(`schedule:${schedule}`);
-        const workflow = nonEmptyString(data.workflow);
-        if (workflow) hints.add(`workflow:${workflow}`);
-        const prompt = nonEmptyString(data.prompt);
-        if (prompt) hints.add(`prompt:${prompt}`);
+        for (const binding of task.triggers.schedules) hints.add(`schedule:${binding.cron}`);
+        if (task.target.kind === "uses") {
+          if (task.target.uses.kind === "workflow") hints.add(`workflow:${task.target.uses.ref}`);
+          else if (task.target.uses.kind === "command") hints.add(`prompt:${task.target.uses.ref}`);
+          else if (task.target.command?.kind === "inline") hints.add(`prompt:${task.target.command.content}`);
+          else if (task.target.command?.kind === "stored") hints.add(`prompt:${task.target.command.ref}`);
+          else hints.add(`uses:${task.target.uses.ref}`);
+        } else {
+          hints.add(`run:${task.target.run}`);
+        }
         finalizeHints(out, hints);
       } catch {
         // Non-fatal: skip metadata extraction on parse error
@@ -305,22 +302,22 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
       return out;
     }
 
-    // ── workflow-document-metadata (workflow-md) ──
+    // ── workflow-document-metadata (historical renderer id `workflow-md`, peer sources) ──
     case "workflow-md": {
       try {
-        const result = parseWorkflow(file.content(), { path: file.relPath });
+        const result = compileWorkflowSource(file.content(), { path: file.relPath, workspaceRoot: file.stashRoot });
         if (!result.ok) return out;
-        const doc = result.document;
+        const sourceIr = result.ir;
         const hints = new Set<string>();
-        if (doc.preamble) hints.add(doc.preamble);
-        for (const step of doc.steps) {
+        if (sourceIr.preamble) hints.add(sourceIr.preamble);
+        for (const step of sourceIr.jobs.flatMap((job) => job.steps)) {
           hints.add(step.id);
-          if (step.instructions) hints.add(step.instructions.text);
-          if (step.gateRubric) hints.add(step.gateRubric.text);
+          hints.add(sourceStepInstructions(step));
+          if (step.gate?.rubric) hints.add(step.gate.rubric);
         }
         out.searchHints = Array.from(hints).filter(Boolean);
-        if (doc.params) {
-          const parameters = Object.entries(doc.params).map(([name, schema]) => {
+        if (sourceIr.params) {
+          const parameters = Object.entries(sourceIr.params).map(([name, schema]) => {
             const description = schema.description;
             return { name, ...(typeof description === "string" && description ? { description } : {}) };
           });
@@ -348,8 +345,8 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
  * Precedence, verified against every case in {@link foldRecognizedMetadata}:
  *  - description/source/confidence travel together and only when the entry has
  *    no description yet (contributors gate on `!entry.description`); a
- *    contributor that sets description WITHOUT source/confidence
- *    (workflow-program-yaml) leaves those untouched — mirrored by the
+ *    contributor that sets description WITHOUT source/confidence leaves those
+ *    untouched — mirrored by the
  *    `folded.source`/`folded.confidence` guards below;
  *  - tags UNION into the existing set (order-preserving Set dedup), matching the
  *    contributors' `Array.from(new Set([...entry.tags, ...added]))`;

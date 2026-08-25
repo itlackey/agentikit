@@ -12,13 +12,19 @@ import {
   toggleBlock,
   upsertBlock,
 } from "../src/tasks/backends/cron";
-import type { InstalledTaskRef } from "../src/tasks/backends/types";
+import type { InstalledSchedulerBinding } from "../src/tasks/backends/types";
+import { type SchedulerBinding, schedulerNativeBindingId } from "../src/tasks/scheduler-binding";
 import {
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
 } from "../src/tasks/scheduler-invocation";
-import type { TaskDocument } from "../src/tasks/schema";
+import {
+  type SchedulerArtifactDrift,
+  type SchedulerBackendContractDriver,
+  type SchedulerNormalizedPeer,
+  schedulerBackendConformance,
+} from "./_helpers/scheduler-backend-conformance";
 
 const SCHEDULED_CONTEXT: ScheduledTaskContext = {
   AKM_BUNDLE_DIR: "/srv/akm stash/100%'s",
@@ -29,15 +35,23 @@ const SCHEDULED_CONTEXT: ScheduledTaskContext = {
 };
 const contextPath = (envPath = "") => schedulerContextPath(schedulerContextDescriptor(SCHEDULED_CONTEXT, envPath));
 
-const TASK: TaskDocument = {
-  version: 2,
-  schemaVersion: 2,
+const TASK: SchedulerBinding = {
   id: "ping",
-  schedule: "*/15 * * * *",
+  logicalSource: { kind: "task", ref: "stash//tasks/ping" },
+  cron: "*/15 * * * *",
+  source: "akm.schedule",
+  ordinal: 0,
   enabled: true,
-  target: { kind: "workflow", ref: "workflows/noop", params: {} },
-  source: { path: "/stash/tasks/ping.yml" },
+  invocation: ["task", "run", "ping", "--scheduled"],
 };
+
+function targeted(binding: SchedulerBinding, target: string): SchedulerBinding {
+  return {
+    ...binding,
+    logicalSource: { ...binding.logicalSource, ref: `${target}//tasks/${binding.id}` },
+    invocation: ["task", "run", binding.id, "--bundle", target, "--scheduled"],
+  };
+}
 
 describe("cron backend helpers", () => {
   test("buildCronLine emits absolute akm path", () => {
@@ -48,8 +62,21 @@ describe("cron backend helpers", () => {
     expect(line).not.toContain("AKM_LLM_API_KEY");
   });
 
-  test("buildCronLine embeds --bundle only when a non-default bundle is given", () => {
-    const withTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath(), "work");
+  test("buildCronLine renders a qualified workflow binding without task-only arguments", () => {
+    const workflow: SchedulerBinding = {
+      ...TASK,
+      id: "wf-1234",
+      logicalSource: { kind: "workflow", ref: "team//workflows/release" },
+      source: "workflows/release.yml:on.schedule[0]",
+      invocation: ["workflow", "run", "team//workflows/release"],
+    };
+    const line = buildCronLine(workflow, ["/usr/local/bin/akm"], "/var/log", contextPath());
+    expect(line).toContain("workflow run team//workflows/release");
+    expect(line).not.toContain("--scheduled");
+  });
+
+  test("buildCronLine renders the binding invocation without hidden target state", () => {
+    const withTarget = buildCronLine(targeted(TASK, "work"), ["/usr/local/bin/akm"], "/var/log", contextPath());
     expect(withTarget).toContain("task run ping --bundle work --scheduled");
     const withoutTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath());
     expect(withoutTarget).toContain("task run ping --scheduled");
@@ -57,7 +84,7 @@ describe("cron backend helpers", () => {
   });
 
   test("extractInstalledTarget recovers the bundle from a cron body (and undefined for the primary form)", () => {
-    const withTarget = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath(), "team-stash");
+    const withTarget = buildCronLine(targeted(TASK, "team-stash"), ["/usr/local/bin/akm"], "/var/log", contextPath());
     expect(extractInstalledTarget(withTarget)).toBe("team-stash");
     expect(extractInstalledTarget(cronBlockBody(withTarget, false))).toBe("team-stash");
     const primary = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath());
@@ -87,17 +114,16 @@ describe("cron backend helpers", () => {
   });
 
   test("buildCronLine escapes cron percent syntax even inside POSIX shell quotes", () => {
-    const task = { ...TASK, id: "ping%done" };
     const line = buildCronLine(
-      task,
+      TASK,
       ["/opt/100% ready/akm's bin"],
       "/var/log/100% ready",
       contextPath("/opt/100% tools/bin:/usr/bin"),
     );
     expect(line).not.toContain("PATH=");
     expect(line).toContain("'/opt/100'\\%' ready/akm'\\''s bin'");
-    expect(line).toContain("task run ping\\%done");
-    expect(line).toContain("'/var/log/100'\\%' ready/ping'\\%'done.log'");
+    expect(line).toContain("task run ping");
+    expect(line).toContain("'/var/log/100'\\%' ready/ping.log'");
   });
 
   test("buildCronLine rejects newline injection from every interpolated input", () => {
@@ -233,44 +259,130 @@ describe("cron backend helpers", () => {
 
 // ── drift detection (the `tasks sync` schedule-change fix) ───────────────────
 
+type MemoryCronExec = CronExec & {
+  current(): string;
+  replace(content: string): void;
+  resetActivity(): void;
+  accessCount(): number;
+  mutationCount(): number;
+};
+
 /** In-memory crontab so the backend never touches the real one. */
-function memoryExec(initial = ""): CronExec & { current: () => string } {
+function memoryExec(initial = ""): MemoryCronExec {
   let store = initial;
+  let reads = 0;
+  let writes = 0;
   return {
     read(): CronExecResult {
+      reads += 1;
       return { status: 0, stdout: store, stderr: "" };
     },
     write(content: string): CronExecResult {
+      writes += 1;
       store = content;
       return { status: 0, stdout: "", stderr: "" };
     },
     current: () => store,
+    replace(content) {
+      store = content;
+    },
+    resetActivity() {
+      reads = 0;
+      writes = 0;
+    },
+    accessCount: () => reads + writes,
+    mutationCount: () => writes,
   };
 }
 
-const SYNC_TASK: TaskDocument = {
-  version: 2,
-  schemaVersion: 2,
+const SYNC_TASK: SchedulerBinding = {
   id: "ping",
-  schedule: "*/15 * * * *",
+  logicalSource: { kind: "task", ref: "stash//tasks/ping" },
+  cron: "*/15 * * * *",
+  source: "akm.schedule",
+  ordinal: 0,
   enabled: true,
-  target: { kind: "workflow", ref: "workflows/noop", params: {} },
-  source: { path: "/stash/tasks/ping.yml" },
+  invocation: ["task", "run", "ping", "--scheduled"],
 };
 
-describe("cron backend drift detection", () => {
-  const opts = (exec: CronExec) => ({
+function cronBackendOptions(exec: CronExec, scheduledContext: ScheduledTaskContext = SCHEDULED_CONTEXT) {
+  return {
     exec,
     fs: { ensureDir() {} },
     logDir: "/var/log/akm",
     akmArgv: ["/usr/local/bin/akm"],
     envPath: false as const,
-    scheduledContext: SCHEDULED_CONTEXT,
-  });
-  // The cron backend's list() is synchronous, but the TaskBackend interface
+    scheduledContext,
+  };
+}
+
+function cronContractDriver(scheduledContext = SCHEDULED_CONTEXT): SchedulerBackendContractDriver {
+  const exec = memoryExec();
+  const backend = CRON_BACKEND(cronBackendOptions(exec, scheduledContext));
+  const nativeId = (binding: SchedulerBinding) => binding.nativeId ?? schedulerNativeBindingId(binding.id);
+  const replaceArtifact = (binding: SchedulerBinding, replacement: string) => {
+    const marker = `# akm:task ${nativeId(binding)}`;
+    const prior = exec.current();
+    const duplicate = prior.replaceAll(marker, `# akm:task ${replacement}`);
+    if (duplicate === prior) throw new Error(`missing cron artifact fixture for ${binding.id}`);
+    exec.replace(`${prior}${duplicate}`);
+  };
+
+  return {
+    backend,
+    captureState: exec.current,
+    clearArtifact(binding) {
+      exec.replace(removeBlock(exec.current(), nativeId(binding)));
+    },
+    driftArtifact(binding, drift: SchedulerArtifactDrift) {
+      const prior = exec.current();
+      let next: string;
+      if (drift === "foreign") {
+        next = prior.replace(
+          " task run ping --bundle stash --scheduled ",
+          " task run foreign --bundle stash --scheduled ",
+        );
+      } else if (drift === "malformed") {
+        next = prior.replace(" --scheduled ", " --broken ");
+      } else {
+        const fields = binding.cron.split(" ");
+        fields[0] = fields[0] === "0" ? "7" : "8";
+        next = prior.replace(binding.cron, fields.join(" "));
+      }
+      if (next === prior) throw new Error(`failed to drift cron artifact fixture for ${drift}`);
+      exec.replace(next);
+    },
+    addNormalizedPeer(binding, peer: SchedulerNormalizedPeer) {
+      const id = nativeId(binding);
+      replaceArtifact(binding, peer === "case" ? id.toUpperCase() : `${id}.`);
+    },
+    currentFingerprint(binding) {
+      const artifact = (backend.listNativeArtifacts?.() as Array<{ nativeId: string; fingerprint?: string }>).find(
+        (candidate) => candidate.nativeId === nativeId(binding),
+      );
+      if (!artifact?.fingerprint) throw new Error(`missing cron fingerprint fixture for ${binding.id}`);
+      return artifact.fingerprint;
+    },
+    resetActivity: exec.resetActivity,
+    accessCount: exec.accessCount,
+    mutationCount: exec.mutationCount,
+  };
+}
+
+schedulerBackendConformance({
+  name: "cron",
+  scheduledContext: SCHEDULED_CONTEXT,
+  movedContext: { ...SCHEDULED_CONTEXT, AKM_DATA_DIR: "/srv/moved data" },
+  create: cronContractDriver,
+});
+
+describe("cron backend drift detection", () => {
+  const opts = cronBackendOptions;
+  // The cron backend's list() is synchronous, but the SchedulerBackend interface
   // types it as `… | Promise<…>`; resolve through the concrete array shape so
   // indexing stays type-safe.
-  const listSync = (b: ReturnType<typeof CRON_BACKEND>): InstalledTaskRef[] => b.list() as InstalledTaskRef[];
+  const listSync = (b: ReturnType<typeof CRON_BACKEND>): InstalledSchedulerBinding[] =>
+    b.list() as InstalledSchedulerBinding[];
 
   test("list() returns a signature equal to expectedSignature for an installed task", () => {
     const exec = memoryExec();
@@ -287,13 +399,39 @@ describe("cron backend drift detection", () => {
   test("list() attributes a target-installed entry, and its signature matches the target-aware expectation", () => {
     const exec = memoryExec();
     const backend = CRON_BACKEND(opts(exec));
-    backend.install(SYNC_TASK, { target: "work" });
+    const targetBinding = targeted(SYNC_TASK, "work");
+    backend.install(targetBinding);
     const listed = listSync(backend);
     expect(listed).toHaveLength(1);
     expect(listed[0]!.target).toBe("work");
-    expect(listed[0]!.signature).toBe(backend.expectedSignature?.(SYNC_TASK, { target: "work" }));
+    expect(listed[0]!.signature).toBe(backend.expectedSignature?.(targetBinding));
     // The target-aware signature differs from the primary (no-target) one.
-    expect(backend.expectedSignature?.(SYNC_TASK, { target: "work" })).not.toBe(backend.expectedSignature?.(SYNC_TASK));
+    expect(backend.expectedSignature?.(targetBinding)).not.toBe(backend.expectedSignature?.(SYNC_TASK));
+  });
+
+  test("round-trips a nested logical id through a portable native marker", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const nested = {
+      ...SYNC_TASK,
+      id: "sub/deep/nightly",
+      logicalSource: { kind: "task" as const, ref: "team//sub/deep/nightly" },
+      invocation: ["task", "run", "sub/deep/nightly", "--bundle", "team", "--scheduled"],
+    };
+
+    backend.install(nested);
+
+    expect(exec.current()).not.toContain("# akm:task sub/deep/nightly BEGIN");
+    expect(listSync(backend)).toEqual([expect.objectContaining({ id: "sub/deep/nightly", target: "team" })]);
+
+    const colliding = {
+      ...SYNC_TASK,
+      id: "task-b0117b892c35999ceb4d5386f8609932",
+      logicalSource: { kind: "task" as const, ref: "team//task-b0117b892c35999ceb4d5386f8609932" },
+      invocation: ["task", "run", "task-b0117b892c35999ceb4d5386f8609932", "--bundle", "team", "--scheduled"],
+    };
+    expect(() => backend.install(colliding)).toThrow(/native scheduler artifact|different logical owner/i);
+    expect(listSync(backend)).toEqual([expect.objectContaining({ id: "sub/deep/nightly", target: "team" })]);
   });
 
   // 0.9 scheduler ABI respelling (S6): an entry whose invocation no longer
@@ -311,7 +449,9 @@ describe("cron backend drift detection", () => {
       ].join("\n"),
     );
 
-    expect(CRON_BACKEND(opts(exec)).list()).toEqual([]);
+    const backend = CRON_BACKEND(opts(exec));
+    expect(backend.list()).toEqual([]);
+    expect(backend.listNativeArtifacts?.()).toEqual([{ nativeId: "ping" }]);
   });
 
   test("expectedSignature changes when the schedule changes (drift is detectable)", () => {
@@ -319,7 +459,7 @@ describe("cron backend drift detection", () => {
     const backend = CRON_BACKEND(opts(exec));
     backend.install(SYNC_TASK);
     const installedSig = listSync(backend)[0]!.signature;
-    const rescheduled: TaskDocument = { ...SYNC_TASK, schedule: "45 */6 * * *" };
+    const rescheduled: SchedulerBinding = { ...SYNC_TASK, cron: "45 */6 * * *" };
     expect(backend.expectedSignature?.(rescheduled)).not.toBe(installedSig);
   });
 
@@ -358,16 +498,6 @@ describe("cron backend drift detection", () => {
     expect(sig1).toBe(backend.expectedSignature?.(SYNC_TASK));
   });
 
-  test("expected signature changes when the resolved AKM context changes", () => {
-    const original = CRON_BACKEND(opts(memoryExec()));
-    const moved = CRON_BACKEND({
-      ...opts(memoryExec()),
-      scheduledContext: { ...SCHEDULED_CONTEXT, AKM_DATA_DIR: "/srv/moved data" },
-    });
-
-    expect(original.expectedSignature?.(SYNC_TASK)).not.toBe(moved.expectedSignature?.(SYNC_TASK));
-  });
-
   test("a failed crontab replacement restores the complete prior crontab", () => {
     let store = "0 1 * * * user-job\n";
     let failNextWrite = false;
@@ -389,12 +519,82 @@ describe("cron backend drift detection", () => {
     const prior = store;
     failNextWrite = true;
 
-    expect(() => backend.install({ ...SYNC_TASK, schedule: "45 */6 * * *" })).toThrow("injected write failure");
+    expect(() => backend.install({ ...SYNC_TASK, cron: "45 */6 * * *" })).toThrow("injected write failure");
 
     expect(writes).toHaveLength(3);
     expect(store).toBe(prior);
     expect(store).toContain("*/15 * * * *");
     expect(store).not.toContain("45 */6 * * *");
+  });
+
+  test("binding snapshots restore the exact whole crontab after multi-binding mutation", () => {
+    const exec = memoryExec("0 1 * * * user-job\n");
+    const backend = CRON_BACKEND(opts(exec));
+    const second = { ...SYNC_TASK, id: "second", invocation: ["task", "run", "second", "--scheduled"] };
+    backend.install(SYNC_TASK);
+    backend.install(second);
+    const prior = exec.current();
+    const snapshot = backend.snapshotBindings?.([SYNC_TASK.id, second.id, "absent"]);
+
+    backend.uninstall(SYNC_TASK.id);
+    backend.install({ ...second, cron: "45 */6 * * *" });
+    backend.restoreBindings?.(snapshot);
+
+    expect(exec.current()).toBe(prior);
+    expect(exec.current()).toStartWith("0 1 * * * user-job\n");
+  });
+
+  test("rollback continues past one duplicate key and restores independent native IDs", () => {
+    const exec = memoryExec();
+    const backend = CRON_BACKEND(opts(exec));
+    const ping = targeted(SYNC_TASK, "stash");
+    const second = targeted(
+      { ...SYNC_TASK, id: "second", invocation: ["task", "run", "second", "--scheduled"] },
+      "stash",
+    );
+    const snapshot = backend.snapshotBindings?.(["ping", "second"]);
+    backend.install(ping);
+    const pingBlock = exec.current();
+    backend.install(second);
+    exec.write(`${exec.current()}${pingBlock.replaceAll("# akm:task ping", "# akm:task PING")}`);
+    const raced = exec.current();
+    const restore = backend.restoreBindings as unknown as (
+      snapshot: unknown,
+      guards: readonly Record<string, unknown>[],
+    ) => void;
+
+    expect(() =>
+      restore(snapshot, [
+        {
+          nativeId: "ping",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: ping.id,
+              invocation: ping.invocation,
+              fingerprint: backend.expectedSignature?.(ping),
+            },
+          ],
+        },
+        {
+          nativeId: "second",
+          allowed: [
+            { state: "absent" },
+            {
+              state: "present",
+              bindingId: second.id,
+              invocation: second.invocation,
+              fingerprint: backend.expectedSignature?.(second),
+            },
+          ],
+        },
+      ]),
+    ).toThrow(/rollback|cardinality|duplicate|collision|exactly one/i);
+    expect(exec.current()).not.toContain("# akm:task second BEGIN");
+    expect(exec.current()).toContain("# akm:task ping BEGIN");
+    expect(exec.current()).toContain("# akm:task PING BEGIN");
+    expect(raced).toContain("# akm:task second BEGIN");
   });
 
   test("an unterminated block aborts uninstall without writing the crontab", () => {

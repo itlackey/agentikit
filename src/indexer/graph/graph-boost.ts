@@ -363,7 +363,7 @@ export function collectGraphRelatedHit(context: GraphBoostContext, filePath: str
  * idx_graph_files_path guarantees one graph_files row per path).
  *
  * The returned `ref` field carries the canonical indexed `concept_id`, never a
- * value re-derived from presentation fields or `entry_key`. It is undefined
+ * value re-derived from presentation fields. It is undefined
  * when the graph row has no matching entry with current indexed provenance.
  */
 export function listRelatedPathsForFile(
@@ -487,10 +487,9 @@ export function listRelatedPathsForFile(
     const entryRows = db
       .prepare(
         `SELECT file_path, concept_id FROM entries
-          WHERE file_path IN (${placeholders}) AND stash_dir = ?
-            AND item_ref IS NOT NULL AND concept_id IS NOT NULL`,
+          WHERE file_path IN (${placeholders})`,
       )
-      .all(...candidatePaths, stashRoot) as Array<{
+      .all(...candidatePaths) as Array<{
       file_path: string;
       concept_id: string;
     }>;

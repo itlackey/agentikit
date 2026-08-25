@@ -23,7 +23,6 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { parseAssetRef, parseStoredRef } from "../../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { DEPRECATED_REJECTED_TYPES, isKnownType, KNOWN_TYPES, type KnownType } from "../../src/core/recognition-util";
 import { presentationFor, TYPE_PRESENTATION } from "../../src/core/type-presentation";
 import { validateStashEntry } from "../../src/indexer/passes/metadata";
@@ -32,12 +31,6 @@ import { TYPE_BOOST, typeBoostFor } from "../../src/indexer/search/ranking-contr
 // ── (a) open-token acceptance as DATA ───────────────────────────────────────
 
 describe("open type token — accepted as data (D1.5-1)", () => {
-  test("parseAssetRef round-trips an arbitrary foreign/adapter type", () => {
-    const ref = parseAssetRef("custom-adapter-type:foo");
-    expect(ref.type).toBe("custom-adapter-type");
-    expect(ref.name).toBe("foo");
-  });
-
   test("validateStashEntry accepts an entry whose type is not in KNOWN_TYPES", () => {
     const result = validateStashEntry({ name: "widget-one", type: "widget" });
     expect(result).not.toBeNull();
@@ -142,29 +135,9 @@ describe("presentationFor — open-string fallback (§2.3)", () => {
   });
 });
 
-// ── (d) deny-list still rejects tool/vault (D1.5-6) ─────────────────────────
-
-describe("DEPRECATED_REJECTED_TYPES deny-list — scoped to AKM's legacy grammar", () => {
+describe("DEPRECATED_REJECTED_TYPES ownership list", () => {
   test("the deny-list is exactly {tool, vault}", () => {
     expect([...DEPRECATED_REJECTED_TYPES].sort()).toEqual(["tool", "vault"]);
-  });
-
-  test("parseAssetRef rejects tool with the generic invalid-type message", () => {
-    expect(() => parseAssetRef("tool:deploy.sh")).toThrow("Invalid asset type");
-  });
-
-  test("parseAssetRef rejects vault with its migration-hint message (checked before the deny-list)", () => {
-    expect(() => parseAssetRef("vault:prod")).toThrow(/vault.*removed in 0\.9\.0.*env.*secret/i);
-  });
-
-  test("parseStoredRef accepts retired types only for historical durable state", () => {
-    expect(parseStoredRef("vault:default")).toEqual({ type: "vault", name: "default" });
-    expect(parseStoredRef("local//tool:deploy.sh")).toEqual({
-      type: "tool",
-      name: "deploy.sh",
-      origin: "local",
-    });
-    expect(() => parseStoredRef(":bad")).toThrow();
   });
 
   test("the format-neutral index projection accepts retired AKM names as adapter-owned types", () => {

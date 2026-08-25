@@ -3,8 +3,6 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
-import { withEnvSync } from "../_helpers/sandbox";
 
 const CLI = path.join(__dirname, "..", "..", "src", "cli.ts");
 const tempDirs: string[] = [];
@@ -86,7 +84,6 @@ describe("akm bundle add website", () => {
       };
       const configDir = path.join(xdgConfig, "akm");
       fs.mkdirSync(configDir, { recursive: true });
-      withEnvSync(env, () => createMigrationBackup());
       fs.writeFileSync(
         path.join(configDir, "config.json"),
         `${JSON.stringify({ configVersion: "0.9.0", semanticSearchMode: "off" }, null, 2)}\n`,

@@ -9,22 +9,10 @@ directory. Project `.akm/config.json` files are not merged.
 
 A present configuration file must set `configVersion` to exactly `"0.9.0"`.
 Missing, older, newer, numeric, and malformed versions are rejected by ordinary
-commands without rewriting the file. `akm migrate status` reports config and
-database state independently; it exits nonzero when migration is blocked.
-`akm migrate apply` installs an operator-prepared 0.9 config and applies pending
-database migrations, but it never guesses profile-to-engine mappings. See [the
-migration guide](../migration/v0.8-to-v0.9.md) before editing an existing
-installation.
-
-Canonical config and durable database access fail closed while a restore or
-migration-apply operation is incomplete. Use `akm migrate status` to inspect it
-and `akm migrate apply` to retry; do not delete migration control files manually.
-
-AKM 0.8 does not provide these migration commands. To cross from 0.8 to 0.9,
-prepare the target and an independent filesystem backup first, install or stage
-the 0.9 binary manually, then invoke that new binary with `migrate apply
---config`. Do not use `upgrade --migration-config` from 0.8; that installed 0.8
-code cannot enforce safeguards introduced by 0.9.
+commands without rewriting the file. Pre-0.9 config and database layouts are
+not runtime inputs and are not migrated by `akm upgrade`. Configure the current
+schema directly. The standalone migrator exists only for explicit task v2 to
+task v3 conversion.
 
 ```jsonc
 {
@@ -80,8 +68,17 @@ LLM endpoints must be complete `http://` or `https://` chat-completions URLs
 ending in `/chat/completions`, without userinfo, query, or fragment. API keys
 are symbolic only: `$VAR` or `${VAR}`. AKM resolves them only at dispatch.
 
-An agent engine may set `bin`, `args`, `workspace`, `model`, `timeoutMs`, and
-`modelAliases`. Only `platform: "opencode-sdk"` may set `llmEngine`; it names
+An LLM engine may set `reasoningEffort` to a non-empty provider-supported
+value such as `"none"`, `"low"`, or `"high"`. AKM sends it as the top-level
+OpenAI-compatible `reasoning_effort` parameter alongside the existing
+`enableThinking` control, because providers do not all honor the same thinking
+switch. `reasoning_effort` is AKM-owned and cannot be set through
+`extraParams`. If a response reports reasoning tokens despite
+`enableThinking: false`, AKM emits a runtime warning so an ineffective provider
+control is visible.
+
+An agent engine may set `bin`, `args`, `workspace`, `model`, and `timeoutMs`.
+Only `platform: "opencode-sdk"` may set `llmEngine`; it names
 the LLM engine used as that SDK engine's fallback connection.
 
 `platform: "opencode-sdk"` needs the **`opencode` binary** on PATH (or a `bin`
@@ -90,17 +87,102 @@ client with no dependencies — it spawns `opencode serve` and talks to it — s
 the npm dependency alone does not make the platform usable. Install the binary
 with `npm i -g opencode-ai` or opencode's own installer.
 
-Config-root `modelAliases` resolve by exact engine/platform column first, then
-the shared `llm` column for direct and fallback LLM engines, then `"*"`. The
-resolved exact model is used consistently by direct dispatch, SDK fallback,
-health evidence, and frozen workflow plans.
+### Model-map files
 
-> **Current versus target design:** 0.9.1 model aliases are string mappings and
-> the shipped built-ins are vendor-oriented. The approved target keeps exact
-> identifiers, adds a small operator-overridable starter vocabulary such as
-> `fast`/`balanced`/`reasoning`, and permits explicitly adopted structured
-> inference profiles. That target is not yet implemented; see
-> [Agent, Command, Engine, and Model Resolution](../architecture/specs/agent-command-engine-model-design.md).
+AKM ships an immutable `models.json` package asset with three intent aliases:
+`fast`, `balanced`, and `reasoning`. The installed starter has separate
+columns for Claude Code, OpenCode, and OpenCode SDK only. A provider-specific
+identifier is not pretended to work on unrelated engines. Add mappings for
+Gemini, Codex, named direct LLM engines, or other harnesses in your user file.
+Config-root and per-engine `modelAliases` are rejected; this file is the only
+alias definition surface.
+
+An optional operator-owned file lives beside `config.json` at
+`$XDG_CONFIG_HOME/akm/models.json` (or `<AKM_CONFIG_DIR>/models.json`). It uses
+the same version-1 schema as the installed file:
+
+```json
+{
+  "version": 1,
+  "aliases": {
+    "fast": {
+      "gemini": "gemini-2.5-flash"
+    },
+    "reasoning": {
+      "claude": {
+        "inference": {
+          "effort": "medium"
+        }
+      },
+      "local-reasoner": {
+        "model": "qwen3:30b",
+        "inference": {
+          "effort": "high"
+        }
+      }
+    }
+  }
+}
+```
+
+Each engine mapping is either a non-empty exact model string or a structured
+profile with the documented fields `model` and `inference`. A user profile may
+omit `model` when the installed layer already supplies it, as the partial
+Claude override above does. After overlay, every alias/engine entry must have a
+usable model. Unknown profile fields are rejected; JSON-safe fields inside
+`inference` are preserved for engine adapters to lower optimistically.
+
+The user file overlays the installed file by alias, engine, and nested object
+field. Objects merge recursively. Arrays, scalars, and explicit `null` replace
+the lower value; omitted fields preserve it. Alias and engine keys are
+case-normalized, and case-colliding definitions are rejected. Unknown model
+inputs still pass through byte-for-byte as exact identifiers. Once a name is a
+known merged alias, selecting an engine with no mapping is an actionable
+configuration error rather than silently sending the alias as a model ID.
+
+The common execution cascade reads these files for current direct command and
+non-interactive agent calls, task-v3 runs, and improve/proposal/index
+model work routed through that resolver. A structured alias expands as
+defaults at the layer that selected it; explicit sibling fields and nearer
+layers still win. The resulting request carries the exact model ID and merged
+inference object. Engine lowerers consume that exact selection and never run
+alias resolution again. New workflow starts persist the exact request and
+symbolic runner selection in durable plan v4; resume consumes that frozen
+material without resolving aliases again.
+
+Copy the complete installed starter into the user configuration directory when
+you want to customize all fields:
+
+```sh
+akm models copy-defaults
+akm models copy-defaults --overwrite  # explicit replacement confirmation
+```
+
+The command validates the installed asset, creates the config directory, and
+writes a fully synced sibling before publication. Without `--overwrite`, a
+hard-link/no-replace operation makes publication atomic: a racing creator wins
+without losing its bytes. A filesystem that cannot provide that operation
+fails safely instead of falling back to a clobbering rename.
+
+With `--overwrite`, the portable guarantee is an atomic pathname replacement
+that never follows the target when it is a symlink. AKM verifies the observed
+regular-file identity again immediately before rename, but the portable
+filesystem APIs do not provide a conditional compare-and-swap rename. Another
+process can still change the directory entry after that check; AKM replaces
+the entry at the pathname without dereferencing it. Consequently,
+`overwritten: true` means overwrite was requested for an entry AKM observed,
+not that an inode identity was transactionally locked. Symlinks and other
+non-regular targets observed at either check are refused.
+
+AKM does not auto-create or sync this file, and authoritative defaults never
+live in the cache. npm/Node and normal Bun installs read the packaged
+`dist/assets/models.json` lazily, so `akm health` can report a missing or
+malformed package asset as a `model-map-files` failure. A standalone binary has
+the same authoritative bytes embedded at compile time and therefore has no
+external model-map asset that can later disappear; its health check validates
+the embedded copy, and release tests pin copied bytes to `src/assets/models.json`.
+The health check passes when the optional user file is absent and warns with
+its path and JSON location when the user file is unreadable or invalid.
 
 `defaults.engine` names an LLM or agent engine. `defaults.llmEngine` must name
 an LLM engine. There is no first-engine fallback: an unset `defaults.engine`
@@ -164,6 +246,32 @@ incompatible engine never falls back to another engine. Built-in strategies
 are complete presets. User-defined strategies inherit omitted fields from the
 built-in `default` strategy before applying their own overrides.
 
+`processes.triage.judgment` explicitly controls the optional judgment tier.
+Use `true` to enable it, `false` to disable it, or an object with `enabled`,
+`engine`, `model`, `timeoutMs`, and/or `llm` overrides. Existing object values
+such as `{}` and `{ "engine": "reviewer" }` remain enabled by default. Unknown
+object keys are rejected so misspellings cannot silently change execution;
+the retired `mode` and `profile` keys continue to report their engine migration
+guidance. When enabled, engine selection is judgment → triage → strategy →
+`defaults.llmEngine`, and resolution fails closed if none is available.
+
+```jsonc
+{
+  "improve": {
+    "strategies": {
+      "nightly": {
+        "processes": {
+          "triage": {
+            "enabled": true,
+            "judgment": { "enabled": true, "engine": "reviewer" }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 The shipped `default` and `frequent` strategies keep improve-stage session
 extraction off. `proactiveMaintenance` is off in `default` and
 `reflect-distill`; run `akm improve --strategy proactive-maintenance` to use the
@@ -197,6 +305,17 @@ embedding-based search. `"auto"` lets AKM set up embeddings (which downloads
 a local model unless you point `embedding` at a remote provider) and falls
 back to keyword-only FTS if the embedding runtime is unavailable; `"off"`
 disables semantic search outright and search is always keyword-only FTS.
+If a backend marked ready cannot serve a query, search still returns the FTS
+results but reports `searchMode: "fts-fallback"` and one sanitized warning.
+This is distinct from `searchMode: "keyword"`, which is the normal result when
+semantic search is disabled or has not been built. A read-only sandbox that
+cannot record best-effort usage telemetry does not by itself mark search as
+degraded.
+The npm/Bun package declares `@huggingface/transformers` as a normal dependency.
+AKM imports that external package directly; it does not carry a copied runtime
+under `src/` or `dist/`. If the dependency is unavailable, reinstall `akm-cli`
+or configure a remote `embedding.endpoint`. Setup does not mutate a global
+installation to add runtime packages.
 The default is `"off"` so a bare or headless install (`akm bundle create`, `--yes`,
 `--config`) never silently downloads the local embedding model on first
 index.
@@ -291,6 +410,10 @@ Each entry is `{ url, name?, enabled?, provider?, options? }`; `provider`
 defaults to `"static-index"`. See [Registries](https://github.com/itlackey/akm/blob/main/docs/reference/registry.md) for the full
 field reference and provider list.
 
+Registry `url` values must not contain username/password userinfo. The built-in
+providers do not currently support authenticated registry requests; `options`
+does not add an authentication mechanism. Use a credential-free HTTPS endpoint.
+
 ## Output defaults
 
 `output.format` (one of `json`\|`yaml`\|`text`\|`jsonl`\|`md`\|`html`,
@@ -334,10 +457,6 @@ akm config get engines.fast
 akm config set engines.fast '{"kind":"llm","endpoint":"http://localhost:11434/v1/chat/completions","model":"qwen3"}'
 akm config set engines.fast.apiKey '$LOCAL_LLM_API_KEY'
 akm config unset engines.old
-akm migrate status
-akm migrate status --config ./prepared-0.9.json
-akm migrate apply --config ./prepared-0.9.json --dry-run
-akm migrate apply --config ./prepared-0.9.json
 ```
 
 Object values passed to `config set` deep-merge with their current value.
@@ -354,7 +473,7 @@ generic walker.
 | `AKM_LLM_API_KEY` | Fallback only for the selected `defaults.llmEngine` |
 | `AKM_EMBED_API_KEY` | Embedding credential |
 | `AKM_BUNDLE_DIR` | Override the bundle directory |
-| `AKM_DATA_DIR` | Override the data directory — durable `index.db`/`workflow.db`/`state.db`, `akm.lock`, config backups (or set `XDG_DATA_HOME`) |
+| `AKM_DATA_DIR` | Override the data directory — `index.db`, durable `state.db`, and `akm.lock` (or set `XDG_DATA_HOME`) |
 | `AKM_CACHE_DIR` | Override the cache directory — regenerable caches (or set `XDG_CACHE_HOME`) |
 | `AKM_STATE_DIR` | Override the state directory — task-scheduler invocation state (or set `XDG_STATE_HOME`) |
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode: `WAL` (default), `DELETE`, or `TRUNCATE` |

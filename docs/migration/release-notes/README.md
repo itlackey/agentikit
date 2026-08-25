@@ -5,6 +5,11 @@ focused migration note that `akm help migrate <version>` prints to the
 terminal. The longform cross-release guides (e.g. `v0.5-to-v0.6.md`)
 live one level up in `docs/migration/`.
 
+## Available notes
+
+- [0.9.2](0.9.2.md) — task v3, workflow source IR v1 and durable v4,
+  command diagnostics, and strategy judgment migration
+
 ## Adding notes for a new release
 
 1. Create `<version>.md` in this directory (e.g. `0.7.0.md`).

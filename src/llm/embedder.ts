@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Backward-compatible facade for the embedder module.
+ * Semantic embedding entry point.
  *
  * The implementation has been split into:
  * - `./embedders/types`  — `EmbeddingVector`, `Embedder`, `EmbeddingCheckResult`
@@ -13,10 +13,8 @@
  * - `./embedders/cache`  — LRU `embedCache`, `clearEmbeddingCache`,
  *                          `embedCacheKey`
  *
- * This module wires them together: it picks the right implementation from the
- * (optional) embedding config, applies the cache layer, and re-exports the
- * existing public API so call sites (`db-search.ts`, `indexer.ts`, `db.ts`,
- * `setup.ts`, `semantic-status.ts`, tests) keep working unmodified.
+ * This module picks the configured implementation and owns the shared cache
+ * and local model lifetime.
  *
  * Tests can construct fresh `LocalEmbedder` / `RemoteEmbedder` instances
  * directly from their submodules to avoid module-level state pollution.
@@ -37,7 +35,7 @@ import {
 import { hasRemoteEndpoint, RemoteEmbedder } from "./embedders/remote";
 import type { EmbeddingCheckResult, EmbeddingVector } from "./embedders/types";
 
-// ── Re-exports (public API) ─────────────────────────────────────────────────
+// ── Shared exports ──────────────────────────────────────────────────────────
 
 export { clearEmbeddingCache } from "./embedders/cache";
 export { _setTransformersLoaderForTests, DEFAULT_LOCAL_MODEL } from "./embedders/local";
@@ -64,7 +62,7 @@ export function _setEmbedderForTests(fakes?: EmbedderOverridesForTests): void {
 }
 
 /**
- * Check whether the @huggingface/transformers package is importable.
+ * Check whether the external Transformers dependency is available.
  * Delegating wrapper around `./embedders/local`'s probe so tests can swap it
  * via {@link _setEmbedderForTests}.
  */
@@ -75,7 +73,7 @@ export function isTransformersAvailable(): boolean {
 
 // ── Singleton local embedder ────────────────────────────────────────────────
 // `_localEmbedder` is an intentional module-level singleton but constructed
-// lazily on first use. The underlying @huggingface/transformers pipeline is
+// lazily on first use. The underlying Transformers.js pipeline is
 // expensive to initialise (model download + WASM compilation) and is safe to
 // share across calls because it is stateless once created. Deferring
 // construction to first call keeps the module side-effect-free at import time,
@@ -103,7 +101,7 @@ export function resetLocalEmbedder(): void {
 /**
  * Generate an embedding for the given text.
  * If embeddingConfig has a remote endpoint, uses the configured OpenAI-compatible endpoint.
- * Otherwise falls back to local @huggingface/transformers using the model from
+ * Otherwise falls back to local Transformers.js using the model from
  * `embeddingConfig.localModel` or `DEFAULT_LOCAL_MODEL`.
  *
  * Results are cached in an LRU cache (max ~100 entries) keyed by query text
@@ -204,8 +202,7 @@ export async function embedBatch(
 
 // `cosineSimilarity` was moved to `./embedders/types.ts` so importers
 // (notably `db.ts`) can pull the math function without dragging in this
-// facade and its `@huggingface/transformers` import chain. Re-export
-// preserves the existing public API.
+// module and its Transformers.js import chain.
 export { cosineSimilarity } from "./embedders/types";
 
 // ── Model ID resolution ─────────────────────────────────────────────────────
@@ -260,7 +257,7 @@ export async function checkEmbeddingAvailability(
     return {
       available: false,
       reason: "missing-package",
-      message: "@huggingface/transformers is not installed.",
+      message: "The @huggingface/transformers dependency is unavailable.",
     };
   }
   try {

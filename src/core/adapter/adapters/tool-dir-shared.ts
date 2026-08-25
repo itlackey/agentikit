@@ -9,10 +9,8 @@
  * open AKM `type` vocabulary (spec §6/§7): a root instruction file
  * (CLAUDE.md / AGENTS.md) → `instruction`, `commands/*.md` → `command`,
  * `agents/*.md` → `agent`, `skills/<name>/SKILL.md` → `skill` (item = the dir).
- * They differ only in three parameters carried on {@link ToolDirLayout}:
+ * They differ only in two parameters carried on {@link ToolDirLayout}:
  *   - the instruction basename + its concept id,
- *   - the accepted subdir spellings (opencode accepts the SINGULAR
- *     `command/`/`agent/`/`skill/` aliases per open-question-6, claude does not),
  *   - the adapter id + component id.
  *
  * The SKILL.md codec is shared with the `agent-skills` adapter as functions
@@ -51,10 +49,16 @@
  */
 
 import path from "node:path";
+import {
+  type AdapterOwnedExtensions,
+  type AdapterRenderedExecutionSource,
+  createAdapterExtensions,
+} from "../../../execution/source";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
+import { executionDefaultsFromFrontmatter, renderMarkdownExecutionSource } from "../execution-source";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
 import { skillDirectoryDiagnostics } from "./akm-lint";
 import { hashContent, nonEmptyString, readTags, runBaseValidateChecks } from "./shared";
@@ -78,11 +82,11 @@ export interface ToolDirLayout {
   instructionFile: string;
   /** conceptId for the root instruction file (CLAUDE / AGENTS). */
   instructionConceptId: string;
-  /** Accepted `command` subdir spellings (plural canonical + optional singular alias). */
+  /** Accepted canonical command directory. */
   commandDirs: ReadonlySet<string>;
-  /** Accepted `agent` subdir spellings. */
+  /** Accepted canonical agent directory. */
   agentDirs: ReadonlySet<string>;
-  /** Accepted `skill` subdir spellings. */
+  /** Accepted canonical skill directory. */
   skillDirs: ReadonlySet<string>;
 }
 
@@ -121,7 +125,7 @@ function classify(relPath: string, layout: ToolDirLayout): ToolDirClassification
   // skill: <skillDir>/<name>/SKILL.md — the item is the DIRECTORY. Any other
   // file under a skill dir (bundled resources) is part of the item, not a concept.
   if (layout.skillDirs.has(head)) {
-    if (segs.length >= 3 && base === SKILL_MANIFEST) {
+    if (segs.length === 3 && base === SKILL_MANIFEST) {
       return { type: "skill", conceptId: `${segs[0]}/${segs[1]}`, name: segs[1]! };
     }
     return null;
@@ -190,6 +194,26 @@ export function placeNewToolDir(layout: ToolDirLayout, c: BundleComponent, conce
   return path.join(c.root, `${posix}.md`);
 }
 
+/** List native read spellings. */
+export function readCandidatesToolDir(layout: ToolDirLayout, c: BundleComponent, conceptId: string) {
+  const posix = toPosix(conceptId);
+  if (posix === layout.instructionConceptId) {
+    return [{ path: path.join(c.root, layout.instructionFile), conceptId: posix }];
+  }
+
+  const segs = posix.split("/").filter((segment) => segment.length > 0);
+  const head = segs[0];
+  const rest = segs.slice(1).join("/");
+  if (!head || !rest) return [];
+  if (layout.skillDirs.has(head)) {
+    return segs.length === 2 ? [{ path: path.join(c.root, head, rest, SKILL_MANIFEST), conceptId: posix }] : [];
+  }
+  if (layout.commandDirs.has(head) || layout.agentDirs.has(head)) {
+    return [{ path: path.join(c.root, head, `${rest}.md`), conceptId: posix }];
+  }
+  return [];
+}
+
 /** LENIENT command/agent check: a diagnostic only when NEITHER a name/description NOR a type-shaped signal is present. */
 function nameOrSignalDiagnostics(
   type: "command" | "agent",
@@ -233,8 +257,7 @@ export async function validateToolDir(
     // The one coded skill check (missing-skill-md) fires on ANY change under a
     // `<skillDir>/<name>/…` package (self-gated + deduped), even a bundled
     // resource — mirrors the akm adapter's per-change SkillLinter.lintDirectory
-    // pass. `layout.skillDirs` is passed so opencode's singular `skill/` alias
-    // is checked identically to `skills/` (issue #774).
+    // pass.
     diagnostics.push(...(await skillDirectoryDiagnostics(relPath, seenSkillDirs, ctx, layout.skillDirs)));
 
     const cls = classify(change.path, layout);
@@ -250,6 +273,52 @@ export async function validateToolDir(
   return diagnostics;
 }
 
+function nativeExecutionExtensions(
+  layout: ToolDirLayout,
+  cls: ToolDirClassification,
+  data: Readonly<Record<string, unknown>>,
+): AdapterOwnedExtensions | undefined {
+  const values: Record<string, string> = {};
+  if (layout.adapterId === "claude" && cls.type === "command" && Object.hasOwn(data, "argument-hint")) {
+    if (typeof data["argument-hint"] !== "string") {
+      throw new TypeError("frontmatter.argument-hint must be a string");
+    }
+    values.argumentHint = data["argument-hint"];
+  }
+  if (layout.adapterId === "opencode" && Object.hasOwn(data, "mode")) {
+    if (typeof data.mode !== "string") throw new TypeError("frontmatter.mode must be a string");
+    values.mode = data.mode;
+  }
+  return Object.keys(values).length > 0 ? createAdapterExtensions(layout.adapterId, values) : undefined;
+}
+
+/** Translate a native Claude/OpenCode command or agent without exposing raw frontmatter. */
+export function renderToolDirExecutionSource(
+  layout: ToolDirLayout,
+  c: BundleComponent,
+  file: FileContext,
+): AdapterRenderedExecutionSource | null {
+  const cls = classify(file.relPath, layout);
+  if (cls?.type !== "command" && cls?.type !== "agent") return null;
+  const raw = file.content();
+  return renderMarkdownExecutionSource({
+    kind: cls.type === "command" ? "command" : "persona",
+    raw,
+    identity: {
+      ref: `${c.id}//${cls.conceptId}`,
+      bundle: c.id,
+      adapter: layout.adapterId,
+      file: file.relPath,
+    },
+    defaults: (data) =>
+      executionDefaultsFromFrontmatter(data, {
+        kind: cls.type === "command" ? "command" : "persona",
+        toolsKeys: layout.adapterId === "claude" && cls.type === "command" ? ["allowed-tools", "tools"] : ["tools"],
+      }),
+    extensions: (data) => nativeExecutionExtensions(layout, cls, data),
+  });
+}
+
 /** Build the concrete `BundleAdapter` from a layout + a `looksLikeRoot` probe (claude/opencode share everything else). */
 export function makeToolDirAdapter(layout: ToolDirLayout, looksLikeRoot: (root: string) => boolean): BundleAdapter {
   return {
@@ -257,7 +326,9 @@ export function makeToolDirAdapter(layout: ToolDirLayout, looksLikeRoot: (root: 
     version: "0.9.0",
     extensions: [".md"],
     recognize: (c, file) => recognizeToolDir(layout, c, file),
+    renderExecutionSource: (c, file) => renderToolDirExecutionSource(layout, c, file),
     validate: (c, changes, ctx) => validateToolDir(layout, c, changes, ctx),
+    readCandidates: (c, conceptId) => readCandidatesToolDir(layout, c, conceptId),
     placeNew: (c, conceptId) => placeNewToolDir(layout, c, conceptId),
     directoryList: () => [CANONICAL_COMMAND_DIR, CANONICAL_AGENT_DIR, CANONICAL_SKILL_DIR],
     looksLikeRoot,

@@ -7,8 +7,6 @@
  *
  * Drives the adapter over `tests/fixtures/bundles/opencode/` and asserts the
  * four authored goldens under `tests/fixtures/format-family-goldens/opencode/`.
- * Beyond the shared tool-dir shape it exercises the open-question-6 SINGULAR
- * directory alias (`command/legacy.md`).
  */
 
 import { describe, expect, test } from "bun:test";
@@ -78,12 +76,6 @@ describe("opencode adapter — recognition golden", () => {
       if (expected.description !== undefined) expect(doc.description).toBe(expected.description as string);
     });
   }
-
-  test("the SINGULAR command/ dir alias preserves its on-disk conceptId (command/legacy)", () => {
-    const doc = recognizeRel("command/legacy.md");
-    expect(doc?.type).toBe("command");
-    expect(doc?.conceptId).toBe("command/legacy");
-  });
 });
 
 describe("opencode adapter — placement golden (writes normalize to plural)", () => {
@@ -99,11 +91,6 @@ describe("opencode adapter — placement golden (writes normalize to plural)", (
       expect(relFromRoot(abs as string)).toBe(expected.assetPath);
     });
   }
-
-  test("a singular command/ conceptId still WRITES to the canonical plural commands/", () => {
-    const abs = opencodeAdapter.placeNew?.(component(), "command/legacy");
-    expect(relFromRoot(abs as string)).toBe("commands/legacy.md");
-  });
 });
 
 describe("opencode adapter — renderer golden", () => {
@@ -129,8 +116,7 @@ describe("opencode adapter — lint golden (lenient tool-dir validation)", () =>
   const perType = loadGolden("lint").perType as Record<string, { relPath: string; issues: Diagnostic[] }>;
 
   test("every recognized fixture file validates to exactly the golden's issue codes", async () => {
-    // Include the singular-dir alias too — both dir forms are conformant → [].
-    const relPaths = [...Object.values(perType).map((e) => e.relPath), "command/legacy.md"];
+    const relPaths = Object.values(perType).map((e) => e.relPath);
     const changes: FileChange[] = relPaths.map((rel) => ({
       path: rel,
       op: "update" as const,
@@ -142,6 +128,5 @@ describe("opencode adapter — lint golden (lenient tool-dir validation)", () =>
     for (const entry of Object.values(perType)) {
       expect(byFile.get(entry.relPath) ?? [], entry.relPath).toEqual((entry.issues ?? []).map((i) => i.issue));
     }
-    expect(byFile.get("command/legacy.md") ?? []).toEqual([]);
   });
 });

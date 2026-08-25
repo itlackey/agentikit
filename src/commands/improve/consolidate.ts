@@ -18,20 +18,37 @@ import { openStateDatabase } from "../../core/state-db";
 import { parseSinceToIsoLenient } from "../../core/time";
 import { warn, warnVerbose } from "../../core/warn";
 import { type ResolvedWriteTarget, resolveWriteTarget } from "../../core/write-source";
-import { getDefaultLlmConfig } from "../../integrations/agent/engine-resolution";
-import { materializeLlmRunnerConnection, resolveImproveProcessRunner } from "../../integrations/agent/runner";
+import type { LoweringNotice } from "../../execution/resolved-request";
+import { deriveInstallations } from "../../indexer/installations";
+import { resolveSourceEntries } from "../../indexer/search/search-source";
+import {
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
+} from "../../integrations/agent/execution-lowering";
+import type { RunnerSpec } from "../../integrations/agent/runner";
 import { cosineSimilarity, embedBatch, resolveEmbeddingModelId } from "../../llm/embedder";
-import { callStructured } from "../../llm/structured-call";
+import { callStructured, preflightStructuredLlmRunner } from "../../llm/structured-call";
 import type { Database } from "../../storage/database";
 import { getBodyEmbeddings, upsertBodyEmbeddings } from "../../storage/repositories/embeddings-repository";
-import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
+import {
+  closeDatabase,
+  openExistingDatabase,
+  openReadonlyExistingDatabase,
+} from "../../storage/repositories/index-connection";
 import { findEntryIdByRef, getAllEntries, getEntryById } from "../../storage/repositories/index-entries-repository";
 import type { DbIndexedEntry } from "../../storage/repositories/index-entry-types";
 import { getNeighborsByEntryId } from "../../storage/repositories/index-vec-repository";
-import { isProposalSkipped, listProposals, type ProposalsContext, proposalContent } from "../proposal/repository";
+import {
+  isProposalSkipped,
+  listProposals,
+  listProposalsReadOnly,
+  type ProposalsContext,
+  proposalContent,
+} from "../proposal/repository";
 import { hasSupersededStatus, validateProposalFrontmatter } from "../proposal/validators/proposal-quality-validators";
 import type { AntiCollapseConfig } from "./anti-collapse";
 import { cacheHash } from "./content-hash";
+import { resolveImproveLlmExecution } from "./execution";
 import { resolveImproveStrategy, resolveProcessEnabled } from "./improve-strategies";
 import { emitProposal } from "./proposal-envelope";
 import { createRunContext, type RunContext } from "./run-context";
@@ -68,8 +85,10 @@ export interface AkmConsolidateOptions {
   task?: string; // extra guidance appended to the system prompt
   stashDir?: string;
   config?: AkmConfig;
-  /** Pre-resolved connection supplied by the improve invocation plan. */
-  llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
+  /** Exact symbolic runner frozen by the improve plan. */
+  llmRunner?: Extract<RunnerSpec, { kind: "llm" }> | null;
+  /** Internal diagnostics sink for resolved/lowered dispatches. */
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
   /** When true, indicates the run was triggered automatically by volume threshold rather than by the memory_consolidation feature flag. */
   autoTriggered?: boolean;
   /**
@@ -398,7 +417,9 @@ async function clusterMemoriesBySimilarity(
 function loadPendingConsolidateProposalHashes(stashDir: string): Set<string> {
   const hashes = new Set<string>();
   try {
-    const pending = listProposals(stashDir, { status: "pending" }).filter((p) => p.source === "consolidate");
+    const pending = listProposalsReadOnly(stashDir, { status: "pending" }).filter(
+      (proposal) => proposal.source === "consolidate",
+    );
     for (const p of pending) {
       try {
         hashes.add(cacheHash(proposalContent(p)));
@@ -478,29 +499,41 @@ function promoteProvenanceXrefs(existing: unknown, sourceRef: string): string[] 
 // ── LLM resolution ──────────────────────────────────────────────────────────
 
 /**
- * Resolve the LLM connection for the consolidate pass.
+ * Resolve the symbolic LLM runner for the consolidate pass.
  *
  * Priority order (mirrors extract / reflect / distill — see
  * `resolveExtractRunConfig` in `src/commands/improve/extract.ts` and the
- * canonical `resolveImproveProcessRunner` pattern):
+ * canonical improve execution-cascade pattern):
  *
  *   1. `improve.strategies.<name>.processes.consolidate.engine`
- *      via {@link resolveImproveProcessRunner}. Lets the user pin
+ *      via the common execution planner. Lets the user pin
  *      a dedicated model (e.g. `ministral-3b`) for consolidation instead of
  *      whatever `defaults.llmEngine` happens to be.
- *   2. `getDefaultLlmConfig(config)` — the baseline default LLM engine.
+ *   2. the baseline default LLM engine.
  *
- * Regression guard (2026-05-26): before this resolver, `akmConsolidate`
- * called `getDefaultLlmConfig` directly and silently ignored a configured
- * `processes.consolidate.profile`, sending every chunk to the default LLM
- * (often a long-context model loaded with a smaller runtime `n_ctx`, causing
- * silent 400s from LM Studio). The investigation lives at
- * `/tmp/akm-health-investigations/consolidation-no-op.md`.
+ * All consolidate execution crosses the same improve engine-resolution
+ * boundary as extract, reflect, and distill.
  */
-function resolveConsolidateLlmConfig(config: AkmConfig, activeProfile?: ImproveProfileConfig) {
-  const runnerSpec = resolveImproveProcessRunner(activeProfile, "consolidate", config);
-  if (runnerSpec) return materializeLlmRunnerConnection(runnerSpec);
-  return getDefaultLlmConfig(config);
+function resolveConsolidateLlmRunner(
+  config: AkmConfig,
+  activeProfile?: ImproveProfileConfig,
+): ReturnType<typeof resolveImproveLlmExecution> {
+  return resolveImproveLlmExecution({
+    config,
+    profile: activeProfile,
+    process: getImproveProcessConfig("consolidate", activeProfile),
+    processName: "consolidate",
+  });
+}
+
+function consolidateRunnerFromOptions(
+  opts: AkmConsolidateOptions,
+  config: AkmConfig,
+): Extract<RunnerSpec, { kind: "llm" }> | undefined {
+  if (Object.hasOwn(opts, "llmRunner")) return opts.llmRunner ?? undefined;
+  const resolved = resolveConsolidateLlmRunner(config, opts.improveProfile);
+  if (resolved) opts.onNotices?.(resolved.notices);
+  return resolved?.runner;
 }
 
 /**
@@ -569,8 +602,24 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   const config = opts.config ?? loadConfig();
   const writeTarget = resolveConsolidationWriteTarget(opts, config);
   opts = { ...opts, target: writeTarget.source.name, writeTarget };
-  opts = { ...opts, improveProfile: opts.improveProfile ?? resolveImproveStrategy(undefined, config).config };
+  const activeProfile = opts.improveProfile ?? resolveImproveStrategy(undefined, config).config;
+  opts = { ...opts, improveProfile: activeProfile };
   const stashDir = writeTarget.source.path;
+  const executionNotices = new Map<string, Readonly<LoweringNotice>>();
+  const externalOnNotices = opts.onNotices;
+  const collectNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
+    for (const notice of notices) executionNotices.set(JSON.stringify(notice), notice);
+    externalOnNotices?.(notices);
+  };
+  opts = { ...opts, onNotices: collectNotices };
+  const consolidateEnabled = resolveProcessEnabled("consolidate", activeProfile);
+  const frozenLlmRunner = consolidateEnabled ? consolidateRunnerFromOptions(opts, config) : undefined;
+  // Own the field even when no runner exists. Every downstream reader now
+  // observes this one symbolic snapshot instead of re-running config/model-map
+  // selection during the same invocation.
+  opts = { ...opts, llmRunner: frozenLlmRunner ?? null };
+  const withNotices = (result: ConsolidateResult): ConsolidateResult =>
+    executionNotices.size > 0 ? { ...result, notices: Object.freeze([...executionNotices.values()]) } : result;
 
   // WI-9.10: construct this run's RunContext from values already resolved
   // above (sourceRun, config, stashDir) — no second config load, no new db
@@ -579,24 +628,14 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   // called with the default, seam-less ProposalsContext — see
   // emitPromotionProposal below), so both get the safe empty-object default,
   // behaviorally identical to `undefined` (EventsContext/ProposalsContext
-  // fields are all optional-chained by their consumers). `getLlmConfig`
-  // mirrors `planConsolidation`'s own resolution (`resolveConsolidateLlmConfig`)
-  // verbatim but lazily and independently — nothing calls `ctx.getLlmConfig`
-  // yet this stage, so this never duplicates real work, only the (pure,
-  // side-effect-free) resolution logic if invoked. consolidate has no `chat`
-  // seam (it drives the LLM directly via the HTTP client path, never through
-  // `chatCompletion`), so that field is left to its default.
+  // fields are all optional-chained by their consumers). LLM work uses the
+  // already-frozen symbolic runner through the shared dispatch seam.
   const runContext: RunContext = createRunContext({
     stashDir,
     config,
     eventsCtx: {},
     proposalsCtx: {},
-    getLlmConfig: (): import("../../core/config/config").LlmConnectionConfig | null => {
-      const resolved = Object.hasOwn(opts, "llmConfig")
-        ? (opts.llmConfig ?? undefined)
-        : resolveConsolidateLlmConfig(config, opts.improveProfile);
-      return resolved ?? null;
-    },
+    getLlmRunner: () => opts.llmRunner ?? null,
     sourceRun,
     dryRun: opts.dryRun ?? false,
     signal: opts.signal,
@@ -604,17 +643,19 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
 
   const warnings: string[] = [];
 
-  if (!resolveProcessEnabled("consolidate", opts.improveProfile ?? resolveImproveStrategy(undefined, config).config)) {
-    return makeConsolidateResult({
-      // Sourced from runContext (identical value to `opts.dryRun ?? false`)
-      // so the constructed RunContext has a genuine downstream reference —
-      // consolidate's own content-read sites are out of this stage's stated
-      // item-2 scope (reflect + distill only; see the WI-9.10c report).
-      dryRun: runContext.dryRun,
-      target: opts.target ?? stashDir,
-      durationMs: Date.now() - startMs,
-      warnings,
-    });
+  if (!consolidateEnabled) {
+    return withNotices(
+      makeConsolidateResult({
+        // Sourced from runContext (identical value to `opts.dryRun ?? false`)
+        // so the constructed RunContext has a genuine downstream reference —
+        // consolidate's own content-read sites are out of this stage's stated
+        // item-2 scope (reflect + distill only; see the WI-9.10c report).
+        dryRun: runContext.dryRun,
+        target: opts.target ?? stashDir,
+        durationMs: Date.now() - startMs,
+        warnings,
+      }),
+    );
   }
 
   // WS-3a: open one state.db handle shared by the body-embedding cache (dedup
@@ -622,14 +663,16 @@ export async function akmConsolidate(opts: AkmConsolidateOptions = {}): Promise<
   // receive this handle; it is closed in the `finally` block below.
   // Fail-open: any open error leaves it `undefined` and all cache paths skip.
   let sharedStateDb: Database | undefined;
-  try {
-    sharedStateDb = openStateDatabase();
-  } catch {
-    // State DB unavailable → skip the embedding cache for this run.
+  if (config.embedding) {
+    try {
+      sharedStateDb = openStateDatabase();
+    } catch {
+      // State DB unavailable → skip the embedding cache for this run.
+    }
   }
 
   try {
-    return await akmConsolidateInner(opts, config, stashDir, startMs, warnings, sharedStateDb);
+    return withNotices(await akmConsolidateInner(opts, config, stashDir, startMs, warnings, sharedStateDb));
   } finally {
     sharedStateDb?.close();
   }
@@ -716,6 +759,106 @@ type NarrowPoolResult =
       dedupPoolSize: number;
     };
 
+export interface ConsolidationPoolSnapshot {
+  /** Eligible on-disk memories before incremental narrowing and the limit. */
+  poolSize: number;
+  /** Pool after incremental narrowing and the configured limit. */
+  candidatePoolSize: number;
+  /** Pool after incremental narrowing but before the configured limit. */
+  dedupPoolSize: number;
+  memories: MemoryEntry[];
+}
+
+interface ConsolidationSourceOwner {
+  bundleId: string;
+  sourceRoot: string;
+  excludedSourceRoots: ReadonlySet<string>;
+}
+
+function resolveConsolidationSourceOwner(
+  opts: AkmConsolidateOptions,
+  stashDir: string,
+): ConsolidationSourceOwner | undefined {
+  const targetRoot = path.resolve(opts.writeTarget?.source.path ?? stashDir);
+  try {
+    const sources = resolveSourceEntries(stashDir, opts.config);
+    const installations = deriveInstallations(sources);
+    const targetIndex = sources.findIndex((source) => path.resolve(source.path) === targetRoot);
+    const target = installations[targetIndex];
+    if (!target) return undefined;
+    return {
+      bundleId: target.id,
+      sourceRoot: targetRoot,
+      excludedSourceRoots: new Set(
+        sources
+          .filter((_, index) => index !== targetIndex)
+          .map((source) => path.resolve(source.path))
+          .filter((sourceRoot) => sourceRoot.startsWith(`${targetRoot}${path.sep}`)),
+      ),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Read and narrow the exact pool the live pass consumes, without embedding,
+ * LLM, proposal, event, or asset writes. Used by both preview and execution.
+ */
+export function inspectConsolidationPool(
+  opts: AkmConsolidateOptions,
+  stashDir: string,
+  warnings: string[],
+  access?: { readOnly?: boolean },
+): ConsolidationPoolSnapshot {
+  const readOnly = access?.readOnly === true;
+  const sourceOwner = resolveConsolidationSourceOwner(opts, stashDir);
+  let memories = loadMemoriesForSource(sourceOwner, warnings, readOnly);
+  const staleCount = memories.filter((memory) => !fs.existsSync(memory.filePath)).length;
+  if (staleCount > 0) {
+    warnings.push(
+      `Pre-flight: filtered ${staleCount} stale DB entr${staleCount === 1 ? "y" : "ies"} (file absent on disk) from memory pool before chunking.`,
+    );
+  }
+  memories = memories.filter((memory) => fs.existsSync(memory.filePath));
+  const poolSize = memories.length;
+
+  if (opts.incrementalSince && memories.length > 0) {
+    memories = narrowToIncrementalCandidates(
+      memories,
+      opts.incrementalSince,
+      warnings,
+      opts.neighborsPerChanged,
+      readOnly,
+    );
+  }
+  const dedupPoolSize = memories.length;
+
+  if (opts.limit === undefined && memories.length > 150) {
+    warnings.push(
+      `Consolidation: pool has ${memories.length} memories and no limit is set. Consider adding a limit to your consolidate config to prevent timeouts on slow LLM endpoints.`,
+    );
+  }
+
+  if (opts.limit !== undefined && memories.length > opts.limit) {
+    const mtimeOf = (memory: MemoryEntry): number => {
+      try {
+        return fs.statSync(memory.filePath).mtimeMs;
+      } catch {
+        return 0;
+      }
+    };
+    const mtimeCache = new Map(memories.map((memory) => [memory.filePath, mtimeOf(memory)]));
+    memories = [...memories].sort((a, b) => (mtimeCache.get(a.filePath) ?? 0) - (mtimeCache.get(b.filePath) ?? 0));
+    warnings.push(
+      `Consolidation: pool capped at ${opts.limit} of ${memories.length} memories (limit option, oldest-modified first).`,
+    );
+    memories = memories.slice(0, opts.limit);
+  }
+
+  return { poolSize, candidatePoolSize: memories.length, dedupPoolSize, memories };
+}
+
 /**
  * Pass 1 — narrow the memory pool before any LLM work: drop stale DB entries,
  * apply incremental-since narrowing, and cap to `opts.limit` (oldest-modified
@@ -729,20 +872,8 @@ async function narrowConsolidationPool(
   startMs: number,
   warnings: string[],
 ): Promise<NarrowPoolResult> {
-  let memories = loadMemoriesForSource(opts.writeTarget?.source.path, stashDir, warnings);
-
-  // Pre-flight: filter out stale DB entries whose files no longer exist on
-  // disk. Without this, memories deleted by a prior run (but not yet
-  // reindexed) appear in chunk prompts, causing the LLM to generate plans
-  // against ghost refs and wasting tokens. Filtering here ensures the chunk
-  // pool and memoryByRef are authoritative against the actual filesystem state.
-  const staleCount = memories.filter((m) => !fs.existsSync(m.filePath)).length;
-  if (staleCount > 0) {
-    warnings.push(
-      `Pre-flight: filtered ${staleCount} stale DB entr${staleCount === 1 ? "y" : "ies"} (file absent on disk) from memory pool before chunking.`,
-    );
-  }
-  memories = memories.filter((m) => fs.existsSync(m.filePath));
+  const snapshot = inspectConsolidationPool(opts, stashDir, warnings);
+  const memories = snapshot.memories;
 
   // (The former WS-3b Step 0a homeostatic demotion pass was removed — R4:
   // it was default-off and self-undoing (the next salience recompute
@@ -761,57 +892,7 @@ async function narrowConsolidationPool(
     };
   }
 
-  if (opts.incrementalSince) {
-    memories = narrowToIncrementalCandidates(memories, opts.incrementalSince, warnings, opts.neighborsPerChanged);
-    if (memories.length === 0) {
-      return {
-        done: true,
-        result: makeConsolidateResult({
-          dryRun: opts.dryRun ?? false,
-          target: opts.target ?? stashDir,
-          warnings,
-          durationMs: Date.now() - startMs,
-        }),
-      };
-    }
-  }
-
-  // WS-5 perf telemetry: `dedupPoolSize` = memories entering the LLM pool
-  // (after incremental narrowing, before the limit cap). `llmPoolSize` =
-  // memories actually sent to the LLM. `embedMs/cacheHits/cacheMisses` =
-  // accumulated from clusterMemoriesBySimilarity.
-  const dedupPoolSize = memories.length;
-
-  if (opts.limit === undefined && memories.length > 150) {
-    warnings.push(
-      `Consolidation: pool has ${memories.length} memories and no limit is set. Consider adding a limit to your consolidate config to prevent timeouts on slow LLM endpoints.`,
-    );
-  }
-
-  if (opts.limit !== undefined && memories.length > opts.limit) {
-    // Order oldest-modified-first before capping so the limit selects the
-    // stalest memories rather than a fixed head of the (rowid-ordered) DB
-    // query. Consolidation rewrites surviving files, bumping their mtime, so
-    // processed memories drift to the back of the queue and the cap rotates
-    // across the whole corpus over successive runs instead of revisiting the
-    // same slice every time. Fail-open to 0 (front of queue) when a file can
-    // no longer be stat'd.
-    const mtimeOf = (m: MemoryEntry): number => {
-      try {
-        return fs.statSync(m.filePath).mtimeMs;
-      } catch {
-        return 0;
-      }
-    };
-    const mtimeCache = new Map<string, number>(memories.map((m) => [m.filePath, mtimeOf(m)]));
-    memories = [...memories].sort((a, b) => (mtimeCache.get(a.filePath) ?? 0) - (mtimeCache.get(b.filePath) ?? 0));
-    warnings.push(
-      `Consolidation: pool capped at ${opts.limit} of ${memories.length} memories (limit option, oldest-modified first).`,
-    );
-    memories = memories.slice(0, opts.limit);
-  }
-
-  return { done: false, memories, dedupPoolSize };
+  return { done: false, memories, dedupPoolSize: snapshot.dedupPoolSize };
 }
 
 /**
@@ -867,7 +948,8 @@ async function judgeConsolidationChunks(args: {
   chunks: MemoryEntry[][];
   opts: AkmConsolidateOptions;
   config: AkmConfig;
-  llmConfig: import("../../core/config/config").LlmConnectionConfig | undefined;
+  llmRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
+  lease: LoweredExecutionDispatchLease | undefined;
   sourceName: string;
   bodyTruncation: number;
   pendingProposalBodyHashes: Set<string>;
@@ -879,7 +961,8 @@ async function judgeConsolidationChunks(args: {
     chunks,
     opts,
     config,
-    llmConfig,
+    llmRunner,
+    lease,
     sourceName,
     bodyTruncation,
     pendingProposalBodyHashes,
@@ -978,12 +1061,13 @@ async function judgeConsolidationChunks(args: {
     const callChunkLlm = async (fallbackError: string) => {
       // The gate runs with enabled:true (always open), so this guard is
       // exactly the envelope the gated fn used to return first thing.
-      if (!llmConfig) return { ok: false as const, error: "No LLM configured for consolidation" };
+      if (!llmRunner) return { ok: false as const, error: "No LLM configured for consolidation" };
       return callStructured<{ ok: true; content: string } | { ok: false; error: string }>({
         feature: "memory_consolidation",
         akmConfig: config,
         enabled: true,
-        config: llmConfig,
+        runner: llmRunner,
+        ...(lease ? { lease } : {}),
         messages: [
           { role: "system", content: CONSOLIDATE_SYSTEM_PROMPT },
           { role: "user", content: userPrompt },
@@ -991,7 +1075,7 @@ async function judgeConsolidationChunks(args: {
         request: {
           responseSchema: CONSOLIDATE_PLAN_JSON_SCHEMA,
           enableThinking: false,
-          timeoutMs: llmConfig.timeoutMs,
+          timeoutMs: llmRunner.timeoutMs,
           signal: opts.signal,
         },
         parse: (raw) => ({ ok: true as const, content: raw ?? "" }),
@@ -1000,6 +1084,7 @@ async function judgeConsolidationChunks(args: {
         // reproduces that. The fallback fires only on wrapper timeout.
         onError: (_cls, e) => ({ ok: false as const, error: String(e) }),
         fallback: { ok: false as const, error: fallbackError },
+        ...(opts.onNotices ? { onNotices: opts.onNotices } : {}),
       });
     };
 
@@ -1093,11 +1178,8 @@ async function planConsolidation(
   // CLI. The agent CLI is for interactive agent sessions (reflect, propose);
   // structured JSON generation works better and faster via HTTP.
   //
-  // Improve supplies a frozen connection; standalone consolidate resolves its
-  // selected strategy/default engine here.
-  const llmConfig = Object.hasOwn(opts, "llmConfig")
-    ? (opts.llmConfig ?? undefined)
-    : resolveConsolidateLlmConfig(config, opts.improveProfile);
+  // The outer invocation freezes standalone and improve-owned selection once.
+  const llmRunner = opts.llmRunner ?? undefined;
 
   // Chunk sizing: derive a safe chunk size from the configured model context
   // window so that the full prompt (system prompt + chunk user prompt) never
@@ -1110,7 +1192,7 @@ async function planConsolidation(
   // keep it fixed and let computeSafeChunkSize vary the number of memories
   // per chunk instead.
   const bodyTruncation = 500;
-  const modelContextLength = llmConfig?.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS;
+  const modelContextLength = llmRunner?.connection.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS;
   const chunkSize = computeSafeChunkSize(modelContextLength, bodyTruncation, opts.maxChunkSize);
 
   // -- Phase A: plan generation -----------------------------------------------
@@ -1146,118 +1228,132 @@ async function planConsolidation(
 
   // WS-5: capture llmPoolSize after every pre-LLM cap.
   const llmPoolSize = budgetedMemories.length;
+  const dispatchingChunks: MemoryEntry[][] = [];
+  for (let i = 0; i < budgetedMemories.length; i += chunkSize) {
+    const chunk = budgetedMemories.slice(i, i + chunkSize);
+    if (chunk.length > 0 && !chunk.every((memory) => isHotCapturedMemory(memory.filePath))) {
+      dispatchingChunks.push(chunk);
+    }
+  }
+  const dispatchLease =
+    llmRunner && dispatchingChunks.length > 0 ? await preflightStructuredLlmRunner(llmRunner) : undefined;
 
-  // C-1 / #380: Pre-cluster memories by embedding similarity before chunking.
-  // This ensures that semantically similar memories land in the same LLM
-  // context window, allowing the model to detect and merge duplicates that
-  // would otherwise be split across chunks and survive indefinitely.
-  // mem0 arXiv:2504.19413, A-MEM arXiv:2502.12110.
-  // Fails open: if embeddings are unavailable or fail, original order is used.
-  const { ordered: clusteredMemories, embedTelemetry } = await clusterMemoriesBySimilarity(
-    budgetedMemories,
-    config,
-    sharedStateDb,
-    opts.signal,
-  );
+  try {
+    // C-1 / #380: Pre-cluster memories by embedding similarity before chunking.
+    // This ensures that semantically similar memories land in the same LLM
+    // context window, allowing the model to detect and merge duplicates that
+    // would otherwise be split across chunks and survive indefinitely.
+    // mem0 arXiv:2504.19413, A-MEM arXiv:2502.12110.
+    // Fails open: if embeddings are unavailable or fail, original order is used.
+    const { ordered: clusteredMemories, embedTelemetry } = await clusterMemoriesBySimilarity(
+      budgetedMemories,
+      config,
+      sharedStateDb,
+      opts.signal,
+    );
 
-  // WS-3b Anti-collapse step 8c: inject random (non-similar) clusters.
-  // A small fraction (default 5%) of the pool is shuffled into random positions
-  // so the pipeline isn't PURELY similarity-driven. This prevents rich-get-richer
-  // entrenchment where only the most-retrieved assets ever get consolidated.
-  // DEFAULT ON since R5 — opt out via antiCollapse.enabled: false.
-  let finalClusteredMemories = clusteredMemories;
-  {
-    const antiCollapseForCluster: AntiCollapseConfig =
-      (getImproveProcessConfig("consolidate", opts.improveProfile)?.antiCollapse as AntiCollapseConfig | undefined) ??
-      {};
-    if (antiCollapseForCluster.enabled !== false && clusteredMemories.length > 2) {
-      const fraction = antiCollapseForCluster.randomClusterFraction ?? 0.05;
-      const randomCount = Math.max(1, Math.floor(clusteredMemories.length * fraction));
-      // Pick `randomCount` positions to inject random (un-clustered) members.
-      // Use a seeded-ish shuffle: sort by hash of the name so it's deterministic
-      // per run but not strictly similarity-driven.
-      const shuffled = [...clusteredMemories].sort((a, b) => {
-        // Deterministic shuffle: compare sha256-ish (use name hash as proxy).
-        const ha = a.name.split("").reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
-        const hb = b.name.split("").reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
-        return ha - hb;
-      });
-      const randomSlice = shuffled.slice(0, randomCount);
-      const randomSet = new Set(randomSlice.map((m) => m.name));
-      // Insert random members at intervals through the clustered sequence.
-      const withRandom: MemoryEntry[] = [];
-      const interval = Math.max(2, Math.floor(clusteredMemories.length / randomCount));
-      let randomIdx = 0;
-      for (let i = 0; i < clusteredMemories.length; i++) {
-        const m = clusteredMemories[i];
-        if (m && !randomSet.has(m.name)) withRandom.push(m);
-        if (i > 0 && i % interval === 0 && randomIdx < randomSlice.length) {
+    // WS-3b Anti-collapse step 8c: inject random (non-similar) clusters.
+    // A small fraction (default 5%) of the pool is shuffled into random positions
+    // so the pipeline isn't PURELY similarity-driven. This prevents rich-get-richer
+    // entrenchment where only the most-retrieved assets ever get consolidated.
+    // DEFAULT ON since R5 — opt out via antiCollapse.enabled: false.
+    let finalClusteredMemories = clusteredMemories;
+    {
+      const antiCollapseForCluster: AntiCollapseConfig =
+        (getImproveProcessConfig("consolidate", opts.improveProfile)?.antiCollapse as AntiCollapseConfig | undefined) ??
+        {};
+      if (antiCollapseForCluster.enabled !== false && clusteredMemories.length > 2) {
+        const fraction = antiCollapseForCluster.randomClusterFraction ?? 0.05;
+        const randomCount = Math.max(1, Math.floor(clusteredMemories.length * fraction));
+        // Pick `randomCount` positions to inject random (un-clustered) members.
+        // Use a seeded-ish shuffle: sort by hash of the name so it's deterministic
+        // per run but not strictly similarity-driven.
+        const shuffled = [...clusteredMemories].sort((a, b) => {
+          // Deterministic shuffle: compare sha256-ish (use name hash as proxy).
+          const ha = a.name.split("").reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
+          const hb = b.name.split("").reduce((acc, c) => ((acc << 5) - acc + c.charCodeAt(0)) | 0, 0);
+          return ha - hb;
+        });
+        const randomSlice = shuffled.slice(0, randomCount);
+        const randomSet = new Set(randomSlice.map((m) => m.name));
+        // Insert random members at intervals through the clustered sequence.
+        const withRandom: MemoryEntry[] = [];
+        const interval = Math.max(2, Math.floor(clusteredMemories.length / randomCount));
+        let randomIdx = 0;
+        for (let i = 0; i < clusteredMemories.length; i++) {
+          const m = clusteredMemories[i];
+          if (m && !randomSet.has(m.name)) withRandom.push(m);
+          if (i > 0 && i % interval === 0 && randomIdx < randomSlice.length) {
+            const r = randomSlice[randomIdx++];
+            if (r) withRandom.push(r);
+          }
+        }
+        // Append any remaining random members not yet inserted.
+        while (randomIdx < randomSlice.length) {
           const r = randomSlice[randomIdx++];
           if (r) withRandom.push(r);
         }
+        finalClusteredMemories = withRandom;
+        warnings.push(
+          `Anti-collapse: injected ${randomCount} random (non-similarity-driven) cluster member(s) into consolidation pool (fraction=${fraction}).`,
+        );
       }
-      // Append any remaining random members not yet inserted.
-      while (randomIdx < randomSlice.length) {
-        const r = randomSlice[randomIdx++];
-        if (r) withRandom.push(r);
-      }
-      finalClusteredMemories = withRandom;
-      warnings.push(
-        `Anti-collapse: injected ${randomCount} random (non-similarity-driven) cluster member(s) into consolidation pool (fraction=${fraction}).`,
-      );
     }
+
+    const chunks: MemoryEntry[][] = [];
+    for (let i = 0; i < finalClusteredMemories.length; i += chunkSize) {
+      chunks.push(finalClusteredMemories.slice(i, i + chunkSize));
+    }
+
+    // 2026-05-27 prompt-context fix: precompute body-hashes of pending
+    // consolidate proposals once, so the per-chunk prompt can annotate
+    // memories whose body would just produce a deterministic
+    // `dedup_pending_proposal` skip. Cuts ~110 wasted LLM proposals per
+    // 4h on this user's stack. See
+    // /tmp/akm-health-investigations/tuning-reasons-investigation.md §Q3.
+    const pendingProposalBodyHashes = loadPendingConsolidateProposalHashes(stashDir);
+
+    warn(
+      `[consolidate] ${budgetedMemories.length} memories / ${chunks.length} chunk(s) / chunk_size=${chunkSize}` +
+        ` / pending-proposal hashes: ${pendingProposalBodyHashes.size}`,
+    );
+
+    // Consolidate output merges memories (non-wiki) → stash authoring standards.
+    // Resolved ONCE per run and passed to each chunk prompt (facts not re-read
+    // per chunk).
+    const standardsContext = resolveStandardsContext("memories/_consolidated", stashDir);
+
+    const chunkOpsArrays = await judgeConsolidationChunks({
+      chunks,
+      opts,
+      config,
+      llmRunner,
+      lease: dispatchLease,
+      sourceName,
+      bodyTruncation,
+      pendingProposalBodyHashes,
+      standardsContext,
+      warnings,
+      accounting,
+    });
+
+    // Build the known-refs set from the already-filtered memory pool so
+    // mergePlans() can reject LLM-hallucinated primary refs before execution.
+    const knownRefs = new Set(budgetedMemories.map((m) => conceptIdFromTypeName("memory", m.name)));
+    const { ops: allOps, warnings: mergeWarnings } = mergePlans(chunkOpsArrays, knownRefs);
+    warnings.push(...mergeWarnings);
+
+    return {
+      allOps,
+      totalChunks: chunks.length,
+      llmPoolSize,
+      deferredMemories: memories.length - budgetedMemories.length,
+      embedTelemetry,
+      sourceName,
+    };
+  } finally {
+    if (dispatchLease) disposeLoweredExecutionDispatchLease(dispatchLease);
   }
-
-  const chunks: MemoryEntry[][] = [];
-  for (let i = 0; i < finalClusteredMemories.length; i += chunkSize) {
-    chunks.push(finalClusteredMemories.slice(i, i + chunkSize));
-  }
-
-  // 2026-05-27 prompt-context fix: precompute body-hashes of pending
-  // consolidate proposals once, so the per-chunk prompt can annotate
-  // memories whose body would just produce a deterministic
-  // `dedup_pending_proposal` skip. Cuts ~110 wasted LLM proposals per
-  // 4h on this user's stack. See
-  // /tmp/akm-health-investigations/tuning-reasons-investigation.md §Q3.
-  const pendingProposalBodyHashes = loadPendingConsolidateProposalHashes(stashDir);
-
-  warn(
-    `[consolidate] ${budgetedMemories.length} memories / ${chunks.length} chunk(s) / chunk_size=${chunkSize}` +
-      ` / pending-proposal hashes: ${pendingProposalBodyHashes.size}`,
-  );
-
-  // Consolidate output merges memories (non-wiki) → stash authoring standards.
-  // Resolved ONCE per run and passed to each chunk prompt (facts not re-read
-  // per chunk).
-  const standardsContext = resolveStandardsContext("memories/_consolidated", stashDir);
-
-  const chunkOpsArrays = await judgeConsolidationChunks({
-    chunks,
-    opts,
-    config,
-    llmConfig,
-    sourceName,
-    bodyTruncation,
-    pendingProposalBodyHashes,
-    standardsContext,
-    warnings,
-    accounting,
-  });
-
-  // Build the known-refs set from the already-filtered memory pool so
-  // mergePlans() can reject LLM-hallucinated primary refs before execution.
-  const knownRefs = new Set(budgetedMemories.map((m) => conceptIdFromTypeName("memory", m.name)));
-  const { ops: allOps, warnings: mergeWarnings } = mergePlans(chunkOpsArrays, knownRefs);
-  warnings.push(...mergeWarnings);
-
-  return {
-    allOps,
-    totalChunks: chunks.length,
-    llmPoolSize,
-    deferredMemories: memories.length - budgetedMemories.length,
-    embedTelemetry,
-    sourceName,
-  };
 }
 
 async function akmConsolidateInner(
@@ -1328,9 +1424,7 @@ async function akmConsolidateInner(
     promotionFailures,
     warnings,
     pushSkipReason: accounting.pushSkipReason,
-    llmConfig: Object.hasOwn(opts, "llmConfig")
-      ? (opts.llmConfig ?? null)
-      : (resolveConsolidateLlmConfig(config, opts.improveProfile) ?? null),
+    llmRunner: opts.llmRunner ?? null,
   };
   for (const op of allOps) {
     if (op.op === "promote") await emitPromotionProposal(op, promoteContext);
@@ -1375,7 +1469,7 @@ export interface PromoteContext {
   promotionFailures: { count: number };
   warnings: string[];
   pushSkipReason: ConsolidateAccounting["pushSkipReason"];
-  llmConfig?: import("../../core/config/config").LlmConnectionConfig | null;
+  llmRunner?: Extract<RunnerSpec, { kind: "llm" }> | null;
 }
 
 /** Reject a promotion when its body already exists in knowledge or the queue. */
@@ -1587,7 +1681,7 @@ export async function emitPromotionProposal(op: ConsolidatePromoteOp, ctx: Promo
         source: "consolidate",
         sourceRun,
         // §23.6 fingerprint model-id term (WI-6.4).
-        ...(ctx.llmConfig?.model ? { modelId: ctx.llmConfig.model } : {}),
+        ...(ctx.llmRunner?.connection.model ? { modelId: ctx.llmRunner.connection.model } : {}),
         payload: {
           content: promotedAssetContent,
           frontmatter: { description, xrefs: [canonicalXref(op.ref)] },
@@ -1711,6 +1805,7 @@ export function narrowToIncrementalCandidates(
   since: string,
   warnings: string[],
   neighborsPerChanged = 5,
+  readOnly = false,
 ): MemoryEntry[] {
   // Lenient by design: garbage `since` passes through unchanged and the ISO
   // string comparison below then selects nothing (see core/time.ts doc).
@@ -1730,7 +1825,8 @@ export function narrowToIncrementalCandidates(
   const keep = new Set<string>(changed.map((m) => m.name));
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
-    db = openExistingDatabase();
+    db = readOnly ? openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true }) : openExistingDatabase();
+    if (!db) return memories;
     for (const m of changed) {
       const id = findEntryIdByRef(db, conceptIdFromTypeName("memory", m.name));
       if (id === undefined) continue;
@@ -1756,18 +1852,20 @@ export function narrowToIncrementalCandidates(
   return candidates;
 }
 
-function loadMemoriesForSource(source: string | undefined, stashDir: string, warnings: string[]): MemoryEntry[] {
+function loadMemoriesForSource(
+  source: ConsolidationSourceOwner | undefined,
+  warnings: string[],
+  readOnly: boolean,
+): MemoryEntry[] {
   // Load from DB first
   let memories: MemoryEntry[] = [];
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
-    db = openExistingDatabase();
+    db = readOnly ? openReadonlyExistingDatabase(undefined, { isolatedSnapshot: true }) : openExistingDatabase();
+    if (!db) throw new Error("index unavailable");
     const entries: DbIndexedEntry[] = getAllEntries(db, "memory");
     memories = entries
-      .filter((e) => {
-        if (!source) return true;
-        return path.resolve(e.stashDir) === path.resolve(source);
-      })
+      .filter((entry) => source !== undefined && entry.bundleId === source.bundleId)
       .filter((e) => isConsolidationEligibleMemoryName(e.entry.name))
       // Skip stale DB entries whose file was deleted by a prior run but not yet
       // re-indexed. Without this guard the deleted file's ref appears in chunks
@@ -1780,7 +1878,7 @@ function loadMemoriesForSource(source: string | undefined, stashDir: string, war
         filePath: e.filePath,
         description: e.entry.description ?? "",
         tags: e.entry.tags ?? [],
-        stashDir: e.stashDir,
+        stashDir: source?.sourceRoot ?? "",
       }));
   } catch {
     memories = [];
@@ -1788,10 +1886,10 @@ function loadMemoriesForSource(source: string | undefined, stashDir: string, war
     if (db) closeDatabase(db);
   }
 
-  if (memories.length === 0) {
+  if (memories.length === 0 && source) {
     // DB fallback: walk filesystem
-    const memoriesDir = path.join(source ?? stashDir, "memories");
-    const fsStashDir = source ?? stashDir;
+    const memoriesDir = path.join(source.sourceRoot, "memories");
+    const fsStashDir = source.sourceRoot;
     if (fs.existsSync(memoriesDir)) {
       const pending = [memoriesDir];
       while (pending.length > 0) {
@@ -1799,6 +1897,7 @@ function loadMemoriesForSource(source: string | undefined, stashDir: string, war
         for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
           const filePath = path.join(current, entry.name);
           if (entry.isDirectory()) {
+            if (source.excludedSourceRoots.has(path.resolve(filePath))) continue;
             pending.push(filePath);
             continue;
           }

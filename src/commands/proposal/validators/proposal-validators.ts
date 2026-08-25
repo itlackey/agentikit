@@ -6,8 +6,8 @@ import { parseFrontmatter } from "../../../core/asset/frontmatter";
 import { parseRefInput } from "../../../core/asset/resolve-ref";
 import { proposalContent } from "../../../core/file-change";
 import { lintLessonContent } from "../../../core/lesson-lint";
-import { parseTaskDocument } from "../../../tasks/parser";
-import { parseWorkflow } from "../../../workflows/parser";
+import { parseTaskV3Yaml } from "../../../tasks/source-v3";
+import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import type {
   Proposal,
   ProposalValidationContext,
@@ -73,10 +73,9 @@ const canonicalProposalValidators: Readonly<Record<string, CanonicalProposalVali
   task(proposal, ctx) {
     const name = ctx.parsedRef?.name;
     if (!name) return [];
-    parseTaskDocument({
+    parseTaskV3Yaml({
       yaml: proposalContent(proposal),
       filePath: proposal.changes[0]?.path || proposal.ref,
-      id: name,
     });
     return [];
   },
@@ -84,13 +83,16 @@ const canonicalProposalValidators: Readonly<Record<string, CanonicalProposalVali
     const content = proposalContent(proposal);
     if (!content.trim()) return [];
 
-    const changePath = proposal.changes[0]?.path ?? "";
-    const result = parseWorkflow(content, { path: changePath || proposal.ref });
+    const sourcePath = proposal.changes[0]?.path || proposal.ref;
+    const result = compileWorkflowSource(content, {
+      path: sourcePath,
+      workspaceRoot: proposal.proposedTarget.root,
+    });
     if (result.ok) return [];
 
     return result.errors.map((error) => ({
       kind: "invalid-workflow-structure",
-      message: `Workflow proposal ${proposal.id} (${proposal.ref}) is invalid at line ${error.line}: ${error.message}`,
+      message: `Workflow proposal ${proposal.id} (${proposal.ref}) is invalid [${error.code}] at ${error.path}:${error.line}: ${error.message}`,
     }));
   },
 };

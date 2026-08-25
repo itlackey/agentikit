@@ -1,16 +1,23 @@
 # Agent, Command, Engine, and Model Resolution
 
+> **Historical implementation design.** The 0.9.2 implementation is complete;
+> current public contracts live in [Tasks](../../reference/tasks.md) and
+> [Workflow Schema](../../reference/workflow-schema.md). The staged checkpoints
+> below are retained as design history and are not current status.
+
 **Status:** Approved target design
 
 **Decision date:** 2026-08-18
 
-**Implementation baseline:** AKM 0.9.1 implements parts of this design; see
-[Implementation status](#implementation-status).
+**Implementation baseline:** The 0.9.2 line implements WP2 model maps, the WP3
+common cascade/authorization boundary, the WP4 command surface, and WP5
+runtime engine lowering convergence. Task v3 remains WP6, and the final
+source-to-frozen durable workflow IR/resume representation remains WP7; see
+the [0.9.2 implementation plan](../../plans/0.9.2-agent-command-workflow-plan.md).
 
 This specification defines how agent personas, command templates, execution
 engines, model mappings, tasks, and workflows interact. It is authoritative
-for those semantics. It does not define the final task or workflow source
-syntax.
+for those semantics and for the 0.9.2 task/workflow format direction.
 
 ## 1. Goals
 
@@ -106,7 +113,11 @@ A task may describe or reference:
 - a command;
 - a workflow;
 - a script or explicit shell operation; or
-- inline prompt text with an optional agent selector.
+- inline command content with an optional agent selector.
+
+There is no separate prompt executable type. Prompt text is command content:
+stored content is a command asset, while inline content is an anonymous
+command invocation using the same resolver and execution path.
 
 ### 2.6 Workflow: durable composition
 
@@ -114,6 +125,12 @@ A workflow composes work into a frozen, journaled run. A workflow step may
 reuse a task's work definition; scheduling-only task fields such as `schedule`
 and `enabled` do not join the step. Step values are nearer and therefore
 override the referenced task.
+
+Workflow authoring is multi-format. AKM Markdown workflows remain first-class
+with no planned deprecation. GitHub-shaped YAML is an additional format, and
+future known formats may be added through adapters. Every adapter compiles to
+one versioned internal execution IR before the run is frozen; source files are
+never rewritten into another authoring format.
 
 Nested workflows are outside the initial design. A separately journaled child
 workflow may be added after v1 if real usage demonstrates the need.
@@ -123,6 +140,10 @@ workflow may be added after v1 if real usage demonstrates the need.
 Scripts and explicit shell/process declarations are the deterministic
 execution surface. They MUST remain distinct from command assets. Calling a
 prompt template a command does not authorize it to run as an OS command.
+
+The 0.9.2 task/workflow `run` field follows GitHub step semantics: it is a
+string executed through the selected shell, with compatible `shell` and
+`working-directory` controls where the host supports them.
 
 ## 3. Native bundles and runtime translation
 
@@ -223,8 +244,8 @@ vocabulary SHOULD stay small; `fast`, `balanced`, and `reasoning` are the
 approved starting shape. These are conveniences, not permanent universal
 model classifications.
 
-The authoritative mechanism is data-driven and operator-owned. Mapping
-precedence is:
+The authoritative mechanism is data-driven and operator-owned. The long-term
+mapping precedence is:
 
 ```text
 AKM starter defaults
@@ -236,6 +257,15 @@ AKM starter defaults
 Bundles may select aliases. They MUST NOT redefine what an alias means on the
 host. A bundle may distribute a suggested map, but it becomes active only when
 the operator explicitly adopts it.
+
+AKM 0.9.2 does not implement reusable mapping packs. It ships an immutable
+default `models.json` with the installation and reads an optional,
+user-editable `models.json` from the AKM configuration directory. The user
+file overlays the installed default by alias and by field, so users need only
+state differences. The default MUST NOT live in the cache: cache deletion or
+eviction cannot be allowed to change model resolution. AKM provides an
+explicit command that can copy the installed defaults into the user config
+directory for full customization.
 
 An alias mapping may be either:
 
@@ -276,6 +306,23 @@ capability guess.
 When an engine has no native system-prompt channel, AKM MUST preserve the
 persona by deterministically composing a clearly delimited persona block into
 the user prompt. It SHOULD emit a lowering notice when it uses this fallback.
+
+The 0.9.2 implementation makes that adapter choice structural. Every registered
+harness contributes a concrete resolved-request lowerer through the harness
+registry, and direct LLM is the remaining registered lowerer. The registry is
+an inventory of implementations, not a table predicting model/provider
+capabilities. Lowerers receive the exact model and inference selected by the
+common cascade; they do not reinterpret aliases. They return stable translated
+and untranslated field paths plus structured notices whose fixed messages and
+metadata contain no prompt, environment value, credential value, or provider
+error body.
+
+LLM and SDK-fallback credentials stay as symbolic descriptors in engine
+transport and frozen runner material; secret values never enter the resolved
+request. Only final runner dispatch reads their current environment values. An
+already-frozen runner uses the config-free lowering entry point, which does not
+consult live config, aliases, environment variables, or credentials before
+dispatch.
 
 ## 8. Native agent selectors
 
@@ -327,41 +374,138 @@ settings, and relevant source identities or hashes.
 AKM command execution starts a fresh, one-shot session by default. Reusing or
 resuming a native session requires an explicit invocation option.
 
-## 11. Implementation status
+## 11. Task and workflow source formats
 
-This document describes the approved design, not a claim that 0.9.1 already
-implements it. Important 0.9.1 gaps include:
+### 11.1 Task v3
 
-- there is no canonical `akm command run` surface;
-- `akm agent --command` reads raw file bytes instead of adapter-rendered command
-  content and does not apply command metadata;
-- command filling implements a different placeholder grammar from the one
-  displayed by `show`;
-- prompt tasks may send raw agent files, including frontmatter, as user text
-  instead of selecting a persona;
-- engine/model resolution is duplicated across direct dispatch, tasks, and
-  workflow freezing;
-- configured agent-engine models do not consistently reach every CLI spawn
-  path;
-- built-in model aliases are vendor-oriented and do not yet implement the
-  approved operator-owned starter-map design;
-- tool provenance and engine-kind gates do not yet follow the selection versus
-  authorization and optimistic-lowering rules above; and
-- workflow plans do not yet freeze command targets and persona snapshots under
-  this unified resolver.
+Task v3 is an intentional breaking replacement for the 0.9.1 task schema. AKM
+does not keep the v2 parser as a compatibility execution path. Instead,
+`akm migrate` provides an explicit, previewable, fail-closed conversion. It
+backs up files before writing, converts only deterministic cases, and stops
+for manual review when an argv array or another v2 construct cannot be
+translated portably into the v3 shell-string contract.
+
+The executable part of a v3 task is GitHub-step-shaped:
+
+- exactly one of `uses` or `run` selects the work;
+- compatible fields such as `name`, `with`, `env`, `shell`, and
+  `working-directory` keep their GitHub spelling and location; and
+- scheduling and other AKM-only controls use the `akm` namespace when the
+  source is a step-shaped task.
+
+`uses` accepts both existing AKM refs and GitHub action refs. Their grammars
+are deterministic: AKM does not introduce an `akm:` URI alias or guess whether
+an unresolved string was intended as inline content. AKM command refs,
+workflow refs, script refs, and future GitHub action refs remain distinct
+resolved target kinds. An agent ref is never executable through `uses`.
+
+Inline command content uses a built-in command action rather than a separate
+prompt target. Its contract requires exactly one of `with.ref` or
+`with.content`; `with.arguments` supplies the exact string substituted for the
+portable `$ARGUMENTS` placeholder. Stored and inline forms compile to the same
+command IR.
+
+AKM accepts scheduling information through adapters in three source shapes:
+
+1. a step-shaped task with `akm.schedule`;
+2. a step-shaped task with a GitHub-style `on` block; or
+3. a complete GitHub-style `on` plus `jobs` document.
+
+The third shape is exposed as one workflow asset, not as both a task and a
+workflow. Its locally representable triggers create internal scheduler
+bindings that use the existing OS-native scheduler backends. `schedule` maps
+to scheduled execution and `workflow_dispatch` maps to manual execution.
+Repository and service events such as `push`, `pull_request`, and `issues`
+produce an explicit unsupported-trigger result in local execution; AKM does
+not silently ignore them or install polling daemons.
+
+### 11.2 Workflow formats and internal IR
+
+AKM Markdown and GitHub-shaped YAML are peer authoring formats. Adapters
+compile both into a shared, internal, versioned IR. The IR deliberately reuses
+known GitHub concepts such as `jobs`, `needs`, `steps`, `uses`, `run`, `with`,
+and `env` where they fit. It is not the literal GitHub workflow schema and is
+not a fourth public authoring format.
+
+The IR also carries the information AKM needs for deterministic execution:
+resolved command and persona snapshots, engine/model/tool settings, source
+identity and hashes, adapter-owned supported extensions, lowering notices,
+and journal/freeze metadata. Format adapters may preserve supported native
+constructs explicitly. An unsupported construct produces an actionable
+portability error or a structured lowering notice; it never creates a
+format-specific executor alongside the shared scheduler.
+
+GitHub interoperability is consumption-first. GitHub workflow and action files
+remain authoritative and AKM will consume them through adapters; AKM does not
+generate or synchronize GitHub files. Full GitHub workflow/action execution is
+0.9.3 work. A separate, deliberate future bridge is a public GitHub Action
+package that invokes AKM from a GitHub workflow. That package uses typed
+subpath actions such as `/command`, `/workflow`, and `/task`, backed by one
+runtime. There is no `/prompt` action because prompt content is a command.
+
+## 12. 0.9.2 support boundary
+
+0.9.2 delivers the coherent MVP across direct CLI invocation, scheduled tasks,
+and workflow freeze/resume. All currently registered execution profiles must
+consume the same resolved request and lowering contract.
+
+The native agent/command authoring formats in scope are the formats AKM already
+recognizes: AKM native, Claude, and OpenCode. 0.9.2 does not add native file
+adapters for Codex, Gemini, Aider, Copilot, Pi, Amazon Q, or OpenHands, but their
+existing execution profiles must still accept unified resolved work. New
+native authoring formats, full GitHub action/workflow ingestion, and the public
+GitHub Action package begin in 0.9.3 or later.
+
+## 13. Implementation status
+
+This document describes both the approved design and the staged 0.9.2
+implementation boundary. The current line implements:
+
+- the installed/operator `models.json` layers and exact alias/profile
+  expansion in the common far-to-near cascade;
+- selection-versus-authorization handling for tools before engine lowering;
+- canonical `akm command run`, adapter-rendered command/persona loading,
+  strict one-pass `$ARGUMENTS`, and the delegating non-interactive
+  `akm agent` compatibility surface;
+- an engine-owned optimistic lowerer for all ten registered harnesses plus
+  direct LLM, with exact selected models, translated/untranslated field
+  inventories, deterministic persona/conversation composition, and
+  secret-free structured notices;
+- runtime adapters for the existing task-v2 prompt arm, improve/proposal model
+  work, current frozen workflow units and judges, index passes, and shared
+  structured LLM calls; and
+- symbolic LLM and SDK-fallback credentials until dispatch, including a
+  config-free path that lowers already-frozen runner material without
+  re-reading live config or aliases.
+
+WP5 is therefore implemented as **runtime lowering convergence**. It does not
+claim the still-separate WP6 task-v3 source schema/migrator, nor WP7's final
+source-to-frozen durable workflow IR and resume-persistence convergence. The
+current workflow adapter lowers its already-frozen engine invocation at run
+time; that is not proof that the source plan froze a complete
+`ResolvedExecutionRequestV1`. Workflow lowering notices are currently live
+result/diagnostic metadata and are intentionally excluded from durable
+result/evidence journal data; this specification does not assign future notice
+persistence to WP7.
+
+GitHub-step-shaped task sources, GitHub-shaped workflow compilation, durable
+common-request freeze/resume, and their migrations remain WP6/WP7 work. Full
+GitHub Actions semantics, remote action acquisition, and the public GitHub
+Action package remain unsupported and out of scope.
 
 Implementation work MUST preserve current public behavior deliberately or
-document a migration. It MUST NOT describe one of these gaps as approved
-semantics merely because it exists in 0.9.1.
+document a migration. It MUST NOT describe a remaining WP6/WP7 gap as approved
+semantics merely because an older task or workflow runtime already exists.
 
-## 12. Deferred decisions
+## 14. Deferred decisions
 
-The following are deliberately not specified here:
+The following remain deliberately outside 0.9.2:
 
-- final task and workflow on-disk syntax;
 - portable positional or named command arguments;
 - nested or child workflows;
-- the complete contents and distribution format of model mapping packs; and
+- reusable model mapping packs beyond the installed/user `models.json` layers;
+- full GitHub workflow/action execution and the public GitHub Action package;
+- additional native agent/command authoring formats; and
 - the CLI syntax for explicit session reuse.
 
 These require separate decisions or implementation evidence. They are not

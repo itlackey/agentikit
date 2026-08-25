@@ -5,7 +5,7 @@
 /**
  * #627 — default search/curate excludes `session` assets via config.search.defaultExcludeTypes.
  *
- * Session assets are a first-class indexed `entry_type` (so search can find
+ * Session assets are a first-class indexed `type` (so search can find
  * them when explicitly requested), but they pollute the DEFAULT untyped
  * `akm search` / `akm curate` results. #627 adds a pure query-layer policy:
  *

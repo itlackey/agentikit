@@ -10,7 +10,7 @@ import { resolveStorageLocations } from "../../../src/storage/locations";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../../src/workflows/ir/schema-v4";
 import { resumeWorkflowRun, startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import {
   type IsolatedAkmStorage,
@@ -120,13 +120,20 @@ describe("budget.max_units", () => {
     const frozen = JSON.parse(row?.plan_json ?? "") as WorkflowPlanGraph;
     expect(frozen.budget).toEqual({ maxUnits: 2 });
 
+    const notice = {
+      code: "untranslated-field",
+      severity: "warning" as const,
+      adapter: "codex",
+      field: "tools",
+      message: "tool selection was not translated",
+    };
     let dispatches = 0;
     const result = await runWorkflowSteps({
       target: started.run.id,
       summaryJudge: null,
       dispatcher: async (): Promise<UnitDispatchResult> => {
         dispatches++;
-        return { ok: true, text: "reviewed" };
+        return { ok: true, text: "reviewed", notices: [notice] };
       },
     });
 
@@ -135,6 +142,8 @@ describe("budget.max_units", () => {
     expect(result.executed[0]?.ok).toBe(false);
     expect(result.executed[0]?.summary).toContain("budget exceeded (max_units ceiling)");
     expect(result.executed[0]?.summary).toContain("max_units of 2");
+    expect(result.executed[0]?.notices).toEqual([notice]);
+    expect(result.notices).toEqual([notice]);
 
     // Only the dispatched attempts journaled — the refused unit wrote no row.
     const units = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(started.run.id));
@@ -211,14 +220,9 @@ describe("budget.max_units", () => {
   });
 
   test("crash/resume re-dispatches of ONE unit accumulate against max_units and are refused at the ceiling", async () => {
-    // PR #714 review (P2): a crash between a unit's dispatch (`running` row)
-    // and its finish leaves a stale row that resume re-dispatches under the
-    // SAME content-derived unit_id — `insertUnit` REPLACES the single row. The
-    // budget seed used to count ROWS, so each crash/resume erased the prior
-    // dispatch from `max_units` accounting and the run could spend past its
-    // ceiling. Migration 008's `attempts` counter, summed by the seed, charges
-    // every re-dispatch. Here max_units:2 with two crashed attempts already at
-    // the ceiling: the third invocation must be REFUSED before dispatching.
+    // Every retry appends an attempt for the same content-derived unit id. The
+    // budget seed reads that append-only journal, so max_units:2 with two failed
+    // attempts already at the ceiling refuses the third dispatch.
     writeProgram(
       "crash-budget",
       [
@@ -250,7 +254,7 @@ describe("budget.max_units", () => {
 
     await resumeWorkflowRun(runId);
 
-    // Invocation 2: crashes again → the SAME unit_id row is REPLACED, attempts=2.
+    // Invocation 2 appends attempt 2 for the same unit id.
     const second = await runWorkflowSteps({
       target: runId,
       summaryJudge: null,
@@ -260,17 +264,17 @@ describe("budget.max_units", () => {
     });
     expect(second.run.status).toBe("failed");
 
-    // Exactly ONE dispatch row survives, but it records TWO attempts.
+    // The status projection has one row; the authoritative journal has both attempts.
     const units = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(runId));
     const dispatchRows = units.filter((u) => u.phase !== "gate");
     expect(dispatchRows).toHaveLength(1);
     expect(dispatchRows[0]!.attempts).toBe(2);
+    expect(await withWorkflowRunsRepo((repo) => repo.getUnitAttempts(runId, dispatchRows[0]!.unit_id))).toHaveLength(2);
 
     await resumeWorkflowRun(runId);
 
-    // Invocation 3: the seed is SUM(attempts) = 2 = the ceiling, so the
-    // re-dispatch is REFUSED before running — no third attempt is spent. Pre-008
-    // the seed counted the single row (1) and this dispatched again (over-spend).
+    // Invocation 3 sees two authoritative attempts at the ceiling, so the
+    // re-dispatch is refused before running.
     let dispatches = 0;
     const third = await runWorkflowSteps({
       target: runId,
@@ -285,13 +289,13 @@ describe("budget.max_units", () => {
     expect(third.executed[0]?.ok).toBe(false);
     expect(third.executed[0]?.summary).toContain("budget exceeded (max_units ceiling)");
 
-    // The journal still holds ONE dispatch row with two accumulated attempts —
-    // the refused invocation wrote no new row.
+    // The refused invocation wrote no new attempt.
     const finalRows = (await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(runId))).filter(
       (u) => u.phase !== "gate",
     );
     expect(finalRows).toHaveLength(1);
     expect(finalRows[0]!.attempts).toBe(2);
+    expect(await withWorkflowRunsRepo((repo) => repo.getUnitAttempts(runId, finalRows[0]!.unit_id))).toHaveLength(2);
   });
 
   test("seeding: journaled dispatches from a prior invocation count against max_units", async () => {
@@ -449,7 +453,7 @@ describe("budget.max_tokens", () => {
     expect(first.executed[0]?.ok).toBe(true);
 
     // Simulate a prior invocation having spent more than the ceiling.
-    execOnWorkflowDb("UPDATE workflow_run_units SET tokens = 150 WHERE run_id = ?", started.run.id);
+    execOnWorkflowDb("UPDATE workflow_run_unit_attempts SET tokens = 150 WHERE run_id = ?", started.run.id);
 
     let dispatches = 0;
     const second = await runWorkflowSteps({

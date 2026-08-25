@@ -59,7 +59,6 @@ function makeCtx(io: RunContextInit["io"], overrides: Partial<RunContextInit> = 
     config: {} as AkmConfig,
     eventsCtx: {} as EventsContext,
     proposalsCtx: {} as ProposalsContext,
-    getLlmConfig: () => null,
     sourceRun: "run-7.4",
     dryRun: false,
     now: () => 1_700_000_000_000,
@@ -159,15 +158,13 @@ describe("RunContext carrier threading", () => {
     const eventsCtx = { dbPath: "/tmp/state.db" } as EventsContext;
     const proposalsCtx = { dbPath: "/tmp/state.db" } as ProposalsContext;
     const signal = new AbortController().signal;
-    const getLlmConfig = () => null;
-    const ctx = makeCtx(store.io, { eventsCtx, proposalsCtx, signal, getLlmConfig });
+    const ctx = makeCtx(store.io, { eventsCtx, proposalsCtx, signal });
 
     const forked = ctx.withFreshAssetMemo();
     expect(forked.stashDir).toBe("/tmp/stash");
     expect(forked.eventsCtx).toBe(eventsCtx);
     expect(forked.proposalsCtx).toBe(proposalsCtx);
     expect(forked.signal).toBe(signal);
-    expect(forked.getLlmConfig).toBe(getLlmConfig);
     expect(forked.sourceRun).toBe("run-7.4");
     expect(forked.dryRun).toBe(false);
     expect(forked.now()).toBe(1_700_000_000_000);

@@ -192,7 +192,7 @@ export function measureCycleParticipants(): string[] {
  * asset-spec.ts) and `asset-ref.ts`'s now-fully-dead `common.ts` import,
  * clearing 10 participants as a pure side effect: `commands/env/env.ts`,
  * `core/asset/asset-ref.ts`, `core/config/config-io.ts`, `core/file-lock.ts`,
- * `core/migration-operation.ts`, `indexer/walk/file-context.ts`,
+ * `indexer/walk/file-context.ts`,
  * `sources/types.ts`, `workflows/parser.ts`, `workflows/program/project.ts`,
  * `workflows/validator.ts`. `common.ts` itself stays a participant via a
  * separate `common.ts <-> paths.ts` round trip. Empirically re-verified

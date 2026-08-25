@@ -11,16 +11,15 @@ import { readEvents } from "../core/events";
 import { listTxnJournalsTolerant, TXN_SWEEP_GRACE_MS } from "../core/fs-txn";
 import { openLogsDatabase } from "../core/logs-db";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
-import { getConfigPath, getDataDir, getStateDbPathInDataDir } from "../core/paths";
+import { getConfigPath, getDataDir, getDbPath, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import { readSemanticStatus } from "../indexer/search/semantic-status";
-import type { SessionLogEntry } from "../integrations/session-logs";
-import { getExecutionLogCandidates } from "../integrations/session-logs";
 import type { Database } from "../storage/database";
+import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
 import { collectImproveAdvisories } from "./health/advisories";
-import { HEALTH_CHECKS, type HealthCheckContext } from "./health/checks";
+import { HEALTH_CHECKS, type HealthCheckContext, runHealthEngineProbes } from "./health/checks";
 import {
   buildImproveSkipSummary,
   computeWallTimeStats,
@@ -49,7 +48,6 @@ import {
   type ImproveHealthMetrics,
   type ImproveRunSummary,
   MIN_ROWS_FOR_WORST_TASK_FAIL_RATE,
-  type SessionLogAdvisory,
   type WindowResult,
   type WindowSpec,
 } from "./health/types";
@@ -61,7 +59,6 @@ export interface AkmHealthOptions {
   groupBy?: "run";
   windowCompare?: string;
   windows?: WindowSpec[];
-  getExecutionLogCandidatesFn?: (sinceDays?: number) => SessionLogEntry[];
   /**
    * Clock seam for the health read path. Defaults to `Date.now`. Tests may pin
    * this to a fixed epoch so staleness/window math is deterministic. Purely
@@ -380,6 +377,9 @@ function gatherAncillaryAdvisories(
 ): HealthCheckResult[] {
   const advisories: HealthCheckResult[] = [...collectImproveAdvisories(db, stateDbPath, since, improveSummary)];
 
+  const indexStateMismatch = detectIndexStateGenerationMismatch(db);
+  if (indexStateMismatch) advisories.push(indexStateMismatch);
+
   // 08-F1: surface a `stash-git-exposure` advisory when env/secret assets are
   // git-tracked AND a remote is configured (the leak moment). Best-effort.
   // Cheap guard: only shell out to git when the stash has its OWN `.git` (or a
@@ -415,22 +415,61 @@ function gatherAncillaryAdvisories(
   return advisories;
 }
 
-/** Execution-log-derived session advisories. Best-effort: any failure yields an empty list. */
-function gatherSessionLogAdvisories(
-  since: string,
-  now: () => number,
-  getExecutionLogCandidatesFn: (sinceDays?: number) => SessionLogEntry[],
-): SessionLogAdvisory[] {
+/**
+ * Detect the durable signature of an interrupted cross-database update.
+ *
+ * `usage_events.entry_ref` is the stable identity while `entry_id` names the
+ * current, regenerable index row. A linked event whose id is absent or resolves
+ * to a different ref means index.db and state.db describe adjacent generations.
+ * Legacy/bare refs and deliberately detached rows are excluded. The scan is
+ * streaming and keeps only a bounded evidence sample so health cannot mirror
+ * either database into the JS heap.
+ *
+ * Best-effort by design: an absent/unreadable/incompatible index has its own
+ * diagnostics and must not make the state health path throw.
+ */
+function detectIndexStateGenerationMismatch(stateDb: Database): HealthCheckResult | undefined {
+  let indexDb: Database | undefined;
   try {
-    const sinceDays = Math.max(0, Math.ceil((now() - new Date(since).getTime()) / (24 * 60 * 60 * 1000)));
-    return getExecutionLogCandidatesFn(sinceDays).map((entry) => ({
-      topic: entry.topic,
-      frequency: entry.frequency,
-      source: entry.source,
-      isFailurePattern: entry.isFailurePattern,
-    }));
+    indexDb = openReadonlyExistingDatabase(getDbPath());
+    if (!indexDb) return undefined;
+
+    const byId = indexDb.prepare<{ item_ref: string | null }>("SELECT item_ref FROM entries WHERE id = ?");
+    const rows = stateDb
+      .prepare<{ entry_id: number; entry_ref: string }>(
+        "SELECT DISTINCT entry_id, entry_ref FROM usage_events " +
+          "WHERE entry_id IS NOT NULL AND entry_ref IS NOT NULL AND instr(entry_ref, '//') > 0",
+      )
+      .iterate();
+    let mismatches = 0;
+    const sample: Array<{ entryId: number; entryRef: string; indexedRef: string | null }> = [];
+    for (const row of rows) {
+      const indexedRef = byId.get(row.entry_id)?.item_ref ?? null;
+      if (indexedRef === row.entry_ref) continue;
+      mismatches += 1;
+      if (sample.length < 5) sample.push({ entryId: row.entry_id, entryRef: row.entry_ref, indexedRef });
+    }
+    if (mismatches === 0) return undefined;
+    return {
+      name: "index-state-generation",
+      kind: "deterministic",
+      status: "warn",
+      confidence: "high",
+      message:
+        `${mismatches} durable usage link(s) disagree with the current searchable index generation. ` +
+        "Stop concurrent writers and run 'akm index --full' to relink state to the current index.",
+      evidence: { mismatches, sample },
+    };
   } catch {
-    return [];
+    return undefined;
+  } finally {
+    if (indexDb) {
+      try {
+        closeDatabase(indexDb);
+      } catch {
+        // Best-effort advisory: a close failure must not abort health.
+      }
+    }
   }
 }
 
@@ -536,7 +575,6 @@ function unreadableStateDbReport(detail: string, options: AkmHealthOptions): Akm
       llmUsage: emptyLlmUsageAggregate(),
     },
     improve: summarizeImproveCompleted([]),
-    sessionLogAdvisories: [],
   };
 }
 
@@ -547,7 +585,6 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
   const stateDbPath = options.stateDbPath ?? getStateDbPathInDataDir();
   const hardChecks: HealthCheckResult[] = [];
   const advisories: HealthCheckResult[] = [];
-  const getExecutionLogCandidatesFn = options.getExecutionLogCandidatesFn ?? getExecutionLogCandidates;
 
   // #791: an UNREADABLE state.db is the one failure `akm health` most needs to
   // be able to report, because it is the command an operator runs to find out
@@ -590,7 +627,7 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
 
     advisories.push(...gatherAncillaryAdvisories(db, stateDbPath, since, improveSummary, options, egressConfigView));
 
-    const sessionLogEntries = gatherSessionLogAdvisories(since, now, getExecutionLogCandidatesFn);
+    const engineProbes = runHealthEngineProbes();
 
     // Run the ordered health-check registry. Each check projects the shared
     // context computed above into one HealthCheckResult; `channel` routes it to
@@ -614,9 +651,9 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       semanticStatus,
       semanticSearchMode,
       embeddingEndpoint,
-      sessionLogEntries,
       sessionExtraction: improveSummary.sessionExtraction,
       autoAccept: improveSummary.autoAccept,
+      engineProbes,
     };
     for (const check of HEALTH_CHECKS) {
       const result = check.run(checkContext);
@@ -657,7 +694,6 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       advisories,
       metrics,
       improve: improveSummary,
-      sessionLogAdvisories: sessionLogEntries,
       ...(runs ? { runs } : {}),
       ...(windowResults ? { windows: windowResults } : {}),
       ...(deltas ? { deltas } : {}),

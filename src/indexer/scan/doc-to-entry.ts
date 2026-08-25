@@ -7,13 +7,11 @@
  * `indexDocumentFromEntry` (`adapters/akm-adapter.ts`). akm 0.9.0 Chunk 5,
  * milestone F4a (M2 groundwork).
  *
- * The engine swap drains an `IndexDocument` stream (`drainDirDocuments` × the
- * dispatched adapter's `recognize`) in place of the per-dir flat-walk matcher-pass
- * `IndexDocument` stream, then persists it. But the durable `entries.entry_json`
- * column stays a faithful `IndexDocument` — every reader (`rowToIndexedEntry` →
- * `DbIndexedEntry.entry`) consumes it as one, and the byte-for-byte goldens pin
- * it. So the persist path must reconstruct the exact `IndexDocument` the old
- * pipeline stored FROM the `IndexDocument` the new pipeline produces.
+ * The indexer drains a single `IndexDocument` stream (`drainDirDocuments` × the
+ * dispatched adapter's `recognize`) and persists its canonical projection in
+ * `entries.document_json`. Every reader (`rowToIndexedEntry` →
+ * `DbIndexedEntry.entry`) consumes that same projection, and parity tests pin
+ * the boundary.
  *
  * That reconstruction is lossless by construction: the akm adapter's `recognize`
  * assembles a full `IndexDocument` (P1/P2 → fold → P4) and then maps it onto the
@@ -21,8 +19,8 @@
  * onto named members, every other search-surface/provenance field onto
  * `documentJson` (the `DOCUMENT_JSON_CARRIED_FIELDS` set). This function reverses
  * that mapping exactly, so `indexDocumentToStashEntry(recognize(file))` deep-
- * equals the entry the legacy flat-walk pass stored for the same file (the
- * `tests/integration/shadow-scan-parity.test.ts` gate pins the persisted index).
+ * equals the current persisted document for the same file (the
+ * `tests/integration/shadow-scan-parity.test.ts` gate pins this boundary).
  *
  * Two deliberate non-round-trip fields:
  *   - `filename` — dropped by `indexDocumentFromEntry` (no IndexDocument home),

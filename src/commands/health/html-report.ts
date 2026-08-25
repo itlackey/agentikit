@@ -493,21 +493,6 @@ function renderActionItems(vm: HealthReportViewModel): string {
     });
   }
 
-  // Session-log notes (informational, lowest priority).
-  if (vm.sessionLogAdvisories.length > 0) {
-    const patterns = vm.sessionLogAdvisories
-      .slice(0, 6)
-      .map((p) => `<li>${esc(p.topic)}</li>`)
-      .join("");
-    pushItem({
-      key: "session-log-notes",
-      prio: "P3",
-      cls: "warn",
-      title: `${vm.sessionLogAdvisories.length} session-log note(s) (informational)`,
-      descHtml: `<ul style="margin:4px 0 0 16px;padding:0;">${patterns}</ul>`,
-    });
-  }
-
   items.sort((a, b) => PRIO_RANK[a.prio] - PRIO_RANK[b.prio]);
   return items.length > 0
     ? items.map(actionItemCard).join("\n")

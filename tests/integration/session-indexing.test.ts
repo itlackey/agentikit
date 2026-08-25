@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmExtract } from "../../src/commands/improve/extract";
-import type { SessionSummaryGenerator } from "../../src/commands/improve/session-asset";
+import { buildSessionAccessInstructions, type SessionSummaryGenerator } from "../../src/commands/improve/session-asset";
 import { akmSearch } from "../../src/commands/read/search";
 import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
@@ -127,7 +127,7 @@ function configFor(stash: string, indexSessions?: boolean, extractEnabled = true
 function makeSession(endedAt: number): SessionData {
   return {
     ref: {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: SESSION_ID,
       filePath: "/home/u/.claude/projects/-p/ca894f15.jsonl",
       startedAt: endedAt - 3 * 3_600_000,
@@ -136,8 +136,8 @@ function makeSession(endedAt: number): SessionData {
       title: "node compat",
     },
     events: [
-      { harness: "claude-code", text: "user: investigate bun sqlite compatibility", role: "user" },
-      { harness: "claude-code", text: "agent: designed runtime boundary abstraction", role: "assistant" },
+      { harness: "claude", text: "user: investigate bun sqlite compatibility", role: "user" },
+      { harness: "claude", text: "agent: designed runtime boundary abstraction", role: "assistant" },
     ],
     inlineRefs: [],
   };
@@ -146,9 +146,8 @@ function makeSession(endedAt: number): SessionData {
 function makeHarness(sessions: SessionData[], available = true): SessionLogHarness {
   const summaries: SessionSummary[] = sessions.map((s) => s.ref);
   return {
-    name: "claude-code",
+    name: "claude",
     isAvailable: () => available,
-    *readEvents() {},
     listSessions: (input?: { sinceMs?: number }) => {
       const since = input?.sinceMs ?? 0;
       return summaries.filter((s) => (s.endedAt ?? 0) >= since);
@@ -169,11 +168,25 @@ const fakeSummaryGenerator: SessionSummaryGenerator = async () => ({
 
 const sessionAssetPath = () => path.join(stashDir, "sessions", "claude", `${SESSION_ID}.md`);
 
+describe("session source access instructions", () => {
+  test("describes the current OpenCode SQLite source without JSON file commands", () => {
+    const sessionId = "ses_'quoted";
+    const access = buildSessionAccessInstructions("opencode", "/tmp/opencode.db", sessionId);
+    expect(access).toContain("SQLite");
+    expect(access).toContain("message AS m");
+    expect(access).toContain("part AS p");
+    expect(access).toContain(JSON.stringify(sessionId));
+    expect(access).not.toContain("cat ");
+    expect(access).not.toContain("jq");
+    expect(access).not.toContain("JSON");
+  });
+});
+
 describe("#561 session indexing — round-trip", () => {
   test("extract writes a session asset, akmIndex indexes it, search --type session finds it", async () => {
     const now = Date.now();
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir,
       config: configFor(stashDir, true),
       harnesses: [makeHarness([makeSession(now)])],
@@ -220,7 +233,7 @@ describe("#561 session indexing — round-trip", () => {
   test("log_path + access frontmatter survive an index rebuild", async () => {
     const now = Date.now();
     await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir,
       config: configFor(stashDir, true),
       harnesses: [makeHarness([makeSession(now)])],
@@ -246,7 +259,7 @@ describe("#561 session indexing — disabled / fail-open is byte-identical (no a
   test("indexSessions:false writes NO session asset", async () => {
     const now = Date.now();
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir,
       config: configFor(stashDir, /* indexSessions */ false),
       harnesses: [makeHarness([makeSession(now)])],
@@ -268,7 +281,7 @@ describe("#561 session indexing — disabled / fail-open is byte-identical (no a
     const now = Date.now();
     const noopGenerator: SessionSummaryGenerator = async () => undefined;
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir,
       config: configFor(stashDir, true),
       harnesses: [makeHarness([makeSession(now)])],
@@ -288,7 +301,7 @@ describe("#561 session indexing — disabled / fail-open is byte-identical (no a
     const short = makeSession(now);
     short.ref.startedAt = now - 60_000; // 1 minute session, below the 5-min default
     const result = await akmExtract({
-      type: "claude-code",
+      type: "claude",
       stashDir,
       config: configFor(stashDir, true),
       harnesses: [makeHarness([short])],

@@ -13,7 +13,7 @@ import {
 } from "../../src/storage/repositories/index-connection";
 import {
   deleteEntriesByDir,
-  deleteEntriesByDirAndStash,
+  deleteEntriesByDirAndBundle,
   deleteUsageEventsByEntryIds,
   findEntryIdByRef,
   getAllEntries,
@@ -93,7 +93,6 @@ function insertTestEntry(
   opts?: {
     dirPath?: string;
     filePath?: string;
-    stashDir?: string;
     description?: string;
     searchText?: string;
     type?: IndexDocument["type"];
@@ -106,12 +105,10 @@ function insertTestEntry(
     type,
     key,
   );
+  const dirPath = opts?.dirPath ?? "/test/dir";
   return upsertEntry(
     db,
-    key,
-    opts?.dirPath ?? "/test/dir",
-    opts?.filePath ?? `/test/dir/${key}.ts`,
-    opts?.stashDir ?? "/test/stash",
+    opts?.filePath ?? path.join(dirPath, `${key}.ts`),
     entry,
     opts?.searchText ?? `${key} ${entry.description}`,
     provenance,
@@ -131,7 +128,24 @@ describe("Schema", () => {
     }
   });
 
-  test("openIndexDatabase with a stale version marker preserves data (no nuclear drop)", () => {
+  test("openIndexDatabase removes the obsolete workflow document cache", () => {
+    const dbPath = tmpDbPath();
+    let db = openIndexDatabase(dbPath);
+    db.exec("CREATE TABLE workflow_documents (entry_id INTEGER PRIMARY KEY, document_json TEXT NOT NULL)");
+    closeDatabase(db);
+
+    db = openIndexDatabase(dbPath);
+    try {
+      const row = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workflow_documents'")
+        .get();
+      expect(row).toBeNull();
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("openIndexDatabase with a stale version marker rebuilds the derived index generation", () => {
     const dbPath = tmpDbPath();
 
     // Open, insert data, stamp an OLDER version than DB_VERSION.
@@ -141,11 +155,12 @@ describe("Schema", () => {
     setMeta(db, "version", "0");
     closeDatabase(db);
 
-    // Reopen — the stale marker must NOT drop tables (the nuclear-drop path was
-    // removed); the regenerable index converges forward and the entry survives.
+    // Reopen — index.db is regenerable, so an incompatible generation is
+    // discarded instead of carrying live compatibility SQL.
     db = openIndexDatabase(dbPath);
     try {
-      expect(getEntryCount(db)).toBe(1);
+      expect(getEntryCount(db)).toBe(0);
+      expect(getMeta(db, "version")).toBe(String(DB_VERSION));
     } finally {
       closeDatabase(db);
     }
@@ -213,7 +228,7 @@ describe("Entry CRUD", () => {
     }
   });
 
-  test("upsertEntry updates on conflict (same entry_key)", () => {
+  test("upsertEntry updates on conflict (same item_ref)", () => {
     const db = openIndexDatabase(tmpDbPath());
     try {
       insertTestEntry(db, "my-tool", { description: "original description" });
@@ -237,21 +252,20 @@ describe("Entry CRUD", () => {
     try {
       const type = "script";
       const name = "my-tool";
-      const entryKey = `/s:${type}:${name}`;
       const prov = deriveEntryProvenance({ bundleId: "team-kb", componentId: "team-kb", adapterId: "akm" }, type, name);
       const entry = makeEntry({ name, type, description: "original" });
-      upsertEntry(db, entryKey, "/s/dir", "/s/dir/my-tool.ts", "/s", entry, "my-tool original", prov);
+      upsertEntry(db, "/s/dir/my-tool.ts", entry, "my-tool original", prov);
       // Re-upsert the SAME item_ref (same identity) with an updated payload.
       const entry2 = makeEntry({ name, type, description: "updated" });
-      upsertEntry(db, entryKey, "/s/dir", "/s/dir/my-tool.ts", "/s", entry2, "my-tool updated", prov);
+      upsertEntry(db, "/s/dir/my-tool.ts", entry2, "my-tool updated", prov);
       expect(getEntryCount(db)).toBe(1);
-      const rows = db.prepare("SELECT item_ref, entry_json FROM entries").all() as Array<{
-        item_ref: string | null;
-        entry_json: string;
+      const rows = db.prepare("SELECT item_ref, document_json FROM entries").all() as Array<{
+        item_ref: string;
+        document_json: string;
       }>;
       expect(rows).toHaveLength(1);
       expect(rows[0]?.item_ref).toBe("team-kb//scripts/my-tool");
-      expect(JSON.parse(rows[0]?.entry_json ?? "{}").description).toBe("updated");
+      expect(JSON.parse(rows[0]?.document_json ?? "{}").description).toBe("updated");
     } finally {
       closeDatabase(db);
     }
@@ -276,10 +290,7 @@ describe("Entry CRUD", () => {
       );
       const primaryId = upsertEntry(
         db,
-        "primary-kb-my-tool",
-        "/p/dir",
         "/p/dir/my-tool.ts",
-        "/p",
         makeEntry({ name, type, description: "primary" }),
         "my-tool primary",
         primaryProv,
@@ -291,10 +302,7 @@ describe("Entry CRUD", () => {
       );
       const secondaryId = upsertEntry(
         db,
-        "zzz-source-my-tool",
-        "/z/dir",
         "/z/dir/my-tool.ts",
-        "/z",
         makeEntry({ name, type, description: "secondary" }),
         "my-tool secondary",
         secondaryProv,
@@ -341,12 +349,12 @@ describe("Entry CRUD", () => {
 
       const alphaEntries = getEntriesByDir(db, "/project/alpha");
       expect(alphaEntries).toHaveLength(2);
-      const keys = alphaEntries.map((e) => e.entryKey).sort();
+      const keys = alphaEntries.map((e) => e.entry.name).sort();
       expect(keys).toEqual(["tool-a", "tool-b"]);
 
       const betaEntries = getEntriesByDir(db, "/project/beta");
       expect(betaEntries).toHaveLength(1);
-      expect(betaEntries[0]!.entryKey).toBe("tool-c");
+      expect(betaEntries[0]!.entry.name).toBe("tool-c");
     } finally {
       closeDatabase(db);
     }
@@ -399,7 +407,7 @@ describe("Entry CRUD", () => {
       expect(getEntryCount(db)).toBe(1);
 
       const remaining = getAllEntries(db);
-      expect(remaining[0]!.entryKey).toBe("keep-1");
+      expect(remaining[0]!.entry.name).toBe("keep-1");
     } finally {
       closeDatabase(db);
     }
@@ -411,7 +419,6 @@ describe("Entry CRUD", () => {
     try {
       const entryId = insertTestEntry(db, "rollback-delete", {
         dirPath: "/handoff",
-        stashDir: "/parent",
       });
       const stateDb = openStateDatabase();
       stateDb
@@ -421,7 +428,7 @@ describe("Entry CRUD", () => {
 
       expect(() =>
         db.transaction(() => {
-          deleteEntriesByDirAndStash(db, "/handoff", "/parent", { cleanupUsageEvents: false });
+          deleteEntriesByDirAndBundle(db, "/handoff", "test-bundle", { cleanupUsageEvents: false });
           throw new Error("forced persistence failure");
         })(),
       ).toThrow("forced persistence failure");
@@ -435,7 +442,9 @@ describe("Entry CRUD", () => {
       });
       afterRollback.close();
 
-      const deletedIds = deleteEntriesByDirAndStash(db, "/handoff", "/parent", { cleanupUsageEvents: false });
+      const deletedIds = deleteEntriesByDirAndBundle(db, "/handoff", "test-bundle", {
+        cleanupUsageEvents: false,
+      });
       deleteUsageEventsByEntryIds(deletedIds);
       const afterCommit = openStateDatabase();
       expect(afterCommit.prepare("SELECT COUNT(*) AS count FROM usage_events WHERE entry_id = ?").get(entryId)).toEqual(
@@ -942,18 +951,27 @@ describe("rebuildFts incremental", () => {
     }
   }
 
+  function upsertFtsEntry(db: Database, key: string, entry: IndexDocument, searchText: string): number {
+    const provenance = deriveEntryProvenance(
+      { bundleId: "stash", componentId: "stash", adapterId: "akm" },
+      entry.type,
+      key,
+    );
+    return upsertEntry(db, `/d/${key}.md`, entry, searchText, provenance);
+  }
+
   test("upsertEntry marks rows dirty; incremental rebuild only re-indexes them", () => {
     const db = openIndexDatabase(tmpDbPath("inc-fts"));
     try {
-      upsertEntry(db, "k1", "/d", "/d/k1.md", "/stash", makeEntry("alpha", "first"), "alpha first");
-      upsertEntry(db, "k2", "/d", "/d/k2.md", "/stash", makeEntry("bravo", "second"), "bravo second");
-      upsertEntry(db, "k3", "/d", "/d/k3.md", "/stash", makeEntry("charlie", "third"), "charlie third");
+      upsertFtsEntry(db, "k1", makeEntry("alpha", "first"), "alpha first");
+      upsertFtsEntry(db, "k2", makeEntry("bravo", "second"), "bravo second");
+      upsertFtsEntry(db, "k3", makeEntry("charlie", "third"), "charlie third");
       rebuildFts(db, { incremental: false });
       expect(ftsCount(db)).toBe(3);
       expect(dirtyCount(db)).toBe(0);
 
       // Touch only one entry — its row should be the only dirty one.
-      upsertEntry(db, "k2", "/d", "/d/k2.md", "/stash", makeEntry("bravo", "second-updated"), "bravo second-updated");
+      upsertFtsEntry(db, "k2", makeEntry("bravo", "second-updated"), "bravo second-updated");
       expect(dirtyCount(db)).toBe(1);
 
       rebuildFts(db, { incremental: true });
@@ -972,7 +990,7 @@ describe("rebuildFts incremental", () => {
   test("incremental rebuild with empty dirty queue is a no-op", () => {
     const db = openIndexDatabase(tmpDbPath("inc-fts-empty"));
     try {
-      upsertEntry(db, "k1", "/d", "/d/k1.md", "/stash", makeEntry("alpha"), "alpha");
+      upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
       rebuildFts(db, { incremental: false });
       expect(ftsCount(db)).toBe(1);
       expect(dirtyCount(db)).toBe(0);
@@ -986,7 +1004,7 @@ describe("rebuildFts incremental", () => {
   test("full rebuild also drains the dirty queue", () => {
     const db = openIndexDatabase(tmpDbPath("inc-fts-full"));
     try {
-      upsertEntry(db, "k1", "/d", "/d/k1.md", "/stash", makeEntry("alpha"), "alpha");
+      upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
       expect(dirtyCount(db)).toBe(1);
       rebuildFts(db, { incremental: false });
       expect(ftsCount(db)).toBe(1);
@@ -999,12 +1017,12 @@ describe("rebuildFts incremental", () => {
   test("deleteEntriesByDir purges FTS rows + dirty markers immediately", () => {
     const db = openIndexDatabase(tmpDbPath("inc-fts-del"));
     try {
-      upsertEntry(db, "k1", "/d", "/d/k1.md", "/stash", makeEntry("alpha"), "alpha");
-      upsertEntry(db, "k2", "/d", "/d/k2.md", "/stash", makeEntry("bravo"), "bravo");
+      upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
+      upsertFtsEntry(db, "k2", makeEntry("bravo"), "bravo");
       rebuildFts(db, { incremental: false });
       expect(ftsCount(db)).toBe(2);
 
-      upsertEntry(db, "k1", "/d", "/d/k1.md", "/stash", makeEntry("alpha", "updated"), "alpha updated");
+      upsertFtsEntry(db, "k1", makeEntry("alpha", "updated"), "alpha updated");
       expect(dirtyCount(db)).toBe(1);
 
       deleteEntriesByDir(db, "/d");
@@ -1029,7 +1047,9 @@ describe("rebuildFts incremental", () => {
 describe("entries-by-path reads (getEntryIdByFilePath / getEntryFilePathById / getEntryRefRowsForStashRoot)", () => {
   function seedAt(db: Database, key: string, filePath: string, stashDir: string, type: IndexDocument["type"]): number {
     const entry = { description: `Description for ${key}`, type, name: key } as unknown as IndexDocument;
-    return upsertEntry(db, key, path.dirname(filePath), filePath, stashDir, entry, key);
+    const bundleId = path.basename(stashDir) || "root";
+    const provenance = deriveEntryProvenance({ bundleId, componentId: bundleId, adapterId: "akm" }, type, key);
+    return upsertEntry(db, filePath, entry, key, provenance);
   }
 
   test("getEntryIdByFilePath resolves the row id by exact file_path, undefined when no match", () => {
@@ -1059,12 +1079,12 @@ describe("entries-by-path reads (getEntryIdByFilePath / getEntryFilePathById / g
     }
   });
 
-  test("getEntryFilePathById still returns the path when entry_json is corrupt (no JSON parse)", () => {
+  test("getEntryFilePathById still returns the path when document_json is corrupt (no JSON parse)", () => {
     const dbPath = tmpDbPath();
     const db = openIndexDatabase(dbPath);
     try {
       const id = seedAt(db, "broken", "/s/broken.md", "/s", "skill");
-      db.prepare("UPDATE entries SET entry_json = ? WHERE id = ?").run("{not json", id);
+      db.prepare("UPDATE entries SET document_json = ? WHERE id = ?").run("{not json", id);
       expect(getEntryFilePathById(db, id)).toBe("/s/broken.md");
       // getEntryById, by contrast, drops the corrupt row — proving the new
       // helper deliberately avoids JSON parsing to preserve feedback-cli's
@@ -1075,24 +1095,24 @@ describe("entries-by-path reads (getEntryIdByFilePath / getEntryFilePathById / g
     }
   });
 
-  test("getEntryRefRowsForStashRoot matches by stash_dir OR file_path prefix; dedupe stays with caller", () => {
+  test("getEntryRefRowsForStashRoot matches canonical file-path ownership", () => {
     const dbPath = tmpDbPath();
     const db = openIndexDatabase(dbPath);
     try {
-      // Matches by exact stash_dir.
+      // A bundle label alone does not make an unrelated path owned by the root.
       seedAt(db, "in-stash", "/elsewhere/in-stash.md", "/root", "skill");
-      // Matches by file_path prefix even though stash_dir differs.
+      // Matches by file_path containment even when another bundle owns it.
       seedAt(db, "by-prefix", "/root/sub/by-prefix.md", "/other", "memory");
-      // Should NOT match: different stash_dir and a non-prefix path.
+      // Should not match a non-contained path.
       seedAt(db, "outside", "/somewhere/outside.md", "/other", "lesson");
 
       const rows = getEntryRefRowsForStashRoot(db, "/root");
       const paths = rows.map((r) => r.file_path).sort();
-      expect(paths).toEqual(["/elsewhere/in-stash.md", "/root/sub/by-prefix.md"]);
-      // entry_json is returned raw (unparsed) for the caller to decode.
+      expect(paths).toEqual(["/root/sub/by-prefix.md"]);
+      // document_json is returned raw (unparsed) for the caller to decode.
       for (const r of rows) {
-        expect(typeof r.entry_json).toBe("string");
-        expect(() => JSON.parse(r.entry_json)).not.toThrow();
+        expect(typeof r.document_json).toBe("string");
+        expect(() => JSON.parse(r.document_json)).not.toThrow();
       }
     } finally {
       closeDatabase(db);

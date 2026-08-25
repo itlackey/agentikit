@@ -6,9 +6,9 @@
  * Post-F5 ref lookup (ref-grammar decision D-R1/D-R4): the repository readers
  * key on the canonical stored `item_ref`. This proves — over a REAL indexed
  * fixture — that a new-grammar `bundle//conceptId` ref (and the short conceptId
- * form, both directly and via `resolveRef`) finds the intended `entries` row,
- * and that a NULL-`item_ref` row is NOT findable by ref (it heals on the next
- * full index) now that the transitional legacy `entry_key` fallback is gone.
+ * form, both directly and via `resolveRef`) finds the intended `entries` row.
+ * Canonical identity columns reject NULL writes at the schema boundary; there
+ * is no nullable-row healing path or transitional legacy lookup fallback.
  */
 
 import { Database } from "bun:sqlite";
@@ -164,22 +164,21 @@ describe("current ref lookup", () => {
     }
   });
 
-  test("a NULL-item_ref row is no longer findable by ref (heals on next index)", () => {
+  test("canonical identity columns reject NULL writes and preserve the indexed row", () => {
     const db = openDb();
     try {
       const bundle = slugForPath(stashDir);
       const targetId = findEntryIdByRef(db, "memories/second");
       expect(targetId).toBeDefined();
 
-      // Simulate a write-back row: clear its provenance columns.
-      db.prepare("UPDATE entries SET item_ref = NULL, concept_id = NULL, bundle_id = NULL WHERE id = ?").run(
-        targetId as number,
-      );
+      for (const column of ["item_ref", "concept_id", "bundle_id"] as const) {
+        expect(() => db.prepare(`UPDATE entries SET ${column} = NULL WHERE id = ?`).run(targetId as number)).toThrow(
+          /NOT NULL constraint failed/i,
+        );
+      }
 
-      // With the transitional legacy `entry_key` fallback gone, an item_ref-only
-      // lookup no longer resolves the row until the next full index re-writes it.
-      expect(findEntryIdByRef(db, `${bundle}//memories/second`), "qualified new ref").toBeUndefined();
-      expect(findEntryIdByRef(db, "memories/second"), "short new ref").toBeUndefined();
+      expect(findEntryIdByRef(db, `${bundle}//memories/second`), "qualified new ref").toBe(targetId);
+      expect(findEntryIdByRef(db, "memories/second"), "short new ref").toBe(targetId);
     } finally {
       db.close();
     }

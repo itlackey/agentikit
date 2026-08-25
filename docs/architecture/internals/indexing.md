@@ -62,13 +62,11 @@ ref.
 Every current `entries` row carries a canonical fully qualified
 `item_ref` (`bundle//conceptId`), its `bundle_id` and `concept_id` provenance,
 and the absolute `file_path` of the materialized local asset. Search and show
-prefer those columns for identity and access rather than reconstructing refs
-from a name or source path. This preserves bundle identity when multiple sources
-contain the same concept.
-
-The provenance columns remain nullable only for partially migrated rows. Lookup
-retains the older entry-key/path fallback for those rows until a reindex writes
-their canonical identity.
+use those required columns for identity and access rather than reconstructing
+refs from a name or source path. `item_ref` is the sole upsert conflict key;
+`document_json` is the sole stored document projection. The v21 schema does not
+admit incomplete identity rows or retain an entry-key/path lookup fallback.
+This preserves bundle identity when multiple sources contain the same concept.
 
 ## LLM Enrichment Pass
 
@@ -112,7 +110,7 @@ skipped unless the caller explicitly requests re-enrichment.
 ## Database Tables
 
 `index.db`'s schema (`ensureSchema()`,
-`src/storage/repositories/index-schema.ts`) creates 17 tables (2 of them
+`src/storage/repositories/index-schema.ts`) creates 16 tables (2 of them
 virtual). Full column-level detail lives in
 [Storage Locations](storage-locations.md#dataindexdb--main-search-index);
 this is a purpose summary:
@@ -127,7 +125,6 @@ this is a purpose summary:
 | `utility_scores` | recomputed utility boost state (global) |
 | `utility_scores_scoped` | same EMA per `(entry, project-anchor)` pair |
 | `index_meta` | schema/version/runtime metadata |
-| `workflow_documents` | validated `WorkflowDocument` JSON for indexed workflows |
 | `index_dir_state` | incremental-indexing cache (per-directory hash + mtime) |
 | `llm_enrichment_cache` | cached LLM enrichment/graph-extraction/memory-inference results |
 | `registry_index_cache` | cached registry index JSON (replaces flat cache files) |
@@ -138,35 +135,28 @@ this is a purpose summary:
 | `graph_extraction_queue` | lazy, priority-ordered backlog of files awaiting graph extraction |
 
 `usage_events` (search/show/feedback telemetry) and workflow runtime state
-both live in `state.db`, not `index.db` — the three-DB cutover (Chunk-8
-WI-8.3) moved `usage_events` out of the regenerable index and folded the
-former `workflow.db` into `state.db`.
+both live in `state.db`, not `index.db`, so rebuildable search state remains
+separate from durable runtime state.
 
 ## Schema Versioning
 
-`index.db` is ephemeral — fully rebuildable from sources by `akm index`.
-`ensureSchema()` (`src/storage/repositories/index-schema.ts`) converges the
-schema forward idempotently: every table is `CREATE ... IF NOT EXISTS`, column
-additions go through guarded `ALTER`s, and targeted migrations handle
-structural changes — there is no "drop the whole index on a version mismatch"
-path. `DB_VERSION` (a forensic stamp recorded in `index_meta`) only marks how
-far a fresh database was created; it never triggers destructive rebuilds.
-Durable workflow run state in `state.db` is never touched by this path.
+`index.db` is ephemeral — fully rebuildable from sources by `akm index`. The
+current generation is exactly v21. `ensureSchema()`
+(`src/storage/repositories/index-schema.ts`) accepts an existing generation
+only when both `index_meta.version` and the complete `entries` fingerprint
+match the canonical contract, including `AUTOINCREMENT`, required columns,
+constraints, indexes, collation, and hidden-column absence. An incompatible
+generation is discarded: AKM drops the entry-dependent derived tables and
+caches, creates the canonical v21 schema, and rebuilds it from current sources
+and durable usage state. Current read-only and existing-database openers reject
+an incompatible generation instead of serving it. Durable workflow, task,
+proposal, event, and usage state in `state.db` is never touched by this path.
 
-The `workflow_documents` table caches the validated `WorkflowDocument` JSON
-output of `parseWorkflow()` for each indexed workflow asset, keyed by
-`entry_id` with `ON DELETE CASCADE`:
-
-```sql
-CREATE TABLE workflow_documents (
-  entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
-  schema_version INTEGER NOT NULL,
-  document_json TEXT NOT NULL,
-  source_path TEXT NOT NULL,
-  source_hash TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-```
+Workflow `.md` and `.yml` adapters compile directly to source IR version 1.
+The index stores only the ordinary normalized `entries` row and searchable
+metadata derived from that IR. It does not cache a second workflow AST or an
+executable plan. Starting a run recompiles the authored source once and freezes
+the sole durable plan format into `state.db`.
 
 ## Metadata Sources
 

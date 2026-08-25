@@ -6,6 +6,94 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-22
+
+### Breaking changes & migration
+
+- **Node.js 22 is no longer supported by the npm package.** `akm-cli` now
+  requires Node.js >= 24 to bootstrap its command. A working Bun >= 1.0 remains
+  optional and preferred for execution after that bootstrap; the standalone
+  binary remains runtime-free. Upgrade Node before installing or running the
+  npm package.
+- The `inherit_env` option is a breaking removal: new durable-v4 workflow starts reject it.
+  Replace ambient whole-process inheritance with exact named environment bindings and
+  `exec.pass_env` names. Pre-v4 stored workflow plans are not executable in
+  0.9.2; start a new run from current source.
+- `improve.strategies.*.processes.triage.judgment` now accepts `true`/`false`
+  and honors `enabled` on object values; existing `{}` and configured objects
+  remain enabled. Unknown object keys are now rejected instead of ignored, so
+  correct typos such as `egnine`, `judgement`, or other unrecognized fields
+  before upgrading. Use `judgment: false` to disable the tier explicitly.
+
+### Added
+
+- **WP0 — characterization and release contracts:** pinned direct-agent,
+  command, task, workflow-freeze, model-alias, and harness-lowering behavior;
+  added cross-entry-point equivalence fixtures and immutable release-surface
+  gates.
+- **WP1 — shared execution contracts:** introduced adapter-rendered source
+  identity and one resolved-request representation carrying final content,
+  engine/model/inference selection, authorization, runtime settings, source
+  hashes, and structured lowering notices.
+- **WP2 — layered model maps:** ship a versioned installed `models.json`, merge
+  an optional user overlay from the config directory, expand known aliases by
+  engine, pass unknown identifiers through exactly, and provide guarded model
+  map initialization.
+- **WP3 — common cascade and authorization:** resolve far-to-near defaults once,
+  preserve explicit false/zero/empty values, authorize selected tools before
+  dispatch, and expose stable field-level provenance without resolved values.
+- **WP4 — portable command execution:** added canonical
+  `akm command run <ref>`, implemented one-pass `$ARGUMENTS` substitution, and
+  reject unsupported native template constructs before dispatch. Stored
+  commands have one execution surface; `akm agent --command` is not retained.
+- **WP6 — task v3:** added the strict shipped task schema, command/workflow/script
+  targets, closed shell and working-directory rules, portable schedules, and a
+  fail-closed task-v2 migrator with no-write preview, per-file status, backups,
+  validation, and blocked argv-array handling.
+- **WP7 — peer workflow sources and durable v4:** compile Markdown and the
+  approved GitHub-shaped `.yml` subset through source IR v1; new runs atomically
+  persist immutable v4 targets, guarded source reads, symbolic environments,
+  and durable dispatch attempts. Pre-v4 stored plans are rejected rather than
+  maintaining a second runtime.
+- **WP8 — release diagnostics:** added zero-write, secret-safe command dry-run
+  output, stderr-only verbose provenance, offline `selected-model-aliases` and
+  `configured-engines` health advisories, self-contained migration guidance,
+  and npm tar/install/link release gates.
+
+### Changed
+
+- **WP5 — engine lowering convergence:** direct command/agent execution,
+  improve/proposal dispatch, tasks, and workflows now share the resolved-request
+  boundary and implementation-derived lowerers. Exact model and inference
+  settings reach registered harnesses; unsupported fields produce safe notices,
+  while provider capability rejection remains a runtime result.
+- Scheduled workflow fires re-read the current peer source and create a fresh
+  durable-v4 freeze. Resume remains journaled replay, and crash recovery uses
+  at-least-once attempt semantics with stable reclaim identities.
+- Task scheduler synchronization is transactional across supported adapters and
+  preserves exact ownership, rollback evidence, enabled state, parameters,
+  timeouts, redaction metadata, and resolver overrides.
+
+### Fixed
+
+- Ordinary managed database opens no longer silently apply released migration
+  `018-drop-dead-lane-schema`, which drops retired tables and a column. Every
+  state migration now has an explicit safety classification; migration 002's
+  row-preserving table rebuild remains automatic, while migration 018 requires
+  a successful `akm upgrade` and a verified sibling SQLite snapshot created
+  immediately before its immutable SQL runs. The ledger recheck, WAL-inclusive
+  snapshot, and 018 transaction now share one writer-exclusion window; fresh
+  files and randomized backup paths are atomically reserved and inode-verified.
+  Pre-existing unversioned files—including an absent or empty migration
+  ledger—are rejected without writes by ordinary opens and snapshotted before
+  migration 001 by explicit upgrade. That snapshot, ledger initialization, and
+  migrations 001–002 share one writer-exclusion transaction, preventing an old
+  schema writer from landing data between the snapshot and the 002 rebuild.
+  Migration locks now reject phantom `BEGIN IMMEDIATE` results before running
+  SQL and fail clearly if the transaction disappears after a body. Snapshot
+  source and target handles are inode-bound, and failed reserved paths are
+  retained rather than removed by raced cleanup.
+
 ## [0.9.1] - 2026-08-18
 
 ### Fixed

@@ -135,10 +135,7 @@ describe("getRetrievalCounts", () => {
     const stashDir = "/tmp/utility-source";
     const entryId = upsertEntry(
       db,
-      `${stashDir}:skill:probe`,
-      `${stashDir}/skills`,
       `${stashDir}/skills/probe.md`,
-      stashDir,
       { type: "skill", name: "probe" } as never,
       "probe",
       deriveEntryProvenance({ bundleId: "utility", componentId: "utility", adapterId: "akm" }, "skill", "probe"),
@@ -161,10 +158,7 @@ describe("getRetrievalCounts", () => {
     const stashDir = "/tmp/utility-omitted-source";
     const entryId = upsertEntry(
       db,
-      `${stashDir}:skill:probe`,
-      `${stashDir}/skills`,
       `${stashDir}/skills/probe.md`,
-      stashDir,
       { type: "skill", name: "probe" } as never,
       "probe",
       deriveEntryProvenance({ bundleId: "omitted", componentId: "omitted", adapterId: "akm" }, "skill", "probe"),
@@ -206,27 +200,21 @@ describe("getRetrievalCounts", () => {
     expect(scoped.get("skills/duplicate")).toBe(2);
   });
 
-  test("last-use recency selects the duplicate from the requested source root", () => {
+  test("last-use recency does not select a nested bundle through the requested source root", () => {
     db.close();
     db = openIndexDatabase(":memory:");
     const selectedRoot = "/tmp/selected-source";
-    const otherRoot = "/tmp/other-source";
+    const otherRoot = `${selectedRoot}/.read-only-bundle`;
     const selectedId = upsertEntry(
       db,
-      `${selectedRoot}:skill:duplicate`,
-      `${selectedRoot}/skills`,
       `${selectedRoot}/skills/duplicate.md`,
-      selectedRoot,
       { type: "skill", name: "duplicate" } as never,
       "selected",
       deriveEntryProvenance({ bundleId: "selected", componentId: "selected", adapterId: "akm" }, "skill", "duplicate"),
     );
     const otherId = upsertEntry(
       db,
-      `${otherRoot}:skill:duplicate`,
-      `${otherRoot}/skills`,
       `${otherRoot}/skills/duplicate.md`,
-      otherRoot,
       { type: "skill", name: "duplicate" } as never,
       "other",
       deriveEntryProvenance({ bundleId: "other", componentId: "other", adapterId: "akm" }, "skill", "duplicate"),
@@ -246,9 +234,7 @@ describe("getRetrievalCounts", () => {
       lastUsedAt: "2026-06-01T00:00:00.000Z",
     });
 
-    const recency = (
-      getLastUseMsByRef as unknown as (database: AkmDatabase, refs: string[], stashDir: string) => Map<string, number>
-    )(db, ["skills/duplicate"], selectedRoot);
+    const recency = getLastUseMsByRef(db, [{ ref: "skills/duplicate", itemRef: "selected//skills/duplicate" }]);
 
     expect(recency.get("skills/duplicate")).toBe(Date.parse("2026-01-01T00:00:00.000Z"));
   });

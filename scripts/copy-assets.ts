@@ -36,7 +36,7 @@ for await (const src of yamlTemplateGlob.scan(".")) {
   await Bun.write(dest, Bun.file(src));
 }
 
-// 4. Copy the published launchers plus the core CLI's Node-runtime entry
+// 5. Copy the published launchers plus the core CLI's Node-runtime entry
 //    wrapper and text-import loader hook into dist/. Both launchers prefer Bun
 //    and fall back to Node.
 const runtimeFiles = [

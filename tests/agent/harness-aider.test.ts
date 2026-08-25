@@ -101,35 +101,10 @@ describe("aiderBuilder — plain prompt", () => {
   });
 });
 
-// ── Builder — model alias resolution ─────────────────────────────────────────
+// ── Builder — exact model selection ─────────────────────────────────────────
 
-describe("aiderBuilder — model resolution via resolveModel('aider')", () => {
-  test("profile.modelAliases resolves a custom alias for the aider platform", () => {
-    const profile = makeAiderProfile({ modelAliases: { fast: "gpt-5-mini" } });
-    const cmd = aiderBuilder.build(profile, { prompt: "go", model: "fast" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("gpt-5-mini");
-  });
-
-  test("globalModelAliases aider column wins over '*' fallback", () => {
-    const profile = makeAiderProfile({
-      globalModelAliases: { deep: { aider: "claude-sonnet-4-6", "*": "generic-deep" } },
-    });
-    const cmd = aiderBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("claude-sonnet-4-6");
-  });
-
-  test("globalModelAliases '*' fallback applies when no aider column exists", () => {
-    const profile = makeAiderProfile({
-      globalModelAliases: { deep: { "*": "generic-deep" } },
-    });
-    const cmd = aiderBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("generic-deep");
-  });
-
-  test("builtin alias without an aider column passes through verbatim (user aliases own aider ids)", () => {
+describe("aiderBuilder — exact model selection", () => {
+  test("a model selector passes through verbatim", () => {
     const cmd = aiderBuilder.build(makeAiderProfile(), { prompt: "go", model: "sonnet" });
     const argv = cmd.argv as string[];
     expect(argv[argv.indexOf("--model") + 1]).toBe("sonnet");

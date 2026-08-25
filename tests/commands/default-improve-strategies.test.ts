@@ -13,6 +13,8 @@ import { describe, expect, test } from "bun:test";
 import profileCatchup from "../../src/assets/improve-strategies/catchup.json";
 import profileConsolidate from "../../src/assets/improve-strategies/consolidate.json";
 import profileFrequent from "../../src/assets/improve-strategies/frequent.json";
+import profileProactiveMaintenance from "../../src/assets/improve-strategies/proactive-maintenance.json";
+import profileReflectDistill from "../../src/assets/improve-strategies/reflect-distill.json";
 import { resolveImproveStrategy } from "../../src/commands/improve/improve-strategies";
 import type { AkmConfig } from "../../src/core/config/config";
 import { ImproveProfileConfigSchema } from "../../src/core/config/config-schema";
@@ -47,6 +49,11 @@ describe("default improve strategies (#552)", () => {
     expect(
       resolveImproveStrategy("proactive-maintenance", MINIMAL_CONFIG).config.processes?.proactiveMaintenance?.enabled,
     ).toBe(true);
+  });
+
+  test("judgment-enabled shipped strategies use durable boolean opt-in", () => {
+    expect(profileReflectDistill.processes.triage.judgment).toBe(true);
+    expect(profileProactiveMaintenance.processes.triage.judgment).toBe(true);
   });
 
   test("frequent: validates against the live schema", () => {

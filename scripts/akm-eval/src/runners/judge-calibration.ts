@@ -47,11 +47,10 @@
  *     by `run.ts`.
  *   - `score`: linear blend of agreement (0.6) and inverse variance (0.4).
  *
- * The harness writes a sandbox-local distill-only improve profile using the
- * current `profiles.improve.default.processes.*` shape. When the outer env has
- * no resolvable LLM path (`defaults.llm` / `profiles.llm`), the case is
- * skipped with an actionable precondition instead of generating stale all-
- * `skipped` disagreement noise.
+ * The harness writes a sandbox-local distill-only improve strategy using the
+ * current `engines` / `defaults.llmEngine` / `improve.strategies` shape. When
+ * the outer config has no selected LLM engine, the case is skipped with an
+ * actionable precondition instead of generating stale disagreement noise.
  */
 
 import fs from "node:fs";
@@ -161,26 +160,26 @@ function collectConfigCandidates(env: Record<string, string>): string[] {
   const xdgConfigHome = asNonEmptyString(env.XDG_CONFIG_HOME);
   if (xdgConfigHome) push(path.join(xdgConfigHome, "akm", "config.json"));
 
-  const stashDir = asNonEmptyString(env.AKM_BUNDLE_DIR);
-  if (stashDir) push(path.join(stashDir, ".akm", "config.json"));
-
   const home = asNonEmptyString(env.HOME);
   if (home) push(path.join(home, ".config", "akm", "config.json"));
 
   return candidates;
 }
 
-function resolveDefaultLlmProfileNameFromConfig(config: Record<string, unknown>): string | undefined {
+function resolveDefaultLlmEngineFromConfig(
+  config: Record<string, unknown>,
+): { name: string; config: Record<string, unknown> } | undefined {
   const defaults = config.defaults;
-  if (defaults && typeof defaults === "object") {
-    const explicit = asNonEmptyString((defaults as Record<string, unknown>).llm);
-    if (explicit) return explicit;
+  if (!defaults || typeof defaults !== "object") return undefined;
+  const name = asNonEmptyString((defaults as Record<string, unknown>).llmEngine);
+  if (!name) return undefined;
+  const engines = config.engines;
+  if (!engines || typeof engines !== "object") return undefined;
+  const selected = (engines as Record<string, unknown>)[name];
+  if (!selected || typeof selected !== "object" || (selected as Record<string, unknown>).kind !== "llm") {
+    return undefined;
   }
-  const profiles = config.profiles;
-  if (!profiles || typeof profiles !== "object") return undefined;
-  const llmProfiles = (profiles as Record<string, unknown>).llm;
-  if (!llmProfiles || typeof llmProfiles !== "object") return undefined;
-  return Object.prototype.hasOwnProperty.call(llmProfiles, "default") ? "default" : undefined;
+  return { name, config: selected as Record<string, unknown> };
 }
 
 function collectEnvReferences(value: unknown, out: Set<string>): void {
@@ -225,24 +224,13 @@ export function resolveJudgeCalibrationSandboxConfig(
       };
     }
 
-    const llmProfileName = resolveDefaultLlmProfileNameFromConfig(parsed);
-    if (!llmProfileName) {
+    const selected = resolveDefaultLlmEngineFromConfig(parsed);
+    if (!selected) {
       return {
         ok: false,
         reason:
-          `judge-calibration requires an LLM path. ${configPath} does not define ` +
-          "`defaults.llm` (or an implicit `profiles.llm.default`). Configure a default LLM profile and re-run.",
-      };
-    }
-
-    const llmProfiles = (parsed.profiles as Record<string, unknown> | undefined)?.llm;
-    const llmConfig = llmProfiles && typeof llmProfiles === "object" ? (llmProfiles as Record<string, unknown>)[llmProfileName] : undefined;
-    if (!llmConfig || typeof llmConfig !== "object") {
-      return {
-        ok: false,
-        reason:
-          `judge-calibration requires an LLM path. ${configPath} points defaults.llm at ` +
-          `"${llmProfileName}", but profiles.llm.${llmProfileName} is missing.`,
+          `judge-calibration requires a selected LLM engine. ${configPath} must define ` +
+          "`defaults.llmEngine` naming an `engines.<name>` entry with `kind: \"llm\"`.",
       };
     }
 
@@ -250,16 +238,19 @@ export function resolveJudgeCalibrationSandboxConfig(
       ok: true,
       sourceConfigPath: configPath,
       config: {
-        defaults: {
-          llm: llmProfileName,
-          improve: "default",
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: {
+          [selected.name]: selected.config,
         },
-        profiles: {
-          llm: {
-            [llmProfileName]: llmConfig,
-          },
-          improve: {
-            default: {
+        defaults: {
+          llmEngine: selected.name,
+          improveStrategy: "judge-calibration",
+        },
+        improve: {
+          strategies: {
+            "judge-calibration": {
+              engine: selected.name,
               description: "judge-calibration distill-only sandbox profile",
               processes: {
                 reflect: { enabled: false },
@@ -283,8 +274,8 @@ export function resolveJudgeCalibrationSandboxConfig(
   return {
     ok: false,
     reason:
-      "judge-calibration requires an LLM path, but no AKM config with `defaults.llm` / `profiles.llm` was found in " +
-      "AKM_CONFIG_DIR, XDG_CONFIG_HOME, AKM_BUNDLE_DIR/.akm, or HOME/.config/akm. Configure an LLM profile, then re-run the suite.",
+      "judge-calibration requires a current AKM config with `defaults.llmEngine` and a matching LLM engine in " +
+      "AKM_CONFIG_DIR, XDG_CONFIG_HOME, or HOME/.config/akm. Configure an LLM engine, then re-run the suite.",
   };
 }
 
@@ -424,7 +415,11 @@ function median(xs: number[]): number {
   if (xs.length === 0) return 0;
   const sorted = [...xs].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  const upper = sorted[mid];
+  if (upper === undefined) return 0;
+  if (sorted.length % 2 !== 0) return upper;
+  const lower = sorted[mid - 1];
+  return lower === undefined ? upper : (lower + upper) / 2;
 }
 
 function mean(xs: number[]): number {

@@ -16,25 +16,11 @@
  * same file.
  */
 
+import { formatRegistryUrl } from "../../core/registry-url";
 import type { IndexResponse } from "../../indexer/indexer";
 import type { DetailLevel } from "../context";
 
-/**
- * `akm info`'s real result (`InfoResponse`, `src/sources/types.ts`) carries
- * `defaultBundle`/`assetTypes`/`searchModes`/`semanticSearch`/`registries`/
- * `sourceProviders`/`indexStats` — this formatter used to check for
- * `configPath`/`cacheDir`/`dbPath`/`capabilities`/`index` instead, none of
- * which `InfoResponse` has ever had, so every one of those `if` guards was
- * always false and those five real fields silently never appeared in
- * `--format text` output (the plain fallthrough JSON check three lines below
- * papered over it: `lines` was never empty because `version`/`bundleDir`
- * always matched, so the "render everything" escape hatch never fired
- * either — same class of bug as `akm health`/`akm lint`'s raw-JSON-array
- * dump: `--format text` claiming to render a shape it wasn't actually
- * rendering). The legacy field checks stay (harmless no-ops on the current
- * shape) in case another producer still emits them; the real fields are
- * added alongside.
- */
+/** Render the current `InfoResponse` shape. */
 export function formatInfoPlain(r: Record<string, unknown>): string {
   const lines: string[] = [];
   if (r.version) lines.push(`version: ${String(r.version)}`);
@@ -42,9 +28,6 @@ export function formatInfoPlain(r: Record<string, unknown>): string {
   if (r.defaultBundle !== undefined) {
     lines.push(`defaultBundle: ${r.defaultBundle === null ? "(none)" : String(r.defaultBundle)}`);
   }
-  if (r.configPath) lines.push(`configPath: ${String(r.configPath)}`);
-  if (r.cacheDir) lines.push(`cacheDir: ${String(r.cacheDir)}`);
-  if (r.dbPath) lines.push(`dbPath: ${String(r.dbPath)}`);
   if (Array.isArray(r.assetTypes) && r.assetTypes.length > 0) {
     lines.push(`assetTypes: ${(r.assetTypes as unknown[]).join(", ")}`);
   }
@@ -65,7 +48,8 @@ export function formatInfoPlain(r: Record<string, unknown>): string {
       const name = typeof reg.name === "string" ? `${reg.name}: ` : "";
       const provider = typeof reg.provider === "string" ? ` (${reg.provider})` : "";
       const disabled = reg.enabled === false ? " [disabled]" : "";
-      lines.push(`  ${name}${String(reg.url ?? "?")}${provider}${disabled}`);
+      const url = typeof reg.url === "string" ? formatRegistryUrl(reg.url) : "?";
+      lines.push(`  ${name}${url}${provider}${disabled}`);
     }
   }
   const sourceProviders = Array.isArray(r.sourceProviders)
@@ -79,14 +63,7 @@ export function formatInfoPlain(r: Record<string, unknown>): string {
       lines.push(`  [${String(source.type ?? "?")}] ${String(label)}${disabled}`);
     }
   }
-  const capabilities = r.capabilities as Record<string, unknown> | undefined;
-  if (capabilities) {
-    lines.push("capabilities:");
-    for (const [k, v] of Object.entries(capabilities)) {
-      lines.push(`  ${k}: ${typeof v === "object" && v !== null ? JSON.stringify(v) : String(v)}`);
-    }
-  }
-  const indexStats = (r.indexStats ?? r.index) as Record<string, unknown> | undefined;
+  const indexStats = r.indexStats as Record<string, unknown> | undefined;
   if (indexStats) {
     lines.push("indexStats:");
     for (const [k, v] of Object.entries(indexStats)) {
@@ -111,7 +88,9 @@ export function formatConfigPlain(r: Record<string, unknown>): string {
       } else if (typeof v === "object") {
         walk(v as Record<string, unknown>, path);
       } else {
-        lines.push(`${path}=${String(v)}`);
+        const rendered =
+          typeof v === "string" && /^registries\.\d+\.url$/u.test(path) ? formatRegistryUrl(v) : String(v);
+        lines.push(`${path}=${rendered}`);
       }
     }
   };
@@ -161,7 +140,7 @@ export function formatRegistryListPlain(r: Record<string, unknown>): string {
   }
   const lines: string[] = [];
   for (const reg of registries) {
-    const url = String(reg.url ?? "?");
+    const url = typeof reg.url === "string" ? formatRegistryUrl(reg.url) : "?";
     const name = typeof reg.name === "string" ? reg.name : "";
     const provider = typeof reg.provider === "string" ? ` (${reg.provider})` : "";
     const enabled = reg.enabled === false ? " [disabled]" : "";
@@ -184,7 +163,7 @@ export function formatRegistryRemovePlain(r: Record<string, unknown>): string {
     return typeof r.message === "string" ? r.message : "No matching registry found.";
   }
   const entry = r.entry as Record<string, unknown> | undefined;
-  const url = entry ? String(entry.url ?? entry.name ?? "?") : "?";
+  const url = entry ? (typeof entry.url === "string" ? formatRegistryUrl(entry.url) : String(entry.name ?? "?")) : "?";
   return `Removed registry ${url}`;
 }
 
@@ -452,6 +431,14 @@ export function formatIndexPlain(r: Record<string, unknown>): string {
   if (Array.isArray(warnings) && warnings.length > 0) {
     out += `\nWarnings (${warnings.length}):`;
     for (const message of warnings) out += `\n  - ${String(message)}`;
+  }
+  const notices = Array.isArray(indexResult.notices) ? indexResult.notices : [];
+  for (const notice of notices) {
+    const severity = notice.severity === "info" ? "info" : "warning";
+    const field = typeof notice.field === "string" ? ` field=${notice.field}` : "";
+    out +=
+      `\n  notice[${severity}] ${notice.code} adapter=${notice.adapter}${field}` +
+      (notice.message ? `: ${notice.message}` : "");
   }
   const verification = indexResult.verification;
   if (verification?.ok === false && verification.message) {

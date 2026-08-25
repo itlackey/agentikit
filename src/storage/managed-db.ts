@@ -5,8 +5,8 @@
 /**
  * Managed-database seam — the single home for the SQLite open/lifecycle recipe.
  *
- * Before this module, two idioms were copy-pasted across state.db / logs.db /
- * workflow.db / index.db and their consumers:
+ * Two lifecycle steps are shared across the current managed databases
+ * (`state.db`, `logs.db`, and `index.db`) and their consumers:
  *
  *   1. The open recipe: `mkdir(dir) → openDatabase(path) → applyStandardPragmas
  *      → migrate`.
@@ -70,9 +70,28 @@ export function openManagedDatabase(spec: ManagedDbSpec): Database {
     fs.mkdirSync(dir, { recursive: true });
   }
   const db = spec.create === false ? openDatabase(spec.path, { create: false }) : openDatabase(spec.path);
-  applyStandardPragmas(db, spec.pragmas ?? { dataDir: dir });
-  spec.init?.(db);
-  return db;
+  try {
+    applyStandardPragmas(db, spec.pragmas ?? { dataDir: dir });
+    spec.init?.(db);
+    return db;
+  } catch (error) {
+    // Initializers may open a transaction (source update does so before index
+    // schema work). Never strand that transaction/handle when later setup
+    // fails; closing rolls it back and releases its writer lock.
+    if (db.inTransaction) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // Closing remains the final rollback backstop.
+      }
+    }
+    try {
+      db.close();
+    } catch {
+      // Preserve the initializer failure, which identifies the real boundary.
+    }
+    throw error;
+  }
 }
 
 /**
@@ -94,29 +113,6 @@ export function withManagedDb<T>(open: () => Database, fn: (db: Database) => T, 
   const db = open();
   try {
     return fn(db);
-  } finally {
-    db.close();
-  }
-}
-
-/**
- * Async sibling of {@link withManagedDb}. Use this — NOT `withManagedDb` — when
- * `fn` holds the handle across an `await`: the sync version closes in its
- * `finally` before the awaited work resolves (use-after-close). Here the handle
- * is closed only after `fn`'s promise settles. Borrowed handles pass straight
- * through and are not closed, as in the sync version.
- */
-export async function withManagedDbAsync<T>(
-  open: () => Database,
-  fn: (db: Database) => Promise<T>,
-  opts?: { borrowed?: Database },
-): Promise<T> {
-  if (opts?.borrowed) {
-    return fn(opts.borrowed);
-  }
-  const db = open();
-  try {
-    return await fn(db);
   } finally {
     db.close();
   }

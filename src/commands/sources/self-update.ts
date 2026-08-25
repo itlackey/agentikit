@@ -14,46 +14,25 @@ import {
   readChunkWithDeadline,
 } from "../../core/common";
 import { ConfigError } from "../../core/errors";
+import { type HistoricalStateUpgradeResult, upgradeHistoricalStateDatabase } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import { githubHeaders } from "../../integrations/github";
 import { getDirname, mainPath, semverOrder } from "../../runtime";
 import type { UpgradeCheckResponse, UpgradeResponse } from "../../sources/types";
-import { resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
 
 const REPO = "itlackey/akm";
 const DEFAULT_PACKAGE_NAME = "akm-cli";
 const NODE_MODULES_SEGMENT = "/node_modules/";
 const BUN_GLOBAL_INSTALL_PATTERN = /(^|\/)\.bun\/(?:[^/]+\/)+node_modules\//;
 const PNPM_GLOBAL_INSTALL_PATTERN = /(^|\/)(?:pnpm\/global|\.pnpm-global)(?:\/\d+)?\/node_modules\//;
-const MIGRATION_CONTRACT_VERSION = "0.9.0-rc.0";
-const MIGRATION_CONTRACT_BLOCKED_MESSAGE =
-  "AKM 0.8 does not implement the migrate command or the --migration-config upgrade contract, so self-update cannot safely cross into 0.9. " +
-  "Prepare the 0.9 config and an independent backup, install or stage the 0.9 binary manually, then use the new binary to run: " +
-  "akm migrate apply --config <prepared-0.9.json>. See docs/migration/v0.8-to-v0.9.md.";
 const MAX_BINARY_DOWNLOAD_BYTES = 256 * 1024 * 1024;
 const MAX_CHECKSUM_METADATA_BYTES = 1024 * 1024;
 
 export type InstallMethod = UpgradeCheckResponse["installMethod"];
 
-export interface UpgradeMigrationCommand {
-  preflight(akmBin: string): void;
-  stagedPreflight(akmBin: string): void;
-  apply(akmBin: string): void;
-}
-
 export interface SelfUpdateDependencies {
   execPath: string;
-  migration: UpgradeMigrationCommand;
-}
-
-export function defaultMigrationCommand(preparedConfigPath?: string): UpgradeMigrationCommand {
-  const configArgs = preparedConfigPath ? ["--config", preparedConfigPath] : [];
-  return {
-    preflight: (akmBin) => runRequiredCommand(akmBin, ["migrate", "status"], "Migration preflight"),
-    stagedPreflight: (akmBin) =>
-      runRequiredCommand(akmBin, ["migrate", "status", ...configArgs], "Staged migration preflight"),
-    apply: (akmBin) => runRequiredCommand(akmBin, ["migrate", "apply", ...configArgs], "Migration apply"),
-  };
+  upgradeHistoricalStateDatabase: () => HistoricalStateUpgradeResult;
 }
 
 /**
@@ -228,13 +207,12 @@ function checksumBypassRequested(): boolean {
 
 export async function performUpgrade(
   check: UpgradeCheckResponse,
-  opts?: { force?: boolean; skipPostUpgrade?: boolean; migrationConfig?: string },
+  opts?: { force?: boolean; skipPostUpgrade?: boolean },
   dependencies?: Partial<SelfUpdateDependencies>,
 ): Promise<UpgradeResponse> {
   const { currentVersion, latestVersion, installMethod } = check;
   const force = opts?.force === true;
   const skipPostUpgrade = opts?.skipPostUpgrade === true;
-  const migration = dependencies?.migration ?? defaultMigrationCommand(opts?.migrationConfig);
 
   // All install methods can short-circuit here unless the user explicitly forces an upgrade.
   if (!check.updateAvailable && !force) {
@@ -247,14 +225,6 @@ export async function performUpgrade(
     };
   }
 
-  if (
-    latestVersion &&
-    semverOrder(currentVersion, MIGRATION_CONTRACT_VERSION) < 0 &&
-    semverOrder(latestVersion, MIGRATION_CONTRACT_VERSION) >= 0
-  ) {
-    throw new ConfigError(MIGRATION_CONTRACT_BLOCKED_MESSAGE, "UPGRADE_BLOCKED");
-  }
-
   const packageManagerCommand = getPackageManagerUpgradeCommand(installMethod);
   if (packageManagerCommand) {
     return runPackageManagerUpgrade({
@@ -262,8 +232,8 @@ export async function performUpgrade(
       currentVersion,
       latestVersion,
       installMethod,
-      migration,
       skipPostUpgrade,
+      upgradeState: dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase,
     });
   }
 
@@ -381,14 +351,6 @@ export async function performUpgrade(
     }
   }
 
-  try {
-    migration.preflight(execPath);
-    migration.stagedPreflight(stagedPath);
-  } catch (err) {
-    removeFileBestEffort(stagedPath);
-    throw err;
-  }
-
   if (fs.existsSync(backupPath)) {
     removeFileBestEffort(stagedPath);
     throw new ConfigError(`Refusing to overwrite retained previous binary at ${backupPath}.`, "UPGRADE_BLOCKED");
@@ -406,16 +368,7 @@ export async function performUpgrade(
     throw err;
   }
 
-  try {
-    migration.apply(execPath);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `Migration apply failed; the new binary remains installed and the previous binary retained at ${backupPath}: ${detail}`,
-    );
-  }
-
-  // Keep the previous binary available until migration apply has completed.
+  // The replacement completed; the temporary rollback copy is no longer needed.
   removeFileBestEffort(backupPath);
 
   return {
@@ -425,20 +378,41 @@ export async function performUpgrade(
     installMethod,
     binaryPath: execPath,
     checksumVerified,
-    postUpgrade: runPostUpgradeTasks(execPath, { skip: skipPostUpgrade }),
+    postUpgrade: runPostUpgradeTasks(
+      execPath,
+      { skip: skipPostUpgrade },
+      dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase,
+    ),
   };
 }
 
 /**
- * Rebuild the derived index after the explicit migration command succeeds.
- * Migration and indexing are intentionally separate lifecycle steps.
+ * Rebuild the derived index after a successful upgrade.
  */
-function runPostUpgradeTasks(akmBin: string, opts: { skip: boolean }): NonNullable<UpgradeResponse["postUpgrade"]> {
+function runPostUpgradeTasks(
+  akmBin: string,
+  opts: { skip: boolean },
+  upgradeState: () => HistoricalStateUpgradeResult,
+): NonNullable<UpgradeResponse["postUpgrade"]> {
+  let stateUpgrade: HistoricalStateUpgradeResult;
+  try {
+    stateUpgrade = upgradeState();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      skipped: opts.skip,
+      message:
+        `Upgrade completed, but the state schema was not prepared (${detail}). ` +
+        "Preserve state.db and run `akm upgrade --force` before other AKM commands.",
+    };
+  }
+  const stateNote = stateUpgrade.safetyCopyPath ? ` Historical state safety copy: ${stateUpgrade.safetyCopyPath}.` : "";
   if (opts.skip) {
     return {
       ok: true,
       skipped: true,
-      message: "Migration completed; skipped the index rebuild. Run `akm index` manually to rebuild the index.",
+      message: `Upgrade completed.${stateNote} Skipped the index rebuild. Run \`akm index\` manually to rebuild the index.`,
     };
   }
   try {
@@ -451,7 +425,7 @@ function runPostUpgradeTasks(akmBin: string, opts: { skip: boolean }): NonNullab
       return {
         ok: false,
         skipped: false,
-        message: `Migration completed, but the index rebuild could not start: ${result.error.message}. Run \`akm index\` manually.`,
+        message: `Upgrade completed.${stateNote} The index rebuild could not start: ${result.error.message}. Run \`akm index\` manually.`,
       };
     }
     if (result.status !== 0) {
@@ -460,28 +434,28 @@ function runPostUpgradeTasks(akmBin: string, opts: { skip: boolean }): NonNullab
         ok: false,
         skipped: false,
         exitCode: result.status,
-        message: `Migration completed, but post-upgrade \`akm index\` failed (${detail}). Run \`akm index\` manually.`,
+        message: `Upgrade completed.${stateNote} Post-upgrade \`akm index\` failed (${detail}). Run \`akm index\` manually.`,
       };
     }
     return {
       ok: true,
       skipped: false,
       exitCode: 0,
-      message: "Migration completed and the index was rebuilt against the new binary.",
+      message: `Upgrade completed and the index was rebuilt against the new binary.${stateNote}`,
     };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
       skipped: false,
-      message: `Migration completed, but the index rebuild failed: ${detail}. Run \`akm index\` manually.`,
+      message: `Upgrade completed.${stateNote} The index rebuild failed: ${detail}. Run \`akm index\` manually.`,
     };
   }
 }
 
 /**
- * The package-manager arm of {@link performUpgrade}: preflight → install →
- * post-install version verification → migrate apply → post-upgrade tasks.
+ * The package-manager arm of {@link performUpgrade}: install → post-install
+ * version verification → post-upgrade tasks.
  * Extracted whole so performUpgrade stays under its fn-size baseline.
  */
 function runPackageManagerUpgrade(input: {
@@ -489,17 +463,15 @@ function runPackageManagerUpgrade(input: {
   currentVersion: string;
   latestVersion: string | undefined;
   installMethod: InstallMethod;
-  migration: UpgradeMigrationCommand;
   skipPostUpgrade: boolean;
+  upgradeState: () => HistoricalStateUpgradeResult;
 }): UpgradeResponse {
-  const { packageManagerCommand, currentVersion, latestVersion, installMethod, migration, skipPostUpgrade } = input;
+  const { packageManagerCommand, currentVersion, latestVersion, installMethod, skipPostUpgrade, upgradeState } = input;
   if (!latestVersion) {
     throw new Error(
       "Unable to determine latest version from GitHub releases. Check https://github.com/itlackey/akm/releases",
     );
   }
-
-  migration.preflight("akm");
 
   const result = childProcess.spawnSync(packageManagerCommand.command, packageManagerCommand.args, {
     encoding: "utf8",
@@ -522,8 +494,7 @@ function runPackageManagerUpgrade(input: {
   // `latestVersion`: a lagging `@latest` dist-tag (partial publish,
   // registry mirror lag) "succeeds" while leaving the old version on PATH.
   // Re-read the version the shim actually reports before claiming an
-  // upgrade — a confirmed mismatch also means `migrate apply` would run
-  // against the OLD binary, so stop before it.
+  // upgrade, so stop before claiming success.
   const installedVersion = readInstalledCliVersion("akm");
   if (installedVersion !== undefined && installedVersion !== latestVersion) {
     return {
@@ -539,8 +510,6 @@ function runPackageManagerUpgrade(input: {
     };
   }
 
-  migration.apply("akm");
-
   return {
     currentVersion,
     newVersion: latestVersion,
@@ -550,7 +519,7 @@ function runPackageManagerUpgrade(input: {
       installedVersion === latestVersion
         ? `akm upgraded via ${installMethod} (verified: akm --version reports v${installedVersion})`
         : `akm upgraded via ${installMethod} (installed version could not be verified)`,
-    postUpgrade: runPostUpgradeTasks("akm", { skip: skipPostUpgrade }),
+    postUpgrade: runPostUpgradeTasks("akm", { skip: skipPostUpgrade }, upgradeState),
   };
 }
 
@@ -570,28 +539,6 @@ function readInstalledCliVersion(akmBin: string): string | undefined {
   if (result.error || result.status !== 0) return undefined;
   const match = (result.stdout ?? "").match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/);
   return match?.[0];
-}
-
-function runRequiredCommand(akmBin: string, args: string[], label: string): void {
-  // A bare "akm" is not spawnable on Windows: npm/pnpm/yarn install a global CLI
-  // as akm.cmd / akm.ps1 shims, and spawnSync without a shell does not apply
-  // PATHEXT — so the package-manager upgrade arm died with ENOENT before it ever
-  // ran. resolveAkmInvocation returns a concrete argv (launcher, runtime + main
-  // script, or a standalone binary) for however this install actually runs.
-  // An explicit path (the standalone arm passes one) is used as given.
-  const [command, ...prefixArgs] = path.isAbsolute(akmBin) ? [akmBin] : resolveAkmInvocation().argv;
-  const result = childProcess.spawnSync(command ?? akmBin, [...prefixArgs, ...args], {
-    encoding: "utf8",
-    env: process.env,
-    stdio: "pipe",
-  });
-  if (result.error) {
-    throw new Error(`${label} could not start: ${result.error.message}`);
-  }
-  if (result.status !== 0) {
-    const detail = (result.stderr ?? "").trim() || (result.stdout ?? "").trim() || `exit code ${result.status}`;
-    throw new Error(`${label} failed (${detail}).`);
-  }
 }
 
 function removeFileBestEffort(filePath: string): void {

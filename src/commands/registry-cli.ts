@@ -6,6 +6,12 @@ import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import type { RegistryConfigEntry } from "../core/config/config";
 import { getEffectiveRegistries, loadUserConfig, mutateConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
+import {
+  formatRegistryUrl,
+  hasRegistryUrlCredentials,
+  REGISTRY_CREDENTIALS_UNSUPPORTED,
+  registryEntryForOutput,
+} from "../core/registry-url";
 import { warn } from "../core/warn";
 
 export const registryCommand = defineGroupCommand({
@@ -17,7 +23,7 @@ export const registryCommand = defineGroupCommand({
         const config = loadUserConfig();
         // R-066 #5: mirror the shared config↔default-fallback helper instead
         // of re-deriving it inline.
-        output("registry-list", { registries: getEffectiveRegistries(config) });
+        output("registry-list", { registries: getEffectiveRegistries(config).map(registryEntryForOutput) });
       },
     }),
     add: defineJsonCommand({
@@ -26,7 +32,7 @@ export const registryCommand = defineGroupCommand({
         url: { type: "positional", description: "Registry index URL", required: true },
         name: { type: "string", description: "Human-friendly name for the registry" },
         provider: { type: "string", description: "Provider type (e.g. static-index, skills-sh)" },
-        options: { type: "string", description: 'Provider options as JSON (e.g. \'{"apiKey":"key"}\').' },
+        options: { type: "string", description: "Provider-specific options as JSON." },
         "allow-insecure": {
           type: "boolean",
           description: "Allow a plain HTTP registry URL (otherwise rejected)",
@@ -34,6 +40,9 @@ export const registryCommand = defineGroupCommand({
         },
       },
       async run({ args }) {
+        if (hasRegistryUrlCredentials(args.url)) {
+          throw new UsageError(REGISTRY_CREDENTIALS_UNSUPPORTED);
+        }
         if (!args.url.startsWith("http")) {
           throw new UsageError("Registry URL must start with http:// or https://");
         }
@@ -68,7 +77,7 @@ export const registryCommand = defineGroupCommand({
           return { ...config, registries };
         }).config;
         output("registry-add", {
-          registries: updated.registries ?? [],
+          registries: (updated.registries ?? []).map(registryEntryForOutput),
           added,
           ...(!added ? { message: "Registry URL already configured" } : {}),
         });
@@ -83,19 +92,25 @@ export const registryCommand = defineGroupCommand({
       async run({ args }) {
         const config = loadUserConfig();
         const registries = [...(config.registries ?? [])];
+        const displayTarget =
+          hasRegistryUrlCredentials(args.target) ||
+          args.target.startsWith("http://") ||
+          args.target.startsWith("https://")
+            ? formatRegistryUrl(args.target)
+            : args.target;
         const idx = registries.findIndex((r) => r.url === args.target || r.name === args.target);
         if (idx === -1) {
           // Was a success envelope with `removed: false` and exit 0, so
           // `akm registry remove typo && ...` proceeded as if it had removed
           // something. A missing target is exit 1, like every other not-found.
           throw new NotFoundError(
-            `No registry matching "${args.target}" is configured.`,
+            `No registry matching "${displayTarget}" is configured.`,
             "SOURCE_NOT_FOUND",
             "Run `akm registry list` to see configured registries.",
           );
         }
         const { confirmDestructive } = await import("../cli/confirm.js");
-        const confirmed = await confirmDestructive(`Remove registry "${args.target}"? This cannot be undone.`, {
+        const confirmed = await confirmDestructive(`Remove registry "${displayTarget}"? This cannot be undone.`, {
           yes: args.yes === true,
         });
         if (!confirmed) {
@@ -113,9 +128,9 @@ export const registryCommand = defineGroupCommand({
           return { ...latest, registries: current };
         }).config;
         output("registry-remove", {
-          registries: updated.registries ?? [],
+          registries: (updated.registries ?? []).map(registryEntryForOutput),
           removed: removed !== undefined,
-          ...(removed ? { entry: removed } : { message: "No matching registry found" }),
+          ...(removed ? { entry: registryEntryForOutput(removed) } : { message: "No matching registry found" }),
         });
       },
     }),

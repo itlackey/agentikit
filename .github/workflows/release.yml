@@ -60,8 +60,10 @@ jobs:
       # artifact: npm bin targets/launcher selection, the akm-migrate bundle
       # under both Bun and Node, package/install/setup regression, and the
       # published 0.8 -> candidate task upgrade under both runtimes. Docker is
-      # skipped here (no docker daemon on ubuntu-latest runners; the Docker
-      # matrix stays a local/manual gate per the runbook).
+      # skipped here because the exact candidate's separate Gated CI run is a
+      # required, linked release-checklist artifact; duplicating its Docker and
+      # native-platform work inside the publishing job would add cost without
+      # improving candidate identity.
       - name: Release check
         run: ./tests/release-check.sh --skip-docker
 
@@ -74,7 +76,6 @@ jobs:
             bun build ./scripts/akm-standalone.ts \
               --compile \
               --target="$target" \
-              --external @huggingface/transformers \
               --outfile "artifacts/$output" \
               --define "AKM_VERSION='$CANDIDATE_VERSION'"
           done <<'EOF'

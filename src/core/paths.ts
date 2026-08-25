@@ -211,7 +211,7 @@ function homelessFallbackDir(kind: string): string {
  * `%LOCALAPPDATA%\akm\data` on Windows).
  *
  * Holds durable, non-regenerable application data: SQLite databases
- * (index.db, workflow.db, state.db), akm.lock, and config-backups.
+ * (`index.db`, `state.db`), `akm.lock`, and current data artifacts.
  * Losing this directory loses history and installed state.
  *
  * Env overrides (in priority order):

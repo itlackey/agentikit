@@ -37,9 +37,9 @@ import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/san
  * continuation. `yaml`'s parser throws on this — it is not merely a document
  * that parses to a non-mapping.
  */
-const MALFORMED_TASK = 'version: 2\nschedule: \'@daily\n\tcommand: ["echo", "hi"]\n';
+const MALFORMED_TASK = "version: 3\nrun: 'echo hi\nakm:\n\tschedule: '@daily'\n";
 
-const VALID_TASK = 'version: 2\nschedule: "@daily"\ncommand: ["echo", "hi"]\n';
+const VALID_TASK = "version: 3\nrun: echo hi\nakm:\n  schedule: '@daily'\n";
 
 function writeTask(stashDir: string, relPath: string, content: string): string {
   const full = path.join(stashDir, "tasks", relPath);
@@ -67,7 +67,7 @@ describe("akm lint — malformed task YAML (issue #760)", () => {
       (issue) => issue.issue === "invalid-task-yaml" && issue.file.endsWith("broken.yml"),
     );
     expect(parseFindings.length).toBe(1);
-    expect(parseFindings[0]?.detail).toMatch(/does not parse/);
+    expect(parseFindings[0]?.detail).toMatch(/invalid|YAML|parse/i);
   });
 
   test("a well-formed task still lints clean — the new check is not a blanket flag", async () => {
@@ -77,6 +77,17 @@ describe("akm lint — malformed task YAML (issue #760)", () => {
     const result = await akmLint({ dir: storage.stashDir, config: makeConfig(storage.stashDir) });
 
     expect(result.flagged.filter((issue) => issue.issue === "invalid-task-yaml")).toEqual([]);
+  });
+
+  test("a v2 task reports the canonical migration preview hint", async () => {
+    storage = withIsolatedAkmStorage();
+    writeTask(storage.stashDir, "legacy.yml", "version: 2\nschedule: '@daily'\nprompt: hello\n");
+
+    const result = await akmLint({ dir: storage.stashDir, config: makeConfig(storage.stashDir) });
+
+    const finding = result.flagged.find((issue) => issue.file.endsWith("legacy.yml"));
+    expect(finding?.issue).toBe("invalid-task-yaml");
+    expect(finding?.detail).toContain("akm migrate apply --dry-run");
   });
 
   test("a tasks/*.yaml file is flagged for its extension instead of being skipped", async () => {
@@ -102,7 +113,7 @@ describe("akm lint — malformed task YAML (issue #760)", () => {
     const details = result.flagged
       .filter((issue) => issue.file.endsWith("double-trouble.yaml"))
       .map((issue) => issue.detail);
-    expect(details.some((d) => /does not parse/.test(d))).toBe(true);
+    expect(details.some((d) => /invalid|YAML|parse/i.test(d))).toBe(true);
     expect(details.some((d) => /\.yaml extension/.test(d))).toBe(true);
   });
 });
@@ -142,7 +153,7 @@ describe("akm-task adapter validate() — malformed task YAML (issue #760)", () 
     );
 
     expect(diagnostics.map((d) => d.issue)).toEqual(["invalid-task-yaml"]);
-    expect(diagnostics[0]?.detail).toMatch(/does not parse/);
+    expect(diagnostics[0]?.detail).toMatch(/invalid|YAML|parse/i);
   });
 
   test("a .yaml task file reaches validate() and is flagged for the extension", async () => {

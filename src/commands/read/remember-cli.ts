@@ -259,6 +259,7 @@ export const rememberCommand = defineJsonCommand({
     let observed_at: string | undefined;
     let expires: string | undefined;
     let subjective: boolean | undefined;
+    let executionNotices: Awaited<ReturnType<typeof runLlmEnrich>>["notices"];
 
     // Resolve --expires to an ISO date string
     if (args.expires) {
@@ -286,6 +287,7 @@ export const rememberCommand = defineJsonCommand({
       }
       if (!description && enriched.description) description = enriched.description;
       if (!observed_at && enriched.observed_at) observed_at = enriched.observed_at;
+      executionNotices = enriched.notices;
     }
 
     // ── Required-field check (before any write) ───────────────────────────
@@ -349,14 +351,24 @@ export const rememberCommand = defineJsonCommand({
         tagCount: tags.length,
         enriched: args.enrich === true,
         auto: args.auto === true,
+        ...(executionNotices && executionNotices.length > 0 ? { notices: executionNotices } : {}),
         ...(hasScope ? { scope: scopeFields } : {}),
       },
     });
     if (args.showSimilar) {
       const similar = await fetchSimilarMemories((body ?? args.content ?? "").slice(0, 500), result.ref, eventSource);
-      output("remember", { ok: true, ...result, similar });
+      output("remember", {
+        ok: true,
+        ...result,
+        similar,
+        ...(executionNotices && executionNotices.length > 0 ? { notices: executionNotices } : {}),
+      });
     } else {
-      output("remember", { ok: true, ...result });
+      output("remember", {
+        ok: true,
+        ...result,
+        ...(executionNotices && executionNotices.length > 0 ? { notices: executionNotices } : {}),
+      });
     }
   },
 });

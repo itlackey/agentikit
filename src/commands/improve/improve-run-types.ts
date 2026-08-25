@@ -50,6 +50,8 @@ import type {
   ConsolidateResult,
   ImproveActionResult,
   ImproveEligibleRef,
+  ImproveExecutionPlan,
+  ImprovePlanGate,
 } from "../../core/improve-types";
 import type { ResolvedWriteTarget } from "../../core/write-source";
 import type { EnsureIndexOptions } from "../../indexer/ensure-index";
@@ -222,7 +224,16 @@ export interface ImprovePreparationResult {
    * Layer 2 proactive-maintenance selector outcome, when the process ran.
    * Undefined when the process is disabled or the run is ref-scoped.
    */
-  proactiveMaintenance?: { selected: number; dueTotal: number; neverReflected: number };
+  proactiveMaintenance?: { selected: number; dueTotal: number; neverReflected: number; selectedRefs: string[] };
+  /** Read-only selector data projected into the public dry/live plan. */
+  planning: {
+    gates: ImprovePlanGate[];
+    /** Configured replay slots appended beyond the ordinary effective limit. */
+    replayBudget: number;
+    proactive?: ImproveExecutionPlan["proactive"];
+    consolidation: ImproveExecutionPlan["consolidation"];
+    extract: { wouldRun: boolean; reason: string };
+  };
 }
 
 export interface ImproveLoopResult {
@@ -269,13 +280,15 @@ export interface ConsolidationPassResult {
   consolidation: ConsolidateResult;
   /** True iff consolidation actually processed memories this run (drives graph reindex). */
   consolidationRan: boolean;
+  /** Pre-dispatch gate/pool/chunk projection shared with dry-run. */
+  plan: ImproveExecutionPlan["consolidation"];
 }
 
 /**
  * Mutable improve-loop state: the (WI-9.10) unification of the deleted
  * legacy dual-context interface onto the minted {@link RunContext}. `ctx`
  * carries every run-scoped, immutable DI seam (stashDir, config, eventsCtx,
- * proposalsCtx, chat, getLlmConfig, sourceRun, dryRun, signal, now, asset IO
+ * proposalsCtx, chat, getLlmRunner, sourceRun, dryRun, signal, now, asset IO
  * — see `./run-context`); the fields below are the improve-loop-specific
  * state that `RunContext` does not model — an immutable run snapshot plus
  * the mutable per-run accumulators the loop folds into as it walks

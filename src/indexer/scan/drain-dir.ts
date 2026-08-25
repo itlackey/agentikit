@@ -15,29 +15,30 @@
  *  - **Broken-workflow drop (item 3).** The live path dropped a broken workflow
  *    via the renderer contributor's throw → metadata-pass skip-with-warning; the
  *    `akm` adapter's synchronous `foldRecognizedMetadata` SWALLOWS the parse
- *    error, so a broken workflow would otherwise silently index. We re-run
- *    `parseWorkflow` on drained workflow docs and DROP
+ *    error, so a broken workflow would otherwise silently index. We run the
+ *    shared source-IR compiler on drained workflow docs and DROP
  *    the entry with the same `Skipped workflow …` warning
  *    ({@link buildMetadataSkipWarning}), so the workflow-skip summary counts it.
- *  - **Workflow-document side-table (workflow-md only).** The valid parsed
- *    `WorkflowDocument` is handed to the persist layer through the same
- *    `document-cache` side channel the live renderer contributor used, keyed by
- *    the reconstructed entry — so `takeWorkflowDocument(entry)` in the persist
- *    loop writes the `workflow_documents` row exactly as before.
  *
  * `doc.hash` (= sha256 of the file content) is surfaced per recognized file so
  * the persist layer can populate the `content_hash` column (item 2). It is keyed
  * by the file's absolute path rather than by the entry object.
  *
- * Pure of DB/global state beyond the workflow-document side channel; a new leaf
- * (nothing imports it back), so it joins no import cycle.
+ * Pure of DB/global state; a new leaf (nothing imports it back), so it joins no
+ * import cycle.
  */
 
+import path from "node:path";
 import { akmAdapter } from "../../core/adapter/adapters/akm-adapter";
 import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
 import type { BundleComponent, IndexDocument } from "../../core/adapter/types";
-import { parseWorkflow } from "../../workflows/parser";
-import { cacheWorkflowDocument } from "../../workflows/runtime/document-cache";
+import { canonicalizeWorkflowName } from "../../core/recognition-util";
+import {
+  resolveUniqueWorkflowSource,
+  WorkflowSourceRejectionError,
+  workflowNameForSourcePath,
+} from "../../workflows/source-files";
+import { compileWorkflowSource } from "../../workflows/source-ir/compile";
 import { buildMetadataSkipWarning, type StashFile } from "../passes/metadata";
 import { buildFileContext, type FileContext } from "../walk/file-context";
 import { indexDocumentToStashEntry } from "./doc-to-entry";
@@ -59,6 +60,10 @@ export interface DrainedDir {
    * `item_ref` verbatim (D-R3: identity comes from the owning adapter).
    */
   conceptIdByFile: Map<string, string>;
+  /** Authored paths rejected by workflow source-ownership preflight. */
+  rejectedPaths: Set<string>;
+  /** Adapter-owned canonical concept ids rejected before workflow parsing. */
+  rejectedConceptIds: Set<string>;
 }
 
 /**
@@ -79,8 +84,36 @@ export function drainDirDocuments(
   const warnings: string[] = [];
   const hashByFile = new Map<string, string>();
   const conceptIdByFile = new Map<string, string>();
+  const rejectedPaths = new Set<string>();
+  const rejectedConceptIds = new Set<string>();
+  const workflowLookups = new Map<string, string>();
 
   for (const file of fileContexts) {
+    const workflowName = workflowNameForSourcePath(component.root, adapter.id, file.absPath);
+    if (workflowName !== undefined) {
+      const canonicalName = canonicalizeWorkflowName(workflowName);
+      if (!workflowLookups.has(canonicalName)) workflowLookups.set(canonicalName, workflowName);
+    }
+  }
+
+  for (const [canonicalName, workflowName] of [...workflowLookups].sort(([left], [right]) =>
+    comparePaths(left, right),
+  )) {
+    try {
+      resolveUniqueWorkflowSource(component.root, adapter.id, workflowName);
+    } catch (error) {
+      if (!(error instanceof WorkflowSourceRejectionError)) throw error;
+      rejectedConceptIds.add(adapter.id === "akm" ? `workflows/${canonicalName}` : canonicalName);
+      for (const relativePath of error.sourcePaths) {
+        rejectedPaths.add(path.join(component.root, relativePath));
+      }
+      warnings.push(error.message);
+    }
+  }
+
+  for (const file of fileContexts) {
+    if (rejectedPaths.has(file.absPath)) continue;
+
     const doc = adapter.recognize(component, file);
     if (doc === null) continue;
     if (!doc.conceptId) {
@@ -89,9 +122,9 @@ export function drainDirDocuments(
     }
 
     const entry = indexDocumentToStashEntry(doc);
-    // Workflow docs: drop-with-warning if broken; otherwise cache the parsed
-    // markdown document for the persist-time `workflow_documents` write.
-    const dropWarning = handleWorkflowDoc(doc, entry, file);
+    // Workflow docs: drop-with-warning if broken; otherwise cache a lossless
+    // runtime projection when the current executor can represent the source.
+    const dropWarning = handleWorkflowDoc(doc, file, component.root);
     if (dropWarning !== null) {
       warnings.push(dropWarning);
       continue;
@@ -102,7 +135,11 @@ export function drainDirDocuments(
     entries.push(entry);
   }
 
-  return { entries, warnings, hashByFile, conceptIdByFile };
+  return { entries, warnings, hashByFile, conceptIdByFile, rejectedPaths, rejectedConceptIds };
+}
+
+function comparePaths(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**
@@ -128,17 +165,21 @@ export function recognizeStashEntries(stashRoot: string, files: string[]): Stash
 }
 
 /**
- * If `doc` is a workflow, re-parse it: return a `Skipped workflow …` drop
- * warning when it is broken, or cache the parsed markdown `WorkflowDocument`
- * (workflow-md only) and return `null` when valid. Non-workflow docs return
- * `null` immediately.
+ * If `doc` is a workflow, compile it through source IR: return a
+ * `Skipped workflow …` drop warning when it is broken, or return `null` when
+ * it compiles. Non-workflow docs return `null` immediately.
  */
-function handleWorkflowDoc(doc: IndexDocument, entry: IndexDocument, file: FileContext): string | null {
-  if (docRenderer(doc) !== WORKFLOW_MD_RENDERER) return null;
+function handleWorkflowDoc(doc: IndexDocument, file: FileContext, workspaceRoot: string): string | null {
+  if (
+    doc.type !== "workflow" ||
+    (doc.adapterId !== "akm" && doc.adapterId !== "akm-workflow") ||
+    (docRenderer(doc) !== WORKFLOW_MD_RENDERER && doc.adapterId !== "akm-workflow")
+  ) {
+    return null;
+  }
 
-  const result = parseWorkflow(file.content(), { path: file.relPath });
+  const result = compileWorkflowSource(file.content(), { path: file.relPath, workspaceRoot });
   if (!result.ok) return workflowDropWarning(file, result.errors);
-  cacheWorkflowDocument(entry, result.document);
   return null;
 }
 

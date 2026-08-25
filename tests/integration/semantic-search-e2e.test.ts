@@ -1,5 +1,5 @@
 /**
- * End-to-end semantic search test that uses real @huggingface/transformers
+ * End-to-end semantic search test that uses the external Transformers.js dependency
  * embeddings and verifies vector search produces meaningful results.
  *
  * Gated behind AKM_SEMANTIC_TESTS=1 because first run downloads the model.
@@ -28,6 +28,7 @@ import { type Cleanup, sandboxStashDir, sandboxXdgCacheHome, sandboxXdgConfigHom
 // ── Gate ───────────────────────────────────────────────────────────────────
 
 const SEMANTIC_TESTS = process.env.AKM_SEMANTIC_TESTS === "1";
+const DEFAULT_HF_HOME = path.resolve(import.meta.dir, "../..", ".ci-cache", "huggingface");
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -269,7 +270,7 @@ function restoreEnv(): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Gated tests — require real @huggingface/transformers and ONNX runtime
+// Gated tests — require the real Transformers.js dependency and model runtime
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)", () => {
@@ -285,13 +286,15 @@ describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)",
     moduleEnvCleanup = stashResult.cleanup;
     testCacheDir = cacheResult.dir;
     testConfigDir = cfgResult.dir;
-    // Use the user's existing HuggingFace model cache to avoid re-downloading.
-    // Only set (and later restore in restoreEnv()) when it wasn't already
-    // present — see the ISOLATION-03 note above hfHomeMutated.
+    // Keep model bytes across local runs without reading from or writing to the
+    // developer's real HOME. CI supplies this same repo-local path explicitly
+    // and actions/cache persists it across runners. Only set (and later restore
+    // in restoreEnv()) when the caller did not supply HF_HOME — see the
+    // ISOLATION-03 note above hfHomeMutated.
     if (!process.env.HF_HOME) {
       savedHfHome = process.env.HF_HOME;
       hfHomeMutated = true;
-      process.env.HF_HOME = path.join(process.env.HOME ?? "/tmp", ".cache", "huggingface");
+      process.env.HF_HOME = DEFAULT_HF_HOME;
     }
 
     // Create test stash with semantically distinct assets
@@ -303,7 +306,7 @@ describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)",
     saveConfig({ semanticSearchMode: "auto" });
 
     // Index the stash with real embeddings
-    // This will download the model on first run (cached at ~/.cache/huggingface)
+    // This downloads the model on first run and reuses DEFAULT_HF_HOME later.
     savedCacheDir = testCacheDir;
     savedConfigDir = testConfigDir;
 

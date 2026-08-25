@@ -33,7 +33,7 @@ export type EmbeddingCheckResult =
  *
  * Lives next to {@link EmbeddingVector} so importers (notably `db.ts`)
  * can pull just the math without dragging in the embedder facade and its
- * transitive `@huggingface/transformers` import chain.
+ * transitive Transformers.js runtime import chain.
  *
  * Returns 0 when the vectors have different dimensions — silently
  * computing on a truncated view would produce meaningless scores.

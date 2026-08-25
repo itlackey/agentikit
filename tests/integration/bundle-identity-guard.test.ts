@@ -8,14 +8,15 @@
  * bundle id that is no longer configured (the hand-rename signature).
  */
 
-import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import path from "node:path";
 import type { AkmConfig } from "../../src/core/config/config";
 import { getDbPath } from "../../src/core/paths";
 import { _setWarnSinkForTests } from "../../src/core/warn";
 import { resetBundleIdentityGuardForTests, warnOnBundleRenameDrift } from "../../src/indexer/bundle-identity-guard";
+import { openDatabase } from "../../src/storage/database";
+import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 import { type Cleanup, sandboxXdgDataHome } from "../_helpers/sandbox";
 
 let cleanup: Cleanup = () => {};
@@ -40,12 +41,21 @@ afterEach(() => {
 /** Seed an index.db `entries` table whose rows carry the given bundle prefixes. */
 function seedIndexBundles(bundleIds: string[]): void {
   const dbPath = getDbPath();
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
-  db.exec("CREATE TABLE entries (id INTEGER PRIMARY KEY AUTOINCREMENT, entry_key TEXT, bundle_id TEXT)");
-  const ins = db.prepare("INSERT INTO entries (entry_key, bundle_id) VALUES (?, ?)");
-  for (const [i, bundleId] of bundleIds.entries()) ins.run(`k${i}`, bundleId);
-  db.close();
+  const db = openIndexDatabase(dbPath);
+  try {
+    for (const [i, bundleId] of bundleIds.entries()) {
+      const conceptId = `knowledge/k${i}`;
+      upsertEntry(db, `/s/${bundleId}/k${i}.md`, { name: `k${i}`, type: "knowledge" }, `k${i}`, {
+        itemRef: `${bundleId}//${conceptId}`,
+        bundleId,
+        componentId: bundleId,
+        conceptId,
+        adapterId: "akm",
+      });
+    }
+  } finally {
+    closeDatabase(db);
+  }
 }
 
 function bundlesConfig(...ids: string[]): AkmConfig {
@@ -68,6 +78,20 @@ describe("§11.5 bundle-rename startup guard", () => {
     seedIndexBundles(["primary"]);
     warnOnBundleRenameDrift(bundlesConfig("primary"));
     expect(warnCalls).toHaveLength(0);
+  });
+
+  test("refuses a stamped v21 index with a hidden generated legacy column before reading bundle ids", () => {
+    seedIndexBundles(["oldname"]);
+    const raw = openDatabase(getDbPath());
+    try {
+      raw.exec("ALTER TABLE entries ADD COLUMN entry_key TEXT GENERATED ALWAYS AS (item_ref) VIRTUAL");
+    } finally {
+      raw.close();
+    }
+
+    warnOnBundleRenameDrift(bundlesConfig("newname"));
+
+    expect(warnCalls).toEqual([]);
   });
 
   test("stays silent when a configured bundle is simply not yet indexed (all index ids configured)", () => {

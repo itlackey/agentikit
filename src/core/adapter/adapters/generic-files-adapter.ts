@@ -113,6 +113,18 @@ export const genericFilesAdapter: BundleAdapter = {
   recognize,
   validate,
 
+  readCandidates(c: BundleComponent, conceptId: string) {
+    const posix = toPosix(conceptId);
+    const extension = path.extname(posix).toLowerCase();
+    const documentCandidates = [...DOCUMENT_EXTENSIONS].map((candidateExtension) => ({
+      path: path.join(c.root, `${posix}${candidateExtension}`),
+      conceptId: posix,
+    }));
+    return DOCUMENT_EXTENSIONS.has(extension)
+      ? documentCandidates
+      : [{ path: path.join(c.root, posix), conceptId: posix }, ...documentCandidates];
+  },
+
   /**
    * IDENTITY placement (open-question-5): a conceptId that carries an extension
    * (`script`/`file`) places to itself; an extension-less conceptId (a

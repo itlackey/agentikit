@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import * as tasksModule from "../../../src/commands/tasks/tasks";
 import { saveConfig } from "../../../src/core/config/config";
-import type { TaskBackend } from "../../../src/tasks/backends/types";
+import type { SchedulerBackend } from "../../../src/tasks/backends/types";
 import { makeSandboxDir, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 const backendState = {
@@ -22,7 +22,7 @@ function resetBackendState(): void {
   backendState.failInstallFor.clear();
 }
 
-const fakeBackend: TaskBackend = {
+const fakeBackend: SchedulerBackend = {
   name: "cron",
   install: async (task) => {
     backendState.installCalls.push(task.id);
@@ -33,6 +33,10 @@ const fakeBackend: TaskBackend = {
   },
   setEnabled: async () => {},
   list: async () => [],
+  inspectBindings: async () => ({ installed: [], artifacts: [] }),
+  snapshotBindings: async (nativeIds) => ({ nativeIds: [...nativeIds], artifacts: [] }),
+  restoreBindings: async () => {},
+  expectedSignature: (binding) => JSON.stringify([binding.cron, binding.enabled, binding.invocation]),
 };
 
 afterEach(() => {
@@ -112,17 +116,23 @@ describe("task asset mutations honor write-target resolution", () => {
       });
       backendState.failInstallFor.add("broken");
 
-      await expect(
-        tasksModule.akmTasksAdd(
+      let failure: unknown;
+      try {
+        await tasksModule.akmTasksAdd(
           {
             id: "broken",
             schedule: "0 2 * * *",
             command: "echo broken",
           },
           { backend: fakeBackend },
-        ),
-      ).rejects.toThrow(/install failed/);
+        );
+      } catch (error) {
+        failure = error;
+      }
 
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(AggregateError);
+      expect((failure as Error).message).toMatch(/install failed/);
       expect(fs.existsSync(path.join(target.dir, "tasks", "broken.yml"))).toBe(false);
     } finally {
       iso.cleanup();

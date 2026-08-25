@@ -280,6 +280,7 @@ export async function createUnitWorktree(
   baseDir: string,
   runId: string,
   attemptId: string,
+  commitOid?: string,
 ): Promise<WorktreeCreateResult> {
   // Opportunistic, at most once per process, never awaited — GC must never sit
   // on the dispatch path.
@@ -324,7 +325,7 @@ export async function createUnitWorktree(
       else prunedRuns.set(runId, new Set([repoKey]));
       await git(baseDir, ["worktree", "prune"]);
     }
-    const added = await git(baseDir, ["worktree", "add", "--detach", dest]);
+    const added = await git(baseDir, ["worktree", "add", "--detach", dest, ...(commitOid ? [commitOid] : [])]);
     if (!added.ok) {
       return {
         ok: false,

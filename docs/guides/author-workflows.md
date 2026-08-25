@@ -1,7 +1,7 @@
 # Author's Guide: Writing Workflows
 
-This guide walks through writing and testing a workflow definition: the
-markdown structure, a minimal complete example, common authoring mistakes,
+This guide walks through writing and testing a workflow definition: choosing a
+source format, the Markdown structure, a minimal complete example, common authoring mistakes,
 and how to verify gates and outputs before you publish. It assumes you
 already know what a workflow is; for the exhaustive, exact-syntax reference
 — every frontmatter key, the reference grammar, gates, and outputs — see
@@ -10,21 +10,28 @@ it's written, see [Running Workflows](../guides/run-workflows.md).
 
 ## Start from the template
 
-A workflow is an ordinary AKM markdown asset — OKF-conformant frontmatter
-plus a markdown body — whose frontmatter carries the orchestration graph
-(params, and how each step dispatches, fans out, routes, and gates) and whose
-body carries each step's instructions and gate rubric under plain headings,
-joined to the frontmatter by step id. There is **one** format: no separate
-YAML "program" surface, no `.yaml`/`.yml` workflow files.
+Authors can choose peer Markdown or GitHub-shaped YAML sources. Markdown is
+the full AKM authoring format: OKF-conformant frontmatter carries the
+orchestration graph and its body carries instructions and gate rubrics.
+GitHub-shaped YAML is a strict local subset for interoperability. Read the
+[authoritative YAML subset](../reference/workflow-schema.md#github-shaped-yaml-subset)
+before translating an Actions-shaped file; AKM does not accept arbitrary
+GitHub semantics. `.yaml` is not recognized—use `.yml`.
 
-Use `akm workflow create --print` to print a valid starter, then edit it and
-register it with `akm workflow create`:
+Use `akm workflow create --print` to print a valid Markdown starter, then edit
+it and register it with `akm workflow create`. Author a YAML source directly
+under `workflows/<name>.yml` and validate either source with `akm lint`:
 
 ```sh
 akm workflow create my-release --print   # Print the template, without writing
 akm workflow create my-release --from ./my-release.md
 akm lint --type workflows                # Check for structural errors before using it
 ```
+
+Both formats compile to source IR version 1. Choose Markdown for maps, routes,
+gates, typed artifacts, and prose-rich agent instructions. Choose the bounded
+YAML subset for a single local self-hosted job made of token-safe `run` and
+supported local `uses` steps.
 
 ## A minimal complete example
 
@@ -160,30 +167,29 @@ context variables. Ordinary commands (`bun`, `git`, `make`, `cargo`) work
 unchanged; an unrelated `SOME_OTHER_SERVICE_TOKEN` sitting in the shell that
 ran `akm workflow run` does not reach them.
 
-Two ways to widen it, in order of preference:
+Widen it only by naming what the unit needs:
 
 ```yaml
   - id: build
     unit:
+      env: [env/build]
       exec:
         command: ["cargo", "build", "--release"]
         pass_env: [CARGO_HOME, SCCACHE_DIR]   # a few extra names
-  - id: deploy
-    unit:
-      exec:
-        command: ["./scripts/deploy.sh"]
-        inherit_env: true                      # the whole environment
 ```
 
 `pass_env:` is for a **per-machine** variable an `env:` binding cannot express
 (an env asset stores a committed value; `CARGO_HOME` differs per build agent).
-`inherit_env: true` is the honest all-in escape hatch — use it when
-enumerating names is a losing game, and know that it is visible in the diff.
-Secrets still belong in `env:` bindings: those values are redacted out of
-everything journaled, and `pass_env:` values are not.
+Secrets and fixed values belong in exact named `env:` bindings: those values
+are redacted out of everything journaled, and `pass_env:` values are not.
 
-Both keys are part of the unit's input hash, so flipping either re-runs the
-command instead of reusing a row recorded under the other scope.
+Workflow starts freeze durable v4 plans, and v4 rejects `inherit_env` instead
+of persisting an unbounded ambient environment. Pre-v4 stored plans do not
+execute; start a new run after updating the source.
+
+Named bindings and `pass_env:` are part of the unit's input hash, so changing
+either re-runs the command instead of reusing a row recorded under another
+scope.
 
 Full list of allowlisted names:
 [Workflow Schema: The child's environment is an allowlist](../reference/workflow-schema.md#the-childs-environment-is-an-allowlist).
@@ -205,8 +211,8 @@ Full list of allowlisted names:
   mean unbounded.
 - **Don't assume your shell's environment.** The child gets an allowlist, not
   an inheritance. If a command fails with "not found" or reads a missing
-  toolchain variable, name it in `pass_env:` (or set `inherit_env: true`) —
-  it is not a bug in the command.
+  toolchain variable, name it in `pass_env:`; use a named `env:` binding for a
+  fixed or secret value. Durable v4 deliberately has no whole-process fallback.
 - **A very chatty command still passes; its artifact just says so.** akm retains
   8 MiB of stdout and 8 MiB of stderr. Past that it keeps draining and discards,
   so the command runs to completion and its exit code decides the step. The
@@ -257,9 +263,9 @@ Full reference: [Workflow Schema: Exec (shell) units](../reference/workflow-sche
 - **Expecting an exec command to inherit your environment.** It gets a default
   allowlist (`PATH`, `HOME`, locale/temp/identity, the Windows essentials) plus
   your `env:` bindings and the `AKM_*` context — nothing else. Widen it with
-  `exec.pass_env:` (a few names) or `exec.inherit_env: true` (all of it).
-  Note `pass_env`/`inherit_env` live inside `exec:`; the unit-level `env:` key
-  means something different — a list of env asset binding refs.
+  `exec.pass_env:` (a few non-secret names). `pass_env` lives inside `exec:`;
+  the unit-level `env:` key is a list of exact env asset binding refs. A new v4
+  start rejects `inherit_env`.
 - **Asking a model to do deterministic work.** "Run the test suite and tell me
   if it passed" is an [exec step](#deterministic-steps-run-a-command-gate-on-it),
   not a prompt.
@@ -313,14 +319,13 @@ the first.
 
 Set `defaults.engine`/`defaults.model` (or per-unit `unit.engine`/`unit.model`)
 rather than hardcoding an exact model id, so the workflow stays
-harness-agnostic. Reference semantic aliases — `fast`, `balanced`, `deep`, or
-whatever your `modelAliases` config defines — in `model:` fields; see
+harness-agnostic. Reference semantic aliases — `fast`, `balanced`, `reasoning`,
+or aliases defined in the installed/user `models.json` files — in `model:` fields; see
 [Workflow Schema: Model references](../reference/workflow-schema.md#model-references)
 for the exact resolution order and config shape.
 
-Point `deep` work (review, verification, judging) at `fable` — Anthropic's
-tier above Opus — and keep high-volume fan-out units on `fast`/`balanced`.
-The richer example's `review` map step is a good template: `deep` on the
+Point `reasoning` work at a capable model and keep high-volume fan-out units
+on `fast`/`balanced`. The richer example's `review` map step is a good template: `reasoning` on the
 per-item reviewer, `balanced` as the run default for everything else.
 
 ## Fan-out width

@@ -41,8 +41,8 @@
  * ── Cycle-safety (chunk-2 ratchet, baseline 18) ──
  *
  * Imported ONLY by `akm-adapter.ts` (no inbound `src/` edge) → can never join a
- * cycle. It VALUE-imports `parseWorkflow` (already transitively reachable from
- * `akm-adapter` via `matchers.ts`) and the pure predicate `isDangerousEnvKey`
+ * cycle. It VALUE-imports the one `compileWorkflowSource` frontend and the pure
+ * predicate `isDangerousEnvKey`
  * from `commands/lint/env-key-rules` — the predicate is imported, not copied,
  * precisely so the 40+ security-sensitive dangerous-key names cannot drift from
  * the canonical set; importing it is ratchet-neutral (verified: 18). The small
@@ -54,9 +54,9 @@
 
 import path from "node:path";
 import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
-import { isPresentTarget, taskFieldProblems } from "../../../tasks/schema";
+import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "../../../tasks/source-v3";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
-import { parseWorkflow } from "../../../workflows/parser";
+import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../types";
 
@@ -210,11 +210,8 @@ const AKM_SKILL_DIRS: ReadonlySet<string> = new Set(["skills"]);
  * (matching the per-subdir call). `file`/`detail` mirror the live check exactly
  * (relDir + `no SKILL.md in <relDir>/`).
  *
- * `skillDirs` defaults to the akm-native `skills/` placement dir. The tool-dir
- * adapters pass their OWN accepted spellings, because opencode also accepts the
- * singular `skill/` alias on read (`opencode-adapter.ts` LAYOUT) — with the
- * gate hardcoded to `"skills"`, an identical manifest-less package went flagged
- * under `skills/` and unflagged under `skill/` (issue #774).
+ * `skillDirs` defaults to the akm-native `skills/` placement dir. Tool-dir
+ * adapters pass their own canonical placement directory.
  */
 export async function skillDirectoryDiagnostics(
   relPath: string,
@@ -250,6 +247,8 @@ export interface PerTypeCheckArgs {
   /** File extension incl. dot, lower-cased (`.md`, `.yaml`, …). */
   ext: string;
   ctx: ValidateContext;
+  /** Materialized component root used for physical working-directory containment. */
+  workspaceRoot?: string;
 }
 
 /**
@@ -258,7 +257,7 @@ export interface PerTypeCheckArgs {
  * routes through `ctx`.
  */
 export async function perTypeValidateChecks(args: PerTypeCheckArgs): Promise<Diagnostic[]> {
-  const { type, relPath, raw, data, frontmatter, body, ext, ctx } = args;
+  const { type, relPath, raw, data, frontmatter, body, ext, ctx, workspaceRoot } = args;
   switch (type) {
     case "command":
       return nameOrTypeDiagnostics(relPath, data, frontmatter, ["command"]);
@@ -267,9 +266,9 @@ export async function perTypeValidateChecks(args: PerTypeCheckArgs): Promise<Dia
     case "fact":
       return factDiagnostics(relPath, data);
     case "task":
-      return taskDiagnostics(relPath, data);
+      return taskDiagnostics(relPath, raw, workspaceRoot);
     case "workflow":
-      // Unified workflows are markdown-only; other extensions are not a lint path.
+      // Markdown lint handles `.md`; peer GitHub-shaped `.yml` sources enter through the workflow source adapter.
       return ext === ".md" ? workflowDiagnostics(relPath, raw, body) : [];
     case "memory":
       return memoryDiagnostics(relPath, data, body, ctx);
@@ -309,31 +308,28 @@ export function factDiagnostics(relPath: string, data: Record<string, unknown>):
 }
 
 /**
- * TaskLinter extra check (`task-linter.ts:25-58`). `data` is the parsed YAML.
- * Field rules come from the shared {@link taskFieldProblems} (see its doc for
- * the lint-vs-parser reconciliation story); this sweep additionally requires
- * at least one target.
+ * Task validation has one semantic owner: the strict task-v3 source parser.
+ * Keeping raw YAML at this boundary preserves duplicate-key, alias/tag,
+ * source-location, descriptor, resource-bound, and migration-hint behavior.
  */
-export function taskDiagnostics(relPath: string, data: Record<string, unknown>): Diagnostic[] {
-  if (data === null || Object.keys(data).length === 0) return [];
-  const missing = taskFieldProblems(data);
-  // Presence, matching the runtime parser's rule (src/tasks/parser.ts): an
-  // empty string is NOT a target there, so a `workflow: ""` that linted clean
-  // here failed at run time with MISSING_REQUIRED_ARGUMENT — a file the linter
-  // called valid but that could never run.
-  const hasTarget = (["prompt", "workflow", "command"] as const).some((key) => isPresentTarget(data[key]));
-  if (!hasTarget) missing.push("prompt, workflow, or command");
-  if (missing.length > 0) {
+export function taskDiagnostics(relPath: string, raw: string, workspaceRoot?: string): Diagnostic[] {
+  try {
+    parseTaskV3Yaml({
+      filePath: relPath,
+      yaml: raw,
+      ...(workspaceRoot ? { workspaceRoot } : {}),
+    });
+    return [];
+  } catch (cause) {
     return [
       {
         file: relPath,
         issue: "invalid-task-yaml",
-        detail: `missing required fields: ${missing.join(", ")}`,
+        detail: taskV3SourceErrorDetail(cause),
         fixed: false,
       },
     ];
   }
-  return [];
 }
 
 /**
@@ -348,11 +344,10 @@ export function matchWorkflowPlaceholder(body: string): string | null {
 
 /**
  * WorkflowLinter's `invalid-workflow-structure` check (`workflow-linter.ts:48-77`):
- * the ERROR half of {@link workflowFrontendDiagnostics}, for callers that only
- * ever surface fatal findings — the read-only adapter `validate` path and
- * `akm migrate`'s stale-workflow probe. A caller that ALSO surfaces the
- * advisories must call {@link workflowFrontendDiagnostics} once instead of
- * pairing this with a second view. NEVER writes.
+ * the ERROR half of {@link workflowFrontendDiagnostics}, for the read-only
+ * adapter `validate` path. A caller that ALSO surfaces advisories must call
+ * {@link workflowFrontendDiagnostics} once instead of pairing this with a
+ * second view. NEVER writes.
  */
 export function workflowStructureDiagnostics(
   relPath: string,
@@ -390,15 +385,42 @@ export interface WorkflowFrontendDiagnostics {
 }
 
 /**
+ * Compile one peer GitHub-shaped `.yml` source through the shared source-IR
+ * frontend. YAML has no Markdown frontmatter/base/stub pass and currently
+ * emits fatal source diagnostics only; keeping the same two-channel result
+ * shape lets the ordinary sweep and both workflow adapters route it exactly
+ * like the established Markdown frontend without inventing another parser.
+ */
+export function workflowYamlSourceDiagnostics(
+  relPath: string,
+  raw: string,
+  parsePath: string,
+  workspaceRoot: string,
+): WorkflowFrontendDiagnostics {
+  if (parsePath.includes("/.cache/") || parsePath.includes("/registry/")) return { errors: [], warnings: [] };
+  const compiled = compileWorkflowSource(raw, { path: parsePath, workspaceRoot });
+  if (compiled.ok) return { errors: [], warnings: [] };
+  return {
+    errors: compiled.errors.map((error) => ({
+      file: relPath,
+      issue: "invalid-workflow-structure",
+      detail: error.message,
+      fixed: false,
+      ...lineOf(error),
+    })),
+    warnings: [],
+  };
+}
+
+/**
  * ONE parse+compile of a workflow through the unified frontend, returning both
  * halves of what it produces: fatal `invalid-workflow-structure` findings, and
  * `compileWorkflowPlan`'s non-fatal `workflow-warning` advisories (a step with
  * no `output:` schema, a reference to an undeclared param). The read-only
  * `/.cache/` + `/registry/` cached copies are skipped, and nothing is written.
  *
- * `parsePath` is the path handed to `parseWorkflow` (the adapter passes the
- * change relPath, the CLI passes the absolute filePath — matching each
- * caller's legacy behavior).
+ * `parsePath` is the source identity handed to `compileWorkflowSource` (the
+ * adapter passes the change relPath; the CLI passes the absolute filePath).
  *
  * A caller that surfaces BOTH halves must call this once and route the result
  * itself. The frontend is expensive — instruction bodies reach
@@ -415,7 +437,7 @@ export function workflowFrontendDiagnostics(
   const errors: WorkflowFrontendDiagnostic[] = [];
   const warnings: WorkflowFrontendDiagnostic[] = [];
   try {
-    const result = parseWorkflow(raw, { path: parsePath });
+    const result = compileWorkflowSource(raw, { path: parsePath });
     if (!result.ok) {
       for (const err of result.errors ?? []) {
         errors.push({
@@ -428,7 +450,7 @@ export function workflowFrontendDiagnostics(
       }
       return { errors, warnings };
     }
-    const compiled = compileWorkflowPlan(result.document, path.basename(parsePath, path.extname(parsePath)));
+    const compiled = compileWorkflowPlan(result.ir, path.basename(parsePath, path.extname(parsePath)));
     if (!compiled.ok) {
       for (const err of compiled.errors) {
         errors.push({

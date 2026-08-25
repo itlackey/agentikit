@@ -31,6 +31,7 @@ export type ConfigErrorCode =
   // "not built yet" precisely so a read can fail loudly instead of returning an
   // empty-but-successful result for an index that is sitting right there (#791).
   | "DATA_DIR_UNREADABLE"
+  | "INDEX_SCHEMA_INCOMPATIBLE"
   | "EMBEDDING_NOT_CONFIGURED"
   | "LLM_NOT_CONFIGURED"
   | "INVALID_CONFIG_FILE"
@@ -41,6 +42,8 @@ export type ConfigErrorCode =
   | "INIT_TMP_STASH_REFUSED"
   | "SETUP_TMP_STASH_REFUSED"
   | "UNKNOWN_IMPROVE_STRATEGY"
+  | "DANGEROUS_ENV_AUDIT_FAILED"
+  | "EXECUTION_NOT_AUTHORIZED"
   // Refused stashDir that would clobber a sensitive system path or the user's
   // home directory (#473). Triggered by `akm bundle create`/`akm setup` when the
   // explicit `--dir` argument resolves to e.g. `/`, `$HOME`, `~/.config`,
@@ -95,6 +98,7 @@ export type NotFoundErrorCode =
   | "SOURCE_NOT_FOUND"
   | "WORKFLOW_NOT_FOUND"
   | "PROPOSAL_NOT_FOUND"
+  | "DANGEROUS_ENV_KEY"
   | "FILE_NOT_FOUND";
 
 /**
@@ -108,6 +112,8 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   STASH_DIR_UNREADABLE: "Check the path exists and your user has read permission, or update the default bundle path.",
   DATA_DIR_UNREADABLE:
     "The data directory is not readable by the user running akm. Check its owner and mode, or point AKM_DATA_DIR / XDG_DATA_HOME somewhere this user owns.",
+  INDEX_SCHEMA_INCOMPATIBLE:
+    "Run `akm index --full` to rebuild the derived index from the currently materialized sources.",
   EMBEDDING_NOT_CONFIGURED: 'Run `akm config set embedding \'{"endpoint":"...","model":"..."}\'` to enable embeddings.',
   LLM_NOT_CONFIGURED:
     'Run `akm setup` or configure an `engines` entry with `kind: "llm"`, then select it with `defaults.llmEngine`.',
@@ -119,6 +125,7 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
     "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The bundle directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
   UNKNOWN_IMPROVE_STRATEGY:
     "Pass one of the listed strategy names to `--strategy`, or define it under `improve.strategies`. Names are case-sensitive.",
+  EXECUTION_NOT_AUTHORIZED: "Change the selected tools or update the machine/user execution policy, then retry.",
 };
 
 /** Default hint for each UsageError code. */

@@ -8,6 +8,9 @@ actually improve it, and the current state of the `curate` implementation.
   kind of contributor check (live source, built launcher, packed-package
   acceptance, global checkout install) and the verification commands to run
   before pushing.
+- [Release Checklist](release-checklist.md) — local release validation, exact
+  candidate-SHA semantic/Docker/native-scheduler gates, and the evidence links
+  required before publication.
 - [akm-eval](eval.md) — the standalone, read-only toolkit that measures
   whether `akm improve` and retrieval changes are actually working.
 - [Curate Workmap](curate-workmap.md) — the current `akm curate` contract,

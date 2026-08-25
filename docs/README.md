@@ -30,6 +30,7 @@ the task needs, and capture what you learn along the way.
 - [Environment & Secrets](https://github.com/itlackey/akm/blob/main/docs/reference/env-and-secrets.md) -- `akm env` and `akm secret`: exact operations, file modes, and the security guarantee
 - [Run Workflows](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md) -- Start or continue a run, check on it, resume it, or abandon it
 - [Scheduling](https://github.com/itlackey/akm/blob/main/docs/guides/scheduling.md) -- Run akm tasks through the OS scheduler (cron / launchd / schtasks) safely
+- [Migrate to 0.9.2](migration/v0.9.1-to-v0.9.2.md) -- Convert task-v2 sources safely and understand workflow resume compatibility
 - [Improve the Library](https://github.com/itlackey/akm/blob/main/docs/guides/improve-the-library.md) -- Feedback, history, and proposals -- how evidence turns into reviewable changes
 - Recipes: [Turn a Website into a Searchable Bundle](https://github.com/itlackey/akm/blob/main/docs/guides/recipes/website-source.md), [Headless Install](https://github.com/itlackey/akm/blob/main/docs/guides/recipes/headless-install.md)
 
@@ -55,6 +56,7 @@ Working on akm itself, not just using it.
 - [CLI](reference/cli.md) -- All `akm` commands and flags
 - [Configuration](reference/configuration.md) -- Engines, strategies, bundles, and settings
 - [Supported Formats](reference/supported-formats.md) -- Every bundle format akm recognizes, its detection marker, and current read/write support
+- [Tasks](reference/tasks.md) -- Task-v3 files, targets, triggers, and fail-closed migration
 - [Asset Types](https://github.com/itlackey/akm/blob/main/docs/reference/asset-types.md) -- The capability taxonomy, directory conventions, and per-type examples
 - [Refs](https://github.com/itlackey/akm/blob/main/docs/reference/refs.md) -- The ref grammar `akm search` emits and `akm show` consumes
 - [Memory](https://github.com/itlackey/akm/blob/main/docs/reference/memory.md) -- The `memory` asset type: capture, belief states, and derived memories

@@ -1,10 +1,43 @@
+import { createHash } from "node:crypto";
 import type { AkmConfig } from "../../src/core/config/config";
-import { compileResolveFreezeWorkflow, type FreezeOptions } from "../../src/workflows/ir/freeze";
+import { captureFrozenDirectoryIdentity } from "../../src/execution/directory-identity";
+import { type FrozenExecutableIdentity, freezeExecutableIdentity } from "../../src/execution/executable-identity";
+import type { ExecutionJsonObject } from "../../src/execution/json";
+import {
+  canonicalResolvedExecutionRequest,
+  decodeResolvedExecutionRequest,
+  type ResolvedExecutionRequestV1,
+} from "../../src/execution/resolved-request";
+import type { UnresolvedExecutionDefaults } from "../../src/execution/source";
+import { requireAuthorizedExecutionPlan } from "../../src/integrations/agent/execution-cascade";
+import { lowerResolvedExecutionRequest } from "../../src/integrations/agent/execution-lowering";
+import { prepareInlineExecution } from "../../src/integrations/agent/inline-execution";
+import { MODEL_MAP_VERSION, type ResolvedModelMapV1 } from "../../src/integrations/agent/model-map";
+import type { RunnerSpec } from "../../src/integrations/agent/runner";
+import {
+  defaultLlmEngineConcurrency,
+  defaultMapConcurrency,
+  workflowMaxConcurrency,
+} from "../../src/workflows/concurrency-policy";
+import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
 import { canonicalPlanJson, computePlanHash } from "../../src/workflows/ir/plan-hash";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+import {
+  decodeWorkflowPlanV4,
+  type FrozenWorkflowCommandTarget,
+  type FrozenWorkflowEnvironmentBinding,
+  type FrozenWorkflowShellTarget,
+  type IrStepPlanV4,
+  type IrUnitNodeV4,
+  WORKFLOW_IR_V4_VERSION,
+  type WorkflowPlanGraphV4,
+} from "../../src/workflows/ir/schema-v4";
 import { parseWorkflow } from "../../src/workflows/parser";
+import type { ProgramExec, ProgramUnit } from "../../src/workflows/program/schema";
+import { DEFAULT_EXEC_TIMEOUT_MS } from "../../src/workflows/resource-limits";
 import { frozenStepRows } from "../../src/workflows/runtime/plan-classifier";
 import type { WorkflowError } from "../../src/workflows/schema";
+import { compileWorkflowSource } from "../../src/workflows/source-ir/compile";
+import { sourceStepInstructions, sourceStepProgramUnit } from "../../src/workflows/source-ir/program";
 
 export const WORKFLOW_TEST_CONFIG = {
   configVersion: "0.9.0",
@@ -21,39 +54,226 @@ export const WORKFLOW_TEST_CONFIG = {
   workflow: { judgeEngine: "test-llm" },
 } as const satisfies AkmConfig;
 
+const WORKFLOW_TEST_MODEL_MAP: ResolvedModelMapV1 = Object.freeze({
+  version: MODEL_MAP_VERSION,
+  aliases: Object.freeze(Object.create(null)) as ResolvedModelMapV1["aliases"],
+});
+
+export type WorkflowPlanFixture = WorkflowPlanGraphV4;
+
 /**
- * Parse + compile + freeze a unified workflow markdown document (workflow-
- * format-unification). Replaces the pre-unification `freezeWorkflowProgram`
- * (YAML program) / `freezeMarkdownWorkflow` (classic linear markdown) split —
- * one frontend now.
+ * Compile source bytes into the shared executor-core fixture used by unit
+ * tests. Production starts use the durable-v4 freezer; this helper deliberately
+ * does not publish a stored plan or recreate the retired new-start-v3 path.
  *
  * `config` defaults to {@link WORKFLOW_TEST_CONFIG}; suites with their own
- * engine catalog pass it explicitly. `options` are threaded straight through
- * to {@link compileResolveFreezeWorkflow} (e.g. the `compile` test seam).
+ * engine catalog pass it explicitly.
  */
 export function freezeWorkflow(
   markdown: string,
   sourcePath = "workflows/demo.md",
   config: AkmConfig = WORKFLOW_TEST_CONFIG,
-  options: FreezeOptions = {},
-): WorkflowPlanGraph {
-  const parsed = parseWorkflow(markdown, { path: sourcePath });
-  if (!parsed.ok) {
-    throw new Error(parsed.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
+): WorkflowPlanFixture {
+  const compiledSource = compileWorkflowSource(markdown, { path: sourcePath, workspaceRoot: "/tmp" });
+  if (!compiledSource.ok) {
+    throw new Error(compiledSource.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
   }
-  const title = sourcePath.split("/").pop()?.replace(/\.md$/i, "") || "demo";
-  return compileResolveFreezeWorkflow(
-    {
-      ref: `workflows/${title}`,
-      path: sourcePath,
-      sourcePath: "/tmp",
-      title,
-      steps: [],
-      document: parsed.document,
-    },
+  const title =
+    sourcePath
+      .split("/")
+      .pop()
+      ?.replace(/\.(?:md|yml)$/i, "") || "demo";
+  const sourceSteps = compiledSource.ir.jobs[0]?.steps ?? [];
+  const resolvedUnits = new Map(
+    sourceSteps
+      .filter((step) => step.route === undefined)
+      .map(
+        (step) => [step.id, { unit: sourceStepProgramUnit(step), instructions: sourceStepInstructions(step) }] as const,
+      ),
+  );
+  const compiled = compileWorkflowPlan(compiledSource.ir, title, resolvedUnits);
+  if (!compiled.ok) {
+    throw new Error(compiled.errors.map((error) => `${error.line}: ${error.message}`).join(" | "));
+  }
+  const sourceById = new Map(sourceSteps.map((step) => [step.id, step]));
+  const steps: IrStepPlanV4[] = compiled.plan.steps.map((step) => {
+    const source = sourceById.get(step.stepId);
+    if (!source) throw new Error(`missing source step ${step.stepId}`);
+    const programUnit = resolvedUnits.get(step.stepId)?.unit;
+    const root = step.root
+      ? step.root.kind === "map"
+        ? {
+            ...step.root,
+            concurrency: step.root.concurrency ?? defaultMapConcurrency(config.workflow?.defaultMapConcurrency),
+            template: freezeCurrentUnit(
+              step.root.template,
+              programUnit,
+              source.env,
+              config,
+              compiledSource.ir.defaults,
+            ),
+          }
+        : freezeCurrentUnit(step.root, programUnit, source.env, config, compiledSource.ir.defaults)
+      : undefined;
+    const frozenJudge =
+      step.gate.criteria.length > 0
+        ? freezeCommandTarget(step.gate.criteria.join("\n"), { engine: config.workflow?.judgeEngine }, config)
+        : null;
+    const { root: _root, gate: _gate, ...base } = step;
+    return {
+      ...base,
+      ...(root ? { root } : {}),
+      gate: { ...step.gate, maxLoops: step.gate.maxLoops ?? 1, frozenJudge },
+    };
+  });
+  return decodeWorkflowPlanV4({
+    irVersion: WORKFLOW_IR_V4_VERSION,
+    title,
+    ...(compiled.plan.params ? { params: compiled.plan.params } : {}),
+    ...(compiled.plan.paramSchemas ? { paramSchemas: compiled.plan.paramSchemas } : {}),
+    ...(compiled.plan.budget ? { budget: compiled.plan.budget } : {}),
+    execution: { maxConcurrency: workflowMaxConcurrency(config.workflow?.maxConcurrency) },
+    sourceReadSet: [
+      {
+        identity: {
+          ref: `test//${sourcePath.replace(/\.(?:md|yml)$/i, "")}`,
+          bundle: "test",
+          adapter: "akm-workflow",
+          file: sourcePath,
+          hash: createHash("sha256").update(markdown).digest("hex"),
+        },
+        containmentPhysicalIdentity: "test-fixture-root",
+        physicalIdentity: createHash("sha256").update(`${sourcePath}\0${markdown}`).digest("hex"),
+        size: Buffer.byteLength(markdown),
+      },
+    ],
+    steps,
+  });
+}
+
+type ExecutionUnitLike = Partial<Pick<ProgramUnit, "engine" | "model" | "llm" | "timeoutMs" | "output">>;
+
+function executionValues(unit: ExecutionUnitLike | undefined, workspace = "/tmp"): UnresolvedExecutionDefaults {
+  return {
+    ...(unit && Object.hasOwn(unit, "engine") ? { engine: unit.engine } : {}),
+    ...(unit && Object.hasOwn(unit, "model") ? { model: unit.model } : {}),
+    ...(unit && Object.hasOwn(unit, "llm") ? { inference: unit.llm as ExecutionJsonObject } : {}),
+    ...(unit && Object.hasOwn(unit, "timeoutMs") ? { timeout: unit.timeoutMs } : {}),
+    ...(unit && Object.hasOwn(unit, "output") ? { outputSchema: unit.output as ExecutionJsonObject | null } : {}),
+    workspace,
+  };
+}
+
+function durableRequest(request: ResolvedExecutionRequestV1): ResolvedExecutionRequestV1 {
+  const wire = JSON.parse(canonicalResolvedExecutionRequest(request)) as Record<string, unknown>;
+  const runtime = { ...(wire.runtime as Record<string, unknown>) };
+  delete runtime.environment;
+  wire.runtime = runtime;
+  return decodeResolvedExecutionRequest(wire);
+}
+
+function freezeCommandTarget(
+  instructions: string,
+  current: UnresolvedExecutionDefaults,
+  config: AkmConfig,
+  invocationDefaults?: UnresolvedExecutionDefaults,
+): FrozenWorkflowCommandTarget {
+  const prepared = prepareInlineExecution({
+    content: instructions,
     config,
-    options,
-  ).plan;
+    invocationKind: "workflow",
+    modelMap: WORKFLOW_TEST_MODEL_MAP,
+    ...(invocationDefaults ? { invocationDefaults } : {}),
+    current,
+  });
+  const resolved = durableRequest(requireAuthorizedExecutionPlan(prepared.plan));
+  const cwdIdentity = captureFrozenDirectoryIdentity("/tmp");
+  let runner = lowerResolvedExecutionRequest(resolved, prepared.config).runner;
+  let executable: FrozenExecutableIdentity | undefined;
+  if (runner.kind === "agent") {
+    executable = freezeExecutableIdentity(runner.profile.bin, { cwd: cwdIdentity.realCwd });
+    runner = Object.freeze({ ...runner, profile: Object.freeze({ ...runner.profile, bin: executable.absolutePath }) });
+  }
+  const request = JSON.parse(canonicalResolvedExecutionRequest(resolved)) as ResolvedExecutionRequestV1;
+  return Object.freeze({
+    kind: "command",
+    ref: null,
+    contentHash: createHash("sha256").update(request.command.content).digest("hex"),
+    request,
+    runner,
+    ...(targetConcurrency(runner, config) ? { concurrency: targetConcurrency(runner, config) } : {}),
+    cwdIdentity,
+    ...(executable ? { executable } : {}),
+  });
+}
+
+function targetConcurrency(runner: RunnerSpec, config: AkmConfig): number | undefined {
+  if (runner.kind === "llm") {
+    const configured = typeof runner.engine === "string" ? config.engines?.[runner.engine] : undefined;
+    return defaultLlmEngineConcurrency(
+      runner.connection.endpoint,
+      configured?.kind === "llm" ? configured.concurrency : undefined,
+    );
+  }
+  if (runner.kind !== "sdk" || !runner.fallbackConnection) return undefined;
+  const selected = typeof runner.engine === "string" ? config.engines?.[runner.engine] : undefined;
+  const fallbackName = selected?.kind === "agent" ? (selected.llmEngine ?? config.defaults?.llmEngine) : undefined;
+  const fallback = fallbackName ? config.engines?.[fallbackName] : undefined;
+  return defaultLlmEngineConcurrency(
+    runner.fallbackConnection.endpoint,
+    fallback?.kind === "llm" ? fallback.concurrency : undefined,
+  );
+}
+
+function frozenEnvironment(exec: ProgramExec | undefined, literals: Readonly<Record<string, unknown>> | undefined) {
+  const bindings: FrozenWorkflowEnvironmentBinding[] = [
+    ...Object.entries(literals ?? {}).map(([name, value]) => ({
+      kind: "literal" as const,
+      name,
+      value: String(value),
+    })),
+    ...(exec?.passEnv ?? []).map((name) => ({ kind: "pass-through" as const, name })),
+  ];
+  return Object.freeze(bindings);
+}
+
+function freezeCurrentUnit(
+  node: import("../../src/workflows/ir/compile").WorkflowUnitDraft,
+  unit: ProgramUnit | undefined,
+  literals: Readonly<Record<string, unknown>> | undefined,
+  config: AkmConfig,
+  defaults: ExecutionUnitLike | undefined,
+): IrUnitNodeV4 {
+  if (unit?.env?.length)
+    throw new Error("freezeWorkflow test fixtures do not resolve env assets; use a v4 source test");
+  const environment = frozenEnvironment(unit?.exec, literals);
+  let frozenTarget: FrozenWorkflowCommandTarget | FrozenWorkflowShellTarget;
+  if (unit?.exec) {
+    const declaredTimeout = Object.hasOwn(unit, "timeoutMs")
+      ? unit.timeoutMs
+      : defaults && Object.hasOwn(defaults, "timeoutMs")
+        ? defaults.timeoutMs
+        : DEFAULT_EXEC_TIMEOUT_MS;
+    const exec = {
+      ...unit.exec,
+      command: unit.exec.command as [string, ...string[]],
+      timeoutMs: declaredTimeout ?? null,
+    };
+    const cwdIdentity = captureFrozenDirectoryIdentity("/tmp", unit.exec.cwd);
+    frozenTarget = {
+      kind: "shell",
+      contentHash: createHash("sha256")
+        .update("akm.workflow.shell.v1\0")
+        .update(canonicalPlanJson({ exec, environment, cwdIdentity }))
+        .digest("hex"),
+      exec,
+      cwdIdentity,
+    };
+  } else {
+    frozenTarget = freezeCommandTarget(node.instructions, executionValues(unit), config, executionValues(defaults));
+  }
+  const { exec: _exec, ...common } = node;
+  return Object.freeze({ ...common, isolation: common.isolation ?? "none", frozenTarget, environment });
 }
 
 /** Parse a workflow document and return its parser errors (`[]` when it parses cleanly). */
@@ -148,7 +368,7 @@ export function seedWorkflowRun(
 export function storeFrozenWorkflowPlan(
   db: { prepare(sql: string): { run(...params: unknown[]): unknown } },
   runId: string,
-  plan: WorkflowPlanGraph,
+  plan: WorkflowPlanGraphV4,
 ): void {
   for (const step of frozenStepRows(plan)) {
     db.prepare(
@@ -157,7 +377,7 @@ export function storeFrozenWorkflowPlan(
          WHERE run_id = ? AND step_id = ?`,
     ).run(step.stepTitle, step.instructions, step.completionJson, step.sequenceIndex, runId, step.stepId);
   }
-  db.prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = 3 WHERE id = ?").run(
+  db.prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = 4 WHERE id = ?").run(
     canonicalPlanJson(plan),
     computePlanHash(plan),
     runId,

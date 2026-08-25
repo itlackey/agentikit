@@ -44,10 +44,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
-import type { LlmConnectionConfig } from "../../core/config/config-types";
 import type { EventsContext } from "../../core/events";
 import { recordWrittenPath } from "../../core/write-provenance";
-import { chatCompletion } from "../../llm/client";
+import type { RunnerSpec } from "../../integrations/agent/runner";
+import type { chatCompletion } from "../../llm/client";
 import type { ProposalsContext } from "../proposal/repository";
 
 /** The chat-completion seam shape shared by every improve LLM caller. */
@@ -78,10 +78,10 @@ export interface RunContext {
   readonly eventsCtx: EventsContext;
   /** Proposals clock/id/dbPath seam. No db handle is threaded in (D14). */
   readonly proposalsCtx: ProposalsContext;
-  /** The chat-completion seam (test-injectable via structured-call late binding). */
-  readonly chat: RunContextChatFn;
-  /** Resolve the run's LLM connection config lazily (null when unconfigured). */
-  readonly getLlmConfig: () => LlmConnectionConfig | null;
+  /** Optional test-only chat seam; production dispatch remains engine-owned. */
+  readonly chat?: RunContextChatFn;
+  /** Resolve the run's symbolic LLM runner lazily (null when unconfigured). */
+  readonly getLlmRunner: () => Extract<RunnerSpec, { kind: "llm" }> | null;
   /** Stable run id stamped onto automated proposals + events (PROV-DM). */
   readonly sourceRun: string;
   /** When true, mutating side effects are suppressed. */
@@ -124,9 +124,9 @@ export interface RunContextInit {
   config: AkmConfig;
   eventsCtx: EventsContext;
   proposalsCtx: ProposalsContext;
-  /** Defaults to the real {@link chatCompletion}. */
+  /** Test-only transport override. Production leaves this absent. */
   chat?: RunContextChatFn;
-  getLlmConfig: () => LlmConnectionConfig | null;
+  getLlmRunner?: () => Extract<RunnerSpec, { kind: "llm" }> | null;
   sourceRun: string;
   dryRun: boolean;
   signal?: AbortSignal;
@@ -142,8 +142,8 @@ interface RunContextCarriers {
   config: AkmConfig;
   eventsCtx: EventsContext;
   proposalsCtx: ProposalsContext;
-  chat: RunContextChatFn;
-  getLlmConfig: () => LlmConnectionConfig | null;
+  chat?: RunContextChatFn;
+  getLlmRunner: () => Extract<RunnerSpec, { kind: "llm" }> | null;
   sourceRun: string;
   dryRun: boolean;
   signal?: AbortSignal;
@@ -165,7 +165,7 @@ function buildRunContext(carriers: RunContextCarriers, memo: Map<string, string>
     eventsCtx: carriers.eventsCtx,
     proposalsCtx: carriers.proposalsCtx,
     chat: carriers.chat,
-    getLlmConfig: carriers.getLlmConfig,
+    getLlmRunner: carriers.getLlmRunner,
     sourceRun: carriers.sourceRun,
     dryRun: carriers.dryRun,
     signal: carriers.signal,
@@ -207,8 +207,8 @@ export function createRunContext(init: RunContextInit): RunContext {
     config: init.config,
     eventsCtx: init.eventsCtx,
     proposalsCtx: init.proposalsCtx,
-    chat: init.chat ?? chatCompletion,
-    getLlmConfig: init.getLlmConfig,
+    chat: init.chat,
+    getLlmRunner: init.getLlmRunner ?? (() => null),
     sourceRun: init.sourceRun,
     dryRun: init.dryRun,
     signal: init.signal,

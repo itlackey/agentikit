@@ -501,22 +501,16 @@ describe("recognizeMatch", () => {
 
 // ── 2b. task-yaml metadata fold ──────────────────────────────────────────────
 //
-// Regression test for the task-yaml defect: the extraction must parse the
-// PLAIN YAML task document (src/tasks/schema.ts TaskDocument — no `---` fences)
-// with the generic YAML parser, not the frontmatter parser (which would
-// silently return `{}`, leaving schedule/workflow/prompt searchHints empty and
-// emitting only the static "task"/"scheduled" tags). This test must FAIL
-// (searchHints missing schedule:/workflow:/prompt: entries) if the fold
-// regresses back to the frontmatter parser.
+// Regression test for the task-yaml defect: extraction must parse the PLAIN
+// strict-v3 YAML document (no `---` fences) through the canonical source
+// parser, not the frontmatter parser (which would silently return `{}`).
 describe("task-yaml metadata fold", () => {
-  test("populates schedule/workflow/prompt searchHints and task/scheduled tags from plain YAML", () => {
+  test("populates schedule/workflow searchHints and task/scheduled tags from strict v3 YAML", () => {
     const root = tmpDir();
     const filePath = path.join(root, "tasks", "nightly-report.yml");
     writeFile(
       filePath,
-      ["schedule: '0 9 * * *'", "enabled: true", "workflow: workflow:daily-backup", "prompt: agent:my-agent"].join(
-        "\n",
-      ),
+      ["version: 3", "uses: workflows/daily-backup", "akm:", "  schedule: '0 9 * * *'", "  enabled: true"].join("\n"),
     );
 
     const ctx = buildFileContext(root, filePath);
@@ -527,8 +521,23 @@ describe("task-yaml metadata fold", () => {
     expect(entry.tags).toContain("scheduled");
     expect(entry.searchHints).toBeDefined();
     expect(entry.searchHints).toContain("schedule:0 9 * * *");
-    expect(entry.searchHints).toContain("workflow:workflow:daily-backup");
-    expect(entry.searchHints).toContain("prompt:agent:my-agent");
+    expect(entry.searchHints).toContain("workflow:workflows/daily-backup");
+  });
+
+  test("projects a stored command target through the canonical v3 metadata shape", () => {
+    const root = tmpDir();
+    const filePath = path.join(root, "tasks", "review.yml");
+    writeFile(
+      filePath,
+      ["version: 3", "uses: akm/command", "with:", "  ref: commands/review", "akm:", "  schedule: '@daily'"].join("\n"),
+    );
+
+    const ctx = buildFileContext(root, filePath);
+    const entry: IndexDocument = { name: "review", type: "task" };
+    applyFoldedMetadata(entry, foldRecognizedMetadata("task-yaml", ctx));
+
+    expect(entry.searchHints).toContain("schedule:@daily");
+    expect(entry.searchHints).toContain("prompt:commands/review");
   });
 
   test("still applies task/scheduled tags without throwing when the YAML is unparseable", () => {

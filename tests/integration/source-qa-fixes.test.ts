@@ -18,9 +18,11 @@ import { akmAdd } from "../../src/commands/sources/source-add";
 import { addStash } from "../../src/commands/sources/source-manage";
 import { loadConfig, saveConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
-import { mergeLockEntriesSync, readLockfile } from "../../src/integrations/lockfile";
+import { readLockfile } from "../../src/integrations/lockfile";
 import * as gitProvider from "../../src/sources/providers/git";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
+import { seedLockEntries } from "../_helpers/lockfile";
+import { withEnv, withMockedFetch } from "../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
 
@@ -34,6 +36,12 @@ function makeStashDir(base: string): void {
   for (const sub of ["skills", "commands", "agents", "knowledge", "scripts"]) {
     fs.mkdirSync(path.join(base, sub), { recursive: true });
   }
+}
+
+function git(repoDir: string, args: string[]): string {
+  const result = gitProvider.runGit(["-C", repoDir, ...args]);
+  if (result.status !== 0) throw new Error(result.stderr.trim() || `git ${args.join(" ")} failed`);
+  return result.stdout.trim();
 }
 
 afterAll(() => {
@@ -316,7 +324,7 @@ describe("issue #12: updatable field absent from SourceEntry", () => {
       semanticSearchMode: "off",
       bundles: { "test-pkg": { npm: "test-pkg" } },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "test-pkg",
         source: "npm",
@@ -338,39 +346,81 @@ describe("issue #12: updatable field absent from SourceEntry", () => {
 
 describe("issue #19: akm bundle update website sources", () => {
   test("website source update does not throw TARGET_NOT_UPDATABLE", async () => {
-    // Use a local HTTP server to serve minimal HTML for the crawl
-    const server = Bun.serve({
-      port: 0,
-      fetch(_req: Request) {
-        return new Response(
-          "<html><head><title>Test</title></head><body><h1>Test</h1><p>hello world</p></body></html>",
-          { headers: { "Content-Type": "text/html; charset=utf-8" } },
-        );
-      },
+    const siteUrl = "http://127.0.0.1:45679/test-site";
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: { "test-site": { website: { url: siteUrl } } },
     });
-    const siteUrl = `http://127.0.0.1:${server.port}`;
 
-    try {
-      saveConfig({
-        semanticSearchMode: "off",
-        bundles: { "test-site": { website: { url: siteUrl } } },
-      });
+    // Should not throw TARGET_NOT_UPDATABLE
+    const result = await withMockedFetch(
+      () => akmUpdate({ target: "test-site", stashDir }),
+      () =>
+        new Response("<html><head><title>Test</title></head><body><h1>Test</h1><p>hello world</p></body></html>", {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+    );
+    // Returns an UpdateResponse with processed[] (empty for website sources
+    // — a website re-crawl has no UpdateResultItem shape, no version/lock to
+    // diff). R-015-adjacent: this success must still be reported somewhere,
+    // via `plainSynced`, instead of `processed: []` rendering as the same
+    // "nothing to update" text a true no-op would (pinned in
+    // output-text-add-update-formatters.test.ts).
+    expect(result).toBeDefined();
+    expect(result.schemaVersion).toBe(1);
+    expect(result.processed).toEqual([]);
+    expect(result.plainSynced).toEqual([{ id: "test-site", kind: "website", ref: siteUrl }]);
+  });
 
-      // Should not throw TARGET_NOT_UPDATABLE
-      const result = await akmUpdate({ target: "test-site", stashDir });
-      // Returns an UpdateResponse with processed[] (empty for website sources
-      // — a website re-crawl has no UpdateResultItem shape, no version/lock to
-      // diff). R-015-adjacent: this success must still be reported somewhere,
-      // via `plainSynced`, instead of `processed: []` rendering as the same
-      // "nothing to update" text a true no-op would (pinned in
-      // output-text-add-update-formatters.test.ts).
-      expect(result).toBeDefined();
-      expect(result.schemaVersion).toBe(1);
-      expect(result.processed).toEqual([]);
-      expect(result.plainSynced).toEqual([{ id: "test-site", kind: "website", ref: siteUrl }]);
-    } finally {
-      server.stop(true);
-    }
+  test("website source update authenticates X requests with the stored bearer token", async () => {
+    const secret = "STORE_ONLY_X_TOKEN";
+    fs.mkdirSync(path.join(stashDir, "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(stashDir, "secrets", "x-bearer-token"), `${secret}\n`, { mode: 0o600 });
+    saveConfig({
+      semanticSearchMode: "off",
+      bundles: { "x-site": { website: { url: "https://x.com/jack" } } },
+    });
+
+    const apiRequests: string[] = [];
+    const authenticatedApiRequests: string[] = [];
+    const result = await withEnv({ X_BEARER_TOKEN: undefined, X_RSS_TEMPLATE: undefined }, () =>
+      withMockedFetch(
+        () => akmUpdate({ target: "x-site", stashDir }),
+        async (url, init) => {
+          if (url.startsWith("https://api.x.com/2/")) {
+            apiRequests.push(url);
+            if (new Headers(init?.headers).get("authorization") === `Bearer ${secret}`) {
+              authenticatedApiRequests.push(url);
+            }
+            if (url.includes("/users/by/username/")) {
+              return new Response(JSON.stringify({ data: { id: "1" } }), {
+                headers: { "content-type": "application/json" },
+              });
+            }
+            return new Response(
+              JSON.stringify({
+                data: [{ id: "9", text: "materialized through bundle update", created_at: "2025-04-01T10:00:00Z" }],
+              }),
+              { headers: { "content-type": "application/json" } },
+            );
+          }
+
+          // Before the regression fix the direct update path omitted the
+          // store resolver, fell through to the generic website crawler, and
+          // still reported success. Keep that fallback successful so the
+          // assertion below specifically proves authentication, not merely
+          // whether the update happened to throw.
+          return new Response(
+            "<html><head><title>Public fallback</title></head><body><h1>Public fallback</h1></body></html>",
+            { headers: { "content-type": "text/html; charset=utf-8" } },
+          );
+        },
+      ),
+    );
+
+    expect(result.plainSynced).toEqual([{ id: "x-site", kind: "website", ref: "https://x.com/jack" }]);
+    expect(apiRequests).toHaveLength(2);
+    expect(authenticatedApiRequests).toEqual(apiRequests);
   });
 
   test("git source update refreshes configured git mirrors instead of treating them as local paths", async () => {
@@ -398,16 +448,14 @@ describe("issue #19: akm bundle update website sources", () => {
     // `plainSynced` rather than vanishing into an empty `processed: []` that
     // renders identically to a true no-op.
     expect(result.plainSynced).toEqual([{ id: "test-git", kind: "git", ref: "https://github.com/example/repo" }]);
-    // updateGitSource must refresh via syncMirroredRepo (not treat the URL as a
-    // local path), passing force + the resolved writable flag. The subsequent
-    // re-index also refreshes every cache-backed source through the provider
-    // seam (ensureSourceCaches → provider.sync()), so this spy legitimately
-    // sees more than one call; the meaningful assertion is the direct call's
-    // arguments below.
-    expect(syncSpy).toHaveBeenCalledWith(expect.objectContaining({ name: "test-git" }), {
-      force: true,
-      writable: false,
-    });
+    // updateGitSource refreshes once into an isolated cache root. The indexer
+    // is deliberately told not to hydrate again, otherwise a second fetch
+    // could bypass the audit boundary.
+    expect(syncSpy).toHaveBeenCalledTimes(1);
+    expect(syncSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "test-git" }),
+      expect.objectContaining({ force: true, writable: false, cacheRootDir: expect.any(String) }),
+    );
     syncSpy.mockRestore();
   });
 });
@@ -418,6 +466,17 @@ describe("update preserves entry.source for writable installed entries", () => {
   test("updating a github: entry stored as source:git preserves source:git and writable:true", async () => {
     const stashRoot = createTmpDir("akm-qa-writable-stash-");
     makeStashDir(stashRoot);
+    fs.writeFileSync(path.join(stashRoot, "knowledge", "revision.md"), "writable old\n");
+    const init = gitProvider.runGit(["init", stashRoot]);
+    if (init.status !== 0) throw new Error(init.stderr.trim() || "git init failed");
+    git(stashRoot, ["config", "user.name", "AKM QA"]);
+    git(stashRoot, ["config", "user.email", "qa@example.invalid"]);
+    git(stashRoot, ["remote", "add", "origin", "https://github.com/dimm-city/agent-stash.git"]);
+    git(stashRoot, ["add", "-A"]);
+    git(stashRoot, ["commit", "-m", "old revision"]);
+    const oldHead = git(stashRoot, ["rev-parse", "HEAD"]);
+    const oldBranch = git(stashRoot, ["symbolic-ref", "--short", "HEAD"]);
+    const oldOrigin = git(stashRoot, ["remote", "get-url", "origin"]);
     const cacheDir = createTmpDir("akm-qa-writable-cache-");
 
     saveConfig({
@@ -430,30 +489,39 @@ describe("update preserves entry.source for writable installed entries", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "dimm-city-agent-stash",
         source: "git",
         ref: "github:dimm-city/agent-stash",
         localRoot: stashRoot,
         installedAt: "2026-04-22T16:39:07.564Z",
-        resolvedRevision: "abc123",
+        resolvedRevision: oldHead,
       },
     ]);
 
     // syncFromRef for a github: ref returns source: "github" — this is what
     // triggered the bug: updateRegistryEntry was using synced.source ("github")
     // instead of entry.source ("git"), causing the validator to reject writable:true.
-    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockResolvedValue({
-      id: "github:dimm-city/agent-stash",
-      source: "github",
-      ref: "github:dimm-city/agent-stash",
-      artifactUrl: "https://github.com/dimm-city/agent-stash.git",
-      contentDir: stashRoot,
-      cacheDir,
-      extractedDir: stashRoot,
-      syncedAt: new Date().toISOString(),
-      resolvedRevision: "def456",
+    let auditedHead = "";
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+      const stagedRoot = options?.writableRoot;
+      if (!stagedRoot) throw new Error("writable update did not pass a staged root");
+      fs.writeFileSync(path.join(stagedRoot, "knowledge", "revision.md"), "writable audited new\n");
+      git(stagedRoot, ["add", "-A"]);
+      git(stagedRoot, ["commit", "-m", "audited revision"]);
+      auditedHead = git(stagedRoot, ["rev-parse", "HEAD"]);
+      return {
+        id: "github:dimm-city/agent-stash",
+        source: "github",
+        ref: "github:dimm-city/agent-stash",
+        artifactUrl: "https://github.com/dimm-city/agent-stash.git",
+        contentDir: stagedRoot,
+        cacheDir,
+        extractedDir: stagedRoot,
+        syncedAt: new Date().toISOString(),
+        resolvedRevision: auditedHead,
+      };
     });
     const mirrorSpy = spyOn(gitProvider, "syncMirroredRepo").mockResolvedValue({
       id: "github:dimm-city/agent-stash",
@@ -470,12 +538,19 @@ describe("update preserves entry.source for writable installed entries", () => {
     let result: Awaited<ReturnType<typeof akmUpdate>>;
     try {
       result = await akmUpdate({ target: "github:dimm-city/agent-stash", stashDir });
-      expect(syncSpy).toHaveBeenCalledWith("github:dimm-city/agent-stash", {
-        force: false,
-        writable: true,
-        writableRoot: stashRoot,
-        writableRequiredRoots: [stashRoot],
-      });
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      const updateOptions = syncSpy.mock.calls[0]?.[1];
+      expect(updateOptions).toEqual(
+        expect.objectContaining({
+          force: false,
+          writable: true,
+          writableRoot: expect.stringContaining(".akm-update-stage-"),
+        }),
+      );
+      expect(updateOptions?.writableRoot).not.toBe(stashRoot);
+      const stagedWritableRoot = updateOptions?.writableRoot;
+      if (!stagedWritableRoot) throw new Error("update did not pass a staged writable root");
+      expect(updateOptions?.writableRequiredRoots).toEqual([stagedWritableRoot]);
     } finally {
       syncSpy.mockRestore();
       mirrorSpy.mockRestore();
@@ -493,7 +568,10 @@ describe("update preserves entry.source for writable installed entries", () => {
     // resolved revision lives in the lock and should be updated
     const lock = readLockfile().find((e) => e.ref === "github:dimm-city/agent-stash");
     expect(lock?.source).toBe("git");
-    expect(lock?.resolvedRevision).toBe("def456");
+    expect(lock?.resolvedRevision).toBe(auditedHead);
+    expect(git(stashRoot, ["rev-parse", "HEAD"])).toBe(auditedHead);
+    expect(git(stashRoot, ["symbolic-ref", "--short", "HEAD"])).toBe(oldBranch);
+    expect(git(stashRoot, ["remote", "get-url", "origin"])).toBe(oldOrigin);
   });
 
   test("re-adding a writable install without --writable preserves and updates its checkout in place", async () => {
@@ -510,7 +588,7 @@ describe("update preserves entry.source for writable installed entries", () => {
         },
       },
     });
-    mergeLockEntriesSync([
+    seedLockEntries([
       {
         id: "dimm-city-agent-stash",
         source: "github",
@@ -560,7 +638,7 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
         plain: { git: "https://github.com/example/plain.git", enabled: false },
       },
     });
-    mergeLockEntriesSync([{ id: "managed", source: "npm", ref: "npm:managed", localRoot: disabledManagedRoot }]);
+    seedLockEntries([{ id: "managed", source: "npm", ref: "npm:managed", localRoot: disabledManagedRoot }]);
     const managedSync = spyOn(syncFromRefModule, "syncFromRef").mockRejectedValue(new Error("disabled managed synced"));
     const plainSync = spyOn(gitProvider, "syncMirroredRepo").mockRejectedValue(new Error("disabled plain synced"));
 
@@ -602,19 +680,11 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     }
   });
 
-  test("accounts for every configured source: syncs git+npm, reports website+filesystem as skipped", async () => {
+  test("accounts for every configured source: syncs git+website+npm and reports filesystem as skipped", async () => {
     const fsDir = createTmpDir("akm-r015-fs-");
     makeStashDir(fsDir);
 
-    const server = Bun.serve({
-      port: 0,
-      fetch(_req: Request) {
-        return new Response("<html><head><title>T</title></head><body><h1>T</h1><p>hi</p></body></html>", {
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
-      },
-    });
-    const siteUrl = `http://127.0.0.1:${server.port}`;
+    const siteUrl = "http://127.0.0.1:45680/docs-site";
 
     saveConfig({
       semanticSearchMode: "off",
@@ -653,11 +723,16 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
 
     let result: Awaited<ReturnType<typeof akmUpdate>>;
     try {
-      result = await akmUpdate({ all: true, stashDir });
+      result = await withMockedFetch(
+        () => akmUpdate({ all: true, stashDir }),
+        () =>
+          new Response("<html><head><title>T</title></head><body><h1>T</h1><p>hi</p></body></html>", {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          }),
+      );
     } finally {
       gitSyncSpy.mockRestore();
       npmSyncSpy.mockRestore();
-      server.stop(true);
     }
 
     // Before R-015: `selectManagedTargets` returned `installs` (empty, since
@@ -671,19 +746,17 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
       kind: "git",
       ref: "https://github.com/example/mirror-git.git",
     });
+    expect(result.plainSynced).toContainEqual({ id: "docs-site", kind: "website", ref: siteUrl });
     // npm: promoted to a managed (lock-backed) install on first sync, so it
     // is reported via `processed` like any other managed update.
     expect(result.processed).toHaveLength(1);
     expect(result.processed[0]?.id).toBe("left-pad");
     expect(result.processed[0]?.installed.resolvedVersion).toBe("1.3.0");
-    // website + filesystem: no --all sync path exists for either, so both
-    // must be visibly reported as skipped (with the SAME explanatory wording
-    // the single-target path already used) rather than silently omitted.
+    // Filesystem is the only intentional skip: it reflects local bytes in
+    // place. Website now uses the same staged/audited transaction as an
+    // explicit website update.
     const skippedIds = (result.skipped ?? []).map((s) => s.id).sort();
-    expect(skippedIds).toEqual(["docs-site", "local-fs"]);
-    const websiteSkip = result.skipped?.find((s) => s.id === "docs-site");
-    expect(websiteSkip?.kind).toBe("website");
-    expect(websiteSkip?.reason).toContain("not yet implemented for --all");
+    expect(skippedIds).toEqual(["local-fs"]);
     const fsSkip = result.skipped?.find((s) => s.id === "local-fs");
     expect(fsSkip?.kind).toBe("filesystem");
     expect(fsSkip?.reason).toContain("akm index");

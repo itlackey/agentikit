@@ -92,14 +92,17 @@ Valid `--kind` values are the four bundle providers: `filesystem`, `git`,
 
 ## akm bundle update / akm bundle remove
 
-`akm bundle update` pulls the latest version of a managed (git or npm)
-bundle. `akm bundle remove` disconnects a bundle and re-indexes without it.
+`akm bundle update` refreshes git, npm, and website bundles. Each candidate is
+staged outside its active root, audited for dangerous environment keys, and
+only then published and indexed. `akm bundle remove` disconnects a bundle and
+re-indexes without it.
 
 ```sh
 # Update
 akm bundle update @scope/bundle          # One managed bundle
 akm bundle update --all                 # All managed bundles
 akm bundle update --all --force         # Force fresh download even if version unchanged
+akm bundle update @scope/bundle --allow-insecure  # Approve reviewed dangerous env keys
 
 # Remove
 akm bundle remove @scope/bundle          # By npm id
@@ -107,6 +110,23 @@ akm bundle remove github:owner/repo     # By git ref
 akm bundle remove ~/.claude/skills      # By path
 akm bundle remove my-provider           # By name
 ```
+
+Dangerous keys prompt in a terminal (default: No) and block non-interactive
+updates unless `--allow-insecure` is explicit. `--yes` only approves deletion
+of an obsolete moved install directory; it never approves security findings.
+For `--all`, blocked and failed bundles are reported separately and later
+bundles continue. A rejected or failed bundle keeps its prior bytes, lock/config
+state, and search-index generation.
+
+During publication AKM holds a SQLite writer transaction across the index and
+the update-owned state work. Existing readers keep seeing the prior generation,
+but other writers may wait for a full index pass. This provides process-fault
+rollback for handled errors, not atomic durability across the filesystem and
+two WAL database files during `SIGKILL`, power loss, or storage failure. After
+such a failure, stop writers, run `akm health`, rerun the targeted update if its
+checkout/lock is not the intended revision, and run
+`akm index --full`. The `index-state-generation` advisory detects mismatched
+durable usage links; it cannot detect every theoretical cross-file split.
 
 **Example: keep bundles fresh**
 

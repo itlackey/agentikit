@@ -33,10 +33,8 @@ function normalizeName(name: string): string {
 
 // ── Bundle-scoped ref grammar (0.9.0, spec §11.1 / §3.4) ─────────────────────
 //
-// The 0.9.0 identity is `[<bundle>//]<concept-id>[#<fragment>]` (path identity;
-// `type` is no longer part of identity). This is the surviving ref grammar; the
-// pre-0.9.0 `[origin//]type:name` grammar now lives in the standalone migrator
-// (`scripts/akm-migrate/migrate/legacy-ref-grammar.ts`).
+// The identity is `[<bundle>//]<concept-id>[#<fragment>]` (path identity;
+// `type` is not part of identity). This is the only ref grammar.
 //
 //   - `bundle`   — workspace bundle slug; the OPTIONAL prefix. Short refs
 //                  (no `bundle//`) resolve to the containing bundle (§11.1).

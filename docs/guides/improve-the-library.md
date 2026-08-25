@@ -73,18 +73,39 @@ akm improve memory                    # Scope to memory assets only
 akm improve skills/code-review         # One asset
 akm improve --task "reduce duplication"
 akm improve --dry-run                 # Show planned refs without generating proposals
-akm improve --limit 10                # Cap assets processed
+akm improve --limit 10                # Base cap; configured replay slots are additive
 ```
 
 Selection defaults to assets with recent feedback signals first, with a
 retrieval-count fallback for high-traffic assets that have no feedback yet.
 Full flag reference: [CLI Reference — improve](../reference/cli.md#improve).
 
+`--dry-run` is an execution-plan preview, not a raw scope listing. Its
+`plannedRefs` are the final ranked refs after validation, signal, disk, and
+limit gates. The accompanying `plan` keeps the pre-gate `rawInScope` count,
+per-gate removal counts and reasons, configured versus effective limits, and
+the selection lane for each final ref. `plan.snapshot` explains whether the
+existing index was readable; a missing or incompatible index produces an
+explicit empty snapshot without creating or migrating it. The plan reports the
+ordinary base cap as `limits.effective`, the separate additive replay budget as
+`limits.additiveReplayAllowance`, and their finite sum as
+`limits.totalCeiling`. It also reports proactive-maintenance due statistics,
+consolidation pool gates and chunk estimate, extract/graph/memory-inference
+stage decisions, and proposal-triage mode and caps. The plan has
+`mode: "estimate"` and `dispatch: false`; producing it does not acquire the
+improve lock, invoke an LLM, create state, or write proposals, events, assets,
+cache files, or result records.
+
+The preview is a best-effort observation assembled during the invocation, not
+an atomic cross-store snapshot or a reservation. A later live run re-inspects
+mutable index, state, filesystem, and session-log inputs before dispatch, so
+concurrent changes can legitimately produce a different plan.
+
 **Example: auto-generate lessons from usage patterns**
 
 ```sh
 akm improve --dry-run        # preview what would be processed
-akm improve --limit 20       # run a bounded pass
+akm improve --limit 20       # base cap; configured replay slots may be appended
 akm proposal list            # review what was generated
 ```
 

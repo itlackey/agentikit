@@ -23,6 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import { akmImprove } from "../../../../src/commands/improve/improve";
 import { saveConfig } from "../../../../src/core/config/config";
+import { getStateDbPath } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { withMockedFetch } from "../../../_helpers/sandbox";
 
@@ -143,6 +144,89 @@ afterEach(() => {
 });
 
 describe("akm improve --dry-run writes no AKM artifacts", () => {
+  test("schema validation never dispatches repair or writes proposals, events, or locks", async () => {
+    const stashDir = makeTempDir("akm-dryrun-schema-repair-");
+    const lessonPath = path.join(stashDir, "lessons", "broken.md");
+    fs.mkdirSync(path.dirname(lessonPath), { recursive: true });
+    fs.writeFileSync(lessonPath, "---\nwhen_to_use: Testing dry planning\n---\n\nBody.\n", "utf8");
+    const before = snapshotSandboxRoots(stashDir);
+    const ensureIndexFn = mock(async () => {
+      throw new Error("dry-run invoked ensureIndex");
+    });
+    const fetchCalls: string[] = [];
+
+    const result = await withMockedFetch(
+      () =>
+        akmImprove({
+          scope: "lesson",
+          stashDir,
+          dryRun: true,
+          ensureIndexFn,
+          collectEligibleRefsFn: (async () => ({
+            plannedRefs: [{ ref: "lessons/broken", reason: "scope-type", filePath: lessonPath }],
+            memorySummary: { eligible: 0, derived: 0 },
+            strategyFilteredRefs: [],
+          })) as never,
+          config: {
+            configVersion: "0.9.0",
+            semanticSearchMode: "off",
+            bundles: { stash: { path: stashDir, writable: true } },
+            defaultBundle: "stash",
+            engines: {
+              repair: {
+                kind: "llm",
+                endpoint: "https://example.test/v1/chat/completions",
+                model: "repair",
+              },
+            },
+            defaults: { llmEngine: "repair" },
+            improve: {
+              strategies: {
+                "dry-schema": {
+                  processes: {
+                    reflect: { enabled: false },
+                    distill: { enabled: false },
+                    consolidate: { enabled: false },
+                    memoryInference: { enabled: false },
+                    graphExtraction: { enabled: false },
+                    extract: { enabled: false },
+                    validation: { enabled: true, engine: "repair" },
+                    triage: { enabled: false },
+                    proactiveMaintenance: { enabled: false },
+                    recombine: { enabled: false },
+                    procedural: { enabled: false },
+                  },
+                },
+              },
+            },
+          },
+          strategy: "dry-schema",
+        }),
+      (url) => {
+        fetchCalls.push(url);
+        return Response.json({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  description: "A repaired lesson description",
+                  when_to_use: "When testing dry planning",
+                }),
+              },
+            },
+          ],
+        });
+      },
+    );
+
+    expect(result.plan?.gates.find((gate) => gate.name === "validation")?.removed).toBe(1);
+    expect(fetchCalls).toEqual([]);
+    expect(ensureIndexFn).not.toHaveBeenCalled();
+    expect(fs.existsSync(getStateDbPath())).toBe(false);
+    expect(fs.existsSync(path.join(stashDir, ".akm", "improve.lock"))).toBe(false);
+    expectSandboxRootsUnchanged(before, stashDir);
+  });
+
   test("live improve lint is read-only and never invokes the mutating contradiction detector", async () => {
     const stashDir = makeTempDir("akm-live-readonly-lanes-");
     const filePath = path.join(stashDir, "knowledge", "guide.md");

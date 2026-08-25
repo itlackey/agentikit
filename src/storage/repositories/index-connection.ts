@@ -20,15 +20,25 @@ import type { Database } from "../database";
 import { openDatabase } from "../database";
 import { openManagedDatabase } from "../managed-db";
 import { SQLITE_BUSY_TIMEOUT_MS } from "../sqlite-pragmas";
+import { openSqliteReadSnapshot } from "../sqlite-read-snapshot";
+import { isCanonicalIndexGeneration } from "./index-entry-schema";
 import { ensureSchema } from "./index-schema";
 import { loadVecExtension, warnIfVecMissing } from "./index-vec-repository";
 
-export function openIndexDatabase(dbPath?: string, options?: { embeddingDim?: number }): Database {
+export function openIndexDatabase(
+  dbPath?: string,
+  options?: { embeddingDim?: number; beforeSchema?: (db: Database) => void },
+): Database {
   return openManagedDatabase({
     path: dbPath ?? getDbPath(),
     init: (db) => {
       // Try to load sqlite-vec extension
       loadVecExtension(db);
+
+      // Source update uses this narrow lifecycle seam to ATTACH state.db and
+      // open its coordinator-owned outer transaction before ensureSchema or
+      // any indexer write can mutate the live generation.
+      options?.beforeSchema?.(db);
 
       // Dim resolution: explicit option wins; otherwise consult the on-disk
       // config so unparameterised opens (registry providers, graph helpers,
@@ -68,9 +78,10 @@ function resolveConfiguredEmbeddingDim(): number | undefined {
 }
 
 export function openExistingDatabase(dbPath?: string): Database {
-  // Existing-DB callers must not mutate schema or embedding metadata on open,
-  // but some paths still need write access to usage_events and other tables —
-  // so init only loads the vec extension, it does not run ensureSchema.
+  // Existing-DB callers do not mutate schema or embedding metadata on open.
+  // They do validate the exact current derived generation before returning a
+  // handle, so no current reader can accidentally serve a populated legacy
+  // table and fail later on its first canonical-column query.
   //
   // "Existing" is load-bearing: a missing file throws instead of being
   // created. Create-on-open used to leave a schema-less index.db behind (a
@@ -84,7 +95,22 @@ export function openExistingDatabase(dbPath?: string): Database {
   if (classifyPathAccess(resolvedPath).access === "absent") {
     throw new Error(`Index database not found at ${resolvedPath}. Run 'akm index' to build it.`);
   }
-  return openManagedDatabase({ path: resolvedPath, init: loadVecExtension, create: false });
+  return openManagedDatabase({
+    path: resolvedPath,
+    init: (db) => {
+      loadVecExtension(db);
+      assertCanonicalIndexGeneration(db, resolvedPath);
+    },
+    create: false,
+  });
+}
+
+function assertCanonicalIndexGeneration(db: Database, resolvedPath: string): void {
+  if (isCanonicalIndexGeneration(db)) return;
+  throw new ConfigError(
+    `Index database uses an incompatible derived schema: ${resolvedPath}.`,
+    "INDEX_SCHEMA_INCOMPATIBLE",
+  );
 }
 
 /**
@@ -111,16 +137,24 @@ export function assertIndexPathReadable(resolvedPath: string): void {
 }
 
 /**
- * Open an existing index for queries without creating directories, a database
- * file, journals, or running write-capable pragmas/schema initialization.
+ * Open an existing index for queries without changing the source database or
+ * running schema initialization. The default path attaches read-only to the
+ * source. `isolatedSnapshot` instead opens a disposable main/WAL copy so even
+ * SQLite's read-lock bookkeeping cannot touch the source SHM file.
  */
-export function openReadonlyExistingDatabase(dbPath?: string): Database | undefined {
+export function openReadonlyExistingDatabase(
+  dbPath?: string,
+  options?: { isolatedSnapshot?: boolean },
+): Database | undefined {
   const resolvedPath = dbPath ?? getDbPath();
   // `undefined` means "no index" — reserve it for a genuinely absent one, and
   // let an unreadable index raise instead of masquerading as absent (#791).
   assertIndexPathReadable(resolvedPath);
   if (classifyPathAccess(resolvedPath).access === "absent") return undefined;
-  const db = openDatabase(resolvedPath, { readonly: true, create: false });
+  const db = options?.isolatedSnapshot
+    ? openSqliteReadSnapshot(resolvedPath)
+    : openDatabase(resolvedPath, { readonly: true, create: false });
+  if (!db) return undefined;
   // This opener bypasses openManagedDatabase/applyStandardPragmas by design (no
   // journal or schema work on a read-only handle), but that also left
   // busy_timeout at SQLite's default of 0. In WAL that is harmless — readers
@@ -128,8 +162,14 @@ export function openReadonlyExistingDatabase(dbPath?: string): Database | undefi
   // AKM_SQLITE_JOURNAL_MODE can select, a concurrent writer makes every read
   // fail instantly with SQLITE_BUSY. busy_timeout is legal on a read-only
   // connection, so apply just that one.
-  db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
-  return db;
+  try {
+    db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+    assertCanonicalIndexGeneration(db, resolvedPath);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 export function closeDatabase(db: Database): void {

@@ -2,27 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import path from "node:path";
 import { isContainedRelativePath } from "../../core/common";
 import { UsageError } from "../../core/errors";
-import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-params";
-import type { LlmInvocationOverrides } from "../../integrations/agent/engine-resolution";
-import { HARNESS_BY_ID } from "../../integrations/harnesses";
 import { parseReference } from "../program/expressions";
 import { PROGRAM_PARAM_NAME_PATTERN, PROGRAM_RETRY_REASONS, PROGRAM_STEP_ID_PATTERN } from "../program/schema";
 import {
   jsonBytes,
   utf8Bytes,
-  WORKFLOW_ENGINE_NAME_PATTERN,
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
-  WORKFLOW_MAX_ENGINE_NAME_LENGTH,
-  WORKFLOW_MAX_ENGINES,
   WORKFLOW_MAX_EXEC_ARG_BYTES,
   WORKFLOW_MAX_EXEC_ARGV,
   WORKFLOW_MAX_EXEC_CWD_LENGTH,
   WORKFLOW_MAX_EXEC_PASS_ENV,
-  WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
   WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
   WORKFLOW_MAX_INSTRUCTION_BYTES,
@@ -38,35 +30,10 @@ import {
 } from "../resource-limits";
 import type { SourceRef } from "../schema";
 
-/** The only executable persisted workflow plan format. */
-export const WORKFLOW_IR_VERSION = 3;
 export type IrOnError = "fail" | "continue";
 export type IrIsolation = "none" | "worktree";
 export type IrMapReducer = "collect" | "vote";
-/**
- * Instruction-delivery mode. Single-valued on purpose: the `${{ … }}`
- * interpolation language is GONE, so instructions always reach a unit
- * byte-exact. The field itself survives because every frozen plan already
- * persisted (`plan_json`, migration 006) carries it and the decoder rejects
- * unknown keys — dropping it would fail decode for in-flight runs.
- */
-export type IrInstructionTemplating = "verbatim";
 export type IrRuntimeKind = "llm" | "agent" | "sdk" | "exec";
-
-/**
- * The {@link IrRuntimeKind} a frozen engine dispatches as — the value journaled
- * in `workflow_run_units.runner` and read back by `status --units`.
- *
- * Lives here, beside the union, because the mapping is a property OF the union:
- * spelled at each call site instead, a kind added to `FrozenEngineSnapshot`
- * would type-check against whichever site happens to end with a default and be
- * silently mis-journaled. Callers supply their own answer for the ABSENCE of an
- * engine, which genuinely differs — a unit without one is an `exec` unit, while
- * a gate without one is an llm judge.
- */
-export function engineRuntimeKind(engine: FrozenEngineSnapshot): IrRuntimeKind {
-  return engine.kind === "llm" ? "llm" : engine.runnerKind;
-}
 
 /**
  * A frozen exec (shell) unit: the argv the engine spawns, where it spawns it,
@@ -82,26 +49,18 @@ export function engineRuntimeKind(engine: FrozenEngineSnapshot): IrRuntimeKind {
  * re-checks containment against the RESOLVED base directory before spawning,
  * so neither a crafted plan nor a symlink can escape the unit's tree.
  *
- * `timeoutMs` lives here rather than on an `IrInvocation` because an exec unit
- * has no engine to inherit one from — it is resolved once at freeze
- * (`ir/freeze.ts`) from the unit `timeout:` → document `defaults.timeout` →
+ * `timeoutMs` is resolved once at freeze from the unit `timeout:` → document
+ * `defaults.timeout` →
  * {@link DEFAULT_EXEC_TIMEOUT_MS}. `null` means the author wrote `timeout: none`.
  *
- * `passEnv`/`inheritEnv` describe the child's ENVIRONMENT SCOPE, which defaults
- * to an allowlist (`exec/exec-unit.ts`, `EXEC_DEFAULT_ENV_PASSTHROUGH`). Both
- * are dispatch-significant — they change what the command can see — so both are
- * in the unit's input-hash preimage. Each has exactly ONE encoding per state:
- * `inheritEnv` is present only as `true`, `passEnv` only when non-empty. A
- * frozen `false`/`[]` would mean the same thing while hashing differently, so
- * the decoder rejects it rather than letting two spellings of "default" exist.
+ * `passEnv` extends the child's default allowlist. Whole-process inheritance is
+ * not part of the current plan format.
  */
 export interface IrExecSpec {
   command: [string, ...string[]];
   cwd?: string;
   /** Extra parent-env NAMES on top of the default allowlist. Never empty when present. */
   passEnv?: string[];
-  /** Present only as `true`: the child gets akm's whole environment instead of the allowlist. */
-  inheritEnv?: true;
   timeoutMs: number | null;
 }
 
@@ -110,66 +69,12 @@ export interface IrRetry {
   on: string[];
 }
 
-export interface FrozenCredential {
-  names: [string, ...string[]];
-  required: boolean;
-}
-
-export interface FrozenLlmEngine {
-  name: string;
-  kind: "llm";
-  provider?: string;
-  endpoint: string;
-  /** Exact base model used by SDK fallbacks and inherited LLM invocations. */
-  model: string;
-  credential?: FrozenCredential;
-  temperature?: number;
-  maxTokens?: number;
-  concurrency: number;
-  supportsJsonSchema?: boolean;
-  extraParams?: Record<string, unknown>;
-  contextLength?: number;
-  enableThinking?: boolean;
-}
-
-export interface FrozenAgentEngine {
-  name: string;
-  kind: "agent";
-  runnerKind: "agent" | "sdk";
-  platform: string;
-  bin: string;
-  args: string[];
-  workspace: string | null;
-  envPassthrough: string[];
-  commandBuilder: string;
-  fallbackLlmEngine: string | null;
-}
-
-export type FrozenEngineSnapshot = FrozenLlmEngine | FrozenAgentEngine;
-
-export interface IrInvocation {
-  engine: string;
-  /** Exact model resolved at start, never an alias. */
-  model: string | null;
-  timeoutMs: number | null;
-  llm?: LlmInvocationOverrides;
-}
-
-export interface IrUnitNode {
+export interface IrUnitNodeCore {
   kind: "unit" | "agent";
   id: string;
   instructions: string;
-  templating?: IrInstructionTemplating;
   /** Prior-step artifacts attached to this unit as structured context (reference strings). */
   inputs?: string[];
-  /**
-   * Engine dispatch settings. Present on EXACTLY the units that reach an
-   * engine — an `exec` unit has none (it spawns a process instead), and the
-   * decoder enforces the exclusive-or.
-   */
-  invocation?: IrInvocation;
-  /** Shell-command dispatch. Mutually exclusive with {@link invocation}. */
-  exec?: IrExecSpec;
   schema?: Record<string, unknown>;
   retry?: IrRetry;
   onError: IrOnError;
@@ -182,21 +87,18 @@ export interface IrMapNode {
   kind: "map";
   id: string;
   over: string;
-  template: IrUnitNode;
+  template: IrUnitNodeCore;
   concurrency?: number;
   reducer: IrMapReducer;
   source?: SourceRef;
 }
 
-export type IrExecNode = IrUnitNode | IrMapNode;
-
-export interface IrGateNode {
+export interface IrGateNodeCore {
   kind: "gate";
   id: string;
   stepId: string;
   criteria: string[];
   maxLoops?: number;
-  judge?: IrInvocation | null;
 }
 
 export interface IrRouteSpec {
@@ -205,14 +107,14 @@ export interface IrRouteSpec {
   defaultStepId?: string;
 }
 
-export interface IrStepPlan {
+export interface IrStepPlanCore {
   stepId: string;
   title: string;
   sequenceIndex: number;
-  root?: IrExecNode;
+  root?: IrUnitNodeCore | IrMapNode;
   route?: IrRouteSpec;
   outputSchema?: Record<string, unknown>;
-  gate: IrGateNode;
+  gate: IrGateNodeCore;
 }
 
 export interface IrBudget {
@@ -220,14 +122,14 @@ export interface IrBudget {
   maxUnits?: number;
 }
 
-export interface WorkflowPlanGraph {
-  irVersion: typeof WORKFLOW_IR_VERSION;
+export interface WorkflowPlanStructure {
+  irVersion: number;
   title: string;
   params?: string[];
   paramSchemas?: Record<string, Record<string, unknown>>;
   budget?: IrBudget;
-  execution: { maxConcurrency: number; engines: Record<string, FrozenEngineSnapshot> };
-  steps: IrStepPlan[];
+  execution: { maxConcurrency: number };
+  steps: IrStepPlanCore[];
 }
 
 // Shared dispatch-significant bounds now live in `../resource-limits` so the
@@ -237,20 +139,32 @@ export { WORKFLOW_MAX_CONCURRENCY, WORKFLOW_MAX_GATE_LOOPS, WORKFLOW_MAX_RETRIES
 export const WORKFLOW_MAX_UNITS = WORKFLOW_MAX_MAP_EXPANSION;
 const MAX_LIST_ITEMS = 1024;
 const MAX_STRING_LENGTH = 1_000_000;
-const ENGINE_NAME_PATTERN = WORKFLOW_ENGINE_NAME_PATTERN;
 
-export interface WorkflowPlanValidationHooks {
-  /** Optional shared config-policy hook. Structural and byte bounds remain owned here. */
-  validateExtraParams?(value: Readonly<Record<string, unknown>>, location: string): string | undefined;
+export type WorkflowPlanValidationHooks = {};
+
+export interface WorkflowPlanStructureDecodeOptions {
+  readonly expectedVersion: number;
+  readonly planExtraKeys?: readonly string[];
+  readonly unitExtraKeys?: readonly string[];
+  readonly gateExtraKeys?: readonly string[];
 }
-
-/** Strictly decode persisted v3 data before it can drive a workflow. */
-export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidationHooks = {}): WorkflowPlanGraph {
-  if (!isRecord(input) || input.irVersion !== WORKFLOW_IR_VERSION) fail("irVersion must be 3");
+/** Validate the current durable execution graph. */
+export function validateWorkflowPlanStructure(
+  input: unknown,
+  options: WorkflowPlanStructureDecodeOptions,
+  hooks: WorkflowPlanValidationHooks = {},
+): void {
+  if (!isRecord(input) || input.irVersion !== options.expectedVersion) {
+    fail(`irVersion must be ${options.expectedVersion}`);
+  }
   assertJson(input);
   if (jsonBytes(input) > WORKFLOW_MAX_PLAN_BYTES) fail("plan exceeds the 2 MiB resource limit");
-  const plan = input as unknown as WorkflowPlanGraph;
-  assertKeys(input, ["irVersion", "title", "params", "paramSchemas", "budget", "execution", "steps"], "plan");
+  const plan = input as unknown as WorkflowPlanStructure;
+  assertKeys(
+    input,
+    ["irVersion", "title", "params", "paramSchemas", "budget", "execution", "steps", ...(options.planExtraKeys ?? [])],
+    "plan",
+  );
   assertString(plan.title, "title");
   validateParams(plan.params, plan.paramSchemas);
   validateBudget(plan.budget);
@@ -262,13 +176,7 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
   ) {
     fail(`execution.maxConcurrency must be an integer from 1 through ${WORKFLOW_MAX_CONCURRENCY}`);
   }
-  assertKeys(plan.execution, ["maxConcurrency", "engines"], "execution");
-  if (!isRecord(plan.execution.engines)) fail("execution.engines must be an object");
-  const engines = plan.execution.engines as Record<string, FrozenEngineSnapshot>;
-  if (Object.keys(engines).length > WORKFLOW_MAX_ENGINES)
-    fail(`execution.engines exceeds ${WORKFLOW_MAX_ENGINES} entries`);
-  const references = new Set<string>();
-  for (const [key, engine] of Object.entries(engines)) validateEngine(key, engine, references, hooks);
+  assertKeys(plan.execution, ["maxConcurrency"], "execution");
   if (!Array.isArray(plan.steps) || plan.steps.length === 0 || plan.steps.length > WORKFLOW_MAX_STEPS)
     fail("steps must contain 1 through 256 entries");
   const stepIds = new Set<string>();
@@ -292,9 +200,9 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
       `step ${step.stepId}`,
     );
     if (step.outputSchema !== undefined) validateSchema(step.outputSchema, `step ${step.stepId} outputSchema`);
-    if (step.root) validateNode(step.root, step.stepId, references, nodeIds, hooks);
+    if (step.root) validateNode(step.root, step.stepId, nodeIds, options.unitExtraKeys ?? []);
     if (step.route) validateRoute(step.route, step.stepId);
-    validateGate(step.gate, step.stepId, references, nodeIds, hooks);
+    validateGate(step.gate, step.stepId, nodeIds, options.gateExtraKeys ?? []);
   }
   const stepIndex = new Map(plan.steps.map((step, index) => [step.stepId, index]));
   for (const [index, step] of plan.steps.entries()) {
@@ -307,156 +215,9 @@ export function decodeWorkflowPlanV3(input: unknown, hooks: WorkflowPlanValidati
     }
     validateStepExpressions(step, index, stepIndex);
   }
-  for (const name of references) {
-    if (!engines[name]) fail(`engine reference ${name} is not in execution.engines`);
-  }
-  for (const name of Object.keys(engines)) if (!references.has(name)) fail(`engine ${name} is not referenced`);
-  for (const engine of Object.values(engines)) {
-    if (engine.kind !== "agent") continue;
-    if (engine.fallbackLlmEngine !== null && engines[engine.fallbackLlmEngine]?.kind !== "llm")
-      fail(`SDK engine ${engine.name} fallback must name an LLM engine`);
-  }
-  for (const step of plan.steps) {
-    if (step.root) assertUnitEngineCompatibility(step.root, engines);
-    if (step.gate.judge) {
-      const judge = engines[step.gate.judge.engine];
-      if (!judge) fail(`gate ${step.gate.id} references an unavailable engine`);
-      if (judge.kind === "llm" && step.gate.judge.model === null) fail(`LLM gate ${step.gate.id} has no exact model`);
-      if (judge.kind === "agent" && step.gate.judge.llm !== undefined)
-        fail(`agent gate ${step.gate.id} cannot carry LLM invocation settings`);
-    }
-  }
-  return plan;
 }
 
-function validateEngine(
-  key: string,
-  engine: unknown,
-  references: Set<string>,
-  hooks: WorkflowPlanValidationHooks,
-): void {
-  if (
-    !ENGINE_NAME_PATTERN.test(key) ||
-    key.length > WORKFLOW_MAX_ENGINE_NAME_LENGTH ||
-    !isRecord(engine) ||
-    engine.name !== key ||
-    (engine.kind !== "llm" && engine.kind !== "agent")
-  )
-    fail("catalog keys must equal a valid snapshot name");
-  if (engine.kind === "llm") {
-    assertKeys(
-      engine,
-      [
-        "name",
-        "kind",
-        "provider",
-        "endpoint",
-        "model",
-        "credential",
-        "temperature",
-        "maxTokens",
-        "concurrency",
-        "supportsJsonSchema",
-        "extraParams",
-        "contextLength",
-        "enableThinking",
-      ],
-      `LLM engine ${key}`,
-    );
-    if (
-      typeof engine.endpoint !== "string" ||
-      !engine.endpoint ||
-      typeof engine.model !== "string" ||
-      !engine.model ||
-      !Number.isInteger(engine.concurrency) ||
-      (engine.concurrency as number) < 1 ||
-      (engine.concurrency as number) > WORKFLOW_MAX_CONCURRENCY
-    )
-      fail(`LLM engine ${key} is invalid`);
-    if (engine.provider !== undefined) assertString(engine.provider, `LLM engine ${key} provider`);
-    validateEndpoint(engine.endpoint, key);
-    validateOptionalFiniteNumber(engine.temperature, `LLM engine ${key} temperature`);
-    validateOptionalPositiveInteger(engine.maxTokens, `LLM engine ${key} maxTokens`);
-    validateOptionalPositiveInteger(engine.contextLength, `LLM engine ${key} contextLength`);
-    if (engine.supportsJsonSchema !== undefined && typeof engine.supportsJsonSchema !== "boolean")
-      fail(`LLM engine ${key} supportsJsonSchema must be boolean`);
-    if (engine.enableThinking !== undefined && typeof engine.enableThinking !== "boolean")
-      fail(`LLM engine ${key} enableThinking must be boolean`);
-    if (engine.extraParams !== undefined) {
-      const issue = validateExtraParams(engine.extraParams)[0];
-      if (issue) fail(formatExtraParamsIssue(`LLM engine ${key} extraParams`, issue));
-    }
-    validateExtraParamsValue(engine.extraParams, `LLM engine ${key} extraParams`, hooks);
-    if (engine.credential !== undefined) {
-      if (
-        !isRecord(engine.credential) ||
-        !Array.isArray(engine.credential.names) ||
-        engine.credential.names.length === 0 ||
-        engine.credential.names.length > 32 ||
-        !engine.credential.names.every((n) => typeof n === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(n)) ||
-        new Set(engine.credential.names).size !== engine.credential.names.length ||
-        typeof engine.credential.required !== "boolean"
-      ) {
-        fail(`LLM engine ${key} has an invalid credential descriptor`);
-      }
-      assertKeys(engine.credential, ["names", "required"], `LLM engine ${key} credential`);
-    }
-    return;
-  }
-  assertKeys(
-    engine,
-    [
-      "name",
-      "kind",
-      "runnerKind",
-      "platform",
-      "bin",
-      "args",
-      "workspace",
-      "envPassthrough",
-      "commandBuilder",
-      "fallbackLlmEngine",
-    ],
-    `agent engine ${key}`,
-  );
-  if (
-    (engine.runnerKind !== "agent" && engine.runnerKind !== "sdk") ||
-    typeof engine.platform !== "string" ||
-    !engine.platform ||
-    typeof engine.bin !== "string" ||
-    !engine.bin ||
-    !Array.isArray(engine.args) ||
-    engine.args.length > MAX_LIST_ITEMS ||
-    !engine.args.every((arg) => typeof arg === "string" && arg.length <= MAX_STRING_LENGTH) ||
-    !(typeof engine.workspace === "string" || engine.workspace === null) ||
-    !Array.isArray(engine.envPassthrough) ||
-    engine.envPassthrough.length > MAX_LIST_ITEMS ||
-    !engine.envPassthrough.every((name) => typeof name === "string" && WORKFLOW_ENV_VAR_NAME_PATTERN.test(name)) ||
-    new Set(engine.envPassthrough).size !== engine.envPassthrough.length ||
-    typeof engine.commandBuilder !== "string" ||
-    engine.commandBuilder !== engine.platform ||
-    (engine.workspace !== null && !path.isAbsolute(engine.workspace)) ||
-    !HARNESS_BY_ID.get(engine.platform)?.capabilities.agentDispatch
-  )
-    fail(`agent engine ${key} is invalid`);
-  if ((engine.platform === "opencode-sdk") !== (engine.runnerKind === "sdk"))
-    fail(`agent engine ${key} has incompatible platform and runnerKind`);
-  if (engine.runnerKind === "agent" && engine.fallbackLlmEngine !== null)
-    fail(`agent engine ${key} cannot have an SDK fallback`);
-  if (engine.fallbackLlmEngine !== null) {
-    if (typeof engine.fallbackLlmEngine !== "string" || !engine.fallbackLlmEngine)
-      fail(`agent engine ${key} has an invalid fallback`);
-    references.add(engine.fallbackLlmEngine);
-  }
-}
-
-function validateNode(
-  node: unknown,
-  stepId: string,
-  references: Set<string>,
-  nodeIds: Set<string>,
-  hooks: WorkflowPlanValidationHooks,
-): void {
+function validateNode(node: unknown, stepId: string, nodeIds: Set<string>, unitExtraKeys: readonly string[]): void {
   if (
     !isRecord(node) ||
     (node.kind !== "unit" && node.kind !== "map") ||
@@ -479,7 +240,7 @@ function validateNode(
       fail(`map ${node.id} is invalid`);
     if (node.id !== `${stepId}.map`) fail(`map ${node.id} does not match step ${stepId}`);
     validateSource(node.source, `map ${node.id} source`);
-    validateNode(node.template, stepId, references, nodeIds, hooks);
+    validateNode(node.template, stepId, nodeIds, unitExtraKeys);
     if (!isRecord(node.template) || node.template.kind !== "unit") fail(`map ${node.id} template must be a unit`);
     if (node.template.id !== `${stepId}.unit`) fail(`map ${node.id} template id is invalid`);
     return;
@@ -490,23 +251,20 @@ function validateNode(
       "kind",
       "id",
       "instructions",
-      "templating",
       "inputs",
-      "invocation",
-      "exec",
       "schema",
       "retry",
       "onError",
       "env",
       "isolation",
       "source",
+      ...unitExtraKeys,
     ],
     `unit ${node.id}`,
   );
   if (
     typeof node.instructions !== "string" ||
     !node.instructions ||
-    node.templating !== "verbatim" ||
     (node.onError !== "fail" && node.onError !== "continue") ||
     (node.isolation !== "none" && node.isolation !== "worktree")
   )
@@ -519,17 +277,6 @@ function validateNode(
   validateStringArray(node.env, `unit ${node.id} env`, MAX_LIST_ITEMS, true);
   validateStringArray(node.inputs, `unit ${node.id} inputs`, WORKFLOW_MAX_INPUTS, true);
   validateSource(node.source, `unit ${node.id} source`);
-  // Exactly one dispatch mechanism per unit. A node carrying both would let a
-  // tampered plan smuggle a shell command past the engine-compatibility checks
-  // (which key off the invocation); one carrying neither has nothing to run.
-  if ((node.invocation === undefined) === (node.exec === undefined)) {
-    fail(`unit ${node.id} must declare exactly one of invocation or exec`);
-  }
-  if (node.exec !== undefined) {
-    validateExecSpec(node.exec, `unit ${node.id} exec`);
-    return;
-  }
-  validateInvocation(node.invocation, references, hooks);
 }
 
 /**
@@ -540,7 +287,7 @@ function validateNode(
  */
 function validateExecSpec(value: unknown, label: string): void {
   if (!isRecord(value)) fail(`${label} must be an object`);
-  assertKeys(value, ["command", "cwd", "passEnv", "inheritEnv", "timeoutMs"], label);
+  assertKeys(value, ["command", "cwd", "passEnv", "timeoutMs"], label);
   validateExecEnvScope(value, label);
   const command = value.command;
   if (
@@ -573,20 +320,23 @@ function validateExecSpec(value: unknown, label: string): void {
   }
 }
 
+/** Decode one current frozen exec spec. */
+export function decodeWorkflowExecSpec(value: unknown, label: string): IrExecSpec {
+  validateExecSpec(value, label);
+  return value as IrExecSpec;
+}
+
 /**
  * The child's ENVIRONMENT SCOPE half of a frozen exec spec. Split out so
  * {@link validateExecSpec} keeps its shape (and the src-fn-size ratchet stays
  * shrink-only).
  *
- * Both keys are canonical-form-only: `inheritEnv` may only be `true` and
- * `passEnv` may only be a non-empty deduplicated name list. A persisted `false`
- * or `[]` means exactly what absence means, and admitting a second spelling of
- * the default would give the same unit two different input hashes.
+ * `passEnv` is canonical-form-only and may only be a non-empty deduplicated
+ * name list. A persisted `[]` means exactly what absence means, and admitting a
+ * second spelling of the default would give the same unit two different input
+ * hashes.
  */
 function validateExecEnvScope(value: Record<string, unknown>, label: string): void {
-  if (value.inheritEnv !== undefined && value.inheritEnv !== true) {
-    fail(`${label}.inheritEnv must be true when present (the allowlist default is the key's ABSENCE)`);
-  }
   if (value.passEnv === undefined) return;
   const passEnv = value.passEnv;
   if (
@@ -603,13 +353,7 @@ function validateExecEnvScope(value: Record<string, unknown>, label: string): vo
   }
 }
 
-function validateGate(
-  gate: unknown,
-  stepId: string,
-  references: Set<string>,
-  nodeIds: Set<string>,
-  hooks: WorkflowPlanValidationHooks,
-): void {
+function validateGate(gate: unknown, stepId: string, nodeIds: Set<string>, gateExtraKeys: readonly string[]): void {
   if (
     !isRecord(gate) ||
     gate.kind !== "gate" ||
@@ -624,29 +368,8 @@ function validateGate(
   )
     fail(`gate for step ${stepId} is invalid`);
   if (nodeIds.has(gate.id)) fail(`gate id ${gate.id} collides with a node`);
-  assertKeys(gate, ["kind", "id", "stepId", "criteria", "maxLoops", "judge"], `gate ${stepId}`);
+  assertKeys(gate, ["kind", "id", "stepId", "criteria", "maxLoops", ...gateExtraKeys], `gate ${stepId}`);
   nodeIds.add(gate.id);
-  if (gate.criteria.length === 0 && gate.judge !== null) fail(`gate ${gate.id} without criteria cannot have a judge`);
-  if (gate.judge !== null) validateInvocation(gate.judge, references, hooks);
-}
-
-function validateInvocation(invocation: unknown, references: Set<string>, hooks: WorkflowPlanValidationHooks): void {
-  if (
-    !isRecord(invocation) ||
-    typeof invocation.engine !== "string" ||
-    !invocation.engine ||
-    !((typeof invocation.model === "string" && invocation.model.length > 0) || invocation.model === null) ||
-    !(
-      invocation.timeoutMs === null ||
-      (Number.isSafeInteger(invocation.timeoutMs) &&
-        (invocation.timeoutMs as number) >= 1 &&
-        (invocation.timeoutMs as number) <= WORKFLOW_MAX_TIMEOUT_MS)
-    )
-  )
-    fail("invocation is invalid");
-  references.add(invocation.engine);
-  assertKeys(invocation, ["engine", "model", "timeoutMs", "llm"], "invocation");
-  validateLlmOverrides(invocation.llm, hooks);
 }
 
 function validateRoute(route: unknown, stepId: string): void {
@@ -664,25 +387,6 @@ function validateRoute(route: unknown, stepId: string): void {
   assertKeys(route, ["input", "when", "defaultStepId"], `route ${stepId}`);
   if (route.defaultStepId !== undefined && (typeof route.defaultStepId !== "string" || !route.defaultStepId))
     fail(`route for step ${stepId} has an invalid default target`);
-}
-
-function assertUnitEngineCompatibility(node: IrExecNode, engines: Record<string, FrozenEngineSnapshot>): void {
-  const unit = node.kind === "map" ? node.template : node;
-  // An exec unit names no engine at all, so there is no engine pairing to
-  // check. It is the ONE kind that may carry `env` + `isolation: worktree`
-  // without an engine behind it: it spawns a real child process, which is
-  // exactly the precondition those two features require. `validateNode` has
-  // already proven it carries no `invocation`, so nothing here can be bypassed
-  // by declaring both.
-  if (unit.exec !== undefined) return;
-  const engine = unit.invocation ? engines[unit.invocation.engine] : undefined;
-  if (!engine) return;
-  if (engine.kind === "llm" && unit.invocation?.model === null) fail(`LLM unit ${unit.id} has no exact model`);
-  if (engine.kind === "agent" && unit.invocation?.llm !== undefined)
-    fail(`agent unit ${unit.id} cannot carry LLM invocation settings`);
-  if (engine.kind === "llm" && ((unit.env?.length ?? 0) > 0 || unit.isolation === "worktree")) {
-    fail(`LLM unit ${unit.id} cannot use env injection or worktree isolation`);
-  }
 }
 
 function assertKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
@@ -763,44 +467,12 @@ function validateRetry(retry: unknown, nodeId: string): void {
     fail(`unit ${nodeId} retry.on is invalid`);
 }
 
-function validateLlmOverrides(value: unknown, hooks: WorkflowPlanValidationHooks): void {
-  if (value === undefined) return;
-  if (!isRecord(value)) fail("invocation.llm must be an object");
-  assertKeys(
-    value,
-    ["temperature", "maxTokens", "supportsJsonSchema", "extraParams", "contextLength", "enableThinking"],
-    "invocation.llm",
-  );
-  validateOptionalFiniteNumber(value.temperature, "invocation.llm.temperature");
-  validateOptionalPositiveInteger(value.maxTokens, "invocation.llm.maxTokens");
-  validateOptionalPositiveInteger(value.contextLength, "invocation.llm.contextLength");
-  if (value.supportsJsonSchema !== undefined && typeof value.supportsJsonSchema !== "boolean")
-    fail("invocation.llm.supportsJsonSchema must be boolean");
-  if (value.enableThinking !== undefined && typeof value.enableThinking !== "boolean")
-    fail("invocation.llm.enableThinking must be boolean");
-  if (value.extraParams !== undefined) {
-    const issue = validateExtraParams(value.extraParams)[0];
-    if (issue) fail(formatExtraParamsIssue("invocation.llm.extraParams", issue));
-  }
-  validateExtraParamsValue(value.extraParams, "invocation.llm.extraParams", hooks);
-}
-
 function validateSchema(value: unknown, label: string): asserts value is Record<string, unknown> {
   if (!isRecord(value)) fail(`${label} must be an object`);
   if (jsonBytes(value) > WORKFLOW_MAX_SCHEMA_BYTES) fail(`${label} exceeds the 256 KiB resource limit`);
 }
 
-function validateExtraParamsValue(value: unknown, label: string, hooks: WorkflowPlanValidationHooks): void {
-  if (value === undefined) return;
-  if (!isRecord(value)) fail(`${label} must be an object`);
-  if (jsonBytes(value) > WORKFLOW_MAX_EXTRA_PARAMS_BYTES) fail(`${label} exceeds the 64 KiB resource limit`);
-  const issue = validateExtraParams(value)[0];
-  if (issue) fail(formatExtraParamsIssue(label, issue));
-  const policyError = hooks.validateExtraParams?.(value, label);
-  if (policyError) fail(`${label}: ${policyError}`);
-}
-
-function validateStepExpressions(step: IrStepPlan, index: number, steps: Map<string, number>): void {
+function validateStepExpressions(step: IrStepPlanCore, index: number, steps: Map<string, number>): void {
   const validateReference = (text: string, label: string, paramsAllowed: boolean): void => {
     const parsed = parseReference(text);
     if (!parsed.ok) fail(`${label} contains an invalid reference`);
@@ -849,30 +521,9 @@ function validateStringArray(
     fail(`${label} is invalid`);
 }
 
-function validateOptionalFiniteNumber(value: unknown, label: string): void {
-  if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) fail(`${label} must be finite`);
-}
-
 function validateOptionalPositiveInteger(value: unknown, label: string): void {
   if (value !== undefined && (!Number.isSafeInteger(value) || (value as number) < 1))
     fail(`${label} must be a positive safe integer`);
-}
-
-function validateEndpoint(value: string, engine: string): void {
-  try {
-    const url = new URL(value);
-    if (
-      (url.protocol !== "http:" && url.protocol !== "https:") ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      !url.pathname.endsWith("/chat/completions")
-    )
-      fail(`LLM engine ${engine} endpoint is not canonical`);
-  } catch {
-    fail(`LLM engine ${engine} endpoint is invalid`);
-  }
 }
 
 function assertString(value: unknown, label: string): asserts value is string {

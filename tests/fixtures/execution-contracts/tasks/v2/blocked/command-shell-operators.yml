@@ -1,0 +1,4 @@
+version: 2
+schedule: "@daily"
+enabled: true
+command: echo before && echo after

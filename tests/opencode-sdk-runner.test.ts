@@ -34,6 +34,7 @@ const baseProfile: AgentProfile = {
 interface PromptCapture {
   body?: {
     parts: { type: string; text: string }[];
+    agent?: string;
     system?: string;
     tools?: Record<string, boolean>;
   };
@@ -98,6 +99,20 @@ afterEach(() => {
 });
 
 describe("runOpencodeSdk — #564 bug fix (1): systemPrompt forwarding", () => {
+  test("forwards an exact native agent selector to the SDK prompt body", async () => {
+    const capture: PromptCapture = {};
+    const fake = makeFakeServer(capture);
+    __setTestServer(fake.server as never);
+
+    const res = await runOpencodeSdk(baseProfile, "do the thing", {
+      dispatch: { prompt: "do the thing", agent: "Review-Team.Exact" } as RunAgentOptions["dispatch"],
+      timeoutMs: null,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(capture.body?.agent).toBe("Review-Team.Exact");
+  });
+
   test("forwards dispatch.systemPrompt to the SDK prompt body", async () => {
     const capture: PromptCapture = {};
     const fake = makeFakeServer(capture);
@@ -326,9 +341,9 @@ describe("runOpencodeSdk — one end-to-end deadline", () => {
   });
 });
 
-// ── buildSdkConfig — model alias resolution on the SDK path ──────────────────
+// ── buildSdkConfig — exact model selection on the SDK path ──────────────────
 
-describe("buildSdkConfig — model alias resolution", () => {
+describe("buildSdkConfig — exact model selection", () => {
   const baseProfile: AgentProfile = {
     name: "opencode-sdk",
     bin: "",
@@ -338,33 +353,7 @@ describe("buildSdkConfig — model alias resolution", () => {
     parseOutput: "text",
   };
 
-  test("profile.modelAliases resolves before the SDK config is built", async () => {
-    const { buildSdkConfig } = await import("../src/integrations/harnesses/opencode-sdk/sdk-runner");
-    const cfg = buildSdkConfig({
-      ...baseProfile,
-      model: "fast",
-      modelAliases: { fast: "anthropic/claude-haiku-4-5" },
-    });
-    expect(cfg.model).toBe("anthropic/claude-haiku-4-5");
-  });
-
-  test("global tier table resolves via the opencode-sdk platform column, then '*'", async () => {
-    const { buildSdkConfig } = await import("../src/integrations/harnesses/opencode-sdk/sdk-runner");
-    const viaColumn = buildSdkConfig({
-      ...baseProfile,
-      model: "deep",
-      globalModelAliases: { deep: { "opencode-sdk": "anthropic/claude-opus-4-7", "*": "wrong" } },
-    });
-    expect(viaColumn.model).toBe("anthropic/claude-opus-4-7");
-    const viaStar = buildSdkConfig({
-      ...baseProfile,
-      model: "deep",
-      globalModelAliases: { deep: { "*": "anthropic/claude-opus-4-7" } },
-    });
-    expect(viaStar.model).toBe("anthropic/claude-opus-4-7");
-  });
-
-  test("unaliased model passes through verbatim; unqualified model gets akm-custom prefix with endpoint", async () => {
+  test("a provider-qualified model passes through; an unqualified model gets the endpoint provider", async () => {
     const { buildSdkConfig } = await import("../src/integrations/harnesses/opencode-sdk/sdk-runner");
     const plain = buildSdkConfig({ ...baseProfile, model: "anthropic/claude-sonnet-4-6" });
     expect(plain.model).toBe("anthropic/claude-sonnet-4-6");
@@ -375,13 +364,12 @@ describe("buildSdkConfig — model alias resolution", () => {
     expect(prefixed.model).toBe("akm-custom/my-local-model");
   });
 
-  test("alias resolving to an unqualified string still gets akm-custom prefix with endpoint", async () => {
+  test("an exact unqualified selector gets the endpoint provider", async () => {
     const { buildSdkConfig } = await import("../src/integrations/harnesses/opencode-sdk/sdk-runner");
     const cfg = buildSdkConfig(
       {
         ...baseProfile,
-        model: "fast",
-        modelAliases: { fast: "qwen3-30b-a3b" },
+        model: "qwen3-30b-a3b",
       },
       { endpoint: "http://localhost:1234/v1/chat/completions", model: "fallback" },
     );

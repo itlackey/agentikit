@@ -7,18 +7,23 @@
  *
  * Enforces the secret-resolver injection boundary (P4 architecture review,
  * docs/architecture/reviews/env-secret-access.md): every MATERIALIZING call to
- * `ensureSourceCaches` must supply a `secrets` resolver.
+ * `ensureSourceCaches` must supply a `secrets` resolver, and any direct call to
+ * `ensureWebsiteMirror` must supply `resolveSecret`.
  *
  * The `secrets?: SecretResolver` option is deliberately optional — an absent
- * resolver means "environment variables only", the backward-compatible read
+ * resolver means "environment variables only", the documented read
  * path. But a caller that MATERIALIZES sources (clones/pulls/re-fetches, i.e.
  * does not pass `materialize: false`) and omits `secrets` silently reverts a
  * website source's X fetcher to `X_BEARER_TOKEN`-only — the exact
  * `sync()`/bundle-update gap P4 closed. That gap was invisible for months
  * because nothing failed loudly; this guard makes a regression fail the build.
  *
- * What is flagged: a `ensureSourceCaches(` call whose argument object does not
- * contain `materialize: false` AND does not contain `secrets`.
+ * What is flagged:
+ *   - an `ensureSourceCaches(` call whose argument object does not contain
+ *     `materialize: false` AND does not contain `secrets`; or
+ *   - a direct `ensureWebsiteMirror(` call without `resolveSecret`; or
+ *   - a provider `.sync(` call that supplies `ensureWebsiteMirror` without
+ *     also supplying `secrets`.
  *
  * What is NOT flagged: read-only callers (`materialize: false`), and the
  * function's own definition / re-export / dynamic-import destructuring lines.
@@ -179,6 +184,42 @@ for (const file of collectTs(srcDir)) {
         `inject a SecretResolver (e.g. storeSecretResolver) or pass \`materialize: false\` for a read-only call.`,
     );
   }
+
+  const websiteMirrorPattern = /ensureWebsiteMirror\s*\(/g;
+  for (const match of code.matchAll(websiteMirrorPattern)) {
+    const at = match.index ?? 0;
+    const before = code.slice(Math.max(0, at - 40), at);
+    // Skip the function declaration; imported/destructured references do not
+    // include an opening parenthesis and therefore never match this pattern.
+    if (/function\s+$/.test(before)) continue;
+
+    const openParen = at + match[0].length - 1;
+    const call = readCallArgs(code, openParen);
+    if (!call || /\bresolveSecret\b/.test(call.args)) continue;
+
+    violations.push(
+      `${rel}:${lineOf(code, at)}  ensureWebsiteMirror(...) materializes but does not pass \`resolveSecret\` — ` +
+        "inject the store-backed resolver at this composition boundary or refresh through SourceProvider.sync(...).",
+    );
+  }
+
+  // A website refresh may also be composed directly through the provider
+  // seam. Key the rule to the mirror capability rather than a filename or
+  // variable name: git/npm sync calls legitimately have no secret resolver,
+  // while any sync call carrying ensureWebsiteMirror is necessarily the
+  // website composition and must carry the resolver beside it.
+  const providerSyncPattern = /\.sync\s*(?:\?\.)?\s*\(/g;
+  for (const match of code.matchAll(providerSyncPattern)) {
+    const at = match.index ?? 0;
+    const openParen = at + match[0].length - 1;
+    const call = readCallArgs(code, openParen);
+    if (!call || !/\bensureWebsiteMirror\b/.test(call.args) || /\bsecrets\b/.test(call.args)) continue;
+
+    violations.push(
+      `${rel}:${lineOf(code, at)}  provider.sync(...) supplies \`ensureWebsiteMirror\` without \`secrets\` — ` +
+        "inject a SecretResolver alongside the website mirror capability.",
+    );
+  }
 }
 
 if (violations.length > 0) {
@@ -187,6 +228,4 @@ if (violations.length > 0) {
   process.exit(1);
 }
 
-console.log(
-  "lint-secret-resolver-boundary: OK - every materializing ensureSourceCaches caller injects a SecretResolver.",
-);
+console.log("lint-secret-resolver-boundary: OK - every materializing source refresh injects a SecretResolver.");

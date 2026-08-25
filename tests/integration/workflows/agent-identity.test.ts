@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { readEvents } from "../../../src/core/events";
-import { denormalizeRuntimeIdentity, HARNESS_REGISTRY } from "../../../src/integrations/harnesses";
+import { HARNESS_REGISTRY } from "../../../src/integrations/harnesses";
 import { resolveAgentIdentity } from "../../../src/workflows/runtime/agent-identity";
 import { getWorkflowStatus, listWorkflowRuns, startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import {
@@ -40,9 +40,9 @@ describe("resolveAgentIdentity", () => {
     expect(identity).toEqual({ harness: "custom-harness", sessionId: "sess-123" });
   });
 
-  test("infers claude-code from CLAUDE_SESSION_ID", () => {
+  test("infers claude from CLAUDE_SESSION_ID", () => {
     const identity = resolveAgentIdentity({ CLAUDE_SESSION_ID: "abc-def" });
-    expect(identity).toEqual({ harness: "claude-code", sessionId: "abc-def" });
+    expect(identity).toEqual({ harness: "claude", sessionId: "abc-def" });
   });
 
   test("infers opencode from OPENCODE_SESSION_ID", () => {
@@ -53,7 +53,7 @@ describe("resolveAgentIdentity", () => {
   test("ignores blank/whitespace-only env values", () => {
     const identity = resolveAgentIdentity({ AKM_AGENT_HARNESS: "   ", CLAUDE_SESSION_ID: "  cs  " });
     // blank harness override falls through to inference; session id is trimmed.
-    expect(identity).toEqual({ harness: "claude-code", sessionId: "cs" });
+    expect(identity).toEqual({ harness: "claude", sessionId: "cs" });
   });
 
   // ── registry-derived markers (P2, plan §"Kill registry drift") ────────────
@@ -61,14 +61,14 @@ describe("resolveAgentIdentity", () => {
   // vars) and `presenceEnv` (presence-only flags), so every harness that
   // declares a marker must be detected without this module knowing it.
 
-  test("every registry identityEnv marker detects its harness's runtime identity", () => {
+  test("every registry identityEnv marker detects its exact harness id", () => {
     const marked = HARNESS_REGISTRY.filter((h) => (h.identityEnv?.length ?? 0) > 0);
     // Guard: the derivation is only meaningful if markers exist at all.
     expect(marked.length).toBeGreaterThanOrEqual(2);
     for (const h of marked) {
       for (const envKey of h.identityEnv ?? []) {
         const identity = resolveAgentIdentity({ [envKey]: "sess-1" });
-        expect(identity).toEqual({ harness: denormalizeRuntimeIdentity(h.id), sessionId: "sess-1" });
+        expect(identity).toEqual({ harness: h.id, sessionId: "sess-1" });
       }
     }
   });
@@ -82,7 +82,7 @@ describe("resolveAgentIdentity", () => {
     for (const h of flagged) {
       for (const envKey of h.presenceEnv ?? []) {
         const identity = resolveAgentIdentity({ [envKey]: "not-a-session-id" });
-        expect(identity).toEqual({ harness: denormalizeRuntimeIdentity(h.id), sessionId: null });
+        expect(identity).toEqual({ harness: h.id, sessionId: null });
       }
     }
   });
@@ -122,7 +122,7 @@ describe("resolveAgentIdentity", () => {
     // registry-derived table sorts by canonical id ('claude' < 'opencode'),
     // which keeps this byte-identical — including the paired session id.
     const identity = resolveAgentIdentity({ OPENCODE_SESSION_ID: "oc-1", CLAUDE_SESSION_ID: "cc-1" });
-    expect(identity).toEqual({ harness: "claude-code", sessionId: "cc-1" });
+    expect(identity).toEqual({ harness: "claude", sessionId: "cc-1" });
   });
 });
 
@@ -167,20 +167,20 @@ describe("workflow run agent identity persistence", () => {
     const started = await startWorkflowRun(
       "workflows/explicit-flow",
       {},
-      { agentHarness: "claude-code", agentSessionId: "session-xyz" },
+      { agentHarness: "claude", agentSessionId: "session-xyz" },
     );
 
-    expect(started.run.agentHarness).toBe("claude-code");
+    expect(started.run.agentHarness).toBe("claude");
     expect(started.run.agentSessionId).toBe("session-xyz");
 
     // Re-read from the database to prove it is persisted, not just echoed.
     const reloaded = await getWorkflowStatus(started.run.id);
-    expect(reloaded.run.agentHarness).toBe("claude-code");
+    expect(reloaded.run.agentHarness).toBe("claude");
     expect(reloaded.run.agentSessionId).toBe("session-xyz");
 
     const listed = await listWorkflowRuns({ workflowRef: "workflows/explicit-flow" });
     const match = listed.runs.find((r) => r.id === started.run.id);
-    expect(match?.agentHarness).toBe("claude-code");
+    expect(match?.agentHarness).toBe("claude");
     expect(match?.agentSessionId).toBe("session-xyz");
   });
 
@@ -205,11 +205,11 @@ describe("workflow run agent identity persistence", () => {
     const started = await withEnv({ CLAUDE_SESSION_ID: "env-session-42" }, () =>
       startWorkflowRun("workflows/env-flow", {}),
     );
-    expect(started.run.agentHarness).toBe("claude-code");
+    expect(started.run.agentHarness).toBe("claude");
     expect(started.run.agentSessionId).toBe("env-session-42");
 
     const reloaded = await getWorkflowStatus(started.run.id);
-    expect(reloaded.run.agentHarness).toBe("claude-code");
+    expect(reloaded.run.agentHarness).toBe("claude");
     expect(reloaded.run.agentSessionId).toBe("env-session-42");
   });
 

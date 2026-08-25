@@ -32,7 +32,13 @@ import {
 import { findSourceForPath, resolveSourceEntries } from "../../indexer/search/search-source";
 import { insertUsageEvent, type UsageEventSource } from "../../indexer/usage/usage-events";
 import { truncateDescription } from "../../output/shapes/helpers";
-import type { RegistrySearchResultHit, SearchResponse, ShowResponse, SourceSearchHit } from "../../sources/types";
+import type {
+  RegistrySearchResultHit,
+  SearchExecutionMode,
+  SearchResponse,
+  ShowResponse,
+  SourceSearchHit,
+} from "../../sources/types";
 import { TELEMETRY_BUSY_TIMEOUT_MS, withIndexDb } from "../../storage/repositories/index-db";
 import { findEntryIdByRef, getItemRefById } from "../../storage/repositories/index-entries-repository";
 import { computeBodyHash } from "../../storage/repositories/index-llm-cache-repository";
@@ -82,6 +88,7 @@ export interface CurateResponse {
   summary: string;
   items: CuratedItem[];
   warnings?: string[];
+  searchMode?: SearchExecutionMode;
   tip?: string;
 }
 
@@ -299,6 +306,7 @@ export async function curateSearchResults(
     summary: buildCurateSummary(query, items),
     items,
     ...(result.warnings?.length ? { warnings: result.warnings } : {}),
+    ...(result.searchMode ? { searchMode: result.searchMode } : {}),
     ...(result.tip ? { tip: result.tip } : {}),
   };
 }
@@ -549,12 +557,23 @@ export function mergeCurateSearchResponses(base: SearchResponse, extras: SearchR
     ...baseReg,
     ...[...extraRegOnly.values()].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
   ];
+  const modes = [base.searchMode, ...extras.map((result) => result.searchMode)].filter(
+    (mode): mode is SearchExecutionMode => mode !== undefined,
+  );
+  const searchMode = modes.includes("fts-fallback")
+    ? "fts-fallback"
+    : modes.includes("semantic")
+      ? "semantic"
+      : modes.includes("keyword")
+        ? "keyword"
+        : undefined;
 
   return {
     ...base,
     hits: mergedHits,
     ...(mergedRegistryHits.length > 0 ? { registryHits: mergedRegistryHits } : {}),
     ...(warnings.length > 0 ? { warnings } : {}),
+    ...(searchMode ? { searchMode } : {}),
     ...(mergedHits.length > 0 || mergedRegistryHits.length > 0 ? { tip: undefined } : {}),
   };
 }

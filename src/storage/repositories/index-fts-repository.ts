@@ -54,7 +54,7 @@ function runFtsQuery(
   // (never emit `NOT IN ()`, which is a SQL error / always-false).
   const excludes = excludeTypes && excludeTypes.length > 0 ? excludeTypes : [];
 
-  // The typed and untyped paths differ ONLY by one WHERE clause (an entry_type
+  // The typed and untyped paths differ only by one `type` WHERE clause
   // equality vs. an optional NOT IN exclusion) and their param order — the
   // SELECT/JOIN/ORDER/LIMIT is shared, so build it once. Join on integer
   // entry_id directly (no CAST; we store integer). bm25() per-column weights:
@@ -62,16 +62,16 @@ function runFtsQuery(
   let filterClause: string;
   let params: unknown[];
   if (entryType && entryType !== "any") {
-    filterClause = "AND e.entry_type = ?";
+    filterClause = "AND e.type = ?";
     params = [ftsQuery, entryType, limit];
   } else {
-    filterClause = excludes.length > 0 ? `AND e.entry_type NOT IN (${excludes.map(() => "?").join(", ")})` : "";
+    filterClause = excludes.length > 0 ? `AND e.type NOT IN (${excludes.map(() => "?").join(", ")})` : "";
     // Param order: MATCH, then the NOT IN values, then LIMIT.
     params = [ftsQuery, ...excludes, limit];
   }
 
   const sql = `
-    SELECT e.id, e.file_path AS filePath, e.entry_json, e.search_text AS searchText,
+    SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
            e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
            bm25(entries_fts, 0, 10.0, 5.0, 3.0, 2.0, 1.0) AS bm25Score
     FROM entries_fts f
@@ -86,12 +86,12 @@ function runFtsQuery(
     const rows = db.prepare(sql).all(...(params as SqlValue[])) as Array<{
       id: number;
       filePath: string;
-      entry_json: string;
+      documentJson: string;
       searchText: string;
-      itemRef: string | null;
-      bundleId: string | null;
-      conceptId: string | null;
-      adapterId: string | null;
+      itemRef: string;
+      bundleId: string;
+      conceptId: string;
+      adapterId: string;
       bm25Score: number;
     }>;
 
@@ -100,9 +100,9 @@ function runFtsQuery(
     for (const row of rows) {
       let entry: IndexDocument;
       try {
-        entry = JSON.parse(row.entry_json) as IndexDocument;
+        entry = JSON.parse(row.documentJson) as IndexDocument;
       } catch {
-        warn(`[db] searchFts: skipping entry id=${row.id} — corrupt entry_json`);
+        warn(`[db] searchFts: skipping entry id=${row.id} — corrupt document_json`);
         continue;
       }
       results.push({
@@ -142,14 +142,14 @@ export function rebuildFts(db: Database, options?: { incremental?: boolean }): v
   const incremental = options?.incremental === true;
 
   db.transaction(() => {
-    let rows: Array<{ id: number; entry_json: string }>;
+    let rows: Array<{ id: number; document_json: string }>;
     if (incremental) {
       // Read the dirty queue and join against entries to get the JSON.
       // Then drop the matching rows from entries_fts so the INSERT below
       // doesn't double-up. The dirty list is drained at the end.
       rows = db
         .prepare(
-          `SELECT e.id AS id, e.entry_json AS entry_json
+          `SELECT e.id AS id, e.document_json AS document_json
              FROM entries_fts_dirty d
              JOIN entries e ON e.id = d.entry_id`,
         )
@@ -166,7 +166,7 @@ export function rebuildFts(db: Database, options?: { incremental?: boolean }): v
     } else {
       // Full path: wipe and re-read every row.
       db.exec("DELETE FROM entries_fts");
-      rows = db.prepare("SELECT id, entry_json FROM entries").all() as typeof rows;
+      rows = db.prepare("SELECT id, document_json FROM entries").all() as typeof rows;
     }
 
     const insertStmt = db.prepare(
@@ -178,7 +178,7 @@ export function rebuildFts(db: Database, options?: { incremental?: boolean }): v
       let entry: IndexDocument;
       let fields: ReturnType<typeof buildSearchFields>;
       try {
-        entry = JSON.parse(row.entry_json) as IndexDocument;
+        entry = JSON.parse(row.document_json) as IndexDocument;
         fields = buildSearchFields(entry);
       } catch {
         skipped++;
@@ -188,7 +188,7 @@ export function rebuildFts(db: Database, options?: { incremental?: boolean }): v
     }
 
     if (skipped > 0) {
-      warn(`[db] rebuildFts: skipped ${skipped} entr${skipped === 1 ? "y" : "ies"} with invalid entry_json`);
+      warn(`[db] rebuildFts: skipped ${skipped} entr${skipped === 1 ? "y" : "ies"} with invalid document_json`);
     }
 
     // Always drain the dirty queue — both paths converge here. The

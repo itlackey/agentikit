@@ -8,8 +8,8 @@ import { akmInit } from "../../src/commands/sources/init";
 import { resetConfigCache, saveConfig } from "../../src/core/config/config";
 import { getConfigPath } from "../../src/core/paths";
 import { akmIndex } from "../../src/indexer/indexer";
-import { mergeLockEntriesSync } from "../../src/integrations/lockfile";
 import type { SearchHit, SourceSearchHit } from "../../src/sources/types";
+import { seedLockEntries } from "../_helpers/lockfile";
 
 const createdTmpDirs: string[] = [];
 
@@ -194,9 +194,7 @@ describe("source commands and resolution", () => {
       semanticSearchMode: "off",
       bundles: { "deploy-stash": { npm: "@scope/deploy-stash", registryId: "npm:@scope/deploy-stash" } },
     });
-    mergeLockEntriesSync([
-      { id: "deploy-stash", source: "npm", ref: "@scope/deploy-stash", localRoot: installedStash },
-    ]);
+    seedLockEntries([{ id: "deploy-stash", source: "npm", ref: "@scope/deploy-stash", localRoot: installedStash }]);
     process.env.AKM_BUNDLE_DIR = stashDir;
 
     await akmIndex({ stashDir, full: true });

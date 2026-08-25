@@ -13,15 +13,75 @@ detail.
 - For operating a run day to day (`run`, `status`, `resume`, `abandon`), see
   [Running Workflows](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md).
 
-## One format
+## Source formats and shared IR
 
-A workflow is an ordinary AKM markdown asset — the same envelope as every
-other type, OKF-conformant frontmatter plus a markdown body — whose
-frontmatter carries the entire orchestration graph (params, and how each step
-dispatches, fans out, routes, and gates) and whose body carries each step's
+Peer workflow sources include Markdown `.md` and GitHub-shaped YAML `.yml`.
+`.yaml` is not supported or recognized as a workflow source. Both adapters
+compile into the same strict source IR version 1 (`sourceIrVersion: 1`) before
+target resolution and durable freezing.
+
+The shipped `schemas/akm-workflow.json` frontmatter schema applies to and
+validates the Markdown source only. Markdown is not the sole or only workflow
+source; the GitHub-shaped YAML adapter has its own bounded parser and shares
+the source-IR decoder and semantic authorities.
+
+### Markdown source
+
+A Markdown workflow is an ordinary AKM asset — the same envelope as every
+other Markdown type, OKF-conformant frontmatter plus a body — whose
+frontmatter carries the orchestration graph (params, and how each step
+dispatches, fans out, routes, and gates). Its body carries each step's
 instructions and gate rubric under plain headings, joined to the frontmatter
-by step id. There is **one** format: no separate YAML "program" surface, no
-`.yaml`/`.yml` workflow files.
+by step id. The remainder of this page's frontmatter/body sections document
+that Markdown authoring format.
+
+## GitHub-shaped YAML subset
+
+A complete valid `on` plus `jobs` document is one workflow asset.
+It never creates a duplicate or second task asset. The root vocabulary is exactly
+`name`, `on`, and `jobs`:
+
+```yaml
+name: Local checks
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+jobs:
+  checks:
+    runs-on: [self-hosted]
+    steps:
+      - id: lint
+        run: bun run lint
+      - id: review
+        uses: akm/command
+        with:
+          ref: commands/review
+```
+
+The accepted 0.9.2 subset is deliberately closed:
+
+- `on` accepts five-field `schedule` entries and an empty or null
+  `workflow_dispatch`; workflow_dispatch inputs are unsupported.
+- Service events are rejected.
+  A rejected service event creates no watcher and no polling daemon.
+- Each job requires exactly `runs-on: [self-hosted]`. `name`, `needs`, and
+  `steps` are the remaining job fields.
+- Each step requires `id` and exactly one `uses` or `run`; optional fields are
+  `name`, `with`, `env`, `shell`, and contained `working-directory`.
+- A `run` accepts only token-safe local command tokens.
+  Shell expansion and operators are unsupported and rejected, even when a host shell is named.
+- `uses` delegates to the task-v3 ref classifier. `akm/command`, command,
+  script, and task composition are local targets.
+  Local actions and Docker actions are unsupported and rejected (including `./` and `docker://`); remote actions are rejected
+  because acquisition is out of scope; nested workflows are unsupported.
+- GitHub expressions and contexts are unsupported and rejected anywhere in
+  the parsed tree.
+
+Multi-job documents are dependency-validated, indexed, and displayable, but
+cannot execute in 0.9.2 because the runtime boundary is single-job execution.
+The runtime refuses instead of flattening `needs` or fabricating job
+semantics.
 
 ## Frontmatter keys
 
@@ -668,7 +728,8 @@ stripped it — the same treatment an agent-harness child gets.
 
 Deliberately **not** on the list: credentials of any kind, cloud/CI variables,
 and the proxy family (`HTTP_PROXY` and friends — proxy URLs routinely embed
-credentials). Reach them with `pass_env:`, an `env:` binding, or `inherit_env:`.
+credentials). Reach a required value with an exact named `env:` binding, or
+name a non-secret per-machine variable with `pass_env:`.
 
 #### `pass_env:` — widen the allowlist by name
 
@@ -687,26 +748,16 @@ a committed *value*, so it cannot carry "whatever this build agent's
 Values passed through this way are **not** redacted from the command's output
 the way `env:` binding values are, so never list a credential here.
 
-#### `inherit_env:` — opt back into full inheritance
+#### Durable v4 forbids `inherit_env`
 
-```yaml
-    unit:
-      exec:
-        command: ["./scripts/deploy.sh"]
-        inherit_env: true
-```
+Every new workflow start freezes a durable v4 plan. V4 rejects
+`inherit_env: true` and any other request for whole-process inheritance; use
+exact named environment bindings and `pass_env:` instead. Both mechanisms are
+dispatch-significant, keep the visible environment surface bounded, and form
+part of the unit's input hash.
 
-`inherit_env: true` gives the command akm's **entire** environment, verbatim —
-what it would see if you had typed it yourself in the shell that ran
-`akm workflow run`. Reach for it when a command genuinely needs the
-caller's whole environment (a wrapper script, a toolchain with many ambient
-variables) and enumerating names would be a losing game. Prefer `pass_env:` or
-`env:` bindings when you can, because those keep what the command can see
-visible in the frontmatter diff.
-
-Both keys are **dispatch-significant**: they change what the command can see,
-so both are part of the unit's input hash. Changing either re-dispatches the
-unit rather than reusing a journaled row produced under the other scope.
+The historical `inherit_env` spelling is unsupported. Pre-v4 stored plans are
+rejected; they are never upgraded or replayed through a second runtime.
 
 ### What `akm show` reports for an exec step
 
@@ -727,8 +778,7 @@ happens. Field presence is the discriminator, the same way `fanOut` marks a
     "exec": {
       "command": ["bun", "run", "test:unit"],
       "cwd": "packages/core",
-      "passEnv": ["CARGO_HOME"],
-      "inheritEnv": true
+      "passEnv": ["CARGO_HOME"]
     }
   }
 }
@@ -741,8 +791,9 @@ happens. Field presence is the discriminator, the same way `fanOut` marks a
   of it is resolved from your environment, from a secret ref, or from a prior
   step's output. Every byte is already visible in the workflow file (and stored
   verbatim in `plan_json`) — which is also why you never inline a secret there.
-- `cwd`, `passEnv` and `inheritEnv` appear only when the unit declares them.
-  `passEnv` is a list of variable **names**; no value is ever projected.
+- `cwd` and `passEnv` appear only when the unit declares them. `passEnv` is a
+  list of variable **names**; no value is ever projected. New v4 plans never
+  carry `inheritEnv`.
 - `timeoutMs` is still reported, because an exec unit really does inherit
   `defaults.timeout` — that number is true for it.
 
@@ -987,23 +1038,23 @@ budget means starting a new run.
 ## Model references
 
 Reference semantic aliases in `model:` fields instead of exact model ids so a
-workflow stays harness-agnostic. Recommended vocabulary (convention, not
-hardcoded) via the config-root `modelAliases` key:
+workflow stays harness-agnostic. Aliases are defined only in the installed and
+optional user `models.json` files:
 
 ```jsonc
 {
-  "modelAliases": {
-    "fast":     { "llm": "claude-haiku-4-5", "*": "claude-haiku-4-5" },
-    "balanced": { "llm": "claude-sonnet-4-6", "*": "claude-sonnet-4-6" },
-    "deep":     { "claude": "claude-fable-5", "opencode": "opencode/claude-fable-5", "*": "claude-fable-5" }
+  "version": 1,
+  "aliases": {
+    "fast": { "claude": "claude-haiku-4-5", "opencode": "opencode/claude-haiku-4-5" },
+    "balanced": { "claude": "claude-sonnet-4-6", "opencode": "opencode/claude-sonnet-4-6" },
+    "reasoning": { "claude": "claude-opus-4-7", "opencode": "opencode/claude-opus-4-7" }
   }
 }
 ```
 
-For an LLM engine, resolution checks its engine-name column, then `llm`, then
-`*`. Agent engines check their harness platform and then `*`. The built-in
-aliases `fable`, `opus`, `sonnet`, and `haiku` resolve per platform with no
-config. See the [Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md#choosing-engines-and-models)
+Resolution checks the selected engine name or canonical harness column. A
+known alias without that column fails rather than guessing a provider model;
+an unknown string is treated as an exact model selector. See the [Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md#choosing-engines-and-models)
 for guidance on which tier to pick per step.
 
 ## See also

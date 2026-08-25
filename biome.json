@@ -20,6 +20,7 @@
       "tests/**",
       "scripts/*.ts",
       "!src/assets/templates/html",
+      "!src/vendor/**",
       "!tests/fixtures/goldens/**/*.json",
       "!tests/fixtures/format-family-goldens/**/*.json",
       "!.claude/**"

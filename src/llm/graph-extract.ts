@@ -16,19 +16,22 @@
  * This module is intentionally tiny and stateless so tests can stub it via
  * `mock.module("../src/llm/graph-extract", ...)` without hitting a network.
  *
- * The LLM connection comes from the selected named engine. Callers obtain it
- * via `resolveIndexPassLLM("graph", config)` and pass it straight through.
+ * The symbolic LLM runner comes from the current index-pass execution
+ * resolution and is passed straight through.
  */
 
 import systemPromptTemplate from "../assets/prompts/graph-extract-system.md" with { type: "text" };
 import userPromptTemplate from "../assets/prompts/graph-extract-user-prompt.md" with { type: "text" };
 import { toErrorMessage } from "../core/common";
-import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
+import type { AkmConfig } from "../core/config/config";
+import { ConfigError } from "../core/errors";
 import { parseEmbeddedJsonResponse } from "../core/parse";
 import { warn, warnVerbose } from "../core/warn";
-import { chatCompletion, isContextSizeError } from "./client";
+import type { LoweringNotice } from "../execution/resolved-request";
+import type { LoweredExecutionDispatchLease } from "../integrations/agent/execution-lowering";
+import { type ChatMessage, isContextSizeError } from "./client";
 import { type TryLlmFeatureFallbackEvent, tryLlmFeature } from "./feature-gate";
-import { callStructured } from "./structured-call";
+import { type CallStructuredRequest, callStructured, type StructuredLlmRunner } from "./structured-call";
 
 /**
  * Separator token used between assets in a batch prompt.
@@ -113,6 +116,8 @@ export interface GraphRuntimeTelemetry {
 export interface GraphExtractionRuntimeOptions {
   batchState?: GraphBatchState;
   telemetry?: GraphRuntimeTelemetry;
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void;
+  lease?: LoweredExecutionDispatchLease;
 }
 
 const GENERIC_ENTITIES = new Set([
@@ -538,8 +543,31 @@ function buildBatchUserPrompt(bodies: string[]): string {
   );
 }
 
-function formatContextHint(llmConfig: LlmConnectionConfig): string {
-  return llmConfig.contextLength ? `, configured contextLength=${llmConfig.contextLength}` : "";
+function formatContextHint(llmRunner: StructuredLlmRunner): string {
+  return llmRunner.connection.contextLength ? `, configured contextLength=${llmRunner.connection.contextLength}` : "";
+}
+
+/** Dispatch one raw graph prompt through the common resolved-request adapter. */
+async function callGraphLlm(
+  runner: StructuredLlmRunner,
+  messages: ChatMessage[],
+  request: CallStructuredRequest,
+  lease: LoweredExecutionDispatchLease | undefined,
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
+): Promise<string> {
+  return callStructured<string>({
+    feature: "graph_extraction",
+    runner,
+    ...(lease ? { lease } : {}),
+    messages,
+    request,
+    onNotices,
+    parse: (raw) => raw ?? "",
+    onError: (_cls, error) => {
+      throw error;
+    },
+    fallback: "",
+  });
 }
 
 /**
@@ -548,6 +576,27 @@ function formatContextHint(llmConfig: LlmConnectionConfig): string {
  */
 function parseBatchItem(raw: unknown): GraphExtraction {
   return parseGraphExtraction(raw);
+}
+
+function applySuccessfulBatchResults(
+  results: GraphExtraction[],
+  batchResult: unknown[],
+  nonEmptyBodies: string[],
+  nonEmptyIndices: number[],
+  batchState: GraphBatchState | undefined,
+): void {
+  if (batchState) batchState.nonArrayBatchFailures = 0;
+  if (batchResult.length > nonEmptyBodies.length) {
+    warn(
+      `graph extraction (batch): response had ${batchResult.length} items for ${nonEmptyBodies.length} assets; ` +
+        `ignoring ${batchResult.length - nonEmptyBodies.length} extra item(s).`,
+    );
+  }
+  for (let j = 0; j < nonEmptyBodies.length; j++) {
+    const originalIndex = nonEmptyIndices[j];
+    if (originalIndex === undefined) continue;
+    if (j < batchResult.length) results[originalIndex] = parseBatchItem(batchResult[j]);
+  }
 }
 
 /**
@@ -567,14 +616,14 @@ function parseBatchItem(raw: unknown): GraphExtraction {
  * Routes through `tryLlmFeature("graph_extraction", ...)` so the feature gate
  * and onFallback hook are honoured uniformly.
  *
- * @param llmConfig - LLM connection configuration.
+ * @param llmRunner - Symbolic LLM runner selected through shared execution lowering.
  * @param bodies    - Asset body strings to process in one batch.
  * @param signal    - Optional AbortSignal for cancellation.
  * @param akmConfig - Full AKM config (for feature-gate checks).
  * @param onFallback - Optional fallback event sink.
  */
 export async function extractGraphFromBodies(
-  llmConfig: LlmConnectionConfig,
+  llmRunner: StructuredLlmRunner,
   bodies: string[],
   signal?: AbortSignal,
   akmConfig?: AkmConfig,
@@ -589,7 +638,7 @@ export async function extractGraphFromBodies(
 
   // Single body: delegate to the single-asset path for identical behaviour.
   if (bodies.length === 1) {
-    const result = await extractGraphFromBody(llmConfig, bodies[0] ?? "", signal, akmConfig, onFallback, options);
+    const result = await extractGraphFromBody(llmRunner, bodies[0] ?? "", signal, akmConfig, onFallback, options);
     return [result];
   }
 
@@ -615,7 +664,7 @@ export async function extractGraphFromBodies(
     await Promise.all(
       oversizedIndices.map(async (index) => {
         results[index] = await extractGraphFromBody(
-          llmConfig,
+          llmRunner,
           bodies[index] ?? "",
           signal,
           akmConfig,
@@ -630,7 +679,7 @@ export async function extractGraphFromBodies(
 
   if (batchState?.batchingDisabled) {
     return Promise.all(
-      bodies.map((body) => extractGraphFromBody(llmConfig, body, signal, akmConfig, onFallback, options)),
+      bodies.map((body) => extractGraphFromBody(llmRunner, body, signal, akmConfig, onFallback, options)),
     );
   }
 
@@ -645,25 +694,29 @@ export async function extractGraphFromBodies(
   let batchContextError = false;
   let nonArrayResponse = false;
 
-  const batchResult = await tryLlmFeature(
+  const batchOutcome = await tryLlmFeature<
+    { kind: "value"; value: unknown[] | null } | { kind: "config-error"; error: ConfigError }
+  >(
     "graph_extraction",
     akmConfig,
     async () => {
       try {
-        const raw = await chatCompletion(
-          llmConfig,
+        const raw = await callGraphLlm(
+          llmRunner,
           [
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt },
           ],
           {
             temperature: 0.1,
-            timeoutMs: llmConfig.timeoutMs,
+            timeoutMs: llmRunner.timeoutMs,
             signal,
             onRetryAttempt: () => bumpTelemetry(options.telemetry, "retryAttempts"),
           },
+          options.lease,
+          options.onNotices,
         );
-        if (!raw) return null;
+        if (!raw) return { kind: "value", value: null };
         // Array-preferring salvage (#635): the batch contract is a top-level
         // JSON array. A leading/example `{…}` object in the response must not
         // mask a valid `[…]` array as a false "non-array" failure.
@@ -673,13 +726,15 @@ export async function extractGraphFromBodies(
           // (#635). Many genuine non-array responses recover when the model is
           // told explicitly to emit only the raw array.
           bumpTelemetry(options.telemetry, "retryAttempts");
-          const retryRaw = await chatCompletion(
-            llmConfig,
+          const retryRaw = await callGraphLlm(
+            llmRunner,
             [
               { role: "system", content: buildBatchRetrySystemPrompt() },
               { role: "user", content: userPrompt },
             ],
-            { temperature: 0, timeoutMs: llmConfig.timeoutMs, signal },
+            { temperature: 0, timeoutMs: llmRunner.timeoutMs, signal },
+            options.lease,
+            options.onNotices,
           );
           parsed = retryRaw ? parseEmbeddedJsonResponse<unknown[]>(retryRaw, { expect: "array" }) : undefined;
         }
@@ -695,59 +750,48 @@ export async function extractGraphFromBodies(
           warn(
             `graph extraction (batch): LLM response was not a JSON array for ${nonEmptyBodies.length} asset(s) ` +
               `even after a stricter retry; will fall back per-asset. ` +
-              `promptChars=${userPrompt.length}${formatContextHint(llmConfig)}`,
+              `promptChars=${userPrompt.length}${formatContextHint(llmRunner)}`,
           );
-          return null;
+          return { kind: "value", value: null };
         }
-        return parsed;
+        return { kind: "value", value: parsed };
       } catch (err) {
+        if (err instanceof ConfigError) return { kind: "config-error", error: err };
         const errMsg = toErrorMessage(err);
         if (isContextSizeError(errMsg)) {
           batchContextError = true;
           bumpTelemetry(options.telemetry, "contextBatchRetries");
           warn(
             `graph extraction (batch): context size exceeded for ${nonEmptyBodies.length} asset(s); ` +
-              `skipping batch. promptChars=${userPrompt.length}${formatContextHint(llmConfig)}`,
+              `skipping batch. promptChars=${userPrompt.length}${formatContextHint(llmRunner)}`,
           );
         } else {
           warn(
             `graph extraction (batch) failed for ${nonEmptyBodies.length} asset(s); ` +
-              `promptChars=${userPrompt.length}${formatContextHint(llmConfig)}: ${errMsg}`,
+              `promptChars=${userPrompt.length}${formatContextHint(llmRunner)}: ${errMsg}`,
           );
         }
-        return null;
+        return { kind: "value", value: null };
       }
     },
-    null,
+    { kind: "value", value: null },
     {
-      timeoutMs: llmConfig.timeoutMs,
+      timeoutMs: llmRunner.timeoutMs,
       onFallback,
     },
   );
+  if (batchOutcome.kind === "config-error") throw batchOutcome.error;
+  const batchResult = batchOutcome.value;
 
   // Map successful batch results back to their original indices.
   if (batchResult !== null) {
-    if (batchState) batchState.nonArrayBatchFailures = 0;
-    if (batchResult.length > nonEmptyBodies.length) {
-      warn(
-        `graph extraction (batch): response had ${batchResult.length} items for ${nonEmptyBodies.length} assets; ` +
-          `ignoring ${batchResult.length - nonEmptyBodies.length} extra item(s).`,
-      );
-    }
-    for (let j = 0; j < nonEmptyBodies.length; j++) {
-      const originalIndex = nonEmptyIndices[j];
-      if (originalIndex === undefined) continue;
-      if (j < batchResult.length) {
-        results[originalIndex] = parseBatchItem(batchResult[j]);
-      }
-      // j >= batchResult.length → partial failure; handled below.
-    }
+    applySuccessfulBatchResults(results, batchResult, nonEmptyBodies, nonEmptyIndices, batchState);
   }
 
   if (batchContextError && nonEmptyBodies.length > 1) {
     const splitAt = Math.ceil(nonEmptyBodies.length / 2);
     const left = await extractGraphFromBodies(
-      llmConfig,
+      llmRunner,
       nonEmptyBodies.slice(0, splitAt),
       signal,
       akmConfig,
@@ -755,7 +799,7 @@ export async function extractGraphFromBodies(
       options,
     );
     const right = await extractGraphFromBodies(
-      llmConfig,
+      llmRunner,
       nonEmptyBodies.slice(splitAt),
       signal,
       akmConfig,
@@ -795,7 +839,7 @@ export async function extractGraphFromBodies(
     await Promise.all(
       fallbackIndices.map(async (origIdx) => {
         const body = bodies[origIdx] ?? "";
-        results[origIdx] = await extractGraphFromBody(llmConfig, body, signal, akmConfig, onFallback, options);
+        results[origIdx] = await extractGraphFromBody(llmRunner, body, signal, akmConfig, onFallback, options);
       }),
     );
   } else if (batchContextError) {
@@ -821,7 +865,7 @@ export async function extractGraphFromBodies(
  * and onFallback hook are honoured uniformly (Fix C5).
  */
 export async function extractGraphFromBody(
-  llmConfig: LlmConnectionConfig,
+  llmRunner: StructuredLlmRunner,
   body: string,
   signal?: AbortSignal,
   akmConfig?: AkmConfig,
@@ -847,7 +891,7 @@ export async function extractGraphFromBody(
   if (chunked.chunks.length > 1) {
     const chunkResults: GraphExtraction[] = [];
     for (const chunk of chunked.chunks) {
-      chunkResults.push(await extractGraphFromBody(llmConfig, chunk, signal, akmConfig, onFallback, options));
+      chunkResults.push(await extractGraphFromBody(llmRunner, chunk, signal, akmConfig, onFallback, options));
     }
     const merged = mergeGraphExtractions(chunkResults);
     merged.truncationCount = (merged.truncationCount ?? 0) + chunked.truncationCount;
@@ -859,17 +903,19 @@ export async function extractGraphFromBody(
   return callStructured<GraphExtraction>({
     feature: "graph_extraction",
     akmConfig,
-    config: llmConfig,
+    runner: llmRunner,
+    ...(options.lease ? { lease: options.lease } : {}),
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: userPrompt },
     ],
     request: {
       temperature: 0.1,
-      timeoutMs: llmConfig.timeoutMs,
+      timeoutMs: llmRunner.timeoutMs,
       signal,
       onRetryAttempt: () => bumpTelemetry(options.telemetry, "retryAttempts"),
     },
+    onNotices: options.onNotices,
     parse: (raw) => {
       if (!raw) return empty();
       const parsed = parseEmbeddedJsonResponse<{ entities?: unknown; relations?: unknown }>(raw);
@@ -895,20 +941,20 @@ export async function extractGraphFromBody(
       if (cls === "context_limit") {
         bumpTelemetry(options.telemetry, "failureCount");
         warn(
-          `graph extraction: context size exceeded for asset; promptChars=${userPrompt.length}${formatContextHint(llmConfig)}. ` +
+          `graph extraction: context size exceeded for asset; promptChars=${userPrompt.length}${formatContextHint(llmRunner)}. ` +
             `Consider increasing llm.contextLength in config.json.`,
         );
         return empty("context_limit", "failed");
       } else if (cls === "html") {
         bumpTelemetry(options.telemetry, "htmlErrorCount");
         warn(
-          `graph extraction: provider returned HTML instead of JSON for asset; promptChars=${userPrompt.length}${formatContextHint(llmConfig)}: ${errMsg}`,
+          `graph extraction: provider returned HTML instead of JSON for asset; promptChars=${userPrompt.length}${formatContextHint(llmRunner)}: ${errMsg}`,
         );
         return empty("llm_error", "failed");
       } else {
         bumpTelemetry(options.telemetry, "failureCount");
         warn(
-          `graph extraction failed for asset; promptChars=${userPrompt.length}${formatContextHint(llmConfig)}: ${errMsg}`,
+          `graph extraction failed for asset; promptChars=${userPrompt.length}${formatContextHint(llmRunner)}: ${errMsg}`,
         );
         return empty("llm_error", "failed");
       }

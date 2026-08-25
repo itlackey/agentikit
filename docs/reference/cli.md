@@ -57,12 +57,10 @@ and `secret run`), document payloads (`help`,
 documented shell-substitution primitive — wrapping it in an envelope would
 break `$(akm env path <ref>)` substitutions). Passing `--format` to one of
 those **warns on stderr** and is otherwise ignored; the exempt set is declared
-in `src/output/format-exempt.ts`. `migrate status`/`apply` also spawn a
-standalone tool (the migration tool) but are NOT exempt: the CLI parses that
-child's final JSON result line and renders it through the normal `--format`
-pipeline, so `text`/`md`/`html`/`yaml` genuinely reformat it; any progress
-lines the child printed along the way still print verbatim, ahead of the
-formatted result.
+in `src/output/format-exempt.ts`. `migrate status`/`apply` invoke the packaged
+task migrator but are NOT exempt: the CLI parses its task plan and renders it
+through the normal `--format` pipeline, so `text`/`md`/`html`/`yaml` genuinely
+reformat it.
 
 Scripted `setup` modes emit a normal format-aware result. Interactive `setup`
 is a terminal UI and emits no result document. `agent` leaves inherited child
@@ -284,11 +282,10 @@ Primary result fields:
 | Field | Description |
 | --- | --- |
 | `status` | Overall health verdict: `pass`, `warn`, or `fail` |
-| `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `task-log-backing`, `active-runs`, and `default-engine` |
-| `advisories` | Non-fatal warnings including `semantic-search-runtime`, `session-extraction` (akmExtract pipeline health), and `session-log-failures` (informational keyword matches, never triggers warn) |
+| `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `task-log-backing`, `active-runs`, `default-engine`, and `model-map-files` |
+| `advisories` | Non-fatal warnings including `semantic-search-runtime` and `session-extraction` (akmExtract pipeline health) |
 | `metrics` | Aggregate task/runtime metrics: `taskFailRate`, `agentFailureRate`, `stuckActiveRuns`, `logBackingRate`, `probeRoundTripMs` |
 | `improve` | Recent improve-loop counts derived from `improve_invoked`, `improve_skipped`, and `improve_completed` events |
-| `sessionLogAdvisories` | Raw keyword-matched session-log topics (pre-LLM, informational only) |
 
 The `improve` section includes counts for planned refs, reflect/distill actions,
 memory-prune actions, memory-inference writes, graph-extraction refreshes,
@@ -297,9 +294,7 @@ dead-URL detections, and skip reasons observed in the selected time window.
 
 The `session-extraction` advisory reflects the health of the `akmExtract` pipeline
 (Phase 0.4 of `akm improve`). It warns on harness errors or when no proposals are
-generated across five or more scanned sessions. The `session-log-failures` advisory
-is informational only and never triggers `warn` — it reports raw keyword matches,
-not LLM-validated extraction outcomes.
+generated across five or more scanned sessions.
 
 The indexed entity graph (entities/relations extracted from bundle assets) has
 no dedicated inspection command; its summary counts surface as an info-level
@@ -355,6 +350,14 @@ ordinary keyword search — use `akm show` to resolve a single ref. An explicit
 The pre-0.9.0 `<type>:` / `<type>:<prefix>/` spelling was removed. A query in
 that shape is now an ordinary keyword search, and when it returns nothing the
 tip names the conceptId spelling that replaces it.
+
+Local search responses include `searchMode`: `semantic` when vector ranking
+ran, `keyword` when keyword-only search was intentional or semantic search was
+not ready, and `fts-fallback` when a ready semantic backend failed during this
+query. The last case also adds one sanitized, endpoint-naming entry to
+`warnings`; it never repeats the provider/runtime error text. Both fields are
+preserved by `--shape agent` so machine consumers can lower their confidence
+instead of treating keyword fallback as healthy semantic ranking.
 
 | Flag | Values | Default | Description |
 | --- | --- | --- | --- |
@@ -450,6 +453,8 @@ includes direct follow-up commands such as `akm show <ref>` or `akm bundle add <
 so you can immediately inspect or install what it found.
 `--detail` and `--shape agent` both work on curate output; `--shape summary`
 does not.
+Curate preserves the underlying `searchMode` and deduplicates semantic fallback
+warnings across its full-query and token-fallback searches.
 Agent-shaped local items include `ref`, `path`, and `editable`, plus `editHint`
 only for read-only items. Their `followUp` remains `akm show <ref>` rather than
 being replaced by clone guidance.
@@ -564,7 +569,7 @@ Subcommands:
 
 | Subcommand | Description |
 | --- | --- |
-| `create <name>` | Validate and write a unified markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
+| `create <name>` | Validate and write a Markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
 | `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or continues the active run in the current scope; a run id continues that exact active run. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
 | `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only) |
 | `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`) |
@@ -665,10 +670,10 @@ akm workflow create ship --path release          # writes workflows/release/ship
 | Flag | Description |
 | --- | --- |
 | `--path <dir>` | Relative subdirectory under `workflows/` to place the workflow in. The filename comes from `<name>`. |
-| `--from <file>` | Import and validate a unified markdown workflow from an existing file |
+| `--from <file>` | Import and validate a Markdown workflow from an existing file |
 | `--force` | Overwrite an existing workflow. Requires `--from` or `--reset`. |
 | `--reset` | Explicitly replace an existing workflow with a fresh template (use with `--force`) |
-| `--print` | Print the unified markdown template without creating anything |
+| `--print` | Print the Markdown template without creating anything |
 
 `--force` requires either `--from <file>` (replace from a source file) or
 `--reset` (explicitly acknowledge you are overwriting in place). Without one of
@@ -864,24 +869,68 @@ akm bundle remove my-provider --yes        # Skip the confirmation prompt
 
 ### bundle update
 
-Update one or all managed sources to the latest available version. Local and
-remote sources are not updatable — akm explains why if you target one.
+Update one remote bundle, or refresh every configured bundle with `--all`.
+Git, npm, and website candidates are staged and audited before they replace the
+active generation; filesystem bundles are reported as skipped because they
+already reflect local files in place.
 
 ```sh
 akm bundle update npm:@scope/pkg
 akm bundle update --all
 akm bundle update --all --force   # Force fresh download even if version is unchanged
 akm bundle update --all --yes     # Skip confirmation when an update needs to delete a moved install dir
+akm bundle update npm:@scope/pkg --allow-insecure  # Explicitly approve reviewed dangerous env keys
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--all` | Update all managed sources |
 | `--force` | Delete cached extraction before re-downloading |
+| `--allow-insecure` | Permit a staged update containing dangerous environment keys after warning. Without it, an interactive terminal prompts with a default of No; non-interactive use fails closed. This is independent of `--yes`. |
 | `-y`, `--yes` | Skip the confirmation prompt for the rare branch where the resolved content location moved and the previous install directory must be deleted. No effect on a normal refresh, which deletes nothing. |
 
-Reports per-entry change flags: `changed.version`, `changed.revision`,
-`changed.any`.
+The audit examines key names in `.env`-suffixed files under the staged
+component root. Publisher lint suppressions do not bypass it. Rejection or an
+audit/publication/index failure preserves the prior active bytes, lock/config
+generation, and searchable index for that bundle.
+
+Writable Git updates resolve configured roots to their physical checkout,
+reject component symlinks that escape it, and re-audit the exact materialized
+worktree before activation. AKM holds its source/index writer lease through
+that check and commit, and rechecks after the index pass at the final database
+commit boundary. All AKM writers cooperate with this lease. A non-cooperating
+local process can still edit ordinary files because POSIX/Windows filesystems
+provide no mandatory recursive directory lock: writes observed by either
+generation check make the update fail and restore the pre-update checkout, but
+a write racing after the final filesystem read cannot be guaranteed detectable
+and a write during compensation can be overwritten. Do not edit a writable
+checkout from another process while its update is running.
+
+The index and its update-owned state maintenance share one deferred SQLite
+transaction. WAL readers continue to see the last committed generation while a
+full update index pass runs, and competing writers wait for that pass to commit
+or roll back. The semantic-status JSON file is a recomputable advisory: failure
+to refresh it after the database commit warns but does not undo a committed
+bundle update.
+
+This boundary guarantees rollback for handled process faults (throws and
+SQLite commit failures); it is not an abrupt-termination or cross-database
+power-loss guarantee. Both `index.db` and `state.db` remain in WAL mode, where
+SQLite does not guarantee an atomic commit across attached database files after
+`SIGKILL`, abrupt power loss, or storage failure. The durable outcome may
+therefore combine approved old/new source bytes and lock state with adjacent
+index/state generations. `akm health` reports `index-state-generation` when a
+durable usage link disagrees with the searchable index, but that advisory
+cannot identify every theoretical split. Stop concurrent writers, rerun the
+targeted bundle update if the checkout/lock is not the intended approved
+revision, then run `akm index --full` to rebuild the search index and relink
+durable usage state.
+
+Reports per-entry change flags: `changed.version`, `changed.revision`, and
+`changed.any`. With `--all`, each bundle is isolated: successful entries appear
+in `processed`/`plainSynced`; rejected entries report `status: "blocked"` and a
+security code; provider or transaction errors report `status: "failed"`. The
+command continues with later bundles without half-publishing a blocked one.
 
 ### upgrade
 
@@ -889,25 +938,9 @@ Upgrade `akm` itself to the latest release. Standalone binaries are downloaded,
 checksummed, and staged before replacement; npm, Bun, and pnpm global installs
 use their package manager.
 
-For contract-capable releases, upgrade treats migration and indexing as
-separate steps. It runs migration preflight before installation, migration apply
-after installation, and rebuilds the derived index only after migration
-succeeds. Standalone upgrades retain the previous binary until migration apply
-completes. If apply fails, the new binary stays installed and the previous binary
-remains beside it for operator recovery; the executable is never rolled back
-independently of durable state.
-
-A binary that predates the `migrate` command and `--migration-config` cannot
-enforce guards implemented in a release that is not installed yet, so
-self-update cannot safely cross that boundary; install or stage the new
-binary manually instead and run its `akm migrate apply` command. See
-[docs/migration/](../migration/) for version-specific upgrade guides.
-
-For contract-capable upgrades, the old/current binary's preflight inspects only its
-current artifact state and never parses the future prepared config. The prepared
-config is then checked by the staged standalone binary's `migrate status` before
-replacement and passed to the newly installed binary's apply command. A failed
-staged preflight removes the stage and leaves the old executable untouched.
+Upgrade replaces the installed program and then rebuilds the derived index.
+It does not run legacy config, database, or workflow migration paths. Standalone
+downloads use a temporary rollback copy only during atomic executable replacement.
 
 Standalone downloads are streamed directly to the staged file while SHA-256 is
 computed, with a 256 MiB binary limit. Release/checksum metadata is capped at
@@ -917,15 +950,13 @@ computed, with a 256 MiB binary limit. Release/checksum metadata is capped at
 akm upgrade              # Download and replace the running binary
 akm upgrade --check      # Check for updates without installing
 akm upgrade --force      # Force upgrade even if already on latest
-akm upgrade --migration-config ./prepared-config.json  # Contract-capable releases only
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--check` | Check for updates without installing |
 | `--force` | Force upgrade even if on latest version |
-| `--skip-post-upgrade` | Skip only the post-migration index rebuild; migration preflight and apply still run |
-| `--migration-config` | On contract-capable upgrades, operator-prepared config passed only to the new binary's migration apply; not a path for crossing from a pre-`migrate` binary |
+| `--skip-post-upgrade` | Skip the post-upgrade index rebuild |
 
 Checksum verification is not optional and has no flag. If a release's
 `checksums.txt` is genuinely unreachable, the recovery hatch is the
@@ -1262,7 +1293,7 @@ akm log --run <run-id>                       # Only events for one workflow run
 | Flag | Description |
 | --- | --- |
 | `--since` | Lower bound. Accepts ISO 8601, epoch ms, or `@offset:<id>` for a durable row-id cursor that survives across processes. |
-| `--type` | Filter by event type. Common values include `add`, `remove`, `update`, `remember`, `import`, `sync`, `feedback`, `promoted`, `rejected`, `propose_invoked`, `reflect_invoked`, `distill_invoked`, `select`, and `improve_skipped`. `sync` and the legacy `save` are synonyms on read, so `--type save` still returns rows written before the 0.9.0 rename as well as new ones. |
+| `--type` | Filter by event type. Common values include `add`, `remove`, `update`, `remember`, `import`, `sync`, `feedback`, `promoted`, `rejected`, `propose_invoked`, `reflect_invoked`, `distill_invoked`, `select`, and `improve_skipped`. |
 | `--ref` | Filter by asset ref (`[bundle//]conceptId`). |
 | `--run` | Filter to one workflow run's events (`metadata.runId`) — the replacement for the dropped `akm workflow watch <run-id>`. Poll with `--since '@offset:<id>'` for a live tail; there is no daemon. |
 | `--limit` | Return only the most recent N events matching every other filter. Default: unlimited. |
@@ -1335,24 +1366,20 @@ akm registry remove my-team --yes    # Skip the confirmation prompt
 
 ### migrate
 
-Inspect or apply config and durable database (`state.db`) migration as one
-installation lifecycle. Status and dry-run are read-only and exit nonzero when
-newer, inconsistent, corrupt, or unresolved config state blocks apply.
+Inspect or apply the explicit one-way task-v2 to task-v3 conversion. Normal task
+execution accepts only task v3. Database schema upgrades are additive and run
+automatically when `state.db` opens; config and workflow formats have no runtime
+compatibility migrator.
 
 ```sh
 akm migrate status
-akm migrate status --config ./prepared-config.json
-akm migrate apply --config ./prepared-config.json --dry-run
-akm migrate apply --config ./prepared-config.json
+akm migrate apply --dry-run
+akm migrate apply
 ```
 
-`--config` is required when the active config is legacy or absent. When the
-active config is current, apply safely uses it as the target. Apply is
-idempotent and creates a semantically verified recovery run before changing any
-artifact. One phase-free incomplete sentinel makes a killed apply replayable;
-while apply or restore is incomplete, ordinary canonical config/database access
-fails closed. Apply refuses before backup when managed handles, maintenance
-activities, mutation locks, or workflow claims are live.
+`status` and `apply --dry-run` are read-only. Apply refuses blocked task sources,
+backs up each changed file, atomically publishes strict v3 YAML, and is
+idempotent: an already-v3 file is skipped.
 
 ### config
 
@@ -1389,6 +1416,28 @@ and CI scripts.
 > schema checks already reject an invalid config) were also removed.
 
 See [configuration.md](configuration.md) for details.
+
+### models
+
+Manage the installed and operator-owned model intent map. Bare `akm models`
+is a usage error; use the explicit copy operation when you want an editable
+full map.
+
+```sh
+akm models copy-defaults
+akm models copy-defaults --overwrite
+```
+
+`copy-defaults` validates the packaged version-1 `models.json`, then stages and
+syncs it beside the normal AKM configuration target. Creation uses an atomic
+no-replace publish and fails safely on filesystems that cannot provide it.
+`--overwrite` performs an atomic pathname replacement after a best-effort
+regular-file identity recheck; it never dereferences a symlink, but portable
+filesystems do not offer a conditional rename that locks the previously
+observed inode. Symlinks and other non-regular targets observed during checks
+are refused. See
+[Model-map files](configuration.md#model-map-files) for schema, overlay, and
+resolution semantics.
 
 ### help
 
@@ -1765,42 +1814,100 @@ source <(akm completions)
 
 These commands define the self-improvement and agent-dispatch surface.
 
-### agent
+### command run
 
-Dispatch a configured agent engine, optionally embodying a bundle agent asset.
-
-> **0.9.1 surface:** the syntax and behavior below document the released CLI.
-> The approved target makes `akm command run` the canonical command-asset
-> executor and retains `akm agent --command` only as an alias through the same
-> resolver. That unification is not implemented in 0.9.1; see
-> [Agent, Command, Engine, and Model Resolution](../architecture/specs/agent-command-engine-model-design.md).
+Resolve a stored command through its owning bundle adapter and execute one
+fresh session through the common engine/model cascade:
 
 ```sh
-akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [--command <ref>] [--workflow <ref>] [--timeout-ms <ms>] [--cwd <path>]
+akm command run <command-ref> [--arguments <exact-text>] [--agent <selector>] [--engine <name>] [--model <id-or-alias>] [--timeout-ms <ms>] [--cwd <path>] [--dry-run]
+```
+
+`--dry-run` does not dispatch and does not materialize credentials.
+
+| Argument / Flag | Description |
+| --- | --- |
+| `<command-ref>` | Local indexed command ref, optionally bundle-qualified (for example `commands/review` or `team//commands/review`) |
+| `--arguments <exact-text>` | Exact string substituted for every literal `$ARGUMENTS`; it is not trimmed, tokenized, quoted, or recursively expanded |
+| `--agent <selector>` | Portable `agents/...` ref or a native harness selector |
+| `--engine <name>` | Current-invocation engine override |
+| `--model <id-or-alias>` | Current-invocation exact model or operator model-map alias |
+| `--timeout-ms <ms>` | Current-invocation timeout override |
+| `--cwd <path>` | Current-invocation workspace override |
+| `--dry-run` | Resolve, authorize, and lower the command without dispatching or materializing credentials |
+
+Commands and portable personas are rendered by their bundle adapter. Native
+frontmatter is never sent as prompt text and native files are never rewritten.
+The only portable template token is literal `$ARGUMENTS`. Positional, named,
+expression, legacy `{{...}}`, and other native-only constructs fail before
+authorization or dispatch; invoke those templates through their native tool.
+Omitting `--arguments` and passing an explicit empty string both substitute
+empty text, but remain distinct in the resolved request.
+
+`akm command run ... --dry-run` performs the real adapter read, cascade/model
+resolution, operator authorization or policy check, and engine lowering. It
+returns a successful JSON result with `schemaVersion: 1`,
+`shape: "command-dry-run"`, `ok: true`, `dryRun: true`, the selected engine
+name, safe `provenance`, and safe lowering `notices`. It has no fake exit code,
+stdout, stderr, or duration.
+
+Each provenance entry contains only `field`, `layer`, `kind`, and `via`. Each
+lowering notice contains `code`, `severity`, `adapter`, optional `field`, and
+fixed `message`. Dry-run does not dispatch and does not materialize
+credentials. It uses a read-only source lookup and records no usage, events, or
+accounting.
+
+Diagnostics exclude resolved values. They never include prompt content.
+They never include command content. They never include environment values.
+They never include credential values. User-authored
+inference keys are collapsed to the safe wildcard field instead of being
+echoed.
+
+For live execution, global `--verbose` emits the same safe provenance and
+notices to stderr before dispatch. The normal command result on stdout is
+preserved unchanged, so enabling verbose diagnostics does not corrupt scripts
+that consume stdout.
+
+### agent
+
+Dispatch a configured agent engine, optionally selecting a bundle agent persona
+and model defaults. A nonempty tool request from that asset is not
+authorization: the current CLI rejects it at the execution boundary.
+Stored command assets execute only through `akm command run`; `akm agent` has
+no command compatibility alias.
+
+```sh
+akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [--timeout-ms <ms>] [--cwd <path>]
 ```
 
 | Argument / Flag | Description |
 | --- | --- |
-| `<agent-ref>` | Optional agent asset ref (e.g. `agents/code-reviewer`). Loads system prompt, model, and tool policy from the bundle asset. |
+| `<agent-ref>` | Optional agent asset ref (e.g. `agents/code-reviewer`). Resolves persona and model defaults; a nonempty tool request still requires separate operator authorization. |
 | `--engine <name>` | Agent engine to use; defaults to `defaults.engine` |
 | `--prompt <text>` | Task prompt to pass to the agent |
 | `--model <model>` | Model override. Accepts aliases (`opus`, `sonnet`, `haiku`) or exact platform model IDs. Overrides the model in the agent asset. Resolved per platform: `opencode/claude-opus-4-7` for opencode, `claude-opus-4-7` for claude. |
-| `--command <ref>` | Load prompt from a `commands/<name>` asset |
-| `--workflow <ref>` | Load prompt from a `workflows/<name>` asset |
 | `--timeout-ms <ms>` | Override the agent CLI timeout in milliseconds |
 | `--cwd <path>` | Working directory for the spawned agent (defaults to the current directory) |
 
-When `<agent-ref>` is provided, akm loads the bundle agent asset and extracts
-its system prompt, `modelHint`, and `toolPolicy`. The `--model` flag wins
-over any model specified in the asset.
+When `<agent-ref>` is provided, akm resolves the bundle agent's persona,
+`modelHint`, and requested `toolPolicy`. The `--model` flag wins over any model
+specified in the asset. The requested tool policy never grants access by
+itself: authorization runs before lowering, credentials, or provider dispatch.
+The current CLI has no built-in allow-all authorizer, so a nonempty request is
+rejected rather than silently weakened.
+Selecting a persona or model without `--prompt` or `--prompt-stdin` is also
+rejected; akm never fabricates an empty command. The
+prompt-free interactive exemption applies only when no persona/model/tool/schema
+or inference payload was selected.
 
 **Platform-specific dispatch:** akm uses a platform builder to construct the
 CLI argv for each engine's harness platform. `platform: "opencode"` engines emit:
 `opencode run [--system-prompt "..."] [--model opencode/claude-opus-4-7] "<prompt>"`.
 `platform: "claude"` engines emit:
-`claude [--system-prompt "..."] [--model claude-opus-4-7] [--allowedTools ...] --print "<prompt>"`.
-Agent engines may set `bin`, `args`, `workspace`, `model`, `timeoutMs`, and
-`modelAliases` in config.
+`claude [--system-prompt "..."] [--model claude-opus-4-7] --print -- "<prompt>"`.
+Agent engines may set `bin`, `args`, `workspace`, `model`, and `timeoutMs` in
+config. Semantic model aliases live only in the installed/user `models.json`
+files and resolve before dispatch.
 
 Without any `--prompt`, `<agent-ref>`, or `--model`, the agent is launched
 interactively (no injected prompt, no platform-specific flags beyond the
@@ -1844,7 +1951,7 @@ stale paths, and broken refs — in body text and in
 `dangerous-env-key` findings for env files (the same key set `akm bundle add`
 enforces — see [Dangerous env key audit](#dangerous-env-key-audit) — but
 non-blocking here; `lint` only warns). `--type workflows` structurally parses
-and compiles unified markdown workflows; errors surface as
+and compiles peer Markdown and GitHub-shaped YAML workflows; errors surface as
 `invalid-workflow-structure` findings (0.9.0: this is the only
 structural-validation surface now that `akm workflow validate` is gone).
 
@@ -1896,7 +2003,7 @@ akm improve --sync --no-push           # commit only, skip the push after it
 | `--task` | Optional extra guidance for this improvement pass |
 | `--dry-run` | Show the schema-v2 result on stdout without creating config, data, state, cache, bundle, log, or result artifacts. Dry-run results are never persisted, including on errors or signals. |
 | `--bundle` | Select the proposal/write target; when the ref scope is bundle-qualified, it must name the same bundle |
-| `--limit <n>` | Maximum number of assets to process (highest utility first) |
+| `--limit <n>` | Base cap for ordinary assets (highest utility first); configured replay slots are additive |
 | `--timeout-ms <ms>` | Wall-clock budget for the run (default: `7200000` = 2 hours) |
 | `--require-feedback-signal` | Only process assets with recent feedback signals |
 | `--strategy <name>` | Override the active improve strategy (a built-in or entry under `improve.strategies`) |
@@ -1939,6 +2046,22 @@ Selection behavior defaults to recent feedback signals first, with a
 zero-feedback retrieval fallback for high-traffic refs. Use
 `--require-feedback-signal` to disable retrieval fallback for the run.
 
+For dry runs, `plannedRefs` is the effective post-limit work set, not every
+ref in the requested scope. The `plan` object preserves both views: raw scope
+size and per-gate removals, configured and effective caps, final ranked refs
+and their selection lanes, proactive and consolidation statistics, stage
+decisions, triage mode/caps, and `snapshot.status`/`snapshot.reason` for the
+read-side index boundary. `limits.effective` is the ordinary-ref base cap;
+`limits.additiveReplayAllowance` is the separate replay budget, and
+`limits.totalCeiling` is their finite sum (omitted when the base run is
+unbounded). A missing or incompatible index is an explicit empty snapshot and
+is not created or migrated. `plan.mode` is `estimate` and `plan.dispatch` is
+`false`; live JSON results use the same projection with `mode: "execution"`.
+The dry result is a best-effort observation assembled during that invocation,
+not an atomic cross-store snapshot or a reservation. Live execution re-inspects
+mutable inputs, so a later run can differ after index, state, filesystem,
+clock, or session-log changes.
+
 When reinforced facts need promotion, `knowledge` is the higher-authority
 destination than `memory`. The deterministic search ranking also prefers
 `knowledge` over `memory` hits, including inferred `.derived` memories, when
@@ -1976,16 +2099,16 @@ session extraction — it replaces the legacy session-checkpoint hook and runs
 independently of the improve-stage extract toggle (see `improve` above).
 
 ```sh
-akm proposal extract --type claude-code --session-id <id>
-akm proposal extract --type claude-code --since 24h
+akm proposal extract --type claude --session-id <id>
+akm proposal extract --type claude --since 24h
 akm proposal extract --type opencode --since 7d --dry-run
 akm proposal extract --auto                 # iterate every available harness
-akm proposal extract --type claude-code --location /custom/path --session-id <id>
+akm proposal extract --type claude --location /custom/path --session-id <id>
 ```
 
 | Flag | Description |
 | --- | --- |
-| `--type <harness>` | Harness name (`claude-code`, `opencode`). Required unless `--auto`. |
+| `--type <harness>` | Harness name (`claude`, `opencode`). Required unless `--auto`. |
 | `--session-id <id>` | Process only this session ID. When absent, discover sessions via `--since`. |
 | `--location <path>` | Override the harness's default session-discovery location. |
 | `--since <cutoff>` | Discovery cutoff. ISO timestamp or duration (`24h`, `7d`, `30m`). Default `24h`. |
@@ -2198,7 +2321,7 @@ akm proposal drain --strategy default --promote -y  # Read the triage block from
 | `--max-accepts` | Hard per-run accept ceiling; accepts beyond this are reported as `skippedByCap` |
 | `--max-diff-lines` | Defer (never promote) accepts whose proposed content exceeds this many lines |
 | `--older-than` | Only consider proposals created more than this many days ago |
-| `--judgment` | Opt into the judgment tier (`llm` by default; `agent`/`sdk` per config) for deferred items. No-op with a logged `triage_deferred` summary when no runner is configured. |
+| `--judgment` | Explicitly enable the judgment tier for this standalone drain, including when the selected strategy says `judgment.enabled: false`; execution overrides still come from that strategy. Without this flag, strategy judgment config does not enable standalone drain judgment. A missing runner remains a no-op with a logged `triage_deferred` summary. |
 | `-y`, `--yes` | Skip the confirmation prompt (required in non-interactive mode for promotion) |
 
 ### feedback (`--reason`)
@@ -2212,7 +2335,8 @@ prompts. Negative feedback requires a reason by default.
 `akm task` is the scheduling surface for workflows, agent prompts, and
 shell commands. It manages on-disk task definitions under
 `<bundle>/tasks/<id>.yml` and reconciles them with the OS-native scheduler
-(cron / launchd / schtasks). Only version-2 task YAML is discovered. The
+(cron / launchd / schtasks). Strict task v3 YAML is the executable source
+contract; see the canonical [Tasks reference](tasks.md). The
 group is `add | run | sync | doctor | history` — there is no `list` or
 `remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
 and edit the file + `akm task sync` to change or remove a schedule.
@@ -2278,16 +2402,16 @@ disturbs another bundle's scheduled tasks. Scheduler ids are the bare task id an
 are never namespaced: registering a task whose id is already scheduled from a
 different bundle is a hard error.
 
-Each task targets exactly one of `--workflow <ref>`, `--prompt <text-or-ref>`,
-or `--command <shell>`. Task YAML is strict and begins with `version: 2`.
-Prompt targets dispatch through `--engine` or `defaults.engine` and may set
-`model`, `timeoutMs`, and LLM request overrides; command tasks may set only
-`timeoutMs`; workflow tasks may set `params`, `timeoutMs`, `maxSteps`, and
-`maxRetries`. `task add` accepts `--engine`, `--model`, `--timeout-ms`,
-`--params`, `--name`, `--when-to-use`, `--description`, and `--tags`
-(`maxSteps` / `maxRetries` are YAML-only — set them in the file and run `akm
-task sync`). A v1 task is diagnosed by sync and doctor but is never rewritten
-or executed.
+`task add` accepts exactly one CLI target selector (`--workflow <ref>`,
+`--prompt <text-or-ref>`, or `--command <shell>`) and writes a strict task v3
+source. In the file, exactly one of `uses` or `run` is allowed. `uses` accepts
+command, workflow, and script refs plus `akm/command`; agents and task refs are
+not executable. `run` accepts a shell string with the closed shell and
+contained working-directory contract. The `akm` object owns scheduling,
+resolver overrides, `timeout`, `maxSteps`, `maxRetries`, and redaction names.
+Normal execution rejects v2 and points to `akm migrate apply --dry-run` followed
+by `akm migrate apply`. See [Tasks](tasks.md#migrating-task-v2-to-v3) for the
+complete grammar and fail-closed migration behavior.
 
 **Task-log redaction and `redact:`.** A task's persisted output — the run `.log`
 file and its `logs.db` rows — is scrubbed before it is written. Two passes run:
@@ -2304,10 +2428,11 @@ Any task kind may add `redact:` for a secret exported under a name none of those
 rules recognise:
 
 ```yaml
-version: 2
-schedule: "0 3 * * *"
-command: ./deploy.sh
-redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values — max 32
+version: 3
+run: ./deploy.sh
+akm:
+  schedule: "0 3 * * *"
+  redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values
 ```
 
 akm looks each name up in the environment the run is given; a name that is unset
@@ -2323,13 +2448,13 @@ run`; it does not stop after creating a run. Completion maps to task
 `failed`. The task schema's `params` mapping remains the non-CLI way a scheduled
 definition supplies its new-run parameter snapshot.
 
-**Workflow-task run bounds.** `timeoutMs`, `maxSteps`, and `maxRetries` are the
-task-file spellings of `akm workflow run --timeout`, `--max-steps`, and
+**Workflow-task run bounds.** `akm.timeout`, `akm.maxSteps`, and
+`akm.maxRetries` correspond to `akm workflow run --timeout`, `--max-steps`, and
 `--max-retries`. Unlike the interactive command, a scheduled workflow task gets
 a **default whole-run timeout of 6 hours**
 (`DEFAULT_WORKFLOW_TASK_TIMEOUT_MS`): nobody is at the terminal to Ctrl-C an
 unattended run, so without one a single wedged unit hangs the task forever. An
-explicit `timeoutMs` always wins, and `timeoutMs: null` opts out entirely. On
+explicit `akm.timeout` always wins, and `timeout: null` opts out entirely. On
 expiry the runner aborts the run's signal, which the engine treats as a
 graceful break at the next step boundary — the journal is kept and the run
 stays resumable with `akm workflow resume <run-id>` (the run id is in the task
@@ -2337,12 +2462,13 @@ run's `detail.error` and log). The attempt itself is recorded as `failed`, so
 the OS scheduler sees a non-zero exit.
 
 ```yaml
-version: 2
-schedule: "@daily"
-workflow: workflows/nightly-report
-params:
+version: 3
+uses: workflows/nightly-report
+with:
   region: us-east-1
-timeoutMs: 3600000   # 1h whole-run bound (omit for the 6h default, null for none)
-maxSteps: 20         # optional
-maxRetries: 1        # optional
+akm:
+  schedule: "@daily"
+  timeout: 3600000   # 1h whole-run bound (omit for the 6h default, null for none)
+  maxSteps: 20       # optional
+  maxRetries: 1      # optional
 ```

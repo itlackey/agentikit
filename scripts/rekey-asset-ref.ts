@@ -180,8 +180,6 @@ function rekeyStateDb(oldRef: string, newRef: string, dryRun: boolean): Record<s
 function rekeyIndexEntry(args: {
   sourceName: string;
   sourceRoot: string;
-  oldType: string;
-  oldName: string;
   newName: string;
   oldConceptId: string;
   newConceptId: string;
@@ -197,8 +195,6 @@ function rekeyIndexEntry(args: {
       return db.prepare("SELECT id FROM entries WHERE item_ref = ?").get(oldItemRef) == null ? 0 : 1;
     }
     const rekeyed = rekeyEntryInPlace(db, {
-      oldEntryKey: `${args.sourceRoot}:${args.oldType}:${args.oldName}`,
-      newEntryKey: `${args.sourceRoot}:${args.oldType}:${args.newName}`,
       newName: args.newName,
       newFilePath: args.newFilePath,
       oldRef: args.oldConceptId,
@@ -295,8 +291,6 @@ export function rekeyAssetRef(
     indexEntries = rekeyIndexEntry({
       sourceName,
       sourceRoot,
-      oldType: from.type,
-      oldName: from.name,
       newName: to.name,
       oldConceptId,
       newConceptId,

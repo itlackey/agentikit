@@ -112,6 +112,25 @@ describe("#12 — param schema validation at start", () => {
     });
     expect(started.run.status).toBe("active");
   });
+
+  test("workflow run surfaces the secret-shaped-param warning without leaking the value or retired driver prose", async () => {
+    writeProgram("param-guard", PARAM_GUARD_WF);
+    const secretValue = "sk-live-ABCD1234efgh5678IJKL9012mnop3456";
+    const result = await runWorkflowSteps({
+      target: "workflows/param-guard",
+      params: { files: ["a.ts"], mode: "fast", apiKey: secretValue },
+      summaryJudge: null,
+      dispatcher: async () => ({ ok: true, text: "done" }),
+    });
+
+    const warning = result.warnings?.find((entry) => entry.includes('Run param "apiKey"'));
+    expect(warning).toBeDefined();
+    expect(warning).toContain("native unit execution context");
+    expect(warning).toContain("akm workflow run");
+    expect(warning).toContain("akm workflow status");
+    expect(warning).not.toContain(secretValue);
+    expect(warning).not.toMatch(/\bdrivers?\b|workflow brief|`brief`/i);
+  });
 });
 
 describe("#12 — journaled params must still satisfy the frozen schemas (execution integrity)", () => {

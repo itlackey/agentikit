@@ -56,7 +56,7 @@ import { parseFrontmatter, writeSalienceToFrontmatter } from "../../core/asset/f
 import { stripMarkdownFences } from "../../core/asset/markdown";
 import { conceptIdFromTypeName, parseRefInput } from "../../core/asset/resolve-ref";
 import { authoringRulesForType } from "../../core/authoring-rules";
-import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../../core/config/config";
+import type { AkmConfig, ImproveProfileConfig } from "../../core/config/config";
 import { getImproveProcessConfig, loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent, type EventsContext, readEvents } from "../../core/events";
@@ -67,17 +67,22 @@ import { getDbPath } from "../../core/paths";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
 import { withStateDb } from "../../core/state-db";
 import { warnVerbose } from "../../core/warn";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { resolveAssetPath } from "../../indexer/walk/path-resolver";
-import { getDefaultLlmConfig } from "../../integrations/agent/engine-resolution";
-import { materializeLlmRunnerConnection, resolveImproveProcessRunner } from "../../integrations/agent/runner";
-import { type ChatMessage, chatCompletion } from "../../llm/client";
-import { callStructured } from "../../llm/structured-call";
-import { closeDatabase, openIndexDatabase } from "../../storage/repositories/index-connection";
+import {
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
+} from "../../integrations/agent/execution-lowering";
+import type { RunnerSpec } from "../../integrations/agent/runner";
+import type { ChatMessage, chatCompletion } from "../../llm/client";
+import { callStructured, preflightStructuredLlmRunner } from "../../llm/structured-call";
+import { closeDatabase, openReadonlyExistingDatabase } from "../../storage/repositories/index-connection";
 import { getAllEntries } from "../../storage/repositories/index-entries-repository";
 import type { EligibilitySource } from "../proposal/proposal-types";
 import {
   isProposalSkipped,
   listProposals,
+  listProposalsReadOnly,
   type Proposal,
   type ProposalsContext,
   proposalContent,
@@ -90,7 +95,12 @@ import {
   type DistillValidationFinding,
   repairLessonDescriptionTruncation,
 } from "./distill/content-repair";
-import { promoteMemoryToKnowledge } from "./distill/promote-memory";
+import {
+  memoryKnowledgePromotionRequiresDispatch,
+  type PromoteMemoryContext,
+  planMemoryKnowledgePromotion,
+  promoteMemoryToKnowledge,
+} from "./distill/promote-memory";
 import {
   fetchTopSimilarLessons,
   persistOutputEncodingSalience,
@@ -100,6 +110,7 @@ import {
 import { buildClsContext, checkDistillFidelity } from "./distill-guards";
 import { deriveKnowledgeRef } from "./distill-promotion-policy";
 import { buildRefVocabulary, scoreEncodingSalience } from "./encoding-salience";
+import { resolveImproveLlmExecution } from "./execution";
 import { resolveImproveStrategy, resolveProcessEnabled } from "./improve-strategies";
 import { emitProposal } from "./proposal-envelope";
 import { createRunContext, type RunContext, resolveRunStashDir } from "./run-context";
@@ -159,13 +170,12 @@ export interface AkmDistillOptions {
   stashDir?: string;
   /** Override the loaded config (test seam). */
   config?: AkmConfig;
-  /** Pre-resolved connection supplied by the improve invocation plan. */
-  llmConfig?: LlmConnectionConfig | null;
+  /** Exact symbolic runner frozen by the improve plan. */
+  llmRunner?: Extract<RunnerSpec, { kind: "llm" }> | null;
   /** Shared improve deadline signal for generation and quality judging. */
   signal?: AbortSignal;
   /**
-   * Optional chat seam for tests. Defaults to {@link chatCompletion}.
-   * Stateless — no module-level fallback, callers always pass a function.
+   * Optional chat seam for tests. Production transport stays engine-owned.
    */
   chat?: typeof chatCompletion;
   /** Override the proposals clock / id generator (test seam). */
@@ -622,8 +632,10 @@ async function loadAndScoreInputSalience(args: {
    * path (none exists yet in this invocation) would see the stamped bytes.
    */
   ctx: RunContext;
+  /** Delay durable salience writes until credential-bearing dispatch returns. */
+  persistSalience?: boolean;
 }): Promise<{ assetContent: string | null; existingRefVocabulary: Set<string> }> {
-  const { inputRef, durableInputRef, salienceWriteKey, stash, config, outcomeWeightEnabled, lookup, ctx } = args;
+  const { inputRef, durableInputRef, salienceWriteKey, stash, outcomeWeightEnabled, lookup, ctx } = args;
   // Best-effort load: when the asset is not yet indexed we still proceed —
   // the LLM is asked to distil from "available signal" (feedback alone).
   let assetContent: string | null = null;
@@ -649,19 +661,20 @@ async function loadAndScoreInputSalience(args: {
   // reuses it when scoring the distilled OUTPUT at proposal creation (G4).
   let existingRefVocabulary = new Set<string>();
   try {
-    const embCfg = config?.embedding;
-    const indexDb = openIndexDatabase(getDbPath(), embCfg?.dimension ? { embeddingDim: embCfg.dimension } : undefined);
-    try {
-      const allRefs = getAllEntries(indexDb).map((e) => e.entryKey);
-      existingRefVocabulary = buildRefVocabulary(allRefs);
-    } finally {
-      closeDatabase(indexDb);
+    const indexDb = openReadonlyExistingDatabase(getDbPath(), { isolatedSnapshot: true });
+    if (indexDb) {
+      try {
+        const allRefs = getAllEntries(indexDb).map((e) => e.itemRef);
+        existingRefVocabulary = buildRefVocabulary(allRefs);
+      } finally {
+        closeDatabase(indexDb);
+      }
     }
   } catch {
     // Index not available — novelty defaults to type-floor.
   }
 
-  if (assetContent && assetFilePath) {
+  if (args.persistSalience !== false && assetContent && assetFilePath) {
     try {
       const parsedRef = parseRefInput(inputRef);
       // G4: predictionError decays with revision count — the prior hardcoded
@@ -762,6 +775,100 @@ function refuseDisallowedDistillInput(args: {
   };
 }
 
+async function prepareDistillExecution(args: {
+  options: AkmDistillOptions;
+  config: AkmConfig;
+  inputRef: string;
+  durableInputRef: string;
+  salienceWriteKey: string;
+}) {
+  const { options, config, inputRef, durableInputRef, salienceWriteKey } = args;
+  const stash = resolveRunStashDir(options.stashDir);
+  const chat = options.chat;
+  const executionNotices = new Map<string, Readonly<LoweringNotice>>();
+  const collectNotices = (notices: readonly Readonly<LoweringNotice>[]): void => {
+    for (const notice of notices) executionNotices.set(JSON.stringify(notice), notice);
+  };
+  const resolvedExecution = !Object.hasOwn(options, "llmRunner")
+    ? resolveImproveLlmExecution({
+        config,
+        profile: options.improveProfile,
+        process: getImproveProcessConfig("distill", options.improveProfile),
+        processName: "distill",
+      })
+    : null;
+  if (resolvedExecution) collectNotices(resolvedExecution.notices);
+  const distillRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined = Object.hasOwn(options, "llmRunner")
+    ? (options.llmRunner ?? undefined)
+    : resolvedExecution?.runner;
+  const withNotices = (result: AkmDistillResult): AkmDistillResult =>
+    executionNotices.size > 0 ? { ...result, notices: Object.freeze([...executionNotices.values()]) } : result;
+  const lookup = options.lookupFn ?? ((ref: string) => defaultLookup(ref, stash));
+  const readEventsImpl =
+    options.readEventsFn ??
+    ((readOptions: Parameters<typeof readEvents>[0]) => readEvents(readOptions, { readOnly: true }));
+  const outcomeWeightEnabled = config.improve?.salience?.outcomeWeightEnabled !== false;
+  const fetchSimilarLessonsFn: NonNullable<AkmDistillOptions["fetchSimilarLessonsFn"]> =
+    options.fetchSimilarLessonsFn ?? ((query, n) => fetchTopSimilarLessons(query, n, options.stashDir));
+  const assetCtx = createRunContext({
+    stashDir: stash,
+    config,
+    eventsCtx: options.eventsCtx ?? {},
+    proposalsCtx: options.ctx ?? {},
+    chat,
+    getLlmRunner: () => distillRunner ?? null,
+    sourceRun: options.sourceRun ?? `distill-${Date.now()}`,
+    dryRun: false,
+    signal: options.signal,
+  }).withFreshAssetMemo();
+  const initialSalience = await loadAndScoreInputSalience({
+    inputRef,
+    durableInputRef,
+    salienceWriteKey,
+    stash,
+    config,
+    outcomeWeightEnabled,
+    lookup,
+    ctx: assetCtx,
+    persistSalience: false,
+  });
+  const assetState = { ...initialSalience };
+  const persistInputSalience = async (): Promise<void> => {
+    const scored = await loadAndScoreInputSalience({
+      inputRef,
+      durableInputRef,
+      salienceWriteKey,
+      stash,
+      config,
+      outcomeWeightEnabled,
+      lookup,
+      ctx: assetCtx,
+    });
+    assetState.assetContent = scored.assetContent ?? assetState.assetContent;
+    assetState.existingRefVocabulary = scored.existingRefVocabulary;
+  };
+  const feedbackState = readDistillFeedback({ readEventsImpl, options, durableInputRef });
+  const feedback = feedbackState.filteredEvents.slice(-20).map((event) => ({
+    ts: event.ts,
+    eventType: event.eventType,
+    ...(event.metadata !== undefined ? { metadata: event.metadata } : {}),
+  }));
+  return {
+    stash,
+    chat,
+    collectNotices,
+    distillRunner,
+    withNotices,
+    lookup,
+    outcomeWeightEnabled,
+    fetchSimilarLessonsFn,
+    assetState,
+    persistInputSalience,
+    feedback,
+    ...feedbackState,
+  };
+}
+
 export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistillResult> {
   const inputRef = options.ref.trim();
   if (!inputRef) {
@@ -805,79 +912,46 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
   const refused = refuseDisallowedDistillInput({ options, parsedInputRef, inputRef, durableInputRef, eligMeta });
   if (refused) return refused;
 
-  const stash = resolveRunStashDir(options.stashDir);
-  const chat = options.chat ?? chatCompletion;
-  const distillLlm = Object.hasOwn(options, "llmConfig")
-    ? (options.llmConfig ?? undefined)
-    : (() => {
-        const runner = resolveImproveProcessRunner(options.improveProfile, "distill", config);
-        return runner ? materializeLlmRunnerConnection(runner) : getDefaultLlmConfig(config);
-      })();
-  const lookup = options.lookupFn ?? ((ref: string) => defaultLookup(ref, stash));
-  const readEventsImpl = options.readEventsFn ?? readEvents;
-  // R1 opt-out must flow into every computeSalience call this command makes so
-  // distill-written rank_score rows use the same weights as preparation's.
-  const outcomeWeightEnabled = config.improve?.salience?.outcomeWeightEnabled !== false;
-  // D-4 / #390: similar-lessons retrieval seam (test-injectable).
-  const fetchSimilarLessonsFn =
-    options.fetchSimilarLessonsFn ?? ((query, n) => fetchTopSimilarLessons(query, n, options.stashDir));
-
-  const assetCtx = createRunContext({
-    stashDir: stash,
+  const prepared = await prepareDistillExecution({
+    options,
     config,
-    eventsCtx: options.eventsCtx ?? {},
-    proposalsCtx: options.ctx ?? {},
-    chat,
-    getLlmConfig: () => distillLlm ?? null,
-    sourceRun: options.sourceRun ?? `distill-${Date.now()}`,
-    dryRun: false,
-    signal: options.signal,
-  }).withFreshAssetMemo();
-
-  const { assetContent, existingRefVocabulary } = await loadAndScoreInputSalience({
     inputRef,
     durableInputRef,
     salienceWriteKey,
+  });
+  const {
     stash,
-    config,
-    outcomeWeightEnabled,
+    chat,
+    collectNotices,
+    distillRunner,
+    withNotices,
     lookup,
-    ctx: assetCtx,
-  });
-
-  const { filteredEvents, exclusionSet, filteredFeedbackCount, feedbackFullyFiltered } = readDistillFeedback({
-    readEventsImpl,
-    options,
-    durableInputRef,
-  });
-  const feedback = filteredEvents.slice(-20).map((e) => ({
-    ts: e.ts,
-    eventType: e.eventType,
-    ...(e.metadata !== undefined ? { metadata: e.metadata } : {}),
-  }));
-
-  // Memory→knowledge promotion branch (D-1/#369). When the target ref is a
-  // reinforced memory, distill graduates it into a knowledge proposal instead
-  // of a lesson — the whole branch (LLM contradiction-merge, quality gate,
-  // proposal creation, event emit) lives in `promoteMemoryToKnowledge` and is
-  // terminal when it fires. A `null` return means "not a promotion candidate";
-  // fall through to the ordinary lesson/knowledge distillation path.
-  const promotionResult = await promoteMemoryToKnowledge({
+    outcomeWeightEnabled,
+    fetchSimilarLessonsFn,
+    assetState,
+    persistInputSalience,
+    feedback,
+    filteredEvents,
+    exclusionSet,
+    filteredFeedbackCount,
+    feedbackFullyFiltered,
+  } = prepared;
+  const promotionContext = {
     targetKind,
     inputRef,
     durableInputRef,
     ...(options.itemRef ? { itemRef: options.itemRef } : {}),
-    assetContent,
+    assetContent: assetState.assetContent,
     filteredEvents,
     config,
     strategy: options.improveProfile,
-    llmConfig: distillLlm,
+    llmRunner: distillRunner,
     signal: options.signal,
     chat,
     stash,
     lookup,
     fetchSimilarLessonsFn,
-    existingRefVocabulary,
+    existingRefVocabulary: assetState.existingRefVocabulary,
     outcomeWeightEnabled,
     eligMeta,
     eligibilitySource: options.eligibilitySource,
@@ -887,98 +961,133 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
     exclusionSetSize: exclusionSet.size,
     filteredFeedbackCount,
     feedbackFullyFiltered,
-  });
-  if (promotionResult) return promotionResult;
+    onNotices: collectNotices,
+  } satisfies PromoteMemoryContext;
+  const promotionPlan = await planMemoryKnowledgePromotion(promotionContext);
+  let dispatchLease: LoweredExecutionDispatchLease | undefined;
 
-  const effectiveProposalKind = targetKind === "knowledge" ? "knowledge" : "lesson";
-  const effectiveLessonRef =
-    effectiveProposalKind === "knowledge" ? deriveKnowledgeRef(inputRef) : deriveLessonRef(inputRef);
+  try {
+    // Memory→knowledge promotion branch (D-1/#369). When the target ref is a
+    // reinforced memory, distill graduates it into a knowledge proposal instead
+    // of a lesson — the whole branch (LLM contradiction-merge, quality gate,
+    // proposal creation, event emit) lives in `promoteMemoryToKnowledge` and is
+    // terminal when it fires. A `null` return means "not a promotion candidate";
+    // fall through to the ordinary lesson/knowledge distillation path.
+    if (promotionPlan && distillRunner && memoryKnowledgePromotionRequiresDispatch(promotionContext, promotionPlan)) {
+      dispatchLease = await preflightStructuredLlmRunner(distillRunner);
+    }
+    const promotionResult = await promoteMemoryToKnowledge(
+      { ...promotionContext, ...(dispatchLease ? { lease: dispatchLease } : {}) },
+      promotionPlan,
+    );
+    if (promotionResult) {
+      await persistInputSalience();
+      return withNotices(promotionResult);
+    }
 
-  const messages = await buildDistillMessages({
-    options,
-    stash,
-    inputRef,
-    assetContent,
-    feedback,
-    effectiveProposalKind,
-    effectiveLessonRef,
-    fetchSimilarLessonsFn,
-  });
+    const effectiveProposalKind = targetKind === "knowledge" ? "knowledge" : "lesson";
+    const effectiveLessonRef =
+      effectiveProposalKind === "knowledge" ? deriveKnowledgeRef(inputRef) : deriveLessonRef(inputRef);
 
-  const { raw, fallbackReason } = await runDistillLlmCall({
-    config,
-    options,
-    distillLlm,
-    messages,
-    effectiveProposalKind,
-  });
+    const messages = await buildDistillMessages({
+      options,
+      stash,
+      inputRef,
+      assetContent: assetState.assetContent,
+      feedback,
+      effectiveProposalKind,
+      effectiveLessonRef,
+      fetchSimilarLessonsFn,
+    });
 
-  if (raw === null || raw.trim() === "") {
-    return distillEmptyResponseResult({
-      fallbackReason,
+    if (!dispatchLease && distillRunner) dispatchLease = await preflightStructuredLlmRunner(distillRunner);
+
+    const { raw, fallbackReason } = await runDistillLlmCall({
+      config,
+      options,
+      distillRunner,
+      lease: dispatchLease,
+      messages,
+      effectiveProposalKind,
+      onNotices: collectNotices,
+    });
+    await persistInputSalience();
+
+    if (raw === null || raw.trim() === "") {
+      return withNotices(
+        distillEmptyResponseResult({
+          fallbackReason,
+          inputRef,
+          durableInputRef,
+          ...(options.itemRef ? { itemRef: options.itemRef } : {}),
+          effectiveLessonRef,
+          effectiveProposalKind,
+          exclusionSet,
+          filteredFeedbackCount,
+          feedbackFullyFiltered,
+          eligMeta,
+          eventsCtx: options.eventsCtx,
+        }),
+      );
+    }
+
+    const { content, descriptionSwapped } = assembleAndValidateDistillContent({
+      raw,
+      effectiveProposalKind,
       inputRef,
       durableInputRef,
       ...(options.itemRef ? { itemRef: options.itemRef } : {}),
       effectiveLessonRef,
-      effectiveProposalKind,
       exclusionSet,
       filteredFeedbackCount,
-      feedbackFullyFiltered,
       eligMeta,
       eventsCtx: options.eventsCtx,
     });
+
+    const gate = await applyDistillQualityGate({
+      config,
+      options,
+      content,
+      assetContent: assetState.assetContent,
+      chat,
+      distillRunner,
+      lease: dispatchLease,
+      fetchSimilarLessonsFn,
+      stash,
+      inputRef,
+      effectiveLessonRef,
+      exclusionSet,
+      filteredFeedbackCount,
+      feedbackFullyFiltered,
+      onNotices: collectNotices,
+    });
+    if ("rejection" in gate) return withNotices(gate.rejection);
+    const lessonJudgeConfidence = gate.confidence;
+
+    return withNotices(
+      await emitDistillLessonProposal({
+        content,
+        options,
+        distillRunner,
+        assetContent: assetState.assetContent,
+        inputRef,
+        durableInputRef,
+        effectiveLessonRef,
+        effectiveProposalKind,
+        stash,
+        exclusionSet,
+        filteredFeedbackCount,
+        feedbackFullyFiltered,
+        lessonJudgeConfidence,
+        existingRefVocabulary: assetState.existingRefVocabulary,
+        outcomeWeightEnabled,
+        descriptionSwapped,
+        eligMeta,
+      }),
+    );
+  } finally {
+    if (dispatchLease) disposeLoweredExecutionDispatchLease(dispatchLease);
   }
-
-  const { content, descriptionSwapped } = assembleAndValidateDistillContent({
-    raw,
-    effectiveProposalKind,
-    inputRef,
-    durableInputRef,
-    ...(options.itemRef ? { itemRef: options.itemRef } : {}),
-    effectiveLessonRef,
-    exclusionSet,
-    filteredFeedbackCount,
-    eligMeta,
-    eventsCtx: options.eventsCtx,
-  });
-
-  const gate = await applyDistillQualityGate({
-    config,
-    options,
-    content,
-    assetContent,
-    chat,
-    distillLlm,
-    fetchSimilarLessonsFn,
-    stash,
-    inputRef,
-    effectiveLessonRef,
-    exclusionSet,
-    filteredFeedbackCount,
-    feedbackFullyFiltered,
-  });
-  if ("rejection" in gate) return gate.rejection;
-  const lessonJudgeConfidence = gate.confidence;
-
-  return emitDistillLessonProposal({
-    content,
-    options,
-    distillLlm,
-    assetContent,
-    inputRef,
-    durableInputRef,
-    effectiveLessonRef,
-    effectiveProposalKind,
-    stash,
-    exclusionSet,
-    filteredFeedbackCount,
-    feedbackFullyFiltered,
-    lessonJudgeConfidence,
-    existingRefVocabulary,
-    outcomeWeightEnabled,
-    descriptionSwapped,
-    eligMeta,
-  });
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -993,7 +1102,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
 async function emitDistillLessonProposal(args: {
   content: string;
   options: AkmDistillOptions;
-  distillLlm: import("../../core/config/config").LlmConnectionConfig | undefined;
+  distillRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
   assetContent: string | null;
   inputRef: string;
   durableInputRef: string;
@@ -1011,7 +1120,7 @@ async function emitDistillLessonProposal(args: {
 }): Promise<AkmDistillResult> {
   const {
     options,
-    distillLlm,
+    distillRunner,
     assetContent,
     inputRef,
     durableInputRef,
@@ -1085,7 +1194,7 @@ async function emitDistillLessonProposal(args: {
       // (profile/config fallback included), not the raw option — a standalone
       // `akm distill` run must fingerprint under the model that actually
       // generated the content, matching the promote-memory branch.
-      ...(distillLlm?.model ? { modelId: distillLlm.model } : {}),
+      ...(distillRunner?.connection.model ? { modelId: distillRunner.connection.model } : {}),
       source: "distill",
       ...(options.sourceRun !== undefined ? { sourceRun: options.sourceRun } : {}),
       payload: {
@@ -1295,11 +1404,13 @@ function assembleAndValidateDistillContent(args: {
 async function runDistillLlmCall(args: {
   config: AkmConfig;
   options: AkmDistillOptions;
-  distillLlm: import("../../core/config/config").LlmConnectionConfig | undefined;
+  distillRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
+  lease: LoweredExecutionDispatchLease | undefined;
   messages: ChatMessage[];
   effectiveProposalKind: "lesson" | "knowledge";
+  onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }): Promise<{ raw: string | null; fallbackReason: "disabled" | "timeout" | "error" | undefined }> {
-  const { config, options, distillLlm, messages, effectiveProposalKind } = args;
+  const { config, options, distillRunner, lease, messages, effectiveProposalKind, onNotices } = args;
   const distillSchema =
     effectiveProposalKind === "knowledge" ? DISTILL_KNOWLEDGE_JSON_SCHEMA : DISTILL_LESSON_JSON_SCHEMA;
   let fallbackReason: "disabled" | "timeout" | "error" | undefined;
@@ -1313,7 +1424,7 @@ async function runDistillLlmCall(args: {
     // emitting the distill_invoked event so we don't double-emit here.
     warnVerbose(`[akm] LLM fallback for ${feature}: ${reason}`);
   };
-  if (enabled && !distillLlm) {
+  if (enabled && !distillRunner) {
     // No LLM connection configured. At HEAD this threw a ConfigError inside
     // the gated fn and tryLlmFeature routed it through the "error" fallback;
     // reproduce that terminal state directly (the gate-disabled case above
@@ -1326,9 +1437,10 @@ async function runDistillLlmCall(args: {
     feature: "distill",
     akmConfig: config,
     enabled,
-    // Safe: when the gate is open, distillLlm is defined (guard above); when
-    // it is closed, the transport never runs and config is never read.
-    config: distillLlm as import("../../core/config/config").LlmProfileConfig,
+    // Safe: when the gate is open, distillRunner is defined (guard above); when
+    // it is closed, the transport never runs and the runner is never read.
+    runner: distillRunner as Extract<RunnerSpec, { kind: "llm" }>,
+    ...(lease ? { lease } : {}),
     messages,
     request:
       options.chat === undefined
@@ -1336,7 +1448,10 @@ async function runDistillLlmCall(args: {
           // `response_format: json_schema` enforce shape upstream. Providers
           // that ignore the option fall through to the prompt-contract
           // markdown path.
-          { responseSchema: distillSchema }
+          {
+            responseSchema: distillSchema,
+            ...(options.signal ? { signal: options.signal } : {}),
+          }
         : // Test seam: keep the injected fake as the transport; fakes never
           // see the schema (they return markdown strings).
           { chat: options.chat, ...(options.signal ? { signal: options.signal } : {}) },
@@ -1350,6 +1465,7 @@ async function runDistillLlmCall(args: {
     },
     fallback: null,
     onFallback: (evt) => recordFallback(evt.feature, evt.reason),
+    onNotices,
   });
   return { raw, fallbackReason };
 }
@@ -1445,8 +1561,9 @@ async function applyDistillQualityGate(args: {
   options: AkmDistillOptions;
   content: string;
   assetContent: string | null;
-  chat: typeof chatCompletion;
-  distillLlm: import("../../core/config/config").LlmConnectionConfig | undefined;
+  chat: typeof chatCompletion | undefined;
+  distillRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
+  lease: LoweredExecutionDispatchLease | undefined;
   fetchSimilarLessonsFn: (query: string, n: number) => Promise<Array<{ ref: string; content: string }>>;
   stash: string;
   inputRef: string;
@@ -1454,6 +1571,7 @@ async function applyDistillQualityGate(args: {
   exclusionSet: Set<string>;
   filteredFeedbackCount: number;
   feedbackFullyFiltered: boolean;
+  onNotices: (notices: readonly Readonly<LoweringNotice>[]) => void;
 }): Promise<{ rejection: AkmDistillResult } | { confidence: number | undefined }> {
   const {
     config,
@@ -1461,7 +1579,8 @@ async function applyDistillQualityGate(args: {
     content,
     assetContent,
     chat,
-    distillLlm,
+    distillRunner,
+    lease,
     fetchSimilarLessonsFn,
     stash,
     inputRef,
@@ -1469,6 +1588,7 @@ async function applyDistillQualityGate(args: {
     exclusionSet,
     filteredFeedbackCount,
     feedbackFullyFiltered,
+    onNotices,
   } = args;
   if (!(options.improveProfile?.processes?.distill?.qualityGate?.enabled ?? true)) {
     return { confidence: undefined };
@@ -1477,8 +1597,10 @@ async function applyDistillQualityGate(args: {
   const similarLessons = await fetchSimilarLessonsFn(content.slice(0, 500), 3);
   const judgeResult = await runLessonQualityJudge(config, content, assetContent ?? "", chat, {
     ...(similarLessons.length > 0 ? { similarLessons } : {}),
-    ...(distillLlm ? { llmConfig: distillLlm } : {}),
+    ...(distillRunner ? { llmRunner: distillRunner } : {}),
+    ...(lease ? { lease } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
+    onNotices,
   });
   if (!judgeResult.pass) {
     if (judgeResult.reviewNeeded) {
@@ -1587,7 +1709,11 @@ async function buildDistillMessages(args: {
   } = args;
   // Inject last 1–3 rejected proposals for this ref as Reflexion-style
   // verbal-RL context so the LLM avoids regenerating refused proposals.
-  const rejectedForRef = listProposals(stash, { ref: inputRef, status: "rejected", includeArchive: true })
+  const rejectedForRef = listProposalsReadOnly(
+    stash,
+    { ref: inputRef, status: "rejected", includeArchive: true },
+    options.ctx,
+  )
     .sort((a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime())
     .slice(0, MAX_REJECTED_PROPOSALS)
     .map((p) => ({

@@ -20,15 +20,35 @@ akm uses four XDG-compliant directories. Durable data (`index.db`, `state.db`, `
 
 ## SQLite Databases
 
+Managed SQLite openers apply a `busy_timeout` of 30,000 ms. Journal mode is
+selected by `AKM_SQLITE_JOURNAL_MODE` (`WAL`, `DELETE`, or `TRUNCATE`) and
+defaults to WAL. When that default is used on a detected network filesystem,
+AKM falls back to DELETE; rollback-journal modes also set `synchronous = FULL`.
+Read-only existing-index handles apply the same busy timeout without mutating
+journal mode. Foreign-key policy is called out per database below.
+
 ### `$DATA/index.db` — Main Search Index
 
-Schema managed by `ensureSchema()` (`src/storage/repositories/index-schema.ts`), gated by a `DB_VERSION` constant used only as a forensic stamp in `index_meta`. WAL mode, `busy_timeout = 5000 ms`, foreign keys ON. Optionally loads the `sqlite-vec` extension for fast ANN (approximate nearest-neighbour) vector search.
+Schema managed by `ensureSchema()` (`src/storage/repositories/index-schema.ts`).
+The current derived generation is exactly v21: `index_meta.version` and the
+complete canonical `entries` fingerprint must both match. It uses the shared
+opening pragma policy above with foreign keys ON and optionally loads the
+`sqlite-vec` extension for fast ANN (approximate nearest-neighbour) vector
+search.
 
 Opened by:
-- `openDatabase()` — full schema init, called by `akm index`
-- `openExistingDatabase()` — read/write without schema mutation, called by search/show/curate
+- `openIndexDatabase()` — managed schema initialization and generation rebuild,
+  called by `akm index` and other index writers
+- `openExistingDatabase()` — no schema mutation; validates the exact current
+  generation before returning a handle to search/show/curate and other readers
 
-**Retention:** `index.db` is a fully regenerable derived cache. Schema convergence is additive and non-destructive — every table is `CREATE ... IF NOT EXISTS`, column additions go through guarded `ALTER`s, and targeted migrations handle structural changes; there is no drop-and-recreate-on-version-mismatch path. `clearStaleCacheEntries()` removes orphaned LLM cache rows.
+**Retention:** `index.db` is a fully regenerable derived cache. A missing or
+noncanonical v21 `entries` fingerprint causes the managed opener to discard the
+entry-dependent derived generation and create the exact current schema; the
+indexer then repopulates it from current sources and durable usage state.
+Existing/read-only openers reject a noncanonical generation. This path never
+modifies `state.db`. `clearStaleCacheEntries()` removes orphaned LLM cache rows
+within a current generation.
 
 #### Table: `index_meta`
 
@@ -44,21 +64,21 @@ Known keys: `version` (stored DB_VERSION), `embeddingDim` (e.g. `"384"`), `hasEm
 | Column | Type | Notes |
 |---|---|---|
 | `id` | INTEGER PRIMARY KEY AUTOINCREMENT | Internal row ID |
-| `entry_key` | TEXT NOT NULL UNIQUE | `<stash_dir>:<type>:<name>` (legacy identity column) |
-| `dir_path` | TEXT NOT NULL | Parent directory of the asset file |
+| `item_ref` | TEXT NOT NULL UNIQUE | Sole durable identity and upsert conflict key: `<bundle>//<concept-id>` |
+| `bundle_id` | TEXT NOT NULL | Owning installation identity |
+| `component_id` | TEXT NOT NULL | Owning component identity within the installation |
+| `concept_id` | TEXT NOT NULL | Adapter-owned concept identity |
+| `adapter_id` | TEXT NOT NULL | Adapter that recognized and renders the document |
+| `type` | TEXT NOT NULL | Adapter-emitted item type |
 | `file_path` | TEXT NOT NULL | Absolute path to the asset file |
-| `stash_dir` | TEXT NOT NULL | Root bundle directory |
-| `entry_json` | TEXT NOT NULL | Full `StashEntry` as JSON |
-| `search_text` | TEXT NOT NULL | Pre-built BM25 search string |
-| `entry_type` | TEXT NOT NULL | Asset type: `memory`, `skill`, `lesson`, etc. |
-| `derived_from` | TEXT | Set on entries derived from another asset (e.g. `.derived` memories) |
-| `item_ref` | TEXT | Bundle-adapter identity: the durable `<bundle>//<concept-id>` spelling. Now the primary conflict target for the entries upsert; nullable only on partially-migrated rows. |
-| `bundle_id`, `component_id`, `concept_id`, `adapter_id` | TEXT | Bundle-adapter provenance columns, additive alongside the legacy columns above |
-| `type` | TEXT | Bundle-adapter item type (parallel to `entry_type`) |
 | `content_hash` | TEXT | Content hash for change detection |
-| `document_json` | TEXT | Bundle-adapter document payload |
+| `document_json` | TEXT NOT NULL | Sole stored `IndexDocument` projection |
+| `search_text` | TEXT NOT NULL | Pre-built BM25 search string |
+| `derived_from` | TEXT | Set on entries derived from another asset (e.g. `.derived` memories) |
 
-Indexes: `idx_entries_dir` on `dir_path`, `idx_entries_type` on `entry_type`, `idx_entries_file_path` on `file_path`, a UNIQUE index on `item_ref`.
+Indexes: the UNIQUE `item_ref` constraint plus `idx_entries_bundle` on
+`bundle_id`, `idx_entries_type` on `type`, `idx_entries_file_path` on
+`file_path`, and `idx_entries_derived_from` on `derived_from`.
 
 #### Virtual Table: `entries_fts` (FTS5)
 
@@ -93,16 +113,12 @@ Used by JS cosine-similarity fallback when `sqlite-vec` is absent.
 
 Created only when `sqlite-vec` is loadable. Columns: `id INTEGER PRIMARY KEY`, `embedding FLOAT[<dim>]`. Dropped and recreated if embedding dimension changes.
 
-#### Table: `workflow_documents`
+#### Workflow source indexing
 
-| Column | Type | Notes |
-|---|---|---|
-| `entry_id` | INTEGER PRIMARY KEY | FK → `entries(id)` ON DELETE CASCADE |
-| `schema_version` | INTEGER NOT NULL | Workflow schema version |
-| `document_json` | TEXT NOT NULL | Parsed `WorkflowDocument` AST |
-| `source_path` | TEXT NOT NULL | Bundle directory path |
-| `source_hash` | TEXT NOT NULL | FNV-1a hash of raw file bytes (incremental skip key) |
-| `updated_at` | TEXT NOT NULL | ISO-8601 |
+Peer `.md` and `.yml` workflow sources compile directly to source IR version 1.
+The index stores the ordinary normalized `entries` row and metadata derived from
+that IR; there is no workflow-specific AST cache or parallel persisted source
+representation. Executable durable plans belong only to `state.db`.
 
 #### Table: `index_dir_state`
 
@@ -153,33 +169,36 @@ global fallback / cold-start signal.
 
 See [Utility Score Pipeline](#utility-score-pipeline) below.
 
-`usage_events` (search/show/feedback telemetry) is **not** an `index.db` table —
-since the three-DB cutover (Chunk-8 WI-8.3) it lives in `state.db`. See the
-`state.db` section below.
+`usage_events` (search/show/feedback telemetry) is **not** an `index.db` table;
+it lives in `state.db` so an index-generation rebuild cannot discard durable
+usage history. See the `state.db` section below.
 
 #### Table: `registry_index_cache`
 
-Registry index cache: `registry_url` PK, `fetched_at`, `etag`, `last_modified`, `index_json`. TTL enforced by `getRegistryIndexCache()`. Replaces flat JSON files in `$CACHE/registry-index/`.
+Registry index cache. TTL is enforced by `getRegistryIndexCache()`.
 
 | Column | Type | Notes |
 |---|---|---|
-| `slug` | TEXT PRIMARY KEY | Same slug as former filename; registry URL with non-alphanumeric → `-`, max 120 chars |
-| `body_json` | TEXT NOT NULL | Raw registry index JSON |
+| `registry_url` | TEXT PRIMARY KEY | Canonical registry URL and cache key |
 | `fetched_at` | TEXT NOT NULL | ISO-8601 |
-| `fresh_until` | TEXT NOT NULL | ISO-8601; used for TTL check |
-| `stale_until` | TEXT NOT NULL | ISO-8601; used for stale-fallback |
+| `etag` | TEXT | HTTP ETag for conditional requests |
+| `last_modified` | TEXT | HTTP Last-Modified value for conditional requests |
+| `index_json` | TEXT NOT NULL DEFAULT `'{}'` | Raw registry index document |
 
 ---
 
 ### Workflow Run State — tables in `$DATA/state.db`
 
-The 0.9.0 cutover folded the former `$DATA/workflow.db` into `state.db`; the
-`workflow_runs` / `workflow_run_steps` / `workflow_run_units` tables documented
-here now live in `state.db` (see the `state.db` section below) and are deleted
-along with the physical `workflow.db` by `akm migrate apply`. WAL mode, foreign
-keys ON. No automatic cleanup — runs persist indefinitely.
+`workflow_runs`, `workflow_run_steps`, `workflow_run_units`, and
+`workflow_run_unit_attempts` live in `state.db`. They use `state.db`'s shared
+journal-mode/busy-timeout policy with foreign keys enabled. There is no separate
+workflow database or workflow-storage migration path. Runs persist until an
+explicit retention policy removes them.
 
 #### Table: `workflow_runs`
+
+New starts persist plan IR v4, the sole executable plan format. Pre-v4 stored
+plans are rejected rather than upgraded or replayed through another runtime.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -194,9 +213,9 @@ keys ON. No automatic cleanup — runs persist indefinitely.
 | `created_at` | TEXT NOT NULL | ISO-8601 |
 | `updated_at` | TEXT NOT NULL | ISO-8601 |
 | `completed_at` | TEXT | ISO-8601; NULL while active |
-| `agent_harness`, `agent_session_id` | TEXT | Driving agent identity, recorded at start (see the check-in mechanism in `docs/reference/workflows.md`) |
+| `agent_harness`, `agent_session_id` | TEXT | Invoking harness/session identity, recorded at start (see the check-in mechanism in `docs/reference/workflows.md`) |
 | `checkin_armed_at` | TEXT | ISO-8601 timestamp; a stall past the check-in window surfaces a `continue` directive on the next poll |
-| `plan_json`, `plan_hash` | TEXT | Frozen workflow-v3 execution plan (engine caps, exact models, symbolic credentials, concurrency, timeout) and its hash |
+| `plan_json`, `plan_hash` | TEXT | Frozen executable plan and its integrity hash; current v4 plans include guarded source reads, immutable targets, and symbolic environment bindings |
 | `engine_lease_until`, `engine_lease_holder` | TEXT | Engine concurrency lease bookkeeping for the run |
 | `plan_ir_version` | INTEGER | Schema version of `plan_json`'s IR |
 
@@ -222,20 +241,79 @@ Primary key: `(run_id, step_id)`.
 
 #### Table: `workflow_run_units`
 
-Fan-out execution units for workflow-v3 parallel/graph runs (one row per node in
-a run's execution graph), keyed `(run_id, unit_id)` with a FK to `workflow_runs`.
-Columns include `node_id`, `parent_unit_id`, `phase`, `runner`, `model`,
-`status` (`pending`/`running`/`completed`/`failed`/`skipped`), `result_json`,
-`tokens`, `failure_reason`, `worktree_path`, `session_id`, timing columns, and
-per-unit check-in/claim fields (`last_checkin_at`, `attempts`, `claim_holder`,
-`claim_expires_at`, `engine`) mirroring the run-level check-in design. See
-`docs/reference/workflows.md`.
+The current status projection for execution units (one row per node in a
+run's execution graph), keyed `(run_id, unit_id)` with a FK to `workflow_runs`.
+The `workflow_run_unit_attempts` table is append-only; it receives every
+external reservation and terminal result, while this table remains the
+public status projection. Columns include
+`node_id`, `parent_unit_id`, `phase`,
+`runner`, `model`, `status`
+(`pending`/`running`/`completed`/`failed`/`skipped`), `result_json`, `tokens`,
+`failure_reason`, `worktree_path`, `session_id`, timing columns, and per-unit
+check-in/claim fields (`last_checkin_at`, `attempts`, `claim_holder`,
+`claim_expires_at`, `engine`). See `docs/reference/workflows.md`.
+
+#### Table: `workflow_run_unit_attempts`
+
+Append-only durable-v4 external-dispatch attempt ledger. Primary key: `(run_id, unit_id, attempt)`.
+`dispatch_id` also has a unique index. A crash
+reclaim keeps the stable dispatch identity for the same attempt; an explicit
+retry appends a new numbered attempt instead of overwriting history.
+
+| Column | Type | Notes |
+|---|---|---|
+| `run_id` | TEXT NOT NULL | FK to `workflow_runs(id)` with cascade delete |
+| `unit_id` | TEXT NOT NULL | Stable v4 unit identity across explicit retries |
+| `attempt` | INTEGER NOT NULL | One-based append-only attempt ordinal |
+| `dispatch_id` | TEXT NOT NULL UNIQUE | Stable identity reused by crash reclaim |
+| `step_id`, `node_id` | TEXT NOT NULL | Owning workflow step and node |
+| `phase` | TEXT NOT NULL | `unit` or `gate` |
+| `runner`, `engine`, `model` | TEXT | Frozen dispatch classification; values may be absent where inapplicable |
+| `input_hash` | TEXT NOT NULL | Integrity/replay identity for the dispatch input |
+| `status` | TEXT NOT NULL | `running`, `completed`, `failed`, or `skipped` |
+| `result_json`, `tokens`, `failure_reason` | mixed | Terminal result, known usage, and safe failure reason |
+| `session_id`, `worktree_path` | TEXT | External session and isolation-worktree evidence |
+| `started_at`, `finished_at` | TEXT | Attempt timing |
+| `claim_holder`, `claim_expires_at` | TEXT NOT NULL | Lease fencing for reclaim and stale-terminal refusal |
 
 ---
 
 ### `$DATA/state.db` — Migration-safe Durable State Database
 
-WAL mode, foreign keys ON. Schema uses Flyway-pattern migrations — never drops durable rows. Created on first event write.
+Uses the shared journal-mode/busy-timeout policy with foreign keys ON. The
+immutable Flyway-pattern ledger has an explicit safety classification for every
+migration ID. Additive migrations and released
+migration 002's verified data-preserving `task_history` rebuild run
+automatically. Released migration 018's dead-lane table/column drops do not:
+an ordinary managed open stops at that boundary and directs the operator to
+`akm upgrade --force`. After executable replacement, that command creates a
+consistent sibling snapshot with `VACUUM INTO`, fsyncs it, requires
+`PRAGMA quick_check` to report `ok`, and only then admits migration 018. The
+snapshot is named
+`state.db.pre-018-drop-dead-lane-schema.<UTC-digits>.<UUID>.bak`. Its randomized
+pathname is atomically reserved and held by descriptor; symlink, inode, and
+ownership replacement fail closed. It remains owner-only while SQLite writes
+and verifies it, then receives permissions no broader than `state.db`. One
+`BEGIN IMMEDIATE` window spans the locked ledger recheck, WAL-inclusive
+snapshot, migration 018 DDL, and ledger insert. Fresh-database privilege comes
+only from an atomically created file whose inode remains owned by that open;
+an existing or replaced path cannot inherit it. An existing file with no
+applied migration IDs—whether the ledger table is absent or empty—is rejected
+without writes by ordinary commands. Explicit upgrade binds the exact source
+inode, writes and verifies a
+`state.db.pre-001-initial-schema.<UTC-digits>.<UUID>.bak` copy before ledger
+creation or migration 001. One `BEGIN IMMEDIATE` transaction holds writer
+exclusion across that snapshot, ledger initialization, migration 001, and
+migration 002's table rebuild. The migration lock verifies that `BEGIN`
+actually opened a transaction before any body runs and that the transaction
+still exists before `COMMIT`. Snapshot source and target SQLite connections use
+descriptor-bound paths where the platform permits pathname replacement and
+fail closed if that binding is not available. Failed reserved backup paths are
+reported and retained, never removed by check-then-unlink cleanup. Unknown or
+divergent ledgers fail closed.
+
+This is one narrow released-ledger gate, not a general database backup,
+restore, or cutover framework. Created on first durable state write.
 
 #### Table: `schema_migrations`
 
@@ -297,8 +375,8 @@ Indexes: `idx_task_history_task` on `task_id`, `idx_task_history_started` on `st
 
 #### Table: `usage_events`
 
-Moved here from `index.db` at the three-DB cutover (Chunk-8 WI-8.3) — durable,
-non-regenerable telemetry does not belong in a rebuildable derived cache.
+Durable, non-regenerable telemetry lives in `state.db`, not the rebuildable
+derived index.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -309,26 +387,32 @@ non-regenerable telemetry does not belong in a rebuildable derived cache.
 | `entry_ref` | TEXT | Stable ref string (survives entry ID changes across index rebuilds) |
 | `signal` | TEXT | Feedback signal: `positive` or `negative` |
 | `metadata` | TEXT | JSON free-form metadata |
-| `source` | TEXT NOT NULL DEFAULT 'user' | Provenance: `user`, `improve`, `task`, `audit`, or `unknown`. The SQL default is retained in the cutover schema; runtime writers always pass an explicit value. |
+| `source` | TEXT NOT NULL DEFAULT 'user' | Provenance: `user`, `improve`, `task`, `audit`, or `unknown`. Runtime writers always pass an explicit value. |
 | `created_at` | TEXT NOT NULL | ISO-8601 |
 
 Indexes: `idx_usage_events_entry`, `idx_usage_events_type`, `idx_usage_events_ref`, `idx_usage_events_source`.
 
-Preserved across `index.db` schema changes and full rebuilds. `relinkUsageEvents()` re-associates rows to new entry IDs via `entry_ref` after a full rebuild.
-Pre-provenance rows rescued during the three-DB cutover are explicitly stored as
-`unknown`, never promoted to user demand by the historical SQL default.
+Preserved across `index.db` schema changes and full rebuilds. `relinkUsageEvents()`
+re-associates rows to new entry IDs via `entry_ref` after a full rebuild.
 
 #### Table: `legacy_state`
 
-Orphan quarantine archive populated by the one-time three-DB-cutover ref-rekey
-migration (§11.4): rows from durable state keyed off a ref that could not be
-re-keyed onto `item_ref` land here instead of being silently dropped.
+Historical table installed by released state migration 020. The migration SQL
+and ledger id remain immutable for existing databases; current runtime code has
+no reader, writer, or cutover path for this table.
 
 ---
 
 ### `$DATA/logs.db` — Task/Run Log Lines
 
-Separate SQLite database from `state.db` (`src/core/logs-db.ts`, `getLogsDbPath()`). WAL mode, `busy_timeout = 30000 ms`, foreign keys OFF. Structured replacement for grepping the per-run flat log files under `$CACHE/tasks/logs/<task-id>/<ISO-ts>.log` (that per-run text file is still written as a transitional human-readable tail). Can grow large in practice — live installs have been observed at roughly 1 GB — because every scheduled task run appends its stdout/stderr lines here with no default cap on total size (only an age-based purge, see below).
+Separate SQLite database from `state.db` (`src/core/logs-db.ts`,
+`getLogsDbPath()`). Uses the shared journal-mode/busy-timeout policy with
+foreign keys OFF. Structured replacement for grepping the per-run flat log
+files under `$CACHE/tasks/logs/<task-id>/<ISO-ts>.log` (that per-run text file
+is still written as a transitional human-readable tail). Can grow large in
+practice — live installs have been observed at roughly 1 GB — because every
+scheduled task run appends its stdout/stderr lines here with no default cap on
+total size (only an age-based purge, see below).
 
 #### Table: `task_logs`
 
@@ -352,7 +436,7 @@ Indexes: `idx_task_logs_ts` on `ts`, `idx_task_logs_task_id` on `task_id`, `idx_
 
 ### `$CACHE/events.jsonl` — **Replaced by `events` table in `$DATA/state.db`**
 
-The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing files can be migrated using `scripts/migrate-storage.ts`.
+The JSONL file at `$CACHE/events.jsonl` is no longer read or written by akm.
 
 **Wire format (one object per line, historical reference):**
 ```json
@@ -409,12 +493,6 @@ The JSONL file at `$CACHE/events.jsonl` is no longer written by akm. Existing fi
 
 ---
 
-### `$STATE/tasks/history/<task-id>.jsonl` — Task Run History (legacy)
-
-These JSONL files are no longer written or read by akm. Existing files at `$CACHE/tasks/history/` or `$STATE/tasks/history/` can be imported into the `task_history` table in `state.db` using the migration script. See Step 7 of `akm-migrate storage`.
-
-One line per execution: `{ id, status, startedAt, finishedAt, durationMs, log, target, detail? }`. No cleanup.
-
 ### `$STASH/.akm/memory-cleanup/belief-transitions.jsonl` — Belief State Log
 
 One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromState, toState, reason, relatedRef? }`. Observability only; no programmatic consumer reads this file.
@@ -434,7 +512,7 @@ One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromS
 | `$CACHE/registry-index/<slug>.json` | Removed in v0.8.0 — data now stored in `registry_index_cache` table in `$DATA/index.db`. Delete these files after running the migration script. | — |
 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | Skills.sh search result cache. Fresh 15min; stale 1d. Key = MD5 of `url + query + limit`. | TTL |
 | `$STASH/.akm/consolidate-journal.json` | Legacy consolidation journal; current advisory consolidation does not read or write it. | Safe to remove |
-| `$DATA/index.db` (`graph_*` tables) | Knowledge graph index data: per-bundle graph metadata plus per-file entities and relations extracted from assets via LLM. `graph_files` is keyed on `entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE` with `(stash_root, file_path)` as `UNIQUE`; `body_hash` is `NOT NULL`; every considered file persists a `status` and `reason`; `graph_file_entities` stores both canonical `entity` and normalized `entity_norm`; `graph_file_relations` stores canonical endpoints plus `from_entity_norm` / `to_entity_norm`; `extraction_run_id` (on `graph_files` and `graph_meta`) and `extractor_id` (on `graph_meta`) record extraction provenance. `graph_meta` also stores the latest graph telemetry: model, prompt version, batch size, cache hits/misses, truncation count, and failure count. A companion `graph_extraction_queue` table holds a lazy, priority-ordered backlog of files awaiting extraction. Indexes: `idx_graph_files_stash_order`, `idx_graph_file_entities_entity_norm(stash_root, entity_norm)`, `idx_entries_file_path` on `entries(file_path)`. | Refreshed by graph extraction; regenerated on the next `akm index`/`akm improve` since `index.db` is a fully rebuildable cache |
+| `$DATA/index.db` (`graph_*` tables) | Knowledge graph index data: per-bundle graph metadata plus per-file entities and relations extracted from assets via LLM. `graph_files` is keyed by `(stash_root, file_path, body_hash)` with `(stash_root, file_path)` unique; it has no `entries.id` foreign key. Every considered file persists `status` and `reason`. `graph_file_entities` and `graph_file_relations` carry the same three-column owner key and cascade from `graph_files`; they store normalized and display-form entity values. `extraction_run_id` (on `graph_files` and `graph_meta`) and `extractor_id` (on `graph_meta`) record extraction provenance. `graph_meta` also stores the latest graph telemetry: model, prompt version, batch size, cache hits/misses, truncation count, and failure count. A companion `graph_extraction_queue` table holds a lazy, priority-ordered backlog of files awaiting extraction. Indexes include `idx_graph_files_path`, `idx_graph_files_stash_order`, `idx_graph_file_entities_entity_norm(stash_root, entity_norm)`, and `idx_entries_file_path` on `entries(file_path)`. | Refreshed by graph extraction; regenerated on the next `akm index`/`akm improve` since `index.db` is a fully rebuildable cache |
 
 ---
 
@@ -444,6 +522,9 @@ One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromS
 
 All asset files live under `$STASH/` in type-specific subdirectories defined by the `PLACEMENT_SPECS` map in `src/core/asset/asset-placement.ts`:
 
+The `workflows/` directory holds peer `.md` and `.yml` workflow sources. The
+`tasks/` directory holds strict `.yml` task v3 sources.
+
 | Subdirectory | Asset Type | Format |
 |---|---|---|
 | `skills/<name>/SKILL.md` | skill | YAML-FM + Markdown |
@@ -451,14 +532,14 @@ All asset files live under `$STASH/` in type-specific subdirectories defined by 
 | `agents/<name>.md` | agent | YAML-FM + Markdown |
 | `knowledge/<name>.md` | knowledge | YAML-FM + Markdown |
 | `instructions/<name>.md` | instruction | YAML-FM + Markdown |
-| `workflows/<name>.md` | workflow | YAML-FM + Markdown |
+| `workflows/<name>.md` / `workflows/<name>.yml` | workflow | Peer `.md` Markdown and `.yml` GitHub-shaped sources; both compile through source IR v1 |
 | `scripts/<name>.<ext>` | script | sh / ts / js / ps1 etc. |
 | `memories/<name>.md` | memory | YAML-FM + Markdown |
 | `env/<name>.env` | env | `KEY=VALUE` pairs |
 | `secrets/<name>` | secret | raw secret bytes |
 | `facts/<name>.md` | fact | YAML-FM + Markdown |
 | `lessons/<name>.md` | lesson | YAML-FM + Markdown (required: `description`, `when_to_use`) |
-| `tasks/<name>.yml` | task | strict YAML with root `version: 2`; prompt tasks select `engine` (see `docs/migration/v0.8-to-v0.9.md#engine-and-task-assets`) |
+| `tasks/<name>.yml` | task | Strict task v3 YAML source with root `version: 3`; `.yaml` is not recognized |
 | `sessions/<harness>/<session-id>.md` | session | YAML-FM + Markdown; generated by the `extract` pass, not user-authored |
 
 `wikis/<name>/` is a separate convention: a bundle root recognized by the
@@ -632,23 +713,17 @@ not affect ranking, salience, real-query labels, or GRR.
 | # | Path | Format | Purpose |
 |---|---|---|---|
 | 1 | `$DATA/index.db` | SQLite 3 (WAL) | Main search index, embeddings, utility scores, LLM cache, registry index cache |
-| 2 | `$DATA/workflow.db` | — | **Removed in 0.9.0** — folded into `$DATA/state.db`. Deleted by `akm migrate apply`. |
-| 3 | `$DATA/state.db` | SQLite 3 (WAL) | Durable event and usage logs, proposals, task history, and workflow run state (migration-safe) |
-| 4 | `$STATE/tasks/history/<id>.jsonl` | JSONL | Per-task execution history (legacy location, removed in v0.8.0; import into state.db via migration script) |
-| 5 | `$STASH/.akm/memory-cleanup/belief-transitions.jsonl` | JSONL | Belief state transition audit log |
-| 6 | `$CONFIG/config.json` | JSONC | User configuration |
-| 7 | `<cwd>/.akm/config.json` | JSONC | Project-scoped config overrides |
-| 8 | `$CACHE/config-backups/config-<ts>.json` | JSON | Config pre-save backups (0600 files / 0700 dir; capped at 5, only live backup location) |
-| 9 | `$DATA/akm.lock` | JSON | Installed bundle lockfile (moved from $CONFIG) |
-| 10 | `$CONFIG/akm.lock` | JSON | Legacy location (removed in v0.8.0). Run migration script to move to `$DATA/akm.lock`. |
-| 11 | `$DATA/akm.lock.lck` | Text (PID) | Write-lock sentinel for lockfile |
-| 12 | `$CACHE/semantic-status.json` | JSON | Embedding provider health cache |
-| 13 | `$CACHE/registry-index/<slug>.json` | JSON | Removed in v0.8.0 — replaced by `registry_index_cache` table in `$DATA/index.db`. Safe to delete after migration. |
-| 14 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | JSON | Skills.sh query result cache |
-| 15 | `$STASH/.akm/consolidate-journal.json` | JSON | Legacy consolidation journal; no longer used |
-| 16 | `$DATA/index.db` (`graph_*` tables) | SQLite | Knowledge graph data — there is no `graph.json` file; see the `graph_*` table row above |
-| 17 | `$DATA/state.db` (`proposals` table) | SQLite | Proposal queue, pending and archived alike — archival is a `status` flip, not a separate directory |
-| 18 | `$STASH/.akm/archive/<ts>-<i>-<name>.md` | FM+Markdown | Legacy consolidation archive; no longer managed |
+| 2 | `$DATA/state.db` | SQLite 3 (WAL) | Durable event and usage logs, proposals, task history, and workflow run state |
+| 3 | `$STASH/.akm/memory-cleanup/belief-transitions.jsonl` | JSONL | Belief state transition audit log |
+| 4 | `$CONFIG/config.json` | JSONC | User configuration |
+| 5 | `<cwd>/.akm/config.json` | JSONC | Project-scoped config overrides |
+| 6 | `$CACHE/config-backups/config-<ts>.json` | JSON | Config pre-save backups (0600 files / 0700 dir; capped at 5) |
+| 7 | `$DATA/akm.lock` | JSON | Installed bundle lockfile |
+| 8 | `$DATA/akm.lock.lck` | Text (PID) | Write-lock sentinel for lockfile |
+| 9 | `$CACHE/semantic-status.json` | JSON | Embedding provider health cache |
+| 10 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | JSON | Skills.sh query result cache |
+| 11 | `$DATA/index.db` (`graph_*` tables) | SQLite | Knowledge graph data — there is no `graph.json` file; see the `graph_*` table row above |
+| 12 | `$DATA/state.db` (`proposals` table) | SQLite | Proposal queue; archival is a `status` change, not a separate directory |
 | 19 | `$STASH/.akm/consolidate-backup/<ts>/<name>.md` | Markdown | Legacy consolidation backups; no longer created |
 | 20 | `$STASH/.akm/memory-cleanup/archive/<ts>-<ref>/` | Markdown | Belief-state archived memories |
 | 21 | `$STASH/.akm/distill-rejected/<ts>-<ref>.md` | FM+Markdown | Quality-gate rejected lessons |

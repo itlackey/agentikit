@@ -13,9 +13,8 @@
  * importers reference those modules directly. The migration engine
  * lives in `./state/migrations`.
  *
- * The state DB replaces flat-file storage for data that is NON-REGENERABLE —
- * events (events.jsonl), proposals (per-uuid JSON directories), task history
- * (per-task JSONL), and the improve-pipeline ledgers.
+ * The state DB stores non-regenerable events, proposals, task history, workflow
+ * runs, and improve-pipeline ledgers.
  *
  * ## Why a separate database from index.db
  *
@@ -23,33 +22,28 @@
  * regenerable from the stash on disk, so a corrupt index is recovered by deleting
  * it and re-running `akm index` (no destructive version-bump rebuild). Events,
  * proposals, and task history are NON-REGENERABLE — losing them is data loss. They
- * must live in a database whose schema evolves via incremental, additive migrations
- * that never drop rows.
+ * live in a database whose released migration ledger is immutable and whose
+ * application policy is explicit.
  *
  * ## Migration-safety contract
  *
  * The `schema_migrations` table records every applied migration by a stable string
- * ID. `runMigrations(db)` is idempotent: new installs run all migrations in order;
- * upgrades run only the ones not yet applied. No migration may DROP a table that
- * holds durable data, RENAME a column, or change a column's type.
+ * ID. New installs run all migrations in order. Existing exact-prefix ledgers
+ * automatically apply additive migrations and the verified data-preserving 002
+ * table rebuild. Released migration 018 contains destructive cleanup DDL and is
+ * never applied by an ordinary managed open. The successful `akm upgrade` path
+ * must first create and verify a sibling `VACUUM INTO` snapshot, then supplies
+ * the narrow explicit intent that admits 018. A pre-existing file with no
+ * applied migration IDs (whether the ledger table is absent or empty) is also
+ * rejected without writes; explicit upgrade snapshots its exact inode before
+ * creating the ledger or applying migration 001, then retains the same writer
+ * lock through migration 002's rebuild. Unknown and divergent ledgers fail
+ * closed.
  *
- * Permitted schema evolution operations (always migration-safe in SQLite):
+ * Normal automatic schema evolution uses:
  *   - ALTER TABLE … ADD COLUMN <name> <type> DEFAULT <value>
  *   - CREATE INDEX IF NOT EXISTS …
  *   - CREATE TABLE IF NOT EXISTS … (additive new tables)
- *
- * ## Three-DB cutover carve-out (Chunk 8, migration `020-three-db-cutover`)
- *
- * The 0.9.0 three-DB merge folds workflow.db and index.db's durable rows
- * (`usage_events`, `legacy_state`) into state.db. That migration is still pure
- * additive DDL and DROPS NOTHING — it only `CREATE TABLE IF NOT EXISTS`es the
- * merge-target tables at their final shape. The one-time, filesystem-derived,
- * fail-closed DATA movement (the workflow.db merge, the usage_events rescue, the
- * full old-ref→item_ref re-key, and the workflow.db unlink / index.db quarantine
- * rename) runs as idempotent code in the migrate-apply coordinator
- * (`scripts/akm-migrate/migrate/legacy/three-db-cutover.ts`). So the no-DROP
- * contract here is intact: physical workflow.db deletion happens outside the
- * ledger DDL, after a verified backup and committed data transaction.
  *
  * ## Schema design: indexed columns vs. metadata_json
  *
@@ -70,13 +64,13 @@
  * @module state-db
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { type Database, openDatabase, type SqlValue } from "../storage/database";
-import { assertCurrentMigrationLedger, assertMigrationLedger } from "../storage/engines/sqlite-migrations";
+import { assertMigrationLedger } from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase, withManagedDb } from "../storage/managed-db";
 import { acquireMaintenanceActivitySync } from "./maintenance-barrier";
-import { assertNoPendingMigrationOperation } from "./migration-operation";
 import { getDataDir } from "./paths";
 import { runMigrations, STATE_MIGRATIONS } from "./state/migrations";
 
@@ -90,6 +84,300 @@ import { runMigrations, STATE_MIGRATIONS } from "./state/migrations";
  */
 export function getStateDbPath(): string {
   return path.join(getDataDir(), "state.db");
+}
+
+interface OpenStateDatabaseOptions {
+  /** Narrow intent supplied only by the successful `akm upgrade` post-install step. */
+  allowHistoricalDestructiveStateUpgrade?: boolean;
+  /** Internal result seam used to report the verified safety-copy path. */
+  onHistoricalStateSafetyCopy?: (safetyCopyPath: string) => void;
+}
+
+export interface HistoricalStateUpgradeResult {
+  upgraded: boolean;
+  safetyCopyPath?: string;
+}
+
+function safetyCopyTimestamp(): string {
+  return new Date().toISOString().replaceAll(/[^0-9]/g, "");
+}
+
+interface FileIdentityHandle {
+  path: string;
+  fd: number;
+  identity: fs.BigIntStats;
+}
+
+type OwnedFileReservation = FileIdentityHandle;
+
+type StateDatabaseSource = FileIdentityHandle;
+
+function noFollowFlag(): number {
+  return process.platform !== "win32" && typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+}
+
+function samePhysicalFile(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
+  if (left.dev !== 0n || left.ino !== 0n || right.dev !== 0n || right.ino !== 0n) {
+    return left.dev === right.dev && left.ino === right.ino;
+  }
+  return left.birthtimeNs === right.birthtimeNs && left.rdev === right.rdev;
+}
+
+function assertOwnedFileReservation(reservation: OwnedFileReservation, label: string): fs.BigIntStats {
+  const descriptorStat = fs.fstatSync(reservation.fd, { bigint: true });
+  let pathStat: fs.BigIntStats;
+  try {
+    pathStat = fs.lstatSync(reservation.path, { bigint: true });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} ownership/inode verification failed because its path disappeared: ${detail}`);
+  }
+  if (
+    pathStat.isSymbolicLink() ||
+    !pathStat.isFile() ||
+    !descriptorStat.isFile() ||
+    !samePhysicalFile(reservation.identity, descriptorStat) ||
+    !samePhysicalFile(descriptorStat, pathStat)
+  ) {
+    throw new Error(`${label} ownership/inode verification failed: its path is a symlink or was replaced.`);
+  }
+  if (process.platform !== "win32" && typeof process.geteuid === "function") {
+    const expectedUid = BigInt(process.geteuid());
+    if (descriptorStat.uid !== expectedUid || pathStat.uid !== expectedUid) {
+      throw new Error(`${label} ownership verification failed: the reserved file is not owned by the current user.`);
+    }
+  }
+  return pathStat;
+}
+
+function assertStateDatabaseSource(source: StateDatabaseSource): fs.BigIntStats {
+  const descriptorStat = fs.fstatSync(source.fd, { bigint: true });
+  let pathStat: fs.BigIntStats;
+  try {
+    pathStat = fs.lstatSync(source.path, { bigint: true });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`state.db source inode verification failed because its path disappeared: ${detail}`);
+  }
+  if (
+    pathStat.isSymbolicLink() ||
+    !pathStat.isFile() ||
+    !descriptorStat.isFile() ||
+    !samePhysicalFile(source.identity, descriptorStat) ||
+    !samePhysicalFile(descriptorStat, pathStat) ||
+    descriptorStat.uid !== source.identity.uid ||
+    pathStat.uid !== source.identity.uid
+  ) {
+    throw new Error("state.db source ownership/inode verification failed: its path is a symlink or was replaced.");
+  }
+  return descriptorStat;
+}
+
+function descriptorAlias(handle: FileIdentityHandle): string | undefined {
+  const candidates =
+    process.platform === "linux"
+      ? [`/proc/self/fd/${handle.fd}`, `/dev/fd/${handle.fd}`]
+      : process.platform === "win32"
+        ? []
+        : [`/dev/fd/${handle.fd}`];
+  for (const candidate of candidates) {
+    try {
+      const stat = fs.statSync(candidate, { bigint: true });
+      if (samePhysicalFile(handle.identity, stat)) return candidate;
+    } catch {
+      // The caller verifies the pathname immediately around SQLite open on
+      // platforms without a SQLite-openable descriptor alias.
+    }
+  }
+  return undefined;
+}
+
+function sqliteBoundFilePath(handle: FileIdentityHandle, label: string): string {
+  const alias = descriptorAlias(handle);
+  if (alias) return alias;
+  // SQLite's Windows VFS keeps an open database pathname from being replaced;
+  // the caller still performs identity checks immediately around every open.
+  if (process.platform === "win32") return handle.path;
+  throw new Error(`${label} cannot be bound to its held inode: this platform has no descriptor-backed path.`);
+}
+
+function closeFileIdentity(handle: FileIdentityHandle): void {
+  try {
+    fs.closeSync(handle.fd);
+  } catch {
+    // Preserve the authoritative operation failure.
+  }
+}
+
+function reserveFreshStateDatabase(dbPath: string): OwnedFileReservation | undefined {
+  let fd: number;
+  try {
+    fd = fs.openSync(dbPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_RDWR | noFollowFlag(), 0o666);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "EEXIST") return undefined;
+    throw error;
+  }
+  try {
+    const reservation: OwnedFileReservation = {
+      path: dbPath,
+      fd,
+      identity: fs.fstatSync(fd, { bigint: true }),
+    };
+    assertOwnedFileReservation(reservation, "Fresh state.db");
+    return reservation;
+  } catch (error) {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // Preserve the ownership failure.
+    }
+    throw error;
+  }
+}
+
+function openExistingStateDatabaseSource(dbPath: string): StateDatabaseSource {
+  let fd: number;
+  try {
+    fd = fs.openSync(dbPath, fs.constants.O_RDONLY | noFollowFlag());
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not bind the existing state.db source inode: ${detail}`);
+  }
+  try {
+    const source: StateDatabaseSource = {
+      path: dbPath,
+      fd,
+      identity: fs.fstatSync(fd, { bigint: true }),
+    };
+    assertStateDatabaseSource(source);
+    return source;
+  } catch (error) {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // Preserve the source identity failure.
+    }
+    throw error;
+  }
+}
+
+function reserveHistoricalSafetyCopy(
+  source: StateDatabaseSource,
+  migrationId: string,
+): { reservation: OwnedFileReservation; finalMode: number } {
+  const sourceStat = assertStateDatabaseSource(source);
+  const finalMode = Number(sourceStat.mode & 0o600n);
+  const prefix = `${source.path}.pre-${migrationId}.${safetyCopyTimestamp()}`;
+
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const candidate = `${prefix}.${randomUUID()}.bak`;
+    let fd: number;
+    try {
+      fd = fs.openSync(
+        candidate,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_RDWR | noFollowFlag(),
+        0o600,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "EEXIST") continue;
+      throw error;
+    }
+    let reservation: OwnedFileReservation | undefined;
+    try {
+      reservation = {
+        path: candidate,
+        fd,
+        identity: fs.fstatSync(fd, { bigint: true }),
+      };
+      // Keep recovery bytes owner-only throughout creation. The source-derived
+      // (never broader) final mode is restored only after verification.
+      fs.fchmodSync(fd, 0o600);
+      assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
+      return { reservation, finalMode };
+    } catch (error) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Preserve the reservation/ownership failure.
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Could not secure reserved state.db safety-copy path ${candidate}: ${detail}. ` +
+          "The reserved pathname was not removed.",
+      );
+    }
+  }
+  throw new Error("Could not reserve a unique randomized state.db safety-copy path after 32 attempts.");
+}
+
+function fsyncDirectory(directory: string): void {
+  if (process.platform === "win32") return;
+  const fd = fs.openSync(directory, fs.constants.O_RDONLY);
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Create one verified, standalone SQLite snapshot immediately before released
+ * migration 018 removes its retired tables/column. `VACUUM INTO` includes
+ * committed WAL content in one consistent sibling database; a raw file copy
+ * would not.
+ */
+function createHistoricalStateSafetyCopy(source: StateDatabaseSource, migrationId: string): string {
+  const { reservation, finalMode } = reserveHistoricalSafetyCopy(source, migrationId);
+  let reader: Database | undefined;
+  try {
+    assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
+    assertStateDatabaseSource(source);
+    // The migration connection already holds BEGIN IMMEDIATE. A distinct
+    // read-only connection bound to the held source inode can snapshot the
+    // committed WAL view without trying to VACUUM from inside that transaction.
+    reader = openDatabase(sqliteBoundFilePath(source, "state.db snapshot source"), { readonly: true });
+    assertStateDatabaseSource(source);
+    reader.prepare("VACUUM INTO ?").run(sqliteBoundFilePath(reservation, "Reserved state.db safety-copy target"));
+    assertStateDatabaseSource(source);
+    reader.close();
+    reader = undefined;
+
+    assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
+    fs.fsyncSync(reservation.fd);
+    assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
+
+    const verified = openDatabase(sqliteBoundFilePath(reservation, "Reserved state.db safety-copy target"), {
+      readonly: true,
+    });
+    try {
+      const quickCheck = verified.prepare("PRAGMA quick_check").get() as Record<string, unknown> | undefined;
+      if (!quickCheck || Object.values(quickCheck)[0] !== "ok") {
+        throw new Error("SQLite quick_check did not report ok");
+      }
+      assertMigrationLedger(verified, STATE_MIGRATIONS);
+    } finally {
+      verified.close();
+    }
+    assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
+    fs.fchmodSync(reservation.fd, finalMode);
+    fs.fsyncSync(reservation.fd);
+    assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
+    fsyncDirectory(path.dirname(reservation.path));
+    closeFileIdentity(reservation);
+    return reservation.path;
+  } catch (error) {
+    try {
+      reader?.close();
+    } catch {
+      // Preserve the snapshot/verification failure below.
+    }
+    closeFileIdentity(reservation);
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Could not create a verified state.db safety copy before ${migrationId}: ${detail}. ` +
+        `The reserved safety-copy pathname was not removed: ${reservation.path}`,
+    );
+  }
 }
 
 // ── Database open ────────────────────────────────────────────────────────────
@@ -120,29 +408,103 @@ export function getStateDbPath(): string {
  *     matches the value used in openDatabase() for index.db; 5 s proved too
  *     narrow when a post-inference reindex overlapped a parallel event write.
  */
-export function openStateDatabase(dbPath?: string): Database {
+export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOptions): Database {
   const canonicalPath = getStateDbPath();
   const resolvedPath = dbPath ?? canonicalPath;
+  // `:memory:` is a SQLite connection identity, not a filesystem pathname.
+  // Never pass it through the durable-file reservation/inode/snapshot path:
+  // doing so creates a literal `:memory:` file and makes later in-process
+  // opens look like an unversioned durable database. Each in-memory handle is
+  // fresh and cannot be path-swapped, so the ownership proof is intrinsically
+  // satisfied for this explicit test/internal seam.
+  if (resolvedPath === ":memory:") {
+    return openManagedDatabase({
+      path: resolvedPath,
+      pragmas: { dataDir: path.dirname(resolvedPath) },
+      init: (db) =>
+        runMigrations(db, {
+          freshDatabase: true,
+          verifyFreshDatabaseOwnership: () => {},
+        }),
+    });
+  }
   const isCanonical = path.resolve(resolvedPath) === path.resolve(canonicalPath);
-  if (isCanonical) assertNoPendingMigrationOperation();
   const releaseActivity = isCanonical ? acquireMaintenanceActivitySync("state-db") : undefined;
+  let freshReservation: OwnedFileReservation | undefined;
+  let existingSource: StateDatabaseSource | undefined;
+  let openedDb: Database | undefined;
+  let existingUnversionedDatabase = false;
+  let stateSafetyCopyCreated = false;
   try {
-    if (isCanonical) assertNoPendingMigrationOperation();
-    const existed = fs.existsSync(resolvedPath);
-    if (existed) {
-      const preflight = openDatabase(resolvedPath, { readonly: true });
+    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+    freshReservation = reserveFreshStateDatabase(resolvedPath);
+    if (!freshReservation) {
+      existingSource = openExistingStateDatabaseSource(resolvedPath);
+      assertStateDatabaseSource(existingSource);
+      const preflight = openDatabase(sqliteBoundFilePath(existingSource, "Existing state.db preflight"), {
+        readonly: true,
+      });
       try {
+        assertStateDatabaseSource(existingSource);
         preflight.exec("PRAGMA busy_timeout = 30000");
-        if (isCanonical) assertCurrentMigrationLedger(preflight, STATE_MIGRATIONS);
-        else assertMigrationLedger(preflight, STATE_MIGRATIONS);
+        const ledger = assertMigrationLedger(preflight, STATE_MIGRATIONS);
+        existingUnversionedDatabase = ledger.migrationIds.length === 0;
+        if (existingUnversionedDatabase && !options?.allowHistoricalDestructiveStateUpgrade) {
+          throw new Error(
+            "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
+              "Run `akm upgrade --force` to create a verified snapshot before migration 001.",
+          );
+        }
       } finally {
         preflight.close();
       }
     }
-    const db = openManagedDatabase({
-      path: resolvedPath,
-      init: (db) => runMigrations(db, { applyPending: !(isCanonical && existed) }),
+    const ownedFresh = freshReservation;
+    const boundSource = existingSource;
+    if (boundSource) assertStateDatabaseSource(boundSource);
+    openedDb = openManagedDatabase({
+      path: boundSource ? sqliteBoundFilePath(boundSource, "Managed state.db writer") : resolvedPath,
+      pragmas: { dataDir: path.dirname(resolvedPath) },
+      init: (db) => {
+        if (boundSource) assertStateDatabaseSource(boundSource);
+        runMigrations(db, {
+          freshDatabase: !!ownedFresh,
+          verifyFreshDatabaseOwnership: ownedFresh
+            ? () => assertOwnedFileReservation(ownedFresh, "Fresh state.db")
+            : undefined,
+          existingUnversionedDatabase,
+          allowHistoricalDestructiveStateUpgrade: options?.allowHistoricalDestructiveStateUpgrade,
+          beforeExistingUnversionedStateMigration: options?.allowHistoricalDestructiveStateUpgrade
+            ? (migration) => {
+                if (!boundSource) throw new Error("An existing unversioned state.db has no bound source inode.");
+                const safetyCopyPath = createHistoricalStateSafetyCopy(boundSource, migration.id);
+                stateSafetyCopyCreated = true;
+                options.onHistoricalStateSafetyCopy?.(safetyCopyPath);
+              }
+            : undefined,
+          beforeHistoricalDestructiveMigration: options?.allowHistoricalDestructiveStateUpgrade
+            ? (migration) => {
+                if (stateSafetyCopyCreated) return;
+                if (!boundSource) throw new Error("Historical state migration has no bound source inode.");
+                const safetyCopyPath = createHistoricalStateSafetyCopy(boundSource, migration.id);
+                stateSafetyCopyCreated = true;
+                options.onHistoricalStateSafetyCopy?.(safetyCopyPath);
+              }
+            : undefined,
+        });
+      },
     });
+    if (existingSource) {
+      assertStateDatabaseSource(existingSource);
+      closeFileIdentity(existingSource);
+      existingSource = undefined;
+    }
+    if (freshReservation) {
+      assertOwnedFileReservation(freshReservation, "Fresh state.db");
+      closeFileIdentity(freshReservation);
+      freshReservation = undefined;
+    }
+    const db = openedDb;
     if (!releaseActivity) return db;
     let closed = false;
     return {
@@ -165,9 +527,43 @@ export function openStateDatabase(dbPath?: string): Database {
       },
     };
   } catch (error) {
+    if (openedDb) {
+      try {
+        openedDb.close();
+      } catch {
+        // Preserve the open/migration ownership failure.
+      }
+    }
+    if (existingSource) closeFileIdentity(existingSource);
+    if (freshReservation) closeFileIdentity(freshReservation);
     releaseActivity?.();
     throw error;
   }
+}
+
+/**
+ * Narrow state-schema step owned by `akm upgrade` after executable replacement.
+ * Missing/current databases are no-ops. A pre-018 exact ledger is snapshotted
+ * beside state.db and verified before the immutable released migration runs.
+ */
+export function upgradeHistoricalStateDatabase(dbPath = getStateDbPath()): HistoricalStateUpgradeResult {
+  if (!fs.existsSync(dbPath)) return { upgraded: false };
+
+  let safetyCopyPath: string | undefined;
+  try {
+    const db = openStateDatabase(dbPath, {
+      allowHistoricalDestructiveStateUpgrade: true,
+      onHistoricalStateSafetyCopy(copyPath) {
+        safetyCopyPath = copyPath;
+      },
+    });
+    db.close();
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const recovery = safetyCopyPath ? ` Verified safety copy: ${safetyCopyPath}.` : "";
+    throw new Error(`${detail}${recovery}`);
+  }
+  return safetyCopyPath ? { upgraded: true, safetyCopyPath } : { upgraded: false };
 }
 
 /**
@@ -251,6 +647,46 @@ function sleepSyncMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/**
+ * Open, but deliberately do not finish, an immediate transaction.
+ *
+ * This is the split-phase counterpart to {@link withImmediateTransaction} for
+ * the source-update coordinator: index finalization must mutate state.db in a
+ * transaction that remains pending until content, lockfile, and index
+ * publication have all succeeded. The caller that asked for this split phase
+ * owns the matching COMMIT/ROLLBACK.
+ */
+export function beginImmediateTransaction(db: Database): void {
+  if (db.inTransaction) {
+    throw new Error("beginImmediateTransaction requires a connection with no active transaction");
+  }
+  let lastBeginErr: unknown;
+  for (let attempt = 1; attempt <= WITH_IMMEDIATE_TX_MAX_ATTEMPTS; attempt++) {
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      if (!db.inTransaction) {
+        throw new Error("BEGIN IMMEDIATE did not open a transaction (phantom contention state)");
+      }
+      return;
+    } catch (err) {
+      lastBeginErr = err;
+      if (isRetryableBeginError(err) && attempt < WITH_IMMEDIATE_TX_MAX_ATTEMPTS) {
+        if (db.inTransaction) {
+          try {
+            db.exec("ROLLBACK");
+          } catch {
+            // Transaction already gone — safe to retry BEGIN.
+          }
+        }
+        sleepSyncMs(2 ** (attempt - 1));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastBeginErr;
+}
+
 export function withImmediateTransaction<T>(db: Database, fn: () => T): T {
   // Re-entrancy guard (issue #686): if a transaction is already open on this
   // connection (e.g. a nested withImmediateTransaction call inside an outer
@@ -262,63 +698,31 @@ export function withImmediateTransaction<T>(db: Database, fn: () => T): T {
   if (db.inTransaction) {
     return fn();
   }
-  let lastBeginErr: unknown;
-  for (let attempt = 1; attempt <= WITH_IMMEDIATE_TX_MAX_ATTEMPTS; attempt++) {
-    try {
-      db.exec("BEGIN IMMEDIATE");
-      // bun:sqlite can return from BEGIN IMMEDIATE under writer contention WITHOUT
-      // actually opening a transaction (no throw). That phantom state otherwise
-      // surfaces as "cannot commit - no transaction is active" at COMMIT — AFTER
-      // fn() has already run in autocommit, so its writes escaped the intended
-      // serialization (the concurrent proposal-queue race). Detect it here, before
-      // fn(), and route it through the same retry path as a contended BEGIN.
-      if (!db.inTransaction) {
-        throw new Error("BEGIN IMMEDIATE did not open a transaction (phantom contention state)");
-      }
-    } catch (err) {
-      lastBeginErr = err;
-      if (isRetryableBeginError(err) && attempt < WITH_IMMEDIATE_TX_MAX_ATTEMPTS) {
-        // Only roll back a transaction we can see — never blind-ROLLBACK, since
-        // that could destroy a transaction this frame does not own.
-        if (db.inTransaction) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {
-            // Transaction already gone — fine.
-          }
-        }
-        sleepSyncMs(2 ** (attempt - 1));
-        continue;
-      }
-      throw err;
+  beginImmediateTransaction(db);
+  try {
+    const result = fn();
+    if (!db.inTransaction) {
+      // The transaction we opened vanished while fn() ran (e.g. an
+      // auto-rollback or a stray ROLLBACK inside fn). fn's writes may have
+      // escaped serialization, so retrying is unsafe — fail loudly instead of
+      // letting COMMIT throw the opaque "cannot commit - no transaction is
+      // active" SQLiteError.
+      throw new Error(
+        "withImmediateTransaction invariant violated: transaction opened by BEGIN IMMEDIATE was no longer active after the transaction body ran; refusing to COMMIT (writes may have escaped serialization)",
+      );
     }
-    try {
-      const result = fn();
-      if (!db.inTransaction) {
-        // The transaction we opened vanished while fn() ran (e.g. an
-        // auto-rollback or a stray ROLLBACK inside fn). fn's writes may have
-        // escaped serialization, so retrying is unsafe — fail loudly instead of
-        // letting COMMIT throw the opaque "cannot commit - no transaction is
-        // active" SQLiteError.
-        throw new Error(
-          "withImmediateTransaction invariant violated: transaction opened by BEGIN IMMEDIATE was no longer active after the transaction body ran; refusing to COMMIT (writes may have escaped serialization)",
-        );
+    db.exec("COMMIT");
+    return result;
+  } catch (err) {
+    if (db.inTransaction) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // Ignore rollback failures so the original error is preserved.
       }
-      db.exec("COMMIT");
-      return result;
-    } catch (err) {
-      if (db.inTransaction) {
-        try {
-          db.exec("ROLLBACK");
-        } catch {
-          // Ignore rollback failures so the original error is preserved.
-        }
-      }
-      throw err; // a real error inside the transaction body — never retried.
     }
+    throw err;
   }
-  // Exhausted retries on transient begin failures.
-  throw lastBeginErr;
 }
 
 // ── schema introspection ─────────────────────────────────────────────────────

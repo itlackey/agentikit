@@ -5,11 +5,11 @@
 import { describe, expect, test } from "bun:test";
 import { parseWorkflowParameterFlags } from "../../src/commands/workflow-cli";
 import { materializeWorkflowParameterFlags } from "../../src/workflows/ir/params";
-import type { WorkflowPlanGraph } from "../../src/workflows/ir/schema";
+import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../src/workflows/ir/schema-v4";
 
 function parameterPlan(): WorkflowPlanGraph {
   return {
-    irVersion: 3,
+    irVersion: 4,
     title: "parameters",
     params: ["include_processes", "count", "name", "tags", "metadata", "mode"],
     paramSchemas: {
@@ -20,7 +20,8 @@ function parameterPlan(): WorkflowPlanGraph {
       metadata: { type: "object" },
       mode: { type: "string", enum: ["quick", "full"] },
     },
-    execution: { maxConcurrency: 1, engines: {} },
+    execution: { maxConcurrency: 1 },
+    sourceReadSet: [],
     steps: [],
   };
 }

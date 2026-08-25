@@ -86,35 +86,10 @@ describe("piBuilder — plain prompt", () => {
   });
 });
 
-// ── Builder — model alias resolution ─────────────────────────────────────────
+// ── Builder — exact model selection ─────────────────────────────────────────
 
-describe("piBuilder — model resolution via resolveModel('pi')", () => {
-  test("profile.modelAliases resolves a custom alias for the pi platform", () => {
-    const profile = makePiProfile({ modelAliases: { fast: "gpt-5-mini" } });
-    const cmd = piBuilder.build(profile, { prompt: "go", model: "fast" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("gpt-5-mini");
-  });
-
-  test("globalModelAliases pi column wins over '*' fallback", () => {
-    const profile = makePiProfile({
-      globalModelAliases: { deep: { pi: "claude-sonnet-4-6", "*": "generic-deep" } },
-    });
-    const cmd = piBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("claude-sonnet-4-6");
-  });
-
-  test("globalModelAliases '*' fallback applies when no pi column exists", () => {
-    const profile = makePiProfile({
-      globalModelAliases: { deep: { "*": "generic-deep" } },
-    });
-    const cmd = piBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("generic-deep");
-  });
-
-  test("builtin alias without a pi column passes through verbatim (user aliases own pi ids)", () => {
+describe("piBuilder — exact model selection", () => {
+  test("a model selector passes through verbatim", () => {
     const cmd = piBuilder.build(makePiProfile(), { prompt: "go", model: "sonnet" });
     const argv = cmd.argv as string[];
     expect(argv[argv.indexOf("--model") + 1]).toBe("sonnet");

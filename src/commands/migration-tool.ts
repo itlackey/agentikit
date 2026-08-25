@@ -26,10 +26,9 @@ export interface MigrationToolResult {
 
 /**
  * Spawns the standalone `akm-migrate` tool and returns its captured exit
- * status plus stdout/stderr — never writes them itself. `migrate-cli.ts`'s
- * `status`/`apply` commands use this to reshape the child's final JSON result
- * line through the normal `--format` pipeline (D7) while any earlier
- * progress-event lines the child printed still go through verbatim.
+ * status plus stdout/stderr — never writes them itself. `migrate-cli.ts` uses
+ * this packaging boundary to render the task-only plan through the normal
+ * output pipeline.
  */
 export async function runMigrationTool(args: readonly string[]): Promise<MigrationToolResult> {
   const entry = migrationEntryPoint();
@@ -44,11 +43,9 @@ export async function runMigrationTool(args: readonly string[]): Promise<Migrati
     );
   }
   // Compiled standalone: no scripts/ tree exists on disk (`import.meta.url`
-  // resolves inside the binary's virtual filesystem), so the documented
-  // `./akm-<ver> migrate status/apply` path used to dead-end with
-  // FILE_NOT_FOUND. Release binaries are compiled from
-  // `scripts/akm-standalone.ts`, which embeds the migrator and dispatches to
-  // it when `AKM_MIGRATE_ENTRY=1` — so re-exec ourselves with the marker.
+  // resolves inside the binary's virtual filesystem). Release binaries embed
+  // the task migrator in `scripts/akm-standalone.ts` and re-exec themselves
+  // with the internal marker.
   // (src must not import scripts/: the dist build's tsc has `rootDir: src`.)
   const result = spawnSync(process.execPath, entry ? [entry, ...args] : [...args], {
     encoding: "utf8",

@@ -44,6 +44,22 @@ export interface SecretResolver {
   resolveSecret(ref: string): string | null;
 }
 
+/** Options the website provider passes to its injected mirror capability. */
+export interface WebsiteMirrorOptions {
+  requireStashDir?: boolean;
+  force?: boolean;
+  allowPrivateHosts?: boolean;
+  resolveSecret?: SecretResolver["resolveSecret"];
+}
+
+/**
+ * Materializes a website source into its cache.
+ *
+ * This capability lives on the provider seam so the website provider can
+ * refresh without importing website-ingest and its snapshot-fetcher registry.
+ */
+export type EnsureWebsiteMirror = (config: SourceConfigEntry, options?: WebsiteMirrorOptions) => Promise<unknown>;
+
 /** Options accepted by {@link SourceProvider.sync}. */
 export interface SyncOptions {
   /** Bypass the cache-freshness TTL and re-fetch unconditionally. */
@@ -51,9 +67,16 @@ export interface SyncOptions {
   /**
    * Secret resolver for provider kinds whose refresh needs credentials
    * (today: the website provider's X fetcher). Absent means environment
-   * variables only — the documented, backward-compatible default.
+   * variables only — the documented default.
    */
   secrets?: SecretResolver;
+  /**
+   * Website mirror implementation supplied by the source-sync composition.
+   * Required when invoking a website provider's `sync()`; omitted for other
+   * provider kinds. Website sync fails with a `ConfigError` when it is absent
+   * so a missing composition binding cannot silently report a refresh.
+   */
+  ensureWebsiteMirror?: EnsureWebsiteMirror;
 }
 
 export interface SourceProvider {

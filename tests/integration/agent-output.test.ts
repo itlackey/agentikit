@@ -25,25 +25,43 @@ function writeConfig(configDir: string, config: Record<string, unknown>): void {
   fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
-// In-process replacement for the former spawnSync("bun", [CLI, ...]). Each call
-// gets fresh, isolated XDG dirs (cache/config/data/state) and the test's stash,
+interface CliRuntime {
+  xdgCache: string;
+  xdgConfig: string;
+  xdgData: string;
+  xdgState: string;
+}
+
+function makeCliRuntime(): CliRuntime {
+  return {
+    xdgCache: makeTempDir("akm-agent-cache-"),
+    xdgConfig: makeTempDir("akm-agent-config-"),
+    xdgData: makeTempDir("akm-agent-data-"),
+    xdgState: makeTempDir("akm-agent-state-"),
+  };
+}
+
+// In-process replacement for the former spawnSync("bun", [CLI, ...]). Calls use
+// isolated XDG dirs (cache/config/data/state) and may share them when a fixture
+// needs an index produced by an earlier CLI invocation with the same stash,
 // installed via the allowlisted `withEnv` wrapper so the env is restored after
 // the run and the per-test isolation tripwire stays satisfied. The harness
 // (runCliCapture) resets the config/output singletons per call, matching
 // fresh-subprocess semantics. Throws on a non-zero exit, like the spawn version.
-async function runCli(stashDir: string, args: string[], config?: Record<string, unknown>): Promise<string> {
-  const xdgCache = makeTempDir("akm-agent-cache-");
-  const xdgConfig = makeTempDir("akm-agent-config-");
-  const xdgData = makeTempDir("akm-agent-data-");
-  const xdgState = makeTempDir("akm-agent-state-");
-  if (config) writeConfig(xdgConfig, config);
+async function runCli(
+  stashDir: string,
+  args: string[],
+  config?: Record<string, unknown>,
+  runtime = makeCliRuntime(),
+): Promise<string> {
+  if (config) writeConfig(runtime.xdgConfig, config);
   return withEnv(
     {
       AKM_BUNDLE_DIR: stashDir,
-      XDG_CACHE_HOME: xdgCache,
-      XDG_CONFIG_HOME: xdgConfig,
-      XDG_DATA_HOME: xdgData,
-      XDG_STATE_HOME: xdgState,
+      XDG_CACHE_HOME: runtime.xdgCache,
+      XDG_CONFIG_HOME: runtime.xdgConfig,
+      XDG_DATA_HOME: runtime.xdgData,
+      XDG_STATE_HOME: runtime.xdgState,
     },
     async () => {
       const { code, stdout, stderr } = await runCliCapture(args);
@@ -313,15 +331,19 @@ describe("--format jsonl", () => {
       path.join(stashDir, "agents", "reviewer.md"),
       "---\ndescription: Reviewer\n---\nRendered system prompt.\n",
     );
+    const config = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: { test: { kind: "agent", platform: "opencode", bin: "/bin/echo" } },
+      defaults: { engine: "test" },
+    };
+    const runtime = makeCliRuntime();
+    await runCli(stashDir, ["index", "--full", "--format=json", "-q"], config, runtime);
     const output = await runCli(
       stashDir,
       ["agent", "agents/reviewer", "--prompt", "Review this task.", "--format=json", "-q"],
-      {
-        configVersion: "0.9.0",
-        semanticSearchMode: "off",
-        engines: { test: { kind: "agent", platform: "opencode", bin: "/bin/echo" } },
-        defaults: { engine: "test" },
-      },
+      config,
+      runtime,
     );
     const result = JSON.parse(output) as { ok: boolean; stdout: string };
 
@@ -332,15 +354,37 @@ describe("--format jsonl", () => {
 
   test("agent rejects refs that render as a non-agent asset", async () => {
     const stashDir = makeTempDir("akm-agent-dispatch-type-stash-");
-    writeFile(path.join(stashDir, "knowledge", "guide.md"), "---\ndescription: Guide\n---\nA guide.\n");
+    // OKF keeps path identity independent of its open type, so this has an
+    // `agents/` selector while indexing as knowledge and reaches the loader's
+    // exact persona type guard.
+    writeFile(
+      path.join(stashDir, "agents", "guide.md"),
+      "---\ntype: knowledge\ntitle: Guide\ndescription: Guide\n---\nA guide.\n",
+    );
 
+    const config = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      defaultBundle: "fixture",
+      bundles: {
+        fixture: {
+          path: stashDir,
+          writable: false,
+          components: { main: { root: ".", adapter: "okf", writable: false } },
+        },
+      },
+      engines: { test: { kind: "agent", platform: "opencode", bin: "/bin/echo" } },
+      defaults: { engine: "test" },
+    };
+    const runtime = makeCliRuntime();
+    await runCli(stashDir, ["index", "--full", "--format=json", "-q"], config, runtime);
     await expect(
-      runCli(stashDir, ["agent", "knowledge/guide", "--format=json", "-q"], {
-        configVersion: "0.9.0",
-        semanticSearchMode: "off",
-        engines: { test: { kind: "agent", platform: "opencode", bin: "/bin/echo" } },
-        defaults: { engine: "test" },
-      }),
+      runCli(
+        stashDir,
+        ["agent", "fixture//agents/guide", "--prompt", "Review this task.", "--format=json", "-q"],
+        config,
+        runtime,
+      ),
     ).rejects.toThrow(/expected/);
   });
 

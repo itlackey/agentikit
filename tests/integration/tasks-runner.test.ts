@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { createMigrationBackup } from "../../scripts/akm-migrate/migration-backup";
+import { stringify as stringifyYaml } from "yaml";
 import { buildTaskRunId, openLogsDatabase, queryTaskLogs, type TaskLogRow } from "../../src/core/logs-db";
 import { openStateDatabase } from "../../src/core/state-db";
 import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
@@ -53,6 +53,11 @@ beforeEach(() => {
   fs.mkdirSync(tasksDir, { recursive: true });
   // Workflows directory needs to exist so resolveAssetPath can stat the type root.
   fs.mkdirSync(path.join(stashDir, "workflows"), { recursive: true });
+  fs.writeFileSync(
+    path.join(stashDir, "workflows", "noop.md"),
+    "---\ntype: workflow\nsteps:\n  - id: work\n---\n\n## work\n\nDo it.\n",
+    "utf8",
+  );
   // Point state.db to an isolated data dir so tests don't share history.
   process.env.AKM_DATA_DIR = dataDir;
   process.env.AKM_CONFIG_DIR = configDir;
@@ -60,7 +65,6 @@ beforeEach(() => {
   // Pair AKM_BUNDLE_DIR with AKM_STATE_DIR so the test-isolation guard in
   // src/core/paths.ts (getDataDir) stays inert.
   process.env.AKM_STATE_DIR = stateDir;
-  createMigrationBackup();
 });
 
 afterEach(() => {
@@ -77,8 +81,35 @@ afterAll(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
 function writeTask(id: string, body: string): void {
   fs.writeFileSync(path.join(tasksDir, `${id}.yml`), body, "utf8");
+}
+
+function workflowTask(overrides: Record<string, unknown> = {}, params?: Record<string, unknown>): string {
+  return stringifyYaml({
+    version: 3,
+    uses: "workflows/noop",
+    ...(params ? { with: params } : {}),
+    akm: { schedule: "@daily", enabled: true, ...overrides },
+  });
+}
+
+function shellTask(command: string | readonly string[], overrides: Record<string, unknown> = {}): string {
+  const run = Array.isArray(command) ? command.map((value) => shellWord(value)).join(" ") : command;
+  return stringifyYaml({ version: 3, run, akm: { schedule: "@daily", enabled: true, ...overrides } });
+}
+
+function promptTask(content: string, overrides: Record<string, unknown> = {}): string {
+  return stringifyYaml({
+    version: 3,
+    uses: "akm/command",
+    with: { content },
+    akm: { schedule: "@daily", enabled: true, ...overrides },
+  });
 }
 
 /** Read this run's logs.db rows (the runner writes them via persistRunLog). */
@@ -119,31 +150,6 @@ test("task history applies its public limit in SQL before decoding metadata", ()
     "history-2",
     "history-1",
   ]);
-});
-
-test("task history projects a v1 prompt profile as legacyProfile, never engine", () => {
-  const db = openStateDatabase();
-  try {
-    upsertTaskHistory(db, {
-      task_id: "legacy-prompt",
-      status: "completed",
-      started_at: "2025-01-01T00:00:00.000Z",
-      completed_at: "2025-01-01T00:00:01.000Z",
-      failed_at: null,
-      log_path: null,
-      target_kind: "prompt",
-      target_ref: null,
-      metadata_json: JSON.stringify({ durationMs: 1000, detail: null, profile: "reviewer" }),
-    });
-  } finally {
-    db.close();
-  }
-
-  expect(readTaskHistory({ id: "legacy-prompt" })[0]?.target).toEqual({
-    kind: "prompt",
-    engine: null,
-    legacyProfile: "reviewer",
-  });
 });
 
 function emptyReadableStream(): ReadableStream<Uint8Array> {
@@ -189,7 +195,7 @@ async function fireWhenRegistered(timers: FakeTimer[], ms: number): Promise<void
 
 describe("runTask — workflow target", () => {
   test("dispatches to runWorkflowSteps and writes log + history to state.db", async () => {
-    writeTask("wf", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", ""].join("\n"));
+    writeTask("wf", workflowTask());
     const calls: Array<{ ref: string; params: Record<string, unknown> }> = [];
     const fakeWf: FakeWorkflowRunner = async ({ target, params = {} }) => {
       calls.push({ ref: target, params });
@@ -217,9 +223,9 @@ describe("runTask — workflow target", () => {
       now: () => new Date("2025-01-01T00:00:00Z"),
     });
 
-    expect(calls).toEqual([{ ref: "workflows/noop", params: {} }]);
+    expect(calls).toEqual([{ ref: "stash//workflows/noop", params: {} }]);
     expect(result.status).toBe("completed");
-    expect(result.target).toEqual({ kind: "workflow", ref: "workflows/noop" });
+    expect(result.target).toEqual({ kind: "workflow", ref: "stash//workflows/noop" });
     expect(result.detail?.runId).toBe("run-id-1");
 
     const logExists = fs.existsSync(result.log);
@@ -243,7 +249,7 @@ describe("runTask — workflow target", () => {
   ] as const;
   for (const { wf, expected } of STATUS_CASES) {
     test(`maps workflow run status "${wf}" → task status "${expected}"`, async () => {
-      writeTask("map", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", ""].join("\n"));
+      writeTask("map", workflowTask());
       const fakeWf: FakeWorkflowRunner = async ({ target, params = {} }) => ({
         run: {
           id: "run-map",
@@ -375,10 +381,7 @@ describe("runTask — workflow target", () => {
   }
 
   test("a declared timeout aborts the run and reports it as resumable", async () => {
-    writeTask(
-      "wf-timeout",
-      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 100", ""].join("\n"),
-    );
+    writeTask("wf-timeout", workflowTask({ timeout: 100 }));
     const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
     const captured: CapturedRunOptions[] = [];
 
@@ -410,10 +413,7 @@ describe("runTask — workflow target", () => {
   });
 
   test("a run that completes anyway is not reported as a timeout", async () => {
-    writeTask(
-      "wf-raced",
-      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 100", ""].join("\n"),
-    );
+    writeTask("wf-raced", workflowTask({ timeout: 100 }));
     const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
     const captured: CapturedRunOptions[] = [];
 
@@ -439,10 +439,7 @@ describe("runTask — workflow target", () => {
   });
 
   test("a gate rejection outranks the deadline in the status, the log and the history row alike", async () => {
-    writeTask(
-      "wf-gated",
-      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 100", ""].join("\n"),
-    );
+    writeTask("wf-gated", workflowTask({ timeout: 100 }));
     const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
     const captured: CapturedRunOptions[] = [];
 
@@ -472,10 +469,7 @@ describe("runTask — workflow target", () => {
   });
 
   test("an explicit timeout overrides the unattended default", async () => {
-    writeTask(
-      "wf-explicit",
-      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: 60000", ""].join("\n"),
-    );
+    writeTask("wf-explicit", workflowTask({ timeout: 60_000 }));
     const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
     const captured: CapturedRunOptions[] = [];
 
@@ -494,7 +488,7 @@ describe("runTask — workflow target", () => {
   });
 
   test("applies the unattended default timeout when the task declares none", async () => {
-    writeTask("wf-default", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", ""].join("\n"));
+    writeTask("wf-default", workflowTask());
     const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
     const captured: CapturedRunOptions[] = [];
 
@@ -513,11 +507,8 @@ describe("runTask — workflow target", () => {
     expect(DEFAULT_WORKFLOW_TASK_TIMEOUT_MS).toBe(6 * 60 * 60 * 1000);
   });
 
-  test("`timeoutMs: null` opts a workflow task out of any whole-run timeout", async () => {
-    writeTask(
-      "wf-unbounded",
-      ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "timeoutMs: null", ""].join("\n"),
-    );
+  test("`akm.timeout: null` opts a workflow task out of any whole-run timeout", async () => {
+    writeTask("wf-unbounded", workflowTask({ timeout: null }));
     const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
     const captured: CapturedRunOptions[] = [];
 
@@ -536,19 +527,7 @@ describe("runTask — workflow target", () => {
   });
 
   test("threads declared maxSteps / maxRetries into the orchestrator", async () => {
-    writeTask(
-      "wf-bounds",
-      [
-        "version: 2",
-        'schedule: "@daily"',
-        "workflow: workflows/noop",
-        "params:",
-        "  region: us-east-1",
-        "maxSteps: 4",
-        "maxRetries: 2",
-        "",
-      ].join("\n"),
-    );
+    writeTask("wf-bounds", workflowTask({ maxSteps: 4, maxRetries: 2 }, { region: "us-east-1" }));
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-bounds", {
@@ -564,7 +543,7 @@ describe("runTask — workflow target", () => {
   });
 
   test("omits maxSteps / maxRetries when the task declares none", async () => {
-    writeTask("wf-nobounds", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", ""].join("\n"));
+    writeTask("wf-nobounds", workflowTask());
     const captured: CapturedRunOptions[] = [];
 
     await runTask("wf-nobounds", {
@@ -581,12 +560,9 @@ describe("runTask — workflow target", () => {
 });
 
 describe("runTask — command target", () => {
-  test("routes a bare akm command through the current installation", async () => {
+  test("resolves a bare akm run task to the current installation when PATH omits it", async () => {
     const command = ["akm", "improve", "--strategy", "quick"];
-    writeTask(
-      "literal-command",
-      ["version: 2", 'schedule: "@daily"', `command: ${JSON.stringify(command)}`, ""].join("\n"),
-    );
+    writeTask("literal-command", shellTask(command));
     let spawned: string[] | undefined;
     const spawnFn: SpawnFn = (cmd) => {
       spawned = cmd;
@@ -600,11 +576,31 @@ describe("runTask — command target", () => {
       };
     };
 
-    const result = await runTask("literal-command", { stashDir, logDir, spawnFn });
+    const result = await withEnv({ PATH: "" }, () => runTask("literal-command", { stashDir, logDir, spawnFn }));
 
     expect(result.status).toBe("completed");
-    expect(spawned).toEqual([...resolveAkmInvocation().argv, ...command.slice(1)]);
+    expect(spawned?.slice(0, 2)).toEqual(["sh", "-c"]);
+    const shellText = spawned?.[2];
+    expect(shellText).toContain(resolveAkmInvocation().argv.map(shellWord).join(" "));
+    expect(shellText).toContain(command.slice(1).map(shellWord).join(" "));
   });
+
+  test.skipIf(process.platform === "win32")(
+    "executes a bare akm run task when the scheduler PATH omits the installation",
+    async () => {
+      writeTask(
+        "bare-current-install",
+        ["version: 3", "run: akm --version", "akm:", '  schedule: "@daily"', ""].join("\n"),
+      );
+
+      const result = await withEnv({ PATH: "/usr/bin:/bin" }, () =>
+        runTask("bare-current-install", { stashDir, logDir, scheduled: true }),
+      );
+
+      expect(result.status).toBe("completed");
+      expect(fs.readFileSync(result.log, "utf8")).toContain("exit_code=0");
+    },
+  );
 
   test("executes an explicitly selected akm path without replacing it", async () => {
     const vendorDir = path.join(tmpRoot, "vendor");
@@ -616,15 +612,7 @@ describe("runTask — command target", () => {
       fs.copyFileSync(process.execPath, executable);
     }
     if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
-    writeTask(
-      "explicit-akm",
-      [
-        "version: 2",
-        'schedule: "@daily"',
-        `command: ${JSON.stringify([executable, "-e", 'console.log("explicit vendor akm")'])}`,
-        "",
-      ].join("\n"),
-    );
+    writeTask("explicit-akm", shellTask([executable, "-e", 'console.log("explicit vendor akm")']));
 
     const result = await runTask("explicit-akm", { stashDir, logDir });
 
@@ -632,32 +620,21 @@ describe("runTask — command target", () => {
     expect(fs.readFileSync(result.log, "utf8")).toContain("explicit vendor akm");
   });
 
-  test("uses the platform temp directory when HOME is absent", async () => {
+  test("uses the owning bundle as the default working directory when HOME is absent", async () => {
     const fallbackDir = path.join(tmpRoot, "command-cwd");
     fs.mkdirSync(fallbackDir, { recursive: true });
-    writeTask(
-      "portable-cwd",
-      [
-        "version: 2",
-        'schedule: "@daily"',
-        `command: ${JSON.stringify([process.execPath, "-e", "console.log('cwd=' + process.cwd())"])}`,
-        "",
-      ].join("\n"),
-    );
+    writeTask("portable-cwd", shellTask([process.execPath, "-e", "console.log('cwd=' + process.cwd())"]));
 
     const result = await withEnv({ HOME: undefined, TMPDIR: fallbackDir, TEMP: fallbackDir, TMP: fallbackDir }, () =>
       runTask("portable-cwd", { stashDir, logDir }),
     );
 
     expect(result.status).toBe("completed");
-    expect(fs.readFileSync(result.log, "utf8")).toContain(`cwd=${fallbackDir}`);
+    expect(fs.readFileSync(result.log, "utf8")).toContain(`cwd=${stashDir}`);
   });
 
   test("a command that ignores SIGTERM is SIGKILLed on timeout, logging timed_out + exit 143", async () => {
-    writeTask(
-      "stubborn",
-      ["version: 2", 'schedule: "@daily"', "command: hang-forever", "timeoutMs: 100", "enabled: true", ""].join("\n"),
-    );
+    writeTask("stubborn", shellTask("hang-forever", { timeout: 100 }));
 
     const { timers, setTimeoutFn, clearTimeoutFn } = collectTimers();
     const signals: string[] = [];
@@ -701,12 +678,7 @@ describe("runTask — command target", () => {
     const webhookUrl = "https://discord.com/api/webhooks/123456789012345678/abcDEF-123_token";
     writeTask(
       "leaky-webhook",
-      [
-        "version: 2",
-        'schedule: "@daily"',
-        `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(`posting to ${webhookUrl}`)})`])}`,
-        "",
-      ].join("\n"),
+      shellTask([process.execPath, "-e", `console.log(${JSON.stringify(`posting to ${webhookUrl}`)})`]),
     );
 
     const result = await runTask("leaky-webhook", { stashDir, logDir });
@@ -727,16 +699,10 @@ describe("runTask — command target", () => {
   // The pattern arm above only catches credential SHAPES. A configured secret
   // whose value looks like nothing in particular went to disk verbatim.
 
-  const echoTask = (id: string, text: string, extraYaml: readonly string[] = []): void => {
+  const echoTask = (id: string, text: string, redact?: readonly string[]): void => {
     writeTask(
       id,
-      [
-        "version: 2",
-        'schedule: "@daily"',
-        `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(text)})`])}`,
-        ...extraYaml,
-        "",
-      ].join("\n"),
+      shellTask([process.execPath, "-e", `console.log(${JSON.stringify(text)})`], { ...(redact ? { redact } : {}) }),
     );
   };
 
@@ -756,7 +722,14 @@ describe("runTask — command target", () => {
       path.join(configDir, "config.json"),
       JSON.stringify({
         configVersion: "0.9.0",
-        engines: { main: { kind: "llm", apiKey: "${ACME_LLM_KEY}", endpoint: "https://api.example.com" } },
+        engines: {
+          main: {
+            kind: "llm",
+            endpoint: "https://api.example.com/v1/chat/completions",
+            model: "fixture",
+            credential: { names: ["ACME_LLM_KEY"], required: true },
+          },
+        },
       }),
     );
     echoTask("leaky-config-secret", `calling out with ${secret}`);
@@ -784,7 +757,7 @@ describe("runTask — command target", () => {
     // Neither config-declared nor name-shaped — the escape hatch is the only
     // thing that can catch this one.
     const secret = "harbour-lantern-drift";
-    echoTask("leaky-declared-secret", `token is ${secret}`, ["redact: [ACME_UNGUESSABLE]"]);
+    echoTask("leaky-declared-secret", `token is ${secret}`, ["ACME_UNGUESSABLE"]);
 
     const result = await withEnv({ ACME_UNGUESSABLE: secret }, () =>
       runTask("leaky-declared-secret", { stashDir, logDir }),
@@ -804,10 +777,7 @@ describe("runTask — command target", () => {
 
   test("redaction survives a secret reaching the spawn_error path", async () => {
     const secret = "cinnabar-thicket-verso";
-    writeTask(
-      "leaky-spawn-error",
-      ["version: 2", 'schedule: "@daily"', `command: [${JSON.stringify(`/nonexistent/${secret}/bin`)}]`, ""].join("\n"),
-    );
+    writeTask("leaky-spawn-error", shellTask([`/nonexistent/${secret}/bin`]));
 
     const result = await withEnv({ ACME_API_TOKEN: secret }, () => runTask("leaky-spawn-error", { stashDir, logDir }));
 
@@ -841,13 +811,9 @@ describe("runTask — command target", () => {
     fs.mkdirSync(path.join(secondaryStash, "workflows"), { recursive: true });
     fs.writeFileSync(
       path.join(secondaryStash, "tasks", "secondary-leak.yml"),
-      [
-        "version: 2",
-        'schedule: "@daily"',
-        `command: ${JSON.stringify([process.execPath, "-e", `console.log(${JSON.stringify(`shipping ${secret}`)})`])}`,
-        "redact: [ACME_SECONDARY_VALUE]",
-        "",
-      ].join("\n"),
+      shellTask([process.execPath, "-e", `console.log(${JSON.stringify(`shipping ${secret}`)})`], {
+        redact: ["ACME_SECONDARY_VALUE"],
+      }),
     );
 
     const result = await withEnv({ ACME_SECONDARY_VALUE: secret }, () =>
@@ -860,49 +826,65 @@ describe("runTask — command target", () => {
 });
 
 describe("runTask — prompt target", () => {
-  test("resolves agent model aliases once and marks the dispatched model exact", async () => {
+  test("forwards scheduled AKM directory context to an agent without trusting task or caller overrides", async () => {
     writeTask(
-      "aliased",
-      ["version: 2", 'schedule: "@daily"', "prompt: review", "engine: reviewer", "model: premium", ""].join("\n"),
+      "scheduled-agent-context",
+      [
+        "version: 3",
+        "uses: akm/command",
+        "with:",
+        "  content: keep nested akm calls in this scheduled installation",
+        "env:",
+        "  AKM_BUNDLE_DIR: /authored-override",
+        "  TASK_FLAG: retained",
+        "akm:",
+        '  schedule: "@daily"',
+        "  engine: opencode",
+        "",
+      ].join("\n"),
     );
-    process.env.AKM_CONFIG_DIR = configDir;
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "config.json"),
       JSON.stringify({
         configVersion: "0.9.0",
-        engines: {
-          reviewer: {
-            kind: "agent",
-            platform: "opencode",
-            modelAliases: { premium: "provider/exact-model" },
-          },
-        },
-        defaults: { engine: "reviewer" },
+        engines: { opencode: { kind: "agent", platform: "opencode" } },
+        defaults: { engine: "opencode" },
       }),
     );
-    let dispatched: { model?: string; modelIsExact?: boolean } | undefined;
+    const schedulerContext = {
+      AKM_BUNDLE_DIR: path.join(tmpRoot, "scheduled-bundle"),
+      AKM_CONFIG_DIR: configDir,
+      AKM_DATA_DIR: path.join(tmpRoot, "scheduled-data"),
+      AKM_CACHE_DIR: path.join(tmpRoot, "scheduled-cache"),
+      AKM_STATE_DIR: path.join(tmpRoot, "scheduled-state"),
+    };
+    for (const directory of Object.values(schedulerContext)) fs.mkdirSync(directory, { recursive: true });
+    let childEnv: Record<string, string> | undefined;
 
-    await runTask("aliased", {
-      stashDir,
-      logDir,
-      runAgentImpl: async (profile) => {
-        dispatched = { model: profile.model, modelIsExact: profile.modelIsExact };
-        return { ok: true, exitCode: 0, stdout: "ok", stderr: "", durationMs: 1 };
-      },
-      now: () => new Date("2025-01-01T00:00:00Z"),
-    });
+    const result = await withEnv(schedulerContext, () =>
+      runTask("scheduled-agent-context", {
+        stashDir,
+        logDir,
+        scheduled: true,
+        // Operational overrides must not be able to replace frozen request
+        // data, including the scheduler context below.
+        agentOptions: { env: { AKM_STATE_DIR: "/caller-override" } },
+        runAgentImpl: async (_profile, _prompt, options) => {
+          childEnv = options.env;
+          return { ok: true, exitCode: 0, stdout: "ok", stderr: "", durationMs: 1 };
+        },
+      }),
+    );
 
-    expect(dispatched).toEqual({ model: "provider/exact-model", modelIsExact: true });
+    expect(result.status).toBe("completed");
+    expect(childEnv).toMatchObject({ ...schedulerContext, TASK_FLAG: "retained" });
+    expect(childEnv?.AKM_BUNDLE_DIR).toBe(schedulerContext.AKM_BUNDLE_DIR);
+    expect(childEnv?.AKM_STATE_DIR).toBe(schedulerContext.AKM_STATE_DIR);
   });
 
   test("dispatches an LLM prompt task through its selected engine", async () => {
-    writeTask(
-      "llm",
-      ["version: 2", 'schedule: "@daily"', "prompt: answer briefly", "engine: fast", "model: qwen3-small", ""].join(
-        "\n",
-      ),
-    );
+    writeTask("llm", promptTask("answer briefly", { engine: "fast", model: "qwen3-small" }));
     process.env.AKM_CONFIG_DIR = configDir;
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
@@ -935,10 +917,16 @@ describe("runTask — prompt target", () => {
     expect(result.status).toBe("completed");
     expect(result.target).toEqual({ kind: "prompt", engine: "fast" });
     expect(seen).toEqual({ model: "qwen3-small", prompt: "answer briefly" });
+    expect(result.notices?.map((notice) => [notice.code, notice.field])).toEqual([
+      ["untranslated-field", "runtime.workspace"],
+    ]);
+    const log = fs.readFileSync(result.log, "utf8");
+    expect(log).toContain("lowering_notice=untranslated-field adapter=llm field=runtime.workspace");
+    expect(log).not.toContain("lowering_notice=untranslated-field adapter=llm field=runtime.environment");
   });
 
   test("dispatches to runAgent (mocked) and writes captured stdout to the log", async () => {
-    writeTask("prompt", ["version: 2", 'schedule: "@daily"', "prompt: say hello", "engine: opencode", ""].join("\n"));
+    writeTask("prompt", promptTask("say hello", { engine: "opencode" }));
 
     const fakeRunAgent: FakeRunAgent = async (...args) => {
       const prompt = args[1] as string;
@@ -997,11 +985,8 @@ describe("runTask — prompt target", () => {
     }
   });
 
-  test("lowers a prompt-task model through the selected agent engine aliases exactly once", async () => {
-    writeTask(
-      "agent-model",
-      ["version: 2", 'schedule: "@daily"', "prompt: review this", "engine: reviewer", "model: fast", ""].join("\n"),
-    );
+  test("passes a prompt-task model through the selected agent engine exactly", async () => {
+    writeTask("agent-model", promptTask("review this", { engine: "reviewer", model: "provider/exact-model" }));
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "config.json"),
@@ -1011,31 +996,30 @@ describe("runTask — prompt target", () => {
           reviewer: {
             kind: "agent",
             platform: "opencode",
-            modelAliases: { fast: "provider/exact-model" },
           },
         },
         defaults: { engine: "reviewer" },
       }),
     );
-    let captured: { model?: string; modelIsExact?: boolean } = {};
+    let captured: { model?: string } = {};
 
     const result = await runTask("agent-model", {
       stashDir,
       logDir,
       runAgentImpl: async (profile) => {
-        captured = { model: profile.model, modelIsExact: profile.modelIsExact };
+        captured = { model: profile.model };
         return { ok: true, exitCode: 0, stdout: "reviewed", stderr: "", durationMs: 1 };
       },
       now: () => new Date("2025-01-01T00:00:00Z"),
     });
 
     expect(result.status).toBe("completed");
-    expect(captured).toEqual({ model: "provider/exact-model", modelIsExact: true });
+    expect(captured).toEqual({ model: "provider/exact-model" });
   });
 
   test("redacts echoed agent credentials before task logs are persisted", async () => {
     const sentinel = "TASK-ECHO-SENTINEL";
-    writeTask("redacted", ["version: 2", 'schedule: "@daily"', "prompt: say hello", "engine: opencode", ""].join("\n"));
+    writeTask("redacted", promptTask("say hello", { engine: "opencode" }));
     fs.mkdirSync(configDir, { recursive: true });
     fs.writeFileSync(
       path.join(configDir, "config.json"),
@@ -1067,7 +1051,7 @@ describe("runTask — prompt target", () => {
   });
 
   test("agent failure surfaces as failed status with reason", async () => {
-    writeTask("fail", ["version: 2", 'schedule: "@daily"', "prompt: boom", "engine: opencode", ""].join("\n"));
+    writeTask("fail", promptTask("boom", { engine: "opencode" }));
 
     process.env.AKM_CONFIG_DIR = configDir;
     fs.mkdirSync(configDir, { recursive: true });
@@ -1113,7 +1097,7 @@ describe("runTask — prompt target", () => {
 
 describe("runTask — disabled tasks", () => {
   test("manual invocation dispatches an intentionally disabled task", async () => {
-    writeTask("off", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "enabled: false", ""].join("\n"));
+    writeTask("off", workflowTask({ enabled: false }));
     let called = false;
     const fakeWf: FakeWorkflowRunner = async ({ target, params = {} }) => {
       called = true;
@@ -1146,7 +1130,7 @@ describe("runTask — disabled tasks", () => {
   });
 
   test("scheduler-generated invocation is recorded but not dispatched", async () => {
-    writeTask("off", ["version: 2", 'schedule: "@daily"', "workflow: workflows/noop", "enabled: false", ""].join("\n"));
+    writeTask("off", workflowTask({ enabled: false }));
     let called = false;
     const fakeWf = async () => {
       called = true;

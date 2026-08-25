@@ -57,6 +57,7 @@ import {
   assertNotFlag,
   resolveDispatchModel,
 } from "../../agent/builder-shared";
+import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /** Canonical harness/platform id used for model-alias resolution. */
 export const GEMINI_PLATFORM = "gemini";
@@ -105,6 +106,13 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
  */
 export const geminiBuilder: AgentCommandBuilder = {
   platform: GEMINI_PLATFORM,
+  personaChannel: "prompt",
+  lower: createAgentRequestLowerer({
+    adapter: GEMINI_PLATFORM,
+    personaChannel: "prompt",
+    tools: "flat",
+    outputSchema: true,
+  }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

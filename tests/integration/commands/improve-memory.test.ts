@@ -6,7 +6,6 @@ import { akmImprove } from "../../../src/commands/improve/improve";
 import { akmSearch } from "../../../src/commands/read/search";
 import { saveConfig } from "../../../src/core/config/config";
 import { appendEvent, readEvents } from "../../../src/core/events";
-import { canonicalTxnRoot, txnNamespaceDir } from "../../../src/core/fs-txn";
 import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { setQuiet } from "../../../src/core/warn";
 import type { GraphExtractionResult } from "../../../src/indexer/graph/graph-extraction";
@@ -358,6 +357,9 @@ describe("akm improve memory cleanup", () => {
       config: withImproveAutonomy(
         withTestImproveLlm({
           semanticSearchMode: "off",
+          bundles: { stash: { path: stashDir, writable: true } },
+          defaultBundle: "stash",
+          defaultWriteTarget: "stash",
           improve: { strategies: { default: { processes: { extract: { enabled: false } } } } },
         }),
       ),
@@ -1444,150 +1446,5 @@ describe("akm improve memory cleanup", () => {
       memoryEligible: 1,
       memoryDerived: 0,
     });
-  });
-
-  /**
-   * Plant a stale (incomplete) consolidate checklist journal in the unified
-   * engine home for `stashDir`; returns the transaction directory.
-   */
-  function writeStaleConsolidateTxnJournal(stashDir: string): string {
-    const txnDir = path.join(txnNamespaceDir(stashDir), "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
-    fs.mkdirSync(txnDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(txnDir, "journal.json"),
-      JSON.stringify(
-        {
-          version: 1,
-          kind: "consolidate",
-          phase: "applying",
-          transactionId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-          root: canonicalTxnRoot(stashDir),
-          changes: [],
-          decidedAt: "2026-01-01T00:00:00.000Z",
-          payload: {
-            startedAt: "2026-01-01T00:00:00.000Z",
-            operations: [{ op: "delete", ref: "memories/old", reason: "stale" }],
-            completed: [],
-          },
-        },
-        null,
-        2,
-      ),
-      "utf8",
-    );
-    return txnDir;
-  }
-
-  // 0.8.0: this test invokes akmImprove twice end-to-end against a real (empty)
-  // stash; the planner + consolidate journal check together routinely take
-  // 4–6 s, which exceeds Bun's 5 s default per-test timeout under full-suite
-  // load. Give it a comfortable margin so it stays green when the suite is
-  // warm and the system is busy.
-  test.skip("stale consolidate journal error gives actionable improve recovery guidance", async () => {
-    const stashDir = makeTempDir("akm-improve-stale-journal-abort-");
-    // WI-6.3e: the checklist journal rides the unified fs-txn engine.
-    writeStaleConsolidateTxnJournal(stashDir);
-
-    await expect(
-      akmImprove({
-        scope: "memory",
-        stashDir,
-        config: {
-          semanticSearchMode: "off",
-          // D8 — the stale-journal recovery path only runs when consolidate
-          // does, and consolidate needs the autonomy opt-in.
-          experimental: { improveAutonomy: true },
-          engines: {
-            default: { kind: "llm", endpoint: "http://localhost/chat/completions", model: "test" },
-          },
-          improve: {
-            strategies: {
-              default: { processes: { consolidate: { enabled: true, minPoolSize: 0 }, extract: { enabled: false } } },
-            },
-          },
-          defaults: { llmEngine: "default" },
-        },
-        ensureIndexFn: async () => false,
-        reindexFn: async () => ({
-          schemaVersion: 1,
-          ok: true,
-          indexed: 0,
-          warnings: [],
-          errors: [],
-          durationMs: 0,
-        }),
-      }),
-    ).rejects.toThrow("--consolidate-recovery clean");
-    await expect(
-      akmImprove({
-        scope: "memory",
-        stashDir,
-        config: {
-          semanticSearchMode: "off",
-          // D8 — the stale-journal recovery path only runs when consolidate
-          // does, and consolidate needs the autonomy opt-in.
-          experimental: { improveAutonomy: true },
-          engines: {
-            default: { kind: "llm", endpoint: "http://localhost/chat/completions", model: "test" },
-          },
-          improve: {
-            strategies: {
-              default: { processes: { consolidate: { enabled: true, minPoolSize: 0 }, extract: { enabled: false } } },
-            },
-          },
-          defaults: { llmEngine: "default" },
-        },
-        ensureIndexFn: async () => false,
-        reindexFn: async () => ({
-          schemaVersion: 1,
-          ok: true,
-          indexed: 0,
-          warnings: [],
-          errors: [],
-          durationMs: 0,
-        }),
-      }),
-    ).rejects.not.toThrow("akm consolidate --clean");
-  }, 30_000);
-
-  test.skip("consolidate recovery clean removes stale journal and allows improve to continue", async () => {
-    const stashDir = makeTempDir("akm-improve-stale-journal-clean-");
-    // WI-6.3e: the checklist journal rides the unified fs-txn engine; the
-    // journal and its backups share the transaction directory.
-    const txnDir = writeStaleConsolidateTxnJournal(stashDir);
-    fs.mkdirSync(path.join(txnDir, "backup"), { recursive: true });
-    fs.writeFileSync(path.join(txnDir, "backup", "orphan.md"), "x", "utf8");
-
-    const result = await akmImprove({
-      scope: "memory",
-      stashDir,
-      config: {
-        semanticSearchMode: "off",
-        // D8 — the stale-journal recovery path only runs when consolidate does,
-        // and consolidate needs the autonomy opt-in.
-        experimental: { improveAutonomy: true },
-        engines: {
-          default: { kind: "llm", endpoint: "http://localhost/chat/completions", model: "test" },
-        },
-        improve: {
-          strategies: {
-            default: { processes: { consolidate: { enabled: true, minPoolSize: 0 }, extract: { enabled: false } } },
-          },
-        },
-        defaults: { llmEngine: "default" },
-      },
-      ensureIndexFn: async () => false,
-      reindexFn: async () => ({
-        schemaVersion: 1,
-        ok: true,
-        indexed: 0,
-        warnings: [],
-        errors: [],
-        durationMs: 0,
-      }),
-    });
-
-    expect(result.ok).toBe(true);
-    expect(fs.existsSync(txnDir)).toBe(false);
   });
 });

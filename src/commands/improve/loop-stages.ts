@@ -25,13 +25,13 @@ import {
   runGraphExtractionPass,
 } from "../../indexer/graph/graph-extraction";
 import { withIndexWriterLease } from "../../indexer/index-writer-lock";
+import { deriveWritableBundleIds } from "../../indexer/installations";
 import {
   collectPendingMemories,
   type MemoryInferenceResult,
   runMemoryInferencePass,
 } from "../../indexer/passes/memory-inference";
-import { getWritableStashDirs, resolveSourceEntries } from "../../indexer/search/search-source";
-import { materializeLlmRunnerConnection } from "../../integrations/agent/runner";
+import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { isProcessEnabled } from "../../llm/feature-gate";
 import { withLlmStage } from "../../llm/usage-telemetry";
 import type { Database } from "../../storage/database";
@@ -72,6 +72,7 @@ import type {
 } from "./improve-run-types";
 import { type ResolvedImprovePlan, shouldSkipRef } from "./improve-strategies";
 import type { applyMemoryCleanup } from "./memory/memory-improve";
+import type { AkmReflectOptions } from "./reflect";
 import { recordNoOp, resetConsecutiveNoOps } from "./salience";
 import { errMessage, refSlug } from "./shared";
 import { bareImproveRef, durableImproveRef } from "./source-identity";
@@ -307,8 +308,9 @@ async function runLoopReflectPass(
       // O-1 (#364): pass remaining budget as timeoutMs so the agent spawn is
       // bounded by the wall-clock deadline rather than the default per-profile timeout.
       const reflectBudgetMs = env.remainingBudgetMs();
-      // Use the runner frozen in the invocation plan; no leaf re-resolution.
-      const reflectProfileRunner = resolvedPlan.processes.reflect.runner;
+      // Re-enter canonical named-engine lowering with the config snapshot and
+      // process profile frozen into the invocation plan. The loop never injects
+      // a RunnerSpec seam or observes later caller-config mutations.
       const reflectCallArgs = {
         ref: planned.ref,
         // Carry the resolved item_ref so reflect uses the same durable key for
@@ -317,7 +319,7 @@ async function runLoopReflectPass(
         task: options.task,
         // Active strategy supplies non-engine process tuning.
         ...(improveProfile ? { improveProfile } : {}),
-        config: options.config,
+        config: resolvedPlan.config as AkmConfig,
         ...(primaryStashDir ? { stashDir: primaryStashDir } : {}),
         ...(options.sourceName && primaryStashDir
           ? { target: { source: options.sourceName, root: primaryStashDir } }
@@ -329,13 +331,12 @@ async function runLoopReflectPass(
         lowValueFilter: improveProfile.processes?.reflect?.lowValueFilter?.enabled === true,
         ...(reflectBudgetMs > 0 ? { timeoutMs: reflectBudgetMs } : {}),
         signal: budgetSignal,
-        runner: reflectProfileRunner ?? null,
         // R25: reflect's event emits reuse the run's long-lived state.db handle.
         eventsCtx: env.eventsCtx,
         // Attribution: carry the eligibility lane so reflect stamps it on
         // the reflect_invoked event and the persisted proposal.
         ...(planned.eligibilitySource ? { eligibilitySource: planned.eligibilitySource } : {}),
-      };
+      } satisfies AkmReflectOptions;
       const reflectResult: AkmReflectResult = await withLlmStage("reflect", () => reflectFn(reflectCallArgs), {
         engine: resolvedPlan.processes.reflect.runner?.engine,
         process: "reflect",
@@ -600,9 +601,7 @@ async function invokeDistillAndRecord(
         // Active profile so distill's per-process reads honor `--profile`.
         ...(improveProfile ? { improveProfile } : {}),
         config: options.config,
-        llmConfig: resolvedPlan.processes.distill.runner
-          ? materializeLlmRunnerConnection(resolvedPlan.processes.distill.runner)
-          : null,
+        llmRunner: resolvedPlan.processes.distill.runner,
         signal: budgetSignal,
         // R25: distill's event emits reuse the run's long-lived state.db handle.
         eventsCtx,
@@ -1134,9 +1133,7 @@ export async function runMemoryInferenceMaintenancePass(
             config,
             ...(resolvedPlan
               ? {
-                  llmConfig: resolvedPlan.processes.memoryInference.runner
-                    ? materializeLlmRunnerConnection(resolvedPlan.processes.memoryInference.runner)
-                    : null,
+                  llmRunner: resolvedPlan.processes.memoryInference.runner,
                 }
               : {}),
             sources,
@@ -1249,9 +1246,9 @@ export async function runGraphExtractionMaintenancePass(
       if (!graphExtractionFullScan) {
         candidatePaths = new Set<string>();
         if (primaryStashDir && touchedRefs.size > 0) {
-          const writableDirSet = new Set(getWritableStashDirs(primaryStashDir).map((d) => path.resolve(d)));
+          const writableBundleIds = deriveWritableBundleIds(resolveSourceEntries(primaryStashDir));
           const resolved = await Promise.all(
-            [...touchedRefs].map((ref) => findAssetFilePath(ref, primaryStashDir, writableDirSet).catch(() => null)),
+            [...touchedRefs].map((ref) => findAssetFilePath(ref, primaryStashDir, writableBundleIds).catch(() => null)),
           );
           for (const p of resolved) {
             if (typeof p === "string" && p.length > 0) candidatePaths.add(p);
@@ -1279,9 +1276,7 @@ export async function runGraphExtractionMaintenancePass(
             config,
             ...(resolvedPlan
               ? {
-                  llmConfig: resolvedPlan.processes.graphExtraction.runner
-                    ? materializeLlmRunnerConnection(resolvedPlan.processes.graphExtraction.runner)
-                    : null,
+                  llmRunner: resolvedPlan.processes.graphExtraction.runner,
                 }
               : {}),
             sources,

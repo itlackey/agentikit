@@ -53,6 +53,7 @@ import {
   assertNotFlag,
   resolveDispatchModel,
 } from "../../agent/builder-shared";
+import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /** Canonical harness/platform id used for model-alias resolution. */
 export const COPILOT_PLATFORM = "copilot";
@@ -101,6 +102,13 @@ function buildPromptPayload(req: AgentDispatchRequest): string {
  */
 export const copilotBuilder: AgentCommandBuilder = {
   platform: COPILOT_PLATFORM,
+  personaChannel: "prompt",
+  lower: createAgentRequestLowerer({
+    adapter: COPILOT_PLATFORM,
+    personaChannel: "prompt",
+    tools: "flat",
+    outputSchema: true,
+  }),
   build(profile, req) {
     assertNotFlag(req.systemPrompt, "systemPrompt");
     assertNotFlag(req.model, "model");

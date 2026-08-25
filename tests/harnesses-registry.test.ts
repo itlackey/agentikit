@@ -9,7 +9,7 @@
  *
  * These tests pin:
  *   1. registry membership + capability-derived sublists,
- *   2. the 'claude' ↔ 'claude-code' id-normalization round-trips, and
+ *   2. exact ids are shared by config, dispatch, attribution, and logs, and
  *   3. that every currently-valid platform/harness id is present so the
  *      derived registries cannot silently drift from the canonical one.
  */
@@ -20,11 +20,9 @@ import {
   CONFIG_IMPORTER_HARNESSES,
   DETECTION_HARNESSES,
   defaultProfileName,
-  denormalizeRuntimeIdentity,
   getHarness,
   HARNESS_BY_ID,
   HARNESS_REGISTRY,
-  normalizeHarnessId,
   SESSION_LOG_HARNESSES,
   VALID_HARNESS_IDS,
 } from "../src/integrations/harnesses";
@@ -64,6 +62,12 @@ describe("HARNESS_REGISTRY membership", () => {
     // The Zod schema, the AgentProfileConfig platform union, and setup's
     // DetectedHarness all derive from this exact array.
     expect([...CONFIG_VALID_HARNESS_IDS]).toEqual([...VALID_HARNESS_IDS]);
+  });
+
+  it("does not carry a second runtime-identity compatibility capability", () => {
+    for (const harness of HARNESS_REGISTRY) {
+      expect(harness.capabilities).not.toHaveProperty("runtimeIdentity");
+    }
   });
 });
 
@@ -151,9 +155,7 @@ describe("workflow-engine descriptor fields (P2, plan §'Capability matrix')", (
   it("every sessionLogs-capable harness's provider name resolves back to it", () => {
     for (const h of SESSION_LOG_HARNESSES) {
       const provider = h.sessionLogProvider();
-      // Provider runtime name (e.g. 'claude-code') must normalize to the
-      // harness's canonical id via the #562 bridge.
-      expect(normalizeHarnessId(provider.name)).toBe(h.id);
+      expect(provider.name).toBe(h.id);
     }
   });
 
@@ -165,43 +167,11 @@ describe("workflow-engine descriptor fields (P2, plan §'Capability matrix')", (
   });
 });
 
-describe("id normalization bridge ('claude' ↔ 'claude-code')", () => {
-  it("normalizes the 'claude-code' alias to the canonical 'claude'", () => {
-    expect(normalizeHarnessId("claude-code")).toBe("claude");
-  });
-
-  it("normalizing the canonical id is a no-op", () => {
-    expect(normalizeHarnessId("claude")).toBe("claude");
-    expect(normalizeHarnessId("opencode")).toBe("opencode");
-    expect(normalizeHarnessId("opencode-sdk")).toBe("opencode-sdk");
-  });
-
-  it("denormalizes 'claude' to the 'claude-code' runtime identity", () => {
-    expect(denormalizeRuntimeIdentity("claude")).toBe("claude-code");
-    // round-trip: the alias denormalizes to the same runtime identity
-    expect(denormalizeRuntimeIdentity("claude-code")).toBe("claude-code");
-  });
-
-  it("round-trips both directions for Claude Code", () => {
-    expect(normalizeHarnessId(denormalizeRuntimeIdentity("claude"))).toBe("claude");
-    expect(denormalizeRuntimeIdentity(normalizeHarnessId("claude-code"))).toBe("claude-code");
-  });
-
-  it("harnesses without a distinct runtime id denormalize to themselves", () => {
-    expect(denormalizeRuntimeIdentity("opencode")).toBe("opencode");
-    expect(denormalizeRuntimeIdentity("opencode-sdk")).toBe("opencode-sdk");
-  });
-
-  it("getHarness resolves canonical id, alias, and runtime id to the same harness", () => {
-    const byCanonical = getHarness("claude");
-    expect(byCanonical).toBeDefined();
-    expect(getHarness("claude-code")).toBe(byCanonical);
-  });
-
-  it("unknown ids pass through normalization unchanged and resolve to undefined", () => {
+describe("exact harness ids", () => {
+  it("rejects aliases and unknown ids", () => {
+    expect(getHarness("claude")).toBeDefined();
+    expect(getHarness("claude-code")).toBeUndefined();
     expect(getHarness("nope")).toBeUndefined();
-    expect(normalizeHarnessId("nope")).toBe("nope");
-    expect(denormalizeRuntimeIdentity("nope")).toBe("nope");
   });
 });
 
@@ -212,30 +182,17 @@ describe("defaultProfileName — registry-derived headless default (#566)", () =
     expect(defaultProfileName("opencode-sdk")).toBe("opencode-sdk");
   });
 
-  it("resolves the 'claude-code' runtime alias to the canonical 'claude' default", () => {
-    expect(defaultProfileName("claude-code")).toBe("claude");
-  });
-
   it("returns undefined for 'none' and unknown ids (no spurious default)", () => {
     expect(defaultProfileName("none")).toBeUndefined();
     expect(defaultProfileName("cursor")).toBeUndefined();
+    expect(defaultProfileName("claude-code")).toBeUndefined();
   });
 });
 
 describe("every currently-valid platform/harness id is present", () => {
-  // The historical set of valid platform strings the three old registries
-  // accepted. Each must resolve through the unified registry so we never break
-  // an already-persisted config or session log.
-  const HISTORICAL_IDS = ["claude", "claude-code", "opencode", "opencode-sdk"];
-
-  for (const id of HISTORICAL_IDS) {
+  for (const id of ALL_HARNESS_IDS) {
     it(`"${id}" resolves to a registered harness`, () => {
       expect(getHarness(id)).toBeDefined();
     });
   }
-
-  it("the session-log provider name 'claude-code' maps to the canonical 'claude' harness", () => {
-    expect(normalizeHarnessId("claude-code")).toBe("claude");
-    expect(getHarness("claude-code")?.id).toBe("claude");
-  });
 });

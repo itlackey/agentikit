@@ -52,13 +52,3 @@ export function getAdapters(): BundleAdapter[] {
 export function adapterForId(id: string): BundleAdapter | undefined {
   return BY_ID.get(id);
 }
-
-/**
- * DEPRECATED no-op retained for test back-compat only. The registry is a static
- * frozen map (normative §12.6) populated at module load, so there is nothing to
- * reset — `getAdapters()` / `adapterForId()` are always the full built-in set.
- * New code MUST NOT depend on this.
- */
-export function resetAdapterRegistryForTests(): void {
-  // intentionally empty — the registry is static; see the doc comment above.
-}

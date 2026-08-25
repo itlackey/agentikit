@@ -222,6 +222,9 @@ const commandMdRenderer: AssetRenderer = {
     const parsedMd = parseFrontmatter(ctx.content());
     const template = parsedMd.content;
     const tags = readFrontmatterTags(parsedMd.data.tags);
+    const modelHint = typeof parsedMd.data.model === "string" ? parsedMd.data.model : undefined;
+    const agent = asNonEmptyString(parsedMd.data.agent);
+    const parameters = extractParameters(template);
     return {
       type: "command",
       name,
@@ -230,9 +233,9 @@ const commandMdRenderer: AssetRenderer = {
       description: asNonEmptyString(parsedMd.data.description),
       ...(tags ? { tags } : {}),
       template,
-      modelHint: typeof parsedMd.data.model === "string" ? parsedMd.data.model : undefined,
-      agent: asNonEmptyString(parsedMd.data.agent),
-      parameters: extractParameters(template),
+      ...(modelHint !== undefined ? { modelHint } : {}),
+      ...(agent !== undefined ? { agent } : {}),
+      ...(parameters !== undefined ? { parameters } : {}),
     };
   },
 };
@@ -245,6 +248,8 @@ const agentMdRenderer: AssetRenderer = {
   buildShowResponse(ctx: RenderContext): ShowResponse {
     const name = deriveName(ctx);
     const parsedMd = parseFrontmatter(ctx.content());
+    const toolPolicy = parsedMd.data.tools as ShowResponse["toolPolicy"];
+    const modelHint = typeof parsedMd.data.model === "string" ? parsedMd.data.model : undefined;
     return {
       type: "agent",
       name,
@@ -256,8 +261,8 @@ const agentMdRenderer: AssetRenderer = {
       // whether this self-declared policy is honoured is applied at the show
       // layer (`akmShowUnified`), which knows whether the source is the operator's
       // own writable stash vs a read-only third-party source (07 P1-D).
-      toolPolicy: parsedMd.data.tools as ShowResponse["toolPolicy"],
-      modelHint: typeof parsedMd.data.model === "string" ? parsedMd.data.model : undefined,
+      ...(toolPolicy !== undefined ? { toolPolicy } : {}),
+      ...(modelHint !== undefined ? { modelHint } : {}),
     };
   },
 };
@@ -357,8 +362,8 @@ const scriptSourceRenderer: AssetRenderer = {
           path: ctx.absPath,
           action: "Execute the run command below",
           run: hints.run,
-          setup: hints.setup,
-          cwd: hints.cwd,
+          ...(hints.setup !== undefined ? { setup: hints.setup } : {}),
+          ...(hints.cwd !== undefined ? { cwd: hints.cwd } : {}),
         };
       }
     }

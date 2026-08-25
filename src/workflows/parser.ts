@@ -119,7 +119,7 @@ const DEFAULTS_KEYS = ["engine", "model", "timeout", "on_error", "llm"];
 const BUDGET_KEYS = ["max_tokens", "max_units"];
 const STEP_KEYS = ["id", "unit", "map", "route", "inputs", "output", "gate"];
 const UNIT_KEYS = ["exec", "engine", "model", "llm", "timeout", "retry", "on_error", "output", "env", "isolation"];
-const EXEC_KEYS = ["command", "cwd", "pass_env", "inherit_env"];
+const EXEC_KEYS = ["command", "cwd", "pass_env"];
 /** Unit keys that name an ENGINE dispatch and therefore cannot appear beside `exec:`. */
 const UNIT_ENGINE_KEYS = ["engine", "model", "llm"] as const;
 const MAP_KEYS = ["over", "concurrency", "reducer", "unit"];
@@ -133,19 +133,6 @@ const TIMEOUT_VALUE = /^(\d+)(ms|s|m)?$/;
 const TIMEOUT_HINT = `Use "<n>ms", "<n>s", "<n>m" (e.g. "10m"), or "none"`;
 const LIFECYCLE_STATUSES = new Set(["draft", "stable", "deprecated"]);
 
-/**
- * Cheap structural probe retained ONLY for callers that still need a fast
- * "is this workflow-shaped" content check without touching the filesystem's
- * directory. Recognition itself no longer sniffs content (spec §2.5) — this
- * is a best-effort convenience for content-only contexts (e.g. a proposal
- * whose ref carries no path). It looks for `type: workflow` in frontmatter.
- */
-export function looksLikeWorkflow(raw: string): boolean {
-  const fmBlock = parseFrontmatterBlock(raw);
-  if (!fmBlock) return false;
-  return /^type:\s*['"]?workflow['"]?\s*(#.*)?$/m.test(fmBlock.frontmatter);
-}
-
 type Path = Array<string | number>;
 
 /** Yaml AST node surface we rely on for line anchoring (best-effort). */
@@ -156,12 +143,23 @@ interface RangedNode {
 interface Ctx {
   readonly filePath: string;
   readonly errors: WorkflowError[];
+  readonly validateExecCwd?: WorkflowParseOptions["validateExecCwd"];
   lineAt(path: Path): number;
   lineAtOffset(offset: number): number;
   refAt(path: Path): SourceRef;
   nodeAt(path: Path): unknown;
   err(path: Path, message: string): void;
   errAtLine(line: number, message: string): void;
+}
+
+export type WorkflowExecCwdValidationResult =
+  | { ok: true; value: string }
+  | { ok: false; code: string; message: string };
+
+export interface WorkflowParseOptions {
+  path: string;
+  /** Optional adapter-neutral semantic validator used by the source-IR frontend. */
+  validateExecCwd?: (value: string) => WorkflowExecCwdValidationResult;
 }
 
 /** Route branch bookkeeping for the post-pass (targets need all step ids). */
@@ -172,7 +170,7 @@ interface RouteCheck {
   defaultTarget?: { stepId: string; line: number };
 }
 
-export function parseWorkflow(markdown: string, source: { path: string }): WorkflowParseResult {
+export function parseWorkflow(markdown: string, source: WorkflowParseOptions): WorkflowParseResult {
   if (utf8Bytes(markdown) > WORKFLOW_MAX_SOURCE_BYTES) {
     return {
       ok: false,
@@ -244,6 +242,7 @@ export function parseWorkflow(markdown: string, source: { path: string }): Workf
   const ctx: Ctx = {
     filePath: path,
     errors,
+    ...(source.validateExecCwd ? { validateExecCwd: source.validateExecCwd } : {}),
     lineAt,
     lineAtOffset: (offset) => Math.max(1, lineCounter.linePos(offset).line + lineOffset),
     nodeAt: (p) => (p.length === 0 ? doc.contents : doc.getIn(p, true)),
@@ -864,17 +863,6 @@ function parseExec(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
   if (cwd !== undefined) exec.cwd = cwd;
   const passEnv = parseExecPassEnv(ctx, raw.pass_env, [...path, "pass_env"], stepLabel);
   if (passEnv !== undefined) exec.passEnv = passEnv;
-  if (raw.inherit_env !== undefined) {
-    if (typeof raw.inherit_env !== "boolean") {
-      ctx.err(
-        [...path, "inherit_env"],
-        `${stepLabel} "exec.inherit_env" must be true or false. true gives the command akm's whole environment ` +
-          `instead of the default allowlist; omit it (or write false) to keep the allowlist.`,
-      );
-    } else if (raw.inherit_env) {
-      exec.inheritEnv = true;
-    }
-  }
   return exec;
 }
 
@@ -897,7 +885,7 @@ function parseExecPassEnv(ctx: Ctx, raw: unknown, path: Path, stepLabel: string)
     ctx.err(
       path,
       `${stepLabel} "exec.pass_env" must have at most ${WORKFLOW_MAX_EXEC_PASS_ENV} entries. A command needing ` +
-        `more than that wants "inherit_env: true", which says so explicitly.`,
+        `more than that should use explicit named "env:" bindings instead.`,
     );
     return undefined;
   }
@@ -940,6 +928,10 @@ function parseExecCommand(ctx: Ctx, raw: unknown, path: Path, stepLabel: string)
       ctx.err(path, `${stepLabel} "exec.command[${index}]" must be a non-empty string.`);
       return undefined;
     }
+    if (entry.includes("\0")) {
+      ctx.err([...path, index], `${stepLabel} "exec.command[${index}]" may not contain NUL bytes.`);
+      return undefined;
+    }
     if (utf8Bytes(entry) > WORKFLOW_MAX_EXEC_ARG_BYTES) {
       ctx.err(path, `${stepLabel} "exec.command[${index}]" exceeds ${WORKFLOW_MAX_EXEC_ARG_BYTES} bytes.`);
       return undefined;
@@ -972,6 +964,18 @@ function parseExecCwd(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): st
         `directory — absolute paths, Windows drive letters, "~", and ".." segments are rejected.`,
     );
     return undefined;
+  }
+  if (ctx.validateExecCwd) {
+    const semantic = ctx.validateExecCwd(value);
+    if (!semantic.ok) {
+      ctx.errors.push({
+        code: semantic.code,
+        line: ctx.lineAt(path),
+        message: semantic.message,
+      });
+      return undefined;
+    }
+    return semantic.value;
   }
   return value;
 }
@@ -1310,6 +1314,7 @@ function parseLlmOverrides(ctx: Ctx, raw: unknown, path: Path, label: string): L
     "extra_params",
     "context_length",
     "enable_thinking",
+    "reasoning_effort",
   ];
   checkUnknownKeys(ctx, raw, path, keys, label);
   const result: LlmInvocationOverrides = {};
@@ -1350,6 +1355,11 @@ function parseLlmOverrides(ctx: Ctx, raw: unknown, path: Path, label: string): L
   if (raw.enable_thinking !== undefined) {
     if (typeof raw.enable_thinking === "boolean") result.enableThinking = raw.enable_thinking;
     else ctx.err([...path, "enable_thinking"], `${label}.enable_thinking must be a boolean.`);
+  }
+  if (raw.reasoning_effort !== undefined) {
+    if (typeof raw.reasoning_effort === "string" && raw.reasoning_effort.trim().length > 0) {
+      result.reasoningEffort = raw.reasoning_effort;
+    } else ctx.err([...path, "reasoning_effort"], `${label}.reasoning_effort must be a non-empty string.`);
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }

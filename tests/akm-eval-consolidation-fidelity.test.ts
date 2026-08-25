@@ -15,7 +15,6 @@ import {
   normalizeDirectProvenance,
   parseConsolidationFidelityManifest,
 } from "../scripts/akm-eval/src/consolidation-fidelity";
-import { legacyRefToBundleRef } from "../scripts/akm-migrate/migrate/legacy-ref-grammar";
 import { checkMergeInformationFloor } from "../src/commands/improve/anti-collapse";
 import { bundleRefToString, parseBundleRef } from "../src/core/asset/asset-ref";
 
@@ -129,50 +128,11 @@ describe("deterministic fixture-authored consolidation candidate oracle", () => 
     expect(invalid.directProvenance.passed).toBe(false);
   });
 
-  test("matches the frozen migrator for supported legacy provenance spellings", () => {
-    const legacyRefs = [
-      "agent:alpha",
-      "command:alpha",
-      "env:alpha",
-      "fact:alpha",
-      "knowledge:alpha",
-      "lesson:alpha",
-      "memory:alpha",
-      "script:alpha.ts",
-      "secret:alpha.pem",
-      "session:alpha",
-      "skill:alpha",
-      "task:alpha",
-      "workflow:alpha",
-      "wiki:alpha",
-      "foreign:alpha",
-      "lab//memory:beta",
-      "environment:production",
-      "local//environment:staging",
-      "stash//memory:nested/item",
-      "owner/repo//memory:portable",
-      "memory:nested\\windows-name",
-    ];
-
-    for (const raw of legacyRefs) {
-      const runtimeNormalized = bundleRefToString(legacyRefToBundleRef(raw));
-      expect(normalizeDirectProvenance(raw)).toBe(runtimeNormalized);
-    }
-    expect(normalizeDirectProvenance("environment:production")).toBe("env/production");
-    expect(normalizeDirectProvenance("local//environment:staging")).toBe("env/staging");
-    expect(normalizeDirectProvenance("wiki:alpha")).toBe("alpha");
-    expect(normalizeDirectProvenance("foreign:alpha")).toBe("alpha");
-  });
-
-  test("matches current ref normalization and rejects empty legacy or current origins", () => {
+  test("matches current ref normalization and rejects invalid current origins", () => {
     for (const raw of ["memories/alpha", "lab//memories/beta", "env/production", "memories/nested\\item"]) {
       expect(normalizeDirectProvenance(raw)).toBe(bundleRefToString(parseBundleRef(raw)));
     }
 
-    for (const raw of ["//memory:alpha", "//environment:production"]) {
-      expect(() => legacyRefToBundleRef(raw)).toThrow(/Empty origin/);
-      expect(normalizeDirectProvenance(raw)).toBeUndefined();
-    }
     expect(() => parseBundleRef("//memories/alpha")).toThrow(/Empty bundle/);
     expect(normalizeDirectProvenance("//memories/alpha")).toBeUndefined();
   });
@@ -229,8 +189,8 @@ describe("deterministic fixture-authored consolidation candidate oracle", () => 
     expect(result.oraclePassed).toBe(true);
   });
 
-  test("treats equivalent legacy and current direct provenance as retained", () => {
-    const result = gradeFixtureCalibrationCandidate(fixtureById("safe-legacy-current-provenance-equivalence"));
+  test("retains an exact current direct-provenance set", () => {
+    const result = gradeFixtureCalibrationCandidate(fixtureById("safe-current-provenance-equivalence"));
     expect(result.directProvenance).toMatchObject({
       retention: 1,
       missing: [],

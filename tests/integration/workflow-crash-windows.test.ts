@@ -105,7 +105,7 @@ describe.skipIf(!BUN)("multi-process crash windows", () => {
   test("Window A: SIGKILL after the unit row is running but before finish → resume re-dispatches it exactly once and completes", async () => {
     writeProgram(storage.stashDir, "crash-solo", SOLO_WF);
     const started = await startWorkflowRun("workflows/crash-solo", {});
-    expect(started.run.planIrVersion).toBe(3);
+    expect(started.run.planIrVersion).toBe(4);
     const runId = started.run.id;
     const [unit] = await unitIds(runId, {});
 
@@ -132,12 +132,13 @@ describe.skipIf(!BUN)("multi-process crash windows", () => {
 
     const status = await getWorkflowStatus(runId);
     expect(status.run.status).toBe("completed");
-    // Dispatched twice total (killed attempt + the single resume attempt); the
-    // journal's attempts counter agrees — no third dispatch.
+    // Dispatched twice total (killed invocation + the single resume invocation).
+    // V4 reclaims the same durable attempt/dispatch id in place, so the current
+    // status projection retains the stable 1-based attempt ordinal.
     expect(dispatchCount(markerDir, unit!)).toBe(2);
     const finalRow = await withWorkflowRunsRepo((repo) => repo.getUnit(runId, unit!));
     expect(finalRow?.status).toBe("completed");
-    expect(finalRow?.attempts).toBe(2);
+    expect(finalRow?.attempts).toBe(1);
 
     // A further invocation is a pure no-op — the completed run dispatches nothing.
     const noop = spawnRunner({ CHAOS_RUN_ID: runId, CHAOS_MARKER_DIR: markerDir });
@@ -148,7 +149,7 @@ describe.skipIf(!BUN)("multi-process crash windows", () => {
   test("Window B: SIGKILL after the unit completes but before the step does → resume reuses the unit, replaces the dangling gate row, finalizes once", async () => {
     writeProgram(storage.stashDir, "crash-gate", GATE_WF);
     const started = await startWorkflowRun("workflows/crash-gate", {});
-    expect(started.run.planIrVersion).toBe(3);
+    expect(started.run.planIrVersion).toBe(4);
     const runId = started.run.id;
     const [unit] = await unitIds(runId, {});
 

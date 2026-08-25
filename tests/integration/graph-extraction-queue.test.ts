@@ -16,15 +16,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
 import * as graphDb from "../../src/indexer/db/graph-db";
 import { loadGraphFilesOnly, replaceStoredGraph } from "../../src/indexer/db/graph-db";
 import * as graphExtraction from "../../src/indexer/graph/graph-extraction";
 import type { GraphFile } from "../../src/indexer/graph/graph-types";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 import { computeBodyHash } from "../../src/storage/repositories/index-llm-cache-repository";
-import { makeStashDir, type SandboxedDir } from "../_helpers/sandbox";
+import { makeStashDir, type SandboxedDir, withEnv } from "../_helpers/sandbox";
 
 // ── Deferred (not-yet-exported) P3 symbols ───────────────────────────────────
 //
@@ -54,6 +57,12 @@ const drainExtractionQueue = (
   }
 ).drainExtractionQueue;
 
+const acknowledgeExtractionQueueEntry = (
+  graphDb as unknown as {
+    acknowledgeExtractionQueueEntry: (db: Database, stashRoot: string, filePath: string, bodyHash: string) => boolean;
+  }
+).acknowledgeExtractionQueueEntry;
+
 type LlmOverride = (body: string) => Promise<{
   entities: string[];
   relations: Array<{ from: string; to: string; type?: string; confidence?: number }>;
@@ -67,10 +76,16 @@ const extractGraphForSingleFile = (
       stashRoot: string,
       filePath: string,
       bodyHash?: string,
-      opts?: { llmOverride?: LlmOverride; signal?: AbortSignal },
+      opts?: { llmOverride?: LlmOverride; signal?: AbortSignal; config?: AkmConfig },
     ) => Promise<boolean>;
   }
 ).extractGraphForSingleFile;
+
+const runGraphExtractionPass = (
+  graphExtraction as unknown as {
+    runGraphExtractionPass: typeof graphExtraction.runGraphExtractionPass;
+  }
+).runGraphExtractionPass;
 
 // ── Sandbox plumbing ─────────────────────────────────────────────────────────
 
@@ -122,8 +137,13 @@ function makeEligibleMemory(slug: string, body: string): string {
   fs.mkdirSync(memDir, { recursive: true });
   const absPath = path.join(memDir, `${slug}.md`);
   fs.writeFileSync(absPath, `---\ntype: memory\n---\n${body}\n`);
-  const entry = { name: slug, type: "memory", filename: `${slug}.md` } as Parameters<typeof upsertEntry>[5];
-  upsertEntry(db, `${stash.dir}:memory:${slug}`, memDir, absPath, stash.dir, entry, slug);
+  const entry = { name: slug, type: "memory", filename: `${slug}.md` };
+  const provenance = deriveEntryProvenance(
+    { bundleId: "stash", componentId: "stash", adapterId: "akm" },
+    entry.type,
+    slug,
+  );
+  upsertEntry(db, absPath, entry, slug, provenance);
   return absPath;
 }
 
@@ -158,6 +178,17 @@ describe("#624 P3 enqueueGraphExtraction / drainExtractionQueue (AC1)", () => {
     expect(row.priority).toBe(5);
   });
 
+  test("acknowledging an older revision preserves a concurrent re-enqueue", () => {
+    enqueueGraphExtraction(db, stash.dir, "/a.md", "hashA", 5);
+    enqueueGraphExtraction(db, stash.dir, "/a.md", "hashA2", 5);
+
+    expect(acknowledgeExtractionQueueEntry(db, stash.dir, "/a.md", "hashA")).toBe(false);
+    const row = db
+      .prepare("SELECT body_hash FROM graph_extraction_queue WHERE stash_root = ? AND file_path = ?")
+      .get(stash.dir, "/a.md") as { body_hash: string };
+    expect(row.body_hash).toBe("hashA2");
+  });
+
   test("drainExtractionQueue returns rows highest-priority-first then oldest queued_at", () => {
     enqueueGraphExtraction(db, stash.dir, "/low.md", "h1", 0);
     enqueueGraphExtraction(db, stash.dir, "/high.md", "h2", 10);
@@ -190,6 +221,77 @@ describe("#624 P3 enqueueGraphExtraction / drainExtractionQueue (AC1)", () => {
     // The other stash's row is untouched.
     expect(queueRowCount("/other/stash")).toBe(1);
   });
+
+  test("required symbolic credential failure preserves queued work and creates no graph or cache rows", async () => {
+    const absPath = makeEligibleMemory("queued-credential", "Alice works with Bob.");
+    enqueueGraphExtraction(db, stash.dir, absPath, computeBodyHash("Alice works with Bob."), 10);
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        graph: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_GRAPH_PASS_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "graph" }, graph: { enabled: true, lazyGraphExtraction: true } },
+    };
+
+    const failure = withEnv({ AKM_GRAPH_PASS_REQUIRED_KEY: undefined }, () =>
+      runGraphExtractionPass({
+        config,
+        sources: [{ path: stash.dir }],
+        db,
+        options: { candidatePaths: new Set() },
+      }),
+    );
+
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(queueRowCount(stash.dir)).toBe(1);
+    expect(graphFileRowExists(stash.dir, absPath)).toBe(false);
+    const cacheRows = (db.prepare("SELECT COUNT(*) AS n FROM llm_enrichment_cache").get() as { n: number }).n;
+    expect(cacheRows).toBe(0);
+  });
+
+  test("a queued path already covered by the stored graph is acknowledged without materializing credentials", async () => {
+    const body = "Alice works with Bob on Project X.";
+    const absPath = makeEligibleMemory("queued-hit", body);
+    const extracted = await extractGraphForSingleFile(db, stash.dir, absPath, undefined, {
+      llmOverride: async () => ({
+        entities: ["Alice", "Bob", "Project X"],
+        relations: [{ from: "Alice", to: "Bob", type: "works_with" }],
+      }),
+    });
+    expect(extracted).toBe(true);
+    enqueueGraphExtraction(db, stash.dir, absPath, computeBodyHash(body), 10);
+    const graphBefore = loadGraphFilesOnly(stash.dir, db);
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        graph: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_GRAPH_QUEUE_HIT_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "graph" }, graph: { enabled: true, lazyGraphExtraction: true } },
+    };
+
+    const result = await withEnv({ AKM_GRAPH_QUEUE_HIT_REQUIRED_KEY: undefined }, () =>
+      runGraphExtractionPass({
+        config,
+        sources: [{ path: stash.dir }],
+        db,
+        options: { candidatePaths: new Set() },
+      }),
+    );
+
+    expect(result.written).toBe(false);
+    expect(queueRowCount(stash.dir)).toBe(0);
+    expect(loadGraphFilesOnly(stash.dir, db)).toEqual(graphBefore);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +299,30 @@ describe("#624 P3 enqueueGraphExtraction / drainExtractionQueue (AC1)", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("#624 P3 extractGraphForSingleFile (AC2)", () => {
+  test("required symbolic credential failure leaves lazy extraction caches and graph rows empty", async () => {
+    const absPath = makeEligibleMemory("credential", "Alice works with Bob.");
+    const config: AkmConfig = {
+      semanticSearchMode: "off",
+      engines: {
+        graph: {
+          kind: "llm",
+          endpoint: "http://127.0.0.1:1/v1/chat/completions",
+          model: "never-dispatched",
+          apiKey: "$AKM_LAZY_GRAPH_REQUIRED_KEY",
+        },
+      },
+      index: { defaults: { engine: "graph" }, graph: { enabled: true, lazyGraphExtraction: true } },
+    };
+
+    const failure = withEnv({ AKM_LAZY_GRAPH_REQUIRED_KEY: undefined }, () =>
+      extractGraphForSingleFile(db, stash.dir, absPath, undefined, { config }),
+    );
+    await expect(failure).rejects.toBeInstanceOf(ConfigError);
+    expect(graphFileRowExists(stash.dir, absPath)).toBe(false);
+    const cacheRows = (db.prepare("SELECT COUNT(*) AS n FROM llm_enrichment_cache").get() as { n: number }).n;
+    expect(cacheRows).toBe(0);
+  });
+
   test("extracts + stores one file's graph via the injected LLM seam", async () => {
     expect(typeof extractGraphForSingleFile).toBe("function");
     const absPath = makeEligibleMemory("target", "Alice works with Bob on Project X.");
@@ -224,6 +350,23 @@ describe("#624 P3 extractGraphForSingleFile (AC2)", () => {
     expect(entityRows.map((r) => r.entity)).toEqual(["Alice", "Bob", "Project X"]);
     // Keep bodyText referenced (sanity that the file is real on disk).
     expect(bodyText.length).toBeGreaterThan(0);
+  });
+
+  test("binds a single-file graph row to the body revision actually read from disk", async () => {
+    const currentBody = "Current body about Alice and Bob.";
+    const absPath = makeEligibleMemory("revision-bound", currentBody);
+    const staleHash = computeBodyHash("stale queued body");
+
+    const ok = await extractGraphForSingleFile(db, stash.dir, absPath, staleHash, {
+      llmOverride: async () => ({ entities: ["Alice", "Bob"], relations: [] }),
+    });
+
+    expect(ok).toBe(true);
+    const row = db
+      .prepare("SELECT body_hash FROM graph_files WHERE stash_root = ? AND file_path = ?")
+      .get(stash.dir, absPath) as { body_hash: string };
+    expect(row.body_hash).toBe(computeBodyHash(currentBody));
+    expect(row.body_hash).not.toBe(staleHash);
   });
 
   test("merges — extracting one file does NOT clobber another file's existing graph", async () => {

@@ -11,13 +11,21 @@ import type { BundleComponent } from "../core/adapter/types";
 import { isHttpUrl, toErrorMessage } from "../core/common";
 import { concurrentMap } from "../core/concurrent";
 import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
+import { ConfigError } from "../core/errors";
 import { isLoopbackEndpoint } from "../core/loopback";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
 import { withStateDb } from "../core/state-db";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
-import { resolveIndexPassLLM } from "../llm/index-passes";
+import type { LoweringNotice } from "../execution/resolved-request";
+import {
+  disposeLoweredExecutionDispatchLease,
+  type LoweredExecutionDispatchLease,
+} from "../integrations/agent/execution-lowering";
+import { isLlmFeatureEnabled } from "../llm/feature-gate";
+import { type ResolvedIndexPassExecution, resolveIndexPassExecution } from "../llm/index-passes";
+import { preflightStructuredLlmRunner, type StructuredLlmRunner } from "../llm/structured-call";
 import { resolveSourcesForOrigin } from "../registry/origin-resolve";
 /**
  * M-4 / #395 — Index Consistency Architecture Decision Record
@@ -49,29 +57,36 @@ import { resolveSourcesForOrigin } from "../registry/origin-resolve";
  * See the index-consistency ADR (2026-06) for the full analysis.
  */
 import type { Database } from "../storage/database";
-import { closeDatabase, openExistingDatabase, openIndexDatabase } from "../storage/repositories/index-connection";
 import {
-  deleteEntriesByDirAndStash,
-  deleteEntriesByDirExceptKeys,
+  closeDatabase,
+  openExistingDatabase,
+  openIndexDatabase,
+  openReadonlyExistingDatabase,
+} from "../storage/repositories/index-connection";
+import {
+  deleteEntriesByBundle,
+  deleteEntriesByDirAndBundle,
+  deleteEntriesByDirExceptRefs,
   deleteEntriesByIds,
-  deleteEntriesByStashDir,
   deleteUsageEventsByEntryIds,
   findEntryIdByRef,
   getAllEntries,
   getEmbeddableEntryCount,
   getEntryCount,
-  getIndexedDirPathsByStashDir,
-  getIndexedStashDirsByDir,
+  getIndexedBundleIdsByDir,
+  getIndexedDirPathsByBundleId,
   relinkUsageEvents,
   upsertEntry,
-  upsertWorkflowDocument,
 } from "../storage/repositories/index-entries-repository";
 import type { EntryProvenance } from "../storage/repositories/index-entry-types";
 import { rebuildFts } from "../storage/repositories/index-fts-repository";
-import { clearStaleCacheEntries } from "../storage/repositories/index-llm-cache-repository";
+import {
+  clearStaleCacheEntries,
+  computeBodyHash,
+  getLlmCacheEntry,
+} from "../storage/repositories/index-llm-cache-repository";
 import {
   deleteIndexDirState,
-  deleteIndexDirStatesByStashDir,
   deleteMeta,
   getMeta,
   setMeta,
@@ -88,10 +103,15 @@ import {
   upsertEmbedding,
   warnIfVecMissing,
 } from "../storage/repositories/index-vec-repository";
-import { takeWorkflowDocument } from "../workflows/runtime/document-cache";
+import { assertIndexedWorkflowSourceIdentity, WorkflowSourceIdentityError } from "../workflows/source-files";
 import { deleteStoredGraph } from "./db/graph-db";
 import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
+import {
+  type AdapterConceptOwner,
+  indexedPathMatchesOwner,
+  resolveAdapterConceptOwner,
+} from "./lookup/adapter-concept-owner";
 import {
   canUseIncrementalSkip,
   computeDirFingerprint,
@@ -136,6 +156,8 @@ export interface IndexResponse {
   directoriesScanned: number;
   directoriesSkipped: number;
   warnings?: string[];
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
   verification: IndexVerification;
   /** Timing counters in milliseconds */
   timing?: {
@@ -162,11 +184,33 @@ export interface IndexResponse {
   configUpdated?: { detectedAdapters: Record<string, string> };
 }
 
+function collectLoweringNotices(
+  target: Array<Readonly<LoweringNotice>>,
+  notices: readonly Readonly<LoweringNotice>[],
+): void {
+  const keys = new Set(target.map((notice) => JSON.stringify(notice)));
+  for (const notice of notices) {
+    const key = JSON.stringify(notice);
+    if (keys.has(key)) continue;
+    keys.add(key);
+    target.push(notice);
+  }
+}
+
 export interface IndexProgressEvent {
   phase: "summary" | "preflight" | "scan" | "llm" | "embeddings" | "fts" | "finalize" | "verify";
   message: string;
   processed?: number;
   total?: number;
+}
+
+export interface DeferredUpdateIndexTransaction {
+  /** Canonical index.db handle already inside the coordinator-owned transaction. */
+  db: Database;
+  /** Attached schema name for the canonical state.db on the same connection. */
+  stateSchema: string;
+  /** Filesystem semantic-status publication deferred until the DB commit succeeds. */
+  afterCommit?: () => void;
 }
 
 interface IndexOptions {
@@ -199,6 +243,19 @@ interface IndexOptions {
    * of cloned.
    */
   hydrateSources?: boolean;
+  /**
+   * Whether adapter auto-detection may persist into config.json. Source-update
+   * transactions disable this so a failed publication can restore lock/content/
+   * index without also having to compensate an unrelated config write.
+   */
+  persistDetectedAdapters?: boolean;
+  /**
+   * Borrow the source-update coordinator's canonical index.db handle. The
+   * handle already has state.db attached and one outer transaction spanning
+   * both schemas; indexer writes remain pending until the coordinator's final
+   * commit point. Internal lifecycle seam; ordinary callers omit it.
+   */
+  deferredUpdateTransaction?: DeferredUpdateIndexTransaction;
   /**
    * Whether this run was triggered implicitly by another command's inline
    * auto-index rather than by an explicit `akm index`.
@@ -243,49 +300,76 @@ export function getDefaultLlmConcurrency(llmConfig?: LlmConnectionConfig): numbe
 
 // ── Phase functions ──────────────────────────────────────────────────────────
 
+interface IndexSourceOwner {
+  bundleId: string;
+  sourceRoot: string;
+}
+
+function sourceOwners(sources: readonly SearchSource[]): IndexSourceOwner[] {
+  const installations = deriveInstallations([...sources]);
+  return sources.flatMap((source, index) => {
+    const installation = installations[index];
+    return installation ? [{ bundleId: installation.id, sourceRoot: path.resolve(source.path) }] : [];
+  });
+}
+
+function parseStoredSourceOwners(raw: string | undefined): IndexSourceOwner[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      !Array.isArray(parsed) ||
+      parsed.some(
+        (owner) =>
+          typeof owner !== "object" ||
+          owner === null ||
+          typeof (owner as Record<string, unknown>).bundleId !== "string" ||
+          typeof (owner as Record<string, unknown>).sourceRoot !== "string",
+      )
+    ) {
+      warn("index_meta sourceOwners value is invalid — treating as empty");
+      return [];
+    }
+    return parsed.map((owner) => {
+      const stored = owner as { bundleId: string; sourceRoot: string };
+      return { bundleId: stored.bundleId, sourceRoot: path.resolve(stored.sourceRoot) };
+    });
+  } catch {
+    warn("index_meta sourceOwners value is corrupt JSON — treating as empty");
+    return [];
+  }
+}
+
 /**
  * Source cache phase: ensure git stash caches are up to date and purge orphaned
  * entries from removed sources (incremental only).
  */
 async function runSourceCachePhase(ctx: IndexRunContext): Promise<void> {
-  const { db, config, sourceDirs, isIncremental, full } = ctx;
+  const { db, isIncremental, full, sources } = ctx;
 
   if (isIncremental && !full) {
-    // Purge entries from stash dirs that have been removed since the last run
-    // (e.g. after `akm remove`) so orphaned entries don't linger.
-    const prevStashDirsJson = getMeta(db, "stashDirs");
-    if (prevStashDirsJson) {
-      let prevStashDirs: string[] = [];
-      try {
-        const parsed: unknown = JSON.parse(prevStashDirsJson);
-        if (Array.isArray(parsed)) {
-          prevStashDirs = parsed.filter((d): d is string => typeof d === "string");
-        } else {
-          warn("index_meta stashDirs value is not an array — treating as empty");
-        }
-      } catch {
-        warn("index_meta stashDirs value is corrupt JSON — treating as empty");
-      }
-      const currentSet = new Set(sourceDirs);
-      for (const dir of prevStashDirs) {
-        if (!currentSet.has(dir)) {
-          ctx.hadRemovedSources = true;
-          ctx.removedSourceDirs.push(dir);
-        }
+    const currentByBundle = new Map(sourceOwners(sources).map((owner) => [owner.bundleId, owner]));
+    for (const previous of parseStoredSourceOwners(getMeta(db, "sourceOwners"))) {
+      const current = currentByBundle.get(previous.bundleId);
+      if (!current || current.sourceRoot !== previous.sourceRoot) {
+        ctx.hadRemovedSources = true;
+        ctx.removedSources.push({
+          ...previous,
+          removeBundleEntries: current === undefined,
+        });
       }
     }
   }
   // Source caches are hydrated before akmIndex() calls this phase; nothing
   // further to do here. The flag is exposed on ctx for runWalkPhase().
-  void config;
 }
 
 function applyRemovedSources(ctx: IndexRunContext): void {
   if (!ctx.scanComplete) return;
-  for (const dir of ctx.removedSourceDirs) {
-    deleteEntriesByStashDir(ctx.db, dir);
-    deleteIndexDirStatesByStashDir(ctx.db, dir);
-    deleteStoredGraph(ctx.db, dir);
+  const currentRoots = new Set(sourceOwners(ctx.sources).map((owner) => owner.sourceRoot));
+  for (const removed of ctx.removedSources) {
+    if (removed.removeBundleEntries) deleteEntriesByBundle(ctx.db, removed.bundleId);
+    if (!currentRoots.has(removed.sourceRoot)) deleteStoredGraph(ctx.db, removed.sourceRoot);
   }
 }
 
@@ -313,6 +397,16 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
     doFullDelete,
     onProgress,
     !clean,
+    async (dirRecords, ownersByRoot) => {
+      const runner = ctx.enrichmentExecution.runner;
+      if (
+        runner &&
+        isLlmFeatureEnabled(config, "metadata_enhance") &&
+        dirRecordsNeedMetadataDispatch(db, dirRecords, ownersByRoot)
+      ) {
+        ctx.enrichmentLease = await preflightStructuredLlmRunner(runner);
+      }
+    },
   );
 
   ctx.scannedDirs = scannedDirs;
@@ -348,10 +442,19 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
   throwIfAborted(signal);
 
   // LLM enrichment for directories that need it
-  await enhanceDirsWithLlm(db, config, dirsNeedingLlm, onProgress, signal);
+  await enhanceDirsWithLlm(
+    db,
+    config,
+    ctx.enrichmentExecution,
+    dirsNeedingLlm,
+    onProgress,
+    signal,
+    (notices) => collectLoweringNotices(ctx.loweringNotices, notices),
+    ctx.enrichmentLease,
+  );
   onProgress({
     phase: "llm",
-    message: resolveIndexPassLLM("enrichment", config)
+    message: ctx.enrichmentExecution.runner
       ? `LLM enhancement reviewed ${dirsNeedingLlm.length} ${dirsNeedingLlm.length === 1 ? "directory" : "directories"}.`
       : "LLM enhancement disabled.",
   });
@@ -381,7 +484,10 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
  * Finalize phase: rebuild FTS, re-link usage events, recompute utility scores,
  * regenerate wiki indexes, update index metadata, and emit the verify event.
  */
-async function runFinalizePhase(ctx: IndexRunContext): Promise<void> {
+async function runFinalizePhase(
+  ctx: IndexRunContext,
+  deferredUpdateTransaction?: DeferredUpdateIndexTransaction,
+): Promise<void> {
   const { db, config, sources, sourceDirs, isIncremental, stashDir, signal, onProgress } = ctx;
   ctx.timing.tFinalizeStart = Date.now();
 
@@ -395,20 +501,26 @@ async function runFinalizePhase(ctx: IndexRunContext): Promise<void> {
   });
   ctx.timing.tFtsEnd = Date.now();
 
-  // Re-link detached usage_events and recompute utility scores. The one-time
-  // §11.4 legacy→item_ref re-key is owned by the migration cutover
-  // (020-three-db-cutover) now, so index finalize only re-resolves entry_ids
-  // (idempotent) — every stored `entry_ref` is already the item_ref spelling.
-  //
-  // Chunk-8 WI-8.3: usage_events lives in state.db now (index.db no longer holds
-  // it), so these cross-DB passes take both handles — entries in `db` (index.db),
-  // usage_events in the loaned state.db.
-  withStateDb((stateDb) => {
+  // Re-link state.db usage events to the regenerated index and recompute the
+  // derived utility cache. Stored refs already use the current item-ref grammar,
+  // so this idempotent pass only restores derived entry ids.
+  const mutateState = (stateDb: Database, stateSchema?: string): void => {
     onProgress({ phase: "finalize", message: "Relinking usage events." });
-    relinkUsageEvents(db, stateDb, { sources, defaultStashDir: stashDir });
+    relinkUsageEvents(db, stateDb, { sources, defaultStashDir: stashDir, stateSchema });
     onProgress({ phase: "finalize", message: "Recomputing utility scores." });
-    recomputeUtilityScores(db, stateDb);
-  });
+    recomputeUtilityScores(db, stateDb, { stateSchema });
+  };
+  if (deferredUpdateTransaction) {
+    if (deferredUpdateTransaction.db !== db || !db.inTransaction) {
+      throw new Error("Source update index finalization requires its borrowed unified transaction.");
+    }
+    // state.db is ATTACHed to this same index connection before the outer
+    // BEGIN IMMEDIATE. Index and state mutations therefore share one SQLite
+    // commit/rollback decision rather than an unsafe two-connection ordering.
+    mutateState(db, deferredUpdateTransaction.stateSchema);
+  } else {
+    withStateDb(mutateState);
+  }
 
   // Purge LLM cache entries for assets that no longer exist in the index.
   try {
@@ -428,6 +540,7 @@ async function runFinalizePhase(ctx: IndexRunContext): Promise<void> {
     setMeta(db, "builtAt", new Date().toISOString());
     setMeta(db, "stashDir", stashDir);
     setMeta(db, "stashDirs", JSON.stringify(sourceDirs));
+    setMeta(db, "sourceOwners", JSON.stringify(sourceOwners(sources)));
   }
   setMeta(db, "hasEmbeddings", embeddingResult.success ? "1" : "0");
 
@@ -447,9 +560,11 @@ async function runFinalizePhase(ctx: IndexRunContext): Promise<void> {
   onProgress({ phase: "finalize", message: "Verifying semantic search state." });
   const verification = verifyIndexState(db, config, semanticEntryCount, embeddingResult);
 
-  if (config.semanticSearchMode === "off") {
-    clearSemanticStatus();
-  } else {
+  const persistSemanticStatus = (): void => {
+    if (config.semanticSearchMode === "off") {
+      clearSemanticStatus();
+      return;
+    }
     writeSemanticStatus({
       status: verification.semanticStatus === "disabled" ? "pending" : verification.semanticStatus,
       ...(embeddingResult.reason ? { reason: embeddingResult.reason } : {}),
@@ -459,6 +574,11 @@ async function runFinalizePhase(ctx: IndexRunContext): Promise<void> {
       entryCount: verification.entryCount,
       embeddingCount: verification.embeddingCount,
     });
+  };
+  if (deferredUpdateTransaction) {
+    deferredUpdateTransaction.afterCommit = persistSemanticStatus;
+  } else {
+    persistSemanticStatus();
   }
   onProgress({ phase: "verify", message: verification.message });
 
@@ -530,7 +650,7 @@ export function reconcileBodyOpeningIndexState(
  * reported instead.
  */
 function runCleanPass(db: Database, dryRun: boolean): IndexCleanResult {
-  const allEntries = db.prepare("SELECT id, entry_key AS ref, file_path AS path FROM entries").all() as {
+  const allEntries = db.prepare("SELECT id, item_ref AS ref, file_path AS path FROM entries").all() as {
     id: number;
     ref: string;
     path: string;
@@ -581,8 +701,21 @@ export function _setAkmIndexForTests(fake?: typeof akmIndexReal): void {
 }
 
 export async function akmIndex(options: IndexOptions): Promise<IndexResponse> {
-  if (akmIndexOverride) return akmIndexOverride(options);
-  return akmIndexReal(options);
+  try {
+    const override = akmIndexOverride;
+    return override ? await override(options) : await akmIndexReal(options);
+  } catch (error) {
+    const updateDb = options.deferredUpdateTransaction?.db;
+    if (updateDb?.inTransaction) {
+      try {
+        updateDb.exec("ROLLBACK");
+      } catch {
+        // Preserve the indexing error. The update coordinator will retry
+        // rollback before closing its borrowed unified handle.
+      }
+    }
+    throw error;
+  }
 }
 
 /**
@@ -638,7 +771,7 @@ function detectAndPersistBundleAdapters(
   allSourceEntries: SearchSource[],
   config: AkmConfig,
   mutateConfig: typeof import("../core/config/config.js").mutateConfig,
-  opts: { announce: boolean },
+  opts: { announce: boolean; persist: boolean },
 ): { config: AkmConfig; persistedAdapters: Record<string, string> } {
   const detectedByBundle = new Map<string, string>();
   for (const source of allSourceEntries) {
@@ -650,7 +783,7 @@ function detectAndPersistBundleAdapters(
   }
 
   const persistedAdapters: Record<string, string> = {};
-  if (detectedByBundle.size === 0) return { config, persistedAdapters };
+  if (detectedByBundle.size === 0 || !opts.persist) return { config, persistedAdapters };
 
   const nextConfig = mutateConfig(
     (current) => {
@@ -684,6 +817,53 @@ function detectAndPersistBundleAdapters(
     );
   }
   return { config: nextConfig, persistedAdapters };
+}
+
+interface CreateIndexRunContextOptions {
+  db: Database;
+  config: AkmConfig;
+  enrichmentExecution: ResolvedIndexPassExecution;
+  sources: SearchSource[];
+  sourceDirs: string[];
+  full: boolean;
+  clean: boolean;
+  stashDir: string;
+  onProgress: (event: IndexProgressEvent) => void;
+  signal: AbortSignal | undefined;
+  t0: number;
+}
+
+function createIndexRunContext(options: CreateIndexRunContextOptions): IndexRunContext {
+  const prevStashDir = getMeta(options.db, "stashDir");
+  const prevBuiltAt = getMeta(options.db, "builtAt");
+  const isIncremental = !options.full && prevStashDir === options.stashDir && !!prevBuiltAt;
+  const builtAtMs = isIncremental && prevBuiltAt ? new Date(prevBuiltAt).getTime() : 0;
+  const { t0, ...context } = options;
+  return {
+    ...context,
+    loweringNotices: [...options.enrichmentExecution.notices],
+    timing: {
+      t0,
+      tWalkStart: t0,
+      tWalkEnd: t0,
+      tLlmEnd: t0,
+      tFtsEnd: t0,
+      tEmbedEnd: t0,
+      tFinalizeStart: t0,
+      tFinalizeEnd: t0,
+    },
+    isIncremental,
+    builtAtMs,
+    hadRemovedSources: false,
+    removedSources: [],
+    scanComplete: true,
+    scannedDirs: 0,
+    skippedDirs: 0,
+    generatedCount: 0,
+    walkWarnings: [],
+    dirsNeedingLlm: [],
+    embeddingResult: null,
+  };
 }
 
 async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
@@ -736,7 +916,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       // Durable state must be runtime-compatible before source hydration,
       // adapter persistence, or index.db creation can mutate the installation.
       onProgress({ phase: "preflight", message: "Validating durable state." });
-      withStateDb(() => undefined);
+      if (!options.deferredUpdateTransaction) withStateDb(() => undefined);
 
       // Ensure git stash caches are extracted before resolving stash dirs,
       // so their content directories exist on disk for the walker to discover.
@@ -759,6 +939,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       const allSourceEntries = resolveSourceEntries(stashDir, config);
       const detected = detectAndPersistBundleAdapters(allSourceEntries, config, mutateConfig, {
         announce: options.implicit !== true,
+        persist: options.persistDetectedAdapters !== false,
       });
       config = detected.config;
       const persistedAdapters = detected.persistedAdapters;
@@ -769,23 +950,24 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       });
 
       const t0 = Date.now();
+      const enrichmentExecution = resolveIndexPassExecution("enrichment", config);
 
       // Open database — pass embedding dimension from config if available
       const dbPath = getDbPath();
       const embeddingDim = config.embedding?.dimension;
-      const db = openIndexDatabase(dbPath, embeddingDim ? { embeddingDim } : undefined);
+      const borrowedUpdateDb = options.deferredUpdateTransaction?.db;
+      const db = borrowedUpdateDb ?? openIndexDatabase(dbPath, embeddingDim ? { embeddingDim } : undefined);
+      if (borrowedUpdateDb && !borrowedUpdateDb.inTransaction) {
+        throw new Error("Source update index requires an active borrowed index transaction.");
+      }
 
+      let indexRunContext: IndexRunContext | undefined;
       try {
-        // Determine incremental vs full mode
-        const prevStashDir = getMeta(db, "stashDir");
-        const prevBuiltAt = getMeta(db, "builtAt");
-        const isIncremental = !full && prevStashDir === stashDir && !!prevBuiltAt;
-        const builtAtMs = isIncremental && prevBuiltAt ? new Date(prevBuiltAt).getTime() : 0;
-
         // Assemble the run context
-        const ctx: IndexRunContext = {
+        const ctx = createIndexRunContext({
           db,
           config,
+          enrichmentExecution,
           sources: allSourceEntries,
           sourceDirs: allSourceDirs,
           full,
@@ -793,37 +975,18 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           stashDir,
           onProgress,
           signal,
-          timing: {
-            t0,
-            tWalkStart: t0,
-            tWalkEnd: t0,
-            tLlmEnd: t0,
-            tFtsEnd: t0,
-            tEmbedEnd: t0,
-            tFinalizeStart: t0,
-            tFinalizeEnd: t0,
-          },
-          isIncremental,
-          builtAtMs,
-          hadRemovedSources: false,
-          removedSourceDirs: [],
-          scanComplete: true,
-          scannedDirs: 0,
-          skippedDirs: 0,
-          generatedCount: 0,
-          walkWarnings: [],
-          dirsNeedingLlm: [],
-          embeddingResult: null,
-        };
+          t0,
+        });
+        indexRunContext = ctx;
 
         onProgress({
           phase: "summary",
           message: buildIndexSummaryMessage({
-            mode: isIncremental ? "incremental" : "full",
+            mode: ctx.isIncremental ? "incremental" : "full",
             sourcesCount: allSourceDirs.length,
             semanticSearchMode: config.semanticSearchMode,
             embeddingProvider: getEmbeddingProvider(config.embedding),
-            llmEnabled: !!resolveIndexPassLLM("enrichment", config),
+            llmEnabled: !!enrichmentExecution.runner,
             vecAvailable: isVecAvailable(db),
           }),
         });
@@ -833,7 +996,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
         await runWalkPhase(ctx);
         applyRemovedSources(ctx);
         await runEmbeddingPhase(ctx);
-        await runFinalizePhase(ctx);
+        await runFinalizePhase(ctx, options.deferredUpdateTransaction);
         // ────────────────────────────────────────────────────────────────────────
 
         // runFinalizePhase always populates these before returning.
@@ -866,10 +1029,11 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           totalEntries,
           generatedMetadata: ctx.generatedCount,
           indexPath: dbPath,
-          mode: isIncremental ? "incremental" : "full",
+          mode: ctx.isIncremental ? "incremental" : "full",
           directoriesScanned: ctx.scannedDirs,
           directoriesSkipped: ctx.skippedDirs,
           ...(ctx.walkWarnings.length > 0 ? { warnings: ctx.walkWarnings } : {}),
+          ...(ctx.loweringNotices.length > 0 ? { notices: Object.freeze([...ctx.loweringNotices]) } : {}),
           ...(Object.keys(persistedAdapters).length > 0
             ? { configUpdated: { detectedAdapters: persistedAdapters } }
             : {}),
@@ -890,7 +1054,10 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           ...(cleanResult !== undefined ? { clean: cleanResult } : {}),
         };
       } finally {
-        closeDatabase(db);
+        if (indexRunContext?.enrichmentLease) {
+          disposeLoweredExecutionDispatchLease(indexRunContext.enrichmentLease);
+        }
+        if (!borrowedUpdateDb) closeDatabase(db);
       }
     },
   );
@@ -948,6 +1115,60 @@ type DirNeedingLlm = {
   currentStashDir: string;
   stash: StashFile;
 };
+
+type IndexedSourceOwner = Pick<EntryProvenance, "bundleId" | "componentId" | "adapterId">;
+
+function buildIndexedSourceOwners(sources: readonly SearchSource[]): Map<string, IndexedSourceOwner> {
+  const installations = deriveInstallations([...sources]);
+  const owners = new Map<string, IndexedSourceOwner>();
+  sources.forEach((source, index) => {
+    const installation = installations[index];
+    if (!installation) return;
+    const component = installation.components[0];
+    owners.set(path.resolve(source.path), {
+      bundleId: installation.id,
+      componentId: component?.id ?? installation.id,
+      adapterId: component?.adapter ?? "akm",
+    });
+  });
+  return owners;
+}
+
+/** Read-only mirror of the enrichment cache gate used before entry persistence. */
+function dirRecordsNeedMetadataDispatch(
+  db: Database,
+  records: readonly DirRecord[],
+  ownersByRoot: ReadonlyMap<string, IndexedSourceOwner>,
+): boolean {
+  for (const record of records) {
+    if (record.skip || record.remove || !record.stash) continue;
+    const owner = ownersByRoot.get(path.resolve(record.currentStashDir));
+    if (!owner) throw new Error(`Missing bundle provenance for indexed source ${record.currentStashDir}`);
+    for (const entry of record.stash.entries) {
+      if (entry.quality !== "generated" || isEnrichmentComplete(entry)) continue;
+      const entryFile = entry.filename ? path.join(record.dirPath, entry.filename) : undefined;
+      if (!entryFile) continue;
+      const adapterConceptId = record.conceptIdByFile?.get(entryFile);
+      if (!adapterConceptId) continue;
+      let fileContent: string | undefined;
+      try {
+        fileContent = fs.readFileSync(entryFile, "utf8");
+      } catch {
+        // The dispatch path uses the same deterministic metadata fallback.
+      }
+      const bodyHash = computeBodyHash(fileContent ?? `${entry.name}\n${entry.description ?? ""}`);
+      const cacheKey = deriveEntryProvenance(owner, entry.type, entry.name, adapterConceptId).itemRef;
+      const cached = getLlmCacheEntry(db, cacheKey, bodyHash);
+      if (!cached) return true;
+      try {
+        JSON.parse(cached.resultJson);
+      } catch {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 type SourceScanPlan = {
   currentStashDir: string;
@@ -1018,11 +1239,11 @@ function groupFileContextsByDir(fileContexts: FileContext[]): Map<string, FileCo
 function sourceSnapshotRemovals(
   db: Database,
   currentStashDir: string,
+  bundleId: string,
   currentDirs: ReadonlySet<string>,
-  allIndexedDirsBySource?: ReadonlyMap<string, ReadonlySet<string>>,
+  allIndexedDirsByBundle?: ReadonlyMap<string, ReadonlySet<string>>,
 ): Array<DirRecord & { reason: DirScanReason }> {
-  const indexedDirs =
-    allIndexedDirsBySource?.get(path.resolve(currentStashDir)) ?? getIndexedDirPathsByStashDir(db, currentStashDir);
+  const indexedDirs = allIndexedDirsByBundle?.get(bundleId) ?? getIndexedDirPathsByBundleId(db, bundleId);
   return [...indexedDirs]
     .map((dirPath) => path.resolve(dirPath))
     .filter((dirPath) => !currentDirs.has(dirPath))
@@ -1061,6 +1282,9 @@ function buildSourceScanPlans(
     }
     const walked = walkStashFlatWithStatus(currentStashDir, {
       includeAllDirectories: component.adapter === "okf",
+      ...(component.adapter === "akm" || component.adapter === "akm-workflow"
+        ? { workflowSymlinkAdapter: component.adapter }
+        : {}),
     });
     const dirGroups = groupFileContextsByDir(walked.files);
     const adapter = adapterForId(component.adapter);
@@ -1098,19 +1322,24 @@ function buildSourceScanPlans(
   // A full, globally-complete run uses the atomic table wipe below. Every
   // other run reconciles only sources that produced trustworthy snapshots.
   if (reconcileMissingDirs && (isIncremental || !allComplete)) {
-    const allIndexedDirsBySource = !isIncremental ? new Map<string, Set<string>>() : undefined;
-    if (allIndexedDirsBySource) {
+    const allIndexedDirsByBundle = !isIncremental ? new Map<string, Set<string>>() : undefined;
+    if (allIndexedDirsByBundle) {
       for (const entry of getAllEntries(db)) {
-        const sourceRoot = path.resolve(entry.stashDir);
-        const dirs = allIndexedDirsBySource.get(sourceRoot) ?? new Set<string>();
-        dirs.add(path.resolve(entry.dirPath));
-        allIndexedDirsBySource.set(sourceRoot, dirs);
+        const dirs = allIndexedDirsByBundle.get(entry.bundleId) ?? new Set<string>();
+        dirs.add(path.dirname(path.resolve(entry.filePath)));
+        allIndexedDirsByBundle.set(entry.bundleId, dirs);
       }
     }
     for (const plan of plans) {
       if (!plan.walkComplete || !plan.adapter) continue;
       const currentDirs = new Set([...plan.dirGroups.keys()].map((dirPath) => path.resolve(dirPath)));
-      for (const removal of sourceSnapshotRemovals(db, plan.currentStashDir, currentDirs, allIndexedDirsBySource)) {
+      for (const removal of sourceSnapshotRemovals(
+        db,
+        plan.currentStashDir,
+        plan.component.id,
+        currentDirs,
+        allIndexedDirsByBundle,
+      )) {
         addRemoval(plan, removal.dirPath, removal.currentStashDir);
       }
     }
@@ -1123,14 +1352,16 @@ function buildSourceScanPlans(
   // The first configured source that exposes a physical directory owns it.
   // Remove rows left by a prior owner even when both adapters are identical.
   const claimedDirs = new Set<string>();
+  const sourcePathByBundle = new Map(plans.map((plan) => [plan.component.id, plan.currentStashDir] as const));
   for (const plan of plans) {
     for (const dirPath of plan.dirGroups.keys()) {
       const resolvedDir = path.resolve(dirPath);
       if (claimedDirs.has(resolvedDir)) continue;
       claimedDirs.add(resolvedDir);
-      for (const priorOwner of getIndexedStashDirsByDir(db, dirPath)) {
-        if (path.resolve(priorOwner) !== path.resolve(plan.currentStashDir)) {
-          addRemoval(plan, dirPath, priorOwner);
+      for (const priorOwnerBundle of getIndexedBundleIdsByDir(db, dirPath)) {
+        if (priorOwnerBundle !== plan.component.id) {
+          const priorOwnerPath = sourcePathByBundle.get(priorOwnerBundle);
+          if (priorOwnerPath) addRemoval(plan, dirPath, priorOwnerPath);
         }
       }
     }
@@ -1294,7 +1525,7 @@ async function scanSourceDirs(
       // abstains on its own bundle's walked files. The core walk keeps only the
       // universal hygiene `walkStashFlat` already applies (.git/dot-dirs/etc.).
       const indexableFiles = ctxs.map((ctx) => ctx.absPath);
-      const forceScan = handoffDirs.has(path.resolve(dirPath));
+      const forceScan = handoffDirs.has(path.resolve(dirPath)) || requiresWorkflowSourcePreflight(ctxs);
 
       if (markSeenOrSkipDuplicate(dirPath, currentStashDir, indexableFiles)) continue;
 
@@ -1371,6 +1602,16 @@ async function scanSourceDirs(
     warnings,
     complete: plans.every((plan) => plan.walkComplete && plan.adapter !== undefined),
   };
+}
+
+function requiresWorkflowSourcePreflight(ctxs: readonly FileContext[]): boolean {
+  return ctxs.some((ctx) => {
+    try {
+      return fs.lstatSync(ctx.absPath).isSymbolicLink();
+    } catch {
+      return true;
+    }
+  });
 }
 
 function preserveExistingIndex(
@@ -1490,8 +1731,12 @@ function persistDirRecords(
       remove,
       pruneMissing,
     } of dirRecords) {
+      const bundle = bundleByRoot.get(path.resolve(currentStashDir));
+      if (!bundle) throw new Error(`Missing bundle provenance for indexed source ${currentStashDir}`);
       if (remove) {
-        const removedIds = deleteEntriesByDirAndStash(db, dirPath, currentStashDir, { cleanupUsageEvents: false });
+        const removedIds = deleteEntriesByDirAndBundle(db, dirPath, bundle.bundleId, {
+          cleanupUsageEvents: false,
+        });
         addEntryIds(deletedUsageEntryIds, removedIds);
         deleteIndexDirState(db, dirPath);
         continue;
@@ -1512,16 +1757,14 @@ function persistDirRecords(
       // Diff-persist (F4a M-core-2, spec §14.2): upsert the current file set
       // FIRST (ON CONFLICT preserving `entries.id` so embeddings / utility /
       // usage stay attached to unchanged rows), tracking every upserted
-      // `entry_key`, then prune only the DEPARTED rows below. Replaces the old
+      // durable `item_ref`, then prune only the departed rows below. Replaces the old
       // `deleteEntriesByDir` truncate-and-reinsert (which discarded ids).
-      const keptEntryKeys = new Set<string>();
+      const keptItemRefs = new Set<string>();
 
       let persistedRows = 0;
       let dedupedRows = 0;
 
       if (stash) {
-        const bundle = bundleByRoot.get(path.resolve(currentStashDir));
-        if (!bundle) throw new Error(`Missing bundle provenance for indexed source ${currentStashDir}`);
         const ownerIdentity = bundle.bundleId;
         for (const entry of stash.entries) {
           const entryPath = entry.filename ? path.join(dirPath, entry.filename) : null;
@@ -1544,11 +1787,6 @@ function persistDirRecords(
           }
           indexedAssetIdentities.add(identityKey);
 
-          const entryKey =
-            bundle?.adapterId !== "akm" && adapterConceptId
-              ? `${currentStashDir}:concept:${adapterConceptId}`
-              : `${currentStashDir}:${entry.type}:${entry.name}`;
-          keptEntryKeys.add(entryKey);
           const searchText = buildSearchText(entry);
           const entryWithSize = attachFileSize(entry, entryPath);
           // content_hash = doc.hash from the drain, keyed by the recognized
@@ -1556,26 +1794,10 @@ function persistDirRecords(
           const contentHash = hashByFile?.get(entryPath);
 
           const provenance = deriveEntryProvenance(bundle, entry.type, entry.name, adapterConceptId);
+          keptItemRefs.add(provenance.itemRef);
 
-          const entryId = upsertEntry(
-            db,
-            entryKey,
-            dirPath,
-            entryPath,
-            currentStashDir,
-            entryWithSize,
-            searchText,
-            provenance,
-            contentHash,
-          );
+          upsertEntry(db, entryPath, entryWithSize, searchText, provenance, contentHash);
           persistedRows++;
-
-          if (entry.type === "workflow") {
-            const doc = takeWorkflowDocument(entry);
-            if (doc) {
-              upsertWorkflowDocument(db, entryId, doc, fs.readFileSync(entryPath));
-            }
-          }
         }
 
         // Collect dirs needing LLM enhancement during the first walk.
@@ -1592,7 +1814,7 @@ function persistDirRecords(
       if (pruneMissing !== false) {
         addEntryIds(
           deletedUsageEntryIds,
-          deleteEntriesByDirExceptKeys(db, dirPath, currentStashDir, keptEntryKeys, { cleanupUsageEvents: false }),
+          deleteEntriesByDirExceptRefs(db, dirPath, bundle.bundleId, keptItemRefs, { cleanupUsageEvents: false }),
         );
       }
 
@@ -1645,6 +1867,10 @@ async function indexEntries(
   doFullDelete = false,
   onProgress?: (event: IndexProgressEvent) => void,
   reconcileMissingDirs = true,
+  beforePersist?: (
+    dirRecords: readonly DirRecord[],
+    ownersByRoot: ReadonlyMap<string, IndexedSourceOwner>,
+  ) => Promise<void>,
 ): Promise<{
   scannedDirs: number;
   skippedDirs: number;
@@ -1665,27 +1891,18 @@ async function indexEntries(
     reconcileMissingDirs,
   );
 
+  const bundleByRoot = buildIndexedSourceOwners(allSourceEntries);
+  await beforePersist?.(dirRecords, bundleByRoot);
+
   // Phase 2 (sync): write all pre-generated metadata inside a single transaction.
   // Source roots feed the #624-P1 zero-document preflight (a full-rebuild wipe
   // is suppressed when the scan is empty because roots are unreadable).
   const sourceRoots = allSourceEntries.map((s) => s.path);
-  // Chunk-5 Step 2 (spec §14.4): map each source root → its durable bundle id so
-  // the writer can persist `item_ref = <bundle>//<conceptId>` and the component/
-  // adapter provenance alongside the legacy columns. `deriveInstallations`
+  // Map each source root → its durable bundle id so the writer can persist
+  // `item_ref = <bundle>//<conceptId>` and canonical component/adapter
+  // provenance. `deriveInstallations`
   // preserves source order, so a positional zip yields the SAME bundle id the
   // dispatched `adapter.recognize` emits as `IndexDocument.ref` for that root.
-  const installations = deriveInstallations(allSourceEntries);
-  const bundleByRoot = new Map<string, { bundleId: string; componentId: string; adapterId: string }>();
-  allSourceEntries.forEach((source, i) => {
-    const inst = installations[i];
-    if (!inst) return;
-    const component = inst.components[0];
-    bundleByRoot.set(path.resolve(source.path), {
-      bundleId: inst.id,
-      componentId: component?.id ?? inst.id,
-      adapterId: component?.adapter ?? "akm",
-    });
-  });
   const { dirsNeedingLlm } = persistDirRecords(
     db,
     dirRecords,
@@ -1729,6 +1946,7 @@ function indexedProvenanceForFile(db: Database, filePath: string): EntryProvenan
 async function enhanceDirsWithLlm(
   db: Database,
   config: import("../core/config/config").AkmConfig,
+  execution: ResolvedIndexPassExecution,
   dirsNeedingLlm: Array<{
     dirPath: string;
     files: string[];
@@ -1737,12 +1955,13 @@ async function enhanceDirsWithLlm(
   }>,
   onProgress?: (event: IndexProgressEvent) => void,
   signal?: AbortSignal,
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
+  lease?: LoweredExecutionDispatchLease,
 ): Promise<void> {
-  // Resolve per-pass LLM config via the unified shim. Returns undefined when
-  // either no `akm.llm` is configured or the user opted this pass out via
-  // `index.enrichment.llm = false`. (#208)
-  const llmConfig = resolveIndexPassLLM("enrichment", config);
-  if (!llmConfig || dirsNeedingLlm.length === 0) return;
+  // The invocation owns one frozen symbolic selection. Summary reporting and
+  // every enrichment dispatch consume this same snapshot.
+  const llmRunner = execution.runner;
+  if (!llmRunner || dirsNeedingLlm.length === 0) return;
 
   // Aggregate per-entry failures so a misconfigured LLM endpoint surfaces
   // as a single visible warning instead of silently degrading every entry
@@ -1764,7 +1983,7 @@ async function enhanceDirsWithLlm(
   // engine's timeoutMs (or 10 minutes if not set). Users can extend it via
   // `index.enrichment.timeoutMs` (or `index.defaults.timeoutMs`, or the
   // engine's own `engines.<name>.timeoutMs`) — no separate knob needed.
-  const enrichDeadline = createEnrichmentDeadline(llmConfig.timeoutMs, totalEntries);
+  const enrichDeadline = createEnrichmentDeadline(llmRunner.timeoutMs, totalEntries);
   let deadlineHit = false;
   const enrichSignal: AbortSignal = (() => {
     if (!enrichDeadline) return signal ?? new AbortController().signal;
@@ -1789,13 +2008,14 @@ async function enhanceDirsWithLlm(
       phase: "llm",
       message:
         `LLM enhancement starting for ${totalEntries} entr${totalEntries === 1 ? "y" : "ies"} ` +
-        `across ${totalDirs} director${totalDirs === 1 ? "y" : "ies"} (concurrency ${getDefaultLlmConcurrency(llmConfig)}).`,
+        `across ${totalDirs} director${totalDirs === 1 ? "y" : "ies"} (concurrency ${getDefaultLlmConcurrency(llmRunner.connection)}).`,
       processed: 0,
       total: totalEntries,
     });
   }
 
   let currentDirLabel: string | undefined;
+  let configFailure: ConfigError | undefined;
   let lastProgressAt = Date.now();
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   if (totalEntries > 0 && onProgress) {
@@ -1842,51 +2062,55 @@ async function enhanceDirsWithLlm(
         });
         lastProgressAt = Date.now();
         const targetStash: StashFile = { entries: entriesToEnhance };
-        const entryKeys = entriesToEnhance.map((e) => `${currentStashDir}:${e.type}:${e.name}`);
-        const enhanced = await enhanceStashWithLlm(
-          llmConfig,
-          targetStash,
-          files,
-          summary,
-          enrichSignal,
-          db,
-          entryKeys,
-          config,
-          (event) => {
-            completedEntries++;
-            lastProgressAt = Date.now();
-            onProgress?.({
-              phase: "llm",
-              message:
-                `Enhanced ${completedEntries}/${totalEntries} entr${totalEntries === 1 ? "y" : "ies"}; ` +
-                `${completedDirs}/${totalDirs} director${totalDirs === 1 ? "y" : "ies"} complete` +
-                (event.entryName ? `; current ${event.entryName}` : "") +
-                (currentDirLabel ? ` in ${currentDirLabel}` : "") +
-                (event.outcome === "cache-hit" ? " (cache hit)" : ""),
-              processed: completedEntries,
-              total: totalEntries,
-            });
-          },
-        );
+        const itemRefs = entriesToEnhance.map((entry) => {
+          const entryPath = entry.filename ? path.join(dirPath, entry.filename) : files[0] || dirPath;
+          return indexedProvenanceForFile(db, entryPath).itemRef;
+        });
+        let enhanced: StashFile;
+        try {
+          enhanced = await enhanceStashWithLlm(
+            llmRunner,
+            targetStash,
+            files,
+            summary,
+            enrichSignal,
+            db,
+            itemRefs,
+            config,
+            (event) => {
+              completedEntries++;
+              lastProgressAt = Date.now();
+              onProgress?.({
+                phase: "llm",
+                message:
+                  `Enhanced ${completedEntries}/${totalEntries} entr${totalEntries === 1 ? "y" : "ies"}; ` +
+                  `${completedDirs}/${totalDirs} director${totalDirs === 1 ? "y" : "ies"} complete` +
+                  (event.entryName ? `; current ${event.entryName}` : "") +
+                  (currentDirLabel ? ` in ${currentDirLabel}` : "") +
+                  (event.outcome === "cache-hit" ? " (cache hit)" : ""),
+                processed: completedEntries,
+                total: totalEntries,
+              });
+            },
+            onNotices,
+            lease,
+          );
+        } catch (err) {
+          if (err instanceof ConfigError) {
+            configFailure ??= err;
+            return undefined;
+          }
+          throw err;
+        }
 
         // Re-upsert the enhanced entries in a single transaction so a crash
         // cannot leave half the entries updated and the rest stale.
         db.transaction(() => {
           for (const entry of enhanced.entries) {
             const entryPath = entry.filename ? path.join(dirPath, entry.filename) : files[0] || dirPath;
-            const entryKey = `${currentStashDir}:${entry.type}:${entry.name}`;
             const searchText = buildSearchText(entry);
             const provenance = indexedProvenanceForFile(db, entryPath);
-            upsertEntry(
-              db,
-              entryKey,
-              dirPath,
-              entryPath,
-              currentStashDir,
-              attachFileSize(entry, entryPath),
-              searchText,
-              provenance,
-            );
+            upsertEntry(db, entryPath, attachFileSize(entry, entryPath), searchText, provenance);
           }
         })();
         completedDirs++;
@@ -1905,8 +2129,9 @@ async function enhanceDirsWithLlm(
       // Studio, Ollama run one inference at a time — parallel requests cause
       // "Model reloaded" / 500 errors). No config override reaches this path:
       // `resolveLlmEngineUse` does not forward `engines.<name>.concurrency`.
-      getDefaultLlmConcurrency(llmConfig),
+      getDefaultLlmConcurrency(llmRunner.connection),
     );
+    if (configFailure) throw configFailure;
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);
   }
@@ -1999,7 +2224,7 @@ async function generateEmbeddingsForDb(
         const batchNum = Math.floor(i / EMBED_BATCH_SIZE) + 1;
         const chars = texts[i]!.length;
         const tokens = estimateTokenCount(texts[i]!);
-        const ref = allEntries[i]!.entryKey.split(":").slice(1).join(":"); // strip stashDir prefix
+        const ref = allEntries[i]!.itemRef;
         warnVerbose(`[embed] ${ref} (${chars} chars, est. ${tokens} tokens) → batch ${batchNum}/${totalBatches}`);
       }
     }
@@ -2251,21 +2476,24 @@ interface LlmEnhancementSummary {
 }
 
 async function enhanceStashWithLlm(
-  llmConfig: LlmConnectionConfig,
+  llmRunner: StructuredLlmRunner,
   stash: StashFile,
   files: string[],
   summary: LlmEnhancementSummary,
   signal?: AbortSignal,
   db?: Database,
-  entryKeys?: string[],
+  itemRefs?: string[],
   akmConfig?: AkmConfig,
   onEntryDone?: (event: { entryName: string; outcome: "cache-hit" | "llm" | "failed" | "skipped" }) => void,
+  onNotices?: (notices: readonly Readonly<LoweringNotice>[]) => void,
+  lease?: LoweredExecutionDispatchLease,
 ): Promise<StashFile> {
   const { enhanceMetadata } = await import("../llm/metadata-enhance");
   const { computeBodyHash, getLlmCacheEntry, upsertLlmCacheEntry } = await import(
     "../storage/repositories/index-llm-cache-repository"
   );
 
+  let configFailure: ConfigError | undefined;
   const results = await concurrentMap(
     stash.entries,
     async (entry, idx) => {
@@ -2285,11 +2513,12 @@ async function enhanceStashWithLlm(
         }
 
         // Incremental cache: skip LLM call when file body is unchanged. The
-        // cache key is the entry_key (stashDir:type:name) which is stable
-        // across index runs.
+        // Cache metadata enrichment by the canonical durable item ref.
         const cacheBody = fileContent ?? `${entry.name}\n${entry.description ?? ""}`;
         const bodyHash = computeBodyHash(cacheBody);
-        const cacheKey = entryKeys?.[idx] ?? `${entry.type}:${entry.name}`;
+        const cacheKey = itemRefs?.[idx];
+
+        if (!cacheKey) throw new Error(`Missing canonical item ref for enrichment entry ${entry.name}.`);
 
         if (db) {
           const cached = getLlmCacheEntry(db, cacheKey, bodyHash);
@@ -2314,7 +2543,7 @@ async function enhanceStashWithLlm(
           }
         }
 
-        const outcome = await enhanceMetadata(llmConfig, entry, fileContent, signal, akmConfig);
+        const outcome = await enhanceMetadata(llmRunner, entry, fileContent, signal, akmConfig, onNotices, lease);
 
         if (outcome.status !== "enriched") {
           // Not a genuine LLM success: the gate was closed (`skipped`) or the
@@ -2366,6 +2595,10 @@ async function enhanceStashWithLlm(
         onEntryDone?.({ entryName: entry.name, outcome: "llm" });
         return updated;
       } catch (err) {
+        if (err instanceof ConfigError) {
+          configFailure ??= err;
+          return entry;
+        }
         const msg = toErrorMessage(err);
         // failureSamples is bounded to 3 items, so a linear scan is cheaper
         // than maintaining a parallel Set for membership checks (#177 review).
@@ -2378,8 +2611,9 @@ async function enhanceStashWithLlm(
     },
     // Defaults: 2 for remote LLM APIs, 1 for local model servers. No config
     // override reaches this path (see getDefaultLlmConcurrency).
-    getDefaultLlmConcurrency(llmConfig),
+    getDefaultLlmConcurrency(llmRunner.connection),
   );
+  if (configFailure) throw configFailure;
 
   // concurrentMap returns Array<T | undefined>; filter out undefined slots
   // (which can only occur if the callback itself returned undefined, which
@@ -2398,8 +2632,6 @@ export interface IndexEntry {
   filePath: string;
   /** Source root (the directory the walker rooted at). */
   stashDir: string;
-  /** Raw entry_key from the entries table — `${stashDir}:${type}:${name}`. */
-  entryKey: string;
   /** Asset type (skill, command, knowledge, ...). */
   type: string;
   /** Asset name as recorded by the indexer. */
@@ -2414,6 +2646,14 @@ export interface IndexEntry {
   conceptId: string;
 }
 
+export interface BundleRefLookupResolution {
+  entry: IndexEntry | null;
+  /** First physical owner, retained even when its index row is absent/stale. */
+  owner?: AdapterConceptOwner;
+  /** Deferred index failure for callers (such as show) that can use owner.path. */
+  indexError?: unknown;
+}
+
 async function resolveLookupSources(): Promise<SearchSource[]> {
   const { loadConfig } = await import("../core/config/config.js");
   const { resolveSourceEntries } = await import("./search/search-source.js");
@@ -2423,69 +2663,131 @@ async function resolveLookupSources(): Promise<SearchSource[]> {
 function resolveLookupScope(
   bundle: string | undefined,
   sources: SearchSource[],
-): { candidateDirs: string[]; qualified: boolean } {
-  if (!bundle) return { candidateDirs: sources.map((source) => source.path), qualified: false };
-  return { candidateDirs: resolveSourcesForOrigin(bundle, sources).map((source) => source.path), qualified: true };
+): { candidateSources: SearchSource[]; qualified: boolean } {
+  if (!bundle) return { candidateSources: sources, qualified: false };
+  return { candidateSources: resolveSourcesForOrigin(bundle, sources), qualified: true };
+}
+
+/**
+ * Resolve index and physical ownership together. Ownership preserves
+ * installation-priority arbitration even when a row is missing or stale.
+ */
+type LookupDatabaseOpener = (dbPath: string) => Database | undefined;
+
+async function lookupBundleRefWithResolutionUsing(
+  ref: BundleRef,
+  openLookupDatabase: LookupDatabaseOpener,
+): Promise<BundleRefLookupResolution> {
+  const sources = await resolveLookupSources();
+  if (sources.length === 0) return { entry: null };
+  const bundleBySourcePath = new Map(
+    deriveInstallations(sources).map((installation, index) => [path.resolve(sources[index]!.path), installation.id]),
+  );
+
+  const { candidateSources, qualified } = resolveLookupScope(ref.bundle, sources);
+  if (candidateSources.length === 0) return { entry: null };
+
+  let db: Database | undefined;
+  let indexError: unknown;
+  try {
+    db = openLookupDatabase(getDbPath());
+  } catch (error) {
+    indexError = error;
+  }
+  try {
+    for (const source of candidateSources) {
+      const adapterId = source.adapterId ?? detectAdapterId(source.path);
+      const owner = resolveAdapterConceptOwner(source.path, adapterId, ref.conceptId);
+      const lookupConceptId = owner?.conceptId ?? ref.conceptId;
+      const inputRef = makeBundleRef(qualified ? ref.bundle : undefined, lookupConceptId);
+      const sourceBundleId = bundleBySourcePath.get(path.resolve(source.path));
+      const id = db && sourceBundleId ? findEntryIdByRef(db, inputRef, sourceBundleId) : undefined;
+      if (id !== undefined && owner && db) {
+        const entry = readLookupEntry(db, id, ref.conceptId, source.path);
+        if (entry) {
+          if (owner.workflowSource) {
+            assertIndexedWorkflowSourceIdentity(inputRef, entry.filePath, owner.workflowSource);
+            if (entry.adapterId !== adapterId) {
+              throw new WorkflowSourceIdentityError(inputRef, entry.filePath, owner.path);
+            }
+          } else if (entry.adapterId !== adapterId || !indexedPathMatchesOwner(entry.filePath, owner)) {
+            return { entry: null, owner, ...(indexError === undefined ? {} : { indexError }) };
+          }
+          return { entry, owner, ...(indexError === undefined ? {} : { indexError }) };
+        }
+      }
+
+      // A physical owner with a missing/incomplete index row still owns this
+      // unqualified concept. Stop here so a later source cannot retarget it.
+      if (owner) return { entry: null, owner, ...(indexError === undefined ? {} : { indexError }) };
+    }
+    return { entry: null, ...(indexError === undefined ? {} : { indexError }) };
+  } finally {
+    if (db) closeDatabase(db);
+  }
+}
+
+export async function lookupBundleRefWithResolution(ref: BundleRef): Promise<BundleRefLookupResolution> {
+  return lookupBundleRefWithResolutionUsing(ref, openExistingDatabase);
 }
 
 /** Resolve an adapter-owned `[bundle//]conceptId` without interpreting its path as an AKM type. */
 export async function lookupBundleRef(ref: BundleRef): Promise<IndexEntry | null> {
-  const sources = await resolveLookupSources();
-  if (sources.length === 0) return null;
+  const resolution = await lookupBundleRefWithResolution(ref);
+  if (resolution.indexError !== undefined) throw resolution.indexError;
+  return resolution.entry;
+}
 
-  const { candidateDirs, qualified } = resolveLookupScope(ref.bundle, sources);
-  if (candidateDirs.length === 0) return null;
+/**
+ * Resolve one execution source without opening the live index database for
+ * write or allowing SQLite read-lock bookkeeping to touch its SHM file.
+ */
+export async function lookupBundleRefReadonly(ref: BundleRef): Promise<IndexEntry | null> {
+  const resolution = await lookupBundleRefWithResolutionUsing(ref, (dbPath) => {
+    const db = openReadonlyExistingDatabase(dbPath, { isolatedSnapshot: true });
+    if (!db) throw new Error(`Index database not found at ${dbPath}. Run 'akm index' to build it.`);
+    return db;
+  });
+  if (resolution.indexError !== undefined) throw resolution.indexError;
+  return resolution.entry;
+}
 
-  const db = openExistingDatabase(getDbPath());
-  try {
-    const inputRef = makeBundleRef(qualified ? ref.bundle : undefined, ref.conceptId);
-    for (const dir of candidateDirs) {
-      const id = findEntryIdByRef(db, inputRef, dir);
-      if (id === undefined) continue;
-      const row = db
-        .prepare(
-          "SELECT entry_key AS entryKey, file_path AS filePath, stash_dir AS stashDir, entry_type AS type, " +
-            "entry_json AS entryJson, item_ref AS itemRef, bundle_id AS bundleId, concept_id AS conceptId, " +
-            "adapter_id AS adapterId FROM entries WHERE id = ?",
-        )
-        .get(id) as
-        | {
-            entryKey: string;
-            filePath: string;
-            stashDir: string;
-            type: string;
-            entryJson: string;
-            itemRef: string | null;
-            bundleId: string | null;
-            conceptId: string | null;
-            adapterId: string | null;
-          }
-        | undefined;
-      if (!row) continue;
-      let document: IndexDocument | undefined;
-      try {
-        document = JSON.parse(row.entryJson) as IndexDocument;
-      } catch {
-        // Corrupt optional projection does not erase the durable path identity.
+function readLookupEntry(db: Database, id: number, fallbackConceptId: string, sourceRoot: string): IndexEntry | null {
+  const row = db
+    .prepare(
+      "SELECT file_path AS filePath, type, document_json AS documentJson, " +
+        "item_ref AS itemRef, bundle_id AS bundleId, concept_id AS conceptId, " +
+        "adapter_id AS adapterId FROM entries WHERE id = ?",
+    )
+    .get(id) as
+    | {
+        filePath: string;
+        type: string;
+        documentJson: string;
+        itemRef: string;
+        bundleId: string;
+        conceptId: string;
+        adapterId: string;
       }
-      if (!row.itemRef || !row.bundleId || !row.conceptId || !row.adapterId) continue;
-      return {
-        entryKey: row.entryKey,
-        filePath: row.filePath,
-        stashDir: row.stashDir,
-        type: row.type,
-        name: document?.name ?? ref.conceptId.split("/").pop() ?? ref.conceptId,
-        adapterId: row.adapterId,
-        document,
-        itemRef: row.itemRef,
-        bundleId: row.bundleId,
-        conceptId: row.conceptId,
-      };
-    }
-    return null;
-  } finally {
-    closeDatabase(db);
+    | undefined;
+  if (!row) return null;
+  let document: IndexDocument | undefined;
+  try {
+    document = JSON.parse(row.documentJson) as IndexDocument;
+  } catch {
+    // Corrupt optional projection does not erase the durable path identity.
   }
+  return {
+    filePath: row.filePath,
+    stashDir: sourceRoot,
+    type: row.type,
+    name: document?.name ?? fallbackConceptId.split("/").pop() ?? fallbackConceptId,
+    adapterId: row.adapterId,
+    document,
+    itemRef: row.itemRef,
+    bundleId: row.bundleId,
+    conceptId: row.conceptId,
+  };
 }
 
 /**
@@ -2522,12 +2824,17 @@ const USAGE_EVENT_RETENTION_DAYS = 90;
  *
  * Called during `akm index` after FTS rebuild.
  */
-export function recomputeUtilityScores(db: Database, stateDb: Database): void {
+export function recomputeUtilityScores(db: Database, stateDb: Database, options?: { stateSchema?: string }): void {
   const EMA_DECAY = 0.7;
+  const stateSchema = options?.stateSchema;
+  if (stateSchema !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(stateSchema)) {
+    throw new Error("Invalid attached state schema name.");
+  }
+  const usageEvents = stateSchema === undefined ? "usage_events" : `"${stateSchema}".usage_events`;
 
   // Purge stale usage events (90-day retention). usage_events lives in state.db
   // (Chunk-8 WI-8.3); its table is created by state migration 020.
-  purgeOldUsageEvents(stateDb, USAGE_EVENT_RETENTION_DAYS);
+  purgeOldUsageEvents(stateDb, USAGE_EVENT_RETENTION_DAYS, { stateSchema });
 
   // Time-proportional decay: apply one round of EMA per elapsed day so
   // indexing frequency doesn't affect how fast scores decay.
@@ -2560,7 +2867,7 @@ export function recomputeUtilityScores(db: Database, stateDb: Database): void {
                  ELSE NULL
                END
              ) AS last_used_at
-      FROM usage_events u
+      FROM ${usageEvents} u
       WHERE u.entry_id IS NOT NULL
         AND u.source = 'user'
       GROUP BY u.entry_id

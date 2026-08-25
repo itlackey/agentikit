@@ -14,18 +14,17 @@ import reflectDistill from "../../assets/improve-strategies/reflect-distill.json
 import thorough from "../../assets/improve-strategies/thorough.json" with { type: "json" };
 import { parseRefInput } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveProcessConfig, ImproveProfileConfig } from "../../core/config/config";
+import { ImproveProfileConfigSchema } from "../../core/config/config-schema";
 import { deepMergeConfig } from "../../core/config/deep-merge";
 import {
   BUILTIN_IMPROVE_STRATEGY_NAMES,
   IMPROVE_PROCESS_ENGINE_CAPABILITIES,
 } from "../../core/config/engine-semantics";
 import { ConfigError } from "../../core/errors";
-import {
-  type RunnerSpec,
-  resolveImproveProcessRunner,
-  resolveTriageJudgmentRunner,
-} from "../../integrations/agent/runner";
+import type { LoweringNotice } from "../../execution/resolved-request";
+import type { RunnerSpec } from "../../integrations/agent/runner";
 import { applyAutonomyGate, type GatedLane } from "./autonomy-gate";
+import { resolveImproveExecution, resolveImproveLlmExecution } from "./execution";
 
 /** 0.9 public name for the improve preset configuration. */
 export type ImproveStrategyConfig = ImproveProfileConfig;
@@ -68,17 +67,17 @@ export function isStrategyFilteredForAllPasses(ref: string, strategy: ImprovePro
   return shouldSkipRef(ref, "reflect", strategy).skip && shouldSkipRef(ref, "distill", strategy).skip;
 }
 
-const BUILTIN_STRATEGIES: Record<string, ImproveStrategyConfig> = {
-  default: defaultStrategy as ImproveStrategyConfig,
-  quick: quick as ImproveStrategyConfig,
-  thorough: thorough as ImproveStrategyConfig,
-  "memory-focus": memoryFocus as ImproveStrategyConfig,
-  "graph-refresh": graphRefresh as ImproveStrategyConfig,
-  frequent: frequent as ImproveStrategyConfig,
-  consolidate: consolidate as ImproveStrategyConfig,
-  catchup: catchup as ImproveStrategyConfig,
-  "reflect-distill": reflectDistill as ImproveStrategyConfig,
-  "proactive-maintenance": proactiveMaintenance as ImproveStrategyConfig,
+const BUILTIN_STRATEGIES: Record<string, Record<string, unknown>> = {
+  default: defaultStrategy,
+  quick,
+  thorough,
+  "memory-focus": memoryFocus,
+  "graph-refresh": graphRefresh,
+  frequent,
+  consolidate,
+  catchup,
+  "reflect-distill": reflectDistill,
+  "proactive-maintenance": proactiveMaintenance,
 };
 
 if (BUILTIN_IMPROVE_STRATEGY_NAMES.some((name) => !(name in BUILTIN_STRATEGIES))) {
@@ -96,15 +95,12 @@ export function resolveImproveStrategy(name: string | undefined, config: AkmConf
     );
   }
   const selectedStrategy = BUILTIN_STRATEGIES[selectedName] ?? {};
-  const baseStrategy = deepMergeConfig(
-    BUILTIN_STRATEGIES.default as Record<string, unknown>,
-    selectedStrategy as Record<string, unknown>,
-  );
+  const baseStrategy = deepMergeConfig(BUILTIN_STRATEGIES.default ?? {}, selectedStrategy);
   const resolved = deepMergeConfig(
     baseStrategy as Record<string, unknown>,
     (userStrategies[selectedName] ?? {}) as Record<string, unknown>,
-  ) as ImproveStrategyConfig;
-  return { name: selectedName, config: resolved };
+  );
+  return { name: selectedName, config: ImproveProfileConfigSchema.parse(resolved) };
 }
 
 export type ImproveLlmRunner = Extract<RunnerSpec, { kind: "llm" }>;
@@ -114,13 +110,17 @@ export interface ResolvedImproveProcess {
   enabled: boolean;
   config: Readonly<ImproveProcessConfig>;
   runner: ImproveLlmRunner | null;
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 /** Complete immutable process behavior for one improve invocation. */
 export interface ResolvedImprovePlan {
+  /** Immutable config snapshot used to re-enter canonical named-engine lowering. */
+  config: Readonly<AkmConfig>;
   strategy: Readonly<SelectedStrategy>;
   processes: Readonly<Record<ImproveProcessName, ResolvedImproveProcess>>;
   triageJudgment: RunnerSpec | null;
+  triageJudgmentNotices?: readonly Readonly<LoweringNotice>[];
   /**
    * D8 — lanes the autonomy gate downgraded for this run. Empty when
    * `experimental.improveAutonomy` is set. The run reports each one so a gated
@@ -165,6 +165,7 @@ function buildImprovePlan(
     const processConfig = cloneAndFreeze(strategy.config.processes?.[processName] ?? {});
     const enabled = processConfig.enabled === true;
     let runner: ImproveLlmRunner | null = null;
+    let notices: readonly Readonly<LoweringNotice>[] = [];
     if (IMPROVE_PROCESS_ENGINE_CAPABILITIES[processName] !== "llm" || !enabled) {
       processes[processName] = Object.freeze({ enabled, config: processConfig, runner });
       continue;
@@ -172,7 +173,14 @@ function buildImprovePlan(
     // Validation itself is structural and always runs. Only its optional repair
     // step needs a model, so disabling repair must not create an LLM preflight.
     if (processName !== "validation" || options.repairValidationFailures !== false) {
-      runner = resolveImproveProcessRunner(strategy.config, processName, config);
+      const resolved = resolveImproveLlmExecution({
+        config,
+        profile: strategy.config,
+        process: processConfig,
+        processName,
+      });
+      runner = resolved?.runner ?? null;
+      notices = resolved?.notices ?? [];
     }
     if (!runner && !(processName === "validation" && options.repairValidationFailures === false)) {
       throw new ConfigError(
@@ -181,16 +189,35 @@ function buildImprovePlan(
       );
     }
     if (runner) runner = cloneAndFreeze(runner) as ImproveLlmRunner;
-    processes[processName] = Object.freeze({ enabled, config: processConfig, runner });
+    processes[processName] = Object.freeze({
+      enabled,
+      config: processConfig,
+      runner,
+      ...(notices.length > 0 ? { notices: cloneAndFreeze(notices) } : {}),
+    });
   }
 
   const triage = strategy.config.processes?.triage;
-  const judgmentOptedIn = triage !== undefined && Object.hasOwn(triage, "judgment");
-  const triageJudgment =
-    processes.triage.enabled && judgmentOptedIn
-      ? resolveTriageJudgmentRunner(triage.judgment, config, triage, strategy.config)
+  const judgmentEnabled = triage?.judgment?.enabled === true;
+  const triageJudgmentResolution =
+    processes.triage.enabled && judgmentEnabled
+      ? resolveImproveExecution({
+          config,
+          profile: strategy.config,
+          process: triage,
+          current: triage.judgment,
+          processName: "triage-judgment",
+        })
       : null;
-  if (processes.triage.enabled && judgmentOptedIn && !triageJudgment) {
+  const triageJudgment = triageJudgmentResolution?.runner ?? null;
+  const effectiveJudgmentLlm = triage?.judgment?.llm ?? triage?.llm ?? strategy.config.llm;
+  if (triageJudgment && triageJudgment.kind !== "llm" && effectiveJudgmentLlm) {
+    throw new ConfigError(
+      `Triage judgment engine "${triageJudgment.engine ?? "unknown"}" is an agent engine and cannot receive llm overrides.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  if (processes.triage.enabled && judgmentEnabled && !triageJudgment) {
     throw new ConfigError(
       `Enabled improve triage judgment requires an engine. Set defaults.llmEngine or improve.strategies.${strategy.name}.processes.triage.judgment.engine.`,
       "LLM_NOT_CONFIGURED",
@@ -207,8 +234,12 @@ function buildImprovePlan(
     }),
   });
   return Object.freeze({
+    config: cloneAndFreeze(config),
     strategy: frozenStrategy,
     processes: frozenProcesses,
     triageJudgment: triageJudgment ? cloneAndFreeze(triageJudgment) : null,
+    ...(triageJudgmentResolution?.notices.length
+      ? { triageJudgmentNotices: cloneAndFreeze(triageJudgmentResolution.notices) }
+      : {}),
   });
 }

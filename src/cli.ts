@@ -3,23 +3,23 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// Runtime guard: the akm-cli npm package bootstraps with Node.js >= 22
+// Runtime guard: the akm-cli npm package bootstraps with Node.js >= 24
 // (#465, #560), then its launcher prefers a working Bun >= 1.0 when available.
 // The runtime boundary (src/runtime.ts, src/storage/database.ts) supports both.
 // Under Node the CLI must be launched via the
 // `dist/cli-node.mjs` wrapper, which registers the text-import loader hook
 // before this module graph loads; running `node dist/cli.js` directly still
 // works for code paths that touch no embedded text asset, but the wrapper is
-// the supported entry. The hard floor is Node 22 (Node 20 support dropped 2026-07; `@clack/core` imports
-// `node:util`'s `styleText` (added in Node 20.12) — Node 18 (EOL) throws at import.
+// the supported entry. The hard floor is Node 24; Node 22 is no longer a
+// supported npm bootstrap runtime.
 {
   const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
   if (!isBun) {
     const [major = 0] = (process.versions.node ?? "0").split(".").map((part) => Number.parseInt(part, 10) || 0);
-    const nodeOk = major >= 22;
+    const nodeOk = major >= 24;
     if (!nodeOk) {
       console.error(
-        "\n  ERROR: the akm-cli npm package requires Node.js >= 22.\n" +
+        "\n  ERROR: the akm-cli npm package requires Node.js >= 24.\n" +
           `  Detected Node.js ${process.versions.node ?? "unknown"}.\n` +
           "  Bun >= 1.0 is optional for execution; it does not replace the Node.js bootstrap.\n" +
           "  Upgrade Node.js (https://nodejs.org), or install the runtime-free standalone binary:\n" +
@@ -92,6 +92,7 @@ import {
 } from "./cli/shared";
 import { assertKnownFlags, closestMatch, type FlagScanCommand } from "./cli/unknown-flags";
 import { agentCommand, lintCommand } from "./commands/agent/contribute-cli";
+import { commandCommand } from "./commands/command/command-cli";
 import { generateBashCompletions, installBashCompletions } from "./commands/completions";
 import { configCommand } from "./commands/config-cli";
 import { envCommand } from "./commands/env/env-cli";
@@ -103,6 +104,7 @@ import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
 import { improveCommand } from "./commands/improve/improve-cli";
 import { migrateCommand } from "./commands/migrate-cli";
+import { modelsCommand } from "./commands/models-cli";
 import { logCommand } from "./commands/observability-cli";
 import { proposalCommand } from "./commands/proposal/proposal-cli";
 import { rememberCommand } from "./commands/read/remember-cli";
@@ -116,7 +118,6 @@ import { taskCommand } from "./commands/tasks/tasks-cli";
 import { workflowCommand } from "./commands/workflow-cli";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
 import { UsageError, type UsageErrorCode } from "./core/errors";
-import { assertNoPendingMigrationOperation } from "./core/migration-operation";
 import { getConfigPath } from "./core/paths";
 import { DURATION_UNITS, parseDuration } from "./core/time";
 import { plainize } from "./core/tty";
@@ -497,6 +498,7 @@ const commands = {
   feedback: feedbackCommand,
   log: logCommand,
   agent: agentCommand,
+  command: commandCommand,
   lint: lintCommand,
   improve: improveCommand,
   proposal: proposalCommand,
@@ -504,6 +506,7 @@ const commands = {
   env: envCommand,
   secret: secretCommand,
   task: taskCommand,
+  models: modelsCommand,
   hints: hintsCommand,
 };
 
@@ -802,7 +805,7 @@ const HELP_SECTIONS: ReadonlyArray<{
     title: "ASSETS",
     commands: ["import", "clone", "bundle", "env", "secret", "sync", "proposal"],
   },
-  { title: "AUTOMATION", commands: ["improve", "agent", "workflow", "task"] },
+  { title: "AUTOMATION", commands: ["improve", "agent", "command", "workflow", "task"] },
   {
     title: "SYSTEM",
     commands: [
@@ -811,6 +814,7 @@ const HELP_SECTIONS: ReadonlyArray<{
       "lint",
       "health",
       "config",
+      "models",
       "registry",
       "info",
       "log",
@@ -1009,7 +1013,6 @@ async function runCli(): Promise<void> {
   // rather than letting the raw exception escape with a stack trace.
   try {
     applyEarlyStderrFlags(process.argv);
-    if (isTaskRunWithId(process.argv)) assertNoPendingMigrationOperation();
     const bypassConfig = shouldBypassConfigStartup(process.argv);
     initOutputMode(process.argv, bypassConfig ? (DEFAULT_CONFIG.output ?? {}) : (loadConfig().output ?? {}));
   } catch (error: unknown) {

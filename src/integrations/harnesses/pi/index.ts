@@ -30,7 +30,6 @@ export { piResultExtractor } from "./result-extractor";
 export class PiHarness extends BaseHarness {
   readonly id = "pi" as const;
   readonly displayName = "Pi";
-  readonly aliases = [] as const;
   readonly agentBuilder = piBuilder;
   readonly resultExtractor = piResultExtractor;
   // ── Workflow-engine descriptor (plan §"Capability matrix", P2) ────────────

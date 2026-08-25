@@ -251,8 +251,8 @@ Phase 1 + Phase 2 runner types:
 - **retrieval** — shells out to `akm search <query> --format jsonl
   --detail agent` and scores against `mustIncludeRefs`,
   `mustNotIncludeRefs`, `keywords`, and `minHits`.
-- **proposal-quality** — reads `state.db` (or `<stash>/.akm/proposals/`
-  as fallback) and reports counts, validation pass rate, accept rate,
+- **proposal-quality** — reads the current `state.db` proposal queue and
+  reports counts, validation pass rate, accept rate,
   reject rate, and accept-rate-per-source.
 - **reflect-quality** — walks `<stash>/.akm/runs/<id>/improve-result.json`
   for the most recent N runs (default 20) and classifies every
@@ -628,12 +628,11 @@ scripts/akm-eval/
     report.ts              Markdown renderer
     runners/
       retrieval.ts         akm search → score
-      proposal-quality.ts  state.db / .akm/proposals → score
+      proposal-quality.ts  state.db → score
       regression.ts        case-results.jsonl diff
     sources/
       paths.ts             stash + data-dir + state.db path resolution
       state-db.ts          read-only SQLite reader (+ Phase 6 record/playback)
-      stash-fs.ts          filesystem fallback for proposals
       akm-cli.ts           shell wrapper (+ Phase 6 record/playback)
       replay-log.ts        Phase 6 recorder/player + JSONL log helpers
       eval-runs.ts         resolver + loader for <stash>/.akm/evals/runs/

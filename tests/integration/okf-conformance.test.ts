@@ -105,10 +105,10 @@ describe("OKF first-class conformance", () => {
     try {
       const rows = db
         .prepare(
-          "SELECT item_ref AS itemRef, entry_type AS type, adapter_id AS adapterId, entry_json AS entryJson " +
+          "SELECT item_ref AS itemRef, type, adapter_id AS adapterId, document_json AS documentJson " +
             "FROM entries WHERE bundle_id = 'adversarial' ORDER BY item_ref",
         )
-        .all() as Array<{ itemRef: string; type: string; adapterId: string; entryJson: string }>;
+        .all() as Array<{ itemRef: string; type: string; adapterId: string; documentJson: string }>;
       expect(rows.map((row) => row.itemRef)).toEqual([
         "adversarial//.hidden/hidden",
         "adversarial//bin/bin-doc",
@@ -123,7 +123,7 @@ describe("OKF first-class conformance", () => {
       expect(rows.filter((row) => row.type === "Vendor Duplicate")).toHaveLength(2);
       expect(rows.find((row) => row.itemRef.endsWith("//unknown"))?.type).toBe("Some Vendor Thing");
 
-      const unknown = JSON.parse(rows.find((row) => row.itemRef.endsWith("//unknown"))!.entryJson) as {
+      const unknown = JSON.parse(rows.find((row) => row.itemRef.endsWith("//unknown"))!.documentJson) as {
         content?: string;
         links?: string[];
         aliases?: string[];
@@ -143,9 +143,7 @@ describe("OKF first-class conformance", () => {
       });
 
       const noIndex = db
-        .prepare(
-          "SELECT item_ref AS itemRef, entry_type AS type, adapter_id AS adapterId FROM entries WHERE bundle_id = ?",
-        )
+        .prepare("SELECT item_ref AS itemRef, type, adapter_id AS adapterId FROM entries WHERE bundle_id = ?")
         .get("noindex") as { itemRef: string; type: string; adapterId: string };
       expect(noIndex).toEqual({
         itemRef: "noindex//vendor",
@@ -244,7 +242,7 @@ describe("OKF first-class conformance", () => {
     expect(fs.existsSync(path.join(storage.stashDir, "memories", "index.md"))).toBe(false);
   });
 
-  test("an adapter change invalidates incremental freshness and rekeys the durable row", async () => {
+  test("an adapter change invalidates incremental freshness and updates the canonical row in place", async () => {
     write(okfRoot, "knowledge/switch.md", concept("knowledge", "Switch", "Adapter switch body."));
     configure("akm");
     resetConfigCache();
@@ -256,35 +254,42 @@ describe("OKF first-class conformance", () => {
       try {
         return db
           .prepare(
-            "SELECT entry_key AS entryKey, adapter_id AS adapterId FROM entries " +
+            "SELECT id, item_ref AS itemRef, adapter_id AS adapterId FROM entries " +
               "WHERE item_ref = 'adversarial//knowledge/switch' ORDER BY id",
           )
-          .all() as Array<{ entryKey: string; adapterId: string }>;
+          .all() as Array<{ id: number; itemRef: string; adapterId: string }>;
       } finally {
         closeDatabase(db);
       }
     };
 
-    expect(readSwitchRow()).toEqual([{ entryKey: [okfRoot, "knowledge", "switch"].join(":"), adapterId: "akm" }]);
+    const initial = readSwitchRow();
+    expect(initial).toEqual([{ id: expect.any(Number), itemRef: "adversarial//knowledge/switch", adapterId: "akm" }]);
+    const initialId = initial[0]?.id;
+    expect(initialId).toBeNumber();
 
     configure("okf");
     resetConfigCache();
     const result = await akmIndex({ stashDir: storage.stashDir });
 
     expect(result.mode).toBe("incremental");
-    expect(readSwitchRow()).toEqual([{ entryKey: `${okfRoot}:concept:knowledge/switch`, adapterId: "okf" }]);
+    expect(readSwitchRow()).toEqual([
+      { id: initialId as number, itemRef: "adversarial//knowledge/switch", adapterId: "okf" },
+    ]);
   });
 
   test("an adapter change prunes directories omitted by the new walk policy", async () => {
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const db = openExistingDatabase(getDbPath());
-    const staleRows = db
-      .prepare(
-        "SELECT id, dir_path AS dirPath FROM entries " +
-          "WHERE item_ref IN ('adversarial//.hidden/hidden', 'adversarial//bin/bin-doc') ORDER BY item_ref",
-      )
-      .all() as Array<{ id: number; dirPath: string }>;
+    const staleRows = (
+      db
+        .prepare(
+          "SELECT id, file_path AS filePath FROM entries " +
+            "WHERE item_ref IN ('adversarial//.hidden/hidden', 'adversarial//bin/bin-doc') ORDER BY item_ref",
+        )
+        .all() as Array<{ id: number; filePath: string }>
+    ).map((row) => ({ ...row, dirPath: path.dirname(row.filePath) }));
     expect(staleRows).toHaveLength(2);
     for (const row of staleRows)
       upsertEmbedding(
@@ -368,12 +373,12 @@ describe("OKF first-class conformance", () => {
     let initialId = 0;
     try {
       const initial = initialDb
-        .prepare("SELECT id, item_ref AS itemRef, stash_dir AS stashDir FROM entries WHERE file_path = ?")
-        .get(path.join(nestedRoot, "overlap.md")) as { id: number; itemRef: string; stashDir: string };
+        .prepare("SELECT id, item_ref AS itemRef, bundle_id AS bundleId FROM entries WHERE file_path = ?")
+        .get(path.join(nestedRoot, "overlap.md")) as { id: number; itemRef: string; bundleId: string };
       expect(initial).toEqual({
         id: expect.any(Number),
         itemRef: "parent//.hidden/overlap",
-        stashDir: storage.stashDir,
+        bundleId: "parent",
       });
       initialId = initial.id;
     } finally {
@@ -386,9 +391,9 @@ describe("OKF first-class conformance", () => {
     const db = openExistingDatabase(getDbPath());
     try {
       const rows = db
-        .prepare("SELECT id, item_ref AS itemRef, stash_dir AS stashDir FROM entries WHERE file_path = ?")
-        .all(path.join(nestedRoot, "overlap.md")) as Array<{ id: number; itemRef: string; stashDir: string }>;
-      expect(rows).toEqual([{ id: expect.any(Number), itemRef: "nested//overlap", stashDir: nestedRoot }]);
+        .prepare("SELECT id, item_ref AS itemRef, bundle_id AS bundleId FROM entries WHERE file_path = ?")
+        .all(path.join(nestedRoot, "overlap.md")) as Array<{ id: number; itemRef: string; bundleId: string }>;
+      expect(rows).toEqual([{ id: expect.any(Number), itemRef: "nested//overlap", bundleId: "nested" }]);
       expect(rows[0]?.id).not.toBe(initialId);
     } finally {
       closeDatabase(db);
@@ -410,9 +415,9 @@ describe("OKF first-class conformance", () => {
     const reversedDb = openExistingDatabase(getDbPath());
     try {
       const reversedRows = reversedDb
-        .prepare("SELECT item_ref AS itemRef, stash_dir AS stashDir FROM entries WHERE file_path = ?")
-        .all(path.join(nestedRoot, "overlap.md")) as Array<{ itemRef: string; stashDir: string }>;
-      expect(reversedRows).toEqual([{ itemRef: "parent//.hidden/overlap", stashDir: storage.stashDir }]);
+        .prepare("SELECT item_ref AS itemRef, bundle_id AS bundleId FROM entries WHERE file_path = ?")
+        .all(path.join(nestedRoot, "overlap.md")) as Array<{ itemRef: string; bundleId: string }>;
+      expect(reversedRows).toEqual([{ itemRef: "parent//.hidden/overlap", bundleId: "parent" }]);
     } finally {
       closeDatabase(reversedDb);
     }
@@ -449,9 +454,9 @@ describe("OKF first-class conformance", () => {
     const db = openExistingDatabase(getDbPath());
     try {
       const rows = db
-        .prepare("SELECT item_ref AS itemRef, stash_dir AS stashDir FROM entries WHERE file_path = ?")
-        .all(filePath) as Array<{ itemRef: string; stashDir: string }>;
-      expect(rows).toEqual([{ itemRef: "parent//.container/.hidden/overlap", stashDir: storage.stashDir }]);
+        .prepare("SELECT item_ref AS itemRef, bundle_id AS bundleId FROM entries WHERE file_path = ?")
+        .all(filePath) as Array<{ itemRef: string; bundleId: string }>;
+      expect(rows).toEqual([{ itemRef: "parent//.container/.hidden/overlap", bundleId: "parent" }]);
     } finally {
       closeDatabase(db);
     }
@@ -1080,10 +1085,10 @@ describe("OKF v0.2 fixture bundle indexes end-to-end alongside the v0.1 fixture"
     try {
       const rows = db
         .prepare(
-          "SELECT item_ref AS itemRef, adapter_id AS adapterId, entry_json AS entryJson " +
+          "SELECT item_ref AS itemRef, adapter_id AS adapterId, document_json AS documentJson " +
             "FROM entries WHERE bundle_id = 'okf-v2' ORDER BY item_ref",
         )
-        .all() as Array<{ itemRef: string; adapterId: string; entryJson: string }>;
+        .all() as Array<{ itemRef: string; adapterId: string; documentJson: string }>;
 
       expect(rows.map((row) => row.itemRef)).toEqual([
         "okf-v2//reports/draft-note",
@@ -1092,7 +1097,7 @@ describe("OKF v0.2 fixture bundle indexes end-to-end alongside the v0.1 fixture"
       ]);
       expect(rows.every((row) => row.adapterId === "okf")).toBe(true);
 
-      const byRef = new Map(rows.map((row) => [row.itemRef, JSON.parse(row.entryJson) as Record<string, unknown>]));
+      const byRef = new Map(rows.map((row) => [row.itemRef, JSON.parse(row.documentJson) as Record<string, unknown>]));
 
       // Full v0.2 family: generated + verified (list form) + object-list sources + status + stale_after.
       const quarterly = byRef.get("okf-v2//reports/quarterly") as {

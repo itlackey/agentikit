@@ -1,4 +1,4 @@
 {
-  "exitCode": 0,
-  "resultStatus": "completed"
+  "errorCode": "INVALID_CONFIG_FILE",
+  "exitCode": 78
 }

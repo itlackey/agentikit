@@ -2,11 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { LlmConnectionConfig } from "../../core/config/config";
-import { deepMergeConfig } from "../../core/config/deep-merge";
-import { resolveCredentialFromEnv } from "../../integrations/agent/engine-resolution";
+import { ConfigError } from "../../core/errors";
+import { assertFrozenDirectoryIdentity } from "../../execution/directory-identity";
+import { assertFrozenExecutableIdentity } from "../../execution/executable-identity";
+import {
+  canonicalResolvedExecutionRequest,
+  decodeResolvedExecutionRequest,
+  type LoweringNotice,
+} from "../../execution/resolved-request";
+import {
+  dispatchLoweredExecutionRequest,
+  type LoweredExecutionRequest,
+  lowerResolvedExecutionRequestWithRunner,
+} from "../../integrations/agent/execution-lowering";
 import type { AgentTokenUsage } from "../../integrations/agent/spawn";
-import type { FrozenEngineSnapshot, IrExecSpec, IrInvocation } from "../ir/schema";
+import { getHarness } from "../../integrations/harnesses";
+import type { FrozenWorkflowTarget } from "../ir/schema-v4";
 
 /** Everything the dispatcher needs to run one frozen workflow unit. */
 export interface UnitDispatchRequest {
@@ -14,25 +25,16 @@ export interface UnitDispatchRequest {
   stepId: string;
   unitId: string;
   nodeId: string;
+  /** Append-only attempt ordinal when the journal policy uses attempt rows. */
+  attempt?: number;
+  /** Stable external correlation/idempotency key for an append-only attempt. */
+  dispatchId?: string;
   /** Fully assembled user prompt. */
   prompt: string;
   /** Optional system prompt, used by frozen workflow gate judges. */
   systemPrompt?: string;
-  /**
-   * Frozen v3 engine snapshot. Dispatch never consults live config. Absent on
-   * `exec` units, which name no engine — see {@link UnitDispatchRequest.exec}.
-   */
-  engine?: FrozenEngineSnapshot;
-  fallbackEngine?: Extract<FrozenEngineSnapshot, { kind: "llm" }>;
-  /** Engine dispatch settings. Present on exactly the units that reach an engine. */
-  invocation?: IrInvocation;
-  /**
-   * Frozen shell command for an `exec` unit — argv, relative cwd, resolved
-   * timeout. Present on EXACTLY the units that carry no `engine`/`invocation`;
-   * the frozen-plan decoder enforces that exclusive-or, so a dispatcher can
-   * branch on this field alone.
-   */
-  exec?: IrExecSpec;
+  /** The sole normalized execution target. Dispatch authority comes from this snapshot only. */
+  frozenTarget: FrozenWorkflowTarget;
   /**
    * `AKM_*` context environment for an exec unit's child — run/step/unit ids,
    * the run params, a map unit's item + index, and the step's declared
@@ -63,40 +65,123 @@ export interface UnitDispatchResult {
   failureReason?: string;
   error?: string;
   usage?: AgentTokenUsage;
+  /** Safe, structured diagnostics emitted by the common execution lowerer. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 /** The one dispatch seam. `feedback` carries a structured-output retry prompt. */
 export type UnitDispatcher = (request: UnitDispatchRequest, feedback?: string) => Promise<UnitDispatchResult>;
 
-/**
- * Materialize a frozen llm engine snapshot into a live connection: resolve the
- * credential out of `process.env`, then apply the invocation's model/llm
- * overrides. The ONE definition — the default dispatcher's llm runner and the
- * frozen gate judge both dispatch through it, so credential resolution and
- * connection-field mapping cannot drift between the two llm dispatch paths.
- *
- * The credential read itself is {@link resolveCredentialFromEnv}, shared with
- * the live-config dispatch boundary (`materializeLlmConnection`): a frozen
- * snapshot's `credential` and a resolved engine's `CredentialDescriptor` are the
- * same descriptor, so lookup order and the "required … is not set" failure are
- * one implementation, not two that happen to agree.
- */
-export function materializeFrozenLlm(
-  snapshot: Extract<FrozenEngineSnapshot, { kind: "llm" }>,
-  invocation: IrInvocation | undefined,
-): LlmConnectionConfig {
-  const apiKey = resolveCredentialFromEnv(snapshot.credential);
-  const base = {
-    provider: snapshot.provider,
-    endpoint: snapshot.endpoint,
-    model: invocation?.model ?? snapshot.model,
-    ...(snapshot.temperature !== undefined ? { temperature: snapshot.temperature } : {}),
-    ...(snapshot.maxTokens !== undefined ? { maxTokens: snapshot.maxTokens } : {}),
-    ...(snapshot.supportsJsonSchema !== undefined ? { supportsJsonSchema: snapshot.supportsJsonSchema } : {}),
-    ...(snapshot.extraParams ? { extraParams: snapshot.extraParams } : {}),
-    ...(snapshot.contextLength !== undefined ? { contextLength: snapshot.contextLength } : {}),
-    ...(snapshot.enableThinking !== undefined ? { enableThinking: snapshot.enableThinking } : {}),
-    ...(apiKey ? { apiKey } : {}),
+/** Lower a persisted v4 common request through its persisted runner only. */
+export function prepareWorkflowExecution(
+  request: UnitDispatchRequest & { frozenTarget: Extract<FrozenWorkflowTarget, { kind: "command" }> },
+  prompt = request.prompt,
+): LoweredExecutionRequest {
+  const target = request.frozenTarget;
+  if (target.cwdIdentity) assertFrozenDirectoryIdentity(target.cwdIdentity);
+  if (target.executable) assertFrozenExecutableIdentity(target.executable, `unit ${request.unitId} executable`);
+  const wire = JSON.parse(canonicalResolvedExecutionRequest(target.request)) as Record<string, unknown>;
+  const command = { ...(wire.command as Record<string, unknown>), content: prompt };
+  const runtime = {
+    ...(wire.runtime as Record<string, unknown>),
+    ...(request.cwd !== undefined
+      ? { workspace: request.cwd }
+      : target.cwdIdentity
+        ? { workspace: target.cwdIdentity.realCwd }
+        : {}),
+    ...(request.env !== undefined ? { environment: request.env } : {}),
   };
-  return invocation?.llm ? (deepMergeConfig(base, invocation.llm as Record<string, unknown>) as typeof base) : base;
+  wire.command = command;
+  wire.runtime = runtime;
+  if (request.systemPrompt !== undefined) {
+    wire.conversation = [{ role: "system", content: request.systemPrompt }];
+  }
+  return lowerResolvedExecutionRequestWithRunner(decodeResolvedExecutionRequest(wire), target.runner);
+}
+
+function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Dispatch one frozen workflow engine call through the common prepared/lowered
+ * seam. Credential materialization happens inside the final dispatch only.
+ */
+export async function dispatchWorkflowExecution(
+  request: UnitDispatchRequest,
+  feedback?: string,
+): Promise<UnitDispatchResult> {
+  const prompt = feedback ? `${request.prompt}\n\n${feedback}` : request.prompt;
+  if (request.frozenTarget.kind !== "command") {
+    throw new ConfigError(`unit ${JSON.stringify(request.unitId)} is not a command target.`, "INVALID_CONFIG_FILE");
+  }
+  const lowered = prepareWorkflowExecution(
+    request as UnitDispatchRequest & { frozenTarget: Extract<FrozenWorkflowTarget, { kind: "command" }> },
+    prompt,
+  );
+  const notices = lowered.notices.length > 0 ? lowered.notices : undefined;
+
+  if (request.env && Object.keys(request.env).length > 0 && lowered.runner.kind === "llm") {
+    return {
+      ok: false,
+      text: "",
+      failureReason: "env_unsupported",
+      error:
+        `unit ${JSON.stringify(request.unitId)} declares env bindings, which require a child process ` +
+        `(agent or sdk runner) — the "llm" runner cannot inject a per-unit child environment.`,
+      ...(notices ? { notices } : {}),
+    };
+  }
+  if (request.cwd && lowered.runner.kind === "llm") {
+    return {
+      ok: false,
+      text: "",
+      failureReason: "isolation_unsupported",
+      error:
+        `unit ${JSON.stringify(request.unitId)} declares isolation: worktree but resolved to the "llm" runner, ` +
+        `which has no working directory to isolate. Use the agent or sdk runner for isolated units.`,
+      ...(notices ? { notices } : {}),
+    };
+  }
+
+  let result: Awaited<ReturnType<typeof dispatchLoweredExecutionRequest>>;
+  try {
+    result = await dispatchLoweredExecutionRequest(lowered, {
+      runOptions: {
+        stdio: "captured",
+        parseOutput: "text",
+        ...(request.signal ? { signal: request.signal } : {}),
+      },
+    });
+  } catch (err) {
+    if (err instanceof ConfigError) throw err;
+    return {
+      ok: false,
+      text: "",
+      failureReason: "dispatch_error",
+      error: message(err),
+      ...(notices ? { notices } : {}),
+    };
+  }
+
+  let text = result.stdout;
+  let sessionId = result.sessionId;
+  if (lowered.runner.kind === "agent" && result.ok) {
+    const harness = getHarness(lowered.runner.profile.platform ?? lowered.runner.profile.name);
+    if (harness?.resultExtractor) {
+      const extraction = harness.resultExtractor(result);
+      text = extraction.text;
+      if (extraction.sessionId !== undefined) sessionId = extraction.sessionId;
+    }
+  }
+
+  return {
+    ok: result.ok,
+    text,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(result.reason ? { failureReason: result.reason } : {}),
+    ...(result.error ? { error: result.error } : {}),
+    ...(result.usage ? { usage: result.usage } : {}),
+    ...(notices ? { notices } : {}),
+  };
 }

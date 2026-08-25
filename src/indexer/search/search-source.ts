@@ -4,13 +4,13 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isSourceWriteActivated } from "../../core/activation-policy";
 import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, SourceConfigEntry } from "../../core/config/config";
 import { bundleComponentConfig, bundlesToSourceEntries, getSources, loadConfig } from "../../core/config/config";
 import { resolveGitContentRoot, resolveWritable } from "../../core/write-source";
 import { lockContentRootFor } from "../../integrations/lockfile";
 import { resolveSourceProviderFactory } from "../../sources/provider-factory";
+import { ensureWebsiteMirror } from "../../sources/snapshot-fetchers/website-ingest";
 // Eager side-effect imports so all built-in source providers self-register
 // before resolveEntryContentDir() runs.
 import "../../sources/providers/index";
@@ -42,9 +42,8 @@ export interface SearchSource {
  *   2. The configured `defaultBundle`, after component-root validation.
  *   3. Remaining configured bundles in installation-priority order.
  *
- * Replaces the previous four-pass loop that walked `stashes[]` separately
- * for each provider kind. Disabled entries (`enabled: false`) are filtered
- * after deduplication. Missing configured roots remain in the result so the
+ * Disabled entries (`enabled: false`) are filtered after deduplication.
+ * Missing configured roots remain in the result so the
  * indexer can classify their scan as incomplete instead of mistaking them for
  * removed sources.
  */
@@ -175,8 +174,8 @@ export function resolveEntryContentDir(entry: SourceConfigEntry): string | undef
   // and writes agree on where content is); the localRoot is the already-walkable
   // content root (installed sources are extracted to their content dir), so no
   // content/-subdir step is applied. Fall back to the provider path logic when no
-  // lock entry exists (e.g. a git bundle migrated from a `sources[]` url, whose
-  // provider re-derives the mirror path).
+  // lock entry exists (for example while a configured source is being
+  // materialized for the first time).
   const localRoot = lockContentRootFor(entry.name, entry.type);
   if (localRoot != null) return localRoot;
 
@@ -222,15 +221,6 @@ export function resolveEntryContentDir(entry: SourceConfigEntry): string | undef
  */
 export function resolveAllStashDirs(overrideStashDir?: string): string[] {
   return resolveSourceEntries(overrideStashDir).map((s) => s.path);
-}
-
-/**
- * Return the resolved absolute paths of all writable stash sources.
- */
-export function getWritableStashDirs(overrideStashDir?: string, existingConfig?: AkmConfig): string[] {
-  return resolveSourceEntries(overrideStashDir, existingConfig)
-    .filter((s) => isSourceWriteActivated(s))
-    .map((s) => s.path);
 }
 
 /**
@@ -333,7 +323,7 @@ export async function ensureSourceCaches(
   // provider and call `sync()`. Every cache-backed kind (git, website, npm)
   // refreshes the same way — a bad source warns and is skipped without
   // aborting the others. The git content/-subdir layout convention stays in
-  // resolveEntryContentDir. NEW shape reads `bundles`; old shape reads sources[].
+  // resolveEntryContentDir. Provider projection comes only from `bundles`.
   //
   // DISTINCTION (deliberately NOT lock-first): refresh derives the PROVIDER's
   // own cache path to git-pull/re-materialize INTO — that derived path is where
@@ -380,7 +370,7 @@ export async function ensureSourceCaches(
     }
 
     try {
-      await provider.sync({ force, secrets: options?.secrets });
+      await provider.sync({ force, secrets: options?.secrets, ensureWebsiteMirror });
     } catch (err) {
       warn(
         `Warning: failed to refresh ${provider.kind} source "${provider.name}": ${err instanceof Error ? err.message : String(err)}`,

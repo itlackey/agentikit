@@ -88,13 +88,3 @@ export const BUILTIN_ADAPTERS: readonly BundleAdapter[] = Object.freeze([
   // Explicit-config fallback (never auto-selected) — last.
   genericFilesAdapter,
 ]);
-
-/**
- * DEPRECATED no-op retained for test back-compat only. The built-in set is now
- * the static, frozen {@link BUILTIN_ADAPTERS}, exposed by the registry at
- * module load (normative §12.6), so there is nothing to register. New code MUST
- * NOT call this — `getAdapters()` / `adapterForId()` are always populated.
- */
-export function registerBuiltinAdapters(): void {
-  // intentionally empty — BUILTIN_ADAPTERS is static; see the doc comment above.
-}

@@ -248,6 +248,42 @@ describe("family B — akm health", () => {
       warn: { exitCode: warn.code, status: warnJson.status },
     });
   });
+
+  test("health — a deterministic advisory warning sets overall warn and exit 4", async () => {
+    const db = openStateDatabase();
+    try {
+      upsertTaskHistory(db, {
+        task_id: "b-advisory-failing-task",
+        status: "failed",
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        failed_at: new Date().toISOString(),
+        log_path: null,
+        target_kind: "prompt",
+        target_ref: null,
+        metadata_json: JSON.stringify({
+          metadataVersion: 2,
+          durationMs: 5,
+          detail: { exitCode: 1 },
+          engine: "opencode",
+        }),
+      });
+    } finally {
+      db.close();
+    }
+
+    const direct = akmHealth({ since: "7d" });
+    expect(direct.hardChecks.some((check) => check.status === "warn" || check.status === "fail")).toBe(false);
+    expect(direct.advisories.find((check) => check.name === "task-fail-rate")).toMatchObject({
+      kind: "deterministic",
+      status: "warn",
+    });
+    expect(direct).toMatchObject({ ok: true, status: "warn" });
+
+    const cli = await runCli(["health", "--since", "7d", "--format=json"]);
+    expect(cli.code).toBe(4);
+    expect(JSON.parse(cli.stdout)).toMatchObject({ ok: true, status: "warn" });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -258,7 +294,7 @@ function writeTrueTask(): void {
   fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
   fs.writeFileSync(
     path.join(storage.stashDir, "tasks", `${TASK_TRUE_ID}.yml`),
-    ["version: 2", 'schedule: "@daily"', "enabled: true", 'command: "true"', ""].join("\n"),
+    ["version: 3", 'run: "true"', "akm:", '  schedule: "@daily"', "  enabled: true", ""].join("\n"),
   );
 }
 
@@ -268,7 +304,7 @@ describe("family C — akm task", () => {
     fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
     fs.writeFileSync(
       path.join(storage.stashDir, "tasks", `${id}.yml`),
-      ["version: 2", 'schedule: "@daily"', "enabled: true", 'command: ["/bin/sh", "-c", "exit 7"]', ""].join("\n"),
+      ["version: 3", 'run: "exit 7"', "akm:", '  schedule: "@daily"', "  enabled: true", ""].join("\n"),
     );
 
     const run = await runCli(["task", "run", id, "--format=json"]);
@@ -313,26 +349,22 @@ describe("family C — akm task", () => {
     );
   });
 
-  test("tasks run <id> — config-bypass path with invalid config.json (cli.ts:609-620)", async () => {
+  test("tasks run <id> — invalid config fails before task-history mutation", async () => {
     writeTrueTask();
-    // isTaskRunWithId (cli.ts:599-606) + shouldBypassConfigStartup (:609-620):
-    // `tasks run <id>` is a recovery/setup-adjacent surface that must stay
-    // reachable even when config.json is unparseable — loadConfig() is never
-    // called for this argv shape. runCliCapture replays this bypass logic
-    // itself (module docstring), so a genuinely broken config.json must NOT
-    // surface as a ConfigError here, unlike the family-F `list` case.
+    // A v3 run must resolve and prepare its execution boundary before it
+    // reserves durable history. A malformed config therefore fails closed.
     const configPath = path.join(storage.configDir, "akm", "config.json");
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, "{ not valid json");
 
     const run = await runCli(["task", "run", TASK_TRUE_ID, "--format=json"]);
-    expect(run.code).toBe(0);
-    const runJson = JSON.parse(run.stdout) as { result: Record<string, unknown> };
-    expect(runJson.result.status).toBe("completed");
+    expect(run.code).toBe(78);
+    const failure = JSON.parse(run.stderr) as { code?: string };
+    expect(failure.code).toBe("INVALID_CONFIG_FILE");
 
     expectGolden("tests/fixtures/goldens/cli/c-tasks-run-config-bypass.json", {
       exitCode: run.code,
-      resultStatus: runJson.result.status,
+      errorCode: failure.code,
     });
   });
 });

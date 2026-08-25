@@ -230,7 +230,6 @@ function buildFixture(): void {
       },
     ];
     for (const e of entries) {
-      const entryKey = `${stashDir}:${e.entry.type}:${e.entry.name}`;
       const searchText = buildSearchText(e.entry);
       // Seed the durable bundle-adapter identity (item_ref/concept_id/bundle_id)
       // that the graph-boost reader now resolves the related-ref from. The
@@ -241,7 +240,7 @@ function buildFixture(): void {
         e.entry.type,
         e.entry.name,
       );
-      upsertEntry(db, entryKey, e.dirPath, e.filePath, stashDir, e.entry, searchText, provenance);
+      upsertEntry(db, e.filePath, e.entry, searchText, provenance);
     }
     rebuildFts(db);
     setMeta(db, "stashDir", stashDir);
@@ -684,13 +683,10 @@ describe("listRelatedPathsForFile (SQL-backed)", () => {
     }
   });
 
-  // Repoint pin (spec §3.3): the annotation ref MUST come from the canonical
-  // durable identity (`concept_id` / the `item_ref` tail), NOT from stripping the
-  // legacy `entry_key`. The seeded neighbor's `entry_key` name deliberately
-  // DIVERGES from its canonical `concept_id`, so the old entry_key-stripping
-  // reader would have emitted "knowledge/legacy-neighbor" while the repointed
-  // reader emits the canonical "knowledge/canonical-neighbor".
-  test("related ref is the canonical item_ref-derived ref, not the stripped legacy entry_key", () => {
+  // The annotation ref comes from canonical durable identity (`concept_id` /
+  // the `item_ref` tail), not presentation metadata. The seeded neighbor's
+  // document name deliberately diverges from its canonical concept id.
+  test("related ref is canonical even when the document name diverges", () => {
     // Isolated on-DISK index under a unique dir (built with a UUID rather than a
     // raw temp-dir helper, which the isolation lint bans in a file that also sets
     // AKM env vars). The reader only queries the DB, so the referenced files need
@@ -707,26 +703,19 @@ describe("listRelatedPathsForFile (SQL-backed)", () => {
       const target: IndexDocument = { name: "target", type: kType };
       upsertEntry(
         db,
-        `${root}:${kType}:target`,
-        path.dirname(targetPath),
         targetPath,
-        root,
         target,
         buildSearchText(target),
         deriveEntryProvenance({ bundleId: "team-kb", componentId: "team-kb", adapterId: "akm" }, kType, "target"),
       );
-      // Legacy entry_key name intentionally DIVERGES from the canonical name.
-      const legacyName = "legacy-neighbor";
-      const neighbor: IndexDocument = { name: legacyName, type: kType };
+      const presentationName = "presentation-neighbor";
+      const neighbor: IndexDocument = { name: presentationName, type: kType };
       upsertEntry(
         db,
-        `${root}:${kType}:${legacyName}`,
-        path.dirname(neighborPath),
         neighborPath,
-        root,
         neighbor,
         buildSearchText(neighbor),
-        // Canonical durable identity diverges from the entry_key's name.
+        // Canonical durable identity diverges from the document name.
         {
           itemRef: "team-kb//knowledge/canonical-neighbor",
           bundleId: "team-kb",
@@ -748,9 +737,9 @@ describe("listRelatedPathsForFile (SQL-backed)", () => {
       const related = listRelatedPathsForFile(root, targetPath, 5, db);
       expect(related.length).toBe(1);
       expect(related[0]?.path).toBe(neighborPath);
-      // Canonical, item_ref-derived ref — NOT the entry_key-stripped legacy name.
+      // Canonical, item_ref-derived ref — not the presentation name.
       expect(related[0]?.ref).toBe("knowledge/canonical-neighbor");
-      expect(related[0]?.ref).not.toBe("knowledge/legacy-neighbor");
+      expect(related[0]?.ref).not.toBe("knowledge/presentation-neighbor");
     } finally {
       closeDatabase(db);
       fs.rmSync(dir, { recursive: true, force: true });

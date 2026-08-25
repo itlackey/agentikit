@@ -2,29 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-/**
- * Meta-test for the shrink-only allowlist ratchet in
- * `scripts/lint-tests-isolation.ts`.
- *
- * The grandfather allowlist (Rule-1 `ALLOWED_FILES` + Rule-2
- * `ENV_ASSIGN_ALLOWED` + Rule-5 `SPAWN_ALLOWED`) may only ever get SMALLER as
- * files migrate onto the
- * `withIsolatedAkmStorage` composite. This test fails if the live combined size
- * grows past the recorded baseline — forcing the baseline to be lowered (never
- * raised) in any change that touches the lists. It also asserts the linter
- * itself is clean, so the ratchet and the rules are exercised together.
- *
- * ISOLATION-07: the size check alone is blind to entries that point at files
- * no longer in the tree — a stale path still counts toward the (correct)
- * total, so nothing here caught `tests/integration/ripgrep.test.ts` and
- * `tests/integration/tasks-legacy-md-warning.test.ts` sitting in
- * `ALLOWED_FILES` for an unknown period after both files were deleted. A
- * future accidental re-creation at either path would have silently inherited
- * the stale exemption. The path-existence test below closes that gap by
- * resolving every allowlisted entry against the repo root and asserting it
- * exists — this is the check that would have failed the moment those two
- * files were removed.
- */
+/** Shrink-only allowlist and conservative real-home operation boundary contract. */
 
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
@@ -36,16 +14,205 @@ import {
   combinedAllowlistSize,
   ENV_ASSIGN_ALLOWED,
   lintAllTestFiles,
+  lintFile,
   SPAWN_ALLOWED,
 } from "../scripts/lint-tests-isolation";
+import { makeSandboxDir } from "./_helpers/sandbox";
 
 const repoRoot = path.resolve(__dirname, "..");
 
+const source = (...lines: string[]): string => lines.join("\n");
+const imports = (fsImport: string, osImport: string, ...body: string[]): string =>
+  source(fsImport, osImport, 'import path from "node:path";', ...body);
+const defaultImports = (...body: string[]): string =>
+  imports('import fs from "node:fs";', 'import os from "node:os";', ...body);
+const danger = (name: string, line: number, fixture: string) => ({ expectedLines: [line], name, source: fixture });
+const safe = (name: string, fixture: string) => ({ expectedLines: [], name, source: fixture });
+
+const REAL_HOME_OPERATION_LEDGER = [
+  danger(
+    "default-os-and-fs-rmSync-danger",
+    4,
+    defaultImports('fs.rmSync(path.join(os.homedir(), ".config", "tool"), { recursive: true });'),
+  ),
+  danger(
+    "namespace-os-alias-danger",
+    4,
+    imports(
+      'import fs from "node:fs";',
+      'import * as platform from "node:os";',
+      'fs.rmSync(path.join(platform.homedir(), ".config", "tool"), { recursive: true });',
+    ),
+  ),
+  danger(
+    "named-homedir-alias-danger",
+    4,
+    imports(
+      'import { rmSync } from "node:fs";',
+      'import { homedir as realHome } from "node:os";',
+      'rmSync(path.join(realHome(), ".config", "tool"), { recursive: true });',
+    ),
+  ),
+  danger(
+    "fs-promises-member-rm-danger",
+    4,
+    defaultImports('await fs.promises.rm(path.join(os.homedir(), ".config", "tool"), { recursive: true });'),
+  ),
+  danger(
+    "renamed-fs-rmSync-danger",
+    4,
+    imports(
+      'import { rmSync as erase } from "node:fs";',
+      'import os from "node:os";',
+      'erase(path.join(os.homedir(), ".config", "tool"), { recursive: true });',
+    ),
+  ),
+  danger(
+    "destructured-fs-rmSync-danger",
+    5,
+    defaultImports("const { rmSync: erase } = fs;", 'erase(path.join(os.homedir(), ".config", "tool"));'),
+  ),
+  danger(
+    "renamed-fs-rmdirSync-danger",
+    4,
+    imports(
+      'import { rmdirSync as eraseDirectory } from "node:fs";',
+      'import os from "node:os";',
+      'eraseDirectory(path.join(os.homedir(), ".config", "tool"));',
+    ),
+  ),
+  danger(
+    "renamed-fs-rm-callback-danger",
+    4,
+    imports(
+      'import { rm as eraseAsync } from "node:fs";',
+      'import os from "node:os";',
+      'eraseAsync(path.join(os.homedir(), ".config", "tool"), { recursive: true }, () => {});',
+    ),
+  ),
+  danger(
+    "renamed-fs-rmdir-callback-danger",
+    4,
+    imports(
+      'import { rmdir as eraseDirectoryAsync } from "node:fs";',
+      'import os from "node:os";',
+      'eraseDirectoryAsync(path.join(os.homedir(), ".config", "tool"), () => {});',
+    ),
+  ),
+  danger(
+    "renamed-fs-promises-rm-danger",
+    4,
+    imports(
+      'import { rm as eraseAsync } from "node:fs/promises";',
+      'import os from "node:os";',
+      'await eraseAsync(path.join(os.homedir(), ".config", "tool"), { recursive: true });',
+    ),
+  ),
+  danger(
+    "destructured-fs-promises-rmdir-danger",
+    5,
+    defaultImports("const { rmdir: eraseDirectoryAsync } = fs.promises;", "await eraseDirectoryAsync(os.homedir());"),
+  ),
+  danger(
+    "formatter-normal-multiline-danger",
+    4,
+    defaultImports("fs.rmSync(", "  os.homedir(),", "  { recursive: true, force: true },", ");"),
+  ),
+  danger(
+    "home-read-plus-unrelated-node-delete-danger",
+    6,
+    defaultImports(
+      "const inspectedHome = os.homedir();",
+      'const owned = path.join(os.tmpdir(), "owned");',
+      "fs.rmSync(owned);",
+    ),
+  ),
+  danger(
+    "named-home-mkdtemp-still-danger",
+    5,
+    imports(
+      'import { mkdtempSync as makeOwned, rmSync } from "node:fs";',
+      'import os from "node:os";',
+      'const owned = makeOwned(path.join(os.homedir(), "owned-"));',
+      "rmSync(owned);",
+    ),
+  ),
+  danger(
+    "element-home-mkdtemp-still-danger",
+    5,
+    defaultImports('const owned = fs["mkdtempSync"](os.homedir());', "fs.rmSync(owned);"),
+  ),
+  danger(
+    "fake-mkdtemp-boundary-danger",
+    5,
+    defaultImports("const owned = { mkdtempSync: (p: string) => p }.mkdtempSync(os.homedir());", "fs.rmSync(owned);"),
+  ),
+  danger("fs-unlinkSync-danger", 4, defaultImports("fs.unlinkSync(os.homedir());")),
+  danger("fs-unlink-callback-danger", 4, defaultImports("fs.unlink(os.homedir(), () => {});")),
+  danger(
+    "fs-promises-unlink-danger",
+    4,
+    imports('import { unlink } from "node:fs/promises";', 'import os from "node:os";', "await unlink(os.homedir());"),
+  ),
+  danger(
+    "default-import-one-hop-aliases-danger",
+    6,
+    defaultImports("const erase = fs.rmSync;", "const getHome = os.homedir;", "erase(getHome());"),
+  ),
+  danger(
+    "named-import-one-hop-aliases-danger",
+    6,
+    imports(
+      'import { rmSync } from "node:fs";',
+      'import { homedir } from "node:os";',
+      "const erase = rmSync;",
+      "const getHome = homedir;",
+      "erase(getHome());",
+    ),
+  ),
+  safe(
+    "shadowed-os-safe",
+    defaultImports(
+      "function cleanup(os: { homedir(): string }) {",
+      '  fs.rmSync(path.join(os.homedir(), "owned"), { recursive: true });',
+      "}",
+    ),
+  ),
+  safe(
+    "unrelated-delete-method-safe",
+    imports(
+      'import type {} from "node:fs";',
+      'import os from "node:os";',
+      "const recorder = { rmSync(_path: string) {} };",
+      "recorder.rmSync(os.homedir());",
+    ),
+  ),
+  safe(
+    "two-hop-aliases-safe",
+    defaultImports(
+      "const eraseOnce = fs.rmSync;",
+      "const eraseTwice = eraseOnce;",
+      "const homeOnce = os.homedir;",
+      "const homeTwice = homeOnce;",
+      "eraseTwice(homeTwice());",
+    ),
+  ),
+  safe(
+    "property-owner-alias-budget-safe",
+    defaultImports("const files = fs;", "const erase = files.rmSync;", "erase(os.homedir());"),
+  ),
+  safe(
+    "binding-alias-budget-safe",
+    defaultImports("const { rmSync: once } = fs;", "const twice = once;", "twice(os.homedir());"),
+  ),
+  safe(
+    "binding-owner-alias-budget-safe",
+    defaultImports("const files = fs;", "const { rmSync: erase } = files;", "erase(os.homedir());"),
+  ),
+] as const;
+
 describe("lint-tests-isolation allowlist ratchet", () => {
   test("the recorded baseline tracks the live size exactly (shrink-only, no stale slack)", () => {
-    // Equality subsumes the old "never grows past" check: when entries are
-    // removed the baseline is lowered in the same change, and any growth
-    // fails immediately.
     expect(ALLOWLIST_RATCHET_BASELINE).toBe(combinedAllowlistSize());
   });
 
@@ -60,9 +227,27 @@ describe("lint-tests-isolation allowlist ratchet", () => {
   test("the test suite currently has zero isolation/determinism violations", () => {
     const violations = lintAllTestFiles();
     if (violations.length > 0) {
-      const summary = violations.map((v) => `${v.file}:${v.line} [${v.rule}]`).join("\n");
+      const summary = violations
+        .map((violation) => `${violation.file}:${violation.line} [${violation.rule}]`)
+        .join("\n");
       throw new Error(`lint-tests-isolation found violations:\n${summary}`);
     }
     expect(violations.length).toBe(0);
+  });
+
+  test("classifies the conservative real-home operation-identity ledger", () => {
+    const fixture = makeSandboxDir("akm-home-operation-ledger");
+    const fixturePath = path.join(fixture.dir, "fixture.test.ts");
+    try {
+      for (const entry of REAL_HOME_OPERATION_LEDGER) {
+        fs.writeFileSync(fixturePath, entry.source);
+        const actualLines = lintFile(fixturePath)
+          .filter((violation) => violation.rule === "real-home-delete")
+          .map((violation) => violation.line);
+        expect(actualLines, entry.name).toEqual(entry.expectedLines);
+      }
+    } finally {
+      fixture.cleanup();
+    }
   });
 });

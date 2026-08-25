@@ -139,24 +139,14 @@ describe("narrowToIncrementalCandidates — mixed branch (real index DB)", () =>
     const entry: IndexDocument = { type: "memory", name, description: `desc for ${name}` };
     // Chunk-8: production resolves entries by their D-R2 item_ref
     // (findEntryIdByRef ← conceptIdFromTypeName), so the seed must carry the
-    // provenance a real index write attaches — a legacy entry_key alone is
-    // no longer resolvable.
-    const id = upsertEntry(
-      db,
-      `memory:${name}`,
-      tmpDir,
-      path.join(memDir, `${name}.md`),
-      tmpDir,
-      entry,
-      `${name} ${entry.description}`,
-      {
-        bundleId: "stash",
-        componentId: "stash",
-        adapterId: "akm",
-        conceptId: `memories/${name}`,
-        itemRef: `stash//memories/${name}`,
-      },
-    );
+    // provenance a real index write attaches.
+    const id = upsertEntry(db, path.join(memDir, `${name}.md`), entry, `${name} ${entry.description}`, {
+      bundleId: "stash",
+      componentId: "stash",
+      adapterId: "akm",
+      conceptId: `memories/${name}`,
+      itemRef: `stash//memories/${name}`,
+    });
     upsertEmbedding(db, id, embedding);
     return id;
   }

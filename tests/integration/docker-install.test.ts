@@ -14,6 +14,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { requireDockerGateCapabilities } from "../docker/docker-gate";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const DOCKER_DIR = path.join(PROJECT_ROOT, "tests", "docker");
@@ -107,9 +108,9 @@ function dockerRun(variant: string): { ok: boolean; output: string } {
 // Docker install tests are heavyweight (build images + download deps per container).
 // They only run when explicitly requested via AKM_DOCKER_TESTS=1 to avoid
 // hammering the network on every `bun test` invocation. Strict "1" match — not
-// `!!process.env...` — matches the `=== "1"` convention used by every other
-// opt-in gate in this repo (e.g. AKM_RUN_SLOW_TESTS, AKM_SEMANTIC_TESTS-style
-// gates); a loose truthy check would treat `AKM_DOCKER_TESTS=0` as enabled.
+// `!!process.env...` — matches the strict convention used by the other current
+// opt-in gates (for example AKM_SEMANTIC_TESTS); a loose truthy check would
+// treat `AKM_DOCKER_TESTS=0` as enabled.
 const DOCKER_TESTS_ENABLED = process.env.AKM_DOCKER_TESTS === "1";
 
 // dockerAvailable()/bunAvailable() each spawn a subprocess (docker info has a
@@ -118,6 +119,16 @@ const DOCKER_TESTS_ENABLED = process.env.AKM_DOCKER_TESTS === "1";
 // Docker tests were never going to run.
 const HAS_DOCKER = DOCKER_TESTS_ENABLED && dockerAvailable();
 const HAS_BUN = DOCKER_TESTS_ENABLED && bunAvailable();
+
+describe("Docker install gate preflight", () => {
+  test("an explicitly requested gate has Docker and Bun available", () => {
+    requireDockerGateCapabilities({
+      requested: DOCKER_TESTS_ENABLED,
+      dockerAvailable: HAS_DOCKER,
+      bunAvailable: HAS_BUN,
+    });
+  });
+});
 
 const bunVariants = ["ubuntu-bun", "debian-bun", "alpine-bun", "fedora-bun"] as const;
 

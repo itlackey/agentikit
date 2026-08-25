@@ -6,7 +6,6 @@ import { akmHealth } from "../../src/commands/health";
 import type { HealthCheckResult } from "../../src/commands/health/types";
 import { appendEvent } from "../../src/core/events";
 import { openStateDatabase } from "../../src/core/state-db";
-import type { SessionLogEntry } from "../../src/integrations/session-logs";
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
 import { type IsolatedAkmStorage, withEnvSync, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -59,9 +58,7 @@ function findCheck(checks: HealthCheckResult[], name: string): HealthCheckResult
 
 describe("health checks characterization (WS9)", () => {
   test("empty stash: full ordered check structure is stable", () => {
-    // Inject an empty session-log source so the empty-stash baseline is not
-    // polluted by host session logs.
-    const result = withEnvSync({ PATH: "" }, () => akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] }));
+    const result = withEnvSync({ PATH: "" }, () => akmHealth({ since: "7d" }));
 
     expect(result.hardChecks.map(project)).toEqual([
       {
@@ -107,11 +104,32 @@ describe("health checks characterization (WS9)", () => {
         message: "No default engine is configured.",
       },
       {
+        name: "model-map-files",
+        kind: "deterministic",
+        status: "pass",
+        confidence: "high",
+        message: "Installed model defaults are valid; no optional user models.json is present.",
+      },
+      {
+        name: "selected-model-aliases",
+        kind: "deterministic",
+        status: "unknown",
+        confidence: "high",
+        message: "No configured engines select a model.",
+      },
+      {
         name: "default-llm-engine",
         kind: "deterministic",
         status: "unknown",
         confidence: "high",
         message: "No default LLM engine is configured.",
+      },
+      {
+        name: "configured-engines",
+        kind: "deterministic",
+        status: "unknown",
+        confidence: "high",
+        message: "No engines are explicitly configured.",
       },
       {
         name: "active-improve-strategy",
@@ -157,13 +175,6 @@ describe("health checks characterization (WS9)", () => {
         message: "No semantic-search runtime status recorded yet.",
       },
       {
-        name: "session-log-failures",
-        kind: "heuristic",
-        status: "pass",
-        confidence: "low",
-        message: "No repeated external session-log failure patterns were detected.",
-      },
-      {
         name: "session-extraction",
         kind: "heuristic",
         status: "pass",
@@ -196,6 +207,7 @@ describe("health checks characterization (WS9)", () => {
     expect(result.ok).toBe(true);
     expect(result.status).toBe("pass");
     expect(result.schemaVersion).toBe(3);
+    expect("sessionLogAdvisories" in result).toBe(false);
   });
 
   test("seeded failure stash: ordered structure with a hard fail + advisory warn", () => {
@@ -246,10 +258,7 @@ describe("health checks characterization (WS9)", () => {
 
     appendEvent({ eventType: "improve_invoked", ref: "improve:all:all", metadata: { dryRun: false } });
 
-    const sessionLogs: SessionLogEntry[] = [
-      { topic: "boom failed", frequency: 3, source: "claude-code", isFailurePattern: true },
-    ];
-    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => sessionLogs });
+    const result = akmHealth({ since: "7d" });
 
     // Order + identity of hard checks is unchanged even with a fail present.
     expect(result.hardChecks.map((c) => c.name)).toEqual([
@@ -259,7 +268,10 @@ describe("health checks characterization (WS9)", () => {
       "task-log-backing",
       "active-runs",
       "default-engine",
+      "model-map-files",
+      "selected-model-aliases",
       "default-llm-engine",
+      "configured-engines",
       "active-improve-strategy",
     ]);
     expect(result.advisories.map((c) => c.name)).toEqual([
@@ -267,7 +279,6 @@ describe("health checks characterization (WS9)", () => {
       "egress-endpoints",
       "task-fail-rate",
       "semantic-search-runtime",
-      "session-log-failures",
       "session-extraction",
       "pool-saturation",
       "auto-accept-validation",
@@ -278,14 +289,9 @@ describe("health checks characterization (WS9)", () => {
     expect(logBacking.status).toBe("fail");
     expect(logBacking.message).toBe("1 task log(s) referenced in task_history are missing.");
 
-    // session-log-failures is informational: even with a failure pattern it
-    // never warns and reports the raw match count.
-    const slf = findCheck(result.advisories, "session-log-failures");
-    expect(slf.status).toBe("pass");
-    expect(slf.message).toBe("1 raw session-log keyword match(es) detected (pre-LLM, informational only).");
-
     expect(result.ok).toBe(false);
     expect(result.status).toBe("fail");
+    expect("sessionLogAdvisories" in result).toBe(false);
   });
 });
 
@@ -306,7 +312,7 @@ describe("semantic-search-runtime embedding-endpoint advisory", () => {
       lastCheckedAt: new Date().toISOString(),
     });
 
-    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const result = akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "semantic-search-runtime");
     expect(advisory.status).toBe("warn");
     expect(advisory.message).toContain("http://localhost:1234/v1/embeddings");
@@ -329,7 +335,7 @@ describe("semantic-search-runtime embedding-endpoint advisory", () => {
       lastCheckedAt: new Date().toISOString(),
     });
 
-    const result = akmHealth({ since: "7d", getExecutionLogCandidatesFn: () => [] });
+    const result = akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "semantic-search-runtime");
     expect(advisory.status).toBe("warn");
     expect(advisory.message).toBe("Semantic search status: blocked");

@@ -39,7 +39,7 @@ function memoryExec(initial = ""): CronExec & { current: () => string } {
 function writeTask(id: string, schedule: string, enabled = true): void {
   fs.writeFileSync(
     path.join(tasksDir, `${id}.yml`),
-    `version: 2\nschedule: "${schedule}"\ncommand: echo ${id}\nenabled: ${enabled}\nname: ${id}\n`,
+    `version: 3\nrun: echo ${id}\nname: ${id}\nakm:\n  schedule: "${schedule}"\n  enabled: ${enabled}\n`,
     "utf8",
   );
 }
@@ -86,6 +86,9 @@ describe("akmTasksSync — schedule drift", () => {
     expect(second.installed).toEqual([]);
     expect(second.updated).toEqual([]);
     expect(second.unchanged.sort()).toEqual(["alpha", "beta"]);
+    const bundleName = path.basename(stashDir).toLowerCase();
+    expect(exec.current()).toContain(`task run alpha --bundle ${bundleName} --scheduled`);
+    expect(exec.current()).toContain(`task run beta --bundle ${bundleName} --scheduled`);
   });
 
   test("detects a changed schedule and reinstalls it (the bug fix)", async () => {
@@ -104,7 +107,7 @@ describe("akmTasksSync — schedule drift", () => {
     expect(result.installed).toEqual([]);
     // The crontab now carries the new schedule, not the stale one.
     expect(exec.current()).toContain("45 */6 * * * /usr/local/bin/akm --scheduler-context");
-    expect(exec.current()).toContain("task run beta --scheduled");
+    expect(exec.current()).toContain("task run beta --bundle");
     expect(exec.current()).not.toContain("0 2 * * * /usr/local/bin/akm");
   });
 
@@ -119,7 +122,7 @@ describe("akmTasksSync — schedule drift", () => {
     const result = await akmTasksSync({ backend });
     expect(result.updated).toEqual(["alpha"]);
     expect(exec.current()).toContain("# akm:disabled */15 * * * * /usr/local/bin/akm --scheduler-context");
-    expect(exec.current()).toContain("task run alpha --scheduled");
+    expect(exec.current()).toContain("task run alpha --bundle");
   });
 
   test("removes orphaned scheduler entries with no backing file", async () => {
@@ -136,7 +139,7 @@ describe("akmTasksSync — schedule drift", () => {
     expect(exec.current()).toContain("task run alpha");
   });
 
-  test("skips an unversioned task without installing it", async () => {
+  test("rejects an unversioned task without installing it", async () => {
     const exec = memoryExec();
     const backend = backendFor(exec);
     fs.writeFileSync(
@@ -145,18 +148,13 @@ describe("akmTasksSync — schedule drift", () => {
       "utf8",
     );
 
-    const result = await akmTasksSync({ backend });
-    expect(result.installed).toEqual([]);
-    expect(result.skipped).toHaveLength(1);
-    expect(result.skipped[0]?.reason).toContain("TASK_SCHEMA_VERSION_UNSUPPORTED");
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/version is required and must be 3/);
     expect(exec.current()).toBe("");
   });
 
-  // 0.9 scheduler ABI respelling (S6): a persisted invocation that no longer
-  // parses (missing context descriptor, or the pre-rename `tasks run`
-  // spelling below) is an orphan of its marker id, not a hard failure — sync
-  // reinstalls it from the current task file instead of crashing.
-  test("reinstalls a persisted scheduler invocation without a context descriptor", async () => {
+  // A malformed native artifact does not prove its logical owner. Even when
+  // its marker resembles the desired task, sync must not overwrite it.
+  test("preserves and rejects a scheduler invocation without a context descriptor", async () => {
     const exec = memoryExec(
       [
         "# akm:task alpha BEGIN",
@@ -167,14 +165,13 @@ describe("akmTasksSync — schedule drift", () => {
     );
     const backend = backendFor(exec);
     writeTask("alpha", "*/15 * * * *", false);
+    const prior = exec.current();
 
-    const result = await akmTasksSync({ backend });
-    expect(result.installed).toEqual(["alpha"]);
-    expect(exec.current()).toContain("--scheduler-context");
-    expect(exec.current()).toContain("task run alpha");
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/native scheduler artifact|unproven owner/i);
+    expect(exec.current()).toBe(prior);
   });
 
-  test("reinstalls a pre-rename `tasks run` invocation as an orphan of its marker id", async () => {
+  test("preserves and rejects a pre-rename `tasks run` artifact with unproven ownership", async () => {
     const exec = memoryExec(
       [
         "# akm:task alpha BEGIN",
@@ -185,11 +182,10 @@ describe("akmTasksSync — schedule drift", () => {
     );
     const backend = backendFor(exec);
     writeTask("alpha", "*/15 * * * *", true);
+    const prior = exec.current();
 
-    const result = await akmTasksSync({ backend });
-    expect(result.installed).toEqual(["alpha"]);
-    expect(exec.current()).toContain("task run alpha");
-    expect(exec.current()).not.toContain("tasks run alpha");
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/native scheduler artifact|unproven owner/i);
+    expect(exec.current()).toBe(prior);
   });
 
   test("a failed replacement leaves the prior native definition active", async () => {

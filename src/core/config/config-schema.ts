@@ -26,12 +26,10 @@
  * - Top-level uses `.passthrough()` so unknown future keys round-trip intact on
  *   read; `sanitizeConfigForWrite` decides what to persist.
  * - Most nested sub-objects use `.catch(undefined)` so malformed entries are
- *   silently dropped (matches the legacy parser's warn-and-ignore semantics for
- *   field-level shape errors — keeps cold-start working when a user has a
- *   typo in their config).
- * - Two exceptions (hard-rejected): openviking source type and legacy
- *   `stashes[]` key. Both have explicit migration paths; silently dropping
- *   would mask user data loss.
+ *   silently dropped to keep cold-start working when a user has a field-level
+ *   typo in an optional section.
+ * - Unsupported top-level source shapes and provider kinds are hard-rejected;
+ *   silently dropping them would mask user data loss.
  * - UNKNOWN-KEY POLICY: object schemas use passthrough (unknown keys are
  *   preserved and ignored, NOT rejected). akm runs across multiple installed
  *   versions sharing one config.json; a newer version writes keys an older
@@ -52,13 +50,7 @@ import { FeedbackConfigSchema } from "./schema/feedback";
 import { ImproveConfigSchema } from "./schema/improve";
 import { IndexConfigSchema } from "./schema/index-config";
 import { OutputConfigSchema } from "./schema/output";
-import {
-  CURRENT_CONFIG_VERSION,
-  engineName,
-  GlobalModelAliasesSchema,
-  nonEmptyString,
-  nonNegativeNumber,
-} from "./schema/primitives";
+import { CURRENT_CONFIG_VERSION, engineName, nonEmptyString, nonNegativeNumber } from "./schema/primitives";
 import { SearchConfigSchema } from "./schema/search";
 import { SetupConfigSchema } from "./schema/setup";
 import { BundlesConfigSchema, RegistryConfigEntrySchema } from "./schema/sources-bundles";
@@ -115,33 +107,21 @@ export const DefaultsSchema = z
  * with cross-field refinements (`.superRefine()`).
  *
  * All fields validate loudly — typos and shape errors throw at load time. The
- * legacy parser's warn-and-drop tolerance was a frequent source of silent
- * configuration loss; the migration module ({@link migrateConfigShape}) handles
- * one-time 0.7→0.8 input transforms before the schema sees the value.
+ * the removed parser's warn-and-drop tolerance was a source of silent
+ * configuration loss. There is no pre-schema compatibility transform.
  */
 export const AkmConfigShape = {
   configVersion: z.literal(CURRENT_CONFIG_VERSION),
   engines: EnginesSchema.optional(),
   defaults: DefaultsSchema.optional(),
-  // Global model-alias tiers: alias → platform → exact model string, with a
-  // reserved `"*"` platform key as fallback. Lets workflows/callers name a
-  // semantic tier ("fast", "deep") that resolves per-harness at dispatch
-  // time. Values are literal model strings, never other aliases (one
-  // resolution level). Platform keys match the platform string a command
-  // builder resolves against ("claude", "opencode", "opencode-sdk", or a
-  // custom profile's name for the default builder) — unknown keys are inert.
-  // Precedence: profile modelAliases > this table > built-in aliases.
-  modelAliases: GlobalModelAliasesSchema.optional(),
   semanticSearchMode: z.enum(["off", "auto"]).default("off"),
   embedding: EmbeddingConnectionConfigSchema.optional(),
   index: IndexConfigSchema.optional(),
   registries: z.array(RegistryConfigEntrySchema).optional(),
-  // 0.9.0 config-shape cutover (spec §10.1 / D-R5). `bundles` + `defaultBundle`
-  // are the ONLY source shape — the retired `stashDir`/`sources[]`/`installed[]`
-  // trio is hard-rejected at load (see the top-level superRefine). The migrator
-  // ({@link migrateConfigSourcesToBundles}) converts a pre-cutover config to this
-  // shape before validation. `defaultBundle` names the primary bundle (spec
-  // §11.1 short-ref resolution / D-R4).
+  // `bundles` + `defaultBundle` are the only source configuration shape. The
+  // retired `stashDir`/`sources[]`/`installed[]` keys are rejected at load;
+  // there is no runtime config translator. `defaultBundle` names the primary
+  // bundle used for short-ref resolution.
   bundles: BundlesConfigSchema.optional(),
   defaultBundle: nonEmptyString.optional(),
   output: OutputConfigSchema.optional(),
@@ -160,19 +140,16 @@ export const AkmConfigShape = {
 export const AkmConfigBaseSchema = z.object(AkmConfigShape).passthrough();
 
 /**
- * Per-key overrides for the retired `stashDir`/`sources`/`installed` source-
- * shape rejection below. Keys without an entry fall back to the shared
- * "retired pre-cutover source shape" message, which already names the
- * replacement (bundles) and the migration command.
+ * Per-key overrides for unsupported pre-cutover source shapes.
  */
 const RETIRED_SOURCE_SHAPE_KEY_MESSAGES: Record<string, string> = {
   stashDir:
-    "stashDir is retired in 0.9; the stash path now comes from `bundles`. Run `akm-migrate apply` to convert a pre-0.9 config, or see `akm config path --all` / `akm info`.",
+    "stashDir is not supported; configure `bundles`, or use `akm config path --all` / `akm info` to inspect current paths.",
 };
 
 export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => {
   const raw = config as Record<string, unknown>;
-  for (const key of ["profiles", "llm", "agent", "features", "stashes"]) {
+  for (const key of ["profiles", "llm", "agent", "features", "stashes", "modelAliases"]) {
     if (key in raw) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -191,20 +168,15 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
       message: "bindings is not supported in 0.9.0 (Tier B); it is neither emitted nor accepted",
     });
   }
-  // 0.9.0 config-shape cutover (spec §10.1): the retired `stashDir`/`sources`/
-  // `installed` trio is HARD-REJECTED at load whenever present — `bundles` +
-  // `defaultBundle` fully supersede it. A pre-cutover config never loads through
-  // this validated path; the migrator ({@link migrateConfigSourcesToBundles})
-  // normalizes old→bundles BEFORE validation, and `inspectConfig` classifies an
-  // old-shape-alone config "old" (migration-eligible) via that same normalize.
+  // Only the current source shape enters the runtime. There is no config
+  // compatibility path; `bundles` + `defaultBundle` fully supersede these keys.
   for (const key of ["stashDir", "sources", "installed"]) {
     if (key in raw && raw[key] !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [key],
         message:
-          RETIRED_SOURCE_SHAPE_KEY_MESSAGES[key] ??
-          `${key} is the retired pre-cutover source shape; run \`akm-migrate apply\` to convert it to bundles`,
+          RETIRED_SOURCE_SHAPE_KEY_MESSAGES[key] ?? `${key} is not supported; configure the current bundles shape`,
       });
     }
   }
@@ -301,7 +273,7 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
       }
     }
     for (const [processName, process] of Object.entries(strategy.processes ?? {})) {
-      const processConfig = process as { engine?: string; judgment?: { engine?: string } };
+      const processConfig = process as { engine?: string; judgment?: { enabled?: boolean; engine?: string } };
       const capability =
         IMPROVE_PROCESS_ENGINE_CAPABILITIES[processName as keyof typeof IMPROVE_PROCESS_ENGINE_CAPABILITIES];
       if (processConfig.engine && capability === null) {
@@ -330,7 +302,7 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
         }
       }
       const judgmentEngine = processConfig.judgment?.engine;
-      if (judgmentEngine) {
+      if (processConfig.judgment?.enabled === true && judgmentEngine) {
         const engine = config.engines?.[judgmentEngine];
         if (!engine) {
           ctx.addIssue({

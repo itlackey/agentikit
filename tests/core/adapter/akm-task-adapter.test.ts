@@ -7,7 +7,7 @@
  *
  * Drives the adapter over `tests/fixtures/bundles/akm-task/` and asserts the
  * four authored goldens under `tests/fixtures/format-family-goldens/akm-task/`.
- * The invalid task (two targets) is still RECOGNIZED; the `invalid-task-yaml`
+ * The invalid task (`uses` plus `run`) is still RECOGNIZED; the `invalid-task-yaml`
  * violation surfaces only in `validate`.
  */
 
@@ -51,7 +51,7 @@ const ctx: ValidateContext = {
 describe("akm-task adapter — metadata", () => {
   test("id / version / extensions", () => {
     expect(akmTaskAdapter.id).toBe("akm-task");
-    expect(akmTaskAdapter.version).toBe("0.9.0");
+    expect(akmTaskAdapter.version).toBe("0.9.2");
     // `.yaml` is a COLLECTION hint only (issue #760) so `akm lint` routes the
     // near-miss spelling into `validate` instead of walking past it.
     expect(akmTaskAdapter.extensions).toEqual([".yml", ".yaml"]);
@@ -129,7 +129,7 @@ describe("akm-task adapter — renderer golden", () => {
   }
 });
 
-describe("akm-task adapter — lint golden (invalid-task-yaml: exactly one target)", () => {
+describe("akm-task adapter — strict task-v3 validation", () => {
   const perType = loadGolden("lint").perType as Record<string, { relPath: string; issues: Diagnostic[] }>;
 
   test("each task validates to exactly the golden's issue codes", async () => {
@@ -146,7 +146,7 @@ describe("akm-task adapter — lint golden (invalid-task-yaml: exactly one targe
     }
   });
 
-  test("two-targets.yml is the sole invalid-task-yaml (both prompt AND command)", async () => {
+  test("two-targets.yml is the sole invalid-task-yaml (`uses` plus `run`)", async () => {
     const raw = fs.readFileSync(path.join(FIXTURE_ROOT, "two-targets.yml"), "utf8");
     const diags = await akmTaskAdapter.validate(
       component(),
@@ -154,5 +154,31 @@ describe("akm-task adapter — lint golden (invalid-task-yaml: exactly one targe
       ctx,
     );
     expect(diags.map((d) => d.issue)).toEqual(["invalid-task-yaml"]);
+    expect(diags[0]?.detail).toContain("exactly one executable selector");
+  });
+
+  test("delegates hostile and unsupported forms to the canonical production parser", async () => {
+    const cases = [
+      ["unknown.yml", "version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\nsurprise: true\n", "surprise"],
+      ["event.yml", "version: 3\nrun: echo okay\non:\n  push: {}\n", "unsupported local service event"],
+      ["alias.yml", "version: 3\nrun: &shared echo okay\nakm:\n  schedule: *shared\n", "anchors"],
+    ] as const;
+    for (const [file, raw, detail] of cases) {
+      const diagnostics = await akmTaskAdapter.validate(component(), [{ path: file, op: "update", after: raw }], ctx);
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]).toMatchObject({ file, issue: "invalid-task-yaml", fixed: false });
+      expect(diagnostics[0]?.detail).toContain(detail);
+    }
+  });
+
+  test("keeps `.yaml` as a reported near miss and never validates it as a task", async () => {
+    const raw = "version: 3\nrun: echo okay\nakm:\n  schedule: '@daily'\n";
+    const diagnostics = await akmTaskAdapter.validate(
+      component(),
+      [{ path: "misnamed.yaml", op: "update", after: raw }],
+      ctx,
+    );
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]?.detail).toContain(".yml");
   });
 });

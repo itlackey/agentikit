@@ -12,11 +12,6 @@
  *      contributed nothing the loop could see. The code's own comment deferred
  *      the case to `directorySkillDiagnostics`, a symbol that did not exist.
  *      The check is now a real directory pass over `ValidateContext.list`.
- *   2. The shared tool-dir check gated on the literal `skills/` segment, so
- *      under opencode's supported singular `skill/` alias an identical
- *      manifest-less package went unflagged while the `skills/` one was caught.
- *      The gate now uses each layout's own accepted spellings.
- *
  * Both are driven through the real `akm lint` entry point, plus a direct
  * `validate()` call for the containment rules the CLI cannot express.
  */
@@ -135,40 +130,5 @@ describe("agent-skills: a package directory with no SKILL.md is flagged (issue #
     );
 
     expect(diagnostics.filter((d) => d.issue === "missing-skill-md")).toEqual([]);
-  });
-});
-
-describe("opencode: the singular skill/ alias is checked like skills/ (issue #774)", () => {
-  let storage: IsolatedAkmStorage;
-  afterEach(() => storage?.cleanup());
-
-  /** An `.opencode` root, with the skill package under the caller's chosen spelling. */
-  function opencodeBundle(root: string, skillDir: string): void {
-    write(root, "AGENTS.md", "# Agents\n");
-    write(root, "opencode.json", "{}\n");
-    // A package with a bundled resource but NO manifest.
-    write(root, `${skillDir}/half-built/reference/NOTES.md`, "# Notes\n");
-  }
-
-  test("skill/ and skills/ produce the same missing-skill-md finding", async () => {
-    storage = withIsolatedAkmStorage();
-    const plural = path.join(storage.root, "oc-plural");
-    const singular = path.join(storage.root, "oc-singular");
-    opencodeBundle(plural, "skills");
-    opencodeBundle(singular, "skill");
-
-    expect(detectAdapterId(plural)).toBe("opencode");
-    expect(detectAdapterId(singular)).toBe("opencode");
-
-    const pluralResult = await akmLint({ dir: plural });
-    const singularResult = await akmLint({ dir: singular });
-
-    expect(pluralResult.flagged.filter((i) => i.issue === "missing-skill-md").map((i) => i.file)).toEqual([
-      "skills/half-built",
-    ]);
-    // This is the half that used to be silently clean.
-    expect(singularResult.flagged.filter((i) => i.issue === "missing-skill-md").map((i) => i.file)).toEqual([
-      "skill/half-built",
-    ]);
   });
 });

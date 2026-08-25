@@ -19,11 +19,11 @@
  *   1. same set of ITEMS (no item gained or lost), keyed by `(type, conceptId)`;
  *   2. every item persists with `item_ref == <bundle>//<conceptId>` (D-R2) and a
  *      populated `content_hash` (the diff-persist provenance write, M-core-2);
- *   3. the durable `entry_json` deep-equals `indexDocumentToStashEntry(doc)` —
+ *   3. the durable `document_json` deep-equals `indexDocumentToStashEntry(doc)` —
  *      the exact IndexDocument `recognize` reconstructs — modulo the persist-time
  *      `fileSize` (attached by `attachFileSize`, absent from the doc). This one
  *      equality SUBSUMES the old folded-search-fields and filter/ranking-signal
- *      arms: every one of those surfaces is derived from `entry_json`.
+ *      arms: every one of those surfaces is derived from `document_json`.
  *
  * Run over `all-types` (every asset type) and `search-filter` (rich curated/
  * belief/scope frontmatter + `.derived` twins).
@@ -32,9 +32,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { registerBuiltinAdapters } from "../../src/core/adapter/adapters";
 import { akmAdapter } from "../../src/core/adapter/adapters/akm-adapter";
-import { resetAdapterRegistryForTests } from "../../src/core/adapter/registry";
 import type { BundleComponent, IndexDocument } from "../../src/core/adapter/types";
 import { getDbPath } from "../../src/core/paths";
 import { akmIndex } from "../../src/indexer/indexer";
@@ -71,7 +69,7 @@ interface PersistedRow {
   conceptId: string;
   itemRef: string | null;
   contentHash: string | null;
-  // biome-ignore lint/suspicious/noExplicitAny: entry_json is the durable IndexDocument, compared structurally below.
+  // biome-ignore lint/suspicious/noExplicitAny: document_json is the durable IndexDocument, compared structurally below.
   entry: any;
 }
 
@@ -86,8 +84,6 @@ for (const { name, root } of STASHES) {
     let rows: PersistedRow[] = [];
 
     beforeAll(async () => {
-      resetAdapterRegistryForTests();
-      registerBuiltinAdapters();
       docs = newStream(root);
 
       // Build the live index over the fixture in a sandboxed XDG home so the
@@ -108,19 +104,19 @@ for (const { name, root } of STASHES) {
       const db = openIndexDatabase();
       try {
         rows = (
-          db.prepare("SELECT entry_type, concept_id, item_ref, content_hash, entry_json FROM entries").all() as Array<{
-            entry_type: string;
+          db.prepare("SELECT type, concept_id, item_ref, content_hash, document_json FROM entries").all() as Array<{
+            type: string;
             concept_id: string;
             item_ref: string | null;
             content_hash: string | null;
-            entry_json: string;
+            document_json: string;
           }>
         ).map((r) => ({
-          entryType: r.entry_type,
+          entryType: r.type,
           conceptId: r.concept_id,
           itemRef: r.item_ref,
           contentHash: r.content_hash,
-          entry: JSON.parse(r.entry_json),
+          entry: JSON.parse(r.document_json),
         }));
       } finally {
         closeDatabase(db);
@@ -152,7 +148,7 @@ for (const { name, root } of STASHES) {
       }
     });
 
-    test("persisted entry_json deep-equals recognize→IndexDocument (minus persist-time fileSize)", () => {
+    test("persisted document_json deep-equals recognize→IndexDocument (minus persist-time fileSize)", () => {
       const expectedByKey = new Map(docs.map((d) => [docKey(d), indexDocumentToStashEntry(d)]));
       let asserted = 0;
       for (const r of rows) {
@@ -164,7 +160,7 @@ for (const { name, root } of STASHES) {
         // IndexDocument never carries it. Strip it for the structural comparison.
         persisted.fileSize = undefined;
         delete persisted.fileSize;
-        expect(persisted, `entry_json for ${rowKey(r)}`).toEqual(expected);
+        expect(persisted, `document_json for ${rowKey(r)}`).toEqual(expected);
         asserted += 1;
       }
       expect(asserted).toBe(docs.length);

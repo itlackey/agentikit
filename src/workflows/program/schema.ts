@@ -78,7 +78,7 @@ export const PROGRAM_RETRY_REASONS = Object.keys(RETRY_REASON_SET) as readonly A
 
 /**
  * Step ids: `[A-Za-z_][A-Za-z0-9_-]*` (also pinned in the JSON Schema) — the
- * ONE id grammar for the unified format (workflow-format-unification, spec
+ * ONE id grammar for the shared source IR (workflow-format-unification, spec
  * §2.2). This is EXACTLY the `<ident>` grammar `readIdent` accepts in
  * `program/expressions.ts` for `steps.<id>.output` references: a
  * letter/underscore first char, then letters/digits/underscores/dashes, and
@@ -124,9 +124,8 @@ export interface ProgramRetry {
  *
  * The child's environment is an ALLOWLIST by default (see
  * `EXEC_DEFAULT_ENV_PASSTHROUGH` in `exec/exec-unit.ts`). `pass_env` extends it
- * with a few named variables; `inherit_env` opts all the way back into the akm
- * process's whole environment. Both live inside `exec:` because the unit-level
- * `env:` key already means something else — a list of env asset binding REFS.
+ * with a few named variables. Whole-process inheritance is not an authoring
+ * surface; `exec:` and unit-level named `env:` bindings are the only paths.
  */
 export interface ProgramExec {
   /** argv; `command[0]` is the program, resolved through PATH. Never shell-parsed. */
@@ -135,20 +134,16 @@ export interface ProgramExec {
   cwd?: string;
   /** Extra parent-process env var NAMES copied through on top of the default allowlist. */
   passEnv?: string[];
-  /** `true` = give the child akm's whole environment instead of the allowlist. */
-  inheritEnv?: boolean;
 }
 
 /**
  * An exec spec projected into its canonical structural form: argv copied, the
- * env-scope keys present ONLY in their meaningful state. `inheritEnv` narrows
- * to `true` because `false` is spelled as absence.
+ * env-scope keys present only in their meaningful state.
  */
 export interface ProgramExecCore {
   command: string[];
   cwd?: string;
   passEnv?: string[];
-  inheritEnv?: true;
 }
 
 /**
@@ -172,7 +167,6 @@ export function projectExecCore(exec: ProgramExec): ProgramExecCore {
     command: [...exec.command],
     ...(exec.cwd ? { cwd: exec.cwd } : {}),
     ...(exec.passEnv && exec.passEnv.length > 0 ? { passEnv: [...exec.passEnv] } : {}),
-    ...(exec.inheritEnv ? { inheritEnv: true as const } : {}),
   };
 }
 

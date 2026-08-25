@@ -24,8 +24,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getDirname } from "../runtime";
-import { parseTaskDocument } from "./parser";
-import type { TaskDocument } from "./schema";
+import { parseTaskV3Yaml, type TaskV3SourceDocument } from "./source-v3";
 
 /** Directory holding the bundled task template categories. */
 const TASKS_ASSETS_DIR = path.join(getDirname(import.meta.url), "../assets/tasks");
@@ -88,20 +87,20 @@ export function listEmbeddedTasks(): EmbeddedTask[] {
       } catch {
         continue;
       }
-      let task: TaskDocument;
+      let task: TaskV3SourceDocument;
       try {
-        task = parseTaskDocument({ yaml, filePath, id });
+        task = parseTaskV3Yaml({ yaml, filePath, workspaceRoot: TASKS_ASSETS_DIR });
       } catch {
         continue;
       }
-      if (task.target.kind !== "command") continue;
+      if (task.target.kind !== "run" || task.akm?.schedule === undefined) continue;
       tasks.push({
         id,
         label: `${category}/${id}`,
-        command: task.target.cmd.join(" "),
-        schedule: task.schedule,
-        description: task.description ?? "",
-        enabled: task.enabled,
+        command: task.target.run,
+        schedule: task.akm.schedule,
+        description: task.akm.description ?? "",
+        enabled: task.akm.enabled !== false,
         yaml,
       });
     }

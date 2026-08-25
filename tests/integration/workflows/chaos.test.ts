@@ -21,7 +21,7 @@ import {
   type StepWorkList,
   stepOutputsFromEvidence,
 } from "../../../src/workflows/exec/step-work";
-import type { WorkflowPlanGraph } from "../../../src/workflows/ir/schema";
+import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../../src/workflows/ir/schema-v4";
 import { getWorkflowStatus, resumeWorkflowRun, startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
@@ -107,7 +107,7 @@ function workListFor(
 
 /**
  * The engine's FULL computed work list for a step — every unit's resolved
- * prompt, input hash, env ref names and frozen engine snapshot. This is the
+ * prompt, input hash, frozen environment bindings and engine snapshot. This is the
  * exact structure the engine is about to dispatch from, so asserting a value is
  * absent from it is a real durable-surface check, not a vacuous one.
  */
@@ -122,7 +122,6 @@ function fullWorkList(
     runId,
     params,
     stepOutputs,
-    engines: plan.execution?.engines,
   });
   if (!computed.ok) throw new Error(computed.error);
   return computed.list;
@@ -692,7 +691,17 @@ describe("chaos: hostile content — events, clipping, journaled gate feedback",
     expect(result.done).toBe(true);
 
     // Every workflow_unit_* event carries only the whitelisted metadata keys.
-    const allowedKeys = new Set(["runId", "stepId", "unitId", "status", "failureReason", "tokens"]);
+    const allowedKeys = new Set([
+      "runId",
+      "stepId",
+      "unitId",
+      "attempt",
+      "dispatchId",
+      "phase",
+      "status",
+      "failureReason",
+      "tokens",
+    ]);
     const unitEvents = readEvents({}).events.filter((e) => e.eventType.startsWith("workflow_unit_"));
     expect(unitEvents.length).toBeGreaterThan(0);
     for (const ev of unitEvents) {
@@ -834,10 +843,13 @@ describe("chaos: hostile content — secret env VALUES never reach a durable sur
     const runId = started.run.id;
 
     // The engine's OWN work list BEFORE any dispatch — including each unit's
-    // fully-resolved prompt and input-hash preimage. The env binding is carried
-    // as a REF NAME only; the whole computed structure contains no secret value.
+    // fully-resolved prompt and input-hash preimage. The env binding is frozen
+    // as descriptor metadata only; the whole computed structure contains no
+    // secret value.
     const preWork = fullWorkList(await frozenPlan(runId), 0, runId, {});
-    expect(preWork.units[0]!.env).toEqual(["env/leak"]);
+    const envBinding = preWork.units[0]?.environment[0];
+    expect(envBinding?.kind).toBe("env-ref");
+    expect(envBinding?.kind === "env-ref" ? envBinding.ref : "").toMatch(/(?:^|\/{2})env\/leak$/);
     expect(JSON.stringify(preWork)).not.toContain(FAKE_SECRET);
 
     // Drive the step: the resolved value DOES reach the dispatched child env

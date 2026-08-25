@@ -126,35 +126,10 @@ describe("amazonqBuilder — tool policy", () => {
   });
 });
 
-// ── Builder — model alias resolution ─────────────────────────────────────────
+// ── Builder — exact model selection ─────────────────────────────────────────
 
-describe("amazonqBuilder — model resolution via resolveModel('amazonq')", () => {
-  test("profile.modelAliases resolves a custom alias for the amazonq platform", () => {
-    const profile = makeQProfile({ modelAliases: { fast: "claude-haiku-4-5" } });
-    const cmd = amazonqBuilder.build(profile, { prompt: "go", model: "fast" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("claude-haiku-4-5");
-  });
-
-  test("globalModelAliases amazonq column wins over '*' fallback", () => {
-    const profile = makeQProfile({
-      globalModelAliases: { deep: { amazonq: "claude-sonnet-4-6", "*": "generic-deep" } },
-    });
-    const cmd = amazonqBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("claude-sonnet-4-6");
-  });
-
-  test("globalModelAliases '*' fallback applies when no amazonq column exists", () => {
-    const profile = makeQProfile({
-      globalModelAliases: { deep: { "*": "generic-deep" } },
-    });
-    const cmd = amazonqBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("generic-deep");
-  });
-
-  test("builtin alias without an amazonq column passes through verbatim (user aliases own q ids)", () => {
+describe("amazonqBuilder — exact model selection", () => {
+  test("a model selector passes through verbatim", () => {
     const cmd = amazonqBuilder.build(makeQProfile(), { prompt: "go", model: "sonnet" });
     const argv = cmd.argv as string[];
     expect(argv[argv.indexOf("--model") + 1]).toBe("sonnet");

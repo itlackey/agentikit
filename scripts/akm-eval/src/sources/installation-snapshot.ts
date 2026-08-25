@@ -16,6 +16,7 @@ import {
 } from "../../../../src/core/file-lock";
 import { resolveWritable } from "../../../../src/core/write-source";
 import { type Database, openDatabaseFinalizing } from "../../../../src/storage/database";
+import { isCanonicalIndexGeneration } from "../../../../src/storage/repositories/index-entry-schema";
 import {
   assertSafeRelativePath,
   assertSha256,
@@ -553,6 +554,9 @@ function snapshotDatabase(
     database = openDatabaseFinalizing(sourcePath, { readonly: true, create: false });
     database.exec("PRAGMA busy_timeout = 10000");
     assertQuickCheck(database, sourcePath);
+    if (databaseName === "index.db" && !isCanonicalIndexGeneration(database)) {
+      throw new Error(`incompatible derived index generation: ${sourcePath}`);
+    }
     makePrivateDirectory(path.dirname(destinationPath));
     database.exec(`VACUUM INTO ${sqliteQuote(destinationPath)}`);
   } catch (error) {
@@ -667,6 +671,9 @@ function rewriteDatabasePaths(
     : openDatabaseFinalizing(databasePath, { readonly: true, create: false });
   let inTransaction = false;
   try {
+    if (databaseName === "index.db" && !isCanonicalIndexGeneration(database)) {
+      throw new Error(`incompatible derived index generation: ${databasePath}`);
+    }
     if (write) {
       database.exec("PRAGMA foreign_keys = OFF");
       database.exec("BEGIN IMMEDIATE");
@@ -719,11 +726,7 @@ function rewriteIndexDatabasePaths(
   write: boolean,
 ): void {
   for (const [table, column] of [
-    ["entries", "entry_key"],
-    ["entries", "dir_path"],
     ["entries", "file_path"],
-    ["entries", "stash_dir"],
-    ["workflow_documents", "source_path"],
     ["graph_meta", "stash_root"],
     ["graph_files", "stash_root"],
     ["graph_files", "file_path"],
@@ -738,11 +741,7 @@ function rewriteIndexDatabasePaths(
   ] as const) {
     rewriteTextColumn(database, table, column, mapValue, write);
   }
-  for (const [table, column] of [
-    ["entries", "entry_json"],
-    ["entries", "document_json"],
-    ["workflow_documents", "document_json"],
-  ] as const) {
+  for (const [table, column] of [["entries", "document_json"]] as const) {
     rewriteJsonColumn(database, table, column, mapValue, write);
   }
   rewriteIndexStashDirs(database, mapValue, write);

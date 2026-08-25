@@ -235,7 +235,7 @@ export class RecordingStateDbSources implements StateDbReader {
   available(): boolean {
     const result = this.inner.available();
     // Record on first call so the player can return the same answer and the
-    // runner picks the same branch (state-db vs stash-fs fallback). Only
+    // runner preserves the same availability decision during replay. Only
     // recorded once per source — `available()` is a pure existence check
     // on a path that doesn't change during a run.
     if (!this.availableRecorded) {

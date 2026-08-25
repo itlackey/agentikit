@@ -13,6 +13,9 @@
  */
 
 import type { AkmConfig } from "../../core/config/config";
+import type { LoweringNotice } from "../../execution/resolved-request";
+import type { LoweredExecutionDispatchLease } from "../../integrations/agent/execution-lowering";
+import type { ResolvedIndexPassExecution } from "../../llm/index-passes";
 import type { Database } from "../../storage/database";
 import type { SearchSource } from "../search/search-source";
 import type { SemanticSearchReason, SemanticSearchRuntimeStatus } from "../search/semantic-status";
@@ -46,6 +49,14 @@ export interface IndexVerification {
   vecAvailable: boolean;
 }
 
+/** Canonical configured owner that disappeared or moved since the last complete scan. */
+export interface RemovedIndexSource {
+  bundleId: string;
+  sourceRoot: string;
+  /** False when the same bundle id remains configured at a different root. */
+  removeBundleEntries: boolean;
+}
+
 /** Progress event emitted during indexing. Mirrors IndexProgressEvent in indexer.ts. */
 export interface IndexPhaseEvent {
   phase: "summary" | "preflight" | "scan" | "llm" | "embeddings" | "fts" | "finalize" | "verify";
@@ -60,6 +71,12 @@ export interface IndexRunContext {
   db: Database;
   /** Resolved AKM configuration. */
   config: AkmConfig;
+  /** Frozen standalone metadata-enrichment selection for this invocation. */
+  enrichmentExecution: ResolvedIndexPassExecution;
+  /** Opaque credential snapshot held for the full metadata mutation scope. */
+  enrichmentLease?: LoweredExecutionDispatchLease;
+  /** Stable, deduped lowering diagnostics accumulated across enrichment calls. */
+  loweringNotices: Array<Readonly<LoweringNotice>>;
   /** All resolved stash source entries (primary + additional). */
   sources: SearchSource[];
   /** All source directory paths (derived from `sources`). */
@@ -82,8 +99,8 @@ export interface IndexRunContext {
   builtAtMs: number;
   /** Whether sources were removed since the last run (triggers orphan cleanup). */
   hadRemovedSources: boolean;
-  /** Prior source roots to remove only after every current source scans completely. */
-  removedSourceDirs: string[];
+  /** Prior canonical owners to remove only after every current source scans completely. */
+  removedSources: RemovedIndexSource[];
   /** Whether every configured component produced a trustworthy source snapshot. */
   scanComplete: boolean;
 

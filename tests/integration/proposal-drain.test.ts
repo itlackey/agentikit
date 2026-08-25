@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  buildJudgmentPrompt,
   classifyProposal,
   type DrainOptions,
   drainProposals,
@@ -19,10 +21,13 @@ import {
   type Proposal,
 } from "../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
 import type { EventsContext } from "../../src/core/events";
+import { getStateDbPath } from "../../src/core/state-db";
 import type { AgentRunResult } from "../../src/integrations/agent";
 import type { RunnerSpec } from "../../src/integrations/agent/runner";
 import { makeConfig } from "../_helpers/factories";
+import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
 
 // ── Test setup ────────────────────────────────────────────────────────────
 //
@@ -45,6 +50,24 @@ function makeStashDir(): string {
     fs.mkdirSync(path.join(stash, dir), { recursive: true });
   }
   return stash;
+}
+
+function snapshotTree(root: string): Record<string, string> {
+  const snapshot: Record<string, string> = {};
+  const visit = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      const relativePath = path.relative(root, fullPath).split(path.sep).join("/");
+      if (entry.isDirectory()) {
+        snapshot[`${relativePath}/`] = "directory";
+        visit(fullPath);
+      } else {
+        snapshot[relativePath] = createHash("sha256").update(fs.readFileSync(fullPath)).digest("hex");
+      }
+    }
+  };
+  visit(root);
+  return snapshot;
 }
 
 function eventsCtx(): EventsContext {
@@ -411,19 +434,30 @@ describe("drainProposals — dry-run", () => {
 /** A minimal `llm` RunnerSpec — the injected `chat` seam ignores the connection. */
 const FAKE_LLM_RUNNER: RunnerSpec = {
   kind: "llm",
-  connection: { endpoint: "http://fake.invalid/v1/chat/completions", model: "fake-judge" },
+  engine: "fake-llm-judge",
+  connection: {
+    endpoint: "http://fake.invalid/v1/chat/completions",
+    model: "provider/exact-fake-judge",
+    temperature: 0.11,
+    maxTokens: 77,
+    contextLength: 8_192,
+  },
 };
 
 /** A minimal `agent` RunnerSpec — the injected `runAgentFn` ignores the profile. */
 const FAKE_AGENT_RUNNER: RunnerSpec = {
   kind: "agent",
+  engine: "fake-agent-judge",
+  timeoutMs: 1_234,
   profile: {
     name: "fake-judge",
+    platform: "opencode",
     bin: "fake-judge",
     args: [],
     stdio: "captured",
     envPassthrough: [],
     parseOutput: "text",
+    model: "provider/exact-agent-judge",
   },
 };
 
@@ -432,6 +466,81 @@ function agentResult(stdout: string): AgentRunResult {
 }
 
 describe("drainProposals — judgment tier (llm mode)", () => {
+  test("an unused judgment credential is not materialized when deterministic policy leaves no deferred work", async () => {
+    const stash = makeStashDir();
+    const accepted = seed(stash, "lessons/deterministic-only", "extract", VALID_LESSON);
+    const runner: RunnerSpec = {
+      ...FAKE_LLM_RUNNER,
+      credential: { names: ["AKM_UNUSED_DRAIN_REQUIRED_KEY"], required: true },
+    };
+    const chat = mock(async () => {
+      throw new Error("deterministic-only drain reached judgment provider");
+    });
+
+    const result = await withEnv({ AKM_UNUSED_DRAIN_REQUIRED_KEY: undefined }, () =>
+      drainProposals(baseOpts(stash, { judgment: runner }), fakeAccept(), fakeReject(), { chat }),
+    );
+
+    expect(result.promoted).toEqual([accepted.id]);
+    expect(result.deferred).toEqual([]);
+    expect(chat).not.toHaveBeenCalled();
+  });
+
+  test("missing required judgment credential propagates before proposal or event mutation", async () => {
+    const stash = makeStashDir();
+    seed(stash, "lessons/credential-boundary", "consolidate", BIG_LESSON);
+    const before = snapshotTree(stash);
+    const stateDir = path.dirname(getStateDbPath());
+    const stateBefore = snapshotTree(stateDir);
+    const eventContext = eventsCtx();
+    const runner: RunnerSpec = {
+      ...FAKE_LLM_RUNNER,
+      credential: { names: ["AKM_DRAIN_REQUIRED_KEY"], required: true },
+    };
+    const chat = mock(async () => {
+      throw new Error("required-credential judgment reached provider");
+    });
+
+    await withEnv({ AKM_DRAIN_REQUIRED_KEY: undefined }, async () => {
+      await expect(
+        drainProposals(baseOpts(stash, { judgment: runner, eventsCtx: eventContext }), fakeAccept(), fakeReject(), {
+          chat,
+        }),
+      ).rejects.toBeInstanceOf(ConfigError);
+    });
+
+    expect(chat).not.toHaveBeenCalled();
+    expect(snapshotTree(stash)).toEqual(before);
+    expect(snapshotTree(stateDir)).toEqual(stateBefore);
+    expect(fs.existsSync(eventContext.dbPath ?? "")).toBe(false);
+  });
+
+  test("all deferred judgments use the credential captured before drain mutations", async () => {
+    const stash = makeStashDir();
+    const first = seed(stash, "lessons/lease-first", "consolidate", BIG_LESSON);
+    const second = seed(stash, "lessons/lease-second", "consolidate", BIG_LESSON);
+    const secret = "drain-lease-original-092";
+    const runner: RunnerSpec = {
+      ...FAKE_LLM_RUNNER,
+      credential: { names: ["AKM_DRAIN_LEASE_KEY"], required: true },
+    };
+    const observed: Array<string | undefined> = [];
+    const chat = mock(async (dispatched: Extract<RunnerSpec, { kind: "llm" }>) => {
+      observed.push(dispatched.connection.apiKey);
+      if (observed.length === 1) mutateScopedEnv("AKM_DRAIN_LEASE_KEY", undefined);
+      return JSON.stringify({ decision: "reject", reason: "lease fixture" });
+    });
+    const rejectFn = fakeReject();
+
+    const result = await withEnv({ AKM_DRAIN_LEASE_KEY: secret }, () =>
+      drainProposals(baseOpts(stash, { judgment: runner }), fakeAccept(), rejectFn, { chat }),
+    );
+
+    expect(result.rejected.sort()).toEqual([first.id, second.id].sort());
+    expect(observed).toEqual([secret, secret]);
+    expect(rejectFn).toHaveBeenCalledTimes(2);
+  });
+
   test("engine accepts a deferred item when the llm verdict is accept", async () => {
     const stash = makeStashDir();
     const deferred = seed(stash, "lessons/big", "consolidate", BIG_LESSON);
@@ -444,6 +553,23 @@ describe("drainProposals — judgment tier (llm mode)", () => {
     const result = await drainProposals(baseOpts(stash, { judgment: FAKE_LLM_RUNNER }), promoteFn, rejectFn, seams);
 
     expect(chat).toHaveBeenCalledTimes(1);
+    expect(chat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connection: expect.objectContaining({
+          model: "provider/exact-fake-judge",
+          temperature: 0.11,
+          maxTokens: 77,
+          contextLength: 8_192,
+        }),
+      }),
+      [
+        {
+          role: "user",
+          content: buildJudgmentPrompt(deferred, "mid-band", { liveAsset: undefined, siblings: [] }),
+        },
+      ],
+    );
+    expect(result.notices).toBeUndefined();
     // The ENGINE performed the accept (promote mode), not the runner.
     expect(result.promoted).toEqual([deferred.id]);
     expect(result.deferred).toEqual([]);
@@ -499,6 +625,23 @@ describe("drainProposals — judgment tier (llm mode)", () => {
     expect(result.deferred.map((d) => d.id)).toEqual([deferred.id]);
     expect(promoteFn).not.toHaveBeenCalled();
   });
+
+  test("provider rejection remains deferred without fabricating lowering notices", async () => {
+    const stash = makeStashDir();
+    const deferred = seed(stash, "lessons/provider-reject", "consolidate", BIG_LESSON);
+    const chat = mock(async () => {
+      throw new Error("PROVIDER-BODY-SENTINEL");
+    });
+
+    const result = await drainProposals(baseOpts(stash, { judgment: FAKE_LLM_RUNNER }), fakeAccept(), fakeReject(), {
+      chat,
+    });
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(result.deferred.map((item) => item.id)).toEqual([deferred.id]);
+    expect(result.notices).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("PROVIDER-BODY-SENTINEL");
+  });
 });
 
 describe("drainProposals — judgment tier (agent mode)", () => {
@@ -506,9 +649,11 @@ describe("drainProposals — judgment tier (agent mode)", () => {
     const stash = makeStashDir();
     const deferred = seed(stash, "lessons/big", "consolidate", BIG_LESSON);
 
-    const runAgentFn = mock(async () =>
-      agentResult(JSON.stringify({ decision: "accept", reason: "merge is correct" })),
-    );
+    let capturedDispatch: Record<string, unknown> | undefined;
+    const runAgentFn: NonNullable<JudgmentSeams["runAgentFn"]> = mock(async (_profile, _prompt, options) => {
+      capturedDispatch = options.dispatch;
+      return agentResult(JSON.stringify({ decision: "accept", reason: "merge is correct" }));
+    });
     const promoteFn = fakeAccept();
 
     const result = await drainProposals(baseOpts(stash, { judgment: FAKE_AGENT_RUNNER }), promoteFn, fakeReject(), {
@@ -516,6 +661,21 @@ describe("drainProposals — judgment tier (agent mode)", () => {
     });
 
     expect(runAgentFn).toHaveBeenCalledTimes(1);
+    expect(runAgentFn).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "provider/exact-agent-judge" }),
+      buildJudgmentPrompt(deferred, "mid-band", { liveAsset: undefined, siblings: [] }),
+      expect.objectContaining({
+        stdio: "captured",
+        parseOutput: "text",
+        timeoutMs: 1_234,
+        dispatch: expect.objectContaining({
+          model: "provider/exact-agent-judge",
+        }),
+      }),
+    );
+    expect(capturedDispatch).not.toHaveProperty("tools");
+    expect(capturedDispatch).not.toHaveProperty("schema");
+    expect(result.notices).toBeUndefined();
     expect(result.promoted).toEqual([deferred.id]);
     expect(result.deferred).toEqual([]);
     expect(promoteFn).toHaveBeenCalledTimes(1);

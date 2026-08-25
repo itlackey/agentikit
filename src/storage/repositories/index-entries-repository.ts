@@ -43,53 +43,38 @@ import { deleteEntryVectors, isVecAvailable } from "./index-vec-repository";
  */
 export function upsertEntry(
   db: Database,
-  entryKey: string,
-  dirPath: string,
   filePath: string,
-  stashDir: string,
   entry: IndexDocument,
   searchText: string,
-  provenance?: EntryProvenance,
+  provenance: EntryProvenance,
   contentHash?: string,
 ): number {
   // Hot path during indexing — cache prepared statements per database
   // connection so we don't pay the SQL parse/compile cost on every call.
   const stmts = getUpsertStmts(db);
-  const previous =
-    (provenance?.itemRef
-      ? (stmts.findByItemRef.get(provenance.itemRef) as ExistingUpsertRow | undefined)
-      : undefined) ?? (stmts.findByEntryKey.get(entryKey) as ExistingUpsertRow | undefined);
+  const previous = stmts.findByItemRef.get(provenance.itemRef) as ExistingUpsertRow | undefined;
   // Phase 5A / Advantage D5: surface derived memory parent ref into the
   // dedicated `derived_from` column so retrieval-time lookup (parent→child)
   // does not have to scan + JSON-decode every memory row.
   const derivedFrom =
     typeof entry.derivedFrom === "string" && entry.derivedFrom.trim() ? entry.derivedFrom.trim() : null;
-  // Chunk-5 Step 2 (spec §14.4): populate the additive identity/provenance
-  // columns alongside the legacy ones. `type` mirrors `entry_type` (the open
-  // token) unconditionally; `item_ref`/bundle/component/concept/adapter come
-  // from the write-boundary derivation when available (NULL otherwise, healed
-  // by the next full index). `content_hash` (F4a M-core-2) is `doc.hash` from
-  // the diff-persist writer; a NULL passed here PRESERVES any existing hash (the
-  // ON CONFLICT COALESCE below) so the LLM-enrichment re-upsert cannot wipe it.
+  // `content_hash` is optional on the LLM-enrichment re-upsert; a missing hash
+  // preserves the scan writer's current value.
   const apply = (): number => {
     const result = stmts.upsert.get(
-      entryKey,
-      dirPath,
+      provenance.itemRef,
+      provenance.bundleId,
+      provenance.componentId,
+      provenance.conceptId,
+      provenance.adapterId,
+      entry.type,
       filePath,
-      stashDir,
+      contentHash ?? null,
       JSON.stringify(entry),
       searchText,
-      entry.type,
       derivedFrom,
-      provenance?.itemRef ?? null,
-      provenance?.bundleId ?? null,
-      provenance?.componentId ?? null,
-      provenance?.conceptId ?? null,
-      provenance?.adapterId ?? null,
-      entry.type,
-      contentHash ?? null,
     ) as { id: number } | undefined;
-    if (!result) throw new Error("upsertEntry: entry_key not found after upsert");
+    if (!result) throw new Error("upsertEntry: item_ref not found after upsert");
 
     if (previous?.id === result.id && previous.search_text !== searchText) deleteEntryVectors(db, result.id);
 
@@ -106,7 +91,6 @@ interface UpsertStmts {
   upsert: ReturnType<Database["prepare"]>;
   markDirty: ReturnType<Database["prepare"]>;
   findByItemRef: ReturnType<Database["prepare"]>;
-  findByEntryKey: ReturnType<Database["prepare"]>;
 }
 
 interface ExistingUpsertRow {
@@ -116,52 +100,38 @@ interface ExistingUpsertRow {
 
 const upsertStmtsByDb = new WeakMap<Database, UpsertStmts>();
 
-// The ON CONFLICT DO UPDATE column assignments — factored out so the two
-// conflict targets below stay byte-identical. `item_ref` is durable identity;
-// update `entry_key` when adapter ownership changes its
-// spelling so directory pruning retains the upserted row.
-// `content_hash` COALESCEs so a NULL passed by the LLM-enhance re-upsert cannot
-// wipe a previously-persisted hash.
+// item_ref is the sole durable conflict target. `content_hash` COALESCEs so a
+// metadata-only enrichment pass cannot wipe a scan hash.
 const UPSERT_SET_CLAUSE = `SET
-        entry_key = excluded.entry_key,
-        dir_path = excluded.dir_path,
-        file_path = excluded.file_path,
-        stash_dir = excluded.stash_dir,
-        entry_json = excluded.entry_json,
-        search_text = excluded.search_text,
-        entry_type = excluded.entry_type,
-        derived_from = excluded.derived_from,
-        item_ref = excluded.item_ref,
         bundle_id = excluded.bundle_id,
         component_id = excluded.component_id,
         concept_id = excluded.concept_id,
         adapter_id = excluded.adapter_id,
         type = excluded.type,
+        file_path = excluded.file_path,
+        document_json = excluded.document_json,
+        search_text = excluded.search_text,
+        derived_from = excluded.derived_from,
         content_hash = COALESCE(excluded.content_hash, content_hash)`;
 
 function getUpsertStmts(db: Database): UpsertStmts {
   const existing = upsertStmtsByDb.get(db);
   if (existing) return existing;
-  // Durable identity is the primary conflict target. `entry_key` remains the
-  // internal conflict key for low-level entries without provenance.
-  const conflictClause = `ON CONFLICT(item_ref) DO UPDATE ${UPSERT_SET_CLAUSE}
-      ON CONFLICT(entry_key) DO UPDATE ${UPSERT_SET_CLAUSE}`;
   const stmts: UpsertStmts = {
     // RETURNING id handles ON CONFLICT DO UPDATE correctly — no second
     // SELECT round-trip needed (last_insert_rowid() is unreliable for
     // ON CONFLICT). Use `.get()` so a single row comes back.
     upsert: db.prepare(`
       INSERT INTO entries (
-        entry_key, dir_path, file_path, stash_dir, entry_json, search_text, entry_type, derived_from,
-        item_ref, bundle_id, component_id, concept_id, adapter_id, type, content_hash
+        item_ref, bundle_id, component_id, concept_id, adapter_id, type,
+        file_path, content_hash, document_json, search_text, derived_from
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ${conflictClause}
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(item_ref) DO UPDATE ${UPSERT_SET_CLAUSE}
       RETURNING id
     `),
     markDirty: db.prepare("INSERT OR IGNORE INTO entries_fts_dirty (entry_id) VALUES (?)"),
-    findByItemRef: db.prepare("SELECT id, search_text FROM entries WHERE item_ref = ? ORDER BY id ASC LIMIT 1"),
-    findByEntryKey: db.prepare("SELECT id, search_text FROM entries WHERE entry_key = ? LIMIT 1"),
+    findByItemRef: db.prepare("SELECT id, search_text FROM entries WHERE item_ref = ?"),
   };
   upsertStmtsByDb.set(db, stmts);
   return stmts;
@@ -177,9 +147,9 @@ function getUpsertStmts(db: Database): UpsertStmts {
  * ordering keeps results deterministic). Returns `null` when no derived
  * child has been indexed for this parent.
  */
-export function getDerivedForParent(db: Database, parentRef: string, stashDir?: string): DbIndexedEntry | null {
+export function getDerivedForParent(db: Database, parentRef: string, bundleId?: string): DbIndexedEntry | null {
   if (!parentRef) return null;
-  const sourceScope = stashDir ? "AND stash_dir = ?" : "";
+  const sourceScope = bundleId ? "AND bundle_id = ?" : "";
   const row = db
     .prepare(
       `SELECT ${ENTRY_COLUMNS}
@@ -189,7 +159,7 @@ export function getDerivedForParent(db: Database, parentRef: string, stashDir?: 
          ORDER BY id DESC
          LIMIT 1`,
     )
-    .get(parentRef, ...(stashDir ? [stashDir] : [])) as EntryRow | undefined;
+    .get(parentRef, ...(bundleId ? [bundleId] : [])) as EntryRow | undefined;
   if (!row) return null;
   return rowToIndexedEntry(row, "getDerivedForParent");
 }
@@ -200,10 +170,9 @@ export function getDerivedForParent(db: Database, parentRef: string, stashDir?: 
  *
  * Used by the derived-twin belief inheritance in search ranking: a `.derived`
  * twin has no belief state of its own, so it inherits its base memory's
- * demoting state (contradicted/superseded/…) at search time. A twin's
- * `entry_key` is exactly its base's `entry_key` plus the `.derived` suffix
- * (same stash + type prefix, `<name>` vs `<name>.derived`), so the base is
- * found by stripping that suffix — no ref/prefix reconstruction. Returns a map
+ * demoting state (contradicted/superseded/…) at search time. A twin's durable
+ * `item_ref` is exactly its base ref plus the `.derived` suffix, so the base is
+ * found by stripping that suffix. Returns a map
  * of twin id → base beliefState for bases that carry a non-empty state.
  * Best-effort: any query error (e.g. legacy DB) yields no inheritance rather
  * than failing the search.
@@ -220,14 +189,14 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
     bestEffort(() => {
       const rows = db
         .prepare(
-          `SELECT twin.id AS twin_id, json_extract(base.entry_json, '$.beliefState') AS belief
+          `SELECT twin.id AS twin_id, json_extract(base.document_json, '$.beliefState') AS belief
            FROM entries twin
            JOIN entries base
-             ON base.entry_type = 'memory'
+             ON base.type = 'memory'
              AND base.item_ref = substr(twin.item_ref, 1, length(twin.item_ref) - length('.derived'))
            WHERE twin.id IN (${placeholders})
              AND twin.item_ref LIKE '%.derived'
-             AND json_extract(base.entry_json, '$.beliefState') IS NOT NULL`,
+             AND json_extract(base.document_json, '$.beliefState') IS NOT NULL`,
         )
         .all(...chunk) as { twin_id: number; belief: string | null }[];
       for (const r of rows) {
@@ -239,15 +208,15 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
 }
 
 /**
- * SPEC-7 (`akm mv`): re-key an entries row IN PLACE after an on-disk rename.
+ * Re-key an entries row in place for the opt-in source-maintenance script.
  *
  * The row id is preserved on purpose — `utility_scores`,
  * `utility_scores_scoped`, and `embeddings` are keyed by `entry_id`, so an
- * UPDATE (rather than a delete + insert under the new `entry_key`) is what
+ * UPDATE (rather than a delete + insert under the new `item_ref`) is what
  * keeps the asset's accumulated usage-ranking history attached across a
  * rename. (`asset_salience` / `asset_outcome` live in state.db keyed by
  * `asset_ref` TEXT and are re-keyed separately by `akm mv` — see
- * mv-cli.ts `rekeyStateDbForMove`.) `entry_json.name` (and `filename`, when
+ * the state rekey helper.) `document_json.name` (and `filename`, when
  * present) is patched and `search_text` rebuilt so search reflects the new
  * name; the row is marked FTS-dirty for the caller's
  * `rebuildFts({incremental: true})`.
@@ -261,7 +230,7 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
  * never adopts them (live asset's history wins, matching the stale-row
  * eviction below).
  *
- * A stale row already occupying `newEntryKey` (the caller has verified no
+ * A stale row already occupying the new item ref (the caller has verified no
  * FILE exists at the target, so such a row can only be a leftover for a
  * deleted file) is evicted first — through {@link deleteRelatedRows}, so its
  * child rows (embeddings, entries_vec, utility scores, usage events) go with
@@ -269,52 +238,54 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
  * FK under `PRAGMA foreign_keys = ON` and roll back the whole re-key.
  * The moved row keeps its id.
  *
- * Returns the surviving row id, or `null` when no row matches `oldEntryKey`
+ * Returns the surviving row id, or `null` when no row matches the old item ref
  * (nothing indexed under the old name — the caller falls open and the next
  * full `akm index` picks the file up as a fresh entry).
  */
 export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number | null {
   const oldItemRef = `${opts.sourceName}//${opts.oldRef}`;
   const row = db
-    .prepare("SELECT id, stash_dir, entry_json, search_text, entry_type FROM entries WHERE item_ref = ?")
+    .prepare("SELECT id, file_path, document_json, search_text, type FROM entries WHERE item_ref = ?")
     .get(oldItemRef) as
     | {
         id: number;
-        stash_dir: string;
-        entry_json: string;
+        file_path: string;
+        document_json: string;
         search_text: string;
-        entry_type: string;
+        type: string;
       }
     | undefined
     | null;
   if (!row) return null;
-  if (path.resolve(row.stash_dir) !== path.resolve(opts.sourceRoot)) {
-    throw new Error(`Refusing to re-key entry ${opts.oldEntryKey}: source root does not match.`);
+  const sourceRoot = path.resolve(opts.sourceRoot);
+  const currentPath = path.resolve(row.file_path);
+  if (currentPath !== sourceRoot && !currentPath.startsWith(`${sourceRoot}${path.sep}`)) {
+    throw new Error(`Refusing to re-key entry ${oldItemRef}: source root does not match.`);
   }
 
-  // Patch the JSON payload. On corrupt entry_json still re-key key + paths so
+  // Patch the JSON payload. On corrupt document_json still re-key identity/path so
   // the utility history survives; the next full index heals the JSON.
-  let entryJson = row.entry_json;
+  let documentJson = row.document_json;
   let searchText = row.search_text;
   try {
-    const entry = JSON.parse(row.entry_json) as IndexDocument;
+    const entry = JSON.parse(row.document_json) as IndexDocument;
     entry.name = opts.newName;
     if (typeof entry.filename === "string") entry.filename = path.basename(opts.newFilePath);
     if (opts.newDerivedFrom !== undefined) entry.derivedFrom = opts.newDerivedFrom;
-    entryJson = JSON.stringify(entry);
+    documentJson = JSON.stringify(entry);
     searchText = buildSearchText(entry);
   } catch {
-    /* corrupt entry_json — key/path-only re-key */
+    /* corrupt document_json — identity/path-only re-key */
   }
 
-  const expectedNewRef = conceptIdFromTypeName(row.entry_type, opts.newName);
+  const expectedNewRef = conceptIdFromTypeName(row.type, opts.newName);
   if (opts.newRef !== expectedNewRef) {
-    throw new Error(`Refusing to re-key entry ${opts.oldEntryKey}: target ref does not match the entry type and name.`);
+    throw new Error(`Refusing to re-key entry ${oldItemRef}: target ref does not match the entry type and name.`);
   }
   const newItemRef = `${opts.sourceName}//${opts.newRef}`;
 
   db.transaction(() => {
-    const stale = db.prepare("SELECT id FROM entries WHERE entry_key = ?").get(opts.newEntryKey) as
+    const stale = db.prepare("SELECT id FROM entries WHERE item_ref = ?").get(newItemRef) as
       | { id: number }
       | undefined
       | null;
@@ -328,17 +299,8 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
       db.prepare("DELETE FROM entries WHERE id = ?").run(stale.id);
     }
     db.prepare(
-      "UPDATE entries SET entry_key = ?, dir_path = ?, file_path = ?, entry_json = ?, search_text = ?, item_ref = ?, concept_id = ? WHERE id = ?",
-    ).run(
-      opts.newEntryKey,
-      path.dirname(opts.newFilePath),
-      opts.newFilePath,
-      entryJson,
-      searchText,
-      newItemRef,
-      opts.newRef,
-      row.id,
-    );
+      "UPDATE entries SET file_path = ?, document_json = ?, search_text = ?, item_ref = ?, concept_id = ? WHERE id = ?",
+    ).run(opts.newFilePath, documentJson, searchText, newItemRef, opts.newRef, row.id);
     if (opts.newDerivedFrom !== undefined) {
       db.prepare("UPDATE entries SET derived_from = ? WHERE id = ?").run(opts.newDerivedFrom, row.id);
     }
@@ -431,87 +393,73 @@ export function getPositiveFeedbackCountsByIds(ids: number[]): Map<number, numbe
   return result;
 }
 
-function deleteEntriesWhere(db: Database, column: "dir_path" | "stash_dir", value: string): void {
-  db.transaction(() => {
-    const ids = db.prepare(`SELECT id FROM entries WHERE ${column} = ?`).all(value) as Array<{ id: number }>;
-    deleteRelatedRows(db, ids);
-    db.prepare(`DELETE FROM entries WHERE ${column} = ?`).run(value);
-  })();
+function rowsInDirectory(db: Database, dirPath: string, bundleId?: string): Array<{ id: number; item_ref: string }> {
+  const rows = db
+    .prepare(`SELECT id, item_ref, file_path FROM entries${bundleId ? " WHERE bundle_id = ?" : ""}`)
+    .all(...(bundleId ? [bundleId] : [])) as Array<{ id: number; item_ref: string; file_path: string }>;
+  const resolvedDir = path.resolve(dirPath);
+  return rows.filter((row) => path.dirname(path.resolve(row.file_path)) === resolvedDir);
+}
+
+function deleteEntryRows(
+  db: Database,
+  rows: Array<{ id: number }>,
+  options: { cleanupUsageEvents?: boolean } = {},
+): number[] {
+  if (rows.length === 0) return [];
+  deleteRelatedRows(db, rows, options);
+  for (let i = 0; i < rows.length; i += SQLITE_CHUNK_SIZE) {
+    const chunk = rows.slice(i, i + SQLITE_CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(",");
+    db.prepare(`DELETE FROM entries WHERE id IN (${placeholders})`).run(...chunk.map((row) => row.id));
+  }
+  return rows.map((row) => row.id);
 }
 
 export function deleteEntriesByDir(db: Database, dirPath: string): void {
-  deleteEntriesWhere(db, "dir_path", dirPath);
+  db.transaction(() => deleteEntryRows(db, rowsInDirectory(db, dirPath)))();
 }
 
-export function deleteEntriesByDirAndStash(
+export function deleteEntriesByDirAndBundle(
   db: Database,
   dirPath: string,
-  stashDir: string,
+  bundleId: string,
   options: { cleanupUsageEvents?: boolean } = {},
 ): number[] {
-  return db.transaction(() => {
-    const ids = db
-      .prepare("SELECT id FROM entries WHERE dir_path = ? AND stash_dir = ?")
-      .all(dirPath, stashDir) as Array<{
-      id: number;
-    }>;
-    deleteRelatedRows(db, ids, options);
-    db.prepare("DELETE FROM entries WHERE dir_path = ? AND stash_dir = ?").run(dirPath, stashDir);
-    return ids.map((row) => row.id);
+  return db.transaction(() => deleteEntryRows(db, rowsInDirectory(db, dirPath, bundleId), options))();
+}
+
+/** Delete every entry and child row belonging to one canonical bundle. */
+export function deleteEntriesByBundle(db: Database, bundleId: string): void {
+  db.transaction(() => {
+    const rows = db.prepare("SELECT id FROM entries WHERE bundle_id = ?").all(bundleId) as Array<{ id: number }>;
+    deleteEntryRows(db, rows);
   })();
 }
 
 /**
- * Delete every entry (and its child rows) under a source's stash root.
- *
- * Chunk-5 flip F1: this keys on `stash_dir` — the physical source-root path,
- * which is orthogonal to the ref grammar and identifies rows regardless of
- * whether their `item_ref` is populated or NULL. No item_ref predicate is
- * needed (or correct) here; both grammars' rows are removed by location.
- */
-export function deleteEntriesByStashDir(db: Database, stashDir: string): void {
-  deleteEntriesWhere(db, "stash_dir", stashDir);
-}
-
-/**
- * Diff-persist orphan delete (Chunk-5 flip F4a M-core-2): remove every entry
- * (and its child rows, via {@link deleteRelatedRows}) under `dirPath` whose
- * `entry_key` is NOT in `keepKeys` — the rows for files that vanished from a
- * rescanned directory.
+ * Diff-persist orphan delete: remove every entry under `dirPath` whose durable
+ * `item_ref` is not in `keepRefs`.
  *
  * Replaces the old per-dir `deleteEntriesByDir` + full re-insert: the caller
- * upserts the current file set FIRST (ON CONFLICT preserving `entries.id`, so
+ * upserts the current file set first (ON CONFLICT preserving `entries.id`, so
  * embeddings / utility / usage stay attached to unchanged rows), then calls this
- * to prune only the DEPARTED rows. The net row-state of `dir_path` is identical
+ * to prune only the departed rows. The net row-state for the directory is identical
  * to delete-then-reinsert; the win is that unchanged rows keep their id.
  *
- * Keyed on `entry_key` because it mirrors the directory upsert key precisely.
- * Both directory- and source-scoped so overlapping source roots cannot prune
- * one another's rows.
+ * Both directory- and bundle-scoped so overlapping physical roots cannot
+ * prune one another's rows.
  */
-export function deleteEntriesByDirExceptKeys(
+export function deleteEntriesByDirExceptRefs(
   db: Database,
   dirPath: string,
-  stashDir: string,
-  keepKeys: ReadonlySet<string>,
+  bundleId: string,
+  keepRefs: ReadonlySet<string>,
   options: { cleanupUsageEvents?: boolean } = {},
 ): number[] {
   return db.transaction(() => {
-    const rows = db
-      .prepare("SELECT id, entry_key FROM entries WHERE dir_path = ? AND stash_dir = ?")
-      .all(dirPath, stashDir) as Array<{
-      id: number;
-      entry_key: string;
-    }>;
-    const doomed = rows.filter((r) => !keepKeys.has(r.entry_key));
-    if (doomed.length === 0) return [];
-    deleteRelatedRows(db, doomed, options);
-    for (let i = 0; i < doomed.length; i += SQLITE_CHUNK_SIZE) {
-      const chunk = doomed.slice(i, i + SQLITE_CHUNK_SIZE);
-      const placeholders = chunk.map(() => "?").join(",");
-      db.prepare(`DELETE FROM entries WHERE id IN (${placeholders})`).run(...chunk.map((r) => r.id));
-    }
-    return doomed.map((row) => row.id);
+    const doomed = rowsInDirectory(db, dirPath, bundleId).filter((row) => !keepRefs.has(row.item_ref));
+    return deleteEntryRows(db, doomed, options);
   })();
 }
 
@@ -565,48 +513,48 @@ function deleteRelatedRows(
     );
   }
 
-  // usage_events lives in state.db, outside this transaction. Index persistence
-  // disables this cleanup and runs it only after its index.db transaction
-  // commits; standalone delete callers retain the immediate behavior.
-  if (options.cleanupUsageEvents !== false) deleteUsageEventsByEntryIds(numericIds);
-
-  // #624-P1: graph_files is NO LONGER keyed on entries.id, so deleting an
-  // entries row must NOT wipe the extracted graph (that is the whole point —
-  // the graph survives a reindex when body_hash is unchanged). We therefore do
-  // NOT delete graph_files here. We DO, however, recompute graph_meta counts
-  // for the stash roots touched by the deleted entries so the summary numbers
-  // stay consistent with the live child rows (the counts are derived, and the
-  // entries delete may have changed which files are considered/indexed).
-  //
-  // Resolve the affected stash roots from the entries rows BEFORE deletion.
-  const affectedStashRoots = new Set<string>();
+  // Graph rows are independently keyed and intentionally survive entry
+  // deletion. Resolve their owning roots through the canonical physical path
+  // before entries disappear, then refresh the derived summary counts.
+  const affectedGraphRoots = new Set<string>();
   for (let i = 0; i < numericIds.length; i += SQLITE_CHUNK_SIZE) {
     const chunk = numericIds.slice(i, i + SQLITE_CHUNK_SIZE);
     const placeholders = chunk.map(() => "?").join(",");
     bestEffort(() => {
       const rows = db
-        .prepare(`SELECT DISTINCT stash_dir FROM entries WHERE id IN (${placeholders})`)
-        .all(...chunk) as Array<{ stash_dir: string }>;
-      for (const row of rows) {
-        if (row.stash_dir) affectedStashRoots.add(row.stash_dir);
-      }
-    }, "resolve stash roots for graph_meta recompute");
+        .prepare(
+          `SELECT DISTINCT gf.stash_root
+             FROM graph_files gf
+             JOIN entries e ON e.file_path = gf.file_path
+            WHERE e.id IN (${placeholders})`,
+        )
+        .all(...chunk) as Array<{ stash_root: string }>;
+      for (const row of rows) affectedGraphRoots.add(row.stash_root);
+    }, "resolve graph roots for graph_meta recompute");
   }
-  for (const stashRoot of affectedStashRoots) {
+  for (const stashRoot of affectedGraphRoots) {
     bestEffort(
       () =>
         db
           .prepare(
             `UPDATE graph_meta
-             SET extracted_files = (SELECT COUNT(*) FROM graph_files WHERE stash_root = ?),
-                 entity_count    = (SELECT COUNT(*) FROM graph_file_entities WHERE stash_root = ?),
-                 relation_count  = (SELECT COUNT(*) FROM graph_file_relations WHERE stash_root = ?)
-             WHERE stash_root = ?`,
+                SET extracted_files = (SELECT COUNT(*) FROM graph_files WHERE stash_root = ?),
+                    entity_count    = (SELECT COUNT(*) FROM graph_file_entities WHERE stash_root = ?),
+                    relation_count  = (SELECT COUNT(*) FROM graph_file_relations WHERE stash_root = ?)
+              WHERE stash_root = ?`,
           )
           .run(stashRoot, stashRoot, stashRoot, stashRoot),
       "sync graph_meta counts after entries delete",
     );
   }
+
+  // usage_events lives in state.db, outside this transaction. Index persistence
+  // disables this cleanup and runs it only after its index.db transaction
+  // commits; standalone delete callers retain the immediate behavior.
+  if (options.cleanupUsageEvents !== false) deleteUsageEventsByEntryIds(numericIds);
+
+  // graph_files is keyed by its own stash_root/file_path/body_hash identity,
+  // so deleting an entry row intentionally leaves extracted graph data intact.
 }
 
 export function deleteUsageEventsByEntryIds(entryIds: number[]): void {
@@ -662,10 +610,10 @@ export function getAllEntries(db: Database, entryType?: string, excludeTypes?: s
   const excludes = excludeTypes && excludeTypes.length > 0 ? excludeTypes : [];
 
   if (entryType && entryType !== "any") {
-    sql = `SELECT ${ENTRY_COLUMNS} FROM entries WHERE entry_type = ?`;
+    sql = `SELECT ${ENTRY_COLUMNS} FROM entries WHERE type = ?`;
     params = [entryType];
   } else if (excludes.length > 0) {
-    sql = `SELECT ${ENTRY_COLUMNS} FROM entries WHERE entry_type NOT IN (${excludes.map(() => "?").join(", ")})`;
+    sql = `SELECT ${ENTRY_COLUMNS} FROM entries WHERE type NOT IN (${excludes.map(() => "?").join(", ")})`;
     params = [...excludes];
   } else {
     sql = `SELECT ${ENTRY_COLUMNS} FROM entries`;
@@ -679,11 +627,10 @@ export function getAllEntries(db: Database, entryType?: string, excludeTypes?: s
 /**
  * Resolve a single `entries.id` from a new-grammar `[bundle//]conceptId` ref,
  * keying on the canonical stored `item_ref` (ref-grammar decision D-R1/D-R4).
- * The optional `stashDir` scopes the
- * match to one source root.
+ * The optional `bundleId` scopes the match to one indexed bundle.
  */
-export function findEntryIdByRef(db: Database, ref: string, stashDir?: string): number | undefined {
-  return findEntryIdByBundleRef(db, ref, stashDir);
+export function findEntryIdByRef(db: Database, ref: string, bundleId?: string): number | undefined {
+  return findEntryIdByBundleRef(db, ref, bundleId);
 }
 
 /** `name` plus its `.md`-toggled sibling — the markdown ext-keep/strip ambiguity. */
@@ -695,13 +642,13 @@ function withMdVariants(name: string): string[] {
  * Current (`[bundle//]conceptId`) id lookup: match `item_ref` exactly when
  * bundle-qualified or by `//conceptId` suffix when short.
  */
-function findEntryIdByBundleRef(db: Database, ref: string, stashDir?: string): number | undefined {
+function findEntryIdByBundleRef(db: Database, ref: string, bundleId?: string): number | undefined {
   const parsed = parseBundleRef(ref);
   const conceptVariants = withMdVariants(parsed.conceptId);
 
   // item_ref is the canonical stored spelling post-flip.
   for (const conceptId of conceptVariants) {
-    const id = matchIdByItemRef(db, parsed.bundle, conceptId, stashDir);
+    const id = matchIdByItemRef(db, parsed.bundle, conceptId, bundleId);
     if (id !== undefined) return id;
   }
   return undefined;
@@ -735,27 +682,26 @@ function matchIdByItemRef(
   db: Database,
   bundle: string | undefined,
   conceptId: string,
-  stashDir?: string,
+  bundleId?: string,
 ): number | undefined {
-  const scope = stashDir ? "AND stash_dir = ?" : "";
+  const scope = bundleId ? "AND bundle_id = ?" : "";
   if (bundle !== undefined) {
     const itemRef = `${bundle}//${conceptId}`;
     const row = db
       .prepare(`SELECT id FROM entries WHERE item_ref = ? ${scope} ORDER BY id ASC LIMIT 1`)
-      .get(itemRef, ...(stashDir ? [stashDir] : [])) as { id: number } | undefined;
+      .get(itemRef, ...(bundleId ? [bundleId] : [])) as { id: number } | undefined;
     return row?.id;
   }
   const suffix = `//${conceptId}`;
   const row = db
     .prepare(
       `SELECT id FROM entries
-       WHERE item_ref IS NOT NULL
-         AND substr(item_ref, length(item_ref) - length(?) + 1) = ?
+       WHERE substr(item_ref, length(item_ref) - length(?) + 1) = ?
          ${scope}
        ORDER BY id ASC
        LIMIT 1`,
     )
-    .get(suffix, suffix, ...(stashDir ? [stashDir] : [])) as { id: number } | undefined;
+    .get(suffix, suffix, ...(bundleId ? [bundleId] : [])) as { id: number } | undefined;
   return row?.id;
 }
 
@@ -765,15 +711,15 @@ export function getEntryCount(db: Database): number {
 }
 
 /**
- * Per-asset-type entry counts (keyed by `entry_type`, e.g. "skill",
+ * Per-asset-type entry counts (keyed by `type`, e.g. "skill",
  * "knowledge", "memory"). Used by `akm info` to break down the aggregate
- * `indexStats.entryCount` (R-057). Rows with a null/empty `entry_type` are
- * omitted rather than surfaced under a synthetic key.
+ * `indexStats.entryCount` (R-057).
  */
 export function getEntryCountByType(db: Database): Record<string, number> {
-  const rows = db
-    .prepare("SELECT entry_type AS type, COUNT(*) AS cnt FROM entries WHERE entry_type IS NOT NULL GROUP BY entry_type")
-    .all() as Array<{ type: string; cnt: number }>;
+  const rows = db.prepare("SELECT type, COUNT(*) AS cnt FROM entries GROUP BY type").all() as Array<{
+    type: string;
+    cnt: number;
+  }>;
   const out: Record<string, number> = {};
   for (const row of rows) {
     out[row.type] = row.cnt;
@@ -791,65 +737,70 @@ export function getEntryById(
 ):
   | {
       filePath: string;
-      stashDir: string;
       entry: IndexDocument;
-      itemRef?: string | null;
-      bundleId?: string | null;
-      conceptId?: string | null;
+      itemRef: string;
+      bundleId: string;
+      componentId: string;
+      conceptId: string;
+      adapterId: string;
     }
   | undefined {
   const row = db
-    .prepare("SELECT file_path, stash_dir, entry_json, item_ref, bundle_id, concept_id FROM entries WHERE id = ?")
+    .prepare(
+      "SELECT file_path, document_json, item_ref, bundle_id, component_id, concept_id, adapter_id FROM entries WHERE id = ?",
+    )
     .get(id) as
     | {
         file_path: string;
-        stash_dir: string;
-        entry_json: string;
-        item_ref: string | null;
-        bundle_id: string | null;
-        concept_id: string | null;
+        document_json: string;
+        item_ref: string;
+        bundle_id: string;
+        component_id: string;
+        concept_id: string;
+        adapter_id: string;
       }
     | undefined;
   if (!row) return undefined;
   // Guard against corrupt JSON
   let entry: IndexDocument;
   try {
-    entry = JSON.parse(row.entry_json) as IndexDocument;
+    entry = JSON.parse(row.document_json) as IndexDocument;
   } catch {
-    warn(`[db] getEntryById: skipping entry id=${id} — corrupt entry_json`);
+    warn(`[db] getEntryById: skipping entry id=${id} — corrupt document_json`);
     return undefined;
   }
   return {
     filePath: row.file_path,
-    stashDir: row.stash_dir,
     entry,
     itemRef: row.item_ref,
     bundleId: row.bundle_id,
+    componentId: row.component_id,
     conceptId: row.concept_id,
+    adapterId: row.adapter_id,
   };
 }
 
 export function getEntriesByDir(db: Database, dirPath: string): DbIndexedEntry[] {
-  const rows = db.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE dir_path = ?`).all(dirPath) as Array<
-    Record<string, unknown>
-  >;
+  const ids = new Set(rowsInDirectory(db, dirPath).map((row) => row.id));
+  const rows = (db.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries`).all() as Array<Record<string, unknown>>).filter(
+    (row) => ids.has((row as { id: number }).id),
+  );
   return parseEntryRows(rows, "getEntriesByDir");
 }
 
-/** Return every directory previously indexed for one physical source root. */
-export function getIndexedDirPathsByStashDir(db: Database, stashDir: string): string[] {
-  const rows = db.prepare("SELECT DISTINCT dir_path FROM entries WHERE stash_dir = ?").all(stashDir) as Array<{
-    dir_path: string;
+/** Return every directory previously indexed for one canonical bundle. */
+export function getIndexedDirPathsByBundleId(db: Database, bundleId: string): string[] {
+  const rows = db.prepare("SELECT file_path FROM entries WHERE bundle_id = ?").all(bundleId) as Array<{
+    file_path: string;
   }>;
-  return rows.map((row) => row.dir_path);
+  return [...new Set(rows.map((row) => path.dirname(row.file_path)))];
 }
 
-/** Return every persisted source owner for one physical directory. */
-export function getIndexedStashDirsByDir(db: Database, dirPath: string): string[] {
-  const rows = db.prepare("SELECT DISTINCT stash_dir FROM entries WHERE dir_path = ?").all(dirPath) as Array<{
-    stash_dir: string;
-  }>;
-  return rows.map((row) => row.stash_dir);
+/** Return every persisted bundle owner for one physical directory. */
+export function getIndexedBundleIdsByDir(db: Database, dirPath: string): string[] {
+  const ids = new Set(rowsInDirectory(db, dirPath).map((row) => row.id));
+  const rows = db.prepare("SELECT id, bundle_id FROM entries").all() as Array<{ id: number; bundle_id: string }>;
+  return [...new Set(rows.filter((row) => ids.has(row.id)).map((row) => row.bundle_id))];
 }
 
 /**
@@ -890,7 +841,7 @@ export function getIndexedFilePaths(db: Database): Set<string> {
  *
  * Lifted verbatim (WS5) from the inline `SELECT file_path FROM entries WHERE
  * id = ?` in commands/feedback-cli.ts. Unlike {@link getEntryById}, this does
- * NOT parse `entry_json`, so a row with corrupt JSON still yields its path —
+ * NOT parse `document_json`, so a row with corrupt JSON still yields its path —
  * preserving feedback-cli's pre-extraction behaviour byte-for-byte.
  */
 export function getEntryFilePathById(db: Database, id: number): string | undefined {
@@ -899,8 +850,9 @@ export function getEntryFilePathById(db: Database, id: number): string | undefin
 }
 
 /**
- * Fetch every `(file_path, entry_json)` row whose entry belongs to a given
- * stash root — matched either by exact `stash_dir` OR by `file_path` prefix.
+ * Fetch every `(file_path, document_json)` row whose path is under a source
+ * root. The path containment filter is applied in JS so SQLite LIKE wildcard
+ * characters in filesystem paths cannot widen ownership.
  *
  * Lifted verbatim (WS5) from the inline query in commands/graph.ts'
  * `buildRefByPath`. The full result set is materialised with `.all()` before
@@ -908,36 +860,14 @@ export function getEntryFilePathById(db: Database, id: number): string | undefin
  * connection-lifetime rule). JSON parsing stays with the caller, unchanged.
  */
 export function getEntryRefRowsForStashRoot(db: Database, stashRoot: string): EntryRefRow[] {
-  return db
-    .prepare("SELECT file_path, entry_json FROM entries WHERE stash_dir = ? OR file_path LIKE ?")
-    .all(stashRoot, `${stashRoot}%`) as EntryRefRow[];
+  const root = path.resolve(stashRoot);
+  return (db.prepare("SELECT file_path, document_json FROM entries").all() as EntryRefRow[]).filter((row) => {
+    const file = path.resolve(row.file_path);
+    return file === root || file.startsWith(`${root}${path.sep}`);
+  });
 }
 
 // ── Indexer-phase helpers (moved from indexer.ts) ────────────────────────────
-
-/**
- * Upsert a workflow document record for an indexed entry.
- * Persists the parsed workflow AST as JSON alongside a FNV-1a hash of the
- * source content for future incremental fast-paths.
- */
-export function upsertWorkflowDocument(
-  db: Database,
-  entryId: number,
-  doc: import("../../workflows/schema").WorkflowDocument,
-  content: Buffer,
-): void {
-  const sourceHash = computeSourceHash(content);
-  db.prepare(
-    `INSERT INTO workflow_documents (entry_id, schema_version, document_json, source_path, source_hash, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(entry_id) DO UPDATE SET
-       schema_version = excluded.schema_version,
-       document_json = excluded.document_json,
-       source_path = excluded.source_path,
-       source_hash = excluded.source_hash,
-       updated_at = excluded.updated_at`,
-  ).run(entryId, doc.schemaVersion, JSON.stringify(doc), doc.source.path, sourceHash, new Date().toISOString());
-}
 
 /**
  * Compute a cheap FNV-1a hash of a buffer for source-identity tracking.
@@ -992,15 +922,12 @@ export function getEntryByRef(db: Database, ref: string): { id: number } | null 
 /**
  * The fully-qualified `item_ref` (`<bundle>//<conceptId>`, the durable stored
  * spelling — spec §11.1 D-R3) for an entry `id`, or `null` when the row is gone
- * or its `item_ref` is still NULL (a write-back straggler, healed on the next
- * full index). The usage-event / salience / feedback writers derive the durable
+ * The usage-event / salience / feedback writers derive the durable
  * key from this so a stored key is always the resolved entry's canonical ref,
  * never raw input (D-R3: durable keys are never derived from input).
  */
 export function getItemRefById(db: Database, id: number): string | null {
-  const row = db.prepare("SELECT item_ref FROM entries WHERE id = ?").get(id) as
-    | { item_ref: string | null }
-    | undefined;
+  const row = db.prepare("SELECT item_ref FROM entries WHERE id = ?").get(id) as { item_ref: string } | undefined;
   return row?.item_ref ?? null;
 }
 
@@ -1027,7 +954,14 @@ function resolveUsageEventEntryId(db: Database, ref: string): number | undefined
  * distinct linked entry_ids in usage_events is small — and the re-resolution
  * reads `entries` from `indexDb`.
  */
-export function relinkUsageEvents(indexDb: Database, stateDb: Database, _options: RelinkUsageEventsOptions = {}): void {
+function qualifiedUsageEventsTable(stateSchema?: string): string {
+  if (stateSchema === undefined) return "usage_events";
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(stateSchema)) throw new Error("Invalid attached state schema name.");
+  return `"${stateSchema}".usage_events`;
+}
+
+export function relinkUsageEvents(indexDb: Database, stateDb: Database, options: RelinkUsageEventsOptions = {}): void {
+  const usageEvents = qualifiedUsageEventsTable(options.stateSchema);
   bestEffort(() => {
     // Step 1: null out stale entry_ids (entry was deleted, re-keyed, etc).
     // Leaving them in place would let `recomputeUtilityScores` aggregate by an
@@ -1035,17 +969,20 @@ export function relinkUsageEvents(indexDb: Database, stateDb: Database, _options
     // on the utility_scores INSERT and roll back the entire finalize
     // transaction. Nulled rows can be re-resolved by step 2 below; events whose
     // entry is permanently gone simply stay null and age out via retention.
-    const linkedIds = (
-      stateDb.prepare("SELECT DISTINCT entry_id AS id FROM usage_events WHERE entry_id IS NOT NULL").all() as Array<{
-        id: number;
-      }>
-    ).map((r) => r.id);
-    const entryExists = indexDb.prepare("SELECT 1 FROM entries WHERE id = ?");
-    const staleIds = linkedIds.filter((id) => entryExists.get(id) == null);
-    if (staleIds.length > 0) {
-      const nullOut = stateDb.prepare("UPDATE usage_events SET entry_id = NULL WHERE entry_id = ?");
+    const linkedRows = stateDb
+      .prepare(`SELECT DISTINCT entry_id AS id, entry_ref AS ref FROM ${usageEvents} WHERE entry_id IS NOT NULL`)
+      .all() as Array<{ id: number; ref: string | null }>;
+    const entryIdentity = indexDb.prepare("SELECT item_ref AS itemRef FROM entries WHERE id = ?");
+    const staleLinks = linkedRows.filter(({ id, ref }) => {
+      const live = entryIdentity.get(id) as { itemRef: string } | null | undefined;
+      return live == null || (ref !== null && live.itemRef !== ref);
+    });
+    if (staleLinks.length > 0) {
+      const nullOut = stateDb.prepare(
+        `UPDATE ${usageEvents} SET entry_id = NULL WHERE entry_id = ? AND entry_ref IS ?`,
+      );
       const nullTx = stateDb.transaction(() => {
-        for (const id of staleIds) nullOut.run(id);
+        for (const { id, ref } of staleLinks) nullOut.run(id, ref);
       });
       nullTx();
     }
@@ -1053,10 +990,10 @@ export function relinkUsageEvents(indexDb: Database, stateDb: Database, _options
     // Step 2: re-resolve each fully-qualified ref. Bare rows are not current
     // durable identities and remain detached.
     const refs = stateDb
-      .prepare("SELECT DISTINCT entry_ref AS ref FROM usage_events WHERE entry_id IS NULL AND entry_ref IS NOT NULL")
+      .prepare(`SELECT DISTINCT entry_ref AS ref FROM ${usageEvents} WHERE entry_id IS NULL AND entry_ref IS NOT NULL`)
       .all() as { ref: string }[];
 
-    const update = stateDb.prepare("UPDATE usage_events SET entry_id = ? WHERE entry_ref = ? AND entry_id IS NULL");
+    const update = stateDb.prepare(`UPDATE ${usageEvents} SET entry_id = ? WHERE entry_ref = ? AND entry_id IS NULL`);
     const relinkTx = stateDb.transaction(() => {
       for (const { ref } of refs) {
         let id: number | undefined;

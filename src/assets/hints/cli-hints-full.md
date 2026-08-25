@@ -92,7 +92,7 @@ akm import - --name scratch-notes < notes.md   # Import stdin as a knowledge doc
 akm import https://example.com/docs/auth       # Fetch one URL and import it as knowledge
 akm import ./doc.md --target my-other-bundle    # Route import to a named writable bundle source
 akm workflow create ship-release               # Create a workflow asset in the bundle
-akm lint --type workflows                      # Parse and compile every unified markdown workflow; list every error
+akm lint --type workflows                      # Parse and compile every .md/.yml workflow source; list every error
 akm workflow run workflows/ship-release        # Start or resume and execute the workflow
 akm feedback skills/code-review --positive     # Record that an asset helped
 akm feedback agents/reviewer --negative --reason "wrong framework" # Record why an asset missed the mark
@@ -160,7 +160,9 @@ akm secret run secrets/deploy-token GITHUB_TOKEN -- gh release create v1.0.0  # 
 
 ## Workflows
 
-Workflows live under `<bundle>/workflows/` as unified markdown assets.
+Workflows live under `<bundle>/workflows/` as peer `.md` and `.yml` sources.
+Both compile to the same source IR; see `docs/reference/workflow-schema.md` for
+the bounded GitHub-shaped YAML subset.
 
 Ref-based workflow commands are scoped to the current project/worktree/directory,
 so one active run does not block unrelated directories from starting the same
@@ -269,6 +271,7 @@ akm bundle list --kind git                           # Filter by provider (files
 akm bundle remove <target>                           # Remove by id, ref, path, or name
 akm bundle update --all                              # Update all managed sources
 akm bundle update <target> --force                   # Force re-download
+akm bundle update <target> --allow-insecure          # Approve reviewed dangerous env keys
 ```
 
 ## Registries
@@ -336,7 +339,7 @@ akm proposal reject <id> --reason "..."                 # Archive with a reason
 akm proposal revert <id>                                # Restore the pre-promotion content
 akm proposal new <type> <name> --task "..."             # Agent-author a NEW asset as a proposal
 akm proposal extract --auto                             # Mine native session files into proposals
-akm proposal extract --type claude-code                 # Restrict extraction to one harness
+akm proposal extract --type claude                 # Restrict extraction to one harness
 ```
 
 The flat verbs `akm proposals` / `akm show proposal` / `akm accept` /
@@ -353,7 +356,7 @@ file plus one `sync` is a complete workflow.
 
 ```sh
 akm task add nightly-improve --schedule "@daily" --command "akm improve --strategy frequent"
-akm task add briefing --schedule "0 9 * * *" --prompt agents/briefer  # Agent-target task
+akm task add briefing --schedule "0 9 * * *" --prompt "Draft the morning briefing"  # Inline command task
 akm task sync                                  # Reconcile task files with the OS scheduler
 akm task sync --rebind                         # Also re-pin the scheduler's akm binary/spelling
 akm task doctor                                # Scheduler binding + runtime eligibility diagnosis
@@ -362,18 +365,20 @@ akm task run <id>                              # Run one task immediately (works
 akm search --type task                         # Enumerate task assets (there is no `task list`)
 ```
 
-To disable a task, set `enabled: false` in its YAML and run `akm task sync`
+Task files use strict task v3 (`version: 3`). To disable one, set
+`akm.enabled: false` and run `akm task sync`
 (the cron line stays, commented). To remove one, delete the YAML and run
-`akm task sync` — the scheduler entry is unbound. Per-task `timeoutMs` in
-the YAML may be `null` (disable the agent kill timer for long local-model
-runs) or a number of milliseconds overriding the selected engine invocation timeout.
+`akm task sync` — the scheduler entry is unbound. Per-task `akm.timeout` may
+be `null` (disable the invocation timer) or a duration/number overriding the
+selected engine invocation timeout. Preview old task-v2 conversion with
+`akm migrate apply --dry-run`.
 
 ## Agent Dispatch
 
 ```sh
 akm agent --prompt "summarize open proposals"   # Dispatch the configured agent CLI
 akm agent agents/architect --prompt "..."       # Embody a bundle agent asset (system prompt, model, tool policy)
-akm agent --workflow workflows/ship-release     # Load the task from a workflow asset
+akm command run commands/release                # Canonical reusable-command dispatch
 akm agent --model sonnet --prompt "..."         # Model override (aliases or exact IDs)
 ```
 

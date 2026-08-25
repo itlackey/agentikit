@@ -63,6 +63,10 @@
  * Date.now()` — and derive every timestamp from `now`. A single
  * `new Date(Date.now() …)` per scope is fine. No allowlist — zero is the invariant.
  *
+ * Rule 8 (real-home operation boundary): never combine `node:os` `homedir()`
+ * with `node:fs` removal. Identity comes from imports and one exact const alias;
+ * target-flow inference is deliberately out of scope.
+ *
  * Exit codes:
  *   0 — no violations
  *   1 — violations found (or internal error)
@@ -75,6 +79,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -285,14 +290,10 @@ const ALLOWED_FILES = new Set<string>([
   "tests/integration/tasks-runner.test.ts",
   "tests/integration/workflows/checkin-surfacing.test.ts",
   "tests/integration/workflows/complete-summary.test.ts",
-  "tests/integration/workflows/conformance/conformance.test.ts",
   "tests/integration/workflows/gate-artifacts.test.ts",
   "tests/integration/workflows/indexer-rejection.test.ts",
   "tests/integration/workflows/native-executor.test.ts",
-  "tests/integration/workflows/run-units.test.ts",
   "tests/integration/workflows/status-units.test.ts",
-  "tests/integration/workflows/step-work.test.ts",
-  "tests/integration/worktree-isolation.test.ts",
 ]);
 
 /**
@@ -342,8 +343,11 @@ const SPAWN_ALLOWED = new Set<string>([]);
  * (`workflows/brief`, `workflows/report`, `workflows/conformance/driver-parity`)
  * were deleted with the protocol itself, so their grandfathered entries went
  * with them. Ratchet lowered in the same change, per the shrink-only rule.
+ *
+ * 65 → 61: four workflow-v3/duplicate-engine suites were deleted during the
+ * v4-only runtime convergence, so their isolation exemptions were removed too.
  */
-export const ALLOWLIST_RATCHET_BASELINE = 65;
+export const ALLOWLIST_RATCHET_BASELINE = 61;
 
 /** Live size of the combined grandfather allowlist (all rule sets). */
 export function combinedAllowlistSize(): number {
@@ -381,7 +385,8 @@ type Rule =
   | "raw-akm-mkdtemp"
   | "unit-real-spawn"
   | "mock-module"
-  | "nonatomic-now";
+  | "nonatomic-now"
+  | "real-home-delete";
 
 interface Violation {
   file: string;
@@ -390,6 +395,9 @@ interface Violation {
   line: number;
   envVars?: string[];
 }
+
+type ImportContext = { checker: ts.TypeChecker };
+type ImportedValue = { module: string; path: string[] };
 
 /**
  * Find every AKM/XDG/HOME env var that is *assigned* (not merely deleted or
@@ -421,10 +429,144 @@ function usesSanctionedWrapper(src: string): boolean {
   );
 }
 
+const FS_MODULES = new Set(["fs", "node:fs"]);
+const FS_PROMISES_MODULES = new Set(["fs/promises", "node:fs/promises"]);
+const OS_MODULES = new Set(["os", "node:os"]);
+const FS_DELETE_EXPORTS = new Set(["rm", "rmdir", "unlink", "rmSync", "rmdirSync", "unlinkSync"]);
+const FS_PROMISE_DELETE_EXPORTS = new Set(["rm", "rmdir", "unlink"]);
+
+function importModuleOf(declaration: ts.Node): string | undefined {
+  let current: ts.Node | undefined = declaration;
+  while (current && !ts.isImportDeclaration(current)) current = current.parent;
+  return current && ts.isStringLiteral(current.moduleSpecifier) ? current.moduleSpecifier.text : undefined;
+}
+
+function staticPropertyName(name: ts.PropertyName | ts.Expression): string | undefined {
+  return ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined;
+}
+
+function selectBinding(decl: ts.BindingElement, ctx: ImportContext, alias: boolean): ImportedValue | undefined {
+  if (!alias || !ts.isObjectBindingPattern(decl.parent)) return undefined;
+  const owner = decl.parent.parent;
+  if (!ts.isVariableDeclaration(owner) || !owner.initializer) return undefined;
+  const importedOwner = resolveValue(owner.initializer, ctx, false);
+  const selected = decl.propertyName ?? (ts.isIdentifier(decl.name) ? decl.name : undefined);
+  const property = selected ? staticPropertyName(selected) : undefined;
+  return importedOwner && property
+    ? { module: importedOwner.module, path: [...importedOwner.path, property] }
+    : undefined;
+}
+
+function resolveSymbol(symbol: ts.Symbol, context: ImportContext, allowAlias: boolean): ImportedValue | undefined {
+  for (const declaration of symbol.declarations ?? []) {
+    if (ts.isImportSpecifier(declaration)) {
+      const module = importModuleOf(declaration);
+      if (module) return { module, path: [(declaration.propertyName ?? declaration.name).text] };
+    }
+    if (ts.isNamespaceImport(declaration) || (ts.isImportClause(declaration) && declaration.name)) {
+      const module = importModuleOf(declaration);
+      if (module) return { module, path: [] };
+    }
+    if (ts.isBindingElement(declaration)) return selectBinding(declaration, context, allowAlias);
+    if (!allowAlias || !ts.isVariableDeclaration(declaration) || !declaration.initializer) continue;
+    if ((declaration.parent.flags & ts.NodeFlags.Const) !== 0)
+      return resolveValue(declaration.initializer, context, false);
+  }
+  return undefined;
+}
+
+function resolveValue(expression: ts.Expression, context: ImportContext, allowAlias = true): ImportedValue | undefined {
+  if (ts.isIdentifier(expression)) {
+    const symbol = context.checker.getSymbolAtLocation(expression);
+    return symbol ? resolveSymbol(symbol, context, allowAlias) : undefined;
+  }
+  if (ts.isPropertyAccessExpression(expression)) {
+    const owner = resolveValue(expression.expression, context, allowAlias);
+    return owner ? { module: owner.module, path: [...owner.path, expression.name.text] } : undefined;
+  }
+  if (ts.isElementAccessExpression(expression)) {
+    const owner = resolveValue(expression.expression, context, allowAlias);
+    const property = staticPropertyName(expression.argumentExpression);
+    return owner && property ? { module: owner.module, path: [...owner.path, property] } : undefined;
+  }
+  return undefined;
+}
+
+function isNodeFsDeleteCall(call: ts.CallExpression, context: ImportContext): boolean {
+  const imported = resolveValue(call.expression, context);
+  if (!imported) return false;
+  if (FS_PROMISES_MODULES.has(imported.module)) {
+    return imported.path.length === 1 && FS_PROMISE_DELETE_EXPORTS.has(imported.path[0] ?? "");
+  }
+  if (!FS_MODULES.has(imported.module)) return false;
+  if (imported.path.length === 1) return FS_DELETE_EXPORTS.has(imported.path[0] ?? "");
+  return (
+    imported.path.length === 2 &&
+    imported.path[0] === "promises" &&
+    FS_PROMISE_DELETE_EXPORTS.has(imported.path[1] ?? "")
+  );
+}
+
+function isNodeOsHomedirCall(call: ts.CallExpression, context: ImportContext): boolean {
+  const imported = resolveValue(call.expression, context);
+  return Boolean(imported && OS_MODULES.has(imported.module) && imported.path.join(".") === "homedir");
+}
+
+function parseForOperationIdentity(
+  filePath: string,
+  source: string,
+): { checker: ts.TypeChecker; sourceFile: ts.SourceFile } {
+  const canonicalPath = path.resolve(filePath);
+  const scriptKind = filePath.endsWith(".js") ? ts.ScriptKind.JS : ts.ScriptKind.TS;
+  const compilerOptions: ts.CompilerOptions = { allowJs: true, noLib: true, noResolve: true };
+  const sourceFile = ts.createSourceFile(canonicalPath, source, ts.ScriptTarget.Latest, true, scriptKind);
+  const host = ts.createCompilerHost(compilerOptions, true);
+  host.fileExists = (candidate) => path.resolve(candidate) === canonicalPath;
+  host.readFile = (candidate) => (path.resolve(candidate) === canonicalPath ? source : undefined);
+  host.getSourceFile = (candidate) => (path.resolve(candidate) === canonicalPath ? sourceFile : undefined);
+
+  const program = ts.createProgram({ rootNames: [canonicalPath], options: compilerOptions, host });
+  const boundSourceFile = program.getSourceFile(canonicalPath);
+  if (!boundSourceFile) throw new Error(`failed to parse isolation lint target: ${filePath}`);
+  return { checker: program.getTypeChecker(), sourceFile: boundSourceFile };
+}
+
+function findRealHomeDeleteCalls(filePath: string, source: string): ts.CallExpression[] {
+  if (!source.includes("homedir")) return [];
+
+  const { checker, sourceFile } = parseForOperationIdentity(filePath, source);
+  const context: ImportContext = { checker };
+  const deleteCalls: ts.CallExpression[] = [];
+  let callsRealHomedir = false;
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      callsRealHomedir ||= isNodeOsHomedirCall(node, context);
+      if (isNodeFsDeleteCall(node, context)) deleteCalls.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+
+  return callsRealHomedir ? deleteCalls : [];
+}
+
 function lintFile(filePath: string): Violation[] {
   const rel = path.relative(repoRoot, filePath).replace(/\\/g, "/");
   const src = fs.readFileSync(filePath, "utf8");
   const violations: Violation[] = [];
+
+  // ── Rule 8: real-home inspection and Node removal in one test file ────────
+  for (const call of findRealHomeDeleteCalls(filePath, src)) {
+    const sourceFile = call.getSourceFile();
+    violations.push({
+      file: rel,
+      rule: "real-home-delete",
+      detail:
+        "test file combines node:os homedir() with a node:fs removal call; split read-only home assertions from temp-owned cleanup",
+      line: sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile)).line + 1,
+    });
+  }
 
   // ── Rule 1: mkdtempSync + AKM env var ──────────────────────────────────────
   if (!ALLOWED_FILES.has(rel) && src.includes("mkdtempSync")) {
@@ -671,6 +813,7 @@ if (import.meta.main) {
     "unit-real-spawn": "real process spawn in unit-scope test",
     "mock-module": "mock.module call (banned — suite runs without --isolate)",
     "nonatomic-now": "non-atomic Date.now() timestamp construction (#499 flake class)",
+    "real-home-delete": "real-home inspection combined with Node filesystem removal",
   };
 
   console.error(`lint-tests-isolation: ${violations.length} violation(s) found\n`);

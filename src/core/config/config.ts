@@ -5,7 +5,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "../errors";
-import { assertNoPendingMigrationOperation } from "../migration-operation";
 import {
   acquireConfigLock,
   backupExistingConfig,
@@ -29,13 +28,6 @@ import { deepMergeConfig } from "./deep-merge";
 
 export { stripJsonComments } from "./config-io";
 
-// requireLlmConfig / getDefaultLlmConfig moved to
-// integrations/agent/engine-resolution.ts (WI-9.8 KILL 3, D.3 edge A) — they
-// called that module's materializeLlmConnection/resolveLlmEngineUse, and that
-// module imported LlmConnectionConfig back from this file, closing a 2-file
-// cycle that also fused config.ts into the harness/agent-runtime SCC. This
-// file can no longer re-export them (a re-export is still a graph edge to
-// engine-resolution.ts) — import them from there directly.
 import { getConfigPath } from "../paths";
 import { warn } from "../warn";
 
@@ -125,7 +117,6 @@ export function resetConfigCache(): void {
 }
 
 export function loadUserConfig(): AkmConfig {
-  assertNoPendingMigrationOperation();
   const configPath = getConfigPath();
 
   let stat: fs.Stats;
@@ -187,6 +178,24 @@ export function loadUserConfig(): AkmConfig {
 }
 
 /**
+ * Acquire the existing config-write sentinel and read a fresh validated
+ * generation while keeping the sentinel held. Source update uses this to
+ * fence an audited bundle descriptor through publication: a cooperating
+ * config writer can commit either before this snapshot or after the update,
+ * never between the final generation check and index commit.
+ */
+export function acquireConfigReadFence(): { config: AkmConfig; release: () => void } {
+  const release = acquireConfigLock();
+  try {
+    cachedConfig = undefined;
+    return { config: loadUserConfig(), release };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
+/**
  * Parse raw config text and validate via Zod.
  * ({@link AkmConfigSchema}). Returns the merged-with-defaults AkmConfig.
  *
@@ -223,11 +232,9 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
 /**
  * The configured stash sources as an ordered {@link SourceConfigEntry} list.
  *
- * 0.9.0 (spec §10.1): the retired `stashDir`/`sources[]`/`installed[]` trio is
- * gone — every source is a `bundles.<slug>` entry. This derives the unified
- * source list from `bundles` (defaultBundle first, then map order), so callers
- * that iterated `sources[]` keep working over the new shape. Returns `[]` when
- * no bundles are configured.
+ * Every source is a `bundles.<slug>` entry. This derives the provider-ready
+ * source list from `bundles` (defaultBundle first, then map order). Returns
+ * `[]` when no bundles are configured.
  */
 export function getSources(config: AkmConfig): SourceConfigEntry[] {
   return bundlesToSourceEntries(config) ?? [];
@@ -264,13 +271,11 @@ export function saveConfig(config: AkmConfig): void {
 }
 
 function saveConfigReal(config: AkmConfig): void {
-  assertNoPendingMigrationOperation();
   cachedConfig = undefined;
   const configPath = getConfigPath();
   const dir = path.dirname(configPath);
   fs.mkdirSync(dir, { recursive: true });
   withConfigLock(() => {
-    assertNoPendingMigrationOperation();
     const validated = validateCompleteConfig(config);
     backupExistingConfig(configPath);
     writeConfigAtomic(configPath, sanitizeConfigForWrite(validated));
@@ -302,11 +307,9 @@ export function mutateConfig(
   mutate: (current: AkmConfig) => AkmConfig,
   options?: { absentNoop?: boolean },
 ): ConfigMutationResult {
-  assertNoPendingMigrationOperation();
   cachedConfig = undefined;
   const configPath = getConfigPath();
   return withConfigLock(() => {
-    assertNoPendingMigrationOperation();
     const text = readConfigText(configPath);
     if (text === undefined && options?.absentNoop) {
       return { config: { ...DEFAULT_CONFIG }, written: false };
@@ -332,12 +335,10 @@ export async function mutateConfigWithPrecommit<T>(
   mutate: (current: AkmConfig) => AkmConfig,
   precommit: (next: AkmConfig) => Promise<T>,
 ): Promise<ConfigMutationResult & { precommit: T }> {
-  assertNoPendingMigrationOperation();
   cachedConfig = undefined;
   const configPath = getConfigPath();
   const release = acquireConfigLock();
   try {
-    assertNoPendingMigrationOperation();
     const text = readConfigText(configPath);
     const current =
       text === undefined ? ({ ...DEFAULT_CONFIG } as AkmConfig) : parseAndValidateConfigText(text, configPath);

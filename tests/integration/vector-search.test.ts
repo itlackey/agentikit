@@ -18,6 +18,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { cosineSimilarity } from "../../src/llm/embedder";
 import type { Database } from "../../src/storage/database";
@@ -62,7 +63,6 @@ function insertTestEntry(
   db: Database,
   key: string,
   opts?: {
-    dirPath?: string;
     filePath?: string;
     stashDir?: string;
     description?: string;
@@ -80,12 +80,10 @@ function insertTestEntry(
   });
   return upsertEntry(
     db,
-    key,
-    opts?.dirPath ?? "/test/dir",
-    opts?.filePath ?? `/test/dir/${key}.ts`,
-    opts?.stashDir ?? "/test/stash",
+    opts?.filePath ?? path.join(opts?.stashDir ?? "/test/stash", `${key}.ts`),
     entry,
     opts?.searchText ?? `${key} ${entry.description}`,
+    deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, type, key),
   );
 }
 

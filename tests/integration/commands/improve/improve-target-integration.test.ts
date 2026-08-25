@@ -5,10 +5,10 @@ import { akmConsolidate } from "../../../../src/commands/improve/consolidate";
 import { akmImprove } from "../../../../src/commands/improve/improve";
 import type { AkmConfig, ImproveProfileConfig } from "../../../../src/core/config/config";
 import { ConfigError, UsageError } from "../../../../src/core/errors";
-import { mergeLockEntriesSync } from "../../../../src/integrations/lockfile";
 import { getCachePaths, parseGitRepoUrl } from "../../../../src/sources/providers/git";
 import { getWebsiteCachePaths } from "../../../../src/sources/snapshot-fetchers/website-ingest";
 import { withTestImproveLlm } from "../../../_helpers/improve-config";
+import { seedLockEntries } from "../../../_helpers/lockfile";
 import { type Cleanup, makeStashDir, type SandboxedDir, sandboxXdgDataHome } from "../../../_helpers/sandbox";
 
 const sandboxes: SandboxedDir[] = [];
@@ -157,7 +157,7 @@ describe("improve named target integration", () => {
       const vendor = kind === "website" ? websitePaths.rootDir : stash();
       fs.mkdirSync(vendor, { recursive: true });
       if (kind === "npm") {
-        mergeLockEntriesSync([{ id: "vendor", source: "npm", ref: "npm:improve-read-only@1.0.0", localRoot: vendor }]);
+        seedLockEntries([{ id: "vendor", source: "npm", ref: "npm:improve-read-only@1.0.0", localRoot: vendor }]);
       }
       const config = withTestImproveLlm({
         configVersion: "0.9.0",

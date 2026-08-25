@@ -39,12 +39,14 @@ import fs from "node:fs";
 import path from "node:path";
 import contradictionJudgeTemplate from "../../../assets/prompts/contradiction-judge.md" with { type: "text" };
 import { mutateFrontmatter, parseFrontmatter } from "../../../core/asset/frontmatter";
-import type { AkmConfig, ImproveProfileConfig, LlmConnectionConfig } from "../../../core/config/config";
+import type { AkmConfig, ImproveProfileConfig } from "../../../core/config/config";
 import { parseEmbeddedJsonResponse } from "../../../core/parse";
-import { getDefaultLlmConfig } from "../../../integrations/agent/engine-resolution";
-import { materializeLlmRunnerConnection, resolveImproveProcessRunner } from "../../../integrations/agent/runner";
-import { type ChatMessage, chatCompletion } from "../../../llm/client";
-import { callStructured } from "../../../llm/structured-call";
+import type { LoweringNotice } from "../../../execution/resolved-request";
+import { disposeLoweredExecutionDispatchLease } from "../../../integrations/agent/execution-lowering";
+import type { RunnerSpec } from "../../../integrations/agent/runner";
+import type { chatCompletion } from "../../../llm/client";
+import { callStructured, preflightStructuredLlmRunner } from "../../../llm/structured-call";
+import { resolveImproveLlmExecution } from "../execution";
 import { isDerivedMemory, memoryIdentityRef, resolveParentRef } from "./derived-ref";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -85,6 +87,8 @@ export interface ContradictionDetectionResult {
   edgesWritten: number;
   /** Warnings generated during detection (e.g. LLM failures, parse errors). */
   warnings: string[];
+  /** Stable, secret-free execution-lowering diagnostics. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 interface DerivedMemoryEntry {
@@ -191,14 +195,14 @@ function pickContradictionLoser(
  *
  * @param stashDir - Root stash directory.
  * @param config   - Loaded AKM config (used to access LLM settings).
- * @param chat     - Optional chat seam for testing (defaults to chatCompletion).
+ * @param chat     - Optional test-only chat seam.
  */
 export async function detectAndWriteContradictions(
   stashDir: string,
   config: AkmConfig,
-  chat: (llmConfig: LlmConnectionConfig, messages: ChatMessage[]) => Promise<string> = chatCompletion,
+  chat?: typeof chatCompletion,
   strategy?: ImproveProfileConfig,
-  resolvedLlmConfig?: LlmConnectionConfig | null,
+  resolvedRunner?: Extract<RunnerSpec, { kind: "llm" }> | null,
 ): Promise<ContradictionDetectionResult> {
   const result: ContradictionDetectionResult = {
     familiesExamined: 0,
@@ -206,16 +210,22 @@ export async function detectAndWriteContradictions(
     edgesWritten: 0,
     warnings: [],
   };
+  if (!(strategy?.processes?.consolidate?.contradictionDetection?.enabled ?? false)) return result;
 
-  const contradictionLlm =
-    resolvedLlmConfig === null
-      ? undefined
-      : (resolvedLlmConfig ??
-        (() => {
-          const runner = resolveImproveProcessRunner(strategy, "consolidate", config);
-          return runner ? materializeLlmRunnerConnection(runner) : getDefaultLlmConfig(config);
-        })());
-  if (!contradictionLlm) return result;
+  const noticesByKey = new Map<string, Readonly<LoweringNotice>>();
+  const resolvedExecution =
+    resolvedRunner === undefined
+      ? resolveImproveLlmExecution({
+          config,
+          profile: strategy,
+          process: strategy?.processes?.consolidate,
+          processName: "memory-contradiction-detection",
+        })
+      : null;
+  for (const notice of resolvedExecution?.notices ?? []) noticesByKey.set(JSON.stringify(notice), notice);
+
+  const contradictionRunner = resolvedRunner === null ? undefined : (resolvedRunner ?? resolvedExecution?.runner);
+  if (!contradictionRunner) return result;
 
   // Collect derived memories grouped by parent.
   const memoriesDir = path.join(stashDir, "memories");
@@ -253,7 +263,12 @@ export async function detectAndWriteContradictions(
     byParent.set(parentRef, family);
   }
 
-  let totalPairsChecked = 0;
+  const candidatePairs: Array<{
+    a: DerivedMemoryEntry;
+    b: DerivedMemoryEntry;
+    loser: DerivedMemoryEntry;
+    winnerRef: string;
+  }> = [];
 
   for (const [, family] of byParent) {
     if (family.length < 2) continue;
@@ -268,7 +283,7 @@ export async function detectAndWriteContradictions(
 
     for (let i = 0; i < family.length - 1; i++) {
       for (let j = i + 1; j < family.length; j++) {
-        if (totalPairsChecked >= MAX_PAIRS_PER_RUN) break;
+        if (candidatePairs.length >= MAX_PAIRS_PER_RUN) break;
 
         const a = family[i];
         const b = family[j];
@@ -286,67 +301,83 @@ export async function detectAndWriteContradictions(
         const loserCB: string[] = Array.isArray(loserData.contradictedBy) ? (loserData.contradictedBy as string[]) : [];
         if (loserCB.includes(winnerRef)) continue;
 
-        const prompt = buildContradictionJudgePrompt(a, b);
-        const judgeResult = await callStructured<string | null>({
-          feature: "memory_contradiction_detection",
-          akmConfig: config,
-          // Resolver-less key: the strategy decision IS the gate (default-off).
-          enabled: strategy?.processes?.consolidate?.contradictionDetection?.enabled ?? false,
-          config: contradictionLlm,
-          messages: [
-            { role: "system", content: "Return only valid JSON. No prose." },
-            { role: "user", content: prompt },
-          ],
-          request: { chat },
-          parse: (raw) => raw ?? null,
-          // A transport throw used to escape the gated fn into the gate's
-          // catch and take the null fallback ("skip"); onError reproduces it.
-          onError: () => null,
-          fallback: null, // null means "skip" — gate disabled or LLM call failed.
-        });
-
-        totalPairsChecked++;
-        result.pairsChecked++;
-
-        if (!judgeResult) continue; // Feature gate disabled or LLM call failed.
-
-        let parsed: { contradicts: boolean; confidence: number; reason?: string } | null | undefined = null;
-        try {
-          parsed = parseEmbeddedJsonResponse<{ contradicts: boolean; confidence: number; reason?: string }>(
-            judgeResult,
-          );
-        } catch {
-          result.warnings.push(`Could not parse contradiction judge response for pair ${a.ref} / ${b.ref}`);
-          continue;
-        }
-
-        if (!parsed?.contradicts) continue;
-
-        const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0;
-        if (confidence < CONTRADICT_CONFIDENCE_THRESHOLD) {
-          result.warnings.push(
-            `Pair ${a.ref} / ${b.ref}: confidence ${confidence.toFixed(2)} below ${CONTRADICT_CONFIDENCE_THRESHOLD} threshold — skipped.`,
-          );
-          continue;
-        }
-
-        // Write a SINGLE directed contradiction edge: the losing (older) memory
-        // gets `contradictedBy` pointing to the winner. A mutual A↔B pair forms
-        // a 2-cycle that the SCC resolver refreshes back to active, erasing the
-        // contradiction every run (see pickContradictionLoser).
-        try {
-          const wrote = writeContradictedByEdge(loser.filePath, winnerRef);
-          result.edgesWritten += wrote ? 1 : 0;
-        } catch (err) {
-          result.warnings.push(
-            `Failed to write contradiction edge ${loser.ref} -> ${winnerRef}: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
+        candidatePairs.push({ a, b, loser, winnerRef });
       }
 
-      if (totalPairsChecked >= MAX_PAIRS_PER_RUN) break;
+      if (candidatePairs.length >= MAX_PAIRS_PER_RUN) break;
     }
   }
 
-  return result;
+  if (candidatePairs.length === 0) {
+    const notices = Object.freeze([...noticesByKey.values()]);
+    return notices.length > 0 ? { ...result, notices } : result;
+  }
+
+  const dispatchLease = await preflightStructuredLlmRunner(contradictionRunner);
+  try {
+    for (const { a, b, loser, winnerRef } of candidatePairs) {
+      const prompt = buildContradictionJudgePrompt(a, b);
+      const judgeResult = await callStructured<string | null>({
+        feature: "memory_contradiction_detection",
+        akmConfig: config,
+        // Resolver-less key: the strategy decision IS the gate (default-off).
+        enabled: true,
+        runner: contradictionRunner,
+        lease: dispatchLease,
+        messages: [
+          { role: "system", content: "Return only valid JSON. No prose." },
+          { role: "user", content: prompt },
+        ],
+        ...(chat ? { request: { chat } } : {}),
+        onNotices: (notices) => {
+          for (const notice of notices) noticesByKey.set(JSON.stringify(notice), notice);
+        },
+        parse: (raw) => raw ?? null,
+        // A transport throw used to escape the gated fn into the gate's
+        // catch and take the null fallback ("skip"); onError reproduces it.
+        onError: () => null,
+        fallback: null, // null means "skip" — gate disabled or LLM call failed.
+      });
+
+      result.pairsChecked++;
+
+      if (!judgeResult) continue; // Feature gate disabled or LLM call failed.
+
+      let parsed: { contradicts: boolean; confidence: number; reason?: string } | null | undefined = null;
+      try {
+        parsed = parseEmbeddedJsonResponse<{ contradicts: boolean; confidence: number; reason?: string }>(judgeResult);
+      } catch {
+        result.warnings.push(`Could not parse contradiction judge response for pair ${a.ref} / ${b.ref}`);
+        continue;
+      }
+
+      if (!parsed?.contradicts) continue;
+
+      const confidence = typeof parsed.confidence === "number" ? parsed.confidence : 0;
+      if (confidence < CONTRADICT_CONFIDENCE_THRESHOLD) {
+        result.warnings.push(
+          `Pair ${a.ref} / ${b.ref}: confidence ${confidence.toFixed(2)} below ${CONTRADICT_CONFIDENCE_THRESHOLD} threshold — skipped.`,
+        );
+        continue;
+      }
+
+      // Write a SINGLE directed contradiction edge: the losing (older) memory
+      // gets `contradictedBy` pointing to the winner. A mutual A↔B pair forms
+      // a 2-cycle that the SCC resolver refreshes back to active, erasing the
+      // contradiction every run (see pickContradictionLoser).
+      try {
+        const wrote = writeContradictedByEdge(loser.filePath, winnerRef);
+        result.edgesWritten += wrote ? 1 : 0;
+      } catch (err) {
+        result.warnings.push(
+          `Failed to write contradiction edge ${loser.ref} -> ${winnerRef}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  } finally {
+    disposeLoweredExecutionDispatchLease(dispatchLease);
+  }
+
+  const notices = Object.freeze([...noticesByKey.values()]);
+  return notices.length > 0 ? { ...result, notices } : result;
 }

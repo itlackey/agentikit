@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://itlackey.github.io/akm/schemas/akm-workflow.json",
   "title": "AKM Workflow",
-  "description": "Unified akm workflow frontmatter (workflow-format-unification). One markdown asset: the standard AKM asset envelope (type/description/tags/when_to_use/xrefs/updated/timestamp + the OKF v0.2 machine-stamped families) plus the orchestration graph. Per-step prose instructions and gate rubrics live in the markdown body, joined to this graph by step id — see docs/reference/workflow-schema.md. Hand-authored alongside src/workflows/program/schema.ts; the enum vocabularies and patterns here are pinned against the TypeScript constants by tests/integration/workflows/schema-drift.test.ts.",
+  "description": "This frontmatter schema applies to and validates the Markdown (.md) workflow source: the standard AKM asset envelope plus its orchestration graph. Markdown is not the sole or only workflow source; peer GitHub-shaped .yml sources use the bounded adapter and both formats compile to source IR v1. Per-step prose instructions and gate rubrics live in the Markdown body, joined to this graph by step id. Hand-authored alongside src/workflows/program/schema.ts; see docs/reference/workflow-schema.md.",
   "type": "object",
   "required": ["steps"],
   "additionalProperties": false,
@@ -90,7 +90,8 @@
         "supports_json_schema": { "type": "boolean" },
         "extra_params": { "$ref": "#/definitions/extraParams" },
         "context_length": { "type": "integer", "minimum": 1 },
-        "enable_thinking": { "type": "boolean" }
+        "enable_thinking": { "type": "boolean" },
+        "reasoning_effort": { "type": "string", "minLength": 1 }
       }
     },
     "extraParams": {
@@ -98,11 +99,11 @@
       "description": "Provider-specific request fields. Top-level AKM-owned fields are forbidden; credential-shaped keys are forbidden recursively after lowercase/non-alphanumeric normalization.",
       "propertyNames": {
         "not": {
-          "enum": ["model", "messages", "temperature", "maxtokens", "responseformat", "stream", "streamoptions", "enablethinking", "chattemplatekwargs", "authorization", "headers", "apikey", "token", "password", "secret", "cookie", "setcookie"]
+          "enum": ["model", "messages", "temperature", "maxtokens", "responseformat", "stream", "streamoptions", "enablethinking", "reasoningeffort", "chattemplatekwargs", "authorization", "headers", "apikey", "token", "password", "secret", "cookie", "setcookie"]
         }
       },
       "additionalProperties": { "$ref": "#/definitions/extraParamValue" },
-      "x-akm-protectedTopLevelNormalizedKeys": ["model", "messages", "temperature", "maxtokens", "responseformat", "stream", "streamoptions", "enablethinking", "chattemplatekwargs"],
+      "x-akm-protectedTopLevelNormalizedKeys": ["model", "messages", "temperature", "maxtokens", "responseformat", "stream", "streamoptions", "enablethinking", "reasoningeffort", "chattemplatekwargs"],
       "x-akm-recursivelyForbiddenNormalizedKeys": ["authorization", "headers", "apikey", "token", "password", "secret", "cookie", "setcookie"]
     },
     "extraParamValue": {
@@ -215,7 +216,7 @@
     },
     "exec": {
       "type": "object",
-      "description": "Run a shell command as this unit instead of dispatching to an engine. `command` is an ARGV ARRAY and there is no shell-string form: the child is spawned directly, so shell metacharacters (`;` `|` `&&` `$(…)` `>` `*`) are inert literal argument bytes — the quoting/injection class simply does not exist. Write the interpreter explicitly (e.g. [\"bash\", \"-lc\", \"a | b\"]) when a pipeline is really wanted. stdout is the promoted step artifact with trailing newlines stripped (like shell `$(…)`); when the unit declares an `output` schema, stdout must instead be exactly one JSON value, which is validated against it. A non-zero exit fails the unit with failure reason `non_zero_exit`, honoring `retry:` and `on_error:` like any other unit. The child's environment is an ALLOWLIST by default (PATH, HOME, locale/temp vars, the Windows process-creation essentials) — widen it with `pass_env` or `inherit_env`.",
+      "description": "Run a shell command as this unit instead of dispatching to an engine. `command` is an ARGV ARRAY and there is no shell-string form: the child is spawned directly, so shell metacharacters (`;` `|` `&&` `$(…)` `>` `*`) are inert literal argument bytes — the quoting/injection class simply does not exist. Write the interpreter explicitly (e.g. [\"bash\", \"-lc\", \"a | b\"]) when a pipeline is really wanted. stdout is the promoted step artifact with trailing newlines stripped (like shell `$(…)`); when the unit declares an `output` schema, stdout must instead be exactly one JSON value, which is validated against it. A non-zero exit fails the unit with failure reason `non_zero_exit`, honoring `retry:` and `on_error:` like any other unit. The child's environment is an ALLOWLIST by default (PATH, HOME, locale/temp vars, the Windows process-creation essentials) — widen it only with named `env:` environment bindings or `pass_env`.",
       "required": ["command"],
       "additionalProperties": false,
       "properties": {
@@ -247,10 +248,6 @@
             "type": "string",
             "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
           }
-        },
-        "inherit_env": {
-          "type": "boolean",
-          "description": "Give the command akm's ENTIRE environment instead of the default allowlist. Opt in only when a command genuinely needs the caller's whole environment (a wrapper script, a toolchain with many ambient variables); prefer `pass_env` or `env:` bindings, which keep what the command can see explicit in the frontmatter diff. Dispatch-significant: toggling it changes the unit's input hash."
         }
       }
     },

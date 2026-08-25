@@ -318,10 +318,7 @@ describe("search.minScore floor in config (#6)", () => {
         // cosine 0.6 -> score 0.6 * 0.3 = 0.18 (below the 0.2 default floor)
         const belowFloorId = upsertEntry(
           db,
-          "task/below-floor",
-          "/fake/tasks",
           "/fake/tasks/below-floor.md",
-          storage.stashDir,
           { type: "task", name: "below-floor", description: "unrelated filler content alpha" } as IndexDocument,
           "below-floor unrelated filler content alpha",
           deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, "task", "below-floor"),
@@ -331,10 +328,7 @@ describe("search.minScore floor in config (#6)", () => {
         // cosine 0.9 -> score 0.9 * 0.3 = 0.27 (above the 0.2 default floor)
         const aboveFloorId = upsertEntry(
           db,
-          "task/above-floor",
-          "/fake/tasks",
           "/fake/tasks/above-floor.md",
-          storage.stashDir,
           { type: "task", name: "above-floor", description: "unrelated filler content beta" } as IndexDocument,
           "above-floor unrelated filler content beta",
           deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, "task", "above-floor"),

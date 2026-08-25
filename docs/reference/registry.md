@@ -80,6 +80,24 @@ Each entry supports:
 
 Set `enabled: false` to temporarily disable a registry without removing it.
 
+Registry URLs must be credential-free: AKM rejects URL userinfo such as
+`https://user:password@example.com/index.json` before it can be saved. The
+built-in `static-index` and `skills-sh` providers do not currently support
+authenticated registry requests, including through `options`; publish the
+index/API at a credential-free HTTPS endpoint or place an authenticated proxy
+in front of it. AKM does not translate URL credentials into request headers.
+
+Registry HTTP requests must also resolve to public network addresses. AKM
+rejects loopback, private, link-local, metadata, and reserved destinations on
+the initial URL and every redirect hop. This intentionally means a
+`static-index` or `skills-sh` registry hosted only on localhost or an intranet
+is no longer reachable in 0.9.2; publish it at a publicly routable HTTPS
+endpoint. The only private-network compatibility exception is an npm mirror
+explicitly selected with `AKM_NPM_REGISTRY`; metadata and tarball requests may
+reach that configured mirror, but not link-local or cloud-metadata addresses.
+See [Registry network boundary](../architecture/internals/registry-network-boundary.md)
+for the complete policy and DNS guarantee.
+
 ## Searching Registries
 
 Search registries alongside or instead of the local bundle:
@@ -351,7 +369,7 @@ Key behaviors:
 - Per-query response caching with 15-minute TTL
 - No stale-cache fallback past that TTL on network failure — same shared
   cache mechanism as `static-index`, see the note there
-- No authentication required
+- No authenticated-registry transport is currently supported
 - Toggle on/off via `akm registry add https://skills.sh --name skills.sh --provider skills-sh` / `akm registry remove skills.sh` (the bare `akm enable` / `akm disable` aliases and `akm config enable|disable` were removed in 0.9.0 — use `akm registry add|remove`, the general mechanism)
 
 To install a skill found via skills.sh, use the `ref` field (GitHub

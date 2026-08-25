@@ -300,7 +300,6 @@ describe("prepareImproveLoopEnv — derived guards", () => {
         config: {} as AkmConfig,
         eventsCtx: {},
         proposalsCtx: {},
-        getLlmConfig: () => null,
         sourceRun: "test-run",
         dryRun: false,
       }),

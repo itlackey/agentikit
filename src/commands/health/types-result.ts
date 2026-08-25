@@ -5,7 +5,7 @@
 /**
  * Top-level `akm health` result shape (chunk-9 WI-9.5d per-domain split of
  * `./types`) — the return type of `akmHealth()`, combining every other
- * domain (checks, metrics, improve, session-log, per-run, window-compare).
+ * domain (checks, metrics, improve, per-run, window-compare).
  */
 
 import type { AcceptRateEntry } from "./accept-rate";
@@ -13,7 +13,6 @@ import type { HealthCheckResult } from "./types-checks";
 import type { ImproveHealthMetrics } from "./types-improve";
 import type { HealthMetrics } from "./types-metrics";
 import type { ImproveRunSummary } from "./types-runs";
-import type { SessionLogAdvisory } from "./types-session-log";
 import type { DeltaEntry, WindowResult } from "./types-windows";
 
 /**
@@ -48,7 +47,6 @@ export interface AkmHealthResult {
   advisories: HealthCheckResult[];
   metrics: HealthMetrics;
   improve: ImproveHealthMetrics;
-  sessionLogAdvisories: SessionLogAdvisory[];
   runs?: ImproveRunSummary[];
   windows?: WindowResult[];
   deltas?: Record<string, DeltaEntry>;

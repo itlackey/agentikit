@@ -3,12 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * P4 — the SecretResolver capability reaches the provider sync() / bundle-update
- * path, closing the gap where a website source's X fetcher previously saw only
- * X_BEARER_TOKEN and never the secret store.
+ * P4 — unit coverage for the SecretResolver capability on provider sync(). The
+ * real `akm bundle update` composition is covered separately in
+ * tests/integration/source-qa-fixes.test.ts with a stored bearer-token file.
  *
- * The website provider factory registers itself on import; we drive its
- * `sync()` with a stub SecretResolver and assert the stub is consulted for
+ * The website provider factory registers itself on import; this test drives
+ * `sync()` directly with a stub SecretResolver and asserts it is consulted for
  * `secrets/x-bearer-token`, and that the resolved value never surfaces in the
  * produced snapshot (containment — graft (a), verified rather than enforced via
  * a global redaction registry, which would reintroduce the mutable ambient
@@ -18,7 +18,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { SecretResolver } from "../src/sources/provider";
 import { resolveSourceProviderFactory } from "../src/sources/provider-factory";
 import "../src/sources/providers/website";
-import { getWebsiteCachePaths } from "../src/sources/snapshot-fetchers/website-ingest";
+import { ensureWebsiteMirror, getWebsiteCachePaths } from "../src/sources/snapshot-fetchers/website-ingest";
 import { withMockedFetch } from "./_helpers/sandbox";
 
 const SECRET = "STORE_TOKEN_FROM_SYNC_PATH";
@@ -61,7 +61,7 @@ describe("SecretResolver reaches provider sync()", () => {
         // The website provider treats the URL as an x.com profile only if it
         // matches; use a real x.com URL so the X fetcher engages.
         const p = resolveSourceProviderFactory("website")?.(websiteEntry("https://x.com/jack"));
-        await p?.sync?.({ force: true, secrets: resolver });
+        await p?.sync?.({ force: true, secrets: resolver, ensureWebsiteMirror });
         const { stashDir } = getWebsiteCachePaths("https://x.com/jack");
         const fs = await import("node:fs");
         const path = await import("node:path");
@@ -107,7 +107,7 @@ describe("SecretResolver reaches provider sync()", () => {
     // sync() must not throw.
     await expect(
       withMockedFetch(
-        () => provider?.sync?.({ force: true }) ?? Promise.resolve(),
+        () => provider?.sync?.({ force: true, ensureWebsiteMirror }) ?? Promise.resolve(),
         async () => new Response("{}", { status: 404, headers: { "content-type": "application/json" } }),
       ),
     ).resolves.toBeUndefined();

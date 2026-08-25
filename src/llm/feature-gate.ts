@@ -42,7 +42,9 @@ export type LlmFeatureKey =
   | "proposal_quality_gate"
   | "memory_contradiction_detection"
   | "session_extraction"
-  | "reflect_proposal";
+  | "reflect_proposal"
+  | "remember_enrich"
+  | "schema_repair";
 
 /**
  * For each feature key, return the effective enabled state by reading the

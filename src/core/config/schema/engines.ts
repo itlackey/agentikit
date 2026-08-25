@@ -22,7 +22,6 @@ import {
   ExtraParamsSchema,
   engineName,
   LlmCapabilitiesSchema,
-  ModelAliasMapSchema,
   nonEmptyString,
   positiveInt,
 } from "./primitives";
@@ -42,11 +41,9 @@ const timeoutMsField = z.union([positiveInt.max(WORKFLOW_MAX_TIMEOUT_MS), z.null
 
 /**
  * OpenAI-compatible connection fields shared by named LLM engines and bounded
- * internal call helpers. `model` is required at schema level — partial entries
- * created by `akm config set llm.endpoint <url>` (where model is left absent)
- * are normalized to `model: ""` *before* Zod sees them by the load-time
- * pre-Zod migrator hook, so this strict shape gates CLI writes without
- * breaking legacy load-time partial configs.
+ * internal call helpers. `model` is required at schema level: current loads and
+ * CLI writes reject a partial named engine rather than normalizing it through a
+ * pre-schema compatibility transform.
  */
 export const LlmConnectionConfigSchema = z
   .object({
@@ -62,6 +59,7 @@ export const LlmConnectionConfigSchema = z
     extraParams: ExtraParamsSchema.optional(),
     contextLength: positiveInt.optional(),
     enableThinking: z.boolean().optional(),
+    reasoningEffort: nonEmptyString.optional(),
   })
   .passthrough();
 
@@ -90,6 +88,7 @@ const LlmEngineSchema = z
     extraParams: ExtraParamsSchema.optional(),
     contextLength: positiveInt.optional(),
     enableThinking: z.boolean().optional(),
+    reasoningEffort: nonEmptyString.optional(),
   })
   .passthrough()
   .superRefine((value, ctx) => {
@@ -110,7 +109,6 @@ const AgentEngineSchema = z
     workspace: nonEmptyString.optional(),
     model: nonEmptyString.optional(),
     timeoutMs: timeoutMsField,
-    modelAliases: ModelAliasMapSchema.optional(),
     llmEngine: engineName.optional(),
   })
   .passthrough()
@@ -126,6 +124,8 @@ const AgentEngineSchema = z
       "extraParams",
       "contextLength",
       "enableThinking",
+      "reasoningEffort",
+      "modelAliases",
     ]) {
       if (key in value)
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is not valid on an agent engine` });

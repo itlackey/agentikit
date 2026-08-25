@@ -70,10 +70,12 @@ for k in $(seq 0 $((N - 1))); do
   done
   t="${logdir}/shard-$((k + 1)).log"
   tmps+=("$t")
+  runtime_home="${logdir}/runtime-home-$((k + 1))"
+  mkdir -p "$runtime_home"
   # 120s per-test (matches the integration runner): under N-way process
   # contention the heaviest property/goldens suites legitimately run 3-4x
   # their solo duration; the timeout exists to catch HANGS.
-  ( bun test --timeout=120000 "${slice[@]}" >"$t" 2>&1 ) &
+  ( HOME="$runtime_home" bun test --timeout=120000 "${slice[@]}" >"$t" 2>&1 ) &
   pids+=($!)
 done
 

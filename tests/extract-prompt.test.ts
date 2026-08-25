@@ -14,7 +14,7 @@ import type { SessionData } from "../src/integrations/session-logs/types";
 function sampleData(overrides: Partial<SessionData> = {}): SessionData {
   return {
     ref: {
-      harness: "claude-code",
+      harness: "claude",
       sessionId: "ses_test",
       filePath: "/tmp/test.jsonl",
       startedAt: Date.parse("2026-05-26T10:00:00.000Z"),
@@ -127,7 +127,7 @@ describe("buildExtractPrompt", () => {
 
   test("interpolates harness, title, dates, project hint into the template", () => {
     const prompt = buildExtractPrompt({ data: sampleData(), events: [], inlineRefs: [] });
-    expect(prompt).toContain("claude-code");
+    expect(prompt).toContain("claude");
     expect(prompt).toContain("Test session");
     expect(prompt).toContain("test-project");
     expect(prompt).toContain("2026-05-26T10:00:00.000Z");
@@ -173,7 +173,7 @@ describe("buildExtractPrompt", () => {
       data: sampleData(),
       events: [
         {
-          harness: "claude-code",
+          harness: "claude",
           text: "agent recovered after Bash failure",
           ts,
           role: "assistant",
@@ -186,7 +186,7 @@ describe("buildExtractPrompt", () => {
   });
 
   const fenceEvent = (text: string) => ({
-    harness: "claude-code" as const,
+    harness: "claude" as const,
     text,
     ts: Date.parse("2026-05-26T10:30:00.000Z"),
     role: "user" as const,

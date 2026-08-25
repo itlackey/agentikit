@@ -5,6 +5,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { slugForPath } from "../../src/core/bundle-id";
+import { readEvents } from "../../src/core/events";
 import { openStateDatabase } from "../../src/core/state-db";
 import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
@@ -60,14 +62,57 @@ test("audit provenance survives curate, remember, and agent nested reads", async
 
   const verify = openStateDatabase();
   try {
-    const rows = verify.prepare("SELECT event_type, source FROM usage_events ORDER BY id").all() as Array<{
+    const rows = verify.prepare("SELECT event_type, entry_ref, source FROM usage_events ORDER BY id").all() as Array<{
       event_type: string;
+      entry_ref: string | null;
       source: string;
     }>;
     expect(rows.length).toBeGreaterThan(3);
     expect(new Set(rows.map((row) => row.event_type))).toEqual(new Set(["show", "curate", "search"]));
     expect(new Set(rows.map((row) => row.source))).toEqual(new Set(["audit"]));
+    expect(rows.filter((row) => row.event_type === "show")).toEqual([
+      {
+        event_type: "show",
+        entry_ref: `${slugForPath(storage.stashDir)}//agents/reviewer`,
+        source: "audit",
+      },
+    ]);
   } finally {
     verify.close();
   }
+});
+
+test("nested execution reads remain unrecorded when credential preflight fails", async () => {
+  writeSandboxConfig({
+    semanticSearchMode: "off",
+    engines: {
+      audit: {
+        kind: "llm",
+        provider: "openai-compatible",
+        endpoint: "https://provider.invalid/v1/chat/completions",
+        model: "provider/model",
+        apiKey: "$AKM_WP5_USAGE_MISSING_KEY",
+      },
+    },
+    defaults: { engine: "audit", llmEngine: "audit" },
+  });
+  expect((await runCliCapture(["index", "--full"])).code).toBe(0);
+  const state = openStateDatabase();
+  state.prepare("DELETE FROM usage_events").run();
+  state.close();
+  const priorShowEvents = readEvents({ type: "show" }).events.length;
+
+  const result = await withEnv({ AKM_EVENT_SOURCE: "audit", AKM_WP5_USAGE_MISSING_KEY: undefined }, () =>
+    runCliCapture(["agent", "agents/reviewer", "--engine", "audit", "--prompt", "Review this plan"]),
+  );
+
+  expect(result.code).toBe(78);
+  const verify = openStateDatabase();
+  try {
+    const row = verify.prepare("SELECT COUNT(*) AS count FROM usage_events").get() as { count: number };
+    expect(row.count).toBe(0);
+  } finally {
+    verify.close();
+  }
+  expect(readEvents({ type: "show" }).events).toHaveLength(priorShowEvents);
 });

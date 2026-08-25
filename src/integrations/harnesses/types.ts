@@ -23,7 +23,7 @@
  * implementations are migrated under each harness in #563/#564.
  */
 
-import type { AgentCommandBuilder, AgentResultExtractor } from "../agent/builder-shared";
+import type { AgentCommandBuilder, AgentRequestLowerer, AgentResultExtractor } from "../agent/builder-shared";
 import type { SessionLogHarness } from "../session-logs/types";
 import type { HarnessCapabilities } from "./shared";
 
@@ -63,21 +63,10 @@ export type HarnessStructuredOutput = "native-schema" | "native-json" | "none";
  * without repeating the rest of the descriptor twice.
  */
 interface AkmHarnessCommon {
-  /** Canonical, persisted id (the value new config writes). */
+  /** The only config, dispatch, runtime-attribution, and session-log id. */
   readonly id: string;
   /** Human-readable display name. */
   readonly displayName: string;
-  /**
-   * Alternate ids that must continue to resolve to this harness for
-   * already-persisted configs / session logs. Never written for new config.
-   */
-  readonly aliases: readonly string[];
-  /**
-   * Identity string reported at runtime / in session logs, when it differs
-   * from the canonical `id`. Used by workflow run attribution and the
-   * session-logs provider name. Absent ⇒ same as `id`.
-   */
-  readonly runtimeId?: string;
   /**
    * Home-relative config directory that `akm setup` scans to offer this
    * harness as a stash source (#567). e.g. `.claude`, `.config/opencode`.
@@ -98,7 +87,7 @@ interface AkmHarnessCommon {
   /**
    * The harness-owned agent command builder, when dispatch goes through the
    * CLI spawn path. `BUILTIN_BUILDERS` in `agent/builders.ts` is DERIVED from
-   * this field (id, `<id>-headless`, and aliases all map to it) so the
+   * this field so the
    * builder registry cannot drift from the harness registry. Absent for
    * harnesses that dispatch without argv construction (opencode-sdk) — and
    * for dispatch-capable CLIs that do not have a dedicated builder yet, in
@@ -107,20 +96,17 @@ interface AkmHarnessCommon {
    */
   readonly agentBuilder?: AgentCommandBuilder;
 
-  /**
-   * Workflow-engine execution pattern (plan §"Capability matrix"). Optional
-   * on the interface for backward compatibility with external implementers
-   * (additive seam change), but every registry entry MUST declare it — pinned
-   * by `tests/harnesses-registry.test.ts`.
-   */
-  readonly pattern?: HarnessExecutionPattern;
+  /** Resolved-request lowering for non-argv transports such as OpenCode SDK. */
+  readonly executionLowerer?: AgentRequestLowerer;
+
+  /** Workflow-engine execution pattern (plan §"Capability matrix"). */
+  readonly pattern: HarnessExecutionPattern;
 
   /**
    * Structured-output tier for workflow-unit result normalization (plan
-   * §"Structured-output normalization"). Optional on the interface (additive
-   * seam change); required on registry entries, pinned by tests.
+   * §"Structured-output normalization").
    */
-  readonly structuredOutput?: HarnessStructuredOutput;
+  readonly structuredOutput: HarnessStructuredOutput;
 
   /**
    * Env vars that carry this harness's *session id* when a process runs under
@@ -189,26 +175,10 @@ export interface NonSessionLogHarness extends AkmHarnessCommon {
 /**
  * A single harness's identity + capability membership.
  *
- * `id` is the canonical, persisted identifier (what new config writes use).
- * `aliases` are alternate identifiers that MUST keep round-tripping for
- * already-persisted configs and session logs — see the Claude Code split
- * below.
- *
  * Discriminated on `capabilities.sessionLogs` (WI-9.7, H1): the union forces
  * `sessionLogProvider` to be present exactly when `sessionLogs` is `true`, so
  * the pairing is a compile error to get wrong rather than a load-time throw.
  * See {@link SessionLogCapableHarness} / {@link NonSessionLogHarness}.
- *
- * ## id normalization bridge ('claude' vs 'claude-code')
- *
- * Claude Code has historically been persisted under two different id strings:
- *   - `'claude'`      — agent runner, agent profiles, Zod config schema
- *   - `'claude-code'` — session-logs provider name, runtime identity string
- *
- * The canonical id is `'claude'`; `'claude-code'` is registered as an alias so
- * that BOTH directions resolve to the same harness. `normalizeHarnessId()` and
- * `denormalizeRuntimeIdentity()` in `./index.ts` implement the bridge. Existing
- * user config and session-log discovery keep working unchanged.
  */
 export type AkmHarness = SessionLogCapableHarness | NonSessionLogHarness;
 
@@ -258,13 +228,12 @@ export function isSessionLogHarness<H extends AkmHarness>(h: H): h is H & Sessio
 export abstract class BaseHarness implements AkmHarnessCommon {
   abstract readonly id: string;
   abstract readonly displayName: string;
-  abstract readonly aliases: readonly string[];
   abstract readonly capabilities: HarnessCapabilities;
-  readonly runtimeId?: string;
   readonly setupDetectionDir?: string;
   readonly agentBuilder?: AgentCommandBuilder;
-  readonly pattern?: HarnessExecutionPattern;
-  readonly structuredOutput?: HarnessStructuredOutput;
+  readonly executionLowerer?: AgentRequestLowerer;
+  abstract readonly pattern: HarnessExecutionPattern;
+  abstract readonly structuredOutput: HarnessStructuredOutput;
   readonly identityEnv?: readonly string[];
   readonly presenceEnv?: readonly string[];
   readonly resultExtractor?: AgentResultExtractor;

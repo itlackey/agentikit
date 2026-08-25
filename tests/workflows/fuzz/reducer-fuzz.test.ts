@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { canonicalJson, reduceStepOutcomes, type UnitOutcome } from "../../../src/workflows/exec/step-work";
-import type { IrStepPlan } from "../../../src/workflows/ir/schema";
+import type { IrStepPlanV4 } from "../../../src/workflows/ir/schema-v4";
 import { distinctJsonValues, randomJsonValue, reorderKeys } from "./_gen";
 import { fuzzSeeds, Rng, withSeed } from "./_rng";
 
@@ -25,12 +25,12 @@ import { fuzzSeeds, Rng, withSeed } from "./_rng";
  * random outcome multisets. Pure — no storage, no dispatch.
  */
 
-const PLAN: IrStepPlan = {
+const PLAN = {
   stepId: "s",
   title: "s",
   sequenceIndex: 0,
   gate: { kind: "gate", id: "s.gate", stepId: "s", criteria: [] },
-};
+} as unknown as IrStepPlanV4;
 
 let idCounter = 0;
 function ok(result: unknown): UnitOutcome {

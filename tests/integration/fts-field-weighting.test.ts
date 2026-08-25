@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { buildSearchFields, buildSearchText } from "../../src/indexer/search/search-fields";
 import type { Database } from "../../src/storage/database";
@@ -57,7 +58,12 @@ function makeEntry(overrides: Partial<IndexDocument> & { name: string; type: str
 }
 
 function insertEntry(db: Database, key: string, entry: IndexDocument, searchText: string): number {
-  return upsertEntry(db, key, "/test/dir", `/test/dir/${key}.ts`, "/test/stash", entry, searchText);
+  const provenance = deriveEntryProvenance(
+    { bundleId: "test-bundle", componentId: "test-bundle", adapterId: "akm" },
+    entry.type,
+    key,
+  );
+  return upsertEntry(db, `/test/dir/${key}.ts`, entry, searchText, provenance);
 }
 
 // ── Test 1: Name match ranks higher than description-only match ─────────────
@@ -378,7 +384,7 @@ describe("SPEC-8 bodyOpening indexing", () => {
         "This memory situates the quokka onboarding ledger workstream.",
       );
       // search_text deliberately omits the phrase: the FTS columns are built
-      // by rebuildFts from entry_json via buildSearchFields, so a hit proves
+      // by rebuildFts from document_json via buildSearchFields, so a hit proves
       // the fold — not a legacy search_text leak.
       const id = insertEntry(db, "orienter", entry, "project orienter notes about the platform");
       rebuildFts(db);

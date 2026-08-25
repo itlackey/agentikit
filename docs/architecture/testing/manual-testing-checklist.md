@@ -138,7 +138,7 @@ from a clean `git status`.
 
 ### 2.2 Prerequisites
 
-**[CORE]** and **[LOCAL]** require Bash, Bun, Node.js 22+, Git, `jq`, standard
+**[CORE]** and **[LOCAL]** require Bash, Bun, Node.js 24+, Git, `jq`, standard
 POSIX filesystem tools, and the repository checkout.
 
 | Gate | Additional prerequisite |
@@ -1067,6 +1067,17 @@ test "$(sha256sum "$AKM_CONFIG_DIR/config.json")" = "$before_config"
       install safety; test suppression fixture separately.
 - [ ] **[LOCAL]** Declarative provider and later update receive equivalent audit.
 - [ ] **[LOCAL]** New dangerous key on update preserves previous complete source.
+- [ ] **[LOCAL]** A held WAL index reader observes only the prior generation
+      through a failed update; index/state main, WAL, and SHM inodes are not
+      replaced during compensation.
+- [ ] **[LOCAL]** Writable Git rejects physical-root/component symlink escapes,
+      a changed HEAD or dirty state at publication, and dangerous tracked,
+      untracked, ignored, filter-produced, or submodule materialization.
+- [ ] **[LOCAL]** Lock publication and rollback fence both exact raw bytes and
+      file mode; a concurrent chmod blocks publication without being reverted.
+- [ ] **[LOCAL]** A simulated durable index/state split is reported as
+      `index-state-generation`; after writers stop, `akm index --full` clears
+      the advisory and restores coherent searchable usage links.
 - [ ] **[LOCAL]** Corrupt/unreadable lock fails structurally; no managed/plain
       reinterpretation or split state.
 - [ ] **[LOCAL]** Failed add/update/remove compare config, lock, cache, index,
@@ -1804,8 +1815,11 @@ Environment scope and context:
 
 - [ ] **LOCAL** The child gets the default allowlist only: credentials and cloud
       or CI variables present in akm's own environment are **absent** unless
-      named. `pass_env:` widens it by name; `inherit_env: true` hands over the
-      whole environment verbatim.
+      named. `pass_env:` widens it by name; exact named `env:` bindings provide
+      fixed or secret values.
+- [ ] **CORE** A new durable-v4 start containing `inherit_env: true` is rejected
+      before dispatch and directs the author to named env bindings. A pre-v4
+      stored plan is also rejected and directs the user to start a new run.
 - [ ] **LOCAL** `env:` bindings inject resolved values, and the `AKM_*` context
       is applied *after* them, so a binding cannot shadow it.
 - [ ] **LOCAL** `AKM_RUN_ID`, `AKM_STEP_ID`, `AKM_UNIT_ID`, `AKM_PARAMS`,
@@ -2062,12 +2076,12 @@ jq -e '.ok == false and .exitCode == 7' "$AKM_SANDBOX/agent-failure.json"
 ```
 
 - [ ] **AI** Agent asset contributes system prompt/model/tool policy; CLI model override wins.
-- [ ] **AI** Prompt, prompt-stdin, command asset, workflow asset, cwd, and interactive no-prompt paths are each covered.
+- [ ] **AI** Prompt, prompt-stdin, cwd, and interactive no-prompt paths are each covered; stored commands and workflows use their canonical commands.
 - [ ] **AI** Capture proves exact argv/prompt/cwd and credential-presence boolean without logging credential value.
 - [ ] **AI** Nonzero child returns `agent-result` on stdout, CLI exit `1`, child code/reason/stderr retained and redacted.
 - [ ] **AI** Missing executable is a bounded spawn failure; timeout kills process group and writes the fake signal marker with no orphan.
 - [ ] **AI** `OPENCODE_API_KEY=manual-qa-credential-value` plus echo-secret mode produces no literal value in AKM result, stderr, event, or logs.
-- [ ] **AI REGRESSION** `--prompt`, `--command`, and `--workflow` combinations are rejected as ambiguous rather than silently choosing precedence. Prompt-stdin remains mutually exclusive with all.
+- [ ] **AI REGRESSION** Prompt-stdin remains mutually exclusive with `--prompt`; removed aliases such as agent `--command` are absent from help.
 - [ ] **AI** Named LLM engine is rejected where agent-only dispatch is required; invalid platform/kind fails before spawn.
 - [ ] **AI** Default-engine fallback is announced exactly once when used and never rescues an explicitly invalid named engine.
 
@@ -2401,87 +2415,55 @@ akm config unset embedding --silent
 
 ## 19. Migration, Durability, and Concurrency
 
-### 19.1 Safety and output oracle
+### 19.1 Task migration boundary
 
-Use `akm migrate` for the current 0.9 cutover protocol. The separate
-`dist/akm-migrate storage` surface is the frozen legacy storage migrator.
+`akm migrate` has exactly one responsibility: explicit task-v2 to task-v3
+source conversion. It never rewrites config or databases.
 
 | Operation | Classification |
 | --- | --- |
-| `akm migrate status` / `apply --dry-run` | Read-only |
-| `akm-migrate storage --list` / `--dry-run` | Read-only |
-| `akm-migrate backup` | Stateful, non-destructive |
-| `akm migrate apply` | Destructive cutover; stop writers and back up first |
-| `akm-migrate restore --confirm` | Destructive replacement |
-| Migration crash hooks, SIGKILL windows, fabricated sentinels | Suite-only or disposable VM |
+| `akm migrate status` | Read-only task inventory |
+| `akm migrate apply --dry-run` | Read-only validated conversion plan |
+| `akm migrate apply` | Per-file backup plus atomic task-source replacement |
 
-Expected current-command behavior:
+- [ ] **[LOCAL]** Status and dry-run report the same generation and change no
+      source, config, database, lock, scheduler, event, or usage row.
+- [ ] **[LOCAL]** Apply validates complete v3 bytes before replacement,
+      preserves mode, and creates the backup immediately before the write.
+- [ ] **[LOCAL]** A changed generation, ambiguous argv array, unwritable source,
+      invalid YAML, or unsafe shell translation is blocked with original bytes
+      intact.
+- [ ] **[LOCAL]** Normal run/sync/doctor rejects task v2 and never invokes the
+      migrator as a side effect.
 
-| Plan | Exit | Channel |
-| --- | ---: | --- |
-| not-applicable/ready/current status or dry-run | `0` | Plan on stdout |
-| blocked status or dry-run | `1` | Blocked plan on stdout |
-| blocked real apply | `78` | Classified config error on stderr |
-| successful apply | `0` | Raw JSON progress lines then formatted final result |
+### 19.2 Automatic current database upgrades
 
-Migration plans intentionally do not use the normal `shape`/`schemaVersion`
-fields. Only the final apply result honors format; progress remains JSONL-like.
+Managed `state.db` opens validate the exact migration-ledger prefix and apply
+known pending additive migrations automatically. Unknown or reordered ledger
+entries fail closed. There is no external storage migration command.
 
-### 19.2 Read-only status and backup rehearsal
+- [ ] **[LOCAL]** A fresh database applies the complete current registry.
+- [ ] **[LOCAL]** A database with an exact older prefix advances on open without
+      dropping or rewriting durable rows.
+- [ ] **[LOCAL]** A newer/unknown or inconsistent ledger is rejected before a
+      write.
+- [ ] **[LOCAL]** Concurrent first opens serialize each migration exactly once.
+- [ ] **[LOCAL]** `index.db` remains regenerable; `state.db` is never deleted as
+      a generic recovery step.
 
-```sh
-export AKM_MIGRATE_BIN="$REPO/dist/akm-migrate"
-test -x "$AKM_MIGRATE_BIN"
+### 19.3 Package upgrade boundary
 
-config_before="$(sha256sum "$AKM_CONFIG_DIR/config.json")"
-akm migrate status --format json >"$AKM_SANDBOX/migrate-status.json"
-akm migrate apply --dry-run --format json \
-  >"$AKM_SANDBOX/migrate-dry-run.json"
-test "$(sha256sum "$AKM_CONFIG_DIR/config.json")" = "$config_before"
+`akm upgrade` updates executable code only. A 0.8 installation moves its old
+config/state aside, creates current config/state, and selectively brings
+authored assets forward. The explicit task migrator can then convert task-v2
+sources. No current runtime loads old config/storage layouts.
 
-"$AKM_MIGRATE_BIN" backup --for 0.9.0 \
-  >"$AKM_SANDBOX/migration-backup.json"
-jq -e '
-  .action == "create" and .created == true and
-  .manifest.complete == true and (.path | type == "string")
-' "$AKM_SANDBOX/migration-backup.json"
-test -d "$(jq -r .path "$AKM_SANDBOX/migration-backup.json")"
-```
-
-- [ ] **[LOCAL]** Status and dry-run derive the same plan and change no config,
-      bundle, database, lock, sentinel, or event.
-- [ ] **[LOCAL]** Backup verifies config/state/workflow/index artifacts and does
-      not mutate their source bytes.
-- [ ] **[LOCAL]** Restore without confirm exits `78`; confirmed restore creates a
-      rescue copy and restores present/absent artifacts exactly.
-- [ ] **[LOCAL]** Built-in backup does not cover `akm.lock`, logs, scheduler
-      state, or writable bundle content. A real cutover requires an independent
-      verified backup of every writable bundle and durable directory.
-- [ ] **[LOCAL REGRESSION]** Backup manifest cryptographically binds every
-      artifact by size/digest; semantic validation alone is insufficient.
-
-### 19.3 Disposable cutover and recovery
-
-Run a 0.8-to-0.9 rehearsal only against a cloned installation with all AKM
-writers stopped.
-
-- [ ] **[DESTRUCTIVE]** Capture independent archive/digests for config, lock,
-      data, state, cache, and every writable bundle.
-- [ ] **[DESTRUCTIVE]** First apply that must generate config writes only a
-      review file and stops `ready`; no live database/config is replaced.
-- [ ] **[DESTRUCTIVE]** Reviewed apply creates one verified backup, migrates
-      content/state, and publishes config last.
-- [ ] **[DESTRUCTIVE]** Successful rerun is idempotent/current and creates no
-      redundant backup.
-- [ ] **[DESTRUCTIVE]** Interrupt each apply/restore publication phase through
-      the shipped crash suites. Sentinel remains, ordinary access fails closed,
-      and retry converges without deleting evidence.
-- [ ] **[DESTRUCTIVE]** Live workflow claims, index writers, improve locks, and
-      other maintenance barriers block replacement before mutation.
-- [ ] **[DESTRUCTIVE]** Restore plus independent bundle/lock recovery returns
-      exact old behavior; built-in restore alone is not called full rollback.
-
-Do not manually set internal `AKM_TEST_MIGRATION_*` hooks.
+- [ ] **[LIVE DISPOSABLE]** `akm upgrade --check` is nonmutating and the chosen
+      npm/Bun/pnpm or standalone path installs the expected version.
+- [ ] **[LIVE DISPOSABLE]** A standalone replacement verifies its checksum and
+      preflights the staged binary before atomic replacement.
+- [ ] **[LIVE DISPOSABLE]** Old and current data sets stay separate; rollback
+      restores executable code together with its matching archived data.
 
 ### 19.4 Concurrent writers and readers
 
@@ -2537,7 +2519,6 @@ jq -e '
 | `akm.lock` | Preserve corrupt bytes; mutation fails before config/cache/index changes |
 | `index.db` | Regenerable after evidence capture: remove/quarantine, then full index |
 | `state.db` | Non-regenerable; never delete as repair; restore verified backup |
-| migration sentinel | Never edit/delete manually; status then resume apply/restore |
 | transaction journal | Stop writers, retain evidence, use domain recovery |
 | Git source cache | Staged swap for read-only sources; writable checkout policy is explicit |
 | npm/website cache | Must preserve prior complete generation or report a known failing gate |
@@ -2556,24 +2537,14 @@ jq -e '
 
 ```sh
 bun test --timeout=120000 \
-  tests/integration/migration-lifecycle-regression.test.ts \
-  tests/integration/migration-config-generation.test.ts \
-  tests/integration/migration-apply-crash.test.ts \
-  tests/integration/migration-backup.test.ts \
   tests/integration/migrate-format.test.ts \
+  tests/migrate/task-v2-to-v3-files.test.ts \
+  tests/tasks/migrate-v2-to-v3.test.ts \
   tests/integration/config-recovery-concurrency.test.ts \
   tests/integration/file-lock.test.ts \
   tests/integration/index-writer-lock.test.ts \
   tests/integration/index-writer-lock-crossproc.test.ts \
   tests/integration/proposal-durable-recovery.test.ts
-```
-
-Legacy migration property gate:
-
-```sh
-AKM_RUN_SLOW_TESTS=1 \
-  bun test --timeout=1200000 \
-  tests/migrate/legacy/cutover-rekey-property-gate.test.ts
 ```
 
 ---
@@ -2797,7 +2768,8 @@ Current known failing gates must be fixed or explicitly waived with expiry:
 | Ambient test-mode SSRF bypass and secondary URL sinks | `FAIL` until guarded |
 | Git/direct-write symlink escape | `FAIL` until contained |
 | Archive expanded-resource/type/link budgets | `FAIL` until bounded |
-| Registry option/credential/control-data rendering | `FAIL` until redacted |
+| Registry option/control-data rendering | `FAIL` until redacted |
+| Registry URL credential persistence and rendering | `PASS` — #811 passed independent review after seven hardening cycles |
 | Suppressible/add-only dangerous-key audit and event ordering | `FAIL` until pre-publication |
 | Source lifecycle rollback across config/lock/root/index/events | `FAIL` until atomic/recoverable |
 | OpenCode local-listener authentication/documentation | `FAIL` until authenticated |
@@ -2816,8 +2788,8 @@ release are different subjects and require separate evidence.
 
 | Surface | Current support/constraint |
 | --- | --- |
-| npm package | Node `>=22` bootstrap; Bun `>=1.0` preferred, Node fallback supported |
-| Node fallback | Test Node 22 and 24; requires built dist and usable SQLite dependency |
+| npm package | Node `>=24` bootstrap; Bun `>=1.0` preferred, Node fallback supported |
+| Node fallback | Test Node 24; requires built dist and usable SQLite dependency |
 | Standalone | Linux x64/arm64 glibc, macOS x64/arm64, Windows x64 |
 | Unsupported standalone | Alpine/musl, 32-bit, native Windows ARM64 |
 | POSIX installer | Linux/macOS x64/arm64; `AKM_INSTALL_DIR` override |
@@ -2877,11 +2849,11 @@ AKM_SMOKE_NODE=node bun run test:node-compat
 
 - [ ] **[RELEASE]** Test-package packs and installs under a temporary prefix,
       verifies package/version/bin ownership, runs both launchers, and cleans up.
-- [ ] **[PLATFORM]** Repeat Node smoke/compat on Node 22 and 24. Every gated test
+- [ ] **[PLATFORM]** Repeat Node smoke/compat on Node 24. Every gated test
       runs rather than skips; no Bun global leaks into the forced Node path.
 - [ ] **[PLATFORM]** Missing/failed/pre-1.0 Bun probe falls back to Node; current
       Bun is selected. Paths with spaces and Windows `%*` preserve argv.
-- [ ] **[PLATFORM]** Node 20 package install fails at preinstall with the Node 22
+- [ ] **[PLATFORM]** Node 20 package install fails at preinstall with the Node 24
       diagnostic and leaves no usable bins.
 - [ ] **[RELEASE]** Packed payload contains required dist/docs/schemas and omits
       source, tests, repository scripts, `.git`, `.akm`, and `node_modules`.
@@ -2912,8 +2884,7 @@ AKM_DOCKER_TESTS=1 bun test tests/integration/docker-install.test.ts
       info/list, and incremental indexing. It does not prove npm pack, published
       artifact, installer, self-upgrade, ARM, macOS, or Windows.
 - [ ] **[RELEASE]** Cross-compile five exact standalone names; run each on native
-      OS/architecture, verify embedded version, and prove local semantic model is
-      unavailable because transformers are intentionally externalized.
+      OS/architecture and verify the embedded version and supported command surface.
 - [ ] **[RELEASE]** `checksums.txt` covers exactly five binaries and both
       installers. The npm tarball is compared separately because it is generated
       later.
@@ -2958,11 +2929,12 @@ akm info
 
 - [ ] **[LIVE DESTRUCTIVE]** Check is nonmutating. npm/Bun/pnpm global installs
       invoke their package manager; standalone streams bounded bytes, verifies
-      checksum, preflights staged binary, replaces, migrates, and reindexes.
+      checksum, preflights the staged binary, and atomically replaces it.
 - [ ] **[LIVE DESTRUCTIVE]** Failure retains explicit recoverable old/new
       artifacts. Integrity bypass variable is never set for acceptance.
-- [ ] **[LIVE]** 0.8-to-0.9 self-upgrade refusal is expected; use independent
-      backup, install/stage 0.9, then the new migration protocol.
+- [ ] **[LIVE]** A 0.8 package can be replaced, but its config/state are not
+      runtime inputs: archive them, initialize current paths, then explicitly
+      migrate retained task-v2 sources.
 - [ ] **[LIVE]** RC/`next` cannot be validated through latest-stable discovery;
       record post-publication stable self-upgrade as blocked until discoverable.
 
@@ -3001,12 +2973,10 @@ bun run release:check
 
 - [ ] **[RELEASE]** Full script runs workflow syntax/contract, verify-only lint,
       typecheck, build/bin/migration checks, package acceptance, setup/install
-      regression, published 0.8 task upgrade under Node and Bun, Linux standalone
-      scheduler, unit, integration, then Docker.
+      regression, explicit legacy-task migration, Linux standalone scheduler,
+      unit, integration, then Docker.
 - [ ] **[RELEASE]** Every gated file reports executed tests. Skip-docker is
       partial unless a separate exact-commit matrix transcript exists.
-- [ ] **[RELEASE]** Run slow migration/workflow property gates separately with
-      `AKM_RUN_SLOW_TESTS=1` and their 20-minute timeout.
 - [ ] **[RELEASE]** Cut the changelog BEFORE triggering the workflow: bump
       `package.json` `version`, rename `## [Unreleased]` to
       `## [<version>] - <YYYY-MM-DD>`, and leave a fresh empty `## [Unreleased]`
@@ -3022,7 +2992,7 @@ bun run release:check
       version and targets the tested SHA. Stable uses npm `latest`; prerelease
       uses `next` and GitHub prerelease.
 - [ ] **[RELEASE]** After publication, download every asset, verify checksums,
-      compare GitHub/npm tarballs, install under fresh Node 22/24, and run native
+      compare GitHub/npm tarballs, install under fresh Node 24, and run native
       binaries/installers on supported targets.
 - [ ] **[RELEASE]** npm version is immutable. Existing GitHub assets may be
       clobbered by rerun, so rerun only identical commit/bytes and compare hashes.
@@ -3102,7 +3072,7 @@ and not a substitute for the full check.
 | Task/scheduler | task suites, Linux standalone; native macOS/Windows for backend/quoting/binding; published upgrade for schema changes |
 | Env/secret/security path/archive/network | env/secret plus traversal/SSRF/archive/redaction/dangerous-key suites, section 20 |
 | Agent/LLM/improve/proposal | family suites and fake-service AI pass; live bounded provider only for changed external dispatch |
-| Package/runtime/build dependencies | build/package/bin, Node 22/24, Bun launcher, standalone, Docker, release check |
+| Package/runtime/build dependencies | build/package/bin, Node 24, Bun launcher, standalone, Docker, release check |
 | Installers/self-update/standalone | installer/update suites, exact checksum/artifact tests, native install/upgrade, full release gate |
 | Workflows/release-check/Docker | workflow syntax/contract, actual Docker matrix, complete artifact inventory |
 | Test preload/helpers/runners | lint isolation, both sharded targets, multiple shard counts, leaked temp/log review |
@@ -3128,7 +3098,7 @@ fixed.
 
 ### 24.1 Supported constraints
 
-1. npm bootstrap requires Node `>=22`; Bun does not remove that requirement.
+1. npm bootstrap requires Node `>=24`; Bun does not remove that requirement.
 2. No Alpine/musl standalone, native Windows ARM64, 32-bit, or non-listed target.
 3. Standalone binaries cannot load the externalized local transformer model.
 4. macOS/Windows schedules are per-user interactive; schedule grammar is narrower
@@ -3274,19 +3244,25 @@ remaining gaps carry approved waivers with the expiries recorded below.
       listener, registry credential/control-data redaction, archive expansion
       budgets, universal redirect/SSRF policy, and unsuppressible update audit.
   - Partial: symlink containment (walker escape cases tested; not exercised
-    through a real git-repo walk), registry redaction (response-shape limits
-    tested; embedded-credential echo in error paths not), redirect/SSRF
-    policy (website fetcher has the policy; registry fetch does not apply the
-    same private-IP guard).
+    through a real git-repo walk), registry control-data redaction
+    (response-shape limits tested), redirect/SSRF policy (website fetcher has
+    the policy; registry fetch does not apply the same private-IP guard).
+    Registry URL credential handling is implemented under #811. Strict
+    configured-value rejection and conservative diagnostic redaction passed
+    independent review after seven hardening cycles; the final focused corpus
+    covers 102 cases with 36,895 assertions.
   - Open: authenticated OpenCode listener (localhost listener carries no
     per-process credential), archive expansion budgets (download size capped;
-    expansion ratio/member budgets untested), unsuppressible update audit
-    (dangerous-key scan runs on add, not re-verified on bundle update).
+    expansion ratio/member budgets untested).
+  - Closed in #765: the unsuppressible update audit stages and re-verifies every
+    refreshed bundle before publication; keep the rejection, approval, and
+    rollback cases above in the release matrix.
   - Tracking: [#763](https://github.com/itlackey/akm/issues/763) (listener credential),
     [#764](https://github.com/itlackey/akm/issues/764) (archive expansion budgets),
-    [#765](https://github.com/itlackey/akm/issues/765) (update audit),
     [#766](https://github.com/itlackey/akm/issues/766) (git symlink containment),
-    [#767](https://github.com/itlackey/akm/issues/767) (registry SSRF + credential echo).
+    [#767](https://github.com/itlackey/akm/issues/767) (registry SSRF),
+    [#811](https://github.com/itlackey/akm/issues/811) (registry URL credentials,
+    completed for 0.9.2).
   - issue: local-attack-surface and hostile-upstream hardening gaps, all
     pre-existing (none regressed in 0.9.0). impact: requires a local
     co-resident attacker, a malicious registry/source, or a compromised
@@ -3417,7 +3393,9 @@ waiver approver:
 waiver expiry:
 ```
 
-Two stale-consolidation recovery cases remain unconditionally skipped in the
-improve-memory integration suite. Treat those cases as `BLOCKED`, not covered by
-a green full check. Do not carry historical failures into this list unless they
-remain reproducible against the exact candidate.
+The stale-consolidation CLI recovery surface was removed in 0.9.1; its two
+obsolete skipped improve-memory integration cases were deleted during the 0.9.2
+cleanup ([#794](https://github.com/itlackey/akm/issues/794)).
+Stale transaction journals remain covered through the `stale-txn-journals`
+health check. Do not carry historical failures into this list unless they remain
+reproducible against the exact candidate.

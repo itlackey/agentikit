@@ -17,7 +17,6 @@ import { validateConfigShape } from "../../src/core/config/config-schema";
 import { configSet } from "../../src/core/config/config-walker";
 import { ConfigError } from "../../src/core/errors";
 import { getConfigPath } from "../../src/core/paths";
-import { getDefaultLlmConfig } from "../../src/integrations/agent/engine-resolution";
 
 beforeEach(() => resetConfigCache());
 afterEach(() => resetConfigCache());
@@ -69,19 +68,27 @@ describe("0.9 config contract", () => {
     expect(loadUserConfig().engines?.fast?.apiKey).toBe(`\${FAST_API_KEY}`);
   });
 
-  test("resolves direct LLM consumers from defaults.llmEngine", () => {
+  test("accepts first-class reasoningEffort on an LLM engine", () => {
     const config = {
       configVersion: "0.9.0" as const,
       semanticSearchMode: "auto" as const,
       engines: {
-        fast: { kind: "llm" as const, endpoint: "https://example.test/v1/chat/completions", model: "fast-model" },
+        fast: {
+          kind: "llm" as const,
+          endpoint: "https://example.test/v1/chat/completions",
+          model: "fast-model",
+          reasoningEffort: "none",
+        },
       },
       defaults: { llmEngine: "fast" },
     };
-    expect(getDefaultLlmConfig(config)).toMatchObject({
-      endpoint: "https://example.test/v1/chat/completions",
-      model: "fast-model",
-    });
+    expect(validateConfigShape(config).ok).toBe(true);
+    expect(
+      validateConfigShape({
+        ...config,
+        engines: { fast: { ...config.engines.fast, reasoningEffort: "" } },
+      }).ok,
+    ).toBe(false);
   });
 
   test("workflow.judgeEngine accepts named LLM or agent engines and rejects unknown names", () => {
@@ -164,6 +171,21 @@ describe("0.9 config contract", () => {
     expect(() => loadUserConfig()).toThrow(ConfigError);
   });
 
+  test("rejects reasoning_effort extraParams overrides", () => {
+    writeConfig({
+      configVersion: "0.9.0",
+      engines: {
+        fast: {
+          kind: "llm",
+          endpoint: "https://example.test/v1/chat/completions",
+          model: "test",
+          extraParams: { reasoning_effort: "high" },
+        },
+      },
+    });
+    expect(() => loadUserConfig()).toThrow(ConfigError);
+  });
+
   test("rejects retired improve process selectors", () => {
     writeConfig({
       configVersion: "0.9.0",
@@ -217,6 +239,26 @@ describe("0.9 config contract", () => {
       defaultBundle: "primary",
     });
     expect(ok.ok).toBe(true);
+  });
+
+  test("rejects coercion-shaped website options at the config boundary", () => {
+    for (const options of [
+      { maxPages: "25" },
+      { maxDepth: false },
+      { respectRobots: null },
+      { respectRobots: "false" },
+      { crawlTimeoutMs: "300" },
+      { crawlTimeoutMs: false },
+      { crawlTimeoutMs: -1 },
+    ]) {
+      expect(
+        validateConfigShape({
+          configVersion: "0.9.0",
+          bundles: { docs: { website: { url: "https://example.test/docs/", ...options } } },
+          defaultBundle: "docs",
+        }).ok,
+      ).toBe(false);
+    }
   });
 
   test("rejects a half-migrated config carrying bundles alongside the retired source keys", () => {
@@ -287,29 +329,13 @@ describe("0.9 config contract", () => {
     expect(validateConfigShape({ configVersion: "0.9.0", bindings: { release: { export: "a//x" } } }).ok).toBe(false);
   });
 
-  test("normalizes model aliases to lowercase and rejects case-insensitive collisions", () => {
-    const normalized = validateConfigShape({
-      configVersion: "0.9.0",
-      engines: { agent: { kind: "agent", platform: "pi", modelAliases: { FAST: "model-a" } } },
-      modelAliases: { DEEP: { pi: "model-b" } },
-    });
-    expect(normalized.ok).toBe(true);
-    if (normalized.ok) {
-      expect(normalized.value.engines?.agent?.modelAliases).toEqual({ fast: "model-a" });
-      expect(normalized.value.modelAliases).toEqual({ deep: { pi: "model-b" } });
-    }
-
+  test("rejects retired config-root and per-engine model alias tables", () => {
     expect(
       validateConfigShape({
         configVersion: "0.9.0",
-        engines: { agent: { kind: "agent", platform: "pi", modelAliases: { FAST: "a", fast: "b" } } },
+        engines: { agent: { kind: "agent", platform: "pi", modelAliases: { fast: "model-a" } } },
       }).ok,
     ).toBe(false);
-    expect(
-      validateConfigShape({
-        configVersion: "0.9.0",
-        modelAliases: { DEEP: { pi: "a" }, deep: { pi: "b" } },
-      }).ok,
-    ).toBe(false);
+    expect(validateConfigShape({ configVersion: "0.9.0", modelAliases: { deep: { pi: "model-b" } } }).ok).toBe(false);
   });
 });

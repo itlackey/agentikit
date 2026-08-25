@@ -70,34 +70,9 @@ describe("copilotBuilder — plain prompt", () => {
   });
 });
 
-// ── Builder — model alias resolution ─────────────────────────────────────────
+// ── Builder — exact model selection ─────────────────────────────────────────
 
-describe("copilotBuilder — model resolution via resolveModel('copilot')", () => {
-  test("profile.modelAliases resolves a custom alias for the copilot platform", () => {
-    const profile = makeCopilotProfile({ modelAliases: { fast: "gpt-5-mini" } });
-    const cmd = copilotBuilder.build(profile, { prompt: "go", model: "fast" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("gpt-5-mini");
-  });
-
-  test("globalModelAliases copilot column wins over '*' fallback", () => {
-    const profile = makeCopilotProfile({
-      globalModelAliases: { deep: { copilot: "claude-sonnet-4-6", "*": "generic-deep" } },
-    });
-    const cmd = copilotBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("claude-sonnet-4-6");
-  });
-
-  test("globalModelAliases '*' fallback applies when no copilot column exists", () => {
-    const profile = makeCopilotProfile({
-      globalModelAliases: { deep: { "*": "generic-deep" } },
-    });
-    const cmd = copilotBuilder.build(profile, { prompt: "go", model: "deep" });
-    const argv = cmd.argv as string[];
-    expect(argv[argv.indexOf("--model") + 1]).toBe("generic-deep");
-  });
-
+describe("copilotBuilder — exact model selection", () => {
   test("exact model id passes through verbatim", () => {
     const cmd = copilotBuilder.build(makeCopilotProfile(), { prompt: "go", model: "gpt-5" });
     const argv = cmd.argv as string[];

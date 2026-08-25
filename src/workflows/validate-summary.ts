@@ -57,6 +57,12 @@ export interface JudgeCallIdentity {
   stepId: string;
   /** The journaled gate row's `unit_id` — `<stepId>.gate:l<loop>`. */
   unitId: string;
+  /** Durable attempt identity, absent only for manual non-journaled judges. */
+  attempt?: number;
+  /** Stable v4 dispatch correlation/idempotency key. */
+  dispatchId?: string;
+  /** Value-safe usage side channel back to the attempt journal owner. */
+  recordTokens?: (tokens: number) => void;
 }
 
 /**

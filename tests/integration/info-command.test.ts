@@ -6,6 +6,7 @@ import { assembleInfo } from "../../src/commands/sources/info";
 import { resolveStashDir } from "../../src/core/common";
 import { loadConfig, resetConfigCache, saveConfig } from "../../src/core/config/config";
 import { resetQuiet, setQuiet } from "../../src/core/warn";
+import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
@@ -76,6 +77,10 @@ function makeEntry(type: string, name: string): IndexDocument {
   };
 }
 
+function infoEntryProvenance(type: string, name: string) {
+  return deriveEntryProvenance({ bundleId: "stash", componentId: "stash", adapterId: "akm" }, type, name);
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe("assembleInfo", () => {
@@ -130,7 +135,13 @@ describe("assembleInfo", () => {
     const dbPath = path.join(tmpDir("db"), "test.db");
     const db = openIndexDatabase(dbPath);
     const entry = makeEntry("skill", "test-skill");
-    upsertEntry(db, "skills/test-skill", "/fake/skill", "/fake/skill/test-skill", stashDir, entry, "test skill");
+    upsertEntry(
+      db,
+      path.join(stashDir, "skills", "test-skill"),
+      entry,
+      "test skill",
+      infoEntryProvenance("skill", "test-skill"),
+    );
     rebuildFts(db);
     setMeta(db, "builtAt", "2026-03-17T00:00:00Z");
     closeDatabase(db);
@@ -151,30 +162,24 @@ describe("assembleInfo", () => {
     const db = openIndexDatabase(dbPath);
     upsertEntry(
       db,
-      "skills/test-skill",
-      "/fake/skill",
-      "/fake/skill/test-skill",
-      stashDir,
+      path.join(stashDir, "skills", "test-skill"),
       makeEntry("skill", "test-skill"),
       "test skill",
+      infoEntryProvenance("skill", "test-skill"),
     );
     upsertEntry(
       db,
-      "skills/test-skill-2",
-      "/fake/skill2",
-      "/fake/skill2/test-skill-2",
-      stashDir,
+      path.join(stashDir, "skills", "test-skill-2"),
       makeEntry("skill", "test-skill-2"),
       "test skill 2",
+      infoEntryProvenance("skill", "test-skill-2"),
     );
     upsertEntry(
       db,
-      "knowledge/test-doc",
-      "/fake/doc",
-      "/fake/doc/test-doc",
-      stashDir,
+      path.join(stashDir, "knowledge", "test-doc"),
       makeEntry("knowledge", "test-doc"),
       "test doc",
+      infoEntryProvenance("knowledge", "test-doc"),
     );
     rebuildFts(db);
     closeDatabase(db);
@@ -250,12 +255,10 @@ describe("assembleInfo", () => {
     const entry = makeEntry("skill", "embed-skill");
     const id = upsertEntry(
       db,
-      "skills/embed-skill",
-      "/fake/skill",
-      "/fake/skill/embed-skill",
-      stashDir,
+      path.join(stashDir, "skills", "embed-skill"),
       entry,
       "embed skill",
+      infoEntryProvenance("skill", "embed-skill"),
     );
     upsertEmbedding(db, id, [1, 0, 0, 0]);
     setMeta(db, "hasEmbeddings", "1");

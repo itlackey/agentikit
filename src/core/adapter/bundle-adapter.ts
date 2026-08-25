@@ -35,7 +35,13 @@
  *   index .............................. optional
  *   affectedItems ....................... optional
  *   validate .......................... REQUIRED
- *   placeNew / directoryList / looksLikeRoot ... optional
+ *   readCandidates / recognizePathCandidates / placeNew / directoryList / looksLikeRoot ... optional
+ *
+ * 0.9.2 adds two independent optional read/runtime facets:
+ * `renderExecutionSource`, for the approved agent/command design, and
+ * `readCandidates` / `recognizePathCandidates`, which make native read aliases
+ * and non-invertible path identities explicit without changing write placement.
+ * They do not change the 0.9.0 indexing or validation contract.
  *
  * The spec's optional authoring (§12.2) / export (§12.3) / memory (§12.4)
  * facet methods are Tier-B ("no 0.9.0 adapter implements these") and their
@@ -57,6 +63,7 @@
  * `drainDirDocuments` × `adapter.recognize` is the core scan engine).
  */
 
+import type { AdapterRenderedExecutionSource } from "../../execution/source";
 // D1-3: type-only import of FileContext from the indexer layer. Erased at
 // build time (no runtime edge); verified to add no import-cycle
 // participant (`bun scripts/lint-import-cycles.ts` — ratchet stays 28,
@@ -65,6 +72,15 @@
 import type { FileContext } from "../../indexer/walk/file-context";
 import type { FileChange } from "../file-change";
 import type { BundleComponent, BundleInstallation, Diagnostic, IndexDocument, ValidateContext } from "./types";
+
+export interface AdapterReadCandidate {
+  path: string;
+  /** Canonical concept identity this authored path may own. */
+  conceptId: string;
+}
+
+/** Path-derived FileContext fields available to byte-free owner discovery. */
+export type AdapterPathContext = Omit<FileContext, "content" | "frontmatter" | "stat">;
 
 export interface BundleAdapter {
   readonly id: string;
@@ -99,6 +115,26 @@ export interface BundleAdapter {
   // existence (normative §12.1). Cross-component ref existence is a CORE
   // base check, not an adapter concern.
   validate(c: BundleComponent, changes: FileChange[], ctx: ValidateContext): Promise<Diagnostic[]>;
+
+  // OPTIONAL — runtime translation for executable agent assets. The adapter
+  // receives the authoritative native file and returns only a branded,
+  // frontmatter-free command/persona source. Core resolution never reads raw
+  // native bytes into a prompt after this boundary.
+  renderExecutionSource?(c: BundleComponent, file: FileContext): AdapterRenderedExecutionSource | null;
+
+  // OPTIONAL — authoritative read placement. Unlike `extensions` (a walk
+  // collection hint) and `placeNew` (a write-normalization policy), this lists
+  // the existing path spellings that may own one canonical concept. Every
+  // candidate carries that canonical identity, so core can arbitrate without
+  // reading authored bytes or inferring identity from the query.
+  readCandidates?(c: BundleComponent, conceptId: string): AdapterReadCandidate[];
+
+  // OPTIONAL — bounded physical-scan identity. Used when recognition permits
+  // authored placements that cannot be inverted from a concept id. This hook
+  // receives path fields only and MUST return every canonical identity the
+  // path may recognize as without reading authored bytes. Content-dependent
+  // formats may conservatively return more than one possible identity.
+  recognizePathCandidates?(c: BundleComponent, file: AdapterPathContext): readonly string[];
 
   // OPTIONAL — placement / discovery
   /** Replaces the per-type stash-subdir + name-to-path placement primitives. */

@@ -33,7 +33,7 @@ AKM retrieves every supported capability type. It directly orchestrates defined 
 
 ## Install
 
-**Option 1 — npm package (recommended; requires [Node.js](https://nodejs.org) >= 22):**
+**Option 1 — npm package (recommended; requires [Node.js](https://nodejs.org) >= 24):**
 
 ```sh
 npm install -g akm-cli
@@ -81,17 +81,19 @@ AKM recognizes several existing directory layouts in place, each through its own
 | OKF and LLM wikis | Indexes plain-markdown (OKF) and Karpathy-style wiki (`schema.md` + `raw/` + `pages/`) content, read-only |
 | Git, npm, local dirs, and websites | Any of these can be added as a source; AKM detects the bundle format inside and indexes it |
 
-See [Supported Formats](docs/reference/supported-formats.md) for current write support and detection rules, and [Wikis](docs/guides/wikis.md) for using a living LLM wiki as a bundle.
+See [Supported Formats](docs/reference/supported-formats.md) for current write support and detection rules, and [Wikis](https://github.com/itlackey/akm/blob/main/docs/guides/wikis.md) for using a living LLM wiki as a bundle.
 
 ## Common next steps
 
-- Connect local dirs, git repos, npm packages, and websites — [Bundles](docs/guides/bundles.md)
-- Capture memories, import docs, and manage wikis — [Capture Knowledge](docs/guides/capture-knowledge.md)
-- Turn feedback and usage into reviewable proposals — [Improve the Library](docs/guides/improve-the-library.md)
+- Connect local dirs, git repos, npm packages, and websites — [Bundles](https://github.com/itlackey/akm/blob/main/docs/guides/bundles.md)
+- Capture memories, import docs, and manage wikis — [Capture Knowledge](https://github.com/itlackey/akm/blob/main/docs/guides/capture-knowledge.md)
+- Turn feedback and usage into reviewable proposals — [Improve the Library](https://github.com/itlackey/akm/blob/main/docs/guides/improve-the-library.md)
 - Run resumable, multi-step procedures — [Workflows](docs/reference/workflows.md)
-- Wire akm into Claude Code, OpenCode, Cursor, and other assistants — [Use AKM With Any Agent](docs/guides/use-with-any-agent.md)
+- Author strict scheduled automation — [Tasks](docs/reference/tasks.md)
+- Upgrading from 0.9.1 — [0.9.2 migration guide](docs/migration/v0.9.1-to-v0.9.2.md)
+- Wire akm into Claude Code, OpenCode, Cursor, and other assistants — [Use AKM With Any Agent](https://github.com/itlackey/akm/blob/main/docs/guides/use-with-any-agent.md)
 
-Scheduling background tasks (like `akm improve`) involves reviewing and activating OS scheduler entries — see [Scheduling](docs/guides/scheduling.md) for the full walkthrough.
+Scheduling background tasks (like `akm improve`) involves reviewing and activating OS scheduler entries — see [Scheduling](https://github.com/itlackey/akm/blob/main/docs/guides/scheduling.md) for the full walkthrough.
 
 ## Local-first and privacy
 

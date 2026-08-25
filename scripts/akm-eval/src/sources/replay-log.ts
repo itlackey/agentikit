@@ -51,8 +51,8 @@ export interface StateDbProposalsRecord {
 
 /**
  * Captured `available()` answer. Recorded on first call per recorder so the
- * playback runner takes the same code branch (state-db vs stash-fs fallback)
- * as the original run. Without this the player would default to `true` and
+ * playback runner preserves the same state.db availability decision as the
+ * original run. Without this the player would default to `true` and
  * the runner would then ask for a query that was never recorded.
  */
 export interface StateDbAvailableRecord {

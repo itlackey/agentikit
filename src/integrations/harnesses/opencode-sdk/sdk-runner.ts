@@ -97,7 +97,6 @@ import { createHash } from "node:crypto";
 import type { LlmConnectionConfig } from "../../../core/config/config";
 import type { ShowResponse } from "../../../sources/types";
 import { DEFAULT_AGENT_TIMEOUT_MS } from "../../agent/config";
-import { resolveModel } from "../../agent/model-aliases";
 import type { AgentProfile } from "../../agent/profiles";
 import type { AgentFailureReason, AgentRunResult, AgentTokenUsage, RunAgentOptions } from "../../agent/spawn";
 
@@ -114,9 +113,10 @@ interface SdkClient {
       path: { id: string };
       // `system` and `tools` are forwarded when present — see the #564 bug
       // fixes in runOpencodeSdk(). They mirror @opencode-ai/sdk's
-      // SessionPromptData.body shape (system?: string; tools?: Record<string, boolean>).
+      // SessionPromptData.body shape (agent?: string; system?: string; tools?: Record<string, boolean>).
       body: {
         parts: { type: string; text: string }[];
+        agent?: string;
         system?: string;
         tools?: Record<string, boolean>;
       };
@@ -300,22 +300,13 @@ function toolsToSdkAllowlist(tools: ShowResponse["toolPolicy"]): Record<string, 
 
 /**
  * Assemble the OpenCode SDK server config from the profile + LLM fallback.
- * Pure and exported for tests. `profile.model` is resolved through the model
- * alias tables (platform key `"opencode-sdk"`) so config aliases like
- * `"model": "fast"` work on the SDK path the same way they do for CLI
- * builders. Note there is no built-in alias column for `opencode-sdk` —
- * built-in opus/sonnet/haiku strings are CLI-provider-qualified and would
- * collide with the `akm-custom/` provider prefixing below, so only profile
- * and config-root alias tables apply here.
+ * Pure and exported for tests. `profile.model` is already exact because model
+ * aliases resolve once before harness lowering.
  */
 export function buildSdkConfig(profile: AgentProfile, llmConfig?: LlmConnectionConfig): Record<string, unknown> {
   const endpoint = llmConfig?.endpoint;
   const apiKey = llmConfig?.apiKey;
-  const profileModel = profile.model
-    ? profile.modelIsExact
-      ? profile.model
-      : resolveModel(profile.model, "opencode-sdk", profile.modelAliases, profile.globalModelAliases)
-    : undefined;
+  const profileModel = profile.model;
   const model = profileModel ?? llmConfig?.model;
 
   const sdkConfig: Record<string, unknown> = {};
@@ -346,6 +337,27 @@ function serverRegistryKey(profile: AgentProfile, env: Record<string, string>): 
     .digest("hex");
 }
 
+const OPENCODE_SDK_SERVER_ENV_NAMES = [
+  "HOME",
+  "PATH",
+  "USER",
+  "LANG",
+  "LC_ALL",
+  "TERM",
+  "TMPDIR",
+  "SYSTEMROOT",
+  "COMSPEC",
+  "PATHEXT",
+  "WINDIR",
+  "TEMP",
+  "TMP",
+] as const;
+
+/** @internal Exact environment allowlist used to start the OpenCode SDK server. */
+export function opencodeSdkServerEnvironmentNames(profile: AgentProfile): string[] {
+  return [...new Set([...OPENCODE_SDK_SERVER_ENV_NAMES, ...(profile.envPassthrough ?? [])])];
+}
+
 function buildServerEnv(
   profile: AgentProfile,
   config: Record<string, unknown>,
@@ -353,23 +365,7 @@ function buildServerEnv(
   envSource: NodeJS.ProcessEnv,
 ): Record<string, string> {
   const env: Record<string, string> = {};
-  const inheritedNames = new Set([
-    "HOME",
-    "PATH",
-    "USER",
-    "LANG",
-    "LC_ALL",
-    "TERM",
-    "TMPDIR",
-    "SYSTEMROOT",
-    "COMSPEC",
-    "PATHEXT",
-    "WINDIR",
-    "TEMP",
-    "TMP",
-    ...(profile.envPassthrough ?? []),
-  ]);
-  for (const key of inheritedNames) {
+  for (const key of opencodeSdkServerEnvironmentNames(profile)) {
     const value = envSource[key];
     if (value !== undefined) env[key] = value;
   }
@@ -812,6 +808,18 @@ async function deleteSessionBestEffort(
   }
 }
 
+function abortedBeforeSdkStart(profile: AgentProfile): AgentRunResult {
+  return {
+    ok: false,
+    stdout: "",
+    stderr: "",
+    durationMs: 0,
+    exitCode: null,
+    reason: "aborted" as AgentFailureReason,
+    error: `opencode-sdk agent "${profile.name}" not started: caller signal already aborted`,
+  };
+}
+
 export async function runOpencodeSdk(
   profile: AgentProfile,
   prompt: string,
@@ -825,17 +833,7 @@ export async function runOpencodeSdk(
   const setTimeoutImpl = opts.setTimeoutFn ?? setTimeout;
   const clearTimeoutImpl = opts.clearTimeoutFn ?? clearTimeout;
 
-  if (opts.signal?.aborted) {
-    return {
-      ok: false,
-      stdout: "",
-      stderr: "",
-      durationMs: 0,
-      exitCode: null,
-      reason: "aborted" as AgentFailureReason,
-      error: `opencode-sdk agent "${profile.name}" not started: caller signal already aborted`,
-    };
-  }
+  if (opts.signal?.aborted) return abortedBeforeSdkStart(profile);
 
   let client: SdkClient;
   if (_testServer) {
@@ -966,18 +964,21 @@ export async function runOpencodeSdk(
     };
   }
 
-  // #564 bug fixes (1) + (2): forward systemPrompt and tools from the abstract
+  // Forward the exact native agent selector, systemPrompt, and tools from the abstract
   // dispatch request. Both were previously accepted on AgentDispatchRequest but
   // silently dropped on the SDK path, so SDK-mode dispatch ignored agent-asset
   // system prompts and tool policies entirely (the CLI path honours both).
   const dispatch = opts.dispatch;
+  const agent = dispatch?.agent;
   const system = dispatch?.systemPrompt;
   const tools = toolsToSdkAllowlist(dispatch?.tools);
   const body: {
     parts: { type: string; text: string }[];
+    agent?: string;
     system?: string;
     tools?: Record<string, boolean>;
   } = { parts: [{ type: "text", text: prompt }] };
+  if (agent) body.agent = agent;
   if (system) body.system = system;
   if (tools) body.tools = tools;
 

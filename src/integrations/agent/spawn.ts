@@ -151,6 +151,8 @@ export interface AgentRunResult {
   /** Parsed JSON when `parseOutput === "json"` and parsing succeeded. */
   parsed?: unknown;
   reason?: AgentFailureReason;
+  /** Safe typed discriminator for a caught direct-LLM transport error; absent for agent/SDK and generic failures. */
+  llmErrorCode?: Exclude<import("../../llm/usage-telemetry").LlmUsageErrorCode, "unknown_error">;
   /** Human-readable error message paired with `reason`. */
   error?: string;
   /** Token accounting, when the harness reported it (SDK path today). */

@@ -82,6 +82,17 @@ describe("mergeCurateSearchResponses", () => {
     expect(merged.tip).toBeUndefined();
   });
 
+  test("deduplicates repeated semantic failures and preserves fts-fallback mode", () => {
+    const warning = "Vector search unavailable — falling back to keyword search.";
+    const merged = mergeCurateSearchResponses(searchResponse({ searchMode: "fts-fallback", warnings: [warning] }), [
+      searchResponse({ searchMode: "fts-fallback", warnings: [warning] }),
+      searchResponse({ searchMode: "fts-fallback", warnings: [warning] }),
+    ]);
+
+    expect(merged.searchMode).toBe("fts-fallback");
+    expect(merged.warnings).toEqual([warning]);
+  });
+
   test("keeps full-query (base) hits ABOVE higher-scored fallback-only hits (no keyword leapfrog)", () => {
     // Regression for the curate-vs-search divergence: the full-query search
     // returned the contextually-relevant memory at a moderate hybrid score,

@@ -128,6 +128,23 @@ export function formatWorkflowRunPlain(result: Record<string, unknown>): string 
   // text renderer: JSON/YAML pass them through, and dropping them here would
   // hide the announcement from the DEFAULT output mode — where it matters most.
   for (const warning of Array.isArray(result.warnings) ? result.warnings : []) lines.push(`! ${String(warning)}`);
+  // Live-only common-lowerer diagnostics are already sanitized and deduped by
+  // the workflow engine. Render their typed headline (not opaque details) so
+  // default text output has the same observability as JSON without widening a
+  // durable workflow schema.
+  for (const value of Array.isArray(result.notices) ? result.notices : []) {
+    if (typeof value !== "object" || value === null) continue;
+    const notice = value as Record<string, unknown>;
+    if (
+      typeof notice.code !== "string" ||
+      typeof notice.severity !== "string" ||
+      typeof notice.adapter !== "string" ||
+      typeof notice.message !== "string"
+    )
+      continue;
+    const field = typeof notice.field === "string" && notice.field ? `; ${notice.field}` : "";
+    lines.push(`! lowering[${notice.severity}] ${notice.code} (${notice.adapter}${field}): ${notice.message}`);
+  }
   const executed = Array.isArray(result.executed) ? (result.executed as Array<Record<string, unknown>>) : [];
   if (executed.length === 0) {
     lines.push("executed: (no steps — run was already done or blocked)");

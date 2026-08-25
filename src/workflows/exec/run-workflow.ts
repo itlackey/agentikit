@@ -67,17 +67,18 @@
 import { randomUUID } from "node:crypto";
 import { UsageError } from "../../core/errors";
 import { withMaintenanceStartBarrierAsync } from "../../core/maintenance-barrier";
+import type { LoweringNotice } from "../../execution/resolved-request";
 import { disposeDispatchResources } from "../../integrations/agent/runner-dispatch";
 import type { WorkflowRunStepState, WorkflowRunSummary } from "../../sources/types";
 import { withWorkflowRunsConnection, withWorkflowRunsRepo } from "../../storage/repositories/workflow-runs-repository";
 import { assertRunParamsSatisfyPlan, type WorkflowParameterFlag } from "../ir/params";
 import { computePlanHash } from "../ir/plan-hash";
-import { decodeWorkflowPlanV3, type IrStepPlan, type WorkflowPlanGraph } from "../ir/schema";
+import { decodeWorkflowPlanV4, type IrStepPlanV4, type WorkflowPlanGraphV4 } from "../ir/schema-v4";
 import { requireExecutableWorkflowPlan } from "../runtime/plan-classifier";
 import { completeWorkflowStep, getNextWorkflowStep, resumeWorkflowRun, type WorkflowNextResult } from "../runtime/runs";
-import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
 import type { SummaryJudge } from "../validate-summary";
 import { frozenSummaryJudge } from "./frozen-judge";
+import { mergeLoweringNotices } from "./lowering-notices";
 import {
   defaultUnitDispatcher,
   executeStepPlan,
@@ -119,7 +120,7 @@ export interface RunWorkflowOptions {
    * Test seam: plan loader. Default: the run row's FROZEN plan (`plan_json`
    * + `plan_hash` integrity check, migration 006).
    */
-  loadPlan?: (workflowRef: string) => Promise<WorkflowPlanGraph>;
+  loadPlan?: (workflowRef: string) => Promise<WorkflowPlanGraphV4>;
   /** Test seam for the engine concurrency cap. */
   maxConcurrency?: number;
   /**
@@ -160,6 +161,8 @@ export interface ExecutedStepReport {
   unitCount: number;
   failedUnits: number;
   summary: string;
+  /** Safe diagnostics observed while this live step attempt lowered work. */
+  notices?: readonly Readonly<LoweringNotice>[];
 }
 
 export interface RunWorkflowResult {
@@ -186,6 +189,8 @@ export interface RunWorkflowResult {
   judgeFailure?: { stepId: string; message: string };
   /** Present when cooperative cancellation stopped before advancing the step. */
   aborted?: true;
+  /** Deduped safe diagnostics from work lowered during this invocation only. */
+  notices?: readonly Readonly<LoweringNotice>[];
   /**
    * Non-fatal notices from creating the run in THIS invocation — currently the
    * implicit engine fallback announcement. Absent when the run already existed,
@@ -221,7 +226,8 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
     );
     executed.push(...result.executed);
     stepsProcessed += result.stepsProcessed;
-    const aggregate = { ...result, executed, stepsProcessed };
+    const notices = mergeLoweringNotices(...executed.map((step) => step.notices));
+    const aggregate = { ...result, executed, stepsProcessed, ...(notices ? { notices } : {}) };
     if (result.run.status !== "failed" || result.aborted || result.gateRejection || remainingRetries <= 0) {
       return aggregate;
     }
@@ -249,7 +255,7 @@ async function runWorkflowAttempt(
   });
   // Version/canonical/hash validation precedes every executable mutation,
   // including lease acquisition. Historical rows remain inspectable/abandonable.
-  if (!next.done && !options.loadPlan) {
+  if (!next.done) {
     await withWorkflowRunsRepo((repo) => {
       const row = repo.getRunById(next.run.id);
       if (!row) throw new UsageError(`Workflow run ${next.run.id} was not found.`);
@@ -519,26 +525,23 @@ async function completedRunResult(runId: string): Promise<RunWorkflowResult> {
 
 function workflowSummaryJudge(
   options: RunWorkflowOptions,
-  plan: WorkflowPlanGraph,
-  stepPlan: IrStepPlan,
+  stepPlan: IrStepPlanV4,
   signal: AbortSignal | undefined,
   owner: { runId: string; stepId: string },
 ): SummaryJudge | null {
   if (options.summaryJudge !== undefined) return options.summaryJudge;
   // The judge dispatches under the REAL run/step identity; the per-loop gate row
   // identity is threaded in per call by the completion path that journals it.
-  return frozenSummaryJudge(plan, stepPlan.gate.judge, signal, options.dispatcher ?? defaultUnitDispatcher, owner);
+  return frozenSummaryJudge(stepPlan.gate.frozenJudge, signal, options.dispatcher ?? defaultUnitDispatcher, owner);
 }
 
 /**
  * Seed the lifetime unit cap AND the budget ceilings from the journal so
  * both are truly per-RUN: a resumed or re-invoked run must not restart the
- * runaway backstop — or a declared `budget` — at zero. Journal rows = past
- * dispatch ATTEMPTS (counted against `budget.max_units`); their summed
- * `tokens` column is the run's spend so far (counted against
- * `budget.max_tokens`). The executor consumes both only on new dispatches
- * (durable-row reuses are free), so a large partially-completed fan-out
- * stays resumable.
+ * runaway backstop — or a declared `budget` — at zero. The append-only attempt
+ * journal is authoritative: dispatch attempts count against
+ * `budget.max_units`, and their known tokens count against
+ * `budget.max_tokens`. Durable result reuse is free.
  *
  * Gate-evaluation rows (`phase = "gate"`, journaled by the completion-gate
  * judge) are EXCLUDED from the seed: the live path never consumes
@@ -548,20 +551,14 @@ function workflowSummaryJudge(
  * that `on_error` cannot soften. The seed must reproduce exactly what live
  * accounting would have accumulated.
  *
- * The seed sums each dispatch row's `attempts` (migration 008), NOT the row
- * COUNT: a crash between a unit's dispatch and its finish leaves a `running`
- * row that resume re-dispatches under the SAME content-derived unit_id, and
- * `insertUnit` REPLACES that one row while bumping `attempts`. Counting rows
- * would erase every prior crash-retried dispatch from budget/lifetime
- * accounting, letting the run spend past its declared ceiling; summing
- * `attempts` charges each dispatch exactly once.
+ * Attempt rows are append-only, so retries cannot collapse or erase prior
+ * dispatch accounting.
  */
 async function seedRunAccountingFromJournal(runId: string): Promise<{ unitsDispatched: number; tokensUsed: number }> {
-  const journaledUnits = await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(runId));
-  const journaledDispatches = journaledUnits.filter((row) => row.phase !== GATE_EVALUATION_PHASE);
+  const accounting = await withWorkflowRunsRepo((repo) => repo.getAttemptAccounting(runId));
   return {
-    unitsDispatched: journaledDispatches.reduce((sum, row) => sum + row.attempts, 0),
-    tokensUsed: journaledDispatches.reduce((sum, row) => sum + (row.tokens ?? 0), 0),
+    unitsDispatched: accounting.dispatchAttempts,
+    tokensUsed: accounting.dispatchTokens,
   };
 }
 
@@ -577,15 +574,15 @@ async function seedRunAccountingFromJournal(runId: string): Promise<{ unitsDispa
 async function loadAuthoritativeRunPlan(
   options: RunWorkflowOptions,
   next: WorkflowNextResult,
-): Promise<WorkflowPlanGraph> {
-  const plan = await loadFrozenPlan(next.run.id);
+): Promise<WorkflowPlanGraphV4> {
+  const stored = await loadStoredPlan(next.run.id);
   if (options.loadPlan) {
-    const expected = decodeWorkflowPlanV3(await options.loadPlan(next.run.workflowRef));
-    if (computePlanHash(expected) !== computePlanHash(plan))
+    const expected = decodeWorkflowPlanV4(await options.loadPlan(next.run.workflowRef));
+    if (computePlanHash(expected) !== computePlanHash(stored))
       throw new UsageError(`Injected workflow plan for run ${next.run.id} differs from its frozen plan.`);
   }
-  assertRunParamsSatisfyPlan(next.run.id, plan, next.run.params ?? {});
-  return plan;
+  assertRunParamsSatisfyPlan(next.run.id, stored, next.run.params ?? {});
+  return stored;
 }
 
 /**
@@ -596,7 +593,7 @@ async function loadAuthoritativeRunPlan(
 async function skipUnselectedRouteTarget(input: {
   runId: string;
   stepId: string;
-  stepPlan: IrStepPlan;
+  stepPlan: IrStepPlanV4;
   skipInfo: RouteSkipInfo;
   routeUnselected: Map<string, RouteSkipInfo>;
   executed: ExecutedStepReport[];
@@ -641,7 +638,7 @@ async function skipUnselectedRouteTarget(input: {
  */
 async function recoverGateLoopState(
   runId: string,
-  stepPlan: IrStepPlan,
+  stepPlan: IrStepPlanV4,
 ): Promise<{ startLoop: number; seededFeedback: GateFeedback | undefined }> {
   // A step with no effective completion criteria never reaches a judge
   // (`validateStepSummary` short-circuits before the gate-journaling wrapper),
@@ -659,8 +656,8 @@ async function recoverGateLoopState(
 interface StepDriveContext {
   options: RunWorkflowOptions;
   next: WorkflowNextResult;
-  plan: WorkflowPlanGraph;
-  stepPlan: IrStepPlan;
+  plan: WorkflowPlanGraphV4;
+  stepPlan: IrStepPlanV4;
   step: WorkflowRunStepState;
   /** Every prior step's evidence, keyed by step id (live values preferred over rows). */
   evidence: Record<string, Record<string, unknown> | undefined>;
@@ -741,7 +738,6 @@ async function executeStepSubgraph(
         // Budget ceilings ride the FROZEN plan (addendum R2): a mid-run
         // asset edit can never loosen or tighten a run's budget.
         ...(plan.budget ? { budget: plan.budget } : {}),
-        ...(plan.execution ? { engines: plan.execution.engines } : {}),
         gateLoop,
         ...(gateFeedback ? { gateFeedback } : {}),
         // The heartbeat's signal is the effective dispatch signal: a lost
@@ -805,6 +801,7 @@ async function runStepGateLoop(
       unitCount: result.units.length,
       failedUnits: result.units.filter((u) => !u.ok).length,
       summary: result.summary,
+      ...(result.notices ? { notices: result.notices } : {}),
     });
 
     // Route evaluation + artifact-judged completion gate + gate-row
@@ -829,7 +826,6 @@ async function runStepGateLoop(
         routeSelected,
         routeUnselected,
         summaryJudge,
-        ...(ctx.plan.execution ? { engines: ctx.plan.execution.engines } : {}),
         signal: options.signal,
         // The judge runs under the DISPATCH signal, so the completion path must
         // see it too: an abort delivered there (a lost lease, a caller Ctrl-C)
@@ -1038,7 +1034,7 @@ async function driveRun(
     // verify. No gate loop is consumed and nothing is dispatched.
     let summaryJudge: SummaryJudge | null;
     try {
-      summaryJudge = workflowSummaryJudge(options, plan, stepPlan, dispatchSignal, {
+      summaryJudge = workflowSummaryJudge(options, stepPlan, dispatchSignal, {
         runId: next.run.id,
         stepId: step.id,
       });
@@ -1095,10 +1091,12 @@ async function driveRun(
 
   // Re-read for the freshest run state (the loop may have exited on maxSteps).
   const finalState = await getNextWorkflowStep(next.run.id);
+  const notices = mergeLoweringNotices(...executed.map((step) => step.notices));
   return {
     run: finalState.run,
     executed,
     stepsProcessed,
+    ...(notices ? { notices } : {}),
     ...(finalState.run.status === "completed" ? { done: true as const } : {}),
     ...(gateRejection ? { gateRejection } : {}),
     ...(judgeFailure ? { judgeFailure } : {}),
@@ -1116,7 +1114,7 @@ async function driveRun(
  * Missing and non-current plans fail validation and are never rebuilt from a
  * mutable source asset.
  */
-async function loadFrozenPlan(runId: string): Promise<WorkflowPlanGraph> {
+async function loadStoredPlan(runId: string): Promise<WorkflowPlanGraphV4> {
   const row = await withWorkflowRunsRepo((repo) => {
     const run = repo.getRunById(runId);
     return run;

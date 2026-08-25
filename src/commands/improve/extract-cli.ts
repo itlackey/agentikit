@@ -8,11 +8,11 @@
  * see src/commands/proposal/proposal-cli.ts for its registration).
  *
  * Examples:
- *   akm proposal extract --type claude-code --session-id <id>
- *   akm proposal extract --type claude-code --since 24h
+ *   akm proposal extract --type claude --session-id <id>
+ *   akm proposal extract --type claude --since 24h
  *   akm proposal extract --type opencode --since 7d --dry-run
  *   akm proposal extract --auto                 # iterate all available harnesses
- *   akm proposal extract --type claude-code --location /custom/path --session-id <id>
+ *   akm proposal extract --type claude --location /custom/path --session-id <id>
  *
  * Output is the AkmExtractResult JSON envelope (or an aggregated one when
  * `--auto` runs multiple harnesses).
@@ -28,13 +28,12 @@ import { type AkmExtractResult, akmExtract, resolveStandaloneExtractPlan } from 
 export const extractCommand = defineJsonCommand({
   meta: {
     name: "extract",
-    description:
-      "Extract durable insights from native session files (claude-code, opencode) and queue them as proposals.",
+    description: "Extract durable insights from native session files (claude, opencode) and queue them as proposals.",
   },
   args: {
     type: {
       type: "string",
-      description: "Harness name (claude-code, opencode). Required unless --auto.",
+      description: "Harness name (claude, opencode). Required unless --auto.",
     },
     "session-id": {
       type: "string",

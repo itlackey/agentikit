@@ -9,6 +9,8 @@ export type AkmSearchType = string;
 export type SearchSource = "local" | "registry" | "all";
 export type SearchHitSize = "small" | "medium" | "large";
 export type BeliefFilterMode = "all" | "current" | "historical";
+/** Actual local ranking mode, including a semantic attempt that failed at runtime. */
+export type SearchExecutionMode = "semantic" | "keyword" | "fts-fallback";
 
 export interface SourceSearchHit {
   type: string;
@@ -95,6 +97,8 @@ export interface SearchResponse {
   registryHits?: RegistrySearchResultHit[];
   tip?: string;
   warnings?: string[];
+  /** `fts-fallback` means semantic ranking was attempted but keyword search had to serve the result. */
+  searchMode?: SearchExecutionMode;
   /** Timing counters in milliseconds */
   timing?: { totalMs: number; rankMs?: number; embedMs?: number };
 }
@@ -143,7 +147,7 @@ export interface WorkflowStepDefinition {
   instructions: string;
   completionCriteria?: string[];
   sequenceIndex?: number;
-  /** Present only for YAML workflow-program steps that declare orchestration. */
+  /** Present when either peer workflow source projects orchestration for this step. */
   orchestration?: WorkflowStepOrchestrationSummary;
 }
 
@@ -171,7 +175,7 @@ export interface WorkflowRunSummary {
   updatedAt: string;
   completedAt?: string | null;
   params?: Record<string, unknown>;
-  /** Agent harness that started the run (e.g. "claude-code", "opencode"), if known. */
+  /** Agent harness that started the run (e.g. "claude", "opencode"), if known. */
   agentHarness?: string | null;
   /** Platform-native session id that owns the run, if known. */
   agentSessionId?: string | null;
@@ -352,6 +356,10 @@ export interface UpdatePlainSyncedItem {
 export interface UpdateSkippedItem {
   id: string;
   kind: SourceKind;
+  /** Machine-readable per-bundle outcome for update --all. */
+  status?: "blocked" | "failed" | "skipped";
+  /** Stable AkmError code when the bundle was blocked or failed. */
+  code?: string;
   reason: string;
 }
 
@@ -439,22 +447,6 @@ export interface ShowResponse {
   };
 }
 
-// ── Manifest types ──────────────────────────────────────────────────────────
-
-/** Compact entry returned by `akm manifest` for cheap capability discovery. */
-export interface ManifestEntry {
-  name: string;
-  type: string;
-  ref: string;
-  description?: string;
-}
-
-/** Response shape for `akm manifest`. */
-export interface ManifestResponse {
-  schemaVersion: number;
-  entries: ManifestEntry[];
-}
-
 export interface UpgradeCheckResponse {
   currentVersion: string;
   latestVersion: string;
@@ -516,88 +508,4 @@ export interface InfoResponse {
      */
     unreadable?: string;
   };
-}
-
-export interface HealthResponse {
-  schemaVersion: 1;
-  ok: boolean;
-  status: "pass" | "warn" | "fail";
-  since: string;
-  hardChecks: Array<{
-    name: string;
-    kind: "deterministic" | "heuristic";
-    status: "pass" | "warn" | "fail" | "unknown";
-    message: string;
-    confidence: "high" | "medium" | "low";
-    evidence?: Record<string, unknown>;
-  }>;
-  advisories: Array<{
-    name: string;
-    kind: "deterministic" | "heuristic";
-    status: "pass" | "warn" | "fail" | "unknown";
-    message: string;
-    confidence: "high" | "medium" | "low";
-    evidence?: Record<string, unknown>;
-  }>;
-  metrics: {
-    taskFailRate: number;
-    agentFailureRate: number;
-    stuckActiveRuns: number;
-    logBackingRate: number;
-    probeRoundTripMs: number | null;
-  };
-  improve: {
-    invoked: number;
-    completed: number;
-    skipped: number;
-    skipReasons: Record<string, number>;
-    plannedRefs: number;
-    actions: {
-      reflect: number;
-      distill: number;
-      distillSkipped: number;
-      memoryPrune: number;
-      memoryInference: number;
-      graphExtraction: number;
-      error: number;
-    };
-    reflectsWithErrorContext: number;
-    coverageGapCount: number;
-    executionLogCandidateCount: number;
-    evalCasesWritten: number;
-    deadUrlCount: number;
-    memorySummary: {
-      eligible: number;
-      derived: number;
-    };
-    memoryCleanup: {
-      pruneCandidates: number;
-      contradictionCandidates: number;
-      beliefStateTransitions: number;
-      consolidationCandidates: number;
-      archived: number;
-      warnings: number;
-    };
-    consolidation: {
-      ran: boolean;
-      processed: number;
-      durationMs: number;
-    };
-    memoryInference: {
-      ran: boolean;
-      writes: number;
-      durationMs: number;
-    };
-    graphExtraction: {
-      ran: boolean;
-      extractedFiles: number;
-      durationMs: number;
-    };
-  };
-  sessionLogAdvisories: Array<{
-    topic: string;
-    frequency: number;
-    source: string;
-    isFailurePattern: boolean;
-  }>;
 }

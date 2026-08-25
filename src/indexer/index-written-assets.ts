@@ -29,14 +29,8 @@ import { isPathAbsent } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { warn, warnVerbose } from "../core/warn";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
-import {
-  deleteEntriesByIds,
-  getEntryCount,
-  upsertEntry,
-  upsertWorkflowDocument,
-} from "../storage/repositories/index-entries-repository";
+import { deleteEntriesByIds, getEntryCount, upsertEntry } from "../storage/repositories/index-entries-repository";
 import { rebuildFts } from "../storage/repositories/index-fts-repository";
-import { takeWorkflowDocument } from "../workflows/runtime/document-cache";
 import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
 import type { IndexDocument } from "./passes/metadata";
@@ -104,10 +98,19 @@ export async function indexWrittenAssets(
       if (!component) throw new Error(`Could not derive bundle provenance for ${stashDir}`);
       const pairs: Array<{ file: string; entry: IndexDocument; conceptId: string; contentHash?: string }> = [];
       const unindexable = new Set<string>();
+      const rejectedConceptIds = new Set<string>();
       for (const file of files) {
         if (!fs.existsSync(file)) {
-          unindexable.add(file);
-          continue;
+          let authoredDanglingSymlink = false;
+          try {
+            authoredDanglingSymlink = fs.lstatSync(file).isSymbolicLink();
+          } catch {
+            // A genuinely absent path has no source identity to preflight.
+          }
+          if (!authoredDanglingSymlink) {
+            unindexable.add(file);
+            continue;
+          }
         }
         const ctx = buildFileContext(stashDir, file);
         // Hardcoded `akmAdapter` on purpose (owner ruling 2026-07-21): this
@@ -116,11 +119,11 @@ export async function indexWrittenAssets(
         // adapter is always the right recognizer here — no per-component
         // dispatch needed.
         const drained = drainDirDocuments(akmAdapter, component, [ctx]);
+        for (const rejectedPath of drained.rejectedPaths) unindexable.add(rejectedPath);
+        for (const conceptId of drained.rejectedConceptIds) rejectedConceptIds.add(conceptId);
         const entry = drained.entries[0];
-        // Workflows also carry a workflow_documents side-table upsert — handled
-        // below, mirroring the full walk — since `akm mv` rewrites citer files
-        // that can be workflows. A broken workflow drains to zero entries (like
-        // the old skip-with-warning) and is treated as unindexable.
+        // A broken workflow drains to zero entries and is treated as
+        // unindexable; valid peer sources have already compiled to source IR.
         const conceptId = drained.conceptIdByFile.get(ctx.absPath);
         if (entry && conceptId)
           pairs.push({ file, entry, conceptId, contentHash: drained.hashByFile.get(ctx.absPath) });
@@ -131,50 +134,63 @@ export async function indexWrittenAssets(
       try {
         db.exec(`PRAGMA busy_timeout = ${WRITE_PATH_INDEX_BUSY_TIMEOUT_MS}`);
         if (getEntryCount(db) === 0) return true;
-        for (const file of unindexable) {
-          const rows = db.prepare("SELECT id FROM entries WHERE file_path = ?").all(file) as Array<{ id: number }>;
-          deleteEntriesByIds(
-            db,
-            rows.map((row) => row.id),
-          );
-        }
-        for (const { file, entry, conceptId, contentHash } of pairs) {
-          const entryKey = `${stashDir}:${entry.type}:${entry.name}`;
-          let entryWithSize = entry;
-          try {
-            entryWithSize = { ...entry, fileSize: fs.statSync(file).size };
-          } catch {
-            // stat raced a delete — index without the size, like the full walk does.
+        db.transaction(() => {
+          const unindexableEntryIds = new Set<number>();
+          for (const file of unindexable) {
+            const rows = db
+              .prepare(
+                `SELECT id FROM entries
+                  WHERE file_path = ?
+                    AND bundle_id = ?
+                    AND adapter_id = ?`,
+              )
+              .all(file, component.id, component.adapter) as Array<{ id: number }>;
+            for (const row of rows) unindexableEntryIds.add(row.id);
           }
-          // Real provenance (F4a M-core-2 item 5): populate item_ref/content_hash
-          // via the SAME derivation the full-index writer uses, so a write-path
-          // row is never a NULL-item_ref straggler.
-          const provenance = deriveEntryProvenance(
-            { bundleId: component.id, componentId: component.id, adapterId: component.adapter },
-            entry.type,
-            entry.name,
-            conceptId,
-          );
-          const entryId = upsertEntry(
-            db,
-            entryKey,
-            path.dirname(file),
-            file,
-            stashDir,
-            entryWithSize,
-            buildSearchText(entry),
-            provenance,
-            contentHash,
-          );
-          if (entry.type === "workflow") {
-            // Same contract as the full walk (indexer.ts): the renderer cached
-            // the parsed document during metadata generation; persist it so the
-            // workflow runtime never sees an entry without its document.
-            const doc = takeWorkflowDocument(entry);
-            if (doc) upsertWorkflowDocument(db, entryId, doc, fs.readFileSync(file));
+          for (const conceptId of rejectedConceptIds) {
+            const itemRef = `${component.id}//${conceptId}`;
+            const rows = db
+              .prepare(
+                `SELECT id FROM entries
+                  WHERE bundle_id = ? AND adapter_id = ?
+                    AND type = 'workflow'
+                    AND (concept_id = ? OR item_ref = ?)`,
+              )
+              .all(component.id, component.adapter, conceptId, itemRef) as Array<{ id: number }>;
+            for (const row of rows) unindexableEntryIds.add(row.id);
           }
-        }
-        if (pairs.length > 0 || unindexable.size > 0) rebuildFts(db, { incremental: true });
+          deleteEntriesByIds(db, [...unindexableEntryIds]);
+          for (const { file, entry, conceptId, contentHash } of pairs) {
+            let entryWithSize = entry;
+            try {
+              entryWithSize = { ...entry, fileSize: fs.statSync(file).size };
+            } catch {
+              // stat raced a delete — index without the size, like the full walk does.
+            }
+            // Real provenance (F4a M-core-2 item 5): populate item_ref/content_hash
+            // via the SAME derivation the full-index writer uses, so a write-path
+            // row is never a NULL-item_ref straggler.
+            const provenance = deriveEntryProvenance(
+              { bundleId: component.id, componentId: component.id, adapterId: component.adapter },
+              entry.type,
+              entry.name,
+              conceptId,
+            );
+            // A materialized file has one current owner. If a targeted write is
+            // the ownership handoff (for example an explicitly named bundle
+            // replacing an earlier path-derived bootstrap identity), remove the
+            // superseded physical-path row before publishing the canonical ref.
+            const supersededIds = db
+              .prepare("SELECT id FROM entries WHERE file_path = ? AND item_ref <> ?")
+              .all(file, provenance.itemRef) as Array<{ id: number }>;
+            deleteEntriesByIds(
+              db,
+              supersededIds.map((row) => row.id),
+            );
+            upsertEntry(db, file, entryWithSize, buildSearchText(entry), provenance, contentHash);
+          }
+          if (pairs.length > 0 || unindexable.size > 0) rebuildFts(db, { incremental: true });
+        })();
       } finally {
         closeDatabase(db);
       }
