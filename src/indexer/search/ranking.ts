@@ -142,6 +142,7 @@ export function combineSearchScores(options: {
       filePath: result.filePath,
       score: combinedScore,
       rankingMode: embedScore !== undefined ? "hybrid" : "fts",
+      lexicalMatch: result.lexicalMatch,
       itemRef: result.itemRef,
       bundleId: result.bundleId,
       conceptId: result.conceptId,

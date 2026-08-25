@@ -11,6 +11,60 @@
  * query should bypass FTS entirely (SPEC-4 ref-prefix enumeration).
  */
 
+/** Maximum number of distinct lexical terms one query may execute. */
+export const MAX_LEXICAL_QUERY_TOKENS = 16;
+
+export type LexicalQueryExecution = "exact" | "prefix" | "relaxed";
+
+export interface LexicalQueryPlan {
+  tokens: string[];
+  /** Quoted implicit-AND query. */
+  exact: string;
+  /** Quoted prefix-AND query, omitted when no token is eligible. */
+  exactPrefix?: string;
+  /** One bounded prefix-OR recovery query, present only for multi-term input. */
+  relaxed?: string;
+}
+
+const UNICODE_TOKEN = /[\p{L}\p{N}]+/gu;
+
+function quoteToken(token: string): string {
+  return `"${token}"`;
+}
+
+function prefixToken(token: string): string {
+  return [...token].length >= 3 ? `${quoteToken(token)}*` : quoteToken(token);
+}
+
+/**
+ * Build the sole lexical retrieval plan from raw user input.
+ *
+ * Tokenization follows the useful portion of SQLite FTS5's `unicode61`
+ * tokenizer (Unicode letters and numbers). Quoting every term makes FTS
+ * operators ordinary searchable words. Tokens are normalized, deduplicated
+ * case-insensitively, and capped before any SQL executes.
+ */
+export function buildLexicalQueryPlan(query: string): LexicalQueryPlan {
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  const normalized = query.normalize("NFKC");
+  for (const match of normalized.matchAll(UNICODE_TOKEN)) {
+    const token = match[0];
+    const key = token.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tokens.push(token);
+    if (tokens.length === MAX_LEXICAL_QUERY_TOKENS) break;
+  }
+
+  const exact = tokens.map(quoteToken).join(" ");
+  const prefixTokens = tokens.map(prefixToken);
+  const exactPrefix = prefixTokens.some((token) => token.endsWith("*")) ? prefixTokens.join(" ") : undefined;
+  const relaxed = tokens.length > 1 ? prefixTokens.join(" OR ") : undefined;
+
+  return { tokens, exact, exactPrefix, relaxed };
+}
+
 /**
  * Sanitize a raw user query into an FTS5-safe implicit-AND expression.
  *
