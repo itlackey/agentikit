@@ -954,6 +954,94 @@ function truncateUnicodeSafe(text: string, maxChars: number): string {
   return cut.trimEnd();
 }
 
+type MarkdownFence = { marker: "`" | "~"; length: number };
+
+function parseMarkdownFenceOpening(line: string): MarkdownFence | undefined {
+  const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  const run = match?.[1];
+  if (!run) return undefined;
+  const marker = run[0] as "`" | "~";
+  // CommonMark forbids backticks in the info string of a backtick fence.
+  if (marker === "`" && match?.[2]?.includes("`")) return undefined;
+  return { marker, length: run.length };
+}
+
+function isMarkdownFenceClosing(line: string, fence: MarkdownFence): boolean {
+  let cursor = 0;
+  while (cursor < line.length && cursor < 3 && line[cursor] === " ") cursor += 1;
+  const runStart = cursor;
+  while (cursor < line.length && line[cursor] === fence.marker) cursor += 1;
+  if (cursor - runStart < fence.length) return false;
+  return /^[\t ]*$/.test(line.slice(cursor));
+}
+
+function stripMarkdownHtmlComments(line: string, state: { inComment: boolean }): string {
+  let cursor = 0;
+  let visible = "";
+  while (cursor < line.length) {
+    if (state.inComment) {
+      const close = line.indexOf("-->", cursor);
+      if (close < 0) return visible;
+      state.inComment = false;
+      cursor = close + 3;
+      continue;
+    }
+    const open = line.indexOf("<!--", cursor);
+    if (open < 0) return `${visible}${line.slice(cursor)}`;
+    visible += line.slice(cursor, open);
+    state.inComment = true;
+    cursor = open + 4;
+  }
+  return visible;
+}
+
+function findBalancedMarkdownClose(text: string, openAt: number, open: string, close: string): number | undefined {
+  let depth = 1;
+  for (let cursor = openAt + 1; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+    if (char === "\\") {
+      cursor += 1;
+      continue;
+    }
+    if (char === open) depth += 1;
+    if (char !== close) continue;
+    depth -= 1;
+    if (depth === 0) return cursor;
+  }
+  return undefined;
+}
+
+/** Retain link labels while dropping complete, balanced inline destinations. */
+function stripMarkdownLinkDestinations(text: string): string {
+  let visible = "";
+  let cursor = 0;
+  while (cursor < text.length) {
+    const isImage = text[cursor] === "!" && text[cursor + 1] === "[";
+    const labelOpen = isImage ? cursor + 1 : cursor;
+    if (text[labelOpen] !== "[") {
+      visible += text[cursor];
+      cursor += 1;
+      continue;
+    }
+    const labelClose = findBalancedMarkdownClose(text, labelOpen, "[", "]");
+    const destinationOpen = labelClose === undefined ? undefined : labelClose + 1;
+    if (destinationOpen === undefined || text[destinationOpen] !== "(") {
+      visible += text[cursor];
+      cursor += 1;
+      continue;
+    }
+    const destinationClose = findBalancedMarkdownClose(text, destinationOpen, "(", ")");
+    if (destinationClose === undefined) {
+      visible += text[cursor];
+      cursor += 1;
+      continue;
+    }
+    visible += text.slice(labelOpen + 1, labelClose);
+    cursor = destinationClose + 1;
+  }
+  return visible;
+}
+
 /**
  * Derive the one low-weight search projection for an AKM-native Markdown body.
  * Frontmatter is removed by the caller. This projection drops comments,
@@ -967,27 +1055,29 @@ export function projectMarkdownContent(body: string): string | undefined {
   const innerBlock = findInnerFrontmatterBlock(lines);
   const start = innerBlock && isFrontmatterShaped(lines, innerBlock) ? innerBlock.close + 1 : 0;
   const projected: string[] = [];
-  let inFence = false;
-  let fenceChar = "";
-  let inHtmlComment = false;
+  let fence: MarkdownFence | undefined;
+  const htmlComment = { inComment: false };
   for (let i = start; i < lines.length; i += 1) {
-    let trimmed = lines[i]!.trim();
-    const fenceMatch = trimmed.match(/^(`{3,}|~{3,})/);
-    if (inFence) {
-      if (fenceMatch && fenceMatch[1]!.charAt(0) === fenceChar) inFence = false;
+    const rawLine = lines[i]!;
+    if (fence) {
+      if (isMarkdownFenceClosing(rawLine, fence)) fence = undefined;
       continue;
     }
-    if (inHtmlComment) {
-      if (trimmed.includes("-->")) inHtmlComment = false;
-      continue;
+
+    // A leading fence owns the whole line, including any info string that
+    // resembles HTML. Comment state therefore cannot begin inside a fence.
+    if (!htmlComment.inComment) {
+      const openingFence = parseMarkdownFenceOpening(rawLine);
+      if (openingFence) {
+        fence = openingFence;
+        continue;
+      }
     }
-    if (fenceMatch) {
-      inFence = true;
-      fenceChar = fenceMatch[1]!.charAt(0);
-      continue;
-    }
-    if (trimmed.startsWith("<!--")) {
-      if (!trimmed.includes("-->")) inHtmlComment = true;
+
+    let trimmed = stripMarkdownHtmlComments(rawLine, htmlComment).trim();
+    const openingFence = parseMarkdownFenceOpening(trimmed);
+    if (openingFence) {
+      fence = openingFence;
       continue;
     }
     if (!trimmed || /^(-{3,}|\*{3,}|_{3,}|=+)$/.test(trimmed)) continue;
@@ -995,8 +1085,7 @@ export function projectMarkdownContent(body: string): string | undefined {
     if (/^<[^>]+>$/.test(trimmed)) continue;
 
     // Preserve human-facing labels and inline identifiers, never destinations.
-    trimmed = trimmed.replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1");
-    trimmed = trimmed.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+    trimmed = stripMarkdownLinkDestinations(trimmed);
     trimmed = trimmed.replace(/`{1,2}([^`]+)`{1,2}/g, "$1");
     trimmed = trimmed.replace(/^#{1,6}\s+/, "");
     trimmed = trimmed.replace(/^(?:>|[-+*]|\d+[.)])\s+/, "");
