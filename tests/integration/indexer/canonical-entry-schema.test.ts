@@ -194,6 +194,42 @@ describe("canonical derived-index entry schema", () => {
     });
   });
 
+  test("a hostile v21 generation with stale FTS state is discarded wholesale", () => {
+    withTempIndex((dbPath) => {
+      const legacy = openIndexDatabase(dbPath);
+      const entry = {
+        type: "knowledge" as const,
+        name: "hostile-v21",
+        description: "stale FTS state",
+        filename: "hostile-v21.md",
+      };
+      const provenance = deriveEntryProvenance(
+        { bundleId: "primary", componentId: "primary", adapterId: "akm" },
+        entry.type,
+        entry.name,
+      );
+      const oldId = upsertEntry(legacy, "/primary/knowledge/hostile-v21.md", entry, "stale FTS state", provenance);
+      legacy.exec("CREATE TABLE entries_fts_dirty (entry_id INTEGER PRIMARY KEY)");
+      legacy.prepare("INSERT INTO entries_fts_dirty (entry_id) VALUES (?)").run(oldId);
+      legacy.prepare("UPDATE index_meta SET value = '21' WHERE key = 'version'").run();
+      closeDatabase(legacy);
+
+      const current = openIndexDatabase(dbPath);
+      try {
+        expect(current.prepare("SELECT COUNT(*) AS count FROM entries").get()).toEqual({ count: 0 });
+        expect(current.prepare("SELECT COUNT(*) AS count FROM entries_fts").get()).toEqual({ count: 0 });
+        expect(
+          current.prepare("SELECT 1 AS present FROM sqlite_master WHERE name = 'entries_fts_dirty'").get(),
+        ).toBeUndefined();
+        expect(current.prepare("SELECT value FROM index_meta WHERE key = 'version'").get()).toEqual({
+          value: String(DB_VERSION),
+        });
+      } finally {
+        closeDatabase(current);
+      }
+    });
+  });
+
   test("a stale partial generation is rebuilt even when entries is missing", () => {
     withTempIndex((dbPath) => {
       const stale = openDatabase(dbPath);
