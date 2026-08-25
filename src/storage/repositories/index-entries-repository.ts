@@ -442,6 +442,18 @@ export function deleteEntriesByBundle(db: Database, bundleId: string): void {
 }
 
 /**
+ * Delete the complete regenerable entry generation through the same child-row
+ * authority used by targeted deletes. The caller may retain cross-database
+ * usage events so the finalize pass can relink them to the new row ids.
+ */
+export function deleteAllEntries(db: Database, options: { cleanupUsageEvents?: boolean } = {}): number[] {
+  return db.transaction(() => {
+    const rows = db.prepare("SELECT id FROM entries").all() as Array<{ id: number }>;
+    return deleteEntryRows(db, rows, options);
+  })();
+}
+
+/**
  * Diff-persist orphan delete: remove every entry under `dirPath` whose durable
  * `item_ref` is not in `keepRefs`.
  *
@@ -564,7 +576,7 @@ export function deleteUsageEventsByEntryIds(entryIds: number[]): void {
 
 /**
  * Delete entries by their primary key IDs, along with all related rows
- * (embeddings, entries_vec, entries_fts, utility_scores, usage_events).
+ * (embeddings, entries_vec, entries_fts, utility scores, usage_events).
  *
  * Used by explicit `--clean` reconciliation before embeddings and final
  * verification to remove stale entries whose source files no longer exist.
