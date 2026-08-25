@@ -220,7 +220,7 @@ describe("canonical derived-index entry schema", () => {
         expect(current.prepare("SELECT COUNT(*) AS count FROM entries_fts").get()).toEqual({ count: 0 });
         expect(
           current.prepare("SELECT 1 AS present FROM sqlite_master WHERE name = 'entries_fts_dirty'").get(),
-        ).toBeUndefined();
+        ).toBeNull();
         expect(current.prepare("SELECT value FROM index_meta WHERE key = 'version'").get()).toEqual({
           value: String(DB_VERSION),
         });

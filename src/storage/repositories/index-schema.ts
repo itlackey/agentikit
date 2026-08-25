@@ -32,6 +32,10 @@ import { isVecAvailable, purgeEmbeddings } from "./index-vec-repository";
 // entry_type columns. item_ref is the sole conflict key; document_json is the
 // sole stored document projection; bundle provenance and file_path provide the
 // current identity and materialized read path.
+//
+// v21→v22: entry mutations publish FTS synchronously and no dirty queue exists.
+// Discard the old derived generation so stale FTS rows and caller-managed dirty
+// state cannot cross the mutation-authority boundary.
 export const DB_VERSION = CANONICAL_INDEX_DB_VERSION;
 export const EMBEDDING_DIM = 384;
 // #624-P1: graph_files is keyed to (stash_root, file_path, body_hash).
@@ -198,6 +202,7 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
     db.exec("DROP TABLE IF EXISTS graph_files");
     db.exec("DROP TABLE IF EXISTS graph_extraction_queue");
     db.exec("DROP TABLE IF EXISTS graph_meta");
+    db.exec("DROP TABLE IF EXISTS entries_fts_dirty");
     db.exec("DROP TABLE IF EXISTS entries_fts");
     db.exec("DROP TABLE IF EXISTS embeddings");
     db.exec("DROP TABLE IF EXISTS utility_scores_scoped");
