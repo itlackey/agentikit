@@ -11,7 +11,7 @@
 
 import { warn } from "../../core/warn";
 import type { IndexDocument } from "../../indexer/passes/metadata";
-import { buildPrefixQuery, sanitizeFtsQuery } from "../../indexer/search/fts-query";
+import { buildLexicalQueryPlan, type LexicalQueryExecution } from "../../indexer/search/fts-query";
 import { buildSearchFields } from "../../indexer/search/search-fields";
 import type { Database, SqlValue } from "../database";
 import type { DbSearchResult } from "./index-entry-types";
@@ -62,26 +62,29 @@ export function searchFts(
   entryType?: string,
   excludeTypes?: string[],
 ): DbSearchResult[] {
-  const ftsQuery = sanitizeFtsQuery(query);
-  if (!ftsQuery) return [];
+  const plan = buildLexicalQueryPlan(query);
+  if (!plan.exact) return [];
 
   // Try the exact AND query first
-  const exactResults = runFtsQuery(db, ftsQuery, limit, entryType, excludeTypes);
+  const exactResults = runFtsQuery(db, plan.exact, "exact", limit, entryType, excludeTypes);
   if (exactResults.length > 0) return exactResults;
 
-  // Exact match returned zero results — try prefix fallback.
-  // Append FTS5 `*` suffix to each token that is >= 3 characters long.
-  // Short tokens (1-2 chars) are excluded from prefix expansion because
-  // they produce too many false positives.
-  const prefixQuery = buildPrefixQuery(ftsQuery);
-  if (!prefixQuery) return [];
+  if (plan.exactPrefix) {
+    const prefixResults = runFtsQuery(db, plan.exactPrefix, "prefix", limit, entryType, excludeTypes);
+    if (prefixResults.length > 0) return prefixResults;
+  }
 
-  return runFtsQuery(db, prefixQuery, limit, entryType, excludeTypes);
+  // One measured relaxation only after both conjunctive forms miss. This is
+  // still the same FTS table, BM25 weights, candidate collection, and
+  // downstream ranker — merely an OR candidate query for sentence-shaped
+  // input whose filler terms prevented a strict hit.
+  return plan.relaxed ? runFtsQuery(db, plan.relaxed, "relaxed", limit, entryType, excludeTypes) : [];
 }
 
 function runFtsQuery(
   db: Database,
   ftsQuery: string,
+  lexicalMatch: LexicalQueryExecution,
   limit: number,
   entryType?: string,
   excludeTypes?: string[],
@@ -153,6 +156,7 @@ function runFtsQuery(
         bundleId: row.bundleId,
         conceptId: row.conceptId,
         adapterId: row.adapterId,
+        lexicalMatch,
       });
     }
     return results;

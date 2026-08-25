@@ -14,6 +14,7 @@
  */
 
 import type { IndexDocument } from "../passes/metadata";
+import type { LexicalQueryExecution } from "./fts-query";
 
 export interface RankedEntryInput {
   id: number;
@@ -21,6 +22,8 @@ export interface RankedEntryInput {
   filePath: string;
   score: number;
   rankingMode: "hybrid" | "semantic" | "fts";
+  /** Stage of the central lexical plan that admitted this candidate. */
+  lexicalMatch?: LexicalQueryExecution;
   /** Durable fully-qualified `<bundle>//<concept-id>` indexed identity. */
   itemRef?: string | null;
   bundleId?: string | null;

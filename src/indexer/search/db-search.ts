@@ -53,7 +53,12 @@ import { ensureIndex } from "../ensure-index";
 import { collectGraphRelatedHit, type GraphBoostContext, loadGraphBoostContext } from "../graph/graph-boost";
 import { type IndexDocument, isProposedQuality, type StashEntryScope } from "../passes/metadata";
 import { resolveProjectContext } from "../walk/project-context";
-import { parseRefPrefixQuery, parseRetiredTypePrefixQuery, sanitizeFtsQuery } from "./fts-query";
+import {
+  buildLexicalQueryPlan,
+  type LexicalQueryExecution,
+  parseRefPrefixQuery,
+  parseRetiredTypePrefixQuery,
+} from "./fts-query";
 import { applyRankingRules, combineSearchScores, normalizeFtsScores } from "./ranking";
 import type { RankedEntryInput } from "./ranking-types";
 import { attachSearchHitAttribution, copySearchHitAttribution, getSearchHitAttribution } from "./search-attribution";
@@ -370,7 +375,7 @@ async function searchDatabase(
   mode: SearchExecutionMode;
   semanticWarning?: string;
 }> {
-  const hasSearchableTokens = query.length > 0 && sanitizeFtsQuery(query).length > 0;
+  const hasSearchableTokens = query.length > 0 && buildLexicalQueryPlan(query).tokens.length > 0;
 
   // #627 — resolve the default type-exclusion policy. It applies ONLY on the
   // untyped ('any') path and only when the caller did not opt back in via
@@ -608,6 +613,7 @@ async function searchDatabase(
         score: Math.round(finalScore * 10000) / 10000,
         query,
         rankingMode,
+        lexicalMatch: ranked.lexicalMatch,
         defaultStashDir: stashDir,
         allSourceDirs,
         sources,
@@ -983,6 +989,7 @@ export async function buildDbHit(input: {
   score: number;
   query: string;
   rankingMode: "hybrid" | "semantic" | "fts";
+  lexicalMatch?: LexicalQueryExecution;
   defaultStashDir: string;
   allSourceDirs: string[];
   sources: SearchSource[];
@@ -1026,6 +1033,7 @@ export async function buildDbHit(input: {
     confidenceBoost,
     input.utilityBoosted,
     graphBoost,
+    input.lexicalMatch,
   );
 
   const graphHit = input.graphContext ? collectGraphRelatedHit(input.graphContext, absolutePath) : null;
@@ -1091,6 +1099,7 @@ export function buildWhyMatched(
   confidenceBoost: number,
   utilityBoosted?: boolean,
   graphBoost?: number,
+  lexicalMatch?: LexicalQueryExecution,
 ): string[] {
   const reasons: string[] = [
     rankingMode === "hybrid"
@@ -1099,6 +1108,7 @@ export function buildWhyMatched(
         ? "semantic similarity"
         : "fts bm25 relevance",
   ];
+  if (lexicalMatch === "relaxed") reasons.push("lexical recovery after strict query returned no hits");
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
 
   const queryLower = query.toLowerCase().trim();

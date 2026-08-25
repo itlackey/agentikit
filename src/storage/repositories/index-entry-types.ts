@@ -17,6 +17,7 @@
  */
 
 import type { IndexDocument } from "../../indexer/passes/metadata";
+import type { LexicalQueryExecution } from "../../indexer/search/fts-query";
 
 /**
  * Durable bundle-adapter identity attached to every current `entries` row.
@@ -69,6 +70,8 @@ export interface DbSearchResult {
   bundleId: string;
   conceptId: string;
   adapterId: string;
+  /** Which stage of the single progressive lexical plan produced this row. */
+  lexicalMatch: LexicalQueryExecution;
 }
 
 /** One nearest-neighbour hit from the vector index (id + L2 distance). */
