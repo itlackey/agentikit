@@ -14,6 +14,8 @@
 
 import type { AkmConfig } from "../core/config/config";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
+import { embedBatch } from "../llm/embedder";
+import { estimateTokenCount } from "../llm/embedders/remote";
 import type { Database } from "../storage/database";
 import { getEmbeddableEntryCount } from "../storage/repositories/index-entries-repository";
 import { deleteMeta, getMeta, setMeta } from "../storage/repositories/index-meta-repository";
@@ -31,6 +33,7 @@ import {
   classifySemanticFailure,
   clearSemanticStatus,
   deriveSemanticProviderFingerprint,
+  type SemanticSearchReason,
   type SemanticSearchRuntimeStatus,
   writeSemanticStatus,
 } from "./search/semantic-status";
@@ -42,7 +45,7 @@ export interface EmbeddingProgressEvent {
 
 export interface EmbeddingGenerationResult {
   success: boolean;
-  reason?: import("./search/semantic-status").SemanticSearchReason;
+  reason?: SemanticSearchReason;
   message?: string;
   /** Number of sqlite-vec writes that degraded to the complete BLOB fallback. */
   vecInsertFailures?: number;
@@ -85,8 +88,6 @@ export async function generateEmbeddingsForDb(
   }
 
   try {
-    const { embedBatch } = await import("../llm/embedder.js");
-    const { estimateTokenCount } = await import("../llm/embedders/remote.js");
     throwIfAborted(signal);
     const allEntries = getAllEntriesForEmbedding(db, targetEntryIds);
     if (allEntries.length === 0) {
