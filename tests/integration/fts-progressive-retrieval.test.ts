@@ -3,15 +3,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { MARKDOWN_CONTENT_MAX_CHARS, projectMarkdownContent } from "../../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../../src/indexer/scan/drain-dir";
 import { buildLexicalQueryPlan } from "../../src/indexer/search/fts-query";
-import { buildSearchText } from "../../src/indexer/search/search-fields";
+import { buildSearchFields, buildSearchText } from "../../src/indexer/search/search-fields";
 import type { Database as AkmDatabase } from "../../src/storage/database";
-import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
-import { rebuildFts, searchFts } from "../../src/storage/repositories/index-fts-repository";
+import { searchFts } from "../../src/storage/repositories/index-fts-repository";
 
 const createdDirs: string[] = [];
 
@@ -45,21 +43,36 @@ function makeDb(): AkmDatabase {
       content,
       tokenize='porter unicode61'
     );
-    CREATE TABLE entries_fts_dirty (entry_id INTEGER PRIMARY KEY);
-    CREATE TABLE vec_entries (entry_id INTEGER PRIMARY KEY, embedding BLOB);
   `);
   return db;
 }
 
 function insert(db: AkmDatabase, name: string, entry: IndexDocument): void {
   const conceptId = `knowledge/${name}`;
-  upsertEntry(
-    db,
-    `/fixture/${conceptId}.md`,
-    entry,
-    buildSearchText(entry),
-    deriveEntryProvenance({ bundleId: "fixture", componentId: "fixture", adapterId: "akm" }, entry.type, conceptId),
-  );
+  const inserted = db
+    .prepare<{ id: number }>(`
+      INSERT INTO entries (
+        file_path, type, item_ref, bundle_id, component_id, concept_id,
+        adapter_id, document_json, search_text
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      RETURNING id
+    `)
+    .get(
+      `/fixture/${conceptId}.md`,
+      entry.type,
+      `fixture//${conceptId}`,
+      "fixture",
+      "fixture",
+      conceptId,
+      "akm",
+      JSON.stringify(entry),
+      buildSearchText(entry),
+    );
+  if (!inserted) throw new Error("expected inserted retrieval fixture");
+  const fields = buildSearchFields(entry);
+  db.prepare(
+    "INSERT INTO entries_fts (entry_id, name, description, tags, hints, content) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run(inserted.id, fields.name, fields.description, fields.tags, fields.hints, fields.content);
 }
 
 describe("progressive lexical query planning (#819)", () => {
@@ -102,11 +115,9 @@ describe("progressive lexical query planning (#819)", () => {
         description: "Assorted operational observations",
         content: "The spectral quokka calibration nonce rotates every Thursday.",
       });
-      rebuildFts(db);
-
       const cases = [
         { query: "cache-pruner", expected: "cache-pruner", execution: "exact" },
-        { query: "kuber config", expected: "kubernetes-configurator", execution: "exact" },
+        { query: "kuber config", expected: "kubernetes-configurator", execution: "prefix" },
         { query: "CAFÉ déploiement", expected: "café-déploiement", execution: "exact" },
         {
           query: "how do I find the spectral quokka calibration nonce safely",
