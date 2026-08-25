@@ -16,6 +16,7 @@ import { cosineSimilarity, type EmbeddingVector } from "../../llm/embedders/type
 import type { Database } from "../database";
 import type { DbVecResult } from "./index-entry-types";
 import { getMeta, setMeta } from "./index-meta-repository";
+import { SQLITE_CHUNK_SIZE } from "./index-sql";
 
 // ── sqlite-vec extension ────────────────────────────────────────────────────
 
@@ -325,15 +326,35 @@ export function getAllEntriesForEmbedding(
   db: Database,
   entryIds?: readonly number[],
 ): Array<{ id: number; searchText: string; itemRef: string; filePath: string }> {
-  const rows = db
-    .prepare(`
+  const select = `
       SELECT e.id, e.search_text AS searchText, e.item_ref AS itemRef, e.file_path AS filePath FROM entries e
-      WHERE NOT EXISTS (SELECT 1 FROM embeddings b WHERE b.id = e.id)
-    `)
-    .all() as Array<{ id: number; searchText: string; itemRef: string; filePath: string }>;
-  if (entryIds === undefined) return rows;
-  const targets = new Set(entryIds);
-  return rows.filter((row) => targets.has(row.id));
+    `;
+  const missing = "NOT EXISTS (SELECT 1 FROM embeddings b WHERE b.id = e.id)";
+  if (entryIds === undefined) {
+    return db.prepare(`${select} WHERE ${missing} ORDER BY e.id`).all() as Array<{
+      id: number;
+      searchText: string;
+      itemRef: string;
+      filePath: string;
+    }>;
+  }
+
+  const targets = [...new Set(entryIds)].sort((left, right) => left - right);
+  const rows: Array<{ id: number; searchText: string; itemRef: string; filePath: string }> = [];
+  for (let offset = 0; offset < targets.length; offset += SQLITE_CHUNK_SIZE) {
+    const chunk = targets.slice(offset, offset + SQLITE_CHUNK_SIZE);
+    if (chunk.length === 0) continue;
+    const placeholders = chunk.map(() => "?").join(",");
+    rows.push(
+      ...(db.prepare(`${select} WHERE e.id IN (${placeholders}) AND ${missing} ORDER BY e.id`).all(...chunk) as Array<{
+        id: number;
+        searchText: string;
+        itemRef: string;
+        filePath: string;
+      }>),
+    );
+  }
+  return rows;
 }
 
 export function getEmbeddingCount(db: Database): number {
