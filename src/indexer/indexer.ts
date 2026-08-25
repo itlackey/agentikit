@@ -64,6 +64,7 @@ import {
   openReadonlyExistingDatabase,
 } from "../storage/repositories/index-connection";
 import {
+  deleteAllEntries,
   deleteEntriesByBundle,
   deleteEntriesByDirAndBundle,
   deleteEntriesByDirExceptRefs,
@@ -1634,26 +1635,15 @@ function persistDirRecords(
     // transaction so delete and re-insert are atomic — a concurrent reader
     // never observes an empty database between the two operations.
     if (fullDelete) {
-      try {
-        db.exec("DELETE FROM embeddings");
-      } catch {
-        /* ignore */
-      }
-      if (isVecAvailable(db)) {
-        try {
-          db.exec("DELETE FROM entries_vec");
-        } catch {
-          /* ignore */
-        }
-      }
-      db.exec("DELETE FROM entries_fts");
-      db.exec("DELETE FROM utility_scores");
+      // Entries and every child materialization share one deletion authority.
+      // Usage events live in state.db and survive so finalize can relink them
+      // to the replacement generation's row ids.
+      deleteAllEntries(db, { cleanupUsageEvents: false });
       db.exec("DELETE FROM index_dir_state");
       // Chunk-8 WI-8.3: usage_events lives in state.db now (not index.db), so the
       // wipe no longer detaches it here. The finalize pass's relinkUsageEvents
       // (cross-DB) nulls entry_ids that no longer resolve to a rebuilt entry and
       // re-resolves the rest by entry_ref — subsuming the old detach.
-      db.exec("DELETE FROM entries");
       // Atomicity observation point: inside the transaction the tables are now
       // empty, but no other connection may observe that. See
       // tests/integration/indexer/reindex-generation-atomicity.test.ts.
