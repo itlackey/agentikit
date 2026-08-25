@@ -91,24 +91,25 @@ export function isVecFastPathReady(db: Database): boolean {
 export function isVecFastPathComplete(db: Database): boolean {
   if (!isVecAvailable(db) || !hasVecTable(db)) return false;
   try {
-    const counts = db
+    const missingVecRows = db
       .prepare(`
-        SELECT
-          (SELECT COUNT(*) FROM embeddings) AS blobCount,
-          (SELECT COUNT(*) FROM entries_vec) AS vecCount
+        SELECT id FROM embeddings
+        EXCEPT
+        SELECT id FROM entries_vec
+        LIMIT 1
       `)
-      .get() as { blobCount: number; vecCount: number } | undefined;
-    if (!counts || counts.blobCount !== counts.vecCount) return false;
-    return (
-      db
-        .prepare(`
-          SELECT 1
-          FROM embeddings b
-          WHERE NOT EXISTS (SELECT 1 FROM entries_vec v WHERE v.id = b.id)
-          LIMIT 1
-        `)
-        .get() === undefined
-    );
+      .all();
+    if (missingVecRows.length > 0) return false;
+
+    const orphanVecRows = db
+      .prepare(`
+        SELECT id FROM entries_vec
+        EXCEPT
+        SELECT id FROM embeddings
+        LIMIT 1
+      `)
+      .all();
+    return orphanVecRows.length === 0;
   } catch {
     return false;
   }
