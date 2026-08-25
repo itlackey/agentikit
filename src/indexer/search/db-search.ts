@@ -59,7 +59,8 @@ import {
   parseRefPrefixQuery,
   parseRetiredTypePrefixQuery,
 } from "./fts-query";
-import { applyRankingRules, combineSearchScores, normalizeFtsScores } from "./ranking";
+import { applyRankingRules, combineSearchScores, lexicalNameMatchTier, normalizeFtsScores } from "./ranking";
+import { typeBoostFor } from "./ranking-contributors";
 import type { RankedEntryInput } from "./ranking-types";
 import { attachSearchHitAttribution, copySearchHitAttribution, getSearchHitAttribution } from "./search-attribution";
 import { enrichSearchHit } from "./search-hit-enrichers";
@@ -574,7 +575,25 @@ async function searchDatabase(
   // tiebreaker never engages and the order flips run-to-run (Issue #14). Quantize
   // to the display value first; only then does `localeCompare` break true ties.
   const displayScore = (s: number): number => Math.round(Math.min(1, Math.max(0, s)) * 10000) / 10000;
-  preFilter.sort((a, b) => displayScore(b.score) - displayScore(a.score) || a.entry.name.localeCompare(b.entry.name));
+  const queryTokens = buildLexicalQueryPlan(query).tokens.map((token) => token.toLowerCase());
+  preFilter.sort((a, b) => {
+    const aNameTier = lexicalNameMatchTier(a.entry, queryTokens);
+    const bNameTier = lexicalNameMatchTier(b.entry, queryTokens);
+    // Exact normalized names are the strongest lexical signal and must not be
+    // erased when both boosted scores clamp to 1. Relaxed candidates also use
+    // name tier ahead of score so body/description-only OR matches cannot
+    // displace a candidate whose name carries the recovered term.
+    if (aNameTier === 3 || bNameTier === 3 || (a.lexicalMatch === "relaxed" && b.lexicalMatch === "relaxed")) {
+      const nameDiff = bNameTier - aNameTier;
+      if (nameDiff !== 0) return nameDiff;
+    }
+    const scoreDiff = displayScore(b.score) - displayScore(a.score);
+    if (scoreDiff !== 0) return scoreDiff;
+    const nameDiff = bNameTier - aNameTier;
+    if (nameDiff !== 0) return nameDiff;
+    const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);
+    return typeDiff || a.entry.name.localeCompare(b.entry.name);
+  });
 
   // Deduplicate by file path — keep only the highest-scored entry per file.
   const deduped = deduplicateByPath(preFilter);
@@ -1163,14 +1182,13 @@ export function deriveSize(bytes?: number): SearchHitSize | undefined {
 }
 
 /**
- * Deduplicate scored results by file path, keeping only the highest-scored
- * entry per unique path. Sorts by score descending internally to ensure the
- * precondition is always met regardless of caller.
+ * Deduplicate the already-ranked result stream by file path. The caller owns
+ * the one ranking order; re-sorting here would silently discard exact-name and
+ * relaxed-recovery ordering in favor of an internal pre-clamp score.
  */
 function deduplicateByPath<T extends { filePath: string; score?: number }>(items: T[]): T[] {
-  const sorted = [...items].sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.filePath.localeCompare(b.filePath));
   const seen = new Set<string>();
-  return sorted.filter((item) => {
+  return items.filter((item) => {
     if (seen.has(item.filePath)) return false;
     seen.add(item.filePath);
     return true;
