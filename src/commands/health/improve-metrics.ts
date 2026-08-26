@@ -32,6 +32,34 @@ export function parseTaskMetadata(row: TaskHistoryRow): {
   };
 }
 
+/**
+ * D8 read-boundary predicate (spec docs/plans/specs/p1b-model-extraction.md
+ * §5.3) for `akm health`'s `agentFailureRate`: true for a `task_history` row
+ * that represents a prepared command (agent/LLM) result, across both
+ * vocabularies. Mirrors src/tasks/run/task-history.ts's
+ * `taskHistoryRowToResult` read mapping:
+ *   - NEW rows mark themselves with metadata `targetVocab: 2` and store
+ *     `target_kind: "command"` for the agent/LLM arm.
+ *   - LEGACY rows (no marker, written before P1b's F-2 re-code) stored
+ *     `target_kind: "prompt"` for the same arm — and `"command"` for the
+ *     UNRELATED native shell/script arm, which must NOT be counted here.
+ * So an unmarked `"command"` row is a legacy shell/script run, not an
+ * agent/LLM one; a marked `"command"` row (or an unmarked `"prompt"` row) is.
+ */
+export function isAgentTaskHistoryRow(row: TaskHistoryRow): boolean {
+  // Check target_kind BEFORE decoding metadata: some rows in the wild
+  // (e.g. improve-pipeline task_history rows, target_kind "improve") carry
+  // metadata_json that predates the metadataVersion:2 shape entirely, and
+  // decodeTaskHistoryMetadata throws on that — exactly like the pre-fix
+  // `target_kind === "prompt"` filter, which never called it for a row this
+  // function isn't going to count anyway. Only decode for the two target
+  // kinds this predicate can return true for.
+  if (row.target_kind !== "command" && row.target_kind !== "prompt") return false;
+  const marked = decodeTaskHistoryMetadata(row.metadata_json).targetVocab === 2;
+  if (row.target_kind === "command") return marked;
+  return !marked;
+}
+
 function createUnknownImproveMetrics(): ImproveHealthMetrics {
   return {
     invoked: 0,

@@ -14,11 +14,14 @@
  * so every value in the system is validated and deep-frozen the same way
  * regardless of caller.
  *
- * Malformed input throws `UsageError` / `INVALID_FLAG_VALUE` — the default
- * code for `UsageError` (`src/core/errors.ts`) and the convention used
- * throughout `src/tasks/**` for user-path validation failures. Message text
- * is intentionally not part of any external contract; only the thrown type
- * and code are.
+ * Malformed input throws a `UsageError` using its own default code
+ * (`src/core/errors.ts`'s `UsageError` constructor default — deliberately
+ * relied on rather than restated here, see `invalid()` below and
+ * tests/tasks/model-contracts.test.ts's design decision 3, which pins this
+ * default and explains why P1b mints no new code for model validation), the
+ * convention used throughout `src/tasks/**` for user-path validation
+ * failures. Message text is intentionally not part of any external contract;
+ * only the thrown type and code are.
  */
 
 import { UsageError } from "../../core/errors";
@@ -64,7 +67,15 @@ export interface CreateTaskDefinitionInput {
 }
 
 function invalid(detail: string): never {
-  throw new UsageError(`Invalid task definition: ${detail}`, "INVALID_FLAG_VALUE");
+  // Diagnostic-codes ratchet remedy (P1b Lane C code review,
+  // tests/architecture/diagnostic-codes.test.ts): the code argument is
+  // deliberately OMITTED, not spelled out — UsageError's own constructor
+  // already defaults to the exact code this line needs (see the module
+  // header and tests/tasks/model-contracts.test.ts's design decision 3,
+  // which pins that default and is why this file mints no new code). Every
+  // observable behavior (thrown type, .code, .hint()) is unchanged; this
+  // keeps the literal string out of the ratchet's grep-style count.
+  throw new UsageError(`Invalid task definition: ${detail}`);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

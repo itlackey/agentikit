@@ -824,8 +824,10 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     ...(env ? { env } : {}),
     ...(sensitiveValues ? { sensitiveValues } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
-    // F-1 (spec §5.2 point 2): forwarded to exec-unit.ts's childEnv only —
-    // the "agent"/"sdk" defaultUnitDispatcher arms never read it.
+    // F-1 (spec §5.2 point 2): forwarded to exec-unit.ts's childEnv for a
+    // "script"/"shell" unit, and to dispatchWorkflowExecution's
+    // dispatchLoweredExecutionRequest eventSource option (unit-dispatch.ts)
+    // for a "command" unit — both arms observe it.
     ...(ctx.eventSource !== undefined ? { eventSource: ctx.eventSource } : {}),
   };
 

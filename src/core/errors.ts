@@ -111,7 +111,16 @@ export type UsageErrorCode =
   | "WORKFLOW_SOURCE_INVALID"
   // P1a: declared only in this phase — wired in P2b when with: bindings are
   // validated against a target's declared inputs.
-  | "INPUT_BINDING_INVALID";
+  | "INPUT_BINDING_INVALID"
+  // P1b (docs/plans/specs/p1b-model-extraction.md, diagnostic-codes ratchet
+  // remedy): src/tasks/source/parse-v3-adapter.ts's taskDefinitionFromV3
+  // rejects a validly-parsed task-v3 `uses:` kind (builtin-command,
+  // github-action) that has no representation in P1b's closed
+  // TaskDefinitionTarget vocabulary yet. Distinct from INVALID_FLAG_VALUE:
+  // the input is not malformed, it is a recognized construct this phase's
+  // model does not model. Not yet reachable from any production path — the
+  // adapter is additive in P1b (spec §3.4).
+  | "TASK_TARGET_UNSUPPORTED";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -172,6 +181,8 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
     "Targets are canonical asset refs: `commands/review`, `scripts/build.sh`, `tasks/nightly`, `workflows/release`.",
   WORKFLOW_SOURCE_INVALID: "Run `akm workflow validate <ref>` to see the failing source location.",
   INPUT_BINDING_INVALID: "Check the step's with: keys against the target's declared inputs.",
+  TASK_TARGET_UNSUPPORTED:
+    "Task definitions support command, script, workflow, and shell (run:) targets in this version; akm/command and GitHub-action targets are not yet representable here.",
 };
 
 /** Default hint for each NotFoundError code. */

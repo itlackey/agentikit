@@ -162,9 +162,13 @@ export interface RunWorkflowOptions {
    * byte-identical. When present, it reaches an exec unit's child env via
    * native-executor.ts's `StepExecutionContext.eventSource` ->
    * unit-dispatch.ts's `UnitDispatchRequest.eventSource` -> exec-unit.ts's
-   * `childEnv` — applied to the allowlisted BASE only, so an ambient value
-   * already present and an authored `env:` binding both still win. Typed as
-   * a bare `string` (not `UsageEventSource`) — like the native arm's own
+   * `childEnv` for a "script"/"shell" unit — applied to the allowlisted BASE
+   * only, so an ambient value already present and an authored `env:` binding
+   * both still win — and via the same `UnitDispatchRequest.eventSource` ->
+   * `dispatchWorkflowExecution`'s `dispatchLoweredExecutionRequest`
+   * `eventSource` option (execution-lowering.ts's single-key child-env
+   * layering) for a "command" unit, so the agent/sdk arms observe it too.
+   * Typed as a bare `string` (not `UsageEventSource`) — like the native arm's own
    * `process.env.AKM_EVENT_SOURCE ?? provenance.eventSource`, this is an
    * unvalidated raw value destined straight for a child env var, not a value
    * checked against the `UsageEventSource` enum.

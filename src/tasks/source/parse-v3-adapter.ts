@@ -60,9 +60,14 @@ function adaptTarget(target: TaskV3Target): TaskDefinitionTarget {
   if (uses.kind === "workflow") {
     return { kind: "workflow", ref: uses.ref, params: { ...(target.with ?? {}) } };
   }
+  // Diagnostic-codes ratchet remedy (P1b Lane C code review,
+  // tests/architecture/diagnostic-codes.test.ts): a code more specific than
+  // UsageError's own default — this is a recognized construct (builtin-command
+  // or github-action `uses:`) the adapter does not yet model, not a malformed
+  // shape. See src/core/errors.ts's TASK_TARGET_UNSUPPORTED.
   throw new UsageError(
     `Task v3 uses kind ${JSON.stringify(uses.kind)} has no TaskDefinition target representation in P1b.`,
-    "INVALID_FLAG_VALUE",
+    "TASK_TARGET_UNSUPPORTED",
   );
 }
 

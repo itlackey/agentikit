@@ -54,13 +54,17 @@ export interface UnitDispatchRequest {
   cwd?: string;
   signal?: AbortSignal;
   /**
-   * F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 2): the
-   * task runner's resolved provenance event source, forwarded to an exec
-   * unit's child env (exec-unit.ts's RunExecUnitInput.eventSource ->
-   * childEnv). The "agent"/"sdk" defaultUnitDispatcher arms never read it —
-   * only a "script"/"shell" frozenTarget's exec unit does. Typed as a bare
-   * `string` (not `UsageEventSource`) — see run-workflow.ts's
-   * RunWorkflowOptions.eventSource for why.
+   * F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 2), gap
+   * closed (P1b Lane C code review): the task runner's resolved provenance
+   * event source. A "script"/"shell" frozenTarget's exec unit reads it via
+   * exec-unit.ts's RunExecUnitInput.eventSource -> childEnv; a "command"
+   * frozenTarget's `dispatchWorkflowExecution` (below) forwards it into
+   * `dispatchLoweredExecutionRequest`'s own `eventSource` option, which
+   * applies the identical single-key child-env layering
+   * (execution-lowering.ts:998-1001) that the R-07 command-arm fix uses — so
+   * the "agent"/"sdk" arms observe it too. Typed as a bare `string` (not
+   * `UsageEventSource`) — see run-workflow.ts's RunWorkflowOptions.eventSource
+   * for why.
    */
   eventSource?: string;
 }
@@ -162,6 +166,13 @@ export async function dispatchWorkflowExecution(
         parseOutput: "text",
         ...(request.signal ? { signal: request.signal } : {}),
       },
+      // Gap fix (P1b Lane C code review, spec §5.2(2)): forward the resolved
+      // provenance event source so an "agent"/"sdk" unit's dispatched child
+      // env carries AKM_EVENT_SOURCE too, not only a "script"/"shell" unit's.
+      // dispatchLoweredExecutionRequest applies this as exactly one child-env
+      // key (execution-lowering.ts:998-1001) — the same mechanism the R-07
+      // command-arm fix (command-execution.ts) already uses.
+      ...(request.eventSource !== undefined ? { eventSource: request.eventSource } : {}),
     });
   } catch (err) {
     if (err instanceof ConfigError) throw err;

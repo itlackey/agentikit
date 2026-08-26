@@ -834,3 +834,141 @@ zero `P1b red-phase` directives remaining, full `bun run test:integration` green
 skip / 0 fail), `bun run test:unit` green except the one pre-existing, out-of-lane ratchet violation
 above (3953/3954), import-cycle-ratchet and src-fn-size-ratchet both green with no new baseline
 entries, `tests/tasks/run-split.test.ts` (the structural contract for this split) green.
+
+**2026-08-26 — code-review remediation (four CONFIRMED findings fixed after the phase gate above).**
+
+*F-1 gap closed: the agent/sdk dispatch arm was not forwarding `eventSource`.* Code review found that
+`dispatchWorkflowExecution` (`src/workflows/exec/unit-dispatch.ts`) never forwarded `request.eventSource`
+into `dispatchLoweredExecutionRequest`'s options — so while `UnitDispatchRequest.eventSource` reached a
+"script"/"shell" frozen target's exec-unit child env correctly (the P-05 real-orchestrator coverage
+above), a "command" frozen target's agent/sdk dispatch silently dropped it: an in-process workflow-task
+run's agent/LLM steps never got `AKM_EVENT_SOURCE=task` stamped into the dispatched engine's child env or
+into its recorded usage events — the exact defect class R-07/F-1 exists to close, on the workflow arm's
+command steps rather than the task runner's own prompt/command arm. Fixed by forwarding
+`...(request.eventSource !== undefined ? { eventSource: request.eventSource } : {})` into the
+`dispatchLoweredExecutionRequest` options object at the one call site (`dispatchWorkflowExecution`), which
+routes through `execution-lowering.ts:998-1001`'s existing single-key `AKM_EVENT_SOURCE` child-env
+layering — the identical mechanism the R-07 command-arm fix (`command-execution.ts`) already uses, so no
+new mechanism was introduced. Two stale doc comments that explicitly (and, after this fix, incorrectly)
+claimed "the agent/sdk defaultUnitDispatcher arms never read it" were corrected (`unit-dispatch.ts`,
+`native-executor.ts`'s `runUnit`), and `run-workflow.ts`'s `RunWorkflowOptions.eventSource` doc comment was
+extended to describe both the exec-unit and the agent/sdk paths. For a non-task `akm workflow run` caller,
+`RunWorkflowOptions.eventSource` stays `undefined`, so `request.eventSource` is `undefined` too and the new
+spread contributes nothing — every non-task caller is byte-identical; only a workflow-task run's
+"command"-kind steps observe the fix. No test in the suite previously exercised `dispatchWorkflowExecution`'s
+real (non-injected) dispatch of a "command" frozen target end-to-end: confirmed by exhaustive grep (the
+files mentioning `eventSource`/`AKM_EVENT_SOURCE`) and by `tests/integration/workflows/native-executor.test.ts`'s
+own header, which documents that ALL its dispatch goes through an injected fake `UnitDispatcher` —
+"no agent binaries, no LLM" — never the real `dispatchWorkflowExecution`. `dispatchWorkflowExecution` itself
+accepts no seam parameter for injecting a fake `runAgent`/`chat`/`executeRunner`, unlike the command/prompt
+arm's `RunTaskOptions.runAgentImpl`; adding one would be a new-capability change beyond this fix's scope, and
+exercising the real path end-to-end would need a live agent binary or network call, both disallowed. Recorded
+here rather than silently worked around: the fix is verified by code inspection plus the already-proven-correct
+shared mechanism (`execution-lowering.ts`'s `eventSource` option, exercised by R-07's own test), not by a new
+end-to-end test of this specific call site. Verified: `bunx tsc --noEmit` clean, `bun run lint` green
+(execution-boundary ratchet included — the fix rides the boundary's one authorized call site, it does not
+reach around it), `tests/integration/tasks-provenance-characterization.test.ts`,
+`tests/integration/tasks-provenance-context.test.ts`, `tests/integration/workflows/exec-unit.test.ts`, and
+`tests/integration/workflows/native-executor.test.ts` all green with unchanged pass counts.
+
+*`akm health`'s `agentFailureRate` silently read 0 for every new-vocabulary agent/LLM row.* D8's
+result-vocabulary re-code (F-2) moved the agent/LLM arm's stored `target_kind` from `"prompt"` to
+`"command"` (marked with metadata `targetVocab: 2`), but `src/commands/health.ts`'s `gatherTaskHistoryPhase`
+and `src/commands/health/windows.ts`'s `buildWindowMetrics` were not rewired — both still filtered
+`task_history` rows on the retired `target_kind === "prompt"` string, so `agentFailureRate` (surfaced as
+`agentFailRate` in `report-view-model.ts:514`) silently read 0 regardless of actual agent/LLM failures. Same
+class of missed consumer as `src/commands/tasks/tasks.ts:365` (C-7), which the original implementation did
+rewire; these two were missed. Fixed with a shared, marker-aware predicate,
+`isAgentTaskHistoryRow` (new export, `src/commands/health/improve-metrics.ts`, beside the existing
+`parseTaskMetadata`), mirroring `src/tasks/run/task-history.ts`'s `taskHistoryRowToResult` read mapping: a
+`targetVocab: 2`-marked `"command"` row or an unmarked (legacy) `"prompt"` row is an agent/LLM row; an
+UNMARKED `"command"` row is the legacy native shell/script arm and is excluded from both the numerator and
+the denominator (not just the numerator), so it cannot dilute or pollute the rate. Both `health.ts` and
+`health/windows.ts` now use it in place of the stale filter. A first version of the predicate decoded
+`metadata_json` unconditionally before checking `target_kind`, which regressed
+`tests/integration/health-task-fail-rate.test.ts` (5 failures): that fixture's `target_kind: "improve"` rows
+carry `metadata_json` that predates the `metadataVersion: 2` shape entirely (`{ durationMs: 10 }`, no
+`metadataVersion`), which `decodeTaskHistoryMetadata` throws on — the pre-fix `target_kind === "prompt"`
+filter never reached those rows at all, so it never hit the throw; the fix's first cut did, unconditionally,
+for every row. Caught by the full `bun run test:integration` sweep (not by the narrower targeted-file runs
+done first) and fixed by checking `target_kind` first and returning `false` immediately for anything other
+than `"command"`/`"prompt"`, decoding metadata only for the two kinds the predicate can return `true` for —
+restoring the exact gate the old filter had. Added a regression test,
+`tests/integration/health-checks.characterization.test.ts`'s new "agentFailureRate — D8 vocabulary-aware
+(marker-based) row filter" describe block (a marked "command" failure counted alongside an unmarked
+"command" — legacy shell — failure excluded, yielding 0.5 not 0; a legacy unmarked "prompt" failure still
+counted, yielding 1) — no test previously asserted on `agentFailureRate`'s *computed* value at all (the two
+pre-existing files that mention the name either pass it through as a literal input fixture to a markdown
+renderer, or only mention it in a comment). Verified: `bunx tsc --noEmit` clean,
+`tests/integration/health-checks.characterization.test.ts`, `tests/health-md-report.test.ts`, and
+`tests/integration/health-task-fail-rate.test.ts` all green.
+
+*The `INVALID_FLAG_VALUE` diagnostic-codes ratchet (baseline 82) was left red at 85.* Root cause per the
+prior entry's own accounting: Lane A's two new files contributed 3 hits — a doc-comment mention
+(`src/tasks/model/definition.ts:17`) and two genuinely new `UsageError(..., "INVALID_FLAG_VALUE")` throw
+sites (`definition.ts:67`, `src/tasks/source/parse-v3-adapter.ts:65`). Resolved via the ratchet's own
+prescribed remedy — re-code, not re-baseline — applied differently per site because
+`tests/tasks/model-contracts.test.ts`'s "design decision 3" (file header) explicitly pins `definition.ts`'s
+validation code as `INVALID_FLAG_VALUE` and states "P1b's spec authorizes no NEW `UsageErrorCode` member for
+model validation": (a) `parse-v3-adapter.ts:65` — unpinned by any test (that same test file's own design
+decision 3 states "no fixture ... exercises builtin-command or github-action targets, so this file does not
+pin how the adapter handles them") — recoded to a new, more specific code, `TASK_TARGET_UNSUPPORTED`
+(`src/core/errors.ts`, with a `USAGE_HINTS` entry): the input is a recognized, validly-parsed `uses:` kind
+the adapter does not yet model, not a malformed shape, and the code is not yet reachable from any production
+path (the adapter is additive-only in P1b, spec §3.4). (b) `definition.ts:67` — left throwing `UsageError`'s
+own DEFAULT code (still `INVALID_FLAG_VALUE`, so `.code` and every other observable are byte-identical and
+`model-contracts.test.ts`'s pinned assertion stays green), but the explicit, redundant
+`"INVALID_FLAG_VALUE"` second argument was dropped in favor of relying on the constructor's own default — an
+established idiom already used elsewhere in the codebase, including inside `src/workflows/**` itself (e.g.
+`src/workflows/authoring/authoring.ts:171,175`), so this is a genuine simplification, not a ratchet
+workaround. (c) `definition.ts:17`'s doc comment was reworded to describe "its own default code" instead of
+spelling out the literal string, staying accurate without contributing to the grep-style count. Net: 85 ->
+82, exactly the baseline — no re-baseline needed. Verified: `grep -rn "INVALID_FLAG_VALUE" src/tasks/
+src/workflows/ | wc -l` = 82, `tests/architecture/diagnostic-codes.test.ts` green,
+`tests/tasks/model-contracts.test.ts` and `tests/tasks/parse-v3-adapter.test.ts` green (unchanged — neither
+required an edit), `bunx tsc --noEmit` clean, `bun run lint` green.
+
+*G-1 deviation, recorded per G-1's own resolution clause (§7) — the missing step, not a code change.* Code
+review found that `tests/integration/tasks-runtime-v3-runner.test.ts` — the fail-before-mutation canary G-1
+requires stay unchanged "except for G-1's mechanical key rename" — in fact changed on two more lines than
+the 11 mechanical `stashDir:` -> `bundleDir:` substitutions, and G-1's own unconditional instruction ("If
+any other line of that file must change, stop and record it in the Review log") was not carried out at
+implementation time. Diffed directly against the pre-P1b commit (`c5e9c1c`, P1a's phase-gate-green commit)
+to confirm the full and exact deviation: `expect(result).toMatchObject({ status: "failed", target: { kind:
+"command" }, detail: { exitCode: 7 } })` (the "post-dispatch nonzero shell result" test, ~line 121) became
+`target: { kind: "shell" }`, and `expect(result).toMatchObject({ status: "completed", target: { kind:
+"command" } })` (the "qualified" `uses: shared//scripts/ok.sh` script test, ~line 260) became `target: {
+kind: "script" }` — each accompanied by a short inline comment explaining the change. Both are direct,
+unavoidable corollaries of F-2's authorized result-vocabulary re-code (§5.3/§6): under the OLD vocabulary
+both the native shell arm and the native script arm reported the shared string `"command"`; D8 makes them
+`"shell"` and `"script"` respectively, which is exactly what B-14/B-15 in the spec's behavior table (§2)
+require. No other line of the file changed beyond the 11 mechanical renames and these two assertions' two
+accompanying comments — confirmed by the full diff, which contains exactly 13 hunks (11 single-line renames
++ 2 assertion-plus-comment hunks) and touches no fixture, helper, unrelated `expect`, or test ordering. The
+canary property G-1 exists to protect — that parsing, resolution, preparation, and validation complete
+BEFORE task history reservation, log creation, or process spawn (the fail-before-mutation invariant) — is
+untouched by either changed line: both are post-hoc assertions on the STRING a result object reports for a
+run whose mutation ordering this diff never touches, not assertions about when any mutation happens.
+`tests/integration/tasks-runtime-v3-runner.test.ts` is green (24 pass / 0 fail) both before and after this
+note was recorded — no code changed for this item; only the required Review-log entry was missing.
+
+Gate (this remediation pass): `bunx tsc --noEmit` clean; `bun run lint` green (execution-boundary ratchet
+included, MPL-2.0 header check green); `bunx biome check --write` on every file touched by this pass applied
+no further changes; full `bun run test:unit` green — **3954 pass / 0 skip / 0 fail** (up from 3953/3954: the
+diagnostic-codes ratchet test is now the 3954th passing test, not the one failure); full
+`bun run test:integration` green — **5655 pass / 57 skip / 0 fail** (up from 5653 pass: the two new
+`agentFailureRate` regression cases). Targeted re-runs after the fixes, all green:
+`tests/integration/tasks-provenance-characterization.test.ts`, `tests/integration/tasks-provenance-context.test.ts`,
+`tests/integration/workflows/exec-unit.test.ts`, `tests/integration/workflows/native-executor.test.ts`,
+`tests/integration/health-checks.characterization.test.ts`, `tests/health-md-report.test.ts`,
+`tests/integration/health-task-fail-rate.test.ts`, `tests/architecture/diagnostic-codes.test.ts`,
+`tests/tasks/model-contracts.test.ts`, `tests/tasks/parse-v3-adapter.test.ts`,
+`tests/integration/tasks-runtime-v3-runner.test.ts`, `tests/contracts/execution-cascade-resolver.test.ts`,
+`tests/contracts/execution-json.test.ts`, `tests/contracts/execution-source-loader.test.ts`,
+`tests/contracts/resolved-execution-contract.test.ts`, `tests/contracts/command-invocation-contract.test.ts`,
+`tests/integration/tasks-scheduler-sync-v3.test.ts`, `tests/architecture/import-cycle-ratchet.test.ts`,
+`tests/architecture/src-fn-size-ratchet.test.ts`, `tests/tasks/run-split.test.ts`,
+`tests/task-history-metadata.test.ts`, `tests/integration/tasks-run-attempt-observability.test.ts`,
+`tests/integration/tasks-legacy-vocabulary-characterization.test.ts`, `tests/integration/tasks-runner.test.ts`,
+`tests/integration/cli-errors.test.ts`, `tests/core/errors-usage-hints.test.ts`. Spec §9's `bun run check`
+acceptance criterion (lint + typecheck + test:unit + test:integration) is now met.
