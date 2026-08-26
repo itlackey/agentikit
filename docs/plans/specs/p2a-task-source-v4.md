@@ -1375,3 +1375,13 @@ each is recorded here rather than fixed:
    after the immediately preceding `classified.kind === "task"` check has already rejected exactly
    that ref kind (B-14). Neither string is spec-mandated; left as message-quality warts for a future
    pass rather than fixed in this close-out.
+
+**2026-08-26 — commit-history note (orchestrator).** The bulk of this phase's implementation is
+recorded under commit `894ed58`, whose message reads `wip(p2): in-flight implement snapshot —
+typecheck RED`. That message is wrong about the final state: it was an orchestrator safety snapshot
+taken while two implement lanes were still writing (in response to a stop-hook prompt, after two
+earlier phases were lost to container interruptions). Because it staged everything, the run's
+integrator step found nothing left to commit and its intended
+`feat(p2): task source v4, shared input contract, task input flags` commit never landed. The phase's
+real state is the one proved by the gate recorded above: lint, typecheck, unit and integration all
+green. Pushed history is not rewritten to correct the message; this entry is the correction.
