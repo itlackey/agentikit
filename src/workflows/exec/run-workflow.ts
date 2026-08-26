@@ -167,8 +167,11 @@ export interface RunWorkflowOptions {
    * both still win — and via the same `UnitDispatchRequest.eventSource` ->
    * `dispatchWorkflowExecution`'s `dispatchLoweredExecutionRequest`
    * `eventSource` option (execution-lowering.ts's single-key child-env
-   * layering) for a "command" unit, so the agent/sdk arms observe it too.
-   * Typed as a bare `string` (not `UsageEventSource`) — like the native arm's own
+   * layering) for a "command" unit, so the agent/sdk arms observe it too —
+   * gated the same way there (precedence fix, code review round 2; see
+   * unit-dispatch.ts's `forwardedDispatchEventSource`): an authored `env:`
+   * binding on the unit still wins, in agreement with the script/shell arm
+   * above. Typed as a bare `string` (not `UsageEventSource`) — like the native arm's own
    * `process.env.AKM_EVENT_SOURCE ?? provenance.eventSource`, this is an
    * unvalidated raw value destined straight for a child env var, not a value
    * checked against the `UsageEventSource` enum.

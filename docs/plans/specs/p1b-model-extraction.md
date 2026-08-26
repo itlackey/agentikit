@@ -972,3 +972,71 @@ diagnostic-codes ratchet test is now the 3954th passing test, not the one failur
 `tests/integration/tasks-legacy-vocabulary-characterization.test.ts`, `tests/integration/tasks-runner.test.ts`,
 `tests/integration/cli-errors.test.ts`, `tests/core/errors-usage-hints.test.ts`. Spec §9's `bun run check`
 acceptance criterion (lint + typecheck + test:unit + test:integration) is now met.
+
+**2026-08-26 — code-review remediation, round 2: the F-1 gap-fix's forward inverted `env:`-binding
+precedence.** A follow-up code-review pass on the round-1 fix above (which closed the "agent/sdk dispatch arm
+was not forwarding `eventSource`" gap) found that the fix itself introduced a NEW, narrower precedence defect
+in the same call site. `dispatchWorkflowExecution` (`src/workflows/exec/unit-dispatch.ts`) forwarded
+`request.eventSource` into `dispatchLoweredExecutionRequest`'s options UNCONDITIONALLY whenever it was
+defined. `dispatchLoweredExecutionRequest` applies a forwarded value as `env: { ...lowered.options.env,
+AKM_EVENT_SOURCE: eventSource }` (`execution-lowering.ts:998-1001`) — an unconditional override of that one
+key — and `lowered.options.env` IS the unit's own authored/resolved `env:` binding (`options.env =
+request.runtime.environment`, `execution-lowering.ts:518-519`, fed by `prepareWorkflowExecution`'s
+`...(request.env !== undefined ? { environment: request.env } : {})` at `unit-dispatch.ts:106`, itself the
+step's frozen environment materialized by `native-executor.ts`'s `prepareStepDispatchPrerequisites`). So the
+unconditional forward placed the provenance stamp LAST, letting it win over an authored `env: {
+AKM_EVENT_SOURCE: ... }` binding on a `uses: commands/<ref>`-style ("command"-kind) workflow step. This
+inverted the precedence pre-P1b had — the child env for this arm was built by `buildChildEnv`'s
+`collectAllowlistedEnv(profile.envPassthrough, ...)` (`spawn.ts:173-179`) with `options.env` (the authored
+binding) applied AFTER it, at highest precedence, so an authored `AKM_EVENT_SOURCE` binding always won — and
+it disagreed with the sibling "script"/"shell" arm, which correctly implements spec §5.2(2)'s "an authored
+`env:` binding still wins": `exec-unit.ts`'s `childEnv` (`:601-609`) stamps its allowlisted BASE only when the
+name is absent there, strictly BEFORE the `bindings` overlay runs, so an authored binding always wins there
+regardless of the stamp. No reserved-name guard blocks authoring `AKM_EVENT_SOURCE` as a workflow step `env:`
+binding, so the path is reachable; this was an unauthorized observable child-env change (spec §0: "same child
+env"), not in the §6 flips table, and the round-1 Review-log entry above did not record the precedence
+difference — it verified only that the mechanism was "identical" to the R-07 command-arm fix, which is true
+of the merge itself but not of the round-1 fix's own, unconditional call into it.
+
+Fixed by gating the forward on the binding's absence, matching `exec-unit.ts`'s guard exactly: a new,
+exported pure predicate, `forwardedDispatchEventSource(request)` (`unit-dispatch.ts`), returns
+`request.eventSource` unchanged only when `request.env?.AKM_EVENT_SOURCE === undefined`, and `undefined`
+(forward nothing) otherwise — so an authored binding of ANY value, including one that happens to already
+equal the resolved provenance value, leaves the key alone for `execution-lowering.ts`'s merge to skip
+entirely (no `eventSource` reaches its options object at all, so the unconditional-override branch there
+never fires and the authored value in `lowered.options.env` stands untouched). `dispatchWorkflowExecution`
+now calls this predicate once and forwards its result instead of `request.eventSource` directly.
+`command-execution.ts`'s task/prompt arm was deliberately left untouched, per the finding's own instruction
+and spec §5.2(3): that arm has always overridden `task.environment`'s `AKM_EVENT_SOURCE` (matching the native
+arm, `run-native-task.ts:130-134`), so its unconditional `AKM_EVENT_SOURCE: process.env.AKM_EVENT_SOURCE ??
+eventSource` stamp (already ambient-first via `loweredDispatchOptions`, `command-execution.ts:154-158`) is
+correct as-is and is a different contract from the workflow "command"-kind unit arm this fix corrects.
+
+`forwardedDispatchEventSource` is exported and pinned directly by a new test file,
+`tests/workflows/unit-dispatch-event-source.test.ts` (6 tests: no-eventSource passthrough for non-task
+callers, forwarding when no binding is present — absent `env`, empty `env`, and an unrelated binding — an
+authored `AKM_EVENT_SOURCE` binding suppressing the forward regardless of its value including one equal to
+the resolved provenance value, and the gate holding across every `UsageEventSource` value). A direct
+end-to-end test of `dispatchWorkflowExecution`'s real dispatch remains out of reach for the same reason the
+round-1 entry recorded: the function has no injectable `runAgent`/`executeRunner`/`chat` seam, so exercising
+it fully would require a live agent binary or network call. Extracting the forward decision into an exported
+pure predicate pins the actual defect (a precedence decision made entirely inside `unit-dispatch.ts`, before
+any dispatch happens) without adding a new seam to the dispatch path itself. Two doc comments that described
+the forward as unconditional (`UnitDispatchRequest.eventSource` in `unit-dispatch.ts`;
+`RunWorkflowOptions.eventSource` in `run-workflow.ts`) were corrected to name the gate.
+
+Verified: `bunx tsc --noEmit` clean; `bunx biome check --write` on both touched `src/` files and the new test
+file applied no further changes (three pre-existing, unrelated `noNonNullAssertion` warnings elsewhere in
+`run-workflow.ts` are untouched by this diff — confirmed via `git diff --stat`, two files plus one new test
+file); `bun scripts/lint-license-headers.ts`, `bun scripts/lint-tests-isolation.ts`,
+`bun scripts/lint-runtime-boundary.ts`, and `bun scripts/lint-execution-boundary.ts` all green (the new
+predicate is a plain data function — no `runAgent`/`executeRunner`/`chat` reference — so the execution
+boundary's exact-count allowlist is untouched); full `bun run test:unit` green — 3960 pass / 0 skip / 0 fail
+across 297 files (up from 3954: the new test file's 6 tests); the new
+`tests/workflows/unit-dispatch-event-source.test.ts` green on its own (6 pass); targeted re-runs green:
+`tests/integration/tasks-provenance-characterization.test.ts`,
+`tests/integration/tasks-provenance-context.test.ts`, `tests/integration/workflows/exec-unit.test.ts`,
+`tests/integration/workflows/native-executor.test.ts` (120 pass / 0 fail combined). Full
+`bun run test:integration` green — **5655 pass / 57 skip / 0 fail** — identical pass/skip/fail counts to the
+round-1 gate above, confirming no regression from this fix. `bun run check`'s full acceptance criterion
+(lint + typecheck + test:unit + test:integration) holds after this remediation.
