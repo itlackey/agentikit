@@ -269,17 +269,35 @@ published 0.00 / 0.200 remain the last measured end-to-end values and remain
 floored by 0.9.1 retrieval — they should be treated as superseded-pending-
 rerun, not as current.
 
-**A defect surfaced by the fix.** 4 of 20 LongMemEval questions abort under
-0.9.2 on akm-eval's contamination guard. Root cause is a latent akm bug that
-0.9.1's near-total zero-hit rate had hidden: a document under `memories/`
-whose body contains an ordinary dollar amount (`$1,200`, `$2,000`) matches
-`COMMAND_PLACEHOLDER_RE = /\$ARGUMENTS|\$[123]\b/` and is indexed as a
-`command`, with its ref becoming `commands/memories/<slug>`. The content
-heuristic (specificity 18) outranks the explicit parent-directory
-classification (15), so body sniffing beats the directory the file is sitting
-in. Clean separation on the corpus: 3 of 51 documents affected, and those 3
-are exactly the 3 that match the regex. Filed as akm#824 with a one-line
-repro. This is present in 0.9.1 too — it is newly VISIBLE, not new.
+**A defect surfaced by the fix — since fixed and released.** Under
+0.9.2-alpha.2, 4 of 20 LongMemEval questions ABORTED on akm-eval's
+contamination guard. Root cause was a latent akm bug that 0.9.1's near-total
+zero-hit rate had hidden: a document under `memories/` whose body contains an
+ordinary dollar amount (`$1,200`, `$2,000`) matched
+`COMMAND_PLACEHOLDER_RE = /\$ARGUMENTS|\$[123]\b/` — `\b` sits between the `2`
+and the comma — and was indexed as a `command`, its ref becoming
+`commands/memories/<slug>`. That content heuristic (specificity 18) outranked
+the explicit parent-directory classification (15), so body sniffing beat the
+directory the file was sitting in. Clean separation on the corpus: 3 of 51
+documents affected, and those 3 exactly the 3 matching the regex. Present in
+0.9.1 identically — newly VISIBLE, not new. Fixed in akm#824 / #826 and
+shipped in **0.9.2-alpha.3**, drawn along ambiguity rather than directories:
+`$ARGUMENTS` keeps its precedence over a directory hint, while the numeric
+placeholders exclude currency and defer to a directory that declares a type.
+
+**Verified against the published 0.9.2-alpha.3 artifact:**
+
+| pack | metric | 0.9.1 | 0.9.2-alpha.2 | 0.9.2-alpha.3 |
+| --- | --- | --- | --- | --- |
+| LoCoMo | zero-hit | 75.0% | 0.0% | **0.0%** |
+| | evidence recall@5 | 0.154 | 0.590 | **0.590** |
+| LongMemEval | zero-hit | 100% | 0.0% | **0.0%** |
+| | evidence recall@5 | 0.000 | 1.000 (of 16) | **0.950 (of 20)** |
+| | questions aborted | — | 4 of 20 | **0 of 20** |
+
+LongMemEval recall@5 reads LOWER on alpha.3 only because all 20 questions now
+complete: alpha.2's 1.000 was over the 16 that did not abort. The alpha.3
+number is the honest one.
 
 ## 3. Recommended changes
 
