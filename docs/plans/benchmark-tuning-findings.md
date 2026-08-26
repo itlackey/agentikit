@@ -235,6 +235,52 @@ far too small to rank answer quality. Also note LongMemEval reports
 scores on the official LLM judge (akm-eval#6); only `judgedPass` carries
 signal there.
 
+## 2e. RESOLVED: akm#819 lifted the ceiling — measured on 0.9.2-alpha.2
+
+§2d's diagnosis was correct and the fix confirms it. akm-cli 0.9.2-alpha.2
+(npm `next`) carries #819's retrieval fix. Re-measuring with a RETRIEVAL-ONLY
+probe — each pack adapter's exact ingest and query, no LLM in the loop, so
+nothing here is confounded by model or judge — on identical corpora, identical
+code paths, only the CLI version differing:
+
+| pack | metric | 0.9.1 | 0.9.2-alpha.2 |
+| --- | --- | --- | --- |
+| LoCoMo (`conv-26`, 419 docs, 40 questions) | zero-hit rate | 75.0% | **0.0%** |
+| | evidence recall@5 | 0.154 | **0.590** |
+| LongMemEval (20 questions, ~61 sessions each) | zero-hit rate | 100% | **0.0%** |
+| | evidence recall@5 | 0.000 | **1.000** |
+
+Zero-hit going to 0% on its own would be ambiguous — a retriever that returns
+five arbitrary documents for every query also scores 0% zero-hit. Evidence
+recall is what rules that out: at topK=5 over a 419-document haystack, chance
+recall is ~1%. 0.590 is retrieval, not noise.
+
+**The isolated unit-level proof.** akm-eval's live-CLI integration test had
+encoded the ceiling as an assertion — a body-only term MUST return zero hits.
+Against 0.9.2 it returns exactly one hit, the correct document. The assertion
+has been inverted to guard the fix instead (akm-eval#9); it was, until then, a
+tripwire that fired on an improvement.
+
+**What this does and does not settle.** It settles COVERAGE, which is what
+§2d identified as the gap. It does not yet re-rank answer quality: the
+end-to-end judged numbers (LongMemEval `judgedPass`, LoCoMo `tokenF1`) still
+need a rerun against 0.9.2 before the memory-half result can be restated. The
+published 0.00 / 0.200 remain the last measured end-to-end values and remain
+floored by 0.9.1 retrieval — they should be treated as superseded-pending-
+rerun, not as current.
+
+**A defect surfaced by the fix.** 4 of 20 LongMemEval questions abort under
+0.9.2 on akm-eval's contamination guard. Root cause is a latent akm bug that
+0.9.1's near-total zero-hit rate had hidden: a document under `memories/`
+whose body contains an ordinary dollar amount (`$1,200`, `$2,000`) matches
+`COMMAND_PLACEHOLDER_RE = /\$ARGUMENTS|\$[123]\b/` and is indexed as a
+`command`, with its ref becoming `commands/memories/<slug>`. The content
+heuristic (specificity 18) outranks the explicit parent-directory
+classification (15), so body sniffing beats the directory the file is sitting
+in. Clean separation on the corpus: 3 of 51 documents affected, and those 3
+are exactly the 3 that match the regex. Filed as akm#824 with a one-line
+repro. This is present in 0.9.1 too — it is newly VISIBLE, not new.
+
 ## 3. Recommended changes
 
 Ordered by expected value. Every one changes the TREATMENT (the product), not
