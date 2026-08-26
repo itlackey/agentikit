@@ -176,6 +176,111 @@ worth ~0. And akm#819 (retrieval ceiling) is a multiplier that only pays off
 once engagement rises — the calls that do happen already convert well, so
 retrieval quality is not the current binding constraint.
 
+## 2d. The memory half: akm cannot retrieve conversational content at all
+
+Two independent memory packs, three arms each, smoke scale. `baseline` is a
+LONG-CONTEXT REFERENCE ARM — it receives the whole conversation and never
+retrieves — so it is a ceiling, not a control. The only fair comparison is
+`akm-memory` vs `raw-vector`, two retrieval arms on equal footing.
+
+**LongMemEval** (5 questions, `qwen3.5-plus`):
+
+| variant | judgedPass | R@k | zero-hit |
+| --- | --- | --- | --- |
+| baseline (long-context) | 1.00 | — | — |
+| raw-vector | 0.20 | 0.20 | 0/5 |
+| **akm-memory** | **0.00** | 0 | **5/5 (100%)** |
+
+**LoCoMo** (5 questions, same model):
+
+| variant | tokenF1 | zero-hit |
+| --- | --- | --- |
+| baseline (long-context, 16k) | 0.567 | — |
+| raw-vector | 0.233 | 0/5 |
+| **akm-memory** | 0.200 | **2/5 (40%)** |
+
+**akm scored 0 on LongMemEval because it returned no documents at all — on
+every question.** The run emits this itself, unprompted:
+
+> 5/5 retrieval queries returned zero hits (>=50%). The aggregate score for
+> this run is dominated by prompts with no retrieved context at all, not by
+> answer quality on retrieved context.
+
+This is a measurement of the RETRIEVAL CEILING (akm#819), not of memory
+quality, and must not be published as the latter. On LoCoMo, where akm did
+retrieve, the answer was correct.
+
+**The mechanism is structural, not a tuning problem.** akm indexes synthesized
+frontmatter — name, description, tags, searchHints, headings — and never body
+prose. A LongMemEval haystack is a chat transcript whose answer lives entirely
+in the body, so it is unsearchable by construction. LoCoMo reaches 40% rather
+than 100% only because some of its questions happen to match a synthesized
+field.
+
+The sharpest contrast: `raw-vector` is a naive in-memory cosine store and had
+**0/5 zero-hits on both packs**. It always returns something. The gap is not
+ranking quality — it is COVERAGE.
+
+**What this means for the project's priorities.** The +0.439 benchmark result
+came from a corpus of DOCUMENTED CONVENTIONS — content that lives in
+frontmatter, exactly where akm looks. Conversational recall is the opposite
+shape. So the benchmark win does not transfer to memory, and akm#819 is not an
+optimisation: it is the precondition for akm working as memory at all rather
+than as a convention library.
+
+**Caveats.** n=5 questions, one sample, one model per pack — these numbers
+separate the arms on COVERAGE, which is a structural property, but they are
+far too small to rank answer quality. Also note LongMemEval reports
+`exactMatch`/`tokenF1`/`containsExpected` as a hardcoded `0` because the pack
+scores on the official LLM judge (akm-eval#6); only `judgedPass` carries
+signal there.
+
+## 2e. RESOLVED: akm#819 lifted the ceiling — measured on 0.9.2-alpha.2
+
+§2d's diagnosis was correct and the fix confirms it. akm-cli 0.9.2-alpha.2
+(npm `next`) carries #819's retrieval fix. Re-measuring with a RETRIEVAL-ONLY
+probe — each pack adapter's exact ingest and query, no LLM in the loop, so
+nothing here is confounded by model or judge — on identical corpora, identical
+code paths, only the CLI version differing:
+
+| pack | metric | 0.9.1 | 0.9.2-alpha.2 |
+| --- | --- | --- | --- |
+| LoCoMo (`conv-26`, 419 docs, 40 questions) | zero-hit rate | 75.0% | **0.0%** |
+| | evidence recall@5 | 0.154 | **0.590** |
+| LongMemEval (20 questions, ~61 sessions each) | zero-hit rate | 100% | **0.0%** |
+| | evidence recall@5 | 0.000 | **1.000** |
+
+Zero-hit going to 0% on its own would be ambiguous — a retriever that returns
+five arbitrary documents for every query also scores 0% zero-hit. Evidence
+recall is what rules that out: at topK=5 over a 419-document haystack, chance
+recall is ~1%. 0.590 is retrieval, not noise.
+
+**The isolated unit-level proof.** akm-eval's live-CLI integration test had
+encoded the ceiling as an assertion — a body-only term MUST return zero hits.
+Against 0.9.2 it returns exactly one hit, the correct document. The assertion
+has been inverted to guard the fix instead (akm-eval#9); it was, until then, a
+tripwire that fired on an improvement.
+
+**What this does and does not settle.** It settles COVERAGE, which is what
+§2d identified as the gap. It does not yet re-rank answer quality: the
+end-to-end judged numbers (LongMemEval `judgedPass`, LoCoMo `tokenF1`) still
+need a rerun against 0.9.2 before the memory-half result can be restated. The
+published 0.00 / 0.200 remain the last measured end-to-end values and remain
+floored by 0.9.1 retrieval — they should be treated as superseded-pending-
+rerun, not as current.
+
+**A defect surfaced by the fix.** 4 of 20 LongMemEval questions abort under
+0.9.2 on akm-eval's contamination guard. Root cause is a latent akm bug that
+0.9.1's near-total zero-hit rate had hidden: a document under `memories/`
+whose body contains an ordinary dollar amount (`$1,200`, `$2,000`) matches
+`COMMAND_PLACEHOLDER_RE = /\$ARGUMENTS|\$[123]\b/` and is indexed as a
+`command`, with its ref becoming `commands/memories/<slug>`. The content
+heuristic (specificity 18) outranks the explicit parent-directory
+classification (15), so body sniffing beats the directory the file is sitting
+in. Clean separation on the corpus: 3 of 51 documents affected, and those 3
+are exactly the 3 that match the regex. Filed as akm#824 with a one-line
+repro. This is present in 0.9.1 too — it is newly VISIBLE, not new.
+
 ## 3. Recommended changes
 
 Ordered by expected value. Every one changes the TREATMENT (the product), not
