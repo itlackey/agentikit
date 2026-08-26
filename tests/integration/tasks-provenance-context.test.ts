@@ -307,6 +307,7 @@ describe("F-3 (type-level only) — RunTaskOptions.bundleDir replaces stashDir",
     writeTask("bundledir-type-level", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
 
     const result = await runTask("bundledir-type-level", {
+      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       runWorkflowStepsImpl: (async ({ target, params = {} }: { target: string; params?: Record<string, unknown> }) => ({

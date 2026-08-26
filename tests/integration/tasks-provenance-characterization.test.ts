@@ -124,6 +124,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
     writeTask("shell-provenance", shellTask([process.execPath, "-e", ECHO_SOURCE_SNIPPET]));
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
 
+    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     const result = await runTask("shell-provenance", { bundleDir: storage.stashDir, bundleName: "fixture" });
 
     expect(result.status).toBe("completed");
@@ -141,6 +142,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
     );
     writeTask("script-provenance", 'version: 3\nuses: scripts/echo-source.sh\nakm:\n  schedule: "@daily"\n');
 
+    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     const result = await runTask("script-provenance", { bundleDir: storage.stashDir, bundleName: "fixture" });
 
     expect(result.status).toBe("completed");
@@ -153,6 +155,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
     writeTask("shell-provenance-preset", shellTask([process.execPath, "-e", ECHO_SOURCE_SNIPPET]));
 
     const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
+      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       runTask("shell-provenance-preset", { bundleDir: storage.stashDir, bundleName: "fixture" }),
     );
 
@@ -186,6 +189,7 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
     let observedEventSourceOption: string | undefined;
 
     const result = await runTask("wf-provenance", {
+      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       runWorkflowStepsImpl: (async (options: {
@@ -222,6 +226,7 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
 
     const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
       runTask("wf-provenance-preset", {
+        // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
         bundleDir: storage.stashDir,
         bundleName: "fixture",
         runWorkflowStepsImpl: (async (options: {
@@ -263,6 +268,7 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
     // runTask, not merely a caught-and-reported failure.
     await expect(
       runTask("wf-provenance-throws", {
+        // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
         bundleDir: storage.stashDir,
         bundleName: "fixture",
         runWorkflowStepsImpl: (async (options: { eventSource?: string }) => {
@@ -354,6 +360,7 @@ describe("P-05 real-orchestrator coverage — an exec-unit child of a workflow-t
     await akmIndex({ stashDir: storage.stashDir, full: true });
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
 
+    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     const result = await runTask("wf-real-exec-unit", { bundleDir: storage.stashDir, bundleName: "fixture" });
 
     expect(result.status).toBe("completed");
@@ -369,6 +376,7 @@ describe("P-05 real-orchestrator coverage — an exec-unit child of a workflow-t
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
+      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       runTask("wf-real-exec-unit-preset", { bundleDir: storage.stashDir, bundleName: "fixture" }),
     );
 
@@ -459,6 +467,7 @@ describe("P-07 — resolveUsageEventSource's provenance default table", () => {
     [{ AKM_EVENT_SOURCE: "totally-unrecognized-value" }, "task", "unknown"],
     [{ AKM_EVENT_SOURCE: undefined }, "audit", "audit"],
   ] as const)("P-07 — the new fallback argument: AKM_EVENT_SOURCE=%p with fallback %p resolves to %p", (env, fallback, expected) => {
+    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(resolveUsageEventSource(env, fallback as UsageEventSource)).toBe(expected);
   });
 });
@@ -510,6 +519,7 @@ describe('R-07 (FIXED — F-1) — prompt/command arm now stamps AKM_EVENT_SOURC
     };
 
     const result = await runTask("prompt-provenance", {
+      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       runAgentImpl: fakeRunAgent,

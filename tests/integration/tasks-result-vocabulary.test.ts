@@ -108,6 +108,7 @@ describe("F-2 (D8) — every NEW history row carries the targetVocab: 2 marker",
     writeTask("vocab-workflow", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
 
     const result = await runTask("vocab-workflow", {
+      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       runWorkflowStepsImpl: (async ({ target, params = {} }: { target: string; params?: Record<string, unknown> }) => ({
@@ -146,12 +147,14 @@ describe("F-2 (D8) — every NEW history row carries the targetVocab: 2 marker",
     );
 
     const result = await runTask("vocab-command", {
+      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       runAgentImpl: (async () => ({ ok: true, exitCode: 0, stdout: "hi", stderr: "", durationMs: 1 })) as never,
     });
 
     expect(result.status).toBe("completed");
+    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(result.target).toEqual({ kind: "command", engine: "opencode" });
     expect(rawMetadata("vocab-command")).toMatchObject({ targetVocab: 2, engine: "opencode" });
   });
@@ -160,12 +163,14 @@ describe("F-2 (D8) — every NEW history row carries the targetVocab: 2 marker",
     writeTask("vocab-shell", 'version: 3\nrun: printf ok\nshell: sh\nakm:\n  schedule: "@daily"\n');
 
     const result = await runTask("vocab-shell", {
+      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       spawnFn: () => completedSpawn(0),
     });
 
     expect(result.status).toBe("completed");
+    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(result.target.kind).toBe("shell");
     expect(rawMetadata("vocab-shell")).toMatchObject({ targetVocab: 2 });
   });
@@ -175,12 +180,14 @@ describe("F-2 (D8) — every NEW history row carries the targetVocab: 2 marker",
     writeTask("vocab-script", 'version: 3\nuses: scripts/vocab-script.sh\nakm:\n  schedule: "@daily"\n');
 
     const result = await runTask("vocab-script", {
+      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       spawnFn: () => completedSpawn(0),
     });
 
     expect(result.status).toBe("completed");
+    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(result.target.kind).toBe("script");
     expect(rawMetadata("vocab-script")).toMatchObject({ targetVocab: 2 });
   });
