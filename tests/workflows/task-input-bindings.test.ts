@@ -577,15 +577,42 @@ describe("P2b freeze-time — decode widens for task targets only; the expressio
   });
 });
 
-describe("P2b freeze-time — no merge semantics across sibling task-composing steps (B-29)", () => {
-  test("two steps composing different tasks that declare the SAME input name with different defaults each get their OWN default — nothing merges, forwards, or shadows", async () => {
+describe("P2b freeze-time — no merge semantics across a two-level task -> workflow -> task composition chain (B-29, A-N4)", () => {
+  /**
+   * §3.5's actual chain, not two sibling steps of one workflow (a prior
+   * draft of this suite used two siblings — that proves independence
+   * between unrelated call sites, but nothing about a CHAIN, i.e. a task
+   * that is itself composed reachable from a step that composes a further,
+   * inner task).
+   *
+   * The ONLY reachable two-level shape is TASK (top-level, `akm task run
+   * task-outer-chain`) -> workflow -> STEP composing an inner task. A
+   * WORKFLOW-STEP-driven chain — step composes task X, X's own `uses:` is
+   * ALSO a workflow — is rejected on its first hop by taskDispatch's
+   * existing nested-workflow guard (B-30); routing the top-level hop
+   * through `akm task run` instead (§4.3, B-40: a v4 task's `uses:
+   * workflows/<ref>` delivers its effective inputs as the child run's
+   * params) is the only way around that guard, so task-outer-chain.yml
+   * below is a genuine TASK (no `with:` — D2-N1: `with:` on a v4 document is
+   * legal only on `uses: akm/command`), not a workflow step.
+   *
+   * task-outer-chain.yml is never executed by this file (freeze-time only —
+   * pre-attempt/delivery lives in
+   * tests/integration/workflows/task-binding-resolution.test.ts): freezing
+   * chain-child.yml (below) is a wholly separate operation from preparing
+   * task-outer-chain.yml, and neither test needs the outer task to run for
+   * that fact to be provable — chain-child.yml freezes identically whether
+   * or not task-outer-chain.yml exists at all, which is precisely the
+   * "nothing merges, forwards, or shadows" claim B-29 makes.
+   */
+  function writeChainFixtures(): void {
     write("commands/review.md", "Review the workflow-composed task target.\n");
     write(
-      "tasks/task-outer.yml",
+      "tasks/task-outer-chain.yml",
       [
         "version: 4",
-        "name: outer task",
-        "uses: commands/review",
+        "name: outer chain task",
+        "uses: workflows/chain-child",
         "inputs:",
         "  scope:",
         "    type: string",
@@ -594,10 +621,10 @@ describe("P2b freeze-time — no merge semantics across sibling task-composing s
       ].join("\n"),
     );
     write(
-      "tasks/task-inner.yml",
+      "tasks/task-inner-chain.yml",
       [
         "version: 4",
-        "name: inner task",
+        "name: inner chain task",
         "uses: commands/review",
         "inputs:",
         "  scope:",
@@ -606,28 +633,119 @@ describe("P2b freeze-time — no merge semantics across sibling task-composing s
         "",
       ].join("\n"),
     );
-    writeWorkflow("case", [
-      "      - id: outer",
-      "        uses: tasks/task-outer",
-      "        with:",
-      "          scope: outer-authored",
-      "      - id: inner",
-      "        uses: tasks/task-inner",
-    ]);
+  }
+
+  test("B-29: the inner task's frozen binding carries its OWN declared default — the outer task's default for the identical input name never reaches it", async () => {
+    writeChainFixtures();
+    // No with: at all on "inner" — the point is that task-inner-chain's OWN
+    // default is what freezes, with nothing from task-outer-chain.yml (which
+    // this workflow's freeze never reads) to merge, forward, or shadow it.
+    writeWorkflow("chain-child", ["      - id: inner", "        uses: tasks/task-inner-chain"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const started = await startWorkflowRun("workflows/case");
+    const started = await startWorkflowRun("workflows/chain-child");
     const row = await planRow(started.run.id);
     const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
 
     expect(frozenInputBindings(stepTarget(plan, 0))).toEqual([
-      { kind: "literal", name: "scope", value: "outer-authored" },
-    ]);
-    // The outer step's AUTHORED with: value never leaks into the inner step's
-    // own binding — task-inner sees only its OWN declared default.
-    expect(frozenInputBindings(stepTarget(plan, 1))).toEqual([
       { kind: "literal", name: "scope", value: "inner-default" },
     ]);
+  });
+
+  test("A-N4: a {from: params.<name>} reference on the inner step resolves against the CHILD workflow's own declared params, never the outer task's declared inputs, even when the names coincide", async () => {
+    writeChainFixtures();
+    // "scope" is the exact name task-outer-chain.yml declares, and — were
+    // the outer task actually run — the exact param name its effective
+    // inputs would populate on THIS workflow's run (§4.3, B-40). The
+    // freeze-time structural check for a `param` arm (A-N4, §3.3 point 8)
+    // consults only the workflow CURRENTLY being frozen's own paramSchemas
+    // (schema-v4.ts:163) — and chain-child-ref.yml, being GitHub-shaped
+    // YAML, has no params: authoring surface at all (github-yaml.ts's
+    // ROOT_KEYS is exactly ["name", "on", "jobs"]) — so this reference is
+    // rejected as undeclared, proving the check never reaches past this
+    // workflow's own (here, empty) declared params to the outer task's
+    // declared input names, name coincidence notwithstanding.
+    writeWorkflow("chain-child-ref", [
+      "      - id: inner",
+      "        uses: tasks/task-inner-chain",
+      "        with:",
+      "          scope:",
+      "            from: params.scope",
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const error = await expectInputBindingInvalid("workflows/chain-child-ref");
+    expect(error.message).toContain("with.scope");
+    expect(error.message.toLowerCase()).toContain("declared");
+    expect(error.message.toLowerCase()).toContain("param");
+    await expectNoRunRowWritten();
+  });
+});
+
+describe("P2b freeze-time — a workflow-target task step is STILL rejected, now reachable via version: 4 too (B-30)", () => {
+  /**
+   * Before this file, the nested-workflow guard's ONLY pin was
+   * tests/workflows/characterization-classification.test.ts:244, reached
+   * through the v3-only `parseTaskV3Yaml` / `prepareTaskV3Execution` path
+   * (source-freeze-v4.ts:264,281) — the SAME two call sites A-N6's rewrite
+   * touches. Today (LC-N1 still active), a version: 4 task composed from a
+   * workflow step throws TASK_SOURCE_INVALID before ever reaching either
+   * guard, so the v3 pin was the ONLY way to reach this rejection at all —
+   * not evidence the guard survives A-N6's routing rewrite for the v4 arm.
+   * §0 is explicit that it must: "taskDispatch's two 'A workflow task step
+   * cannot compose a nested workflow target.' guards ... stand unchanged.
+   * P3b owns child runs" — and lifting LC-N1 (A-N6) makes a version: 4 task
+   * with `uses: workflows/<ref>` newly REACHABLE from a workflow step for
+   * the first time, so this fact needs its OWN, v4-shaped pin (B-30, tagged
+   * PRESERVE in §2.2 precisely because the OBSERVABLE outcome must not
+   * change even though the code path reaching it is new).
+   */
+  function writeNestedFixtures(): void {
+    writeWorkflow("inner", ["      - id: work", '        run: "true"', "        shell: sh"]);
+    write(
+      "tasks/nested-v4.yml",
+      [
+        "version: 4",
+        "name: Nested workflow target v4",
+        "uses: workflows/inner",
+        "inputs:",
+        "  scope:",
+        "    type: string",
+        "    default: changed",
+        "",
+      ].join("\n"),
+    );
+  }
+
+  test("without an authored with:, a version: 4 task step whose target is uses: workflows/<ref> still throws INVALID_FLAG_VALUE, byte-exact", async () => {
+    writeNestedFixtures();
+    writeWorkflow("nested-no-with", [`      - id: ${STEP_ID}`, "        uses: tasks/nested-v4"]);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const error = await captureRejection("workflows/nested-no-with");
+    expect(error).toBeInstanceOf(UsageError);
+    if (!(error instanceof UsageError)) throw new Error("unreachable");
+    expect(error.code).toBe("INVALID_FLAG_VALUE");
+    expect(error.message).toBe("A workflow task step cannot compose a nested workflow target.");
+    await expectNoRunRowWritten();
+  });
+
+  test("WITH an authored with: that validly binds the target's declared input, the SAME version: 4 task step still throws the SAME byte-exact rejection — the nested-workflow guard is not bypassed by a present, valid binding", async () => {
+    writeNestedFixtures();
+    writeWorkflow("nested-with-with", [
+      `      - id: ${STEP_ID}`,
+      "        uses: tasks/nested-v4",
+      "        with:",
+      "          scope: urgent",
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const error = await captureRejection("workflows/nested-with-with");
+    expect(error).toBeInstanceOf(UsageError);
+    if (!(error instanceof UsageError)) throw new Error("unreachable");
+    expect(error.code).toBe("INVALID_FLAG_VALUE");
+    expect(error.message).toBe("A workflow task step cannot compose a nested workflow target.");
+    await expectNoRunRowWritten();
   });
 });
 

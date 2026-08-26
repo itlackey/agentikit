@@ -21,16 +21,35 @@
  *     (§4.3, B-40) — this one is NOT step composition; it is a v4 TASK whose
  *     OWN target is `uses: workflows/<ref>`, run via `akm task run`.
  *
- * RED TODAY, for the same reason across every scenario below: `taskDispatch`
- * (`src/workflows/ir/source-freeze-v4.ts`) still throws `UsageError`
- * `COMPOSITION_INVALID` the instant a task-composed step authors ANY `with:`
- * (P1a's fail-closed placeholder, spec §1.7 A-N5) — so every
- * `startWorkflowRun(...)` call below rejects before freeze ever reaches the
- * new binding logic. The workflow-target scenario (B-40) fails differently:
- * it never throws, but `projectTaskSourceV4` does not yet forward a v4 task's
- * `inputs:` into the child run's params (P2a's own docstring: "input delivery
- * is P2b"), so the child run's `params` come back `{}` instead of the
- * expected effective inputs — an assertion failure, not a thrown error.
+ * Also pinned: the NEGATIVE half of delivery (B-39) — a task-composed step
+ * whose EFFECTIVE inputs are empty (the target declares no `inputs:` at all,
+ * or declares only optional inputs with no default and `with:` supplies
+ * none) delivers NOTHING new: no `AKM_TASK_INPUTS` var, no `## Task inputs`
+ * prompt block, byte-identical to a plain (non-task-composed) step
+ * (`tests/integration/workflows/exec-unit.test.ts:426-433`, B-02).
+ *
+ * RED TODAY, for one of two reasons depending on the scenario:
+ *
+ *   - every scenario that authors a `with:` (every B-35/B-36/B-37/B-38 case,
+ *     and today's positive B-40 cases): `taskDispatch`
+ *     (`src/workflows/ir/source-freeze-v4.ts`) still throws `UsageError`
+ *     `COMPOSITION_INVALID` the instant a task-composed step authors ANY
+ *     `with:` (P1a's fail-closed placeholder, spec §1.7 A-N5) — so every
+ *     `startWorkflowRun(...)` call below rejects before freeze ever reaches
+ *     the new binding logic.
+ *   - every B-39 negative scenario (no `with:` authored at all, by
+ *     construction — there is nothing to bind): LC-N1 (p2a §1.5) still peeks
+ *     the composed target's version and throws `UsageError`
+ *     `TASK_SOURCE_INVALID` for ANY `version: 4` task composed from a
+ *     workflow step, `with:` or not (spec §1.7 A-N6) — a DIFFERENT
+ *     `taskDispatch` guard than the one above, but the same "P2b hasn't
+ *     landed yet" root cause.
+ *
+ * The workflow-target scenario (B-40) fails differently: it never throws,
+ * but `projectTaskSourceV4` does not yet forward a v4 task's `inputs:` into
+ * the child run's params (P2a's own docstring: "input delivery is P2b"), so
+ * the child run's `params` come back `{}` instead of the expected effective
+ * inputs — an assertion failure, not a thrown error.
  *
  * No `// @ts-expect-error P2b red-phase` pins are needed anywhere in this
  * file: every scenario is driven through the REAL workflow-source YAML
@@ -225,6 +244,87 @@ describe("shell/script task target — AKM_TASK_INPUTS is exactly one canonical-
   });
 });
 
+// ── B-39 (shell/script half) — empty effective inputs deliver NOTHING new ──
+// tests/integration/workflows/exec-unit.test.ts:426-433 pins the allowed
+// AKM_* name set for a PLAIN `exec:` step (B-02, no task composition at
+// all). This is the task-composed sibling that set omits: a task-composing
+// step whose composed target ends up with no EFFECTIVE inputs must be
+// byte-identical to that same plain-step roster — no AKM_TASK_INPUTS key,
+// on EITHER of the two ways "no effective inputs" can arise (B-N1).
+
+describe("shell/script task target — empty effective inputs emit NO AKM_TASK_INPUTS var at all (B-39, B-N1)", () => {
+  test("the target declares no inputs: at all — AKM_TASK_INPUTS is absent from the child's env name list", async () => {
+    write(
+      "tasks/shell-no-inputs.yml",
+      [
+        "version: 4",
+        "name: Shell no inputs",
+        "run: |",
+        "  printf 'ok'",
+        "  printf '\\n---NAMES---\\n'",
+        "  env | cut -d= -f1",
+        "shell: sh",
+        "",
+      ].join("\n"),
+    );
+    writeWorkflow("shell-no-delivery", ["      - id: dispatch", "        uses: tasks/shell-no-inputs"].join("\n"));
+
+    const { runId, step } = await firstStep("workflows/shell-no-delivery");
+    const result: StepExecutionResult = await executeFrozenStepPlan(step, {
+      runId,
+      workflowRef: "workflows/shell-no-delivery",
+      params: {},
+      evidence: {},
+      workDir,
+    });
+
+    expect(result.ok).toBe(true);
+    const [, namesPart] = String(result.evidence.output).split("\n---NAMES---\n");
+    const names = (namesPart ?? "").split("\n").filter((n) => n.length > 0);
+    expect(names).not.toContain("AKM_TASK_INPUTS");
+  });
+
+  test("the target declares only optional inputs with no default, and with: supplies none — the contract yields no effective values, so AKM_TASK_INPUTS is STILL absent", async () => {
+    write(
+      "tasks/shell-unbound-inputs.yml",
+      [
+        "version: 4",
+        "name: Shell declared but unbound inputs",
+        "inputs:",
+        "  extra:",
+        "    type: string",
+        "run: |",
+        "  printf 'ok'",
+        "  printf '\\n---NAMES---\\n'",
+        "  env | cut -d= -f1",
+        "shell: sh",
+        "",
+      ].join("\n"),
+    );
+    // No with: at all — "extra" is optional with no default (B-20), so
+    // freezeTaskInputBindings produces zero entries even though the
+    // CONTRACT itself is non-empty, unlike the sibling test above.
+    writeWorkflow(
+      "shell-unbound-delivery",
+      ["      - id: dispatch", "        uses: tasks/shell-unbound-inputs"].join("\n"),
+    );
+
+    const { runId, step } = await firstStep("workflows/shell-unbound-delivery");
+    const result: StepExecutionResult = await executeFrozenStepPlan(step, {
+      runId,
+      workflowRef: "workflows/shell-unbound-delivery",
+      params: {},
+      evidence: {},
+      workDir,
+    });
+
+    expect(result.ok).toBe(true);
+    const [, namesPart] = String(result.evidence.output).split("\n---NAMES---\n");
+    const names = (namesPart ?? "").split("\n").filter((n) => n.length > 0);
+    expect(names).not.toContain("AKM_TASK_INPUTS");
+  });
+});
+
 // ── B-37 — the spawn-boundary size guard covers AKM_TASK_INPUTS too ────────
 
 describe("oversized effective inputs fail exec_context_too_large at the spawn boundary, before spawn (B-37, B-N1)", () => {
@@ -336,6 +436,43 @@ describe("command target — a structured '## Task inputs' fenced JSON block, pr
     expect(headingIndex).toBeGreaterThan(-1);
     expect(prompt.slice(0, headingIndex)).not.toContain(MARKER);
     expect(prompt.indexOf(MARKER)).toBeGreaterThan(headingIndex);
+  });
+});
+
+// ── B-39 (command half) — empty effective inputs append NO prompt block ────
+
+describe("command target — empty effective inputs append NO '## Task inputs' block (B-39, B-N2)", () => {
+  test("the target declares no inputs: at all — the prompt has no '## Task inputs' heading, and the authored prose is byte-unchanged", async () => {
+    const INSTRUCTIONS = "Echo the composed note for the delivery suite, with nothing bound.\n";
+    write("commands/echo-plain.md", INSTRUCTIONS);
+    write("tasks/plain-command.yml", ["version: 4", "name: Plain command", "uses: commands/echo-plain", ""].join("\n"));
+    writeWorkflow("command-no-inputs", ["      - id: dispatch", "        uses: tasks/plain-command"].join("\n"));
+
+    const { runId, step } = await firstStep("workflows/command-no-inputs");
+    let capturedPrompt: string | undefined;
+    const result: StepExecutionResult = await executeFrozenStepPlan(step, {
+      runId,
+      workflowRef: "workflows/command-no-inputs",
+      params: {},
+      evidence: {},
+      workDir,
+      dispatcher: async (request: UnitDispatchRequest): Promise<UnitDispatchResult> => {
+        capturedPrompt = request.prompt;
+        return { ok: true, text: "noted" };
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (capturedPrompt === undefined) {
+      throw new Error("the injected dispatcher was never invoked — the unit never reached command dispatch");
+    }
+    const prompt = capturedPrompt;
+
+    // The authored prose is appended byte-exact, exactly as when bindings
+    // ARE present (B-38) — only the trailing block is conditional.
+    expect(prompt).toContain(INSTRUCTIONS);
+    expect(prompt).not.toContain("## Task inputs");
+    expect(prompt).not.toContain("The composed task's declared inputs resolved to:");
   });
 });
 

@@ -158,31 +158,118 @@ describe("akm task explain <ref> --format json (B-53)", () => {
   });
 });
 
+/**
+ * Locate every "provenance" tag attached to a supplied-value row for
+ * `inputName`, recursively, tolerant of whichever concrete JSON SHAPE
+ * Implement picks for the envelope — the spec pins the CONTENT contract
+ * (B-N4), never a literal layout (this file's own header comment). Two
+ * shapes are considered, since either is a reasonable reading of "one row
+ * per declared input" (§4.5 B-N4):
+ *
+ *   (a) an array of `{name: "scope", provenance: "default", ...}` rows;
+ *   (b) a map keyed BY input name: `{scope: {provenance: "default", ...}}`.
+ *
+ * A candidate must carry an OWN `provenance` key to count — this is what
+ * makes the search STRUCTURAL rather than a whole-envelope substring probe
+ * (P2b test-review finding #7): the input DECLARATION section also has a
+ * node named "scope" (with its OWN `default` key, per B-N4's field list),
+ * but that node has no `provenance` key, so it is never matched here.
+ */
+function suppliedValueProvenances(json: unknown, inputName: string): unknown[] {
+  const found: unknown[] = [];
+  function visit(node: unknown): void {
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item);
+      return;
+    }
+    if (node === null || typeof node !== "object") return;
+    const obj = node as Record<string, unknown>;
+
+    // Shape (a): this object IS the row — it names itself and carries its
+    // own provenance.
+    const nameField = obj.name ?? obj.input ?? obj.key;
+    if (typeof nameField === "string" && nameField === inputName && Object.hasOwn(obj, "provenance")) {
+      found.push(obj.provenance);
+    }
+    // Shape (b): this object HOLDS the row under a key equal to the input
+    // name.
+    if (Object.hasOwn(obj, inputName)) {
+      const entry = obj[inputName];
+      if (
+        entry !== null &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        Object.hasOwn(entry as object, "provenance")
+      ) {
+        found.push((entry as Record<string, unknown>).provenance);
+      }
+    }
+    for (const value of Object.values(obj)) visit(value);
+  }
+  visit(json);
+  return found;
+}
+
 describe("akm task explain <ref> --<flag> — supplied-value provenance (B-54)", () => {
-  test("an unflagged input's supplied value is attributed to its DEFAULT", async () => {
+  test("an unflagged input's supplied value is attributed to its DEFAULT, structurally — not merely because the word 'default' appears anywhere in the envelope", async () => {
     writeExplainDemoFixture();
     const result = await runCliCapture(["task", "explain", "explain-demo", "--format", "json"]);
-    const rendered = JSON.stringify(JSON.parse(result.stdout));
+    const envelope = JSON.parse(result.stdout);
 
-    expect(rendered).toContain("changed");
-    expect(rendered).toMatch(/default/i);
+    // Not `rendered).toMatch(/default/i)` against the whole serialized
+    // envelope — the input DECLARATION for "scope" carries its OWN
+    // `default: "changed"` key regardless of provenance tracking, so that
+    // whole-envelope probe is satisfiable by an envelope with NO provenance
+    // at all (P2b test-review finding #7). Locate the SUPPLIED-VALUE row
+    // instead and read its provenance field directly.
+    expect(suppliedValueProvenances(envelope, "scope")).toContain("default");
   });
 
-  test("--scope urgent overrides the default: the supplied value is attributed to FLAG provenance", async () => {
+  test("--scope urgent overrides the default: the supplied value is attributed to FLAG provenance, structurally — and is no longer attributed to default", async () => {
     writeExplainDemoFixture();
     const result = await runCliCapture(["task", "explain", "explain-demo", "--scope", "urgent", "--format", "json"]);
-    const rendered = JSON.stringify(JSON.parse(result.stdout));
+    const envelope = JSON.parse(result.stdout);
 
-    expect(rendered).toContain("urgent");
-    expect(rendered).toMatch(/flag/i);
+    const provenances = suppliedValueProvenances(envelope, "scope");
+    expect(provenances).toContain("flag");
+    // Negates a broken implementation that always labels the CURRENT
+    // supplied-value row "default" regardless of where the value actually
+    // came from.
+    expect(provenances).not.toContain("default");
   });
 
-  test("the schedule binding's own inputs are attributed to SCHEDULE-BINDING provenance, distinct from default/flag", async () => {
+  test("the schedule binding's own inputs are attributed to SCHEDULE-BINDING provenance — coexisting with, and distinct from, the CURRENT row's default/flag provenance for the identical input name", async () => {
     writeExplainDemoFixture();
-    const result = await runCliCapture(["task", "explain", "explain-demo", "--format", "json"]);
-    const rendered = JSON.stringify(JSON.parse(result.stdout));
+    const unflagged = JSON.parse((await runCliCapture(["task", "explain", "explain-demo", "--format", "json"])).stdout);
+    const flagged = JSON.parse(
+      (await runCliCapture(["task", "explain", "explain-demo", "--scope", "urgent", "--format", "json"])).stdout,
+    );
 
-    expect(rendered).toMatch(/schedule.?binding/i);
+    // The fixture's ONE schedule entry supplies `scope: all` (line 96)
+    // alongside the task's OWN `scope` declaration — an unflagged explain
+    // call therefore carries TWO rows for the same input name "scope": the
+    // CURRENT value (provenance "default") and the schedule entry's OWN
+    // value (provenance "schedule-binding"). Finding BOTH tags attached to
+    // the SAME input name in the SAME envelope is the direct, structural
+    // proof that they are tracked as genuinely distinct provenance values,
+    // not a single global tag for the whole explain call.
+    const unflaggedScopeProvenances = suppliedValueProvenances(unflagged, "scope");
+    expect(unflaggedScopeProvenances).toContain("schedule-binding");
+    expect(unflaggedScopeProvenances).toContain("default");
+
+    // The schedule entry's own provenance is unaffected by an unrelated
+    // CLI flag on the CURRENT row — it is still "schedule-binding", never
+    // reclassified to "flag", when --scope is supplied for this call.
+    expect(suppliedValueProvenances(flagged, "scope")).toContain("schedule-binding");
+
+    // All three vocabulary values the spec names (B-N4: "default | flag |
+    // schedule-binding") are pairwise distinct, observed together across
+    // the unflagged + flagged calls above.
+    const observed = new Set([
+      ...unflaggedScopeProvenances.filter((p) => p === "default" || p === "schedule-binding"),
+      ...suppliedValueProvenances(flagged, "scope").filter((p) => p === "flag"),
+    ]);
+    expect(observed).toEqual(new Set(["default", "schedule-binding", "flag"]));
   });
 });
 

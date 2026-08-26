@@ -43,7 +43,7 @@ import { resetConfigCache } from "../../../src/core/config/config";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
-import { computeStepWorkList } from "../../../src/workflows/exec/step-work";
+import { computeStepWorkList, unitIdFor } from "../../../src/workflows/exec/step-work";
 import { decodeWorkflowPlanV4 } from "../../../src/workflows/ir/schema-v4";
 import { startWorkflowRun } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
@@ -197,13 +197,19 @@ describe("P2b pre-attempt — a resolved reference violating its declared schema
   // binding `{from: "params.…"}}` is therefore unreachable from either front
   // end and cannot be exercised end-to-end; this proof uses the
   // steps-rooted grammar instead, driving a REAL two-step run so a REAL
-  // attempt-accounting row is there to prove empty. The referenced path
-  // ("collect" ran, but never produces a "scope" property under ANY shape
-  // its output could take) fails PRE-ATTEMPT regardless of whether the
-  // failure mode is "did not resolve" or "violates the schema" — both are
-  // computeStepWorkList returning {ok:false} before any unit is built, which
-  // is the one fact this test needs.
-  test("the real engine never reserves a dispatch attempt for the failing unit — the run's attempt table stays empty (B-32, before reserveUnitAttempt)", async () => {
+  // attempt-accounting row is there to prove the failing unit's is empty.
+  // "collect" is itself an `akm/command` step driven by the stub dispatcher
+  // below — it necessarily journals its own dispatch attempt before the
+  // `dispatch` step is ever reached (computeStepWorkList runs per step at
+  // dispatch time, native-executor.ts:588, i.e. AFTER "collect" already ran)
+  // — so the run-wide attempt table is never empty; only the failing unit's
+  // row set is. The referenced path ("collect" ran, but never produces a
+  // "scope" property under ANY shape its output could take) fails
+  // PRE-ATTEMPT regardless of whether the failure mode is "did not resolve"
+  // or "violates the schema" — both are computeStepWorkList returning
+  // {ok:false} before any unit is built for the `dispatch` step, which is
+  // the one fact this test needs.
+  test("the real engine never reserves a dispatch attempt for the failing unit — its attempt row set stays empty (B-32, before reserveUnitAttempt)", async () => {
     writeCentralTaskFixture();
     writeWorkflow("attempt-gate", [
       "      - id: collect",
@@ -227,8 +233,26 @@ describe("P2b pre-attempt — a resolved reference violating its declared schema
     });
 
     expect(result.run.status).toBe("failed");
+
+    // "collect" (an `akm/command` unit) DID get dispatched and journaled —
+    // proving the run's attempt table is not vacuously empty for some
+    // unrelated reason (e.g. the run failing before "collect" even started).
     const accounting = await withWorkflowRunsRepo((repo) => repo.getAttemptAccounting(started.run.id));
-    expect(accounting.totalAttempts).toBe(0);
+    expect(accounting.dispatchAttempts).toBe(1);
+
+    // The `dispatch` step never got far enough to build a unit at all — its
+    // frozen root node's id is the step id itself for a non-fan-out step
+    // (ir/compile.ts's `compileStep`), so its solo unit id is derived the
+    // same way `computeStepWorkList` derives every unit id.
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    const dispatchRoot = plan.steps[1]!.root;
+    if (!dispatchRoot) throw new Error("expected the dispatch step to have a root exec node");
+    const dispatchUnitId = unitIdFor(dispatchRoot.id, undefined, false, true);
+    const dispatchUnitAttempts = await withWorkflowRunsRepo((repo) =>
+      repo.getUnitAttempts(started.run.id, dispatchUnitId),
+    );
+    expect(dispatchUnitAttempts).toHaveLength(0);
   });
 });
 

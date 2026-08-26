@@ -99,6 +99,43 @@ const ALLOWED_EXACT_FILES = [
   "tests/workflows/with-rejection.test.ts",
   "tests/workflows/direct-script-typed.test.ts",
   "tests/workflows/task-source-v4-deferral.test.ts",
+
+  // §6.2(a)/(b) — Lane C's own migrator suite. This generation's reference
+  // suite (spec §5.1) combines the translation-table coverage (B-60..B-69)
+  // and the filesystem-ladder coverage (B-70..B-74) into one file, exactly
+  // as tests/migrate/task-v2-to-v3-files.test.ts and
+  // tests/tasks/migrate-v2-to-v3.test.ts are excluded by name above: its
+  // SUBJECT is v3 migration, and its v3 task-source fixtures exercise the
+  // migrator's INPUT side (the vendored v3 reader, C-N1) deliberately.
+  "tests/migrate/task-v3-to-v4.test.ts",
+
+  // §6.2(b) catch-all ("any other test whose SUBJECT is v3 parsing, v3
+  // routing, or v3 migration") — spec row B-57 requires `akm task explain
+  // <ref>` to be proven against a genuine version: 3 task (declarations
+  // list resolves empty; target kind/ref and execution settings still
+  // resolve). Converting that fixture would remove the only v3 case this
+  // acceptance row covers.
+  "tests/integration/commands/tasks-explain.test.ts",
+
+  // §8 preservation gate (binding, reviewer-run): "tests/tasks/source-v3.test.ts,
+  // tests/tasks/parse-v3-adapter.test.ts, tests/tasks/prepare-split.test.ts,
+  // tests/tasks/run-split.test.ts, tests/tasks/model-contracts.test.ts,
+  // tests/tasks/bounded-document.test.ts green and byte-unchanged." — its
+  // parseTaskV3Yaml fixture must stay v3 byte-for-byte.
+  "tests/tasks/prepare-split.test.ts",
+
+  // P2b test-review finding #4 (tests/workflows/task-input-bindings.test.ts:1):
+  // the missing identity suite (B-01, B-43, B-44). Its B-01 case's
+  // no-declared-inputs target is deliberately version: 3, mirroring
+  // with-rejection.test.ts's own reasoning immediately above: a v3 task can
+  // never declare `inputs:` at all (P2a §1.2 D2), so "declares no inputs"
+  // holds independent of any binding logic, AND — unlike a version: 4
+  // fixture — is unaffected by A-N6's still-active LC-N1 deferral, which
+  // blocks EVERY version: 4 task composed from a workflow step today. B-01
+  // is itself a PRESERVATION claim ("byte-identical to today"), and before
+  // P2b v3 was the only reachable task-composition target, so this is the
+  // more faithful fixture for that exact claim, not merely a workaround.
+  "tests/workflows/task-binding-identity.test.ts",
 ] as const;
 
 function isAllowed(relPath: string): boolean {
