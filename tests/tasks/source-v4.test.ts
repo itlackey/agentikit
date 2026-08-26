@@ -1,0 +1,1072 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+/**
+ * Tests-first contract for P2a's task source v4 GRAMMAR and its version
+ * ROUTER (spec docs/plans/specs/p2a-task-source-v4.md §1.2 D2, §1.5
+ * D2-N1..D2-N7, §3). Lane A TESTS — this file owns the grammar/router half;
+ * tests/tasks/source-v4-adapter.test.ts owns the prepare-seam projection.
+ *
+ * RED phase: `src/tasks/source/task-source-v4.ts` and
+ * `src/tasks/source/parse-task-source.ts` do not exist on disk yet. Each is
+ * imported as a NAMESPACE (`import * as X from "…"`) behind exactly ONE
+ * directly-preceding
+ *
+ *   // @ts-expect-error P2a red-phase: <symbol(s)> lands in Implement
+ *
+ * pin, per the task brief's RED-PHASE TYPE PINS contract, then destructured
+ * into the plain local names used everywhere below (`const {
+ * parseTaskSourceV4Document, … } = TaskSourceV4Module;` / `type
+ * TaskSourceV4Document = TaskSourceV4Module.TaskSourceV4Document;`). The
+ * single pin suppresses exactly the diagnostic TypeScript raises for THAT
+ * ONE import statement (TS2307 "Cannot find module" — the module does not
+ * exist at all); every downstream USE of the destructured bindings already
+ * compiles without error (implicit `any`) and must NOT carry a second pin —
+ * an `@ts-expect-error` above a line that raises no diagnostic is itself a
+ * `tsc` error (TS2578 "Unused '@ts-expect-error' directive").
+ *
+ * The namespace-import indirection (rather than named imports of each
+ * symbol directly) is deliberate, not stylistic: a multi-symbol NAMED import
+ * spanning several lines places the real TS2307 diagnostic on the `from
+ * "…"` line, not the `import {` line, so a pin placed above `import {`
+ * silently fails to suppress it — AND `bunx biome check --write`
+ * independently MERGES separate single-symbol named imports that share one
+ * specifier back into one multi-line import, stacking their pins together;
+ * TypeScript then honors only the pin immediately adjacent to the import and
+ * marks every earlier stacked one "unused". A namespace import is exactly
+ * one line, never merged with anything, and never reformatted across lines
+ * by biome, so it is the only shape immune to both failure modes. Both
+ * failure modes, and this fix, were verified empirically against this
+ * repo's own tsconfig.json/biome.json before writing this file: one pin on
+ * a namespace import, zero on every destructured call site, `bunx tsc
+ * --noEmit` exits 0 and `bunx biome check --write` makes no further changes
+ * to the import; leaving the pin in place once the real module exists (so
+ * the import itself no longer errors) fails with exactly the "Unused
+ * directive" error — the signal Implement uses to know the pin must be
+ * deleted (together with the namespace indirection, which Implement is free
+ * to replace with ordinary named imports once real).
+ *
+ * Real, already-implemented modules (`src/tasks/source-v3.ts`,
+ * `src/core/json-schema.ts`, `src/core/errors.ts`, `src/core/warn.ts`,
+ * `src/workflows/resource-limits.ts`, `src/workflows/program/schema.ts`,
+ * `src/workflows/exec/param-secrets.ts`, `src/execution/limits.ts`) are
+ * imported for REAL, unpinned. Several assertions below call
+ * `validateJsonSchemaSubset` / `checkJsonSchemaDefinition` /
+ * `detectSecretShapedParams` directly to DERIVE the expected substring of a
+ * task source v4 parser error or warning, rather than guessing
+ * implementation-internal wording the parser has not been written yet to
+ * produce — the derivation ties this file's pins to real, already-shipped
+ * behavior instead of speculative prose.
+ *
+ * D2-N2 divergence from a naive reading of the task brief's one-line
+ * summary ("other -> TASK_SCHEMA_VERSION_UNSUPPORTED"), recorded here so a
+ * future reader does not "fix" this file to match the wrong summary: the
+ * SPEC (authoritative, §1.5 D2-N2) says only `version: 2` raises
+ * TASK_SCHEMA_VERSION_UNSUPPORTED. A missing version, or any OTHER
+ * non-3/non-4 value (5, "3", null, …), routes through the EXISTING v3
+ * parser and its already-shipped, byte-pinned wording — "$ version is
+ * required and must be 3." / "$ version must be exactly 3." — under
+ * TASK_SOURCE_INVALID, not TASK_SCHEMA_VERSION_UNSUPPORTED. That stale
+ * "must be exactly 3" text is a DELIBERATELY preserved wart (spec §3.4); P4
+ * owns the final version-error text, not P2a.
+ *
+ * D1 naming: this grammar is "task source v4", never bare "v4", in every
+ * comment and test title below — the workflow plan IR is separately
+ * versioned and also currently at v4, and the spec is careful never to
+ * conflate the two in prose.
+ */
+
+import { beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { UsageError } from "../../src/core/errors";
+import {
+  checkJsonSchemaDefinition,
+  JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS,
+  validateJsonSchemaSubset,
+} from "../../src/core/json-schema";
+import { _setWarnSinkForTests } from "../../src/core/warn";
+import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
+// @ts-expect-error P2a red-phase: everything from this not-yet-existing module lands in Implement
+import * as ParseTaskSourceModule from "../../src/tasks/source/parse-task-source";
+// @ts-expect-error P2a red-phase: everything from this not-yet-existing module lands in Implement
+import * as TaskSourceV4Module from "../../src/tasks/source/task-source-v4";
+import { parseTaskV3Yaml, TASK_V3_MAX_SCHEDULES } from "../../src/tasks/source-v3";
+import { detectSecretShapedParams } from "../../src/workflows/exec/param-secrets";
+import { PROGRAM_PARAM_NAME_PATTERN } from "../../src/workflows/program/schema";
+import {
+  WORKFLOW_MAX_EXEC_PASS_ENV,
+  WORKFLOW_MAX_PARAMS,
+  WORKFLOW_MAX_RETRIES,
+  WORKFLOW_MAX_SCHEMA_BYTES,
+} from "../../src/workflows/resource-limits";
+import { overrideSeam } from "../_helpers/seams";
+
+const { parseTaskSource, peekTaskSourceVersion } = ParseTaskSourceModule;
+type ParsedTaskSource = ParseTaskSourceModule.ParsedTaskSource;
+
+const {
+  classifyTaskSourceV4Uses,
+  parseTaskSourceV4,
+  parseTaskSourceV4Document,
+  TASK_INPUT_DECLARATION_KEYS,
+  TASK_SOURCE_V4_SCHEDULE_KEYS,
+  TASK_SOURCE_V4_TOP_LEVEL_KEYS,
+  TASK_SOURCE_V4_VERSION,
+} = TaskSourceV4Module;
+type TaskSourceV4Document = TaskSourceV4Module.TaskSourceV4Document;
+
+const ROOT = path.resolve(import.meta.dir, "../..");
+const FIXTURES_DIR = path.join(ROOT, "tests/fixtures/execution-contracts/tasks/v4");
+
+/** No default target/schedule — every call site supplies exactly the keys it means to exercise, mirroring source-v3.test.ts's `scheduled()` helper (which also defaults nothing but `version`/`akm.schedule`). */
+function v4Doc(overrides: Record<string, unknown>): Record<string, unknown> {
+  return { version: TASK_SOURCE_V4_VERSION, ...overrides };
+}
+
+/** Run `fn`, assert it throws a `UsageError` coded `TASK_SOURCE_INVALID`, and assert its message matches every pattern given (each checked independently). */
+function expectTaskSourceInvalid(fn: () => unknown, pattern: RegExp | readonly RegExp[]): void {
+  let caught: unknown;
+  try {
+    fn();
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(UsageError);
+  const error = caught as UsageError;
+  expect(error.code).toBe("TASK_SOURCE_INVALID");
+  for (const one of Array.isArray(pattern) ? pattern : [pattern]) {
+    expect(error.message).toMatch(one);
+  }
+}
+
+interface ManifestFixture {
+  readonly id: string;
+  readonly file: string;
+  readonly represents: readonly string[];
+  readonly expected: Readonly<Record<string, unknown>>;
+}
+
+function loadManifestFixtures(): readonly ManifestFixture[] {
+  const raw = fs.readFileSync(path.join(FIXTURES_DIR, "manifest.json"), "utf8");
+  const parsed = JSON.parse(raw) as { readonly fixtures: readonly ManifestFixture[] };
+  return parsed.fixtures;
+}
+
+function parseFixture(fixture: ManifestFixture): TaskSourceV4Document {
+  const filePath = path.join(FIXTURES_DIR, fixture.file);
+  return parseTaskSourceV4({ yaml: fs.readFileSync(filePath, "utf8"), filePath });
+}
+
+const MANIFEST_FIXTURES = loadManifestFixtures();
+
+// ── Closed key-set constants (D2-N3, D2-N7) ─────────────────────────────────
+
+describe("task source v4 — closed key-set constants (D2-N3, D2-N7)", () => {
+  test("TASK_SOURCE_V4_VERSION is 4", () => {
+    expect(TASK_SOURCE_V4_VERSION).toBe(4);
+  });
+
+  test("TASK_SOURCE_V4_TOP_LEVEL_KEYS is exactly D2-N7's closed set (akm and on excluded)", () => {
+    expect([...TASK_SOURCE_V4_TOP_LEVEL_KEYS].sort()).toEqual(
+      [
+        "version",
+        "name",
+        "description",
+        "when_to_use",
+        "tags",
+        "inputs",
+        "output",
+        "uses",
+        "run",
+        "with",
+        "env",
+        "shell",
+        "working-directory",
+        "schedule",
+        "agent",
+        "engine",
+        "model",
+        "inference",
+        "tools",
+        "timeout",
+        "redact",
+        "maxSteps",
+        "maxRetries",
+      ].sort(),
+    );
+    expect(TASK_SOURCE_V4_TOP_LEVEL_KEYS).not.toContain("akm");
+    expect(TASK_SOURCE_V4_TOP_LEVEL_KEYS).not.toContain("on");
+  });
+
+  test("TASK_SOURCE_V4_SCHEDULE_KEYS closes one schedule-list entry to cron/enabled/inputs", () => {
+    expect([...TASK_SOURCE_V4_SCHEDULE_KEYS].sort()).toEqual(["cron", "enabled", "inputs"].sort());
+  });
+
+  test("TASK_INPUT_DECLARATION_KEYS derives its JSON-Schema-subset keywords from JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS (D2-N3) rather than restating them", () => {
+    const subsetKeywords = JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS.split(",").map(
+      (entry) => entry.split(":")[0]?.trim() ?? "",
+    );
+    for (const keyword of subsetKeywords) {
+      expect(TASK_INPUT_DECLARATION_KEYS, `must cover subset keyword "${keyword}"`).toContain(keyword);
+    }
+    expect([...TASK_INPUT_DECLARATION_KEYS].sort()).toEqual(
+      [
+        "type",
+        "enum",
+        "properties",
+        "required",
+        "items",
+        "additionalProperties",
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "not",
+        "title",
+        "description",
+        "default",
+      ].sort(),
+    );
+  });
+});
+
+// ── classifyTaskSourceV4Uses — target classification (spec §3.3) ───────────
+
+describe("classifyTaskSourceV4Uses — target classification (spec §3.3)", () => {
+  test.each([
+    ["akm/command", { kind: "builtin-command", ref: "akm/command" }],
+    ["commands/review", { kind: "command", ref: "commands/review" }],
+    ["team//commands/review", { kind: "command", ref: "team//commands/review" }],
+    ["scripts/nightly-cleanup.sh", { kind: "script", ref: "scripts/nightly-cleanup.sh" }],
+    ["workflows/release", { kind: "workflow", ref: "workflows/release" }],
+  ] as const)("classifies %s deterministically", (input, expected) => {
+    expect(classifyTaskSourceV4Uses(input)).toEqual(expected);
+  });
+
+  test("rejects a task ref — a task ref is not an executable task source v4 target (B-14)", () => {
+    expect(() => classifyTaskSourceV4Uses("tasks/nightly")).toThrow(/task/i);
+  });
+
+  test.each([
+    "agents/reviewer",
+    "knowledge/guide",
+    "commands/review#fragment",
+    "./local-action",
+    "docker://alpine:3",
+    "commands/../agents/reviewer",
+    "owner/repo",
+  ])("rejects non-canonical, local, Docker, traversal, or ambiguous ref %p", (input) => {
+    expect(() => classifyTaskSourceV4Uses(input)).toThrow();
+  });
+
+  test.each([
+    "actions/checkout@v4",
+    "octo-org/action-repo/sub/action@feature/v2",
+  ])("rejects a github-locator-shaped ref %p by NAMING the removal, not a generic invalid-ref message (B-13)", (input) => {
+    expect(() => classifyTaskSourceV4Uses(input)).toThrow(/github/i);
+  });
+
+  test("a github-locator rejection is distinguishable from a generic invalid-ref rejection (B-13 vs. the fallback case)", () => {
+    let githubMessage = "";
+    let genericMessage = "";
+    try {
+      classifyTaskSourceV4Uses("actions/checkout@v4");
+    } catch (error) {
+      githubMessage = (error as Error).message;
+    }
+    try {
+      classifyTaskSourceV4Uses("agents/reviewer");
+    } catch (error) {
+      genericMessage = (error as Error).message;
+    }
+    expect(githubMessage).not.toBe(genericMessage);
+    expect(githubMessage).toMatch(/github/i);
+  });
+});
+
+// ── parseTaskSourceV4Document — target union, with:, shell/working-directory ──
+// ── (D2-N1, B-13..B-18) ──────────────────────────────────────────────────────
+
+describe("parseTaskSourceV4Document — target union (uses/run exactly one, D2-N1, B-13..B-18)", () => {
+  test("exactly one of uses/run is required (same detail text as v3, B-16)", () => {
+    expectTaskSourceInvalid(() => parseTaskSourceV4Document(v4Doc({}), { filePath: "/x.yml" }), /exactly one/i);
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/x", run: "echo x" }), { filePath: "/x.yml" }),
+      /exactly one/i,
+    );
+  });
+
+  test("a bad uses: value is re-coded through the v4 sourceError funnel as TASK_SOURCE_INVALID — the envelope code (B-15)", () => {
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "agents/reviewer" }), { filePath: "/x.yml" }),
+      /uses/i,
+    );
+  });
+
+  test("a task ref uses: target is TASK_SOURCE_INVALID (B-14)", () => {
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "tasks/other" }), { filePath: "/x.yml" }),
+      [/uses/i, /task/i],
+    );
+  });
+
+  test("a github-locator uses: is TASK_SOURCE_INVALID, naming the removal (B-13)", () => {
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "actions/checkout@v4" }), { filePath: "/x.yml" }),
+      /github/i,
+    );
+  });
+
+  test("uses: commands/, scripts/, and workflows/ all parse to the nested TaskSourceV4Target shape", () => {
+    const command = parseTaskSourceV4Document(v4Doc({ uses: "commands/review" }), { filePath: "/x.yml" });
+    expect(command.target).toEqual({ kind: "uses", uses: { kind: "command", ref: "commands/review" } });
+
+    const script = parseTaskSourceV4Document(v4Doc({ uses: "scripts/nightly-cleanup.sh" }), { filePath: "/x.yml" });
+    expect(script.target).toEqual({ kind: "uses", uses: { kind: "script", ref: "scripts/nightly-cleanup.sh" } });
+
+    const workflow = parseTaskSourceV4Document(v4Doc({ uses: "workflows/nightly-report" }), { filePath: "/x.yml" });
+    expect(workflow.target).toEqual({ kind: "uses", uses: { kind: "workflow", ref: "workflows/nightly-report" } });
+  });
+
+  test("with: is accepted on uses: akm/command and validated by the EXISTING parseBuiltinCommandAction (D2-N1)", () => {
+    const doc = parseTaskSourceV4Document(v4Doc({ uses: "akm/command", with: { content: "hi" } }), {
+      filePath: "/x.yml",
+    });
+    expect(doc.target).toEqual({
+      kind: "uses",
+      uses: { kind: "builtin-command", ref: "akm/command" },
+      with: { content: "hi" },
+      command: { kind: "inline", content: "hi" },
+    });
+  });
+
+  test("with: on akm/command is rejected by the SAME parseBuiltinCommandAction accept/reject set as v3 (D2-N1)", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "akm/command", with: { ref: "commands/x", content: "y" } }), {
+          filePath: "/x.yml",
+        }),
+      /exactly one/i,
+    );
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "akm/command", with: { content: "y", extra: true } }), {
+          filePath: "/x.yml",
+        }),
+      /unsupported field/i,
+    );
+  });
+
+  test.each([
+    ["uses: commands/review", { uses: "commands/review" }],
+    ["run: echo hi", { run: "echo hi" }],
+  ])("with: is rejected and points at inputs: everywhere except uses: akm/command (%s, D2-N1, B-18)", (_label, target) => {
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ ...target, with: { x: 1 } }), { filePath: "/x.yml" }),
+      /inputs/i,
+    );
+  });
+
+  test("shell and working-directory are legal only with run: (mirrors v3)", () => {
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", shell: "bash" }), { filePath: "/x.yml" }),
+      /shell/i,
+    );
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", "working-directory": "." }), {
+          filePath: "/x.yml",
+        }),
+      /working-directory/i,
+    );
+  });
+
+  test("shell must be one of the closed host-shell table (mirrors v3)", () => {
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ run: "echo hi", shell: "bash -e {0}" }), { filePath: "/x.yml" }),
+      /shell/i,
+    );
+  });
+
+  test("run: target with a valid shell and no working-directory parses cleanly", () => {
+    const doc = parseTaskSourceV4Document(v4Doc({ run: "echo hi", shell: "bash" }), { filePath: "/x.yml" });
+    expect(doc.target).toEqual({ kind: "run", run: "echo hi", shell: "bash" });
+  });
+
+  test("accepts the closed run/shell/working-directory contract with real physical containment (mirrors v3)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-source-v4-root-"));
+    fs.mkdirSync(path.join(root, "packages", "core"), { recursive: true });
+    try {
+      const doc = parseTaskSourceV4Document(
+        v4Doc({ run: "printf '%s\\n' exact", shell: "bash", "working-directory": "packages/core" }),
+        { filePath: path.join(root, "tasks", "run.yml"), workspaceRoot: root },
+      );
+      expect(doc.target).toEqual({
+        kind: "run",
+        run: "printf '%s\\n' exact",
+        shell: "bash",
+        workingDirectory: "packages/core",
+      });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("requires a workspace root whenever working-directory needs physical containment (mirrors v3)", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ run: "echo hi", "working-directory": "packages/core" }), {
+          filePath: "/bundle/tasks/run.yml",
+        }),
+      /workspace root|physically|contain/i,
+    );
+  });
+});
+
+// ── akm:/on: removal (B-11, B-12) ───────────────────────────────────────────
+
+describe("task source v4 — akm:/on: removal (B-11, B-12)", () => {
+  test("an akm: key is TASK_SOURCE_INVALID, naming the removal and pointing at the top-level spellings", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", akm: { schedule: "@daily" } }), {
+          filePath: "/x.yml",
+        }),
+      /akm/,
+    );
+  });
+
+  test("an on: key is TASK_SOURCE_INVALID, naming the removal and pointing at schedule:", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", on: { schedule: [{ cron: "0 0 * * *" }] } }), {
+          filePath: "/x.yml",
+        }),
+      [/\bon\b/, /schedule/i],
+    );
+  });
+
+  test("an unrecognized top-level key is rejected by the closed TASK_SOURCE_V4_TOP_LEVEL_KEYS set (generic wording)", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", bogusTopLevelKey: true }), {
+          filePath: "/x.yml",
+        }),
+      /bogusTopLevelKey/,
+    );
+  });
+
+  test("the akm:/on: removal messages are distinguishable from a generic unknown-key rejection (their detail NAMES the removal)", () => {
+    let akmMessage = "";
+    let genericMessage = "";
+    try {
+      parseTaskSourceV4Document(v4Doc({ uses: "commands/review", akm: { schedule: "@daily" } }), {
+        filePath: "/x.yml",
+      });
+    } catch (error) {
+      akmMessage = (error as Error).message;
+    }
+    try {
+      parseTaskSourceV4Document(v4Doc({ uses: "commands/review", bogusTopLevelKey: true }), { filePath: "/x.yml" });
+    } catch (error) {
+      genericMessage = (error as Error).message;
+    }
+    expect(akmMessage.length).toBeGreaterThan(0);
+    expect(genericMessage.length).toBeGreaterThan(0);
+    expect(akmMessage).not.toBe(genericMessage);
+  });
+});
+
+// ── Version router (spec §3.4, D2-N2) ───────────────────────────────────────
+
+describe("task source v4 — version router (spec §3.4, D2-N2's exact routing table)", () => {
+  test("peekTaskSourceVersion reads the root version field without over-accepting non-number values", () => {
+    expect(peekTaskSourceVersion({ version: 4 })).toBe(4);
+    expect(peekTaskSourceVersion({ version: 3 })).toBe(3);
+    expect(peekTaskSourceVersion({ version: 2 })).toBe(2);
+    expect(peekTaskSourceVersion({})).toBeUndefined();
+    expect(peekTaskSourceVersion({ version: "4" })).toBeUndefined();
+    expect(peekTaskSourceVersion(null)).toBeUndefined();
+    expect(peekTaskSourceVersion("not an object")).toBeUndefined();
+  });
+
+  test("version: 4 routes to the new task source v4 parser", () => {
+    const yaml = "version: 4\nuses: commands/review\n";
+    const filePath = "/bundle/tasks/x.yml";
+    const result: ParsedTaskSource = parseTaskSource({ yaml, filePath });
+    expect(result.version).toBe(4);
+    if (result.version !== 4) throw new Error("unreachable: asserted above");
+    expect(result.v4.target).toEqual({ kind: "uses", uses: { kind: "command", ref: "commands/review" } });
+    expect(result.v4.manualOnly).toBe(true);
+  });
+
+  test("version: 3 routes to the EXISTING v3 parser, byte-identical to calling parseTaskV3Yaml directly", () => {
+    const yaml = "version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\n";
+    const filePath = "/bundle/tasks/x.yml";
+    const direct = parseTaskV3Yaml({ yaml, filePath });
+    const result = parseTaskSource({ yaml, filePath });
+    expect(result.version).toBe(3);
+    if (result.version !== 3) throw new Error("unreachable: asserted above");
+    expect(result.v3).toEqual(direct);
+  });
+
+  test("version: 2 raises TASK_SCHEMA_VERSION_UNSUPPORTED, byte-identical to today (D2-N2)", () => {
+    const yaml = "version: 2\nschedule: '@daily'\nprompt: hi\n";
+    const filePath = "/bundle/tasks/legacy.yml";
+    let direct: unknown;
+    try {
+      parseTaskV3Yaml({ yaml, filePath });
+    } catch (error) {
+      direct = error;
+    }
+    let routed: unknown;
+    try {
+      parseTaskSource({ yaml, filePath });
+    } catch (error) {
+      routed = error;
+    }
+    expect(direct).toBeInstanceOf(UsageError);
+    expect(routed).toBeInstanceOf(UsageError);
+    expect((routed as UsageError).code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
+    expect((routed as UsageError).message).toBe((direct as UsageError).message);
+  });
+
+  test.each([
+    ["missing version", "uses: commands/review\nakm:\n  schedule: '@daily'\n"],
+    ["version: 5", "version: 5\nuses: commands/review\nakm:\n  schedule: '@daily'\n"],
+    ["version: '3' (string, not number)", "version: '3'\nuses: commands/review\nakm:\n  schedule: '@daily'\n"],
+    ["version: null", "version: null\nuses: commands/review\nakm:\n  schedule: '@daily'\n"],
+  ] as const)("D2-N2 divergence pin: %s routes to the v3 parser's OWN preserved wording under TASK_SOURCE_INVALID, never TASK_SCHEMA_VERSION_UNSUPPORTED", (_label, yaml) => {
+    const filePath = "/bundle/tasks/x.yml";
+    let direct: unknown;
+    try {
+      parseTaskV3Yaml({ yaml, filePath });
+    } catch (error) {
+      direct = error;
+    }
+    let routed: unknown;
+    try {
+      parseTaskSource({ yaml, filePath });
+    } catch (error) {
+      routed = error;
+    }
+    expect(direct).toBeInstanceOf(UsageError);
+    expect(routed).toBeInstanceOf(UsageError);
+    expect((routed as UsageError).code).toBe("TASK_SOURCE_INVALID");
+    expect((routed as UsageError).message).toBe((direct as UsageError).message);
+  });
+
+  test("front-end (pre-version) YAML failures render with the v3 label even when the document later declares version: 4 (§3.4, recorded wart)", () => {
+    // The bounded YAML front end runs ONCE, before `root.version` is even
+    // read, so a hostile/malformed-YAML failure has no version to route on
+    // yet and always renders "Invalid task v3 source …" in P2a — byte-
+    // identical to what parseTaskV3Yaml alone would render for the same
+    // malformed bytes. This is a DELIBERATE, spec-recorded wart (§3.4): "P4
+    // owns the final label once v3 is gone." Do not "fix" this to say "task
+    // source v4" without re-reading §3.4 first.
+    const yaml = "version: 4\nuses: [\n";
+    const filePath = "/bundle/tasks/hostile.yml";
+    expect(() => parseTaskSource({ yaml, filePath })).toThrow(/task v3 source/);
+  });
+});
+
+// ── Optional schedule (D2-N6, D2-N5, B-06..B-10, B-38) ──────────────────────
+
+describe("task source v4 — optional schedule (D2-N6, D2-N5, B-06..B-10, B-38)", () => {
+  test("absent schedule: parses as valid, manual-only, and akm task sync's projection input (B-06, D2-N6)", () => {
+    const doc = parseTaskSourceV4Document(v4Doc({ uses: "commands/review" }), { filePath: "/x.yml" });
+    expect(doc.manualOnly).toBe(true);
+    expect(doc.schedule).toEqual([]);
+    expect(Object.isFrozen(doc.schedule)).toBe(true);
+  });
+
+  test("schedule: as a bare string is shorthand for one enabled binding with no inputs (B-08)", () => {
+    const doc = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", schedule: "0 8 * * 1" }), {
+      filePath: "/x.yml",
+    });
+    expect(doc.manualOnly).toBe(false);
+    expect(doc.schedule).toEqual([{ cron: "0 8 * * 1", enabled: true, inputs: {}, source: "schedule", ordinal: 0 }]);
+  });
+
+  test("schedule: as a list assigns ordinals and schedule[<i>].cron source strings (B-09)", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({ uses: "commands/review", schedule: [{ cron: "0 6 * * *" }, { cron: "30 18 * * 1-5" }] }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.schedule).toEqual([
+      { cron: "0 6 * * *", enabled: true, inputs: {}, source: "schedule[0].cron", ordinal: 0 },
+      { cron: "30 18 * * 1-5", enabled: true, inputs: {}, source: "schedule[1].cron", ordinal: 1 },
+    ]);
+  });
+
+  test("schedule[i].enabled: false disables that ONE binding without affecting siblings; default is true (B-10, D2-N5)", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({
+        uses: "commands/review",
+        schedule: [{ cron: "0 6 * * *" }, { cron: "30 18 * * 1-5", enabled: false }],
+      }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.schedule[0]?.enabled).toBe(true);
+    expect(doc.schedule[1]?.enabled).toBe(false);
+  });
+
+  test("schedule count is bounded by TASK_V3_MAX_SCHEDULES, reused (B-09)", () => {
+    const atBound = Array.from({ length: TASK_V3_MAX_SCHEDULES }, (_, i) => ({ cron: `${i % 60} * * * *` }));
+    expect(() =>
+      parseTaskSourceV4Document(v4Doc({ uses: "commands/review", schedule: atBound }), { filePath: "/x.yml" }),
+    ).not.toThrow();
+
+    const overBound = Array.from({ length: TASK_V3_MAX_SCHEDULES + 1 }, (_, i) => ({ cron: `${i % 60} * * * *` }));
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", schedule: overBound }), { filePath: "/x.yml" }),
+      new RegExp(String(TASK_V3_MAX_SCHEDULES)),
+    );
+  });
+
+  test("a schedule list entry closes to cron/enabled/inputs (TASK_SOURCE_V4_SCHEDULE_KEYS)", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", schedule: [{ cron: "0 0 * * *", extra: true }] }), {
+          filePath: "/x.yml",
+        }),
+      /extra/,
+    );
+  });
+
+  test("schedule[i].inputs validated against the document's input declarations — a satisfying literal is accepted (B-38)", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({
+        uses: "commands/review",
+        inputs: { scope: { type: "string", enum: ["changed", "all"] } },
+        schedule: [{ cron: "0 0 * * *", inputs: { scope: "all" } }],
+      }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.schedule[0]?.inputs).toEqual({ scope: "all" });
+  });
+
+  test("schedule[i].inputs violating a declared input's schema is TASK_SOURCE_INVALID (B-38)", () => {
+    const derived = validateJsonSchemaSubset("bogus", { type: "string", enum: ["changed", "all"] });
+    expect(derived.length).toBeGreaterThan(0);
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({
+            uses: "commands/review",
+            inputs: { scope: { type: "string", enum: ["changed", "all"] } },
+            schedule: [{ cron: "0 0 * * *", inputs: { scope: "bogus" } }],
+          }),
+          { filePath: "/x.yml" },
+        ),
+      /not one of|enum|scope/i,
+    );
+  });
+
+  test("schedule[i].inputs carrying a key the document does not declare is NOT rejected — validateInputs's synthetic object schema has no additionalProperties: false (spec §4.2), matching workflow params' own lenient extra-key behavior", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({
+        uses: "commands/review",
+        inputs: { scope: { type: "string" } },
+        schedule: [{ cron: "0 0 * * *", inputs: { scope: "changed", undeclared: "ignored" } }],
+      }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.schedule[0]?.inputs).toEqual({ scope: "changed", undeclared: "ignored" });
+  });
+});
+
+// ── Typed input declarations (D2-N3, B-19..B-23) ────────────────────────────
+
+describe("task source v4 — typed input declarations (D2-N3, B-19..B-23)", () => {
+  test("accepts a bounded JSON Schema declaration, validated through the EXISTING validateJsonSchemaSubset/checkJsonSchemaDefinition", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({ uses: "commands/review", inputs: { scope: { type: "string", enum: ["changed", "all"] } } }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.inputs).toEqual({
+      scope: { schema: { type: "string", enum: ["changed", "all"] }, required: false },
+    });
+  });
+
+  test("default is accepted, stripped from .schema, and carried on InputDeclaration.default", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({ uses: "commands/review", inputs: { strict: { type: "boolean", default: true } } }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.inputs?.strict).toEqual({ schema: { type: "boolean" }, default: true, required: false });
+  });
+
+  test("required: true is carried on InputDeclaration.required; required: false means the same as omitting it (D2-N3)", () => {
+    const required = parseTaskSourceV4Document(
+      v4Doc({ uses: "commands/review", inputs: { ticket: { type: "string", required: true } } }),
+      { filePath: "/x.yml" },
+    );
+    expect(required.inputs?.ticket).toEqual({ schema: { type: "string" }, required: true });
+
+    const explicitFalse = parseTaskSourceV4Document(
+      v4Doc({ uses: "commands/review", inputs: { ticket: { type: "string", required: false } } }),
+      { filePath: "/x.yml" },
+    );
+    const omitted = parseTaskSourceV4Document(
+      v4Doc({ uses: "commands/review", inputs: { ticket: { type: "string" } } }),
+      {
+        filePath: "/x.yml",
+      },
+    );
+    expect(explicitFalse.inputs).toEqual(omitted.inputs);
+  });
+
+  test("default together with required: true is TASK_SOURCE_INVALID at inputs.<name> (B-20)", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({ uses: "commands/review", inputs: { ticket: { type: "string", required: true, default: "x" } } }),
+          { filePath: "/x.yml" },
+        ),
+      /inputs\.ticket/,
+    );
+  });
+
+  test("root-level required must be a boolean, not a JSON Schema array (D2-N3)", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({ uses: "commands/review", inputs: { config: { type: "object", required: ["name"] } } }),
+          { filePath: "/x.yml" },
+        ),
+      [/inputs\.config/, /boolean|required/i],
+    );
+  });
+
+  test("nested required (inside properties) keeps ordinary JSON Schema array semantics — the boolean-flag rule applies only at the declaration root (D2-N3)", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({
+        uses: "commands/review",
+        inputs: {
+          config: {
+            type: "object",
+            properties: { inner: { type: "object", properties: { baz: { type: "string" } }, required: ["baz"] } },
+          },
+        },
+      }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.inputs?.config?.schema).toEqual({
+      type: "object",
+      properties: { inner: { type: "object", properties: { baz: { type: "string" } }, required: ["baz"] } },
+    });
+    expect(doc.inputs?.config?.required).toBe(false);
+  });
+
+  test("an unknown declaration key is TASK_SOURCE_INVALID at inputs.<name>.<key> (B-19)", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({ uses: "commands/review", inputs: { scope: { type: "string", bogusKey: 1 } } }),
+          { filePath: "/x.yml" },
+        ),
+      /inputs\.scope\.bogusKey/,
+    );
+  });
+
+  test("a nested unsupported-but-recognized JSON Schema keyword (e.g. pattern) is reported via the EXISTING checkJsonSchemaDefinition, not silently accepted", () => {
+    const derivedIssues = checkJsonSchemaDefinition({
+      type: "object",
+      properties: { y: { type: "string", pattern: "^a" } },
+    });
+    const patternIssue = derivedIssues.find((issue) => issue.keyword === "pattern");
+    expect(patternIssue).toBeDefined();
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({
+            uses: "commands/review",
+            inputs: { config: { type: "object", properties: { y: { type: "string", pattern: "^a" } } } },
+          }),
+          { filePath: "/x.yml" },
+        ),
+      /pattern/,
+    );
+  });
+
+  test("a malformed schema (unknown type name) is TASK_SOURCE_INVALID, surfacing checkJsonSchemaDefinition's own wording", () => {
+    const derivedIssues = checkJsonSchemaDefinition({ type: "not-a-real-type" });
+    expect(derivedIssues[0]?.kind).toBe("malformed");
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: { x: { type: "not-a-real-type" } } }), {
+          filePath: "/x.yml",
+        }),
+      /not-a-real-type/,
+    );
+  });
+
+  test("default must itself satisfy its own (stripped) declaration — a violation is TASK_SOURCE_INVALID at inputs.<name>.default, carrying validateJsonSchemaSubset's own error text (B-21)", () => {
+    const derived = validateJsonSchemaSubset(-5, { type: "integer", minimum: 0 });
+    expect(derived[0]).toMatch(/below minimum/);
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({ uses: "commands/review", inputs: { count: { type: "integer", minimum: 0, default: -5 } } }),
+          { filePath: "/x.yml" },
+        ),
+      [/inputs\.count\.default/, /below minimum/],
+    );
+  });
+
+  test("input name grammar is PROGRAM_PARAM_NAME_PATTERN, identical to workflow params (D2-N3, D3-N1)", () => {
+    expect(PROGRAM_PARAM_NAME_PATTERN.test("scope")).toBe(true);
+    expect(PROGRAM_PARAM_NAME_PATTERN.test("scope_2")).toBe(true);
+    expect(PROGRAM_PARAM_NAME_PATTERN.test("2scope")).toBe(false);
+    expect(PROGRAM_PARAM_NAME_PATTERN.test("my-scope")).toBe(false);
+
+    expect(() =>
+      parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: { scope_2: { type: "string" } } }), {
+        filePath: "/x.yml",
+      }),
+    ).not.toThrow();
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: { "my-scope": { type: "string" } } }), {
+          filePath: "/x.yml",
+        }),
+      /my-scope/,
+    );
+  });
+
+  test("input declaration count is bounded by WORKFLOW_MAX_PARAMS, reused (D2-N3)", () => {
+    const atBound = Object.fromEntries(
+      Array.from({ length: WORKFLOW_MAX_PARAMS }, (_, i) => [`input${i}`, { type: "string" }]),
+    );
+    expect(() =>
+      parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: atBound }), { filePath: "/x.yml" }),
+    ).not.toThrow();
+
+    const overBound = Object.fromEntries(
+      Array.from({ length: WORKFLOW_MAX_PARAMS + 1 }, (_, i) => [`input${i}`, { type: "string" }]),
+    );
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: overBound }), { filePath: "/x.yml" }),
+      new RegExp(String(WORKFLOW_MAX_PARAMS)),
+    );
+  });
+
+  test("one declaration's serialized schema size is bounded by WORKFLOW_MAX_SCHEMA_BYTES, reused (D2-N3)", () => {
+    const bigEnum = Array.from({ length: 1024 }, (_, i) => `${"x".repeat(280)}${i}`);
+    expect(JSON.stringify(bigEnum).length).toBeGreaterThan(WORKFLOW_MAX_SCHEMA_BYTES);
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({ uses: "commands/review", inputs: { big: { type: "string", enum: bigEnum } } }),
+          { filePath: "/x.yml" },
+        ),
+      /big/,
+    );
+  });
+
+  describe("secret-shaped default warning (D2-N3, B-22)", () => {
+    let warnCalls: string[] = [];
+
+    beforeEach(() => {
+      warnCalls = [];
+      overrideSeam(_setWarnSinkForTests, (level, args) => {
+        if (level !== "warn") return;
+        warnCalls.push(args.map((value) => (typeof value === "string" ? value : JSON.stringify(value))).join(" "));
+      });
+    });
+
+    test("a secret-shaped default warns via warn() — same detector, same phrasing family as workflow params — and parsing still succeeds", () => {
+      const secretValue = `sk-${"A".repeat(40)}`;
+      const derivedWarnings = detectSecretShapedParams({ ticket: secretValue });
+      expect(derivedWarnings.length).toBeGreaterThan(0);
+
+      const doc = parseTaskSourceV4Document(
+        v4Doc({ uses: "commands/review", inputs: { ticket: { type: "string", default: secretValue } } }),
+        { filePath: "/x.yml" },
+      );
+      expect(doc.inputs?.ticket?.default).toBe(secretValue);
+      expect(warnCalls.join("\n")).toContain(derivedWarnings[0] as string);
+    });
+
+    test("an ordinary (non-secret-shaped) default does not warn", () => {
+      parseTaskSourceV4Document(
+        v4Doc({ uses: "commands/review", inputs: { scope: { type: "string", default: "changed" } } }),
+        { filePath: "/x.yml" },
+      );
+      expect(warnCalls).toEqual([]);
+    });
+  });
+});
+
+// ── Optional output schema (mirrors v3's akm.outputSchema, re-rooted at "output") ──
+
+describe("task source v4 — optional output schema", () => {
+  test("output: is optional; absent leaves doc.output undefined", () => {
+    const doc = parseTaskSourceV4Document(v4Doc({ uses: "commands/review" }), { filePath: "/x.yml" });
+    expect(doc.output).toBeUndefined();
+  });
+
+  test("a valid bounded JSON Schema is accepted and preserved verbatim", () => {
+    const schema = { type: "object", properties: { summary: { type: "string" } }, required: ["summary"] };
+    const doc = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", output: schema }), { filePath: "/x.yml" });
+    expect(doc.output).toEqual(schema);
+  });
+
+  test("a malformed output schema is TASK_SOURCE_INVALID, re-rooted at 'output' (not 'akm.outputSchema')", () => {
+    const derivedIssues = checkJsonSchemaDefinition({ type: "not-a-real-type" });
+    expect(derivedIssues[0]?.kind).toBe("malformed");
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", output: { type: "not-a-real-type" } }), {
+          filePath: "/x.yml",
+        }),
+      /output/i,
+    );
+  });
+});
+
+// ── Top-level execution controls (§3.2 item 8: same extracted helpers as v3, ──
+// ── so accept/reject sets and detail texts match v3's BY CONSTRUCTION) ──────
+
+describe("task source v4 — top-level execution controls", () => {
+  test("timeout accepts a common duration string and rejects a value beyond EXECUTION_MAX_TIMEOUT_MS", () => {
+    const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", timeout: "20m" }), { filePath: "/x.yml" });
+    expect(ok.execution.timeout).toBe("20m");
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", timeout: EXECUTION_MAX_TIMEOUT_MS + 1 }), {
+          filePath: "/x.yml",
+        }),
+      /timeout/i,
+    );
+  });
+
+  test("engine/model/agent accept null and reject an empty string", () => {
+    const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", engine: null, model: null, agent: null }), {
+      filePath: "/x.yml",
+    });
+    expect(ok.execution.engine).toBeNull();
+    expect(ok.execution.model).toBeNull();
+    expect(ok.execution.agent).toBeNull();
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", engine: "" }), { filePath: "/x.yml" }),
+      /engine/i,
+    );
+  });
+
+  test("redact rejects duplicate names and more than WORKFLOW_MAX_EXEC_PASS_ENV entries", () => {
+    const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", redact: ["TOKEN"] }), {
+      filePath: "/x.yml",
+    });
+    expect(ok.execution.redact).toEqual(["TOKEN"]);
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", redact: ["TOKEN", "TOKEN"] }), {
+          filePath: "/x.yml",
+        }),
+      /duplicate/i,
+    );
+    const tooMany = Array.from({ length: WORKFLOW_MAX_EXEC_PASS_ENV + 1 }, (_, i) => `TOKEN_${i}`);
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", redact: tooMany }), { filePath: "/x.yml" }),
+      new RegExp(String(WORKFLOW_MAX_EXEC_PASS_ENV)),
+    );
+  });
+
+  test("env rejects an invalid environment variable name", () => {
+    const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", env: { MODE: "safe" } }), {
+      filePath: "/x.yml",
+    });
+    expect(ok.env).toEqual({ MODE: "safe" });
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", env: { "1bad": "x" } }), { filePath: "/x.yml" }),
+      /env/i,
+    );
+  });
+
+  test("maxSteps requires a positive safe integer", () => {
+    const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxSteps: 8 }), { filePath: "/x.yml" });
+    expect(ok.execution.maxSteps).toBe(8);
+    expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxSteps: 0 }), { filePath: "/x.yml" }),
+      /maxSteps/i,
+    );
+  });
+
+  test("maxRetries is bounded 0..WORKFLOW_MAX_RETRIES", () => {
+    const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxRetries: WORKFLOW_MAX_RETRIES }), {
+      filePath: "/x.yml",
+    });
+    expect(ok.execution.maxRetries).toBe(WORKFLOW_MAX_RETRIES);
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxRetries: WORKFLOW_MAX_RETRIES + 1 }), {
+          filePath: "/x.yml",
+        }),
+      new RegExp(String(WORKFLOW_MAX_RETRIES)),
+    );
+  });
+
+  test("when_to_use, tags, inference, and tools survive as top-level v4 keys with identical validation (D2-N7)", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({
+        uses: "commands/review",
+        when_to_use: "Run during release review",
+        tags: ["contract", "review"],
+        inference: { seed: 7 },
+        tools: ["read", "grep"],
+      }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.when_to_use).toBe("Run during release review");
+    expect(doc.tags).toEqual(["contract", "review"]);
+    expect(doc.execution.inference).toEqual({ seed: 7 });
+    expect(doc.execution.tools).toEqual(["read", "grep"]);
+  });
+
+  test("name/description round-trip as top-level v4 keys (description is NOT re-homed under akm here, unlike v3)", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({ uses: "commands/review", name: "Review code", description: "Reviews the diff" }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.name).toBe("Review code");
+    expect(doc.description).toBe("Reviews the diff");
+  });
+});
+
+// ── Fixture-driven round trip (tests/fixtures/execution-contracts/tasks/v4/) ──
+
+describe("task source v4 fixtures (tests/fixtures/execution-contracts/tasks/v4/) parse per manifest.json's raw-parse expectations", () => {
+  test("the manifest has exactly the 10 fixtures this file's fixture-driven tests assume", () => {
+    expect(MANIFEST_FIXTURES).toHaveLength(10);
+  });
+
+  test.each(
+    MANIFEST_FIXTURES.map((fixture) => [fixture.id, fixture] as const),
+  )("%s parses to the shape manifest.json pins", (_id, fixture) => {
+    const result = parseFixture(fixture);
+    expect(result.manualOnly).toBe(fixture.expected.manualOnly);
+    expect(result.schedule).toEqual(fixture.expected.schedule);
+    expect(result.target).toEqual(fixture.expected.target);
+    expect(result.inputs).toEqual(fixture.expected.inputs);
+    expect(result.output).toEqual(fixture.expected.output);
+    expect(result.env).toEqual(fixture.expected.env);
+    expect(result.execution).toEqual(fixture.expected.execution ?? {});
+    expect(Object.isFrozen(result)).toBe(true);
+  });
+
+  test("never throws for any fixture in this family (manifest.json's own invariant)", () => {
+    for (const fixture of MANIFEST_FIXTURES) {
+      expect(() => parseFixture(fixture), fixture.id).not.toThrow();
+    }
+  });
+});
