@@ -29,4 +29,32 @@ describe("decodeTaskHistoryMetadata", () => {
     ).toThrow(/unknown fields/);
     expect(() => decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1 })).toThrow(/detail is required/);
   });
+
+  // P1b (D8, spec §5.3/§6 F-2): the result-vocabulary marker rides the
+  // metadata as `targetVocab`, validated as 2 | undefined. RED until the
+  // Implement step teaches the decoder the field (today it rejects it as an
+  // unknown field); a later phase never widens the accepted values.
+  test("accepts targetVocab 2 and metadata without targetVocab (P1b vocabulary marker)", () => {
+    expect(decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: null, targetVocab: 2 })).toEqual({
+      metadataVersion: 2,
+      durationMs: 1,
+      detail: null,
+      // @ts-expect-error P1b red-phase: targetVocab lands on TaskHistoryMetadata in Implement (the implementation removes this directive)
+      targetVocab: 2,
+    });
+    expect(decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: null })).toEqual({
+      metadataVersion: 2,
+      durationMs: 1,
+      detail: null,
+    });
+  });
+
+  test("rejects a non-2 targetVocab (P1b vocabulary marker)", () => {
+    expect(() =>
+      decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: null, targetVocab: 3 }),
+    ).toThrow();
+    expect(() =>
+      decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: null, targetVocab: "2" }),
+    ).toThrow();
+  });
 });

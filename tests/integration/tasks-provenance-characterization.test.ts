@@ -428,6 +428,18 @@ describe("B-10 / spec §9 acceptance grep — process.env.AKM_EVENT_SOURCE is wr
   test("no file under src/ deletes process.env.AKM_EVENT_SOURCE", () => {
     expect(offendersMatching(/delete process\.env\.AKM_EVENT_SOURCE/)).toEqual([]);
   });
+
+  // Round-3 advisory: the two greps above only match the DOTTED spelling the
+  // spec's rg command names. Bracket-notation writes, bracketed deletes, and
+  // Object.assign(process.env, …) would evade them while re-introducing the
+  // very mutation this phase removes. Any hit on an assignment-shaped use of
+  // the name under src/ must be a child-env OBJECT construction, never a
+  // process.env write — so pin the spellings wholesale.
+  test("no file under src/ writes AKM_EVENT_SOURCE through bracket notation or Object.assign(process.env, …)", () => {
+    expect(offendersMatching(/process\.env\[\s*["']AKM_EVENT_SOURCE["']\s*\]\s*=/)).toEqual([]);
+    expect(offendersMatching(/delete\s+process\.env\[\s*["']AKM_EVENT_SOURCE["']\s*\]/)).toEqual([]);
+    expect(offendersMatching(/Object\.assign\(\s*process\.env\b/)).toEqual([]);
+  });
 });
 
 describe("P-07 — resolveUsageEventSource's provenance default table", () => {
