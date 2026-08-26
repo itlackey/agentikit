@@ -39,6 +39,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+import ts from "typescript";
 import { LineCounter, parseDocument } from "yaml";
 import { UsageError } from "../../src/core/errors";
 // @ts-expect-error P2a red-phase: everything from this not-yet-existing module lands in Implement
@@ -46,6 +49,8 @@ import * as BoundedDocumentModule from "../../src/tasks/source/bounded-document"
 import { assertBoundedTaskYamlDocument, parseTaskV3Yaml } from "../../src/tasks/source-v3";
 
 const { sourceError } = BoundedDocumentModule;
+
+const ROOT = path.resolve(import.meta.dir, "../..");
 
 /** Reused verbatim from tests/tasks/source-v3.test.ts's hostile-YAML `test.each` list (an aliased akm: mapping). */
 const ALIASED_YAML = "version: 3\nuses: commands/a\nakm: &a { schedule: '@daily' }\ncopy: *a\n";
@@ -144,5 +149,112 @@ describe("sourceError — the per-field funnel renders both source labels via it
       sourceError({ filePath: "/x.yml", sourceLabel: "task source v4" }, [], "top-level detail."),
     );
     expect((error as UsageError).message).toBe("Invalid task source v4 at /x.yml: $ top-level detail.");
+  });
+});
+
+// ── Structure: src/tasks/source-v3.ts imports the D2-N4 helpers, MOVE not ───
+// ── COPY (§0, §3.1, §9). Test-review remediation (finding recorded against ──
+// ── tests/tasks/bounded-document.test.ts:115): the two describe blocks ──────
+// ── above prove `src/tasks/source/bounded-document.ts` exists and renders ───
+// ── both source labels — they do NOT prove source-v3.ts actually delegates
+// to it. Spec §0 names the exact failure mode this phase exists to avoid
+// ("Every helper extracted from src/tasks/source-v3.ts keeps its body
+// byte-equivalent. A rewrite disguised as a move is the failure mode this
+// phase exists to avoid") and §9 pins it structurally ("src/tasks/source-v3.ts
+// imports them and contains no copy of any of them"). A copy-instead-of-move
+// implementation — one that adds bounded-document.ts alongside source-v3.ts's
+// own still-private originals — passes every OTHER test in this file and in
+// tests/tasks/source-v3.test.ts, because both files call the functions they
+// already had in scope either way. This block is the one that would fail it:
+// an AST scan (source, not a runtime import — a copy compiles and runs
+// identically to a move) asserting source-v3.ts both imports the D2-N4
+// helper set from ./source/bounded-document AND no longer declares any of
+// them itself.
+//
+// NOT a red-phase group in the tsc sense — source-v3.ts already exists and
+// compiles today. It is genuinely RED right now for the ordinary reason that
+// the extraction has not happened yet: source-v3.ts imports nothing from
+// ./source/bounded-document, and every one of these helpers is still declared
+// as a file-private `function` in source-v3.ts today (verified at the head of
+// this branch: source-v3.ts:210,228,315,325,345,381,403,423,677,795,805).
+
+const SOURCE_V3_PATH = path.join(ROOT, "src/tasks/source-v3.ts");
+const BOUNDED_DOCUMENT_MODULE = path.join(ROOT, "src/tasks/source/bounded-document");
+
+/** The D2-N4 helper set this finding names explicitly (spec §0/§3.1/§9). */
+const D2_N4_MOVED_HELPERS = [
+  "sourceError",
+  "cloneBoundedJson",
+  "asRecord",
+  "checkKeys",
+  "stringField",
+  "parseTimeout",
+  "parseStringArray",
+  "parseTools",
+  "validateWorkingDirectory",
+  "yamlProblem",
+  "yamlAstError",
+] as const;
+
+/** Top-level `import ... from "..."` module specifiers, keyed to the named bindings each one imports. */
+function importedBindingsByModule(filePath: string): Map<string, string[]> {
+  const sourceText = fs.readFileSync(filePath, "utf8");
+  const source = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true);
+  const byModule = new Map<string, string[]>();
+  source.forEachChild((node) => {
+    if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) return;
+    const names: string[] = [];
+    const namedBindings = node.importClause?.namedBindings;
+    if (namedBindings && ts.isNamedImports(namedBindings)) {
+      for (const element of namedBindings.elements) names.push(element.name.text);
+    }
+    byModule.set(node.moduleSpecifier.text, names);
+  });
+  return byModule;
+}
+
+/** Every name a TypeScript source file declares at its TOP LEVEL via `function`, `const`/`let`/`var`, or `class`. */
+function topLevelDeclaredNames(filePath: string): Set<string> {
+  const sourceText = fs.readFileSync(filePath, "utf8");
+  const source = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true);
+  const names = new Set<string>();
+  source.forEachChild((node) => {
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      names.add(node.name.text);
+    } else if (ts.isVariableStatement(node)) {
+      for (const declaration of node.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) names.add(declaration.name.text);
+      }
+    } else if (ts.isClassDeclaration(node) && node.name) {
+      names.add(node.name.text);
+    }
+  });
+  return names;
+}
+
+describe("D2-N4 extraction — src/tasks/source-v3.ts imports the moved helpers and declares none of them itself", () => {
+  test("imports the D2-N4 helper set from ./source/bounded-document", () => {
+    const byModule = importedBindingsByModule(SOURCE_V3_PATH);
+    const specifier = [...byModule.keys()].find(
+      (spec) => spec.startsWith(".") && path.resolve(path.dirname(SOURCE_V3_PATH), spec) === BOUNDED_DOCUMENT_MODULE,
+    );
+    if (!specifier) {
+      throw new Error(
+        `src/tasks/source-v3.ts does not import from ./source/bounded-document (found specifiers: ${
+          [...byModule.keys()].join(", ") || "<none>"
+        })`,
+      );
+    }
+    const imported = new Set(byModule.get(specifier));
+    for (const helper of D2_N4_MOVED_HELPERS) {
+      expect({ helper, imported: imported.has(helper) }).toEqual({ helper, imported: true });
+    }
+  });
+
+  test("declares none of the D2-N4 moved helpers itself — a copy-instead-of-move implementation fails this", () => {
+    const declared = topLevelDeclaredNames(SOURCE_V3_PATH);
+    for (const helper of D2_N4_MOVED_HELPERS) {
+      expect({ helper, stillDeclaredLocally: declared.has(helper) }).toEqual({ helper, stillDeclaredLocally: false });
+    }
   });
 });

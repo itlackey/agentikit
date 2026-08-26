@@ -869,3 +869,68 @@ describe("purity — src/execution/input-contract.ts imports only the D3-N1 allo
     expect(sourceText).toContain("D3-N2");
   });
 });
+
+// ── Structure: src/workflows/ir/params.ts becomes a THIN CONSUMER (§4.3, §9) ─
+//
+// Test-review remediation (finding recorded against
+// tests/execution/input-contract.test.ts:678): the "delegation guarantee"
+// group above pins ONLY the wrappers' observable strings/codes/hints, which
+// an UNTOUCHED params.ts — one that adds this file and leaves its OWN
+// duplicate coercion/validation logic in place — satisfies trivially, since
+// nothing routes through the new module at all. §9's structure criterion is
+// explicit: "src/workflows/ir/params.ts contains no coercion or validation
+// logic of its own — only the plan→contract adapter, the diagnostics
+// vocabulary, and the three re-exported wrappers." This is the mirror image
+// of the purity scan directly above — same `importedModuleSpecifiers` helper,
+// pointed at params.ts instead of input-contract.ts — plus a declaration scan
+// proving the four private coercion helpers (`coerceFlagValue`, `schemaTypes`,
+// `materializeFlagValues`, `parseJsonFlag`) are GONE from params.ts, not
+// merely unused.
+//
+// NOT a red-phase group in the tsc sense (params.ts already exists and
+// compiles today) — it reads params.ts as text/AST, so it is genuinely RED
+// right now for the ordinary reason that params.ts has not been rewritten
+// yet: it imports nothing from ../../execution/input-contract, and it still
+// declares all four helpers itself (src/workflows/ir/params.ts:78-160, read
+// directly above by the "delegation guarantee" group's own module import).
+
+const PARAMS_TS_PATH = path.join(ROOT, "src/workflows/ir/params.ts");
+const INPUT_CONTRACT_MODULE = path.resolve(EXECUTION_ROOT, "input-contract");
+const PARAMS_TS_MOVED_HELPERS = ["coerceFlagValue", "schemaTypes", "materializeFlagValues", "parseJsonFlag"] as const;
+
+/** Every name a TypeScript source file declares at its TOP LEVEL via `function`, `const`/`let`/`var`, or `class`. */
+function topLevelDeclaredNames(filePath: string): Set<string> {
+  const sourceText = fs.readFileSync(filePath, "utf8");
+  const source = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true);
+  const names = new Set<string>();
+  source.forEachChild((node) => {
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      names.add(node.name.text);
+    } else if (ts.isVariableStatement(node)) {
+      for (const declaration of node.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) names.add(declaration.name.text);
+      }
+    } else if (ts.isClassDeclaration(node) && node.name) {
+      names.add(node.name.text);
+    }
+  });
+  return names;
+}
+
+describe("structure — src/workflows/ir/params.ts becomes a thin consumer of input-contract.ts (§4.3, §9)", () => {
+  test("imports from ../../execution/input-contract", () => {
+    const specifiers = importedModuleSpecifiers(PARAMS_TS_PATH);
+    const resolvesToInputContract = specifiers.some(
+      (specifier) =>
+        specifier.startsWith(".") && path.resolve(path.dirname(PARAMS_TS_PATH), specifier) === INPUT_CONTRACT_MODULE,
+    );
+    expect({ specifiers, resolvesToInputContract }).toEqual({ specifiers, resolvesToInputContract: true });
+  });
+
+  test("no longer declares coerceFlagValue / schemaTypes / materializeFlagValues / parseJsonFlag itself", () => {
+    const declared = topLevelDeclaredNames(PARAMS_TS_PATH);
+    for (const helper of PARAMS_TS_MOVED_HELPERS) {
+      expect({ helper, stillDeclaredLocally: declared.has(helper) }).toEqual({ helper, stillDeclaredLocally: false });
+    }
+  });
+});

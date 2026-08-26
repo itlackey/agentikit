@@ -185,6 +185,20 @@ const TICKETED_TASK_YAML = [
   "",
 ].join("\n");
 
+/** One optional ARRAY-declared input — B-31's array-grouping path (spec §5.1, §4.2). */
+const TAGGED_TASK_YAML = [
+  "version: 4",
+  "name: Tagged review",
+  "inputs:",
+  "  tags:",
+  "    type: array",
+  "    items:",
+  "      type: string",
+  'run: "true"',
+  "shell: sh",
+  "",
+].join("\n");
+
 describe("akm task run — exact-name input flags materialize literal bindings (P2a spec §5.1)", () => {
   // Test-review remediation (finding recorded against
   // tests/integration/commands/tasks-input-flags.test.ts:150): §4.4/§5.1
@@ -316,6 +330,56 @@ describe("akm task run — exact-name input flags materialize literal bindings (
     // B-29 (spec §2): "detail names the missing input" — the missing input's
     // own name must appear somewhere in the rendered envelope.
     expect(JSON.stringify(envelope)).toContain("ticket");
+  });
+});
+
+// ── B-31 end to end, through the REAL `akm task run` CLI path and the REAL ──
+// ── TASK_INPUT_DIAGNOSTICS vocabulary — not the sentinel UsageErrors the ────
+// ── probe-based unit tests in tests/execution/input-contract.test.ts ────────
+// ── construct themselves. Test-review remediation (finding recorded against ─
+// ── tests/execution/input-contract.test.ts:455): B-31's task-side code and ──
+// ── message were unpinned — the only assertions were an err.code check ──────
+// ── against a `new UsageError("PROBE:duplicateNonArray", ──────────────────
+// ── "INPUT_BINDING_INVALID")` that file authored itself, which proves ───────
+// ── nothing about src/tasks/source/task-input-diagnostics.ts. These three ───
+// ── tests drive real argv through `akm task run`, asserting on the REAL, ────
+// ── serialized {ok:false,error,code} envelope (or, for the success case, ────
+// ── the real run result) — mirroring the B-27/B-28/B-29 tests just above. ───
+
+describe("akm task run — B-31 array grouping and its failure modes, end to end", () => {
+  test("`--tags a --tags b` on a type: array input succeeds with the grouped array (B-31)", async () => {
+    writeTask("tagged", TAGGED_TASK_YAML);
+    const result = await runCliCapture(["task", "run", "tagged", "--tags", "a", "--tags", "b"]);
+
+    expect(result.code).toBe(0);
+    const envelope = JSON.parse(result.stdout) as { result: { id: string; status: string } };
+    expect(envelope.result.id).toBe("tagged");
+    expect(envelope.result.status).toBe("completed");
+  });
+
+  test("a repeated flag on a NON-array-declared input fails INPUT_BINDING_INVALID on the real envelope (B-31)", async () => {
+    writeTask("review", REVIEW_TASK_YAML);
+    // `scope` is declared `type: string` (not array) — two distinct,
+    // individually-valid enum values still trip the duplicate-non-array
+    // rejection, which fires on flag COUNT before any per-value check.
+    const result = await runCliCapture(["task", "run", "review", "--scope", "changed", "--scope", "all"]);
+
+    expect(result.code).toBe(2);
+    const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string };
+    expect(envelope.ok).toBe(false);
+    expect(envelope.code).toBe("INPUT_BINDING_INVALID");
+    expect(JSON.stringify(envelope)).toContain("scope");
+  });
+
+  test("a malformed JSON-array shorthand (`[not json`) fails INPUT_BINDING_INVALID on the real envelope (B-31)", async () => {
+    writeTask("tagged", TAGGED_TASK_YAML);
+    const result = await runCliCapture(["task", "run", "tagged", "--tags", "[not json"]);
+
+    expect(result.code).toBe(2);
+    const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string };
+    expect(envelope.ok).toBe(false);
+    expect(envelope.code).toBe("INPUT_BINDING_INVALID");
+    expect(JSON.stringify(envelope)).toContain("tags");
   });
 });
 
