@@ -413,7 +413,7 @@ describe("akmExtract — subagent transcripts are never extracted as their own s
     return { parentId, subagentId };
   }
 
-  test("discovery mode processes exactly one session, with folded content attributed only to the parent", async () => {
+  test("discovery mode processes exactly one session, subagent transcript never surfaced as its own", async () => {
     const stash = makeStashDir();
     const { parentId } = seedParentAndSubagent(storage.sessionLogsDir);
 
@@ -439,9 +439,13 @@ describe("akmExtract — subagent transcripts are never extracted as their own s
     expect(result.sessions).toHaveLength(1);
     expect(result.sessions[0]?.sessionId).toBe(parentId);
     expect(result.sessions[0]?.contentHash).toBeDefined();
-    // The subagent's folded content actually reached the LLM prompt, filed
-    // under the parent's own extraction result — not skipped, not separate.
-    expect(capturedPrompt).toContain("SUBAGENT_MARKER");
+    // #840 — harvest-without-prompting hybrid: the folded subagent transcript
+    // is still read and hashed under the parent's identity (no double
+    // extraction), but its raw text is never sent to the LLM — only
+    // parent-origin events reach the prompt. The subagent's provenance-
+    // prefixed text ("[subagent:...]") must NOT appear here.
+    expect(capturedPrompt).not.toContain("SUBAGENT_MARKER");
+    expect(capturedPrompt).not.toContain("[subagent:");
   });
 
   test("--session-id agent-<hash> returns the not-found result, not an extraction", async () => {
