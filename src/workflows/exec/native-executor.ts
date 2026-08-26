@@ -145,6 +145,7 @@ import {
   withWorkflowRunsConnection,
   withWorkflowRunsRepo,
 } from "../../storage/repositories/workflow-runs-repository";
+import type { TaskV3ScriptInterpreter } from "../../tasks/prepare/prepared-execution";
 import { materializeFrozenWorkflowEnvironment } from "../ir/environment-v4";
 import type { IrBudget } from "../ir/schema";
 import type { FrozenWorkflowTarget, IrStepPlanV4, IrUnitNodeV4 } from "../ir/schema-v4";
@@ -1372,7 +1373,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
     }
     const materialized = materializeFrozenScript({
       sourceRef: frozenTarget.ref,
-      interpreter: frozenTarget.interpreter as import("../../tasks/runtime-v3").TaskV3ScriptInterpreter,
+      interpreter: frozenTarget.interpreter as TaskV3ScriptInterpreter,
       extension: frozenTarget.extension,
       bytesBase64: frozenTarget.bytesBase64,
       byteLength: frozenTarget.byteLength,
@@ -1382,7 +1383,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
       const command = frozenScriptCommand(
         {
           sourceRef: frozenTarget.ref,
-          interpreter: frozenTarget.interpreter as import("../../tasks/runtime-v3").TaskV3ScriptInterpreter,
+          interpreter: frozenTarget.interpreter as TaskV3ScriptInterpreter,
           extension: frozenTarget.extension,
           bytesBase64: frozenTarget.bytesBase64,
           byteLength: frozenTarget.byteLength,

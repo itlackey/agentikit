@@ -301,6 +301,17 @@ function importsModuleNamed(filePath: string, moduleName: string): boolean {
       const [arg] = node.arguments;
       if (arg && ts.isStringLiteral(arg) && targets(arg.text)) found = true;
     }
+    // Inline type queries — `foo as import("../../tasks/runtime-v3").X` — are
+    // ImportTypeNodes, not call expressions; the round-2/3 reviews found two
+    // production sites evading the scan through exactly this spelling.
+    if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteral(node.argument.literal) &&
+      targets(node.argument.literal.text)
+    ) {
+      found = true;
+    }
     ts.forEachChild(node, visit);
   }
   visit(source);

@@ -55,7 +55,15 @@ export function isAgentTaskHistoryRow(row: TaskHistoryRow): boolean {
   // function isn't going to count anyway. Only decode for the two target
   // kinds this predicate can return true for.
   if (row.target_kind !== "command" && row.target_kind !== "prompt") return false;
-  const marked = decodeTaskHistoryMetadata(row.metadata_json).targetVocab === 2;
+  // An undecodable metadata_json is by definition unmarked: pre-P1b rows can
+  // carry shapes decodeTaskHistoryMetadata rejects, and `akm health` must
+  // classify them as legacy rather than throw (round-3 review advisory).
+  let marked = false;
+  try {
+    marked = decodeTaskHistoryMetadata(row.metadata_json).targetVocab === 2;
+  } catch {
+    marked = false;
+  }
   if (row.target_kind === "command") return marked;
   return !marked;
 }
