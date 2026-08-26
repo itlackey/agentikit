@@ -6,9 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2-alpha.3] - 2026-08-26
+
+### Fixed
+
+- **Currency in prose no longer retypes an asset as a command** (#824). The
+  smart-Markdown classifier matched `$1`/`$2`/`$3` with a trailing word
+  boundary, and that boundary sits between the `2` and the comma in `$2,000` —
+  so any note quoting a price was indexed as a `command`, its ref moved to
+  `commands/<dir>/<slug>`, and it left its own namespace. Measured on a real
+  corpus, 3 of 51 memory documents were affected, and those 3 were exactly the
+  3 whose bodies matched. `$ARGUMENTS` is unambiguous and keeps its existing
+  precedence over a directory hint; the numeric placeholders now exclude a
+  following digit (or a `.`/`,` followed by one), and where they still
+  disagree with a directory that declares a type, the declaration wins. The
+  defect is present identically in 0.9.1 — it only became visible once the
+  0.9.2-alpha.2 retrieval work let mistyped assets surface in results.
+
+### Documentation
+
+- Recorded the 0.9.2 retrieval measurement in
+  `docs/plans/benchmark-tuning-findings.md` §2e (#825). Retrieval-only probes
+  with no model in the loop, identical corpora, only the CLI version differing:
+  LoCoMo zero-hit 75.0% -> 0.0% and evidence recall@5 0.154 -> 0.590;
+  LongMemEval zero-hit 100% -> 0.0% and recall@5 0.000 -> 1.000.
+
 ## [0.9.2-alpha.2] - 2026-08-25
 
-- TODO
+### Fixed
+
+- **Retrieval:** relaxed zero-hit lexical queries centrally, stabilized
+  relaxed-retrieval quality, and preserved name quality through relaxed
+  ranking. This is the change measured in §2e above — it is what lifted the
+  retrieval ceiling that had floored memory-backed evaluation.
+- **Indexing:** verify vec completeness before promotion; compare vec IDs as
+  exact sets; materialize vectors for targeted writes; make nested entry
+  mutation atomic; reconcile clean before final verification; restore static
+  embedding imports.
+- **Markdown projection:** parse nested links safely, parse destination
+  phases, and project with stateful delimiters.
+- **Sources:** reconcile local bundle updates and report incomplete filesystem
+  reconciliation.
+- **Extract:** keep malformed model output retryable.
+
+### Performance
+
+- Keep targeted embedding selection narrow and preserve targeted vec
+  degradation.
 
 ## [0.9.2-alpha.1] - 2026-08-24
 
