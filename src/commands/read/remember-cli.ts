@@ -9,7 +9,14 @@ import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { resolveUsageEventSource, type UsageEventSource } from "../../indexer/usage/usage-events";
 import type { SourceSearchHit } from "../../sources/types";
-import { buildMemoryFrontmatter, parseDuration, readMemoryContent, runAutoHeuristics, runLlmEnrich } from "../remember";
+import {
+  buildMemoryFrontmatter,
+  parseDuration,
+  readMemoryContent,
+  runAutoHeuristics,
+  runLlmEnrich,
+  synthesizeMemoryDescription,
+} from "../remember";
 import {
   assertFlatAssetName,
   inferAssetName,
@@ -217,7 +224,9 @@ export const rememberCommand = defineJsonCommand({
       // Phase 1B / Rec 7: even the zero-flag hot-path emits
       // `captureMode: hot` + `beliefState: asserted` so user-supplied
       // memories outrank background-derived ones during ranking.
+      // #834: `description` is synthesized deterministically (see synthesizeMemoryDescription) so the memory is indexable.
       const frontmatterBlock = buildMemoryFrontmatter({
+        description: synthesizeMemoryDescription(body),
         captureMode: "hot",
         beliefState: "asserted",
       });
@@ -289,6 +298,9 @@ export const rememberCommand = defineJsonCommand({
       if (!observed_at && enriched.observed_at) observed_at = enriched.observed_at;
       executionNotices = enriched.notices;
     }
+
+    // #834: no --description and no --enrich-derived one — synthesize deterministically (see zero-flag path above).
+    if (!description) description = synthesizeMemoryDescription(body);
 
     // ── Required-field check (before any write) ───────────────────────────
     // Tags remain required when the user explicitly asked for tag-bearing

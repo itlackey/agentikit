@@ -17,6 +17,7 @@ import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import { readSemanticStatus } from "../indexer/search/semantic-status";
 import type { Database } from "../storage/database";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
+import { getAllEntries } from "../storage/repositories/index-entries-repository";
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
 import { pkgVersion } from "../version";
 import { collectImproveAdvisories } from "./health/advisories";
@@ -40,6 +41,7 @@ import { collectPluginStalenessAdvisories } from "./health/plugin-staleness";
 import { collectStashExposureAdvisory, type GitRunner } from "./health/stash-exposure";
 import { collectSurfacesAdvisories, type EgressConfigView } from "./health/surfaces";
 import { buildPerRunSummaries } from "./health/task-runs";
+import { buildTypeDirectoryAdvisory } from "./health/type-directory-check";
 import {
   ACTIVE_RUN_WARN_MS,
   type AkmHealthResult,
@@ -415,6 +417,16 @@ function gatherAncillaryAdvisories(
     // Non-fatal.
   }
 
+  // #831: flag indexed assets whose resolved type disagrees with the type
+  // their containing directory declares (see health/type-directory-check.ts).
+  // Best-effort — an unreadable index must not abort the health report.
+  try {
+    const typeDirMismatch = detectTypeDirectoryDisagreements(options.stashDir ?? resolveStashDir());
+    if (typeDirMismatch) advisories.push(typeDirMismatch);
+  } catch {
+    // Non-fatal.
+  }
+
   // itlackey/akm#832: report installed Claude Code harness plugin version(s)
   // and warn when stale or when the plugin's own akm-cli version range no
   // longer admits this CLI. Best-effort — no plugin installed, an unreadable
@@ -427,6 +439,36 @@ function gatherAncillaryAdvisories(
   }
 
   return advisories;
+}
+
+/**
+ * Open index.db read-only, project every entry to `{ filePath, type }`, and
+ * build the `type-directory-disagreement` advisory. `stashRoot` is used only
+ * to shorten displayed paths (relative to the stash) when it's an ancestor of
+ * the entry's path; falls back to the absolute path otherwise. Returns
+ * `undefined` when the index is absent/unreadable or nothing disagrees —
+ * mirrors {@link detectIndexStateGenerationMismatch}'s best-effort shape.
+ */
+function detectTypeDirectoryDisagreements(stashRoot: string): HealthCheckResult | undefined {
+  let indexDb: ReturnType<typeof openReadonlyExistingDatabase>;
+  try {
+    indexDb = openReadonlyExistingDatabase(getDbPath());
+    if (!indexDb) return undefined;
+    const entries = getAllEntries(indexDb).map((entry) => ({ filePath: entry.filePath, type: entry.type }));
+    return buildTypeDirectoryAdvisory(entries, undefined, (absPath) =>
+      absPath.startsWith(stashRoot) ? path.relative(stashRoot, absPath) : absPath,
+    );
+  } catch {
+    return undefined;
+  } finally {
+    if (indexDb) {
+      try {
+        closeDatabase(indexDb);
+      } catch {
+        // Best-effort advisory: a close failure must not abort health.
+      }
+    }
+  }
 }
 
 /**
