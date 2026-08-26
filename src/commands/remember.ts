@@ -11,6 +11,7 @@
  */
 
 import { serializeFrontmatter } from "../core/asset/asset-serialize";
+import { DESCRIPTION_MAX_CHARS } from "../core/authoring-rules";
 import { toErrorMessage, tryReadStdinText } from "../core/common";
 import { loadConfig } from "../core/config/config";
 import { ConfigError, UsageError } from "../core/errors";
@@ -139,6 +140,71 @@ export function readMemoryContent(contentArg: string | undefined): string {
     throw new UsageError("Memory content is required. Pass quoted text or pipe markdown into stdin.");
   }
   return content;
+}
+
+/**
+ * Split `text` into sentence-shaped chunks on `.`/`!`/`?`, swallowing any
+ * immediately-trailing closing quotes/brackets/repeated terminators into the
+ * same sentence (so `Alice said, "hi there."` ends the sentence at the
+ * closing quote, not the period).
+ *
+ * Ported from akm-eval's memory backend (`splitIntoSentences` /
+ * `firstSentencesCapped` in akm-eval/src/memory/backends/akm.ts), which
+ * independently arrived at this exact synthesis rule after measuring that
+ * akm indexes only frontmatter/heading text, never body prose — the same gap
+ * this fixes at the source.
+ */
+function splitIntoSentences(text: string): string[] {
+  const sentences: string[] = [];
+  let start = 0;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text.charAt(i);
+    if (ch === "." || ch === "!" || ch === "?") {
+      let end = i + 1;
+      while (end < text.length && /["'”’)\]!?.]/.test(text.charAt(end))) end += 1;
+      sentences.push(text.slice(start, end));
+      while (end < text.length && /\s/.test(text.charAt(end))) end += 1;
+      start = end;
+      i = end;
+      continue;
+    }
+    i += 1;
+  }
+  if (start < text.length) sentences.push(text.slice(start));
+  return sentences;
+}
+
+/**
+ * Deterministically synthesize a `description` from a memory body when the
+ * caller didn't supply one (#834): `akm remember`'s hot-capture path used to
+ * write memories with no `description:` and no `tags:`, and akm's indexer
+ * covers only synthesized frontmatter/headings — never body prose — so those
+ * memories were retrievable only by whatever words survived into the
+ * auto-generated filename. This closes that gap at write time.
+ *
+ * Skips a leading markdown heading line (if any) so the description reads as
+ * prose rather than repeating the title, then accumulates whole sentences
+ * from the body until the next one would exceed `capChars`, hard-truncating
+ * only if the very first sentence alone is over the cap. Pure, deterministic,
+ * no LLM call — `akm remember` must stay a fast local write.
+ */
+export function synthesizeMemoryDescription(body: string, capChars = DESCRIPTION_MAX_CHARS): string {
+  const withoutHeading = body.replace(/^\s*#{1,6}\s+.*(?:\r?\n)?/, "");
+  const trimmed = withoutHeading.trim() || body.trim();
+  if (!trimmed) return "";
+  let out = "";
+  for (const raw of splitIntoSentences(trimmed)) {
+    const sentence = raw.trim();
+    if (!sentence) continue;
+    const candidate = out ? `${out} ${sentence}` : sentence;
+    if (candidate.length > capChars) {
+      if (!out) return `${candidate.slice(0, Math.max(0, capChars - 1)).trimEnd()}…`;
+      break;
+    }
+    out = candidate;
+  }
+  return out;
 }
 
 /**
