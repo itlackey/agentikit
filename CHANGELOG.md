@@ -6,6 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Extract: LLM prompt is now built from parent-origin events only —
+  "harvest-without-prompting hybrid" (#840).** #830 folds a session's
+  subagent transcripts into its event stream for hashing and inline-ref
+  harvesting; the prompt sent to the extraction LLM previously included that
+  folded subagent content too, competing with the parent's own transcript
+  for the 80,000-char pre-filter budget. #840's design-determination doc
+  (`docs/plans/subagent-extraction-design.md`) measured that this "fold"
+  approach evicts up to 28.6% of parent-origin content on real sessions to
+  make room for subagent noise that mostly gets evicted anyway, while a
+  "harvest-without-prompting hybrid" — keep folding for hashing/inline-ref
+  purposes, but filter the prompt down to `data.events` whose `filePath`
+  matches the session's own (`data.ref.filePath`) — matches or beats the
+  folded prompt's size with zero eviction on every session measured, and
+  recovers the exact same inline refs (`akm remember`/`akm feedback` calls
+  the agent made inside a subagent), because that harvesting already runs on
+  the raw stream independent of what reaches the prompt. Only
+  `runPreLlmSessionGates`'s call into `preFilterSession` changed; folding
+  (`session-log.ts`) and `buildExtractPrompt` are untouched.
+  - **No forced re-extraction wave.** `hashSessionContent` still hashes the
+    full folded `data` (parent + subagents), computed before the
+    parent-origin view is built — no previously-computed session hash
+    changes, so no session already extracted under the fold prompt shape is
+    automatically re-processed. Use `--force` to re-process a specific
+    session under the new, parent-only prompt shape.
+  - **`processes.extract.maxTotalChars` is unchanged in meaning and default**
+    — it still caps the single-call prompt built from parent-origin events;
+    it simply no longer has to compete against subagent-origin noise for
+    that budget.
+  - **`minContentChars`** (the raw-size skip gate, #595/#596) is still
+    measured on the FULL folded `data.events` (parent + subagents),
+    deliberately left unchanged: narrowing it to parent-origin chars would
+    newly skip delegation-heavy sessions with a thin parent transcript
+    before extraction runs at all, even though their subagent-origin work is
+    still fully harvested via inline refs. The full-stream measurement is
+    today's existing behavior; the worst case it preserves is an LLM call
+    over a small parent-only prompt, not a missed extraction.
+  - #839's task-notification dedupe (which stubs a parent's
+    `<task-notification>` only when the matching subagent's own event ALSO
+    survives into the same kept prompt set) composes safely with this
+    change without modification: subagent-origin events never reach
+    `preFilterSession` on this path, so the dedupe's own scoping check
+    naturally makes it a no-op — the parent's notification (the only
+    remaining trace of delegated work in the prompt) survives untouched.
+
 ### Fixed
 
 - **Extract: deduped the doubled subagent conclusion in the extraction prompt**
