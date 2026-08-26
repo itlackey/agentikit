@@ -25,20 +25,17 @@
  *     spec §4.2/§4.4 (the Lane B classifier seam) from silently regressing
  *     back onto the task-v3 grammar.
  *
- * TEST-FIRST NOTE: this file is authored under Lane C (tests) before the
- * Lane 0/Lane B implementation lands. Both assertions below are EXPECTED TO
- * FAIL at the point this file is committed:
- *   - Assertion 1's baseline is hardcoded to spec §9's stated post-P1a
- *     expectation (82 = 83 today minus the one `sourceError` funnel literal
- *     at src/tasks/source-v3.ts:225) — see the TODO on
- *     INVALID_FLAG_VALUE_BASELINE. It fails today (live count is still 83)
- *     until the implementer lands that re-code, and turns green with no test
- *     edit once it does — unless the re-measured count differs from 82, in
- *     which case the TODO says to hardcode the real number instead.
- *   - Assertion 2 fails until Lane B rewires `uses.ts`/`semantics.ts`/
- *     `compile.ts` per spec §4.2-§4.4 — today `uses.ts` still imports
- *     `classifyTaskV3Uses` directly and `compile.ts` still imports it
- *     alongside `classifyTaskV3Triggers`.
+ * STATUS: this file was authored under Lane C (tests) ahead of the Lane
+ * 0/Lane B implementation landing, so both assertions were originally
+ * written red-first. Both are measured true as of this commit:
+ *   - Assertion 1's baseline is the count MEASURED at this commit, after
+ *     Lane 0's source-v3.ts:225 `sourceError` re-code landed — see the
+ *     comment on INVALID_FLAG_VALUE_BASELINE below for the exact grep. It is
+ *     not a forward guess.
+ *   - Assertion 2 passes now that Lane B rewired `uses.ts`/`semantics.ts`/
+ *     `compile.ts` per spec §4.2-§4.4: neither `uses.ts` nor `semantics.ts`
+ *     imports from `tasks/source-v3` any more, and `compile.ts` imports only
+ *     `classifyTaskV3Triggers` from it.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -81,24 +78,22 @@ function countLinesContaining(files: readonly string[], needle: string): number 
 
 // ── Assertion 1: the INVALID_FLAG_VALUE code ratchet (spec §9) ─────────────
 
-// Pre-P1a measurement (this branch, verified by Lane C the same day the spec
-// records it): `grep -rn "INVALID_FLAG_VALUE" src/tasks/ src/workflows/ | wc -l`
-// = 83.
+// Pre-P1a measurement (this branch, before Lane 0 landed):
+// `grep -rn "INVALID_FLAG_VALUE" src/tasks/ src/workflows/ | wc -l` = 83.
 //
-// Post-P1a baseline: 82 — the `sourceError` funnel's single throw site
-// (src/tasks/source-v3.ts:225) re-codes to `TASK_SOURCE_INVALID`; Lane A's
-// new rejection throws `COMPOSITION_INVALID`, not `INVALID_FLAG_VALUE`, so it
-// does not add to this count. This is spec §9's stated post-P1a expectation
-// (83 - 1), not yet re-measured against a landed source-v3.ts re-code — this
-// test is RED until Lane 0 lands that re-code (live count is still 83 today).
+// Post-P1a baseline: 82 — MEASURED at this commit with the same command
+// (`grep -rn "INVALID_FLAG_VALUE" src/tasks/ src/workflows/ | wc -l` == 82),
+// verified after Lane 0's source-v3.ts:225 `sourceError` funnel re-code (spec
+// §2.2) landed: its single throw site re-codes to `TASK_SOURCE_INVALID`, and
+// Lane A's new rejection throws `COMPOSITION_INVALID`, not
+// `INVALID_FLAG_VALUE`, so it does not add to this count.
 //
-// TODO(implementer): once Lane 0's source-v3.ts re-code (spec §2.2) lands,
-// re-run the grep command above and verify the measured count matches 82. If
-// it does not, hardcode the actual measured number instead. Do not raise this
-// value for any other reason — the baseline only ever DECLINES. A later phase
-// that re-codes more `INVALID_FLAG_VALUE` sites lowers it further; nothing
-// may raise it.
-const INVALID_FLAG_VALUE_BASELINE = 82; // spec §9 post-P1a expectation (83 - the source-v3.ts:225 funnel literal). Verify, don't raise — see TODO above.
+// This baseline only ever DECLINES. A later phase that re-codes more
+// `INVALID_FLAG_VALUE` sites must re-run the grep above and lower this number
+// to match — never raise it. A raised count means a new `INVALID_FLAG_VALUE`
+// throw was added to task/workflow code, exactly what this ratchet exists to
+// prevent.
+const INVALID_FLAG_VALUE_BASELINE = 82; // MEASURED post-P1a count (spec §9) — re-measure and lower when future work recodes more sites; never raise.
 
 // ── Assertion 2: the classification import seam (spec §9 / §4.2 / §4.4) ────
 
@@ -128,12 +123,12 @@ describe("D7 diagnostics ratchet (spec p1a-with-rejection-classifier.md §9)", (
       throw new Error(
         `INVALID_FLAG_VALUE ratchet violated: found ${count} matching line(s) across src/tasks/** + ` +
           `src/workflows/**, baseline is ${INVALID_FLAG_VALUE_BASELINE}.\n` +
-          "The baseline in this file only ever DECLINES. If this is the P1a implementer landing the " +
-          "source-v3.ts sourceError re-code (spec §2.2), re-measure with " +
+          "The baseline in this file only ever DECLINES. If this change re-codes more INVALID_FLAG_VALUE " +
+          "sites to more specific UsageError codes, re-measure with " +
           '`grep -rn "INVALID_FLAG_VALUE" src/tasks/ src/workflows/ | wc -l` and hardcode the real ' +
-          "measured count on INVALID_FLAG_VALUE_BASELINE (spec expects 82). If this is any other change, " +
-          "it added a new INVALID_FLAG_VALUE throw to task/workflow code — recode it to a more specific " +
-          "UsageError code instead of lowering the ratchet's bar.",
+          "measured count on INVALID_FLAG_VALUE_BASELINE — re-measure and lower, never raise. If this is " +
+          "any other change, it added a new INVALID_FLAG_VALUE throw to task/workflow code — recode it " +
+          "to a more specific UsageError code instead of lowering the ratchet's bar.",
       );
     }
     expect(count).toBeLessThanOrEqual(INVALID_FLAG_VALUE_BASELINE);
