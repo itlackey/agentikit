@@ -18,6 +18,7 @@ import { readSemanticStatus } from "../indexer/search/semantic-status";
 import type { Database } from "../storage/database";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
+import { pkgVersion } from "../version";
 import { collectImproveAdvisories } from "./health/advisories";
 import { HEALTH_CHECKS, type HealthCheckContext, runHealthEngineProbes } from "./health/checks";
 import {
@@ -35,6 +36,7 @@ import {
   computeEnrichmentMintingRollup,
   probeStateDbRoundTrip,
 } from "./health/metrics";
+import { collectPluginStalenessAdvisories } from "./health/plugin-staleness";
 import { collectStashExposureAdvisory, type GitRunner } from "./health/stash-exposure";
 import { collectSurfacesAdvisories, type EgressConfigView } from "./health/surfaces";
 import { buildPerRunSummaries } from "./health/task-runs";
@@ -361,11 +363,12 @@ function gatherImproveSummaryPhase(
 }
 
 /**
- * The three best-effort advisory groups beyond the health-check registry:
- * improve advisories, the `stash-git-exposure` probe, and the 08 surfaces
- * group (binary-config-skew, egress-endpoints). Order matches emission order in
- * the returned array. A probe/filesystem failure in either try/catch must not
- * abort the health report — each group degrades to "no advisory" independently.
+ * The four best-effort advisory groups beyond the health-check registry:
+ * improve advisories, the `stash-git-exposure` probe, the 08 surfaces group
+ * (binary-config-skew, egress-endpoints), and `plugin-version` (itlackey/akm#832).
+ * Order matches emission order in the returned array. A probe/filesystem
+ * failure in any try/catch must not abort the health report — each group
+ * degrades to "no advisory" independently.
  */
 function gatherAncillaryAdvisories(
   db: Database,
@@ -408,6 +411,17 @@ function gatherAncillaryAdvisories(
         config: egressConfigView,
       }),
     );
+  } catch {
+    // Non-fatal.
+  }
+
+  // itlackey/akm#832: report installed Claude Code harness plugin version(s)
+  // and warn when stale or when the plugin's own akm-cli version range no
+  // longer admits this CLI. Best-effort — no plugin installed, an unreadable
+  // manifest, or a network failure while checking the newest tag must not
+  // abort the health report.
+  try {
+    advisories.push(...collectPluginStalenessAdvisories({ cliVersion: pkgVersion }));
   } catch {
     // Non-fatal.
   }
