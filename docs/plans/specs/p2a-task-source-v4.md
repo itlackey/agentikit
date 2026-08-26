@@ -1169,3 +1169,123 @@ input-flag thread is not additive.
 ## Review log
 
 <!-- Reviewers append dated entries below. -->
+
+**2026-08-26 — close-out: the four already-known non-§6 behavior differences (§9 acceptance,
+"Behavior" bullet).** Recorded here as required, none fixed (all four are deliberate, spec-recorded
+warts, not defects):
+
+1. **The stale `must be exactly 3` version message (D2-N2).** A `version: 4` document with an
+   invalid `version` value never reaches this text — it routes through `parseTaskSourceV4Document`,
+   which has its own `must be exactly 4.` wording. But a document with a missing `version`, or any
+   value that is neither `3` nor `4` nor `2`, still routes to the unmodified v3 parser and renders
+   `$ version is required and must be 3.` (`src/tasks/source-v3.ts:495`) / `$ version must be exactly
+   3.` (`:497`) — text that is no longer accurate now that a second, valid version exists. This is
+   deliberate (spec §1.5 D2-N2: "rewriting it is a message flip nobody authorized… P4 owns the final
+   version-error text") and is pinned, not fixed, by `tests/tasks/source-v4.test.ts`'s router-table
+   tests and `tests/tasks/source-v3.test.ts:260`.
+2. **The v3 source label on front-end failures for an unknown version (§3.4).** `parseTaskSource`
+   (`src/tasks/source/parse-task-source.ts`) runs the bounded YAML front end with
+   `sourceLabel: "task v3 source"` unconditionally, because `root.version` cannot be read until the
+   front end already succeeded. A source-not-a-string / oversized / malformed-YAML failure on a
+   document that would otherwise have declared `version: 4` therefore still renders `Invalid task v3
+   source at …`, never `Invalid task source v4 at …`. Recorded in the module's own header comment as
+   "a deliberate, spec-recorded wart… P4 owns the final label once v3 is gone."
+3. **The literal `version: 3` inside the projected preparable document (§3.5).** `projectTaskSourceV4`
+   (`src/tasks/source/project-v4.ts`) always sets the projected `PreparableTaskDocument.version` to
+   the literal `TASK_V3_SCHEMA_VERSION` (`3`), regardless of the source document having been
+   `version: 4` — it is the prepare seam's discriminant, not a re-assertion of the source version. The
+   `rg -F 'version: 3\nuses:'`-style synthetic-document invariant is not violated (this is a typed
+   field assignment, not a fabricated YAML string), but a debugger inspecting the object handed to
+   `prepareTaskV3Execution` would see `3` for a task authored at `version: 4`. Recorded as a wart in
+   `project-v4.ts`'s own header; P4 retires it with the `PreparableTaskDocument` type rename.
+4. **`schedule[i].inputs` validated but undelivered (B-38).** A schedule entry's `inputs:` literal is
+   validated against the document's `inputs:` declarations at parse time (and, per the fix below,
+   validated with a closed key set), but `projectTaskSourceV4` does not project it onto
+   `triggers.schedules[i]`, and `compileTaskSchedulerBindings`'s invocation tail
+   (`src/tasks/scheduler-binding.ts:180`, `["task", "run", id, "--bundle", bundle, "--scheduled"]`) is
+   fixed — no `--<input>` flag is ever appended for a scheduled run. This is P2a's explicit non-goal
+   (spec §0: "P2b owns delivery"), not a defect.
+
+**2026-08-26 — close-out: LC-N2 verification record (§1.5 LC-N2, §9 acceptance).** Re-verified as
+part of this review-fix pass: `src/commands/completions.ts` enumerates no task input flags by hand —
+it walks the real citty command tree (`walkCommandTree`) and a `FLAG_VALUES` table keyed by flag
+name, neither of which names any per-task, per-document flag. `tests/completions.test.ts` and
+`tests/integration/completions-install.test.ts` pass unchanged (19 pass / 0 fail). No edit was made
+to `completions.ts`, confirming Lane C's "update shell completion if it enumerates task flags" is
+discharged by verifying it does not, per LC-N2's binding resolution.
+
+**2026-08-26 — close-out: D2-N4 deviation record (§1.5 D2-N4, §3.1).** D2-N4's own extraction list
+names `nullableSelector` alongside `parseTimeout` and `parseTools` as one of the helpers that "move
+body-intact to `src/tasks/source/bounded-document.ts`." At head, only two of the three actually
+moved: `parseTimeout` and `parseTools` live in `bounded-document.ts` (both still hardcode the
+`["akm", …]` field path, exactly as D2-N4 describes); `nullableSelector` stayed declared directly in
+`src/tasks/source-v3.ts` and was never moved. `bounded-document.ts`'s own header documents this as a
+deliberate choice ("`nullableSelector` is the same kind of `["akm", …]`-hardcoding helper but is NOT
+in D2-N4's named list and stays declared directly in `source-v3.ts`") — but that characterization
+does not match D2-N4's actual text, which does name `nullableSelector` in the list quoted above. This
+is therefore a genuine deviation from a literal reading of D2-N4, not merely a header's accurate
+description of an intentional exception, and is recorded here per §9's acceptance criterion that
+every observed non-§6 behavior difference be recorded rather than silently absorbed. The deviation is
+purely structural, not behavioral: task source v4 declares its own top-level-rooted
+`nullableSelectorTopLevel` sibling in `task-source-v4.ts` (same accept/reject semantics as v3's
+`nullableSelector`, at a different, un-prefixed field path — the same pattern `parseTimeoutTopLevel`/
+`parseToolsTopLevel` use relative to their moved counterparts), so no v3 or v4 behavior is affected;
+`tests/tasks/source-v3.test.ts` and `tests/tasks/bounded-document.test.ts` (including its AST scan)
+both pass unchanged. Left as-is — moving `nullableSelector` now is a mechanical follow-up, not a
+CONFIRMED-finding fix, and is better done together with any other D2-N4 cleanup rather than as an
+isolated diff.
+
+**2026-08-26 — fix(review): schedule[i].inputs fail-closed on undeclared keys (finding at
+task-source-v4.ts:530).** `parseScheduleEntry` validated a schedule entry's `inputs:` literal only
+through `validateInputs(contract, inputsValue)` (§3.2 rule 7), whose synthetic `{type:"object",
+properties}` schema (§4.2) deliberately carries no `additionalProperties:false` — the right default
+for `validateInputs` itself, which has other callers (`materializeWorkflowParameterFlags`/
+`materializeInputFlags` already do their own exact-name check before ever calling it). Relying on
+`validateInputs` alone at the `schedule[i].inputs` parse site left a fail-closed hole: a typo'd or
+wholly undeclared literal (e.g. `scoep: all` alongside a declared `scope`) parsed cleanly, survived
+`projectTaskSourceV4`'s no-op drop of `schedule[i].inputs` unnoticed, and was never named by any
+diagnostic — accepted-but-silently-ignored forever, the exact state the repo's fail-closed convention
+(mirrored everywhere else in this file via `checkKeys`, and by `materializeInputFlags`' own
+exact-name rule) forbids. Fixed by adding a `checkKeys(inputsValue, Object.keys(contract), ctx,
+[...entryPath, "inputs"])` call in `parseScheduleEntry`, ahead of `validateInputs` — layered on top
+of, not inside, the shared `validateInputs` function, so `validateInputs`'s own general-purpose
+§4.2 contract (no implicit `additionalProperties:false`) is unchanged for every other caller. An
+unrecognized key now fails `TASK_SOURCE_INVALID` at `schedule[<i>].inputs.<name>`, mirroring
+`checkKeys`' existing use at every other closed-key boundary in this file (top-level keys, schedule-
+entry keys, input-declaration keys). `schemas/akm-task.json`'s `taskSourceV4ScheduleEntry.inputs` is
+tightened off the free-form `jsonObject` $ref to a new `taskSourceV4ScheduleInputs` definition closing
+property names to the input-name pattern (full cross-referencing of the document's own declared
+`inputs:` names is not expressible in static JSON Schema here, so this is a partial, name-shape-only
+tightening, not a semantic replacement for the runtime's exact-name check). New coverage:
+`tests/tasks/source-v4.test.ts` (three new tests: an undeclared-key rejection, the exact typo'd-name
+repro from the finding, and the empty-contract case) and `tests/integration/tasks-schema.test.ts`
+(one new test asserting the schema-level property-name tightening). This is judged to be within
+§3.2 rule 7's "validated against the declarations… via `validateInputs()`" — the fix adds a
+closed-key check immediately alongside that call, inside the same parse step, rather than replacing
+or contradicting it — so no gap is recorded as an alternative to the fix; this entry documents the
+mechanism for a future reader instead.
+
+**2026-08-26 — fix(review): schema/parser drift on task source v4's `output: null` (finding at
+schemas/akm-task.json:226).** The published schema's v4 arm accepted `output: null` (a
+`{"type":"null"}` alternative copied from v3's `akm.outputSchema`, which genuinely accepts `null` at
+`src/tasks/source-v3.ts:272-282`), but `parseOutputSchema` (`src/tasks/source/task-source-v4.ts`)
+goes straight to `asRecord`, which rejects `null` with `output must be a mapping.` Per §5.3 ("the v4
+arm reuses the existing outputSchema grammar DEFINITION") and §3.2's `Readonly<Record<string,
+unknown>>` typing (no `null`), the schema was wrong, not the parser: dropped the `{"type":"null"}`
+alternative from the v4 arm's `output` property only — v3's `akm.outputSchema` keeps it, unchanged.
+New coverage: `tests/integration/tasks-schema.test.ts` gains the v4 arm's first `output:` assertion
+(previously absent entirely), asserting both that v4 rejects `null` and that v3's `akm.outputSchema:
+null` still validates.
+
+**2026-08-26 — fix(review): task-source-v4.ts module header corrected (finding at
+task-source-v4.ts:18).** The header claimed `src/tasks/source-v3.ts` was untouched by this phase and
+that `bounded-document.ts` was "a fresh, parameterized reimplementation" of helpers that "cannot be
+edited" in `source-v3.ts` — the opposite of what the commit (and `bounded-document.ts`'s own header)
+actually describes: `source-v3.ts` IS edited (the D2-N4 helpers move out body-intact and are
+imported/re-exported back), which is the D2-N4 move itself, not a waiver of it. Left uncorrected, the
+header told the next reader the copy-vs-move invariant `tests/tasks/bounded-document.test.ts`'s AST
+scan exists to protect had been waived. Rewritten to describe the actual extraction, keeping only the
+true part: task source v4 declares its own top-level-rooted `parseTimeoutTopLevel`/
+`nullableSelectorTopLevel`/`parseToolsTopLevel` because the v3 originals (two of which now live in
+`bounded-document.ts`, one of which — `nullableSelector` — stayed in `source-v3.ts`, see the D2-N4
+deviation entry above) hardcode the `["akm", …]` field path.

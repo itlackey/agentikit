@@ -512,6 +512,63 @@ test("published task schema's v4 arm closes input declarations to TASK_INPUT_DEC
   ).toBe(false);
 });
 
+test("published task schema's v4 arm's output: rejects null while v3's akm.outputSchema keeps it (schema/parser drift fix)", () => {
+  const schema = readTaskSchema();
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+
+  // v3's akm.outputSchema genuinely accepts null at the parser
+  // (src/tasks/source-v3.ts:272-282) — the published schema's v3 arm must
+  // keep the { type: "null" } alternative unchanged.
+  expect(
+    validate({ version: 3, uses: "commands/review", akm: { schedule: "@daily", outputSchema: null } }),
+    JSON.stringify(validate.errors),
+  ).toBe(true);
+
+  // task source v4's parseOutputSchema (src/tasks/source/task-source-v4.ts)
+  // goes straight to asRecord and rejects null with "output must be a
+  // mapping." — the published schema's v4 arm must reject it too, not accept
+  // a shape the production parser never does.
+  expect(
+    validate({ version: TASK_SOURCE_V4_VERSION, run: "echo hi", output: null }),
+    "the v4 arm must reject output: null — the production parser does",
+  ).toBe(false);
+
+  // A valid bounded schema is still accepted.
+  expect(
+    validate({
+      version: TASK_SOURCE_V4_VERSION,
+      run: "echo hi",
+      output: { type: "object", properties: { summary: { type: "string" } } },
+    }),
+    JSON.stringify(validate.errors),
+  ).toBe(true);
+});
+
+test("published task schema's v4 arm's schedule[].inputs is closed to the input name pattern, not the free-form jsonObject $ref (fail-closed hardening)", () => {
+  const schema = readTaskSchema();
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+  const base = { version: TASK_SOURCE_V4_VERSION, run: "echo hi" };
+
+  // A property name matching PROGRAM_PARAM_NAME_PATTERN still validates.
+  expect(
+    validate({ ...base, schedule: [{ cron: "0 8 * * 1", inputs: { scope: "all" } }] }),
+    JSON.stringify(validate.errors),
+  ).toBe(true);
+
+  // A property name failing the pattern is rejected at the schema level too
+  // — static JSON Schema cannot cross-reference the document's own inputs:
+  // declarations, but it can at least close the key SHAPE, rather than
+  // publishing the fully free-form jsonObject definition.
+  expect(
+    validate({ ...base, schedule: [{ cron: "0 8 * * 1", inputs: { "not a name": "x" } }] }),
+    "a schedule input key failing the input-name pattern must be rejected",
+  ).toBe(false);
+
+  const scheduleEntry = schema.definitions.taskSourceV4ScheduleEntry as JsonSchema;
+  const inputsSchema = scheduleEntry.properties.inputs as JsonSchema;
+  expect(inputsSchema.$ref).not.toBe("#/definitions/jsonObject");
+});
+
 test("published task schema's v4 arm bounds inputs: at WORKFLOW_MAX_PARAMS declared inputs (D2-N3)", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);

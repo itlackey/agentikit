@@ -732,16 +732,56 @@ describe("task source v4 — optional schedule (D2-N6, D2-N5, B-06..B-10, B-38)"
     );
   });
 
-  test("schedule[i].inputs carrying a key the document does not declare is NOT rejected — validateInputs's synthetic object schema has no additionalProperties: false (spec §4.2), matching workflow params' own lenient extra-key behavior", () => {
-    const doc = parseTaskSourceV4Document(
-      v4Doc({
-        uses: "commands/review",
-        inputs: { scope: { type: "string" } },
-        schedule: [{ cron: "0 0 * * *", inputs: { scope: "changed", undeclared: "ignored" } }],
-      }),
-      { filePath: "/x.yml" },
+  test("schedule[i].inputs carrying a key the document does not declare is rejected — TASK_SOURCE_INVALID at schedule[<i>].inputs.<name> (fail-closed, code-review finding)", () => {
+    // `validateInputs`'s synthetic {type:"object", properties} schema (spec
+    // §4.2) has no additionalProperties: false — a general-purpose contract
+    // validator correctly leaves that choice to its callers. Parsing a
+    // schedule[i].inputs literal is one such caller, and it closes against
+    // the declared contract itself (mirroring materializeInputFlags' own
+    // exact-name rule), so an undeclared key is rejected here rather than
+    // silently accepted-but-ignored forever.
+    const error = expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({
+            uses: "commands/review",
+            inputs: { scope: { type: "string" } },
+            schedule: [{ cron: "0 0 * * *", inputs: { scope: "changed", undeclared: "ignored" } }],
+          }),
+          { filePath: "/x.yml" },
+        ),
+      /undeclared/,
     );
-    expect(doc.schedule[0]?.inputs).toEqual({ scope: "changed", undeclared: "ignored" });
+    expect(error.message).toContain("schedule[0].inputs.undeclared");
+  });
+
+  test("a schedule[i].inputs literal naming a typo'd declared input is rejected, not silently accepted-but-ignored (repro from the code-review finding)", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({
+            uses: "commands/review",
+            inputs: { scope: { type: "string", enum: ["changed", "all"] } },
+            schedule: [{ cron: "0 8 * * 1", inputs: { scoep: "all", totally_undeclared: 42 } }],
+          }),
+          { filePath: "/x.yml" },
+        ),
+      /schedule\[0\]\.inputs\.scoep/,
+    );
+  });
+
+  test("schedule[i].inputs with an empty inputs: contract rejects any key rather than silently accepting it (validateInputs alone short-circuits to [] on an empty contract)", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({
+            uses: "commands/review",
+            schedule: [{ cron: "0 0 * * *", inputs: { anything: 1 } }],
+          }),
+          { filePath: "/x.yml" },
+        ),
+      /schedule\[0\]\.inputs\.anything/,
+    );
   });
 });
 

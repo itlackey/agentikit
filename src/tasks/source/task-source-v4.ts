@@ -15,16 +15,22 @@
  * re-home survives as a top-level key instead, D2-N7). There is no
  * github-action `uses:` variant.
  *
- * `src/tasks/source-v3.ts` is untouched by this phase (task brief: "v3
- * parsing is UNTOUCHED"). D2-N4 asks for the bounded-document front end and
- * field helpers to move body-intact out of that file; since it cannot be
- * edited here, `./bounded-document.ts` carries a fresh, parameterized
- * reimplementation of the helpers that are already path-generic in v3
- * (no hardcoded `"akm"` segment), and this file implements its own
- * top-level-rooted versions of the three v3 helpers that DO hardcode
- * `["akm", …]` (`parseTimeout`, `nullableSelector`, `parseTools`) — task
- * source v4 needs the same accept/reject semantics at a different field
- * path, not the same field path.
+ * `src/tasks/source-v3.ts` IS edited by this phase (D2-N4): the bounded-document
+ * front end and the path-generic field helpers move body-intact out of that
+ * file into `./bounded-document.ts`, and `source-v3.ts` now imports (and,
+ * for the names that were already part of its public surface, re-exports)
+ * them instead of declaring its own copies — see `./bounded-document.ts`'s
+ * own header and spec §6 F-2 for the extraction itself. `parseTimeout` and
+ * `parseTools` moved that way; `nullableSelector` did not (a recorded
+ * deviation from a literal reading of D2-N4's own extraction list — see the
+ * P2a Review log) and stays declared directly in `source-v3.ts`.
+ *
+ * This file implements its OWN top-level-rooted versions of the three v3
+ * helpers that hardcode the `["akm", …]` field path —
+ * `parseTimeoutTopLevel`/`nullableSelectorTopLevel`/`parseToolsTopLevel`
+ * below, siblings of v3's `parseTimeout`/`nullableSelector`/`parseTools` —
+ * because task source v4 needs the same accept/reject semantics at a
+ * different, un-prefixed field path, not the same field path.
  */
 
 import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../../commands/command/builtin-action";
@@ -527,6 +533,18 @@ function parseScheduleEntry(
       ...entryPath,
       "inputs",
     ]);
+    // Fail-closed exact-name check (code-review finding, task-source-v4.ts:530):
+    // `validateInputs`'s synthetic `{type:"object", properties}` schema (spec
+    // §4.2) deliberately carries no `additionalProperties:false` — that is the
+    // right default for a general-purpose contract validator with other
+    // callers (materializeInputFlags already does its own exact-name check
+    // before ever calling validateInputs, per D3-N3's design) — so relying on
+    // validateInputs alone here would silently accept a typo'd or wholly
+    // undeclared schedule[i].inputs key forever, exactly the fifth state the
+    // fail-closed rule forbids. checkKeys mirrors materializeInputFlags' own
+    // exact-name rule at the grammar layer: closed against the declared
+    // contract, TASK_SOURCE_INVALID at schedule[<i>].inputs.<name>.
+    checkKeys(inputsValue, Object.keys(contract), ctx, [...entryPath, "inputs"]);
     const errors = validateInputs(contract, inputsValue as Record<string, unknown>);
     if (errors.length > 0) sourceError(ctx, [...entryPath, "inputs"], errors.join("; "));
     inputsLiteral = Object.freeze({ ...inputsValue });

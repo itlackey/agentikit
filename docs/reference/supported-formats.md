@@ -21,7 +21,7 @@ one explicitly. 0.9.0 recognizes 11 formats.
 | `opencode` | Same shape as `claude`, rooted on `AGENTS.md` | `opencode.json`/`opencode.jsonc`, or root `AGENTS.md` plus a canonical plural tool directory | Read-only | Point AKM at an existing OpenCode `.opencode` tool directory |
 | `dotenv` | `env` entries as key names only (never values); `secret` entries as file names only (never content) | Every top-level directory is `env/` and/or `secrets/`, with at least one present | Writable, narrowly — `akm env create`/`env remove`/`secret set` only | A standalone env/secrets-only bundle |
 | `akm-workflow` | Workflow steps, name, description, tags | Either a top-level `.md` file with explicit `type: workflow` frontmatter or a peer top-level GitHub-shaped `.yml` workflow | Writable — `akm workflow create` only | A standalone workflow bundle, one workflow per file |
-| `akm-task` | Strict task-v3 `.yml` sources (`version: 3`) as type `task`, including local schedules/manual triggers and the exact authored YAML | A top-level `.yml` file accepted by the task-v3 source probe (`akm.schedule` or supported `on`) | Read-only | A standalone scheduled-task bundle; `.yaml` is rejected |
+| `akm-task` | Task-v3 (`version: 3`) or task source v4 (`version: 4`) `.yml` sources as type `task`, including local schedules/manual triggers and the exact authored YAML | A top-level `.yml` file accepted by the task source probe — v3's `akm.schedule`/`on:`, or v4's optional top-level `schedule:` | Read-only | A standalone scheduled-task bundle; `.yaml` is rejected |
 | `llm-wiki` | `raw/` sources as `wiki-source`; `pages/` as their `pageKind` (default `note`), with resolved cross-reference links | Root `schema.md` plus a `pages/` directory | Read-only (author by writing directly into `pages/`; AKM indexes and serves the result) | [Karpathy's LLM-wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — agent-authored reference wikis |
 | `akm` (native) | AKM's own 14 native asset types — see [Asset Types](https://github.com/itlackey/akm/blob/main/docs/reference/asset-types.md) | A `.stash` marker directory, or two-plus native subdirectories, or the fallback when nothing else matches | Fully writable — every AKM-native write command | Your working bundle, and any bundle authored as AKM's own format |
 | `okf` | Frontmatter `type` (defaults to `knowledge`); name, description, tags, links, body | A root `index.md`, or any `.md` file anywhere carrying a non-empty frontmatter `type` | Read-only | The [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) — the portable baseline every markdown-based format here is a superset of |
@@ -40,16 +40,19 @@ native files remain authoritative.
 
 ## Task format
 
-The `akm-task` adapter and native AKM task directory use the same strict
-`version: 3` task-v3 contract. An `akm-task` source is `.yml` only; `.yaml` is
-diagnosed but never indexed, scheduled, or executed. See [Tasks](tasks.md).
+The `akm-task` adapter and native AKM task directory accept two task source
+grammars side by side: strict `version: 3` task v3, and the additive
+`version: 4` task source v4 (typed `inputs:`, a single bounded `output:`
+schema, and OPTIONAL scheduling). An `akm-task` source is `.yml` only;
+`.yaml` is diagnosed but never indexed, scheduled, or executed. See
+[Tasks](tasks.md).
 
 ## Workflow formats
 
 Workflow sources are the one intentional peer-format case inside the native
 AKM workspace: workflows may be `.md` or `.yml`, and both compile to the same
-source IR. Task sources remain `.yml` only and require task v3. See
-[Tasks](tasks.md) and [Workflow Schema](workflow-schema.md).
+source IR. Task sources remain `.yml` only, whether authored as task v3 or
+task source v4. See [Tasks](tasks.md) and [Workflow Schema](workflow-schema.md).
 
 ## Why this matters
 

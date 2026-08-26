@@ -223,12 +223,7 @@
           "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
           "additionalProperties": { "$ref": "#/definitions/inputDeclaration" }
         },
-        "output": {
-          "oneOf": [
-            { "$ref": "#/definitions/outputSchemaDefinition" },
-            { "type": "null" }
-          ]
-        },
+        "output": { "$ref": "#/definitions/outputSchemaDefinition" },
         "uses": {
           "oneOf": [
             { "const": "akm/command" },
@@ -379,8 +374,15 @@
       "properties": {
         "cron": { "$ref": "#/definitions/nonemptyLiteral" },
         "enabled": { "type": "boolean" },
-        "inputs": { "$ref": "#/definitions/jsonObject" }
+        "inputs": { "$ref": "#/definitions/taskSourceV4ScheduleInputs" }
       }
+    },
+    "taskSourceV4ScheduleInputs": {
+      "description": "schedule[i].inputs literals: keys are closed to the input-name pattern (the same pattern inputs: declarations use), not the free-form jsonObject shape — the runtime parser additionally rejects any key not present in the document's own inputs: declarations, which static JSON Schema cannot cross-reference here.",
+      "type": "object",
+      "maxProperties": 128,
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "additionalProperties": { "$ref": "#/definitions/jsonValue" }
     },
     "inputDeclaration": {
       "description": "One inputs: declaration: a bounded JSON Schema. At the declaration ROOT, required is task source v4's own boolean flag, not JSON Schema's required array; default must itself satisfy the remaining schema; default + required:true together is invalid (D2-N3). Nested schemas (properties/items/allOf/anyOf/oneOf/not) keep ordinary JSON-Schema meaning via outputSchemaDefinition. Closed to exactly this key set — an unlisted keyword (e.g. pattern) is rejected here even though the runtime subset accepts it inside output:, because a task input declaration is intentionally narrower.",

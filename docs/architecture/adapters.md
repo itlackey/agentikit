@@ -201,10 +201,14 @@ happens to expose a `placeNew()` implementation.
 
 ## Task adapter
 
-The native and standalone `akm-task` paths delegate to the authoritative
-`akm-task` task-v3 parser. A source must declare `version: 3`, exactly one
-executable, and exactly one supported local trigger source. See
-[Tasks](../reference/tasks.md) for the public source contract.
+The native and standalone `akm-task` paths delegate to the authoritative task
+source parsers, routed by version. A `version: 3` (task v3) source must
+declare exactly one executable and exactly one supported local trigger
+source. A `version: 4` (task source v4) source declares the same one
+executable selector, but its scheduling is OPTIONAL — a document with no
+`schedule:` is valid and runnable manually. See
+[Tasks](../reference/tasks.md) for the public source contract of both
+grammars.
 
 ---
 
@@ -230,14 +234,18 @@ they actually work:
   `secret` entries surface only the file name, never content. A `.env`
   file placed under `secrets/` is a secret (name-only), not an env group —
   the directory gate wins over the `.env` suffix.
-- **Task adapters share the task-v3 parser.** A standalone `akm-task` bundle
-  and task files owned by the native `akm` adapter require `version: 3`,
-  exactly one `uses` or `run` executable, and exactly one supported trigger
-  source. The parser recognizes `akm/command`, `commands/`, `workflows/`, and
-  `scripts/` targets, while refusing agent/task refs and unsupported actions.
-  `.yaml` is a collection hint only: recognition still gates on `.yml`, so the
-  near miss is diagnosed but never indexed or scheduled. See the
-  [task-v3 reference](../reference/tasks.md).
+- **Task adapters share the task source parsers.** A standalone `akm-task`
+  bundle and task files owned by the native `akm` adapter accept either a
+  `version: 3` (task v3) or a `version: 4` (task source v4) document, routed
+  through `parseTaskSource`. Task v3 requires exactly one `uses` or `run`
+  executable and exactly one supported trigger source; task source v4
+  requires the same one executable selector, but its `schedule:` is OPTIONAL.
+  Both parsers recognize `akm/command`, `commands/`, `workflows/`, and
+  `scripts/` targets (task source v4 additionally refuses the github-action
+  `uses:` variant that task v3 still recognizes), while refusing agent/task
+  refs and unsupported actions. `.yaml` is a collection hint only:
+  recognition still gates on `.yml`, so the near miss is diagnosed but never
+  indexed or scheduled. See the [Tasks reference](../reference/tasks.md).
 - **`llm-wiki`, `akm`, and `okf` all reserve `index.md`/`log.md`** as
   structural files — never indexed as concepts, never valid write targets —
   at any depth.

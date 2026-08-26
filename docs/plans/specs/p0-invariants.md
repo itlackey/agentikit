@@ -299,3 +299,24 @@ cross-run leakage (the global is now never mutated: before, during, after), chil
 `tests/integration/tasks-provenance-characterization.test.ts` and the new
 `tasks-provenance-context.test.ts`. R-07's defect (prompt arm recording scheduled usage as
 `"user"`) is fixed as planned.
+
+**2026-08-26 — R-06 close-out: the replacement is scoped to task source v4, not a flip of the row
+itself (P2a, docs/plans/specs/p2a-task-source-v4.md §1.5 D2-N6, §6 F-0).** The R-06 row's "Flips
+in" cell reads "**P2a** (optional schedule)"; that cell names the phase that *introduces* the
+first document shape the rule does not apply to, not a change to the rule task v3 itself pins. Task
+source v4 (`version: 4`) makes `schedule:` OPTIONAL — an absent `schedule:` parses as valid and
+projects to `triggers = { manual: true, schedules: [] }` (D2-N6) — but `compileTriggers`
+(`src/tasks/source-v3.ts:450-464` as of this entry — `:636-651` at the R-06 row's own
+"verified at head" commit, before P2a's D2-N4 extraction moved code within the file; same
+function, unchanged body) is untouched by P2a: a `version: 3` document that declares
+neither `akm.schedule` nor `on:` (or declares both) still fails with the byte-identical message
+`must declare exactly one scheduling source: akm.schedule or on.`, still via `sourceError(ctx, [],
+…)` with the empty path, and still with the three frozen-shape assertions on the `akm.schedule`
+success arm. All three of `tests/integration/tasks-scheduling-characterization.test.ts`'s R-06 tests
+(the neither-case at `:45`, the both-case at `:57`, and the `akm.schedule` success shape at `:73`,
+including its `Object.isFrozen` assertions) pass **unchanged** after P2a — verified as part of P2a's
+preservation gates. R-06 therefore stands, unflipped, for every `version: 3` document; only a
+`version: 4` document gets the new, additive optional-scheduling row (B-06/B-07 in the P2a spec's
+behavior table). v3's exactly-one-scheduling-source rule stands until **P4** removes v3 acceptance
+outright — this row should not be read as "replaced" in the sense of no longer holding for any
+document, only as "superseded for the one new document shape that did not exist before P2a."

@@ -1367,9 +1367,10 @@ akm registry remove my-team --yes    # Skip the confirmation prompt
 ### migrate
 
 Inspect or apply the explicit one-way task-v2 to task-v3 conversion. Normal task
-execution accepts only task v3. Database schema upgrades are additive and run
-automatically when `state.db` opens; config and workflow formats have no runtime
-compatibility migrator.
+execution accepts task v3 and task source v4; `akm migrate` itself only
+converts task-v2 sources to task v3. Database schema upgrades are additive and
+run automatically when `state.db` opens; config and workflow formats have no
+runtime compatibility migrator.
 
 ```sh
 akm migrate status
@@ -2335,8 +2336,9 @@ prompts. Negative feedback requires a reason by default.
 `akm task` is the scheduling surface for workflows, agent prompts, and
 shell commands. It manages on-disk task definitions under
 `<bundle>/tasks/<id>.yml` and reconciles them with the OS-native scheduler
-(cron / launchd / schtasks). Strict task v3 YAML is the executable source
-contract; see the canonical [Tasks reference](tasks.md). The
+(cron / launchd / schtasks). Strict task v3 YAML and task source v4 YAML are
+both executable source contracts (`akm task add` still writes only task v3);
+see the canonical [Tasks reference](tasks.md). The
 group is `add | run | sync | doctor | history` — there is no `list` or
 `remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
 and edit the file + `akm task sync` to change or remove a schedule.
