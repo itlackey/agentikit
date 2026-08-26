@@ -633,3 +633,32 @@ The new test file carries the MPL-2.0 header
   `tests/execution/target-ref.test.ts` exercises any of these ten
   values, so this was a silent, undetected divergence, not a test
   failure — `bun run check` was green both before and after this fix.
+
+- **2026-08-26 — CHANGELOG's `TASK_SOURCE_INVALID` entry overclaimed its
+  scope and omitted a `hint`/`detail` behavior change; corrected in docs,
+  not code.** A code-review pass on the Lane 0 diagnostics + CHANGELOG diff
+  found the `[Unreleased]` "Breaking changes & migration" entry for
+  `TASK_SOURCE_INVALID` inaccurate in two ways. First, it read as if every
+  task-source validation error now reports the new code, but per §2.2's
+  scope boundary only the `sourceError` funnel re-codes; the seven direct
+  `UsageError` throws in `parseTaskV3Yaml`/`yamlAstError`
+  (`src/tasks/source-v3.ts:810,896,901,911,919,926,936` — YAML syntax, size,
+  structure, and expansion failures) render the identical `Invalid task v3
+  source at …` message prefix but keep `INVALID_FLAG_VALUE` in 0.9.2, so a
+  script branching only on the new code would miss the most common failure
+  shape. Second, the entry's "messages … are unchanged" claim is true only
+  of the JSON envelope's `error` field: `taskV3SourceErrorDetail`
+  (`source-v3.ts:884`) appends `hint()` to the message, so for a re-coded
+  (`sourceError`-funneled) failure the envelope's separate `hint` field
+  (`src/cli/shared.ts:113`) and the composed `detail` string that `akm lint`
+  (`src/core/adapter/adapters/akm-lint.ts:328`), the akm-task adapter
+  (`src/core/adapter/adapters/akm-task-adapter.ts:104`), and scheduler-sync
+  (`src/tasks/scheduler-sync.ts:711`) surface for every invalid task YAML all
+  changed — from `… Run \`akm <command> --help\` to see accepted values.` to
+  `… Fix the task source at the reported path and line, then re-run.` — a
+  delta no test or golden pins, so it was invisible in `bun run check`.
+  Neither finding required a source change: §2.2's scope boundary ("the
+  `sourceError` funnel and nothing else") is binding for P1a, so the seven
+  direct-throw sites stay `INVALID_FLAG_VALUE`. The CHANGELOG entry was
+  rewritten to state both qualifications explicitly instead of silently
+  absorbing the gap, per §10's final acceptance criterion.

@@ -13,10 +13,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   having the authored mapping silently dropped at freeze. Remove the step's
   `with:` block, or wait for task-call inputs, which arrive in a later 0.9.x
   release. `with:` on `uses: akm/command` is unaffected.
-- Task-source validation errors now report code **`TASK_SOURCE_INVALID`**
-  instead of `INVALID_FLAG_VALUE`. Scripts that branch on the `code` field of
-  the JSON error envelope must be updated; messages and exit code 2 are
-  unchanged.
+- Task-source validation errors raised through the shared `sourceError`
+  funnel (field- and semantic-level checks: missing/invalid fields, schedule
+  conflicts, and similar) now report code **`TASK_SOURCE_INVALID`** instead of
+  `INVALID_FLAG_VALUE`. YAML syntax, size, structure, and expansion failures
+  (malformed YAML, oversized source, unsupported YAML constructs, and
+  alias/tag/depth/node-count limits) are raised earlier, before that funnel is
+  reached, and still report `INVALID_FLAG_VALUE` in 0.9.2 — both families
+  render the identical `Invalid task v3 source at <path>[:<line>]: …` message
+  prefix, so **scripts that branch on the `code` field of the JSON error
+  envelope must handle both `TASK_SOURCE_INVALID` and `INVALID_FLAG_VALUE`**,
+  not only the new code. The envelope's `error` message text and exit code 2
+  are unchanged for every task-source error. For the errors that do re-code,
+  the envelope's `hint` field and the `detail` text `akm lint` and the
+  akm-task adapter report for the same failure also change — from `… Run
+  \`akm <command> --help\` to see accepted values.` to `… Fix the task source
+  at the reported path and line, then re-run.`
 
 ## [0.9.2-alpha.1] - 2026-08-24
 
