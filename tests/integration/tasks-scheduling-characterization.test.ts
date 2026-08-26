@@ -43,15 +43,20 @@ const EXACTLY_ONE_SCHEDULING_SOURCE = `Invalid task v3 source at ${SHARED_FILE_P
 
 describe("R-06 — task v3 requires exactly one scheduling source (source-v3.ts:636-651)", () => {
   test("R-06 — declaring neither akm.schedule nor on: fails with the exact rendered source-error text at the empty field path", () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // P1a FLIP (F-02, spec §7): the sourceError funnel (source-v3.ts:210-226)
+    // re-codes INVALID_FLAG_VALUE -> TASK_SOURCE_INVALID (spec §2.2). Message
+    // text, the empty-path "$" rendering, and the UsageError type are
+    // byte-identical to the P0-pinned characterization — only the code
+    // assertion below flips.
     const error = thrown(() => parseTaskV3Yaml({ yaml: "version: 3\nrun: echo hi\n", filePath: SHARED_FILE_PATH }));
     expect(error).toBeInstanceOf(UsageError);
-    expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
+    expect((error as UsageError).code).toBe("TASK_SOURCE_INVALID");
     expect((error as Error).message).toBe(EXACTLY_ONE_SCHEDULING_SOURCE);
   });
 
   test("R-06 — declaring BOTH akm.schedule and on: fails with the byte-identical rendered text as the neither-case", () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+    // P1a FLIP (F-02, spec §7): same sourceError re-code as the neither-case
+    // above; message text is unchanged.
     const both = thrown(() =>
       parseTaskV3Yaml({
         yaml: ["version: 3", "run: echo hi", "akm:", '  schedule: "@daily"', "on:", "  workflow_dispatch:", ""].join(
@@ -61,7 +66,7 @@ describe("R-06 — task v3 requires exactly one scheduling source (source-v3.ts:
       }),
     );
     expect(both).toBeInstanceOf(UsageError);
-    expect((both as UsageError).code).toBe("INVALID_FLAG_VALUE");
+    expect((both as UsageError).code).toBe("TASK_SOURCE_INVALID");
     expect((both as Error).message).toBe(EXACTLY_ONE_SCHEDULING_SOURCE);
   });
 

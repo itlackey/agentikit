@@ -23,6 +23,13 @@
       "id": "unsupported-remote-action",
       "file": "rejected/unsupported-remote-action.yml",
       "reasonCode": "remote-action-acquisition-out-of-scope"
+    },
+    {
+      "id": "with-on-task-composition",
+      "file": "rejected/with-on-task-composition.yml",
+      "reasonCode": "COMPOSITION_INVALID",
+      "stage": "freeze",
+      "note": "Unlike its siblings above, this fixture is ACCEPTED at compileGithubWorkflowSource (with: on a tasks/<ref> uses target decodes cleanly, P0 row R-01(a)); it is rejected only when the workflow is frozen (docs/plans/specs/p1a-with-rejection-classifier.md §3.1, tests/workflows/with-rejection.test.ts)."
     }
   ],
   "singleJob": {

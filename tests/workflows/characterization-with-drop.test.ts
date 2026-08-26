@@ -24,6 +24,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { resetConfigCache } from "../../src/core/config/config";
+import { UsageError } from "../../src/core/errors";
 import { akmIndex } from "../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
 import { decodeWorkflowPlanV4, type FrozenWorkflowTarget } from "../../src/workflows/ir/schema-v4";
@@ -125,7 +126,7 @@ describe("R-01(a)(b)(d) — with: on tasks/<ref>: decode-level acceptance, guard
   });
 });
 
-describe("R-01(c) — with: values leave no trace at freeze (source-freeze-v4.ts:211-272, taskDispatch)", () => {
+describe("R-01(c) — with: on tasks/<ref> now rejects at freeze (source-freeze-v4.ts:211-272, taskDispatch)", () => {
   let storage: IsolatedAkmStorage;
 
   beforeEach(() => {
@@ -155,10 +156,17 @@ describe("R-01(c) — with: values leave no trace at freeze (source-freeze-v4.ts
     return root.kind === "map" ? root.template.frozenTarget : root.frozenTarget;
   }
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. Flips in P1a (the drop becomes a rejection)
-  // and P2b (a real `with:` -> task-param binding is implemented).
-  test("R-01(c): a task-composed step freezes byte-identically whether or not with: is authored, and the values are absent from the persisted plan JSON", async () => {
+  // FLIPPED (P1a, Lane A): docs/plans/specs/p1a-with-rejection-classifier.md
+  // §3.1, §7 rows F-01a/F-01b. Before P1a this test proved the SILENT DROP —
+  // freeze-equality of the with/without halves and byte-absence of the
+  // authored value from the persisted plan JSON (see git history for the
+  // prior body). P1a turns the drop into a fail-closed rejection: the
+  // with-half now throws UsageError COMPOSITION_INVALID naming the step id
+  // and the authored task ref, before the frozen dispatch is ever produced.
+  // The without-half is untouched by the new guard and still freezes to a
+  // command dispatch exactly as before (B-04) — both halves are asserted in
+  // this one test, per F-01b.
+  test("R-01(c): a task-composed step's with: now rejects at freeze with COMPOSITION_INVALID; the without-half still freezes unchanged", async () => {
     write("commands/review.md", "Review the dropped with value.\n");
     write(
       "tasks/command-task.yml",
@@ -198,26 +206,27 @@ describe("R-01(c) — with: values leave no trace at freeze (source-freeze-v4.ts
     );
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const withRun = await startWorkflowRun("workflows/with-drop-with");
-    const withoutRun = await startWorkflowRun("workflows/with-drop-without");
-    const withRow = await planRow(withRun.run.id);
-    const withoutRow = await planRow(withoutRun.run.id);
-    const withPlan = decodeWorkflowPlanV4(JSON.parse(withRow?.plan_json ?? "null"));
-    const withoutPlan = decodeWorkflowPlanV4(JSON.parse(withoutRow?.plan_json ?? "null"));
-    const withTarget = firstTarget(withPlan);
-    const withoutTarget = firstTarget(withoutPlan);
+    // F-01a: the with-half now rejects at freeze instead of silently
+    // dropping the mapping and dispatching a command.
+    let withError: unknown;
+    try {
+      await startWorkflowRun("workflows/with-drop-with");
+    } catch (error) {
+      withError = error;
+    }
+    expect(withError).toBeInstanceOf(UsageError);
+    if (!(withError instanceof UsageError)) return;
+    expect(withError.code).toBe("COMPOSITION_INVALID");
+    expect(withError.message).toBe(
+      "Workflow step dispatch cannot pass with: to task target tasks/command-task; task-call inputs are not supported yet.",
+    );
 
-    // The authored step actually reached a command dispatch (sanity check the
-    // fixture exercises taskDispatch's command arm, not some earlier failure).
-    expect(withTarget?.kind).toBe("command");
-    // R-01(c) — the drop, proven by equality: two otherwise-identical steps
-    // (one with `with:`, one without) resolve to the SAME frozen target.
-    expect(withTarget).toEqual(withoutTarget);
-    // R-01(c) — the drop, proven directly: the authored with: value is byte-absent
-    // from the persisted plan JSON. The sentinel string can only appear if the
-    // authored with: left a trace, so this cannot fail for an unrelated
-    // plan-shape change that happens to contain a generic word.
-    expect(withRow?.plan_json ?? "").not.toContain("r01-dropped-sentinel");
+    // F-01b: the without-half is unaffected by the new guard and still
+    // freezes to a command dispatch, unchanged from before P1a.
+    const withoutRun = await startWorkflowRun("workflows/with-drop-without");
+    const withoutRow = await planRow(withoutRun.run.id);
+    const withoutPlan = decodeWorkflowPlanV4(JSON.parse(withoutRow?.plan_json ?? "null"));
+    expect(firstTarget(withoutPlan)?.kind).toBe("command");
   });
 });
 
