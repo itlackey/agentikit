@@ -689,3 +689,7 @@ wires the code retargets the hint at `akm lint` or ships the verb (P3 specs);
 SAFE_TASK_ATTEMPT_ERROR_CODES allowlist tracks the new codes when P1b splits the runner;
 `with:` on `uses: commands/<ref>`/`scripts/<ref>` is still accepted-then-ignored (P0-unpinned,
 outside R-01) — P2b's binding work must close it and the docs note it until then.
+
+**2026-08-26 — phase gate green.** lint green, tsc green, unit 3908 pass / 0 fail (291 files),
+integration 5622 pass / 57 skip / 0 fail (419 files), with the close-out parity pins included.
+P1a is complete.
