@@ -293,6 +293,46 @@ describe("preFilterSession — subagent task-notification dedupe (#839)", () => 
     expect(result.events[0]?.text).toContain("<task-notification>");
   });
 
+  test("does not stub when the subagent's own event was evicted by the budget cap (#840 hazard)", () => {
+    // The recency-biased budget can (and per #840's measurement, usually does)
+    // evict one side of a raw duplicate pair before dedupe ever runs. If the
+    // NOTIFICATION survives but the subagent's own (older) event does not,
+    // stubbing the notification would delete the only surviving trace of that
+    // delegated work — exactly the hazard #840's design doc flags for any
+    // future prompt-composition design where the subagent's own copy is never
+    // in the prompt at all. The dedupe must be a no-op here.
+    const resultBody = 'Verdict: CONFIRMED -&gt; zero live callers found via grep across src/tests. {"ok":true}';
+    const notif = notification(resultBody);
+    const events = [subagentEvent, notif]; // subagentEvent is OLDER (ts 1700000000000 < 1700000001000)
+    // Budget just barely fits the (newer) notification alone — the older
+    // subagent event gets evicted by the recency-biased budget pass.
+    const tightBudget = notif.text.length + 10;
+    const result = preFilterSession(makeData(events), { maxTotalChars: tightBudget });
+
+    expect(result.events).toHaveLength(1);
+    expect(result.stats.budgetDroppedCount).toBe(1);
+    // The notification survives UNSTUBBED — its would-be duplicate never made it into this kept set.
+    expect(result.events[0]?.text).toBe(notif.text);
+    expect(result.events[0]?.text).toContain("<task-notification>");
+  });
+
+  test("does not stub when the subagent's own event was dropped by a per-event rule (not merely evicted)", () => {
+    // Same hazard as the budget case, via a different exclusion path: the
+    // subagent's folded event is dropped by an ordinary per-event rule
+    // (too-short) rather than the budget cap. Either way, if the subagent's
+    // own copy isn't in the kept set, the notification must survive untouched.
+    const resultBody = 'Verdict: CONFIRMED -&gt; zero live callers found via grep across src/tests. {"ok":true}';
+    const tooShortSubagentEvent = event({
+      role: "assistant",
+      text: "hi", // under the 10-char floor — dropped by classifyEvent's "too-short" rule
+      filePath: "/proj/session-1/subagents/agent-a4f581608db6e05b1.jsonl",
+    });
+    const result = preFilterSession(makeData([tooShortSubagentEvent, notification(resultBody)]));
+
+    expect(result.events).toHaveLength(1); // the too-short subagent event was dropped, not just the notification stubbed
+    expect(result.events[0]?.text).toContain("<task-notification>");
+  });
+
   test("falls back to a generic stub when the notification has no <summary>", () => {
     const resultBody = 'Verdict: CONFIRMED -&gt; zero live callers found via grep across src/tests. {"ok":true}';
     const noSummary = event({
