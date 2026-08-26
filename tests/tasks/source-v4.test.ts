@@ -126,8 +126,13 @@ function v4Doc(overrides: Record<string, unknown>): Record<string, unknown> {
   return { version: TASK_SOURCE_V4_VERSION, ...overrides };
 }
 
-/** Run `fn`, assert it throws a `UsageError` coded `TASK_SOURCE_INVALID`, and assert its message matches every pattern given (each checked independently). */
-function expectTaskSourceInvalid(fn: () => unknown, pattern: RegExp | readonly RegExp[]): void {
+/**
+ * Run `fn`, assert it throws a `UsageError` coded `TASK_SOURCE_INVALID`, assert
+ * its message matches every pattern given (each checked independently), and
+ * return the caught error so callers can layer additional assertions (e.g.
+ * {@link expectTopLevelFieldPath}) without re-invoking `fn`.
+ */
+function expectTaskSourceInvalid(fn: () => unknown, pattern: RegExp | readonly RegExp[]): UsageError {
   let caught: unknown;
   try {
     fn();
@@ -140,6 +145,23 @@ function expectTaskSourceInvalid(fn: () => unknown, pattern: RegExp | readonly R
   for (const one of Array.isArray(pattern) ? pattern : [pattern]) {
     expect(error.message).toMatch(one);
   }
+  return error;
+}
+
+/**
+ * Assert `message` locates the detail at the EXACT top-level dotted field
+ * path `field` — not nested under `akm.` — per `sourceError`'s
+ * `${dotted} ${detail}` rendering (D2-N4). A v4 implementation that reuses
+ * v3's `parseAkm` wholesale (nesting every execution control under
+ * `["akm", key]`, `source-v3.ts:375,384,450,471,475,480,490`) would still
+ * satisfy a loose `/timeout/i`-style substring match on
+ * `"akm.timeout must be …"`; this pins the field path itself so that
+ * regression class fails loudly instead of passing vacuously (test-review
+ * finding, tests/tasks/source-v4.test.ts:130).
+ */
+function expectTopLevelFieldPath(message: string, field: string): void {
+  expect(message).toContain(`: ${field} `);
+  expect(message).not.toContain(`akm.${field}`);
 }
 
 interface ManifestFixture {
@@ -296,8 +318,22 @@ describe("classifyTaskSourceV4Uses — target classification (spec §3.3)", () =
 // ── (D2-N1, B-13..B-18) ──────────────────────────────────────────────────────
 
 describe("parseTaskSourceV4Document — target union (uses/run exactly one, D2-N1, B-13..B-18)", () => {
-  test("exactly one of uses/run is required (same detail text as v3, B-16)", () => {
-    expectTaskSourceInvalid(() => parseTaskSourceV4Document(v4Doc({}), { filePath: "/x.yml" }), /exactly one/i);
+  test("exactly one of uses/run is required (same detail text as v3, B-16) — the FULL message is pinned byte-exactly, proving the D2-N4 'task source v4' label (not 'task v3 source')", () => {
+    // B-16's detail text, pinned verbatim (test-review finding,
+    // tests/tasks/source-v4.test.ts:130): a v4 parser that is really just
+    // v3's `parseTaskV3Document` wearing a v4 hat would render "Invalid task
+    // v3 source at …" for this exact input — a loose `/exactly one/i` match
+    // cannot tell the two labels apart, so this asserts the complete
+    // "Invalid task source v4 at <path>: <field> <detail>" shape in one
+    // `toBe`, not a substring.
+    const error = expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({}), { filePath: "/x.yml" }),
+      /exactly one/i,
+    );
+    expect(error.message).toBe(
+      "Invalid task source v4 at /x.yml: $ requires exactly one executable selector: uses or run.",
+    );
+
     expectTaskSourceInvalid(
       () => parseTaskSourceV4Document(v4Doc({ uses: "commands/x", run: "echo x" }), { filePath: "/x.yml" }),
       /exactly one/i,
@@ -435,12 +471,20 @@ describe("parseTaskSourceV4Document — target union (uses/run exactly one, D2-N
 
 describe("task source v4 — akm:/on: removal (B-11, B-12)", () => {
   test("an akm: key is TASK_SOURCE_INVALID, naming the removal and pointing at the top-level spellings", () => {
+    // B-11 requires the detail to NAME THE REMOVAL, not merely mention "akm"
+    // — `checkKeys`' generic unknown-field wording ("akm is an unsupported
+    // field.", src/tasks/source-v3.ts:333) also matches a bare `/akm/`, so a
+    // pattern-only check here is satisfiable by routing `akm:` through the
+    // SAME generic closed-key rejection every other unrecognized top-level
+    // key gets — exactly the regression class this test must catch (test-
+    // review finding, tests/tasks/source-v4.test.ts:437). The second pattern
+    // requires wording only a removal-specific detail can produce.
     expectTaskSourceInvalid(
       () =>
         parseTaskSourceV4Document(v4Doc({ uses: "commands/review", akm: { schedule: "@daily" } }), {
           filePath: "/x.yml",
         }),
-      /akm/,
+      [/akm/, /removed|no longer|top-level/i],
     );
   });
 
@@ -464,9 +508,23 @@ describe("task source v4 — akm:/on: removal (B-11, B-12)", () => {
     );
   });
 
-  test("the akm:/on: removal messages are distinguishable from a generic unknown-key rejection (their detail NAMES the removal)", () => {
+  test("the akm:/on: removal messages are distinguishable from a generic unknown-key rejection (their detail NAMES the removal, not merely a different interpolated key name)", () => {
+    // The original version of this test compared `akm:`'s message against
+    // `bogusTopLevelKey:`'s message and asserted they differ — but
+    // `checkKeys`' generic wording is `"<key> is an unsupported field."`,
+    // which interpolates the offending key name. TWO generic messages for
+    // TWO DIFFERENT key names always differ from each other trivially, so
+    // that comparison passed vacuously even if `akm:` received the exact
+    // same generic treatment as any other unrecognized key (test-review
+    // finding, tests/tasks/source-v4.test.ts:437). The fix compares each
+    // message against the GENERIC-SHAPED string for THAT SAME key — the
+    // literal wording a naive "route akm/on through the ordinary closed-key
+    // check" implementation would produce for exactly this key — so only a
+    // detail that truly names the removal can pass.
+    const genericShapedAkmMessage = "Invalid task source v4 at /x.yml: akm is an unsupported field.";
+    const genericShapedOnMessage = "Invalid task source v4 at /x.yml: on is an unsupported field.";
+
     let akmMessage = "";
-    let genericMessage = "";
     try {
       parseTaskSourceV4Document(v4Doc({ uses: "commands/review", akm: { schedule: "@daily" } }), {
         filePath: "/x.yml",
@@ -474,14 +532,19 @@ describe("task source v4 — akm:/on: removal (B-11, B-12)", () => {
     } catch (error) {
       akmMessage = (error as Error).message;
     }
+    let onMessage = "";
     try {
-      parseTaskSourceV4Document(v4Doc({ uses: "commands/review", bogusTopLevelKey: true }), { filePath: "/x.yml" });
+      parseTaskSourceV4Document(v4Doc({ uses: "commands/review", on: { schedule: [{ cron: "0 0 * * *" }] } }), {
+        filePath: "/x.yml",
+      });
     } catch (error) {
-      genericMessage = (error as Error).message;
+      onMessage = (error as Error).message;
     }
+
     expect(akmMessage.length).toBeGreaterThan(0);
-    expect(genericMessage.length).toBeGreaterThan(0);
-    expect(akmMessage).not.toBe(genericMessage);
+    expect(onMessage.length).toBeGreaterThan(0);
+    expect(akmMessage).not.toBe(genericShapedAkmMessage);
+    expect(onMessage).not.toBe(genericShapedOnMessage);
   });
 });
 
@@ -938,48 +1001,76 @@ describe("task source v4 — optional output schema", () => {
 // ── so accept/reject sets and detail texts match v3's BY CONSTRUCTION) ──────
 
 describe("task source v4 — top-level execution controls", () => {
-  test("timeout accepts a common duration string and rejects a value beyond EXECUTION_MAX_TIMEOUT_MS", () => {
+  test("timeout accepts a common duration string and rejects a value beyond EXECUTION_MAX_TIMEOUT_MS, at the TOP-LEVEL field path (not akm.timeout)", () => {
     const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", timeout: "20m" }), { filePath: "/x.yml" });
     expect(ok.execution.timeout).toBe("20m");
-    expectTaskSourceInvalid(
+    const error = expectTaskSourceInvalid(
       () =>
         parseTaskSourceV4Document(v4Doc({ uses: "commands/review", timeout: EXECUTION_MAX_TIMEOUT_MS + 1 }), {
           filePath: "/x.yml",
         }),
       /timeout/i,
     );
+    // v3's parseTimeout hardcodes ["akm", "timeout"] (source-v3.ts:396) — a v4
+    // implementation that reuses it unmodified would render "akm.timeout …",
+    // which /timeout/i alone cannot distinguish from the correct top-level
+    // "timeout …" (test-review finding, tests/tasks/source-v4.test.ts:130).
+    expectTopLevelFieldPath(error.message, "timeout");
   });
 
-  test("engine/model/agent accept null and reject an empty string", () => {
+  test("engine/model/agent accept null and reject an empty string, each at its OWN top-level field path (not akm.<key>)", () => {
     const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", engine: null, model: null, agent: null }), {
       filePath: "/x.yml",
     });
     expect(ok.execution.engine).toBeNull();
     expect(ok.execution.model).toBeNull();
     expect(ok.execution.agent).toBeNull();
-    expectTaskSourceInvalid(
+
+    // v3's nullableSelector hardcodes ["akm", key] (source-v3.ts:375) for
+    // every one of engine/model/agent — pin all three field paths
+    // individually, not just "engine" (test-review finding,
+    // tests/tasks/source-v4.test.ts:130).
+    const engineError = expectTaskSourceInvalid(
       () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", engine: "" }), { filePath: "/x.yml" }),
       /engine/i,
     );
+    expectTopLevelFieldPath(engineError.message, "engine");
+
+    const modelError = expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", model: "" }), { filePath: "/x.yml" }),
+      /model/i,
+    );
+    expectTopLevelFieldPath(modelError.message, "model");
+
+    const agentError = expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", agent: "" }), { filePath: "/x.yml" }),
+      /agent/i,
+    );
+    expectTopLevelFieldPath(agentError.message, "agent");
   });
 
-  test("redact rejects duplicate names and more than WORKFLOW_MAX_EXEC_PASS_ENV entries", () => {
+  test("redact rejects duplicate names and more than WORKFLOW_MAX_EXEC_PASS_ENV entries, at the TOP-LEVEL field path (not akm.redact)", () => {
     const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", redact: ["TOKEN"] }), {
       filePath: "/x.yml",
     });
     expect(ok.execution.redact).toEqual(["TOKEN"]);
-    expectTaskSourceInvalid(
+    const duplicateError = expectTaskSourceInvalid(
       () =>
         parseTaskSourceV4Document(v4Doc({ uses: "commands/review", redact: ["TOKEN", "TOKEN"] }), {
           filePath: "/x.yml",
         }),
       /duplicate/i,
     );
+    // v3's redact duplicate/bound checks hardcode ["akm", "redact"]
+    // (source-v3.ts:471,475) — pin the top-level field path (test-review
+    // finding, tests/tasks/source-v4.test.ts:130).
+    expectTopLevelFieldPath(duplicateError.message, "redact");
     const tooMany = Array.from({ length: WORKFLOW_MAX_EXEC_PASS_ENV + 1 }, (_, i) => `TOKEN_${i}`);
-    expectTaskSourceInvalid(
+    const tooManyError = expectTaskSourceInvalid(
       () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", redact: tooMany }), { filePath: "/x.yml" }),
       new RegExp(String(WORKFLOW_MAX_EXEC_PASS_ENV)),
     );
+    expectTopLevelFieldPath(tooManyError.message, "redact");
   });
 
   test("env rejects an invalid environment variable name", () => {
@@ -993,27 +1084,33 @@ describe("task source v4 — top-level execution controls", () => {
     );
   });
 
-  test("maxSteps requires a positive safe integer", () => {
+  test("maxSteps requires a positive safe integer, at the TOP-LEVEL field path (not akm.maxSteps)", () => {
     const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxSteps: 8 }), { filePath: "/x.yml" });
     expect(ok.execution.maxSteps).toBe(8);
-    expectTaskSourceInvalid(
+    const error = expectTaskSourceInvalid(
       () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxSteps: 0 }), { filePath: "/x.yml" }),
       /maxSteps/i,
     );
+    // v3 hardcodes ["akm", "maxSteps"] (source-v3.ts:480) — test-review
+    // finding, tests/tasks/source-v4.test.ts:130.
+    expectTopLevelFieldPath(error.message, "maxSteps");
   });
 
-  test("maxRetries is bounded 0..WORKFLOW_MAX_RETRIES", () => {
+  test("maxRetries is bounded 0..WORKFLOW_MAX_RETRIES, at the TOP-LEVEL field path (not akm.maxRetries)", () => {
     const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxRetries: WORKFLOW_MAX_RETRIES }), {
       filePath: "/x.yml",
     });
     expect(ok.execution.maxRetries).toBe(WORKFLOW_MAX_RETRIES);
-    expectTaskSourceInvalid(
+    const error = expectTaskSourceInvalid(
       () =>
         parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxRetries: WORKFLOW_MAX_RETRIES + 1 }), {
           filePath: "/x.yml",
         }),
       new RegExp(String(WORKFLOW_MAX_RETRIES)),
     );
+    // v3 hardcodes ["akm", "maxRetries"] (source-v3.ts:490) — test-review
+    // finding, tests/tasks/source-v4.test.ts:130.
+    expectTopLevelFieldPath(error.message, "maxRetries");
   });
 
   test("when_to_use, tags, inference, and tools survive as top-level v4 keys with identical validation (D2-N7)", () => {
@@ -1031,6 +1128,16 @@ describe("task source v4 — top-level execution controls", () => {
     expect(doc.tags).toEqual(["contract", "review"]);
     expect(doc.execution.inference).toEqual({ seed: 7 });
     expect(doc.execution.tools).toEqual(["read", "grep"]);
+  });
+
+  test("an invalid tags: value is TASK_SOURCE_INVALID at the TOP-LEVEL field path 'tags' (not akm.tags, D2-N7)", () => {
+    // v3 hardcodes ["akm", "tags"] (source-v3.ts:450) — test-review finding,
+    // tests/tasks/source-v4.test.ts:130.
+    const error = expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", tags: "not-an-array" }), { filePath: "/x.yml" }),
+      /tags/i,
+    );
+    expectTopLevelFieldPath(error.message, "tags");
   });
 
   test("name/description round-trip as top-level v4 keys (description is NOT re-homed under akm here, unlike v3)", () => {

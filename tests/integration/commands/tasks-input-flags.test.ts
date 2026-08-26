@@ -12,7 +12,7 @@
  * the shared input contract (`src/execution/input-contract.ts`, Lane B), and
  * this lane's own additions — `RunTaskOptions.inputFlags` on
  * `src/tasks/run/task-result.ts`, plus this file's own test-only
- * `captureInputBindings` seam on that same options bag — do not exist yet.
+ * `captureTaskInvocation` seam on that same options bag — do not exist yet.
  * Every reference to one of those not-yet-existing names carries a
  * directly-preceding
  *
@@ -33,17 +33,34 @@
  * flags (B-26). That means the claim "akm task run <id> --scope all --strict
  * passes literal inputs into the invocation" cannot be read off
  * `TaskRunResult`, stdout, or the run log — every one of those is required
- * to stay unchanged by a valid flag set. The task brief anticipates exactly
- * this and offers two ways to assert it: "the run result/log or an injected
- * seam". This file uses the seam: `RunTaskOptions.captureInputBindings`,
- * called with the literal `TaskInputBinding[]` Stage 2 (load-task.ts)
- * materializes, once — before dispatch, never read back by production code.
- * It is modeled on the already-existing test-only overrides on that same
- * interface (`beforeNativeDispatch`, `spawnFn`, `runAgentImpl`, …,
+ * to stay unchanged by a valid flag set (see the dedicated end-to-end
+ * describe block near the bottom of this file, which pins exactly that
+ * byte-identity through the REAL `akm task run` CLI path). The task brief
+ * anticipates exactly this and offers two ways to assert the isolated Stage 2
+ * (materialize + attach) behavior: "the run result/log or an injected seam".
+ * This file uses the seam: `RunTaskOptions.captureTaskInvocation`, called
+ * with the CONSTRUCTED `TaskInvocation` Stage 2 (load-task.ts) builds, once —
+ * before dispatch, never read back by production code — so the load-bearing
+ * assertion is `TaskInvocation.inputs` (the widened model field §4.4
+ * authorizes), not a bespoke side channel. It is modeled on the
+ * already-existing test-only overrides on `RunTaskOptions`
+ * (`beforeNativeDispatch`, `spawnFn`, `runAgentImpl`, …,
  * src/tasks/run/task-result.ts) and is this test's OWN addition, not a name
- * the spec itself pins — if Implement satisfies the "passes literal inputs
- * into the invocation" requirement through a differently-shaped seam, update
- * this test's call site and pins to match rather than re-deriving intent.
+ * the spec itself pins — if Implement satisfies "the result becomes
+ * TaskInvocation.inputs" through a differently-shaped seam, update this
+ * test's call site and pins to match rather than re-deriving intent. (An
+ * earlier version of this file's seam handed back only a bare
+ * `TaskInputBinding[]`, which a side channel production code never reads
+ * could satisfy without ever attaching `.inputs` to a real `TaskInvocation`
+ * — test-review finding, tests/integration/commands/tasks-input-flags.test.ts:150.)
+ *
+ * B-27's declared-input enumeration and B-28's underlying-detail requirement
+ * (test-review finding, tests/integration/commands/tasks-input-flags.test.ts:187)
+ * are pinned by checking the WHOLE serialized `{ok,error,code,hint}` envelope
+ * (`JSON.stringify(envelope)`), not `.error` alone — `emitJsonError`
+ * (src/cli/shared.ts:113) serializes a UsageError's `hint` into the envelope
+ * too, and the workflow analogue's own "Declared parameters: …" text lives in
+ * exactly that separate `hint`, not the message (params.ts:51-56).
  *
  * IMPORTANT FINDING, recorded for Implement (out of scope for this
  * test-only lane to fix): `src/cli/unknown-flags.ts`'s `assertKnownFlags`
@@ -74,14 +91,36 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+// `src/cli.ts` already exists and already exports `main`/`normalizeCittyCliError`
+// (tests/_helpers/cli.ts uses them) — `isTaskRunWithId` is the ONE new named
+// export F-5 requires; a single-symbol named import from an already-resolving
+// module raises one single-line TS2305 ("has no exported member") directly
+// on this import statement (mirrors tests/tasks/source-v4-adapter.test.ts's
+// `PreparableTaskDocument` import — no namespace indirection needed for a
+// lone new symbol with nothing else from this path to merge with).
+// @ts-expect-error P2a red-phase: isTaskRunWithId is not yet exported from src/cli.ts (F-5); Implement adds `export`
+import { isTaskRunWithId } from "../../../src/cli";
+// `tasks-cli.ts` already exists (real exports: tasksCommand, etc.), so this
+// namespace import itself resolves cleanly today and carries NO pin — only
+// the destructuring below, which reaches for three not-yet-existing exports,
+// needs one (a namespace import, not 3 separate named imports, per this
+// file's own RED-phase import convention above: biome `--write` merges
+// same-specifier named imports and stacks their pins, leaving all but the
+// last "unused").
+import * as TasksCliModule from "../../../src/commands/tasks/tasks-cli";
+import { validateJsonSchemaSubset } from "../../../src/core/json-schema";
 import type {
   TaskInputBinding,
   // @ts-expect-error P2a red-phase: src/execution/input-contract.ts lands in Implement (whole module is new; tsc reports the diagnostic on the module-specifier line directly below)
 } from "../../../src/execution/input-contract";
+import type { TaskInvocation } from "../../../src/tasks/model/invocation";
 import { loadPreparedTask } from "../../../src/tasks/run/load-task";
 import type { RunTaskOptions } from "../../../src/tasks/run/task-result";
 import { runCliCapture } from "../../_helpers/cli";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
+
+// @ts-expect-error P2a red-phase: TasksCliModule (see the pinned import above) is untyped until Implement lands the module's new exports
+const { parseTaskInputFlags, TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS } = TasksCliModule;
 
 let storage: IsolatedAkmStorage;
 let tasksDir: string;
@@ -147,9 +186,25 @@ const TICKETED_TASK_YAML = [
 ].join("\n");
 
 describe("akm task run — exact-name input flags materialize literal bindings (P2a spec §5.1)", () => {
-  test('"--scope all --strict" materializes both as literal TaskInputBinding entries before dispatch (B-06, B-30, B-31)', async () => {
+  // Test-review remediation (finding recorded against
+  // tests/integration/commands/tasks-input-flags.test.ts:150): §4.4/§5.1
+  // require the materialized literals to become `readonly TaskInputBinding[]`
+  // on the `TaskInvocation` the run CONSTRUCTS — `TaskInvocation.inputs?` is
+  // the model-type declaration §4.4 explicitly authorizes
+  // (src/tasks/model/invocation.ts). The original version of this test only
+  // asserted a bespoke `captureInputBindings(bindings)` callback that this
+  // file itself invented — a pin that a differently-shaped, side-channel-only
+  // implementation (one production code never actually reads) could satisfy
+  // without ever attaching `.inputs` to a real `TaskInvocation`. The seam
+  // below still exists (test-only observability is otherwise impossible — the
+  // model-purity ratchet, tests/tasks/parse-v3-adapter.test.ts, keeps
+  // `TaskInvocation` a pure, IO-free type, so nothing production reads it back
+  // from in P2a either, per spec §0), but it now hands back the CONSTRUCTED
+  // `TaskInvocation` itself, and the load-bearing assertion is
+  // `invocation.inputs` — the widened model field — not a bespoke array.
+  test('"--scope all --strict" materializes both as literal TaskInputBinding entries on the constructed TaskInvocation before dispatch (B-06, B-30, B-31)', async () => {
     writeTask("review", REVIEW_TASK_YAML);
-    let captured: readonly TaskInputBinding[] | undefined;
+    let captured: TaskInvocation | undefined;
 
     // Stage 1 (the CLI's parseTaskInputFlags, tasks-cli.ts) would produce
     // exactly this InputFlag[] for `akm task run review --scope all
@@ -166,49 +221,88 @@ describe("akm task run — exact-name input flags materialize literal bindings (
       { name: "scope", value: "all" },
       { name: "strict", value: true },
     ];
-    // @ts-expect-error P2a red-phase: RunTaskOptions.captureInputBindings (this test's own seam, see file header) lands in Implement (src/tasks/run/task-result.ts)
-    options.captureInputBindings = (bindings: readonly TaskInputBinding[]) => {
-      captured = bindings;
+    // @ts-expect-error P2a red-phase: RunTaskOptions.captureTaskInvocation (this test's own seam, see the describe-block comment above) lands in Implement (src/tasks/run/task-result.ts) — if Implement satisfies "the result becomes TaskInvocation.inputs" through a differently-shaped seam, update this call site and pin to match rather than re-deriving intent
+    options.captureTaskInvocation = (invocation: TaskInvocation) => {
+      captured = invocation;
     };
 
     await loadPreparedTask("review", options);
 
     if (!captured)
       throw new Error(
-        "captureInputBindings was never called — Stage 2 did not run, or the seam is wired to a different name",
+        "captureTaskInvocation was never called — Stage 2 did not construct a TaskInvocation, or the seam is wired to a different name",
       );
-    const byName = [...captured].sort((a, b) => a.name.localeCompare(b.name));
+    // @ts-expect-error P2a red-phase: TaskInvocation.inputs lands in Implement (src/tasks/model/invocation.ts, spec §4.4) — the LOAD-BEARING assertion: it targets the widened model field, not a side channel production code never reads
+    const inputs = captured.inputs as readonly TaskInputBinding[] | undefined;
+    if (!inputs) throw new Error("TaskInvocation.inputs was not populated");
+    const byName = [...inputs].sort((a, b) => a.name.localeCompare(b.name));
     expect(byName).toEqual([
       { kind: "literal", name: "scope", value: "all" },
       { kind: "literal", name: "strict", value: true },
     ]);
   });
 
-  test("an input flag the task does not declare fails UNKNOWN_FLAG with exit 2 (B-27)", async () => {
+  // Test-review remediation (finding recorded against
+  // tests/integration/commands/tasks-input-flags.test.ts:187): §9 requires
+  // "every NEW row of §2 has at least one test asserting its code AND its
+  // message text", and B-27's row requires the detail to list the declared
+  // inputs — the original version of this test asserted only
+  // `typeof envelope.error === "string"` and a non-zero length, which any
+  // non-empty string satisfies. `emitJsonError` (src/cli/shared.ts:113)
+  // serializes BOTH `error` and (when the UsageError carries one) `hint` into
+  // the envelope, and `TASK_INPUT_DIAGNOSTICS.unknownFlag`
+  // (src/tasks/source/task-input-diagnostics.ts) is not required to put the
+  // declared-input enumeration in one specific field — `params.ts`'s own
+  // `unknown workflow parameter` analogue puts it in the SEPARATE `hint`
+  // (params.ts:51-56). This checks the whole serialized envelope (mirroring
+  // the B-29 test below, already written this way) rather than assuming it
+  // is in `.error` specifically.
+  test("an input flag the task does not declare fails UNKNOWN_FLAG, naming the offending flag and enumerating the declared inputs (B-27)", async () => {
     writeTask("review", REVIEW_TASK_YAML);
     const result = await runCliCapture(["task", "run", "review", "--not-a-declared-input", "x"]);
 
     expect(result.code).toBe(2);
-    const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string };
+    const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string; hint?: string };
     expect(envelope.ok).toBe(false);
     expect(envelope.code).toBe("UNKNOWN_FLAG");
-    expect(typeof envelope.error).toBe("string");
-    expect(envelope.error.length).toBeGreaterThan(0);
+    const rendered = JSON.stringify(envelope);
+    // Names the offending flag …
+    expect(rendered).toContain("not-a-declared-input");
+    // … and enumerates BOTH declared input names, mirroring the workflow
+    // analogue's "Declared parameters: --alpha, --beta." hint
+    // (src/workflows/ir/params.ts:54).
+    expect(rendered).toContain("scope");
+    expect(rendered).toContain("strict");
   });
 
-  test("a value that violates its input's declared schema fails INPUT_BINDING_INVALID with exit 2 (B-28)", async () => {
+  test("a value that violates its input's declared schema fails INPUT_BINDING_INVALID, naming the input and carrying validateJsonSchemaSubset's own detail (B-28)", async () => {
     writeTask("ticketed", TICKETED_TASK_YAML);
     // `scope` is declared `enum: [changed, all]`; "bogus" satisfies neither.
     // `--ticket` is supplied so this fails on the VALUE, not the separate
     // missing-required path the next test covers.
+    //
+    // Derive the expected detail fragment from the REAL, already-implemented
+    // validateJsonSchemaSubset (src/core/json-schema.ts) rather than guessing
+    // wording the task input contract has not been written yet to produce —
+    // mirrors tests/tasks/source-v4.test.ts's established derivation
+    // convention. The declaration's `default`/root `required` are stripped
+    // before validation (D2-N3), so the schema handed to the validator here
+    // omits both, matching what `validateInputs` will actually check against.
+    const [rawDetail] = validateJsonSchemaSubset("bogus", { type: "string", enum: ["changed", "all"] });
+    if (!rawDetail) throw new Error("expected validateJsonSchemaSubset to report a violation for this fixture");
+    const detailSuffix = rawDetail.replace(/^\$:\s*/, "");
+
     const result = await runCliCapture(["task", "run", "ticketed", "--ticket", "T-1", "--scope", "bogus"]);
 
     expect(result.code).toBe(2);
-    const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string };
+    const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string; hint?: string };
     expect(envelope.ok).toBe(false);
     expect(envelope.code).toBe("INPUT_BINDING_INVALID");
-    expect(typeof envelope.error).toBe("string");
-    expect(envelope.error.length).toBeGreaterThan(0);
+    const rendered = JSON.stringify(envelope);
+    // Names the offending input …
+    expect(rendered).toContain("scope");
+    // … and carries validateJsonSchemaSubset's own underlying detail text.
+    expect(rendered).toContain(detailSuffix);
   });
 
   test("omitting a required: true input with no flag at all fails INPUT_BINDING_INVALID, naming the missing input (B-29)", async () => {
@@ -222,5 +316,101 @@ describe("akm task run — exact-name input flags materialize literal bindings (
     // B-29 (spec §2): "detail names the missing input" — the missing input's
     // own name must appear somewhere in the rendered envelope.
     expect(JSON.stringify(envelope)).toContain("ticket");
+  });
+});
+
+// ── B-26 / §0 — a valid input flag set is byte-identical; a manual-only v4 ──
+// ── task runs end-to-end. Test-review remediation (finding recorded against ──
+// ── docs/plans/specs/p2a-task-source-v4.md:520): §0's central observable ────
+// ── contract had no end-to-end pin at all — the one v4 run test stopped at ──
+// ── loadPreparedTask, never reaching `akm task run` itself. ─────────────────
+
+describe("akm task run — end to end (B-26, §0: a valid flag set is byte-identical to the same run without flags)", () => {
+  /** Fields that legitimately differ between two separate runs of the identical task (timestamps, the per-run log file path). */
+  const VOLATILE_RESULT_FIELDS = ["startedAt", "finishedAt", "durationMs", "log"] as const;
+
+  function stableResult(result: Record<string, unknown>): Record<string, unknown> {
+    const stable = { ...result };
+    for (const field of VOLATILE_RESULT_FIELDS) delete stable[field];
+    return stable;
+  }
+
+  test("the same version: 4 task run bare and run with a valid --scope/--strict flag set produce byte-identical exit codes, run results, and history rows", async () => {
+    writeTask("review", REVIEW_TASK_YAML);
+
+    const bare = await runCliCapture(["task", "run", "review"]);
+    const flagged = await runCliCapture(["task", "run", "review", "--scope", "all", "--strict"]);
+
+    expect(bare.code).toBe(flagged.code);
+    const bareEnvelope = JSON.parse(bare.stdout) as { result: Record<string, unknown> };
+    const flaggedEnvelope = JSON.parse(flagged.stdout) as { result: Record<string, unknown> };
+    expect(stableResult(flaggedEnvelope.result)).toEqual(stableResult(bareEnvelope.result));
+
+    const history = await runCliCapture(["task", "history", "--id", "review", "--limit", "2"]);
+    const rows = (JSON.parse(history.stdout) as { rows: Record<string, unknown>[] }).rows;
+    expect(rows).toHaveLength(2);
+    expect(stableResult(rows[0] as Record<string, unknown>)).toEqual(stableResult(rows[1] as Record<string, unknown>));
+  });
+
+  test("a manual-only version: 4 task (no schedule:) parses AND runs successfully end-to-end via akm task run (§9 acceptance bullet)", async () => {
+    writeTask("review", REVIEW_TASK_YAML);
+    const result = await runCliCapture(["task", "run", "review"]);
+
+    expect(result.code).toBe(0);
+    const envelope = JSON.parse(result.stdout) as { result: { id: string; status: string } };
+    expect(envelope.result.id).toBe("review");
+    expect(envelope.result.status).toBe("completed");
+  });
+});
+
+// ── B-32 / B-33 — retired --target and akm task run's own declared flags ────
+// ── are PRESERVED, never treated as inputs. Test-review remediation (finding ──
+// ── recorded against docs/plans/specs/p2a-task-source-v4.md:526): neither ───
+// ── B-32 nor B-33 nor F-5's isTaskRunWithId test existed anywhere. ──────────
+
+describe("akm task run <id> --target x — the retired-flag usage error is unchanged (B-32, PRESERVE)", () => {
+  test("still rejects with the retired-flag INVALID_FLAG_VALUE usage error, exit 2 — --target is NEVER treated as an input", async () => {
+    // rejectRetiredTaskTargetFlag() (src/commands/tasks/tasks-cli.ts) runs
+    // BEFORE any task lookup, so the id need not exist for this to fire —
+    // this is ALREADY-REAL, ALREADY-GREEN production behavior today; grep for
+    // "was renamed to `--bundle`" in tests/ returns nothing anywhere in the
+    // repo before this test.
+    const result = await runCliCapture(["task", "run", "anything", "--target", "x"]);
+
+    expect(result.code).toBe(2);
+    const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string };
+    expect(envelope.ok).toBe(false);
+    expect(envelope.code).toBe("INVALID_FLAG_VALUE");
+    expect(envelope.error).toBe("`akm task --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.");
+  });
+});
+
+describe("parseTaskInputFlags — akm task run's own declared flags are excluded from the captured input set (B-33, PRESERVE)", () => {
+  test("--bundle/--format/--scheduled/--quiet are parsed as their declared flags and never appear in the materialized flag set; a genuine input flag still does", () => {
+    const flags = parseTaskInputFlags(
+      ["review", "--bundle", "fixture", "--format", "json", "--scheduled", "--quiet", "--scope", "all"],
+      "review",
+    );
+    expect(flags).toEqual([{ name: "scope", value: "all" }]);
+  });
+
+  test("TASK_RUN_VALUE_FLAGS / TASK_RUN_BOOLEAN_FLAGS are exactly the closed sets spec §5.1 names", () => {
+    expect([...TASK_RUN_VALUE_FLAGS].sort()).toEqual(["bundle", "detail", "format", "output", "shape"].sort());
+    expect([...TASK_RUN_BOOLEAN_FLAGS].sort()).toEqual(
+      ["help", "no-quiet", "no-verbose", "quiet", "scheduled", "verbose"].sort(),
+    );
+  });
+});
+
+describe("isTaskRunWithId — F-5's explicit classification requirement", () => {
+  test("`akm task run <id> --scope all` still classifies as a task-run-with-id", () => {
+    expect(isTaskRunWithId(["bun", "cli.ts", "task", "run", "nightly", "--scope", "all"])).toBe(true);
+  });
+
+  // PRESERVED companion: unaffected non-task-run invocations still classify
+  // false, so the new pin above cannot be satisfied by an always-true stub.
+  test("a non-task-run invocation still classifies false", () => {
+    expect(isTaskRunWithId(["bun", "cli.ts", "task", "history"])).toBe(false);
+    expect(isTaskRunWithId(["bun", "cli.ts", "workflow", "run", "workflows/x"])).toBe(false);
   });
 });
