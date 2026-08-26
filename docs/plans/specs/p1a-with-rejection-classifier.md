@@ -662,3 +662,30 @@ The new test file carries the MPL-2.0 header
   direct-throw sites stay `INVALID_FLAG_VALUE`. The CHANGELOG entry was
   rewritten to state both qualifications explicitly instead of silently
   absorbing the gap, per §10's final acceptance criterion.
+
+**2026-08-26 — phase close-out (orchestrator).** Test review: clean after 2 rounds. Code review ran
+its full 3-round budget (3 → 1 → 2 CONFIRMED) without a confirming fourth round; the orchestrator
+adjudicated per the dispute rule. Round 1 found real code issues (type widening at the classifier
+seam, a five-value locator parity regression, a falsified workflow-schema.md sentence) — fixed in
+round 1's fix commit, with the parity fix independently differentially fuzzed by the round-2
+reviewer over 353k locator-shaped values (sole divergence class: the A-1-authorized widening).
+Round 2's single finding (ratchet file describing itself as unmeasured/RED) and round 3's two
+findings (CHANGELOG overclaiming the TASK_SOURCE_INVALID scope; the unrecorded hint/detail drift)
+were each fixed in their round's fix commit — verified directly against the reviewers' required
+changes. Severity converged monotonically (code → stale comments → changelog wording), so the
+budget expiry is a bookkeeping artifact, not an unresolved defect.
+
+Applied at close-out (round-2 advisory): the ten locator parity values are now pinned in
+`tests/execution/target-ref.test.ts`'s rejection table (five regression values + five A-1
+widenings, all `remote-action-acquisition-out-of-scope`, live-verified before pinning).
+
+Advisories carried to later phase specs: import-seam ratchet hardening against namespace-import /
+re-export / dynamic-import evasion (P4a spec — the seam must hold through the grammar deletion);
+CLI envelope + exit-2 coverage for COMPOSITION_INVALID / TASK_SOURCE_INVALID (P1b spec);
+lint-stage diagnostic for `with:` on task steps — the freeze-stage rejection is invisible to
+`akm lint`, workflow authoring, and scheduler-sync (P2b spec, where bindings land);
+WORKFLOW_SOURCE_INVALID's hint names `akm workflow validate`, which does not exist — the phase that
+wires the code retargets the hint at `akm lint` or ships the verb (P3 specs);
+SAFE_TASK_ATTEMPT_ERROR_CODES allowlist tracks the new codes when P1b splits the runner;
+`with:` on `uses: commands/<ref>`/`scripts/<ref>` is still accepted-then-ignored (P0-unpinned,
+outside R-01) — P2b's binding work must close it and the docs note it until then.

@@ -186,6 +186,23 @@ describe("classifyWorkflowStepUses — identical observable results through the 
       // becoming remote-action-acquisition-out-of-scope.
       ["actions/checkout@bad:ref", "unsupported-uses-target"],
       ["review", "unsupported-uses-target"],
+      // Locator-shape parity pins (spec Review log, round-1 parity fix): the
+      // five values below regressed to unsupported-uses-target when the first
+      // isGithubLocatorShape rule was narrower than the task-v3 grammar, and
+      // were restored by the round-1 fix. Pinned so the shape check cannot
+      // silently narrow again before P4 retires it.
+      ["owner/.github@v1", "remote-action-acquisition-out-of-scope"],
+      ["owner/_repo@v1", "remote-action-acquisition-out-of-scope"],
+      ["owner/-repo@v1", "remote-action-acquisition-out-of-scope"],
+      ["owner/repo@v1.0+meta", "remote-action-acquisition-out-of-scope"],
+      ["owner/repo@%40", "remote-action-acquisition-out-of-scope"],
+      // A-1-authorized widenings (previously unsupported-uses-target under the
+      // full task-v3 grammar, locator-SHAPED under the sanctioned shape check):
+      ["owner/repo/../x@v1", "remote-action-acquisition-out-of-scope"],
+      ["owner/repo/.@v1", "remote-action-acquisition-out-of-scope"],
+      ["o.wner/repo@v1", "remote-action-acquisition-out-of-scope"],
+      ["own_er/repo@v1", "remote-action-acquisition-out-of-scope"],
+      ["a234567890123456789012345678901234567890/repo@v1", "remote-action-acquisition-out-of-scope"],
     ];
     for (const [value, code] of rejected) {
       const error = thrown(() => classifyWorkflowStepUses(value));
