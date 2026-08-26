@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2-alpha.4] - 2026-08-26
+
+### Added
+
+- **`akm health`: flag assets whose resolved type disagrees with their
+  directory** (#837). Adds a `type-directory-disagreement` advisory that
+  compares every indexed asset's resolved type against the type its
+  `DIR_TYPE_MAP` directory declares (`memories/`, `knowledge/`, `commands/`,
+  `agents/`, `workflows/`, `facts/`, `lessons/`, `sessions/`,
+  `instructions/`, `scripts/`, `env/`, `secrets/`, `tasks/`). This is the
+  diagnostic that would have caught #824 (three `memories/` files silently
+  indexed as commands) the day it was introduced. Since `knowledge/` +
+  `$ARGUMENTS` and `agents/` + `agent:` frontmatter are deliberate command
+  overrides, the check never hard-fails: every disagreement is reported as a
+  warning naming the winning classifier signal, with a `knownGoodOverride`
+  flag so a sanctioned override reads differently from an unexplained one.
+- **`akm health`: report the Claude harness plugin's version and warn when
+  it's stale or out of range** (#838). Adds a `plugin-version` advisory that
+  reports each installed Claude Code `akm` plugin's version, warns when a
+  newer tag is published upstream (naming the update command), and warns
+  when the plugin's own declared `AKM_VERSION_RANGE` no longer admits the
+  running CLI — meaning the plugin has silently disabled itself. Makes an
+  outbound `git ls-remote` when network is available to check for a newer
+  tag; per owner decision, this is read-only and degrades to a benign pass
+  (no plugin, no marketplace clone, unreadable manifest, malformed range, or
+  a failed remote lookup) rather than crashing or blocking offline use.
+
 ### Changed
 
 - **Extract: LLM prompt is now built from parent-origin events only —
@@ -54,6 +81,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`akm remember` synthesizes a description when the caller doesn't supply
+  one** (#835). Both the zero-flag hot path and the structured-args path
+  (e.g. `--tag`-only, with no `--description`/`--enrich`) previously wrote
+  memories with no `description:` and no `tags:`. akm's indexer covers only
+  synthesized frontmatter/headings, never body prose, so those memories were
+  retrievable only by whatever words survived into the auto-generated
+  filename — effectively write-only. Verified on a real stash: 272/3169
+  memories lacked a description, 100% of those written via `akm remember`.
+  The new `synthesizeMemoryDescription` (ported from akm-eval's
+  `firstSentencesCapped` rule, which independently arrived at the same fix)
+  is deterministic and makes no LLM call: it accumulates whole sentences
+  from the body up to `DESCRIPTION_MAX_CHARS`, skipping a leading markdown
+  heading so the description doesn't just repeat the title. Wired into both
+  write paths as a fallback only — a caller-supplied `--description` (or one
+  derived by `--enrich`) is never overwritten. Closes the write-only-memories
+  gap on 0.9.1 indexes.
 - **Extract: deduped the doubled subagent conclusion in the extraction prompt**
   (#839). After #830 folded a session's subagent transcripts into its event
   stream, a completed subagent's final report could appear twice in the same
