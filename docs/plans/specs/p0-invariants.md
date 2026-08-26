@@ -236,3 +236,12 @@ Gate: `bun run lint` green, `bunx tsc --noEmit` green, unit 3879 pass / 0 fail (
 The full integration suite runs as the final gate step; its result is appended below when it
 completes. `git diff origin/release/0.9.2..HEAD -- src/` is empty — P0 changed no production code.
 All acceptance boxes ticked.
+
+**2026-08-26 — integration gate confirmed green.** Full integration suite: 5622 pass / 57 skip /
+0 fail across 419 files (sharded runners). An initial run had 15 environment-caused failures in
+`registry-pinned-transport`, `registry-network-boundary`, and `package-launcher` — all traced to
+the container's default Node being v22 while akm 0.9.2 requires Node >= 24 (the transport helper
+and npm launcher enforce it). Fixed at the environment level by installing Node v24.19.0 and making
+it the default; no repository change was needed and the failures predate P0 (they reproduce at the
+untouched baseline in a Node-22 environment). P0 gate: lint green, tsc green, unit 3879/0,
+integration 5622/0.
