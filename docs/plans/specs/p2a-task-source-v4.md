@@ -1025,46 +1025,46 @@ document at head, so nothing about it can be a flip.
 
 ## 7. Preservation gates (the reviewer runs these)
 
-- [ ] `tests/integration/tasks-runtime-v3-runner.test.ts` green and **byte-unchanged**
+- [x] `tests/integration/tasks-runtime-v3-runner.test.ts` green and **byte-unchanged**
       (fail-before-mutation canary for the run path).
-- [ ] `tests/tasks/source-v3.test.ts` green and **byte-unchanged** (canary for the
+- [x] `tests/tasks/source-v3.test.ts` green and **byte-unchanged** (canary for the
       D2-N4 extraction).
-- [ ] `tests/integration/tasks-scheduling-characterization.test.ts` green and
+- [x] `tests/integration/tasks-scheduling-characterization.test.ts` green and
       **byte-unchanged** — all three R-06 tests (§6 F-0).
-- [ ] `tests/integration/tasks-scheduler-sync-v3.test.ts` green and
+- [x] `tests/integration/tasks-scheduler-sync-v3.test.ts` green and
       **byte-unchanged**; the compiled binding set for every v3 fixture is
       identical in ids, ordinals, `source` strings, `enabled`, and invocation tails.
-- [ ] `tests/workflows/workflow-param-flags.test.ts` and
+- [x] `tests/workflows/workflow-param-flags.test.ts` and
       `tests/integration/workflows/params-validation.test.ts` green and
       **byte-unchanged** (Lane B canary).
-- [ ] `tests/contracts/execution-cascade-resolver.test.ts`,
+- [x] `tests/contracts/execution-cascade-resolver.test.ts`,
       `tests/contracts/execution-json.test.ts`,
       `tests/contracts/execution-source-loader.test.ts`,
       `tests/contracts/resolved-execution-contract.test.ts`,
       `tests/contracts/command-invocation-contract.test.ts` green and
       **byte-unchanged**.
-- [ ] Every other P0/P1 suite green except §6's enumerated flips — in particular
+- [x] Every other P0/P1 suite green except §6's enumerated flips — in particular
       `tests/integration/tasks-provenance-characterization.test.ts`,
       `tests/integration/tasks-legacy-vocabulary-characterization.test.ts`,
       `tests/integration/tasks-with-classification-characterization.test.ts`,
       `tests/tasks/model-contracts.test.ts`, `tests/tasks/parse-v3-adapter.test.ts`,
       `tests/tasks/prepare-split.test.ts`, `tests/tasks/run-split.test.ts`.
-- [ ] `tests/architecture/import-cycle-ratchet.test.ts` green with **no new cycle
+- [x] `tests/architecture/import-cycle-ratchet.test.ts` green with **no new cycle
       participant** — specifically no `src/execution/** → src/workflows/**` edge
       (D3-N1).
-- [ ] `tests/architecture/src-fn-size-ratchet.test.ts` green with **no baseline
+- [x] `tests/architecture/src-fn-size-ratchet.test.ts` green with **no baseline
       additions** — every new parser/materializer function stays under the
       220-line `SRC_FN_SIZE_BAR`.
-- [ ] `tests/tasks/parse-v3-adapter.test.ts`'s purity ratchet green with its file
+- [x] `tests/tasks/parse-v3-adapter.test.ts`'s purity ratchet green with its file
       list unchanged (§4.4).
-- [ ] No frozen-plan bytes change: workflow freeze / plan-hash suites green
+- [x] No frozen-plan bytes change: workflow freeze / plan-hash suites green
       unchanged. `taskDispatch`'s only edit is the LC-N1 guard, which runs
       **before** any freeze.
-- [ ] `rg -F 'version: 3\nuses:' src/` and `rg -F 'schedule: "@daily"' src/`
+- [x] `rg -F 'version: 3\nuses:' src/` and `rg -F 'schedule: "@daily"' src/`
       return **zero** hits (P1b's synthetic-document invariant still holds —
       §3.5's projection is typed, not textual).
-- [ ] `bun scripts/lint-doc-examples.ts` clean.
-- [ ] `bunx biome check --write src/ tests/` produces no further changes;
+- [x] `bun scripts/lint-doc-examples.ts` clean.
+- [x] `bunx biome check --write src/ tests/` produces no further changes;
       `bunx tsc --noEmit` clean; `bun run check` passes.
 
 ### G-1 — recorded gate scope note {#g1}
@@ -1080,17 +1080,17 @@ input-flag thread is not additive.
 
 ## 8. Docs that ride with the code
 
-- [ ] `docs/reference/tasks.md` — task source v4 documented; v3 stated as still
+- [x] `docs/reference/tasks.md` — task source v4 documented; v3 stated as still
       parsing until a later release; every `akm …` example passes
       `scripts/lint-doc-examples.ts` (§5.4).
-- [ ] `CHANGELOG.md` `[Unreleased]` → "Breaking changes & migration" — the
+- [x] `CHANGELOG.md` `[Unreleased]` → "Breaking changes & migration" — the
       task-source-v4 entry, with the full `akm:` → top-level mapping, the
       github-action removal, the optional-schedule/sync-skip behavior, the new
       input flags and their validate-but-not-yet-deliver scope, and the LC-N1
       workflow-composition deferral.
-- [ ] `docs/plans/specs/p0-invariants.md` Review log — the **R-06 scoping note**
+- [x] `docs/plans/specs/p0-invariants.md` Review log — the **R-06 scoping note**
       (§6 F-0). This is a close-out obligation, not optional.
-- [ ] Universal "`version: 3`" / "exactly one trigger source" statements in
+- [x] Universal "`version: 3`" / "exactly one trigger source" statements in
       `docs/reference/supported-formats.md`, `docs/reference/cli.md`, and
       `docs/architecture/adapters.md` scoped to v3.
 
@@ -1100,63 +1100,63 @@ input-flag thread is not additive.
 
 **Structure**
 
-- [ ] `src/tasks/source/bounded-document.ts` exists and owns the D2-N4 helpers;
+- [x] `src/tasks/source/bounded-document.ts` exists and owns the D2-N4 helpers;
       `src/tasks/source-v3.ts` imports them and contains **no copy** of any of
       them.
-- [ ] `src/tasks/source/task-source-v4.ts` exports `TASK_SOURCE_V4_VERSION`,
+- [x] `src/tasks/source/task-source-v4.ts` exports `TASK_SOURCE_V4_VERSION`,
       `TaskSourceV4Document`, `parseTaskSourceV4()`, and the three key-set
       constants of D2-N3/D2-N7.
-- [ ] `src/tasks/source/parse-task-source.ts` exports `parseTaskSource()`
+- [x] `src/tasks/source/parse-task-source.ts` exports `parseTaskSource()`
       returning the `ParsedTaskSource` union and parses the YAML **once**.
-- [ ] `src/tasks/source/project-v4.ts` exports `projectTaskSourceV4()`; no YAML
+- [x] `src/tasks/source/project-v4.ts` exports `projectTaskSourceV4()`; no YAML
       is fabricated and `prepareTaskV3Execution` is unmodified.
-- [ ] `src/execution/input-contract.ts` exports the full §4.2 surface, imports
+- [x] `src/execution/input-contract.ts` exports the full §4.2 surface, imports
       nothing from `src/workflows/**`, and keeps the pure-module header.
-- [ ] `src/workflows/ir/params.ts` contains no coercion or validation logic of
+- [x] `src/workflows/ir/params.ts` contains no coercion or validation logic of
       its own — only the plan→contract adapter, the diagnostics vocabulary, and
       the three re-exported wrappers.
-- [ ] Every §3.6 "ROUTE" call site consumes the union and handles both arms; every
+- [x] Every §3.6 "ROUTE" call site consumes the union and handles both arms; every
       "STAYS" call site is unchanged except `source-freeze-v4.ts`'s LC-N1 guard.
 
 **Naming (D1)**
 
-- [ ] The task-side symbols are `TASK_SOURCE_V4_VERSION`, `TaskSourceV4Document`,
+- [x] The task-side symbols are `TASK_SOURCE_V4_VERSION`, `TaskSourceV4Document`,
       `parseTaskSourceV4` and live under `src/tasks/source/`.
-- [ ] No prose in the new code, the schema, `docs/reference/tasks.md`, or the
+- [x] No prose in the new code, the schema, `docs/reference/tasks.md`, or the
       CHANGELOG entry says bare "v4" for the task grammar — it is always "task
       source v4". `grep -n '\bv4\b'` over the new/edited docs shows only
       workflow-plan-IR uses.
 
 **Behavior**
 
-- [ ] Every PRESERVE row of §2 holds, verified by its cited test.
-- [ ] Every NEW row of §2 has at least one test asserting its code **and** its
+- [x] Every PRESERVE row of §2 holds, verified by its cited test.
+- [x] Every NEW row of §2 has at least one test asserting its code **and** its
       message text.
-- [ ] A v4 task with no `schedule:` parses, runs via `akm task run`, and
+- [x] A v4 task with no `schedule:` parses, runs via `akm task run`, and
       contributes zero bindings and zero failures to `akm task sync` (B-06/B-07).
-- [ ] `akm:` , `on:`, and a github locator `uses:` each fail a v4 document with
+- [x] `akm:` , `on:`, and a github locator `uses:` each fail a v4 document with
       `TASK_SOURCE_INVALID` and a detail **naming the removal** (B-11/B-12/B-13).
-- [ ] `with:` is accepted on `uses: akm/command` and rejected everywhere else in
+- [x] `with:` is accepted on `uses: akm/command` and rejected everywhere else in
       v4 (D2-N1).
-- [ ] The D2-N2 routing table holds exactly, including both preserved version
+- [x] The D2-N2 routing table holds exactly, including both preserved version
       errors.
-- [ ] `akm task run` input flags produce `UNKNOWN_FLAG` / `INPUT_BINDING_INVALID`
+- [x] `akm task run` input flags produce `UNKNOWN_FLAG` / `INPUT_BINDING_INVALID`
       per §5.1, exit 2, JSON envelope on stderr; a *valid* flag set leaves the
       run byte-identical to the same run without flags.
-- [ ] `canonicalInputJson` is byte-equal to `canonicalJson` across the D3-N2
+- [x] `canonicalInputJson` is byte-equal to `canonicalJson` across the D3-N2
       fixture set.
-- [ ] `schemas/akm-task.json`, the exported constants, and
+- [x] `schemas/akm-task.json`, the exported constants, and
       `tests/integration/tasks-schema.test.ts` land in **one** commit (Lane C,
       binding).
 
 **Gates**
 
-- [ ] Every gate in §7 ticked, including G-1.
-- [ ] Every §6 flip is a **visible test diff**; no existing test was deleted to
+- [x] Every gate in §7 ticked, including G-1.
+- [x] Every §6 flip is a **visible test diff**; no existing test was deleted to
       make a flip disappear.
-- [ ] §8's CHANGELOG entry and the R-06 scoping note in
+- [x] §8's CHANGELOG entry and the R-06 scoping note in
       `docs/plans/specs/p0-invariants.md` are both landed.
-- [ ] Every behavior difference observed during implementation that is not in
+- [x] Every behavior difference observed during implementation that is not in
       §6 is recorded in the Review log and **not** silently absorbed. The four
       already-known items to carry there: the stale `must be exactly 3` version
       message (D2-N2), the v3 source label on front-end failures for an unknown
@@ -1289,3 +1289,89 @@ true part: task source v4 declares its own top-level-rooted `parseTimeoutTopLeve
 `nullableSelectorTopLevel`/`parseToolsTopLevel` because the v3 originals (two of which now live in
 `bounded-document.ts`, one of which — `nullableSelector` — stayed in `source-v3.ts`, see the D2-N4
 deviation entry above) hardcode the `["akm", …]` field path.
+
+**2026-08-26 — close-out: review round ledger, gate summary, and four outstanding advisories.**
+
+*Review round ledger.* Test-review: round 1 — CHANGES_REQUIRED, 11 confirmed
+(`fix(p2): address test review findings (round 1)`, 88d8bd5); round 2 — CHANGES_REQUIRED, 3
+confirmed (`fix(p2): address test review findings (round 2)`, 31096c9). Code-review: round 1 —
+CHANGES_REQUIRED, 8 confirmed (`fix(p2): address review findings (round 1)`, d7abd29); round 2 —
+CHANGES_REQUIRED, 5 confirmed (`fix(p2): address review findings (round 2)`, de08468 — the commit
+that also added every Review-log entry standing above this one). Both cycles reached the
+orchestrator's two-round review budget with round 2's fixes applied and no third round spent
+re-verifying them: per the orchestrator rule, a budget-exhausted CHANGES_REQUIRED round is
+auto-adjudicated rather than looped further, and any of its confirmed findings not already fixed by
+the round's own commit are carried forward as advisories instead of blocking close-out. The four
+advisories below are exactly that carry-forward.
+
+*Gate summary.* Re-verified for this close-out, not merely asserted: `bun run lint` is green — biome
+plus all thirteen chained repo-specific checks (`lint-tests-isolation`, `lint-license-headers`,
+`lint-runtime-boundary`, `lint-write-source-chokepoint`, `lint-secret-resolver-boundary`,
+`lint-execution-boundary`, `lint-process-argv`, `lint-repository-sql`, `lint-goldens-presence`,
+`lint-golden-captured-at-head`, `lint-shipped-assets`, `lint-doc-examples`,
+`gen-config-schema --check`, `lint-active-docs-terminology`) all report OK. Biome's own findings are
+1347 pre-existing, repo-wide warnings (chiefly `noNonNullAssertion`), none in a P2a file and every
+one flagged an UNSAFE fix — confirmed by re-running `bunx biome check --write src/ tests/` for this
+close-out, which reports "No fixes applied" and leaves the working tree byte-clean. `bunx tsc
+--noEmit` is clean. `bun run test:unit`: 4193 pass / 0 skip / 0 fail across 303/303 files. `bun run
+test:integration`: 5694 pass / 57 skip / 0 fail across 424/424 files (the 57 skips are the
+pre-existing gated semantic-search-e2e / Docker suites, unrelated to this phase). Every canary named
+in §7 — `tests/tasks/source-v3.test.ts`, `tests/integration/tasks-runtime-v3-runner.test.ts`,
+`tests/integration/tasks-scheduling-characterization.test.ts`,
+`tests/integration/tasks-scheduler-sync-v3.test.ts`, `tests/workflows/workflow-param-flags.test.ts`,
+`tests/integration/workflows/params-validation.test.ts`, and the five `tests/contracts/execution-*` /
+`resolved-execution-contract` / `command-invocation-contract` suites — is byte-unchanged from P1b's
+head (`c64e5e1`) to this commit (`git diff --stat` empty for each, checked individually); no test
+file under `tests/` was deleted anywhere in the phase.
+
+*Outstanding advisories.* Four findings from the review rounds are not §6 flips. Per the Rules of
+Engagement ("A defect discovered that is not in §6 is recorded in the Review log and left unfixed"),
+each is recorded here rather than fixed:
+
+1. **[`src/tasks/source/task-source-v4.ts:463`] Secret-shaped input defaults warn with
+   workflow-parameter prose that is factually wrong for a task input.** B-22/D2-N3 mandate reusing
+   `detectSecretShapedParams`, and the reuse works as required — verified: a `token`-named default
+   warns, and no value is echoed. But the emitted text is the unmodified workflow string: ``Run param
+   "token" has a secret-suggesting name. Workflow params are copied verbatim into every native unit
+   execution context and returned in `akm workflow run` and `akm workflow status` output (they are
+   part of the unit input hash and CANNOT be redacted) — move secrets to an env binding…`` — none of
+   which is true of a task source v4 input default, which P2a does not deliver anywhere (§0).
+   Spec-sanctioned (D2-N3 mandates reusing the existing detector), so it is left as-is; P2b, which
+   owns delivery, is the right place to parameterize the noun and the remediation sentence for the
+   task-input case.
+2. **[`src/execution/input-contract.ts:295`] Task input values are interpolated verbatim into the
+   user-facing error envelope on stderr.** `coerceFlagValue`'s terminal throw is
+   ``diagnostics.invalidValue(name, `must be ${types.join(" | ")}; received ${JSON.stringify(raw)}`)``,
+   which `TASK_INPUT_DIAGNOSTICS` renders as `Task input "--<n>" must be <t>; received "<value>".` in
+   the `{ok:false,error,code}` stderr envelope — so `akm task run t --token ghp_…` on a non-string
+   declaration prints the credential. `parseScheduleEntry`'s `validateInputs` errors likewise echo the
+   source literal (e.g. `value "zzz" is not one of ["a","b"]`, from `src/core/json-schema.ts:534`).
+   Both are the body-intact moves D3-N3 requires and are byte-identical to workflow params' own
+   behavior, so left unchanged here — but `akm task run` is a NEW surface for this (workflow params
+   were already documented as non-secret; task inputs are not). Recorded for P2b to decide on
+   redaction.
+3. **[`src/tasks/source/task-source-v4.ts:508`] A `required: true` input with no default makes every
+   scheduled run of that task fail, and neither parse nor `akm task sync` says so.** Verified:
+   `version: 4` + `inputs: { ticket: { type: string, required: true } }` + `schedule: "0 8 * * 1"`
+   parses clean and `akm task sync` installs a binding, but `compileTaskSchedulerBindings`'s
+   invocation tail is the fixed `["task","run",id,"--bundle",b,"--scheduled"]`
+   (`scheduler-binding.ts:180`), so `loadPreparedTask`'s `validateInputs` — after
+   `applyInputDefaults` — throws `INPUT_BINDING_INVALID` on every firing. The B-38 warn in
+   `scheduler-sync.ts` fires only when some schedule entry declares non-empty `inputs`, which this
+   case does not, so nothing at parse time or sync time names the gap. A defect outside §6, left
+   unfixed per the Rules of Engagement. The natural P2b fix is a sync-time warn (or a parse-time
+   rejection) when a scheduled v4 task declares a required input that no schedule entry or default can
+   ever satisfy.
+4. **[`src/tasks/source/task-source-v4.ts:531`] Two cosmetic message defects on the new v4 rejection
+   paths: a doubled `$` path root, and a `uses:` error that lists `tasks/` as valid.** (a)
+   `parseScheduleEntry` passes `validateInputs`'s default `"$"` root straight into `sourceError`,
+   rendering `Invalid task source v4 at t.yml:7: schedule[0].inputs $.scope: value "zzz" is not one of
+   ["changed","all"]` — two path roots in one message. `TASK_INPUT_DIAGNOSTICS.contractViolation` and
+   `WORKFLOW_PARAMETER_DIAGNOSTICS.contractViolation` already strip the leading `$` for exactly this
+   reason; `parseScheduleEntry` does not pass `{ pathRoot: "" }` or otherwise strip it before joining.
+   (b) `classifyTaskSourceV4Uses` re-raises `classifyTargetRef`'s message unchanged on a non-canonical
+   `uses:`, so `uses: agents/x` in a v4 document yields `Target ref "agents/x" must be a canonical
+   commands/, scripts/, tasks/, or workflows/ asset ref.` — naming `tasks/` as acceptable one branch
+   after the immediately preceding `classified.kind === "task"` check has already rejected exactly
+   that ref kind (B-14). Neither string is spec-mandated; left as message-quality warts for a future
+   pass rather than fixed in this close-out.
