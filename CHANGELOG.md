@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- Recorded the fold-vs-link subagent-extraction design determination in
+  `docs/plans/subagent-extraction-design.md` (#840). Measured four candidates
+  (fold+dedupe as shipped, link-only, a harvest-without-prompting hybrid, and
+  chunked map-reduce extraction) on the same real sessions #836 used plus one
+  added for scale. Headline: the hybrid recovers 100% of #830's inline-ref
+  harvesting (162/162, 38/38, 1/1, 8/8 across the four sessions) with zero
+  parent-content eviction (vs 27.5%/28.6% evicted under fold on two of the
+  four), and #839's dedupe was measured to have zero effect on the actual
+  LLM prompt on all four sessions (the flagged duplicate content is already
+  evicted by the recency-biased budget before dedupe would matter). Chunked
+  extraction was measured at 9x-229x more LLM calls per session on real
+  data and is not recommended. No behavior changes shipped in this PR.
+
 ## [0.9.2-alpha.3] - 2026-08-26
 
 ### Fixed
