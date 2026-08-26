@@ -1127,3 +1127,7 @@ cannot evade it again, and `akm health`'s vocabulary-marker probe hardened to cl
 undecodable legacy metadata as unmarked instead of throwing. Deferred and recorded: the
 shared-capture structural check (reviewer-verified from the diff instead); adapter-header P2a
 cross-reference.
+
+**2026-08-26 — phase gate green at final head (`775d146`+docs).** lint green, tsc green, unit
+3960 pass / 0 fail (297 files), integration 5655 pass / 57 skip / 0 fail (421 files), including
+the close-out advisory fixes. P1b — and with it Phase 1 — is complete.
