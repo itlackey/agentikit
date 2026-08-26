@@ -1105,3 +1105,25 @@ Targeted re-runs, all green: `tests/integration/tasks-provenance-characterizatio
 `tests/integration/tasks-legacy-vocabulary-characterization.test.ts`, `tests/integration/tasks-runner.test.ts`,
 `tests/integration/cli-errors.test.ts` — 283 pass / 0 fail combined). `bun run check`'s full acceptance
 criterion (lint + typecheck + test:unit + test:integration) holds after this remediation.
+
+**2026-08-26 — phase close-out (orchestrator).** The run was interrupted once by infrastructure
+(during test-review round 3) and resumed from its journal both times. Test review ran 3 rounds
+(3 → 3 → 2 CONFIRMED); round 3's two findings (missing Lane-B structural ratchet — also the sole
+basis of its nullImplementationWouldPass=true — and the cwdIdentity parity gap) were fixed in
+`b6eefdd` and verified directly by the orchestrator, who adjudicated proceed per the dispute rule,
+additionally applying two advisories in `3e33ae9` (metadata targetVocab pins; widened B-10
+never-written grep) and — during the outage — making the red window typecheck-clean via marked
+`@ts-expect-error P1b red-phase` directives (`ddceaa9`), all of which Implement removed. The
+round-3 structural scan also revealed FIVE runtime-v3 importers (the spec's table named three);
+all five were rewired in Implement. Code review ran 3 rounds (4 → 1 → 1 CONFIRMED), tracing the
+D5 provenance thread arm by arm: round 1's threading gaps, round 2's env-precedence inversion
+(fixed with `forwardedDispatchEventSource` + a pinning test), round 3's summary-judge stamp loss
+(fixed by threading eventSource through `frozenSummaryJudge`); every fix verified against the
+reviewer's required change, so the exhausted budget is again bookkeeping, not an open defect.
+Applied at close-out (`775d146`, carried advisories): native-executor's two inline
+`import("…/runtime-v3")` type queries rewired to `prepare/prepared-execution` (last production
+shim importers), the prepare-split scan extended with ImportTypeNode coverage so that spelling
+cannot evade it again, and `akm health`'s vocabulary-marker probe hardened to classify
+undecodable legacy metadata as unmarked instead of throwing. Deferred and recorded: the
+shared-capture structural check (reviewer-verified from the diff instead); adapter-header P2a
+cross-reference.

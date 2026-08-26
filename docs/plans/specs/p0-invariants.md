@@ -288,3 +288,14 @@ rows (including a REAL, non-injected `runWorkflowSteps` → `exec-unit` child ob
 by `tests/integration/tasks-provenance-context.test.ts`'s new `RunTaskOptions.provenance` coverage.
 No production change to P0 itself; this entry documents P1b Lane C's implementation of the flip P0's
 own R-07/P-05 rows named as pending.
+
+**2026-08-26 — P-05 reclassified by P1b (D5).** P-05 pinned the workflow arm's global
+`process.env.AKM_EVENT_SOURCE` stamp-and-restore as then-current MECHANISM; the refactor plan
+always scheduled D5 to replace that mechanism with an explicit `ExecutionProvenanceContext`
+threaded through dispatch. P1b flipped P-05's mechanism-level assertions per its authorized-flips
+table; the preserved CONTRACT — in-process execution and usage recording observe `"task"`, no
+cross-run leakage (the global is now never mutated: before, during, after), child-env stamping
+(P-06) unchanged, pre-set ambient values still win — is pinned by the amended
+`tests/integration/tasks-provenance-characterization.test.ts` and the new
+`tasks-provenance-context.test.ts`. R-07's defect (prompt arm recording scheduled usage as
+`"user"`) is fixed as planned.
