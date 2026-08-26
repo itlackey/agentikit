@@ -3,16 +3,24 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * P0 characterization — task-runner provenance stamping (AKM_EVENT_SOURCE).
+ * P0 characterization — task-runner provenance stamping (AKM_EVENT_SOURCE) —
+ * AMENDED IN P1b (F-1) per docs/plans/specs/p1b-model-extraction.md §5.2/§6.
  *
- * Pins the CURRENT behavior of the three task-runner dispatch arms around
+ * Pins the behavior of the three task-runner dispatch arms around
  * AKM_EVENT_SOURCE — the stamp that lets nested `akm` usage be attributed to
  * scheduled machine traffic rather than direct user demand — plus the
  * `resolveUsageEventSource` default table those arms feed into.
  *
- * See docs/plans/specs/p0-invariants.md rows P-05, P-06, P-07, R-07. Nothing
- * here is fixed: R-07 pins a known DEFECT (the prompt/command arm never
- * stamps at all), scheduled to flip in P1b.
+ * See docs/plans/specs/p0-invariants.md rows P-05, P-06, P-07, R-07, and
+ * p1b-model-extraction.md §1.2 (D5), §5.2 (F-1 implementation), and §6 (the
+ * AUTHORIZED-FLIPS table). P-06 and the base P-07 table are UNCHANGED —
+ * still load-bearing after P1b. P-05 is RECLASSIFIED (D5 always scheduled the
+ * global process.env stamp for replacement; the mechanism flips, the
+ * preserved CONTRACT — in-process execution and usage recording still
+ * observe "task", no cross-run leakage, child-env stamping (P-06) unchanged,
+ * pre-set ambient values still win — does not). R-07 FLIPS to the fixed
+ * behavior: a prompt/command task run now stamps AKM_EVENT_SOURCE into the
+ * dispatched engine's child env and records nested usage as "task".
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -20,7 +28,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import { ConfigError } from "../../src/core/errors";
-import { resolveUsageEventSource } from "../../src/indexer/usage/usage-events";
+import { openStateDatabase } from "../../src/core/state-db";
+import { akmIndex } from "../../src/indexer/indexer";
+import { resolveUsageEventSource, type UsageEventSource } from "../../src/indexer/usage/usage-events";
 import type { AgentRunResult } from "../../src/integrations/agent";
 import { runTask } from "../../src/tasks/runner";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
@@ -89,6 +99,25 @@ function completedWorkflowRun(id: string, target: string, params: Record<string,
 /** Inline "script" whose only job is to echo its own AKM_EVENT_SOURCE. */
 const ECHO_SOURCE_SNIPPET = "console.log('AKM_EVENT_SOURCE=' + (process.env.AKM_EVENT_SOURCE ?? '<unset>'))";
 
+/**
+ * The recorded `usage_events` rows, narrowed to the columns R-07's flip
+ * cares about. Used to assert nested usage is attributed through the
+ * EXPLICIT dispatch-option path (§5.2 point 3) rather than a bare
+ * `resolveUsageEventSource()` read of an (unmutated) ambient env.
+ */
+function queryUsageEventRows(): Array<{ event_type: string; entry_ref: string | null; source: string }> {
+  const db = openStateDatabase();
+  try {
+    return db.prepare("SELECT event_type, entry_ref, source FROM usage_events ORDER BY id").all() as Array<{
+      event_type: string;
+      entry_ref: string | null;
+      source: string;
+    }>;
+  } finally {
+    db.close();
+  }
+}
+
 describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the child env", () => {
   test("P-06 — a shell (run:) task's child observes AKM_EVENT_SOURCE=task while the parent stays unset", async () => {
     // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
@@ -134,86 +163,124 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
   });
 });
 
-describe("P-05 — workflow arm stamps and restores global process.env.AKM_EVENT_SOURCE", () => {
-  test('P-05 — an unset AKM_EVENT_SOURCE becomes "task" for the duration of an in-process workflow run, then is deleted', async () => {
-    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
+describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global process.env.AKM_EVENT_SOURCE; eventSource threads explicitly", () => {
+  // FLIP (F-1, spec docs/plans/specs/p1b-model-extraction.md §6, row
+  // "tests/integration/tasks-provenance-characterization.test.ts:138 | P-05 |
+  // FLIP (mechanism reclassified). New assertions: process.env.AKM_EVENT_SOURCE
+  // is undefined before, during (observed from inside the injected
+  // runWorkflowStepsImpl), and after; the in-process run observes event source
+  // "task" through the explicit path; an exec-unit child of the run still
+  // observes AKM_EVENT_SOURCE=task.": D5 deletes the global process.env stamp
+  // and its `finally` restore (runner.ts:534-535,:552-555) outright. The
+  // workflow arm now passes the resolved event source into runWorkflowSteps
+  // via a new optional `eventSource` option instead — this test observes that
+  // option from inside the injected runWorkflowStepsImpl, the narrowest seam
+  // available at the task-runner boundary this file pins. Whether an
+  // exec-unit child of a REAL (non-injected) run still observes
+  // AKM_EVENT_SOURCE=task from that option is exercised at the workflow-exec
+  // layer (run-workflow.ts / step-work.ts / exec-unit.ts), not re-proven here.
+  test('P-05 — process.env.AKM_EVENT_SOURCE is never written for an in-process workflow run; the run observes "task" through the explicit eventSource option', async () => {
     writeTask("wf-provenance", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
     let observedDuring: string | undefined;
+    let observedEventSourceOption: string | undefined;
 
     const result = await runTask("wf-provenance", {
       stashDir: storage.stashDir,
       bundleName: "fixture",
-      // Narrowest injectable seam: observe the global stamp from INSIDE the
-      // run, then let production's own `finally` restore it (per the P-05
-      // harness note in docs/plans/specs/p0-invariants.md — never set/leave
-      // AKM_EVENT_SOURCE by hand outside a sandbox helper).
-      runWorkflowStepsImpl: (async ({ target, params = {} }: { target: string; params?: Record<string, unknown> }) => {
+      runWorkflowStepsImpl: (async (options: {
+        target: string;
+        params?: Record<string, unknown>;
+        eventSource?: string;
+      }) => {
         observedDuring = process.env.AKM_EVENT_SOURCE;
-        return completedWorkflowRun("run-wf-provenance", target, params);
+        observedEventSourceOption = options.eventSource;
+        return completedWorkflowRun("run-wf-provenance", options.target, options.params ?? {});
       }) as never,
     });
 
     expect(result.status).toBe("completed");
-    expect(observedDuring).toBe("task");
-    // Restored — and since it was unset before, restoration means fully
-    // deleted, not merely set back to an empty string.
+    // The explicit path carries the resolved source — no global stamp needed.
+    expect(observedEventSourceOption).toBe("task");
+    // Never mutated — before, during, or after.
+    expect(observedDuring).toBeUndefined();
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
     expect(Object.hasOwn(process.env, "AKM_EVENT_SOURCE")).toBe(false);
   });
 
-  test("P-05 — a pre-set, more-specific AKM_EVENT_SOURCE survives the workflow arm untouched", async () => {
-    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
+  // FLIP (F-1, spec §6, row "…:165 P-05 — a pre-set, more-specific
+  // AKM_EVENT_SOURCE survives … untouched | P-05 | PRESERVED contract,
+  // strengthened assertion: ambient improve still observed in-process and in
+  // children; additionally assert process.env was never written (no set, no
+  // delete).": the precedence rule (D5 clause d / spec §5.2) is preserved —
+  // an explicit provenance value is only a FALLBACK, so a recognized ambient
+  // value still wins over the default "task" in the explicit option too.
+  test("P-05 — a pre-set, more-specific AKM_EVENT_SOURCE still wins over the workflow arm's default, in-process and in the explicit option", async () => {
     writeTask("wf-provenance-preset", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
     let observedDuring: string | undefined;
+    let observedEventSourceOption: string | undefined;
 
     const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
       runTask("wf-provenance-preset", {
         stashDir: storage.stashDir,
         bundleName: "fixture",
-        runWorkflowStepsImpl: (async ({
-          target,
-          params = {},
-        }: {
+        runWorkflowStepsImpl: (async (options: {
           target: string;
           params?: Record<string, unknown>;
+          eventSource?: string;
         }) => {
           observedDuring = process.env.AKM_EVENT_SOURCE;
-          return completedWorkflowRun("run-wf-provenance-preset", target, params);
+          observedEventSourceOption = options.eventSource;
+          return completedWorkflowRun("run-wf-provenance-preset", options.target, options.params ?? {});
         }) as never,
       }),
     );
 
     expect(result.status).toBe("completed");
+    // Ambient wins over the "task" default — in-process observation …
     expect(observedDuring).toBe("improve");
+    // … and in the explicit option threaded to runWorkflowSteps.
+    expect(observedEventSourceOption).toBe("improve");
   });
 
-  test("P-05 — restoration happens on the throwing path too", async () => {
-    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
+  // FLIP (F-1, spec §6, row "…:191 P-05 — restoration happens on the
+  // throwing path too | P-05 | FLIP (reclassified). There is nothing to
+  // restore: assert the throwing path leaves process.env.AKM_EVENT_SOURCE
+  // untouched — never set, never deleted — and that the thrown failure still
+  // surfaces unchanged.": the re-throw of a ConfigError out of runWorkflowTask
+  // (runner.ts's `if (e instanceof AkmError && e.kind === "config") throw e;`)
+  // is unrelated production logic and stays unchanged — only the removed
+  // env-restore side of the `finally` block is asserted differently.
+  test("P-05 — process.env.AKM_EVENT_SOURCE stays untouched on the throwing path too, and the thrown failure still surfaces unchanged", async () => {
     writeTask("wf-provenance-throws", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
     let observedDuring: string | undefined;
+    let observedEventSourceOption: string | undefined;
 
     // A ConfigError from the orchestrator is the one failure runWorkflowTask
     // re-throws (rather than swallowing into a "failed" result), so it is the
-    // cleanest way to exercise the `finally` restore on an ACTUAL throw out of
+    // cleanest way to exercise the `finally` block on an ACTUAL throw out of
     // runTask, not merely a caught-and-reported failure.
     await expect(
       runTask("wf-provenance-throws", {
         stashDir: storage.stashDir,
         bundleName: "fixture",
-        runWorkflowStepsImpl: (async () => {
-          // Observe the stamp BEFORE throwing — otherwise an "unset" pre-state
-          // and an "unset" post-state are indistinguishable from the stamp
-          // never having been applied at all (i.e. this would still pass if
-          // the workflow-arm stamp were dropped from the error path).
+        runWorkflowStepsImpl: (async (options: { eventSource?: string }) => {
+          // Observe BEFORE throwing — otherwise an "unset" pre-state and an
+          // "unset" post-state are indistinguishable from the option never
+          // having been threaded at all (i.e. this would still pass if F-1's
+          // explicit-path threading were dropped from the error branch).
           observedDuring = process.env.AKM_EVENT_SOURCE;
+          observedEventSourceOption = options.eventSource;
           throw new ConfigError("synthetic workflow engine failure for P-05");
         }) as never,
       }),
     ).rejects.toThrow("synthetic workflow engine failure for P-05");
 
-    expect(observedDuring).toBe("task");
+    // The explicit path still carried "task" right up to the throw …
+    expect(observedEventSourceOption).toBe("task");
+    // … and there was nothing to restore: process.env was never set.
+    expect(observedDuring).toBeUndefined();
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
   });
 });
@@ -238,28 +305,61 @@ describe("P-07 — resolveUsageEventSource's provenance default table", () => {
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
     expect(resolveUsageEventSource()).toBe("user");
   });
+
+  // NEW (F-1, spec docs/plans/specs/p1b-model-extraction.md §6, row "…:221 /
+  // …:236 (P-07 table + default-env case) | P-07 | UNCHANGED, must stay
+  // green. Add new cases for the fallback argument: explicit fallback used
+  // only when ambient is unset/"", ambient always wins; garbage ambient still
+  // "unknown".": resolveUsageEventSource gains a second, explicit `fallback`
+  // argument (default "user", reproducing the table above byte-for-byte for
+  // every existing single-argument call site) so the workflow and
+  // command/prompt arms can pass provenance.eventSource ("task") instead of
+  // relying on the hardcoded "user" default.
+  test.each([
+    [{ AKM_EVENT_SOURCE: undefined }, "task", "task"],
+    [{ AKM_EVENT_SOURCE: "" }, "task", "task"],
+    [{ AKM_EVENT_SOURCE: "improve" }, "task", "improve"],
+    [{ AKM_EVENT_SOURCE: "totally-unrecognized-value" }, "task", "unknown"],
+    [{ AKM_EVENT_SOURCE: undefined }, "audit", "audit"],
+  ] as const)("P-07 — the new fallback argument: AKM_EVENT_SOURCE=%p with fallback %p resolves to %p", (env, fallback, expected) => {
+    expect(resolveUsageEventSource(env, fallback as UsageEventSource)).toBe(expected);
+  });
 });
 
-describe("R-07 — prompt/command arm DEFECT: AKM_EVENT_SOURCE is never stamped anywhere (fixed in P1b)", () => {
-  test('R-07 — a prompt-target task run never sets AKM_EVENT_SOURCE, so resolveUsageEventSource() observed from inside it returns "user"', async () => {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
+describe('R-07 (FIXED — F-1) — prompt/command arm now stamps AKM_EVENT_SOURCE and records nested usage as "task"', () => {
+  // FLIP (F-1, spec docs/plans/specs/p1b-model-extraction.md §6, row "…:244
+  // R-07 — a prompt-target task run never sets AKM_EVENT_SOURCE … | R-07 |
+  // FLIP to fixed behavior. (a) process.env.AKM_EVENT_SOURCE still undefined
+  // before/during/after — unchanged; (b) inverts: the dispatched engine env
+  // DOES carry AKM_EVENT_SOURCE="task"; (c) inverts: the usage recorded for
+  // the dispatch carries source "task", asserted through the explicit path
+  // (dispatch option / recorded usage-event row), not by a bare
+  // resolveUsageEventSource() reading an unmutated ambient env.":
+  // runPreparedCommandTask now threads the provenance context's eventSource
+  // both into the dispatched engine's child env (matching the native arm,
+  // P-06) and into dispatchPreparedCommandInvocation's new eventSource
+  // option (command-execution.ts:443), so the recorded usage_events row
+  // carries "task" instead of the P-07 default "user" this row's P0 pin was
+  // built to expose.
+  //
+  // A STORED command ref (`uses: commands/notify`) is used here rather than
+  // the P0 pin's inline `with: {content: …}` fixture, because
+  // recordIndexedShowUsage() is a no-op for an inline command — it has no
+  // indexed source ref to attribute — so assertion (c) needs a real,
+  // indexed, consumed ref to produce a row at all.
+  test('R-07 — a prompt-target task run stamps the dispatched engine env and records nested usage as "task"', async () => {
+    fs.writeFileSync(path.join(storage.stashDir, "commands", "notify.md"), "Notify the team.\n", "utf8");
     writeTask(
       "prompt-provenance",
-      [
-        "version: 3",
-        "uses: akm/command",
-        "with:",
-        "  content: keep this prompt short",
-        "akm:",
-        '  schedule: "@daily"',
-        "  engine: opencode",
-        "",
-      ].join("\n"),
+      ["version: 3", "uses: commands/notify", "akm:", '  schedule: "@daily"', "  engine: opencode", ""].join("\n"),
     );
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+    const seed = openStateDatabase();
+    seed.exec("DELETE FROM usage_events");
+    seed.close();
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
 
     let observedDuringProcessEnv: string | undefined;
-    let observedResolvedSource: string | undefined;
     let observedChildEnv: Record<string, string> | undefined;
 
     const fakeRunAgent: FakeRunAgent = async (...args) => {
@@ -267,8 +367,6 @@ describe("R-07 — prompt/command arm DEFECT: AKM_EVENT_SOURCE is never stamped 
       // (a) the parent's process.env, observed from INSIDE the dispatched
       // engine call — the narrowest seam available for this arm.
       observedDuringProcessEnv = process.env.AKM_EVENT_SOURCE;
-      // (c) resolveUsageEventSource(), observed from the very same seam.
-      observedResolvedSource = resolveUsageEventSource();
       // (b) the env bag the runner actually handed to the dispatched engine.
       observedChildEnv = options?.env;
       return { ok: true, exitCode: 0, stdout: "ok", stderr: "", durationMs: 1 };
@@ -281,17 +379,17 @@ describe("R-07 — prompt/command arm DEFECT: AKM_EVENT_SOURCE is never stamped 
     });
 
     expect(result.status).toBe("completed");
-    // (a) the parent's process.env is never touched, at any point of the run.
+    // (a) unchanged: the parent's process.env is never touched, at any point.
     expect(observedDuringProcessEnv).toBeUndefined();
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
-    // (b) the dispatched engine env lacks it entirely — not even present as an
-    // inherited "unset" placeholder key.
-    expect(observedChildEnv).toBeDefined();
-    expect(Object.hasOwn(observedChildEnv ?? {}, "AKM_EVENT_SOURCE")).toBe(false);
-    // (c) the row's whole reason to exist: resolveUsageEventSource(), observed
-    // from inside the very same arm, defaults the absent stamp to "user" — a
-    // scheduled prompt task's nested akm usage records as direct human demand.
-    // fixed in P1b.
-    expect(observedResolvedSource).toBe("user");
+    // (b) inverts the P0 pin: the dispatched engine env now carries the stamp.
+    expect(observedChildEnv).toMatchObject({ AKM_EVENT_SOURCE: "task" });
+    // (c) inverts the P0 pin: the recorded usage_events row for the consumed
+    // command ref carries source "task" — proven through the explicit
+    // dispatch-option / recorded-row path, not a bare resolveUsageEventSource()
+    // read of an (unmutated) ambient env.
+    expect(queryUsageEventRows()).toEqual([
+      { event_type: "show", entry_ref: "fixture//commands/notify", source: "task" },
+    ]);
   });
 });

@@ -166,6 +166,83 @@ describe("CLI error handling", () => {
   });
 });
 
+// P1a carried advisory, wired here per docs/plans/specs/p1b-model-extraction.md
+// §1.5 (binding choice: "the envelope tests extend
+// tests/integration/cli-errors.test.ts. No tasks-cli-envelope family exists
+// at head … and minting one for two cases would fragment the CLI-envelope
+// surface.") and §5.5. Both codes were declared and WIRED by P1a (D7,
+// src/core/errors.ts) — this is new CLI-envelope-level coverage of an
+// already-correct throw, not a behavior flip: one test per code asserting
+// the {ok:false,error,code} JSON envelope on stderr and exit 2.
+describe("CLI envelope coverage for P1a's diagnostic codes (COMPOSITION_INVALID, TASK_SOURCE_INVALID)", () => {
+  test("akm task run of a task source with no scheduling source emits {ok:false,code:TASK_SOURCE_INVALID} on stderr, exit 2", async () => {
+    const stash = makeStashDir();
+    disposers.push(stash);
+    fs.mkdirSync(path.join(stash.dir, "tasks"), { recursive: true });
+    // R-06 shape (parseTaskV3Yaml's sourceError funnel, re-coded by P1a):
+    // neither akm.schedule nor on: declared.
+    fs.writeFileSync(path.join(stash.dir, "tasks", "bad-source.yml"), "version: 3\nrun: echo hi\n", "utf8");
+
+    const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () => runCli("task", "run", "bad-source"));
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("TASK_SOURCE_INVALID");
+    expect(typeof parsed.error).toBe("string");
+    expect(parsed.hint).toBe(new UsageError("x", "TASK_SOURCE_INVALID").hint());
+  });
+
+  test("akm workflow run of a step passing with: to a task target emits {ok:false,code:COMPOSITION_INVALID} on stderr, exit 2", async () => {
+    const stash = makeStashDir();
+    disposers.push(stash);
+    fs.mkdirSync(path.join(stash.dir, "tasks"), { recursive: true });
+    fs.mkdirSync(path.join(stash.dir, "workflows"), { recursive: true });
+    fs.writeFileSync(
+      path.join(stash.dir, "commands", "review.md"),
+      "Review the workflow-composed task target.\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(stash.dir, "tasks", "nightly.yml"),
+      ["version: 3", "uses: commands/review", "akm:", '  schedule: "@daily"', ""].join("\n"),
+    );
+    // Lane A's with-rejection (P1a, taskDispatch's head guard): a workflow
+    // step composing a task target with a with: block.
+    fs.writeFileSync(
+      path.join(stash.dir, "workflows", "with-on-task.yml"),
+      [
+        "name: With on task",
+        "on:",
+        "  workflow_dispatch:",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: dispatch",
+        "        uses: tasks/nightly",
+        "        with:",
+        "          scope: all",
+        "",
+      ].join("\n"),
+    );
+
+    await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () => runCli("index", "--full"));
+    const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () =>
+      runCli("workflow", "run", "workflows/with-on-task"),
+    );
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("COMPOSITION_INVALID");
+    expect(parsed.error).toBe(
+      "Workflow step dispatch cannot pass with: to task target tasks/nightly; task-call inputs are not supported yet.",
+    );
+    expect(parsed.hint).toBe(new UsageError("x", "COMPOSITION_INVALID").hint());
+  });
+});
+
 describe("error class hints", () => {
   test("ConfigError derives hint from code by default", () => {
     expect(new ConfigError("missing stash", "STASH_DIR_NOT_FOUND").hint()).toContain("akm setup");
