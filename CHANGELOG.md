@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes & migration
+
+- A workflow step that passes `with:` to a `tasks/<ref>` target is now
+  **rejected** (`UsageError` code `COMPOSITION_INVALID`, exit 2) instead of
+  having the authored mapping silently dropped at freeze. Remove the step's
+  `with:` block, or wait for task-call inputs, which arrive in a later 0.9.x
+  release. `with:` on `uses: akm/command` is unaffected.
+- Task-source validation errors now report code **`TASK_SOURCE_INVALID`**
+  instead of `INVALID_FLAG_VALUE`. Scripts that branch on the `code` field of
+  the JSON error envelope must be updated; messages and exit code 2 are
+  unchanged.
+
 ## [0.9.2-alpha.1] - 2026-08-24
 
 ### Breaking changes & migration

@@ -89,7 +89,29 @@ export type UsageErrorCode =
   // strict: false) silently ignores these, so a typo used to parse
   // "successfully" and exit 0 — a `--fail-on-flaged`
   // in CI meant the gate never fired.
-  | "UNKNOWN_FLAG";
+  | "UNKNOWN_FLAG"
+  // P1a (docs/plans/specs/p1a-with-rejection-classifier.md §2.1, D7): a
+  // workflow step authors with: on a uses: tasks/<ref> target. Task-call
+  // inputs are not implemented yet (arriving in a later 0.9.x release) — the
+  // authored mapping used to be silently dropped at freeze; now it is
+  // rejected instead (the fail-closed correction). Thrown from
+  // src/workflows/ir/source-freeze-v4.ts's taskDispatch.
+  | "COMPOSITION_INVALID"
+  // P1a: the sourceError funnel in src/tasks/source-v3.ts, re-coded from
+  // INVALID_FLAG_VALUE. Message text, field-path rendering (`$` for the
+  // empty path), and the file:line location string are unchanged.
+  | "TASK_SOURCE_INVALID"
+  // P1a: src/execution/target-ref.ts's classifyTargetRef rejects any value
+  // that is not a canonical commands/, scripts/, tasks/, or workflows/ asset
+  // ref (fragments, malformed shapes, non-canonical spellings, other asset
+  // families, GitHub locators, etc).
+  | "TARGET_REF_INVALID"
+  // P1a: declared only in this phase — wired to workflow source validation
+  // (e.g. `akm workflow validate`) in a later phase.
+  | "WORKFLOW_SOURCE_INVALID"
+  // P1a: declared only in this phase — wired in P2b when with: bindings are
+  // validated against a target's declared inputs.
+  | "INPUT_BINDING_INVALID";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -144,6 +166,12 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
     "Refs use the form [bundle//]conceptId, e.g. `akm show knowledge/guide.md` or `akm show skills/deploy`.",
   UNKNOWN_COMMAND: "Run `akm --help` to see available commands.",
   UNKNOWN_FLAG: "Run the command with `--help` to see its accepted flags.",
+  COMPOSITION_INVALID: "Remove the step's with: block; task-call inputs arrive in a later 0.9.x release.",
+  TASK_SOURCE_INVALID: "Fix the task source at the reported path and line, then re-run.",
+  TARGET_REF_INVALID:
+    "Targets are canonical asset refs: `commands/review`, `scripts/build.sh`, `tasks/nightly`, `workflows/release`.",
+  WORKFLOW_SOURCE_INVALID: "Run `akm workflow validate <ref>` to see the failing source location.",
+  INPUT_BINDING_INVALID: "Check the step's with: keys against the target's declared inputs.",
 };
 
 /** Default hint for each NotFoundError code. */

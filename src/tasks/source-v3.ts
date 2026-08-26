@@ -222,7 +222,7 @@ function sourceError(ctx: ParseContext, fieldPath: readonly (string | number)[],
         );
   const line = ctx.lineAt?.(fieldPath);
   const location = `${ctx.filePath}${line === undefined ? "" : `:${line}`}`;
-  throw new UsageError(`Invalid task v3 source at ${location}: ${dotted} ${detail}`, "INVALID_FLAG_VALUE");
+  throw new UsageError(`Invalid task v3 source at ${location}: ${dotted} ${detail}`, "TASK_SOURCE_INVALID");
 }
 
 function cloneBoundedJson(

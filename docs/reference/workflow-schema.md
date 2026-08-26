@@ -75,6 +75,14 @@ The accepted 0.9.2 subset is deliberately closed:
   script, and task composition are local targets.
   Local actions and Docker actions are unsupported and rejected (including `./` and `docker://`); remote actions are rejected
   because acquisition is out of scope; nested workflows are unsupported.
+- `with:` on a **task-composed** step (`uses: tasks/<ref>`) is rejected when
+  the workflow is frozen — `UsageError` code `COMPOSITION_INVALID`, exit 2 —
+  for any authored shape, including an empty mapping (`with: {}`). Task-call
+  inputs are not implemented yet; that support arrives in a later 0.9.x
+  release. Remove the step's `with:` block until then, or omit it entirely —
+  a task-composed step with no `with:` freezes normally. `with:` on
+  `uses: akm/command` is unaffected by this and is still required to supply
+  the builtin action's arguments, as in the example above.
 - GitHub expressions and contexts are unsupported and rejected anywhere in
   the parsed tree.
 

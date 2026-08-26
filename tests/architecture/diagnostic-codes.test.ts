@@ -28,9 +28,13 @@
  * TEST-FIRST NOTE: this file is authored under Lane C (tests) before the
  * Lane 0/Lane B implementation lands. Both assertions below are EXPECTED TO
  * FAIL at the point this file is committed:
- *   - Assertion 1's baseline is a placeholder (see the TODO on
- *     INVALID_FLAG_VALUE_BASELINE) — it fails until the implementer re-codes
- *     the `sourceError` funnel (spec §2.2) and hardcodes the measured count.
+ *   - Assertion 1's baseline is hardcoded to spec §9's stated post-P1a
+ *     expectation (82 = 83 today minus the one `sourceError` funnel literal
+ *     at src/tasks/source-v3.ts:225) — see the TODO on
+ *     INVALID_FLAG_VALUE_BASELINE. It fails today (live count is still 83)
+ *     until the implementer lands that re-code, and turns green with no test
+ *     edit once it does — unless the re-measured count differs from 82, in
+ *     which case the TODO says to hardcode the real number instead.
  *   - Assertion 2 fails until Lane B rewires `uses.ts`/`semantics.ts`/
  *     `compile.ts` per spec §4.2-§4.4 — today `uses.ts` still imports
  *     `classifyTaskV3Uses` directly and `compile.ts` still imports it
@@ -81,17 +85,20 @@ function countLinesContaining(files: readonly string[], needle: string): number 
 // records it): `grep -rn "INVALID_FLAG_VALUE" src/tasks/ src/workflows/ | wc -l`
 // = 83.
 //
-// TODO(implementer): spec §9 expects **82** post-P1a — the `sourceError`
-// funnel's single throw site (src/tasks/source-v3.ts:225) re-codes to
-// `TASK_SOURCE_INVALID`; Lane A's new rejection throws `COMPOSITION_INVALID`,
-// not `INVALID_FLAG_VALUE`, so it does not add to this count. Re-measure with
-// the grep command above AFTER landing the source-v3.ts re-code (spec §2.2)
-// and REPLACE the placeholder 0 below with the measured number — do not copy
-// 82 on faith, and do not raise this value for any other reason.
+// Post-P1a baseline: 82 — the `sourceError` funnel's single throw site
+// (src/tasks/source-v3.ts:225) re-codes to `TASK_SOURCE_INVALID`; Lane A's
+// new rejection throws `COMPOSITION_INVALID`, not `INVALID_FLAG_VALUE`, so it
+// does not add to this count. This is spec §9's stated post-P1a expectation
+// (83 - 1), not yet re-measured against a landed source-v3.ts re-code — this
+// test is RED until Lane 0 lands that re-code (live count is still 83 today).
 //
-// The baseline only ever DECLINES. A later phase that re-codes more
-// `INVALID_FLAG_VALUE` sites lowers it further; nothing may raise it.
-const INVALID_FLAG_VALUE_BASELINE = 0; // PLACEHOLDER — see TODO above. Currently fails (live count is 83).
+// TODO(implementer): once Lane 0's source-v3.ts re-code (spec §2.2) lands,
+// re-run the grep command above and verify the measured count matches 82. If
+// it does not, hardcode the actual measured number instead. Do not raise this
+// value for any other reason — the baseline only ever DECLINES. A later phase
+// that re-codes more `INVALID_FLAG_VALUE` sites lowers it further; nothing
+// may raise it.
+const INVALID_FLAG_VALUE_BASELINE = 82; // spec §9 post-P1a expectation (83 - the source-v3.ts:225 funnel literal). Verify, don't raise — see TODO above.
 
 // ── Assertion 2: the classification import seam (spec §9 / §4.2 / §4.4) ────
 

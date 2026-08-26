@@ -130,7 +130,21 @@ export function classifyWorkflowStepUses(
   try {
     target = classifier(value);
   } catch (cause) {
-    throw usesFailure(value, cause);
+    const failure = usesFailure(value, cause);
+    // §4.3 step 8: a value that is github-locator-SHAPED still throws
+    // remote-action-acquisition-out-of-scope, even though the new classifier
+    // (classifyTargetRef, no locator grammar) rejects it as an unrecognized
+    // family. Ordering is load-bearing: usesFailure's own prefix
+    // classifications (docker://, ./ ../ /, agents/) must keep winning over
+    // locator-shape detection, so this only overrides the generic
+    // unsupported-uses-target fallback.
+    if (failure.code === "unsupported-uses-target" && isGithubLocatorShape(value)) {
+      throw new WorkflowSourceSemanticError(
+        "remote-action-acquisition-out-of-scope",
+        `Remote action acquisition is out of scope for ${JSON.stringify(value)}.`,
+      );
+    }
+    throw failure;
   }
   if (target.kind === "github-action") {
     throw new WorkflowSourceSemanticError(
@@ -224,6 +238,39 @@ export function rejectNulInArgv(command: readonly string[]): void {
   if (command.some((argument) => argument.includes("\0"))) {
     throw new WorkflowSourceSemanticError("invalid-exec-argv", "Direct exec argv may not contain NUL bytes.");
   }
+}
+
+const GITHUB_LOCATOR_OWNER_REPO_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const GITHUB_LOCATOR_REVISION_RE = /^[A-Za-z0-9._/-]+$/;
+
+/**
+ * Minimal GitHub-locator SHAPE detection (P1a §4.3), local to this file and
+ * deliberately NOT the full `owner/repo[/path]@rev` grammar in
+ * src/tasks/source-v3.ts — shape only, no import from that module. Exists
+ * solely to keep `remote-action-acquisition-out-of-scope` winning over
+ * `unsupported-uses-target` for a value that `classifyTargetRef` rejects
+ * (it owns no locator grammar at all), preserving R-04(c) until P4 removes
+ * the row entirely.
+ */
+function isGithubLocatorShape(value: string): boolean {
+  const at = value.lastIndexOf("@");
+  if (at <= 0 || at !== value.indexOf("@")) return false;
+
+  const locator = value.slice(0, at);
+  const segments = locator.split("/");
+  if (segments.length < 2 || segments.some((segment) => segment.length === 0)) return false;
+  const [owner, repository] = segments;
+  if (!owner || !repository) return false;
+  if (!GITHUB_LOCATOR_OWNER_REPO_SEGMENT_RE.test(owner) || !GITHUB_LOCATOR_OWNER_REPO_SEGMENT_RE.test(repository)) {
+    return false;
+  }
+
+  const revision = value.slice(at + 1);
+  if (revision.length === 0 || !GITHUB_LOCATOR_REVISION_RE.test(revision)) return false;
+  if (revision.includes("..") || revision.startsWith("/") || revision.endsWith("/")) return false;
+  if (revision.split("/").some((segment) => segment.startsWith(".") || segment.endsWith(".lock"))) return false;
+
+  return true;
 }
 
 function usesFailure(value: string, cause: unknown): WorkflowSourceSemanticError {

@@ -200,6 +200,50 @@ describe("P1a Lane A — with: on uses: tasks/<ref> rejects at freeze (COMPOSITI
     expect(error.message).toBe(COMPOSITION_INVALID_MESSAGE);
   });
 
+  // NEW BEHAVIOR (P1a, currently RED): pins the load-bearing placement fact
+  // from spec §3.1 ("so the rejection does not depend on the task asset
+  // resolving") and §10's acceptance checkbox ("before resolveOwnedAsset").
+  // Every other Lane A fixture in this file backs its task ref with a real,
+  // resolvable tasks/*.yml via writeTaskTarget() — deliberately NOT this one:
+  // "tasks/does-not-exist" is never written, so no tasks/does-not-exist.yml
+  // exists in the index. Today, with no with:-guard at all, taskDispatch
+  // calls resolveOwnedAsset first, which throws UsageError INVALID_FLAG_VALUE
+  // ("Workflow source target tasks/does-not-exist was not found.") — this
+  // test is red today, but for the WRONG reason (an asset-resolution error,
+  // not COMPOSITION_INVALID). It turns green only once the with: guard is the
+  // FIRST statement in taskDispatch, ahead of resolveOwnedAsset — a guard
+  // placed anywhere after resolveOwnedAsset would still fail this test even
+  // though it would pass B-02/B-03 above (both of which back TASK_REF with a
+  // real file, so resolution never fails there).
+  test("B-02b: the with: rejection fires before resolveOwnedAsset — an unresolvable task target still rejects with COMPOSITION_INVALID, not an asset-resolution error", async () => {
+    write(
+      "workflows/with-on-missing-task.yml",
+      [
+        "name: With on missing task",
+        "on:",
+        "  workflow_dispatch:",
+        "jobs:",
+        "  contract:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        `      - id: ${STEP_ID}`,
+        "        uses: tasks/does-not-exist",
+        "        with:",
+        "          scope: all",
+        "",
+      ].join("\n"),
+    );
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const error = await captureRejection("workflows/with-on-missing-task");
+    expect(error).toBeInstanceOf(UsageError);
+    if (!(error instanceof UsageError)) return;
+    expect(error.code).toBe("COMPOSITION_INVALID");
+    expect(error.message).toBe(
+      `Workflow step ${STEP_ID} cannot pass with: to task target tasks/does-not-exist; task-call inputs are not supported yet.`,
+    );
+  });
+
   // PRESERVED (B-04, already green — must stay green through P1a): a step
   // authored WITHOUT with: at all must not be touched by the new guard; it
   // keeps freezing to a command dispatch exactly as today.

@@ -214,6 +214,20 @@ async function taskDispatch(
   refInput: string,
   context: ResolutionContext,
 ): Promise<ResolvedDispatch> {
+  // P1a fail-closed correction (docs/plans/specs/p1a-with-rejection-classifier.md
+  // §3.1, P0 row R-01(c)): a workflow step's with: on a task target used to be
+  // silently dropped — taskDispatch never read source.with. Reject it instead,
+  // before resolveOwnedAsset, so the rejection does not depend on the task
+  // asset resolving. Fires on ANY authored with: shape, including `{}` (the
+  // check is `!== undefined`, not "non-empty"). Task-call inputs arrive in a
+  // later 0.9.x release (P2b); this rejection is temporary scaffolding for
+  // that gap, not the final shape of task-call bindings.
+  if (source.with !== undefined) {
+    throw new UsageError(
+      `Workflow step ${source.id} cannot pass with: to task target ${refInput}; task-call inputs are not supported yet.`,
+      "COMPOSITION_INVALID",
+    );
+  }
   const owned = await resolveOwnedAsset(refInput, "task", context);
   const retained = captureOwned(owned, context.collector);
   const task = parseTaskV3Yaml({ yaml: retained.content, filePath: owned.file, workspaceRoot: owned.root });
