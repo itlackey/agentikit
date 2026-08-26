@@ -285,6 +285,143 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
   });
 });
 
+describe("P-05 real-orchestrator coverage — an exec-unit child of a workflow-task run driven by the REAL runWorkflowSteps", () => {
+  // Test-review finding: every P-05 assertion above observes an INJECTED
+  // runWorkflowStepsImpl — strictly ABOVE the real orchestrator — and the
+  // comment on the describe block above explicitly defers proving that an
+  // exec-unit child of a REAL (non-injected) run still observes
+  // AKM_EVENT_SOURCE=task to "the workflow-exec layer (run-workflow.ts /
+  // step-work.ts / exec-unit.ts)". No such test existed anywhere in the
+  // suite (only nine files mention AKM_EVENT_SOURCE at all, and
+  // tests/integration/workflows/exec-unit.test.ts — the file that DOES drive
+  // real exec units — mentions neither AKM_EVENT_SOURCE nor eventSource), so
+  // it is pinned here directly instead of deferred again. This is exactly
+  // the regression P-05 exists to catch (spec §5.2(2): "silently dropping
+  // the child stamp is an unauthorized behavior change").
+  //
+  // No `runWorkflowStepsImpl` is passed to runTask() below, so runner.ts's
+  // default (`options.runWorkflowStepsImpl ?? runWorkflowSteps`) drives the
+  // REAL production runWorkflowSteps -> scheduler -> native executor ->
+  // exec-unit chain. The workflow's one step is `uses: scripts/<ref>`
+  // (native dispatch: directScript() -> runExecUnit()), which needs no LLM
+  // engine at all — the spawned child is a genuine subprocess whose only job
+  // is writing its own observed AKM_EVENT_SOURCE to a marker file. The
+  // marker lives at an absolute path under storage.root (OUTSIDE stashDir,
+  // so indexing never touches it), which sidesteps needing to know the shape
+  // of a workflow unit's persisted result/evidence just to read its output.
+  //
+  // TODAY (pre-P1b) this already passes: runner.ts:534-535's global stamp
+  // plus the pre-existing AKM_EVENT_SOURCE entry on
+  // EXEC_DEFAULT_ENV_PASSTHROUGH/COMMON_SPAWN_ENV_PASSTHROUGH
+  // (core/spawn-env.ts, exec-unit.ts:129-142) already produce it end to end
+  // — this is characterization of CURRENT behavior, not a flip. The point of
+  // pinning it is what P1b must reproduce: once F-1 deletes the global
+  // mutation, the new explicit eventSource thread (spec §5.2 point 2:
+  // run-workflow.ts -> step-work.ts -> exec-unit.ts childEnv) must keep this
+  // test green, or the escape hatch of §5.2(2) must be taken and recorded in
+  // the Review log instead of silently shipping the drop.
+  function markerPath(root: string): string {
+    return path.join(root, "event-source-marker.txt");
+  }
+
+  function writeEchoSourceWorkflow(root: string, marker: string): void {
+    fs.writeFileSync(
+      path.join(root, "scripts", "echo-source-to-marker.sh"),
+      `#!/bin/sh\nprintf 'AKM_EVENT_SOURCE=%s' "\${AKM_EVENT_SOURCE:-<unset>}" > ${shellWord(marker)}\n`,
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(root, "workflows", "echo-source.yml"),
+      [
+        "name: Echo source",
+        "on:",
+        "  workflow_dispatch:",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: run-script",
+        "        uses: scripts/echo-source-to-marker.sh",
+        "",
+      ].join("\n"),
+    );
+  }
+
+  test("ambient AKM_EVENT_SOURCE unset: a real workflow run's exec-unit child still observes AKM_EVENT_SOURCE=task", async () => {
+    const marker = markerPath(storage.root);
+    writeEchoSourceWorkflow(storage.stashDir, marker);
+    writeTask("wf-real-exec-unit", 'version: 3\nuses: workflows/echo-source\nakm:\n  schedule: "@daily"\n');
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+    expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
+
+    const result = await runTask("wf-real-exec-unit", { stashDir: storage.stashDir, bundleName: "fixture" });
+
+    expect(result.status).toBe("completed");
+    expect(fs.readFileSync(marker, "utf8")).toBe("AKM_EVENT_SOURCE=task");
+    // Never mutated on the parent side either — before, during, or after.
+    expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
+  });
+
+  test("a pre-set ambient AKM_EVENT_SOURCE: a real workflow run's exec-unit child observes AKM_EVENT_SOURCE=improve (ambient wins)", async () => {
+    const marker = markerPath(storage.root);
+    writeEchoSourceWorkflow(storage.stashDir, marker);
+    writeTask("wf-real-exec-unit-preset", 'version: 3\nuses: workflows/echo-source\nakm:\n  schedule: "@daily"\n');
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
+      runTask("wf-real-exec-unit-preset", { stashDir: storage.stashDir, bundleName: "fixture" }),
+    );
+
+    expect(result.status).toBe("completed");
+    expect(fs.readFileSync(marker, "utf8")).toBe("AKM_EVENT_SOURCE=improve");
+  });
+});
+
+describe("B-10 / spec §9 acceptance grep — process.env.AKM_EVENT_SOURCE is written nowhere in src/", () => {
+  // Test-review finding: every provenance assertion in this file (and in
+  // tasks-provenance-context.test.ts) observes process.env from inside an
+  // INJECTED seam — strictly ABOVE the real orchestrator — so nothing pinned
+  // spec §9's own acceptance grep that the global mutation is actually GONE
+  // from src/, as opposed to merely unreachable from the seams these tests
+  // happen to inject. An implementation that deletes runner.ts:534-535/
+  // :552-555 and re-introduces the identical stamp+finally-restore one layer
+  // BELOW the injection seam (e.g. inside the real runWorkflowSteps /
+  // step-work.ts / exec-unit.ts path) would satisfy every other assertion in
+  // this file while leaving B-10 ("never written") false. Mirrors spec §9
+  // verbatim:
+  //   rg "process\.env\.AKM_EVENT_SOURCE\s*=" src/    → zero hits
+  //   rg "delete process\.env\.AKM_EVENT_SOURCE" src/ → zero hits
+  // Same file-walk style as the purity ratchet in
+  // tests/tasks/parse-v3-adapter.test.ts:423 (recursive src/**/*.ts walk,
+  // per-file scan, named offenders on failure) — regex-based rather than
+  // AST-based here because the acceptance criterion itself IS a regex grep.
+  const SRC_ROOT = path.resolve(import.meta.dir, "../../src");
+
+  function walkTsFiles(dir: string): string[] {
+    const results: string[] = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) results.push(...walkTsFiles(full));
+      else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) results.push(full);
+    }
+    return results;
+  }
+
+  function offendersMatching(pattern: RegExp): string[] {
+    return walkTsFiles(SRC_ROOT)
+      .filter((file) => pattern.test(fs.readFileSync(file, "utf8")))
+      .map((file) => path.relative(SRC_ROOT, file).replace(/\\/g, "/"));
+  }
+
+  test("no file under src/ assigns process.env.AKM_EVENT_SOURCE", () => {
+    expect(offendersMatching(/process\.env\.AKM_EVENT_SOURCE\s*=/)).toEqual([]);
+  });
+
+  test("no file under src/ deletes process.env.AKM_EVENT_SOURCE", () => {
+    expect(offendersMatching(/delete process\.env\.AKM_EVENT_SOURCE/)).toEqual([]);
+  });
+});
+
 describe("P-07 — resolveUsageEventSource's provenance default table", () => {
   test.each([
     [undefined, "user"],

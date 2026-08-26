@@ -24,11 +24,21 @@
  *      through today's real `startWorkflowRun` → frozen-plan path, not a
  *      hand-typed guess — so the pin is provably against CURRENT behavior.
  *   2. Mechanism removal (grep-provable, spec §4.3/§9): the synthetic-YAML
- *      fabrication — the literal `schedule: "@daily"` string, and the
- *      `parseTaskV3Yaml` call fed a `${asset.path}#${step.id}` fragment
- *      filePath — is gone from source-freeze-v4.ts's source text. Mirrors
- *      the acceptance criterion `rg -F 'schedule: "@daily"' src/` returning
- *      zero hits.
+ *      fabrication — the literal `schedule: "@daily"` string, the synthetic
+ *      `version: 3\nuses:` task-document template, and the `parseTaskV3Yaml`
+ *      call fed a `${asset.path}#${step.id}` fragment filePath — is gone from
+ *      EVERY file under src/, not merely from source-freeze-v4.ts's source
+ *      text. Spec §4.3/§9's acceptance criteria are literal `rg -F ... src/`
+ *      greps over the WHOLE tree (`rg -F 'schedule: "@daily"' src/`, `rg -F
+ *      'version: 3\nuses:' src/` — both zero hits), so a single-file scan
+ *      only proves the fabrication MOVED (e.g. relocated verbatim into the
+ *      new prepare/ module), not that it is GONE — this file therefore walks
+ *      every src/**\/*.ts file. `src/tasks/prepare/prepare-script-target.ts`
+ *      is additionally scanned structurally (imports + call expressions) for
+ *      any use of `parseTaskV3Yaml` at all, since a preparer achieving the
+ *      same before/after byte parity by fabricating a DIFFERENTLY WORDED
+ *      synthetic document (dodging the literal-string scans above) would
+ *      still violate spec §4.3's "no parseTaskV3Yaml call" requirement.
  *
  * `prepareScriptTarget` is loaded through a non-literal dynamic-import path
  * so this file stays type-checkable (`bunx tsc --noEmit` clean) before the
@@ -41,6 +51,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 import { resetConfigCache } from "../../src/core/config/config";
 import type { FrozenDirectoryIdentity } from "../../src/execution/directory-identity";
 import { akmIndex } from "../../src/indexer/indexer";
@@ -94,6 +105,46 @@ function write(root: string, relative: string, content: string): string {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content, "utf8");
   return file;
+}
+
+interface ParseTaskV3YamlUsage {
+  readonly importsFromSourceV3: boolean;
+  readonly callsParseTaskV3Yaml: boolean;
+}
+
+/**
+ * Structural scan for "does this module import or call parseTaskV3Yaml at
+ * all" — AST-based (same style as the purity ratchet in
+ * tests/tasks/parse-v3-adapter.test.ts:423) rather than a text-substring
+ * guess, so it catches a re-fabrication that dodges the literal-string scans
+ * below by wording the synthetic document differently.
+ */
+function scanForParseTaskV3YamlUsage(filePath: string): ParseTaskV3YamlUsage {
+  const source = ts.createSourceFile(filePath, fs.readFileSync(filePath, "utf8"), ts.ScriptTarget.Latest, true);
+  let importsFromSourceV3 = false;
+  let callsParseTaskV3Yaml = false;
+  function visit(node: ts.Node): void {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text.includes("source-v3")
+    ) {
+      importsFromSourceV3 = true;
+    }
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression;
+      const calleeName = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee)
+          ? callee.name.text
+          : undefined;
+      if (calleeName === "parseTaskV3Yaml") callsParseTaskV3Yaml = true;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return { importsFromSourceV3, callsParseTaskV3Yaml };
 }
 
 describe("prepareScriptTarget — replaces directScript's synthetic-YAML fabrication (P1b spec §4.3)", () => {
@@ -174,9 +225,38 @@ describe("prepareScriptTarget — replaces directScript's synthetic-YAML fabrica
     });
   });
 
-  describe("the synthetic-YAML fabrication is gone from source-freeze-v4.ts (grep-provable, spec §4.3/§9)", () => {
-    const sourceFreezeV4Path = path.resolve(import.meta.dir, "../../src/workflows/ir/source-freeze-v4.ts");
-    const source = fs.readFileSync(sourceFreezeV4Path, "utf8");
+  describe("the synthetic-YAML fabrication is gone from src/, not merely relocated (grep-provable, spec §4.3/§9)", () => {
+    // Spec §4.3/§9's acceptance criteria are literal `rg -F` greps over ALL of
+    // src/ (`rg -F 'schedule: "@daily"' src/`, `rg -F 'version: 3\nuses:' src/`
+    // — both zero hits), not a scan scoped to source-freeze-v4.ts alone.
+    // Reading only that one file proves the fabrication MOVED (e.g. a
+    // byte-for-byte copy relocated into the new prepare/ module would pass a
+    // single-file scan of source-freeze-v4.ts trivially), not that it is
+    // GONE — so this walks every src/**\/*.ts file, the same convention as
+    // scripts/lint-import-cycles.ts's walkTsFiles / scripts/lint-license-headers.ts's collectTs.
+    const SRC_ROOT = path.resolve(import.meta.dir, "../../src");
+
+    function walkTsFiles(dir: string): string[] {
+      const results: string[] = [];
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) results.push(...walkTsFiles(full));
+        else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) results.push(full);
+      }
+      return results;
+    }
+
+    function allSrcFiles(): ReadonlyArray<readonly [relPath: string, content: string]> {
+      return walkTsFiles(SRC_ROOT).map(
+        (file) => [path.relative(SRC_ROOT, file).replace(/\\/g, "/"), fs.readFileSync(file, "utf8")] as const,
+      );
+    }
+
+    function offendersMatching(predicate: (content: string) => boolean): string[] {
+      return allSrcFiles()
+        .filter(([, content]) => predicate(content))
+        .map(([relPath]) => relPath);
+    }
 
     // CHARACTERIZATION-INVERSE (red today, per P1b spec §4.3's acceptance
     // criterion: "rg -F 'schedule: \"@daily\"' src/ ... return zero hits").
@@ -184,9 +264,11 @@ describe("prepareScriptTarget — replaces directScript's synthetic-YAML fabrica
     //   `version: 3\nuses: ${owned.ref}\nakm:\n  schedule: "@daily"\n`
     // purely to satisfy R-06 (exactly-one-scheduling-source) on a document
     // nothing ever schedules. prepareScriptTarget() never builds a task
-    // document at all, so this literal has nothing left to appear in.
-    test("the literal fabricated schedule string is absent", () => {
-      expect(source).not.toContain('schedule: "@daily"');
+    // document at all, so this literal has nothing left to appear in — ANY
+    // file under src/, including a relocated copy of today's trick.
+    test("the literal fabricated schedule string is absent from every file under src/", () => {
+      const offenders = offendersMatching((content) => content.includes('schedule: "@daily"'));
+      expect(offenders).toEqual([]);
     });
 
     // Today's directScript() (source-freeze-v4.ts:297-299) builds
@@ -194,21 +276,53 @@ describe("prepareScriptTarget — replaces directScript's synthetic-YAML fabrica
     // and feeds it, with the fabricated YAML above, through parseTaskV3Yaml.
     // Spec §4.3: prepareScriptTarget has "no parseTaskV3Yaml call, ... no
     // fabricated filePath fragment (${asset.path}#${step.id})".
-    test("the fabricated fragment filePath fed to parseTaskV3Yaml is absent", () => {
+    test("the fabricated fragment filePath fed to parseTaskV3Yaml is absent from every file under src/", () => {
       // Expressed as a regex rather than a plain string literal so biome's
       // noTemplateCurlyInString rule (a forgotten-backtick guard) does not
       // mistake this deliberate, literal `${...}` needle for a broken
-      // template — this file scans SOURCE TEXT, so the needle intentionally
-      // matches source-freeze-v4.ts's own unevaluated template-literal bytes.
-      expect(source).not.toMatch(/\$\{context\.asset\.path\}#\$\{source\.id\}/);
-      expect(source).not.toMatch(/parseTaskV3Yaml\(\{\s*yaml:\s*`version: 3\\nuses:/);
+      // template — these files are scanned as SOURCE TEXT, so the needle
+      // intentionally matches unevaluated template-literal bytes wherever
+      // they appear under src/.
+      const fragmentOffenders = offendersMatching((content) =>
+        /\$\{context\.asset\.path\}#\$\{source\.id\}/.test(content),
+      );
+      expect(fragmentOffenders).toEqual([]);
+      const callOffenders = offendersMatching((content) =>
+        /parseTaskV3Yaml\(\{\s*yaml:\s*`version: 3\\nuses:/.test(content),
+      );
+      expect(callOffenders).toEqual([]);
     });
 
-    // Weaker, file-scoped restatement of the second acceptance grep
+    // Weaker, content-scoped restatement of the second acceptance grep
     // (`rg -F 'version: 3\nuses:' src/` → zero hits) so a passing run is
     // legible without shelling out to ripgrep from inside the test.
-    test("the synthetic 'version: 3' task-document template is absent", () => {
-      expect(source).not.toContain("version: 3\\nuses:");
+    test("the synthetic 'version: 3' task-document template is absent from every file under src/", () => {
+      const offenders = offendersMatching((content) => content.includes("version: 3\\nuses:"));
+      expect(offenders).toEqual([]);
+    });
+
+    // NEW (test-review finding): the three scans above prove the fabrication
+    // is gone from src/ TEXT, but a preparer could still reach the exact same
+    // "before/after" parity (section 1 above) by fabricating a DIFFERENTLY
+    // WORDED synthetic document — e.g. spelling the schedule some other way —
+    // and re-parsing it through parseTaskV3Yaml, which spec §4.3 forbids
+    // outright regardless of wording ("no parseTaskV3Yaml call"). So
+    // prepareScriptTarget's own module is scanned STRUCTURALLY (import
+    // specifiers + call expressions) for any use of parseTaskV3Yaml at all.
+    describe("src/tasks/prepare/prepare-script-target.ts never imports or calls parseTaskV3Yaml (spec §4.3)", () => {
+      const PREPARE_SCRIPT_TARGET_FILE = path.join(SRC_ROOT, "tasks/prepare/prepare-script-target.ts");
+
+      test("imports nothing from source-v3 and contains no parseTaskV3Yaml(...) call", () => {
+        if (!fs.existsSync(PREPARE_SCRIPT_TARGET_FILE)) {
+          throw new Error(
+            "src/tasks/prepare/prepare-script-target.ts does not exist yet — spec §4.3 requires it to export " +
+              "prepareScriptTarget(); this test cannot pass until the module is implemented.",
+          );
+        }
+        const usage = scanForParseTaskV3YamlUsage(PREPARE_SCRIPT_TARGET_FILE);
+        expect(usage.importsFromSourceV3, "imports something from source-v3").toBe(false);
+        expect(usage.callsParseTaskV3Yaml, "calls parseTaskV3Yaml(...)").toBe(false);
+      });
     });
   });
 });
