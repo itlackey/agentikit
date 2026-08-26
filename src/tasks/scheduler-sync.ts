@@ -31,7 +31,8 @@ import {
   workflowNameForSourcePath,
 } from "../workflows/source-files";
 import { compileWorkflowSource } from "../workflows/source-ir/compile";
-import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "./runtime-v3";
+import { prepareTaskV3Execution } from "./prepare/prepare";
+import type { PrepareTaskV3ExecutionContext } from "./prepare/prepared-execution";
 import { parseSchedule, type ScheduleBackend } from "./schedule";
 import {
   assertSchedulerNativeArtifactCardinality,

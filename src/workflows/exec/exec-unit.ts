@@ -189,6 +189,15 @@ export interface RunExecUnitInput {
   spawnFn?: SpawnFn;
   /** Test seam: the platform whose spawn ceilings the context check uses. Defaults to the host's. */
   platform?: string;
+  /**
+   * F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 2): the
+   * task runner's resolved provenance event source. Typed as a bare `string`
+   * (not `UsageEventSource`) to keep this module's LEAF import discipline —
+   * see the module doc's Layering note. Applied to `childEnv`'s allowlisted
+   * BASE only when the name is absent there, so an ambient AKM_EVENT_SOURCE
+   * and an authored `env:` binding both still win (D5 clause d).
+   */
+  eventSource?: string;
 }
 
 /**
@@ -255,7 +264,7 @@ export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatch
   const result = await runManagedSubprocess([...input.exec.command], {
     capture: true,
     cwd: cwd.path,
-    env: childEnv(input.exec, input.env, input.context),
+    env: childEnv(input.exec, input.env, input.context, input.eventSource),
     timeoutMs: input.timeoutMs,
     // stdout IS this unit's artifact, so RETENTION is BOUNDED: an unbounded
     // capture is memory the akm process spends on a command's behalf with no
@@ -587,8 +596,17 @@ function childEnv(
   exec: IrExecSpec,
   bindings: Record<string, string> | undefined,
   context: Record<string, string> | undefined,
+  eventSource: string | undefined,
 ): Record<string, string> {
   const env = collectAllowlistedEnv(execAllowlist(exec));
+  // F-1 (spec §5.2 point 2): applied to the allowlisted BASE only when the
+  // ambient passthrough above left the name absent — an ambient
+  // AKM_EVENT_SOURCE already collected into `env` still wins, and this runs
+  // strictly BEFORE the bindings/context overlays below, so an authored
+  // `env:` binding (or the engine-authored context) still wins too.
+  if (eventSource !== undefined && env.AKM_EVENT_SOURCE === undefined) {
+    env.AKM_EVENT_SOURCE = eventSource;
+  }
   for (const [name, value] of Object.entries(bindings ?? {})) env[name] = value;
   for (const [name, value] of Object.entries(context ?? {})) env[name] = value;
   return env;

@@ -105,7 +105,6 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
     writeTask("arm-workflow", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
 
     const result = await runTask("arm-workflow", {
-      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       runWorkflowStepsImpl: (async ({ target, params = {} }: { target: string; params?: Record<string, unknown> }) => ({
@@ -154,19 +153,16 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
     );
 
     const result = await runTask("arm-command", {
-      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       runAgentImpl: (async () => ({ ok: true, exitCode: 0, stdout: "hi", stderr: "", durationMs: 1 })) as never,
     });
 
     expect(result.status).toBe("completed");
-    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(result.target).toEqual({ kind: "command", engine: "opencode" });
     // FIXED (D8): a prepared COMMAND target — an agent/LLM dispatch — is now
     // persisted under its own name, "command", not the former "prompt".
     expect(storedTargetKind("arm-command")).toBe("command");
-    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(readTaskHistory({ id: "arm-command" })[0]?.target).toEqual({ kind: "command", engine: "opencode" });
   });
 
@@ -177,7 +173,6 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
     writeTask("arm-shell", 'version: 3\nrun: printf ok\nshell: sh\nakm:\n  schedule: "@daily"\n');
 
     const result = await runTask("arm-shell", {
-      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       spawnFn: () => completedSpawn(0),
@@ -185,14 +180,12 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
 
     expect(result.status).toBe("completed");
     // The freshly-returned result still carries `cmd` …
-    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(result.target).toEqual({ kind: "shell", cmd: ["sh", "-c", "printf ok"] });
     // FIXED (D8): a prepared SHELL target is now persisted under its own
     // string, "shell" — no longer sharing "command" with the script arm below.
     expect(storedTargetKind("arm-shell")).toBe("shell");
     // … but metadata_json never records `cmd`, so the round trip through
     // history drops it: the read-back shape is the bare { kind: "shell" }.
-    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(readTaskHistory({ id: "arm-shell" })[0]?.target).toEqual({ kind: "shell" });
   });
 
@@ -207,19 +200,16 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
     writeTask("arm-script", 'version: 3\nuses: scripts/arm-script.sh\nakm:\n  schedule: "@daily"\n');
 
     const result = await runTask("arm-script", {
-      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       spawnFn: () => completedSpawn(0),
     });
 
     expect(result.status).toBe("completed");
-    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(result.target.kind).toBe("script");
     // FIXED (D8): shell and script are now DISTINGUISHABLE in history — script
     // stores "script", not the "command" string the shell arm stores above.
     expect(storedTargetKind("arm-script")).toBe("script");
-    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(readTaskHistory({ id: "arm-script" })[0]?.target).toEqual({ kind: "script" });
   });
 
@@ -261,7 +251,6 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
     expect(readTaskHistory({ id: "arm-workflow-null-ref" })[0]?.target).toEqual({ kind: "workflow", ref: "" });
     // FLIP: a legacy (unmarked) "prompt" row now maps to "command", not
     // "prompt" — the null-engine fallback itself is unchanged.
-    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(readTaskHistory({ id: "arm-prompt-no-engine" })[0]?.target).toEqual({ kind: "command", engine: null });
   });
 
@@ -302,11 +291,9 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
       db.close();
     }
 
-    // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
     expect(readTaskHistory({ id: "arm-command-legacy" })[0]?.target).toEqual({ kind: "shell" });
     expect(readTaskHistory({ id: "arm-prompt-legacy-with-engine" })[0]?.target).toEqual({
       kind: "command",
-      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       engine: "opencode",
     });
   });
@@ -325,7 +312,6 @@ describe('R-09 — bundleName fallback resolves to the literal "stash" bundle', 
     const captured: string[] = [];
 
     const result = await runTask("arm-fallback", {
-      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       // No bundleName. The shared beforeEach config also declares no
       // defaultBundle — the exact precondition this row names.

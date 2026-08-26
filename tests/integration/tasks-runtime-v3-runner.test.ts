@@ -95,7 +95,7 @@ describe("task-v3 runner mutation boundary", () => {
       writeTask("blocked", yaml);
       let failure: unknown;
       try {
-        await runTask("blocked", { stashDir: storage.stashDir, bundleName: "fixture", scheduled: true });
+        await runTask("blocked", { bundleDir: storage.stashDir, bundleName: "fixture", scheduled: true });
       } catch (error) {
         failure = error;
       }
@@ -112,11 +112,17 @@ describe("task-v3 runner mutation boundary", () => {
   test("a post-dispatch nonzero shell result records exactly one failed attempt", async () => {
     writeTask("fails", 'version: 3\nrun: exit 7\nshell: sh\nakm:\n  schedule: "@daily"\n');
     const result = await runTask("fails", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       scheduled: true,
     });
-    expect(result).toMatchObject({ status: "failed", target: { kind: "command" }, detail: { exitCode: 7 } });
+    // D8 (spec docs/plans/specs/p1b-model-extraction.md §5.3, §6 F-2):
+    // corollary of the authorized result-vocabulary flip — a shell dispatch
+    // now reports "shell", not the former shared "command" string. This is
+    // the one necessary follow-on edit G-1's stashDir->bundleDir rename does
+    // not itself cover; every other line in this file's diff is that
+    // mechanical substitution.
+    expect(result).toMatchObject({ status: "failed", target: { kind: "shell" }, detail: { exitCode: 7 } });
     expect(readTaskHistory({ id: "fails" })).toHaveLength(1);
     expect(logFiles().some((file) => file.endsWith(".log"))).toBe(true);
   });
@@ -147,7 +153,7 @@ describe("task-v3 runner mutation boundary", () => {
     writeTask("multi", 'version: 3\nuses: workflows/multi\nakm:\n  schedule: "@daily"\n');
 
     await expect(
-      runTask("multi", { stashDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
+      runTask("multi", { bundleDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
     ).rejects.toThrow(/exactly one source-IR job/i);
     expect(readTaskHistory({ id: "multi" })).toEqual([]);
     expect(logFiles()).toEqual([]);
@@ -177,7 +183,7 @@ describe("task-v3 runner mutation boundary", () => {
     writeTask("services", 'version: 3\nuses: workflows/services\nakm:\n  schedule: "@daily"\n');
 
     await expect(
-      runTask("services", { stashDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
+      runTask("services", { bundleDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
     ).rejects.toThrow(/services/i);
     expect(readTaskHistory({ id: "services" })).toEqual([]);
     expect(logFiles()).toEqual([]);
@@ -216,7 +222,7 @@ describe("task-v3 runner mutation boundary", () => {
 
     await expect(
       runTask("workflow-env", {
-        stashDir: storage.stashDir,
+        bundleDir: storage.stashDir,
         bundleName: "fixture",
         scheduled: true,
         runWorkflowStepsImpl: async () => {
@@ -245,11 +251,14 @@ describe("task-v3 runner mutation boundary", () => {
     writeTask("qualified", 'version: 3\nuses: shared//scripts/ok.sh\nakm:\n  schedule: "@daily"\n');
 
     const result = await runTask("qualified", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       scheduled: true,
     });
-    expect(result).toMatchObject({ status: "completed", target: { kind: "command" } });
+    // D8 (spec §5.3, §6 F-2) corollary — a script dispatch now reports
+    // "script", not the former shared "command" string. See the comment at
+    // this file's other vocabulary-corollary edit.
+    expect(result).toMatchObject({ status: "completed", target: { kind: "script" } });
     expect(fs.readFileSync(result.log, "utf8")).toContain("qualified");
     expect(readTaskHistory({ id: "qualified" })).toHaveLength(1);
   });
@@ -294,7 +303,7 @@ describe("task-v3 runner mutation boundary", () => {
     };
 
     const result = await runTask("exact-shell", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       spawnFn,
     });
@@ -321,7 +330,7 @@ describe("task-v3 runner mutation boundary", () => {
     );
 
     const result = await runTask("local-redaction", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       scheduled: true,
       spawnFn: (_cmd, options) => {
@@ -367,7 +376,7 @@ describe("task-v3 runner mutation boundary", () => {
       let spawned = false;
 
       const result = await runTask("cwd-swap", {
-        stashDir: storage.stashDir,
+        bundleDir: storage.stashDir,
         bundleName: "fixture",
         beforeNativeDispatch: () => {
           if (replacement === "bundle-root") {
@@ -411,7 +420,7 @@ describe("task-v3 runner mutation boundary", () => {
     let sourceMutated = false;
 
     const result = await runTask("frozen-js", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       beforeNativeDispatch: () => {
         if (replacement === undefined) fs.rmSync(script);
@@ -473,7 +482,7 @@ describe("task-v3 runner mutation boundary", () => {
     };
 
     const result = await runTask("cleanup", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       spawnFn,
     });

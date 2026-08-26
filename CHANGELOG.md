@@ -29,6 +29,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   akm-task adapter report for the same failure also change — from `… Run
   \`akm <command> --help\` to see accepted values.` to `… Fix the task source
   at the reported path and line, then re-run.`
+- **Task-history / JSON-output `target.kind` vocabulary changed.** A prepared
+  command (agent/LLM) run now reports `"command"` (formerly the confusingly
+  inverted `"prompt"`); the former shared `"command"` string for the native
+  arm splits into `"shell"` and `"script"`, now distinguishable in history;
+  `"workflow"` and `"unknown"` are unchanged. **Consumers branching on
+  `"prompt"` must handle `"command"`** — this affects `akm task run`'s and
+  `akm task history`'s JSON output (`result.target.kind` /
+  `rows[].target.kind`) and any code reading `task_history.target_kind`
+  directly. Rows written by earlier akm versions are read back **mapped** to
+  the new vocabulary (legacy `"prompt"` → `{kind:"command", engine}`, legacy
+  `"command"` → `{kind:"shell"}`), so `akm task history` output stays uniform
+  across vintages. New rows carry a `targetVocab: 2` marker inside their
+  `metadata_json`, which akm versions before this one reject as an unknown
+  metadata field — a mixed-version fleet must upgrade every `akm` that writes
+  task history before an older one reads it.
 
 ## [0.9.2-alpha.1] - 2026-08-24
 

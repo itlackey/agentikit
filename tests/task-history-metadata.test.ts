@@ -39,7 +39,6 @@ describe("decodeTaskHistoryMetadata", () => {
       metadataVersion: 2,
       durationMs: 1,
       detail: null,
-      // @ts-expect-error P1b red-phase: targetVocab lands on TaskHistoryMetadata in Implement (the implementation removes this directive)
       targetVocab: 2,
     });
     expect(decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: null })).toEqual({

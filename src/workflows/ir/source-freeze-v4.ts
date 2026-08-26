@@ -29,11 +29,9 @@ import { lowerResolvedExecutionRequest } from "../../integrations/agent/executio
 import { prepareInlineExecution } from "../../integrations/agent/inline-execution";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { resolveAssetPath } from "../../sources/resolve";
-import {
-  type PreparedTaskV3Execution,
-  prepareTaskV3Execution,
-  type TaskV3ScriptInterpreter,
-} from "../../tasks/runtime-v3";
+import { prepareTaskV3Execution } from "../../tasks/prepare/prepare";
+import { prepareScriptTarget } from "../../tasks/prepare/prepare-script-target";
+import type { PreparedTaskV3Execution, TaskV3ScriptInterpreter } from "../../tasks/prepare/prepared-execution";
 import { parseTaskV3Yaml } from "../../tasks/source-v3";
 import { defaultLlmEngineConcurrency } from "../concurrency-policy";
 import type { ProgramExec, ProgramUnit } from "../program/schema";
@@ -293,28 +291,48 @@ async function directScript(
 ): Promise<ResolvedDispatch> {
   const owned = await resolveOwnedAsset(refInput, "script", context);
   captureOwned(owned, context.collector);
-  const synthetic = parseTaskV3Yaml({
-    yaml: `version: 3\nuses: ${owned.ref}\nakm:\n  schedule: "@daily"\n`,
-    filePath: `${context.asset.path}#${source.id}`,
-    workspaceRoot: context.asset.sourcePath,
-  });
-  const prepared = await prepareTaskV3Execution(synthetic, {
-    taskId: source.id,
-    taskRef: `${context.asset.ref}#${source.id}`,
-    bundleName: parseBundleRef(context.asset.ref).bundle ?? owned.bundle,
-    bundleRoot: context.asset.sourcePath,
-    config: context.config,
-    resolveAsset: async () => ({ file: owned.file, bundleRoot: owned.root }),
+  // Typed preparer (P1b spec §4.3) — no synthetic task YAML, no parseTaskV3Yaml
+  // call, no fabricated schedule/filePath/taskId/taskRef. The script's own
+  // owned identity (ref/file/bundleRoot) is all prepareScriptTarget needs.
+  const captured = prepareScriptTarget({
+    ref: owned.ref,
+    file: owned.file,
+    bundleRoot: owned.root,
     readFile: () => context.collector.readBytes(owned.file, owned.root),
   });
-  if (prepared.kind !== "script") throw new Error("direct script did not project as a script");
-  return scriptResult(source, baseUnit, prepared, context, []);
+  return scriptResult(
+    source,
+    baseUnit,
+    {
+      sourceRef: captured.ref,
+      interpreter: captured.interpreter,
+      extension: captured.extension,
+      bytesBase64: captured.bytesBase64,
+      byteLength: captured.byteLength,
+      sha256: captured.sha256,
+      cwdIdentity: captured.cwdIdentity,
+    },
+    context,
+    [],
+  );
 }
+
+/**
+ * The subset of a script projection scriptResult() actually reads — shared by
+ * taskDispatch's prepareTaskV3Execution-produced PreparedTaskV3Script (which
+ * structurally satisfies this narrower shape) and directScript's
+ * prepareScriptTarget()-produced PreparedScriptTarget above (field-mapped:
+ * PreparedScriptTarget.ref -> sourceRef).
+ */
+type FrozenScriptCapture = Pick<
+  Extract<PreparedTaskV3Execution, { kind: "script" }>,
+  "sourceRef" | "interpreter" | "extension" | "bytesBase64" | "byteLength" | "sha256" | "cwdIdentity"
+>;
 
 function scriptResult(
   source: WorkflowSourceStep,
   baseUnit: ProgramUnit,
-  prepared: Extract<PreparedTaskV3Execution, { kind: "script" }>,
+  prepared: FrozenScriptCapture,
   context: ResolutionContext,
   literals: readonly FrozenWorkflowEnvironmentBinding[],
 ): ResolvedDispatch {

@@ -24,10 +24,24 @@ export type UsageEventSource = "user" | "improve" | "task" | "audit" | "unknown"
 
 const USAGE_EVENT_SOURCES = new Set<UsageEventSource>(["user", "improve", "task", "audit", "unknown"]);
 
-/** Resolve subprocess provenance without treating an invalid value as user demand. */
-export function resolveUsageEventSource(env: Record<string, string | undefined> = process.env): UsageEventSource {
+/**
+ * Resolve subprocess provenance without treating an invalid value as user
+ * demand.
+ *
+ * `fallback` (spec docs/plans/specs/p1b-model-extraction.md §5.2, F-1) is what
+ * an unset/empty ambient value resolves to — it defaults to `"user"`, which
+ * reproduces every pre-P1b call site byte-for-byte (P-07). A caller that
+ * already knows the invocation's provenance (the task runner, threading its
+ * `ExecutionProvenanceContext`) passes its resolved value as the fallback
+ * instead, so a recognized ambient `AKM_EVENT_SOURCE` still wins everywhere it
+ * won before, and only the *default* changes.
+ */
+export function resolveUsageEventSource(
+  env: Record<string, string | undefined> = process.env,
+  fallback: UsageEventSource = "user",
+): UsageEventSource {
   const raw = env.AKM_EVENT_SOURCE;
-  if (raw === undefined || raw === "") return "user";
+  if (raw === undefined || raw === "") return fallback;
   return USAGE_EVENT_SOURCES.has(raw as UsageEventSource) ? (raw as UsageEventSource) : "unknown";
 }
 

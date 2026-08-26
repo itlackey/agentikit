@@ -168,7 +168,7 @@ describe("tasks run attempt observability", () => {
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
     assertNoAttempt(INVALID_TASK_ID);
 
-    const thrown = await captureThrown(() => runTask("../DIRECT-RUNNER-HOSTILE-ID", { stashDir: storage.stashDir }));
+    const thrown = await captureThrown(() => runTask("../DIRECT-RUNNER-HOSTILE-ID", { bundleDir: storage.stashDir }));
     expect(thrown).toMatchObject({ code: "INVALID_FLAG_VALUE" });
     assertNoAttempt(INVALID_TASK_ID);
   });
@@ -240,8 +240,8 @@ describe("tasks run attempt observability", () => {
     };
 
     const attempts = await Promise.allSettled([
-      runTask("same-millisecond", { stashDir: storage.stashDir, logDir, now: () => instant, spawnFn }),
-      runTask("same-millisecond", { stashDir: storage.stashDir, logDir, now: () => instant, spawnFn }),
+      runTask("same-millisecond", { bundleDir: storage.stashDir, logDir, now: () => instant, spawnFn }),
+      runTask("same-millisecond", { bundleDir: storage.stashDir, logDir, now: () => instant, spawnFn }),
     ]);
 
     expect(attempts.map(({ status }) => status)).toEqual(["fulfilled", "fulfilled"]);
@@ -300,7 +300,7 @@ describe("tasks run attempt observability", () => {
 
     const thrown = await captureThrown(() =>
       runTask("dispatch-throws", {
-        stashDir: storage.stashDir,
+        bundleDir: storage.stashDir,
         logDir,
         runAgentImpl: async () => {
           throw dispatchError;
@@ -318,7 +318,7 @@ describe("tasks run attempt observability", () => {
     fs.writeFileSync(blockedLogDir, "not a directory");
 
     const result = await runTask("best-effort-log", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       logDir: blockedLogDir,
       spawnFn: successfulSpawn,
     });

@@ -112,6 +112,22 @@ export interface DispatchLoweredExecutionOptions {
   readonly lease?: RunnerDispatchLease;
   /** Operational test/cancellation seams; resolved content/argv/env/cwd/timeout cannot be overridden here. */
   readonly runOptions?: Partial<RunAgentOptions>;
+  /**
+   * F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 3): the
+   * task runner's resolved provenance event source (already ambient-resolved
+   * by the caller — an ambient `process.env.AKM_EVENT_SOURCE` still wins
+   * everywhere it wins today; this is only the fallback). Applied as EXACTLY
+   * one child-env key, `AKM_EVENT_SOURCE`, layered on top of the lowered
+   * request's own resolved `env` — the ONE narrow exception to
+   * `runOptions`'s "resolved content … cannot be overridden" rule above,
+   * scoped to this single name so a caller cannot use it to replace ANY other
+   * resolved value (frozen scheduler-context directories included). Never
+   * reaches around the execution boundary's one authorized `runAgent`/
+   * `runSdk` caller (`scripts/lint-execution-boundary.ts` permits exactly
+   * one, `runner-dispatch.ts`'s `executeRunner`) — it rides the same options
+   * object that boundary's one call site already forwards.
+   */
+  readonly eventSource?: string;
 }
 
 export type LoweredExecutionDispatchLease = RunnerDispatchLease;
@@ -927,12 +943,15 @@ export async function dispatchLoweredExecutionRequest(
   const optionSnapshot = snapshotStrictRecord(options, "lowered execution dispatch options");
   assertSnapshotKeys(
     optionSnapshot,
-    ["executeRunner", "chat", "onRetryAttempt", "runAgent", "runSdk", "lease", "runOptions"],
+    ["executeRunner", "chat", "onRetryAttempt", "runAgent", "runSdk", "lease", "runOptions", "eventSource"],
     "lowered execution dispatch options",
   );
   const strictOptions = optionSnapshot as unknown as DispatchLoweredExecutionOptions;
   if (strictOptions.onRetryAttempt !== undefined && typeof strictOptions.onRetryAttempt !== "function") {
     throw new TypeError("lowered execution dispatch options.onRetryAttempt must be a function");
+  }
+  if (strictOptions.eventSource !== undefined && typeof strictOptions.eventSource !== "string") {
+    throw new TypeError("lowered execution dispatch options.eventSource must be a string");
   }
   const usesDefaultRunner = strictOptions.executeRunner === undefined;
   const run = runnerDispatcher(strictOptions.executeRunner);
@@ -972,6 +991,14 @@ export async function dispatchLoweredExecutionRequest(
     ...(operational.setTimeoutFn !== undefined ? { setTimeoutFn: operational.setTimeoutFn } : {}),
     ...(operational.clearTimeoutFn !== undefined ? { clearTimeoutFn: operational.clearTimeoutFn } : {}),
     ...(operational.onEvent !== undefined ? { onEvent: operational.onEvent } : {}),
+    // F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 3): the
+    // ONE narrowly-scoped exception to "resolved content cannot be
+    // overridden" — sets exactly the one named key, never a caller-supplied
+    // env bag (runOptions.env stays unhonored, same as before P1b; see
+    // DispatchLoweredExecutionOptions.eventSource's doc).
+    ...(strictOptions.eventSource !== undefined
+      ? { env: { ...lowered.options.env, AKM_EVENT_SOURCE: strictOptions.eventSource } }
+      : {}),
   });
   const ownedLease = strictOptions.lease === undefined && usesDefaultRunner;
   const lease =

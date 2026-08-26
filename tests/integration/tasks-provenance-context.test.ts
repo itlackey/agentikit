@@ -24,6 +24,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { stringify as stringifyYaml } from "yaml";
 import { openStateDatabase } from "../../src/core/state-db";
 import { akmIndex } from "../../src/indexer/indexer";
 import type { AgentRunResult } from "../../src/integrations/agent";
@@ -91,7 +92,15 @@ function shellWord(value: string): string {
 
 function shellTask(command: readonly string[]): string {
   const run = command.map((value) => shellWord(value)).join(" ");
-  return `version: 3\nrun: ${run}\nakm:\n  schedule: "@daily"\n`;
+  // Fixture bug fix (pre-existing, unrelated to any P1b authorized flip): the
+  // shell-quoted `run` value itself contains YAML-significant `'` characters
+  // (the shellWord POSIX-quoting idiom), so it cannot be spliced into the
+  // document as a bare/naively-templated scalar — that produced invalid YAML
+  // ("Unexpected single-quoted-scalar at node end"), never actually exercised
+  // while this file was red for unrelated (missing-API) reasons. Serialize
+  // through `yaml`'s own stringifier instead, exactly as the sibling
+  // characterization file's `shellTask` already does.
+  return stringifyYaml({ version: 3, run, akm: { schedule: "@daily" } });
 }
 
 describe("native (shell/script) arm reads provenance.eventSource, not a hardcoded literal", () => {
@@ -307,7 +316,6 @@ describe("F-3 (type-level only) — RunTaskOptions.bundleDir replaces stashDir",
     writeTask("bundledir-type-level", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
 
     const result = await runTask("bundledir-type-level", {
-      // @ts-expect-error P1b red-phase: this API lands in Implement (the implementation removes this directive)
       bundleDir: storage.stashDir,
       bundleName: "fixture",
       runWorkflowStepsImpl: (async ({ target, params = {} }: { target: string; params?: Record<string, unknown> }) => ({

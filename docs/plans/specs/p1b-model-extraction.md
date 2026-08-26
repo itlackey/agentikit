@@ -749,3 +749,88 @@ log** — that is the signal that the split is not behavior-preserving.
 ## Review log
 
 <!-- Reviewers append dated entries below. -->
+
+**2026-08-26 — Lane C implementation notes (runner split + provenance + vocabulary).**
+
+*Module-boundary deviation from the §5.1 table (necessary, cycle-driven).* `finishAttempt` is
+implemented in `run/task-result.ts` as a private inline clamp, NOT imported from
+`run/attempt-lifecycle.ts` as the §5.1 table's literal text lists it. Reason: `task-result.ts` owns
+`TaskRunResult`/`RunTaskOptions` and is imported (type-only, for `TaskRunResult`) by
+`run/task-history.ts`; `attempt-lifecycle.ts` imports `appendHistory` (a value) from
+`task-history.ts`. If `task-result.ts` also imported `finishAttempt` (a value) from
+`attempt-lifecycle.ts`, the three modules would close a cycle —
+`tests/architecture/import-cycle-ratchet.test.ts` counts TYPE-ONLY imports as real cycle edges (its
+own header: "dependency direction is an architecture property, not a runtime one") against an
+EMPTY, shrink-only baseline, so any new cycle participant is a hard failure. `attempt-lifecycle.ts`
+still owns the CANONICAL, exported `finishAttempt` that every dispatch arm
+(`run-native-task.ts`/`run-workflow-task.ts`/`run-command-task.ts`) imports from there; only
+`task-result.ts`'s own `finishDisabledTask` — a single one-line ternary, not the exported symbol —
+avoids the import. Likewise `finishDisabledTask` (task-result.ts) no longer calls `appendHistory`
+itself (the pre-split function did); it persists the log and returns its result, and `run-task.ts`
+calls `appendHistory` immediately after, in the same relative order — the same cycle constraint
+applies (`task-history.ts` needs `TaskRunResult`'s type from `task-result.ts`, so `task-result.ts`
+cannot import a value back from `task-history.ts`). Neither change is user-observable:
+`finishDisabledTask`/`finishAttempt`'s internal call graph is not on the compat-shim re-export list,
+and `tests/tasks/run-split.test.ts` (the structural contract for this split) does not pin either
+function's file location or call graph, only that each named module exports actual runtime logic.
+Verified: `tests/architecture/import-cycle-ratchet.test.ts` green, zero new participants.
+
+*F-1 point 3 (R-07 fix) required routing through `execution-lowering.ts`, not just `command-execution.ts`.*
+The spec's own §5.2 point 3 names `command-execution.ts:443` as the edit site and does not mention
+`execution-lowering.ts`. Implementation required going one layer deeper: `dispatchPreparedCommandInvocation`
+has no way to inject a value into the dispatched engine's child env without either (a) reconstructing
+the frozen, WeakSet-branded `ResolvedExecutionRequestV1`/`LoweredExecutionRequest` (impossible without
+touching `execution-cascade.ts`/`resolved-request.ts`'s construction functions — those objects are
+require-exact-instance branded, not merely structurally validated, so a spread copy fails
+`canonicalResolvedExecutionRequest`'s `instances.has(value)` check), or (b) importing `runAgent`
+(`spawn.ts`) / `runOpencodeSdk` (`sdk-runner.ts`) directly and wrapping them — which
+`scripts/lint-execution-boundary.ts` forbids outright (an exact-count-1 allowlist naming
+`runner-dispatch.ts`'s `executeRunner` as the ONLY authorized caller of each; a first attempt at this
+wrapping approach failed `bun run lint` with "2 unauthorized reference(s)"). The implemented path
+instead: `DispatchLoweredExecutionOptions` gains a narrow, single-purpose `eventSource?: string`
+field (NOT a general `env` override), and `dispatchLoweredExecutionRequest` applies it as exactly one
+child-env key (`AKM_EVENT_SOURCE`) layered onto the lowered request's own resolved `env`, leaving
+`runOptions`'s pre-existing "resolved content … cannot be overridden" contract otherwise untouched.
+
+*A first attempt at implementing the above regressed a pinned test; caught and fixed before landing.*
+The first attempt widened `execution-lowering.ts`'s generic `runOptions`/"operational" merge to honor
+ANY caller-supplied `env` object additively (not just the one event-source key), reasoning that `env`
+was already a declared-but-inert key in that merge's allowlist. This passed every P1b-specific test
+and `bun run lint`, but broke `tests/integration/tasks-runner.test.ts`'s "forwards scheduled AKM
+directory context to an agent without trusting task or caller overrides" — a PRE-EXISTING P0-era
+characterization test (not one of Lane C's five red-phase files, untouched by this phase's authorized
+flips) whose entire point is that `agentOptions`/`runOptions.env` must NOT be able to override frozen
+scheduler-context directory values. The generic merge let a test/caller-supplied `AKM_STATE_DIR`
+silently replace the real one. Caught by the full `bun run test:integration` sweep (not by the
+launcher's five-file list, which does not include this file) — this is the reason this phase's
+verification ran the full suite rather than stopping at the named gates. Fixed by narrowing the
+mechanism to the single named key described above, which cannot touch any other resolved value.
+Re-verified: full `bun run test:integration` green (5653 pass / 57 skip / 0 fail), full
+`bun run lint` green (execution-boundary ratchet included).
+
+*Discovered, NOT fixed — outside Lane C's ownership.* `tests/architecture/diagnostic-codes.test.ts`
+(P1a's `INVALID_FLAG_VALUE` ratchet, baseline 82, ratchet-only-declines) now measures 85 — a +3
+violation. Root-caused precisely: Lane A's `src/tasks/model/definition.ts:67` and
+`src/tasks/source/parse-v3-adapter.ts:65` are genuinely NEW `UsageError(…, "INVALID_FLAG_VALUE")`
+throw sites (neither file existed at P1a's baseline measurement; both are Lane A's own new
+validation code, not code moved from an already-counted site), plus one prose mention of the string
+in a `model/definition.ts` doc comment. Every Lane B/C file movement is ratchet-neutral by
+construction — verified by full accounting: `runtime-v3.ts`'s pre-move 11 sites reappear as exactly
+11 across `prepare/prepare.ts` + `prepare/prepare-support.ts` + `prepare/script-capture.ts`;
+`runner.ts`'s pre-move 1 site (the `SAFE_TASK_ATTEMPT_ERROR_CODES` allowlist entry) reappears as
+exactly 1 in `run/attempt-lifecycle.ts`; every OTHER file the ratchet scans
+(`schedule.ts`/`scheduler-binding.ts`/`scheduler-sync.ts`/`source-v3.ts`/`task-id.ts`/every
+`workflows/**` file) is byte-unchanged in count. `src/tasks/model/**` and
+`src/tasks/source/parse-v3-adapter.ts` are Lane A's files, outside Lane C's "Own ONLY" list and
+outside this phase's authorized-flips table (§6) — recoding their validation errors to a more
+specific `UsageError` code (per the ratchet's own prescribed remedy) is a decision about Lane A's
+validation semantics this lane is not positioned to make correctly, so it is recorded here rather
+than silently absorbed or worked around by editing the ratchet's baseline. `bun run test:unit`
+currently fails on exactly this one test (3953/3954 pass); every other unit and the full integration
+suite (5653/5653) are green.
+
+Gate: lint green (`bun run lint`, execution-boundary ratchet included), `bunx tsc --noEmit` green,
+zero `P1b red-phase` directives remaining, full `bun run test:integration` green (5653 pass / 57
+skip / 0 fail), `bun run test:unit` green except the one pre-existing, out-of-lane ratchet violation
+above (3953/3954), import-cycle-ratchet and src-fn-size-ratchet both green with no new baseline
+entries, `tests/tasks/run-split.test.ts` (the structural contract for this split) green.

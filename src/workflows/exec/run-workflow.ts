@@ -153,6 +153,23 @@ export interface RunWorkflowOptions {
    * nothing). Injected by tests to assert the drain fires on each path.
    */
   disposeDispatchResources?: () => void | Promise<void>;
+  /**
+   * F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 2): the
+   * task runner's resolved provenance event source, threaded here instead of
+   * the removed global `process.env.AKM_EVENT_SOURCE` stamp
+   * (src/tasks/run/run-workflow-task.ts). Optional and undefined for every
+   * non-task caller (`akm workflow run` and its tests), so their behavior is
+   * byte-identical. When present, it reaches an exec unit's child env via
+   * native-executor.ts's `StepExecutionContext.eventSource` ->
+   * unit-dispatch.ts's `UnitDispatchRequest.eventSource` -> exec-unit.ts's
+   * `childEnv` — applied to the allowlisted BASE only, so an ambient value
+   * already present and an authored `env:` binding both still win. Typed as
+   * a bare `string` (not `UsageEventSource`) — like the native arm's own
+   * `process.env.AKM_EVENT_SOURCE ?? provenance.eventSource`, this is an
+   * unvalidated raw value destined straight for a child env var, not a value
+   * checked against the `UsageEventSource` enum.
+   */
+  eventSource?: string;
 }
 
 export interface ExecutedStepReport {
@@ -740,6 +757,9 @@ async function executeStepSubgraph(
         ...(plan.budget ? { budget: plan.budget } : {}),
         gateLoop,
         ...(gateFeedback ? { gateFeedback } : {}),
+        // F-1 (spec §5.2 point 2): threaded to an exec unit's child env;
+        // undefined for every non-task caller (byte-identical, RunWorkflowOptions doc).
+        ...(options.eventSource !== undefined ? { eventSource: options.eventSource } : {}),
         // The heartbeat's signal is the effective dispatch signal: a lost
         // lease (or a caller abort) aborts in-flight units promptly.
         ...(dispatchSignal ? { signal: dispatchSignal } : {}),

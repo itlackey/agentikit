@@ -245,3 +245,46 @@ and npm launcher enforce it). Fixed at the environment level by installing Node 
 it the default; no repository change was needed and the failures predate P0 (they reproduce at the
 untouched baseline in a Node-22 environment). P0 gate: lint green, tsc green, unit 3879/0,
 integration 5622/0.
+
+**2026-08-26 — P-05 reclassification (P1b Lane C, required by D5, spec
+`docs/plans/specs/p1b-model-extraction.md` §1.2).** P-05 pinned the pre-P1b MECHANISM: the workflow
+dispatch arm (`runner.ts:534-535`, `:552-555` at P0 head) stamped `process.env.AKM_EVENT_SOURCE`
+GLOBALLY for the duration of an in-process workflow-task run, then restored the prior value (or
+deleted the key) in a `finally`, so a child `akm` invocation made by a workflow step inherited the
+stamp through ambient environment inheritance. D5 always scheduled this mechanism for replacement —
+the global mutation was a correctness liability in its own right (P0's own row named it a
+cross-run-leakage risk that only worked because the stamp/restore pair happened to be
+synchronous-safe), and the design decision (D5, phase P1b) was to thread the resolved event source
+through an explicit, typed `ExecutionProvenanceContext` instead. P1b (F-1) deletes the global
+`process.env` stamp and its `finally` restore outright — nothing under `src/` writes
+`process.env.AKM_EVENT_SOURCE` any more (grep-provable: `rg "process\.env\.AKM_EVENT_SOURCE\s*="
+src/` and `rg "delete process\.env\.AKM_EVENT_SOURCE" src/` both return zero hits) — and threads the
+value through a new optional `eventSource` option instead: `run-task.ts`'s
+`ExecutionProvenanceContext` → `run-workflow-task.ts` → `RunWorkflowOptions.eventSource` →
+`src/workflows/exec/run-workflow.ts` → `native-executor.ts`'s `StepExecutionContext.eventSource` →
+`unit-dispatch.ts`'s `UnitDispatchRequest.eventSource` → `exec-unit.ts`'s `childEnv`, applied to the
+allowlisted base only when the ambient passthrough left the name absent.
+
+The mechanism changed; the four contract clauses P-05 protected did not:
+
+- (a) in-process workflow execution and usage recording still observe event source `"task"` for an
+  unscheduled or scheduled task run alike (D5-N1) — now via the explicit `eventSource` option read
+  from inside the orchestrator, rather than via `process.env` read from inside the same process;
+- (b) no cross-run leakage — strengthened, not merely preserved: `process.env.AKM_EVENT_SOURCE` is
+  now NEVER mutated at all (no set, no delete), so there is no restore step to get wrong and no
+  window, however small, in which a concurrently-running unrelated task could observe the stamp;
+- (c) child-env stamping is unchanged for the arm P-06 pins (native shell/script) and is now ALSO
+  correct for the arm R-07 pinned as a defect (prompt/command) and for an exec-unit child of a
+  real, non-injected workflow run — all three reach the dispatched child's environment through an
+  explicit value, never through inherited ambient state;
+- (d) a pre-set, more-specific ambient `AKM_EVENT_SOURCE` still wins everywhere it won before — the
+  explicit `eventSource` value is only ever a FALLBACK (`process.env.AKM_EVENT_SOURCE ??
+  provenance.eventSource` at each dispatch arm, and `exec-unit.ts`'s `childEnv` applies its stamp
+  only when the allowlisted-base collection left the name absent), so an already-present ambient
+  value is never overwritten.
+
+Verified end to end by `tests/integration/tasks-provenance-characterization.test.ts`'s flipped P-05
+rows (including a REAL, non-injected `runWorkflowSteps` → `exec-unit` child observing the stamp) and
+by `tests/integration/tasks-provenance-context.test.ts`'s new `RunTaskOptions.provenance` coverage.
+No production change to P0 itself; this entry documents P1b Lane C's implementation of the flip P0's
+own R-07/P-05 rows named as pending.

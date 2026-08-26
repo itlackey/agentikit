@@ -32,12 +32,12 @@ type FakeWorkflowRunner = (options: { target: string; params?: Record<string, un
 type FakeRunAgent = (...args: unknown[]) => Promise<AgentRunResult>;
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-tasks-runner-"));
-const stashDir = path.join(tmpRoot, "stash");
+const bundleDir = path.join(tmpRoot, "stash");
 const cacheDir = path.join(tmpRoot, "cache");
 const dataDir = path.join(tmpRoot, "data");
 const stateDir = path.join(tmpRoot, "state");
 const logDir = path.join(cacheDir, "tasks", "logs");
-const tasksDir = path.join(stashDir, "tasks");
+const tasksDir = path.join(bundleDir, "tasks");
 const configDir = path.join(tmpRoot, "cfg");
 
 const TRACKED_ENV_KEYS = ["AKM_CONFIG_DIR", "AKM_CACHE_DIR", "AKM_BUNDLE_DIR", "AKM_DATA_DIR", "AKM_STATE_DIR"];
@@ -45,16 +45,16 @@ const PRESERVED_ENV: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   for (const key of TRACKED_ENV_KEYS) PRESERVED_ENV[key] = process.env[key];
-  fs.rmSync(stashDir, { recursive: true, force: true });
+  fs.rmSync(bundleDir, { recursive: true, force: true });
   fs.rmSync(cacheDir, { recursive: true, force: true });
   fs.rmSync(dataDir, { recursive: true, force: true });
   fs.rmSync(stateDir, { recursive: true, force: true });
   fs.rmSync(configDir, { recursive: true, force: true });
   fs.mkdirSync(tasksDir, { recursive: true });
   // Workflows directory needs to exist so resolveAssetPath can stat the type root.
-  fs.mkdirSync(path.join(stashDir, "workflows"), { recursive: true });
+  fs.mkdirSync(path.join(bundleDir, "workflows"), { recursive: true });
   fs.writeFileSync(
-    path.join(stashDir, "workflows", "noop.md"),
+    path.join(bundleDir, "workflows", "noop.md"),
     "---\ntype: workflow\nsteps:\n  - id: work\n---\n\n## work\n\nDo it.\n",
     "utf8",
   );
@@ -217,7 +217,7 @@ describe("runTask — workflow target", () => {
     };
 
     const result = await runTask("wf", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: fakeWf as never,
       now: () => new Date("2025-01-01T00:00:00Z"),
@@ -266,7 +266,7 @@ describe("runTask — workflow target", () => {
       });
 
       const result = await runTask("map", {
-        stashDir,
+        bundleDir,
         logDir,
         runWorkflowStepsImpl: fakeWf as never,
         now: () => new Date("2025-01-01T00:00:00Z"),
@@ -386,7 +386,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const promise = runTask("wf-timeout", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: wedgedWorkflowRunner(captured) as never,
       setTimeoutFn,
@@ -418,7 +418,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const promise = runTask("wf-raced", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: completesDespiteAbortRunner(captured) as never,
       setTimeoutFn,
@@ -444,7 +444,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const promise = runTask("wf-gated", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: gateRejectedRunner(captured) as never,
       setTimeoutFn,
@@ -474,7 +474,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-explicit", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
       setTimeoutFn,
@@ -493,7 +493,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-default", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
       setTimeoutFn,
@@ -513,7 +513,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-unbounded", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
       setTimeoutFn,
@@ -531,7 +531,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-bounds", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
     });
@@ -547,7 +547,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     await runTask("wf-nobounds", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
     });
@@ -576,7 +576,7 @@ describe("runTask — command target", () => {
       };
     };
 
-    const result = await withEnv({ PATH: "" }, () => runTask("literal-command", { stashDir, logDir, spawnFn }));
+    const result = await withEnv({ PATH: "" }, () => runTask("literal-command", { bundleDir, logDir, spawnFn }));
 
     expect(result.status).toBe("completed");
     expect(spawned?.slice(0, 2)).toEqual(["sh", "-c"]);
@@ -594,7 +594,7 @@ describe("runTask — command target", () => {
       );
 
       const result = await withEnv({ PATH: "/usr/bin:/bin" }, () =>
-        runTask("bare-current-install", { stashDir, logDir, scheduled: true }),
+        runTask("bare-current-install", { bundleDir, logDir, scheduled: true }),
       );
 
       expect(result.status).toBe("completed");
@@ -614,7 +614,7 @@ describe("runTask — command target", () => {
     if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
     writeTask("explicit-akm", shellTask([executable, "-e", 'console.log("explicit vendor akm")']));
 
-    const result = await runTask("explicit-akm", { stashDir, logDir });
+    const result = await runTask("explicit-akm", { bundleDir, logDir });
 
     expect(result.status).toBe("completed");
     expect(fs.readFileSync(result.log, "utf8")).toContain("explicit vendor akm");
@@ -626,11 +626,11 @@ describe("runTask — command target", () => {
     writeTask("portable-cwd", shellTask([process.execPath, "-e", "console.log('cwd=' + process.cwd())"]));
 
     const result = await withEnv({ HOME: undefined, TMPDIR: fallbackDir, TEMP: fallbackDir, TMP: fallbackDir }, () =>
-      runTask("portable-cwd", { stashDir, logDir }),
+      runTask("portable-cwd", { bundleDir, logDir }),
     );
 
     expect(result.status).toBe("completed");
-    expect(fs.readFileSync(result.log, "utf8")).toContain(`cwd=${stashDir}`);
+    expect(fs.readFileSync(result.log, "utf8")).toContain(`cwd=${bundleDir}`);
   });
 
   test("a command that ignores SIGTERM is SIGKILLed on timeout, logging timed_out + exit 143", async () => {
@@ -661,7 +661,7 @@ describe("runTask — command target", () => {
       return proc;
     };
 
-    const promise = runTask("stubborn", { stashDir, logDir, spawnFn, setTimeoutFn, clearTimeoutFn });
+    const promise = runTask("stubborn", { bundleDir, logDir, spawnFn, setTimeoutFn, clearTimeoutFn });
     await fireWhenRegistered(timers, 100); // deadline → SIGTERM (ignored)
     await fireWhenRegistered(timers, 5000); // grace → SIGKILL → child exits 143
     const result = await promise;
@@ -681,7 +681,7 @@ describe("runTask — command target", () => {
       shellTask([process.execPath, "-e", `console.log(${JSON.stringify(`posting to ${webhookUrl}`)})`]),
     );
 
-    const result = await runTask("leaky-webhook", { stashDir, logDir });
+    const result = await runTask("leaky-webhook", { bundleDir, logDir });
 
     expect(result.status).toBe("completed");
     const log = fs.readFileSync(result.log, "utf8");
@@ -734,7 +734,7 @@ describe("runTask — command target", () => {
     );
     echoTask("leaky-config-secret", `calling out with ${secret}`);
 
-    const result = await withEnv({ ACME_LLM_KEY: secret }, () => runTask("leaky-config-secret", { stashDir, logDir }));
+    const result = await withEnv({ ACME_LLM_KEY: secret }, () => runTask("leaky-config-secret", { bundleDir, logDir }));
 
     expect(result.status).toBe("completed");
     assertAbsentFromBothSinks("leaky-config-secret", result.log, secret);
@@ -746,7 +746,7 @@ describe("runTask — command target", () => {
     echoTask("leaky-ambient-secret", `deploying with ${secret}`);
 
     const result = await withEnv({ ACME_DEPLOY_TOKEN: secret }, () =>
-      runTask("leaky-ambient-secret", { stashDir, logDir }),
+      runTask("leaky-ambient-secret", { bundleDir, logDir }),
     );
 
     expect(result.status).toBe("completed");
@@ -760,7 +760,7 @@ describe("runTask — command target", () => {
     echoTask("leaky-declared-secret", `token is ${secret}`, ["ACME_UNGUESSABLE"]);
 
     const result = await withEnv({ ACME_UNGUESSABLE: secret }, () =>
-      runTask("leaky-declared-secret", { stashDir, logDir }),
+      runTask("leaky-declared-secret", { bundleDir, logDir }),
     );
 
     expect(result.status).toBe("completed");
@@ -770,7 +770,7 @@ describe("runTask — command target", () => {
     // this test proves nothing about `redact:`.
     echoTask("leaky-undeclared-secret", `token is ${secret}`);
     const leaked = await withEnv({ ACME_UNGUESSABLE: secret }, () =>
-      runTask("leaky-undeclared-secret", { stashDir, logDir }),
+      runTask("leaky-undeclared-secret", { bundleDir, logDir }),
     );
     expect(fs.readFileSync(leaked.log, "utf8")).toContain(secret);
   });
@@ -779,7 +779,7 @@ describe("runTask — command target", () => {
     const secret = "cinnabar-thicket-verso";
     writeTask("leaky-spawn-error", shellTask([`/nonexistent/${secret}/bin`]));
 
-    const result = await withEnv({ ACME_API_TOKEN: secret }, () => runTask("leaky-spawn-error", { stashDir, logDir }));
+    const result = await withEnv({ ACME_API_TOKEN: secret }, () => runTask("leaky-spawn-error", { bundleDir, logDir }));
 
     expect(result.status).toBe("failed");
     assertAbsentFromBothSinks("leaky-spawn-error", result.log, secret);
@@ -792,7 +792,7 @@ describe("runTask — command target", () => {
     echoTask("clean-output", "Build finished in 12.4s | 3 tests passed, 0 failed | wrote dist/index.js (48 KB)");
 
     const result = await withEnv({ ACME_DEPLOY_TOKEN: "opalescent-badger-parade" }, () =>
-      runTask("clean-output", { stashDir, logDir }),
+      runTask("clean-output", { bundleDir, logDir }),
     );
 
     const log = fs.readFileSync(result.log, "utf8");
@@ -817,7 +817,7 @@ describe("runTask — command target", () => {
     );
 
     const result = await withEnv({ ACME_SECONDARY_VALUE: secret }, () =>
-      runTask("secondary-leak", { stashDir: secondaryStash, logDir }),
+      runTask("secondary-leak", { bundleDir: secondaryStash, logDir }),
     );
 
     expect(result.status).toBe("completed");
@@ -864,7 +864,7 @@ describe("runTask — prompt target", () => {
 
     const result = await withEnv(schedulerContext, () =>
       runTask("scheduled-agent-context", {
-        stashDir,
+        bundleDir,
         logDir,
         scheduled: true,
         // Operational overrides must not be able to replace frozen request
@@ -904,7 +904,7 @@ describe("runTask — prompt target", () => {
     const seen: { model?: string; prompt?: string } = {};
 
     const result = await runTask("llm", {
-      stashDir,
+      bundleDir,
       logDir,
       chatCompletionImpl: async (connection, messages) => {
         seen.model = connection.model;
@@ -915,7 +915,10 @@ describe("runTask — prompt target", () => {
     });
 
     expect(result.status).toBe("completed");
-    expect(result.target).toEqual({ kind: "prompt", engine: "fast" });
+    // D8 (spec docs/plans/specs/p1b-model-extraction.md §5.3, §6 F-2)
+    // corollary: a prepared command (agent/LLM) run now reports "command",
+    // not the former inverted "prompt" string.
+    expect(result.target).toEqual({ kind: "command", engine: "fast" });
     expect(seen).toEqual({ model: "qwen3-small", prompt: "answer briefly" });
     expect(result.notices?.map((notice) => [notice.code, notice.field])).toEqual([
       ["untranslated-field", "runtime.workspace"],
@@ -952,19 +955,22 @@ describe("runTask — prompt target", () => {
     );
 
     const result = await runTask("prompt", {
-      stashDir,
+      bundleDir,
       logDir,
       runAgentImpl: fakeRunAgent,
       now: () => new Date("2025-01-01T00:00:00Z"),
     });
 
     expect(result.status).toBe("completed");
-    expect(result.target).toEqual({ kind: "prompt", engine: "opencode" });
+    // D8 (spec §5.3, §6 F-2) corollary: same flip as above, both for the
+    // freshly-returned result and the history round trip (this run's own row
+    // carries the new targetVocab: 2 marker, so it reads back unmapped).
+    expect(result.target).toEqual({ kind: "command", engine: "opencode" });
     expect(fs.readFileSync(result.log, "utf8")).toContain("agent received: say hello");
 
     const rows = readTaskHistory({ id: "prompt" });
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.target).toEqual({ kind: "prompt", engine: "opencode" });
+    expect(rows[0]!.target).toEqual({ kind: "command", engine: "opencode" });
 
     // #579: the same run is queryable from logs.db by task_id AND run_id,
     // with the captured agent stdout stored as stream='stdout' rows.
@@ -1004,7 +1010,7 @@ describe("runTask — prompt target", () => {
     let captured: { model?: string } = {};
 
     const result = await runTask("agent-model", {
-      stashDir,
+      bundleDir,
       logDir,
       runAgentImpl: async (profile) => {
         captured = { model: profile.model };
@@ -1032,7 +1038,7 @@ describe("runTask — prompt target", () => {
 
     const result = await withEnv({ AKM_CONFIG_DIR: configDir, OPENCODE_API_KEY: sentinel }, () =>
       runTask("redacted", {
-        stashDir,
+        bundleDir,
         logDir,
         runAgentImpl: async () => ({
           ok: true,
@@ -1077,7 +1083,7 @@ describe("runTask — prompt target", () => {
     };
 
     const result = await runTask("fail", {
-      stashDir,
+      bundleDir,
       logDir,
       runAgentImpl: fakeRunAgent,
       now: () => new Date("2025-01-01T00:00:00Z"),
@@ -1119,7 +1125,7 @@ describe("runTask — disabled tasks", () => {
     };
 
     const result = await runTask("off", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: fakeWf as never,
       now: () => new Date("2025-01-01T00:00:00Z"),
@@ -1137,7 +1143,7 @@ describe("runTask — disabled tasks", () => {
       throw new Error("should not be called");
     };
     const result = await runTask("off", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: fakeWf as never,
       now: () => new Date("2025-01-01T00:00:00Z"),

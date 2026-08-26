@@ -38,9 +38,11 @@ import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveAssetPath } from "../../sources/resolve";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
 import type { InstalledSchedulerBinding, RebindSchedulerBinding, SchedulerBackend } from "../../tasks/backends/types";
+import { prepareTaskV3Execution } from "../../tasks/prepare/prepare";
+import type { PrepareTaskV3ExecutionContext } from "../../tasks/prepare/prepared-execution";
 import { type ResolvedAkmInvocation, resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
+import { createExecutionProvenanceContext } from "../../tasks/run/provenance";
 import { exitCodeForStatus, readTaskHistory, runTask, type TaskRunResult } from "../../tasks/runner";
-import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "../../tasks/runtime-v3";
 import { parseSchedule, SCHEDULE_SUPPORTED_SUBSET_HINT } from "../../tasks/schedule";
 import {
   assertSchedulerMutationArtifact,
@@ -352,17 +354,34 @@ export async function akmTasksRun(
   const bundle = resolveTaskReadBundle(parsed.bundle, options.target);
   const adapterId = bundle.source.adapterId ?? detectAdapterId(bundle.source.path);
   const resolvedId = taskIdForAdapter(parsed.id, adapterId);
+  const scheduled = options.scheduled === true;
+  // D5 "Construction" (spec docs/plans/specs/p1b-model-extraction.md §1.2/
+  // §5.2): built ONCE at this invocation boundary. eventSource is "task"
+  // whether or not --scheduled was passed (§1.6 D5-N1) — scheduled stays a
+  // separate field carrying its own pre-existing meaning (activation policy,
+  // scheduler env), never selecting the event source.
+  const provenance = createExecutionProvenanceContext(scheduled);
   const runOptions = {
-    stashDir: bundle.source.path,
+    // F-3 (spec §5.4): RunTaskOptions.stashDir renamed to bundleDir — VALUE-
+    // preserving, no CLI flag change.
+    bundleDir: bundle.source.path,
     bundleName: bundle.source.name,
     adapterId,
-    scheduled: options.scheduled === true,
+    scheduled,
+    provenance,
   } as Parameters<typeof runTask>[1] & { bundleName: string };
   // The runner owns the prepare-before-reserve boundary. Invalid source,
   // projectability, and resolver failures therefore create no history row.
   const result = await runTask(resolvedId, runOptions);
+  // C-7 (spec §5.6): after D8's result-vocabulary re-code, "command" means
+  // the agent/LLM arm — the native shell/script arm now reports "shell" /
+  // "script". Rewired in the SAME commit as the vocabulary re-code so a
+  // shell/script task's process exit 78 still passes through as CLI exit 78
+  // (documented behavior, src/assets/hints/cli-hints-short.md:95).
   const exitCode =
-    result.status === "failed" && result.target.kind === "command" && result.detail?.exitCode === 78
+    result.status === "failed" &&
+    (result.target.kind === "shell" || result.target.kind === "script") &&
+    result.detail?.exitCode === 78
       ? 78
       : exitCodeForStatus(result.status);
   return {

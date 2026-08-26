@@ -25,6 +25,15 @@ export interface TaskHistoryMetadata {
   durationMs: number;
   detail: TaskHistoryDetail | null;
   engine?: string | null;
+  /**
+   * D8 result-vocabulary marker (spec docs/plans/specs/p1b-model-extraction.md
+   * §5.3): present (always `2`) on every row written by the new
+   * result-vocabulary code, absent on legacy rows written before it. The read
+   * boundary (src/tasks/run/task-history.ts's taskHistoryRowToResult) uses its
+   * presence to choose between the new `target_kind` strings and the legacy
+   * read-mapping table.
+   */
+  targetVocab?: 2;
 }
 
 function metadataError(message: string): never {
@@ -63,7 +72,7 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
   if (!isRecord(parsed)) metadataError("root must be an object");
 
   if (parsed.metadataVersion !== 2) metadataError(`unsupported metadataVersion: ${String(parsed.metadataVersion)}`);
-  const allowed = new Set(["metadataVersion", "durationMs", "detail", "engine"]);
+  const allowed = new Set(["metadataVersion", "durationMs", "detail", "engine", "targetVocab"]);
   const unknown = Object.keys(parsed).filter((key) => !allowed.has(key));
   if (unknown.length > 0) metadataError(`unknown fields: ${unknown.sort().join(", ")}`);
   if (typeof parsed.durationMs !== "number") metadataError("durationMs must be a number");
@@ -71,12 +80,16 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
   if (parsed.engine !== undefined && parsed.engine !== null && typeof parsed.engine !== "string") {
     metadataError("engine must be a string or null");
   }
+  if (parsed.targetVocab !== undefined && parsed.targetVocab !== 2) {
+    metadataError("targetVocab must be 2 when present");
+  }
   validateDetail(parsed.detail);
   return {
     metadataVersion: 2,
     durationMs: parsed.durationMs,
     detail: parsed.detail ?? null,
     ...(parsed.engine !== undefined ? { engine: parsed.engine as string | null } : {}),
+    ...(parsed.targetVocab === 2 ? { targetVocab: 2 as const } : {}),
   };
 }
 

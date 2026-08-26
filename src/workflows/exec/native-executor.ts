@@ -206,6 +206,17 @@ export interface StepExecutionContext {
   /** Test seam / backend override; defaults to the runner-substrate dispatcher. */
   dispatcher?: UnitDispatcher;
   /**
+   * F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 2): the
+   * task runner's resolved provenance event source, threaded from
+   * RunWorkflowOptions.eventSource. Undefined for every non-task caller.
+   * Forwarded to an exec unit's child env via UnitDispatchRequest.eventSource
+   * -> exec-unit.ts's childEnv (applied to the allowlisted base only, so an
+   * ambient value and an authored env: binding both still win). Typed as a
+   * bare `string` (not `UsageEventSource`) — see run-workflow.ts's
+   * RunWorkflowOptions.eventSource for why.
+   */
+  eventSource?: string;
+  /**
    * Dispatch attempts already journaled for this run (lifetime-cap
    * accounting). Only ACTUAL dispatches consume the cap — durable-row reuses
    * are free, so a partially-completed fan-out stays resumable.
@@ -813,6 +824,9 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     ...(env ? { env } : {}),
     ...(sensitiveValues ? { sensitiveValues } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
+    // F-1 (spec §5.2 point 2): forwarded to exec-unit.ts's childEnv only —
+    // the "agent"/"sdk" defaultUnitDispatcher arms never read it.
+    ...(ctx.eventSource !== undefined ? { eventSource: ctx.eventSource } : {}),
   };
 
   // One content-derived unit id is retained across every retry; the append-only
@@ -1387,6 +1401,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
         ...(request.schema ? { hasOutputSchema: true } : {}),
         timeoutMs: request.timeoutMs,
         ...(request.signal ? { signal: request.signal } : {}),
+        ...(request.eventSource !== undefined ? { eventSource: request.eventSource } : {}),
       });
     } finally {
       cleanupFrozenScript(materialized);
@@ -1408,6 +1423,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
       ...(request.schema ? { hasOutputSchema: true } : {}),
       timeoutMs: request.timeoutMs,
       ...(request.signal ? { signal: request.signal } : {}),
+      ...(request.eventSource !== undefined ? { eventSource: request.eventSource } : {}),
     });
   }
   return dispatchWorkflowExecution(request, feedback);

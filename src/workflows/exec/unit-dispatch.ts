@@ -53,6 +53,16 @@ export interface UnitDispatchRequest {
   /** Working directory for the unit's child process or SDK session. */
   cwd?: string;
   signal?: AbortSignal;
+  /**
+   * F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 2): the
+   * task runner's resolved provenance event source, forwarded to an exec
+   * unit's child env (exec-unit.ts's RunExecUnitInput.eventSource ->
+   * childEnv). The "agent"/"sdk" defaultUnitDispatcher arms never read it —
+   * only a "script"/"shell" frozenTarget's exec unit does. Typed as a bare
+   * `string` (not `UsageEventSource`) — see run-workflow.ts's
+   * RunWorkflowOptions.eventSource for why.
+   */
+  eventSource?: string;
 }
 
 export interface UnitDispatchResult {
