@@ -46,3 +46,8 @@ export function isSemverRange(input: string): boolean {
 export function maxSatisfying(versions: string[], range: string): string | undefined {
   return semver.maxSatisfying(versions, range) ?? undefined;
 }
+
+/** True when `version` satisfies `range` (both real semver forms). False for an invalid version or range. */
+export function satisfiesRange(version: string, range: string): boolean {
+  return semver.satisfies(version, range);
+}
