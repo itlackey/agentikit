@@ -124,7 +124,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
     writeTask("shell-provenance", shellTask([process.execPath, "-e", ECHO_SOURCE_SNIPPET]));
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
 
-    const result = await runTask("shell-provenance", { stashDir: storage.stashDir, bundleName: "fixture" });
+    const result = await runTask("shell-provenance", { bundleDir: storage.stashDir, bundleName: "fixture" });
 
     expect(result.status).toBe("completed");
     expect(fs.readFileSync(result.log, "utf8")).toContain("AKM_EVENT_SOURCE=task");
@@ -141,7 +141,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
     );
     writeTask("script-provenance", 'version: 3\nuses: scripts/echo-source.sh\nakm:\n  schedule: "@daily"\n');
 
-    const result = await runTask("script-provenance", { stashDir: storage.stashDir, bundleName: "fixture" });
+    const result = await runTask("script-provenance", { bundleDir: storage.stashDir, bundleName: "fixture" });
 
     expect(result.status).toBe("completed");
     expect(fs.readFileSync(result.log, "utf8")).toContain("AKM_EVENT_SOURCE=task");
@@ -153,7 +153,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
     writeTask("shell-provenance-preset", shellTask([process.execPath, "-e", ECHO_SOURCE_SNIPPET]));
 
     const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
-      runTask("shell-provenance-preset", { stashDir: storage.stashDir, bundleName: "fixture" }),
+      runTask("shell-provenance-preset", { bundleDir: storage.stashDir, bundleName: "fixture" }),
     );
 
     expect(result.status).toBe("completed");
@@ -186,7 +186,7 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
     let observedEventSourceOption: string | undefined;
 
     const result = await runTask("wf-provenance", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       runWorkflowStepsImpl: (async (options: {
         target: string;
@@ -222,7 +222,7 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
 
     const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
       runTask("wf-provenance-preset", {
-        stashDir: storage.stashDir,
+        bundleDir: storage.stashDir,
         bundleName: "fixture",
         runWorkflowStepsImpl: (async (options: {
           target: string;
@@ -263,7 +263,7 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
     // runTask, not merely a caught-and-reported failure.
     await expect(
       runTask("wf-provenance-throws", {
-        stashDir: storage.stashDir,
+        bundleDir: storage.stashDir,
         bundleName: "fixture",
         runWorkflowStepsImpl: (async (options: { eventSource?: string }) => {
           // Observe BEFORE throwing — otherwise an "unset" pre-state and an
@@ -354,7 +354,7 @@ describe("P-05 real-orchestrator coverage — an exec-unit child of a workflow-t
     await akmIndex({ stashDir: storage.stashDir, full: true });
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
 
-    const result = await runTask("wf-real-exec-unit", { stashDir: storage.stashDir, bundleName: "fixture" });
+    const result = await runTask("wf-real-exec-unit", { bundleDir: storage.stashDir, bundleName: "fixture" });
 
     expect(result.status).toBe("completed");
     expect(fs.readFileSync(marker, "utf8")).toBe("AKM_EVENT_SOURCE=task");
@@ -369,7 +369,7 @@ describe("P-05 real-orchestrator coverage — an exec-unit child of a workflow-t
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
-      runTask("wf-real-exec-unit-preset", { stashDir: storage.stashDir, bundleName: "fixture" }),
+      runTask("wf-real-exec-unit-preset", { bundleDir: storage.stashDir, bundleName: "fixture" }),
     );
 
     expect(result.status).toBe("completed");
@@ -510,7 +510,7 @@ describe('R-07 (FIXED — F-1) — prompt/command arm now stamps AKM_EVENT_SOURC
     };
 
     const result = await runTask("prompt-provenance", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       runAgentImpl: fakeRunAgent,
     });
@@ -528,5 +528,43 @@ describe('R-07 (FIXED — F-1) — prompt/command arm now stamps AKM_EVENT_SOURC
     expect(queryUsageEventRows()).toEqual([
       { event_type: "show", entry_ref: "fixture//commands/notify", source: "task" },
     ]);
+  });
+});
+
+describe("F-3 (spec §5.4/§9) — RunTaskOptions.bundleDir REPLACES stashDir; the legacy key is not an alias", () => {
+  // Test-review finding: every RunTaskOptions construction site ABOVE in this
+  // file was just renamed stashDir -> bundleDir (mechanical substitution,
+  // §5.4), matching tests/integration/tasks-legacy-vocabulary-characterization.test.ts's
+  // R-09 pin and this phase's two brand-new files
+  // (tests/integration/tasks-provenance-context.test.ts,
+  // tests/integration/tasks-result-vocabulary.test.ts). But a rename applied
+  // consistently across every CALL SITE does not by itself prove the OLD key
+  // stopped being read: an implementation that adds `bundleDir` while still
+  // honoring `stashDir` as a fallback alias would make every test in this
+  // phase's suite pass — including the R-09 canary, whose only asserted
+  // observable is the resolved ref string, not the option name used to reach
+  // it — while leaving spec §9's "RunTaskOptions.bundleDir replaces stashDir"
+  // unmet. So this pins the RUNTIME contract directly: a stashDir-ONLY
+  // options object (no bundleDir at all) must not resolve the task.
+  //
+  // The cast to `never` on the whole options object is deliberate (mirrors
+  // this phase's established convention, e.g.
+  // tests/integration/tasks-provenance-context.test.ts's `} as never` on its
+  // RunTaskOptions literals) — this is a RUNTIME pin, not a compile-time one:
+  // it must keep compiling (and failing for the right reason) both before
+  // this phase's implementation lands (when `stashDir` is still the ONLY real
+  // field, so runTask would actually resolve the task and this test's
+  // "rejects" expectation is what makes it red today) and after (when a
+  // CORRECT bundleDir-only implementation makes the same call fail because
+  // `bundleDir` is undefined — see src/tasks/runner.ts:154-165 at head, where
+  // an unresolved owner throws NotFoundError before the try/catch boundary,
+  // i.e. before any mutation, so the call REJECTS rather than resolving to a
+  // "failed" TaskRunResult).
+  test("a stashDir-only options object (no bundleDir) does not resolve the task — the rename is a replacement, not an addition", async () => {
+    writeTask("stashdir-only-rejects", shellTask([process.execPath, "-e", ECHO_SOURCE_SNIPPET]));
+
+    const legacyKeyOnly = { stashDir: storage.stashDir, bundleName: "fixture" } as never;
+
+    await expect(runTask("stashdir-only-rejects", legacyKeyOnly)).rejects.toThrow();
   });
 });

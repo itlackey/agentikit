@@ -324,5 +324,82 @@ describe("prepareScriptTarget — replaces directScript's synthetic-YAML fabrica
         expect(usage.callsParseTaskV3Yaml, "calls parseTaskV3Yaml(...)").toBe(false);
       });
     });
+
+    // NEW (test-review finding): the AST scan above proves
+    // prepare-script-target.ts's own module never imports/calls
+    // parseTaskV3Yaml, but nothing pinned that directScript's CALL SITE
+    // (source-freeze-v4.ts:288-312, where today's fabrication actually
+    // lives) stopped fabricating and started calling the replacement. A
+    // whole-file ban on source-freeze-v4.ts would be WRONG — taskDispatch
+    // (the same file, a few lines above directScript) legitimately calls
+    // parseTaskV3Yaml on a REAL task document read off disk
+    // (source-freeze-v4.ts:233 at head) — R-02/spec §4.3 is only about
+    // directScript's SYNTHETIC document, never about taskDispatch's real
+    // one. So this scans directScript's function BODY specifically: the
+    // same "locate the named function, then walk only its subtree"
+    // technique as scanForParseTaskV3YamlUsage above, generalized from
+    // "does this MODULE call X" to "does this FUNCTION call X".
+    describe("src/workflows/ir/source-freeze-v4.ts's directScript itself: no parseTaskV3Yaml call, a prepareScriptTarget call instead (spec §4.3)", () => {
+      const SOURCE_FREEZE_V4_FILE = path.join(SRC_ROOT, "workflows/ir/source-freeze-v4.ts");
+
+      interface FunctionCallScan {
+        readonly functionFound: boolean;
+        readonly calledNames: ReadonlySet<string>;
+      }
+
+      /**
+       * Locates the top-level function DECLARATION named `functionName` and
+       * collects every call expression's callee name from WITHIN that
+       * function's body only — siblings (like taskDispatch, which
+       * legitimately calls parseTaskV3Yaml on a real document) are left
+       * alone, which is exactly why a whole-file ban is wrong for this file.
+       */
+      function scanFunctionCalls(filePath: string, functionName: string): FunctionCallScan {
+        const source = ts.createSourceFile(filePath, fs.readFileSync(filePath, "utf8"), ts.ScriptTarget.Latest, true);
+        let functionFound = false;
+        const calledNames = new Set<string>();
+        function visitCalls(node: ts.Node): void {
+          if (ts.isCallExpression(node)) {
+            const callee = node.expression;
+            const calleeName = ts.isIdentifier(callee)
+              ? callee.text
+              : ts.isPropertyAccessExpression(callee)
+                ? callee.name.text
+                : undefined;
+            if (calleeName) calledNames.add(calleeName);
+          }
+          ts.forEachChild(node, visitCalls);
+        }
+        function visitTop(node: ts.Node): void {
+          if (ts.isFunctionDeclaration(node) && node.name?.text === functionName && node.body) {
+            functionFound = true;
+            visitCalls(node.body);
+          }
+          ts.forEachChild(node, visitTop);
+        }
+        visitTop(source);
+        return { functionFound, calledNames };
+      }
+
+      test("directScript's body contains no parseTaskV3Yaml(...) call and does contain a prepareScriptTarget(...) call", () => {
+        const scan = scanFunctionCalls(SOURCE_FREEZE_V4_FILE, "directScript");
+        expect(scan.functionFound, "directScript function declaration not found in source-freeze-v4.ts").toBe(true);
+        expect(scan.calledNames.has("parseTaskV3Yaml"), "directScript still calls parseTaskV3Yaml(...)").toBe(false);
+        expect(scan.calledNames.has("prepareScriptTarget"), "directScript never calls prepareScriptTarget(...)").toBe(
+          true,
+        );
+      });
+
+      // Sanity contrast (spec §4.3's parenthetical: "a whole-file ban is
+      // wrong there — taskDispatch legitimately calls parseTaskV3Yaml"):
+      // proves the scan above is genuinely function-scoped, not accidentally
+      // whole-file in disguise — if it were whole-file, this fixture would
+      // make a directScript-only ban indistinguishable from a file-wide one.
+      test("taskDispatch (the same file, unrelated to R-02) still legitimately calls parseTaskV3Yaml(...) on a real document", () => {
+        const scan = scanFunctionCalls(SOURCE_FREEZE_V4_FILE, "taskDispatch");
+        expect(scan.functionFound, "taskDispatch function declaration not found in source-freeze-v4.ts").toBe(true);
+        expect(scan.calledNames.has("parseTaskV3Yaml")).toBe(true);
+      });
+    });
   });
 });
