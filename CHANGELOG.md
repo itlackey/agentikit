@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Extract: deduped the doubled subagent conclusion in the extraction prompt**
+  (#839). After #830 folded a session's subagent transcripts into its event
+  stream, a completed subagent's final report appeared twice in the same
+  extraction prompt: once as the subagent's own folded final message, once as
+  the parent's `<task-notification>` record of that same call (#836 measured
+  ~92-99% textual overlap on a real pair). The parent's notification copy is
+  now stubbed to `[subagent <agentId> completed: <description>]` when its
+  `<result>` is a near-duplicate (Dice-bigram similarity ≥ 0.9, after
+  decoding the XML entities Claude Code escapes into `<result>`) of a folded
+  subagent transcript's own text; the subagent's original is untouched, per
+  #839's owner-decided direction (the inverse — dropping the subagent's own
+  terminal event — was evaluated and rejected in #836 because some subagent
+  transcripts consist only of that one event). Matching is scoped by
+  `<task-id>` to the one subagent transcript it names and still requires
+  content similarity, so an earlier notification for a *resumed* agent
+  (Claude Code re-notifies the same task-id on each stop) that carries a
+  genuinely different, intermediate result is left alone.
+  Implemented in the pre-filter (`preFilterSession`), which runs AFTER
+  `hashSessionContent` — so **no `contentHash` moves and no re-extraction
+  wave is triggered** (unlike #830's own folding change, which changed the
+  raw event stream #602's hash covers). Measured on the real session #836
+  used (`4a0d9e9b…`): 10 duplicate task-notifications deduped across its 35
+  folded subagents, reclaiming ~17.3k characters of pre-filter budget
+  (uncapped) that duplication had been consuming; under the current fixed
+  80,000-char budget that mostly reallocates to genuine content the budget
+  had been evicting rather than shrinking the final prompt outright.
+- **Extract: regression-tested the no-double-extraction guarantee** (#839).
+  Discovery-mode extraction over a project with a parent + subagent
+  transcripts now has an explicit end-to-end test proving exactly one
+  session is processed, that `--session-id agent-<hash>` resolves to the
+  not-found result rather than an extraction, and that folded subagent
+  content is attributed only to the parent's session/contentHash. Pins
+  behavior already true since #830 (`listSessions()` excludes `subagents/`
+  dirs for both discovery and `--session-id` lookup); nothing tested it
+  end-to-end before.
+
 ## [0.9.2-alpha.3] - 2026-08-26
 
 ### Fixed

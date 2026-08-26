@@ -212,6 +212,102 @@ describe("preFilterSession — total-character budget", () => {
   });
 });
 
+describe("preFilterSession — subagent task-notification dedupe (#839)", () => {
+  // A subagent transcript's folded final event, as #830's `readSession` stamps
+  // it: provenance prefix + the subagent's own last message.
+  const subagentFinalText =
+    "[subagent:general-purpose] Verify V28+V32: dead surface\n" +
+    'Verdict: CONFIRMED -> zero live callers found via grep across src/tests. {"ok":true}';
+  const subagentEvent = event({
+    role: "assistant",
+    text: subagentFinalText,
+    ts: 1700000000000,
+    filePath: "/proj/session-1/subagents/agent-a4f581608db6e05b1.jsonl",
+  });
+
+  function notification(resultBody: string, opts: { taskId?: string; summary?: string } = {}): SessionEvent {
+    const taskId = opts.taskId ?? "a4f581608db6e05b1";
+    const summary = opts.summary ?? 'Agent "Verify V28+V32: dead surface" finished';
+    return event({
+      role: "user",
+      ts: 1700000001000,
+      filePath: "/proj/session-1.jsonl",
+      text:
+        `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n` +
+        `<status>completed</status>\n<summary>${summary}</summary>\n<result>${resultBody}</result>\n</task-notification>`,
+    });
+  }
+
+  test("stubs a notification whose <result> duplicates the folded subagent's final message", () => {
+    // The <result> body is what Claude Code actually writes: the subagent's own
+    // final text, XML-entity-escaped (its `->` becomes `-&gt;`), with no
+    // provenance prefix (that's #830's own stamp, added only on the folded copy).
+    const resultBody = 'Verdict: CONFIRMED -&gt; zero live callers found via grep across src/tests. {"ok":true}';
+    const events = [subagentEvent, notification(resultBody)];
+    const result = preFilterSession(makeData(events));
+
+    expect(result.events).toHaveLength(2); // event is stubbed, not dropped
+    const stubbed = result.events.find((e) => e.role === "user");
+    expect(stubbed?.text).toBe("[subagent a4f581608db6e05b1 completed: Verify V28+V32: dead surface]");
+    // The subagent's own original is untouched.
+    const original = result.events.find((e) => e.role === "assistant");
+    expect(original?.text).toBe(subagentFinalText);
+  });
+
+  test("does not stub a notification with no <result> (e.g. a background-command notification)", () => {
+    const bgNotification = event({
+      role: "user",
+      filePath: "/proj/session-1.jsonl",
+      text:
+        "<task-notification>\n<task-id>b0pvowrru</task-id>\n<status>completed</status>\n" +
+        '<summary>Background command "Run tests" completed (exit code 0)</summary>\n</task-notification>',
+    });
+    const result = preFilterSession(makeData([subagentEvent, bgNotification]));
+    const kept = result.events.find((e) => e.role === "user");
+    expect(kept?.text).toBe(bgNotification.text);
+  });
+
+  test("does not stub when the <result> genuinely differs, even for the same <task-id> (resumed-agent false positive)", () => {
+    // Claude Code's own note: "A task-notification fires each time this agent
+    // stops ... the same task-id may notify more than once." An earlier
+    // notification for a resumed agent can carry a different, intermediate
+    // result — that must survive untouched.
+    const intermediateResult = "Still investigating V28a, no verdict yet. Continuing to grep for callers.";
+    const events = [subagentEvent, notification(intermediateResult)];
+    const result = preFilterSession(makeData(events));
+    const kept = result.events.find((e) => e.role === "user");
+    expect(kept?.text).toContain("<result>Still investigating");
+  });
+
+  test("does not stub when the <task-id> names no folded subagent transcript", () => {
+    const events = [subagentEvent, notification("some unrelated result text here", { taskId: "not-a-real-agent" })];
+    const result = preFilterSession(makeData(events));
+    const kept = result.events.find((e) => e.role === "user");
+    expect(kept?.text).toContain("<task-id>not-a-real-agent</task-id>");
+  });
+
+  test("is a no-op when the session has no folded subagent events at all", () => {
+    const resultBody = "anything";
+    const events = [notification(resultBody)];
+    const result = preFilterSession(makeData(events));
+    expect(result.events[0]?.text).toContain("<task-notification>");
+  });
+
+  test("falls back to a generic stub when the notification has no <summary>", () => {
+    const resultBody = 'Verdict: CONFIRMED -&gt; zero live callers found via grep across src/tests. {"ok":true}';
+    const noSummary = event({
+      role: "user",
+      filePath: "/proj/session-1.jsonl",
+      text:
+        "<task-notification>\n<task-id>a4f581608db6e05b1</task-id>\n<status>completed</status>\n" +
+        `<result>${resultBody}</result>\n</task-notification>`,
+    });
+    const result = preFilterSession(makeData([subagentEvent, noSummary]));
+    const stubbed = result.events.find((e) => e.role === "user");
+    expect(stubbed?.text).toBe("[subagent a4f581608db6e05b1 completed: completed]");
+  });
+});
+
 describe("preFilterSession — custom options", () => {
   test("custom akmReadOnlyOps lets the caller broaden what counts as noise", () => {
     // Treat `remember` as read-only too (just for this test) and confirm it

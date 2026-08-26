@@ -8,6 +8,11 @@
  * testable — keeps the LLM call cheap and focused on content that might
  * actually carry durable signal.
  *
+ * Pre-pass (before the per-event rules):
+ *   0. stub a parent's `<task-notification>` event when its `<result>` is a
+ *      near-duplicate of a subagent transcript folded into the same stream
+ *      (#839) — see {@link dedupeTaskNotifications}.
+ *
  * Drop rules (in priority order):
  *   1. read-only `akm` meta-ops (show/search/curate/history/info/hints/...)
  *   2. tool-event aggregate patterns (`akm_search unknown` enumerations)
@@ -169,6 +174,128 @@ function classifyEvent(
   return { keep: true, event, truncated: false };
 }
 
+/**
+ * A parent-side `<task-notification>` event, as Claude Code writes it into a
+ * session's own transcript: a `role: "user"` event whose text is (or wraps)
+ * `<task-notification>...<task-id>ID</task-id>...<result>TEXT</result>...</task-notification>`.
+ * Matched on the tags themselves (not a dedicated field) because
+ * {@link SessionEvent} carries no structural provenance beyond `text`/`role`/
+ * `filePath` — the same constraint #830 (subagent provenance) worked within.
+ */
+const TASK_NOTIFICATION_RE = /<task-notification>[\s\S]*<\/task-notification>/;
+const TASK_ID_RE = /<task-id>([^<]+)<\/task-id>/;
+const RESULT_RE = /<result>([\s\S]*)<\/result>/;
+const SUMMARY_RE = /<summary>([^<]*)<\/summary>/;
+/** Claude Code's own `<summary>` phrasing for a finished agent: `Agent "<description>" finished`. */
+const AGENT_SUMMARY_DESCRIPTION_RE = /^Agent "(.*)" finished$/;
+/** Provenance {@link subagentProvenance} stamps on every folded subagent event; stripped before comparison. */
+const PROVENANCE_PREFIX_RE = /^\[subagent:[^\]]*\][^\n]*\n/;
+/** Claude Code's own agentId file naming: `<...>/subagents/<...>agent-<agentId>.jsonl`. */
+const SUBAGENT_FILEPATH_RE = /agent-([^/\\]+?)\.jsonl$/;
+/** Dice (bigram) similarity at/above this counts as "the same content" (#839). */
+const DEDUPE_SIMILARITY_THRESHOLD = 0.9;
+
+/** A handful of named-entity decodes — enough for what Claude Code escapes when it wraps `<result>` text in XML. */
+function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/** Sørensen–Dice coefficient over character bigrams — a cheap, symmetric textual-overlap measure. */
+function diceSimilarity(a: string, b: string): number {
+  if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
+  const bigrams = (s: string): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const bg = s.slice(i, i + 2);
+      counts.set(bg, (counts.get(bg) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const bigramsA = bigrams(a);
+  const bigramsB = bigrams(b);
+  let intersection = 0;
+  let totalA = 0;
+  let totalB = 0;
+  for (const count of bigramsA.values()) totalA += count;
+  for (const count of bigramsB.values()) totalB += count;
+  for (const [bg, count] of bigramsA) {
+    const other = bigramsB.get(bg);
+    if (other) intersection += Math.min(count, other);
+  }
+  return totalA + totalB === 0 ? 1 : (2 * intersection) / (totalA + totalB);
+}
+
+/**
+ * Stub out a parent's `<task-notification>` event when its `<result>` is a
+ * near-duplicate of a subagent transcript's own folded final message (#839).
+ *
+ * After #830 folds a session's subagent transcripts into its event stream,
+ * a completed subagent's report appears twice: once as the subagent's own
+ * folded final event, once as the parent's `<task-notification>` record of
+ * that same call — the notification wraps the subagent's own text almost
+ * verbatim (Claude Code XML-escapes `<`/`>`/`&`/quotes in the `<result>`
+ * body, which {@link decodeXmlEntities} reverses before comparing). Direction
+ * is owner-decided (#839): drop the parent's copy, keep the subagent's
+ * original — the inverse was evaluated and rejected in #836 because some
+ * subagent transcripts consist ONLY of their terminal event, so dropping it
+ * would destroy the harvesting #830 added.
+ *
+ * Matching is scoped by `<task-id>` (which is the subagent's agentId) to the
+ * SPECIFIC subagent transcript it names, via the `agent-<agentId>.jsonl`
+ * filename #830's folding already stamps onto every folded event's
+ * `filePath` — then requires the decoded `<result>` to be a near-duplicate
+ * (Dice similarity ≥ {@link DEDUPE_SIMILARITY_THRESHOLD}) of that subagent's
+ * text, not merely a same-agent match. This matters because a task-notification
+ * fires every time an agent stops (Claude Code's own note in the event: "the
+ * same task-id may notify more than once") — an EARLIER notification for a
+ * resumed agent can carry a genuinely different (intermediate) result that
+ * must NOT be stubbed just because the ids line up.
+ *
+ * The event is kept (not dropped) so event counts/timestamps stay stable and
+ * the parent's narrative — *why* it delegated — survives as a short stub:
+ * `[subagent <agentId> completed: <description>]`.
+ *
+ * Runs BEFORE the per-event drop rules in {@link preFilterSession}, on the
+ * events {@link preFilterSession} receives (post-`hashSessionContent`, per
+ * extract.ts — see the module doc for why this seam doesn't move the hash).
+ */
+function dedupeTaskNotifications(events: readonly SessionEvent[]): SessionEvent[] {
+  // Index folded subagent events by the agentId embedded in their transcript's
+  // filename, so a notification's <task-id> narrows the comparison to the ONE
+  // subagent it reports on instead of scanning the whole stream.
+  const byAgentId = new Map<string, SessionEvent[]>();
+  for (const event of events) {
+    const agentId = event.filePath?.match(SUBAGENT_FILEPATH_RE)?.[1];
+    if (!agentId) continue;
+    const list = byAgentId.get(agentId);
+    if (list) list.push(event);
+    else byAgentId.set(agentId, [event]);
+  }
+  if (byAgentId.size === 0) return events as SessionEvent[]; // no folded subagents — nothing to dedupe
+
+  return events.map((event) => {
+    if (event.role !== "user" || !TASK_NOTIFICATION_RE.test(event.text)) return event;
+    const taskId = event.text.match(TASK_ID_RE)?.[1];
+    const resultRaw = event.text.match(RESULT_RE)?.[1];
+    if (!taskId || !resultRaw) return event; // no <result> (e.g. a background-command notification) — nothing to compare
+    const candidates = byAgentId.get(taskId);
+    if (!candidates || candidates.length === 0) return event; // task-id names no folded subagent transcript
+    const decodedResult = decodeXmlEntities(resultRaw);
+    const isDuplicate = candidates.some(
+      (c) => diceSimilarity(decodedResult, c.text.replace(PROVENANCE_PREFIX_RE, "")) >= DEDUPE_SIMILARITY_THRESHOLD,
+    );
+    if (!isDuplicate) return event;
+    const summary = event.text.match(SUMMARY_RE)?.[1]?.trim();
+    const description = (summary && (summary.match(AGENT_SUMMARY_DESCRIPTION_RE)?.[1] ?? summary)) || "completed";
+    return { ...event, text: `[subagent ${taskId} completed: ${description}]` };
+  });
+}
+
 export function preFilterSession(data: SessionData, options: PreFilterOptions = {}): PreFilterResult {
   const akmReadOnlyOps = options.akmReadOnlyOps ?? DEFAULT_AKM_READONLY_OPS;
   const maxLen = options.maxEventTextLength ?? DEFAULT_MAX_EVENT_LENGTH;
@@ -177,11 +304,13 @@ export function preFilterSession(data: SessionData, options: PreFilterOptions = 
   const kept: SessionEvent[] = [];
   let truncatedCount = 0;
 
+  const dedupedEvents = dedupeTaskNotifications(data.events);
+
   // First pass: apply per-event rules. Track running char total so the budget
   // pass can operate on already-truncated events.
   type KeptEvent = { event: SessionEvent; truncated: boolean; chars: number };
   const candidates: KeptEvent[] = [];
-  for (const event of data.events) {
+  for (const event of dedupedEvents) {
     const verdict = classifyEvent(event, akmReadOnlyOps, maxLen);
     if (!verdict.keep) {
       droppedByRule[verdict.reason] = (droppedByRule[verdict.reason] ?? 0) + 1;
