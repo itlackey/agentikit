@@ -44,6 +44,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `metadata_json`, which akm versions before this one reject as an unknown
   metadata field — a mixed-version fleet must upgrade every `akm` that writes
   task history before an older one reads it.
+- **Task source v4 (`version: 4`) is a new, additive task source grammar.**
+  `version: 3` task sources still parse, run, and schedule exactly as before
+  — this release does not remove v3 acceptance. In v4, scheduling is now
+  **optional**: a v4 task with no `schedule:` parses, is runnable with
+  `akm task run`, and is now **skipped** by `akm task sync` (zero bindings,
+  zero failures) instead of being rejected for missing a trigger. v3
+  documents are unaffected and still require exactly one of `akm.schedule` /
+  `on:`. v4 removes the `akm:` options bag and the `on:` trigger block
+  outright; every field they carried is a top-level key instead:
+  `akm.description` → `description`, `akm.when_to_use` → `when_to_use`,
+  `akm.tags` → `tags`, `akm.agent` → `agent`, `akm.engine` → `engine`,
+  `akm.model` → `model`, `akm.inference` → `inference`,
+  `akm.outputSchema` → `output`, `akm.tools` → `tools`,
+  `akm.timeout` → `timeout`, `akm.redact` → `redact`,
+  `akm.maxSteps` → `maxSteps`, `akm.maxRetries` → `maxRetries`,
+  `akm.schedule` → top-level `schedule:`, and `akm.enabled` → each
+  `schedule:` entry's own `enabled` (v3's single document-level flag becomes
+  per-binding in v4, defaulting to `true`). The GitHub-action `uses:` target
+  (`owner/repo@ref`) is removed outright in v4 — v3 still recognizes and
+  rejects that spelling, unchanged. `with:` is legal in v4 only alongside
+  `uses: akm/command`; every other target uses the new typed `inputs:`
+  declarations instead of `with:`. `akm task run <id>` now accepts
+  exact-name input flags for a v4 task's declared `inputs:` (an undeclared
+  flag name fails `UNKNOWN_FLAG`; a bad value or an unsatisfied `required:
+  true` declaration fails `INPUT_BINDING_INVALID`; both exit 2 with the
+  usual JSON error envelope) — the materialized values are **validated
+  only** in this release and are not yet delivered to the target (no
+  `with:` params, no environment variables, no prompt substitution), so a
+  valid flag set leaves the run byte-identical to the same run without
+  them. `akm task add` is unchanged and still writes only task-v3 sources.
+  A v4 task is not yet a valid workflow-step target: a workflow step's
+  `uses: tasks/<ref>` pointing at a v4 task source fails with
+  `TASK_SOURCE_INVALID` naming the deferral, rather than composing. The
+  published [task schema](schemas/akm-task.json) now publishes both
+  grammars as a two-arm `oneOf` keyed on `version`.
 
 ## [0.9.2-alpha.1] - 2026-08-24
 

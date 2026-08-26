@@ -34,6 +34,7 @@ import {
   resolveWriteTarget,
   writeAssetToSource,
 } from "../../core/write-source";
+import type { InputFlag } from "../../execution/input-contract";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveAssetPath } from "../../sources/resolve";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
@@ -348,7 +349,7 @@ export interface TasksRunResultEnvelope {
 
 export async function akmTasksRun(
   id: string,
-  options: { scheduled?: boolean; target?: string } = {},
+  options: { scheduled?: boolean; target?: string; inputFlags?: readonly InputFlag[] } = {},
 ): Promise<TasksRunResultEnvelope> {
   const parsed = parseTaskRef(id);
   const bundle = resolveTaskReadBundle(parsed.bundle, options.target);
@@ -369,6 +370,14 @@ export async function akmTasksRun(
     adapterId,
     scheduled,
     provenance,
+    // P2a Lane C (spec docs/plans/specs/p2a-task-source-v4.md §5.1): the raw,
+    // exact-name input flags `tasks-cli.ts`'s Stage 1 captures ride through
+    // unchanged to `runTask` -> `loadPreparedTask`'s Stage 2 materializer,
+    // which owns declaring `inputFlags` on `RunTaskOptions` and attaching the
+    // materialized literals to the constructed `TaskInvocation`. This is only
+    // the pass-through surface: a valid flag set stays byte-identical to the
+    // same run without flags (§0), and P2a delivers nothing to the target.
+    inputFlags: options.inputFlags,
   } as Parameters<typeof runTask>[1] & { bundleName: string };
   // The runner owns the prepare-before-reserve boundary. Invalid source,
   // projectability, and resolver failures therefore create no history row.

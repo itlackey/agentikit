@@ -25,7 +25,8 @@ import { resolveAssetPath } from "../../sources/resolve";
 import { prepareTaskV3Execution } from "../prepare/prepare";
 import type { PreparedTaskV3Execution } from "../prepare/prepared-execution";
 import { scheduledTaskContextEnv } from "../scheduler-invocation";
-import { parseTaskV3Yaml } from "../source-v3";
+import { parseTaskSource } from "../source/parse-task-source";
+import { projectTaskSourceV4 } from "../source/project-v4";
 import { validateTaskConceptId, validateTaskId } from "../task-id";
 import type { RunTaskOptions } from "./task-result";
 
@@ -57,7 +58,11 @@ export async function loadPreparedTask(id: string, options: RunTaskOptions): Pro
   }
   const filePath = owner.path;
   const yaml = fs.readFileSync(filePath, "utf8");
-  const source = parseTaskV3Yaml({ yaml, filePath, workspaceRoot: bundleDir });
+  // Version-routing seam (spec docs/plans/specs/p2a-task-source-v4.md §3.6):
+  // a v4 source projects into the same PreparableTaskDocument shape v3
+  // already produces, so every line below is unchanged for both versions.
+  const parsed = parseTaskSource({ yaml, filePath, workspaceRoot: bundleDir });
+  const source = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
   const requiresCommandConfig =
     source.target.kind === "uses" &&
     (source.target.uses.kind === "builtin-command" || source.target.uses.kind === "command");

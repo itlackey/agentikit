@@ -9,25 +9,78 @@
  * flowing into a unit prompt. The schemas are frozen into the plan, so
  * validation is a pure function of the frozen plan and supplied params.
  *
- * Uses the same bounded {@link validateJsonSchemaSubset} the engine applies to
- * unit output. Internal callers may validate partial parameter objects; the CLI
- * separately rejects flags that do not exactly name declared parameters.
+ * P2a (docs/plans/specs/p2a-task-source-v4.md §4.3, D3): this module is now a
+ * THIN CONSUMER of the shared input contract, `src/execution/input-contract.ts`
+ * (§4, D3, D3-N1/D3-N2/D3-N3). Every export below keeps its existing name,
+ * signature, message, code, and hint byte-identically —
+ * `tests/workflows/workflow-param-flags.test.ts` and
+ * `tests/integration/workflows/params-validation.test.ts` pin that with zero
+ * diff. `contractFromPlan` adapts a `WorkflowParameterPlan` into an
+ * `InputContract` (every declared param, `required: false` — workflow params
+ * declare nothing required). `WORKFLOW_PARAMETER_DIAGNOSTICS` reproduces
+ * today's five workflow-parameter messages/codes for the shared
+ * `materializeInputFlags` (D3-N3); its `contractViolation` formatter
+ * re-roots each `"$"`-prefixed error from the shared module's internal check
+ * to `"params."`, matching what `validateWorkflowParams` (called directly,
+ * already `"params."`-rooted) has always produced. No coercion or validation
+ * logic lives in this file — it lives once, in the shared module.
  *
  * Pure module: no IO, no engine imports.
  */
 
 import { UsageError } from "../../core/errors";
-import { validateJsonSchemaSubset } from "../../core/json-schema";
-import { PROGRAM_PARAM_NAME_PATTERN } from "../program/schema";
+import {
+  type InputContract,
+  type InputDeclaration,
+  type InputFlag,
+  type InputFlagDiagnostics,
+  materializeInputFlags,
+  validateInputs,
+} from "../../execution/input-contract";
+
 export interface WorkflowParameterPlan {
   readonly params?: readonly string[];
   readonly paramSchemas?: Readonly<Record<string, Record<string, unknown>>>;
 }
 
-export interface WorkflowParameterFlag {
-  name: string;
-  value: string | boolean;
+/** Alias of the shared `InputFlag` shape, kept under its established name — src/commands/workflow-cli.ts imports it by this name. */
+export type WorkflowParameterFlag = InputFlag;
+
+/** Every declared workflow param as an `InputDeclaration`, `required: false` — workflow params declare nothing required (§4.3). */
+function contractFromPlan(plan: WorkflowParameterPlan): InputContract {
+  const names = plan.params ?? Object.keys(plan.paramSchemas ?? {});
+  const contract: Record<string, InputDeclaration> = {};
+  for (const name of names) {
+    contract[name] = { schema: plan.paramSchemas?.[name] ?? {}, required: false };
+  }
+  return contract;
 }
+
+function invalidParameter(name: string, message: string): UsageError {
+  return new UsageError(`Workflow parameter "--${name}" ${message}.`, "INVALID_FLAG_VALUE");
+}
+
+/** The workflow-parameter message/code vocabulary for `materializeInputFlags` (D3-N3) — today's five strings, unchanged. */
+const WORKFLOW_PARAMETER_DIAGNOSTICS: InputFlagDiagnostics = {
+  unknownFlag: (name, declared) => {
+    const available = declared.map((n) => `--${n}`).join(", ");
+    return new UsageError(
+      `Unknown workflow parameter "--${name}". Parameter flags must exactly match a declared workflow parameter.`,
+      "UNKNOWN_FLAG",
+      available ? `Declared parameters: ${available}.` : "This workflow declares no parameters.",
+    );
+  },
+  invalidValue: (name, detail) => invalidParameter(name, detail),
+  contractViolation: (errors) =>
+    new UsageError(
+      `Workflow parameter flags do not satisfy the workflow's declared schemas:\n${errors
+        .map((error) => `  - ${error.replace(/^\$/, "params")}`)
+        .join("\n")}`,
+      "INVALID_FLAG_VALUE",
+    ),
+  duplicateNonArray: (name) => invalidParameter(name, "was provided more than once but is not declared as an array"),
+  malformedJson: (name) => invalidParameter(name, "must contain valid JSON"),
+};
 
 /**
  * Materialize exact-name CLI parameter flags against the plan being frozen for
@@ -39,132 +92,7 @@ export function materializeWorkflowParameterFlags(
   flags: readonly WorkflowParameterFlag[],
 ): Record<string, unknown> {
   if (flags.length === 0) return {};
-
-  const declared = new Set(plan.params ?? Object.keys(plan.paramSchemas ?? {}));
-  const grouped = new Map<string, Array<string | boolean>>();
-  for (const flag of flags) {
-    if (!PROGRAM_PARAM_NAME_PATTERN.test(flag.name) || !declared.has(flag.name)) {
-      const available = [...declared]
-        .sort()
-        .map((name) => `--${name}`)
-        .join(", ");
-      throw new UsageError(
-        `Unknown workflow parameter "--${flag.name}". Parameter flags must exactly match a declared workflow parameter.`,
-        "UNKNOWN_FLAG",
-        available ? `Declared parameters: ${available}.` : "This workflow declares no parameters.",
-      );
-    }
-    const values = grouped.get(flag.name) ?? [];
-    values.push(flag.value);
-    grouped.set(flag.name, values);
-  }
-
-  const entries: Array<[string, unknown]> = [];
-  for (const [name, values] of grouped) {
-    const schema = plan.paramSchemas?.[name];
-    entries.push([name, materializeFlagValues(name, values, schema)]);
-  }
-  const params = Object.fromEntries(entries);
-  const errors = validateWorkflowParams(plan, params);
-  if (errors.length > 0) {
-    throw new UsageError(
-      `Workflow parameter flags do not satisfy the workflow's declared schemas:\n${errors.map((error) => `  - ${error}`).join("\n")}`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  return params;
-}
-
-function materializeFlagValues(
-  name: string,
-  values: readonly (string | boolean)[],
-  schema: Record<string, unknown> | undefined,
-): unknown {
-  const types = schemaTypes(schema);
-  if (types.includes("array")) {
-    if (values.length === 1 && typeof values[0] === "string" && values[0].trim().startsWith("[")) {
-      const parsed = parseJsonFlag(name, values[0]);
-      if (!Array.isArray(parsed)) throw invalidParameter(name, "must be a JSON array");
-      return parsed;
-    }
-    const itemSchema = isRecord(schema?.items) ? schema.items : undefined;
-    return values.map((value) => coerceFlagValue(name, value, itemSchema));
-  }
-
-  if (values.length > 1) {
-    throw invalidParameter(name, "was provided more than once but is not declared as an array");
-  }
-  return coerceFlagValue(name, values[0] as string | boolean, schema);
-}
-
-function coerceFlagValue(name: string, raw: string | boolean, schema: Record<string, unknown> | undefined): unknown {
-  const types = schemaTypes(schema);
-  if (types.length === 0) return raw;
-
-  if (typeof raw === "boolean") {
-    if (types.includes("boolean")) return raw;
-    if (types.includes("string")) return String(raw);
-    throw invalidParameter(name, `requires a value of type ${types.join(" | ")}`);
-  }
-
-  // A union that permits strings keeps the user's exact text. This prevents a
-  // value such as "001" from being silently converted to a number.
-  if (types.includes("string")) return raw;
-
-  for (const type of types) {
-    switch (type) {
-      case "boolean":
-        if (raw === "true") return true;
-        if (raw === "false") return false;
-        break;
-      case "number": {
-        const value = Number(raw);
-        if (raw.trim() !== "" && Number.isFinite(value)) return value;
-        break;
-      }
-      case "integer": {
-        const value = Number(raw);
-        if (raw.trim() !== "" && Number.isSafeInteger(value)) return value;
-        break;
-      }
-      case "null":
-        if (raw === "null") return null;
-        break;
-      case "object": {
-        const parsed = parseJsonFlag(name, raw);
-        if (isRecord(parsed)) return parsed;
-        break;
-      }
-      case "array": {
-        const parsed = parseJsonFlag(name, raw);
-        if (Array.isArray(parsed)) return parsed;
-        break;
-      }
-    }
-  }
-  throw invalidParameter(name, `must be ${types.join(" | ")}; received ${JSON.stringify(raw)}`);
-}
-
-function schemaTypes(schema: Record<string, unknown> | undefined): string[] {
-  const declared = schema?.type;
-  if (typeof declared === "string") return [declared];
-  return Array.isArray(declared) ? declared.filter((value): value is string => typeof value === "string") : [];
-}
-
-function parseJsonFlag(name: string, raw: string): unknown {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw invalidParameter(name, "must contain valid JSON");
-  }
-}
-
-function invalidParameter(name: string, message: string): UsageError {
-  return new UsageError(`Workflow parameter "--${name}" ${message}.`, "INVALID_FLAG_VALUE");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return materializeInputFlags(contractFromPlan(plan), flags, WORKFLOW_PARAMETER_DIAGNOSTICS);
 }
 
 /**
@@ -173,17 +101,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * valid). Params the plan does not declare a schema for are not constrained.
  */
 export function validateWorkflowParams(plan: WorkflowParameterPlan, params: Record<string, unknown>): string[] {
-  const schemas = plan.paramSchemas;
-  if (!schemas || Object.keys(schemas).length === 0) return [];
-  // Validate the params object as a whole against a synthetic object schema
-  // whose `properties` are the declared param schemas. Missing declared params
-  // are NOT required (params may be optional / defaulted downstream); only a
-  // PRESENT param that violates its declared schema is an error.
-  // Re-root the validator's `$` JSON-pointer prefix to `params` for messages
-  // that read naturally in a start/CLI error (e.g. `params.files: expected …`).
-  return validateJsonSchemaSubset(params, { type: "object", properties: schemas }).map((e) =>
-    e.replace(/^\$/, "params"),
-  );
+  // A plan with no schemas must not start emitting `properties: {}` noise —
+  // preserved as an explicit early return (§4.3 binding constraint), even
+  // though an empty contract would validate to `[]` regardless.
+  if (!plan.paramSchemas || Object.keys(plan.paramSchemas).length === 0) return [];
+  return validateInputs(contractFromPlan(plan), params, { pathRoot: "params" });
 }
 
 /**

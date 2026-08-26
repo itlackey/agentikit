@@ -109,10 +109,7 @@ import { isTaskRunWithId } from "../../../src/cli";
 // last "unused").
 import * as TasksCliModule from "../../../src/commands/tasks/tasks-cli";
 import { validateJsonSchemaSubset } from "../../../src/core/json-schema";
-import type {
-  TaskInputBinding,
-  // @ts-expect-error P2a red-phase: src/execution/input-contract.ts lands in Implement (whole module is new; tsc reports the diagnostic on the module-specifier line directly below)
-} from "../../../src/execution/input-contract";
+import type { TaskInputBinding } from "../../../src/execution/input-contract";
 import type { TaskInvocation } from "../../../src/tasks/model/invocation";
 import { loadPreparedTask } from "../../../src/tasks/run/load-task";
 import type { RunTaskOptions } from "../../../src/tasks/run/task-result";

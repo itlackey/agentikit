@@ -74,7 +74,6 @@ import {
   type InputFlagDiagnostics,
   materializeInputFlags,
   validateInputs,
-  // @ts-expect-error P2a red-phase: src/execution/input-contract.ts lands in Implement (whole module is new; the diagnostic below is reported on the module-specifier line, so the directive sits directly above it; removed once the import resolves)
 } from "../../src/execution/input-contract";
 import {
   assertRunParamsSatisfyPlan,
