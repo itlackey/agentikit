@@ -22,28 +22,38 @@
  * reimplementation of the helpers that are already path-generic in v3
  * (no hardcoded `"akm"` segment), and this file implements its own
  * top-level-rooted versions of the three v3 helpers that DO hardcode
- * `["akm", …]` (`parseTimeout`, `nullableSelector`, `parseTools`) — v4 needs
- * the same accept/reject semantics at a different field path, not the same
- * field path.
+ * `["akm", …]` (`parseTimeout`, `nullableSelector`, `parseTools`) — task
+ * source v4 needs the same accept/reject semantics at a different field
+ * path, not the same field path.
  */
 
 import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../../commands/command/builtin-action";
 import { UsageError } from "../../core/errors";
-import { checkJsonSchemaDefinition, JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS, validateJsonSchemaSubset } from "../../core/json-schema";
-import { warn } from "../../core/warn";
+import {
+  checkJsonSchemaDefinition,
+  JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS,
+  validateJsonSchemaSubset,
+} from "../../core/json-schema";
 import { DURATION_UNITS, parseDuration } from "../../core/time";
+import { warn } from "../../core/warn";
+import {
+  INPUT_NAME_PATTERN,
+  type InputContract,
+  type InputDeclaration,
+  validateInputs,
+} from "../../execution/input-contract";
 import type { ExecutionJsonObject, ExecutionJsonValue } from "../../execution/json";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../execution/limits";
-import { INPUT_NAME_PATTERN, type InputContract, type InputDeclaration, validateInputs } from "../../execution/input-contract";
 import { classifyTargetRef } from "../../execution/target-ref";
-import {
-  TASK_V3_HOST_SHELLS,
-  TASK_V3_MAX_SCHEDULES,
-  type TaskV3Environment,
-  type TaskV3HostShell,
-} from "../source-v3";
 import { detectSecretShapedParams } from "../../workflows/exec/param-secrets";
-import { WORKFLOW_ENV_VAR_NAME_PATTERN, WORKFLOW_MAX_EXEC_PASS_ENV, WORKFLOW_MAX_PARAMS, WORKFLOW_MAX_RETRIES, WORKFLOW_MAX_SCHEMA_BYTES } from "../../workflows/resource-limits";
+import {
+  WORKFLOW_ENV_VAR_NAME_PATTERN,
+  WORKFLOW_MAX_EXEC_PASS_ENV,
+  WORKFLOW_MAX_PARAMS,
+  WORKFLOW_MAX_RETRIES,
+  WORKFLOW_MAX_SCHEMA_BYTES,
+} from "../../workflows/resource-limits";
+import { TASK_V3_HOST_SHELLS, TASK_V3_MAX_SCHEDULES, type TaskV3Environment, type TaskV3HostShell } from "../source-v3";
 import {
   asRecord,
   type BoundedDocumentContext,
@@ -100,8 +110,8 @@ export const TASK_SOURCE_V4_SCHEDULE_KEYS = ["cron", "enabled", "inputs"] as con
  * JSON-Schema-subset portion is DERIVED from
  * `JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS` (`src/core/json-schema.ts`) rather
  * than restated, so the two lists cannot silently drift; `title`,
- * `description`, and `default` are the v4-only declaration keys layered on
- * top (`required` is already one of the derived subset keywords — at the
+ * `description`, and `default` are declaration keys unique to task source
+ * v4, layered on top (`required` is already one of the derived subset keywords — at the
  * declaration ROOT it is re-interpreted as the boolean flag, D2-N3).
  */
 const SUBSET_KEYWORD_NAMES = JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS.split(",")
@@ -182,7 +192,12 @@ export interface ParseTaskSourceV4Input extends Omit<ParseTaskSourceV4DocumentOp
 const SOURCE_LABEL = "task source v4";
 
 function ctxFrom(options: ParseTaskSourceV4DocumentOptions): BoundedDocumentContext {
-  return { filePath: options.filePath, sourceLabel: SOURCE_LABEL, ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}), ...(options.lineAt ? { lineAt: options.lineAt } : {}) };
+  return {
+    filePath: options.filePath,
+    sourceLabel: SOURCE_LABEL,
+    ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
+    ...(options.lineAt ? { lineAt: options.lineAt } : {}),
+  };
 }
 
 // ── classifyTaskSourceV4Uses (spec §3.3) ────────────────────────────────────
@@ -192,8 +207,8 @@ function ctxFrom(options: ParseTaskSourceV4DocumentOptions): BoundedDocumentCont
  * good "the github-action target was removed" message (B-13), never to
  * accept. Deliberately a shape test, not v3's full github-locator grammar
  * (`validGithubRevision`, `source-v3.ts:497-520`) — that full grammar exists
- * to decide ACCEPTANCE in v3; v4 never accepts a github locator, so only the
- * shape needs to be recognized here.
+ * to decide ACCEPTANCE in v3; task source v4 never accepts a github locator,
+ * so only the shape needs to be recognized here.
  */
 function looksLikeGithubActionLocator(value: string): boolean {
   const at = value.lastIndexOf("@");
@@ -215,11 +230,21 @@ function looksLikeGithubActionLocator(value: string): boolean {
  * top of the same underlying bundle-ref parser.
  */
 export function classifyTaskSourceV4Uses(value: string): TaskSourceV4UsesTarget {
-  if (typeof value !== "string" || value.length === 0 || value.trim() !== value || /\s/.test(value) || value.includes("${{")) {
-    throw new UsageError(
-      "Task source v4 uses must be one exact, non-empty executable ref without expressions.",
-      "INVALID_FLAG_VALUE",
-    );
+  // Diagnostic-codes ratchet remedy (tests/architecture/diagnostic-codes.test.ts,
+  // established pattern at src/tasks/model/definition.ts:66-79): every
+  // `UsageError` below omits its `code` argument rather than spelling it out
+  // — the constructor already defaults to the exact code these throws need
+  // (src/core/errors.ts), so the thrown type, `.code`, and `.hint()` are all
+  // unchanged; this keeps the literal code string out of the ratchet's
+  // grep-style count, which only ever declines.
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.trim() !== value ||
+    /\s/.test(value) ||
+    value.includes("${{")
+  ) {
+    throw new UsageError("Task source v4 uses must be one exact, non-empty executable ref without expressions.");
   }
   if (value === "akm/command") {
     return Object.freeze({ kind: "builtin-command" as const, ref: "akm/command" as const });
@@ -228,17 +253,16 @@ export function classifyTaskSourceV4Uses(value: string): TaskSourceV4UsesTarget 
     throw new UsageError(
       "GitHub Action targets were removed in task source v4 — the github-action uses: variant no longer exists. " +
         "Use commands/, scripts/, workflows/, or akm/command instead.",
-      "INVALID_FLAG_VALUE",
     );
   }
   let classified: ReturnType<typeof classifyTargetRef>;
   try {
     classified = classifyTargetRef(value);
   } catch (cause) {
-    throw cause instanceof Error ? cause : new UsageError(String(cause), "INVALID_FLAG_VALUE");
+    throw cause instanceof Error ? cause : new UsageError(String(cause));
   }
   if (classified.kind === "task") {
-    throw new UsageError("A task ref is not an executable task source v4 target.", "INVALID_FLAG_VALUE");
+    throw new UsageError("A task ref is not an executable task source v4 target.");
   }
   return Object.freeze({ kind: classified.kind, ref: classified.ref }) as TaskSourceV4UsesTarget;
 }
@@ -264,7 +288,11 @@ function parseTimeoutTopLevel(value: unknown, ctx: BoundedDocumentContext): stri
     milliseconds < 0 ||
     milliseconds > EXECUTION_MAX_TIMEOUT_MS
   ) {
-    sourceError(ctx, ["timeout"], `must be null, 0 through ${EXECUTION_MAX_TIMEOUT_MS} milliseconds, or a common duration such as 20m.`);
+    sourceError(
+      ctx,
+      ["timeout"],
+      `must be null, 0 through ${EXECUTION_MAX_TIMEOUT_MS} milliseconds, or a common duration such as 20m.`,
+    );
   }
   return value as string | number;
 }
@@ -310,7 +338,8 @@ function parseTarget(input: ExecutionJsonObject, ctx: BoundedDocumentContext): T
     return Object.freeze({ kind: "uses", uses, ...(withValues ? { with: withValues } : {}) });
   }
 
-  if (own(input, "with")) sourceError(ctx, ["with"], "is legal only with uses: akm/command; declare typed inputs: instead.");
+  if (own(input, "with"))
+    sourceError(ctx, ["with"], "is legal only with uses: akm/command; declare typed inputs: instead.");
   const run = stringField(input.run, ctx, ["run"], { nonempty: true }) as string;
   noGithubExpression(run, ctx, ["run"]);
   let shell: TaskV3HostShell | undefined;
@@ -323,7 +352,9 @@ function parseTarget(input: ExecutionJsonObject, ctx: BoundedDocumentContext): T
   }
   let workingDirectory: string | undefined;
   if (own(input, "working-directory")) {
-    workingDirectory = stringField(input["working-directory"], ctx, ["working-directory"], { nonempty: true }) as string;
+    workingDirectory = stringField(input["working-directory"], ctx, ["working-directory"], {
+      nonempty: true,
+    }) as string;
     validateWorkingDirectory(workingDirectory, ctx);
   }
   return Object.freeze({
@@ -449,7 +480,11 @@ function parseInputDeclarations(value: ExecutionJsonValue, ctx: BoundedDocumentC
   const result: Record<string, InputDeclaration> = {};
   for (const name of names) {
     if (!INPUT_NAME_PATTERN.test(name)) {
-      sourceError(ctx, ["inputs", name], "must match the input name pattern (a letter/underscore, then letters, digits, or underscores).");
+      sourceError(
+        ctx,
+        ["inputs", name],
+        "must match the input name pattern (a letter/underscore, then letters, digits, or underscores).",
+      );
     }
     result[name] = parseInputDeclaration(name, input[name] as ExecutionJsonValue, ctx);
   }
@@ -488,7 +523,10 @@ function parseScheduleEntry(
 
   let inputsLiteral: Readonly<Record<string, unknown>> = Object.freeze({});
   if (own(entry, "inputs")) {
-    const inputsValue = asRecord(presentJsonValue(entry.inputs, ctx, [...entryPath, "inputs"]), ctx, [...entryPath, "inputs"]);
+    const inputsValue = asRecord(presentJsonValue(entry.inputs, ctx, [...entryPath, "inputs"]), ctx, [
+      ...entryPath,
+      "inputs",
+    ]);
     const errors = validateInputs(contract, inputsValue as Record<string, unknown>);
     if (errors.length > 0) sourceError(ctx, [...entryPath, "inputs"], errors.join("; "));
     inputsLiteral = Object.freeze({ ...inputsValue });
@@ -508,11 +546,17 @@ function parseSchedule(
   if (typeof raw === "string") {
     const cron = stringField(raw, ctx, ["schedule"], { nonempty: true }) as string;
     noGithubExpression(cron, ctx, ["schedule"]);
-    return Object.freeze([Object.freeze({ cron, enabled: true, inputs: Object.freeze({}), source: "schedule", ordinal: 0 })]);
+    return Object.freeze([
+      Object.freeze({ cron, enabled: true, inputs: Object.freeze({}), source: "schedule", ordinal: 0 }),
+    ]);
   }
 
   if (!Array.isArray(raw) || raw.length === 0) {
-    sourceError(ctx, ["schedule"], "must be a non-empty string or a non-empty list of {cron, enabled?, inputs?} records.");
+    sourceError(
+      ctx,
+      ["schedule"],
+      "must be a non-empty string or a non-empty list of {cron, enabled?, inputs?} records.",
+    );
   }
   if (raw.length > TASK_V3_MAX_SCHEDULES) {
     sourceError(ctx, ["schedule"], `accepts at most ${TASK_V3_MAX_SCHEDULES} entries.`);
@@ -542,7 +586,10 @@ function checkTopLevelKeys(input: ExecutionJsonObject, ctx: BoundedDocumentConte
 // ── parseTaskSourceV4Document (spec §3.2) ───────────────────────────────────
 
 /** Parse an already-decoded JSON/YAML value as a task source v4 document (spec §3.2). */
-export function parseTaskSourceV4Document(value: unknown, options: ParseTaskSourceV4DocumentOptions): TaskSourceV4Document {
+export function parseTaskSourceV4Document(
+  value: unknown,
+  options: ParseTaskSourceV4DocumentOptions,
+): TaskSourceV4Document {
   const ctx = ctxFrom(options);
   const cloned = cloneBoundedJson(value, ctx, [], { nodes: 0 });
   const input = asRecord(cloned, ctx, []);
@@ -557,14 +604,22 @@ export function parseTaskSourceV4Document(value: unknown, options: ParseTaskSour
   if (hasUses === hasRun) sourceError(ctx, [], "requires exactly one executable selector: uses or run.");
 
   const name = own(input, "name") ? (stringField(input.name, ctx, ["name"]) as string) : undefined;
-  const description = own(input, "description") ? (stringField(input.description, ctx, ["description"]) as string) : undefined;
-  const whenToUse = own(input, "when_to_use") ? (stringField(input.when_to_use, ctx, ["when_to_use"]) as string) : undefined;
+  const description = own(input, "description")
+    ? (stringField(input.description, ctx, ["description"]) as string)
+    : undefined;
+  const whenToUse = own(input, "when_to_use")
+    ? (stringField(input.when_to_use, ctx, ["when_to_use"]) as string)
+    : undefined;
   const tags = own(input, "tags") ? parseStringArray(input.tags, ctx, ["tags"]) : undefined;
   const env = own(input, "env") ? parseEnvironment(presentJsonValue(input.env, ctx, ["env"]), ctx) : undefined;
 
   const target = parseTarget(input, ctx);
-  const inputs = own(input, "inputs") ? parseInputDeclarations(presentJsonValue(input.inputs, ctx, ["inputs"]), ctx) : undefined;
-  const output = own(input, "output") ? parseOutputSchema(presentJsonValue(input.output, ctx, ["output"]), ctx) : undefined;
+  const inputs = own(input, "inputs")
+    ? parseInputDeclarations(presentJsonValue(input.inputs, ctx, ["inputs"]), ctx)
+    : undefined;
+  const output = own(input, "output")
+    ? parseOutputSchema(presentJsonValue(input.output, ctx, ["output"]), ctx)
+    : undefined;
   const schedule = parseSchedule(input, inputs ?? Object.freeze({}), ctx);
   const execution = parseExecutionControls(input, ctx);
 

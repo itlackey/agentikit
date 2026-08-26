@@ -54,7 +54,8 @@
 
 import path from "node:path";
 import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
-import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "../../../tasks/source-v3";
+import { parseTaskSource } from "../../../tasks/source/parse-task-source";
+import { taskV3SourceErrorDetail } from "../../../tasks/source-v3";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
@@ -308,13 +309,15 @@ export function factDiagnostics(relPath: string, data: Record<string, unknown>):
 }
 
 /**
- * Task validation has one semantic owner: the strict task-v3 source parser.
+ * Task validation has one semantic owner: the version-routed task source
+ * parser (spec docs/plans/specs/p2a-task-source-v4.md §3.6) — `version: 3`
+ * through the strict task-v3 grammar, `version: 4` through task source v4.
  * Keeping raw YAML at this boundary preserves duplicate-key, alias/tag,
  * source-location, descriptor, resource-bound, and migration-hint behavior.
  */
 export function taskDiagnostics(relPath: string, raw: string, workspaceRoot?: string): Diagnostic[] {
   try {
-    parseTaskV3Yaml({
+    parseTaskSource({
       filePath: relPath,
       yaml: raw,
       ...(workspaceRoot ? { workspaceRoot } : {}),

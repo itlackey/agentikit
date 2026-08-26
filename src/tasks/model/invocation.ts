@@ -14,7 +14,18 @@
  * already has in hand without resolving anything (no IO), leaving richer
  * shapes to whichever later phase first threads a real `TaskInvocation`
  * value (this phase does not construct one).
+ *
+ * `inputs` (spec docs/plans/specs/p2a-task-source-v4.md §4.4): the
+ * `akm task run` input-flag literals `src/tasks/run/load-task.ts` materializes
+ * (Stage 2) are attached here, widening the model. `TaskInputBinding` is a
+ * type-only import from `src/execution/input-contract` — not on the purity
+ * ratchet's forbidden list (`tests/tasks/parse-v3-adapter.test.ts:368-388`),
+ * and erased at compile time either way, so the ratchet stays green with no
+ * baseline change. P2a validates only — nothing reads `inputs` back yet
+ * (spec §0); `src/tasks/model/definition.ts` is unchanged.
  */
+
+import type { TaskInputBinding } from "../../execution/input-contract";
 
 /** How a task run was invoked, and any per-invocation overrides. */
 export type TaskInvocationCaller =
@@ -34,6 +45,8 @@ export interface TaskInvocation {
   readonly taskRef: string;
   readonly caller: TaskInvocationCaller;
   readonly overrides?: TaskInvocationOverrides;
+  /** Literal input bindings materialized from `akm task run` input flags (P2a §4.4). Validated only — not yet delivered (§0). */
+  readonly inputs?: readonly TaskInputBinding[];
 }
 
 /**

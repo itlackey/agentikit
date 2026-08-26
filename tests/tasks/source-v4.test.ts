@@ -89,9 +89,7 @@ import {
 } from "../../src/core/json-schema";
 import { _setWarnSinkForTests } from "../../src/core/warn";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
-// @ts-expect-error P2a red-phase: everything from this not-yet-existing module lands in Implement
 import * as ParseTaskSourceModule from "../../src/tasks/source/parse-task-source";
-// @ts-expect-error P2a red-phase: everything from this not-yet-existing module lands in Implement
 import * as TaskSourceV4Module from "../../src/tasks/source/task-source-v4";
 import { parseTaskV3Yaml, TASK_V3_MAX_SCHEDULES } from "../../src/tasks/source-v3";
 import { detectSecretShapedParams } from "../../src/workflows/exec/param-secrets";
@@ -217,14 +215,14 @@ describe("task source v4 — closed key-set constants (D2-N3, D2-N7)", () => {
         "redact",
         "maxSteps",
         "maxRetries",
-      ].sort(),
+      ].sort() as never,
     );
     expect(TASK_SOURCE_V4_TOP_LEVEL_KEYS).not.toContain("akm");
     expect(TASK_SOURCE_V4_TOP_LEVEL_KEYS).not.toContain("on");
   });
 
   test("TASK_SOURCE_V4_SCHEDULE_KEYS closes one schedule-list entry to cron/enabled/inputs", () => {
-    expect([...TASK_SOURCE_V4_SCHEDULE_KEYS].sort()).toEqual(["cron", "enabled", "inputs"].sort());
+    expect([...TASK_SOURCE_V4_SCHEDULE_KEYS].sort()).toEqual(["cron", "enabled", "inputs"].sort() as never);
   });
 
   test("TASK_INPUT_DECLARATION_KEYS derives its JSON-Schema-subset keywords from JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS (D2-N3) rather than restating them", () => {
@@ -1161,12 +1159,12 @@ describe("task source v4 fixtures (tests/fixtures/execution-contracts/tasks/v4/)
     MANIFEST_FIXTURES.map((fixture) => [fixture.id, fixture] as const),
   )("%s parses to the shape manifest.json pins", (_id, fixture) => {
     const result = parseFixture(fixture);
-    expect(result.manualOnly).toBe(fixture.expected.manualOnly);
-    expect(result.schedule).toEqual(fixture.expected.schedule);
-    expect(result.target).toEqual(fixture.expected.target);
-    expect(result.inputs).toEqual(fixture.expected.inputs);
-    expect(result.output).toEqual(fixture.expected.output);
-    expect(result.env).toEqual(fixture.expected.env);
+    expect(result.manualOnly).toBe(fixture.expected.manualOnly as never);
+    expect(result.schedule).toEqual(fixture.expected.schedule as never);
+    expect(result.target).toEqual(fixture.expected.target as never);
+    expect(result.inputs).toEqual(fixture.expected.inputs as never);
+    expect(result.output).toEqual(fixture.expected.output as never);
+    expect(result.env).toEqual(fixture.expected.env as never);
     expect(result.execution).toEqual(fixture.expected.execution ?? {});
     expect(Object.isFrozen(result)).toBe(true);
   });

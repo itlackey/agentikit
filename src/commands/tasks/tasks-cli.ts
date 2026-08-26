@@ -31,6 +31,7 @@ import { getParsedInvocation } from "../../cli/invocation";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { UsageError } from "../../core/errors";
+import type { InputFlag } from "../../execution/input-contract";
 import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync } from "./tasks";
 
 /** Shared `--bundle <bundle>` arg wired onto every task subcommand. */
@@ -53,6 +54,86 @@ function rejectRetiredTaskTargetFlag(): void {
     "`akm task --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
     "INVALID_FLAG_VALUE",
   );
+}
+
+// ── `akm task run` input flags — Stage 1: capture (spec §5.1) ──────────────
+//
+// Mirrors `parseWorkflowParameterFlags` (src/commands/workflow-cli.ts:232-289)
+// exactly: the CLI carries RAW string/boolean flag values to the boundary
+// that knows the task's declared contract (Stage 2, src/tasks/run/load-task.ts)
+// — coercion happens once, there. `akm task run`'s own declared flags
+// (GLOBAL_OUTPUT_ARGS, --bundle, --scheduled) are excluded so they are never
+// mistaken for inputs (B-33); `--target` is excluded too, but only because
+// `rejectRetiredTaskTargetFlag()` above always runs first and throws before
+// this is ever reached (B-32) — it is not itself special-cased below.
+
+/** Every VALUE-taking flag `akm task run` declares (GLOBAL_OUTPUT_ARGS' value flags plus `--bundle`). */
+export const TASK_RUN_VALUE_FLAGS: readonly string[] = ["bundle", "format", "detail", "shape", "output"];
+/** Every BOOLEAN flag `akm task run` declares, including citty's `--no-` negations of the boolean pair above. */
+export const TASK_RUN_BOOLEAN_FLAGS: readonly string[] = [
+  "scheduled",
+  "quiet",
+  "verbose",
+  "help",
+  "no-quiet",
+  "no-verbose",
+];
+
+const TASK_RUN_VALUE_FLAG_SET = new Set<string>(TASK_RUN_VALUE_FLAGS);
+const TASK_RUN_BOOLEAN_FLAG_SET = new Set<string>(TASK_RUN_BOOLEAN_FLAGS);
+
+/**
+ * Scan `akm task run`'s raw argv for exact-name input flags, excluding the
+ * task id and every declared flag above. Input flags must come after the
+ * task id (mirrors `parseWorkflowParameterFlags`'s positional rule); a bare
+ * `--` is rejected, matching `workflow run`.
+ */
+export function parseTaskInputFlags(rawArgs: readonly string[], id: string): InputFlag[] {
+  const flags: InputFlag[] = [];
+  let idSeen = false;
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const token = rawArgs[index] as string;
+    if (token === "--") {
+      throw new UsageError("`akm task run` does not accept positional arguments after `--`.", "INVALID_FLAG_VALUE");
+    }
+    if (!token.startsWith("-") || token === "-" || /^-\d/.test(token)) {
+      if (!idSeen) {
+        if (token !== id) {
+          throw new UsageError("Task input flags must come after the task id.", "INVALID_FLAG_VALUE");
+        }
+        idSeen = true;
+        continue;
+      }
+      throw new UsageError(`Unexpected positional task argument "${token}".`, "INVALID_FLAG_VALUE");
+    }
+    if (!token.startsWith("--")) continue;
+
+    const body = token.slice(2);
+    const equalsAt = body.indexOf("=");
+    const name = equalsAt === -1 ? body : body.slice(0, equalsAt);
+    const inlineValue = equalsAt === -1 ? undefined : body.slice(equalsAt + 1);
+    if (TASK_RUN_VALUE_FLAG_SET.has(name)) {
+      if (inlineValue === undefined) index += 1;
+      continue;
+    }
+    if (TASK_RUN_BOOLEAN_FLAG_SET.has(name)) continue;
+    if (!idSeen) {
+      throw new UsageError("Task input flags must come after the task id.", "INVALID_FLAG_VALUE");
+    }
+
+    if (inlineValue !== undefined) {
+      flags.push({ name, value: inlineValue });
+      continue;
+    }
+    const next = rawArgs[index + 1];
+    if (next !== undefined && (!next.startsWith("-") || /^-\d/.test(next))) {
+      flags.push({ name, value: next });
+      index += 1;
+    } else {
+      flags.push({ name, value: true });
+    }
+  }
+  return flags;
 }
 
 const tasksAddCommand = defineJsonCommand({
@@ -129,12 +210,14 @@ const tasksRunCommand = defineCommand({
     ...bundleArg,
     scheduled: { type: "boolean", description: "Internal marker for scheduler-generated runs", default: false },
   },
-  async run({ args }) {
+  async run({ args, rawArgs }) {
     await runWithJsonErrors(async () => {
       rejectRetiredTaskTargetFlag();
+      const inputFlags = parseTaskInputFlags(rawArgs, args.id);
       const envelope = await akmTasksRun(args.id, {
         scheduled: args.scheduled === true,
         ...(args.bundle !== undefined ? { target: args.bundle } : {}),
+        inputFlags,
       });
       output("task-run", envelope);
       // F4: was `process.exit(envelope.exitCode)`, terminating synchronously

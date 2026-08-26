@@ -91,14 +91,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-// `src/cli.ts` already exists and already exports `main`/`normalizeCittyCliError`
-// (tests/_helpers/cli.ts uses them) — `isTaskRunWithId` is the ONE new named
-// export F-5 requires; a single-symbol named import from an already-resolving
-// module raises one single-line TS2305 ("has no exported member") directly
-// on this import statement (mirrors tests/tasks/source-v4-adapter.test.ts's
-// `PreparableTaskDocument` import — no namespace indirection needed for a
-// lone new symbol with nothing else from this path to merge with).
-// @ts-expect-error P2a red-phase: isTaskRunWithId is not yet exported from src/cli.ts (F-5); Implement adds `export`
 import { isTaskRunWithId } from "../../../src/cli";
 // `tasks-cli.ts` already exists (real exports: tasksCommand, etc.), so this
 // namespace import itself resolves cleanly today and carries NO pin — only
@@ -116,7 +108,6 @@ import type { RunTaskOptions } from "../../../src/tasks/run/task-result";
 import { runCliCapture } from "../../_helpers/cli";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
-// @ts-expect-error P2a red-phase: TasksCliModule (see the pinned import above) is untyped until Implement lands the module's new exports
 const { parseTaskInputFlags, TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS } = TasksCliModule;
 
 let storage: IsolatedAkmStorage;
@@ -227,12 +218,10 @@ describe("akm task run — exact-name input flags materialize literal bindings (
     // Stage 1's own argv-scanning, which the envelope tests below exercise
     // for real through the actual CLI.
     const options: RunTaskOptions = { bundleDir: storage.stashDir, bundleName: "fixture" };
-    // @ts-expect-error P2a red-phase: RunTaskOptions.inputFlags lands in Implement (src/tasks/run/task-result.ts, spec §5.1)
     options.inputFlags = [
       { name: "scope", value: "all" },
       { name: "strict", value: true },
     ];
-    // @ts-expect-error P2a red-phase: RunTaskOptions.captureTaskInvocation (this test's own seam, see the describe-block comment above) lands in Implement (src/tasks/run/task-result.ts) — if Implement satisfies "the result becomes TaskInvocation.inputs" through a differently-shaped seam, update this call site and pin to match rather than re-deriving intent
     options.captureTaskInvocation = (invocation: TaskInvocation) => {
       captured = invocation;
     };
@@ -243,7 +232,6 @@ describe("akm task run — exact-name input flags materialize literal bindings (
       throw new Error(
         "captureTaskInvocation was never called — Stage 2 did not construct a TaskInvocation, or the seam is wired to a different name",
       );
-    // @ts-expect-error P2a red-phase: TaskInvocation.inputs lands in Implement (src/tasks/model/invocation.ts, spec §4.4) — the LOAD-BEARING assertion: it targets the widened model field, not a side channel production code never reads
     const inputs = captured.inputs as readonly TaskInputBinding[] | undefined;
     if (!inputs) throw new Error("TaskInvocation.inputs was not populated");
     const byName = [...inputs].sort((a, b) => a.name.localeCompare(b.name));
@@ -309,7 +297,19 @@ describe("akm task run — exact-name input flags materialize literal bindings (
     const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string; hint?: string };
     expect(envelope.ok).toBe(false);
     expect(envelope.code).toBe("INPUT_BINDING_INVALID");
-    const rendered = JSON.stringify(envelope);
+    // Test-review fix: `detailSuffix` comes straight from `validateJsonSchemaSubset`
+    // (never JSON-encoded) and legitimately embeds literal `"` characters
+    // (`is not one of ["changed","all"]`) — `JSON.stringify(envelope)` would
+    // re-escape those to `\"`, so a substring check against the STRINGIFIED
+    // envelope can never match the RAW detail text. Checking the already
+    // `JSON.parse`d string fields directly (still real, unescaped strings)
+    // is the byte-accurate comparison; §5.1/B-27's "check the whole envelope,
+    // not just .error" intent is preserved by joining every textual field
+    // the diagnostics vocabulary might use, mirroring the B-27 test's own
+    // "not required to put the enumeration in one specific field" rationale.
+    const rendered = [envelope.error, envelope.hint]
+      .filter((part): part is string => typeof part === "string")
+      .join(" ");
     // Names the offending input …
     expect(rendered).toContain("scope");
     // … and carries validateJsonSchemaSubset's own underlying detail text.

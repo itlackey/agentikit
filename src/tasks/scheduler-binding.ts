@@ -42,6 +42,15 @@ export interface SchedulerSourceSchedule {
   readonly cron: string;
   readonly source: string;
   readonly ordinal: number;
+  /**
+   * Per-entry override of the document-level `enabled` (D2-N5, spec
+   * docs/plans/specs/p2a-task-source-v4.md §1.5). v3 sources never set this
+   * — every v3 projection keeps resolving to the document-level `enabled`
+   * unchanged. A task source v4 document's `schedule[i].enabled` carries it
+   * through so `compileTaskSchedulerBindings` can disable one binding
+   * without touching its siblings.
+   */
+  readonly enabled?: boolean;
 }
 
 export interface CompileTaskSchedulerBindingsInput {
@@ -179,7 +188,7 @@ export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindings
         cron: schedule.cron,
         source: schedule.source,
         ordinal: schedule.ordinal,
-        enabled: input.enabled,
+        enabled: schedule.enabled ?? input.enabled,
         invocation,
       });
     }),

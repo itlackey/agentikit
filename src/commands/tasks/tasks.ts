@@ -43,7 +43,13 @@ import { prepareTaskV3Execution } from "../../tasks/prepare/prepare";
 import type { PrepareTaskV3ExecutionContext } from "../../tasks/prepare/prepared-execution";
 import { type ResolvedAkmInvocation, resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
 import { createExecutionProvenanceContext } from "../../tasks/run/provenance";
-import { exitCodeForStatus, readTaskHistory, runTask, type TaskRunResult } from "../../tasks/runner";
+import {
+  exitCodeForStatus,
+  type RunTaskOptions,
+  readTaskHistory,
+  runTask,
+  type TaskRunResult,
+} from "../../tasks/runner";
 import { parseSchedule, SCHEDULE_SUPPORTED_SUBSET_HINT } from "../../tasks/schedule";
 import {
   assertSchedulerMutationArtifact,
@@ -73,7 +79,9 @@ import {
   prepareSchedulerSyncSourceSet,
   type SchedulerSyncPlan,
 } from "../../tasks/scheduler-sync";
-import { parseTaskV3Yaml, TASK_V3_MAX_SOURCE_BYTES, type TaskV3SourceDocument } from "../../tasks/source-v3";
+import { parseTaskSource } from "../../tasks/source/parse-task-source";
+import { projectTaskSourceV4 } from "../../tasks/source/project-v4";
+import { TASK_V3_MAX_SOURCE_BYTES, type TaskV3SourceDocument } from "../../tasks/source-v3";
 import { normaliseTaskConceptId, normaliseTaskId } from "../../tasks/task-id";
 import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
@@ -187,7 +195,13 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     enabled: input.disabled !== true,
   });
 
-  const task = parseTaskV3Yaml({ yaml, filePath: assetPath, workspaceRoot: stashDir });
+  // Version-routing seam (spec docs/plans/specs/p2a-task-source-v4.md §3.6):
+  // `renderTaskYaml` above always renders a `version: 3` document and
+  // `TasksAddInput` has no raw-YAML override, so the task source v4 arm is
+  // unreachable here in production — routed anyway so this call site consumes the union
+  // per §9 rather than special-casing itself out of it.
+  const parsedTask = parseTaskSource({ yaml, filePath: assetPath, workspaceRoot: stashDir });
+  const task = parsedTask.version === 4 ? projectTaskSourceV4(parsedTask.v4) : parsedTask.v3;
   const qualifiedRef = makeBundleRef(bundle.bundleName, `tasks/${id}`);
   await prepareTaskV3Execution(task, {
     taskId: id,
@@ -362,23 +376,30 @@ export async function akmTasksRun(
   // separate field carrying its own pre-existing meaning (activation policy,
   // scheduler env), never selecting the event source.
   const provenance = createExecutionProvenanceContext(scheduled);
-  const runOptions = {
-    // F-3 (spec §5.4): RunTaskOptions.stashDir renamed to bundleDir — VALUE-
-    // preserving, no CLI flag change.
+  // F-3 (spec §5.4): RunTaskOptions.stashDir renamed to bundleDir — VALUE-
+  // preserving, no CLI flag change.
+  //
+  // P2a Lane C (spec docs/plans/specs/p2a-task-source-v4.md §5.1): the raw,
+  // exact-name input flags `tasks-cli.ts`'s Stage 1 captures ride through
+  // unchanged to `runTask` -> `loadPreparedTask`'s Stage 2 materializer,
+  // which owns declaring `inputFlags` on `RunTaskOptions` and attaching the
+  // materialized literals to the constructed `TaskInvocation`. This is only
+  // the pass-through surface: a valid flag set stays byte-identical to the
+  // same run without flags (§0), and P2a delivers nothing to the target.
+  //
+  // No `as` cast (test-review finding, spec §6 F-5): `RunTaskOptions` (this
+  // literal's inferred type is checked directly against it, below) declares
+  // every one of these fields, so the compiler — not a suppressed excess-
+  // property check — enforces this seam. A future rename or removal on
+  // either side now fails `tsc`, not silently at the `runTask` boundary.
+  const runOptions: RunTaskOptions = {
     bundleDir: bundle.source.path,
     bundleName: bundle.source.name,
     adapterId,
     scheduled,
     provenance,
-    // P2a Lane C (spec docs/plans/specs/p2a-task-source-v4.md §5.1): the raw,
-    // exact-name input flags `tasks-cli.ts`'s Stage 1 captures ride through
-    // unchanged to `runTask` -> `loadPreparedTask`'s Stage 2 materializer,
-    // which owns declaring `inputFlags` on `RunTaskOptions` and attaching the
-    // materialized literals to the constructed `TaskInvocation`. This is only
-    // the pass-through surface: a valid flag set stays byte-identical to the
-    // same run without flags (§0), and P2a delivers nothing to the target.
     inputFlags: options.inputFlags,
-  } as Parameters<typeof runTask>[1] & { bundleName: string };
+  };
   // The runner owns the prepare-before-reserve boundary. Invalid source,
   // projectability, and resolver failures therefore create no history row.
   const result = await runTask(resolvedId, runOptions);

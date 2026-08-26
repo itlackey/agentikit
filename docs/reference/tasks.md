@@ -14,9 +14,9 @@ Two task source grammars are recognized side by side in this release:
   `output:` schema, and scheduling that is OPTIONAL rather than required. See
   [Task source v4](#task-source-v4) below.
 
-`akm task add` writes only task-v3 sources in this release; author a v4
-document by hand (or edit an existing `.yml` in place) to use the newer
-grammar.
+`akm task add` writes only task-v3 sources in this release; author a task
+source v4 document by hand (or edit an existing `.yml` in place) to use the
+newer grammar.
 
 ## Files and schema
 
@@ -25,14 +25,15 @@ indexed, scheduled, or run. Every task must declare `version: 3` or
 `version: 4`; unknown top-level keys and any other version fail closed. The
 published [task schema](../../schemas/akm-task.json) describes the
 hand-authored contract for both grammars as a two-arm `oneOf` keyed on
-`version`, while `src/tasks/source-v3.ts` (v3) and
-`src/tasks/source/task-source-v4.ts` (v4) remain the authoritative bounded
-parsers.
+`version`, while `src/tasks/source-v3.ts` (task v3) and
+`src/tasks/source/task-source-v4.ts` (task source v4) remain the
+authoritative bounded parsers.
 
 The rest of this page documents task v3 first ([Executable targets](#executable-targets-uses-or-run)
 through [Scheduling and triggers](#scheduling-and-triggers)), then
 [Task source v4](#task-source-v4), then the task-v2-to-v3 migration guide
-(unrelated to v4) and day-to-day operations, which apply to both grammars.
+(unrelated to task source v4) and day-to-day operations, which apply to both
+grammars.
 
 At the top level a task-v3 source can use `name`, exactly one executable
 selector, common step fields, and exactly one trigger source:
@@ -171,11 +172,11 @@ task bytes; workflow targets then create a fresh durable workflow freeze.
 ## Task source v4
 
 Task source v4 (`version: 4`) is a second, additive grammar — task v3
-documents keep parsing, running, and scheduling unchanged. v4 adds typed
-`inputs:` and a single bounded `output:` schema, and makes scheduling
-OPTIONAL instead of required. It removes the `akm:` options bag and the
-`on:` trigger block entirely: every field they used to carry is a top-level
-key instead.
+documents keep parsing, running, and scheduling unchanged. Task source v4
+adds typed `inputs:` and a single bounded `output:` schema, and makes
+scheduling OPTIONAL instead of required. It removes the `akm:` options bag
+and the `on:` trigger block entirely: every field they used to carry is a
+top-level key instead.
 
 ```yaml
 version: 4
@@ -211,10 +212,10 @@ Field notes:
 - `inputs:` declares named, typed parameters. Each declaration is a bounded
   JSON Schema (`type`, `enum`, `properties`, `items`, `minimum`/`maximum`,
   `allOf`/`anyOf`/`oneOf`/`not`, and similar keywords — an unlisted keyword is
-  rejected) plus two v4-only keys: `default` (which must itself satisfy the
-  rest of the declaration) and `required: true` (mutually exclusive with
-  `default`). Declaration names follow the same identifier grammar as
-  workflow parameters.
+  rejected) plus two keys unique to task source v4: `default` (which must
+  itself satisfy the rest of the declaration) and `required: true` (mutually
+  exclusive with `default`). Declaration names follow the same identifier
+  grammar as workflow parameters.
 - `output:` is a single bounded JSON Schema, replacing v3's
   `akm.outputSchema`.
 - `schedule:` is OPTIONAL. Omit it entirely for a manual-only task: the
@@ -226,7 +227,7 @@ Field notes:
   literal `inputs`; those literals are validated against the task's
   `inputs:` declarations at parse time but are not yet delivered to the
   scheduled run — delivery is a later 0.9.x release.
-- Every v3 `akm.*` option is a top-level key in v4 instead: `agent`,
+- Every v3 `akm.*` option is a top-level key in task source v4 instead: `agent`,
   `engine`, `model`, `inference`, `tools`, `timeout`, `redact`, `maxSteps`,
   and `maxRetries`, plus `description`, `when_to_use`, and `tags`.
   `akm.enabled` becomes each schedule entry's own `enabled` rather than one
@@ -238,9 +239,9 @@ Field notes:
   Every other target (`commands/`, `scripts/`, `workflows/`, `run:`) uses
   `inputs:` for typed parameters instead of `with:`.
 - The GitHub-action `uses:` spelling (`owner/repo@ref`) recognized (and
-  rejected before dispatch) by v3 is removed outright in v4 — author a v3
-  source if you need that documented syntax.
-- A v4 task cannot yet be the target of a workflow step's
+  rejected before dispatch) by v3 is removed outright in task source v4 —
+  author a v3 source if you need that documented syntax.
+- A task source v4 document cannot yet be the target of a workflow step's
   `uses: tasks/<ref>` — composing a task source v4 target from a workflow
   arrives in a later 0.9.x release; keep the task at `version: 3` until then.
 

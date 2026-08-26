@@ -8,36 +8,78 @@
  * This module owns the strict source grammar and the typed result consumed by
  * current task execution, scheduler binding, and workflow-source classifiers.
  * Legacy task input is read only by the explicit one-way migration command.
+ *
+ * The bounded-YAML front end and its field helpers (D2-N4) live in
+ * `./source/bounded-document.ts` and are imported below, not redeclared —
+ * `src/tasks/source/task-source-v4.ts` needs the identical front end for the
+ * new grammar, and P1b's §4.3 already established that copying a shared
+ * front end instead of moving it is drift this codebase does not accept.
  */
 
-import fs from "node:fs";
-import path from "node:path";
-import { types as utilTypes } from "node:util";
-import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument } from "yaml";
 import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../commands/command/builtin-action";
 import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { UsageError } from "../core/errors";
 import { checkJsonSchemaDefinition } from "../core/json-schema";
-import { DURATION_UNITS, parseDuration } from "../core/time";
 import type { ExecutionJsonObject, ExecutionJsonValue } from "../execution/json";
-import { EXECUTION_MAX_TIMEOUT_MS } from "../execution/limits";
-import { type StrictRecordSnapshot, snapshotStrictRecord } from "../execution/record";
 import {
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_EXEC_PASS_ENV,
   WORKFLOW_MAX_RETRIES,
 } from "../workflows/resource-limits";
+import {
+  asRecord,
+  assertBoundedTaskYamlDocument,
+  type BoundedDocumentContext,
+  checkKeys,
+  cloneBoundedJson,
+  noGithubExpression,
+  own,
+  parseEnvironment,
+  parseStringArray,
+  parseTimeout,
+  parseTools,
+  presentJsonValue,
+  readBoundedTaskSourceYaml,
+  sourceError,
+  stringField,
+  TASK_V3_MAX_COLLECTION_ITEMS,
+  TASK_V3_MAX_JSON_DEPTH,
+  TASK_V3_MAX_JSON_NODES,
+  TASK_V3_MAX_OBJECT_KEYS,
+  TASK_V3_MAX_SCHEDULES,
+  TASK_V3_MAX_SOURCE_BYTES,
+  TASK_V3_MAX_STRING_BYTES,
+  validateWorkingDirectory,
+  yamlAstError,
+  yamlProblem,
+} from "./source/bounded-document";
+
+// D2-N4 (spec docs/plans/specs/p2a-task-source-v4.md §3.1, §9): these were
+// exported directly from this file before the ./source/bounded-document
+// extraction. Re-exported here at their EXISTING names so no importer or
+// test changes. `yamlAstError`/`yamlProblem` were never part of this file's
+// own public surface before (they were private front-end helpers); they are
+// re-exported here too, alongside every other D2-N4 name, rather than left
+// as an imported-but-unreferenced binding — this file's own logic no longer
+// calls either directly now that `parseTaskV3Yaml` delegates to
+// `readBoundedTaskSourceYaml` (below) instead of carrying its own copy of
+// the front end that called them.
+export {
+  assertBoundedTaskYamlDocument,
+  TASK_V3_MAX_COLLECTION_ITEMS,
+  TASK_V3_MAX_JSON_DEPTH,
+  TASK_V3_MAX_JSON_NODES,
+  TASK_V3_MAX_OBJECT_KEYS,
+  TASK_V3_MAX_SCHEDULES,
+  TASK_V3_MAX_SOURCE_BYTES,
+  TASK_V3_MAX_STRING_BYTES,
+  yamlAstError,
+  yamlProblem,
+};
 
 export const TASK_V3_SCHEMA_VERSION = 3 as const;
 export const TASK_EXTENSION = ".yml";
 export const TASK_NEAR_MISS_EXTENSION = ".yaml";
-export const TASK_V3_MAX_SOURCE_BYTES = 1024 * 1024;
-export const TASK_V3_MAX_JSON_DEPTH = 64;
-export const TASK_V3_MAX_JSON_NODES = 10_000;
-export const TASK_V3_MAX_COLLECTION_ITEMS = 1024;
-export const TASK_V3_MAX_OBJECT_KEYS = 256;
-export const TASK_V3_MAX_STRING_BYTES = 256 * 1024;
-export const TASK_V3_MAX_SCHEDULES = 64;
 
 /** Closed authoring vocabulary. Arbitrary GitHub `{0}` shell templates are not accepted. */
 export const TASK_V3_HOST_SHELLS = ["bash", "sh", "zsh", "pwsh", "powershell", "cmd"] as const;
@@ -148,10 +190,19 @@ export interface ClassifyTaskV3TriggersOptions {
   readonly lineAt?: (path: readonly (string | number)[]) => number | undefined;
 }
 
-interface ParseContext extends ParseTaskV3DocumentOptions {}
+/** This file's own parse context is exactly a `BoundedDocumentContext` (D2-N4). */
+type ParseContext = BoundedDocumentContext;
 
-interface CloneState {
-  nodes: number;
+const SOURCE_LABEL = "task v3 source";
+
+/** Build the shared `BoundedDocumentContext` from this file's own (narrower) options shapes. */
+function ctxFrom(options: ParseTaskV3DocumentOptions): ParseContext {
+  return {
+    filePath: options.filePath,
+    sourceLabel: SOURCE_LABEL,
+    ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
+    ...(options.lineAt ? { lineAt: options.lineAt } : {}),
+  };
 }
 
 const TOP_LEVEL_KEYS = ["version", "name", "uses", "run", "with", "env", "shell", "working-directory", "akm", "on"];
@@ -179,26 +230,6 @@ const GITHUB_REPOSITORY = /^[A-Za-z0-9_.-]+$/;
 const GITHUB_ACTION_PATH_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 const GITHUB_REF_FORBIDDEN = new Set(["~", "^", ":", "?", "*", "[", "\\"]);
 
-function own(value: object, key: string): boolean {
-  return Object.hasOwn(value, key);
-}
-
-function utf8Bytes(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
-
-function wellFormedUnicode(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) return false;
-  }
-  return true;
-}
-
 function hasForbiddenGithubRefCharacter(value: string): boolean {
   for (const character of value) {
     const codePoint = character.codePointAt(0) ?? 0;
@@ -207,228 +238,11 @@ function hasForbiddenGithubRefCharacter(value: string): boolean {
   return false;
 }
 
-function sourceError(ctx: ParseContext, fieldPath: readonly (string | number)[], detail: string): never {
-  const dotted =
-    fieldPath.length === 0
-      ? "$"
-      : fieldPath.reduce<string>(
-          (display, segment) =>
-            typeof segment === "number"
-              ? `${display}[${segment}]`
-              : display.length > 0
-                ? `${display}.${segment}`
-                : segment,
-          "",
-        );
-  const line = ctx.lineAt?.(fieldPath);
-  const location = `${ctx.filePath}${line === undefined ? "" : `:${line}`}`;
-  throw new UsageError(`Invalid task v3 source at ${location}: ${dotted} ${detail}`, "TASK_SOURCE_INVALID");
-}
-
-function cloneBoundedJson(
-  value: unknown,
-  ctx: ParseContext,
-  fieldPath: readonly (string | number)[],
-  state: CloneState,
-  depth = 0,
-  ancestors: ReadonlySet<object> = new Set(),
-): ExecutionJsonValue {
-  state.nodes += 1;
-  if (state.nodes > TASK_V3_MAX_JSON_NODES)
-    sourceError(ctx, fieldPath, `exceeds the ${TASK_V3_MAX_JSON_NODES}-node limit.`);
-  if (depth > TASK_V3_MAX_JSON_DEPTH)
-    sourceError(ctx, fieldPath, `exceeds the nesting depth of ${TASK_V3_MAX_JSON_DEPTH}.`);
-  if (value === null || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) sourceError(ctx, fieldPath, "must be a finite JSON number.");
-    return value;
-  }
-  if (typeof value === "string") {
-    if (!wellFormedUnicode(value)) sourceError(ctx, fieldPath, "must contain well-formed Unicode.");
-    if (utf8Bytes(value) > TASK_V3_MAX_STRING_BYTES) {
-      sourceError(ctx, fieldPath, `exceeds the ${TASK_V3_MAX_STRING_BYTES}-byte string limit.`);
-    }
-    return value;
-  }
-  if (value === undefined) sourceError(ctx, fieldPath, "must be omitted instead of set to undefined.");
-  if (typeof value !== "object") sourceError(ctx, fieldPath, "must be JSON-safe.");
-  if (utilTypes.isProxy(value)) sourceError(ctx, fieldPath, "must not be a Proxy object.");
-  if (ancestors.has(value)) sourceError(ctx, fieldPath, "must not contain a cycle.");
-  const nextAncestors = new Set(ancestors).add(value);
-
-  if (Array.isArray(value)) {
-    if (Object.getPrototypeOf(value) !== Array.prototype)
-      sourceError(ctx, fieldPath, "array must use the standard prototype.");
-    const rawLength = Reflect.getOwnPropertyDescriptor(value, "length")?.value;
-    if (
-      typeof rawLength !== "number" ||
-      !Number.isInteger(rawLength) ||
-      rawLength < 0 ||
-      rawLength > TASK_V3_MAX_COLLECTION_ITEMS
-    ) {
-      sourceError(ctx, fieldPath, `array exceeds the ${TASK_V3_MAX_COLLECTION_ITEMS}-item limit.`);
-    }
-    const length = rawLength as number;
-    const keys = Reflect.ownKeys(value);
-    if (keys.length !== length + 1) sourceError(ctx, fieldPath, "array must be dense and contain no extra fields.");
-    const result: ExecutionJsonValue[] = [];
-    for (let index = 0; index < length; index += 1) {
-      const descriptor = Reflect.getOwnPropertyDescriptor(value, String(index));
-      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
-        sourceError(ctx, [...fieldPath, index], "array item must be an enumerable data property in a dense array.");
-      }
-      result.push(cloneBoundedJson(descriptor.value, ctx, [...fieldPath, index], state, depth + 1, nextAncestors));
-    }
-    return Object.freeze(result);
-  }
-
-  let snapshot: StrictRecordSnapshot;
-  try {
-    snapshot = snapshotStrictRecord(value, fieldPath.map(String).join(".") || "task source");
-  } catch (cause) {
-    sourceError(ctx, fieldPath, cause instanceof Error ? cause.message : String(cause));
-  }
-  const entries = Object.entries(snapshot);
-  if (entries.length > TASK_V3_MAX_OBJECT_KEYS) {
-    sourceError(ctx, fieldPath, `mapping exceeds the ${TASK_V3_MAX_OBJECT_KEYS}-key limit.`);
-  }
-  const result = Object.create(null) as Record<string, ExecutionJsonValue>;
-  for (const [key, child] of entries) {
-    if (!wellFormedUnicode(key)) sourceError(ctx, fieldPath, "contains a mapping key with malformed Unicode.");
-    if (utf8Bytes(key) > TASK_V3_MAX_STRING_BYTES) {
-      sourceError(
-        ctx,
-        fieldPath,
-        `contains a mapping key exceeding the ${TASK_V3_MAX_STRING_BYTES}-byte string limit.`,
-      );
-    }
-    Object.defineProperty(result, key, {
-      value: cloneBoundedJson(child, ctx, [...fieldPath, key], state, depth + 1, nextAncestors),
-      enumerable: true,
-      configurable: false,
-      writable: false,
-    });
-  }
-  return Object.freeze(result);
-}
-
-function asRecord(
-  value: ExecutionJsonValue,
-  ctx: ParseContext,
-  fieldPath: readonly (string | number)[],
-): ExecutionJsonObject {
-  if (value === null || Array.isArray(value) || typeof value !== "object")
-    sourceError(ctx, fieldPath, "must be a mapping.");
-  return value as ExecutionJsonObject;
-}
-
-function checkKeys(
-  value: ExecutionJsonObject,
-  allowed: readonly string[],
-  ctx: ParseContext,
-  fieldPath: readonly (string | number)[],
-): void {
-  const allow = new Set(allowed);
-  const firstUnknown = Object.keys(value).find((key) => !allow.has(key));
-  if (firstUnknown !== undefined) sourceError(ctx, [...fieldPath, firstUnknown], "is an unsupported field.");
-}
-
-function presentJsonValue(
-  value: ExecutionJsonValue | undefined,
-  ctx: ParseContext,
-  fieldPath: readonly (string | number)[],
-): ExecutionJsonValue {
-  if (value === undefined) sourceError(ctx, fieldPath, "must be omitted instead of set to undefined.");
-  return value;
-}
-
-function stringField(
-  value: unknown,
-  ctx: ParseContext,
-  fieldPath: readonly (string | number)[],
-  options: { nonempty?: boolean; nullable?: boolean } = {},
-): string | null {
-  if (value === null && options.nullable) return null;
-  if (typeof value !== "string")
-    sourceError(ctx, fieldPath, options.nullable ? "must be a string or null." : "must be a string.");
-  if (options.nonempty && value.trim().length === 0) sourceError(ctx, fieldPath, "must be a non-empty string.");
-  return value;
-}
-
-function noGithubExpression(value: string, ctx: ParseContext, fieldPath: readonly (string | number)[]): void {
-  if (value.includes("${{")) sourceError(ctx, fieldPath, "contains an unsupported GitHub expression.");
-}
-
-function parseEnvironment(value: ExecutionJsonValue, ctx: ParseContext): TaskV3Environment {
-  const environment = asRecord(value, ctx, ["env"]);
-  for (const [key, child] of Object.entries(environment)) {
-    if (!WORKFLOW_ENV_VAR_NAME_PATTERN.test(key))
-      sourceError(ctx, ["env", key], "has an invalid environment variable name.");
-    if (typeof child !== "string" && typeof child !== "number" && typeof child !== "boolean") {
-      sourceError(ctx, ["env", key], "must be a string, finite number, or boolean.");
-    }
-  }
-  return environment as TaskV3Environment;
-}
-
 function nullableSelector(value: unknown, ctx: ParseContext, key: string): string | null {
   const selector = stringField(value, ctx, ["akm", key], { nullable: true });
   if (selector !== null && selector.trim().length === 0)
     sourceError(ctx, ["akm", key], "must be null or a non-empty string.");
   return selector;
-}
-
-function parseTimeout(value: unknown, ctx: ParseContext): string | number | null {
-  if (value === null) return null;
-  if (typeof value === "string" && value.trim() !== value) {
-    sourceError(ctx, ["akm", "timeout"], "must not contain surrounding whitespace.");
-  }
-  const milliseconds = typeof value === "string" ? parseDuration(value, DURATION_UNITS) : value;
-  if (
-    milliseconds === null ||
-    typeof milliseconds !== "number" ||
-    !Number.isSafeInteger(milliseconds) ||
-    milliseconds < 0 ||
-    milliseconds > EXECUTION_MAX_TIMEOUT_MS
-  ) {
-    sourceError(
-      ctx,
-      ["akm", "timeout"],
-      `must be null, 0 through ${EXECUTION_MAX_TIMEOUT_MS} milliseconds, or a common duration such as 20m.`,
-    );
-  }
-  return value as string | number;
-}
-
-function parseStringArray(
-  value: unknown,
-  ctx: ParseContext,
-  fieldPath: readonly (string | number)[],
-  options: { max?: number; pattern?: RegExp } = {},
-): readonly string[] {
-  if (!Array.isArray(value)) sourceError(ctx, fieldPath, "must be an array of strings.");
-  if (options.max !== undefined && value.length > options.max)
-    sourceError(ctx, fieldPath, `accepts at most ${options.max} items.`);
-  const strings: string[] = [];
-  for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "string" || entry.length === 0)
-      sourceError(ctx, [...fieldPath, index], "must be a non-empty string.");
-    if (options.pattern && !options.pattern.test(entry))
-      sourceError(ctx, [...fieldPath, index], "has an invalid value.");
-    strings.push(entry);
-  }
-  return Object.freeze(strings);
-}
-
-function parseTools(value: ExecutionJsonValue, ctx: ParseContext): TaskV3AkmOptions["tools"] {
-  if (value === null || typeof value === "string") return value;
-  if (Array.isArray(value)) {
-    if (value.some((entry) => typeof entry !== "string"))
-      sourceError(ctx, ["akm", "tools"], "array values must be strings.");
-    return value as readonly string[];
-  }
-  if (typeof value === "object") return value as ExecutionJsonObject;
-  sourceError(ctx, ["akm", "tools"], "must be a string, string array, mapping, or null.");
 }
 
 function parseAkm(value: ExecutionJsonValue, ctx: ParseContext): Readonly<TaskV3AkmOptions> {
@@ -667,54 +481,15 @@ function parseTaskV3TriggerFields(input: ExecutionJsonObject, ctx: ParseContext)
  * document grammar.
  */
 export function classifyTaskV3Triggers(value: unknown, options: ClassifyTaskV3TriggersOptions): TaskV3TriggerPlan {
-  const ctx: ParseContext = options;
+  const ctx = ctxFrom(options);
   const cloned = cloneBoundedJson(value, ctx, [], { nodes: 0 });
   const input = asRecord(cloned, ctx, []);
   checkKeys(input, ["akm", "on"], ctx, []);
   return parseTaskV3TriggerFields(input, ctx).triggers;
 }
 
-function validateWorkingDirectory(value: string, ctx: ParseContext): void {
-  if (
-    value.trim().length === 0 ||
-    value.includes("\0") ||
-    path.posix.isAbsolute(value.replaceAll("\\", "/")) ||
-    /^[A-Za-z]:[\\/]/.test(value) ||
-    value.startsWith("\\\\")
-  ) {
-    sourceError(ctx, ["working-directory"], "must be a non-empty relative path contained by the workspace root.");
-  }
-  const segments = value.replaceAll("\\", "/").split("/");
-  if (segments.some((segment) => segment === ".." || segment.length === 0)) {
-    sourceError(ctx, ["working-directory"], "must not contain empty or escaping path segments.");
-  }
-  if (!ctx.workspaceRoot) {
-    sourceError(ctx, ["working-directory"], "requires a workspace root so physical containment can be verified.");
-  }
-  let realRoot: string;
-  let realCandidate: string;
-  try {
-    realRoot = fs.realpathSync(ctx.workspaceRoot);
-    const candidate = path.resolve(realRoot, value);
-    const stat = fs.statSync(candidate);
-    if (!stat.isDirectory()) sourceError(ctx, ["working-directory"], "must resolve to a directory.");
-    realCandidate = fs.realpathSync(candidate);
-  } catch (cause) {
-    if (cause instanceof UsageError) throw cause;
-    sourceError(
-      ctx,
-      ["working-directory"],
-      `cannot be physically verified: ${cause instanceof Error ? cause.message : String(cause)}.`,
-    );
-  }
-  const relative = path.relative(realRoot, realCandidate);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    sourceError(ctx, ["working-directory"], "resolves outside the workspace root and is not physically contained.");
-  }
-}
-
 export function parseTaskV3Document(value: unknown, options: ParseTaskV3DocumentOptions): TaskV3SourceDocument {
-  const ctx: ParseContext = options;
+  const ctx = ctxFrom(options);
   const cloned = cloneBoundedJson(value, ctx, [], { nodes: 0 });
   const input = asRecord(cloned, ctx, []);
   if (!own(input, "version")) sourceError(ctx, ["version"], "is required and must be 3.");
@@ -792,94 +567,6 @@ export function parseTaskV3Document(value: unknown, options: ParseTaskV3Document
   });
 }
 
-function yamlProblem(message: string): string {
-  return message.split("\n")[0]?.trim() || "invalid YAML";
-}
-
-interface BoundedTaskYamlOptions {
-  readonly filePath: string;
-  readonly sourceLabel: string;
-  readonly lineCounter?: LineCounter;
-}
-
-function yamlAstError(options: BoundedTaskYamlOptions, node: unknown, detail: string): never {
-  const range = (node as { range?: readonly number[] | null } | null | undefined)?.range;
-  const line = range && options.lineCounter ? options.lineCounter.linePos(range[0] ?? 0).line : undefined;
-  throw new UsageError(
-    `Invalid ${options.sourceLabel} at ${options.filePath}${line === undefined ? "" : `:${line}`}: ${detail}`,
-    "INVALID_FLAG_VALUE",
-  );
-}
-
-/**
- * Bound and close the YAML AST before `toJS` can allocate or recurse through
- * it. This is shared by the v3 parser and the explicit v2 migration reader.
- */
-export function assertBoundedTaskYamlDocument(
-  document: ReturnType<typeof parseDocument>,
-  options: BoundedTaskYamlOptions,
-): void {
-  const stack: Array<{ node: unknown; depth: number }> = [{ node: document.contents, depth: 0 }];
-  let nodes = 0;
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (!current) break;
-    const node = current.node;
-    if (node === null || node === undefined) continue;
-    nodes += 1;
-    if (nodes > TASK_V3_MAX_JSON_NODES) {
-      yamlAstError(options, node, `YAML exceeds the ${TASK_V3_MAX_JSON_NODES}-node limit.`);
-    }
-    if (current.depth > TASK_V3_MAX_JSON_DEPTH) {
-      yamlAstError(options, node, `YAML exceeds the nesting depth of ${TASK_V3_MAX_JSON_DEPTH}.`);
-    }
-    if (isAlias(node)) yamlAstError(options, node, "YAML aliases are unsupported.");
-    if ((node as { anchor?: unknown }).anchor !== undefined) {
-      yamlAstError(options, node, "YAML anchors are unsupported.");
-    }
-    if ((node as { tag?: unknown }).tag) {
-      yamlAstError(options, node, "custom or explicit YAML tags are unsupported.");
-    }
-    if (isScalar(node)) continue;
-    if (isSeq(node)) {
-      if (node.items.length > TASK_V3_MAX_COLLECTION_ITEMS) {
-        yamlAstError(options, node, `YAML sequence exceeds the ${TASK_V3_MAX_COLLECTION_ITEMS}-item limit.`);
-      }
-      for (let index = node.items.length - 1; index >= 0; index -= 1) {
-        stack.push({ node: node.items[index], depth: current.depth + 1 });
-      }
-      continue;
-    }
-    if (isMap(node)) {
-      if (node.items.length > TASK_V3_MAX_OBJECT_KEYS) {
-        yamlAstError(options, node, `YAML mapping exceeds the ${TASK_V3_MAX_OBJECT_KEYS}-key limit.`);
-      }
-      for (let index = node.items.length - 1; index >= 0; index -= 1) {
-        const pair = node.items[index];
-        if (!pair) yamlAstError(options, node, "sparse YAML mappings are unsupported.");
-        if (!isScalar(pair.key) || typeof pair.key.value !== "string") {
-          yamlAstError(options, pair.key, "non-string YAML mapping keys are unsupported.");
-        }
-        if (!wellFormedUnicode(pair.key.value)) {
-          yamlAstError(options, pair.key, "YAML mapping key must contain well-formed Unicode.");
-        }
-        if (utf8Bytes(pair.key.value) > TASK_V3_MAX_STRING_BYTES) {
-          yamlAstError(
-            options,
-            pair.key,
-            `YAML mapping key exceeds the ${TASK_V3_MAX_STRING_BYTES}-byte string limit.`,
-          );
-        }
-        if (pair.key.value === "<<") yamlAstError(options, pair.key, "YAML merge keys are unsupported.");
-        stack.push({ node: pair.value, depth: current.depth + 1 });
-        stack.push({ node: pair.key, depth: current.depth + 1 });
-      }
-      continue;
-    }
-    yamlAstError(options, node, "unsupported YAML node kind.");
-  }
-}
-
 /** Preserve actionable classified hints when a parser failure becomes a diagnostic. */
 export function taskV3SourceErrorDetail(cause: unknown): string {
   if (!(cause instanceof Error)) return String(cause);
@@ -890,60 +577,20 @@ export function taskV3SourceErrorDetail(cause: unknown): string {
   return hint ? `${cause.message} ${hint}` : cause.message;
 }
 
-/** Parse hostile YAML without aliases/tags/merges, then enter the canonical object parser. */
+/**
+ * Parse hostile YAML without aliases/tags/merges, then enter the canonical
+ * object parser. The bounded-YAML front end itself (D2-N4) is
+ * `readBoundedTaskSourceYaml` (`./source/bounded-document.ts`) — this is now
+ * a thin wrapper passing `sourceLabel: "task v3 source"`, byte-identical in
+ * output to the inline front end this file carried before the D2-N4 move
+ * (`readBoundedTaskSourceYaml`'s throws omit their `code` argument and rely
+ * on `UsageError`'s `"INVALID_FLAG_VALUE"` default instead of stating it,
+ * which is the same code this file's own throws stated explicitly — see
+ * `tests/tasks/bounded-document.test.ts`'s byte-equality check against this
+ * function's production output).
+ */
 export function parseTaskV3Yaml(input: ParseTaskV3YamlInput): TaskV3SourceDocument {
-  if (typeof input.yaml !== "string") {
-    throw new UsageError(`Invalid task v3 source at ${input.filePath}: source must be a string.`, "INVALID_FLAG_VALUE");
-  }
-  if (utf8Bytes(input.yaml) > TASK_V3_MAX_SOURCE_BYTES) {
-    throw new UsageError(
-      `Invalid task v3 source at ${input.filePath}: source exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) resource limit.`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  const lineCounter = new LineCounter();
-  let document: ReturnType<typeof parseDocument>;
-  try {
-    document = parseDocument(input.yaml, { lineCounter, uniqueKeys: true });
-  } catch (cause) {
-    throw new UsageError(
-      `Invalid task v3 source at ${input.filePath}: YAML parsing failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  const [problem] = document.errors;
-  if (problem) {
-    const offset = Array.isArray(problem.pos) ? problem.pos[0] : 0;
-    throw new UsageError(
-      `Invalid task v3 source at ${input.filePath}:${lineCounter.linePos(offset).line}: ${yamlProblem(problem.message)}`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  const [warning] = document.warnings;
-  if (warning) {
-    throw new UsageError(
-      `Invalid task v3 source at ${input.filePath}: unsupported YAML construct: ${yamlProblem(warning.message)}`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  assertBoundedTaskYamlDocument(document, { filePath: input.filePath, sourceLabel: "task v3 source", lineCounter });
-  let root: unknown;
-  try {
-    root = document.toJS({ maxAliasCount: 0 });
-  } catch (cause) {
-    throw new UsageError(
-      `Invalid task v3 source at ${input.filePath}: YAML expansion failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  const lineAt = (fieldPath: readonly (string | number)[]): number | undefined => {
-    for (let depth = fieldPath.length; depth >= 0; depth -= 1) {
-      const node = depth === 0 ? document.contents : document.getIn(fieldPath.slice(0, depth), true);
-      const range = (node as { range?: [number, number, number] | null } | null | undefined)?.range;
-      if (range) return lineCounter.linePos(range[0]).line;
-    }
-    return undefined;
-  };
+  const { root, lineAt } = readBoundedTaskSourceYaml(input, { sourceLabel: SOURCE_LABEL });
   return parseTaskV3Document(root, {
     filePath: input.filePath,
     ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),

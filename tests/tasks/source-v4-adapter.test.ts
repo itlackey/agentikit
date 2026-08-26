@@ -65,11 +65,8 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-// @ts-expect-error P2a red-phase: PreparableTaskDocument lands in Implement
 import type { PreparableTaskDocument } from "../../src/tasks/prepare/prepared-execution";
-// @ts-expect-error P2a red-phase: everything from this not-yet-existing module lands in Implement
 import * as ProjectV4Module from "../../src/tasks/source/project-v4";
-// @ts-expect-error P2a red-phase: everything from this not-yet-existing module lands in Implement
 import * as TaskSourceV4Module from "../../src/tasks/source/task-source-v4";
 
 const { projectTaskSourceV4 } = ProjectV4Module;
@@ -275,7 +272,7 @@ describe("projectTaskSourceV4 — every tests/fixtures/execution-contracts/tasks
     MANIFEST_FIXTURES.map((fixture) => [fixture.id, fixture] as const),
   )("%s projects target (uses/run, with, shell, working-directory) identically (spec §3.5)", (_id, fixture) => {
     const { expectation, projected } = loadCase(fixture);
-    expect(projected.target, fixture.id).toEqual(expectation.target);
+    expect(projected.target, fixture.id).toEqual(expectation.target as never);
   });
 
   test.each(
@@ -295,7 +292,7 @@ describe("projectTaskSourceV4 — every tests/fixtures/execution-contracts/tasks
   )("%s projects name, env, source.path, and the version: 3 discriminant literal (spec §3.5)", (_id, fixture) => {
     const { expectation, projected, document } = loadCase(fixture);
     expect(projected.name, fixture.id).toBe(expectation.name);
-    expect(projected.env, fixture.id).toEqual(expectation.env);
+    expect(projected.env, fixture.id).toEqual(expectation.env as never);
     expect(projected.source, fixture.id).toEqual({ path: document.source.path });
     expect(projected.version, fixture.id).toBe(3);
   });

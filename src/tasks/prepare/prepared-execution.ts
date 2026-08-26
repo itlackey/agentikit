@@ -24,8 +24,8 @@ import type { TaskV3HostShell, TaskV3SourceDocument } from "../source-v3";
  * The prepare seam's input, named independently of the source grammar
  * version (P2a, spec docs/plans/specs/p2a-task-source-v4.md §3.1/§3.5):
  * `prepareTaskV3Execution` (`./prepare.ts`) is unmodified in P2a and still
- * consumes exactly `TaskV3SourceDocument`'s shape, but a v4 source projects
- * into that SAME shape via `src/tasks/source/project-v4.ts`'s
+ * consumes exactly `TaskV3SourceDocument`'s shape, but a task source v4
+ * document projects into that SAME shape via `src/tasks/source/project-v4.ts`'s
  * `projectTaskSourceV4()` (its `version` field is the literal discriminant
  * `3`, a recorded wart — P4 retires this alias when it renames the
  * underlying type). Type alias only; no behavior change.

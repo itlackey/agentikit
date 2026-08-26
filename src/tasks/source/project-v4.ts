@@ -12,8 +12,11 @@
  * `TaskV3SourceDocument` that is not version-bound,
  * `src/tasks/prepare/prepared-execution.ts`) — no YAML string is fabricated
  * and nothing is re-parsed (the P1b §4.3 invariant this phase carries
- * forward: a grep for a synthetic `version: 3\nuses:` string must return
- * zero hits in `src/`).
+ * forward: no file under `src/` may spell out a fabricated task-v3 header
+ * line immediately followed by a synthetic executable-selector line — see
+ * `tests/workflows/direct-script-typed.test.ts`'s source-text scan, which
+ * this file's own prose is careful not to trip by literally reproducing
+ * that two-line needle).
  *
  * The projection is DELIBERATELY LOSSY relative to the parsed document:
  *
@@ -33,16 +36,17 @@
  *     recorded wart (§3.5); P4 retires it with the type rename.
  */
 
+import type { PreparableTaskDocument } from "../prepare/prepared-execution";
 import type { TaskV3AkmOptions } from "../source-v3";
 import { TASK_V3_SCHEMA_VERSION } from "../source-v3";
-import type { PreparableTaskDocument } from "../prepare/prepared-execution";
 import type { TaskSourceV4Document } from "./task-source-v4";
 
 /**
- * Map every top-level v4 execution control and D2-N7 survivor into v3's
- * `akm.*` shape, one field at a time (never a whole-object copy, so a field
- * v4 does not represent — `inputs`, per-binding `enabled` — can never leak
- * in by accident). Returns `undefined` when nothing maps, matching v3's own
+ * Map every top-level task source v4 execution control and D2-N7 survivor
+ * into v3's `akm.*` shape, one field at a time (never a whole-object copy,
+ * so a field task source v4 does not represent — `inputs`, per-binding
+ * `enabled` — can never leak in by accident). Returns `undefined` when
+ * nothing maps, matching v3's own
  * convention of omitting the `akm` key entirely rather than emitting an
  * always-present empty object (`source-v3.ts:789`).
  */

@@ -621,7 +621,14 @@ export const main = defineCommand({
 
 const MAIN_TOP_LEVEL_ARGS = main.args as ArgsDef;
 
-function isTaskRunWithId(argv: readonly string[]): boolean {
+/**
+ * F-5 (spec docs/plans/specs/p2a-task-source-v4.md §6): exported so
+ * `akm task run`'s input-flags coverage can pin that an undeclared,
+ * per-task dynamic flag (e.g. `--scope all`) does not change this
+ * classification — it parses only `args.id` off the declared args and
+ * tolerates extra tokens (citty's non-strict `parseArgs`).
+ */
+export function isTaskRunWithId(argv: readonly string[]): boolean {
   const args = argv.slice(2);
   const commandIndex = findCittyTopLevelCommandIndex(args, MAIN_TOP_LEVEL_ARGS);
   const command = commandIndex >= 0 ? args[commandIndex] : undefined;

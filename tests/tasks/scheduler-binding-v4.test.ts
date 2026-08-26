@@ -11,15 +11,6 @@
  * `compileTaskSchedulerBindings`'s `enabled: schedule.enabled ?? input.enabled`.
  * `tests/tasks/scheduler-binding.test.ts` must stay byte-unchanged (F-4), so
  * this v4-shaped coverage lands as a new, separate file.
- *
- * RED today: `SchedulerSourceSchedule` has no `enabled` field and
- * `compileTaskSchedulerBindings` hardcodes `enabled: input.enabled` for every
- * compiled binding (scheduler-binding.ts:182) — a per-entry override is
- * silently ignored. Constructing a schedule entry with `enabled` therefore
- * needs one `@ts-expect-error` pin (an excess-property check on an object
- * literal assigned to the `SchedulerSourceSchedule[]`-typed `schedules`
- * field), and the compiled binding's `enabled` is wrong until Implement adds
- * the field and the `??` fallback.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -37,7 +28,6 @@ describe("compileTaskSchedulerBindings — per-entry enabled overrides the docum
       enabled: true,
       schedules: [
         { cron: "0 6 * * *", source: "schedule[0].cron", ordinal: 0 },
-        // @ts-expect-error P2a red-phase: SchedulerSourceSchedule.enabled lands in Implement (src/tasks/scheduler-binding.ts, D2-N5)
         { cron: "30 18 * * 1-5", source: "schedule[1].cron", ordinal: 1, enabled: false },
       ],
     };
@@ -53,7 +43,6 @@ describe("compileTaskSchedulerBindings — per-entry enabled overrides the docum
       enabled: false,
       schedules: [
         { cron: "0 6 * * *", source: "schedule[0].cron", ordinal: 0 },
-        // @ts-expect-error P2a red-phase: SchedulerSourceSchedule.enabled lands in Implement (src/tasks/scheduler-binding.ts, D2-N5)
         { cron: "30 18 * * 1-5", source: "schedule[1].cron", ordinal: 1, enabled: true },
       ],
     };

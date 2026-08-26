@@ -11,6 +11,7 @@ import { makeBundleRef } from "../core/asset/asset-ref";
 import type { AkmConfig } from "../core/config/config-types";
 import { UsageError } from "../core/errors";
 import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../core/recognition-util";
+import { warn } from "../core/warn";
 import {
   captureGuardedDirectoryManifest,
   captureGuardedExecutionSource,
@@ -50,7 +51,9 @@ import {
   schedulerNativeArtifactKey,
   schedulerNativeBindingId,
 } from "./scheduler-binding";
-import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "./source-v3";
+import { parseTaskSource } from "./source/parse-task-source";
+import { projectTaskSourceV4 } from "./source/project-v4";
+import { taskV3SourceErrorDetail } from "./source-v3";
 
 export interface SchedulerSyncPlanInput {
   readonly sourceRoot: string;
@@ -477,11 +480,22 @@ async function compileTaskSources(
         );
       }
       physicalOwners.set(physicalIdentity, sourcePath);
-      const document = parseTaskV3Yaml({
+      // Version-routing seam (spec docs/plans/specs/p2a-task-source-v4.md
+      // §3.6, §5.2): route through the union. On the task source v4 arm,
+      // project BEFORE prepareTaskV3Execution so projectability is checked
+      // identically to v3's own parse — but build the scheduler bindings
+      // from the ORIGINAL task source v4 document, not the projection,
+      // which deliberately drops per-entry `enabled` and
+      // `schedule[i].inputs` (D2-N5/B-38, project-v4.ts). A task source v4
+      // document has no document-level `akm.enabled`, so `enabled: true` is
+      // passed at the document level and every entry's own `enabled`
+      // (always present, defaulted at parse time) decides.
+      const parsed = parseTaskSource({
         yaml: guarded.content,
         filePath: sourcePath,
         workspaceRoot: input.sourceRoot,
       });
+      const document = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
       const qualifiedRef = makeBundleRef(input.bundleName, conceptId);
       await prepareTaskV3Execution(document, {
         taskId: id,
@@ -501,16 +515,35 @@ async function compileTaskSources(
             : loadAdapterExecutionSource(ref, "persona", guardedOptions);
         },
       });
+      const relSource = toPosix(path.relative(input.sourceRoot, sourcePath));
       const sourceBindings = compileTaskSchedulerBindings({
         id,
         qualifiedRef,
         ...(input.bundleTarget ? { bundleTarget: input.bundleTarget } : {}),
-        enabled: document.akm?.enabled !== false,
-        schedules: document.triggers.schedules.map((schedule) => ({
-          ...schedule,
-          source: `${toPosix(path.relative(input.sourceRoot, sourcePath))}:${schedule.source}`,
-        })),
+        enabled: parsed.version === 4 ? true : parsed.v3.akm?.enabled !== false,
+        schedules:
+          parsed.version === 4
+            ? parsed.v4.schedule.map((schedule) => ({
+                cron: schedule.cron,
+                ordinal: schedule.ordinal,
+                enabled: schedule.enabled,
+                source: `${relSource}:${schedule.source}`,
+              }))
+            : parsed.v3.triggers.schedules.map((schedule) => ({
+                ...schedule,
+                source: `${relSource}:${schedule.source}`,
+              })),
       });
+      // B-38: `schedule[i].inputs` is validated at parse time
+      // (task-source-v4.ts) but not delivered anywhere in P2a (§0 non-goal;
+      // P2b delivers). Warn ONCE per task — not once per schedule[i] entry —
+      // when any entry declares them, so the gap is visible without spamming
+      // a multi-entry schedule.
+      if (parsed.version === 4 && parsed.v4.schedule.some((schedule) => Object.keys(schedule.inputs).length > 0)) {
+        warn(
+          `Task "${id}" declares schedule[].inputs, which are validated but not yet delivered to the scheduled run.`,
+        );
+      }
       for (const binding of sourceBindings) {
         parseSchedule(binding.cron, input.backend);
         out.push(binding);

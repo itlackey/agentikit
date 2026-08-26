@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://itlackey.github.io/akm/schemas/akm-task.json",
   "title": "AKM Task (v3 or task source v4)",
-  "description": "A task source document is either a strict task-v3 object (exactly one executable selector and exactly one scheduling source; GitHub action refs are recognized source syntax but are not executed by AKM 0.9.2) or a task source v4 object (typed inputs:, a single bounded output: schema, and OPTIONAL scheduling — a v4 document with no schedule: is valid and manual-only). Published as a two-arm oneOf at the document root, keyed on version.",
+  "description": "A task source document is either a strict task-v3 object (exactly one executable selector and exactly one scheduling source; GitHub action refs are recognized source syntax but are not executed by AKM 0.9.2) or a task source v4 object (typed inputs:, a single bounded output: schema, and OPTIONAL scheduling — a task source v4 document with no schedule: is valid and manual-only). Published as a two-arm oneOf at the document root, keyed on version.",
   "x-akm-runtimeConstraints": {
     "authoritativeParser": ["src/tasks/source-v3.ts", "src/tasks/source/task-source-v4.ts"],
     "maxSourceUtf8Bytes": 1048576,
@@ -383,7 +383,7 @@
       }
     },
     "inputDeclaration": {
-      "description": "One inputs: declaration: a bounded JSON Schema. At the declaration ROOT, required is v4's own boolean flag, not JSON Schema's required array; default must itself satisfy the remaining schema; default + required:true together is invalid (D2-N3). Nested schemas (properties/items/allOf/anyOf/oneOf/not) keep ordinary JSON-Schema meaning via outputSchemaDefinition. Closed to exactly this key set — an unlisted keyword (e.g. pattern) is rejected here even though the runtime subset accepts it inside output:, because a task input declaration is intentionally narrower.",
+      "description": "One inputs: declaration: a bounded JSON Schema. At the declaration ROOT, required is task source v4's own boolean flag, not JSON Schema's required array; default must itself satisfy the remaining schema; default + required:true together is invalid (D2-N3). Nested schemas (properties/items/allOf/anyOf/oneOf/not) keep ordinary JSON-Schema meaning via outputSchemaDefinition. Closed to exactly this key set — an unlisted keyword (e.g. pattern) is rejected here even though the runtime subset accepts it inside output:, because a task input declaration is intentionally narrower.",
       "type": "object",
       "additionalProperties": false,
       "properties": {
@@ -418,7 +418,7 @@
           "additionalProperties": { "$ref": "#/definitions/outputSchemaDefinition" }
         },
         "required": {
-          "description": "Declaration-ROOT required is the v4 boolean flag, not a JSON-Schema required array (D2-N3).",
+          "description": "Declaration-ROOT required is task source v4's own boolean flag, not a JSON-Schema required array (D2-N3).",
           "type": "boolean"
         },
         "items": { "$ref": "#/definitions/outputSchemaDefinition" },

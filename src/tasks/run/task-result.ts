@@ -50,12 +50,13 @@
  */
 
 import type { SpawnFn } from "../../core/subprocess";
+import type { InputFlag } from "../../execution/input-contract";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import type { RunAgentOptions } from "../../integrations/agent";
 import type { DispatchLoweredExecutionOptions } from "../../integrations/agent/execution-lowering";
 import type { chatCompletion } from "../../llm/client";
 import type { runWorkflowSteps } from "../../workflows/exec/run-workflow";
-import type { ExecutionProvenanceContext } from "../model/invocation";
+import type { ExecutionProvenanceContext, TaskInvocation } from "../model/invocation";
 import type { PreparedTaskV3Execution, PreparedTaskV3Script, PreparedTaskV3Shell } from "../prepare/prepared-execution";
 import { persistRunLog } from "./task-log";
 
@@ -137,6 +138,29 @@ export interface RunTaskOptions {
   provenance?: ExecutionProvenanceContext;
   /** Runs after immutable preparation/history reservation and before native dispatch (tests). */
   beforeNativeDispatch?: (task: PreparedTaskV3Shell | PreparedTaskV3Script) => void;
+  /**
+   * P2a Lane C (spec docs/plans/specs/p2a-task-source-v4.md §5.1): raw,
+   * exact-name `akm task run` input flags captured by `tasks-cli.ts`'s Stage
+   * 1 (`parseTaskInputFlags`). `load-task.ts`'s Stage 2 materializes these
+   * against the task's contract (task source v4: its `inputs:` declarations;
+   * v3: the empty contract, so ANY flag on a v3 task is `UNKNOWN_FLAG`) and attaches
+   * the result to the constructed `TaskInvocation.inputs`. Optional — every
+   * existing caller and test call site keeps today's behavior untouched (the
+   * same pattern P1b used for `provenance`). P2a validates only: nothing
+   * downstream of `loadPreparedTask` reads this back (spec §0).
+   */
+  inputFlags?: readonly InputFlag[];
+  /**
+   * TEST-ONLY. Runs once, with the `TaskInvocation` Stage 2 constructs,
+   * before dispatch — never read by production code. `TaskInvocation`
+   * (`src/tasks/model/invocation.ts`) is otherwise unobservable from outside
+   * `load-task.ts` in P2a (the model-purity ratchet,
+   * tests/tasks/parse-v3-adapter.test.ts, keeps it a pure, IO-free type that
+   * nothing production reads back either), so this is the seam
+   * tests/integration/commands/tasks-input-flags.test.ts uses to assert
+   * against the real constructed value rather than a bespoke side channel.
+   */
+  captureTaskInvocation?: (invocation: TaskInvocation) => void;
 }
 
 /** D8 (spec §5.3): the result-vocabulary projection of a freshly prepared execution. */

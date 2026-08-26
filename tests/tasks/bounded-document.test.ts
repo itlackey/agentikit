@@ -44,7 +44,6 @@ import path from "node:path";
 import ts from "typescript";
 import { LineCounter, parseDocument } from "yaml";
 import { UsageError } from "../../src/core/errors";
-// @ts-expect-error P2a red-phase: everything from this not-yet-existing module lands in Implement
 import * as BoundedDocumentModule from "../../src/tasks/source/bounded-document";
 import { assertBoundedTaskYamlDocument, parseTaskV3Yaml } from "../../src/tasks/source-v3";
 

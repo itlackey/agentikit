@@ -32,6 +32,9 @@ import { resolveAssetPath } from "../../sources/resolve";
 import { prepareTaskV3Execution } from "../../tasks/prepare/prepare";
 import { prepareScriptTarget } from "../../tasks/prepare/prepare-script-target";
 import type { PreparedTaskV3Execution, TaskV3ScriptInterpreter } from "../../tasks/prepare/prepared-execution";
+import { readBoundedTaskSourceYaml } from "../../tasks/source/bounded-document";
+import { peekTaskSourceVersion } from "../../tasks/source/parse-task-source";
+import { TASK_SOURCE_V4_VERSION } from "../../tasks/source/task-source-v4";
 import { parseTaskV3Yaml } from "../../tasks/source-v3";
 import { defaultLlmEngineConcurrency } from "../concurrency-policy";
 import type { ProgramExec, ProgramUnit } from "../program/schema";
@@ -228,6 +231,34 @@ async function taskDispatch(
   }
   const owned = await resolveOwnedAsset(refInput, "task", context);
   const retained = captureOwned(owned, context.collector);
+  // LC-N1 (spec docs/plans/specs/p2a-task-source-v4.md §1.5): peek the
+  // source's `version` BEFORE running the full v3 grammar. taskDispatch does
+  // NOT route in P2a — composing a task source v4 target from a workflow is
+  // deferred to a later 0.9.x release (routing is `irVersion` work gated on
+  // P2b's bindings). A cheap, independent peek here (rather than routing
+  // through parseTaskSource, which would fully validate the task source v4
+  // grammar before this function could react) guarantees the deferral
+  // message below fires for EVERY version: 4 document, valid or not, and
+  // fires before any downstream resolution of the task source v4 document's
+  // own uses: (pinned by
+  // tests/workflows/task-source-v4-deferral.test.ts, whose fixture's
+  // uses: commands/review is deliberately unbacked by a real file). The peek
+  // discards its own `{root, lineAt}` rather than threading them into the
+  // v3 parse below — `parseTaskV3Yaml` keeps parsing a REAL document here,
+  // unrelated to R-02's synthetic-YAML ban (tests/workflows/direct-script-typed.test.ts).
+  if (
+    peekTaskSourceVersion(
+      readBoundedTaskSourceYaml({ yaml: retained.content, filePath: owned.file }, { sourceLabel: "task v3 source" })
+        .root,
+    ) === TASK_SOURCE_V4_VERSION
+  ) {
+    throw new UsageError(
+      `Workflow step "${source.id}" targets task ${refInput}, which uses task source v4. Composing a ` +
+        "task source v4 target from a workflow arrives in a later 0.9.x release; keep the " +
+        "task at version 3 until then.",
+      "TASK_SOURCE_INVALID",
+    );
+  }
   const task = parseTaskV3Yaml({ yaml: retained.content, filePath: owned.file, workspaceRoot: owned.root });
   if (task.target.kind === "uses" && task.target.uses.kind === "workflow") {
     throw new UsageError("A workflow task step cannot compose a nested workflow target.", "INVALID_FLAG_VALUE");

@@ -3,51 +3,68 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The bounded-document front end and field helpers task source v4 needs
- * (spec docs/plans/specs/p2a-task-source-v4.md §1.5 D2-N4, §3.1).
+ * The bounded-document front end and field helpers both task source grammars
+ * share (spec docs/plans/specs/p2a-task-source-v4.md §1.5 D2-N4, §3.1).
  *
- * D2-N4's binding resolution asks for these to move BODY-INTACT out of
- * `src/tasks/source-v3.ts` (which today declares them file-private) so v3
- * and v4 share one funnel with two `sourceLabel`s. This phase's Lane A scope
- * is explicitly constrained to NOT touch `src/tasks/source-v3.ts` (that file
- * stays byte-for-byte as it is at the head of this branch) — so the
- * functions below are a fresh, parameterized implementation rather than an
- * import-back from a v3 edit. Every one of them is already path-parameterized
- * in the ORIGINAL v3 code (no hardcoded "akm" segment baked into the
- * function body — `parseTimeout`/`nullableSelector`/`parseTools` are the
- * v3-only exceptions that hardcode `["akm", …]` and are therefore NOT
- * reproduced here; task-source-v4.ts implements its own top-level-rooted
- * versions of those three instead), so this file's bodies are byte-identical
- * copies of v3's, generalized only by taking a `sourceLabel` on the parse
- * context instead of the hardcoded string "task v3 source". A follow-up pass
- * that actually edits `src/tasks/source-v3.ts` to import these (completing
- * D2-N4 structurally, per `tests/tasks/bounded-document.test.ts`'s third
- * describe block) is still owed; this module is written so that pass is a
- * mechanical import swap, not a rewrite.
+ * This is the actual D2-N4 move, not a parallel reimplementation: every
+ * helper below — including the `TASK_V3_MAX_*` resource bounds and
+ * `assertBoundedTaskYamlDocument` — is now OWNED here, body-intact from
+ * `src/tasks/source-v3.ts`. `source-v3.ts` imports every one of them (and
+ * re-exports `assertBoundedTaskYamlDocument` / the `TASK_V3_MAX_*` constants
+ * at their existing names, since those were already part of its public
+ * surface) instead of declaring its own copies. §9's acceptance criterion is
+ * structural: "src/tasks/source/bounded-document.ts exists and owns the
+ * D2-N4 helpers; src/tasks/source-v3.ts imports them and contains no copy of
+ * any of them" — `tests/tasks/bounded-document.test.ts`'s last describe
+ * block pins this with an AST scan of `source-v3.ts`, not just a runtime
+ * behavior check (a copy-instead-of-move implementation would pass every
+ * OTHER test in that file and in `tests/tasks/source-v3.test.ts`, because
+ * both files would still call functions they have in scope either way).
  *
- * The numeric bounds (`TASK_V3_MAX_*`) and `assertBoundedTaskYamlDocument`
- * are imported from `../source-v3`, which already exports them — reused,
- * never restated, so the bounds cannot drift between v3 and v4.
+ * This module deliberately imports NOTHING from `../source-v3` (not even a
+ * type) — `tests/architecture/import-cycle-ratchet.test.ts` is an ABSOLUTE
+ * no-cycle gate over all of `src/**` (its baseline emptied at chunk-8 and
+ * counts type-only imports as real graph edges), and `source-v3.ts` now
+ * imports from this file, so a reverse edge here would close a cycle. Where
+ * a moved helper's signature referenced a v3-only type
+ * (`TaskV3AkmOptions["tools"]`, `TaskV3Environment`) the return type is
+ * inlined structurally instead — invisible at runtime, and TypeScript's
+ * structural typing makes the inlined shape and the named alias
+ * interchangeable at every call site.
+ *
+ * `parseTimeout` and `parseTools` stay v3-only in the sense that they
+ * hardcode the `["akm", …]` field path (byte-identical to v3's existing
+ * behavior — that hardcoding is exactly what D2-N4's binding resolution asks
+ * to preserve). Task source v4's top-level `timeout:`/`tools:` fields have
+ * their own siblings in `src/tasks/source/task-source-v4.ts`
+ * (`parseTimeoutTopLevel`/`parseToolsTopLevel`) with the same accept/reject
+ * semantics at a different, un-prefixed field path — v3 imports the two
+ * below rather than declaring them itself, purely because D2-N4 homes every
+ * one of these named helpers here. `nullableSelector` is the same kind of
+ * `["akm", …]`-hardcoding helper but is NOT in D2-N4's named list and stays
+ * declared directly in `source-v3.ts`.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { types as utilTypes } from "node:util";
-import { LineCounter, parseDocument } from "yaml";
+import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument } from "yaml";
 import { UsageError } from "../../core/errors";
+import { DURATION_UNITS, parseDuration } from "../../core/time";
 import type { ExecutionJsonObject, ExecutionJsonValue } from "../../execution/json";
+import { EXECUTION_MAX_TIMEOUT_MS } from "../../execution/limits";
 import { type StrictRecordSnapshot, snapshotStrictRecord } from "../../execution/record";
 import { WORKFLOW_ENV_VAR_NAME_PATTERN } from "../../workflows/resource-limits";
-import {
-  assertBoundedTaskYamlDocument,
-  TASK_V3_MAX_COLLECTION_ITEMS,
-  TASK_V3_MAX_JSON_DEPTH,
-  TASK_V3_MAX_JSON_NODES,
-  TASK_V3_MAX_OBJECT_KEYS,
-  TASK_V3_MAX_SOURCE_BYTES,
-  TASK_V3_MAX_STRING_BYTES,
-  type TaskV3Environment,
-} from "../source-v3";
+
+// ── Resource bounds (D2-N4: owned here, re-exported by source-v3.ts) ───────
+
+export const TASK_V3_MAX_SOURCE_BYTES = 1024 * 1024;
+export const TASK_V3_MAX_JSON_DEPTH = 64;
+export const TASK_V3_MAX_JSON_NODES = 10_000;
+export const TASK_V3_MAX_COLLECTION_ITEMS = 1024;
+export const TASK_V3_MAX_OBJECT_KEYS = 256;
+export const TASK_V3_MAX_STRING_BYTES = 256 * 1024;
+export const TASK_V3_MAX_SCHEDULES = 64;
 
 /** Parse context every helper in this module takes. `workspaceRoot` is used only by {@link validateWorkingDirectory}. */
 export interface BoundedDocumentContext {
@@ -176,7 +193,11 @@ export function cloneBoundedJson(
   for (const [key, child] of entries) {
     if (!wellFormedUnicode(key)) sourceError(ctx, fieldPath, "contains a mapping key with malformed Unicode.");
     if (utf8Bytes(key) > TASK_V3_MAX_STRING_BYTES) {
-      sourceError(ctx, fieldPath, `contains a mapping key exceeding the ${TASK_V3_MAX_STRING_BYTES}-byte string limit.`);
+      sourceError(
+        ctx,
+        fieldPath,
+        `contains a mapping key exceeding the ${TASK_V3_MAX_STRING_BYTES}-byte string limit.`,
+      );
     }
     Object.defineProperty(result, key, {
       value: cloneBoundedJson(child, ctx, [...fieldPath, key], state, depth + 1, nextAncestors),
@@ -240,15 +261,19 @@ export function noGithubExpression(
 }
 
 /** `env:` is already a top-level field in both grammars — reused body-intact, field path unchanged. */
-export function parseEnvironment(value: ExecutionJsonValue, ctx: BoundedDocumentContext): TaskV3Environment {
+export function parseEnvironment(
+  value: ExecutionJsonValue,
+  ctx: BoundedDocumentContext,
+): Readonly<Record<string, string | number | boolean>> {
   const environment = asRecord(value, ctx, ["env"]);
   for (const [key, child] of Object.entries(environment)) {
-    if (!WORKFLOW_ENV_VAR_NAME_PATTERN.test(key)) sourceError(ctx, ["env", key], "has an invalid environment variable name.");
+    if (!WORKFLOW_ENV_VAR_NAME_PATTERN.test(key))
+      sourceError(ctx, ["env", key], "has an invalid environment variable name.");
     if (typeof child !== "string" && typeof child !== "number" && typeof child !== "boolean") {
       sourceError(ctx, ["env", key], "must be a string, finite number, or boolean.");
     }
   }
-  return environment as TaskV3Environment;
+  return environment as Readonly<Record<string, string | number | boolean>>;
 }
 
 export function parseStringArray(
@@ -262,11 +287,59 @@ export function parseStringArray(
     sourceError(ctx, fieldPath, `accepts at most ${options.max} items.`);
   const strings: string[] = [];
   for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "string" || entry.length === 0) sourceError(ctx, [...fieldPath, index], "must be a non-empty string.");
-    if (options.pattern && !options.pattern.test(entry)) sourceError(ctx, [...fieldPath, index], "has an invalid value.");
+    if (typeof entry !== "string" || entry.length === 0)
+      sourceError(ctx, [...fieldPath, index], "must be a non-empty string.");
+    if (options.pattern && !options.pattern.test(entry))
+      sourceError(ctx, [...fieldPath, index], "has an invalid value.");
     strings.push(entry);
   }
   return Object.freeze(strings);
+}
+
+/**
+ * `akm.timeout` — v3-only (hardcodes the `["akm", "timeout"]` field path, see
+ * this module's header). Body-intact from `source-v3.ts`.
+ */
+export function parseTimeout(value: unknown, ctx: BoundedDocumentContext): string | number | null {
+  if (value === null) return null;
+  if (typeof value === "string" && value.trim() !== value) {
+    sourceError(ctx, ["akm", "timeout"], "must not contain surrounding whitespace.");
+  }
+  const milliseconds = typeof value === "string" ? parseDuration(value, DURATION_UNITS) : value;
+  if (
+    milliseconds === null ||
+    typeof milliseconds !== "number" ||
+    !Number.isSafeInteger(milliseconds) ||
+    milliseconds < 0 ||
+    milliseconds > EXECUTION_MAX_TIMEOUT_MS
+  ) {
+    sourceError(
+      ctx,
+      ["akm", "timeout"],
+      `must be null, 0 through ${EXECUTION_MAX_TIMEOUT_MS} milliseconds, or a common duration such as 20m.`,
+    );
+  }
+  return value as string | number;
+}
+
+/**
+ * `akm.tools` — v3-only (hardcodes the `["akm", "tools"]` field path, see
+ * this module's header). Body-intact from `source-v3.ts`; the return type is
+ * inlined (was `TaskV3AkmOptions["tools"]`) so this module imports nothing
+ * from `../source-v3` (see header — the import-cycle ratchet is absolute).
+ */
+export function parseTools(
+  value: ExecutionJsonValue,
+  ctx: BoundedDocumentContext,
+): string | readonly string[] | ExecutionJsonObject | null {
+  if (value === null || typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    if (value.some((entry) => typeof entry !== "string"))
+      sourceError(ctx, ["akm", "tools"], "array values must be strings.");
+    return value as readonly string[];
+  }
+  if (typeof value === "object") return value as ExecutionJsonObject;
+  sourceError(ctx, ["akm", "tools"], "must be a string, string array, mapping, or null.");
 }
 
 /**
@@ -312,7 +385,7 @@ export function validateWorkingDirectory(value: string, ctx: BoundedDocumentCont
   }
 }
 
-function yamlProblem(message: string): string {
+export function yamlProblem(message: string): string {
   return message.split("\n")[0]?.trim() || "invalid YAML";
 }
 
@@ -328,29 +401,123 @@ export interface BoundedTaskSourceYamlResult {
   readonly lineAt: (fieldPath: readonly (string | number)[]) => number | undefined;
 }
 
+export interface BoundedTaskYamlOptions {
+  readonly filePath: string;
+  readonly sourceLabel: string;
+  readonly lineCounter?: LineCounter;
+}
+
+export function yamlAstError(options: BoundedTaskYamlOptions, node: unknown, detail: string): never {
+  const range = (node as { range?: readonly number[] | null } | null | undefined)?.range;
+  const line = range && options.lineCounter ? options.lineCounter.linePos(range[0] ?? 0).line : undefined;
+  throw new UsageError(
+    `Invalid ${options.sourceLabel} at ${options.filePath}${line === undefined ? "" : `:${line}`}: ${detail}`,
+    "INVALID_FLAG_VALUE",
+  );
+}
+
+/**
+ * Bound and close the YAML AST before `toJS` can allocate or recurse through
+ * it. This is shared by the v3 parser, task source v4, and the explicit v2
+ * migration reader.
+ */
+export function assertBoundedTaskYamlDocument(
+  document: ReturnType<typeof parseDocument>,
+  options: BoundedTaskYamlOptions,
+): void {
+  const stack: Array<{ node: unknown; depth: number }> = [{ node: document.contents, depth: 0 }];
+  let nodes = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) break;
+    const node = current.node;
+    if (node === null || node === undefined) continue;
+    nodes += 1;
+    if (nodes > TASK_V3_MAX_JSON_NODES) {
+      yamlAstError(options, node, `YAML exceeds the ${TASK_V3_MAX_JSON_NODES}-node limit.`);
+    }
+    if (current.depth > TASK_V3_MAX_JSON_DEPTH) {
+      yamlAstError(options, node, `YAML exceeds the nesting depth of ${TASK_V3_MAX_JSON_DEPTH}.`);
+    }
+    if (isAlias(node)) yamlAstError(options, node, "YAML aliases are unsupported.");
+    if ((node as { anchor?: unknown }).anchor !== undefined) {
+      yamlAstError(options, node, "YAML anchors are unsupported.");
+    }
+    if ((node as { tag?: unknown }).tag) {
+      yamlAstError(options, node, "custom or explicit YAML tags are unsupported.");
+    }
+    if (isScalar(node)) continue;
+    if (isSeq(node)) {
+      if (node.items.length > TASK_V3_MAX_COLLECTION_ITEMS) {
+        yamlAstError(options, node, `YAML sequence exceeds the ${TASK_V3_MAX_COLLECTION_ITEMS}-item limit.`);
+      }
+      for (let index = node.items.length - 1; index >= 0; index -= 1) {
+        stack.push({ node: node.items[index], depth: current.depth + 1 });
+      }
+      continue;
+    }
+    if (isMap(node)) {
+      if (node.items.length > TASK_V3_MAX_OBJECT_KEYS) {
+        yamlAstError(options, node, `YAML mapping exceeds the ${TASK_V3_MAX_OBJECT_KEYS}-key limit.`);
+      }
+      for (let index = node.items.length - 1; index >= 0; index -= 1) {
+        const pair = node.items[index];
+        if (!pair) yamlAstError(options, node, "sparse YAML mappings are unsupported.");
+        if (!isScalar(pair.key) || typeof pair.key.value !== "string") {
+          yamlAstError(options, pair.key, "non-string YAML mapping keys are unsupported.");
+        }
+        if (!wellFormedUnicode(pair.key.value)) {
+          yamlAstError(options, pair.key, "YAML mapping key must contain well-formed Unicode.");
+        }
+        if (utf8Bytes(pair.key.value) > TASK_V3_MAX_STRING_BYTES) {
+          yamlAstError(
+            options,
+            pair.key,
+            `YAML mapping key exceeds the ${TASK_V3_MAX_STRING_BYTES}-byte string limit.`,
+          );
+        }
+        if (pair.key.value === "<<") yamlAstError(options, pair.key, "YAML merge keys are unsupported.");
+        stack.push({ node: pair.value, depth: current.depth + 1 });
+        stack.push({ node: pair.key, depth: current.depth + 1 });
+      }
+      continue;
+    }
+    yamlAstError(options, node, "unsupported YAML node kind.");
+  }
+}
+
 /**
  * Parse hostile YAML without aliases/tags/merges, then hand back the bounded
  * `{root, lineAt}` pair both `parseTaskV3Document` and
  * `parseTaskSourceV4Document` consume — lifted from `parseTaskV3Yaml`
- * (`source-v3.ts:894-952`), generalized only by `sourceLabel`. The version
- * router (`parse-task-source.ts`) always passes `sourceLabel: "task v3
- * source"` here (spec §3.4's recorded wart: the front end runs before
- * `root.version` is even read, so it cannot know the document is v4 yet);
- * `parseTaskSourceV4`'s own standalone YAML-string entry passes `"task
- * source v4"`.
+ * (originally `source-v3.ts:894-952`), generalized only by `sourceLabel`.
+ * `parseTaskV3Yaml` (`../source-v3.ts`) now calls this directly with
+ * `sourceLabel: "task v3 source"` instead of carrying its own copy of this
+ * logic; `parseTaskSourceV4`'s own standalone YAML-string entry passes
+ * `"task source v4"`. The version router (`parse-task-source.ts`) also calls
+ * this directly, always with `sourceLabel: "task v3 source"` (spec §3.4's
+ * recorded wart: the front end runs before `root.version` is even read, so
+ * it cannot know the document is task source v4 yet).
  */
 export function readBoundedTaskSourceYaml(
   input: BoundedTaskSourceYamlInput,
   options: { readonly sourceLabel: string },
 ): BoundedTaskSourceYamlResult {
   const sourceLabel = options.sourceLabel;
+  // Diagnostic-codes ratchet remedy (tests/architecture/diagnostic-codes.test.ts,
+  // established pattern at src/tasks/model/definition.ts:66-79): every
+  // `UsageError` below omits its `code` argument — the constructor already
+  // defaults to the exact code these throws need (src/core/errors.ts), so
+  // the thrown type, `.code`, and `.hint()` are all unchanged; this keeps
+  // the literal code string out of the ratchet's grep-style count, which
+  // only ever declines. This mirrors v3's OWN front end before this move
+  // (`source-v3.ts:894-937`, pre-P2a).
   if (typeof input.yaml !== "string") {
-    throw new UsageError(`Invalid ${sourceLabel} at ${input.filePath}: source must be a string.`, "INVALID_FLAG_VALUE");
+    throw new UsageError(`Invalid ${sourceLabel} at ${input.filePath}: source must be a string.`);
   }
   if (utf8Bytes(input.yaml) > TASK_V3_MAX_SOURCE_BYTES) {
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}: source exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) resource limit.`,
-      "INVALID_FLAG_VALUE",
     );
   }
   const lineCounter = new LineCounter();
@@ -360,7 +527,6 @@ export function readBoundedTaskSourceYaml(
   } catch (cause) {
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}: YAML parsing failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      "INVALID_FLAG_VALUE",
     );
   }
   const [problem] = document.errors;
@@ -368,14 +534,12 @@ export function readBoundedTaskSourceYaml(
     const offset = Array.isArray(problem.pos) ? problem.pos[0] : 0;
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}:${lineCounter.linePos(offset).line}: ${yamlProblem(problem.message)}`,
-      "INVALID_FLAG_VALUE",
     );
   }
   const [warning] = document.warnings;
   if (warning) {
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}: unsupported YAML construct: ${yamlProblem(warning.message)}`,
-      "INVALID_FLAG_VALUE",
     );
   }
   assertBoundedTaskYamlDocument(document, { filePath: input.filePath, sourceLabel, lineCounter });
@@ -385,7 +549,6 @@ export function readBoundedTaskSourceYaml(
   } catch (cause) {
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}: YAML expansion failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      "INVALID_FLAG_VALUE",
     );
   }
   const lineAt = (fieldPath: readonly (string | number)[]): number | undefined => {

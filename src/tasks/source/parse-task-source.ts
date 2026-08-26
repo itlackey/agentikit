@@ -57,7 +57,7 @@ export function peekTaskSourceVersion(root: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
-/** Parse task source YAML, routing to the v3 or v4 grammar per D2-N2's table. */
+/** Parse task source YAML, routing to the task v3 or task source v4 grammar per D2-N2's table. */
 export function parseTaskSource(input: ParseTaskSourceInput): ParsedTaskSource {
   const { root, lineAt } = readBoundedTaskSourceYaml(input, { sourceLabel: "task v3 source" });
   const documentOptions = {

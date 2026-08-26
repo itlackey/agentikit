@@ -31,8 +31,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
+import { parseTaskSource } from "../../../tasks/source/parse-task-source";
 import {
-  parseTaskV3Yaml,
   TASK_EXTENSION,
   TASK_NEAR_MISS_EXTENSION,
   taskExtensionDetail,
@@ -96,7 +96,7 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
       continue;
     }
     try {
-      parseTaskV3Yaml({ yaml: raw, filePath: relPath, workspaceRoot: c.root });
+      parseTaskSource({ yaml: raw, filePath: relPath, workspaceRoot: c.root });
     } catch (cause) {
       diagnostics.push({
         file: relPath,
@@ -161,7 +161,7 @@ export const akmTaskAdapter: BundleAdapter = {
         continue;
       }
       try {
-        parseTaskV3Yaml({ yaml: raw, filePath: entry.name, workspaceRoot: root });
+        parseTaskSource({ yaml: raw, filePath: entry.name, workspaceRoot: root });
         return true;
       } catch {
         // Continue probing the remaining top-level .yml files.

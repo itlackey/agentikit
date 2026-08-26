@@ -20,13 +20,22 @@ import { loadConfig } from "../../core/config/config";
 import type { AkmConfig } from "../../core/config/config-types";
 import { NotFoundError } from "../../core/errors";
 import { resolveWriteTarget } from "../../core/write-source";
+import {
+  applyInputDefaults,
+  type InputContract,
+  materializeInputFlags,
+  type TaskInputBinding,
+  validateInputs,
+} from "../../execution/input-contract";
 import { resolveAdapterConceptOwner } from "../../indexer/lookup/adapter-concept-owner";
 import { resolveAssetPath } from "../../sources/resolve";
+import type { TaskInvocation } from "../model/invocation";
 import { prepareTaskV3Execution } from "../prepare/prepare";
 import type { PreparedTaskV3Execution } from "../prepare/prepared-execution";
 import { scheduledTaskContextEnv } from "../scheduler-invocation";
 import { parseTaskSource } from "../source/parse-task-source";
 import { projectTaskSourceV4 } from "../source/project-v4";
+import { TASK_INPUT_DIAGNOSTICS } from "../source/task-input-diagnostics";
 import { validateTaskConceptId, validateTaskId } from "../task-id";
 import type { RunTaskOptions } from "./task-result";
 
@@ -59,8 +68,9 @@ export async function loadPreparedTask(id: string, options: RunTaskOptions): Pro
   const filePath = owner.path;
   const yaml = fs.readFileSync(filePath, "utf8");
   // Version-routing seam (spec docs/plans/specs/p2a-task-source-v4.md §3.6):
-  // a v4 source projects into the same PreparableTaskDocument shape v3
-  // already produces, so every line below is unchanged for both versions.
+  // a task source v4 document projects into the same PreparableTaskDocument
+  // shape v3 already produces, so every line below is unchanged for both
+  // versions.
   const parsed = parseTaskSource({ yaml, filePath, workspaceRoot: bundleDir });
   const source = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
   const requiresCommandConfig =
@@ -68,6 +78,37 @@ export async function loadPreparedTask(id: string, options: RunTaskOptions): Pro
     (source.target.uses.kind === "builtin-command" || source.target.uses.kind === "command");
   const config = requiresCommandConfig ? loadConfig() : CONFIG_FREE_TASK_RUNTIME;
   const bundleName = options.bundleName ?? config.defaultBundle ?? DEFAULT_BUNDLE_NAME;
+  // P2a Lane C, Stage 2 (spec docs/plans/specs/p2a-task-source-v4.md §5.1):
+  // materialize akm task run's raw input flags (Stage 1,
+  // src/commands/tasks/tasks-cli.ts) against the task's own contract —
+  // task source v4: its inputs: declarations; v3: the empty contract, so
+  // ANY input flag on a v3 task fails UNKNOWN_FLAG (there is nothing
+  // declared to match against).
+  // materializeInputFlags already validates the flag-supplied values; a
+  // required input satisfied only by its own default (never supplied as a
+  // flag) needs the SEPARATE validateInputs call below, run after defaults
+  // are applied — materializeInputFlags returns {} immediately for zero
+  // flags, before ever checking `required` (spec §5.1, input-contract.ts's
+  // own header). Nothing downstream consumes `inputs` in P2a (spec §0); a
+  // valid flag set therefore changes nothing about `source`/`config`/dispatch
+  // below, only what gets attached to the TaskInvocation this function
+  // constructs.
+  const inputContract: InputContract = parsed.version === 4 ? (parsed.v4.inputs ?? {}) : {};
+  const materializedInputs = materializeInputFlags(inputContract, options.inputFlags ?? [], TASK_INPUT_DIAGNOSTICS);
+  const defaultedInputs = applyInputDefaults(inputContract, materializedInputs);
+  const requiredErrors = validateInputs(inputContract, defaultedInputs);
+  if (requiredErrors.length > 0) throw TASK_INPUT_DIAGNOSTICS.contractViolation(requiredErrors);
+  const inputBindings: readonly TaskInputBinding[] = Object.entries(defaultedInputs).map(([name, value]) =>
+    Object.freeze({ kind: "literal" as const, name, value }),
+  );
+  if (options.captureTaskInvocation) {
+    const invocation: TaskInvocation = Object.freeze({
+      taskRef: makeBundleRef(bundleName, taskConceptId),
+      caller: Object.freeze({ kind: "cli" as const }),
+      ...(inputBindings.length > 0 ? { inputs: Object.freeze(inputBindings) } : {}),
+    });
+    options.captureTaskInvocation(invocation);
+  }
   return prepareTaskV3Execution(source, {
     taskId: id,
     taskRef: makeBundleRef(bundleName, taskConceptId),

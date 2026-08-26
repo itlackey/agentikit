@@ -72,7 +72,6 @@ import {
   TASK_SOURCE_V4_SCHEDULE_KEYS,
   TASK_SOURCE_V4_TOP_LEVEL_KEYS,
   TASK_SOURCE_V4_VERSION,
-  // @ts-expect-error P2a red-phase: src/tasks/source/task-source-v4.ts lands in Implement (whole module is new; tsc reports the diagnostic on the module-specifier line directly below)
 } from "../../src/tasks/source/task-source-v4";
 import {
   classifyTaskV3Uses,
