@@ -240,8 +240,9 @@ export function rejectNulInArgv(command: readonly string[]): void {
   }
 }
 
-const GITHUB_LOCATOR_OWNER_REPO_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const GITHUB_LOCATOR_REVISION_RE = /^[A-Za-z0-9._/-]+$/;
+const GITHUB_LOCATOR_OWNER_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const GITHUB_LOCATOR_REPOSITORY_SEGMENT_RE = /^[A-Za-z0-9_.-]+$/;
+const GITHUB_LOCATOR_REVISION_FORBIDDEN = new Set(["~", "^", ":", "?", "*", "[", "\\"]);
 
 /**
  * Minimal GitHub-locator SHAPE detection (P1a §4.3), local to this file and
@@ -251,6 +252,20 @@ const GITHUB_LOCATOR_REVISION_RE = /^[A-Za-z0-9._/-]+$/;
  * `unsupported-uses-target` for a value that `classifyTargetRef` rejects
  * (it owns no locator grammar at all), preserving R-04(c) until P4 removes
  * the row entirely.
+ *
+ * The owner segment intentionally stays looser than source-v3.ts's
+ * `GITHUB_OWNER` (no 39-char cap, `.`/`_` allowed): a value the old grammar
+ * rejected on owner shape now yields `remote-action-acquisition-out-of-scope`
+ * instead of `unsupported-uses-target`, which is the one-directional slack
+ * Accepted deviation A-1 (spec §4.3) authorizes. The repository segment and
+ * revision character sets, however, mirror source-v3.ts's `GITHUB_REPOSITORY`
+ * and `validGithubRevision` (`:178`, `:497-520`) exactly: an earlier version
+ * of this function used a strict allowlist for both, which rejected shapes
+ * the old grammar accepted (`owner/.github@v1`, `owner/_repo@v1`,
+ * `owner/-repo@v1`, `owner/repo@v1.0+meta`, `owner/repo@%40`) — the OPPOSITE,
+ * unauthorized direction (a CONFIRMED code-review finding) — so those two
+ * segments are checked by forbidden-character/charset rules matching the old
+ * grammar instead.
  */
 function isGithubLocatorShape(value: string): boolean {
   const at = value.lastIndexOf("@");
@@ -261,16 +276,46 @@ function isGithubLocatorShape(value: string): boolean {
   if (segments.length < 2 || segments.some((segment) => segment.length === 0)) return false;
   const [owner, repository] = segments;
   if (!owner || !repository) return false;
-  if (!GITHUB_LOCATOR_OWNER_REPO_SEGMENT_RE.test(owner) || !GITHUB_LOCATOR_OWNER_REPO_SEGMENT_RE.test(repository)) {
+  if (!GITHUB_LOCATOR_OWNER_SEGMENT_RE.test(owner)) return false;
+  if (!GITHUB_LOCATOR_REPOSITORY_SEGMENT_RE.test(repository) || repository === "." || repository === "..") {
     return false;
   }
 
-  const revision = value.slice(at + 1);
-  if (revision.length === 0 || !GITHUB_LOCATOR_REVISION_RE.test(revision)) return false;
-  if (revision.includes("..") || revision.startsWith("/") || revision.endsWith("/")) return false;
-  if (revision.split("/").some((segment) => segment.startsWith(".") || segment.endsWith(".lock"))) return false;
+  return isGithubLocatorRevisionShape(value.slice(at + 1));
+}
 
-  return true;
+/** Revision-shape check mirroring `validGithubRevision` (source-v3.ts:497-520) by forbidden-character set rather than a strict allowlist. */
+function isGithubLocatorRevisionShape(revision: string): boolean {
+  if (
+    revision.length === 0 ||
+    hasForbiddenGithubLocatorRevisionCharacter(revision) ||
+    revision.startsWith("/") ||
+    revision.endsWith("/") ||
+    revision.includes("..") ||
+    revision.includes("@{") ||
+    revision.includes("@")
+  ) {
+    return false;
+  }
+  return revision
+    .split("/")
+    .every(
+      (segment) =>
+        segment.length > 0 &&
+        segment !== "." &&
+        segment !== ".." &&
+        !segment.startsWith(".") &&
+        !segment.endsWith(".") &&
+        !segment.endsWith(".lock"),
+    );
+}
+
+function hasForbiddenGithubLocatorRevisionCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x20 || codePoint === 0x7f || GITHUB_LOCATOR_REVISION_FORBIDDEN.has(character)) return true;
+  }
+  return false;
 }
 
 function usesFailure(value: string, cause: unknown): WorkflowSourceSemanticError {

@@ -70,10 +70,9 @@ export function classifyWorkflowSourceUses(value: string): WorkflowSourceUsesTar
   if (value === "akm/command") {
     return Object.freeze({ kind: "builtin-command" as const, ref: "akm/command" as const });
   }
-  // classifyTargetRef's ClassifiedTargetRef.kind is intentionally widened
-  // (see target-ref.ts) so a test's plain-string comparison type-checks; the
-  // cast below re-narrows to this module's stricter WorkflowSourceUsesTarget
-  // arm, which is sound because classifyTargetRef only ever actually
-  // produces one of the four TargetRefKind literals.
-  return classifyTargetRef(value) as WorkflowSourceUsesTarget;
+  // classifyTargetRef's return type is structurally identical to this
+  // module's `{ kind: "command" | "script" | "task" | "workflow"; ref:
+  // string }` union arm, so it is assignable to WorkflowSourceUsesTarget
+  // without a cast.
+  return classifyTargetRef(value);
 }

@@ -71,8 +71,9 @@ The accepted 0.9.2 subset is deliberately closed:
   `name`, `with`, `env`, `shell`, and contained `working-directory`.
 - A `run` accepts only token-safe local command tokens.
   Shell expansion and operators are unsupported and rejected, even when a host shell is named.
-- `uses` delegates to the task-v3 ref classifier. `akm/command`, command,
-  script, and task composition are local targets.
+- `uses` is classified as a canonical asset ref (`commands/`, `scripts/`,
+  `tasks/`, `workflows/`), plus the `akm/command` builtin. `akm/command`,
+  command, script, and task composition are local targets.
   Local actions and Docker actions are unsupported and rejected (including `./` and `docker://`); remote actions are rejected
   because acquisition is out of scope; nested workflows are unsupported.
 - `with:` on a **task-composed** step (`uses: tasks/<ref>`) is rejected when

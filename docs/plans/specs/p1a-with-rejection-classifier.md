@@ -307,8 +307,23 @@ those values before reaching the locator branch.
 `semantics.ts`, shape only:**
 
 - exactly one `@`, at index > 0 (`at = value.lastIndexOf("@"); at > 0 && at === value.indexOf("@")`);
-- the locator `value.slice(0, at)` splits on `/` into **≥ 2** non-empty segments, and the first two segments each match `/^[A-Za-z0-9][A-Za-z0-9._-]*$/`;
-- the revision `value.slice(at + 1)` is non-empty, matches `/^[A-Za-z0-9._/-]+$/`, does not contain `..`, does not start or end with `/`, and no `/`-separated revision segment starts with `.` or ends with `.lock`.
+- the locator `value.slice(0, at)` splits on `/` into **≥ 2** non-empty
+  segments; the first segment (owner) matches `/^[A-Za-z0-9][A-Za-z0-9._-]*$/`
+  — looser than `src/tasks/source-v3.ts`'s `GITHUB_OWNER` (no 39-char cap,
+  `.`/`_` allowed), which is the one-directional slack Accepted deviation A-1
+  covers; the second segment (repository) matches `/^[A-Za-z0-9_.-]+$/` and is
+  neither `.` nor `..` — this mirrors `GITHUB_REPOSITORY`
+  (`src/tasks/source-v3.ts:178`) exactly, not the owner regex (see the Review
+  log: an initial draft applied the owner regex to both segments, which
+  rejected old-valid repository shapes);
+- the revision `value.slice(at + 1)` is non-empty, contains none of
+  `~ ^ : ? * [ \` or a C0/DEL control character, does not start or end with
+  `/`, does not contain `..` or `@{` or a literal `@`, and no `/`-separated
+  revision segment is `.`/`..`, starts with `.`, or ends with `.`/`.lock` —
+  this mirrors `validGithubRevision` (`src/tasks/source-v3.ts:497-520`) by
+  forbidden-character set, not a strict charset allowlist (see the Review
+  log: an initial draft used a strict `/^[A-Za-z0-9._/-]+$/` allowlist, which
+  rejected old-valid revisions such as `v1.0+meta`/`%40`).
 
 This is deliberately **not** the full grammar
 (`src/tasks/source-v3.ts:562-588`) and must not import it.
@@ -579,3 +594,42 @@ The new test file carries the MPL-2.0 header
 ---
 
 ## Review log
+
+- **2026-08-26 — `isGithubLocatorShape` repository/revision charsets
+  regressed 5 values in the direction A-1 does NOT authorize; fixed in
+  code, not merely documented.** A code-review pass on Lane B diffed
+  pre-P1a classification (`classifyTaskV3Uses` + the old `semantics.ts`
+  delegator) against post-P1a `isGithubLocatorShape` over a 50-value
+  corpus. The function as first implemented matched §4.3's prescribed
+  regexes verbatim (`GITHUB_LOCATOR_OWNER_REPO_SEGMENT_RE` applied to
+  *both* the owner and repository segments; a strict
+  `/^[A-Za-z0-9._/-]+$/` revision allowlist) — but that prescribed rule
+  itself was narrower than the grammar it replaces for two of its three
+  components: `owner/.github@v1`, `owner/_repo@v1`, `owner/-repo@v1`
+  (old `GITHUB_REPOSITORY = /^[A-Za-z0-9_.-]+$/` allows a leading
+  `.`/`_`/`-` in the repository segment; the shared segment regex
+  required a leading alphanumeric) and `owner/repo@v1.0+meta`,
+  `owner/repo@%40` (old `validGithubRevision` only forbids
+  `~ ^ : ? * [ \` and `..`/`@`; the strict allowlist rejects `+` and
+  `%`). All five were `remote-action-acquisition-out-of-scope` before
+  P1a and had regressed to `unsupported-uses-target` — the opposite of
+  what Accepted deviation A-1 authorizes (A-1 covers only
+  previously-`unsupported-uses-target` values becoming
+  `remote-action-acquisition-out-of-scope`, never the reverse). Fixed by
+  giving the repository segment its own `/^[A-Za-z0-9_.-]+$/` check
+  (mirroring `GITHUB_REPOSITORY` exactly, distinct from the
+  intentionally-looser owner check) and replacing the revision allowlist
+  with a forbidden-character check mirroring `validGithubRevision`
+  (`src/tasks/source-v3.ts:497-520`) — see `isGithubLocatorShape` and
+  `isGithubLocatorRevisionShape` in `src/workflows/source-ir/semantics.ts`,
+  and the corrected §4.3 rule text above. Verified against the same
+  corpus post-fix: all five now match pre-P1a exactly
+  (`remote-action-acquisition-out-of-scope`); the five values that move
+  in A-1's authorized direction (`owner/repo/../x@v1`, `owner/repo/.@v1`,
+  `o.wner/repo@v1`, `own_er/repo@v1`, a >39-char owner — all reachable
+  only through the intentionally-loose owner segment or the
+  intentionally-shape-only path-segment handling) are unaffected and
+  remain covered by A-1 as originally scoped. No pinned test in §4.5 or
+  `tests/execution/target-ref.test.ts` exercises any of these ten
+  values, so this was a silent, undetected divergence, not a test
+  failure — `bun run check` was green both before and after this fix.

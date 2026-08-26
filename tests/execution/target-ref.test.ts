@@ -46,6 +46,7 @@ import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 import { UsageError } from "../../src/core/errors";
+import type { TargetRefKind } from "../../src/execution/target-ref";
 import { classifyWorkflowStepUses, WorkflowSourceSemanticError } from "../../src/workflows/source-ir/semantics";
 
 const ROOT = path.resolve(import.meta.dir, "../..");
@@ -75,7 +76,7 @@ async function targetRefApi() {
 describe("classifyTargetRef — canonical asset-ref classification (P1a §4.1, src/execution/target-ref.ts)", () => {
   test("B-09/B-10/B-11: classifies each of commands/scripts/tasks/workflows, bundle-qualified or not, and freezes the result", async () => {
     const { classifyTargetRef } = await targetRefApi();
-    const matrix: Array<[string, string]> = [
+    const matrix: Array<[string, TargetRefKind]> = [
       ["commands/review", "command"],
       ["team//commands/review", "command"],
       ["scripts/build.sh", "script"],
@@ -87,14 +88,11 @@ describe("classifyTargetRef — canonical asset-ref classification (P1a §4.1, s
     ];
     for (const [value, kind] of matrix) {
       const result = classifyTargetRef(value);
-      // Per-property assertions rather than a whole-object toEqual: once
-      // src/execution/target-ref.ts exists, `classifyTargetRef` returns a
-      // real `ClassifiedTargetRef`, and `kind` here is a plain `string`
-      // (widened across this table's rows, an ordinary TS loop-variable
-      // limitation) — a strict toEqual<ClassifiedTargetRef> overload would
-      // reject that as not narrow enough, the same shape of friction fixed
-      // in the classifyWorkflowStepUses table below. String-to-string
-      // equality via toBe has no such constraint.
+      // Per-property assertions rather than a whole-object toEqual: this is
+      // mostly a style choice here, since `kind` is now typed as the real
+      // `TargetRefKind` (ClassifiedTargetRef.kind is pinned, spec §4.1 — no
+      // widening at the production type), so a strict
+      // toEqual<ClassifiedTargetRef> overload would type-check fine too.
       expect(result.kind).toBe(kind);
       expect(result.ref).toBe(value);
       expect(Object.isFrozen(result)).toBe(true);

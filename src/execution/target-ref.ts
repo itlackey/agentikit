@@ -33,18 +33,7 @@ import { UsageError } from "../core/errors";
 export type TargetRefKind = "command" | "script" | "task" | "workflow";
 
 export interface ClassifiedTargetRef {
-  /**
-   * `TargetRefKind`, widened with the `(string & {})` "loose literal union"
-   * idiom (see e.g. type-fest's `LiteralUnion`) so callers still get the four
-   * known values for autocomplete/narrowing, without pinning `bunx tsc
-   * --noEmit` callers to that exact literal union: a table-driven caller
-   * comparing against a plain `string` (as `tests/execution/target-ref.test.ts`
-   * does — its fixture matrix is deliberately typed `Array<[string, string]>`,
-   * an ordinary TS loop-variable widening) still type-checks. Every value
-   * actually produced at runtime is exactly one of the four `TargetRefKind`
-   * literals — this only relaxes the STATIC type, not the runtime contract.
-   */
-  readonly kind: TargetRefKind | (string & {});
+  readonly kind: TargetRefKind;
   readonly ref: string;
 }
 
