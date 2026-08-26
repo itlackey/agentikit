@@ -125,7 +125,22 @@ const DIR_TYPE_MAP: DirTypeRule[] = [
   },
 ];
 
-const COMMAND_PLACEHOLDER_RE = /\$ARGUMENTS|\$[123]\b/;
+/**
+ * `$ARGUMENTS` — unambiguous. Nothing else writes it, so finding it in a body
+ * is strong evidence of a command wherever the file lives.
+ */
+const ARGUMENTS_PLACEHOLDER_RE = /\$ARGUMENTS/;
+
+/**
+ * `$1` / `$2` / `$3` — AMBIGUOUS, because ordinary prose writes money the same
+ * way. The old combined pattern used `\$[123]\b`, and `\b` sits between the
+ * `2` and the comma in `$2,000`, so every note quoting a price read as a
+ * command (#824). Excluding a following digit, or a `.`/`,` that is itself
+ * followed by a digit, rules out `$1,200` / `$2,000` / `$2.50` / `$12` while
+ * still matching `$1.` at the end of a sentence — a period with no digit after
+ * it is not part of a number.
+ */
+const NUMERIC_PLACEHOLDER_RE = /\$[123](?!\d|[.,]\d)/;
 const SMART_MD_FACTS = {
   workflow: { type: "workflow", specificity: 19 },
   toolsAgent: { type: "agent", specificity: 20 },
@@ -145,7 +160,7 @@ function isTypedDirDocFile(fileName: string): boolean {
   return TYPED_DIR_DOC_FILES.has(fileName.toLowerCase());
 }
 
-function isNestedSkillResource(ctx: FileContext): boolean {
+function isNestedSkillResource(ctx: PathFileContext): boolean {
   return ctx.ancestorDirs[0] === "skills" && ctx.ancestorDirs.length > 1 && ctx.fileName !== "SKILL.md";
 }
 
@@ -153,7 +168,7 @@ function isNestedSkillResource(ctx: FileContext): boolean {
 // Private helpers
 // ---------------------------------------------------------------------------
 
-function matchDirectoryHint(dirName: string, ctx: FileContext, specificity: number): MatchFact | null {
+function matchDirectoryHint(dirName: string, ctx: PathFileContext, specificity: number): MatchFact | null {
   if (dirName === "skills" && ctx.fileName === "SKILL.md") {
     return { type: "skill", specificity };
   }
@@ -170,6 +185,17 @@ function matchDirectoryHint(dirName: string, ctx: FileContext, specificity: numb
   }
 
   return null;
+}
+
+/**
+ * True when some ancestor directory already DECLARES this file's type via
+ * `DIR_TYPE_MAP` — the same walk `classifyByDirectory` performs. Derived from
+ * path fields alone, so `smartMdPathCandidates` can apply it without reading
+ * bytes.
+ */
+function hasDeclaredDirType(ctx: PathFileContext): boolean {
+  if (isNestedSkillResource(ctx)) return false;
+  return ctx.ancestorDirs.some((dir) => matchDirectoryHint(dir, ctx, 0) !== null);
 }
 
 function classifyByExtension(ctx: FileContext): MatchFact | null {
@@ -245,7 +271,20 @@ function classifyBySmartMd(ctx: FileContext): MatchFact | null {
     }
   }
 
-  if (COMMAND_PLACEHOLDER_RE.test(body)) {
+  // `$ARGUMENTS` is unambiguous, so it keeps its long-standing precedence: a
+  // command dropped under `knowledge/` is still found as a command.
+  if (ARGUMENTS_PLACEHOLDER_RE.test(body)) {
+    return SMART_MD_FACTS.command;
+  }
+
+  // A NUMERIC placeholder is a guess, and a typed directory is a declaration.
+  // Where the two disagree the declaration wins — otherwise a note that merely
+  // quotes a price is retyped, which is #824: `memories/*.md` mentioning
+  // `$2,000` were indexed as commands, their refs moved to
+  // `commands/memories/<slug>`, and they left the `memories/` namespace
+  // entirely. Outside a typed directory there is no declaration to defer to,
+  // so the guess still stands.
+  if (NUMERIC_PLACEHOLDER_RE.test(body) && !hasDeclaredDirType(ctx)) {
     return SMART_MD_FACTS.command;
   }
 
