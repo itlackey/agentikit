@@ -31,6 +31,39 @@ function claudeProjectsDir(): string {
 }
 
 /**
+ * Directory Claude Code writes a session's subagent transcripts into, as
+ * `<project>/<parent-session-id>/subagents/agent-<agentId>.jsonl` (sometimes a
+ * level deeper, under a `workflows/<workflowId>/` subdirectory). These
+ * are not sessions of their own — every record inside carries the *parent's*
+ * `sessionId` — so they are excluded from `listSessions` and folded into the
+ * parent by `readSession`.
+ */
+const SUBAGENTS_DIR = "subagents";
+
+/**
+ * Provenance prefix for events read out of a subagent transcript, built from
+ * the `agent-<agentId>.meta.json` sidecar Claude Code writes next to it.
+ * Stamped onto the event text because {@link SessionEvent} has no dedicated
+ * field for it, and per-event (not once per transcript) so the provenance
+ * survives the extractor's per-event pre-filter.
+ */
+function subagentProvenance(jsonlPath: string): string {
+  let agentType: string | undefined;
+  let description: string | undefined;
+  try {
+    const meta = JSON.parse(fs.readFileSync(jsonlPath.replace(/\.jsonl$/, ".meta.json"), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    if (typeof meta.agentType === "string") agentType = meta.agentType;
+    if (typeof meta.description === "string") description = meta.description;
+  } catch {
+    // missing / unreadable sidecar — fall back to an untyped marker
+  }
+  return `[subagent:${agentType ?? "unknown"}]${description ? ` ${description}` : ""}`;
+}
+
+/**
  * Parse a single Claude Code JSONL event into a normalized {@link SessionEvent}.
  * Returns `undefined` for events that don't carry textual content (file
  * snapshots, attachments, queue metadata). Tool calls are flattened from the
@@ -135,13 +168,62 @@ export class ClaudeCodeProvider extends AbstractSessionLogProvider implements Se
 
   readSession(ref: SessionRef): SessionData {
     const stat = fs.statSync(ref.filePath);
-    const lines = fs.readFileSync(ref.filePath, "utf8").split("\n").filter(Boolean);
+    const projectHint = path.basename(path.dirname(ref.filePath));
+
+    const parent = this.#readTranscript(ref.filePath, ref.sessionId, stat.mtimeMs);
+    const events = parent.events;
+    const inlineRefs = parent.inlineRefs;
+    // Fold in this session's subagent transcripts: they record work delegated
+    // *during* this session and every record inside carries this session's id,
+    // so they are harvested under the parent's identity.
+    for (const subagentPath of this.walkFiles(
+      path.join(path.dirname(ref.filePath), path.basename(ref.filePath, ".jsonl"), SUBAGENTS_DIR),
+      (name) => name.endsWith(".jsonl"),
+    )) {
+      const subagent = this.#readTranscript(
+        subagentPath,
+        ref.sessionId,
+        stat.mtimeMs,
+        subagentProvenance(subagentPath),
+      );
+      events.push(...subagent.events);
+      inlineRefs.push(...subagent.inlineRefs);
+    }
+    // Merge chronologically rather than appending: the delegated work happened
+    // during the parent session, consumers document events as time-ordered,
+    // and the pre-filter's budget pass drops from the head (oldest first),
+    // which only samples sensibly on a time-ordered stream.
+    events.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+
+    return {
+      ref: this.sessionRef({
+        sessionId: ref.sessionId,
+        filePath: ref.filePath,
+        startedAt: events[0]?.ts ?? stat.ctimeMs,
+        endedAt: events[events.length - 1]?.ts ?? stat.mtimeMs,
+        projectHint,
+        title: parent.title,
+      }),
+      events,
+      inlineRefs,
+    };
+  }
+
+  /**
+   * Parse one JSONL transcript (a session's own, or one of its subagents')
+   * into normalized events plus the inline `akm` invocations they contain.
+   * `provenance`, when given, is prefixed to every event's text.
+   */
+  #readTranscript(
+    filePath: string,
+    sessionId: string | undefined,
+    fallbackTsMs: number,
+    provenance?: string,
+  ): { events: SessionEvent[]; inlineRefs: InlineRefMention[]; title?: string } {
     const events: SessionEvent[] = [];
     const inlineRefs: InlineRefMention[] = [];
     let title: string | undefined;
-    let firstTsMs: number | undefined;
-    let lastTsMs: number | undefined;
-    const projectHint = path.basename(path.dirname(ref.filePath));
+    const lines = fs.readFileSync(filePath, "utf8").split("\n").filter(Boolean);
 
     for (const line of lines) {
       let entry: Record<string, unknown> | undefined;
@@ -155,27 +237,14 @@ export class ClaudeCodeProvider extends AbstractSessionLogProvider implements Se
         title = entry.customTitle;
         continue;
       }
-      const parsed = parseClaudeEvent(entry, ref.sessionId, ref.filePath, stat.mtimeMs);
+      const parsed = parseClaudeEvent(entry, sessionId, filePath, fallbackTsMs);
       if (!parsed) continue;
-      events.push(parsed);
-      if (firstTsMs === undefined || (parsed.ts ?? 0) < firstTsMs) firstTsMs = parsed.ts;
-      if (lastTsMs === undefined || (parsed.ts ?? 0) > lastTsMs) lastTsMs = parsed.ts;
+      events.push(provenance ? { ...parsed, text: `${provenance}\n${parsed.text}` } : parsed);
       // Extract inline akm-remember/feedback invocations from this event's text.
       inlineRefs.push(...extractInlineRefMentions(parsed.text, parsed.ts));
     }
 
-    return {
-      ref: this.sessionRef({
-        sessionId: ref.sessionId,
-        filePath: ref.filePath,
-        startedAt: firstTsMs ?? stat.ctimeMs,
-        endedAt: lastTsMs ?? stat.mtimeMs,
-        projectHint,
-        title,
-      }),
-      events,
-      inlineRefs,
-    };
+    return { events, inlineRefs, ...(title ? { title } : {}) };
   }
 
   /**
@@ -243,8 +312,18 @@ export class ClaudeCodeProvider extends AbstractSessionLogProvider implements Se
     return result;
   }
 
-  /** Session JSONL files under `dir`, excluding the shared journal file. */
-  #walkJsonl(dir: string): Generator<string> {
-    return this.walkFiles(dir, (name) => name.endsWith(".jsonl") && name !== "journal.jsonl");
+  /**
+   * Session JSONL files under `dir`, excluding the shared journal file and
+   * subagent transcripts (folded into their parent by {@link readSession}).
+   * Only the directories *between* the project directory and the file are
+   * tested for {@link SUBAGENTS_DIR}, so a session file — which always sits
+   * directly in its project directory — can never be excluded.
+   */
+  *#walkJsonl(dir: string): Generator<string> {
+    for (const filePath of this.walkFiles(dir, (name) => name.endsWith(".jsonl") && name !== "journal.jsonl")) {
+      const segments = path.relative(dir, filePath).split(path.sep);
+      if (segments.slice(1, -1).includes(SUBAGENTS_DIR)) continue;
+      yield filePath;
+    }
   }
 }
