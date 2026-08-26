@@ -62,6 +62,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dirs for both discovery and `--session-id` lookup); nothing tested it
   end-to-end before.
 
+### Documentation
+
+- **Measured whether subagent-transcript folding (#830) duplicates the
+  parent's own summary, and disclosed the one-time re-extraction cost
+  (#833).** Using the actual reader/pre-filter/prompt-builder code against 3
+  real sessions on this machine — no LLM calls; `contentHash`,
+  `preFilterSession`, and `buildExtractPrompt` are deterministic:
+  - Raw event counts grow 2x-12x once subagent transcripts are folded in
+    (measured: 1209 -> 14224; 1583 -> 6738, the exact session cited in
+    #829/#833's "1583 -> 6738" figure; 155 -> 2408). `contentHash` is
+    computed over that stream, so every previously-extracted session's hash
+    changes and the next `--since` run re-extracts all of them once, each
+    with a larger prompt (+1.2% to +5.2% prompt chars across the 3 sessions,
+    since the 80,000-char pre-filter budget caps how much of the growth
+    actually reaches the LLM).
+  - The result is a genuine tradeoff, not a clean win or loss. **Benefit:**
+    inline `akm remember`/`akm feedback` calls made *by subagents* are
+    recovered regardless of the budget cap (inline-ref extraction runs on
+    the raw event stream, not the pre-filtered one) — up to 162 refs
+    recovered on the largest session measured (was 2 without folding),
+    fixing #829's "delegated work is never harvested" defect. **Cost:** on
+    sessions whose raw content is near or under the pre-filter's character
+    budget, folding evicts a large share of the parent's own kept content to
+    make room for subagent tool-call trace — parent-origin kept events
+    dropped 27% and 71% respectively on the two smaller sessions measured.
+    On the largest session the budget was already saturated by the parent's
+    own tail, so folding changed nothing there. Duplication is real, not
+    hypothetical: on the smallest session, one subagent's conclusion appears
+    twice in the same prompt sent to the extraction LLM — once via its own
+    folded final message, once via the parent's own record of that
+    delegated call's result, which independently already captured ~92% of
+    the same text verbatim.
+  - A narrowing that drops a subagent transcript's terminal event (its
+    apparent "final report") to avoid this specific duplication was
+    considered and rejected: the existing #830 regression fixture has a
+    subagent transcript whose *only* event is that terminal turn (a single
+    delegated `akm remember` call) — the same rule would drop the only
+    content in short single-step delegations, undoing the harvesting #830
+    added.
+  - **Decision: keep folding as shipped.** The data does not cleanly favor
+    removing or narrowing it, and the one narrowing considered would cost
+    more than it fixes. #829's phantom-session exclusion is unaffected
+    either way.
+- Recorded the fold-vs-link subagent-extraction design determination in
+  `docs/plans/subagent-extraction-design.md` (#840). Measured four candidates
+  (fold+dedupe as shipped, link-only, a harvest-without-prompting hybrid, and
+  chunked map-reduce extraction) on the same real sessions #836 used plus one
+  added for scale. Headline: the hybrid recovers 100% of #830's inline-ref
+  harvesting (162/162, 38/38, 1/1, 8/8 across the four sessions) with zero
+  parent-content eviction (vs 27.5%/28.6% evicted under fold on two of the
+  four), and #839's dedupe was measured to have zero effect on the actual
+  LLM prompt on all four sessions (the flagged duplicate content is already
+  evicted by the recency-biased budget before dedupe would matter). Chunked
+  extraction was measured at 9x-229x more LLM calls per session on real
+  data and is not recommended. No behavior changes shipped in this PR.
+
 ## [0.9.2-alpha.3] - 2026-08-26
 
 ### Fixed
