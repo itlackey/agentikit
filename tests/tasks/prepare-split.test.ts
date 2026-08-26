@@ -49,14 +49,58 @@
  * already characterized elsewhere (tests/tasks-runtime-v3.test.ts, the P0/P1a
  * suites, and this phase's Lane A/C tests). Each stub below throws if
  * invoked, so an accidental call is itself a loud test failure.
+ *
+ * STRUCTURAL RATCHET (test-review finding — added after the tests above):
+ * the three caller-shape tests pin BEHAVIOR only — each calls
+ * `prepareTaskV3Execution` through BOTH runtime-v3.ts's CURRENT export and
+ * the moved `prepare/prepare` module and asserts the two RESULTS are equal.
+ * They say nothing about whether the two calls reach the same CODE. An
+ * inverted "split" — `prepare/prepare.ts` merely re-exporting
+ * `prepareTaskV3Execution` FROM `runtime-v3.ts` (the body never actually
+ * moves), `runtime-v3.ts` left unchanged, and none of the three production
+ * callers (runner.ts:174, scheduler-sync.ts:485, source-freeze-v4.ts's
+ * taskDispatch) rewired — makes both imports above resolve to the literal
+ * SAME function object, so every `expect(after).toEqual(before)` above is
+ * tautological: it cannot fail no matter which module actually holds the
+ * logic. The checks below close that gap: the Lane-B analogue of
+ * tests/tasks/run-split.test.ts's sections (b) and (c), which Lane C already
+ * has and Lane B did not.
+ *
+ *   1. src/tasks/runtime-v3.ts declares no function/class of its own — an
+ *      AST scan, not a text grep — and still carries at least one
+ *      `export ... from "..."` re-export (spec §9: "runtime-v3.ts contains
+ *      no logic — only re-exports").
+ *   2. no file under src/tasks/prepare/** has an import/re-export/
+ *      dynamic-import specifier whose last path segment is "runtime-v3"
+ *      (spec §4.1's one-way rule: "prepare/** must not import from
+ *      runtime-v3.ts"). tests/architecture/import-cycle-ratchet.test.ts's
+ *      shrink-only cycle baseline cannot catch this: an inverted re-export
+ *      (prepare/prepare.ts importing FROM runtime-v3.ts, with nothing
+ *      importing back the other way) creates no cycle at all.
+ *   3. src/tasks/prepare/prepared-execution.ts exists and exports every
+ *      member of the PreparedTaskV3* type family spec §4.1 names — proof the
+ *      TYPES moved too, not only the function.
+ *   4. no file under src/, other than runtime-v3.ts itself, imports from
+ *      "runtime-v3" (spec §4.2/§7: "no caller may be left importing the
+ *      shim"). Check 2 only covers prepare/**; this covers the three named
+ *      production callers and everything else under src/.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+import ts from "typescript";
 import { makeBundleRef } from "../../src/core/asset/asset-ref";
 import type { AkmConfig } from "../../src/core/config/config-types";
 import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "../../src/tasks/runtime-v3";
 import { parseTaskV3Yaml } from "../../src/tasks/source-v3";
 import { makeSandboxDir, type SandboxedDir } from "../_helpers/sandbox";
+
+const ROOT = path.resolve(import.meta.dir, "../..");
+const RUNTIME_V3_FILE = path.join(ROOT, "src/tasks/runtime-v3.ts");
+const PREPARE_DIR = path.join(ROOT, "src/tasks/prepare");
+const PREPARED_EXECUTION_FILE = path.join(PREPARE_DIR, "prepared-execution.ts");
+const SRC_ROOT = path.join(ROOT, "src");
 
 /** Non-literal on purpose (see file header) — keeps this file tsc-clean before the module exists. */
 const PREPARE_MODULE: string = "../../src/tasks/prepare/prepare";
@@ -184,5 +228,171 @@ describe("the moved prepare/prepare.ts entry — three-caller shape parity (P1b 
     const { prepareTaskV3Execution: moved } = await movedPrepare();
     const after = await moved(document, context);
     expect(after).toEqual(before);
+  });
+});
+
+// ── structural ratchet: an inverted "split" must fail (see file header) ────
+
+/** AST-scan a file for its own function/class declarations, and confirm it still re-exports something (an empty file would trivially, wrongly, "pass" a bare declaration-count check). Mirrors tests/tasks/run-split.test.ts's scanRunnerForLogic, applied to runtime-v3.ts instead of runner.ts. */
+function scanForOwnLogic(filePath: string): {
+  readonly functionDeclarationNames: readonly string[];
+  readonly classDeclarationNames: readonly string[];
+  readonly hasReExport: boolean;
+} {
+  const source = ts.createSourceFile(filePath, fs.readFileSync(filePath, "utf8"), ts.ScriptTarget.Latest, true);
+  const functionDeclarationNames: string[] = [];
+  const classDeclarationNames: string[] = [];
+  let hasReExport = false;
+  function visit(node: ts.Node): void {
+    if (ts.isFunctionDeclaration(node)) functionDeclarationNames.push(node.name?.text ?? "<anonymous>");
+    if (ts.isClassDeclaration(node)) classDeclarationNames.push(node.name?.text ?? "<anonymous>");
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      hasReExport = true;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return { functionDeclarationNames, classDeclarationNames, hasReExport };
+}
+
+/**
+ * Recursive .ts file walk. Mirrors tests/tasks/run-split.test.ts's
+ * walkTsFiles / tests/workflows/direct-script-typed.test.ts's — deliberately
+ * NOT defensive about a missing `dir`: ENOENT is the correct, legible red
+ * today, before src/tasks/prepare/ exists.
+ */
+function walkTsFiles(dir: string): string[] {
+  const results: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) results.push(...walkTsFiles(full));
+    else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".d.ts")) results.push(full);
+  }
+  return results;
+}
+
+/**
+ * True when `filePath` has any static import/re-export specifier, or dynamic
+ * `import(...)` argument, whose final path segment (extension stripped)
+ * equals `moduleName`. Mirrors tests/tasks/run-split.test.ts's
+ * importsRunner, generalized to a parameterized target module so it can
+ * check for "runtime-v3" from two different scan roots below.
+ */
+function importsModuleNamed(filePath: string, moduleName: string): boolean {
+  const source = ts.createSourceFile(filePath, fs.readFileSync(filePath, "utf8"), ts.ScriptTarget.Latest, true);
+  let found = false;
+  function targets(specifier: string): boolean {
+    const lastSegment = specifier
+      .replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, "")
+      .split("/")
+      .pop();
+    return lastSegment === moduleName;
+  }
+  function visit(node: ts.Node): void {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier) &&
+      targets(node.moduleSpecifier.text)
+    ) {
+      found = true;
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const [arg] = node.arguments;
+      if (arg && ts.isStringLiteral(arg) && targets(arg.text)) found = true;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return found;
+}
+
+/**
+ * Exported interface/type-alias names declared directly in `filePath`, plus
+ * anything named in an `export { ... }` clause (covers both a local
+ * declaration and a re-export naming the same identifier). Good enough to
+ * confirm "this module exports type X" without standing up a full
+ * type-checked ts.Program, matching this phase's established
+ * AST-scan-over-full-tsc convention (e.g. run-split.test.ts's
+ * hasRuntimeExport, direct-script-typed.test.ts's
+ * scanForParseTaskV3YamlUsage). A re-export sourced FROM runtime-v3.ts would
+ * satisfy this check on its own, but check 2 below independently forbids
+ * exactly that specifier, so the two together still close the loophole.
+ */
+function exportedTypeNames(filePath: string): ReadonlySet<string> {
+  const source = ts.createSourceFile(filePath, fs.readFileSync(filePath, "utf8"), ts.ScriptTarget.Latest, true);
+  const names = new Set<string>();
+  function isExported(node: ts.Node): boolean {
+    return (
+      ts.canHaveModifiers(node) &&
+      (ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false)
+    );
+  }
+  function visit(node: ts.Node): void {
+    if ((ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) && isExported(node)) {
+      names.add(node.name.text);
+    }
+    if (ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause)) {
+      for (const element of node.exportClause.elements) names.add(element.name.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  return names;
+}
+
+describe("src/tasks/runtime-v3.ts contains no logic of its own — only re-exports remain (spec §9, P4-deletion compat shim)", () => {
+  test("no function or class declarations anywhere in runtime-v3.ts, and it still re-exports something", () => {
+    const scan = scanForOwnLogic(RUNTIME_V3_FILE);
+    expect(scan.functionDeclarationNames, "function declarations found in runtime-v3.ts").toEqual([]);
+    expect(scan.classDeclarationNames, "class declarations found in runtime-v3.ts").toEqual([]);
+    expect(scan.hasReExport, 'runtime-v3.ts has no `export ... from "..."` re-export left at all').toBe(true);
+  });
+});
+
+describe("no file under src/tasks/prepare/** imports runtime-v3.ts (one-way rule, spec §4.1: 'prepare/** must not import from runtime-v3.ts')", () => {
+  test("src/tasks/prepare/ exists, has real .ts files, and none of them import runtime-v3", () => {
+    const files = walkTsFiles(PREPARE_DIR);
+    expect(files.length, "src/tasks/prepare/ contains no .ts files yet").toBeGreaterThan(0);
+    const offenders = files
+      .filter((file) => importsModuleNamed(file, "runtime-v3"))
+      .map((file) => path.relative(ROOT, file));
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("src/tasks/prepare/prepared-execution.ts exists and exports the PreparedTaskV3* type family (spec §4.1)", () => {
+  const REQUIRED_TYPE_NAMES = [
+    "TaskV3PreparedBase",
+    "PreparedTaskV3Command",
+    "PreparedTaskV3Workflow",
+    "PreparedTaskV3Shell",
+    "PreparedTaskV3Script",
+    "PreparedTaskV3Execution",
+    "PreparedTaskV3DirectoryIdentity",
+    "PrepareTaskV3ExecutionContext",
+    "TaskV3ScriptInterpreter",
+  ] as const;
+
+  test("the file exists and exports every type spec §4.1 names (the types moved too, not only the function)", () => {
+    if (!fs.existsSync(PREPARED_EXECUTION_FILE)) {
+      throw new Error(
+        "src/tasks/prepare/prepared-execution.ts does not exist yet — spec §4.1 requires it to hold the " +
+          "PreparedTaskV3* type family; this test cannot pass until the module is implemented.",
+      );
+    }
+    const exported = exportedTypeNames(PREPARED_EXECUTION_FILE);
+    const missing = REQUIRED_TYPE_NAMES.filter((name) => !exported.has(name));
+    expect(missing, `missing exported types in prepared-execution.ts: ${missing.join(", ")}`).toEqual([]);
+  });
+});
+
+describe("no file under src/, other than runtime-v3.ts itself, imports from runtime-v3 (spec §4.2/§7: 'no caller may be left importing the shim')", () => {
+  test("every file under src/ has been rewired off the shim", () => {
+    const files = walkTsFiles(SRC_ROOT).filter((file) => file !== RUNTIME_V3_FILE);
+    const offenders = files
+      .filter((file) => importsModuleNamed(file, "runtime-v3"))
+      .map((file) => path.relative(ROOT, file));
+    expect(offenders, `caller(s) still importing the runtime-v3 shim: ${offenders.join(", ")}`).toEqual([]);
   });
 });

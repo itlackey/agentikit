@@ -16,10 +16,17 @@
  *   1. Behavioral parity ("before/after shape"): `prepareScriptTarget()`,
  *      called directly with the script's owned identity (ref/file/
  *      bundleRoot — the exact input shape spec §4.3 assigns it), produces
- *      the same ref/sha256/interpreter/byteLength that today's CURRENT
- *      production path (directScript + prepareTaskV3Execution) freezes for
- *      the identical script. The "before" values are captured by actually
- *      running the P0 R-02 fixture workflow
+ *      the same ref/sha256/interpreter/byteLength/extension/bytesBase64/
+ *      cwdIdentity/cwd that today's CURRENT production path (directScript +
+ *      prepareTaskV3Execution) freezes for the identical script — the full
+ *      set spec §4.3 requires byte-identical, not only the four it names by
+ *      example. cwdIdentity/cwd are load-bearing (they feed
+ *      freezeExecutableIdentity and gitIdentity at the call site,
+ *      source-freeze-v4.ts:322,338) and, unlike the other fields, captured
+ *      from the script's BUNDLE ROOT today (runtime-v3.ts:445), one level
+ *      above the script file — a preparer using the script's own dirname
+ *      instead would change frozen-plan bytes silently. The "before" values
+ *      are captured by actually running the P0 R-02 fixture workflow
  *      (tests/workflows/characterization-classification.test.ts:307-338)
  *      through today's real `startWorkflowRun` → frozen-plan path, not a
  *      hand-typed guess — so the pin is provably against CURRENT behavior.
@@ -218,10 +225,27 @@ describe("prepareScriptTarget — replaces directScript's synthetic-YAML fabrica
       expect(after.interpreter).toBe(before.interpreter);
       expect(after.byteLength).toBe(before.byteLength);
       // The remaining fields spec §4.3 requires byte-identical (the full set
-      // scriptResult() actually reads into FrozenWorkflowScriptTarget).
+      // scriptResult() actually reads into FrozenWorkflowScriptTarget) —
+      // including cwdIdentity/cwd, which B-23 and spec §4.3 both list and
+      // which are load-bearing at the call site: scriptResult() freezes
+      // `prepared.cwdIdentity` verbatim onto FrozenWorkflowScriptTarget,
+      // feeds `prepared.cwdIdentity.realCwd` into
+      // freezeExecutableIdentity({cwd: ...}) for the executable identity,
+      // and feeds `prepared.cwdIdentity.realRoot` into gitIdentity()
+      // (source-freeze-v4.ts:322,335,338). Today's script arm captures that
+      // identity from the script's BUNDLE ROOT
+      // (runtime-v3.ts:445's `captureDirectoryIdentity(resolved.bundleRoot)`),
+      // one level above the script file itself — a preparer that captured
+      // the script's own dirname instead would silently change frozen-plan
+      // bytes while still passing every assertion above it, since nothing
+      // else in the suite pins cwdIdentity for a script step (the P0 pin at
+      // tests/workflows/characterization-classification.test.ts:307-338
+      // asserts only ref/bytes/interpreter).
       expect(after.extension).toBe(before.extension);
       expect(after.bytesBase64).toBe(before.bytesBase64);
       expect(Buffer.from(after.bytesBase64, "base64").toString("utf8")).toBe(scriptBytes);
+      expect(after.cwdIdentity).toEqual(before.cwdIdentity);
+      expect(after.cwd).toBe(before.cwdIdentity.realCwd);
     });
   });
 
