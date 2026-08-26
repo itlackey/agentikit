@@ -1,0 +1,4 @@
+version: 4
+name: task source v4 fixture - schedule string shorthand
+uses: commands/review
+schedule: "0 8 * * 1"

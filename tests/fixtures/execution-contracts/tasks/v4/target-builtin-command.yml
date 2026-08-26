@@ -1,0 +1,7 @@
+version: 4
+name: task source v4 fixture - builtin command target
+uses: akm/command
+with:
+  content: "Say hello"
+  arguments: "--flag"
+schedule: "15 4 * * 1"

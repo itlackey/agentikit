@@ -1,0 +1,20 @@
+version: 4
+name: task source v4 fixture - inputs and output
+uses: commands/review
+inputs:
+  scope:
+    type: string
+    enum: [changed, all]
+    default: changed
+  strict:
+    type: boolean
+    default: true
+  ticket:
+    type: string
+    required: true
+output:
+  type: object
+  properties:
+    summary:
+      type: string
+  required: [summary]

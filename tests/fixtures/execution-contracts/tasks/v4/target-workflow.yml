@@ -1,0 +1,4 @@
+version: 4
+name: task source v4 fixture - workflow target
+uses: workflows/nightly-report
+schedule: "15 4 * * 1"
