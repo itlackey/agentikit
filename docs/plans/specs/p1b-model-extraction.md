@@ -1040,3 +1040,68 @@ across 297 files (up from 3954: the new test file's 6 tests); the new
 `bun run test:integration` green — **5655 pass / 57 skip / 0 fail** — identical pass/skip/fail counts to the
 round-1 gate above, confirming no regression from this fix. `bun run check`'s full acceptance criterion
 (lint + typecheck + test:unit + test:integration) holds after this remediation.
+
+**2026-08-26 — code-review remediation, round 3: the gate/summary-judge dispatch was the one remaining
+unstamped child.** A follow-up code-review pass on rounds 1–2 above (which threaded `eventSource` into the
+exec-unit and agent/sdk arms of a step's own subgraph units) found that `run-workflow.ts`'s
+`workflowSummaryJudge` — the completion-criteria judge every gated step dispatches through
+`finalizeExecutedStep` — never passed `options.eventSource` into `frozenSummaryJudge`
+(`frozen-judge.ts`), so a workflow-task run's judge child process silently lost the provenance stamp its
+pre-P1b `process.env.AKM_EVENT_SOURCE` global mutation used to give it. Same defect class as rounds 1–2
+(R-07/F-1), on the one dispatch neither round touched: the judge is a "command"-kind `UnitDispatchRequest`
+built independently of `executeStepSubgraph`'s per-unit requests, so threading `eventSource` into the step's
+own units did nothing for it. Unauthorized outside §6, and — per §5.2(2)'s escape hatch — either the thread
+had to be built or the gap recorded; it is recorded here alongside the fix.
+
+Fixed by mirroring the two already-fixed arms exactly: `frozenSummaryJudge` (`frozen-judge.ts:95`) gained a
+5th, optional `eventSource?: string` parameter, spread onto the `UnitDispatchRequest` it builds
+(`frozen-judge.ts:137`, `...(eventSource !== undefined ? { eventSource } : {})` — the same conditional-spread
+idiom every other optional field on that request already uses) rather than opening any new mechanism.
+`workflowSummaryJudge` (`run-workflow.ts:561-573`) now passes `options.eventSource` at the call site. Because
+the judge's request reaches `dispatchWorkflowExecution` exactly like any other "command"-kind unit, it goes
+through the identical, already-fixed `forwardedDispatchEventSource` precedence gate (`unit-dispatch.ts`) for
+free — no new gating logic was needed here. The module doc at the top of `frozen-judge.ts` already establishes
+that a judge dispatch carries no authored `env` bindings (`commonRequest` never sets one), so the gate's
+"authored binding wins" branch is structurally unreachable for a judge and the forward always succeeds when
+`eventSource` is supplied. `options.eventSource` is `undefined` for every non-task caller (`akm workflow run`
+and its tests, per `RunWorkflowOptions`'s existing doc contract), so the new parameter and spread contribute
+nothing and both callers stay byte-identical: `run-workflow.ts`'s own call (now 5 args) and
+`runtime/runs.ts:744`'s manual `akm workflow step complete` judge (still 4 args, the finding's own
+confirmation that this path is off the task-run route and needs no change — the added parameter is optional,
+so the pre-existing 4-argument call keeps compiling and keeps behaving exactly as before). Two doc comments
+were extended to name the new path: `frozenSummaryJudge`'s own (previously undocumented beyond a one-line
+summary) and `RunWorkflowOptions.eventSource`'s (previously describing only the exec-unit and agent/sdk arms
+of a step's subgraph, silently omitting the judge dispatch that turned out to be the gap).
+
+No test was added. Exhaustive search (`grep -rln` for `frozen-judge`/`frozenSummaryJudge`/gate-plus-eventSource
+combinations across `tests/`) found no existing test — in this phase's own suites or the two prior rounds' new
+files — that constructs a gated workflow-task run with an injected dispatcher and asserts the judge's captured
+`UnitDispatchRequest`; the gap was invisible to the suite for exactly that reason. Adding one was judged
+out of scope for this remediation pass (scoped to fixing the one named CONFIRMED finding, no test edits
+beyond the spec's authorized flips) rather than silently taken on; the fix is verified by code inspection —
+the change mirrors the already-test-pinned `forwardedDispatchEventSource` mechanism byte-for-byte, so no new
+dispatch-precedence logic exists that only a new test could exercise — plus the full existing suite staying
+green with unchanged pass/skip/fail counts, confirming no regression to any of the paths the two callers
+already exercise.
+
+Verified: `bunx tsc --noEmit` clean; `bunx biome check --write` on both touched files (`frozen-judge.ts`,
+`run-workflow.ts`) applied no further changes (the three pre-existing, unrelated `noNonNullAssertion` warnings
+at `run-workflow.ts:903,912,919` that round 2 already noted are untouched by this diff — confirmed via
+`git diff --stat`, exactly two files, no test file); full `bun run test:unit` green — **3960 pass / 0 skip / 0
+fail** across 297 files, identical to round 2's count; full `bun run test:integration` green — **5655 pass /
+57 skip / 0 fail**, identical to rounds 1–2's count; full `bun run lint` exits 0 (execution-boundary ratchet,
+license-header check, tests-isolation, runtime-boundary, and every other custom lint script all print `OK`;
+the repo-wide biome warning count is pre-existing style noise unrelated to this diff, not a new failure).
+Targeted re-runs, all green: `tests/integration/tasks-provenance-characterization.test.ts`,
+`tests/integration/tasks-provenance-context.test.ts`, `tests/integration/workflows/exec-unit.test.ts`,
+`tests/integration/workflows/native-executor.test.ts`, `tests/workflows/unit-dispatch-event-source.test.ts`,
+`tests/integration/workflows/gate-artifacts.test.ts`, `tests/contracts/engine-lowering-conformance.test.ts`
+(230 pass / 0 fail combined), plus every §7 preservation-gate suite named in this spec
+(`tests/integration/tasks-runtime-v3-runner.test.ts`, the five `tests/contracts/execution-*`/`resolved-execution-contract`/
+`command-invocation-contract` suites, `tests/integration/tasks-scheduler-sync-v3.test.ts`,
+`tests/architecture/import-cycle-ratchet.test.ts`, `tests/architecture/src-fn-size-ratchet.test.ts`,
+`tests/tasks/run-split.test.ts`, `tests/task-history-metadata.test.ts`,
+`tests/integration/tasks-run-attempt-observability.test.ts`,
+`tests/integration/tasks-legacy-vocabulary-characterization.test.ts`, `tests/integration/tasks-runner.test.ts`,
+`tests/integration/cli-errors.test.ts` — 283 pass / 0 fail combined). `bun run check`'s full acceptance
+criterion (lint + typecheck + test:unit + test:integration) holds after this remediation.

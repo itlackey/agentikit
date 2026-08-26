@@ -91,12 +91,29 @@ function warnLoweringNotices(...groups: readonly (readonly Readonly<LoweringNoti
   }
 }
 
-/** Build a gate judge from the normalized frozen target without consulting live config. */
+/**
+ * Build a gate judge from the normalized frozen target without consulting live
+ * config.
+ *
+ * `eventSource` (P1b spec §5.2 point 2, gap closed — code review): the task
+ * runner's resolved provenance event source, threaded through exactly like
+ * `executeStepSubgraph`'s units so a workflow-task run's judge dispatch is not
+ * the one dispatch left silently unstamped. Spread onto the built
+ * {@link UnitDispatchRequest} the same way every other optional field here is
+ * — `undefined` for the manual `akm workflow step complete` judge
+ * (`runtime/runs.ts`, which passes no 5th argument) and for `akm workflow run`
+ * (no task context), so both stay byte-identical. When present, it flows
+ * through the same `forwardedDispatchEventSource` precedence gate every other
+ * "command"-kind dispatch uses (`unit-dispatch.ts`): the module doc above
+ * already establishes a judge request never carries an authored `env:`
+ * binding, so the gate always forwards it here.
+ */
 export function frozenSummaryJudge(
   target: FrozenWorkflowCommandTarget | null | undefined,
   signal: AbortSignal | undefined,
   dispatcher: UnitDispatcher | undefined,
   owner: JudgeOwner,
+  eventSource?: string,
 ): SummaryJudge | null {
   if (!target) return null;
   const dispatch = withDispatchRedaction(dispatcher ?? dispatchWorkflowExecution);
@@ -117,6 +134,7 @@ export function frozenSummaryJudge(
       ...commonRequest,
       frozenTarget: target,
       timeoutMs: target.runner.timeoutMs ?? null,
+      ...(eventSource !== undefined ? { eventSource } : {}),
     };
     // Lowering and authorization precede every live credential/passthrough
     // sample. The injected dispatcher may be a test seam, but it receives the

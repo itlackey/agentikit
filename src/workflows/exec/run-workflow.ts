@@ -171,7 +171,12 @@ export interface RunWorkflowOptions {
    * gated the same way there (precedence fix, code review round 2; see
    * unit-dispatch.ts's `forwardedDispatchEventSource`): an authored `env:`
    * binding on the unit still wins, in agreement with the script/shell arm
-   * above. Typed as a bare `string` (not `UsageEventSource`) — like the native arm's own
+   * above. Also threaded into the step's completion-criteria judge dispatch
+   * (`workflowSummaryJudge` -> `frozen-judge.ts`'s `frozenSummaryJudge`, gap
+   * closed — code review): the judge is a "command"-kind dispatch too, so
+   * without this it was the one dispatch on a task-run's path that silently
+   * kept losing the provenance stamp the pre-P1b global env mutation used to
+   * give it. Typed as a bare `string` (not `UsageEventSource`) — like the native arm's own
    * `process.env.AKM_EVENT_SOURCE ?? provenance.eventSource`, this is an
    * unvalidated raw value destined straight for a child env var, not a value
    * checked against the `UsageEventSource` enum.
@@ -556,7 +561,17 @@ function workflowSummaryJudge(
   if (options.summaryJudge !== undefined) return options.summaryJudge;
   // The judge dispatches under the REAL run/step identity; the per-loop gate row
   // identity is threaded in per call by the completion path that journals it.
-  return frozenSummaryJudge(stepPlan.gate.frozenJudge, signal, options.dispatcher ?? defaultUnitDispatcher, owner);
+  // eventSource (gap closed, code review): the judge's dispatch is a "command"
+  // request like any other exec/agent/sdk unit, so it goes through the same
+  // provenance thread `executeStepSubgraph` uses below — undefined for every
+  // non-task caller, byte-identical.
+  return frozenSummaryJudge(
+    stepPlan.gate.frozenJudge,
+    signal,
+    options.dispatcher ?? defaultUnitDispatcher,
+    owner,
+    options.eventSource,
+  );
 }
 
 /**
