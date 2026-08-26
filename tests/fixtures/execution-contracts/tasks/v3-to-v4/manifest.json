@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "sourceSchemaVersion": 3,
+  "description": "Fixture corpus for scripts/akm-migrate/migrate/task-to-v4.ts (docs/plans/specs/p2b-input-bindings.md §5, Lane C). Every deterministic fixture is valid per src/tasks/source-v3.ts (parseTaskV3Yaml succeeds) and isolates one v3->v4 translation dimension. Every blocked fixture is either valid v3 with no safe v4 representation, or a v3-shaped document the migrator's own vendored reader must reject on stable, catalogued grounds (never guessed, never silently dropped). inputs: is never invented by the migrator, so no fixture here declares one.",
+  "deterministic": [
+    {
+      "id": "trigger-akm-schedule",
+      "file": "deterministic/trigger-akm-schedule.yml",
+      "represents": ["trigger:akm-schedule"]
+    },
+    {
+      "id": "trigger-on-schedule",
+      "file": "deterministic/trigger-on-schedule.yml",
+      "represents": ["trigger:on-schedule"]
+    },
+    {
+      "id": "trigger-workflow-dispatch-manual",
+      "file": "deterministic/trigger-workflow-dispatch-manual.yml",
+      "represents": ["trigger:on-workflow-dispatch-manual", "notice:manual-only"]
+    },
+    {
+      "id": "execution-controls-hoist",
+      "file": "deterministic/execution-controls-hoist.yml",
+      "represents": [
+        "hoist:engine",
+        "hoist:model",
+        "hoist:timeout",
+        "hoist:redact",
+        "hoist:maxSteps",
+        "hoist:maxRetries",
+        "target:run-shell",
+        "preserve:env"
+      ]
+    },
+    {
+      "id": "metadata-hoist",
+      "file": "deterministic/metadata-hoist.yml",
+      "represents": [
+        "hoist:description",
+        "hoist:when_to_use",
+        "hoist:tags",
+        "hoist:agent",
+        "hoist:inference",
+        "hoist:tools",
+        "hoist:timeout-duration-string"
+      ]
+    },
+    {
+      "id": "output-schema-hoist",
+      "file": "deterministic/output-schema-hoist.yml",
+      "represents": ["hoist:outputSchema-to-output"]
+    },
+    {
+      "id": "enabled-false-akm-schedule",
+      "file": "deterministic/enabled-false-akm-schedule.yml",
+      "represents": ["enabled:false-distributes-to-single-schedule-entry"]
+    },
+    {
+      "id": "enabled-false-on-schedule",
+      "file": "deterministic/enabled-false-on-schedule.yml",
+      "represents": ["enabled:false-distributes-to-every-schedule-entry"]
+    }
+  ],
+  "blocked": [
+    {
+      "id": "github-action",
+      "file": "blocked/github-action.yml",
+      "reasonCode": "github-action-target-removed"
+    },
+    {
+      "id": "with-on-workflow-target",
+      "file": "blocked/with-on-workflow-target.yml",
+      "reasonCode": "with-on-non-command-target"
+    },
+    {
+      "id": "enabled-false-without-schedule",
+      "file": "blocked/enabled-false-without-schedule.yml",
+      "reasonCode": "enabled-false-has-no-schedule-entry"
+    }
+  ]
+}

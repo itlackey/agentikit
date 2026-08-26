@@ -35,6 +35,26 @@
  * Sandbox/freeze pattern follows tests/workflows/characterization-with-drop.ts
  * (withIsolatedAkmStorage + writeWorkflowTestConfig + akmIndex +
  * startWorkflowRun + withWorkflowRunsRepo + decodeWorkflowPlanV4).
+ *
+ * P2b FLIP (docs/plans/specs/p2b-input-bindings.md §7 F-A3, A-N5): P1a's
+ * unconditional "task-call inputs are not supported yet" rejection is
+ * REPLACED by a NARROWER one — `with:` on a `tasks/<ref>` step now binds a
+ * DECLARED input contract (task-input-bindings.test.ts owns that new
+ * behavior). `COMPOSITION_INVALID` survives only for the case this fixture
+ * happens to already be: a target that declares NO inputs at all — every
+ * fixture below keeps its task at `version: 3` on purpose (§6.2 (d)), since a
+ * v3 task can never declare `inputs:` (P2a §1.2 D2), so "no declared inputs"
+ * stays true here unconditionally, independent of any binding logic. This is
+ * flip F-A3: CODE stays `COMPOSITION_INVALID` on every assertion below;
+ * only the trailing MESSAGE CLAUSE changes, from "task-call inputs are not
+ * supported yet" to "<ref> declares no inputs" — the message text this file
+ * pins is this test suite's OWN authored contract (the spec pins the FACT a
+ * no-declared-inputs rejection must carry, not exact bytes for it), kept
+ * intentionally consistent with task-input-bindings.test.ts's B-21/B-22/B-23
+ * "not a binding surface" / "declares no inputs" phrasing. `src/core/errors.ts`'s
+ * `COMPOSITION_INVALID` hint string changes too (A-N5) but is not asserted
+ * here. RED today for the SAME underlying reason noted above — no such guard
+ * exists yet, so `startWorkflowRun` still resolves instead of throwing.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -54,7 +74,12 @@ const WORKFLOWS_FIXTURES_ROOT = path.join(EXECUTION_CONTRACT_FIXTURES, "workflow
 const FIXTURE_ID = "with-on-task-composition";
 const STEP_ID = "dispatch";
 const TASK_REF = "tasks/nightly";
-const COMPOSITION_INVALID_MESSAGE = `Workflow step ${STEP_ID} cannot pass with: to task target ${TASK_REF}; task-call inputs are not supported yet.`;
+// P2b flip (F-A3): the trailing clause changed from "task-call inputs are not
+// supported yet" to naming the actual reason this fixture's target still
+// rejects a with: — tasks/nightly is version: 3, which can never declare
+// inputs: (P2a §1.2 D2), so it is a "no declared inputs" target ANY version
+// would be if it declared none. See this file's header comment.
+const COMPOSITION_INVALID_MESSAGE = `Workflow step ${STEP_ID} cannot pass with: to task target ${TASK_REF}; ${TASK_REF} declares no inputs.`;
 
 interface RejectedFixtureEntry {
   readonly id: string;
@@ -215,6 +240,19 @@ describe("P1a Lane A — with: on uses: tasks/<ref> rejects at freeze (COMPOSITI
   // placed anywhere after resolveOwnedAsset would still fail this test even
   // though it would pass B-02/B-03 above (both of which back TASK_REF with a
   // real file, so resolution never fails there).
+  //
+  // P2b FLIP (F-A3, §7 table row `:218`): message bytes only, per the spec —
+  // code stays COMPOSITION_INVALID, this test's structure (an unresolvable
+  // ref) is retained verbatim. RECORDED TENSION for the Review log (spec
+  // §0's "stop and record it" rule): A-N5's "no declared inputs" rejection is
+  // reasoned from the target's PARSED `inputs:` contract, which requires
+  // resolving the target — yet this fixture's ref never resolves at all, and
+  // the spec table still pins COMPOSITION_INVALID (not an asset-resolution
+  // error) here. Implement reconciles the mechanism (e.g. an unresolvable
+  // task target with with: attached still cannot be proven a valid binding
+  // surface, so it is refused the same way); this test only pins the
+  // OBSERVABLE outcome the table requires — it does not prescribe how
+  // taskDispatch orders resolution vs. the with: guard to get there.
   test("B-02b: the with: rejection fires before resolveOwnedAsset — an unresolvable task target still rejects with COMPOSITION_INVALID, not an asset-resolution error", async () => {
     write(
       "workflows/with-on-missing-task.yml",
@@ -240,7 +278,7 @@ describe("P1a Lane A — with: on uses: tasks/<ref> rejects at freeze (COMPOSITI
     if (!(error instanceof UsageError)) return;
     expect(error.code).toBe("COMPOSITION_INVALID");
     expect(error.message).toBe(
-      `Workflow step ${STEP_ID} cannot pass with: to task target tasks/does-not-exist; task-call inputs are not supported yet.`,
+      `Workflow step ${STEP_ID} cannot pass with: to task target tasks/does-not-exist; tasks/does-not-exist declares no inputs.`,
     );
   });
 
