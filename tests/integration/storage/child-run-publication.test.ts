@@ -1,0 +1,601 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+/**
+ * P3a Lane C TESTS — `publishChildWorkflowRun` and its accessors.
+ *
+ * Spec: docs/plans/specs/p3a-plan-v5-child-freeze.md §5.2-§5.5 (binding
+ * design), §1.4(2-4) (Lane C design), §1.8 A-N12 (spawnedByUnitId naming).
+ * Behavior-table rows covered: C-07…C-15 (§2.9). This lane owns ONLY this
+ * file and tests/integration/state-migration-023.test.ts.
+ *
+ * RED phase: `WorkflowRunsRepository.publishChildWorkflowRun`, `childRunsOf`,
+ * and `getRunByInvocationKey` do not exist yet. This file references them
+ * ONLY through a locally-declared structural contract
+ * (`ChildWorkflowRunsRepositoryV4`) intersected onto the real repository
+ * instance, exactly the convention already established for this same
+ * "repository gains a new method" situation by
+ * tests/integration/workflows/v4-atomic-publication-red.test.ts
+ * (`RepositoryWithV4Publisher`, `publishV4`) and
+ * tests/integration/workflows/durable-attempt-journal-v4-red.test.ts
+ * (`DurableAttemptRepositoryV4`, `durableAttempts`). `WorkflowRunsRepository &
+ * Partial<ChildWorkflowRunsRepositoryV4>` is valid whether or not the class
+ * already declares those members, so this produces no compile error to
+ * suppress — no `@ts-expect-error` red-phase pin is needed anywhere in this
+ * file. The RED signal is `expect(typeof candidate.X).toBe("function")`
+ * failing at test time (the method is `undefined` today), exactly like the
+ * two precedent files. `PublishChildWorkflowRunInput` and the three new
+ * `workflow_runs` columns are likewise not imported — they are mirrored
+ * locally (`PublishChildWorkflowRunInputContract`, `ChildWorkflowRunRow`) for
+ * the same reason `PublishWorkflowRunV4InputContract` mirrors
+ * `PublishWorkflowRunV4Input` in the sibling file above. Implement removes no
+ * directive here (there is none) — it simply makes every `typeof` check, and
+ * every behavioral assertion after it, true.
+ *
+ * The C-09 concurrency test spawns a real `node:worker_threads` Worker with
+ * its OWN `bun:sqlite` connection against the SAME state.db file — the same
+ * "genuinely separate connection/thread, real file, real locking" technique
+ * tests/storage/state-db-migrations.test.ts already uses for its
+ * writer-exclusion-window tests — so the partial unique index and SQLite's
+ * own IMMEDIATE-transaction serialization are exercised for real, never a
+ * mocked repository (§5.4).
+ */
+
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
+import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
+import type { Database } from "../../../src/storage/database";
+import { readStateEvents } from "../../../src/storage/repositories/events-repository";
+import {
+  type InsertRunInput,
+  type InsertStepInput,
+  type WorkflowRunRow,
+  WorkflowRunsRepository,
+} from "../../../src/storage/repositories/workflow-runs-repository";
+import { canonicalPlanJson, computePlanHash } from "../../../src/workflows/ir/plan-hash";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
+import { seedWorkflowRun } from "../../_helpers/workflow";
+
+// ── §5.2/§5.3 mirrored locally (see file header) ────────────────────────────
+
+interface PublishChildWorkflowRunInputContract {
+  readonly parentRunId: string;
+  /** Stored in workflow_runs.parent_unit_id — A-N12 naming. */
+  readonly spawnedByUnitId: string;
+  readonly invocationKey: string;
+  readonly run: InsertRunInput;
+  readonly steps: InsertStepInput[];
+  /** Canonical JSON of the embedded frozen child plan. Never re-derived from source. */
+  readonly planJson: string;
+  readonly planHash: string;
+}
+
+interface ChildWorkflowRunRow extends WorkflowRunRow {
+  parent_run_id: string | null;
+  parent_unit_id: string | null;
+  invocation_key: string | null;
+}
+
+interface ChildWorkflowRunsRepositoryV4 {
+  publishChildWorkflowRun(input: PublishChildWorkflowRunInputContract): ChildWorkflowRunRow;
+  childRunsOf(parentRunId: string): ChildWorkflowRunRow[];
+  getRunByInvocationKey(parentRunId: string, key: string): ChildWorkflowRunRow | undefined;
+}
+
+/** Duck-types the not-yet-implemented methods onto a real repository instance (see file header). */
+function childPublication(repo: WorkflowRunsRepository): ChildWorkflowRunsRepositoryV4 {
+  const candidate = repo as unknown as Partial<ChildWorkflowRunsRepositoryV4>;
+  expect(typeof candidate.publishChildWorkflowRun).toBe("function");
+  expect(typeof candidate.childRunsOf).toBe("function");
+  expect(typeof candidate.getRunByInvocationKey).toBe("function");
+  return candidate as ChildWorkflowRunsRepositoryV4;
+}
+
+// ── Fixtures ─────────────────────────────────────────────────────────────────
+
+const NOW = "2026-08-26T12:00:00.000Z";
+const PARENT_RUN_ID = "11111111-1111-4111-8111-111111111111";
+const PARENT_WORKFLOW_REF = "workflows/parent";
+const PARENT_SCOPE_KEY = "dir:v1:parent";
+const SPAWNING_UNIT_ID = "spawn.unit";
+
+/** A structurally-arbitrary "frozen child plan" — publishChildWorkflowRun stores it opaquely (C-11). */
+function childPlanFixture(marker = "default"): { planJson: string; planHash: string } {
+  const fakePlan = { irVersion: 5, title: "child", steps: [{ stepId: "spawn", title: "spawn" }], marker };
+  return { planJson: canonicalPlanJson(fakePlan), planHash: computePlanHash(fakePlan) };
+}
+
+function publicationInput(options: {
+  parentRunId: string;
+  spawnedByUnitId?: string;
+  invocationKey: string;
+  runId: string;
+  workflowRef?: string;
+  scopeKey?: string;
+  planMarker?: string;
+  createdAt?: string;
+}): PublishChildWorkflowRunInputContract {
+  const { planJson, planHash } = childPlanFixture(options.planMarker ?? options.runId);
+  const workflowRef = options.workflowRef ?? "workflows/child";
+  const createdAt = options.createdAt ?? NOW;
+  const run: InsertRunInput = {
+    id: options.runId,
+    workflowRef,
+    scopeKey: options.scopeKey ?? PARENT_SCOPE_KEY,
+    workflowEntryId: null,
+    workflowTitle: "child",
+    paramsJson: "{}",
+    currentStepId: "spawn",
+    createdAt,
+    updatedAt: createdAt,
+    agentHarness: null,
+    agentSessionId: null,
+    checkinArmedAt: null,
+  };
+  const steps: InsertStepInput[] = [
+    {
+      runId: options.runId,
+      stepId: "spawn",
+      stepTitle: "spawn",
+      instructions: "Do the child work.",
+      completionJson: null,
+      sequenceIndex: 0,
+    },
+  ];
+  return {
+    parentRunId: options.parentRunId,
+    spawnedByUnitId: options.spawnedByUnitId ?? SPAWNING_UNIT_ID,
+    invocationKey: options.invocationKey,
+    run,
+    steps,
+    planJson,
+    planHash,
+  };
+}
+
+function seedParentRun(db: Database, runId = PARENT_RUN_ID): void {
+  seedWorkflowRun(db, {
+    runId,
+    workflowRef: PARENT_WORKFLOW_REF,
+    scopeKey: PARENT_SCOPE_KEY,
+    steps: ["spawn"],
+  });
+}
+
+let storage: IsolatedAkmStorage;
+
+beforeEach(() => {
+  storage = withIsolatedAkmStorage();
+});
+
+afterEach(() => storage.cleanup());
+
+// ── C-07: one-transaction publication ───────────────────────────────────────
+
+describe("publishChildWorkflowRun — atomic publication (C-07)", () => {
+  test("inserts the child run row, its step, and one workflow_started event, and returns the inserted row", () => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      const repo = new WorkflowRunsRepository(db);
+      const childRunId = "22222222-2222-4222-8222-222222222222";
+      const input = publicationInput({ parentRunId: PARENT_RUN_ID, invocationKey: "key-atomic", runId: childRunId });
+
+      const row = childPublication(repo).publishChildWorkflowRun(input);
+
+      expect(row.id).toBe(childRunId);
+      expect(row.workflow_ref).toBe(input.run.workflowRef);
+      expect(row.status).toBe("active");
+      expect(row.plan_json).toBe(input.planJson);
+      expect(row.plan_hash).toBe(input.planHash);
+      expect(row.plan_ir_version).toBe(5);
+      expect(row.parent_run_id).toBe(PARENT_RUN_ID);
+      // C-15 / A-N12: the input field is spawnedByUnitId; it lands in parent_unit_id.
+      expect(row.parent_unit_id).toBe(SPAWNING_UNIT_ID);
+      expect(row.invocation_key).toBe("key-atomic");
+
+      const persisted = repo.getRunById(childRunId) as ChildWorkflowRunRow | undefined;
+      expect(persisted).toEqual(row);
+
+      const steps = repo.getStepsForRun(childRunId);
+      expect(steps.map((step) => step.step_id)).toEqual(["spawn"]);
+      expect(steps[0]?.status).toBe("pending");
+
+      const events = readStateEvents(db, { type: "workflow_started", ref: input.run.workflowRef }).events;
+      expect(events).toHaveLength(1);
+      expect(events[0]?.metadata).toEqual({ runId: childRunId, status: "active" });
+
+      // The parent run itself is untouched by a child publication.
+      const parent = repo.getRunById(PARENT_RUN_ID);
+      expect(parent?.status).toBe("active");
+      expect(parent?.plan_json).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  const ATOMICITY_CHILD_RUN_ID = "33333333-3333-4333-8333-333333333333";
+
+  test.each([
+    [
+      "child run insert",
+      `CREATE TRIGGER child_pub_fail_run AFTER INSERT ON workflow_runs WHEN NEW.id = '${ATOMICITY_CHILD_RUN_ID}' BEGIN SELECT RAISE(ABORT, 'child-pub-fail-run'); END`,
+    ],
+    [
+      "child step insert",
+      `CREATE TRIGGER child_pub_fail_steps AFTER INSERT ON workflow_run_steps WHEN NEW.run_id = '${ATOMICITY_CHILD_RUN_ID}' BEGIN SELECT RAISE(ABORT, 'child-pub-fail-steps'); END`,
+    ],
+    [
+      "plan attachment",
+      `CREATE TRIGGER child_pub_fail_plan AFTER UPDATE OF plan_json ON workflow_runs WHEN NEW.id = '${ATOMICITY_CHILD_RUN_ID}' AND NEW.plan_ir_version = 5 BEGIN SELECT RAISE(ABORT, 'child-pub-fail-plan'); END`,
+    ],
+    [
+      "workflow_started event insert",
+      "CREATE TRIGGER child_pub_fail_event AFTER INSERT ON events WHEN NEW.event_type = 'workflow_started' BEGIN SELECT RAISE(ABORT, 'child-pub-fail-event'); END",
+    ],
+  ] as const)("rolls back the child run, its steps, and its event together when %s fails", (_label, triggerSql) => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      db.exec(triggerSql);
+      const repo = new WorkflowRunsRepository(db);
+      const input = publicationInput({
+        parentRunId: PARENT_RUN_ID,
+        invocationKey: "key-fail",
+        runId: ATOMICITY_CHILD_RUN_ID,
+      });
+
+      // childPublication(repo) is resolved OUTSIDE the toThrow wrapper so a
+      // not-yet-implemented method fails this test directly and clearly,
+      // rather than being masked as "yes, something threw" by the wrapper.
+      const child = childPublication(repo);
+      expect(() => child.publishChildWorkflowRun(input)).toThrow();
+
+      expect(repo.getRunById(ATOMICITY_CHILD_RUN_ID)).toBeUndefined();
+      expect(repo.getStepsForRun(ATOMICITY_CHILD_RUN_ID)).toEqual([]);
+      expect(readStateEvents(db, { type: "workflow_started", ref: input.run.workflowRef }).events).toEqual([]);
+      // A failed child publication must not corrupt or touch the parent run.
+      expect(repo.getRunById(PARENT_RUN_ID)?.status).toBe("active");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ── C-08: idempotent second call ────────────────────────────────────────────
+
+describe("publishChildWorkflowRun — idempotent second call (C-08)", () => {
+  test("a second call with the same (parentRunId, invocationKey) returns the SAME child row — no second insert, event, or step set", () => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      const repo = new WorkflowRunsRepository(db);
+      const firstRunId = "44444444-4444-4444-8444-444444444444";
+      const secondCandidateRunId = "55555555-5555-4555-8555-555555555555";
+      const invocationKey = "key-idempotent";
+
+      const first = childPublication(repo).publishChildWorkflowRun(
+        publicationInput({ parentRunId: PARENT_RUN_ID, invocationKey, runId: firstRunId, planMarker: "first" }),
+      );
+
+      // The second call carries a DIFFERENT candidate run id, plan, and steps —
+      // proving the SELECT-first branch returns early without even looking at
+      // them, not merely that an upsert happened to agree on shared values.
+      const second = childPublication(repo).publishChildWorkflowRun(
+        publicationInput({
+          parentRunId: PARENT_RUN_ID,
+          invocationKey,
+          runId: secondCandidateRunId,
+          planMarker: "second",
+        }),
+      );
+
+      expect(second).toEqual(first);
+      expect(second.id).toBe(firstRunId);
+      expect(repo.getRunById(secondCandidateRunId)).toBeUndefined();
+      expect(repo.getStepsForRun(secondCandidateRunId)).toEqual([]);
+
+      const children = childPublication(repo).childRunsOf(PARENT_RUN_ID);
+      expect(children.map((child) => child.id)).toEqual([firstRunId]);
+
+      const events = readStateEvents(db, { type: "workflow_started", ref: "workflows/child" }).events;
+      expect(events).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ── C-09: two concurrent publishers ─────────────────────────────────────────
+
+function waitForFile(file: string, timeoutMs = 8_000): void {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(file) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  }
+  if (!fs.existsSync(file)) throw new Error(`Timed out waiting for ${file}`);
+}
+
+function buildConcurrentPublisherWorkerScript(options: {
+  databaseModulePath: string;
+  repositoryModulePath: string;
+  dbPath: string;
+  readyFile: string;
+  resultFile: string;
+  input: PublishChildWorkflowRunInputContract;
+}): string {
+  return `
+import { openDatabase } from ${JSON.stringify(options.databaseModulePath)};
+import { WorkflowRunsRepository } from ${JSON.stringify(options.repositoryModulePath)};
+import { writeFileSync } from "node:fs";
+
+const db = openDatabase(${JSON.stringify(options.dbPath)});
+try {
+  // Mirror openStateDatabase's own busy_timeout so a genuinely concurrent
+  // BEGIN IMMEDIATE blocks and retries instead of failing outright — see the
+  // file header and src/storage/sqlite-pragmas.ts.
+  db.exec("PRAGMA busy_timeout = 30000");
+  const repo = new WorkflowRunsRepository(db);
+  writeFileSync(${JSON.stringify(options.readyFile)}, "ready");
+  const publish = repo.publishChildWorkflowRun;
+  if (typeof publish !== "function") {
+    writeFileSync(
+      ${JSON.stringify(options.resultFile)},
+      JSON.stringify({ ok: false, error: "publishChildWorkflowRun is not implemented" }),
+    );
+  } else {
+    const row = publish.call(repo, ${JSON.stringify(options.input)});
+    writeFileSync(${JSON.stringify(options.resultFile)}, JSON.stringify({ ok: true, id: row.id }));
+  }
+} catch (error) {
+  writeFileSync(
+    ${JSON.stringify(options.resultFile)},
+    JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+  );
+} finally {
+  db.close();
+}
+`;
+}
+
+describe("publishChildWorkflowRun — two concurrent publishers (C-09)", () => {
+  test("the loser reads the winner's row — never a duplicate row, never a thrown conflict", async () => {
+    const dbPath = getStateDbPath();
+    const db = openStateDatabase(dbPath);
+    try {
+      seedParentRun(db);
+      const repo = new WorkflowRunsRepository(db);
+
+      const invocationKey = "key-race";
+      const mainRunId = "66666666-6666-4666-8666-666666666666";
+      const workerRunId = "77777777-7777-4777-8777-777777777777";
+      const mainInput = publicationInput({
+        parentRunId: PARENT_RUN_ID,
+        invocationKey,
+        runId: mainRunId,
+        planMarker: "main",
+      });
+      const workerInput = publicationInput({
+        parentRunId: PARENT_RUN_ID,
+        invocationKey,
+        runId: workerRunId,
+        planMarker: "worker",
+      });
+
+      const readyFile = path.join(storage.root, "child-race-ready");
+      const resultFile = path.join(storage.root, "child-race-result.json");
+      const workerScript = path.join(storage.root, "child-race-worker.mts");
+      fs.writeFileSync(
+        workerScript,
+        buildConcurrentPublisherWorkerScript({
+          databaseModulePath: path.resolve(import.meta.dir, "../../../src/storage/database.ts"),
+          repositoryModulePath: path.resolve(
+            import.meta.dir,
+            "../../../src/storage/repositories/workflow-runs-repository.ts",
+          ),
+          dbPath,
+          readyFile,
+          resultFile,
+          input: workerInput,
+        }),
+        "utf8",
+      );
+
+      const worker = new Worker(pathToFileURL(workerScript));
+      let workerError = "";
+      const workerExit = new Promise<number>((resolve) => {
+        worker.once("exit", (code) => resolve(code));
+        worker.once("error", (error) => {
+          workerError = error.message;
+        });
+      });
+
+      // Give the worker a head start opening its own connection so the two
+      // attempts are genuinely in flight together rather than strictly
+      // sequential — correctness below does not depend on who actually wins.
+      waitForFile(readyFile);
+
+      let mainThrew: unknown;
+      let mainRow: ChildWorkflowRunRow | undefined;
+      try {
+        mainRow = childPublication(repo).publishChildWorkflowRun(mainInput);
+      } catch (error) {
+        mainThrew = error;
+      }
+
+      const exitCode = await Promise.race([
+        workerExit,
+        new Promise<number>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("concurrent child publisher timed out")), 15_000),
+        ),
+      ]);
+      expect(workerError).toBe("");
+      expect(exitCode).toBe(0);
+      const workerResult = JSON.parse(fs.readFileSync(resultFile, "utf8")) as {
+        ok: boolean;
+        id?: string;
+        error?: string;
+      };
+
+      expect(mainThrew).toBeUndefined();
+      expect(workerResult.ok).toBe(true);
+      if (!mainRow) throw new Error("expected the main publisher to return a row");
+
+      // Both publishers agree on exactly one winner, whichever run id it is.
+      expect([mainRunId, workerRunId]).toContain(mainRow.id);
+      expect(workerResult.id).toBe(mainRow.id);
+
+      const children = childPublication(repo).childRunsOf(PARENT_RUN_ID);
+      expect(children).toHaveLength(1);
+      expect(children[0]?.id).toBe(mainRow.id);
+
+      const events = readStateEvents(db, { type: "workflow_started", ref: "workflows/child" }).events;
+      expect(events).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  }, 20_000);
+});
+
+// ── C-11: never reads child source ──────────────────────────────────────────
+
+describe("publishChildWorkflowRun — no child source access (C-11)", () => {
+  test("succeeds with no workflow source file on disk, and never calls fs.readFileSync under the stash dir", () => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      // No workflow/task source file is ever written anywhere in this test —
+      // the child's "workflows" directory does not even exist.
+      expect(fs.existsSync(path.join(storage.stashDir, "workflows"))).toBe(false);
+
+      const repo = new WorkflowRunsRepository(db);
+      const readFileSyncSpy = spyOn(fs, "readFileSync");
+      let row: ChildWorkflowRunRow;
+      try {
+        row = childPublication(repo).publishChildWorkflowRun(
+          publicationInput({
+            parentRunId: PARENT_RUN_ID,
+            invocationKey: "key-no-source",
+            runId: "88888888-8888-4888-8888-888888888888",
+          }),
+        );
+      } finally {
+        readFileSyncSpy.mockRestore();
+      }
+
+      expect(row.id).toBe("88888888-8888-4888-8888-888888888888");
+      for (const call of readFileSyncSpy.mock.calls) {
+        const target = String(call[0]);
+        expect(target.startsWith(storage.stashDir)).toBe(false);
+      }
+      expect(fs.existsSync(path.join(storage.stashDir, "workflows"))).toBe(false);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ── C-10: top-level scope-conflict rules do not apply ───────────────────────
+
+describe("publishChildWorkflowRun — top-level scope-conflict rules do not apply (C-10)", () => {
+  test("succeeds even when an active top-level run occupies the same (workflow_ref, scope_key) publishWorkflowRunV4 would reject", () => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      const repo = new WorkflowRunsRepository(db);
+
+      // An unrelated, already-active top-level run for the EXACT (workflow_ref,
+      // scope_key) the child below publishes under. publishWorkflowRunV4 would
+      // reject this with RESOURCE_ALREADY_EXISTS via findActiveRunForScope;
+      // publishChildWorkflowRun must never consult that guard.
+      seedWorkflowRun(db, {
+        runId: "occupying-run",
+        workflowRef: "workflows/child",
+        scopeKey: PARENT_SCOPE_KEY,
+        steps: ["work"],
+      });
+      expect(repo.findActiveRunForScope(["workflows/child"], PARENT_SCOPE_KEY)?.id).toBe("occupying-run");
+
+      const input = publicationInput({
+        parentRunId: PARENT_RUN_ID,
+        invocationKey: "key-scope-irrelevant",
+        runId: "99999999-9999-4999-8999-999999999999",
+        workflowRef: "workflows/child",
+        scopeKey: PARENT_SCOPE_KEY,
+      });
+
+      const row = childPublication(repo).publishChildWorkflowRun(input);
+
+      expect(row.id).toBe("99999999-9999-4999-8999-999999999999");
+      // The occupying run is unaffected — no conflict was raised against it.
+      expect(repo.getRunById("occupying-run")?.status).toBe("active");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+// ── C-13, C-14: accessors ────────────────────────────────────────────────────
+
+describe("publishChildWorkflowRun accessors — childRunsOf, getRunByInvocationKey (C-13, C-14)", () => {
+  test("childRunsOf returns [] for a childless parent, then every child in created_at, id order", () => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      const repo = new WorkflowRunsRepository(db);
+      expect(childPublication(repo).childRunsOf(PARENT_RUN_ID)).toEqual([]);
+
+      const first = childPublication(repo).publishChildWorkflowRun(
+        publicationInput({
+          parentRunId: PARENT_RUN_ID,
+          invocationKey: "key-1",
+          runId: "a0000000-0000-4000-8000-000000000001",
+          createdAt: "2026-08-26T12:00:00.000Z",
+        }),
+      );
+      const second = childPublication(repo).publishChildWorkflowRun(
+        publicationInput({
+          parentRunId: PARENT_RUN_ID,
+          invocationKey: "key-2",
+          runId: "a0000000-0000-4000-8000-000000000002",
+          createdAt: "2026-08-26T12:00:01.000Z",
+        }),
+      );
+
+      const children = childPublication(repo).childRunsOf(PARENT_RUN_ID);
+      expect(children.map((child) => child.id)).toEqual([first.id, second.id]);
+      for (const child of children) {
+        expect(child.parent_run_id).toBe(PARENT_RUN_ID);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  test("getRunByInvocationKey returns the matching child row, or undefined for an unmatched (parentRunId, key) pair", () => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      const repo = new WorkflowRunsRepository(db);
+      expect(childPublication(repo).getRunByInvocationKey(PARENT_RUN_ID, "unknown-key")).toBeUndefined();
+
+      const published = childPublication(repo).publishChildWorkflowRun(
+        publicationInput({
+          parentRunId: PARENT_RUN_ID,
+          invocationKey: "key-lookup",
+          runId: "b0000000-0000-4000-8000-000000000001",
+        }),
+      );
+
+      expect(childPublication(repo).getRunByInvocationKey(PARENT_RUN_ID, "key-lookup")).toEqual(published);
+      expect(childPublication(repo).getRunByInvocationKey(PARENT_RUN_ID, "unknown-key")).toBeUndefined();
+      expect(childPublication(repo).getRunByInvocationKey("some-other-parent-id", "key-lookup")).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+});
