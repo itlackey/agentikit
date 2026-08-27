@@ -759,26 +759,45 @@ describe("P2b freeze-time — no merge semantics across a two-level task -> work
   });
 });
 
-describe("P2b freeze-time — a workflow-target task step is STILL rejected, now reachable via version: 4 too (B-30)", () => {
+describe("P3a — a task-wrapped workflow target now composes to a child-workflow target (B-30 FLIPS in P3a; row B-12/B-13)", () => {
   /**
-   * Before this file, the nested-workflow guard's ONLY pin was
-   * tests/workflows/characterization-classification.test.ts:244, reached
-   * through the v3-only `parseTaskV3Yaml` / `prepareTaskV3Execution` path
-   * (source-freeze-v4.ts:264,281) — the SAME two call sites A-N6's rewrite
-   * touches. Today (LC-N1 still active), a version: 4 task composed from a
-   * workflow step throws TASK_SOURCE_INVALID before ever reaching either
-   * guard, so the v3 pin was the ONLY way to reach this rejection at all —
-   * not evidence the guard survives A-N6's routing rewrite for the v4 arm.
-   * §0 is explicit that it must: "taskDispatch's two 'A workflow task step
-   * cannot compose a nested workflow target.' guards ... stand unchanged.
-   * P3b owns child runs" — and lifting LC-N1 (A-N6) makes a version: 4 task
-   * with `uses: workflows/<ref>` newly REACHABLE from a workflow step for
-   * the first time, so this fact needs its OWN, v4-shaped pin (B-30, tagged
-   * PRESERVE in §2.2 precisely because the OBSERVABLE outcome must not
-   * change even though the code path reaching it is new).
+   * P3a FLIP (docs/plans/specs/p3a-plan-v5-child-freeze.md §1.5/§6 F-B4, rows
+   * B-12/B-13): before P3a, the nested-workflow guard's ONLY pin was
+   * tests/workflows/characterization-classification.test.ts, reached through
+   * the v3-only `parseTaskV3Yaml` / `prepareTaskV3Execution` path
+   * (now src/workflows/freeze/targets/task.ts:116,149, A-N3's corrected line
+   * numbers) — the SAME two call sites this file's B-30 block pinned for the
+   * v4 arm once A-N6 lifted LC-N1. P3a REPLACES both throw sites with routing
+   * to the ONE childWorkflowDispatch resolver (spec §4.2): a version: 4 task
+   * step whose OWN target is `uses: workflows/<ref>` no longer rejects at
+   * all — it freezes to a `{kind: "child-workflow", via: "task"}` target,
+   * `taskRef` naming the composing task's qualified ref, and the task's
+   * effective inputs (its declared defaults, overridden by any authored
+   * `with:`) become the child's params via `inputBindings` (A-N8: the SAME
+   * `freezeTaskInputBindings` normalizer, re-bound against the child's own
+   * declared `params:`). `workflows/inner` therefore declares a `scope`
+   * param (in the markdown-frontmatter authoring surface, which — unlike
+   * GitHub-YAML — has one) matching `tasks/nested-v4.yml`'s declared
+   * `scope` input, so the re-bind has a real contract to bind against.
    */
   function writeNestedFixtures(): void {
-    writeWorkflow("inner", ["      - id: work", '        run: "true"', "        shell: sh"]);
+    write(
+      "workflows/inner.md",
+      [
+        "---",
+        "type: workflow",
+        "params:",
+        "  scope: { type: string }",
+        "steps:",
+        "  - id: work",
+        "---",
+        "",
+        "## work",
+        "",
+        "Do inner work.",
+        "",
+      ].join("\n"),
+    );
     write(
       "tasks/nested-v4.yml",
       [
@@ -794,20 +813,25 @@ describe("P2b freeze-time — a workflow-target task step is STILL rejected, now
     );
   }
 
-  test("without an authored with:, a version: 4 task step whose target is uses: workflows/<ref> still throws INVALID_FLAG_VALUE, byte-exact", async () => {
+  test("without an authored with:, a version: 4 task step whose target is uses: workflows/<ref> freezes to a child-workflow target carrying the task's declared default as the child's param", async () => {
     writeNestedFixtures();
     writeWorkflow("nested-no-with", [`      - id: ${STEP_ID}`, "        uses: tasks/nested-v4"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await captureRejection("workflows/nested-no-with");
-    expect(error).toBeInstanceOf(UsageError);
-    if (!(error instanceof UsageError)) throw new Error("unreachable");
-    expect(error.code).toBe("INVALID_FLAG_VALUE");
-    expect(error.message).toBe("A workflow task step cannot compose a nested workflow target.");
-    await expectNoRunRowWritten();
+    const started = await startWorkflowRun("workflows/nested-no-with");
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    const target = stepTarget(plan, 0);
+
+    expect(target).toMatchObject({
+      kind: "child-workflow",
+      via: "task",
+      taskRef: expect.stringContaining("tasks/nested-v4"),
+    });
+    expect(frozenInputBindings(target)).toEqual([{ kind: "literal", name: "scope", value: "changed" }]);
   });
 
-  test("WITH an authored with: that validly binds the target's declared input, the SAME version: 4 task step still throws the SAME byte-exact rejection — the nested-workflow guard is not bypassed by a present, valid binding", async () => {
+  test("WITH an authored with: that validly binds the target's declared input, the SAME version: 4 task step freezes to a child-workflow target carrying the bound value — the former nested-workflow guard no longer fires", async () => {
     writeNestedFixtures();
     writeWorkflow("nested-with-with", [
       `      - id: ${STEP_ID}`,
@@ -817,12 +841,19 @@ describe("P2b freeze-time — a workflow-target task step is STILL rejected, now
     ]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await captureRejection("workflows/nested-with-with");
-    expect(error).toBeInstanceOf(UsageError);
-    if (!(error instanceof UsageError)) throw new Error("unreachable");
-    expect(error.code).toBe("INVALID_FLAG_VALUE");
-    expect(error.message).toBe("A workflow task step cannot compose a nested workflow target.");
-    await expectNoRunRowWritten();
+    const started = await startWorkflowRun("workflows/nested-with-with");
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    const target = stepTarget(plan, 0);
+
+    expect(target).toMatchObject({
+      kind: "child-workflow",
+      via: "task",
+      taskRef: expect.stringContaining("tasks/nested-v4"),
+    });
+    // The bound input reaches the child as an inputBindings entry (F-B4):
+    // the authored with.scope overrides the task's declared default.
+    expect(frozenInputBindings(target)).toEqual([{ kind: "literal", name: "scope", value: "urgent" }]);
   });
 });
 

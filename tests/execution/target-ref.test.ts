@@ -145,14 +145,20 @@ describe("classifyTargetRef — canonical asset-ref classification (P1a §4.1, s
 // ── §4.5 parity table, exercised without a spy (the "new seam") ────────────
 
 describe("classifyWorkflowStepUses — identical observable results through the new seam (P1a §4.3/§4.5 parity)", () => {
+  // P3a FLIP (docs/plans/specs/p3a-plan-v5-child-freeze.md §1.5/§6 F-B3, row
+  // B-02): "workflows/child" joins this accepted table as
+  // ["workflows/child", "workflow"], matching TargetRefKind
+  // (src/execution/target-ref.ts:33) — the per-property assertion loop below
+  // needs no change.
   test("accepts every §4.5 accepted kind through the real default classifier", () => {
-    const accepted: Array<[string, "command" | "script" | "task" | "builtin-command"]> = [
+    const accepted: Array<[string, "command" | "script" | "task" | "builtin-command" | "workflow"]> = [
       ["commands/review", "command"],
       ["team//commands/review", "command"],
       ["scripts/build.sh", "script"],
       ["tasks/review", "task"],
       ["team//tasks/review", "task"],
       ["akm/command", "builtin-command"],
+      ["workflows/child", "workflow"],
     ];
     for (const [value, kind] of accepted) {
       const result = classifyWorkflowStepUses(value);
@@ -170,13 +176,17 @@ describe("classifyWorkflowStepUses — identical observable results through the 
   // rows (spec §4.5: "message drift here is authorized; code drift is not")
   // — only `code` is pinned here, matching the untouched parity gate
   // (source-ir-contract.test.ts), which asserts `code` only for this table.
+  //
+  // P3a FLIP (spec §1.5/§6 F-B3, row B-02): the
+  // ["workflows/child", "nested-workflow-unsupported"] row is removed —
+  // classification no longer rejects it, so it moved to the accepted table
+  // above.
   test("rejects every §4.5 non-accepted kind with its listed WorkflowSourceSemanticError code", () => {
     const rejected: Array<[string, string]> = [
       ["actions/checkout@v4", "remote-action-acquisition-out-of-scope"],
       ["./actions/review", "local-action-path-unsupported"],
       ["docker://alpine:latest", "docker-action-unsupported"],
       ["agents/reviewer", "non-executable-asset-ref"],
-      ["workflows/child", "nested-workflow-unsupported"],
       ["akm:commands/review", "unsupported-uses-target"],
       ["bad.bundle//commands/review", "unsupported-uses-target"],
       ["commands/review#fragment", "unsupported-uses-target"],

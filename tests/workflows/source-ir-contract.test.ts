@@ -426,7 +426,14 @@ jobs:
     );
   });
 
-  test("accepts workflow-step task definitions and rejects nested workflows and remote actions", () => {
+  // P3a FLIP (docs/plans/specs/p3a-plan-v5-child-freeze.md §1.5/§6 F-B2, row
+  // B-02): "workflows/child" moves out of the rejection table below and into
+  // this acceptance loop — decodeWorkflowSourceIrV1's nested-workflow throw
+  // (A-N4's one producer, semantics.ts:155-159) is gone, so a direct
+  // `uses: workflows/x` step compiles cleanly through this SAME pipeline just
+  // like any other target-ref-shaped uses:. Test name drops "nested
+  // workflows" accordingly.
+  test("accepts workflow-step task definitions and rejects remote actions", () => {
     for (const uses of [
       "akm/command",
       "commands/review",
@@ -434,6 +441,7 @@ jobs:
       "tasks/review",
       "team//tasks/review",
       "scripts/build.sh",
+      "workflows/child",
     ]) {
       const withBlock = uses === "akm/command" ? "\n        with: { content: Review this }" : "";
       const result = github(`${VALID_HEADER}\n      - id: local\n        uses: ${uses}${withBlock}\n`);
@@ -444,7 +452,6 @@ jobs:
       ["./actions/review", "local-action-path-unsupported"],
       ["docker://alpine:latest", "docker-action-unsupported"],
       ["agents/reviewer", "non-executable-asset-ref"],
-      ["workflows/child", "nested-workflow-unsupported"],
       ["akm:commands/review", "unsupported-uses-target"],
       ["bad.bundle//commands/review", "unsupported-uses-target"],
       ["commands/review#fragment", "unsupported-uses-target"],
@@ -1085,9 +1092,15 @@ describe("strict source IR decoder", () => {
     replaceOnlyDecodedStep(remote, { id: "ok", uses: "actions/checkout@v4", source: remote.source });
     expect(() => decodeWorkflowSourceIrV1(remote)).toThrow(/remote action/i);
 
+    // P3a FLIP (spec §1.5/§6 F-B2, row B-02): decodeWorkflowSourceIrV1 no
+    // longer throws for a step whose uses: is a workflow ref — A-N4's one
+    // producer (semantics.ts:155-159) is gone, and decodeWorkflowSourceIrV1
+    // is one of its three independent call chains (A-N4). The neighboring
+    // `remote`, `escapedCwd`, `controlCwd`, and `builtin` cases immediately
+    // around this one are untouched.
     const nested = structuredClone(valid);
     replaceOnlyDecodedStep(nested, { id: "ok", uses: "workflows/child", source: nested.source });
-    expect(() => decodeWorkflowSourceIrV1(nested)).toThrow(/nested workflow/i);
+    expect(decodeWorkflowSourceIrV1(nested)).toEqual(nested);
 
     const builtin = structuredClone(valid);
     replaceOnlyDecodedStep(builtin, {

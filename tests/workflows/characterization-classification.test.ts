@@ -24,7 +24,7 @@ import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-ru
 import { prepareTaskV3Execution } from "../../src/tasks/runtime-v3";
 import { classifyTaskV3Uses, parseTaskV3Yaml } from "../../src/tasks/source-v3";
 import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
-import { decodeWorkflowPlanV4 } from "../../src/workflows/ir/schema-v4";
+import { decodeWorkflowPlanV4, type FrozenWorkflowTarget } from "../../src/workflows/ir/schema-v4";
 import { startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { compileGithubWorkflowSource } from "../../src/workflows/source-ir/compile";
 import { classifyWorkflowStepUses, WorkflowSourceSemanticError } from "../../src/workflows/source-ir/semantics";
@@ -173,17 +173,14 @@ describe("classifyWorkflowStepUses — task-ref priority and delegation (source-
     expect(result).toEqual({ kind: "command", ref: "commands/review" });
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. Flips in P3 (child workflows). This is
-  // R-03's FIRST site — semantics.ts:141-146 — independent of the two
-  // source-freeze-v4.ts sites pinned below.
-  test("R-03 (site 1/3, semantics.ts:141-146): a direct 'uses: workflows/x' step throws nested-workflow-unsupported", () => {
-    const error = thrown(() => classifyWorkflowStepUses("workflows/child"));
-    expect(error).toBeInstanceOf(WorkflowSourceSemanticError);
-    expect((error as WorkflowSourceSemanticError).code).toBe("nested-workflow-unsupported");
-    expect((error as Error).message).toBe(
-      'Nested workflow target "workflows/child" is unsupported in a workflow step.',
-    );
+  // P3a FLIP (docs/plans/specs/p3a-plan-v5-child-freeze.md §1.5/§6 F-B1, row
+  // B-01): R-03's FIRST site — semantics.ts:155-159 (A-N3's head-verified
+  // line numbers) — no longer throws. Classification returns the workflow
+  // target and freeze decides (A-N4): a direct 'uses: workflows/x' step
+  // classifies exactly like any other target-ref-shaped uses:.
+  test("R-03 (site 1/3, semantics.ts:155-159) FLIPPED in P3a: a direct 'uses: workflows/x' step classifies as kind workflow and throws nothing", () => {
+    const result = classifyWorkflowStepUses("workflows/child");
+    expect(result).toEqual({ kind: "workflow", ref: "workflows/child" });
   });
 
   // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
@@ -198,7 +195,7 @@ describe("classifyWorkflowStepUses — task-ref priority and delegation (source-
 
 // ── R-03, sites 2 and 3: a task-composed nested-workflow target ─────────────
 
-describe("R-03 (sites 2/3, source-freeze-v4.ts:211-239) — a task-composed nested-workflow target", () => {
+describe("R-03 (sites 2/3, freeze/targets/task.ts:116,149) FLIPPED in P3a — a task-composed workflow target", () => {
   let storage: IsolatedAkmStorage;
 
   beforeEach(() => {
@@ -212,13 +209,40 @@ describe("R-03 (sites 2/3, source-freeze-v4.ts:211-239) — a task-composed nest
     storage.cleanup();
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. Flips in P3 (child workflows).
-  test("a workflow step composing a task whose own uses: is a workflow rejects with the exact byte-identical message", async () => {
+  // P3a FLIP (spec §1.5/§6 F-B1, row B-12): both source sites this describe
+  // block used to pin — the task.target.kind check (task.ts:116) and the
+  // post-prepare prepared.kind check (task.ts:149), A-N3's corrected line
+  // numbers for the pre-P2b-split source-freeze-v4.ts:220-222/:237-239 §1.1
+  // cites — now route to the ONE childWorkflowDispatch resolver instead of
+  // throwing "A workflow task step cannot compose a nested workflow target."
+  // (row B-16: rg "cannot compose a nested workflow" src/ is empty). A
+  // workflow step composing a task whose own uses: targets a workflow
+  // freezes to a child-workflow target, via: "task", carrying the composing
+  // task's qualified ref — exactly as it did for the v3 fixture this test
+  // already used pre-flip (the ONLY reachable site, per the pre-flip trailing
+  // comment this edit removes: the second site stays dead-in-practice, same
+  // as before — a fixture that reaches taskDispatch's target.kind==="uses"
+  // guard can never independently also drive prepareTaskV3Execution's
+  // returned kind==="workflow" check).
+  test("a workflow step composing a task whose own uses: is a workflow freezes to a child-workflow target, via task", async () => {
     write(
       storage.stashDir,
       "tasks/nested-workflow-task.yml",
       ["version: 3", "uses: workflows/child", "akm:", '  schedule: "@daily"', ""].join("\n"),
+    );
+    write(
+      storage.stashDir,
+      "workflows/child.yml",
+      [
+        "name: Child",
+        "on:",
+        "  workflow_dispatch:",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps: [{ id: work, run: echo child, shell: sh }]",
+        "",
+      ].join("\n"),
     );
     write(
       storage.stashDir,
@@ -238,23 +262,17 @@ describe("R-03 (sites 2/3, source-freeze-v4.ts:211-239) — a task-composed nest
     );
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await rejection(startWorkflowRun("workflows/nested-composition"));
-    expect(error).toBeInstanceOf(UsageError);
-    expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    expect((error as Error).message).toBe("A workflow task step cannot compose a nested workflow target.");
+    const started = await startWorkflowRun("workflows/nested-composition");
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    const root = plan.steps[0]?.root;
+    const target: FrozenWorkflowTarget | undefined = root && root.kind !== "map" ? root.frozenTarget : undefined;
 
-    // R-03's third site (source-freeze-v4.ts:237-239, guarding
-    // `prepared.kind === "workflow"` on the return of prepareTaskV3Execution)
-    // throws the byte-identical message from the SAME taskDispatch function.
-    // As written today it is unreachable independently of the :220-222 guard
-    // exercised above: prepareTaskV3Execution can only return kind "workflow"
-    // when `document.target.uses.kind === "workflow"` (runtime-v3.ts:415) —
-    // exactly the fact the :220 guard already tests on the same `task` object
-    // before prepareTaskV3Execution is ever called. No fixture can pass :220
-    // and still reach :237 with prepared.kind === "workflow". This test
-    // therefore pins the one reachable observable failure; the second site is
-    // a currently-dead-in-practice duplicate rather than independently
-    // exercised — see the P0 review log / discoveries.
+    expect(target).toMatchObject({
+      kind: "child-workflow",
+      via: "task",
+      taskRef: expect.stringContaining("tasks/nested-workflow-task"),
+    });
   });
 });
 
