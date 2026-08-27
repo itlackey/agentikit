@@ -585,10 +585,23 @@ function parseUsesStep(
   }
   const uses = reader.string(usesPair.value, "step.uses");
   const target = classifyUses(reader, uses, usesPair.value, options.classifyUses ?? classifyWorkflowSourceUses);
-  const withValues = parseScalarMap(reader, fields.get("with"), "step.with", INPUT_KEY, true);
+  // A-N3 (P2b, docs/plans/specs/p2b-input-bindings.md §1.7): a tasks/<ref>
+  // step's with: may bind any JSON value the composed task's declared input
+  // needs (an object/array literal, or a {from: "..."} reference) — decoding
+  // it through the scalar-only parseScalarMap would reject the very shapes
+  // A-N3 exists to accept before decodeWorkflowSourceIrV1 (schema.ts) is ever
+  // reached. Every other target keeps the byte-identical scalar-only grammar.
+  const withValues =
+    target.kind === "task"
+      ? parsePlainMap(reader, fields.get("with"), "step.with", INPUT_KEY)
+      : parseScalarMap(reader, fields.get("with"), "step.with", INPUT_KEY, true);
   const commandMode =
     target.kind === "builtin-command"
-      ? validateBuiltinCommand(reader, withValues, fields.get("with")?.value ?? usesPair.value)
+      ? validateBuiltinCommand(
+          reader,
+          withValues as Record<string, WorkflowSourceScalar> | undefined,
+          fields.get("with")?.value ?? usesPair.value,
+        )
       : undefined;
   return {
     ...common,
@@ -674,6 +687,32 @@ function parseScalarMap(
     if (!keyPattern.test(key))
       reader.fail("invalid-mapping-key", `${context} has invalid key ${JSON.stringify(key)}.`, valuePair.key);
     out[key] = reader.scalar(valuePair.value, `${context}.${key}`, allowNull);
+  }
+  return out;
+}
+
+/**
+ * Like {@link parseScalarMap} but accepts an arbitrary JSON value per key —
+ * a task-composition with: binding may be the declared input's own shape (an
+ * object/array literal, or a `{from: "..."}` reference), not just a scalar
+ * (A-N3). Depth/node bounds are already enforced document-wide by
+ * `checkTree`/`rejectAliases` before any field-level parsing runs, so this
+ * adds no new bound. `decodeWorkflowSourceIrV1` (schema.ts) decides what a
+ * declared input actually accepts.
+ */
+function parsePlainMap(
+  reader: StrictYamlReader,
+  pair: YamlPair | undefined,
+  context: string,
+  keyPattern: RegExp,
+): Record<string, unknown> | undefined {
+  if (!pair) return undefined;
+  const fields = reader.arbitraryFields(pair.value, context);
+  const out: Record<string, unknown> = {};
+  for (const [key, valuePair] of fields) {
+    if (!keyPattern.test(key))
+      reader.fail("invalid-mapping-key", `${context} has invalid key ${JSON.stringify(key)}.`, valuePair.key);
+    out[key] = reader.plain(valuePair.value, `${context}.${key}`);
   }
   return out;
 }

@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { UsageError } from "../../core/errors";
 import { decodeFrozenExecutableIdentity, type FrozenExecutableIdentity } from "../../execution/executable-identity";
+import { INPUT_NAME_PATTERN, type TaskInputBinding } from "../../execution/input-contract";
 import {
   canonicalResolvedExecutionRequest,
   decodeResolvedExecutionRequest,
@@ -22,6 +23,7 @@ import {
 import { decodeExecutionSourceIdentity, type ExecutionSourceIdentity } from "../../execution/source";
 import { decodeFrozenRunnerSpec } from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
+import { parseReference } from "../program/expressions";
 import {
   decodeWorkflowExecSpec,
   type IrMapNode,
@@ -85,6 +87,8 @@ export interface FrozenWorkflowCommandTarget {
   readonly cwdIdentity?: FrozenWorkflowDirectoryIdentity;
   readonly executable?: FrozenExecutableIdentity;
   readonly gitCommitOid?: string;
+  /** A composing step's frozen with: bindings against this task's declared inputs (P2b §3, A-N7). Absent, never [], when empty. */
+  readonly inputBindings?: readonly TaskInputBinding[];
 }
 
 export interface FrozenWorkflowShellTarget {
@@ -94,6 +98,8 @@ export interface FrozenWorkflowShellTarget {
   readonly cwdIdentity: FrozenWorkflowDirectoryIdentity;
   readonly executable?: FrozenExecutableIdentity;
   readonly gitCommitOid?: string;
+  /** A composing step's frozen with: bindings against this task's declared inputs (P2b §3, A-N7). Absent, never [], when empty. */
+  readonly inputBindings?: readonly TaskInputBinding[];
 }
 
 export interface FrozenWorkflowScriptTarget {
@@ -109,6 +115,8 @@ export interface FrozenWorkflowScriptTarget {
   readonly materialization: "ephemeral-0700-delete";
   readonly executable?: FrozenExecutableIdentity;
   readonly gitCommitOid?: string;
+  /** A composing step's frozen with: bindings against this task's declared inputs (P2b §3, A-N7). Absent, never [], when empty. */
+  readonly inputBindings?: readonly TaskInputBinding[];
 }
 
 export type FrozenWorkflowTarget = FrozenWorkflowCommandTarget | FrozenWorkflowShellTarget | FrozenWorkflowScriptTarget;
@@ -277,7 +285,18 @@ function decodeCommandTarget(
 ): FrozenWorkflowCommandTarget {
   assertKeys(
     target,
-    ["kind", "ref", "contentHash", "request", "runner", "concurrency", "cwdIdentity", "executable", "gitCommitOid"],
+    [
+      "kind",
+      "ref",
+      "contentHash",
+      "request",
+      "runner",
+      "concurrency",
+      "cwdIdentity",
+      "executable",
+      "gitCommitOid",
+      "inputBindings",
+    ],
     `unit ${unit.id} command target`,
   );
   if (target.ref !== null && typeof target.ref !== "string") fail(`unit ${unit.id} command target ref is invalid`);
@@ -324,6 +343,7 @@ function decodeCommandTarget(
     fail(`unit ${unit.id} non-CLI target cannot carry a host executable`);
   }
   const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
+  const inputBindings = decodeInputBindings(target.inputBindings, `unit ${unit.id} command target`);
   // Force the shared request canonicalizer across every accepted wire request.
   canonicalResolvedExecutionRequest(request);
   return Object.freeze({
@@ -336,6 +356,7 @@ function decodeCommandTarget(
     ...(cwdIdentity ? { cwdIdentity } : {}),
     ...(executable ? { executable } : {}),
     ...(gitCommitOid ? { gitCommitOid } : {}),
+    ...(inputBindings ? { inputBindings } : {}),
   });
 }
 
@@ -346,7 +367,7 @@ function decodeShellTarget(
 ): FrozenWorkflowShellTarget {
   assertKeys(
     target,
-    ["kind", "contentHash", "exec", "cwdIdentity", "executable", "gitCommitOid"],
+    ["kind", "contentHash", "exec", "cwdIdentity", "executable", "gitCommitOid", "inputBindings"],
     `unit ${unit.id} shell target`,
   );
   const exec = decodeWorkflowExecSpec(target.exec, `unit ${unit.id} shell target exec`);
@@ -359,11 +380,15 @@ function decodeShellTarget(
   }
   const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
   const contentHash = digest(target.contentHash, `unit ${unit.id} shell contentHash`);
+  // inputBindings deliberately sits OUTSIDE this preimage (P2b A-N7): identity
+  // coverage for a task-composed unit comes from computeUnitInputHash's own
+  // frozenTarget field (step-work.ts), which hashes this whole target anyway.
   const expected = createHash("sha256")
     .update("akm.workflow.shell.v1\0")
     .update(canonicalJsonLocal({ exec, environment, cwdIdentity }))
     .digest("hex");
   if (contentHash !== expected) fail(`unit ${unit.id} shell contentHash does not match its frozen dispatch`);
+  const inputBindings = decodeInputBindings(target.inputBindings, `unit ${unit.id} shell target`);
   return Object.freeze({
     kind: "shell",
     contentHash,
@@ -371,6 +396,7 @@ function decodeShellTarget(
     cwdIdentity,
     ...(executable ? { executable } : {}),
     ...(gitCommitOid ? { gitCommitOid } : {}),
+    ...(inputBindings ? { inputBindings } : {}),
   });
 }
 
@@ -394,6 +420,7 @@ function decodeScriptTarget(
       "materialization",
       "executable",
       "gitCommitOid",
+      "inputBindings",
     ],
     `unit ${unit.id} script target`,
   );
@@ -418,6 +445,7 @@ function decodeScriptTarget(
     ? decodeFrozenExecutableIdentity(target.executable, `unit ${unit.id} executable`)
     : undefined;
   const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
+  const inputBindings = decodeInputBindings(target.inputBindings, `unit ${unit.id} script target`);
   requiredSources.push({ ref: target.ref, bundle: "", adapter: "", file: "", hash: contentHash });
   return Object.freeze({
     kind: "script",
@@ -432,7 +460,53 @@ function decodeScriptTarget(
     materialization: "ephemeral-0700-delete",
     ...(executable ? { executable } : {}),
     ...(gitCommitOid ? { gitCommitOid } : {}),
+    ...(inputBindings ? { inputBindings } : {}),
   });
+}
+
+/**
+ * Decode a frozen target's `inputBindings` (P2b §3.2 A-N7): a composing
+ * step's `with:` normalized against the composed task's declared inputs.
+ * Closed `kind`, `INPUT_NAME_PATTERN` name, unique and sorted by name (never
+ * `[]` — absence is the identity-preserving default). A `literal` entry
+ * requires `value`; a `reference` entry requires a `parseReference`-valid
+ * `from` plus the declaration's bounded `schema` (§3.6's widened reference
+ * arm, `src/execution/input-contract.ts`).
+ */
+function decodeInputBindings(value: unknown, label: string): readonly TaskInputBinding[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) fail(`${label} inputBindings must be a non-empty array`);
+  let prior: string | undefined;
+  const bindings = value.map((raw, index) => {
+    const binding = record(raw, `${label} inputBindings[${index}]`);
+    if (typeof binding.name !== "string" || !INPUT_NAME_PATTERN.test(binding.name)) {
+      fail(`${label} inputBindings[${index}] name is invalid`);
+    }
+    if (prior !== undefined && compareCodePoints(prior, binding.name) >= 0) {
+      fail(`${label} inputBindings must be sorted by unique name`);
+    }
+    prior = binding.name;
+    if (binding.kind === "literal") {
+      assertKeys(binding, ["kind", "name", "value"], `${label} inputBindings[${index}]`);
+      if (!Object.hasOwn(binding, "value")) fail(`${label} inputBindings[${index}] literal binding requires value`);
+      return Object.freeze({ kind: "literal", name: binding.name, value: binding.value }) as TaskInputBinding;
+    }
+    if (binding.kind === "reference") {
+      assertKeys(binding, ["kind", "name", "from", "schema"], `${label} inputBindings[${index}]`);
+      if (typeof binding.from !== "string" || !parseReference(binding.from).ok) {
+        fail(`${label} inputBindings[${index}] from is not a valid reference`);
+      }
+      const schema = record(binding.schema, `${label} inputBindings[${index}] schema`);
+      return Object.freeze({
+        kind: "reference",
+        name: binding.name,
+        from: binding.from,
+        schema: Object.freeze(schema),
+      }) as TaskInputBinding;
+    }
+    return fail(`${label} inputBindings[${index}] has unsupported kind ${String(binding.kind)}`);
+  });
+  return Object.freeze(bindings);
 }
 
 function decodeGitCommitOid(value: unknown, unit: IrUnitNodeCore): string | undefined {

@@ -90,13 +90,20 @@ export interface InputFlag {
  * A single input binding as it will be frozen into a `TaskInvocation`
  * (`src/tasks/model/invocation.ts`, P2b). Task source v4's `inputs:` grammar
  * needs both a literal value (an `akm task run --<name> <value>` flag, or a
- * `schedule[i].inputs` literal) and, eventually, a reference binding (P2b).
- * P2a's `akm task run` input flags only ever produce `kind: "literal"`
- * bindings, and nothing consumes them yet.
+ * `schedule[i].inputs` literal) and a reference binding (P2b,
+ * `docs/plans/specs/p2b-input-bindings.md` §3.6). P2a's `akm task run` input
+ * flags only ever produce `kind: "literal"` bindings.
+ *
+ * The `reference` arm additionally carries `schema` — the declaration's
+ * bounded JSON Schema (P2b §3.6's "Contract note"): pre-attempt resolution
+ * (`src/workflows/exec/step-work.ts`) validates the reference's RESOLVED
+ * value against it without re-reading the task source, so the check stays a
+ * pure function of the frozen plan. This is an additive widening; the
+ * `literal` arm is untouched.
  */
 export type TaskInputBinding =
   | Readonly<{ kind: "literal"; name: string; value: unknown }>
-  | Readonly<{ kind: "reference"; name: string; from: string }>;
+  | Readonly<{ kind: "reference"; name: string; from: string; schema: Readonly<Record<string, unknown>> }>;
 
 /**
  * The injected message vocabulary `materializeInputFlags` calls into instead

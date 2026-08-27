@@ -20,8 +20,12 @@ export async function resolveStep(source: WorkflowSourceStep, context: Resolutio
   if (!source.uses) return inlineDispatch(source, baseUnit, context);
   const target = classifyWorkflowStepUses(source.uses);
   if (target.kind === "task") return taskDispatch(source, baseUnit, target.ref, context);
-  if (target.kind === "script") return directScript(source, baseUnit, target.ref, context);
+  if (target.kind === "script") {
+    rejectNonTaskBindingWith(source, target.ref, "script");
+    return directScript(source, baseUnit, target.ref, context);
+  }
   if (target.kind === "command" || target.kind === "builtin-command") {
+    if (target.kind === "command") rejectNonTaskBindingWith(source, target.ref, "command");
     const action =
       target.kind === "builtin-command"
         ? source.with
@@ -29,6 +33,23 @@ export async function resolveStep(source: WorkflowSourceStep, context: Resolutio
     return commandDispatch(source, baseUnit, action, context);
   }
   throw new UsageError(`Workflow target ${source.uses} is not executable in 0.9.2.`, "INVALID_FLAG_VALUE");
+}
+
+/**
+ * A-N5 (spec docs/plans/specs/p2b-input-bindings.md §1.7): `commands/<ref>`
+ * and `scripts/<ref>` are not binding surfaces — a `with:` authored on either
+ * now fails closed instead of being silently dropped (the same defect P1a
+ * closed for `tasks/<ref>`, now repeated for these two targets, B-22/B-23).
+ * `akm/command`'s `with:` is its own argument bag
+ * (`parseBuiltinCommandAction`) and never routes through here.
+ */
+function rejectNonTaskBindingWith(source: WorkflowSourceStep, ref: string, kind: "command" | "script"): void {
+  if (source.with === undefined) return;
+  const family = kind === "command" ? "commands" : "scripts";
+  throw new UsageError(
+    `Workflow step ${source.id} cannot pass with: to ${family} target ${ref}; a ${kind} ref is not a binding surface.`,
+    "COMPOSITION_INVALID",
+  );
 }
 
 export function resolveJudge(source: WorkflowSourceStep, context: ResolutionContext): ResolvedDispatch {

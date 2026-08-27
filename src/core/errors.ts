@@ -91,11 +91,14 @@ export type UsageErrorCode =
   // in CI meant the gate never fired.
   | "UNKNOWN_FLAG"
   // P1a (docs/plans/specs/p1a-with-rejection-classifier.md §2.1, D7): a
-  // workflow step authors with: on a uses: tasks/<ref> target. Task-call
-  // inputs are not implemented yet (arriving in a later 0.9.x release) — the
+  // workflow step authors with: on a target that cannot bind it. The
   // authored mapping used to be silently dropped at freeze; now it is
-  // rejected instead (the fail-closed correction). Thrown from
-  // src/workflows/ir/source-freeze-v4.ts's taskDispatch.
+  // rejected instead (the fail-closed correction). P2b
+  // (docs/plans/specs/p2b-input-bindings.md §1.7 A-N5) narrows this to a
+  // tasks/<ref> target that declares no inputs: at all, and grows it to
+  // commands/<ref> and scripts/<ref> targets, which are never binding
+  // surfaces. Thrown from src/workflows/freeze/targets/task.ts's
+  // taskDispatch and src/workflows/freeze/resolve-steps.ts's resolveStep.
   | "COMPOSITION_INVALID"
   // P1a: the sourceError funnel in src/tasks/source-v3.ts, re-coded from
   // INVALID_FLAG_VALUE. Message text, field-path rendering (`$` for the
@@ -175,6 +178,13 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
     "Refs use the form [bundle//]conceptId, e.g. `akm show knowledge/guide.md` or `akm show skills/deploy`.",
   UNKNOWN_COMMAND: "Run `akm --help` to see available commands.",
   UNKNOWN_FLAG: "Run the command with `--help` to see its accepted flags.",
+  // NOTE (P2b, docs/plans/specs/p2b-input-bindings.md §1.7 A-N5/F-A3): the
+  // spec calls for this string to name the two real rejection causes instead
+  // of promising a future release. Left BYTE-UNCHANGED here because
+  // tests/core/errors-usage-hints.test.ts (a P1a preservation test, out of
+  // this lane's file ownership) pins it verbatim with `.toBe(...)` and this
+  // lane may not edit tests beyond removing marked red-phase directives.
+  // Recorded for the Review log rather than silently absorbed (spec §0).
   COMPOSITION_INVALID: "Remove the step's with: block; task-call inputs arrive in a later 0.9.x release.",
   TASK_SOURCE_INVALID: "Fix the task source at the reported path and line, then re-run.",
   TARGET_REF_INVALID:

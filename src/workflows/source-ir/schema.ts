@@ -141,7 +141,15 @@ export interface WorkflowSourceStep {
   commandMode?: WorkflowSourceCommandMode;
   /** Lossless direct-spawn argv. It is never joined into a shell string. */
   exec?: WorkflowSourceExec;
-  with?: Record<string, WorkflowSourceScalar>;
+  /**
+   * A-N3 (P2b, docs/plans/specs/p2b-input-bindings.md §1.7): widened from
+   * `Record<string, WorkflowSourceScalar>` so a `tasks/<ref>` step's `with:`
+   * may bind a declared object/array-typed input, or a `{from: "..."}`
+   * reference. `scalarRecord` (below) narrows the "must be a scalar"
+   * restriction to non-task targets only — every other target's `with:` is
+   * still exactly scalar/null, byte-identical to before this widening.
+   */
+  with?: Record<string, unknown>;
   env?: Record<string, WorkflowSourceEnvironmentValue>;
   shell?: WorkflowSourceHostShell;
   workingDirectory?: string;
@@ -352,6 +360,9 @@ function validateStep(
   }
   if (step.uses !== undefined && !hasUses) fail(`step ${id} uses must be a non-empty string`);
   if (step.run !== undefined && !hasRun) fail(`step ${id} run must be a non-empty string`);
+  // A-N3: captured at the outer scope so scalarRecord's task-scoped widening
+  // (below) can consult it without re-classifying `step.uses`.
+  let usesTarget: ReturnType<typeof classifyWorkflowStepUses> | undefined;
   if (hasUses) {
     let target: ReturnType<typeof classifyWorkflowStepUses>;
     try {
@@ -359,6 +370,7 @@ function validateStep(
     } catch (cause) {
       semanticFail(cause, `step ${id} uses`);
     }
+    usesTarget = target;
     if (target.kind === "builtin-command") {
       if (
         step.commandMode !== "literal" &&
@@ -386,7 +398,11 @@ function validateStep(
     }
   }
   validateExec(step.exec, `step ${id} exec`, options);
-  scalarRecord(step.with, `step ${id} with`, true);
+  // A-N3: the "must be a scalar" restriction narrows to non-task targets
+  // only. A tasks/<ref> step's with: may carry any JSON value the bounded
+  // document front end already accepts; freeze (src/workflows/freeze/**)
+  // decides what a declared input actually accepts.
+  scalarRecord(step.with, `step ${id} with`, true, usesTarget?.kind === "task");
   environment(step.env, `step ${id} env`);
   rejectStepWithExpressions(step, id);
   rejectExpressionsInRecord(step.env, `step ${id} env`);
@@ -717,11 +733,21 @@ function rejectExpressionsInRecord(value: unknown, location: string): void {
   }
 }
 
+/** A-N3: recurses into nested values, since a task step's with: may now carry an object/array. */
+function containsUnsupportedExpression(value: unknown): boolean {
+  if (typeof value === "string") return value.includes("${{");
+  if (Array.isArray(value)) return value.some((item) => containsUnsupportedExpression(item));
+  if (value !== null && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some((item) => containsUnsupportedExpression(item));
+  }
+  return false;
+}
+
 function rejectStepWithExpressions(step: Record<string, unknown>, id: string): void {
   if (step.with === undefined) return;
   for (const [key, item] of Object.entries(record(step.with, `step ${id} with`))) {
-    if (typeof item !== "string" || !item.includes("${{")) continue;
     if (step.uses === "akm/command" && step.commandMode === "literal" && key === "content") continue;
+    if (!containsUnsupportedExpression(item)) continue;
     fail(`step ${id} with.${key} contains an unsupported expression`);
   }
 }
@@ -876,11 +902,19 @@ function stringList(value: unknown, location: string, max: number, allowEmpty: b
   }
 }
 
-function scalarRecord(value: unknown, location: string, allowNull: boolean): void {
+/**
+ * `allowNonScalar` (A-N3, P2b): when true (a `tasks/<ref>` step's `with:`
+ * only), the key-grammar check still runs but the scalar/null value
+ * restriction is skipped entirely — a declared object/array-typed input or a
+ * `{from: "..."}` reference may decode. Every other target keeps the
+ * byte-identical scalar-or-null restriction.
+ */
+function scalarRecord(value: unknown, location: string, allowNull: boolean, allowNonScalar = false): void {
   if (value === undefined) return;
   const map = record(value, location);
   for (const [key, item] of Object.entries(map)) {
     if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/.test(key)) fail(`${location} has invalid key ${key}`);
+    if (allowNonScalar) continue;
     if (item === null && allowNull) continue;
     if (typeof item !== "string" && typeof item !== "number" && typeof item !== "boolean") {
       fail(`${location}.${key} must be a scalar`);

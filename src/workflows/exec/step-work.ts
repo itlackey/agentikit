@@ -44,6 +44,7 @@ import { createHash, randomUUID } from "node:crypto";
 import unitPreambleTemplate from "../../assets/prompts/workflow-unit-preamble.md" with { type: "text" };
 import { UsageError } from "../../core/errors";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
+import { canonicalInputJson, type TaskInputBinding, validateInputs } from "../../execution/input-contract";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import {
   type WorkflowRunUnitAttemptRowV4,
@@ -291,6 +292,64 @@ function truncatedReferenceTarget(
   return isTruncatedEvidence(current) ? current : undefined;
 }
 
+/** The whole-step failure shape `computeStepWorkList` returns — one field, so a resolver's own failure IS this shape. */
+type TaskInputBindingsResolution =
+  | { ok: true; values: Readonly<Record<string, unknown>> }
+  | { ok: false; error: string };
+
+/**
+ * Pre-attempt resolution of a task-composing step's frozen `inputBindings`
+ * (spec docs/plans/specs/p2b-input-bindings.md §3.6, B-31..B-34): a
+ * `{kind:"literal"}` passes through unchanged — its schema was already
+ * checked at FREEZE (`freezeTaskInputBindings`,
+ * `src/workflows/freeze/task-bindings.ts`), so it is never re-validated. A
+ * `{kind:"reference"}` resolves via the SAME {@link resolveStepReference}
+ * every other whole-value position uses, then validates the resolved value
+ * against the binding's own frozen `schema` — a mismatch (or a reference that
+ * fails to resolve at all) fails the WHOLE step here, before
+ * `reserveUnitAttempt` is ever called by the native executor. Absent
+ * `bindings` (the overwhelmingly common case — no `with:` on this step's
+ * target) resolves trivially to `{}` with no scope access at all.
+ */
+function resolveTaskInputBindings(
+  bindings: readonly TaskInputBinding[] | undefined,
+  stepId: string,
+  scope: ExpressionScope,
+): TaskInputBindingsResolution {
+  if (!bindings || bindings.length === 0) return { ok: true, values: {} };
+  const values: Record<string, unknown> = {};
+  for (const binding of bindings) {
+    if (binding.kind === "literal") {
+      values[binding.name] = binding.value;
+      continue;
+    }
+    const resolved = resolveStepReference(binding.from, scope);
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        error:
+          `Step "${stepId}" input "${binding.name}" reference ${binding.from} failed to resolve: ` +
+          resolved.error.message,
+      };
+    }
+    const errors = validateInputs(
+      { [binding.name]: { schema: binding.schema, required: false } },
+      { [binding.name]: resolved.value },
+      { pathRoot: binding.name },
+    );
+    if (errors.length > 0) {
+      return {
+        ok: false,
+        error:
+          `Step "${stepId}" input "${binding.name}" reference ${binding.from} resolved to a value violating its ` +
+          `declared schema: ${errors.join("; ")}`,
+      };
+    }
+    values[binding.name] = resolved.value;
+  }
+  return { ok: true, values };
+}
+
 export function computeStepWorkList(plan: IrStepPlanV4, input: WorkListInput): ComputeWorkListResult {
   const root = plan.root;
   // Route-only steps (YAML `route:`) carry no execution subgraph.
@@ -325,6 +384,19 @@ export function computeStepWorkList(plan: IrStepPlanV4, input: WorkListInput): C
     }
     resolvedInputs.push({ reference, value: resolved.value });
   }
+
+  // P2b Lane A2 — pre-attempt resolution of a task-composing step's frozen
+  // `inputBindings` (spec §3.6, B-31..B-34): a `{kind:"literal"}` passes
+  // through unchanged (its schema was already checked at freeze, B-34); a
+  // `{kind:"reference"}` resolves against this SAME scope, then its resolved
+  // value is validated against the binding's own frozen `schema` — a
+  // mismatch fails the WHOLE step here, before `reserveUnitAttempt` is ever
+  // reached (B-32). This runs for every target kind (command/shell/script);
+  // Lane B's delivery consumes the result via `StepWorkUnitContext.taskInputs`
+  // / `taskInputsJson` below.
+  const taskInputsResolution = resolveTaskInputBindings(template.frozenTarget.inputBindings, plan.stepId, scope);
+  if (!taskInputsResolution.ok) return taskInputsResolution;
+  const hasTaskInputs = Object.keys(taskInputsResolution.values).length > 0;
 
   // Resolve fan-out items: `over` is a single whole-value reference naming
   // its producer explicitly — no ambient key search.
@@ -387,6 +459,11 @@ export function computeStepWorkList(plan: IrStepPlanV4, input: WorkListInput): C
     frozenExec && resolvedInputs.length > 0
       ? (canonicalJson(Object.fromEntries(resolvedInputs.map((entry) => [entry.reference, entry.value]))) ?? "{}")
       : undefined;
+  // P2b Lane A2 (§3.6): the resolved effective task-composition inputs,
+  // serialized ONCE here (mirrors execParamsJson/execInputsJson above) —
+  // Lane B's delivery (buildUnitPrompt's "## Task inputs" block,
+  // buildExecContextEnv's AKM_TASK_INPUTS) reads both back per unit.
+  const taskInputsJson = hasTaskInputs ? (canonicalJson(taskInputsResolution.values) ?? "{}") : undefined;
 
   const ctx: StepWorkUnitContext = {
     plan,
@@ -401,6 +478,7 @@ export function computeStepWorkList(plan: IrStepPlanV4, input: WorkListInput): C
     ...(frozenExec ? { frozenExec } : {}),
     ...(execParamsJson !== undefined ? { execParamsJson } : {}),
     ...(execInputsJson !== undefined ? { execInputsJson } : {}),
+    ...(hasTaskInputs ? { taskInputs: taskInputsResolution.values, taskInputsJson } : {}),
   };
   const units: StepWorkUnit[] = items.map((item, index) => buildStepWorkUnit(ctx, unitIds[index]!, item, index));
 
@@ -426,6 +504,21 @@ interface StepWorkUnitContext {
   /** Step-constant `AKM_PARAMS` / `AKM_INPUTS` payloads, serialized once (exec steps only). */
   execParamsJson?: string;
   execInputsJson?: string;
+  /**
+   * P2b Lane B (delivery) / Lane A2 (pre-attempt resolution, spec
+   * docs/plans/specs/p2b-input-bindings.md §3.6, §4.1/§4.2): the composed
+   * task's EFFECTIVE `inputBindings` — resolved (references against
+   * `input.params`/`input.stepOutputs`) and schema-validated once per step,
+   * exactly like `resolvedInputs` above. `taskInputs` feeds the command-target
+   * prompt's `## Task inputs` block (`buildUnitPrompt`); `taskInputsJson` is
+   * its canonical-JSON serialization, feeding `AKM_TASK_INPUTS`
+   * (`buildExecContextEnv`). Both are absent when the frozen target carries no
+   * `inputBindings` or every resolved value is empty (B-39) — this module's
+   * own delivery consumers (Lane B) never populate these fields; only the
+   * pre-attempt resolution step does.
+   */
+  taskInputs?: Readonly<Record<string, unknown>>;
+  taskInputsJson?: string;
 }
 
 /**
@@ -439,7 +532,7 @@ interface StepWorkUnitContext {
  * repo's 220-line function bar.
  */
 function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unknown, index: number): StepWorkUnit {
-  const { plan, input, template, isFanOut, resolvedInputs, target, frozenExec } = ctx;
+  const { plan, input, template, isFanOut, resolvedInputs, target, frozenExec, taskInputs } = ctx;
   // Gate loops (>= 2) journal under `<unitId>~l<loop>` so loop 1's rows are
   // never clobbered; the content-derived identity (and the prompt's
   // {{UNIT_ID}}) stays the base id.
@@ -465,6 +558,9 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
         params: input.params,
         ...(isFanOut ? { item, itemIndex: index } : {}),
         ...(resolvedInputs.length > 0 ? { inputs: resolvedInputs } : {}),
+        // P2b Lane B (§4.2, B-38/B-39): the composed task's resolved
+        // `inputBindings`, when non-empty — see StepWorkUnitContext.taskInputs.
+        ...(taskInputs && Object.keys(taskInputs).length > 0 ? { taskInputs } : {}),
         ...(input.gateFeedback ? { gateFeedback: input.gateFeedback } : {}),
         ...(template.schema ? { schema: template.schema } : {}),
         instructions: template.instructions,
@@ -510,7 +606,8 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
  *
  * SIZE is not bounded here, on purpose. A workflow artifact has no bound
  * comparable to an OS environment entry, so `AKM_INPUTS` (and `AKM_PARAMS` /
- * `AKM_ITEM`) can serialize past what `execve` accepts and make PROCESS CREATION
+ * `AKM_ITEM` / `AKM_TASK_INPUTS`) can serialize past what `execve` accepts and
+ * make PROCESS CREATION
  * fail with a bare `E2BIG`. The check belongs at the spawn boundary, where the
  * failure can be journaled as a unit outcome with an actionable message naming
  * the variable: `checkExecContextSize` in `exec/exec-unit.ts`, against
@@ -538,6 +635,13 @@ function buildExecContextEnv(args: {
     env.AKM_ITEM_INDEX = String(index);
   }
   if (ctx.execInputsJson !== undefined) env.AKM_INPUTS = ctx.execInputsJson;
+  // P2b Lane B (spec §4.1, B-35/B-36/B-39, B-N1): ONE variable carrying the
+  // composed task's effective `inputBindings` as canonical JSON — never one
+  // var per input. Absent when the frozen target carries no `inputBindings`
+  // or every resolved value is empty. Sizing is enforced by the SAME generic
+  // `checkExecContextSize` loop as every other `AKM_*` entry (exec-unit.ts) —
+  // no change there, the roster is just longer by one name (B-37).
+  if (ctx.taskInputsJson !== undefined) env.AKM_TASK_INPUTS = ctx.taskInputsJson;
   return env;
 }
 
@@ -617,6 +721,13 @@ export interface BuildUnitPromptInput {
   itemIndex?: number;
   /** Resolved artifacts named by the step's `inputs:`, in declaration order. */
   inputs?: Array<{ reference: string; value: unknown }>;
+  /**
+   * P2b Lane B (spec §4.2, B-38/B-39, B-N2): the composed task's effective
+   * `inputBindings`, resolved. Renders as the `## Task inputs` fenced JSON
+   * block, appended after `inputs` and before `gateFeedback`. Absent (or
+   * empty) renders nothing — byte-identical to today's prompt shape.
+   */
+  taskInputs?: Readonly<Record<string, unknown>>;
   gateFeedback?: GateFeedback;
   schema?: Record<string, unknown>;
   /** The step's body prose, byte-exact — never interpolated. */
@@ -633,7 +744,8 @@ export interface BuildUnitPromptInput {
  * here.
  */
 export function buildUnitPrompt(input: BuildUnitPromptInput): string {
-  const { runId, stepId, unitId, params, itemIndex, item, inputs, gateFeedback, schema, instructions } = input;
+  const { runId, stepId, unitId, params, itemIndex, item, inputs, taskInputs, gateFeedback, schema, instructions } =
+    input;
   // Function replacements throughout: a string replacement would interpret
   // GetSubstitution patterns ($&, $$, $', $`) inside VALUES and silently
   // corrupt the prompt (e.g. a param value containing "$&").
@@ -656,6 +768,17 @@ export function buildUnitPrompt(input: BuildUnitPromptInput): string {
       ? `\n\n## Declared inputs\n${inputs.map((i) => `### ${i.reference}\n${safeJson(i.value)}`).join("\n\n")}`
       : "";
 
+  // P2b Lane B (spec §4.2, B-38/B-39, B-N2): the composed task's resolved
+  // `inputBindings`, as a structured fenced JSON block — the same "attached
+  // context, never a splice" mechanism as itemBlock/inputsBlock above.
+  // `canonicalInputJson` (sorted keys) matches the AKM_TASK_INPUTS env var's
+  // own serialization, so the effective-inputs value reads identically on
+  // every delivery surface. Absent (or empty) appends nothing (B-39).
+  const taskInputsBlock =
+    taskInputs && Object.keys(taskInputs).length > 0
+      ? `\n\n## Task inputs\nThe composed task's declared inputs resolved to:\n\`\`\`json\n${canonicalInputJson(taskInputs)}\n\`\`\``
+      : "";
+
   // Gate-loop feedback (R2 max_loops): the judge's rejection is appended so
   // the re-executed unit can address it — and so the input hash changes,
   // making the loop's re-dispatch natural instead of a durable-row reuse.
@@ -672,7 +795,7 @@ export function buildUnitPrompt(input: BuildUnitPromptInput): string {
     ? `\n\nRespond with ONLY a JSON value matching this JSON Schema (no prose, no code fences):\n${safeJson(schema)}`
     : "";
 
-  return `${preamble}\n${instructions}${itemBlock}${inputsBlock}${gateBlock}${schemaDirective}`;
+  return `${preamble}\n${instructions}${itemBlock}${inputsBlock}${taskInputsBlock}${gateBlock}${schemaDirective}`;
 }
 
 /**

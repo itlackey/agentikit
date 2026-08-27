@@ -166,7 +166,6 @@ function stepTarget(plan: ReturnType<typeof decodeWorkflowPlanV4>, index: number
  * site, once schema-v4.ts's three target interfaces grow the field.
  */
 function frozenInputBindings(target: FrozenWorkflowTarget | undefined): readonly TaskInputBinding[] | undefined {
-  // @ts-expect-error P2b red-phase: FrozenWorkflowTarget.inputBindings lands in Implement (the implementation removes this directive; A-N7)
   return target?.inputBindings;
 }
 
@@ -561,7 +560,6 @@ describe("P2b freeze-time — decode widens for task targets only; the expressio
               uses: TASK_REF,
               with: {
                 ticket: "ABC-1",
-                // @ts-expect-error P2b red-phase: WorkflowSourceStep.with lands in Implement widened to Record<string, unknown> (the implementation removes this directive; A-N3)
                 meta: { note: "${{ params.x }}" },
               },
               source: span,
@@ -652,7 +650,6 @@ describe("P2b freeze-time — decode widens for task targets only; the expressio
       source: bareSpan(),
     };
     const decoded = decodeWorkflowSourceIrV1(bareIr(step)) as WorkflowSourceIrV1;
-    // @ts-expect-error P2b red-phase: WorkflowSourceStep.with lands in Implement widened to Record<string, unknown> (the implementation removes this directive; A-N3) — decoded.jobs[0].steps[0].with is still typed Record<string, WorkflowSourceScalar> at head, which the non-scalar "meta" value here does not satisfy
     expect(decoded.jobs[0]?.steps[0]?.with).toEqual({ ticket: "T-1", meta: { nested: true } });
   });
 });

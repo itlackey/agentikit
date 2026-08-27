@@ -6,20 +6,72 @@ import path from "node:path";
 import { parseBundleRef } from "../../../core/asset/asset-ref";
 import { UsageError } from "../../../core/errors";
 import { freezeExecutableIdentity } from "../../../execution/executable-identity";
+import type { InputContract, TaskInputBinding } from "../../../execution/input-contract";
 import { prepareTaskV3Execution } from "../../../tasks/prepare/prepare";
-import { readBoundedTaskSourceYaml } from "../../../tasks/source/bounded-document";
-import { peekTaskSourceVersion } from "../../../tasks/source/parse-task-source";
-import { TASK_SOURCE_V4_VERSION } from "../../../tasks/source/task-source-v4";
-import { parseTaskV3Yaml } from "../../../tasks/source-v3";
-import type { FrozenWorkflowShellTarget } from "../../ir/schema-v4";
+import { parseTaskSource } from "../../../tasks/source/parse-task-source";
+import { projectTaskSourceV4 } from "../../../tasks/source/project-v4";
+import type { FrozenWorkflowShellTarget, FrozenWorkflowTarget } from "../../ir/schema-v4";
 import type { ProgramExec, ProgramUnit } from "../../program/schema";
 import { workflowShellCommand } from "../../source-ir/program";
-import type { WorkflowSourceStep } from "../../source-ir/schema";
+import type { WorkflowSourceIrV1, WorkflowSourceStep } from "../../source-ir/schema";
 import { captureOwned, freezeEnvironment, guardedExecutionSource, resolveOwnedAsset } from "../environment";
 import { gitIdentity } from "../identity";
 import { freezeExecSpec, type ResolutionContext, type ResolvedDispatch } from "../step-values";
+import { freezeTaskInputBindings } from "../task-bindings";
 import { commandResult } from "./command";
 import { scriptResult } from "./script";
+
+/** The one message shared by every "cannot prove this is a valid binding surface" rejection (A-N5). */
+function noDeclaredInputsError(stepId: string, ref: string): UsageError {
+  return new UsageError(
+    `Workflow step ${stepId} cannot pass with: to task target ${ref}; ${ref} declares no inputs.`,
+    "COMPOSITION_INVALID",
+  );
+}
+
+interface ResolvedTaskForComposition {
+  readonly owned: Awaited<ReturnType<typeof resolveOwnedAsset>>;
+  readonly task: Parameters<typeof prepareTaskV3Execution>[0];
+  /** The composed task's OWN declared inputs: contract. Undefined = declares no inputs at all (A-N5). */
+  readonly contract: InputContract | undefined;
+}
+
+/**
+ * A-N6 (spec docs/plans/specs/p2b-input-bindings.md §1.7): LC-N1's
+ * peek-and-throw (p2a §1.5) is GONE — a version: 4 target now composes.
+ * `parseTaskSource` parses the YAML ONCE and routes on the SAME {root,
+ * lineAt} the v3 arm always used, so a v3 composition stays byte-identical
+ * (B-07, B-08). `contract` is undefined for a v3 task (which can never
+ * declare `inputs:`, P2a §1.2 D2) or a v4 task with no `inputs:` key at all —
+ * either way, "no declared inputs" (A-N5).
+ *
+ * RECORDED TENSION (spec §0, Review log): A-N5's "no declared inputs"
+ * rejection is reasoned from the target's PARSED `inputs:` contract, which
+ * needs the target to resolve — yet `tests/workflows/with-rejection.test.ts`
+ * B-02b pins `COMPOSITION_INVALID` (not an asset-resolution error) for an
+ * UNRESOLVABLE task ref with an authored `with:`. Reconciled here: an
+ * authored `with:` whose target cannot even be resolved/parsed "cannot be
+ * proven a valid binding surface", so it is refused the same
+ * no-declared-inputs way — a `with:`-free step's resolution failure is
+ * untouched and propagates as before.
+ */
+async function resolveTaskForComposition(
+  source: WorkflowSourceStep,
+  refInput: string,
+  context: ResolutionContext,
+): Promise<ResolvedTaskForComposition> {
+  try {
+    const owned = await resolveOwnedAsset(refInput, "task", context);
+    const retained = captureOwned(owned, context.collector);
+    const parsed = parseTaskSource({ yaml: retained.content, filePath: owned.file, workspaceRoot: owned.root });
+    const contract = parsed.version === 4 ? parsed.v4.inputs : undefined;
+    const task = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
+    return { owned, task, contract };
+  } catch (cause) {
+    if (source.with !== undefined) throw noDeclaredInputsError(source.id, refInput);
+    throw cause;
+  }
+}
 
 export async function taskDispatch(
   source: WorkflowSourceStep,
@@ -27,54 +79,35 @@ export async function taskDispatch(
   refInput: string,
   context: ResolutionContext,
 ): Promise<ResolvedDispatch> {
-  // P1a fail-closed correction (docs/plans/specs/p1a-with-rejection-classifier.md
-  // §3.1, P0 row R-01(c)): a workflow step's with: on a task target used to be
-  // silently dropped — taskDispatch never read source.with. Reject it instead,
-  // before resolveOwnedAsset, so the rejection does not depend on the task
-  // asset resolving. Fires on ANY authored with: shape, including `{}` (the
-  // check is `!== undefined`, not "non-empty"). Task-call inputs arrive in a
-  // later 0.9.x release (P2b); this rejection is temporary scaffolding for
-  // that gap, not the final shape of task-call bindings.
-  if (source.with !== undefined) {
-    throw new UsageError(
-      `Workflow step ${source.id} cannot pass with: to task target ${refInput}; task-call inputs are not supported yet.`,
-      "COMPOSITION_INVALID",
-    );
+  const { owned, task, contract } = await resolveTaskForComposition(source, refInput, context);
+
+  // A-N5: a with: on a target that declares no inputs: at all — a v3 task,
+  // or a v4 task with no inputs: — is COMPOSITION_INVALID. Fires on ANY
+  // authored with: shape, including `{}` (the check is `!== undefined`, not
+  // "non-empty").
+  if (source.with !== undefined && contract === undefined) {
+    throw noDeclaredInputsError(source.id, refInput);
   }
-  const owned = await resolveOwnedAsset(refInput, "task", context);
-  const retained = captureOwned(owned, context.collector);
-  // LC-N1 (spec docs/plans/specs/p2a-task-source-v4.md §1.5): peek the
-  // source's `version` BEFORE running the full v3 grammar. taskDispatch does
-  // NOT route in P2a — composing a task source v4 target from a workflow is
-  // deferred to a later 0.9.x release (routing is `irVersion` work gated on
-  // P2b's bindings). A cheap, independent peek here (rather than routing
-  // through parseTaskSource, which would fully validate the task source v4
-  // grammar before this function could react) guarantees the deferral
-  // message below fires for EVERY version: 4 document, valid or not, and
-  // fires before any downstream resolution of the task source v4 document's
-  // own uses: (pinned by
-  // tests/workflows/task-source-v4-deferral.test.ts, whose fixture's
-  // uses: commands/review is deliberately unbacked by a real file). The peek
-  // discards its own `{root, lineAt}` rather than threading them into the
-  // v3 parse below — `parseTaskV3Yaml` keeps parsing a REAL document here,
-  // unrelated to R-02's synthetic-YAML ban (tests/workflows/direct-script-typed.test.ts).
-  if (
-    peekTaskSourceVersion(
-      readBoundedTaskSourceYaml({ yaml: retained.content, filePath: owned.file }, { sourceLabel: "task v3 source" })
-        .root,
-    ) === TASK_SOURCE_V4_VERSION
-  ) {
-    throw new UsageError(
-      `Workflow step "${source.id}" targets task ${refInput}, which uses task source v4. Composing a ` +
-        "task source v4 target from a workflow arrives in a later 0.9.x release; keep the " +
-        "task at version 3 until then.",
-      "TASK_SOURCE_INVALID",
-    );
-  }
-  const task = parseTaskV3Yaml({ yaml: retained.content, filePath: owned.file, workspaceRoot: owned.root });
+
   if (task.target.kind === "uses" && task.target.uses.kind === "workflow") {
     throw new UsageError("A workflow task step cannot compose a nested workflow target.", "INVALID_FLAG_VALUE");
   }
+
+  // Lane A2 (§3.2-§3.5): normalize THIS step's own with: against THIS task's
+  // OWN declared inputs — no merge across a composition chain (B-29). A v3
+  // task (or a v4 task with no inputs:) has contract === undefined, so an
+  // empty {} contract is used; freezeTaskInputBindings then produces no
+  // bindings for it (there is nothing to bind, and the COMPOSITION_INVALID
+  // check above already fired for any authored with:).
+  const bindings = freezeTaskInputBindings({
+    stepId: source.id,
+    targetRef: refInput,
+    with: source.with,
+    contract: contract ?? {},
+    earlierStepIds: earlierStepIds(context.sourceIr, source.id),
+    declaredParamNames: declaredParamNames(context.sourceIr),
+  });
+
   const prepared = await prepareTaskV3Execution(task, {
     taskId: parseBundleRef(owned.ref).conceptId.slice("tasks/".length),
     taskRef: owned.ref,
@@ -96,7 +129,7 @@ export async function taskDispatch(
     Object.freeze({ kind: "literal" as const, name, value }),
   );
   if (prepared.kind === "command") {
-    return commandResult(source, baseUnit, prepared.invocation, context, taskLiterals);
+    return withInputBindings(commandResult(source, baseUnit, prepared.invocation, context, taskLiterals), bindings);
   }
   if (prepared.kind === "shell") {
     const authoredExec: ProgramExec = {
@@ -116,12 +149,36 @@ export async function taskDispatch(
       executable,
       ...gitIdentity(baseUnit, prepared.cwdIdentity.realRoot),
     });
-    return {
-      target,
-      environment,
-      unit: { ...baseUnit, exec: authoredExec },
-      instructions: source.instructions ?? `Run task ${owned.ref}.`,
-    };
+    return withInputBindings(
+      {
+        target,
+        environment,
+        unit: { ...baseUnit, exec: authoredExec },
+        instructions: source.instructions ?? `Run task ${owned.ref}.`,
+      },
+      bindings,
+    );
   }
-  return scriptResult(source, baseUnit, prepared, context, taskLiterals);
+  return withInputBindings(scriptResult(source, baseUnit, prepared, context, taskLiterals), bindings);
+}
+
+/** Attach the frozen inputBindings (A-N7) to whichever target shape taskDispatch produced. Absent, never [], when empty. */
+function withInputBindings(resolved: ResolvedDispatch, bindings: readonly TaskInputBinding[]): ResolvedDispatch {
+  if (bindings.length === 0) return resolved;
+  return {
+    ...resolved,
+    target: Object.freeze({ ...resolved.target, inputBindings: bindings }) as FrozenWorkflowTarget,
+  };
+}
+
+/** Step ids that appear BEFORE `stepId` in the frozen step order (A-N4) — the SAME ordering map.over/inputs[] rely on. */
+function earlierStepIds(sourceIr: WorkflowSourceIrV1, stepId: string): ReadonlySet<string> {
+  const steps = sourceIr.jobs[0]?.steps ?? [];
+  const index = steps.findIndex((step) => step.id === stepId);
+  return new Set(index < 0 ? [] : steps.slice(0, index).map((step) => step.id));
+}
+
+/** THIS workflow's own declared param names (A-N4) — never an outer composing task's. */
+function declaredParamNames(sourceIr: WorkflowSourceIrV1): ReadonlySet<string> {
+  return new Set(sourceIr.params ? Object.keys(sourceIr.params) : []);
 }
