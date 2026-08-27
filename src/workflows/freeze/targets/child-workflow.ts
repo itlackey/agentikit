@@ -21,9 +21,10 @@
  * module is downstream of `ir/freeze-v4.ts`, so importing back from it would
  * close a static cycle), absorbs the child's own fresh source collector into
  * the parent's (A-N7), binds the composing step's effective inputs against
- * the child's declared `params:` (A-N8, reusing the ONE `freezeTaskInputBindings`
- * normalizer), and returns the standard `ResolvedDispatch` envelope carrying
- * a `FrozenChildWorkflowTarget` (`ir/schema-v4.ts`).
+ * the child's declared `params:` (A-N8 — see `AuthoredChildInputs` below for
+ * the two ways that mapping arrives), and returns the standard
+ * `ResolvedDispatch` envelope carrying a `FrozenChildWorkflowTarget`
+ * (`ir/schema-v4.ts`).
  */
 
 import { createHash } from "node:crypto";
@@ -44,7 +45,34 @@ import { loadWorkflowAsset } from "../../runtime/workflow-asset-loader";
 import type { WorkflowSourceStep } from "../../source-ir/schema";
 import { resolveOwnedAsset } from "../environment";
 import { declaredParamNames, earlierStepIds, type ResolutionContext, type ResolvedDispatch } from "../step-values";
-import { freezeTaskInputBindings } from "../task-bindings";
+import { freezeTaskInputBindings, rebindTaskInputBindings } from "../task-bindings";
+
+/**
+ * The authored mapping bound against the child's declared `params:` (§4.2
+ * step 7's routing table, A-N8). Two shapes, matching whether the composing
+ * site has a genuinely AUTHORED `with:` record or an already-classified
+ * binding set:
+ *
+ *  - `{kind: "with"}` — the step's own `with:` for a direct composition, or
+ *    the v3 task's own `with:` (`PreparedTaskV3Workflow.params`) for a v3
+ *    task-wrapped composition. Neither has been normalized against anything
+ *    yet, so it goes through the ONE `freezeTaskInputBindings` normalizer
+ *    exactly as any other binding surface does.
+ *  - `{kind: "bindings"}` — the composing task's EFFECTIVE inputs for a v4
+ *    declared-inputs task-wrapped composition: its declared defaults,
+ *    overridden by any authored `with:`, already classified once (literal vs
+ *    reference) against the task's OWN `inputs:` contract by `taskDispatch`.
+ *    Re-bound against the child's contract via `rebindTaskInputBindings`,
+ *    which trusts each entry's already-computed `kind` instead of
+ *    re-deriving it from the value's shape — round-tripping through the
+ *    `with:` grammar here would silently reinterpret a LITERAL value shaped
+ *    like `{from: "<ref>"}` (e.g. an object-typed input's declared default)
+ *    as a live reference binding (code-review finding, docs/plans/specs/
+ *    p3a-plan-v5-child-freeze.md).
+ */
+export type AuthoredChildInputs =
+  | Readonly<{ kind: "with"; value: Readonly<Record<string, unknown>> | undefined }>
+  | Readonly<{ kind: "bindings"; value: readonly TaskInputBinding[] }>;
 
 export interface ChildWorkflowDispatchInput {
   readonly source: WorkflowSourceStep;
@@ -60,16 +88,8 @@ export interface ChildWorkflowDispatchInput {
   readonly via: "direct" | "task";
   /** Present only when via === "task": the composing task's OWN qualified ref. */
   readonly taskRef?: string;
-  /**
-   * The with:-shaped authored source bound against the child's declared
-   * `params:` (§4.2 step 7's routing table, A-N8): the step's own `with:`
-   * for a direct composition; the v3 task's own `with:` (`PreparedTaskV3Workflow.params`)
-   * for a v3 task-wrapped composition; the composing task's EFFECTIVE inputs
-   * (its declared defaults, overridden by any authored `with:`, already
-   * normalized against the task's own `inputs:` contract) for a v4
-   * declared-inputs task-wrapped composition.
-   */
-  readonly authoredWith: Readonly<Record<string, unknown>> | undefined;
+  /** See {@link AuthoredChildInputs}. */
+  readonly authoredInputs: AuthoredChildInputs;
 }
 
 /** §3.5's exact `contentHash` formula — mirrors `ir/schema-v4.ts`'s private decode-side `childWorkflowContentHash` byte-for-byte (the decoder re-verifies what this produces); duplicated rather than imported so this freeze-side module needs no edit to Lane A's already-landed decoder file. */
@@ -155,7 +175,7 @@ function chargeEmbeddedBudget(
 }
 
 export async function childWorkflowDispatch(input: ChildWorkflowDispatchInput): Promise<ResolvedDispatch> {
-  const { source, baseUnit, childRefInput, context, via, taskRef, authoredWith } = input;
+  const { source, baseUnit, childRefInput, context, via, taskRef, authoredInputs } = input;
 
   // §4.2 step 1: resolve + qualify. Resolution failures propagate unchanged,
   // in code and shape (row B-11) — the same authority every other
@@ -204,16 +224,27 @@ export async function childWorkflowDispatch(input: ChildWorkflowDispatchInput): 
   context.collector.absorb(child.sourceCollector);
 
   // §4.2 step 7 (A-N8): bind the composing step's effective inputs against
-  // the child's declared params: — the SAME normalizer every other binding
-  // surface uses, fed the child's own contract instead of a task's.
-  const inputBindings = freezeTaskInputBindings({
-    stepId: source.id,
-    targetRef: childRef,
-    with: authoredWith,
-    contract: workflowParamContract(frozenPlan),
-    earlierStepIds: earlierStepIds(context.sourceIr, source.id),
-    declaredParamNames: declaredParamNames(context.sourceIr),
-  });
+  // the child's declared params:. A genuinely authored `with:` goes through
+  // the SAME normalizer every other binding surface uses; an
+  // already-classified binding set (a v4 task's effective inputs) is
+  // RE-bound instead, never round-tripped back through the `with:` grammar
+  // (code-review finding — see AuthoredChildInputs above).
+  const inputBindings =
+    authoredInputs.kind === "bindings"
+      ? rebindTaskInputBindings({
+          stepId: source.id,
+          targetRef: childRef,
+          bindings: authoredInputs.value,
+          contract: workflowParamContract(frozenPlan),
+        })
+      : freezeTaskInputBindings({
+          stepId: source.id,
+          targetRef: childRef,
+          with: authoredInputs.value,
+          contract: workflowParamContract(frozenPlan),
+          earlierStepIds: earlierStepIds(context.sourceIr, source.id),
+          declaredParamNames: declaredParamNames(context.sourceIr),
+        });
 
   // §4.2 step 8: build the frozen target.
   const planHash = createHash("sha256").update(embeddedPlanJson).digest("hex");

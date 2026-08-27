@@ -32,7 +32,7 @@ export async function resolveStep(source: WorkflowSourceStep, context: Resolutio
       childRefInput: target.ref,
       context,
       via: "direct",
-      authoredWith: source.with,
+      authoredInputs: { kind: "with", value: source.with },
     });
   }
   if (target.kind === "script") {

@@ -15,14 +15,14 @@
  * plus plain JSON splicing — never through the real freeze pipeline, which
  * cannot produce a `child-workflow` target yet).
  *
- * RED today, for the two reasons the spec's decoder table (§3.6) implies:
- *   1. `decodeWorkflowPlanV4` requires `raw.irVersion === WORKFLOW_IR_V4_VERSION`
- *      (4) today; every fixture here declares `irVersion: 5`.
- *   2. `decodeFrozenTarget`'s closed-kind check (schema-v4.ts) accepts only
- *      `command | shell | script`; `child-workflow` is unrecognized.
- * Once Implement lands `WORKFLOW_IR_V5_VERSION` + `decodeChildWorkflowTarget`,
- * every "does not throw" assertion below starts passing and every negative
- * (tamper) assertion keeps passing, now for the RIGHT reason.
+ * Implemented, per the spec's decoder table (§3.6):
+ *   1. `decodeWorkflowPlanV4` requires `raw.irVersion === WORKFLOW_IR_V5_VERSION`
+ *      (5, `schema-v4.ts`); every fixture here declares `irVersion: 5`.
+ *   2. `decodeFrozenTarget`'s closed-kind check (schema-v4.ts) accepts a
+ *      fourth kind, `child-workflow`, decoded by `decodeChildWorkflowTarget`.
+ * Every "does not throw" assertion below exercises that decode path
+ * directly; every negative (tamper) assertion exercises its corruption
+ * checks.
  *
  * No `@ts-expect-error` directive is needed anywhere in this file:
  * `decodeWorkflowPlanV4(input: unknown, hooks?)` already accepts `unknown`
@@ -152,8 +152,6 @@ describe("plan irVersion 5 — a child-workflow frozen target decodes (A-01, A-0
     const childTarget = buildChildTarget({ ref: "workflows/child", planHash, frozenPlan: childPlan, via: "direct" });
     const parentPlanJson = embedChildTarget(freshUnitPlan("workflows/parent.md"), childTarget);
 
-    // RED today: decodeWorkflowPlanV4 rejects irVersion 5 and the
-    // child-workflow target kind (see file header).
     expect(() => decodeWorkflowPlanV4(parentPlanJson)).not.toThrow();
 
     const decoded = decodeWorkflowPlanV4(parentPlanJson);
@@ -205,7 +203,7 @@ describe("embedded-plan integrity at decode (A-20…A-23, §2.7)", () => {
     const tampered = JSON.parse(JSON.stringify(valid));
     tampered.steps[0].root.frozenTarget.frozenPlan.title = `${tampered.steps[0].root.frozenTarget.frozenPlan.title}-tampered`;
 
-    expect(() => decodeWorkflowPlanV4(valid)).not.toThrow(); // RED today (see file header)
+    expect(() => decodeWorkflowPlanV4(valid)).not.toThrow();
     expect(() => decodeWorkflowPlanV4(tampered)).toThrow(UsageError);
     try {
       decodeWorkflowPlanV4(tampered);
@@ -230,7 +228,7 @@ describe("embedded-plan integrity at decode (A-20…A-23, §2.7)", () => {
       ? `1${original.slice(1)}`
       : `0${original.slice(1)}`;
 
-    expect(() => decodeWorkflowPlanV4(valid)).not.toThrow(); // RED today
+    expect(() => decodeWorkflowPlanV4(valid)).not.toThrow();
     expect(() => decodeWorkflowPlanV4(tampered)).toThrow(UsageError);
     try {
       decodeWorkflowPlanV4(tampered);
@@ -289,7 +287,7 @@ describe("embedded-plan integrity at decode (A-20…A-23, §2.7)", () => {
     const atLimit = buildNestedRootPlan(8);
     const overLimit = buildNestedRootPlan(9);
 
-    expect(() => decodeWorkflowPlanV4(atLimit)).not.toThrow(); // RED today
+    expect(() => decodeWorkflowPlanV4(atLimit)).not.toThrow();
     expect(() => decodeWorkflowPlanV4(overLimit)).toThrow(UsageError);
   });
 

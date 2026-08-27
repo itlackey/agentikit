@@ -10,13 +10,13 @@
  * tests/workflows/source-ir-contract.test.ts, and
  * tests/execution/target-ref.test.ts, not duplicated here).
  *
- * RED today: `src/workflows/freeze/targets/child-workflow.ts` does not exist,
- * `src/workflows/source-ir/semantics.ts` still throws
- * `nested-workflow-unsupported` for a direct `uses: workflows/<ref>` step
- * (semantics.ts:155-159), and `src/workflows/freeze/targets/task.ts` still
- * throws "A workflow task step cannot compose a nested workflow target." for
- * a task-wrapped one (task.ts:116,149) — every test below that composes a
- * child workflow is RED for one of those two reasons today.
+ * Implemented: `src/workflows/freeze/targets/child-workflow.ts` is the ONE
+ * resolver both forms route to — `src/workflows/source-ir/semantics.ts` no
+ * longer throws `nested-workflow-unsupported` for a direct
+ * `uses: workflows/<ref>` step, and `src/workflows/freeze/targets/task.ts`
+ * no longer throws "A workflow task step cannot compose a nested workflow
+ * target." for a task-wrapped one — both former throw sites now route to
+ * `childWorkflowDispatch` instead.
  *
  * `FrozenWorkflowTarget` (src/workflows/ir/schema-v4.ts) is today's closed
  * `command | shell | script` union; it gains a fourth member,

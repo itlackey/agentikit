@@ -15,14 +15,14 @@
  * `publishWorkflowRunV4`/`GuardedExecutionSourceCollector.revalidate` CAS —
  * not just the frozen in-memory plan `startWorkflowRun` hands back.
  *
- * RED today for the same two reasons as the sibling suite:
- * `src/workflows/freeze/targets/child-workflow.ts` does not exist, and
- * `src/workflows/source-ir/semantics.ts` still throws
+ * Implemented, for the same two reasons as the sibling suite:
+ * `src/workflows/freeze/targets/child-workflow.ts` is the ONE resolver, and
+ * `src/workflows/source-ir/semantics.ts` no longer throws
  * `nested-workflow-unsupported` for a direct `uses: workflows/<ref>` step —
- * so every composing `startWorkflowRun` call below currently rejects instead
- * of freezing. `GuardedExecutionSourceCollector.absorb` (A-N7,
- * src/execution/guarded-source.ts) does not exist either — B-07's direct
- * mechanism-level use of it is the one call needing a pin.
+ * so every composing `startWorkflowRun` call below freezes instead of
+ * rejecting. `GuardedExecutionSourceCollector.absorb` (A-N7,
+ * src/execution/guarded-source.ts) is what B-07 exercises directly, at the
+ * mechanism level.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";

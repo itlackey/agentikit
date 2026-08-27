@@ -159,13 +159,16 @@ export async function taskDispatch(
     // P3a (spec §4.2, rows B-12/B-13): routes to the ONE child-workflow
     // resolver instead of rejecting. `prepared.ref`/`prepared.taskRef` are
     // already qualified (§4.2 step 1 re-resolves and re-canonicalizes them
-    // regardless). The with:-shaped authored source differs by task
-    // version (A-N8's routing table): a v4 task with a declared `inputs:`
-    // contract re-binds its OWN effective inputs (the bindings just
-    // computed above, against ITS contract) against the child's declared
-    // `params:`; a v3 task (or a v4 task with no `inputs:` at all, contract
-    // === undefined either way) hands the child its own raw with:
-    // (`PreparedTaskV3Workflow.params`) unchanged.
+    // regardless). The mapping fed to the child differs by task version
+    // (A-N8's routing table): a v4 task with a declared `inputs:` contract
+    // hands over the bindings just computed above — ITS OWN effective
+    // inputs, already classified once against ITS contract — to be RE-bound
+    // against the child's declared `params:` (never round-tripped through
+    // the `with:` grammar: doing so would let a literal value shaped like
+    // `{from: ...}` be silently reinterpreted as a reference, code-review
+    // finding); a v3 task (or a v4 task with no `inputs:` at all, contract
+    // === undefined either way) hands the child its own raw, never-yet-
+    // normalized with: (`PreparedTaskV3Workflow.params`) unchanged.
     return childWorkflowDispatch({
       source,
       baseUnit,
@@ -173,7 +176,8 @@ export async function taskDispatch(
       context,
       via: "task",
       taskRef: prepared.taskRef,
-      authoredWith: contract !== undefined ? bindingsToWithRecord(bindings) : prepared.params,
+      authoredInputs:
+        contract !== undefined ? { kind: "bindings", value: bindings } : { kind: "with", value: prepared.params },
     });
   }
   const taskLiterals = Object.entries(prepared.environment).map(([name, value]) =>
@@ -220,22 +224,4 @@ function withInputBindings(resolved: ResolvedDispatch, bindings: readonly TaskIn
     ...resolved,
     target: Object.freeze({ ...resolved.target, inputBindings: bindings }) as FrozenWorkflowTarget,
   };
-}
-
-/**
- * Convert an already-computed `TaskInputBinding[]` back into a with:-shaped
- * record (A-N8's v4 routing arm): the composing task's own effective inputs
- * — its declared `inputs:` defaults, overridden by any authored `with:`,
- * already normalized once above against the TASK's own contract — become the
- * authored source `childWorkflowDispatch` RE-normalizes against the CHILD's
- * declared `params:`. A literal binding round-trips as its value; a
- * reference binding round-trips as `{from}`, the exact shape
- * `freezeTaskInputBindings`'s own reference grammar accepts.
- */
-function bindingsToWithRecord(bindings: readonly TaskInputBinding[]): Record<string, unknown> {
-  const record: Record<string, unknown> = {};
-  for (const binding of bindings) {
-    record[binding.name] = binding.kind === "literal" ? binding.value : { from: binding.from };
-  }
-  return record;
 }

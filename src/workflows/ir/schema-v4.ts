@@ -24,6 +24,7 @@ import { decodeExecutionSourceIdentity, type ExecutionSourceIdentity } from "../
 import { decodeFrozenRunnerSpec } from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { parseReference } from "../program/expressions";
+import { utf8Bytes, WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../resource-limits";
 import {
   decodeWorkflowExecSpec,
   type IrMapNode,
@@ -195,19 +196,24 @@ export interface WorkflowPlanGraphV4 {
  * Strict v4 corruption gate. No authored source or config is consulted here.
  *
  * `depth` is the composition-depth recursion counter (0 at the root
- * workflow plan; +1 for every embedded child-workflow plan). It is internal
- * to the recursive child-workflow decode path below
+ * workflow plan; +1 for every embedded child-workflow plan), and `budget` is
+ * a MUTABLE, tree-wide running total of embedded child-plan bytes charged so
+ * far. Both are internal to the recursive child-workflow decode path below
  * (`decodeChildWorkflowTarget` calls this function again on an embedded
- * `frozenPlan`) — every external caller decodes a plan at the top level and
- * relies on the default. Re-enforces the composition depth bound at decode
- * as a corruption gate (spec docs/plans/specs/p3a-plan-v5-child-freeze.md
- * §3.6 step 6, row A-23); the actionable freeze-time `COMPOSITION_INVALID`
- * gate lives in `src/workflows/freeze/targets/child-workflow.ts` (Lane B).
+ * `frozenPlan`, sharing the SAME `budget` object across the whole recursion —
+ * mirroring `ChildCompositionContext.budget` on the freeze side) — every
+ * external caller decodes a plan at the top level and relies on the
+ * defaults. Re-enforces the composition depth bound AND the aggregate
+ * embedded-bytes bound at decode as corruption gates (spec docs/plans/specs/
+ * p3a-plan-v5-child-freeze.md §3.6 step 6, rows A-23, A-N6); the actionable
+ * freeze-time `COMPOSITION_INVALID` gates live in
+ * `src/workflows/freeze/targets/child-workflow.ts` (Lane B).
  */
 export function decodeWorkflowPlanV4(
   input: unknown,
   hooks: WorkflowPlanValidationHooks = {},
   depth = 0,
+  budget: { embeddedBytes: number } = { embeddedBytes: 0 },
 ): WorkflowPlanGraphV4 {
   const raw = record(input, "plan");
   if (raw.irVersion !== WORKFLOW_IR_V5_VERSION) fail("irVersion must be 5");
@@ -246,10 +252,11 @@ export function decodeWorkflowPlanV4(
                 record(rawRoot.template, `map ${String(rawRoot.id)} template`),
                 requiredSources,
                 depth,
+                budget,
               ),
             } satisfies IrMapNodeV4;
           })()
-        : decodeUnitV4(rawRoot, requiredSources, depth);
+        : decodeUnitV4(rawRoot, requiredSources, depth, budget);
     return Object.freeze({ ...step, root, gate }) satisfies IrStepPlanV4;
   });
   assertRequiredSources(sourceReadSet, requiredSources);
@@ -265,6 +272,7 @@ function decodeUnitV4(
   raw: Record<string, unknown>,
   requiredSources: ExecutionSourceIdentity[],
   depth: number,
+  budget: { embeddedBytes: number },
 ): IrUnitNodeV4 {
   const id = raw.id as string;
   if (!Object.hasOwn(raw, "frozenTarget")) fail(`unit ${id} frozenTarget is required`);
@@ -276,6 +284,7 @@ function decodeUnitV4(
     environment,
     requiredSources,
     depth,
+    budget,
   );
   const { frozenTarget: _target, environment: _environment, ...core } = raw;
   return Object.freeze({
@@ -325,12 +334,13 @@ function decodeFrozenTarget(
   environment: readonly FrozenWorkflowEnvironmentBinding[],
   requiredSources: ExecutionSourceIdentity[],
   depth: number,
+  budget: { embeddedBytes: number },
 ): FrozenWorkflowTarget {
   const target = record(value, `unit ${unit.id} frozenTarget`);
   if (target.kind === "command") return decodeCommandTarget(target, unit, requiredSources);
   if (target.kind === "shell") return decodeShellTarget(target, unit, environment);
   if (target.kind === "script") return decodeScriptTarget(target, unit, requiredSources);
-  if (target.kind === "child-workflow") return decodeChildWorkflowTarget(target, unit, depth);
+  if (target.kind === "child-workflow") return decodeChildWorkflowTarget(target, unit, depth, budget);
   fail(`unit ${unit.id} frozenTarget has unsupported kind ${String(target.kind)}`);
 }
 
@@ -349,19 +359,32 @@ const CHILD_WORKFLOW_DECODE_MAX_DEPTH = 8;
  * COMPLETE child plan, re-verified against its own `planHash` and this
  * target's own `contentHash` on every decode (rows A-20, A-21), recursively
  * enforcing `irVersion` 5 (row A-22, via the recursive
- * {@link decodeWorkflowPlanV4} call) and the composition depth bound (row
- * A-23) as the decoder recurses. `frozenPlan` is covered wholesale through
- * `planHash`, so it is deliberately NOT re-serialized into `contentHash`
- * (§3.5). No `requiredSources` contribution: unlike a command/script
- * target's own referenced source, the child's transitive sources live in
- * the child's OWN `sourceReadSet`, verified by the recursive decode call
- * itself; the PARENT's `sourceReadSet` absorbing the child's files (row
- * B-05) is a freeze-time concern (Lane B), not a decode-time structural one.
+ * {@link decodeWorkflowPlanV4} call), the composition depth bound (row A-23),
+ * and the AGGREGATE embedded-plan-bytes bound (§3.6 step 6, A-N6) as the
+ * decoder recurses. `WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES` — unlike the
+ * depth bound above — is imported directly from
+ * `src/workflows/resource-limits.ts` rather than reproduced: that constant
+ * was already Lane B's when this decode-time re-enforcement was added (no
+ * lane-ordering constraint left to honor), and re-deriving a byte cap by
+ * hand invites drift a depth integer does not. `budget` is charged with
+ * THIS child's own full canonical byte length AFTER it decodes (so any
+ * further-nested grandchildren it embeds have already charged themselves,
+ * mirroring the freeze-side `chargeEmbeddedBudget`'s post-recursion charge
+ * order in `src/workflows/freeze/targets/child-workflow.ts`) — a rejected
+ * plan therefore never partially charges the budget. `frozenPlan` is
+ * covered wholesale through `planHash`, so it is deliberately NOT
+ * re-serialized into `contentHash` (§3.5). No `requiredSources`
+ * contribution: unlike a command/script target's own referenced source, the
+ * child's transitive sources live in the child's OWN `sourceReadSet`,
+ * verified by the recursive decode call itself; the PARENT's
+ * `sourceReadSet` absorbing the child's files (row B-05) is a freeze-time
+ * concern (Lane B), not a decode-time structural one.
  */
 function decodeChildWorkflowTarget(
   target: Record<string, unknown>,
   unit: IrUnitNodeCore,
   depth: number,
+  budget: { embeddedBytes: number },
 ): FrozenChildWorkflowTarget {
   assertKeys(
     target,
@@ -392,11 +415,20 @@ function decodeChildWorkflowTarget(
       `unit ${unit.id} child workflow ${target.ref} exceeds the max composition depth of ${CHILD_WORKFLOW_DECODE_MAX_DEPTH}`,
     );
   }
-  const frozenPlan = decodeWorkflowPlanV4(target.frozenPlan, {}, childDepth);
-  const actualPlanHash = sha256(canonicalJsonLocal(frozenPlan));
+  const frozenPlan = decodeWorkflowPlanV4(target.frozenPlan, {}, childDepth, budget);
+  const embeddedPlanJson = canonicalJsonLocal(frozenPlan);
+  const actualPlanHash = sha256(embeddedPlanJson);
   if (actualPlanHash !== planHash) {
     fail(`unit ${unit.id} child workflow embedded plan does not match its frozen planHash`);
   }
+  const projectedBytes = budget.embeddedBytes + utf8Bytes(embeddedPlanJson);
+  if (projectedBytes > WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES) {
+    fail(
+      `unit ${unit.id} child workflow ${target.ref} embedded plans total ${projectedBytes} bytes, over the ` +
+        `${WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES}-byte limit`,
+    );
+  }
+  budget.embeddedBytes = projectedBytes;
   return Object.freeze({
     kind: "child-workflow",
     ref: target.ref,

@@ -21,14 +21,12 @@
  * does. Without the tamper, a fresh run would simply freeze to whatever the
  * current version already is and never reach the retired case at all.
  *
- * RED today, for exactly one reason: `startWorkflowRun` still freezes to
- * `WORKFLOW_IR_V4_VERSION` (4) AND `plan-classifier.ts` still treats 4 as
- * the CURRENT/supported version, so the pre-tamper pin below — asserting
- * the fresh row already carries plan irVersion 5 — fails today (A-N1:
- * `WORKFLOW_IR_V4_VERSION` is deleted, not merely superseded, so 4 is never
- * current again once Implement lands). Once Implement moves the "current"
- * line to `WORKFLOW_IR_V5_VERSION` (5), that pin goes green and the
- * hand-tampered row becomes exactly the retired case this file exercises.
+ * Implemented: `startWorkflowRun` freezes to `WORKFLOW_IR_V5_VERSION` (5) and
+ * `plan-classifier.ts` treats 5 as the CURRENT/supported version (A-N1: the
+ * old executable-version constant is deleted, not merely superseded, so 4
+ * is never current again). The pre-tamper pin below asserts exactly that —
+ * the fresh row already carries plan irVersion 5 — and the hand-tampered row
+ * then becomes the retired case this file exercises.
  *
  * No `@ts-expect-error` directives: `WORKFLOW_IR_VERSION_UNSUPPORTED` is
  * already a real `UsageErrorCode` member (A-N2), `WorkflowRunRow.plan_ir_version`

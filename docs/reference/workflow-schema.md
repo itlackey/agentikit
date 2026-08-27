@@ -82,15 +82,22 @@ The accepted 0.9.2 subset is deliberately closed:
   target task source's declared `inputs:` (task source v4 only — see
   [Task source v4](tasks.md#task-source-v4)). Each value is either a literal
   (validated against the input's declared schema at freeze) or a reference
-  `{from: "steps.<id>.output(.<segment>)*"}` / `{from: "params.<name>"}`,
-  resolved just before the unit dispatches and re-validated against the same
-  schema then. An unknown `with:` key, a missing required input with no
-  default, or a reference naming a step that doesn't exist earlier in the
-  job all fail at **freeze** with `UsageError` code `INPUT_BINDING_INVALID`,
-  before the plan is ever published. If the target task declares **no**
-  `inputs:` at all (every `version: 3` task, or a `version: 4` task with no
-  `inputs:` key) — or the step targets `uses: commands/<ref>` /
-  `uses: scripts/<ref>`, which are never binding surfaces — any authored
+  `{from: "steps.<id>.output(.<segment>)*"}`, resolved just before the unit
+  dispatches and re-validated against the same schema then. The reference
+  grammar also accepts `{from: "params.<name>"}`, naming a declared param of
+  the *composing* workflow itself — but a composing step is only authorable
+  in a GitHub-shaped document (this section), whose root keys are exactly
+  `name`, `on`, and `jobs` with `workflow_dispatch` inputs rejected, so it
+  can never declare `params:` of its own. In practice that reference form
+  therefore always fails freeze here, with "does not name a declared
+  workflow param; declared params: (none)". An unknown `with:` key, a
+  missing required input with no default, or a reference naming a step that
+  doesn't exist earlier in the job all fail at **freeze** with `UsageError`
+  code `INPUT_BINDING_INVALID`, before the plan is ever published. If the
+  target task declares **no** `inputs:` at all (every `version: 3` task, or
+  a `version: 4` task with no `inputs:` key) — or the step targets
+  `uses: commands/<ref>` / `uses: scripts/<ref>`, which are never binding
+  surfaces — any authored
   `with:`, including an empty mapping (`with: {}`), is rejected at freeze
   with `UsageError` code `COMPOSITION_INVALID`, exit 2. Omitting `with:`
   entirely always freezes normally, regardless of target. `with:` on
@@ -109,8 +116,12 @@ semantics.
 
 ## Child workflows
 
-A step can compose another workflow, in either Markdown or GitHub-shaped
-source, two ways:
+A step can compose another workflow, two ways. Composition is authored only
+through the GitHub-shaped `jobs.<id>.steps[].uses` surface — the composing
+(parent) document must be GitHub-shaped YAML, since the Markdown-frontmatter
+step schema has no `uses:` key at all (see [Source formats and shared
+IR](#source-formats-and-shared-ir)). The **child** workflow being composed
+may itself be authored in either format, Markdown or GitHub-shaped:
 
 - **Direct** — `uses: workflows/<ref>`:
 
@@ -131,11 +142,14 @@ Both forms bind against the child workflow's own declared `params:`
 frontmatter key — **not** a task's `inputs:` contract, since a workflow has
 no `inputs:`. `with:` follows the same grammar as everywhere else in this
 document: each value is a literal (validated against the param's declared
-type at freeze) or a `{from: "steps.<id>.output(.<segment>)*"}` /
-`{from: "params.<name>"}` reference, resolved just before the unit
-dispatches. An unknown key or an invalid reference fails at freeze with
-`UsageError` code `INPUT_BINDING_INVALID`, exactly like a task-composed
-step's `with:`.
+type at freeze) or a `{from: "steps.<id>.output(.<segment>)*"}` reference,
+resolved just before the unit dispatches. (The grammar also accepts
+`{from: "params.<name>"}`, naming a declared param of the *composing*
+workflow — but that form is unreachable here for the same reason noted
+above: the composing document is necessarily GitHub-shaped, so it never
+declares `params:` of its own.) An unknown key or an invalid reference
+fails at freeze with `UsageError` code `INPUT_BINDING_INVALID`, exactly like
+a task-composed step's `with:`.
 
 ### Frozen before publication
 

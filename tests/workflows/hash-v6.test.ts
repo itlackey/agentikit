@@ -257,7 +257,6 @@ describe("hashVersion 6 — unit input hash (A-11, A-14, A-15)", () => {
       )
       .digest("hex");
 
-    // RED today: the real prefix is still akm.workflow.unit\0v5\0 / hashVersion 5.
     expect(unit.inputHash).toBe(expectedHash);
   });
 
@@ -362,7 +361,6 @@ describe("hashVersion 6 — the gate hash (A-12)", () => {
       .update(canonicalJson({ hashVersion: 6, dispatch: gateTarget, invocation: null, prompt: capturedPrompt }))
       .digest("hex");
 
-    // RED today: the real prefix is still akm.workflow.gate\0v5\0 / hashVersion 5.
     expect(gateRow?.input_hash).toBe(expectedHash);
   });
 });
