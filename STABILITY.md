@@ -58,6 +58,7 @@ enumeration of the whole `proposal` noun group.
 | `akm curate` | Stable | |
 | `akm show` | Stable | |
 | `akm workflow status` | Stable | |
+| `akm workflow plan` | Evolving | New in 0.9.2; envelope shape may change. |
 | `akm workflow list` | Stable | |
 | `akm workflow create` | Stable | |
 | `akm workflow resume` | Stable | |
@@ -259,6 +260,12 @@ CHANGELOG with a migration note.
   history metadata is versioned. Schema additions in patch releases; removals
   only at minor. Bare `akm task` is a usage error naming the subcommands
   (`akm task doctor` reports scheduler diagnostics).
+- **Workflow plan** — `akm workflow plan <ref>`, new in 0.9.2: zero-write
+  compile+freeze introspection (the canonical step graph, task/child
+  expansion, input bindings, and lowering notices for a workflow, without
+  starting or publishing a run). The envelope shape may still change; the
+  five long-Stable `workflow` verbs (`status`, `list`, `create`, `resume`,
+  `abandon`) and `run` are unaffected.
 - **Events / log** — `akm log` is the event-stream surface (0.9.0: the
   asset-scoped `akm history` surface, and `log`'s own `tail` subcommand, were
   both removed; `log` is now a leaf command — the former `list` surface).

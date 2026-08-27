@@ -144,15 +144,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   complete plan embedded inside the parent's — before the parent run exists,
   so editing the child's source afterward cannot affect an already-frozen
   parent, and the child's transitive sources join the parent's guarded
-  source read set. This release freezes child workflows into the parent
-  plan; it does not yet execute them — running a step that composes a child
-  workflow fails closed with `UsageError` code
-  `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED` the moment that step's unit
-  dispatches (the run fails there — earlier steps keep their journaled
-  results and no other step's own target is affected, but the run does not
-  advance past it), no child run is ever created, and
-  `akm workflow list`/`status`/`next` output is unaffected. See
+  source read set. Running a step that composes a child workflow now drives
+  the child to completion — see **Child workflows now execute** and
+  **Workflow `outputs:`** below. (Correction: an earlier development
+  increment of this same 0.9.2 release briefly made an unexecuted composing
+  step fail closed with `UsageError` code
+  `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`. That code never reached a release
+  and is gone from the shipped 0.9.2 — it is listed here only because a
+  0.9.2 pre-release snapshot may otherwise be the sole place it was seen.)
+  See
   [Workflow Schema: Child workflows](docs/reference/workflow-schema.md#child-workflows).
+- **Child workflows now execute.** Running a step whose target is a child
+  workflow drives that child inline, in the parent's own process, with the
+  same engine `akm workflow run` uses — publication is idempotent, so a
+  retried or resumed composing step reuses the same child rather than
+  starting a new one. The child's final status maps onto the composing
+  step and the parent run: `completed` promotes the child's exported result
+  as the step's output and the parent continues; `failed` fails the step
+  and the run; `blocked` blocks the step and the run, with recovery notes
+  naming the exact sequence — `akm workflow resume <childRunId>`, then
+  `akm workflow resume <parentRunId>` and `akm workflow run <parentRunId>`.
+  `akm workflow status` on a run that composes children now renders a
+  `children:` tree; `akm workflow list` excludes child runs by default
+  (`--children` includes them), and a child run id always works directly
+  with `status`/`resume`/`abandon`/`run`. See
+  [Workflow Schema: Child execution](docs/reference/workflow-schema.md#child-execution)
+  and [Running Workflows: Child runs](docs/guides/run-workflows.md#child-runs).
+- **Workflow `outputs:`.** A workflow may declare a run-level export in its
+  Markdown frontmatter — `outputs: {<name>: {from: steps.<id>.output(.<seg>)*,
+  schema?}}`, up to 64 entries — resolved once, from persisted step
+  evidence, at run completion. An unresolvable reference, a truncated
+  step artifact, or a schema violation rolls the completion back
+  (`UsageError` code `WORKFLOW_OUTPUT_INVALID`): the run stays `active` and
+  its final step stays `pending` rather than completing with missing
+  exports. A run with no `outputs:` declaration exports `{runId, status}`
+  instead. This is a Markdown-frontmatter-only key — a GitHub-shaped
+  workflow's closed root key set has no extension surface for it, the same
+  reason it cannot declare `params:` either. See
+  [Workflow Schema: Workflow outputs](docs/reference/workflow-schema.md#workflow-outputs).
+- **`akm workflow plan <ref>`** (Evolving) — compiles, resolves, and freezes
+  a workflow exactly as starting a run would, then stops: zero durable
+  writes, no published run, no event, no lease. Prints the canonical step
+  graph, per-step frozen target kinds, task/child expansion, input
+  bindings, the source read set, and freeze-time lowering notices —
+  secret-free by construction (no resolved reference value, request
+  content, script bytes, or credential is ever printed). Defaults to a
+  human-readable summary; `--format json` returns the full envelope. See
+  [CLI reference: workflow plan](docs/reference/cli.md#workflow-plan).
 - **`akm task explain <ref> [input flags]`** — read-only task introspection.
   Prints the task's source path and version, its declared `inputs:` (with
   defaults — a secret-shaped default prints as `<redacted>`), the supplied

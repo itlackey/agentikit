@@ -10,13 +10,14 @@
  * tests/integration/workflows/child-cancellation.test.ts, per the spec's own
  * §7 new-suites table).
  *
- * RED today, as a BLOCK: this file's one import of `driveChildWorkflowUnit`
- * from `src/workflows/exec/child-workflow.ts` (which does not exist yet)
- * carries the established `// @ts-expect-error P3b red-phase: …` directive
- * (see tests/integration/workflows/child-execution.test.ts's file header for
- * the full rationale) — every test below fails as a block at the bun:test
- * *runtime* until Implement creates the module; `bunx tsc --noEmit` stays
- * green throughout.
+ * GREEN: this file's one import of `driveChildWorkflowUnit` from
+ * `src/workflows/exec/child-workflow.ts` resolves normally; `bunx tsc
+ * --noEmit` stays green. Before Implement created that module, the import
+ * carried the established `@ts-expect-error` red-phase directive (see
+ * tests/integration/workflows/child-execution.test.ts's file header for the
+ * full rationale) and every test below failed as a block at the bun:test
+ * *runtime*; Implement removed the directive the moment the module was
+ * created.
  *
  * A-31…A-34 use a spy on `runWorkflowSteps` (the reuse seam) to capture the
  * EXACT options object `driveChildWorkflowUnit` calls it with, mirroring

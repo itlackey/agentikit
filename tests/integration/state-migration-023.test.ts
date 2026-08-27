@@ -91,15 +91,22 @@ afterEach(() => {
 });
 
 describe("migration 023-child-workflow-runs — registry position and safety classification (C-03)", () => {
-  test("is the final entry of STATE_MIGRATIONS, directly after 022-workflow-unit-attempts", () => {
+  // Not asserted as the final entry: P3b's migration 024-workflow-run-outputs
+  // (docs/plans/specs/p3b-child-executor.md §8 acceptance criteria) is
+  // authorized to append after this one, so this test pins only 023's own
+  // position relative to its immediate predecessor, 022.
+  test("appears in STATE_MIGRATIONS directly after 022-workflow-unit-attempts", () => {
     const ids = STATE_MIGRATIONS.map((migration) => migration.id);
-    expect(ids.at(-1)).toBe(MIGRATION_ID);
-    expect(ids.at(-2)).toBe(PRECEDING_MIGRATION_ID);
+    const index = ids.indexOf(MIGRATION_ID);
+    expect(index).toBeGreaterThan(-1);
+    expect(ids[index - 1]).toBe(PRECEDING_MIGRATION_ID);
   });
 
-  test("is the final classified id in STATE_MIGRATION_SAFETY_BY_ID, classified additive", () => {
+  test("is classified additive in STATE_MIGRATION_SAFETY_BY_ID, directly after 022-workflow-unit-attempts", () => {
     const classifiedIds = Object.keys(STATE_MIGRATION_SAFETY_BY_ID);
-    expect(classifiedIds.at(-1)).toBe(MIGRATION_ID);
+    const index = classifiedIds.indexOf(MIGRATION_ID);
+    expect(index).toBeGreaterThan(-1);
+    expect(classifiedIds[index - 1]).toBe(PRECEDING_MIGRATION_ID);
     expect(getStateMigrationSafety(MIGRATION_ID)).toBe("additive");
   });
 

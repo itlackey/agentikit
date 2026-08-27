@@ -9,18 +9,15 @@
  * A-07…A-27; §3.3 "driveChildWorkflowUnit — the drive contract", §3.4
  * "Status mapping (exact)"). This file owns ONLY these 21 rows.
  *
- * RED today, as a BLOCK: `src/workflows/exec/child-workflow.ts` does not
- * exist yet, so this file's single import of `driveChildWorkflowUnit` cannot
- * resolve at the bun:test *runtime* — every test below is expected to fail
- * as a block until Implement creates the module (the established convention:
- * `tests/execution/input-contract.test.ts`'s docstring, `@ts-expect-error
- * P1b red-phase`, commit `ddceaa9`). At the TypeScript layer, ONE
- * `// @ts-expect-error P3b red-phase: …` directive on that one import line
- * suppresses the unresolvable-module diagnostic; every name the import
- * introduces is typed `any` for the rest of the file, so no further
- * per-usage directive is needed anywhere below (and none would be legal — a
- * directive on a line with no diagnostic is itself a tsc error). Implement
- * removes the one directive the moment the module exists.
+ * GREEN: `src/workflows/exec/child-workflow.ts` now exists, so this file's
+ * single import of `driveChildWorkflowUnit` resolves normally at both the
+ * TypeScript layer and the bun:test runtime. Before Implement created the
+ * module, every test below failed as a block at the bun:test *runtime* (the
+ * established convention: `tests/execution/input-contract.test.ts`'s
+ * docstring, `@ts-expect-error P1b red-phase`, commit `ddceaa9`), and one
+ * `@ts-expect-error` directive on the import line suppressed the
+ * unresolvable-module diagnostic at the TypeScript layer. Implement removed
+ * that directive the moment the module was created; none remains here.
  *
  * Two testing levels are used deliberately:
  *

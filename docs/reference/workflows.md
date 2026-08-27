@@ -60,14 +60,20 @@ A step can compose another workflow as a child — directly
 (`uses: tasks/<ref>`) — frozen completely into the parent's plan before the
 parent run is published. See
 [Workflow Schema: Child workflows](../reference/workflow-schema.md#child-workflows)
-for both forms and their limits. Child **execution** — a status tree that
-reflects child runs, and surfacing a child's outputs to its parent — is a
-later 0.9.2 increment; today, composing a child workflow freezes and embeds
-cleanly, but actually running a step that composes one fails closed with a
-dedicated `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED` error the moment that
-step's unit is dispatched. That failure fails the run at the composing
-step: a step that already completed keeps its journaled results and no
-other step's own target is affected, but the run does not advance past it.
+for both forms and their limits. Running a step that composes a child
+workflow drives that child to completion (or as far as it gets) with the
+same engine the parent uses, then maps the child's final status onto the
+composing step: a completed child promotes its declared `outputs:` (or
+`{runId, status}` when it declares none) as the step's own output and the
+parent continues; a failed child fails the step and the run; a blocked
+child blocks the composing step and the run, with recovery notes naming the
+exact `akm workflow resume`/`akm workflow run` sequence. `akm workflow
+status` on a run that composes children renders a `children:` tree showing
+every descendant run's ref and status. See
+[Workflow Schema: Child execution](../reference/workflow-schema.md#child-execution)
+for the full status mapping and the blocked-child recovery flow, and
+[Running Workflows: Child runs](../guides/run-workflows.md#child-runs) for a
+walkthrough.
 
 ## Unsupported boundary and 0.9.3
 

@@ -195,24 +195,63 @@ deduplicating identical embedded plans is not implemented. A step whose
 real asset fails with the ordinary asset-resolution error, unchanged by any
 of this.
 
-### What is not yet available
+### Child execution
 
-Composing a child workflow into a parent's frozen plan does not yet mean the
-child *runs*. Freezing succeeds — the parent's plan embeds the child
-completely, as described above — but **running** a step that composes a
-child workflow fails closed: the moment the parent workflow actually
-dispatches that step's unit, it fails with `UsageError` code
-`WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`, naming the child ref and pointing at
-the P3b release that adds child execution — and the run fails there. Only a
-step whose own target is `kind: "child-workflow"` raises this error: no
-other step's own target is affected, and a step that already completed
-keeps its journaled results, but the run does not advance past the
-composing step — steps after it never dispatch. No child run is ever
-created (`publishChildWorkflowRun` has no
-production caller in this release), so `akm workflow list` / `status` /
-`next` output never shows a child row. Child execution, a status tree that
-reflects child runs, and surfacing a child's outputs to its parent are a
-later 0.9.2 increment.
+Running a step whose own target is `kind: "child-workflow"` publishes (or
+finds, if one already exists — see "Identity and retries" below) a child
+run and drives it to completion, or as far as it gets, before the parent
+step is finalized. The drive happens **inline, in the parent's own
+process**: it is the same engine `akm workflow run` uses on the child's
+frozen plan, not a separately scheduled job. Consequently, whatever aborts
+the parent's own dispatch — `Ctrl-C`, a `--timeout`, a budget ceiling, or
+the parent losing its run lease — also aborts the child drive; both runs
+are left resumable, never partially torn down.
+
+The child's final status maps onto the composing step and the parent run:
+
+| Child status | Composing step | Parent run |
+| --- | --- | --- |
+| `completed` | completes; its output is the child's exported result — its declared `outputs:` (see [What a step's output is](#what-a-steps-output-is)), or `{runId, status}` when the child declares none | continues |
+| `failed` | `failed` | `failed` |
+| `blocked` | `blocked` | `blocked` |
+| aborted mid-drive (parent cancelled/timed out/lost its lease) | left unfinished, not finalized | active and resumable |
+| the child could not be published or its plan failed an integrity re-check | `failed` | `failed` |
+| another process already holds the child's run lease | `failed` | `failed` |
+
+**Blocked-child recovery.** A blocked child blocks its composing step —
+`akm` does not resume a child for you, because a gate is a gate for a
+child workflow too. The step's notes name the exact three-command
+sequence: resume the **child** first, then resume and re-run the
+**parent** — re-driving the parent is what advances it, because that is
+what re-enters the composing step and drives the now-resumed child:
+
+```sh
+akm workflow resume <childRunId>
+akm workflow resume <parentRunId>
+akm workflow run <parentRunId>
+```
+
+**Identity and retries.** A child run's identity is keyed by the parent run,
+the parent unit, and that unit's input hash — publishing is idempotent, so
+re-driving the composing step (an explicit `akm workflow resume` +
+`akm workflow run`, or a `retry:` policy on the step) finds and continues
+the **same** child run rather than starting a new one. Only a change to the
+composing step's own inputs (params, upstream step outputs it reads, or gate
+feedback from a rejected verification loop) produces a different child.
+
+**Visibility.** `akm workflow status` on a run that composes children
+renders a `children:` tree — every descendant run's ref, status, and, for a
+blocked child, its resume command — recursively to the same 8-level
+composition-depth bound described above. Child runs are excluded from `akm
+workflow list` by default; pass `--children` to include them. A child run
+id always works directly with `akm workflow status`/`resume`/`abandon`/`run`,
+listed or not. See
+[Running Workflows: Child runs](../guides/run-workflows.md#child-runs) for a
+worked example, and
+[Architecture: The Workflow Engine](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md#child-workflows)
+for the dispatch seam and why reusing the top-level run engine (rather than a
+second executor) is what makes the identity and abort-propagation rules above
+hold for free.
 
 ## Frontmatter keys
 
@@ -494,6 +533,70 @@ surfaces this loudly rather than silently attaching an empty string. A unit
 that declares an `output` schema is unaffected — an empty response is not
 valid JSON, so it fails as a parse error and can never satisfy a schema as a
 silent `null`.
+
+## Workflow outputs
+
+A workflow can declare a run-level export: the values a **completed run**
+promotes, projected from its steps' own artifacts. This is a Markdown
+frontmatter key, `outputs:`:
+
+```yaml
+outputs:
+  report:
+    from: steps.summarize.output
+  changed_count:
+    from: steps.collect.output.total
+    schema: { type: integer, minimum: 0 }
+```
+
+Each entry is a mapping of exactly `from` (required) and `schema`
+(optional):
+
+- `from` is a `steps.<id>.output(.<segment>)*` reference into a step's own
+  artifact — the same reference grammar `with:`/`inputs:` use elsewhere in
+  this document — naming a declared step. `from: params.<name>` is
+  rejected: a run's exports come from what its steps produced, not from its
+  input params verbatim.
+- `schema`, when present, is validated against the same [enforced JSON
+  Schema subset](#the-enforced-json-schema-subset) as a step's own `output:`
+  schema, and is bound by the same limit: at most 256 KiB.
+- Output names follow the same pattern as params, `^[A-Za-z_][A-Za-z0-9_]*$`,
+  and a workflow may declare at most 64.
+
+**This is a Markdown-only key.** GitHub-shaped YAML's root is a closed set —
+`name`, `on`, `jobs` — with no extension surface, the same reason a
+GitHub-shaped workflow cannot declare `params:` either. Composition itself
+is unaffected: the *composing* (parent) document must still be GitHub-shaped
+(only `jobs.<id>.steps[].uses` composes — see [Child
+workflows](#child-workflows)), and the *composed* (child) may be either
+format — but a child that wants to export more than `{runId, status}` must
+be authored in Markdown.
+
+**Different from a step's own `output:` schema.** A step's `output:` (see
+[Typed step artifacts](#typed-step-artifacts) below) is a typed-artifact
+contract on *one step*, enforced and retryable through that step's own gate
+loop. A workflow's `outputs:` is a *run-level export projection* over
+already-promoted step artifacts, resolved once, after every step has
+finished. They compose freely: a step can declare `output:` and the
+workflow's `outputs:` can project that same step's artifact under an export
+name.
+
+**Resolution happens once, at run completion**, over the run's persisted
+step evidence — never re-evaluated afterward. If a declared `from` cannot
+be resolved, reads a step artifact that was too large to persist in full, or
+its resolved value fails its declared `schema`, run completion itself
+rolls back: the run stays `active`, its final step stays `pending`, and no
+event is emitted. Fix the declaration (or the step that produces the value)
+and the next completion attempt resolves outputs again — a bad `outputs:`
+entry cannot silently strand a run as `completed` with missing exports.
+
+**What a completed run exports.** A run with an `outputs:` declaration
+exports exactly those resolved values. A run with none exports
+`{runId, status}` instead — synthesized whenever it is read, never
+persisted. This is what a parent step composing this workflow as a child
+sees at `steps.<id>.output`: see [Child execution](#child-execution) for how
+a composing step's own reference into a child's exports is checked at
+freeze time.
 
 ## Typed step artifacts
 

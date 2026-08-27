@@ -361,10 +361,7 @@ describe("akm workflow plan <ref> — a workflow composing a child (B-49)", () =
 describe("akm workflow plan <ref> — a task-wrapped step (B-50)", () => {
   test("a per-step expansion names via: task and the taskRef", async () => {
     write("commands/plan-noop.md", "Do nothing.\n");
-    write(
-      "tasks/plan-wrapper.yml",
-      ["version: 3", "run: echo wrapped", "shell: sh", "akm:", '  schedule: "@daily"', ""].join("\n"),
-    );
+    write("tasks/plan-wrapper.yml", ["version: 4", "run: echo wrapped", "shell: sh", ""].join("\n"));
     writeParent("plan-task-wrapped", ["      - id: dispatch", "        uses: tasks/plan-wrapper"]);
     await index();
 

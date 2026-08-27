@@ -560,6 +560,8 @@ akm workflow status workflows/ship-release
 akm workflow resume <run-id>
 akm workflow abandon <run-id>
 akm workflow list --active
+akm workflow list --children               # also list child workflow runs
+akm workflow plan workflows/ship-release    # compile+freeze preview, zero writes
 ```
 
 Bare `akm workflow` (no subcommand) is a usage error (exit 2), the canonical
@@ -571,10 +573,11 @@ Subcommands:
 | --- | --- |
 | `create <name>` | Validate and write a Markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
 | `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or continues the active run in the current scope; a run id continues that exact active run. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
-| `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only) |
-| `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`) |
+| `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only). Renders a `children:` tree when the run composes child workflows |
+| `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`). Child workflow runs are excluded unless `--children` is passed |
 | `resume <run-id>` | Flip a `blocked` or `failed` run back to `active`. Completed runs cannot be resumed |
 | `abandon <run-id>` | Mark a run failed so it stops counting as active (`resume` can reopen it) |
+| `plan <ref>` | **Evolving.** Compile and freeze a workflow WITHOUT publishing a run: the canonical step graph, per-step frozen target kinds, task/child expansion, input bindings, source read set, and lowering notices — zero durable writes. Defaults to a human-readable summary; pass `--format json` for the full envelope |
 
 The public `workflow start`, `next`, and `complete` lifecycle was removed in
 0.9, along with the experimental `brief`/`report` external-driver protocol.
@@ -703,6 +706,70 @@ to the most-recently-updated run for that ref in the current working scope.
 `--units` adds per-unit rows (unit id, status, failure reason, and any
 result/error diagnostic text) from the run journal — diagnostics only; step
 evidence stays deterministic and is unaffected.
+
+#### workflow plan
+
+```sh
+akm workflow plan workflows/release
+akm workflow plan workflows/release --format json
+```
+
+**Evolving** (see [STABILITY.md](../../STABILITY.md)). Compiles, resolves,
+and freezes the named workflow exactly as `akm workflow run` would when
+starting a new run — the same two calls, `loadWorkflowAsset` +
+`compileResolveFreezeWorkflowV4` — and stops. It publishes **no** run row,
+takes **no** lease, appends **no** event, and writes to no other table:
+zero durable writes, verified by row count before and after, not merely
+assumed. Use it to preview what a run *would* freeze — the canonical step
+graph, which steps expand through a task or a composed child workflow, and
+any freeze-time lowering notices or compile warnings — before committing to
+a run, or to inspect a workflow's shape without side effects.
+
+Two output modes:
+
+- **No `--format`** (the default for this command only — every other verb
+  defaults to JSON): a human-readable text summary.
+- **`--format json`**: the full envelope — `ok`, `ref`, `title`,
+  `sourceFormat`, `sourcePath`, `irVersion`, `planHash`, `published` (always
+  `false`, so a consumer can never mistake this for a run envelope),
+  `execution`, `budget?`, `params?`, `outputs?`, `steps[]`, `sourceReadSet[]`,
+  `notices[]`, `warnings[]`. Each step entry carries an `expansion` field
+  naming how its target was reached: `{via: "direct"}`, `{via: "task",
+  taskRef}`, or — for a step composing a child workflow —
+  `{via: "child", childRef, childPlanHash, childOutputs, steps[]}` with the
+  child's own step list nested recursively in the same shape.
+
+Text-mode example:
+
+```
+workflow: team//workflows/release (markdown)
+source:   workflows/release.md
+plan:     irVersion 5, hash 4f2ba91c3d0e… (not published)
+limits:   maxConcurrency 4; budget max_units 50, max_tokens 100000
+params:   channel, version
+outputs:  report <- steps.summarize.output
+steps:
+  1. notify   [command]        direct
+  2. build    [script]         via tasks/plan-v4-task
+  3. dispatch [child-workflow] -> workflows/release-checklist (plan 91acbe20f5d1…)
+       with: channel="stable" (literal), files <- steps.build.output.files (reference)
+       exports: report, changed_count
+       3.1 verify [command] direct
+  4. summarize [command]       direct
+read set:
+  workflows/release.md
+  commands/notify.md
+  workflows/release-checklist.md
+```
+
+**Secret-free by construction.** Neither mode ever prints a resolved
+reference value (references resolve at pre-attempt, not here), request
+content (`request.command.content`, `request.persona`, `request.conversation`,
+`request.runtime.environment`), a script's `bytesBase64`, or any credential —
+only binding *shapes* (`inputBindings[].name`/`.kind`, a literal's `.value`,
+a reference's `.from`), environment binding *names* (`environment[].kind`/
+`.name`, an `env-ref`'s `.ref`/`.keys`/`.secretNames`), and engine *names*
+(`gate.judgeEngine`).
 
 #### workflow resume
 

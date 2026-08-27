@@ -74,11 +74,78 @@ embedded child — or an embedded child claiming any `irVersion` other than 5
 corruption boundary the top-level `plan_hash` check already closes, extended
 recursively through however many levels of composition a plan embeds.
 
-This release freezes child workflows into the parent's plan; it does not yet
-execute them — dispatching a step whose target is `kind: "child-workflow"`
-fails closed with `UsageError` code `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`
-rather than running the child. See
-[Workflow Schema: what is not yet available](../reference/workflow-schema.md#what-is-not-yet-available).
+**The dispatch seam.** Dispatching a step whose target is
+`kind: "child-workflow"` is the one branch point in
+`dispatchJournaledAttempt` (`src/workflows/exec/native-executor.ts`) that
+does not call the ordinary unit dispatcher: it calls
+`driveChildWorkflowUnit` instead, with everything the composing unit already
+resolved — the frozen target, the parent's dispatch context, the child's
+resolved params, and the unit input hash. The branch sits **inside** the
+existing retry loop, after the parent unit's attempt row is already claimed
+`running` (so a crash between claiming that row and publishing the child
+leaves a recoverable `running` parent unit and no orphaned child) and
+**before** the ordinary post-dispatch journaling (redaction, attempt
+finishing, the worktree epilogue), which runs unchanged either way — a
+child-workflow unit is journaled exactly like any other.
+
+**The drive contract.** `driveChildWorkflowUnit` re-verifies the embedded
+plan's integrity, resolves the child's params through the same input-binding
+resolution every frozen target uses, computes the child's identity key from
+`{parentRunId, parentUnitId, unitInputHash}`, and publishes the child run —
+idempotently: the same three inputs always resolve to the same child row,
+so a retried or resumed composing step re-drives the run it already started
+rather than starting a new one, and only a change to the composing step's
+own inputs (params, an upstream step output it reads, or gate feedback from
+a rejected verification loop) produces a different child. A child found
+already `blocked` or `failed` is not re-driven — driving happens once per
+call, and a terminal-but-unhealthy child surfaces through the status mapping
+below instead. The child's final status maps onto the composing unit, and
+from there onto the parent step and run, exactly as described in [Workflow
+Schema: Child execution](../reference/workflow-schema.md#child-execution).
+
+**Why `runWorkflowSteps` is reused, not a second executor.** The child drive
+calls the exact same exported entry point `akm workflow run` calls —
+`runWorkflowSteps(options)`, pointed at the child's run id as `target` —
+with no special-casing for "this target is a child": resolving a run id,
+decoding and integrity-checking the stored plan, acquiring that row's own
+lease, and walking its spine through `completeWorkflowStep` are identical to
+the top-level path. That reuse is what makes child leases arbitrate
+two-parent contention correctly with no new mechanism, and what makes a
+resumed parent replay a completed child step byte-identically with zero
+dispatcher calls. The child drive passes a no-op
+`disposeDispatchResources` (the parent's `finally` remains the sole owner of
+the process-lifecycle drain for the whole process) and no `maxSteps` or
+`maxRetries` (the parent's own budgets count only its own spine steps). The
+lower-level `driveRun` that `runWorkflowSteps` wraps stays module-private —
+reaching for it directly, instead of the public entry point, would be
+exactly the second executor this design avoids.
+
+**Why `hashVersion` stays 6.** The parent unit's input-hash preimage already
+covers everything the child drive depends on: the frozen target carries the
+child's ref, plan hash, content hash, binding mode, and its entire embedded
+plan, so any change anywhere in the child changes the parent unit's own
+input hash transitively. The child run id (minted at dispatch) and its
+exported result are unit *outputs*, not inputs, so neither belongs in the
+preimage — adding either would be a hashing-boundary violation, not a fix.
+
+### Run outputs
+
+A workflow may declare `outputs:` — a run-level export projected from its
+steps' own artifacts once every step has finished (see [Workflow Schema:
+Workflow outputs](../reference/workflow-schema.md#workflow-outputs) for the
+authoring grammar). Resolution happens inside the same write transaction
+that completes the run's final step, immediately after the run's terminal
+status is derived: each declared output is resolved from the persisted step
+evidence and, if declared, validated against its schema. If resolution or
+validation fails for any entry, the **whole completion rolls back** — the
+run stays `active`, its final step stays `pending`, and no completion event
+is emitted — rather than leaving a run `completed` with missing or invalid
+exports. A run with no `outputs:` declaration exports `{runId, status}`
+instead, synthesized on read and never persisted. This exported result is
+exactly what a parent composing this workflow as a child promotes as the
+composing unit's own result on `completed` — the same value, read through
+the same function, whether the caller is `akm workflow status` or a parent
+unit's dispatch.
 
 ## Resume is journaled replay
 

@@ -80,6 +80,55 @@ resumes. When you need the human-facing *why* behind a failure, `--units`
 reads the unit journal directly and shows it without ever feeding that text
 back into an artifact or input hash.
 
+## Child runs
+
+A step that composes another workflow (see [Workflow Schema: Child
+workflows](../reference/workflow-schema.md#child-workflows)) drives that
+child inline when the composing step runs. `akm workflow status` on a run
+that composes children renders a `children:` tree after its `steps:` block:
+
+```sh
+akm workflow status <run-id>
+```
+
+```
+steps:
+  - build [work] (completed)
+  - dispatch [dispatch] (completed)
+children:
+  - ✓ 4f2b1a9c workflows/leaf [completed] (step "dispatch")
+```
+
+Each row shows the child's run id, its workflow ref, its status, and which
+of the parent's steps spawned it; a blocked child also shows its resume
+command. Nesting reflects composition depth — a child that itself composes
+a grandchild shows its own indented `children:` rows.
+
+**Recovering a blocked child.** A blocked child blocks the composing step
+(and the parent run) too — `akm` will not resume a child for you. Resume the
+**child** first, then resume and re-run the **parent**; re-driving the
+parent is what advances it, because that re-enters the composing step and
+drives the now-resumed child:
+
+```sh
+akm workflow resume <childRunId>
+akm workflow resume <parentRunId>
+akm workflow run <parentRunId>
+```
+
+**Child runs are hidden by default.** `akm workflow list` excludes child
+runs so the list stays a view of the runs you started; pass `--children` to
+include them:
+
+```sh
+akm workflow list              # child runs excluded
+akm workflow list --children   # child runs included
+```
+
+A child run id always works directly, listed or not — `akm workflow status
+<childRunId>`, `resume`, `abandon`, and `run` all operate on it exactly like
+any other run.
+
 ## List runs in scope
 
 `akm workflow list` shows workflow runs in the current scope.
