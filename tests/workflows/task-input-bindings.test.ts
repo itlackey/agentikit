@@ -575,6 +575,86 @@ describe("P2b freeze-time — decode widens for task targets only; the expressio
 
     expect(() => decodeWorkflowSourceIrV1(ir)).toThrow(/step dispatch with\.meta contains an unsupported expression/);
   });
+
+  // (P2b test-review finding #2) B-27 above pins that the widened decode
+  // still rejects a NESTED expression — on its own that does not prove the
+  // widening is TASK-SCOPED, since an implementation that relaxes
+  // scalarRecord for EVERY uses: target would pass B-27 too (a nested
+  // expression is still caught by rejectStepWithExpressions regardless of
+  // which targets scalarRecord itself now skips). These four siblings pin
+  // the actual scope boundary directly: akm/command, commands/<ref>, and
+  // scripts/<ref> are UNAFFECTED (byte-identical rejection); only a
+  // tasks/<ref> step's decode widens. This authors F-A2's re-scoped
+  // assertion HERE, in the red commit, rather than leaving the only coverage
+  // inside tests/workflows/characterization-with-drop.test.ts:98 — the very
+  // test F-A2 edits during Implement (its tasks/x arm is REMOVED there; this
+  // describe is the independent pin that removal does not leave the
+  // task-scoping fact unpinned).
+  //
+  // Untyped Record<string, unknown> fixtures (rather than this file's own
+  // strictly-typed WorkflowSourceIrV1 literal above) deliberately mirror
+  // characterization-with-drop.test.ts's OWN `baseIr`/step shape: `with`'s
+  // widened Record<string, unknown> type (A-N3) is exactly what is NOT yet
+  // true for these three preserved targets, so building them through a typed
+  // literal would need its own `@ts-expect-error` per call site for no
+  // benefit — decodeWorkflowSourceIrV1 itself accepts `unknown`.
+  function bareSpan() {
+    return { path: "x.yml", start: 1, end: 9 };
+  }
+  function bareIr(step: Record<string, unknown>): unknown {
+    return {
+      sourceIrVersion: 1,
+      name: "B-26/B-25 task-scoping fixture",
+      triggers: [{ kind: "workflow_dispatch", source: bareSpan() }],
+      jobs: [{ id: "main", needs: [], steps: [step], source: bareSpan() }],
+      source: bareSpan(),
+    };
+  }
+
+  test("B-26: a nested with: value on uses: akm/command is UNAFFECTED by the task-scoped widening, byte-identical (verified: validateWorkflowBuiltinCommand's OWN structural check governs this target — scalarRecord's 'must be a scalar' message is unreachable here, before or after A-N3)", () => {
+    const step = {
+      id: STEP_ID,
+      uses: "akm/command",
+      commandMode: "literal",
+      with: { content: { nested: true } },
+      source: bareSpan(),
+    };
+    // Deliberately NOT /must be a scalar/: akm/command's with: is owned by
+    // validateWorkflowBuiltinCommand -> parseBuiltinCommandAction
+    // (schema.ts:362-374; src/commands/command/builtin-action.ts), which
+    // runs BEFORE scalarRecord in validateStep and rejects a non-string
+    // content with ITS OWN message ("Built-in command action with.content
+    // must be a string.") — every with: shape for this target either
+    // satisfies parseBuiltinCommandAction's own field/type checks (in which
+    // case the recognized fields are already scalar, so scalarRecord passes
+    // too) or fails there first, so scalarRecord's message can never surface
+    // for uses: akm/command, independent of A-N3. Pinning this real,
+    // byte-identical fact — not an inapplicable "must be a scalar" one — is
+    // what proves this target is unaffected by the task-scoped relaxation.
+    expect(() => decodeWorkflowSourceIrV1(bareIr(step))).toThrow(/with\.content must be a string/);
+  });
+
+  test("B-26: a nested with: value on uses: commands/<ref> is still rejected 'must be a scalar', byte-identical", () => {
+    const step = { id: STEP_ID, uses: "commands/other", with: { note: { nested: true } }, source: bareSpan() };
+    expect(() => decodeWorkflowSourceIrV1(bareIr(step))).toThrow(/step dispatch with\.note must be a scalar/);
+  });
+
+  test("B-26: a nested with: value on uses: scripts/<ref> is ALSO still rejected 'must be a scalar', byte-identical", () => {
+    const step = { id: STEP_ID, uses: "scripts/build.sh", with: { note: { nested: true } }, source: bareSpan() };
+    expect(() => decodeWorkflowSourceIrV1(bareIr(step))).toThrow(/step dispatch with\.note must be a scalar/);
+  });
+
+  test("B-25: the IDENTICAL nested with: SHAPE on a uses: tasks/<ref> step now decodes — scalarRecord's restriction narrows to non-task targets only", () => {
+    const step = {
+      id: STEP_ID,
+      uses: TASK_REF,
+      with: { ticket: "T-1", meta: { nested: true } },
+      source: bareSpan(),
+    };
+    const decoded = decodeWorkflowSourceIrV1(bareIr(step)) as WorkflowSourceIrV1;
+    // @ts-expect-error P2b red-phase: WorkflowSourceStep.with lands in Implement widened to Record<string, unknown> (the implementation removes this directive; A-N3) — decoded.jobs[0].steps[0].with is still typed Record<string, WorkflowSourceScalar> at head, which the non-scalar "meta" value here does not satisfy
+    expect(decoded.jobs[0]?.steps[0]?.with).toEqual({ ticket: "T-1", meta: { nested: true } });
+  });
 });
 
 describe("P2b freeze-time — no merge semantics across a two-level task -> workflow -> task composition chain (B-29, A-N4)", () => {

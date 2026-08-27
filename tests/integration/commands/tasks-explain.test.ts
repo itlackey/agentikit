@@ -102,6 +102,78 @@ function writeExplainDemoFixture(): void {
   writeTask("explain-demo", EXPLAIN_DEMO_YAML);
 }
 
+/**
+ * Structurally locate a field whose KEY matches `keyPattern` and whose value
+ * is the exact string `expected`, anywhere in the JSON envelope — tolerant of
+ * whichever concrete field name Implement picks (e.g. "bundle", "bundleName",
+ * "owningBundle"), but still a TARGETED proof rather than a whole-envelope
+ * substring probe. A whole-envelope probe for the bundle name "stash" would
+ * also match unrelated appearances of that exact text — the source PATH
+ * itself contains "/stash/" as a directory segment (P2b test-review finding
+ * #3) — so this only counts a node that carries the value under a
+ * bundle-shaped KEY.
+ */
+function hasNamedField(json: unknown, keyPattern: RegExp, expected: string): boolean {
+  function visit(node: unknown): boolean {
+    if (Array.isArray(node)) return node.some(visit);
+    if (node === null || typeof node !== "object") return false;
+    const obj = node as Record<string, unknown>;
+    for (const [key, value] of Object.entries(obj)) {
+      if (keyPattern.test(key) && value === expected) return true;
+    }
+    return Object.values(obj).some(visit);
+  }
+  return visit(json);
+}
+
+/** As {@link hasNamedField}, but the value is the NUMBER `expected` — or its exact string spelling, since "the exact rendering layout is Implement's call" (this file's own header comment). */
+function hasNamedVersionField(json: unknown, keyPattern: RegExp, expected: number): boolean {
+  function visit(node: unknown): boolean {
+    if (Array.isArray(node)) return node.some(visit);
+    if (node === null || typeof node !== "object") return false;
+    const obj = node as Record<string, unknown>;
+    for (const [key, value] of Object.entries(obj)) {
+      if (keyPattern.test(key) && (value === expected || value === String(expected))) return true;
+    }
+    return Object.values(obj).some(visit);
+  }
+  return visit(json);
+}
+
+/**
+ * Locate at least one FIELD-LEVEL EXECUTION PROVENANCE object anywhere in the
+ * envelope — the exact `{layer, kind, via}` shape
+ * `planExecutionCascade`'s `ResolvedExecutionPlanV1.provenance` actually
+ * returns (`src/integrations/agent/execution-cascade.ts`'s `provenance()`
+ * helper: `Object.freeze({layer: layer.id, kind: layer.kind, via})`) —
+ * structurally, not merely because the resolved engine NAME ("test-agent")
+ * appears somewhere in the envelope (P2b test-review finding #3: a whole-
+ * envelope substring probe for the engine name alone is satisfiable by an
+ * envelope that prints the RESOLVED value with no provenance tracking at
+ * all). Finding this shape is the direct, structural proof that `akm task
+ * explain` REUSES planExecutionCascade's own provenance rather than writing
+ * a second resolver (spec B-N4).
+ */
+function hasExecutionFieldProvenance(json: unknown): boolean {
+  function visit(node: unknown): boolean {
+    if (Array.isArray(node)) return node.some(visit);
+    if (node === null || typeof node !== "object") return false;
+    const obj = node as Record<string, unknown>;
+    if (
+      typeof obj.layer === "string" &&
+      obj.layer.length > 0 &&
+      typeof obj.kind === "string" &&
+      obj.kind.length > 0 &&
+      typeof obj.via === "string" &&
+      obj.via.length > 0
+    ) {
+      return true;
+    }
+    return Object.values(obj).some(visit);
+  }
+  return visit(json);
+}
+
 describe("akm task explain <ref> — text output (B-52)", () => {
   test("prints declarations+defaults, target kind+ref, effective execution settings, and schedule bindings", async () => {
     writeExplainDemoFixture();
@@ -115,6 +187,21 @@ describe("akm task explain <ref> — text output (B-52)", () => {
     expect(text).toContain("changed");
     expect(text).toContain("strict");
     expect(text).toContain("ticket");
+
+    // Task source path (absolute) and owning bundle (P2b test-review finding
+    // #3: neither was pinned before). The path itself is not a secret
+    // (B-N4's own field table lists it explicitly), and "stash" is the
+    // owning-bundle name this exact sandbox resolves to whether Implement
+    // reuses akm task run's own DEFAULT_BUNDLE_NAME fallback
+    // (src/tasks/run/load-task.ts) or the working-stash write-target path
+    // (src/core/write-source.ts's deriveBundleId, which slugifies stashDir's
+    // OWN basename — withIsolatedAkmStorage's stash dir is literally named
+    // "stash") — the two independent resolution paths agree here.
+    expect(text).toContain(path.join(tasksDir, "explain-demo.yml"));
+    expect(text).toContain("stash");
+
+    // Task source version: the fixture is version: 4.
+    expect(text).toMatch(/version[^0-9]{0,15}4\b/i);
 
     // Resolved target kind + ref.
     expect(text).toMatch(/command/i);
@@ -145,6 +232,17 @@ describe("akm task explain <ref> --format json (B-53)", () => {
     expect(rendered).toContain("changed");
     expect(rendered).toContain(SCHEDULE_CRON);
     expect(rendered).toContain("explain-note");
+
+    // (P2b test-review finding #3) B-N4's field table lists eight facts;
+    // these four were unpinned by every existing assertion in this
+    // describe: the absolute source path and owning bundle name, the source
+    // version, and at least one FIELD-LEVEL execution-provenance object
+    // proving `explain` reuses planExecutionCascade's own provenance rather
+    // than writing a second resolver.
+    expect(rendered).toContain(path.join(tasksDir, "explain-demo.yml"));
+    expect(hasNamedField(envelope, /bundle/i, "stash")).toBe(true);
+    expect(hasNamedVersionField(envelope, /version/i, 4)).toBe(true);
+    expect(hasExecutionFieldProvenance(envelope)).toBe(true);
   });
 
   test("stable key order: two consecutive explain calls on the identical task produce byte-identical JSON", async () => {
@@ -324,9 +422,15 @@ describe("akm task explain <ref> — a version: 3 task (B-57)", () => {
     const result = await runCliCapture(["task", "explain", "explain-v3", "--format", "json"]);
 
     expect(result.code).toBe(0);
-    const rendered = JSON.stringify(JSON.parse(result.stdout));
+    const envelope = JSON.parse(result.stdout);
+    const rendered = JSON.stringify(envelope);
     expect(rendered).toMatch(/shell/i);
     expect(rendered).toContain("@daily");
+
+    // (P2b test-review finding #3) the source version resolved for a v3 task
+    // is 3, structurally distinct from the v4 fixture's 4 above — proving
+    // the field tracks the REAL parsed version rather than a hardcoded 4.
+    expect(hasNamedVersionField(envelope, /version/i, 3)).toBe(true);
   });
 });
 

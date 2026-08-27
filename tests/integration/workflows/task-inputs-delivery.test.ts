@@ -244,6 +244,80 @@ describe("shell/script task target — AKM_TASK_INPUTS is exactly one canonical-
   });
 });
 
+// ── B-31/B-35 (P2b test-review finding #1) — a REFERENCE binding's RESOLVED
+// value reaches AKM_TASK_INPUTS, not merely a validated-then-dropped one ──
+// Every B-35/B-36/B-38 case above binds only literals/defaults.
+// tests/integration/workflows/task-binding-resolution.test.ts's own B-31
+// exercises computeStepWorkList directly with hand-built stepOutputs, proving
+// the reference arm at the WORK-LIST layer; this sibling drives the SAME
+// two-stage resolution through the REAL delivery pipeline this file's own
+// B-35/B-36 cases already use (executeStepPlan → real subprocess spawn → real
+// env var read-back), so an implementation that resolves+validates a
+// reference and then omits it from the effective input map — the exact
+// "bindings accepted but dropped" defect this phase exists to close — is
+// pinned end-to-end for a real delivery surface, not merely for the
+// pre-attempt work-list shape.
+
+describe("shell task target — a REFERENCE binding's RESOLVED value reaches AKM_TASK_INPUTS (B-31, B-35, B-N1)", () => {
+  test("scope: {from: steps.collect.output.scope} resolves against a prior step's REAL evidence, and the RESOLVED value ('all', never the {from: ...} shape it was authored as) is what AKM_TASK_INPUTS carries", async () => {
+    write(
+      "tasks/shell-echo-ref.yml",
+      [
+        "version: 4",
+        "name: Shell echo (reference-bound)",
+        "inputs:",
+        "  scope:",
+        "    type: string",
+        "run: |",
+        "  printf '%s' \"$AKM_TASK_INPUTS\"",
+        "shell: sh",
+        "",
+      ].join("\n"),
+    );
+    writeWorkflow(
+      "shell-delivery-ref",
+      [
+        "      - id: collect",
+        "        uses: akm/command",
+        "        with:",
+        "          content: Collect a scope decision.",
+        "      - id: dispatch",
+        "        uses: tasks/shell-echo-ref",
+        "        with:",
+        "          scope:",
+        "            from: steps.collect.output.scope",
+      ].join("\n"),
+    );
+
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+    const started = await startWorkflowRun("workflows/shell-delivery-ref");
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null")) as WorkflowPlanGraphV4;
+    const step = plan.steps[1];
+    if (!step) throw new Error("expected a second (dispatch) step in the frozen plan");
+
+    // "collect" is never dispatched here — its evidence is supplied directly,
+    // exactly as this file's own harness already supplies `evidence: {}` for
+    // every single-step scenario above (this is the SAME `evidence` input
+    // parameter, simply non-empty for the first time in this file). The REAL
+    // reference-resolution code (resolveStepReference, step-work.ts), the
+    // REAL freeze-time binding (inputBindings), and the REAL subprocess spawn
+    // + env var all run for real; only "collect"'s own dispatch is stubbed —
+    // the same isolation task-binding-resolution.test.ts's B-32 attempt-gate
+    // test already relies on for a single step's own delivery.
+    const result: StepExecutionResult = await executeFrozenStepPlan(step, {
+      runId: started.run.id,
+      workflowRef: "workflows/shell-delivery-ref",
+      params: {},
+      evidence: { collect: { output: { scope: "all" } } },
+      workDir,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(String(result.evidence.output)).toBe(canonicalInputJson({ scope: "all" }));
+  });
+});
+
 // ── B-39 (shell/script half) — empty effective inputs deliver NOTHING new ──
 // tests/integration/workflows/exec-unit.test.ts:426-433 pins the allowed
 // AKM_* name set for a PLAIN `exec:` step (B-02, no task composition at

@@ -40,6 +40,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { resetConfigCache } from "../../../src/core/config/config";
+import { canonicalInputJson } from "../../../src/execution/input-contract";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
@@ -146,6 +147,21 @@ describe("P2b pre-attempt — a reference resolves successfully against a prior 
     expect(computed.ok).toBe(true);
     if (!computed.ok) return;
     expect(computed.list.units).toHaveLength(1);
+
+    // The resolved reference's VALUE ("all" — not the {from: ...} shape it
+    // was authored as) must reach the dispatched unit's own delivery surface,
+    // not merely satisfy the ok/unit-count check above (P2b test-review
+    // finding #1): an implementation that resolves+validates the reference
+    // and then DROPS it from the effective input map before building context
+    // would still pass every assertion before this one. The composed
+    // target here is `uses: commands/review` (a command/LLM target), so its
+    // delivery surface is the assembled prompt's "## Task inputs" block
+    // (§4.2/B-38), not AKM_TASK_INPUTS — effective inputs are the resolved
+    // reference (scope: "all"), the authored literal (ticket: "T-1"), and
+    // the untouched default (strict: true); files/meta stay absent (B-20).
+    const prompt = computed.list.units[0]?.prompt ?? "";
+    expect(prompt).toContain("## Task inputs");
+    expect(prompt).toContain(canonicalInputJson({ ticket: "T-1", scope: "all", strict: true }));
   });
 });
 
