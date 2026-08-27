@@ -150,6 +150,10 @@ import { materializeFrozenWorkflowEnvironment } from "../ir/environment-v4";
 import type { IrBudget } from "../ir/schema";
 import type { FrozenWorkflowTarget, IrStepPlanV4, IrUnitNodeV4 } from "../ir/schema-v4";
 import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
+// The ONE child-workflow drive (P3b §3.2) — publishes and drives a
+// `child-workflow`-targeted unit; this module's dispatch seam is its only
+// production caller.
+import { driveChildWorkflowUnit } from "./child-workflow";
 // The ONE dispatch redaction contract, shared with the gate-judge path
 // (exec/frozen-judge.ts). Consumers import the leaf directly — this module is
 // not a second front door onto the seam.
@@ -287,6 +291,17 @@ export interface StepExecutionResult {
    * failure (dispatch errors, replay divergence, cap) stays a hard stop.
    */
   artifactSchemaFailure?: true;
+  /**
+   * Set when `ok` is false BECAUSE a composed child workflow is `blocked`
+   * (P3b, spec docs/plans/specs/p3b-child-executor.md §3.4). Threaded through
+   * from {@link reduceStepOutcomes}'s `ExecutedStepOutcome.childBlocked` via
+   * the `...reduced` spread below — never set independently here.
+   */
+  childBlocked?: {
+    childRunId: string;
+    childRef: string;
+    childStepId: string | null;
+  };
 }
 
 /**
@@ -998,13 +1013,13 @@ async function prepareAttemptWorktree(input: JournaledAttemptInput): Promise<Pre
     input.attemptId,
     // A child-workflow target (P3a, schema-v4.ts) carries no gitCommitOid of
     // its own — it is a composition target, never a worktree-isolated exec
-    // one. Code-review fix (Review log R8): this arm IS reachable — a step
-    // that composes a child workflow and also declares `isolation: worktree`
-    // gets a worktree prepared here (worktree prep runs ahead of dispatch);
-    // the unit then fails closed once dispatch itself runs
-    // (unit-dispatch.ts's WORKFLOW_CHILD_EXECUTION_UNSUPPORTED guard) before
-    // that worktree is used for anything. This ternary keeps the field
-    // access total over the frozen-target union either way.
+    // one. This arm IS reachable — a step that composes a child workflow and
+    // also declares `isolation: worktree` gets a worktree prepared here
+    // (worktree prep runs ahead of dispatch), but the child executor
+    // (child-workflow.ts, P3b §3.2) never dispatches through it: driving a
+    // child publishes and drives a RUN, not a command/exec unit, so the
+    // prepared worktree is simply unused by the drive. This ternary keeps the
+    // field access total over the frozen-target union either way.
     input.workUnit.frozenTarget.kind === "child-workflow" ? undefined : input.workUnit.frozenTarget.gitCommitOid,
   );
   if (created.preservedLeftover !== undefined) {
@@ -1165,7 +1180,28 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
     dispatchId: durableAttempt.dispatch_id,
   };
 
-  const dispatched = await dispatchUnit(request, dispatcher);
+  // P3b §3.2: the ONE dispatch-seam branch. A `child-workflow`-targeted unit
+  // never reaches `UnitDispatcher` — it is routed to the child executor
+  // instead (src/workflows/exec/child-workflow.ts), which publishes the
+  // child idempotently and drives it with the SAME engine
+  // (`runWorkflowSteps`) the top-level path uses. Placed HERE — after
+  // `reserveJournaledDispatch` claims this attempt row, before
+  // `finishJournaledDispatch`/the worktree epilogue below — so a
+  // child-workflow unit is journaled exactly like any other unit, and a
+  // crash between reservation and child publication leaves a `running`
+  // parent row with no child, recovered by resume (which re-dispatches the
+  // parent unit and republishes the child idempotently).
+  const dispatched =
+    request.frozenTarget.kind === "child-workflow"
+      ? await driveChildWorkflowUnit({
+          request,
+          target: request.frozenTarget,
+          ctx,
+          childParams: workUnit.childParams ?? {},
+          inputHash: input.inputHash,
+          dispatcher,
+        })
+      : await dispatchUnit(request, dispatcher);
   // Credential and passthrough values are intentionally sampled only AFTER
   // the default dispatcher has authorized/lowered the frozen request and
   // materialized credentials at its terminal dispatch boundary. Custom test

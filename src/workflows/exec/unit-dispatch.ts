@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ConfigError, UsageError } from "../../core/errors";
+import { ConfigError } from "../../core/errors";
 import { assertFrozenDirectoryIdentity } from "../../execution/directory-identity";
 import { assertFrozenExecutableIdentity } from "../../execution/executable-identity";
 import {
@@ -170,19 +170,26 @@ export async function dispatchWorkflowExecution(
   feedback?: string,
 ): Promise<UnitDispatchResult> {
   const prompt = feedback ? `${request.prompt}\n\n${feedback}` : request.prompt;
-  // Code-review fix (P3a Review log R8): freeze (Lane B,
-  // src/workflows/freeze/targets/child-workflow.ts) legitimately produces a
-  // `kind: "child-workflow"` frozen target for a step that composes a child
-  // workflow — that IS the phase's point — but nothing in P3a dispatches one;
-  // child execution is P3b. Fail closed here, on this dedicated code, BEFORE
-  // the generic `!== "command"` guard below would otherwise catch it and
-  // blame a legitimate target kind as "not a command target".
+  // B-N11 (P3b, spec docs/plans/specs/p3b-child-executor.md §1.6): an
+  // internal-invariant guard, not a user-facing one. `dispatchJournaledAttempt`
+  // (native-executor.ts, P3b §3.2) routes a `child-workflow` unit to the child
+  // executor (child-workflow.ts) BEFORE dispatch is ever reached, so arriving
+  // HERE with one means that seam was BYPASSED — an engine routing bug, never
+  // a not-yet-implemented feature (that premise, P3a Review log R8's, is gone
+  // now that P3b ships a production caller). A plain `Error` naming the seam
+  // that should have been reached instead, not a `UsageError`: nothing a user
+  // can author reaches this line once the seam exists, so there is no
+  // user-facing code to carry. Kept here, rather than deleted outright, so a
+  // bypassed seam still fails closed instead of falling into the generic
+  // `kind !== "command"` guard below, which would blame a legitimate target
+  // kind as "not a command target" — the exact false, unhelpful message R8
+  // was opened to remove.
   if (request.frozenTarget.kind === "child-workflow") {
-    throw new UsageError(
-      `unit ${JSON.stringify(request.unitId)} targets child workflow ${JSON.stringify(request.frozenTarget.ref)}: ` +
-        "child workflow execution arrives in a later 0.9.2 increment (P3b) and cannot be dispatched yet. " +
-        "The parent plan freezes and embeds the child successfully; only running through this step fails.",
-      "WORKFLOW_CHILD_EXECUTION_UNSUPPORTED",
+    throw new Error(
+      `unit ${JSON.stringify(request.unitId)} targets child workflow ${JSON.stringify(request.frozenTarget.ref)}, ` +
+        "but reached dispatchWorkflowExecution directly. The child-workflow dispatch seam " +
+        "(src/workflows/exec/child-workflow.ts) should have routed it before dispatch was ever reached — " +
+        "this is an engine routing bug, not a problem with the workflow itself.",
     );
   }
   if (request.frozenTarget.kind !== "command") {

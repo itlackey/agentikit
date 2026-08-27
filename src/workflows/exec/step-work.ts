@@ -46,6 +46,7 @@ import { UsageError } from "../../core/errors";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import { canonicalInputJson, type TaskInputBinding, validateInputs } from "../../execution/input-contract";
 import type { LoweringNotice } from "../../execution/resolved-request";
+import type { WorkflowRunStatus } from "../../sources/types";
 import {
   type WorkflowRunUnitAttemptRowV4,
   type WorkflowRunUnitRow,
@@ -97,6 +98,20 @@ export interface UnitOutcome {
    * structured-output retries). Persisted by `finishUnitAttempt`.
    */
   sessionId?: string;
+  /**
+   * Live-only child-run identity for a child-workflow unit (P3b, spec
+   * docs/plans/specs/p3b-child-executor.md §3.4). Excluded from durable
+   * evidence — the current contract intentionally excludes it from
+   * result_json/evidence, exactly like {@link notices}: `buildEvidence`
+   * projects a closed whitelist that this field is not a member of, so it
+   * cannot leak into a hashed artifact.
+   */
+  childRun?: {
+    runId: string;
+    ref: string;
+    status: WorkflowRunStatus;
+    currentStepId: string | null;
+  };
 }
 
 /**
@@ -167,6 +182,16 @@ export interface StepWorkUnit {
   prompt: string;
   /** Canonical hash of this unit's frozen inputs — the durable-reuse identity. */
   inputHash: string;
+  /**
+   * A child-workflow unit's resolved `with:` bindings (P3b, spec
+   * docs/plans/specs/p3b-child-executor.md §3.3 step 2), set from the SAME
+   * resolution every frozen target's `inputBindings` already runs
+   * ({@link buildStepWorkUnit}'s `taskInputs` — no second binding resolver
+   * exists). Consumed by `child-workflow.ts`'s `driveChildWorkflowUnit` as the
+   * published child run's `params_json`; absent (never `{}`) when the step
+   * binds nothing, exactly like `taskInputs`.
+   */
+  childParams?: Readonly<Record<string, unknown>>;
 }
 
 export interface StepWorkList {
@@ -452,10 +477,10 @@ export function computeStepWorkList(plan: IrStepPlanV4, input: WorkListInput): C
       ? (target.runner.timeoutMs ?? null)
       : target.kind === "child-workflow"
         ? // A child-workflow target carries no exec spec of its own (§3.5).
-          // Code-review fix (Review log R8): computeStepWorkList still builds
-          // this unit's context unconditionally — dispatch itself is what
-          // fails closed for a child-workflow target (unit-dispatch.ts's
-          // WORKFLOW_CHILD_EXECUTION_UNSUPPORTED guard), not this line, so
+          // computeStepWorkList still builds this unit's context
+          // unconditionally — the child executor (child-workflow.ts,
+          // reached from native-executor.ts's dispatch seam, P3b §3.2) is
+          // what actually drives a child-workflow unit, not this line, so
           // `null` only needs to be a value this layer can carry, never one
           // an engine acts on.
           null
@@ -596,6 +621,10 @@ function buildStepWorkUnit(ctx: StepWorkUnitContext, unitId: string, item: unkno
     ...(template.retry ? { retry: template.retry } : {}),
     onError: template.onError,
     ...(template.isolation ? { isolation: template.isolation } : {}),
+    // P3b §3.3 step 2: the SAME resolved `with:` bindings `taskInputs` already
+    // carries, exposed under the name `child-workflow.ts`'s drive contract
+    // reads. Absent (never `{}`) when the step binds nothing.
+    ...(taskInputs && Object.keys(taskInputs).length > 0 ? { childParams: taskInputs } : {}),
     prompt,
     inputHash,
   };
@@ -1007,6 +1036,19 @@ export interface ExecutedStepOutcome {
   /** Set when `ok` is false BECAUSE the promoted artifact failed the step's
    * declared output schema (the one failure a gate loop may re-run). */
   artifactSchemaFailure?: true;
+  /**
+   * Set when a unit failed because the child workflow it composes is
+   * `blocked` (P3b, spec docs/plans/specs/p3b-child-executor.md §3.4).
+   * Carries what `blockStepForChildWorkflow` needs to build the resume
+   * notes; `finalizeExecutedStep`'s `!result.ok` arm checks this FIRST,
+   * before the `artifactSchemaFailure` retry branch — a gate is a gate for a
+   * child workflow too, so this is never fed into the bounded gate loop.
+   */
+  childBlocked?: {
+    childRunId: string;
+    childRef: string;
+    childStepId: string | null;
+  };
 }
 
 /**
@@ -1073,7 +1115,29 @@ export function reduceStepOutcomes(
     }
   }
 
-  return { ok, units, evidence, summary, ...(artifactSchemaFailure ? { artifactSchemaFailure: true as const } : {}) };
+  // P3b §3.4: a composed child workflow that blocked is carried on the
+  // failed unit's LIVE-ONLY `childRun` field (child-workflow.ts's
+  // driveChildWorkflowUnit). Surfaced here, unconditionally on the unit
+  // list, so `finalizeExecutedStep` can check it before deciding whether
+  // this step's failure is retryable — an `onError: "continue"` step that
+  // tolerates the failure (`ok` stays true) never reaches that check at all.
+  const blockedChildUnit = failed.find((u) => u.failureReason === "child_workflow_blocked" && u.childRun !== undefined);
+  const childBlocked = blockedChildUnit?.childRun
+    ? {
+        childRunId: blockedChildUnit.childRun.runId,
+        childRef: blockedChildUnit.childRun.ref,
+        childStepId: blockedChildUnit.childRun.currentStepId,
+      }
+    : undefined;
+
+  return {
+    ok,
+    units,
+    evidence,
+    summary,
+    ...(artifactSchemaFailure ? { artifactSchemaFailure: true as const } : {}),
+    ...(childBlocked ? { childBlocked } : {}),
+  };
 }
 
 /**
@@ -1655,7 +1719,15 @@ export type FinalizeStepResult =
    * consumed, and `akm workflow resume` re-evaluates the gate against the
    * journaled units without re-dispatching them.
    */
-  | { kind: "judge-failed"; summary: string };
+  | { kind: "judge-failed"; summary: string }
+  /**
+   * A composed child workflow is `blocked` (P3b, spec docs/plans/specs/
+   * p3b-child-executor.md §3.4). The step was completed `blocked` (run
+   * derives `blocked`) via {@link blockStepForChildWorkflow} — a gate is a
+   * gate for a child workflow too, so this is never fed into the bounded
+   * gate loop, exactly like `judge-failed`.
+   */
+  | { kind: "child-blocked"; summary: string };
 
 /**
  * The blocked-step notes for a verifier-infrastructure failure (bug: judge
@@ -1723,6 +1795,87 @@ async function blockFinalizedStep(input: FinalizeStepInput, cause: string): Prom
 }
 
 /**
+ * §3.4's exact `blockStepForChildWorkflow` notes — the ONE place the
+ * blocked-child resume sequence is worded, mirroring {@link judgeFailureNotes}.
+ * Two properties this wording pins (each its own test): the CHILD is resumed
+ * FIRST, and the PARENT's own re-drive is what advances it (the child drive
+ * never calls `resumeWorkflowRun` itself, row A-22); the notes name the child
+ * run id and both commands verbatim, so the text renderer needs no change
+ * (B-N15 — Lane A touches no output module).
+ */
+function childWorkflowBlockedNotes(
+  runId: string,
+  stepId: string,
+  childRunId: string,
+  childRef: string,
+  childStepId: string | null,
+): string {
+  return (
+    `Step "${stepId}" composes child workflow run ${childRunId} (${childRef}), ` +
+    `which is blocked at its own step "${childStepId ?? "(unknown)"}". Nothing in this run advances ` +
+    `until the child does — a gate is a gate for a child workflow too, so \`akm\` will ` +
+    `not resume it for you. Clear it with \`akm workflow resume ${childRunId}\`, then ` +
+    `\`akm workflow resume ${runId}\` and \`akm workflow run ${runId}\` to ` +
+    `continue: re-driving the parent drives the resumed child.`
+  );
+}
+
+export interface ChildWorkflowBlock {
+  runId: string;
+  stepId: string;
+  childRunId: string;
+  childRef: string;
+  childStepId: string | null;
+  /** The executed step's evidence (the composing unit's outcome, including the child run identity). */
+  evidence?: Record<string, unknown>;
+  leaseHolder?: string;
+}
+
+/**
+ * Complete a step `blocked` because the child workflow it composes is
+ * blocked, and return the notes written (P3b §3.4). Sits beside
+ * {@link blockStepForJudgeFailure} — the SAME shape of "infrastructure-like"
+ * block: the step is completed `blocked`, and `akm workflow resume` is what
+ * clears it (of the CHILD first, then the parent) rather than an automatic
+ * in-step re-dispatch.
+ */
+export async function blockStepForChildWorkflow(input: ChildWorkflowBlock): Promise<string> {
+  const notes = childWorkflowBlockedNotes(
+    input.runId,
+    input.stepId,
+    input.childRunId,
+    input.childRef,
+    input.childStepId,
+  );
+  await completeWorkflowStep({
+    runId: input.runId,
+    stepId: input.stepId,
+    status: "blocked",
+    notes,
+    ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
+    ...(input.leaseHolder !== undefined ? { leaseHolder: input.leaseHolder } : {}),
+  });
+  return notes;
+}
+
+/** The finalize path's child-blocked write: the executed units' evidence (the composing unit) is preserved. */
+async function blockFinalizedStepForChildWorkflow(
+  input: FinalizeStepInput,
+  childBlocked: NonNullable<ExecutedStepOutcome["childBlocked"]>,
+): Promise<FinalizeStepResult> {
+  const summary = await blockStepForChildWorkflow({
+    runId: input.runId,
+    stepId: input.stepId,
+    childRunId: childBlocked.childRunId,
+    childRef: childBlocked.childRef,
+    childStepId: childBlocked.childStepId,
+    evidence: input.result.evidence,
+    ...(input.leaseHolder !== undefined ? { leaseHolder: input.leaseHolder } : {}),
+  });
+  return { kind: "child-blocked", summary };
+}
+
+/**
  * Perform ONE completion attempt for an executed step:
  *
  *  - a hard unit failure completes the step `failed` (a retryable typed-artifact
@@ -1750,6 +1903,12 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
   const lease = input.leaseHolder !== undefined ? { leaseHolder: input.leaseHolder } : {};
 
   if (!result.ok) {
+    // P3b §3.4: a composed child workflow that blocked is never fed into the
+    // bounded gate loop — a gate is a gate for a child workflow too. Checked
+    // FIRST, before the artifactSchemaFailure retry branch below.
+    if (result.childBlocked) {
+      return blockFinalizedStepForChildWorkflow(input, result.childBlocked);
+    }
     // Typed-artifact mismatch with loop budget left: regenerate-with-errors
     // (the validation errors become the next loop's feedback). No judge ran, so
     // no gate row is journaled for this attempt.

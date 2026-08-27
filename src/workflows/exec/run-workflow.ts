@@ -216,6 +216,18 @@ export interface RunWorkflowResult {
    * `akm workflow resume` retries the gate over the journaled units.
    */
   judgeFailure?: { stepId: string; message: string };
+  /**
+   * Present when a composed child workflow is `blocked` (P3b, spec
+   * docs/plans/specs/p3b-child-executor.md §3.4). Like `judgeFailure`, no
+   * gate loop was consumed; the step and run are left `blocked` — but the
+   * child must be resumed FIRST (`resume`), then the parent
+   * (`resumeParentCommand`), since re-driving the parent is what advances
+   * the resumed child (row A-22: the child drive never calls
+   * `resumeWorkflowRun` itself). Named `resumeParentCommand`, not `then`
+   * (lint/style/noThenProperty — a `then` property risks being treated as
+   * a thenable by `await`).
+   */
+  childBlocked?: { stepId: string; childRunId: string; childRef: string; resume: string; resumeParentCommand: string };
   /** Present when cooperative cancellation stopped before advancing the step. */
   aborted?: true;
   /** Deduped safe diagnostics from work lowered during this invocation only. */
@@ -730,9 +742,14 @@ interface StepDriveContext {
  * the way a forgotten boolean could.
  */
 interface StepGateLoopOutcome {
-  kind: "advanced" | "failed" | "gate-exhausted" | "judge-failed" | "aborted";
+  kind: "advanced" | "failed" | "gate-exhausted" | "judge-failed" | "child-blocked" | "aborted";
   gateRejection?: RunWorkflowResult["gateRejection"];
   judgeFailure?: RunWorkflowResult["judgeFailure"];
+  /**
+   * P3b §3.4: a composed child workflow is blocked. Like `judgeFailure`, this
+   * consumes no gate loop — see {@link STEP_FINISHED_KINDS}.
+   */
+  childBlocked?: RunWorkflowResult["childBlocked"];
   /** Running per-run dispatch/token totals, threaded back into the engine loop. */
   unitsDispatched: number;
   tokensUsed: number;
@@ -742,7 +759,10 @@ interface StepGateLoopOutcome {
  * The kinds that FINISHED the step (completed / failed / gate-exhausted) — the
  * ONE `maxSteps` consumption for its whole gate loop. An abort and a judge
  * outage leave the step unfinished and consume nothing: the next invocation
- * still owes the work.
+ * still owes the work. A blocked child is the SAME shape as a judge outage
+ * (P3b §3.4) — a gate is a gate for a child workflow too, so it is likewise
+ * NOT in this set: `akm workflow resume` is what clears it, never an
+ * automatic in-step re-dispatch.
  */
 const STEP_FINISHED_KINDS: ReadonlySet<StepGateLoopOutcome["kind"]> = new Set(["advanced", "failed", "gate-exhausted"]);
 
@@ -912,6 +932,29 @@ async function runStepGateLoop(
       executed[executed.length - 1] = { ...executed[executed.length - 1]!, summary: finalize.summary };
       return outcome({ kind: "judge-failed", judgeFailure: { stepId: step.id, message: finalize.summary } });
     }
+    if (finalize.kind === "child-blocked") {
+      // P3b §3.4: a composed child workflow is blocked. Like judge-failed,
+      // NO gate loop was consumed and the step does not count against
+      // maxSteps. `result.childBlocked` (set by reduceStepOutcomes off the
+      // failed unit's live-only childRun field) carries the identity
+      // finalizeExecutedStep's own return value deliberately omits.
+      executed[executed.length - 1] = { ...executed[executed.length - 1]!, summary: finalize.summary };
+      const child = result.childBlocked;
+      return outcome({
+        kind: "child-blocked",
+        ...(child
+          ? {
+              childBlocked: {
+                stepId: step.id,
+                childRunId: child.childRunId,
+                childRef: child.childRef,
+                resume: `akm workflow resume ${child.childRunId}`,
+                resumeParentCommand: `akm workflow resume ${next.run.id} && akm workflow run ${next.run.id}`,
+              },
+            }
+          : {}),
+      });
+    }
     if (finalize.kind === "failed") {
       // A route-failure was pushed as ok:true (the units succeeded); reflect
       // the deterministic route failure in the executed report.
@@ -967,6 +1010,7 @@ async function driveRun(
   const executed: ExecutedStepReport[] = [];
   let gateRejection: RunWorkflowResult["gateRejection"];
   let judgeFailure: RunWorkflowResult["judgeFailure"];
+  let childBlocked: RunWorkflowResult["childBlocked"];
   let aborted = false;
   const maxSteps = options.maxSteps ?? Number.POSITIVE_INFINITY;
   // The `maxSteps` budget counts DISTINCT spine steps that finished processing
@@ -1122,10 +1166,11 @@ async function driveRun(
     if (outcome.kind === "aborted") aborted = true;
     if (outcome.gateRejection) gateRejection = outcome.gateRejection;
     if (outcome.judgeFailure) judgeFailure = outcome.judgeFailure;
+    if (outcome.childBlocked) childBlocked = outcome.childBlocked;
 
     if (STEP_FINISHED_KINDS.has(outcome.kind)) stepsProcessed += 1;
     // Only an advance leaves the spine walkable; every other kind ends this
-    // invocation (failure, exhausted gate, judge outage, abort).
+    // invocation (failure, exhausted gate, judge outage, blocked child, abort).
     if (outcome.kind !== "advanced") break;
 
     next = await getNextWorkflowStep(next.run.id);
@@ -1142,6 +1187,7 @@ async function driveRun(
     ...(finalState.run.status === "completed" ? { done: true as const } : {}),
     ...(gateRejection ? { gateRejection } : {}),
     ...(judgeFailure ? { judgeFailure } : {}),
+    ...(childBlocked ? { childBlocked } : {}),
     ...(aborted ? { aborted: true as const } : {}),
   };
 }

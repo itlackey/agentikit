@@ -40,7 +40,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
 import type { TaskInputBinding } from "../../../src/execution/input-contract";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
-// @ts-expect-error P3b red-phase: driveChildWorkflowUnit lands in Implement
 import { driveChildWorkflowUnit } from "../../../src/workflows/exec/child-workflow";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { canonicalJson, computePlanHash } from "../../../src/workflows/ir/plan-hash";

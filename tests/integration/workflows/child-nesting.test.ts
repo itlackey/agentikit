@@ -34,7 +34,6 @@ import fs from "node:fs";
 import path from "node:path";
 import type { TaskInputBinding } from "../../../src/execution/input-contract";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
-// @ts-expect-error P3b red-phase: driveChildWorkflowUnit lands in Implement
 import { driveChildWorkflowUnit } from "../../../src/workflows/exec/child-workflow";
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
 import type { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
@@ -320,7 +319,7 @@ describe("A-33 — StepExecutionContext.dispatcher is threaded into the child dr
     expect(outcome.ok).toBe(true);
     expect(sawUnitCall).toBe(true);
     expect(sawJudgeCall).toBe(true);
-    const childRow = await withWorkflowRunsRepo((repo) => repo.getRunById(outcome.childRun.runId));
+    const childRow = await withWorkflowRunsRepo((repo) => repo.getRunById(outcome.childRun?.runId as string));
     expect(childRow?.status).toBe("completed");
   });
 
@@ -467,7 +466,7 @@ describe("A-35 — a child that itself composes a grandchild drives recursively"
     );
 
     expect(outcome.ok).toBe(true);
-    const childRunId = outcome.childRun.runId as string;
+    const childRunId = outcome.childRun?.runId as string;
 
     const childRow = await withWorkflowRunsRepo((repo) => repo.getRunById(childRunId));
     expect(childRow?.status).toBe("completed");

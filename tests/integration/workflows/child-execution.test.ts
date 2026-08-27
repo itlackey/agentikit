@@ -63,7 +63,6 @@ import { disposeDispatchResources } from "../../../src/integrations/agent/runner
 import { readStateEvents } from "../../../src/storage/repositories/events-repository";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { computeChildInvocationKey } from "../../../src/workflows/exec/child-invocation";
-// @ts-expect-error P3b red-phase: driveChildWorkflowUnit lands in Implement
 import { driveChildWorkflowUnit } from "../../../src/workflows/exec/child-workflow";
 import type { UnitDispatchRequest, UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
 import * as runWorkflowModule from "../../../src/workflows/exec/run-workflow";
@@ -644,7 +643,7 @@ describe("A-18, A-19 — an active child is driven to completion; the exported r
     const outcome = await driveChildWorkflowUnit(buildDriveInput({ parent, target, dispatcher: successDispatcher() }));
 
     expect(outcome.childRun?.runId).toBeDefined();
-    const childRow = await withWorkflowRunsRepo((repo) => repo.getRunById(outcome.childRun.runId));
+    const childRow = await withWorkflowRunsRepo((repo) => repo.getRunById(outcome.childRun?.runId as string));
     expect(childRow?.status).toBe("completed");
   });
 
