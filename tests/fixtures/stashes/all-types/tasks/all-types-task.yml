@@ -2,3 +2,4 @@ version: 4
 uses: akm/command
 with:
   content: "Say hello from the all-types fixture task."
+schedule: "@daily"

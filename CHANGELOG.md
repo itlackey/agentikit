@@ -83,11 +83,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   task source v4 — v3 still recognizes and rejects that spelling,
   unchanged. `with:` is legal in task source v4 only alongside
   `uses: akm/command`; every other target uses the new typed `inputs:`
-  declarations instead of `with:`. `akm task run <id>` now accepts
-  exact-name input flags for a task source v4 document's declared
-  `inputs:` (an undeclared flag name fails `UNKNOWN_FLAG`; a bad value or
-  an unsatisfied `required: true` declaration fails
-  `INPUT_BINDING_INVALID`; both exit 2 with the usual JSON error envelope).
+  declarations instead of `with:`. A declared `inputs:` name may not collide
+  with a flag `akm task run` already declares for itself (`bundle`, `format`,
+  `detail`, `shape`, `output`, `scheduled`, `quiet`, `verbose`, `help`,
+  `no-quiet`, `no-verbose`) — such a document now fails `TASK_SOURCE_INVALID`
+  at parse time, since the colliding name would otherwise route a caller's
+  value into `akm task run`'s own flag instead of the declared input. `akm
+  task run <id>` now accepts exact-name input flags for a task source v4
+  document's declared `inputs:` (an undeclared flag name fails
+  `UNKNOWN_FLAG`; a bad value or an unsatisfied `required: true` declaration
+  fails `INPUT_BINDING_INVALID`; both exit 2 with the usual JSON error
+  envelope).
   Where those materialized values go depends on the task's own target: for
   `uses: workflows/<ref>` they become the child run's params (the existing
   `with:` → params path); for a `run:`, `scripts/<ref>`, or `commands/<ref>`

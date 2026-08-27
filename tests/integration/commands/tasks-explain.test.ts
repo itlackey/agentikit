@@ -217,6 +217,72 @@ describe("akm task explain <ref> — text output (B-52)", () => {
   });
 });
 
+/**
+ * Locate a DECLARATION row for `inputName` — an object holding it under a
+ * key equal to the input name (or a `name`/`input`/`key` self-identifying
+ * field, mirroring {@link suppliedValueProvenances}'s two shapes) whose own
+ * `required` field is `true`. Declaration rows carry no `provenance` key
+ * (that is what makes them structurally distinct from a `suppliedInputs`
+ * row, per this file's own `suppliedValueProvenances` comment), so this
+ * helper intentionally does NOT require one.
+ */
+function hasRequiredDeclarationRow(json: unknown, inputName: string): boolean {
+  function visit(node: unknown): boolean {
+    if (Array.isArray(node)) return node.some(visit);
+    if (node === null || typeof node !== "object") return false;
+    const obj = node as Record<string, unknown>;
+
+    const nameField = obj.name ?? obj.input ?? obj.key;
+    if (typeof nameField === "string" && nameField === inputName && obj.required === true) return true;
+
+    if (Object.hasOwn(obj, inputName)) {
+      const entry = obj[inputName];
+      if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+        const entryObj = entry as Record<string, unknown>;
+        if (entryObj.required === true) return true;
+      }
+    }
+    return Object.values(obj).some(visit);
+  }
+  return visit(json);
+}
+
+describe("akm task explain <ref> — a required input with no default, left unsupplied (B-52)", () => {
+  test("prints the declaration instead of refusing to explain — the exact case the verb exists to explain", async () => {
+    writeTask(
+      "explain-required",
+      [
+        "version: 4",
+        "name: Explain required demo",
+        "inputs:",
+        "  assignee:",
+        "    type: string",
+        "    required: true",
+        "run: echo required-demo",
+        "shell: sh",
+        "",
+      ].join("\n"),
+    );
+
+    const text = await runCliCapture(["task", "explain", "explain-required"]);
+    expect(text.code).toBe(0);
+    expect(text.stdout.length).toBeGreaterThan(0);
+    expect(text.stdout).toContain("assignee");
+
+    const json = await runCliCapture(["task", "explain", "explain-required", "--format", "json"]);
+    expect(json.code).toBe(0);
+    const envelope = JSON.parse(json.stdout);
+
+    // The declaration row is present and marked required, structurally —
+    // not merely because the word "assignee" appears somewhere.
+    expect(hasRequiredDeclarationRow(envelope, "assignee")).toBe(true);
+
+    // No suppliedInputs entry / provenance row exists for the unsupplied
+    // required input: it has neither a default nor a flag-supplied value.
+    expect(suppliedValueProvenances(envelope, "assignee")).toEqual([]);
+  });
+});
+
 describe("akm task explain <ref> --format json (B-53)", () => {
   test("prints one JSON object on stdout carrying the same fields", async () => {
     writeExplainDemoFixture();

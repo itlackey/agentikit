@@ -1544,3 +1544,116 @@ this lane). Pre-sweep vs. post-sweep test counts are unchanged by
 construction — `git diff -- tests/` shows exactly one `test(...)` line
 touched across the whole sweep (a title rename, 1:1, not an add/remove);
 every other change is inside fixture strings or comments.
+
+### 2026-08-27 — Lane A/B close-out (review round 3)
+
+§10's Gates name three items that "the already-known items to carry there"
+must include; only the fixture-count item (D-N1) landed in the Review log
+(inside Lane D's entry above). The other two (items 1–2 below), two in-code
+comments that already asserted "recorded in the Review log" before it was
+true (items 3–4 below), and one further non-§7 behavior difference
+surfaced by the same review round (item 5 below) are closed out here
+together, since none of the five is itself a §7-named flip:
+
+1. **The `commands/`/`scripts/` `with:` rejection is a genuinely NEW
+   rejection, not a "remaining" one (A-N5).** §1.1(5)'s verbatim text says
+   P1a's COMPOSITION_INVALID rejection "remains … for `uses:
+   commands/<ref>`/`scripts/<ref>`" — read in isolation that sentence implies
+   the behavior was already there and P2b merely leaves it alone. A-N5's own
+   "Tension" paragraph already flags that at the P2b head `with:` was
+   **silently dropped**, never rejected, for those two target kinds
+   (`resolveStep`, pre-split `source-freeze-v4.ts:146-151`, forwarded
+   `source.with` to `prepareCommandInvocation` only for `builtin-command` and
+   otherwise discarded it; `directScript` never read it at all) — so the
+   rejection implemented at `src/workflows/freeze/resolve-steps.ts:38-53`
+   (`rejectNonTaskBindingWith`, called from `resolveStep` at `:24` and `:28`)
+   is observably new behavior for any workflow that authored a `with:` on
+   either target, not a preserved one. This is exactly why it is CHANGELOG's
+   own "Breaking changes & migration" bullet (F-A3, `CHANGELOG.md`) rather
+   than filed under "Added" — recorded here per §10's own instruction to
+   carry it explicitly, since a future reader skimming only §1.1(5)'s
+   "remains" wording could otherwise mistake it for a preservation.
+2. **`TaskInputBinding`'s `reference` arm widens with `schema` (§3.6).**
+   `src/execution/input-contract.ts:104-106` declares the reference arm as
+   `{kind:"reference", name, from, schema}` — P2a shipped `{kind, name,
+   from}` (no `schema`) and constructed only `literal` bindings; P2b adds the
+   field so pre-attempt resolution
+   (`src/workflows/exec/step-work.ts:314-339`'s `resolveTaskInputBindings`,
+   `binding.schema` read at `:336`) can validate a reference's *resolved*
+   value as a pure function of the frozen plan, without re-reading the task
+   source. Additive to a type P2a declared for exactly this purpose and that
+   nothing else constructs (spec's own "Contract note", §3.6) — the
+   `literal` arm, and every existing literal producer
+   (`src/tasks/run/load-task.ts:101-108`), are byte-unchanged. Carried here
+   per §10's explicit naming.
+3. **`tests/workflows/direct-script-typed.test.ts`'s
+   `parseTaskV3Yaml`→`resolveTaskForComposition` assertion change** (the
+   file's own comment at `:424-436` says "recorded in the Review log as a
+   consequence of F-A4" — this entry is what makes that true). Before A-N6,
+   `taskDispatch` called `parseTaskV3Yaml` directly on the composed task's
+   real document, and a `scanFunctionCalls` AST probe in this test asserted
+   that call was present in `taskDispatch`'s own body. A-N6 (§1.7, F-A4)
+   routes `taskDispatch` through the new `resolveTaskForComposition` (this
+   file's sibling `src/workflows/freeze/targets/task.ts:68-78`), which itself
+   calls `parseTaskSource` (handling both source versions in one parse) —
+   `taskDispatch` no longer calls `parseTaskV3Yaml` at all, so the original
+   assertion became permanently unsatisfiable the moment A-N6 landed. The
+   test was rewritten in place to scan for `resolveTaskForComposition` in
+   `taskDispatch`'s call set instead, preserving the same "function-scoped,
+   not file-wide" proof technique. F-A1's own table (the split commit, A-N2)
+   only re-pointed this test's two path constants and left every assertion
+   verbatim; this particular assertion's *content* changed one commit later,
+   as a direct structural consequence of A-N6 rather than of the split — it
+   is not itself named in §7's flips table, so it is recorded here instead.
+4. **The asset-resolution repaint** (`src/workflows/freeze/targets/task.ts`,
+   the "RECORDED TENSION (spec §0, Review log)" comment at `:48-66` — this
+   entry is what makes that citation true). A-N5's "no declared inputs"
+   COMPOSITION_INVALID is reasoned from the composed target's *parsed*
+   `inputs:` contract, which requires the target to resolve and parse
+   successfully first — but `tests/workflows/with-rejection.test.ts` B-02b
+   pins `COMPOSITION_INVALID` (not a raw asset-resolution error) for a
+   `with:`-bearing step whose task ref does not even resolve. Reconciled by
+   `resolveAndCaptureTaskAsset` (`task.ts:81-97`): an authored `with:` whose
+   target asset cannot be resolved is repainted from its real resolution
+   error into `noDeclaredInputsError` — "cannot be proven a valid binding
+   surface" reads as the same refusal a genuinely-no-`inputs:` target gets. A
+   P2b round-2 review finding narrowed this repaint to the asset-resolution
+   step alone (`resolveOwnedAsset`/`captureOwned`): once the target resolves
+   to real bytes, `parseTaskSource`/`projectTaskSourceV4` (called at
+   `resolveTaskForComposition`, `task.ts:68-78`, **outside** the repainting
+   try/catch) reports the composed task's own genuine defects (e.g. a
+   `TASK_SOURCE_INVALID` for a malformed `inputs.<name>`) unchanged, never
+   repainted as a false "no declared inputs" — so a real defect in the
+   referenced task's own source is never masked by A-N5's rejection. Neither
+   the reconciliation nor its round-2 narrowing is itself a §7-named flip
+   (both are internal to implementing A-N5/A-N6 against the pre-existing
+   `with-rejection.test.ts` pin); recorded here per the tension comment's own
+   forward reference.
+5. **The reserved input-flag-name rejection is a non-§7 behavior difference**
+   (also the subject of a dedicated review-round-3 finding; recorded here as
+   part of the same close-out sweep). `parseInputDeclarations`
+   (`src/tasks/source/task-source-v4.ts:481-519`) now calls `sourceError` for
+   any declared `inputs:` name in `TASK_RUN_RESERVED_FLAG_NAMES`
+   (`src/tasks/task-run-reserved-flags.ts:50-53`: the union of
+   `TASK_RUN_VALUE_FLAGS` — `bundle`, `format`, `detail`, `shape`, `output` —
+   and `TASK_RUN_BOOLEAN_FLAGS` — `scheduled`, `quiet`, `verbose`, `help`,
+   `no-quiet`, `no-verbose`). This closes a genuine defect a P2b round-2
+   review found: `schedulerInputFlagTail`
+   (`src/tasks/scheduler-binding.ts`) and a bare `akm task run <id>
+   --<name> <value>` both let a declared input name collide with a flag
+   `akm task run` (and now `akm task explain`, B-N4) already binds to
+   itself, so the value would be silently misrouted (a second `--bundle`
+   re-targets which bundle the task loads from) or left as an orphaned
+   positional token that throws. It is a **parse-time (`TASK_SOURCE_INVALID`)
+   rejection of task source v4 documents that was not requested by §7's
+   flips table**, is absent from this Review log until now, and was
+   undocumented in `CHANGELOG.md`/`docs/reference/tasks.md` until this same
+   review round — both are now updated (`CHANGELOG.md`'s task-source-v4
+   bullet; `docs/reference/tasks.md`'s `inputs:` field-notes bullet) in the
+   same commit as this entry. `output` and `format` in particular are
+   entirely plausible authored input names that this rule now forecloses;
+   the fix itself is judged sound (it closes a real misrouting hole) and is
+   left in place, recorded per this spec's own rule of engagement ("A defect
+   discovered that is not in §7 is recorded in the Review log … Do not
+   'improve' anything on the way past" — read here as "do not silently
+   absorb a genuinely new rejection without recording it").

@@ -215,7 +215,13 @@ Field notes:
   rejected) plus two keys unique to task source v4: `default` (which must
   itself satisfy the rest of the declaration) and `required: true` (mutually
   exclusive with `default`). Declaration names follow the same identifier
-  grammar as workflow parameters.
+  grammar as workflow parameters, and additionally may not name a flag `akm
+  task run` already declares for itself — `bundle`, `format`, `detail`,
+  `shape`, `output`, `scheduled`, `quiet`, `verbose`, `help`, `no-quiet`, or
+  `no-verbose`. Parsing rejects a colliding name with `TASK_SOURCE_INVALID`
+  at declaration time, since `akm task run --<name>`, `akm task explain
+  --<name>`, and a `schedule[].inputs` entry would otherwise route the value
+  into `akm task run`'s own flag instead of the declared input.
 - `output:` is a single bounded JSON Schema, replacing v3's
   `akm.outputSchema`.
 - `schedule:` is OPTIONAL. Omit it entirely for a manual-only task: the

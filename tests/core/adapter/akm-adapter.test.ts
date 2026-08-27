@@ -237,7 +237,7 @@ describe("akm adapter — recognize folds the index-time metadata contributors (
     },
     "skills/all-types-skill/SKILL.md": {},
     "tasks/all-types-task.yml": {
-      searchHints: ["prompt:Say hello from the all-types fixture task."],
+      searchHints: ["schedule:@daily", "prompt:Say hello from the all-types fixture task."],
     },
     // workflow-format-unification: no more title/H1 in the fold surface (the
     // unified format carries no authored titles anywhere — a step IS its id,
@@ -304,7 +304,7 @@ describe("akm adapter — recognize folds the index-time metadata contributors (
 
     const task = akmAdapter.recognize(component(), byRel.get("tasks/all-types-task.yml") as FileContext);
     expect(task?.tags).toEqual(["task", "scheduled"]);
-    expect(task?.searchHints).toContain("prompt:Say hello from the all-types fixture task.");
+    expect(task?.searchHints).toContain("schedule:@daily");
 
     const script = akmAdapter.recognize(component(), byRel.get("scripts/all-types-script.sh") as FileContext);
     expect(script?.confidence).toBe(0.7);

@@ -75,7 +75,6 @@ import {
   type InputDeclaration,
   type InputFlag,
   materializeInputFlags,
-  validateInputs,
 } from "../../execution/input-contract";
 import { createInlineResolvedCommand } from "../../execution/resolved-request";
 import { resolveAdapterConceptOwner } from "../../indexer/lookup/adapter-concept-owner";
@@ -293,10 +292,25 @@ export async function akmTaskExplain(ref: string, options: TaskExplainOptions = 
   const parsed = parseTaskSource({ yaml, filePath: sourcePath, workspaceRoot: bundle.source.path });
 
   const inputContract: InputContract = parsed.version === 4 ? (parsed.v4.inputs ?? {}) : {};
+  // Code-review finding (explain.ts:299, B-N4): `akm task run`'s
+  // load-task.ts copies this same materialize -> applyInputDefaults ->
+  // validateInputs ladder, but its own trailing `validateInputs` +
+  // `contractViolation` throw is load-task's OWN enforcement that a task
+  // about to actually EXECUTE never dispatches with a required input still
+  // unmet. `explain` never dispatches anything (this file's header) — it is
+  // read-only introspection, and a task's declared-but-unsupplied required
+  // input is exactly the fact `explain` exists to surface, not a condition
+  // that should make the command refuse to print. Deliberately NOT calling
+  // `validateInputs` here: `materializeInputFlags` above still runs its own
+  // per-flag validation (an unknown flag name still fails UNKNOWN_FLAG,
+  // B-55; a supplied value failing its own declared schema still fails
+  // here), so only the "required and never supplied at all" case is left
+  // unenforced. `buildSuppliedInputs` below naturally renders that case as a
+  // declaration row (always present, carrying `required: true`) with no
+  // corresponding `suppliedInputs` entry, since `defaultedInputs` has no key
+  // for an input with neither a default nor a supplied value.
   const materializedInputs = materializeInputFlags(inputContract, options.inputFlags ?? [], TASK_INPUT_DIAGNOSTICS);
   const defaultedInputs = applyInputDefaults(inputContract, materializedInputs);
-  const requiredErrors = validateInputs(inputContract, defaultedInputs);
-  if (requiredErrors.length > 0) throw TASK_INPUT_DIAGNOSTICS.contractViolation(requiredErrors);
 
   const document: PreparableTaskDocument = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
 
