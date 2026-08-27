@@ -9,6 +9,7 @@ import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { resolveStashDir } from "../core/common";
 import { ConfigError } from "../core/errors";
 import { getCacheDir, getConfigDir, getDataDir, getTaskContextDir } from "../core/paths";
+import { INPUT_NAME_PATTERN } from "../execution/input-contract";
 import { normaliseTaskConceptId } from "./task-id";
 
 export const SCHEDULED_TASK_CONTEXT_KEYS = [
@@ -233,10 +234,18 @@ function parsePublicSchedulerInvocation(
       if (!target) return undefined;
       index += 2;
     }
-    if (invocation[index] !== "--scheduled" || index !== invocation.length - 1) return undefined;
+    if (invocation[index] !== "--scheduled") return undefined;
+    // P2b Lane B (spec §4.4, §1.7 B-N3): zero or more `--<name> <value>`
+    // schedule-supplied input flags may follow `--scheduled` — the same
+    // trailing tail `compileTaskSchedulerBindings` compiles from
+    // `schedule[i].inputs`. Absent/empty is the pre-P2b shape, byte-identical
+    // (B-03).
+    if (!isValidSchedulerInputFlagTail(invocation.slice(index + 1))) return undefined;
     return { invocation: [...invocation], ...(target !== undefined ? { target } : {}) };
   }
-  if (invocation[0] !== "workflow" || invocation[1] !== "run" || invocation.length !== 3) return undefined;
+  if (invocation[0] !== "workflow" || invocation[1] !== "run" || invocation.length !== 3) {
+    return undefined;
+  }
   const ref = invocation[2];
   if (!ref) return undefined;
   try {
@@ -246,6 +255,33 @@ function parsePublicSchedulerInvocation(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Validate an OPTIONAL trailing `--<name> <value>` flag tail (spec §1.7
+ * B-N3): empty is valid (the pre-P2b shape). Otherwise the tail must be an
+ * even-length sequence of `(--<name>, <value>)` pairs where `<name>` matches
+ * {@link INPUT_NAME_PATTERN}, no name repeats, and `<value>` is a single
+ * non-flag token (does not start with `-`) — a bare flag, a repeated name, a
+ * flag-shaped value, or an odd token count are all refused. This validates
+ * SHAPE only; the real materialization against the task's declared contract
+ * happens through the same `parseTaskInputFlags` + `materializeInputFlags`
+ * path `akm task run --<name>` already uses (B-48).
+ */
+function isValidSchedulerInputFlagTail(tail: readonly string[]): boolean {
+  if (tail.length === 0) return true;
+  if (tail.length % 2 !== 0) return false;
+  const seen = new Set<string>();
+  for (let index = 0; index < tail.length; index += 2) {
+    const flag = tail[index];
+    const value = tail[index + 1];
+    if (!flag || !flag.startsWith("--")) return false;
+    const name = flag.slice(2);
+    if (!INPUT_NAME_PATTERN.test(name) || seen.has(name)) return false;
+    seen.add(name);
+    if (value === undefined || value.startsWith("-")) return false;
+  }
+  return true;
 }
 
 function canonicalContext(input: Record<string, unknown>): ScheduledTaskContext {
@@ -361,7 +397,8 @@ function invalidSchedulerContext(): ConfigError {
 
 function invalidSchedulerInvocation(): ConfigError {
   return new ConfigError(
-    "Invalid scheduler invocation; expected public `task run <id> [--bundle <bundle>] --scheduled` or `workflow run <qualified-ref>` argv.",
+    "Invalid scheduler invocation; expected public " +
+      "`task run <id> [--bundle <bundle>] --scheduled [--<input> <value>…]` or `workflow run <qualified-ref>` argv.",
     "INVALID_CONFIG_FILE",
   );
 }

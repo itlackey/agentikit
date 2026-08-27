@@ -141,6 +141,15 @@ export const WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER = "__akm_exec_output_truncate
 // would fail spawns Linux and macOS would have accepted — a tripwire, not a
 // guard.
 
+// The roster of `AKM_*` variables this ceiling governs is closed and
+// enumerable: `AKM_PARAMS`, `AKM_INPUTS` (declared `inputs:` references),
+// `AKM_ITEM` / `AKM_ITEM_INDEX` (fan-out), and `AKM_TASK_INPUTS` (P2b — the
+// canonical-JSON effective inputs of a composed `tasks/<ref>` target's `with:`
+// bindings, `src/workflows/exec/step-work.ts`'s `buildExecContextEnv`). Adding
+// a roster member never changes the two numbers below or `checkExecContextSize`'s
+// generic per-entry loop (`src/workflows/exec/exec-unit.ts`) — this comment is
+// documentation, not a bound.
+
 /** The spawn ceilings that apply to one platform's `AKM_*` context environment. */
 export interface ExecContextLimits {
   /** Max UTF-8 bytes of one `AKM_*` variable. */

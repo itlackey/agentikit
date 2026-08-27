@@ -27,6 +27,7 @@ import {
   type TaskInputBinding,
   validateInputs,
 } from "../../execution/input-contract";
+import type { ExecutionJsonObject } from "../../execution/json";
 import { resolveAdapterConceptOwner } from "../../indexer/lookup/adapter-concept-owner";
 import { resolveAssetPath } from "../../sources/resolve";
 import type { TaskInvocation } from "../model/invocation";
@@ -109,7 +110,23 @@ export async function loadPreparedTask(id: string, options: RunTaskOptions): Pro
     });
     options.captureTaskInvocation(invocation);
   }
-  return prepareTaskV3Execution(source, {
+  // P2b Lane B (spec docs/plans/specs/p2b-input-bindings.md §4.3, B-40): a
+  // task source v4 document's own declared `inputs:` deliver into a
+  // `uses: workflows/<ref>` target's child-run params through the EXISTING
+  // with-> params path (prepare.ts's workflow branch already reads
+  // `document.target.with`) — task source v4 never authors `with:` on a
+  // workflow target itself (task-source-v4.ts's own parser accepts `with:`
+  // only on `uses: akm/command`, source/task-source-v4.ts:329-333), so this
+  // override is purely additive for a v4 workflow-target task. Scoped to
+  // `parsed.version === 4` only: a v3 workflow task's own authored `with:`
+  // already flows through this identical path untouched (P0 row P-03), and
+  // `defaultedInputs` is always `{}` for v3 (its input contract is empty),
+  // which would otherwise silently clobber a v3 task's real `with:` values.
+  const deliverySource =
+    parsed.version === 4 && source.target.kind === "uses" && source.target.uses.kind === "workflow"
+      ? { ...source, target: { ...source.target, with: defaultedInputs as ExecutionJsonObject } }
+      : source;
+  return prepareTaskV3Execution(deliverySource, {
     taskId: id,
     taskRef: makeBundleRef(bundleName, taskConceptId),
     bundleName,

@@ -32,6 +32,7 @@ import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { UsageError } from "../../core/errors";
 import type { InputFlag } from "../../execution/input-contract";
+import { akmTaskExplain } from "./explain";
 import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync } from "./tasks";
 
 /** Shared `--bundle <bundle>` arg wired onto every task subcommand. */
@@ -265,6 +266,35 @@ const tasksSyncCommand = defineJsonCommand({
   },
 });
 
+// ── `akm task explain` — read-only introspection (P2b Lane B, spec
+// docs/plans/specs/p2b-input-bindings.md §4.5, §1.7 B-N4) ──────────────────
+
+const tasksExplainCommand = defineJsonCommand({
+  meta: {
+    name: "explain",
+    description:
+      "Print a task's source, declared inputs (with provenance), resolved target, execution settings, and " +
+      "schedule bindings — read-only and secret-free; never spawns anything",
+  },
+  args: {
+    ref: { type: "positional", description: "Task ref or id", required: true },
+    ...bundleArg,
+  },
+  async run({ args, rawArgs }) {
+    rejectRetiredTaskTargetFlag();
+    // Stage 1 (capture): the SAME exact-name flag scanner `akm task run`
+    // uses (`parseTaskInputFlags` above) — `explain` never declares
+    // `--scheduled`, but reusing the identical scanner is deliberate: one
+    // implementation of "which argv tokens are task input flags", not two.
+    const inputFlags = parseTaskInputFlags(rawArgs, args.ref);
+    const result = await akmTaskExplain(args.ref, {
+      ...(args.bundle !== undefined ? { target: args.bundle } : {}),
+      inputFlags,
+    });
+    output("task-explain", result);
+  },
+});
+
 const tasksDoctorCommand = defineJsonCommand({
   meta: {
     name: "doctor",
@@ -286,6 +316,7 @@ export const taskCommand = defineGroupCommand({
   subCommands: {
     add: tasksAddCommand,
     run: tasksRunCommand,
+    explain: tasksExplainCommand,
     history: tasksHistoryCommand,
     sync: tasksSyncCommand,
     doctor: tasksDoctorCommand,

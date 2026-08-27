@@ -181,8 +181,13 @@ describe("whole-set task source v4 scheduler sync planning — scheduled binding
   });
 });
 
-describe("whole-set task source v4 scheduler sync planning — B-38 (schedule[i].inputs validated, undelivered, single per-task warn)", () => {
-  test("schedule[i].inputs non-empty warns exactly once for the task, and the compiled binding is byte-identical to one with no inputs", async () => {
+describe("whole-set task source v4 scheduler sync planning — B-45/F-B2 (schedule[i].inputs delivered as a sorted invocation tail)", () => {
+  // P2b Lane B flip (spec docs/plans/specs/p2b-input-bindings.md §4.4, §7
+  // F-B2): the P2a B-38 gap this describe block used to pin ("validated but
+  // not yet delivered", single per-task warn, byte-identical fixed tail) is
+  // now CLOSED — schedule[i].inputs are delivered through the compiled
+  // binding's own invocation tail, so there is nothing left to warn about.
+  test("schedule[i].inputs non-empty compiles a sorted --<name> <value> tail per entry — no warn, and each entry's tail reflects its OWN inputs", async () => {
     const bundleRoot = root();
     write(
       path.join(bundleRoot, "tasks", "ticketed.yml"),
@@ -194,8 +199,8 @@ describe("whole-set task source v4 scheduler sync planning — B-38 (schedule[i]
         "  scope:",
         "    type: string",
         "schedule:",
-        // TWO entries, BOTH carrying inputs: — proves the warn fires once per
-        // TASK, not once per schedule[i] entry.
+        // TWO entries with DIFFERENT inputs: — proves each entry's own tail
+        // is compiled from its OWN inputs, never shared/collapsed.
         "  - cron: '0 8 * * 1'",
         "    inputs:",
         "      scope: all",
@@ -221,22 +226,33 @@ describe("whole-set task source v4 scheduler sync planning — B-38 (schedule[i]
       expectedSignature: (binding) => `sig:${binding.id}`,
     });
 
-    // Exactly ONE warn call for this ONE task even though BOTH schedule
-    // entries carry inputs — once per task, not once per schedule[i] entry,
-    // and not zero.
-    expect(warnCalls).toHaveLength(1);
-    expect(warnCalls[0]).toMatch(/schedule/i);
-    expect(warnCalls[0]).toMatch(/input/i);
-    expect(warnCalls[0]).toMatch(/not.*deliver|undeliver/i);
+    // No warn: the gap the old warn announced is closed.
+    expect(warnCalls).toEqual([]);
 
-    // The compiled bindings carry no trace of the literal inputs (B-38: each
-    // compiled binding is byte-identical to one authored with no
-    // schedule[i].inputs at all — the fixed invocation tail,
-    // scheduler-binding.ts:171).
+    // Each compiled binding carries its OWN schedule entry's inputs as a
+    // sorted `--<name> <value>` tail after `--scheduled`.
     expect(plan.desired).toHaveLength(2);
-    for (const binding of plan.desired) {
-      expect(binding.invocation).toEqual(["task", "run", "ticketed", "--bundle", "team", "--scheduled"]);
-    }
+    const byOrdinal = [...plan.desired].sort((left, right) => left.ordinal - right.ordinal);
+    expect(byOrdinal[0]?.invocation).toEqual([
+      "task",
+      "run",
+      "ticketed",
+      "--bundle",
+      "team",
+      "--scheduled",
+      "--scope",
+      "all",
+    ]);
+    expect(byOrdinal[1]?.invocation).toEqual([
+      "task",
+      "run",
+      "ticketed",
+      "--bundle",
+      "team",
+      "--scheduled",
+      "--scope",
+      "changed",
+    ]);
   });
 
   test("schedule[i].inputs violating the declared input's schema still fails at PARSE time (TASK_SOURCE_INVALID), not silently at sync time", async () => {

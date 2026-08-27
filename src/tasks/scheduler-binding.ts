@@ -14,6 +14,7 @@
 import { createHash } from "node:crypto";
 import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { UsageError } from "../core/errors";
+import { canonicalInputJson } from "../execution/input-contract";
 import type { ScheduleBackend } from "./schedule";
 import { normaliseTaskConceptId } from "./task-id";
 
@@ -51,6 +52,15 @@ export interface SchedulerSourceSchedule {
    * without touching its siblings.
    */
   readonly enabled?: boolean;
+  /**
+   * P2b Lane B (spec docs/plans/specs/p2b-input-bindings.md §4.4, §1.7 B-N3):
+   * a v4 `schedule[i].inputs` literal override, additive exactly as `enabled`
+   * above — v3 never sets this, so its compiled invocation tail gains not a
+   * single byte (B-03). When present and non-empty,
+   * {@link compileTaskSchedulerBindings} appends a canonically-sorted
+   * `--<name> <value>` flag tail after `--scheduled`.
+   */
+  readonly inputs?: Readonly<Record<string, unknown>>;
 }
 
 export interface CompileTaskSchedulerBindingsInput {
@@ -177,10 +187,21 @@ export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindings
   const ref = assertQualifiedRef(input.qualifiedRef, "task");
   const bundle = parseBundleRef(ref).bundle;
   if (!bundle) throw new Error("invariant: qualified scheduler task ref lost its bundle");
-  const invocation = Object.freeze(["task", "run", id, "--bundle", bundle, "--scheduled"]);
+  // P2b Lane B (B-N3): the invocation is compiled PER schedule entry now —
+  // each entry's own `inputs` produces its own trailing flag tail, so it can
+  // no longer be hoisted as one binding shared by every entry.
   return Object.freeze(
     input.schedules.map((schedule) => {
       const bindingId = schedule.ordinal === 0 ? id : digestBindingId("task", ref, schedule.ordinal);
+      const invocation = Object.freeze([
+        "task",
+        "run",
+        id,
+        "--bundle",
+        bundle,
+        "--scheduled",
+        ...schedulerInputFlagTail(schedule.inputs),
+      ]);
       return freezeBinding({
         id: bindingId,
         nativeId: schedulerNativeBindingId(bindingId),
@@ -193,6 +214,34 @@ export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindings
       });
     }),
   );
+}
+
+/**
+ * The canonically-sorted `--<name> <value>` flag tail for one schedule
+ * entry's `inputs` (spec §1.7 B-N3). Empty/absent `inputs` yields an empty
+ * tail — the fixed six-token invocation, byte-identical to every schedule
+ * entry before P2b (B-03).
+ */
+function schedulerInputFlagTail(inputs: Readonly<Record<string, unknown>> | undefined): readonly string[] {
+  if (!inputs) return [];
+  const names = Object.keys(inputs).sort();
+  const tail: string[] = [];
+  for (const name of names) tail.push(`--${name}`, schedulerInputFlagValueText(inputs[name]));
+  return tail;
+}
+
+/**
+ * One input value's argv text. A scalar is its exact text — `String(value)`
+ * for a number/boolean (a `true` boolean is `"true"`, never a bare flag, so
+ * the tail round-trips through one parser), the string itself for a string.
+ * An object/array value is its `canonicalInputJson` text, which
+ * `materializeInputFlags`'s JSON-shorthand path already coerces back through
+ * the declaration.
+ */
+function schedulerInputFlagValueText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return canonicalInputJson(value);
 }
 
 export function compileWorkflowSchedulerBindings(

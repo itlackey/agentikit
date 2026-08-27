@@ -1367,7 +1367,17 @@ function taskProjectionAssetResolver(
   };
 }
 
-function resolveTaskReadBundle(refBundle: string | undefined, flagBundle: string | undefined): ResolvedWriteTarget {
+/**
+ * Exported for `src/commands/tasks/explain.ts` (P2b Lane B, spec
+ * docs/plans/specs/p2b-input-bindings.md §4.5, B-N4): `akm task explain`
+ * resolves its `--bundle` axis identically to every other read-only task
+ * verb here (`akm task history`, `akm task run`) — the SAME resolver, not a
+ * second one.
+ */
+export function resolveTaskReadBundle(
+  refBundle: string | undefined,
+  flagBundle: string | undefined,
+): ResolvedWriteTarget {
   if (refBundle && flagBundle && refBundle !== flagBundle) {
     throw new UsageError(
       `Task ref selects bundle ${JSON.stringify(refBundle)}, but --bundle selects ${JSON.stringify(flagBundle)}.`,
@@ -1591,7 +1601,8 @@ export function parseTaskRef(input: string): { id: string; bundle?: string } {
   return { id: normaliseTaskId(trimmed) };
 }
 
-function taskIdForAdapter(parsedId: string, adapterId: string): string {
+/** Exported for `src/commands/tasks/explain.ts` — see {@link resolveTaskReadBundle}'s header. */
+export function taskIdForAdapter(parsedId: string, adapterId: string): string {
   if (adapterId === "akm-task") return normaliseTaskConceptId(parsedId);
   if (adapterId === "akm") {
     if (!parsedId.includes("/")) return normaliseTaskId(parsedId);
