@@ -85,8 +85,10 @@ describe("plan freezing at workflow start (migration 006)", () => {
 
     const plan = JSON.parse(row?.plan_json ?? "") as WorkflowPlanGraphV4;
     expect(plan.steps.map((s) => s.stepId)).toEqual(["only-step"]);
-    expect(plan.irVersion).toBe(4);
-    if (plan.irVersion !== 4) throw new Error("fresh starts must persist v4");
+    // @ts-expect-error P3a red-phase: WORKFLOW_IR_V5_VERSION lands in Implement (the implementation removes this directive)
+    expect(plan.irVersion).toBe(5);
+    // @ts-expect-error P3a red-phase: WORKFLOW_IR_V5_VERSION lands in Implement (the implementation removes this directive)
+    if (plan.irVersion !== 5) throw new Error("fresh starts must persist plan irVersion 5");
     expect(plan.steps[0]!.root?.kind).toBe("unit");
     expect(Object.hasOwn(plan.execution, "engines")).toBe(false);
     const root = plan.steps[0]!.root;
@@ -273,7 +275,7 @@ describe("plan freezing at workflow start (migration 006)", () => {
         throw new Error("expected current workflow IR rejection");
       } catch (error) {
         expect(error).toBeInstanceOf(UsageError);
-        expect((error as UsageError).code).toBe("INVALID_JSON_ARGUMENT");
+        expect((error as UsageError).code).toBe("WORKFLOW_IR_VERSION_UNSUPPORTED");
       }
     };
     await expectCorrupt(getNextWorkflowStep(started.run.id));
@@ -287,7 +289,7 @@ describe("plan freezing at workflow start (migration 006)", () => {
     const cases = [
       { name: "malformed-null", version: null, status: "blocked" },
       { name: "malformed-v2", version: 2, status: "active" },
-      { name: "malformed-future", version: 4, status: "active" },
+      { name: "malformed-current", version: 5, status: "active" },
       { name: "malformed-v3", version: 3, status: "active" },
     ];
     for (const item of cases) {

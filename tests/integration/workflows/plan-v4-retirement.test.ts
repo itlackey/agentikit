@@ -12,16 +12,23 @@
  * (A-N2: this code already exists in `UsageErrorCode`, `src/core/errors.ts`,
  * with no producer anywhere — P3a is its first).
  *
+ * Every fixture below asserts, immediately after `startWorkflowRun`, that
+ * the fresh row's `plan_ir_version` is the CURRENT executable version (a
+ * pin for row A-01 — post-Implement that is plan irVersion 5), and THEN
+ * hand-tampers the row down to `plan_ir_version = 4` via the same raw-SQL
+ * escape hatch `tests/integration/workflows/frozen-plan.test.ts:258` uses
+ * for its `plan_ir_version = 2` fixture — exactly as that file's F-A2 flip
+ * does. Without the tamper, a fresh run would simply freeze to whatever the
+ * current version already is and never reach the retired case at all.
+ *
  * RED today, for exactly one reason: `startWorkflowRun` still freezes to
  * `WORKFLOW_IR_V4_VERSION` (4) AND `plan-classifier.ts` still treats 4 as
- * the CURRENT/supported version — so every fixture below is, today, a
- * perfectly ordinary supported run. No fixture is hand-tampered to reach a
- * "future" version; a fresh `startWorkflowRun` call already produces
- * `plan_ir_version = 4` (A-N1: `WORKFLOW_IR_V4_VERSION` is deleted, not
- * merely superseded), so this file simply asserts the FUTURE-desired
- * behavior around that same, completely ordinary fixture. Once Implement
- * moves the "current" line to `WORKFLOW_IR_V5_VERSION` (5), a stored v4 run
- * becomes exactly the retired case this file exercises.
+ * the CURRENT/supported version, so the pre-tamper pin below — asserting
+ * the fresh row already carries plan irVersion 5 — fails today (A-N1:
+ * `WORKFLOW_IR_V4_VERSION` is deleted, not merely superseded, so 4 is never
+ * current again once Implement lands). Once Implement moves the "current"
+ * line to `WORKFLOW_IR_V5_VERSION` (5), that pin goes green and the
+ * hand-tampered row becomes exactly the retired case this file exercises.
  *
  * No `@ts-expect-error` directives: `WORKFLOW_IR_VERSION_UNSUPPORTED` is
  * already a real `UsageErrorCode` member (A-N2), `WorkflowRunRow.plan_ir_version`
@@ -113,12 +120,19 @@ describe("A-03…A-06, A-16 — a stored plan_ir_version 4 run", () => {
     const runId = started.run.id;
 
     const row = await withWorkflowRunsRepo((repo) => repo.getRunById(runId));
-    // Sanity: today's freeze still produces v4 — no hand-tampering (see file header).
-    expect(row?.plan_ir_version).toBe(4);
+    // A-01: a fresh run persists the CURRENT plan irVersion — post-Implement, 5.
+    expect(row?.plan_ir_version).toBe(5);
+
+    // Hand-tamper to a genuinely non-current stored version (mirrors
+    // frozen-plan.test.ts:258's plan_ir_version = 2 fixture). Every
+    // assertion below must run against a row we've deliberately aged to a
+    // version that is NOT the current one, or the complete-or-abandon
+    // policy under test never actually engages.
+    execOnWorkflowDb("UPDATE workflow_runs SET plan_ir_version = 4 WHERE id = ?", runId);
 
     // A-03/A-04 (NEW): status/list report the policy against the SAME row.
     const status = await getWorkflowStatus(runId);
-    expect(status.run.executionSupport).toBe("unsupported-version"); // RED today: v4 is current today
+    expect(status.run.executionSupport).toBe("unsupported-version");
     expect(status.run.planIrVersion).toBe(4);
     expect((await getWorkflowStatus(runId, { includeUnits: true })).units).toEqual([]);
 
