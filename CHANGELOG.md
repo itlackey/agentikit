@@ -169,7 +169,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--children` includes them), and a child run id always works directly
   with `status`/`resume`/`abandon`/`run`. See
   [Workflow Schema: Child execution](docs/reference/workflow-schema.md#child-execution)
-  and [Running Workflows: Child runs](docs/guides/run-workflows.md#child-runs).
+  and [Running Workflows: Child runs](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md#child-runs).
 - **Workflow `outputs:`.** A workflow may declare a run-level export in its
   Markdown frontmatter — `outputs: {<name>: {from: steps.<id>.output(.<seg>)*,
   schema?}}`, up to 64 entries — resolved once, from persisted step

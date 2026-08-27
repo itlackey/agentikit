@@ -2258,3 +2258,19 @@ make no cascade claim of their own (`rg cascade` across `docs/` before this
 fix found only this doc comment's own language and unrelated route-skip
 prose in `workflow-schema.md`), so no further doc site needed correction;
 `scripts/lint-doc-examples.ts` passes against both edited doc files.
+
+## Review log
+
+**2026-08-27 — phase close-out (orchestrator).** The run survived two container restarts (resumed
+from its journal both times; the tests-verification step's result was orchestrator-performed and
+journal-injected after dying twice) and was restructured mid-phase into restart-sized agents:
+three per-lane test reviews (3/3/3 CONFIRMED, each lane's findings fixed and pushed as
+566eb526/473b6f1a/ffff024e) and three scoped code reviews (executor 1, outputs-cli 4, crosscut 1
+CONFIRMED — all fixed by the shared fixer and verified). Implement landed as c1dee6c4 (Lane B:
+outputs, status tree, akm workflow plan) and 7d6a5ec2 (Lane A: child execution), integrator
+fallout + §8 docs as 77c656ea. Gate: lint green, tsc green, unit 4342/0 (317 files), integration
+5834 pass / 57 skip / 1 fail — the single failure was npm-pack-contents' shipped-markdown link
+check: four shipped files linked the non-shipped docs/guides/run-workflows.md#child-runs. Fixed by
+the orchestrator per house convention (absolute GitHub URL for non-shipped guides, as prior
+changelog entries do); the test file passes 4/4 and lint/tsc re-verified green. With that one
+docs-link fix the phase gate is green.

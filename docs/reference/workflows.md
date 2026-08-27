@@ -72,7 +72,7 @@ status` on a run that composes children renders a `children:` tree showing
 every descendant run's ref and status. See
 [Workflow Schema: Child execution](../reference/workflow-schema.md#child-execution)
 for the full status mapping and the blocked-child recovery flow, and
-[Running Workflows: Child runs](../guides/run-workflows.md#child-runs) for a
+[Running Workflows: Child runs](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md#child-runs) for a
 walkthrough.
 
 ## Unsupported boundary and 0.9.3

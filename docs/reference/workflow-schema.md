@@ -267,7 +267,7 @@ composition-depth bound described above. Child runs are excluded from `akm
 workflow list` by default; pass `--children` to include them. A child run
 id always works directly with `akm workflow status`/`resume`/`abandon`/`run`,
 listed or not. See
-[Running Workflows: Child runs](../guides/run-workflows.md#child-runs) for a
+[Running Workflows: Child runs](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md#child-runs) for a
 worked example, and
 [Architecture: The Workflow Engine](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md#child-workflows)
 for the dispatch seam and why reusing the top-level run engine (rather than a
