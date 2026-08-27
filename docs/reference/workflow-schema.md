@@ -152,10 +152,10 @@ may itself be authored in either format, Markdown or GitHub-shaped:
   ```
 
 - **Task-wrapped** — `uses: tasks/<ref>` where `<ref>` names a task source
-  (v3 or v4) whose own target is a workflow. The task's own authored mapping
-  (v3 `with:`/`params`, or a v4 task's effective `inputs:`) supplies the
-  child's params; a `with:` authored on the *workflow step itself* binds on
-  top of that, exactly as it would for a direct step.
+  v4 document whose own target is a workflow. The task's own effective
+  `inputs:` (its declared defaults plus whatever the *task's own* callers
+  bound) supply the child's params; a `with:` authored on the *workflow
+  step itself* binds on top of that, exactly as it would for a direct step.
 
 Both forms bind against the child workflow's own declared `params:`
 frontmatter key — **not** a task's `inputs:` contract, since a workflow has
