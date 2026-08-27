@@ -43,7 +43,10 @@
  *     `TASK_SOURCE_INVALID` for ANY `version: 4` task composed from a
  *     workflow step, `with:` or not (spec §1.7 A-N6) — a DIFFERENT
  *     `taskDispatch` guard than the one above, but the same "P2b hasn't
- *     landed yet" root cause.
+ *     landed yet" root cause. B-35/B-36's own empirical-baseline sub-run
+ *     (a `with:`-free composition of the same target kind, added to fix an
+ *     exact-allowed-set comparison rather than a single negative regex) hits
+ *     this identical LC-N1 guard before its bound half ever runs.
  *
  * The workflow-target scenario (B-40) fails differently: it never throws,
  * but `projectTaskSourceV4` does not yet forward a v4 task's `inputs:` into
@@ -154,7 +157,47 @@ async function firstStep(ref: string): Promise<{ runId: string; step: IrStepPlan
 // ── B-35/B-36 — shell/script targets: ONE AKM_TASK_INPUTS env var ──────────
 
 describe("shell/script task target — AKM_TASK_INPUTS is exactly one canonical-JSON env var (B-35, B-36)", () => {
-  test("a shell-target (run:/shell:) task receives AKM_TASK_INPUTS with the exact canonical JSON, and no per-input AKM_TASK_INPUT_* var exists (B-35)", async () => {
+  /**
+   * Runs a single-step workflow composing an already-written `taskRef` and
+   * returns the AKM_*-prefixed subset of the child process's full env name
+   * list. Used to fix an EMPIRICAL baseline for a "no effective inputs" run
+   * of the same target-kind shape (B-39's own shape), so the bound-run
+   * assertions below can require the bound run's AKM_* set to be EXACTLY
+   * that baseline plus AKM_TASK_INPUTS — a per-input var emitted under ANY
+   * spelling, not merely the AKM_TASK_INPUT_* one the old assertion checked
+   * alone, now fails this test.
+   */
+  async function akmEnvNames(workflowName: string, steps: string): Promise<string[]> {
+    writeWorkflow(workflowName, steps);
+    const { runId, step } = await firstStep(`workflows/${workflowName}`);
+    const result: StepExecutionResult = await executeFrozenStepPlan(step, {
+      runId,
+      workflowRef: `workflows/${workflowName}`,
+      params: {},
+      evidence: {},
+      workDir,
+    });
+    if (!result.ok) {
+      throw new Error(`baseline workflow run ${workflowName} failed: ${JSON.stringify(result)}`);
+    }
+    return String(result.evidence.output)
+      .split("\n")
+      .filter((name) => name.length > 0 && name.startsWith("AKM_"));
+  }
+
+  test("a shell-target (run:/shell:) task receives AKM_TASK_INPUTS with the exact canonical JSON, and no per-input var exists under any spelling (B-35)", async () => {
+    // Baseline: the identical execution surface — a shell-target task
+    // composed from a workflow step — with NO inputs: declared and NO
+    // with: authored, the same "no effective inputs" shape B-39 pins below.
+    write(
+      "tasks/shell-echo-baseline.yml",
+      ["version: 4", "name: Shell echo baseline", "run: |", "  env | cut -d= -f1", "shell: sh", ""].join("\n"),
+    );
+    const baselineAkmNames = await akmEnvNames(
+      "shell-delivery-baseline",
+      ["      - id: dispatch", "        uses: tasks/shell-echo-baseline"].join("\n"),
+    );
+
     write(
       "tasks/shell-echo.yml",
       [
@@ -197,11 +240,27 @@ describe("shell/script task target — AKM_TASK_INPUTS is exactly one canonical-
 
     const names = (namesPart ?? "").split("\n").filter((n) => n.length > 0);
     expect(names).toContain("AKM_TASK_INPUTS");
-    // The roster is closed and enumerable: never one var per input.
-    expect(names.some((n) => /^AKM_TASK_INPUT_/.test(n))).toBe(false);
+    // The roster is closed and enumerable: the bound run's AKM_*-prefixed
+    // name set is EXACTLY the empirical baseline plus AKM_TASK_INPUTS — never
+    // one var per input, under this spelling or any other (the same
+    // exact-allowed-set idiom
+    // tests/integration/workflows/exec-unit.test.ts:426-433 uses for B-02).
+    const boundAkmNames = names.filter((n) => n.startsWith("AKM_"));
+    expect(boundAkmNames.sort()).toEqual([...baselineAkmNames, "AKM_TASK_INPUTS"].sort());
   });
 
-  test("a script-target (uses: scripts/<ref>) task receives the identical AKM_TASK_INPUTS delivery (B-36)", async () => {
+  test("a script-target (uses: scripts/<ref>) task receives the identical AKM_TASK_INPUTS delivery, and no per-input var exists under any spelling (B-36)", async () => {
+    // Same empirical-baseline idiom as B-35 above, for the script target.
+    write("scripts/echo-inputs-baseline.sh", ["#!/bin/sh", "env | cut -d= -f1", ""].join("\n"));
+    write(
+      "tasks/script-echo-baseline.yml",
+      ["version: 4", "name: Script echo baseline", "uses: scripts/echo-inputs-baseline.sh", ""].join("\n"),
+    );
+    const baselineAkmNames = await akmEnvNames(
+      "script-delivery-baseline",
+      ["      - id: dispatch", "        uses: tasks/script-echo-baseline"].join("\n"),
+    );
+
     write(
       "scripts/echo-inputs.sh",
       ["#!/bin/sh", "printf '%s' \"$AKM_TASK_INPUTS\"", "printf '\\n---NAMES---\\n'", "env | cut -d= -f1", ""].join(
@@ -240,7 +299,8 @@ describe("shell/script task target — AKM_TASK_INPUTS is exactly one canonical-
     expect(jsonPart).toBe(canonicalInputJson({ scope: "all" }));
     const names = (namesPart ?? "").split("\n").filter((n) => n.length > 0);
     expect(names).toContain("AKM_TASK_INPUTS");
-    expect(names.some((n) => /^AKM_TASK_INPUT_/.test(n))).toBe(false);
+    const boundAkmNames = names.filter((n) => n.startsWith("AKM_"));
+    expect(boundAkmNames.sort()).toEqual([...baselineAkmNames, "AKM_TASK_INPUTS"].sort());
   });
 });
 
