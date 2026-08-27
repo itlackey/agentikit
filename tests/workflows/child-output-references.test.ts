@@ -178,18 +178,25 @@ describe("a reference into an undeclared child output fails at freeze (B-29)", (
   test("steps.<child>.output.<bogus> fails COMPOSITION_INVALID, naming the step, the child ref, the bad name, and the child's declared names", async () => {
     writeNoopCommand();
     writeConsumeTask();
-    writeChildWithOutputs("child-with-report-2");
+    // The child's own ref must NOT contain "report" (the declared output
+    // name) — otherwise the toContain("report") assertion below is trivially
+    // satisfied by the ref assertion one line above it, without the message
+    // actually enumerating the child's declared output names.
+    writeChildWithOutputs("child-alpha");
     writeParent("consume-undeclared-output", [
       "      - id: dispatch",
-      "        uses: workflows/child-with-report-2",
+      "        uses: workflows/child-alpha",
       ...consumeStepLines("steps.dispatch.output.bogus"),
     ]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const error = await expectCompositionInvalid("workflows/consume-undeclared-output");
     expect(error.message).toContain("consume");
-    expect(error.message).toContain("child-with-report-2");
+    expect(error.message).toContain("child-alpha");
     expect(error.message).toContain("bogus");
+    // Non-trivial only because "child-alpha" does not itself contain
+    // "report" — this pins that the message enumerates the child's declared
+    // output names, not just that it names the child ref.
     expect(error.message).toContain("report");
     await expectNoRunRowWritten();
   });
@@ -199,18 +206,28 @@ describe("a reference into a no-outputs child's non-{runId,status} name fails at
   test("steps.<child>.output.<bogus> fails COMPOSITION_INVALID when the child declares no outputs:, message pointing at outputs:", async () => {
     writeNoopCommand();
     writeConsumeTask();
-    writeChildNoOutputs("child-no-outputs");
+    // The child's own ref must NOT contain "outputs" — otherwise the
+    // toLowerCase().toContain("outputs") assertion below is trivially
+    // satisfied by the ref assertion one line above it, without the message
+    // actually pointing at the child's `outputs:` frontmatter.
+    writeChildNoOutputs("child-bare");
     writeParent("consume-no-outputs-bogus", [
       "      - id: dispatch",
-      "        uses: workflows/child-no-outputs",
+      "        uses: workflows/child-bare",
       ...consumeStepLines("steps.dispatch.output.bogus"),
     ]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const error = await expectCompositionInvalid("workflows/consume-no-outputs-bogus");
     expect(error.message).toContain("bogus");
-    expect(error.message).toContain("child-no-outputs");
+    expect(error.message).toContain("child-bare");
+    // Non-trivial only because "child-bare" does not itself contain
+    // "outputs" — this pins that the message actually points at the child's
+    // `outputs:` frontmatter, not just that it names the child ref.
     expect(error.message.toLowerCase()).toContain("outputs");
+    // Positive pin for the spec §4.4 exact wording: a no-outputs child
+    // exports only {runId, status}.
+    expect(error.message).toContain("{runId, status}");
     await expectNoRunRowWritten();
   });
 

@@ -241,6 +241,66 @@ describe("akm workflow plan <ref> — compile warnings surface in warnings[] (B-
   });
 });
 
+describe("akm workflow plan <ref> — lowering notices from freeze surface in notices[] (B-57)", () => {
+  // `test-llm` (writeWorkflowTestConfig) declares no `supportsJsonSchema`, so
+  // the existing, unmodified-by-P3b direct-LLM lowerer
+  // (src/integrations/agent/execution-lowering.ts's lowerLlm) rejects this
+  // step's declared unit output: schema with a real "untranslated-field"
+  // notice. That notice is computed TODAY at freeze time
+  // (freeze/targets/command.ts's commandResult calls
+  // lowerResolvedExecutionRequest) and silently discarded — it is exactly the
+  // freeze-time notice row B-57 requires `akm workflow plan` to surface,
+  // through the same {code, severity, adapter, field, message} projection
+  // `akm workflow run` already renders (tests/output-workflow-lowering-notices.test.ts).
+  function writeLoweringNoticeWorkflow(): void {
+    write(
+      "workflows/plan-lowering-notice.md",
+      [
+        "---",
+        "type: workflow",
+        "steps:",
+        "  - id: notify",
+        "    unit:",
+        "      engine: test-llm",
+        "      output:",
+        "        type: object",
+        "        properties:",
+        "          ok:",
+        "            type: boolean",
+        "---",
+        "",
+        "## notify",
+        "",
+        "Notify the channel.",
+        "",
+      ].join("\n"),
+    );
+  }
+
+  test("the notice's code/adapter/message reach notices[] in JSON mode and render as a lowering[] line in text mode", async () => {
+    writeLoweringNoticeWorkflow();
+    await index();
+
+    const json = await runCliCapture(["workflow", "plan", "workflows/plan-lowering-notice", "--format", "json"]);
+    expect(json.code).toBe(0);
+    const envelope = JSON.parse(json.stdout) as { notices: Array<Record<string, unknown>> };
+    expect(envelope.notices.length).toBeGreaterThan(0);
+    const notice = envelope.notices.find((n) => n.code === "untranslated-field");
+    expect(notice).toBeDefined();
+    expect(notice?.adapter).toBe("llm");
+    expect(String(notice?.message)).toContain("outputSchema");
+
+    const text = await runCliCapture(["workflow", "plan", "workflows/plan-lowering-notice"]);
+    expect(text.code).toBe(0);
+    expect(text.stdout).toContain("notices:");
+    // §4.6's exact line shape: `! lowering[<severity>] <code> (<adapter>): <message>`.
+    expect(text.stdout).toContain("! lowering[");
+    expect(text.stdout).toContain("untranslated-field");
+    expect(text.stdout).toContain("llm");
+    expect(text.stdout).toContain("does not translate resolved field outputSchema");
+  });
+});
+
 describe("akm workflow plan <ref> — sourceReadSet is relative paths only (B-54)", () => {
   test("every sourceReadSet entry is a relative path", async () => {
     writeBasicWorkflow();

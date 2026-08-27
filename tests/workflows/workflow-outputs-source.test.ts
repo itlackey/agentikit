@@ -300,7 +300,7 @@ describe("outputs: — decode integrity (B-11…B-16)", () => {
 // ── B-01, B-02, B-17: the full author -> compile -> freeze -> durable-plan
 // ── pipeline (needs an isolated stash + index + config) ────────────────────
 
-describe("outputs: — end-to-end freeze into the durable v5 plan (B-01, B-02, B-17)", () => {
+describe("outputs: — end-to-end freeze into the durable plan irVersion 5 plan (B-01, B-02, B-17)", () => {
   let storage: IsolatedAkmStorage;
 
   beforeEach(() => {
