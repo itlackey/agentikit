@@ -260,11 +260,17 @@ describe("workflows/plan-v4 fixtures — freeze end to end into structurally val
   }
 
   for (const workflow of manifest.workflows) {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); flips in P3a (plan irVersion bumps to 5
-    // when the child-workflow frozen target lands — update the irVersion assertion there, target kinds stay).
-    test(`${workflow.id}: freezes to irVersion 4 with the manifest-declared per-step frozen target kinds`, async () => {
+    // F-A1 (docs/plans/specs/p3a-plan-v5-child-freeze.md §6): this row is the
+    // flip the P0 comment here used to promise ("flips in P3a"). Plan
+    // irVersion bumps to 5 once schema-v4.ts's WORKFLOW_IR_V5_VERSION lands
+    // (§1.8 A-N1) — the manifest-declared target-kind set is untouched, these
+    // fixtures are workflow SOURCES, not plan bytes. `.toBe<number>(5)`
+    // widens the comparison past `plan.irVersion`'s still-literal-4 type
+    // (Implement's type change makes this assertion valid either way, so no
+    // `@ts-expect-error` directive is needed or left behind).
+    test(`${workflow.id}: freezes to irVersion 5 with the manifest-declared per-step frozen target kinds`, async () => {
       const plan = await freeze(workflow.ref);
-      expect(plan.irVersion).toBe(4);
+      expect(plan.irVersion).toBe<number>(5);
       expect(stepTargetKinds(plan)).toEqual(workflow.expectedStepTargetKinds);
     });
   }
