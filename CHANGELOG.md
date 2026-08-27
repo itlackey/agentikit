@@ -8,11 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Breaking changes & migration
 
-- A workflow step that passes `with:` to a `tasks/<ref>` target is now
-  **rejected** (`UsageError` code `COMPOSITION_INVALID`, exit 2) instead of
-  having the authored mapping silently dropped at freeze. Remove the step's
-  `with:` block, or wait for task-call inputs, which arrive in a later 0.9.x
-  release. `with:` on `uses: akm/command` is unaffected.
+- A workflow step that passes `with:` to a `tasks/<ref>` target whose task
+  declares **no** `inputs:` (every `version: 3` task, and a `version: 4` task
+  with no `inputs:` key at all) is now **rejected** (`UsageError` code
+  `COMPOSITION_INVALID`, exit 2) instead of having the authored mapping
+  silently dropped at freeze — for any authored shape, including `with: {}`.
+  When the target's task source **does** declare `inputs:`, `with:` now
+  **binds** them instead: a literal value, or a `{from: "steps.<id>.output…"}`
+  / `{from: "params.<name>"}` reference resolved just before the unit
+  dispatches. See [Task input bindings](docs/reference/tasks.md#task-source-v4)
+  for the full grammar. `with:` on `uses: akm/command` is unaffected — it is
+  still that builtin's own action-argument bag, never an input binding.
+- **New rejection:** `with:` on a workflow step targeting `uses:
+  commands/<ref>` or `uses: scripts/<ref>` is now **rejected**
+  (`COMPOSITION_INVALID`, exit 2) instead of being silently discarded at
+  freeze — neither target is a binding surface. Remove the `with:` block from
+  any such step; a command/script-composing step never accepted its values
+  in the first place, so this closes a defect rather than a feature.
+- Composing a `version: 4` task source from a workflow step's `uses:
+  tasks/<ref>` is no longer deferred: it now **freezes and dispatches**
+  exactly like a `version: 3` task target. The prior release's
+  `TASK_SOURCE_INVALID` "arrives in a later 0.9.x release" rejection for this
+  case is gone.
 - Task-source validation errors raised through the shared `sourceError`
   funnel (field- and semantic-level checks: missing/invalid fields, schedule
   conflicts, and similar) now report code **`TASK_SOURCE_INVALID`** instead of
@@ -71,16 +88,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `inputs:` (an undeclared flag name fails `UNKNOWN_FLAG`; a bad value or
   an unsatisfied `required: true` declaration fails
   `INPUT_BINDING_INVALID`; both exit 2 with the usual JSON error envelope)
-  — the materialized values are **validated only** in this release and are
-  not yet delivered to the target (no `with:` params, no environment
-  variables, no prompt substitution), so a valid flag set leaves the run
-  byte-identical to the same run without them. `akm task add` is unchanged
-  and still writes only task-v3 sources. A task source v4 document is not
-  yet a valid workflow-step target: a workflow step's `uses: tasks/<ref>`
-  pointing at a task source v4 document fails with `TASK_SOURCE_INVALID`
-  naming the deferral, rather than composing. The published
+  and the materialized values are now **delivered** to the target: as the
+  task-composed step's bound `inputs:` (see the `with:`-binding bullet
+  above), as one `AKM_TASK_INPUTS` environment variable (canonical JSON) for
+  a shell/script target, and as a `## Task inputs` prompt block for a
+  command target — no longer validated-only. `schedule[].inputs` on a
+  `version: 4` task source are likewise delivered: `akm task sync` compiles
+  them into the scheduler binding's own invocation tail instead of only
+  validating and discarding them. `akm task add` is unchanged and still
+  writes only task-v3 sources. A `version: 4` task source is now a valid
+  workflow-step target (see above). The published
   [task schema](schemas/akm-task.json) now publishes both grammars as a
-  two-arm `oneOf` keyed on `version`.
+  two-arm `oneOf` keyed on `version`. **No plan/hash version changed**:
+  `irVersion`, `hashVersion`, and every existing frozen plan's `plan_hash` /
+  unit `inputHash` are byte-identical for a step that authors no `with:`.
+
+### Added
+
+- **`akm task explain <ref> [input flags]`** — read-only task introspection.
+  Prints the task's source path and version, its declared `inputs:` (with
+  defaults — a secret-shaped default prints as `<redacted>`), the supplied
+  values with provenance (`default` | `flag` | `schedule-binding`, likewise
+  redacted when secret-shaped), the resolved target kind/ref, effective
+  execution settings with field-level provenance, and schedule bindings.
+  Never spawns anything, writes history, or touches the scheduler; never
+  prints an `env:` value, a credential, a prompt body, a `run:` string, or
+  `with.content`. See [CLI reference: task](docs/reference/cli.md#task).
+- **`AKM_TASK_INPUTS`** — the exec-context environment variable a
+  task-composed step's shell/script target receives: canonical JSON of its
+  resolved, schema-validated `inputs:` bindings. Present only when the
+  bindings are non-empty; subject to the same per-platform size ceiling as
+  `AKM_INPUTS` / `AKM_PARAMS`. See
+  [Context reaching the command](docs/reference/workflow-schema.md#context-reaching-the-command).
+- **A v3 → task source v4 migrator**: the separate `akm-migrate` executable
+  (installed alongside `akm`) gains `task-v4-status` / `task-v4-apply
+  [--dry-run]`, a second, independent generation of the same dry-run-first,
+  `changed | skipped | blocked` migration planner — options bag flattened to
+  top-level keys, `with:` on a non-`akm/command` target converted to a
+  declared `inputs:` entry where the value shape makes it inferable.
+  Ambiguous or github-action-targeted sources are `blocked` for manual
+  review; nothing is overwritten without a backup, and task source v4 is
+  purely additive (`version: 3` sources are unaffected), so this migration
+  is entirely optional. Not (yet) reachable through `akm migrate`. See the
+  [0.9.1 to 0.9.2 migration guide](docs/migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4).
 
 ## [0.9.2-alpha.1] - 2026-08-24
 

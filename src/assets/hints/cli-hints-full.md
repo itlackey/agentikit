@@ -362,6 +362,7 @@ akm task sync --rebind                         # Also re-pin the scheduler's akm
 akm task doctor                                # Scheduler binding + runtime eligibility diagnosis
 akm task history                               # Recent run rows (status, timing)
 akm task run <id>                              # Run one task immediately (works when disabled)
+akm task explain <ref>                         # Read-only: declared inputs, target, schedule — spawns nothing
 akm search --type task                         # Enumerate task assets (there is no `task list`)
 ```
 

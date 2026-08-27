@@ -17,14 +17,50 @@
       "warnings"
     ]
   },
+  "explain": {
+    "exitCode": 0,
+    "stdoutKeys": [
+      "bundleName",
+      "execution",
+      "inputDeclarations",
+      "ref",
+      "schedule",
+      "schemaVersion",
+      "shape",
+      "sourcePath",
+      "sourceVersion",
+      "suppliedInputs",
+      "target",
+      "taskId"
+    ]
+  },
   "history": {
     "exitCode": 0,
-    "stdoutKeys": ["rows", "schemaVersion", "shape"]
+    "stdoutKeys": [
+      "rows",
+      "schemaVersion",
+      "shape"
+    ]
   },
   "run": {
     "exitCode": 0,
-    "resultKeys": ["detail", "durationMs", "finishedAt", "id", "log", "startedAt", "status", "target"],
+    "resultKeys": [
+      "detail",
+      "durationMs",
+      "finishedAt",
+      "id",
+      "log",
+      "startedAt",
+      "status",
+      "target"
+    ],
     "resultStatus": "completed",
-    "stdoutKeys": ["exitCode", "ok", "result", "schemaVersion", "shape"]
+    "stdoutKeys": [
+      "exitCode",
+      "ok",
+      "result",
+      "schemaVersion",
+      "shape"
+    ]
   }
 }

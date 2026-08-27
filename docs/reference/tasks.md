@@ -225,8 +225,12 @@ Field notes:
   string (`schedule: "0 8 * * 1"`) is shorthand for one enabled binding with
   no inputs. A list entry may set its own `enabled` (default `true`) and
   literal `inputs`; those literals are validated against the task's
-  `inputs:` declarations at parse time but are not yet delivered to the
-  scheduled run — delivery is a later 0.9.x release.
+  `inputs:` declarations both at parse time and again at `akm task sync`
+  (once with declared defaults applied), and are **delivered** to the
+  scheduled run: `akm task sync` compiles each entry's inputs into the
+  scheduler binding's own invocation tail (`akm task run <id> --scheduled
+  --<name> <value>…`, names sorted), so the fired run receives them exactly
+  as `akm task run <id> --<name> <value>` would.
 - Every v3 `akm.*` option is a top-level key in task source v4 instead: `agent`,
   `engine`, `model`, `inference`, `tools`, `timeout`, `redact`, `maxSteps`,
   and `maxRetries`, plus `description`, `when_to_use`, and `tags`.
@@ -241,9 +245,10 @@ Field notes:
 - The GitHub-action `uses:` spelling (`owner/repo@ref`) recognized (and
   rejected before dispatch) by v3 is removed outright in task source v4 —
   author a v3 source if you need that documented syntax.
-- A task source v4 document cannot yet be the target of a workflow step's
-  `uses: tasks/<ref>` — composing a task source v4 target from a workflow
-  arrives in a later 0.9.x release; keep the task at `version: 3` until then.
+- A task source v4 document **can** be the target of a workflow step's
+  `uses: tasks/<ref>` — see the
+  [GitHub-shaped YAML subset](workflow-schema.md#github-shaped-yaml-subset)
+  for how a workflow step's `with:` binds a v4 task's declared `inputs:`.
 
 ### Input flags
 
@@ -260,12 +265,29 @@ example above uses one task's actual declared names, not a fixed syntax.
 An undeclared flag fails with `UNKNOWN_FLAG`; a value that does not satisfy
 its declaration, or a missing `required: true` input supplied by neither a
 flag nor a default, fails with `INPUT_BINDING_INVALID` — both exit `2` with
-the usual `{ok:false,error,code}` envelope on stderr. In this release the
-materialized values are **validated only**: nothing yet delivers them to the
-target (no `with:` params, no environment variables, no prompt
-substitution), so a *valid* flag set leaves the run byte-identical to the
-same run without them. `akm task add` does not gain input flags in this
+the usual `{ok:false,error,code}` envelope on stderr. The materialized
+values are **delivered** to the target: as one `AKM_TASK_INPUTS`
+environment variable (canonical JSON) for a `run:` shell or `scripts/<ref>`
+target, and as a `## Task inputs` prompt block for an `akm/command` /
+`commands/<ref>` target. `akm task add` does not gain input flags in this
 release; it continues to write task-v3 sources only.
+
+### `akm task explain`
+
+`akm task explain <ref> [input flags]` prints a task's source path and
+version, its declared `inputs:` (name, type, `enum`, `required`, `default`),
+the values that would actually be supplied — with provenance
+(`default` | `flag` | `schedule-binding`) — the resolved target kind/ref,
+effective execution settings with field-level provenance, and schedule
+bindings. It is **read-only**: it never spawns anything, writes history, or
+touches the scheduler. A secret-shaped value (a declared default, a supplied
+value, or a schedule binding's literal) prints as `"<redacted>"` with its row
+marked `redacted: true` instead of the real value; an `env:` binding is shown
+as a name/ref only, never its resolved value.
+
+```sh
+akm task explain review --scope all  # doclint:ignore
+```
 
 ## Migrating task v2 to v3
 
@@ -287,10 +309,30 @@ replacement.
 See the [0.9.1 to 0.9.2 migration guide](../migration/v0.9.1-to-v0.9.2.md)
 for before/after examples, preserved fields, and recovery guidance.
 
+## Migrating task v3 to task source v4
+
+A second, independent generation of the same fail-closed migrator — a
+separate `akm-migrate` executable, installed alongside `akm` — converts an
+eligible `version: 3` task source to `version: 4`:
+
+```sh
+akm-migrate task-v4-status
+akm-migrate task-v4-apply --dry-run
+akm-migrate task-v4-apply
+```
+
+Task source v4 is purely additive (`version: 3` still parses, runs, and
+schedules unchanged), so this migration is entirely optional. See
+[Migrating task v3 to task source v4](../migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4)
+for what gets blocked and why, and recovery guidance.
+
 ## Operations
 
 - `akm search --type task` and `akm show tasks/<id>` inspect task assets of
   either grammar.
+- `akm task explain <ref>` prints a task's declared inputs, resolved target,
+  effective execution settings, and schedule bindings without running
+  anything — see [`akm task explain`](#akm-task-explain) above.
 - `akm task add` writes a task-v3 source and installs it after validation;
   it does not author task source v4 in this release.
 - `akm task history` reads durable run history from `state.db`.

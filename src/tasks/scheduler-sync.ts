@@ -18,6 +18,7 @@ import {
   type GuardedExecutionSource,
   GuardedExecutionSourceCollector,
 } from "../execution/guarded-source";
+import { applyInputDefaults, validateInputs } from "../execution/input-contract";
 import type { FileContext } from "../indexer/walk/file-context";
 import { compileWorkflowPlan } from "../workflows/ir/compile";
 import { compileResolveFreezeWorkflowV4 } from "../workflows/ir/freeze-v4";
@@ -498,6 +499,32 @@ async function compileTaskSources(
       });
       const document = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
       const qualifiedRef = makeBundleRef(input.bundleName, conceptId);
+      // P2b Lane B (spec docs/plans/specs/p2b-input-bindings.md §4.4, rows
+      // B-50/F-B2): validate each v4 schedule entry's inputs against the
+      // task's OWN declared contract WITH DEFAULTS APPLIED — the same
+      // applyInputDefaults + validateInputs pair akm task run uses
+      // (src/tasks/run/load-task.ts). parseTaskSource's own parse-time check
+      // (task-source-v4.ts's parseScheduleEntry) already rejects an
+      // unknown/malformed entry against the RAW supplied values; this is a
+      // deliberate second, independent gate over the DEFAULTED view — the
+      // exact set of values the compiled invocation below actually delivers
+      // — so a violation fails HERE, recorded as a task failure at sync,
+      // rather than surfacing for the first time when the scheduler fires
+      // the compiled invocation.
+      if (parsed.version === 4) {
+        const contract = parsed.v4.inputs ?? {};
+        for (const scheduleEntry of parsed.v4.schedule) {
+          const defaultedInputs = applyInputDefaults(contract, { ...scheduleEntry.inputs });
+          const errors = validateInputs(contract, defaultedInputs);
+          if (errors.length > 0) {
+            throw new UsageError(
+              `Task ${JSON.stringify(qualifiedRef)} schedule[${scheduleEntry.ordinal}].inputs does not satisfy ` +
+                `its declared inputs once defaults are applied: ${errors.join("; ")}`,
+              "TASK_SOURCE_INVALID",
+            );
+          }
+        }
+      }
       await prepareTaskV3Execution(document, {
         taskId: id,
         taskRef: qualifiedRef,

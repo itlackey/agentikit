@@ -2339,8 +2339,8 @@ shell commands. It manages on-disk task definitions under
 (cron / launchd / schtasks). Strict task v3 YAML and task source v4 YAML are
 both executable source contracts (`akm task add` still writes only task v3);
 see the canonical [Tasks reference](tasks.md). The
-group is `add | run | sync | doctor | history` — there is no `list` or
-`remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
+group is `add | run | explain | sync | doctor | history` — there is no `list`
+or `remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
 and edit the file + `akm task sync` to change or remove a schedule.
 
 ```sh
@@ -2352,6 +2352,7 @@ akm task add review --schedule "@daily" --prompt "Review recent changes" --engin
 akm task add nightly --schedule "@daily" --command "akm improve" --disabled  # register but leave off
 akm task add nightly --schedule "@daily" --command "akm improve" --force    # overwrite an existing task id
 akm task run <id>                           # Execute now (what the scheduler calls)
+akm task explain <ref>                      # Read-only: declared inputs, target, schedule — spawns nothing
 akm task history [--id <id>] [--limit <n>]  # Recent runs from state.db
 akm task sync                               # Reconcile on-disk YAML with scheduler
 akm task sync --rebind                      # Also capture the current installed runtime
@@ -2362,6 +2363,13 @@ akm task doctor                             # Report scheduler backend + paths
 scheduler), `--force` (overwrite an existing task with the same id), and
 `--rebind` (explicitly permit scheduler creation from a local invocation that
 would otherwise be considered ineligible).
+
+`akm task explain <ref> [input flags]` prints a task's declared `inputs:`,
+the values that would actually be supplied (with provenance), the resolved
+target, effective execution settings, and schedule bindings — **read-only**:
+it never spawns anything, writes history, or touches the scheduler. A
+secret-shaped value prints as `<redacted>`. See
+[`akm task explain`](tasks.md#akm-task-explain).
 
 `akm task run` is what cron / launchd / schtasks invoke at the scheduled
 time. Each run is recorded as a row in the durable `task_history` table
@@ -2386,10 +2394,10 @@ the AKM storage path or installed runtime path therefore requires an explicit
 `akm task sync --rebind`; setup does not silently migrate those entries.
 
 **Bundle targeting (`--bundle <bundle>`).** By default every subcommand
-operates on the primary/default bundle. `add`, `history`, `sync`, and `run`
-all accept `--bundle <bundle>` to schedule and reconcile tasks that live in
-another configured bundle (`doctor` reports scheduler-wide state and takes no
-`--bundle`):
+operates on the primary/default bundle. `add`, `history`, `sync`, `run`, and
+`explain` all accept `--bundle <bundle>` to schedule, reconcile, or inspect
+tasks that live in another configured bundle (`doctor` reports scheduler-wide
+state and takes no `--bundle`):
 
 ```sh
 akm task add nightly --schedule "@daily" --command "akm improve" --bundle team-bundle

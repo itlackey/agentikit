@@ -92,12 +92,50 @@ describe("R-01(a)(b)(d) — with: on tasks/<ref>: decode-level acceptance, guard
     if (result.ok) expect(result.ir.jobs[0]?.steps[0]?.with).toEqual({ scope: "all" });
   });
 
-  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
-  // This guardrail is untouched by R-01's flip — it fires on the shape of `with`
-  // itself, independent of which `uses` target consumes it.
-  test("R-01(b): scalarRecord still rejects a non-scalar with value on a tasks/x step (schema.ts:389)", () => {
-    const step = { id: "nonscalar", uses: "tasks/build", with: { scope: { nested: true } }, source: span() };
-    expect(() => decodeWorkflowSourceIrV1(baseIr(step))).toThrow(/must be a scalar/i);
+  // FLIPPED + RE-SCOPED (P2b, spec docs/plans/specs/p2b-input-bindings.md
+  // §1.7 A-N3, §7 F-A2): scalarRecord's "must be a scalar" restriction now
+  // narrows to NON-task uses targets only (schema.ts:389,912) — a
+  // tasks/<ref> step's with: may carry a nested value (see the sibling test
+  // below). This re-points the ORIGINAL assertion at the two uses kinds
+  // where a nested with: value is still rejected, for two DIFFERENT reasons:
+  //   - commands/<ref> is unaffected by the task-only widening, so
+  //     scalarRecord's own "must be a scalar" message still fires exactly
+  //     as before (verified directly against the same fixture shape the
+  //     original tasks/x test used).
+  //   - akm/command is unaffected too, but for a different reason:
+  //     validateWorkflowBuiltinCommand's own ref/content/arguments
+  //     string-typing (schema.ts:362-374) runs BEFORE scalarRecord and
+  //     rejects a nested value first — the surfaced message differs, but
+  //     the net effect (a non-scalar with: value is refused) is identical.
+  test("R-01(b): a non-scalar with value is still rejected for non-task targets — commands/<ref> (scalarRecord, schema.ts:389) and akm/command (validateWorkflowBuiltinCommand, schema.ts:362-374)", () => {
+    const commandStep = {
+      id: "nonscalar-command",
+      uses: "commands/review",
+      with: { scope: { nested: true } },
+      source: span(),
+    };
+    expect(() => decodeWorkflowSourceIrV1(baseIr(commandStep))).toThrow(/must be a scalar/i);
+
+    const builtinStep = {
+      id: "nonscalar-builtin",
+      uses: "akm/command",
+      commandMode: "literal",
+      with: { content: { nested: true } },
+      source: span(),
+    };
+    expect(() => decodeWorkflowSourceIrV1(baseIr(builtinStep))).toThrow(/must be a string/i);
+  });
+
+  // NEW (P2b, spec §1.7 A-N3, §7 F-A2): the task-only decode widening — a
+  // tasks/<ref> step's with: may now carry any JSON value the bounded
+  // document front end already accepts, including a nested object. Freeze
+  // (src/workflows/freeze/**) decides what a declared input actually
+  // accepts; decode only checks the key grammar.
+  test("R-01(b): with: on tasks/<ref> now decodes a nested value (A-N3, schema.ts:389)", () => {
+    const step = { id: "nonscalar-task", uses: "tasks/build", with: { scope: { nested: true } }, source: span() };
+    expect(() => decodeWorkflowSourceIrV1(baseIr(step))).not.toThrow();
+    const decoded = decodeWorkflowSourceIrV1(baseIr(step));
+    expect(decoded.jobs[0]?.steps[0]?.with).toEqual({ scope: { nested: true } });
   });
 
   // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
@@ -217,8 +255,12 @@ describe("R-01(c) — with: on tasks/<ref> now rejects at freeze (source-freeze-
     expect(withError).toBeInstanceOf(UsageError);
     if (!(withError instanceof UsageError)) return;
     expect(withError.code).toBe("COMPOSITION_INVALID");
+    // P2b (spec §1.7 A-N5, §7 F-A3) message-byte flip: the fixture's
+    // version: 3 task declares no inputs: at all, so the rejection is now
+    // the no-declared-inputs COMPOSITION_INVALID (src/workflows/freeze/targets/task.ts's
+    // noDeclaredInputsError), not P1a's "not supported yet" placeholder.
     expect(withError.message).toBe(
-      "Workflow step dispatch cannot pass with: to task target tasks/command-task; task-call inputs are not supported yet.",
+      "Workflow step dispatch cannot pass with: to task target tasks/command-task; tasks/command-task declares no inputs.",
     );
 
     // F-01b: the without-half is unaffected by the new guard and still

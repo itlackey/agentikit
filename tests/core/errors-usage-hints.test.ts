@@ -44,7 +44,10 @@ import { UsageError, type UsageErrorCode } from "../../src/core/errors";
  * tests" contract, not a mistake to work around with a cast.
  */
 const NEW_CODE_HINTS: ReadonlyArray<readonly [UsageErrorCode, string]> = [
-  ["COMPOSITION_INVALID", "Remove the step's with: block; task-call inputs arrive in a later 0.9.x release."],
+  [
+    "COMPOSITION_INVALID",
+    "Remove the with: block, or target a tasks/<ref> whose source declares inputs: — commands/<ref> and scripts/<ref> steps are not binding surfaces.",
+  ],
   ["TASK_SOURCE_INVALID", "Fix the task source at the reported path and line, then re-run."],
   [
     "TARGET_REF_INVALID",

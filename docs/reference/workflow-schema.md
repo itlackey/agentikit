@@ -76,14 +76,24 @@ The accepted 0.9.2 subset is deliberately closed:
   command, script, and task composition are local targets.
   Local actions and Docker actions are unsupported and rejected (including `./` and `docker://`); remote actions are rejected
   because acquisition is out of scope; nested workflows are unsupported.
-- `with:` on a **task-composed** step (`uses: tasks/<ref>`) is rejected when
-  the workflow is frozen — `UsageError` code `COMPOSITION_INVALID`, exit 2 —
-  for any authored shape, including an empty mapping (`with: {}`). Task-call
-  inputs are not implemented yet; that support arrives in a later 0.9.x
-  release. Remove the step's `with:` block until then, or omit it entirely —
-  a task-composed step with no `with:` freezes normally. `with:` on
-  `uses: akm/command` is unaffected by this and is still required to supply
-  the builtin action's arguments, as in the example above.
+- `with:` on a **task-composed** step (`uses: tasks/<ref>`) **binds** the
+  target task source's declared `inputs:` (task source v4 only — see
+  [Task source v4](tasks.md#task-source-v4)). Each value is either a literal
+  (validated against the input's declared schema at freeze) or a reference
+  `{from: "steps.<id>.output(.<segment>)*"}` / `{from: "params.<name>"}`,
+  resolved just before the unit dispatches and re-validated against the same
+  schema then. An unknown `with:` key, a missing required input with no
+  default, or a reference naming a step that doesn't exist earlier in the
+  job all fail at **freeze** with `UsageError` code `INPUT_BINDING_INVALID`,
+  before the plan is ever published. If the target task declares **no**
+  `inputs:` at all (every `version: 3` task, or a `version: 4` task with no
+  `inputs:` key) — or the step targets `uses: commands/<ref>` /
+  `uses: scripts/<ref>`, which are never binding surfaces — any authored
+  `with:`, including an empty mapping (`with: {}`), is rejected at freeze
+  with `UsageError` code `COMPOSITION_INVALID`, exit 2. Omitting `with:`
+  entirely always freezes normally, regardless of target. `with:` on
+  `uses: akm/command` is unaffected by any of this and is still required to
+  supply the builtin action's arguments, as in the example above.
 - GitHub expressions and contexts are unsupported and rejected anywhere in
   the parsed tree.
 
@@ -636,6 +646,7 @@ context blocks a model unit gets in its prompt:
 | `AKM_PARAMS` | the run params, canonical JSON |
 | `AKM_ITEM`, `AKM_ITEM_INDEX` | a `map` unit's item (canonical JSON) and 0-based index |
 | `AKM_INPUTS` | the step's declared `inputs:` artifacts, keyed by reference string |
+| `AKM_TASK_INPUTS` | a task-composed step's resolved `with:` bindings (canonical JSON), present only when the bindings are non-empty |
 
 These are applied *after* your `env:` bindings, so a binding can never shadow
 them.

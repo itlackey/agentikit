@@ -51,9 +51,13 @@
  *     `{layer,kind,via}` provenance map are read back — never
  *     `request.command`, `request.persona`, `request.conversation`, or
  *     `request.runtime.environment`/`.workspace`.
- *   - a declared input's secret-shaped DEFAULT (`detectSecretShapedParams`)
- *     prints as the literal string `"<redacted>"`, with the declaration row
- *     marked `redacted: true`, instead of the real default value.
+ *   - a secret-shaped input value (`detectSecretShapedParams`) prints as the
+ *     literal string `"<redacted>"`, with its row marked `redacted: true`,
+ *     instead of the real value — applied uniformly across every row that
+ *     echoes a value: a declaration's own `default`, a `suppliedInputs`
+ *     entry regardless of provenance, and a `schedule[].inputs` entry
+ *     (code-review finding: the declaration row alone left the identical
+ *     value printed verbatim one section over, in `suppliedInputs`).
  *
  * Field-level execution provenance is READ from `planExecutionCascade`'s own
  * `ResolvedExecutionPlanV1.provenance` (via `prepareResolvedExecution`) —
@@ -94,11 +98,13 @@ type SuppliedValueProvenance = "default" | "flag";
 interface SuppliedInputRow {
   readonly value: unknown;
   readonly provenance: SuppliedValueProvenance;
+  readonly redacted?: boolean;
 }
 
 interface ScheduleInputRow {
   readonly value: unknown;
   readonly provenance: "schedule-binding";
+  readonly redacted?: boolean;
 }
 
 interface InputDeclarationRow {
@@ -139,8 +145,23 @@ export interface TaskExplainEnvelope {
   readonly schedule: readonly ScheduleBindingRow[];
 }
 
-function isSecretShapedDefault(name: string, value: unknown): boolean {
+function isSecretShapedValue(name: string, value: unknown): boolean {
   return detectSecretShapedParams({ [name]: value }).length > 0;
+}
+
+/**
+ * Code-review finding (explain.ts:175, B-N4): `buildInputDeclarations`
+ * already redacted a secret-shaped DEFAULT, but `buildSuppliedInputs` (and
+ * a v4 schedule entry's own `inputs`, printed verbatim from the source)
+ * echoed the identical value unredacted in the same envelope — a
+ * `sk-live-…` default appeared in full in both output formats. Applied to
+ * every supplied/schedule-binding row regardless of provenance, so B-N4's
+ * "never printed" guarantee holds across the whole envelope, not just the
+ * declaration row.
+ */
+function redactIfSecretShaped(name: string, value: unknown): Readonly<{ value: unknown; redacted?: boolean }> {
+  if (!isSecretShapedValue(name, value)) return { value };
+  return { value: "<redacted>", redacted: true };
 }
 
 function declarationType(schema: Readonly<Record<string, unknown>>): string | undefined {
@@ -156,7 +177,7 @@ function buildInputDeclarations(contract: InputContract): Record<string, InputDe
   for (const [name, declaration] of Object.entries(contract)) {
     const typedDeclaration = declaration as InputDeclaration;
     const hasDefault = Object.hasOwn(typedDeclaration, "default");
-    const secret = hasDefault && isSecretShapedDefault(name, typedDeclaration.default);
+    const secret = hasDefault && isSecretShapedValue(name, typedDeclaration.default);
     out[name] = {
       ...(declarationType(typedDeclaration.schema) !== undefined
         ? { type: declarationType(typedDeclaration.schema) }
@@ -178,7 +199,9 @@ function buildSuppliedInputs(
 ): Record<string, SuppliedInputRow> {
   const out: Record<string, SuppliedInputRow> = {};
   for (const [name, value] of Object.entries(defaultedInputs)) {
-    out[name] = { value, provenance: Object.hasOwn(materializedInputs, name) ? "flag" : "default" };
+    const provenance: SuppliedValueProvenance = Object.hasOwn(materializedInputs, name) ? "flag" : "default";
+    const redaction = redactIfSecretShaped(name, value);
+    out[name] = { value: redaction.value, provenance, ...(redaction.redacted ? { redacted: true } : {}) };
   }
   return out;
 }
@@ -285,10 +308,17 @@ export async function akmTaskExplain(ref: string, options: TaskExplainOptions = 
           enabled: entry.enabled,
           source: entry.source,
           inputs: Object.fromEntries(
-            Object.entries(entry.inputs).map(([name, value]) => [
-              name,
-              { value, provenance: "schedule-binding" as const },
-            ]),
+            Object.entries(entry.inputs).map(([name, value]) => {
+              const redaction = redactIfSecretShaped(name, value);
+              return [
+                name,
+                {
+                  value: redaction.value,
+                  provenance: "schedule-binding" as const,
+                  ...(redaction.redacted ? { redacted: true } : {}),
+                },
+              ];
+            }),
           ),
         }))
       : parsed.v3.triggers.schedules.map((entry) => ({

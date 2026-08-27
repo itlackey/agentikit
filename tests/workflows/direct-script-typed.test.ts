@@ -420,10 +420,30 @@ describe("prepareScriptTarget — replaces directScript's synthetic-YAML fabrica
       // proves the scan above is genuinely function-scoped, not accidentally
       // whole-file in disguise — if it were whole-file, this fixture would
       // make a directScript-only ban indistinguishable from a file-wide one.
-      test("taskDispatch (the same file, unrelated to R-02) still legitimately calls parseTaskV3Yaml(...) on a real document", () => {
+      //
+      // UPDATED (P2b A-N6, spec docs/plans/specs/p2b-input-bindings.md §1.7):
+      // recorded in the Review log as a consequence of F-A4, not a named §7
+      // flip itself — F-A1's split commit re-pointed only the path constants
+      // above, never this assertion. A-N6 lifted LC-N1's deferral and routed
+      // taskDispatch through parseTaskSource, which parses BOTH task source
+      // versions once — taskDispatch no longer calls parseTaskV3Yaml
+      // directly at all, so the ORIGINAL assertion is unreachable (verified:
+      // it is not in taskDispatch's own call set). The direct call
+      // taskDispatch now makes toward real-document parsing is
+      // resolveTaskForComposition (this file, its sibling), which itself
+      // calls parseTaskSource — so the same "locate the function, walk only
+      // its subtree" technique is applied one hop further to keep proving
+      // the scan is function-scoped, not file-wide.
+      test("taskDispatch (the same file, unrelated to R-02) still legitimately resolves a real document via resolveTaskForComposition -> parseTaskSource(...)", () => {
         const scan = scanFunctionCalls(TASK_TARGET_FILE, "taskDispatch");
-        expect(scan.functionFound, "taskDispatch function declaration not found in source-freeze-v4.ts").toBe(true);
-        expect(scan.calledNames.has("parseTaskV3Yaml")).toBe(true);
+        expect(scan.functionFound, "taskDispatch function declaration not found in task.ts").toBe(true);
+        expect(scan.calledNames.has("resolveTaskForComposition")).toBe(true);
+
+        const helperScan = scanFunctionCalls(TASK_TARGET_FILE, "resolveTaskForComposition");
+        expect(helperScan.functionFound, "resolveTaskForComposition function declaration not found in task.ts").toBe(
+          true,
+        );
+        expect(helperScan.calledNames.has("parseTaskSource")).toBe(true);
       });
     });
   });

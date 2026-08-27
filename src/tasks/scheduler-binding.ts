@@ -221,12 +221,33 @@ export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindings
  * entry's `inputs` (spec §1.7 B-N3). Empty/absent `inputs` yields an empty
  * tail — the fixed six-token invocation, byte-identical to every schedule
  * entry before P2b (B-03).
+ *
+ * Code-review finding (scheduler-binding.ts:536): a value whose exact text
+ * begins with `-` (a negative number, or a string that just happens to
+ * start with a dash) is indistinguishable from a NEW flag in the two-token
+ * `--<name> <value>` form — `isValidSchedulerInputFlagTail`
+ * (scheduler-invocation.ts) refuses it outright, and even a looser parser
+ * would still be wrong for a non-numeric dash-leading string: the real `akm
+ * task run` flag parser (`parseTaskInputFlags`, tasks-cli.ts) only
+ * special-cases a dash-DIGIT lead, so it would silently treat `--scope
+ * -urgent` as the boolean flag `--scope` followed by an orphaned,
+ * dropped `-urgent` token. The inline `--<name>=<value>` form has no such
+ * ambiguity on EITHER side — `isValidSchedulerInputFlagTail` accepts it
+ * unconditionally, and `parseTaskInputFlags`'s own inline-`=` branch splits
+ * on the first `=` without ever inspecting the value's leading character —
+ * so it is used whenever the value's exact text would otherwise be
+ * ambiguous. Every other value keeps the existing two-token form
+ * byte-identical to before this fix (B-03/B-45).
  */
 function schedulerInputFlagTail(inputs: Readonly<Record<string, unknown>> | undefined): readonly string[] {
   if (!inputs) return [];
   const names = Object.keys(inputs).sort();
   const tail: string[] = [];
-  for (const name of names) tail.push(`--${name}`, schedulerInputFlagValueText(inputs[name]));
+  for (const name of names) {
+    const text = schedulerInputFlagValueText(inputs[name]);
+    if (text.startsWith("-")) tail.push(`--${name}=${text}`);
+    else tail.push(`--${name}`, text);
+  }
   return tail;
 }
 

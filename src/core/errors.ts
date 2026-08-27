@@ -178,14 +178,15 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
     "Refs use the form [bundle//]conceptId, e.g. `akm show knowledge/guide.md` or `akm show skills/deploy`.",
   UNKNOWN_COMMAND: "Run `akm --help` to see available commands.",
   UNKNOWN_FLAG: "Run the command with `--help` to see its accepted flags.",
-  // NOTE (P2b, docs/plans/specs/p2b-input-bindings.md §1.7 A-N5/F-A3): the
-  // spec calls for this string to name the two real rejection causes instead
-  // of promising a future release. Left BYTE-UNCHANGED here because
-  // tests/core/errors-usage-hints.test.ts (a P1a preservation test, out of
-  // this lane's file ownership) pins it verbatim with `.toBe(...)` and this
-  // lane may not edit tests beyond removing marked red-phase directives.
-  // Recorded for the Review log rather than silently absorbed (spec §0).
-  COMPOSITION_INVALID: "Remove the step's with: block; task-call inputs arrive in a later 0.9.x release.",
+  // P2b (docs/plans/specs/p2b-input-bindings.md §1.7 A-N5, §7 F-A3): the
+  // "arrives in a later 0.9.x release" promise is gone now that task-call
+  // inputs are implemented. Names the two real rejection causes instead:
+  // (1) a task target that declares no inputs: at all, (2) commands/<ref> /
+  // scripts/<ref>, which are never binding surfaces. F-A3 authorizes this
+  // edit and the matching pinned-string update in
+  // tests/core/errors-usage-hints.test.ts in the same commit.
+  COMPOSITION_INVALID:
+    "Remove the with: block, or target a tasks/<ref> whose source declares inputs: — commands/<ref> and scripts/<ref> steps are not binding surfaces.",
   TASK_SOURCE_INVALID: "Fix the task source at the reported path and line, then re-run.",
   TARGET_REF_INVALID:
     "Targets are canonical asset refs: `commands/review`, `scripts/build.sh`, `tasks/nightly`, `workflows/release`.",

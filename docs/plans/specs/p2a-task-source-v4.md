@@ -1385,3 +1385,18 @@ integrator step found nothing left to commit and its intended
 `feat(p2): task source v4, shared input contract, task input flags` commit never landed. The phase's
 real state is the one proved by the gate recorded above: lint, typecheck, unit and integration all
 green. Pushed history is not rewritten to correct the message; this entry is the correction.
+
+**2026-08-27 — P2b supersession note (row B-24, §1.5 LC-N1).** P2b
+(`docs/plans/specs/p2b-input-bindings.md` §1.7 A-N6, §7 F-A4) LIFTS the LC-N1
+deferral this spec's row **B-24** and §1.5 section describe: `taskDispatch`
+no longer peeks the root `version` and throws `TASK_SOURCE_INVALID` naming
+the deferral. It now routes through `parseTaskSource`
+(`src/tasks/source/parse-task-source.ts`) and composes a `version: 4` task
+target exactly as it always did a `version: 3` one — `with:` bindings land
+via `freezeTaskInputBindings` (P2b §3.3) when the target declares `inputs:`.
+Row B-24's pinned text above is NOT edited (this is a prose-only, dated
+note, per F-A4's own disposition table); the row is historically accurate
+for P2a's own scope and is superseded, not wrong. The corresponding P2a test
+(`tests/workflows/task-source-v4-deferral.test.ts`, its `LC-N1` describe
+block) was rewritten in place by P2b to assert composition succeeds instead
+— its v3-contrast companion test is unaffected and stays verbatim.

@@ -309,7 +309,7 @@ describe("family C — akm task", () => {
     expect(JSON.parse(run.stdout).result.detail.exitCode).toBe(7);
   });
 
-  test("tasks run / history / doctor — command-type task running `true`", async () => {
+  test("tasks run / history / doctor / explain — command-type task running `true`", async () => {
     writeTrueTask();
 
     const run = await runCli(["task", "run", "--format", "json", TASK_TRUE_ID]);
@@ -324,6 +324,13 @@ describe("family C — akm task", () => {
     expect(doctor.code).toBe(0);
     const doctorJson = JSON.parse(doctor.stdout) as Record<string, unknown>;
     if (doctorJson.remediation !== undefined) expect(doctorJson.remediation).toBe("akm task sync --rebind");
+
+    // P2b Lane B (spec §1.7 B-N4, §7 F-B3): read-only introspection — no
+    // history write, no scheduler touch, no execution spawn — over the SAME
+    // command-type task the run/history/doctor golden above already covers.
+    const explain = await runCli(["task", "explain", TASK_TRUE_ID, "--format=json"]);
+    expect(explain.code).toBe(0);
+    const explainJson = JSON.parse(explain.stdout) as Record<string, unknown>;
 
     expectGolden(
       "tests/fixtures/goldens/cli/c-tasks-family.json",
@@ -341,6 +348,7 @@ describe("family C — akm task", () => {
             .filter((key) => key !== "remediation")
             .sort(),
         },
+        explain: { exitCode: explain.code, stdoutKeys: Object.keys(explainJson).sort() },
       },
       { stash: storage.stashDir, data: storage.dataDir },
     );

@@ -56,7 +56,7 @@ import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-ru
 import { computeStepWorkList } from "../../src/workflows/exec/step-work";
 import { canonicalJson } from "../../src/workflows/ir/plan-hash";
 import { decodeWorkflowPlanV4, WORKFLOW_IR_V4_VERSION } from "../../src/workflows/ir/schema-v4";
-import { startWorkflowRun } from "../../src/workflows/runtime/runs";
+import { abandonWorkflowRun, startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
 
 const STEP_ID = "dispatch";
@@ -223,7 +223,17 @@ describe("P2b freeze identity — B-43: freezing the identical BOUND workflow tw
     // calls against the IDENTICAL source file — re-planning is always an
     // explicit new run (runtime/runs.ts's own comment), so this is two
     // genuinely independent freezes, not one plan read twice.
+    //
+    // publishWorkflowRunV4 refuses a second concurrent run against the same
+    // workflow ref + scope (RESOURCE_ALREADY_EXISTS, "already has an active
+    // run in this scope") — a guard unrelated to task source schema version.
+    // Abandon the first run between freezes so the two startWorkflowRun
+    // calls are independent instead of colliding; the second freeze is still
+    // a genuinely separate publish (a fresh run id, a fresh plan_json write),
+    // and abandonment does not touch either run's already-persisted
+    // plan_json / plan_hash.
     const first = await freeze("workflows/bound-repeat");
+    await abandonWorkflowRun(first.runId);
     const second = await freeze("workflows/bound-repeat");
 
     // The stored run-row plan_hash (computePlanHash/canonicalPlanJson) is
