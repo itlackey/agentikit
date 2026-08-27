@@ -195,11 +195,12 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     enabled: input.disabled !== true,
   });
 
-  // Version-routing seam (spec docs/plans/specs/p2a-task-source-v4.md §3.6):
-  // `renderTaskYaml` above always renders a `version: 3` document and
-  // `TasksAddInput` has no raw-YAML override, so the task source v4 arm is
-  // unreachable here in production — routed anyway so this call site consumes the union
-  // per §9 rather than special-casing itself out of it.
+  // Version-routing seam (spec docs/plans/specs/p4-deletions-closeout.md
+  // §3.2.6, row B-20): `renderTaskYaml` above always renders a `version: 4`
+  // document and `TasksAddInput` has no raw-YAML override, so the task v3
+  // arm is unreachable here in production — routed anyway so this call site
+  // consumes the union per P2a §9 rather than special-casing itself out of
+  // it.
   const parsedTask = parseTaskSource({ yaml, filePath: assetPath, workspaceRoot: stashDir });
   const task = parsedTask.version === 4 ? projectTaskSourceV4(parsedTask.v4) : parsedTask.v3;
   const qualifiedRef = makeBundleRef(bundle.bundleName, `tasks/${id}`);
@@ -211,12 +212,30 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     config: bundle.config,
     resolveAsset: taskProjectionAssetResolver(bundle.config, bundle.bundleName, stashDir),
   });
+  // Bindings are compiled from the ORIGINAL parsed document, not the
+  // `task`/`projectTaskSourceV4` projection above — mirroring
+  // scheduler-sync.ts's compileTaskSources (spec §3.2.7's project-v4.ts
+  // header): the projection deliberately drops each schedule entry's own
+  // `enabled` (P4-N6), so building bindings from it would silently ignore
+  // `--disabled`. A task source v4 document has no document-level
+  // `akm.enabled`, so `enabled: true` is passed at the document level and
+  // every entry's own `enabled` (always present, defaulted at parse time)
+  // decides.
   const taskBindings = compileTaskSchedulerBindings({
     id,
     qualifiedRef,
     ...(bundle.installTarget ? { bundleTarget: bundle.installTarget } : {}),
-    enabled: task.akm?.enabled !== false,
-    schedules: task.triggers.schedules,
+    enabled: parsedTask.version === 4 ? true : task.akm?.enabled !== false,
+    schedules:
+      parsedTask.version === 4
+        ? parsedTask.v4.schedule.map((schedule) => ({
+            cron: schedule.cron,
+            ordinal: schedule.ordinal,
+            enabled: schedule.enabled,
+            source: schedule.source,
+            inputs: schedule.inputs,
+          }))
+        : task.triggers.schedules,
   });
   const taskBinding = taskBindings[0];
   if (!taskBinding) throw new UsageError(`Task "${id}" has no schedulable trigger.`, "INVALID_FLAG_VALUE");
@@ -1485,34 +1504,76 @@ interface RenderInput {
   enabled: boolean;
 }
 
+/**
+ * Infer a JSON-Schema-subset `type` keyword from one `--params` value's
+ * runtime shape (spec docs/plans/specs/p4-deletions-closeout.md §3.2.6, row
+ * B-20). `null` is not one of the five runtime types the spec enumerates
+ * (string/number/boolean/object/array) but is a value JSON.parse can still
+ * produce for a param; `src/core/json-schema.ts`'s subset validator accepts
+ * `"null"` as a `type`, so it is handled rather than mis-typed.
+ */
+function jsonSchemaTypeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * Render `--params` as typed `inputs:` declarations, one per key, each
+ * carrying a `default:` equal to the authored value and a `type:` inferred
+ * from its own JSON runtime shape (row B-20). Never emitted as `with:` —
+ * task source v4 accepts `with:` only on `uses: akm/command` (§3.2.6's
+ * `parseTarget`/`checkTopLevelKeys`), and a workflow target's declared
+ * inputs are what `load-task.ts`'s existing v4 delivery override binds into
+ * the child run's params.
+ */
+function renderInputsFromParams(params: Record<string, unknown>): Record<string, unknown> {
+  const inputs: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(params)) {
+    inputs[name] = { type: jsonSchemaTypeOf(value), default: value };
+  }
+  return inputs;
+}
+
 function renderTaskYaml(input: RenderInput): string {
-  const obj: Record<string, unknown> = { version: 3 };
+  const obj: Record<string, unknown> = { version: 4 };
   if (input.workflow) {
     obj.uses = input.workflow;
-    if (input.params) obj.with = parseJsonObjectArg(input.params);
+    if (input.params) obj.inputs = renderInputsFromParams(parseJsonObjectArg(input.params));
   } else if (input.prompt) {
     obj.uses = "akm/command";
     obj.with = { content: input.prompt };
   } else if (input.command !== undefined) {
     if (Array.isArray(input.command)) {
       throw new UsageError(
-        "Task v3 --command accepts one shell string; argv arrays require manual migration.",
+        "--command accepts one shell string; argv arrays require manual migration.",
         "INVALID_FLAG_VALUE",
       );
     }
     obj.run = input.command;
   }
   if (input.name) obj.name = input.name;
-  obj.akm = {
-    schedule: input.schedule,
-    enabled: input.enabled,
-    ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.when_to_use !== undefined ? { when_to_use: input.when_to_use } : {}),
-    ...(input.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
-    ...(input.engine !== undefined ? { engine: input.engine } : {}),
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    ...(input.timeoutMs !== undefined ? { timeout: input.timeoutMs } : {}),
-  };
+  if (input.description !== undefined) obj.description = input.description;
+  if (input.when_to_use !== undefined) obj.when_to_use = input.when_to_use;
+  if (input.tags && input.tags.length > 0) obj.tags = input.tags;
+  if (input.engine !== undefined) obj.engine = input.engine;
+  if (input.model !== undefined) obj.model = input.model;
+  if (input.timeoutMs !== undefined) obj.timeout = input.timeoutMs;
+  // Task source v4's `enabled` is per schedule-binding, not document-level
+  // (P4-N6, row B-21): `--disabled` writes a one-entry schedule[] list
+  // carrying `enabled: false` rather than the v3 `akm.enabled: false` flag.
+  // `TasksAddInput.schedule`/the `add` CLI's `--schedule` are both still
+  // required, so the "no schedule to disable" usage error B-21 also
+  // describes is unreachable through this call site today; the check below
+  // still guards `renderTaskYaml` itself against ever being called with an
+  // empty schedule string.
+  if (input.schedule.length === 0) {
+    if (!input.enabled) {
+      throw new UsageError("--disabled requires --schedule; a task with no schedule is already manual-only.");
+    }
+  } else {
+    obj.schedule = input.enabled ? input.schedule : [{ cron: input.schedule, enabled: false }];
+  }
   return yamlStringify(obj);
 }
 
@@ -1542,36 +1603,68 @@ function parseJsonObjectArg(raw: string): Record<string, unknown> {
 }
 
 /**
- * Toggle the v3 `akm.enabled:` value in a task YAML file without a full
- * parse/render round-trip (which would reformat the file). Appends the key
- * if absent.
+ * Toggle a task source v4 YAML file's `enabled` state without a full
+ * parse/render round-trip (which would reformat the file). Task source v4
+ * has no document-level `enabled` flag — it lives on each `schedule[]` entry
+ * instead (D2-N5, P4-N6) — so this walks the top-level `schedule:` block and
+ * toggles every `enabled:` key it finds there, the closest v4 equivalent of
+ * v3's single document-level flag broadcasting to every trigger.
+ *
+ * A bare string-shorthand schedule (`schedule: "0 9 * * *"`) has nowhere for
+ * `enabled:` to live and is rewritten to the one-entry list form. A list
+ * entry with no explicit `enabled:` key (defaulting to `true` at parse) gets
+ * one inserted rather than being silently left unaffected. A document with
+ * no `schedule:` key at all throws — there is no trigger to enable or
+ * disable (mirrors `renderTaskYaml`'s `--disabled`-with-no-`--schedule`
+ * usage error, row B-21).
  *
  * Preserves inline comments (e.g. `enabled: true # important`) and uses
  * case-sensitive matching (YAML keys are case-sensitive).
  */
 export function setEnabledInYaml(yaml: string, enabled: boolean): string {
   const lines = yaml.replace(/\r\n/g, "\n").split("\n");
-  const akmLine = lines.findIndex((line) => /^akm:\s*(?:#.*)?$/.test(line));
-  if (akmLine < 0) return `${yaml.trimEnd()}\nakm:\n  enabled: ${enabled}\n`;
 
-  let insertAt = akmLine + 1;
-  for (let index = akmLine + 1; index < lines.length; index += 1) {
+  const scalarLine = lines.findIndex((line) => /^schedule:[ \t]+\S/.test(line));
+  if (scalarLine >= 0) {
+    const line = lines[scalarLine];
+    const match = line?.match(/^schedule:[ \t]+([^\r\n]+?)[ \t]*(#[^\r\n]*)?$/);
+    const cron = match?.[1] ?? "";
+    const comment = match?.[2] ? ` ${match[2]}` : "";
+    lines.splice(scalarLine, 1, "schedule:", `  - cron: ${cron}${comment}`, `    enabled: ${enabled}`);
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  const blockLine = lines.findIndex((line) => /^schedule:\s*(?:#.*)?$/.test(line));
+  if (blockLine < 0) {
+    throw new UsageError("Task source v4 must declare a schedule before its enabled state can be toggled.");
+  }
+
+  let firstItemLine = -1;
+  let toggledAny = false;
+  for (let index = blockLine + 1; index < lines.length; index += 1) {
     const line = lines[index];
     if (line === undefined) break;
     if (line !== "" && !/^[ \t]/.test(line)) break;
-    insertAt = index + 1;
-    const match = line.match(/^([ \t]+enabled:\s*)([^\s#\r\n][^\r\n]*?)(\s*(?:#[^\r\n]*))?$/);
+    if (firstItemLine < 0 && /^[ \t]*-/.test(line)) firstItemLine = index;
+    const match = line.match(/^([ \t]+enabled:[ \t]*)([^\s#\r\n][^\r\n]*?)([ \t]*(?:#[^\r\n]*))?$/);
     if (match) {
       lines[index] = `${match[1]}${enabled}${match[3] ?? ""}`;
-      return `${lines.join("\n").trimEnd()}\n`;
+      toggledAny = true;
+      continue;
     }
-    const bare = line.match(/^([ \t]+enabled:)\s*$/);
+    const bare = line.match(/^([ \t]+enabled:)[ \t]*$/);
     if (bare) {
       lines[index] = `${bare[1]} ${enabled}`;
-      return `${lines.join("\n").trimEnd()}\n`;
+      toggledAny = true;
     }
   }
-  lines.splice(insertAt, 0, `  enabled: ${enabled}`);
+  if (!toggledAny) {
+    if (firstItemLine < 0) {
+      throw new UsageError("Task source v4's schedule: block has no entries to toggle enabled on.");
+    }
+    const indent = lines[firstItemLine]?.match(/^([ \t]*)-/)?.[1] ?? "  ";
+    lines.splice(firstItemLine + 1, 0, `${indent}  enabled: ${enabled}`);
+  }
   return `${lines.join("\n").trimEnd()}\n`;
 }
 

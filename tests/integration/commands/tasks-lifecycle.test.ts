@@ -163,14 +163,26 @@ afterEach(() => {
 });
 
 describe("task lifecycle failure handling", () => {
-  test("setup-style enable edits stay inside the v3 akm mapping", () => {
-    const yaml = "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n  enabled: true # keep\n";
-    expect(setEnabledInYaml(yaml, false)).toBe(
-      "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n  enabled: false # keep\n",
+  test("enable edits toggle every schedule[] entry's enabled flag (row B-21)", () => {
+    const listYaml = "version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n    enabled: true # keep\n";
+    expect(setEnabledInYaml(listYaml, false)).toBe(
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n    enabled: false # keep\n",
     );
-    expect(setEnabledInYaml("version: 3\nrun: echo yes\n", false)).toBe(
-      "version: 3\nrun: echo yes\nakm:\n  enabled: false\n",
+
+    // A bare string-shorthand schedule has nowhere for `enabled:` to live —
+    // it is rewritten to the one-entry list form.
+    expect(setEnabledInYaml("version: 4\nrun: echo yes\nschedule: '@daily'\n", false)).toBe(
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n    enabled: false\n",
     );
+
+    // A list entry with no explicit `enabled:` key defaults to true at parse
+    // — toggling inserts one rather than silently leaving it unaffected.
+    expect(setEnabledInYaml("version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n", false)).toBe(
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n    enabled: false\n",
+    );
+
+    // No schedule: at all — nothing to toggle.
+    expect(() => setEnabledInYaml("version: 4\nrun: echo yes\n", false)).toThrow(/must declare a schedule/);
   });
 
   // Issue 11: a workflow task's `timeoutMs` is its whole-run bound (the task
@@ -217,16 +229,17 @@ describe("task lifecycle failure handling", () => {
     ).rejects.toMatchObject({ code: "INVALID_FLAG_VALUE" });
   });
 
-  // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-01/B-03;
-  // implementer addition to §7.1, same root cause as F-A1.3/F-A1.4 — recorded
-  // in the commit body and the Review log): the locator grammar is deleted
-  // from classifyTaskV3Uses, so a github-action-shaped --workflow value is no
-  // longer a "recognized" construct — it fails the same generic trailing
-  // classification throw as any other unrecognized shape.
-  test("add rejects an unrecognized remote-action-shaped workflow before source or scheduler mutation", async () => {
+  // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.2.6, row B-20;
+  // implementer addition to §7.2, recorded in the commit body and the Review
+  // log): `renderTaskYaml` now authors `version: 4` (sub-step (b)), so a
+  // github-action-shaped --workflow value hits task source v4's OWN
+  // `classifyTaskSourceV4Uses` shape check first (row B-11, unchanged by
+  // §3.1's deletion of the v3 locator grammar) rather than v3's generic
+  // trailing classification throw this test previously pinned.
+  test("add rejects a remote-action-shaped workflow before source or scheduler mutation", async () => {
     await expect(
       akmTasksAdd({ id: "remote", schedule: "@daily", workflow: "owner/repository/action@v1" }, { backend }),
-    ).rejects.toThrow(/not executable/i);
+    ).rejects.toThrow(/GitHub Action targets were removed/i);
     expect(fs.existsSync(path.join(storage.stashDir, "tasks", "remote.yml"))).toBe(false);
     expect(installCalls).toEqual([]);
   });

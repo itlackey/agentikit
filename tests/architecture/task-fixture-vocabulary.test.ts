@@ -159,17 +159,6 @@ const ALLOWED_EXACT_FILES = [
   "tests/integration/commands/tasks-cli-envelope.test.ts",
   "tests/integration/tasks-runner.test.ts",
 
-  // tests/integration/commands/tasks-lifecycle.test.ts's own
-  // `setEnabledInYaml` case ("setup-style enable edits stay inside the v3
-  // akm mapping") exercises that exact-named function byte-for-byte —
-  // `setEnabledInYaml` is a v3-YAML-text splice (the same family as
-  // src/setup/steps/tasks.ts's `setTaskV3EnabledInYaml`, both used only by
-  // codepaths `akm task add` keeps on v3, per this spec's §0 "P2b is not...
-  // an `akm task add` phase") and would not even produce valid task source
-  // v4 syntax if pointed at one. Every OTHER fixture in this file converted
-  // cleanly.
-  "tests/integration/commands/tasks-lifecycle.test.ts",
-
   // tests/integration/tasks-scheduler-sync-v4.test.ts:105's own test name —
   // "a manual-only version: 4 task alongside a normally-scheduled version: 3
   // task: the v3 task still installs, the v4 task contributes nothing" — is
