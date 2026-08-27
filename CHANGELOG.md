@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Breaking changes & migration
 
+- **Durable workflow plans bump to `irVersion` 5.** A stored run frozen
+  before this release (`irVersion` 4 or earlier) can no longer `resume`,
+  `next`, `complete`, or `run` — those fail closed with `UsageError` code
+  `WORKFLOW_IR_VERSION_UNSUPPORTED`, naming the run and pointing at
+  `akm workflow abandon`. `akm workflow status`, `akm workflow list`, and
+  `akm workflow abandon` keep working on those runs — no data is lost, and
+  their step spine is untouched by abandoning. **Before upgrading**, run
+  `akm workflow list --active` and either let in-flight runs finish or
+  abandon them; after upgrading, recover a blocked run with
+  `akm workflow abandon <id>` followed by `akm workflow run <ref>` to start
+  fresh from the current authored source. There is no second executor and no
+  compatibility replay layer for a pre-`irVersion`-5 plan. The unit and gate
+  input-hash prefixes bump alongside it, from `hashVersion` 5 to
+  `hashVersion` 6, so that a freshly frozen plan's units are never
+  content-addressed the same way an old, no-longer-executable plan's were.
+  See [Migrating from akm 0.9.1 to 0.9.2](docs/migration/v0.9.1-to-v0.9.2.md#workflow-cutover).
 - A workflow step that passes `with:` to a `tasks/<ref>` target whose task
   declares **no** `inputs:` (every `version: 3` task, and a `version: 4` task
   with no `inputs:` key at all) is now **rejected** (`UsageError` code
@@ -116,6 +132,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Child workflows.** A workflow step can now compose another workflow —
+  directly (`uses: workflows/<ref>`) or through a task whose own target is a
+  workflow (`uses: tasks/<ref>`, from either a v3 or v4 task) — instead of
+  failing to freeze. `with:` on the composing step binds the child's
+  declared `params:`. Composition is bounded: depth (8 levels), a
+  composition cycle, and aggregate embedded plan bytes (1 MiB total across
+  one root freeze) are all checked at **freeze**, before the parent run is
+  published, and fail with `UsageError` code `COMPOSITION_INVALID`. The
+  child workflow is compiled, validated, and frozen **completely** — its own
+  complete plan embedded inside the parent's — before the parent run exists,
+  so editing the child's source afterward cannot affect an already-frozen
+  parent, and the child's transitive sources join the parent's guarded
+  source read set. This release freezes child workflows into the parent
+  plan; it does not yet execute them — `akm workflow list`/`status`/`next`
+  output is unaffected, and a child run does not yet dispatch. See
+  [Workflow Schema: Child workflows](docs/reference/workflow-schema.md#child-workflows).
 - **`akm task explain <ref> [input flags]`** — read-only task introspection.
   Prints the task's source path and version, its declared `inputs:` (with
   defaults — a secret-shaped default prints as `<redacted>`), the supplied

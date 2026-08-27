@@ -102,8 +102,15 @@ function childWorkflowFields(target: FrozenWorkflowTarget | undefined): {
   readonly planHash: string;
 } {
   if (!target) throw new Error("childWorkflowFields: target is undefined");
+  // Implement landed `FrozenChildWorkflowTarget` as a proper discriminated
+  // union member (schema-v4.ts A-N1): `command`/`shell`/`script` do not
+  // carry `.planHash`, so TypeScript only admits the access below once
+  // `kind` narrows `target`. The red-phase `@ts-expect-error` pin is now
+  // genuinely unused and is removed, per this file's own header comment.
+  if (target.kind !== "child-workflow") {
+    throw new Error(`childWorkflowFields: expected a child-workflow target, got ${target.kind}`);
+  }
   return {
-    // @ts-expect-error P3a red-phase: FrozenChildWorkflowTarget.planHash lands in Implement
     planHash: target.planHash,
   };
 }

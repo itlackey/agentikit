@@ -97,10 +97,18 @@ interface ChildWorkflowTargetFixture {
   readonly inputBindings?: readonly TaskInputBinding[];
 }
 
-/** §3.5: FrozenChildWorkflowTarget lands in Implement — isolated so ONE directive is removed, not one per call site. */
+/**
+ * §3.5: FrozenChildWorkflowTarget landed in Implement as a real
+ * discriminated-union member. `ChildWorkflowTargetFixture.frozenPlan` stays
+ * `unknown` on purpose — this file only hashes the frozen target, it never
+ * decodes it, so building a fully-valid `WorkflowPlanGraphV4` fixture would
+ * add weight nothing here reads — so the fixture is structurally a
+ * `FrozenChildWorkflowTarget` except for that one field, and the cast
+ * routes through `unknown` (never truly type-legal, so `@ts-expect-error`
+ * would be actively wrong here, not merely unused).
+ */
 function asFrozenTarget(target: ChildWorkflowTargetFixture): FrozenWorkflowTarget {
-  // @ts-expect-error P3a red-phase: FrozenChildWorkflowTarget lands in Implement (the implementation removes this directive)
-  return target;
+  return target as unknown as FrozenWorkflowTarget;
 }
 
 function childContentHash(fields: {

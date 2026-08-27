@@ -166,22 +166,25 @@ function childWorkflowFields(target: FrozenWorkflowTarget | undefined): {
   readonly inputBindings: readonly TaskInputBinding[] | undefined;
 } {
   if (!target) throw new Error("childWorkflowFields: target is undefined");
+  // Implement landed `FrozenChildWorkflowTarget` as a proper discriminated
+  // union member (schema-v4.ts A-N1): `command`/`shell`/`script` do not carry
+  // ref/planHash/frozenPlan/via/taskRef, so TypeScript only admits the access
+  // below once `kind` narrows `target`. This narrows for the whole function;
+  // every red-phase `@ts-expect-error` pin below is now genuinely unused and
+  // is removed, per this file's own header comment above.
+  if (target.kind !== "child-workflow") {
+    throw new Error(`childWorkflowFields: expected a child-workflow target, got ${target.kind}`);
+  }
   return {
-    // @ts-expect-error P3a red-phase: FrozenChildWorkflowTarget.ref lands in Implement
     ref: target.ref,
-    // @ts-expect-error P3a red-phase: FrozenChildWorkflowTarget.planHash lands in Implement
     planHash: target.planHash,
-    // @ts-expect-error P3a red-phase: FrozenChildWorkflowTarget.frozenPlan lands in Implement
     frozenPlanIrVersion: target.frozenPlan.irVersion,
-    // @ts-expect-error P3a red-phase: FrozenChildWorkflowTarget.frozenPlan lands in Implement
     frozenPlanTitle: target.frozenPlan.title,
     // contentHash already exists (as `string`) on all three current
     // FrozenWorkflowTarget variants — no pin needed for the access itself,
     // only for the NEW "child-workflow" preimage §3.5 defines for it.
     contentHash: target.contentHash,
-    // @ts-expect-error P3a red-phase: FrozenChildWorkflowTarget.via lands in Implement
     via: target.via,
-    // @ts-expect-error P3a red-phase: FrozenChildWorkflowTarget.taskRef lands in Implement
     taskRef: target.taskRef,
     inputBindings: target.inputBindings,
   };

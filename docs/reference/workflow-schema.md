@@ -73,9 +73,11 @@ The accepted 0.9.2 subset is deliberately closed:
   Shell expansion and operators are unsupported and rejected, even when a host shell is named.
 - `uses` is classified as a canonical asset ref (`commands/`, `scripts/`,
   `tasks/`, `workflows/`), plus the `akm/command` builtin. `akm/command`,
-  command, script, and task composition are local targets.
+  command, script, task, and **child-workflow** composition are local
+  targets — see [Child workflows](#child-workflows) for `uses:
+  workflows/<ref>`.
   Local actions and Docker actions are unsupported and rejected (including `./` and `docker://`); remote actions are rejected
-  because acquisition is out of scope; nested workflows are unsupported.
+  because acquisition is out of scope.
 - `with:` on a **task-composed** step (`uses: tasks/<ref>`) **binds** the
   target task source's declared `inputs:` (task source v4 only — see
   [Task source v4](tasks.md#task-source-v4)). Each value is either a literal
@@ -93,7 +95,10 @@ The accepted 0.9.2 subset is deliberately closed:
   with `UsageError` code `COMPOSITION_INVALID`, exit 2. Omitting `with:`
   entirely always freezes normally, regardless of target. `with:` on
   `uses: akm/command` is unaffected by any of this and is still required to
-  supply the builtin action's arguments, as in the example above.
+  supply the builtin action's arguments, as in the example above. `with:` on
+  a **child-workflow** target (direct or task-wrapped) binds the child's
+  declared `params:` instead of `inputs:` — see
+  [Child workflows](#child-workflows).
 - GitHub expressions and contexts are unsupported and rejected anywhere in
   the parsed tree.
 
@@ -101,6 +106,90 @@ Multi-job documents are dependency-validated, indexed, and displayable, but
 cannot execute in 0.9.2 because the runtime boundary is single-job execution.
 The runtime refuses instead of flattening `needs` or fabricating job
 semantics.
+
+## Child workflows
+
+A step can compose another workflow, in either Markdown or GitHub-shaped
+source, two ways:
+
+- **Direct** — `uses: workflows/<ref>`:
+
+  ```yaml
+  - id: dispatch
+    uses: workflows/release-checklist
+    with:
+      channel: stable
+  ```
+
+- **Task-wrapped** — `uses: tasks/<ref>` where `<ref>` names a task source
+  (v3 or v4) whose own target is a workflow. The task's own authored mapping
+  (v3 `with:`/`params`, or a v4 task's effective `inputs:`) supplies the
+  child's params; a `with:` authored on the *workflow step itself* binds on
+  top of that, exactly as it would for a direct step.
+
+Both forms bind against the child workflow's own declared `params:`
+frontmatter key — **not** a task's `inputs:` contract, since a workflow has
+no `inputs:`. `with:` follows the same grammar as everywhere else in this
+document: each value is a literal (validated against the param's declared
+type at freeze) or a `{from: "steps.<id>.output(.<segment>)*"}` /
+`{from: "params.<name>"}` reference, resolved just before the unit
+dispatches. An unknown key or an invalid reference fails at freeze with
+`UsageError` code `INPUT_BINDING_INVALID`, exactly like a task-composed
+step's `with:`.
+
+### Frozen before publication
+
+Composing a child workflow is not a runtime call — it is a **freeze-time**
+resolution. When the parent workflow's plan is frozen, AKM loads the child's
+source, compiles it, validates it, and freezes the child's own complete plan
+*before the parent run is published*. The result is embedded whole inside
+the parent step's frozen target (`kind: "child-workflow"`); nothing about the
+child is re-read at dispatch time. Concretely:
+
+- Editing the child's source **after** the parent run has started has no
+  effect on that run — the parent already carries its own frozen copy of the
+  child's plan.
+- Editing the child's source in the narrow window **between** the parent's
+  freeze and its publication fails the whole parent publication atomically,
+  with no run row written — the same source-race protection that already
+  covers the parent's own command/script/task sources extends to every
+  transitive child source file.
+- The child's *own* source files (its workflow document plus every
+  command/script/task it in turn resolves) become part of the parent run's
+  guarded source read set, exactly like any other source the parent
+  workflow depends on.
+
+See [Architecture: The Workflow Engine](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md#child-workflows)
+for the embedded-plan integrity chain (`irVersion`, `planHash`,
+`contentHash`) and why a tampered embedded child plan fails to decode.
+
+### Composition limits
+
+Three bounds are enforced at **freeze**, before the parent run is published,
+each failing with `UsageError` code `COMPOSITION_INVALID` (exit 2):
+
+| Limit | Value | Message names |
+| --- | --- | --- |
+| Composition depth | 8 levels below the root | the limit and the ref path, e.g. `Workflow step <id> cannot compose <ref>: workflow composition is limited to 8 levels. Path: <a -> b -> …>.` |
+| Cycle detection | a workflow (direct or task-wrapped) reaching itself through any chain | the cycle path, e.g. `Workflow step <id> cannot compose <ref>: that would create a composition cycle. Path: <a -> tasks/w -> b -> a>.` |
+| Aggregate embedded plan bytes | 1 MiB total, summed across every embedded descendant of one root freeze | the cap and the running total, e.g. `Workflow step <id> cannot compose <ref>: the embedded child plans would total <N> bytes, over the <cap>-byte limit for one workflow run.` |
+
+The same workflow reached twice through disjoint branches (a diamond, not a
+cycle) is not a violation — each occurrence embeds its own independent copy;
+deduplicating identical embedded plans is not implemented. A step whose
+`uses: workflows/<ref>` (or task-wrapped equivalent) does not resolve to a
+real asset fails with the ordinary asset-resolution error, unchanged by any
+of this.
+
+### What is not yet available
+
+Composing a child workflow into a parent's frozen plan does not yet mean the
+child *runs*. In this release, freezing a child workflow into a parent's
+plan succeeds, but nothing dispatches, schedules, or advances that child run
+— `akm workflow list` / `status` / `next` output is unaffected by whether a
+step composes a child workflow. Child execution, a status tree that reflects
+child runs, and surfacing a child's outputs to its parent are a later 0.9.2
+increment.
 
 ## Frontmatter keys
 

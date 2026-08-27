@@ -46,16 +46,32 @@ artifacts, and exec vocabulary. The YAML adapter accepts the documented local
 `name`/`on`/`jobs` subset. `.yaml` is not a workflow source.
 
 Both adapters produce strict source IR version 1. New starts resolve source
-owners and executable targets, then freeze durable plan v4. Only v4 plans
-execute; pre-v4 rows are rejected and must be replaced by a new run.
+owners and executable targets, then freeze durable plan `irVersion` 5. Only
+the current `irVersion` executes: a run frozen at an older version keeps
+`status`, `list`, and `abandon` working, but `resume`/`next`/`complete`/`run`
+fail closed — abandon it and start a new run from current source. See
+[Architecture: The Workflow Engine](https://github.com/itlackey/akm/blob/main/docs/architecture/workflow-engine.md#resume-is-journaled-replay)
+for the exact policy and
+[Migrating from akm 0.9.1 to 0.9.2](https://github.com/itlackey/akm/blob/main/docs/migration/v0.9.1-to-v0.9.2.md#workflow-cutover)
+if you are upgrading with runs in flight.
+
+A step can compose another workflow as a child — directly
+(`uses: workflows/<ref>`) or through a task whose own target is a workflow
+(`uses: tasks/<ref>`) — frozen completely into the parent's plan before the
+parent run is published. See
+[Workflow Schema: Child workflows](../reference/workflow-schema.md#child-workflows)
+for both forms and their limits. Child **execution** — a status tree that
+reflects child runs, and surfacing a child's outputs to its parent — is a
+later 0.9.2 increment; today, composing a child workflow freezes cleanly but
+nothing dispatches it yet.
 
 ## Unsupported boundary and 0.9.3
 
 The 0.9.2 GitHub-shaped adapter is a local interoperability seam, not GitHub
 Actions. Full GitHub expressions and contexts, local/Docker/remote actions,
-nested workflows, service events, arbitrary hosted runners, and multi-job
-runtime execution remain outside 0.9.2. Valid multi-job sources can be indexed
-and displayed, but the 0.9.2 runtime executes a single job only.
+service events, arbitrary hosted runners, and multi-job runtime execution
+remain outside 0.9.2. Valid multi-job sources can be indexed and displayed,
+but the 0.9.2 runtime executes a single job only.
 
 These full GitHub semantics, actions, service events, and runner behaviors are
 explicit 0.9.3-or-later work. AKM neither fetches remote actions nor creates
