@@ -1259,61 +1259,64 @@ that the flip touches.
 
 ## 8. Preservation gates (the reviewer runs these)
 
-- [ ] `tests/integration/tasks-runtime-v3-runner.test.ts` green and
+- [x] `tests/integration/tasks-runtime-v3-runner.test.ts` green and
       **byte-unchanged**.
-- [ ] `tests/contracts/execution-cascade-resolver.test.ts`,
+- [x] `tests/contracts/execution-cascade-resolver.test.ts`,
       `tests/contracts/execution-json.test.ts`,
       `tests/contracts/execution-source-loader.test.ts`,
       `tests/contracts/resolved-execution-contract.test.ts`,
       `tests/contracts/command-invocation-contract.test.ts` green and
       **byte-unchanged**.
-- [ ] Frozen-plan, chaos, run-lease, and crash-window suites green — with
+- [x] Frozen-plan, chaos, run-lease, and crash-window suites green — with
       **byte-identical `plan_hash` and unit `inputHash`** for every fixture
       that authors no `with:` on a task step (B-01).
-- [ ] Workflow param suites green and **byte-unchanged**:
+- [x] Workflow param suites green and **byte-unchanged**:
       `tests/workflows/workflow-param-flags.test.ts`,
       `tests/integration/workflows/params-validation.test.ts`.
-- [ ] Every P0 characterization suite green except §7's enumerated flips —
+- [x] Every P0 characterization suite green except §7's enumerated flips —
       `tests/integration/tasks-scheduling-characterization.test.ts` (all three
       R-06 tests, v3 unchanged),
       `tests/integration/tasks-provenance-characterization.test.ts`,
       `tests/integration/tasks-legacy-vocabulary-characterization.test.ts`,
       `tests/integration/tasks-with-classification-characterization.test.ts`,
       `tests/workflows/characterization-classification.test.ts`.
-- [ ] `tests/tasks/source-v3.test.ts`, `tests/tasks/parse-v3-adapter.test.ts`,
+- [x] `tests/tasks/source-v3.test.ts`, `tests/tasks/parse-v3-adapter.test.ts`,
       `tests/tasks/prepare-split.test.ts`, `tests/tasks/run-split.test.ts`,
       `tests/tasks/model-contracts.test.ts`,
       `tests/tasks/bounded-document.test.ts` green and **byte-unchanged**.
-- [ ] `tests/integration/tasks-scheduler-sync-v3.test.ts` and
+- [x] `tests/integration/tasks-scheduler-sync-v3.test.ts` and
       `tests/tasks/scheduler-binding.test.ts` green and **byte-unchanged**
       (B-03).
-- [ ] `tests/architecture/import-cycle-ratchet.test.ts` green with **no new
+- [x] `tests/architecture/import-cycle-ratchet.test.ts` green with **no new
       cycle participant** — in particular none among
       `src/workflows/freeze/**` (A-N1).
-- [ ] `tests/architecture/src-fn-size-ratchet.test.ts` green with **no baseline
+- [x] `tests/architecture/src-fn-size-ratchet.test.ts` green with **no baseline
       additions** — the split adds no function, and every new function stays
       under `SRC_FN_SIZE_BAR`.
-- [ ] `tests/architecture/diagnostic-codes.test.ts` green; **no new diagnostic
+- [x] `tests/architecture/diagnostic-codes.test.ts` green; **no new diagnostic
       code minted** (§7 F-A3).
 - [ ] **Commit 2 in isolation**: `bun run check` green, and
       `git show --stat` reads as a pure move plus `tests/workflows/direct-script-typed.test.ts`'s
       two path constants.
+      **NOT MET** — the split (`c5d9eae8`) landed after the red-tests commits, reversing §0.1's order; its own commit message records 697 pass / 43 fail in isolation. Content-purity is independently confirmed. See the Review log's 2026-08-27 close-out entry (advisory 5).
 - [ ] `rg -n 'from "\.\./\.\./scripts|from "\.\./scripts|scripts/akm-migrate' src/`
       returns zero hits (C-N1).
-- [ ] `rg -F 'schedule: "@daily"' src/` and `rg -F 'version: 3\nuses:' src/`
+      **NOT MET** — 3 pre-existing hits (`src/commands/migration-tool.ts:13,15`, `src/output/format-exempt.ts:31`, dated 2026-08-24, before P2b): runtime bundle-path strings for the unrelated `akm-migrate` subprocess dispatcher, not a static import. No `import ... from ".../scripts..."` exists in `src/`. See the Review log's 2026-08-27 close-out entry.
+- [x] `rg -F 'schedule: "@daily"' src/` and `rg -F 'version: 3\nuses:' src/`
       still return zero hits.
-- [ ] `bun scripts/lint-doc-examples.ts` clean.
-- [ ] `bun run test:unit` and `bun run test:integration` both pass their floors
+- [x] `bun scripts/lint-doc-examples.ts` clean.
+- [x] `bun run test:unit` and `bun run test:integration` both pass their floors
       with ran+skipped totals **not lower** than the pre-sweep run (D-N1).
 - [ ] `bunx biome check --write src/ tests/` produces no further changes;
       `bunx tsc --noEmit` clean; `bun run check` passes; `bun run build`
       emits no `dist/scripts` and no `dist/tests`.
+      **PARTIALLY MET** — biome (`--write` applies zero further changes) and `tsc --noEmit` are clean, and `bun run check` passes; `dist/tests` is correctly absent, but `dist/scripts/` does exist, holding the two pre-existing bundled `akm-migrate` artifacts (`scripts/copy-assets.ts`, predates P2b) — unrelated to Lane C. See the Review log's 2026-08-27 close-out entry.
 
 ---
 
 ## 9. Docs that ride with the code
 
-- [ ] `docs/reference/workflow-schema.md:79-85` — replace the "task-call inputs
+- [x] `docs/reference/workflow-schema.md:79-85` — replace the "task-call inputs
       arrive in a later 0.9.x release" paragraph: `with:` on a task-composed
       step now **binds the target task's declared `inputs:`**; literal and
       `{from: …}` reference forms; the no-declared-inputs rejection; and an
@@ -1321,14 +1324,14 @@ that the flip touches.
       are **not** binding surfaces and now reject a `with:` (A-N5). Document
       the `AKM_TASK_INPUTS` variable next to the existing `AKM_*` roster and
       its platform ceiling guidance.
-- [ ] `docs/reference/tasks.md` — task source v4 `inputs:` as a *binding
+- [x] `docs/reference/tasks.md` — task source v4 `inputs:` as a *binding
       surface*; `schedule[].inputs` now delivered; `akm task explain` with a
       worked example of both output formats and its secret-free guarantee.
-- [ ] `docs/guides/author-workflows.md` — one worked task-composition example:
+- [x] `docs/guides/author-workflows.md` — one worked task-composition example:
       a v4 task with `inputs:`, a workflow step binding a literal **and** a
       `{from: "steps.<id>.output.…"}` reference, and what the composed target
       receives on each of the three delivery surfaces.
-- [ ] `CHANGELOG.md` `[Unreleased]` — under "Breaking changes & migration":
+- [x] `CHANGELOG.md` `[Unreleased]` — under "Breaking changes & migration":
       (1) `with:` on `uses: commands/<ref>` / `uses: scripts/<ref>` is now
       rejected instead of silently dropped (F-A3); (2) `with:` on
       `uses: tasks/<ref>` binds declared inputs and the P1a "not supported yet"
@@ -1337,13 +1340,13 @@ that the flip touches.
       "not yet delivered" warning is gone (F-B2). Under features: `akm task
       explain`, `AKM_TASK_INPUTS`, and the v3 → task source v4 migrator.
       Say explicitly that **no plan/hash version changed**.
-- [ ] `docs/migration/v0.9.1-to-v0.9.2.md` — the v3 → task source v4 migration
+- [x] `docs/migration/v0.9.1-to-v0.9.2.md` — the v3 → task source v4 migration
       procedure: the dry-run plan, the `changed | skipped | blocked` statuses,
       what is blocked and why (github-action targets, ambiguity), where backups
       land, and how to roll back.
-- [ ] `docs/plans/specs/p2a-task-source-v4.md` Review log — the B-24/LC-N1
+- [x] `docs/plans/specs/p2a-task-source-v4.md` Review log — the B-24/LC-N1
       supersession note (F-A4). A close-out obligation, not optional.
-- [ ] Every `akm …` example in every touched doc passes
+- [x] Every `akm …` example in every touched doc passes
       `scripts/lint-doc-examples.ts`.
 
 ---
@@ -1352,75 +1355,78 @@ that the flip touches.
 
 **Structure**
 
-- [ ] `src/workflows/freeze/{source-freeze,resolve-steps,environment,identity}.ts`
+- [x] `src/workflows/freeze/{source-freeze,resolve-steps,environment,identity}.ts`
       and `src/workflows/freeze/targets/{command,shell,script,task}.ts` exist and
       hold exactly A-N1's assignment; `src/workflows/ir/source-freeze-v4.ts` is
       a three-symbol re-export shim and contains **no function declaration**.
 - [ ] Commit 2 contains **only** the split (plus F-A1's two path constants) and
       is green on `bun run check` on its own.
-- [ ] `src/workflows/ir/environment-v4.ts`, `freeze-v4.ts`, `plan-hash.ts` are
+      **NOT MET** — content is confirmed pure (`git show --name-only c5d9eae8` lists exactly A-N1's file set plus the one F-A1 test file), but it is not green in isolation; same root cause as the §8 "Commit 2 in isolation" gate above. See the Review log's 2026-08-27 close-out entry (advisory 5).
+- [x] `src/workflows/ir/environment-v4.ts`, `freeze-v4.ts`, `plan-hash.ts` are
       **byte-unchanged by commit 2**.
-- [ ] `src/workflows/freeze/task-bindings.ts` exports a **pure**
+- [x] `src/workflows/freeze/task-bindings.ts` exports a **pure**
       `freezeTaskInputBindings` — no IO, no config reads — importing only
       `src/execution/input-contract.ts`, `src/workflows/program/expressions.ts`,
       and `src/core/errors.ts`.
-- [ ] `src/execution/**` still imports nothing from `src/workflows/**`
+- [x] `src/execution/**` still imports nothing from `src/workflows/**`
       (p2a D3-N1 still holds).
 - [ ] `scripts/akm-migrate/migrate/task-to-v4.ts` +
       `task-files-to-v4.ts` exist, share `./durable-fs`, and validate their
       output through the real `parseTaskSourceV4`; `src/` imports nothing from
       `scripts/` (C-N1, B-75).
+      **PARTIALLY MET** — both files exist, share `./durable-fs`, and validate output through the real `parseTaskSourceV4`; the `src/` import clause carries the same pre-existing, unrelated exception as the §8 C-N1 grep above. See the Review log's 2026-08-27 close-out entry.
 
 **Behavior**
 
-- [ ] Every PRESERVE row of §2 holds, verified by its cited test.
-- [ ] Every NEW row of §2 has at least one test asserting its code **and** its
+- [x] Every PRESERVE row of §2 holds, verified by its cited test.
+- [x] Every NEW row of §2 has at least one test asserting its code **and** its
       message text.
-- [ ] `{from}` plus any other key, and a `from` that fails `parseReference`, are
+- [x] `{from}` plus any other key, and a `from` that fails `parseReference`, are
       **hard** `INPUT_BINDING_INVALID` at freeze — a test proves neither is ever
       reinterpreted as a literal (B-15, B-16, §1.1(2)).
-- [ ] Unknown input name, missing required-without-default, a literal violating
+- [x] Unknown input name, missing required-without-default, a literal violating
       its schema, and a reference naming a non-earlier step all fail at
       **FREEZE**, before the plan is published (B-11–B-13, B-17).
-- [ ] A reference whose **resolved** value violates its declared schema fails
+- [x] A reference whose **resolved** value violates its declared schema fails
       **before `reserveUnitAttempt`**, proven by asserting the run's unit-attempt
       table is empty for that unit (B-32).
-- [ ] A changed **literal** and a changed **reference** each change the unit
+- [x] A changed **literal** and a changed **reference** each change the unit
       input hash (B-41, B-42) — §1.1(4)'s mandatory test.
-- [ ] `akm.workflow.unit\0v5\0`, `hashVersion: 5`, and `WORKFLOW_IR_V4_VERSION`
+- [x] `akm.workflow.unit\0v5\0`, `hashVersion: 5`, and `WORKFLOW_IR_V4_VERSION`
       are byte-unchanged, and a step with no `with:` produces a frozen target
       whose canonical JSON is byte-identical to today (B-01, B-44).
-- [ ] Exactly **one** `AKM_TASK_INPUTS` variable is emitted for shell/script
+- [x] Exactly **one** `AKM_TASK_INPUTS` variable is emitted for shell/script
       targets, never one per input, and it is absent when there are no effective
       inputs (B-35, B-36, B-39).
-- [ ] An over-ceiling `AKM_TASK_INPUTS` fails `exec_context_too_large` **before**
+- [x] An over-ceiling `AKM_TASK_INPUTS` fails `exec_context_too_large` **before**
       spawn with a message naming the variable (B-37).
-- [ ] The command-target block is **appended**, never interpolated; the preamble
+- [x] The command-target block is **appended**, never interpolated; the preamble
       asset and `template.instructions` are byte-unchanged (B-38, B-N2).
-- [ ] No merge semantics: a two-level composition chain test proves the outer
+- [x] No merge semantics: a two-level composition chain test proves the outer
       step's bindings are invisible to the inner task (B-29).
-- [ ] A v3 scheduler binding's invocation tail is **byte-identical**; a v4 tail
+- [x] A v3 scheduler binding's invocation tail is **byte-identical**; a v4 tail
       with `schedule[i].inputs` round-trips through `parseScheduledBindingArgv`
       and a malformed tail is refused (B-03, B-45–B-47).
-- [ ] `akm task explain` prints every B-N4 field, in both formats, and a
+- [x] `akm task explain` prints every B-N4 field, in both formats, and a
       sentinel-secret fixture proves nothing banned reaches stdout or the JSON
       bytes (B-52–B-58).
-- [ ] The migrator's ladder holds in order, blocks what §5.3 says to block, never
+- [x] The migrator's ladder holds in order, blocks what §5.3 says to block, never
       guesses a github-action target, and converges (B-60–B-74).
 
 **Gates**
 
 - [ ] Every gate in §8 ticked.
-- [ ] Every §7 flip is a **visible test diff**; no existing test was deleted to
+      **NOT MET** — three §8 gates remain unticked (above); see the Review log's 2026-08-27 close-out entry for all three.
+- [x] Every §7 flip is a **visible test diff**; no existing test was deleted to
       make a flip disappear. In particular
       `tests/workflows/characterization-with-drop.test.ts:98` is **re-scoped,
       not removed**, and `tests/workflows/task-source-v4-deferral.test.ts:112`
       survives verbatim.
-- [ ] Lane D is one commit containing nothing else, and reverting it alone
+- [x] Lane D is one commit containing nothing else, and reverting it alone
       leaves the tree green.
-- [ ] §9's CHANGELOG entries and the p2a Review-log supersession note are both
+- [x] §9's CHANGELOG entries and the p2a Review-log supersession note are both
       landed.
-- [ ] Every behavior difference observed during implementation that is not in §7
+- [x] Every behavior difference observed during implementation that is not in §7
       is recorded in the Review log and **not** silently absorbed. The
       already-known items to carry there: the `commands/` / `scripts/`
       `with:` rejection being a genuinely new rejection rather than a
@@ -1657,3 +1663,279 @@ together, since none of the five is itself a §7-named flip:
    discovered that is not in §7 is recorded in the Review log … Do not
    'improve' anything on the way past" — read here as "do not silently
    absorb a genuinely new rejection without recording it").
+
+### 2026-08-27 — P2b phase close-out (review-round adjudication, final gate sweep, advisories)
+
+**Test-review rounds** (auto-adjudicated: budget exhausted with final-round fixes applied):
+
+| Round | Verdict | Confirmed findings | Fix commit |
+|---|---|---|---|
+| 1 | CHANGES_REQUIRED | 7 | `3d1f4a0c` ("recover test-review fixes after container restart" — the round-1 fix work was lost to a container restart and redone) |
+| 2 | CHANGES_REQUIRED | 3 | `c83347fe` |
+| 3 | CHANGES_REQUIRED | 2 | `6edcbc94` |
+
+All three rounds reviewed the Lane A2/B **red tests** (commit-ladder position 3,
+`19389b37`) against §2/§7's behavior-and-message-byte contracts, written before
+any implementation existed to satisfy them. Every round's confirmed findings
+were fixed in the cited commit; the cycle closed on the round-3 fix rather than
+a clean round 4 — it was auto-adjudicated on exhausted review budget, not on a
+passing review. Per §0.1's binding order, the mechanical split (commit 2,
+`c5d9eae8`) should have preceded these three commits; in the executed history
+it followed them (all three landed 2026-08-26 22:13–2026-08-27 00:32 UTC, the
+split at 2026-08-27 01:06 UTC). See advisory 5 below, which this entry's gate
+summary also dispositions against §8/§10.
+
+**Code-review rounds** (auto-adjudicated):
+
+| Round | Verdict | Confirmed findings | Fix commit |
+|---|---|---|---|
+| 1 | CHANGES_REQUIRED | 11 | `50327fe2` |
+| 2 | CHANGES_REQUIRED | 4 | `57de9e0e` |
+| 3 | CHANGES_REQUIRED | 4 | `df106e32` (HEAD at close-out) |
+
+All three rounds reviewed the full Lane A/B/C/D implementation (`c5d9eae8`
+through `3d4016b2`). As with test-review, the cycle closed on round 3's fix
+commit rather than a clean round 4. Two of round 3's confirmed findings are
+already visible in the tree as durable markers, each carrying an in-code
+comment pointing at this document's "Lane A/B close-out (review round 3)"
+entry above: the reserved-input-flag-name rejection
+(`src/tasks/task-run-reserved-flags.ts`'s `TASK_RUN_RESERVED_FLAG_NAMES`,
+enforced in `parseInputDeclarations`,
+`src/tasks/source/task-source-v4.ts:481-519` — closes a real value-misrouting
+hole where a declared input named e.g. `output` or `bundle` would silently
+collide with `akm task run`'s own flag of the same name), and the
+asset-resolution repaint narrowing (`src/workflows/freeze/targets/task.ts:81-97`'s
+`resolveAndCaptureTaskAsset`, confining A-N5's no-declared-inputs repaint to
+asset resolution alone so a genuine `TASK_SOURCE_INVALID` in the composed
+task's own document is never masked by it).
+
+Because neither cycle closed on a clean round, this close-out entry substitutes
+a direct final verification at HEAD (`df106e32`) in place of a fourth review
+pass on either track:
+
+- `bun run test:unit` — **4248 pass / 0 skip / 0 fail** across 308/308 files
+  (floor 3500). All five failures the "Lane D (fixture sweep) close-out" entry
+  above recorded as pre-existing and unrelated to that lane
+  (`characterization-with-drop.test.ts` ×2, `task-source-v4-deferral.test.ts`,
+  `direct-script-typed.test.ts`, `task-binding-identity.test.ts`) are now
+  green — confirmed both in the full run and by running the four files
+  directly in isolation (20 pass / 0 fail, 52 `expect()` calls).
+- `bun run test:integration` — **5734 pass / 57 skip / 0 fail** across
+  428/428 files (floor 5000).
+- `bunx tsc --noEmit` — clean, no output.
+- `bun run lint` — exit 0, including `lint-doc-examples: OK — 0 doc-example
+  violations found` (satisfies §8's `lint-doc-examples.ts` gate directly) and
+  `lint-golden-captured-at-head: OK` (4 pins unjudged only because this clone
+  is shallow, not a failure).
+- `bunx biome check --write src/ tests/` — reports 1326 pre-existing warnings /
+  2 infos, all either unsafe-fix suggestions (961 of them — e.g.
+  `noNonNullAssertion`, consistent with the "Lane D" entry's "1364
+  pre-existing… advisories" figure, the small drift explained by round-3
+  fixes touching a handful of call sites) or over the diagnostic display cap;
+  **zero safe fixes were applied** — `git status`/`git diff` were empty
+  immediately before and after the run.
+- `tests/architecture/{import-cycle-ratchet,src-fn-size-ratchet,
+  diagnostic-codes,task-fixture-vocabulary}.test.ts` run directly — 10 pass /
+  0 fail, 39 `expect()` calls.
+- `src/core/errors.ts` mints no third diagnostic code for this phase:
+  `COMPOSITION_INVALID` (`:102,188`) predates P2b (P1a), `INPUT_BINDING_INVALID`
+  (`:117,194`) is this phase's one new code and is already accounted for by
+  §7/§10.
+- `git show --name-only c5d9eae8` (the split) lists exactly A-N1's file set —
+  `source-freeze.ts`, `resolve-steps.ts`, `step-values.ts` (the A-N1-anticipated
+  contingency module; its own commit message cites the circular-import reason
+  A-N1 names), `environment.ts`, `identity.ts`, `task-bindings.ts` is absent
+  here because it lands with the Lane A2 feature commit rather than the split,
+  `targets/{command,shell,script,task}.ts`, the `source-freeze-v4.ts` shim,
+  and the one F-A1 test file — with `environment-v4.ts`, `freeze-v4.ts`, and
+  `plan-hash.ts` absent from that list, confirming them byte-unchanged by
+  commit 2 as §10's Structure section requires.
+
+**Gate summary** (§8/§9/§10 checkboxes above are ticked or left with a reason
+inline; this is the same disposition summarized):
+
+- **§9 (Docs) — all 7 boxes met.** Verified by direct read against the cited
+  sections: `docs/reference/workflow-schema.md` (the replacement paragraph now
+  spans roughly `:79-95` — the spec's `:79-85` citation drifted a few lines as
+  the paragraph grew during implementation, the content itself matches the
+  required replacement, including the explicit commands/scripts
+  non-binding-surface statement), `docs/reference/tasks.md` (the `inputs:`
+  binding-surface framing, `schedule[].inputs` delivery, and `akm task
+  explain`'s worked example and secret-free guarantee), `docs/guides/author-workflows.md:420-459`
+  (the literal-plus-reference composition example), `CHANGELOG.md` (all four
+  Breaking-changes bullets, the three Added entries for `akm task explain`,
+  `AKM_TASK_INPUTS`, and the migrator, and the explicit "No plan/hash version
+  changed" sentence), `docs/migration/v0.9.1-to-v0.9.2.md:173-202` (the
+  `task-v4-status`/`task-v4-apply --dry-run`/`task-v4-apply` procedure,
+  `changed`/`skipped`/`blocked`, and the backup/rollback cross-reference to the
+  v2→v3 section), and the p2a Review-log supersession note
+  (`docs/plans/specs/p2a-task-source-v4.md:1389-1402`, prose-only, row B-24's
+  pinned text itself untouched).
+- **§10 Behavior — all 14 boxes met**, on the strength of the green full suite
+  above plus the six review rounds, whose explicit purpose at this
+  granularity was assertion completeness (test-review) and correctness
+  (code-review); this close-out did not re-run a line-by-line audit of all 78
+  of §2's rows on top of that, but did confirm the dedicated test files exist
+  and pass for every area (`task-input-bindings.test.ts`,
+  `task-binding-identity.test.ts`, `task-binding-resolution.test.ts` (pre-attempt
+  resolution — landed under this name rather than the spec's suggested
+  `task-binding-pre-attempt.test.ts`), `task-inputs-delivery.test.ts`,
+  `tasks-schedule-inputs.test.ts`, `tests/integration/commands/tasks-explain.test.ts`
+  (landed under this name rather than the spec's suggested
+  `tests/commands/task-explain.test.ts`), and `tests/migrate/task-v3-to-v4.test.ts`
+  plus its fixtures under `tests/fixtures/execution-contracts/tasks/v3-to-v4/`
+  (landed as one file rather than the spec's suggested two) — none of these
+  filename choices is pinned by any §7/§8/§10 item, so they are noted here for
+  the record rather than treated as a gap).
+- **§8 and §10 Structure carry three (resp. two) boxes left unticked**, all
+  traced to two facts that predate P2b and sit outside every one of its four
+  lanes, plus one cascade:
+  1. **Commit-ladder order** (§8 "Commit 2 in isolation"; §10 Structure
+     "Commit 2 contains only the split… and is green") — advisory 5 below.
+  2. **The C-N1/B-75 `scripts/` grep** (§8's grep gate; the last clause of
+     §10 Structure's migrator bullet) — `rg -n 'from "\.\./\.\./scripts|from
+     "\.\./scripts|scripts/akm-migrate' src/` returns 3 hits, not zero:
+     `src/commands/migration-tool.ts:13,15` and `src/output/format-exempt.ts:31`.
+     `git log -S'scripts/akm-migrate' -- src/commands/migration-tool.ts`
+     traces all three to `2bd8c146` ("test(state): parse complete safety copy
+     diagnostics", 2026-08-24 — three days and multiple unrelated phases
+     before P2b started). They are runtime `new URL(...)` bundle-path strings
+     the top-level `akm migrate` dispatcher uses to spawn the compiled
+     `akm-migrate` tool as a subprocess, not a static TypeScript import of
+     `scripts/**` symbols — confirmed separately (`grep -rn '^import.*from.*"\.\./.*scripts'
+     src/` returns nothing). C-N1's actual concern (no `src/` module statically
+     importing a `scripts/**` symbol, which would corrupt `tsc`'s `rootDir`
+     inference for `tsconfig.build.json`) is unaffected; Lane C's own new
+     `scripts/akm-migrate/migrate/task-to-v4.ts` is never imported by `src/`.
+  3. **`dist/scripts`** (§8's build-output clause only) — `bun run build`
+     does produce a `dist/scripts/` directory, but `ls` shows it holds exactly
+     the two pre-existing bundled artifacts `akm-migrate.js` /
+     `akm-migrate-node.js` (confirmed with `file(1)`: bundled JavaScript, not a
+     `tsc` mirror of individual `.ts` files) — `scripts/copy-assets.ts:56-57`
+     bundles `scripts/akm-migrate.ts` there deliberately, per that script's own
+     header comment ("Bundle runtime-specific migration tools into
+     dist/scripts/"). This predates P2b by the same `2bd8c146` provenance as
+     item 2, and Lane C's new migrator module tree does not appear anywhere
+     under `dist/`. `dist/tests` is correctly absent, as the AGENTS.md
+     invariant requires.
+- **§10 Gates — 4 of 5 met.** "Every gate in §8 ticked" is left unticked
+  because it is literally false given the three §8 exceptions above —
+  recorded rather than papered over, per this document's own rule of
+  engagement. The other four hold: the §7 flip visible-test-diff requirement
+  (verified directly — `characterization-with-drop.test.ts` retains its
+  original non-task-target assertion at `:110` alongside the new tasks/<ref>
+  decode sibling at `:134`, and `R-01(c)`'s reject-vs-unaffected contrast both
+  survive at `:167-207`/`:299-329`; `task-source-v4-deferral.test.ts` carries
+  both the rewritten "composes" test at `:72` and the verbatim
+  "version: 3… is unaffected" contrast at `:124`); Lane D as one commit
+  (`7f612dab`) containing nothing else but tests/fixtures plus the spec's own
+  Review-log entry documenting the sweep — itself required by D-N1/§6.3's own
+  instruction to record the result in the Review log as part of landing the
+  lane, so it is the lane's own record traveling with the lane, not unrelated
+  content — with "reverting it alone leaves the tree green" resting on that
+  entry's own git-stash-based isolation methodology (a fresh `git revert` at
+  current HEAD is a different question, since six more commits have since
+  touched some of the same files); §9's CHANGELOG entries and the p2a
+  supersession note, both landed (above); and the three already-known
+  non-§7 items named by §10 Gates' own text, all recorded across the two
+  entries above this one — this entry's five advisories below add to that
+  same record rather than replacing it.
+
+**Advisories** (recorded per this spec's rule of engagement — "a defect
+discovered that is not in §7 is recorded in the Review log and left unfixed" —
+and per §10 Gates' instruction not to silently absorb a behavior difference;
+none requires a code change under P2b's own scope):
+
+1. **[`src/workflows/exec/step-work.ts:702`]** A reference binding's RESOLVED
+   value is outside `computeUnitInputHash`, while a declared `inputs:`
+   resolved value is inside it — a resumed run can reuse a completed
+   task-composed unit carrying a stale bound value.
+   Required: the preimage hashes `frozenTarget: ctx.target` (which carries the
+   binding's `from` string and `schema`) and `inputs: ctx.resolvedInputs`
+   (which carries the declared inputs' *values*). So if an upstream producer
+   re-executes on resume — its own row diverged, so `classifyUnitReuse`
+   re-dispatched it — a downstream `uses: tasks/<ref>` step whose
+   `with: {x: {from: "steps.up.output.x"}}` now resolves differently still
+   hashes identically and hits the `prior.input_hash === inputHash` reuse arm
+   (`native-executor.ts:400`), delivering the old value; the loop-1 divergence
+   guard cannot see it. The same workflow written with
+   `inputs: [steps.up.output.x]` would re-dispatch. This is spec-conformant —
+   A-N7/§1.1(4) deliberately scope identity to the frozen target and forbid a
+   hash bump in P2b — so no code change is required here, but it belongs in
+   the Review log and in P3a's scope (hashVersion 6) rather than going
+   unnoticed.
+2. **[`src/workflows/freeze/targets/task.ts:205`]** `{from: "params.<name>"}`
+   bindings are unreachable in practice: the only workflow front end that can
+   express `uses: tasks/<ref>` has no `params:` authoring surface, so the
+   param arm always fails freeze.
+   Required: `declaredParamNames(sourceIr)` reads `sourceIr.params`, but a
+   task-composing step can only be authored in the GitHub-shaped YAML format,
+   whose `ROOT_KEYS` is exactly `["name", "on", "jobs"]`
+   (`src/workflows/source-ir/github-yaml.ts:36`) — and the markdown front end
+   can only emit `exec` or `uses: akm/command`
+   (`src/workflows/source-ir/compile.ts:198-203`), never a task ref. So
+   `declaredParamNames` is always empty for any workflow that can carry a
+   binding, every `{from: "params.X"}` is rejected with "declared params:
+   (none)", and A-N4's argument that a steps-only parser "would make
+   §1.1(3)'s 'run params' clause unreachable" is unreachable anyway.
+   `tests/workflows/task-input-bindings.test.ts:743` already documents this in
+   a comment. No code change under P2b's scope (the param arm is correct per
+   A-N4 and harmless), but record the dead root in the Review log so P3b's
+   child-run work either opens a `params:` surface on the YAML format or
+   retires the arm.
+3. **[`src/workflows/freeze/targets/task.ts:94`]** An unresolvable
+   `uses: tasks/<ref>` with an authored `with:` is repainted as "declares no
+   inputs" instead of surfacing the real asset-resolution failure.
+   Required: `resolveAndCaptureTaskAsset` catches any failure from
+   `resolveOwnedAsset`/`captureOwned` and, when `source.with !== undefined`,
+   throws `noDeclaredInputsError(source.id, refInput)`. A typo'd ref therefore
+   reports `Workflow step dispatch cannot pass with: to task target
+   tasks/nightlyy; tasks/nightlyy declares no inputs.` rather than an
+   ASSET_NOT_FOUND naming the missing file — an actively misleading
+   diagnostic for the most common authoring mistake. §7 F-A3 does pin
+   `COMPOSITION_INVALID` for `with-rejection.test.ts` B-02b's unresolvable-ref
+   case, so the code is conformant and the reconciliation is documented in the
+   function's own header; consider widening the message to say the target
+   could not be resolved (keeping the code), and record the tension in the
+   Review log as that header already claims.
+4. **[`src/commands/tasks/explain.ts:298`]** `akm task explain`'s text output
+   and `--format json` output are byte-identical raw JSON — the verb
+   registers as a passthrough shape, so there is no distinct text rendering.
+   Required: `output("task-explain", result)` with `"task-explain"` added to
+   `PASSTHROUGH_COMMANDS` (`src/output/shapes/passthrough.ts:60`) means the
+   default (text) format prints the same JSON envelope as `--format json`; I
+   confirmed this live. §1.2/B-52 pin the content contract, not a layout, and
+   the sibling `task-run`/`task-history`/`task-doctor` verbs are passthrough
+   too, so this is defensible — but "prints (text + --format json)" reads as
+   two renderings, and the B-52 test only does content-presence checks so it
+   cannot tell them apart. Either add a real text renderer or state explicitly
+   in `docs/reference/tasks.md` that `task explain` emits JSON in both
+   formats.
+5. **[`docs/plans/specs/p2b-input-bindings.md:100`]** The §0.1 commit ladder
+   was executed out of order, so §8's "Commit 2 in isolation: `bun run check`
+   green" gate cannot be ticked.
+   Required: §0.1 binds the order: (2) the mechanical split, then (3) the red
+   tests. In history the red tests landed first (`19389b37`, `3d1f4a0c`,
+   `c83347fe`, `6edcbc94` — all before `c5d9eae8`), so the split commit could
+   not be green on its own; its own message records "697 pass / 43 fail, the
+   43 being pre-existing P2b red-phase tests", identical before and after. The
+   split's *content* is clean (independently diffed and it reads as a pure
+   move plus the documented `ResolvedDispatch` inlining and one biome
+   reflow), so nothing needs re-landing; note the ladder deviation in the
+   Review log so the §8 checklist item is honestly dispositioned rather than
+   left ambiguous.
+
+Verification note on the five advisories above: every file:line citation was
+checked against HEAD (`df106e32`). Advisories 1, 2, 3, and 5 match exactly —
+`step-work.ts:700` (`inputs: ctx.resolvedInputs`) and `:702`
+(`frozenTarget: ctx.target`) inside `computeUnitInputHash`;
+`declaredParamNames` at `task.ts:205`; `noDeclaredInputsError(source.id,
+refInput)` inside `resolveAndCaptureTaskAsset` at `task.ts:94`; and the
+`c5d9eae8` commit message's own "697 pass / 43 fail" line. Advisory 4's line
+anchor (`explain.ts:298`) sits inside an unrelated in-code review comment
+(`buildTaskExplainResult`'s own note about why `explain` deliberately skips
+`validateInputs`); the `output("task-explain", result)` passthrough call the
+advisory describes is one layer up, at `src/commands/tasks/tasks-cli.ts:292`,
+with `"task-explain"` confirmed present in `PASSTHROUGH_COMMANDS` at
+`src/output/shapes/passthrough.ts:60` — the finding itself is unaffected,
+only its anchor line.
