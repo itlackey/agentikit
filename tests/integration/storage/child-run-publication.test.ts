@@ -40,6 +40,37 @@
  * writer-exclusion-window tests — so the partial unique index and SQLite's
  * own IMMEDIATE-transaction serialization are exercised for real, never a
  * mocked repository (§5.4).
+ *
+ * TEST-REVIEW FOLLOW-UP (round 3, finding 3): a file-polling handshake alone
+ * (worker writes "ready", main notices it on its next ~5 ms poll tick) does
+ * NOT force a genuine overlap — a synchronous, uncontended SQLite write on
+ * an empty table is fast enough that the worker's whole
+ * publishChildWorkflowRun call (BEGIN IMMEDIATE → SELECT → INSERT → COMMIT)
+ * routinely finishes before main's poll even notices "ready", so main's own
+ * call degenerates into an ordinary, uncontested SELECT-finds-a-committed-row
+ * read — C-08's idempotency case again, just replayed across two
+ * connections. An implementation that SELECTs outside its transaction, or
+ * opens a DEFERRED transaction instead of an IMMEDIATE one, would still pass
+ * that shape of test, because neither publisher's "not found yet" read is
+ * ever forced to overlap with the other's write. C-09 now forces a REAL
+ * overlap deterministically: the main connection takes a raw `BEGIN
+ * IMMEDIATE` write lock BEFORE the worker is even spawned, so the worker's
+ * own `BEGIN IMMEDIATE` (inside its publishChildWorkflowRun call) is
+ * guaranteed to block against a real reserved lock; main then holds it for a
+ * short, deterministic pause (the same 150 ms margin
+ * tests/storage/state-db-migrations.test.ts's own writer-exclusion-window
+ * tests use for the identical purpose) before releasing it and immediately
+ * racing its OWN publishChildWorkflowRun call — issued on the very next
+ * line, no I/O in between — against the worker's already-blocked,
+ * busy_timeout-driven retry for that same freshly-released lock. Whichever
+ * wins, the loser's own SELECT (which can only run once it has actually
+ * acquired the write lock in turn) is now forced to run AFTER the winner's
+ * commit, never before it — exercising the real loser path instead of a
+ * pre-decided sequential read. A second, fully deterministic test below
+ * (no worker, no timing) covers the complementary half of the same
+ * contract: a winner row inserted by raw SQL — never through
+ * publishChildWorkflowRun — must still be recognized by the SELECT-first
+ * branch, with no second insert and no second workflow_started event.
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
@@ -155,6 +186,48 @@ function publicationInput(options: {
     planJson,
     planHash,
   };
+}
+
+/**
+ * Inserts a COMPLETE child run row directly via raw SQL — never through
+ * publishChildWorkflowRun — so the deterministic loser-path test below
+ * (test-review round 3, finding 3) can prove the SELECT-first branch
+ * recognizes ANY existing (parent_run_id, invocation_key) match, not merely
+ * a row it inserted itself. Column list mirrors workflow_runs' full schema
+ * (migrations.ts:882-902) plus migration 023's three additive columns
+ * (§5.1). Like every other reference to those three columns in this file,
+ * this only ever executes once Implement lands the migration alongside
+ * publishChildWorkflowRun — every caller reaches it through
+ * childPublication(repo) first, which fails the same "not implemented" way
+ * as every other test in this file (see file header) before this helper's
+ * INSERT would ever run against today's pre-migration-023 schema.
+ */
+function rawInsertChildRun(db: Database, input: PublishChildWorkflowRunInputContract): void {
+  db.prepare(
+    `INSERT INTO workflow_runs (
+      id, workflow_ref, scope_key, workflow_entry_id, workflow_title, status, params_json, current_step_id,
+      created_at, updated_at, agent_harness, agent_session_id, checkin_armed_at,
+      plan_json, plan_hash, plan_ir_version, parent_run_id, parent_unit_id, invocation_key
+    ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, 5, ?, ?, ?)`,
+  ).run(
+    input.run.id,
+    input.run.workflowRef,
+    input.run.scopeKey,
+    input.run.workflowEntryId,
+    input.run.workflowTitle,
+    input.run.paramsJson,
+    input.run.currentStepId,
+    input.run.createdAt,
+    input.run.updatedAt,
+    input.run.agentHarness,
+    input.run.agentSessionId,
+    input.run.checkinArmedAt,
+    input.planJson,
+    input.planHash,
+    input.parentRunId,
+    input.spawnedByUnitId,
+    input.invocationKey,
+  );
 }
 
 function seedParentRun(db: Database, runId = PARENT_RUN_ID): void {
@@ -405,6 +478,15 @@ describe("publishChildWorkflowRun — two concurrent publishers (C-09)", () => {
         "utf8",
       );
 
+      // Take the write lock BEFORE the worker can possibly attempt its own
+      // publish call, via a raw transaction on THIS connection — not through
+      // publishChildWorkflowRun, which is atomic and would finish before the
+      // test could hold anything open. This guarantees the worker's own
+      // BEGIN IMMEDIATE (inside its publishChildWorkflowRun call, below)
+      // blocks against a real reserved lock rather than racing on file-poll
+      // timing alone (file header, test-review round 3).
+      db.exec("BEGIN IMMEDIATE");
+
       const worker = new Worker(pathToFileURL(workerScript));
       let workerError = "";
       const workerExit = new Promise<number>((resolve) => {
@@ -414,10 +496,25 @@ describe("publishChildWorkflowRun — two concurrent publishers (C-09)", () => {
         });
       });
 
-      // Give the worker a head start opening its own connection so the two
-      // attempts are genuinely in flight together rather than strictly
-      // sequential — correctness below does not depend on who actually wins.
+      // Confirm the worker's own connection is open and it has reached (or
+      // is immediately about to reach) its own publish call, which must now
+      // be blocked against the lock just taken above.
       waitForFile(readyFile);
+      // Deterministic pause: give the worker's blocked BEGIN IMMEDIATE time
+      // to actually register against the held lock before releasing it —
+      // same technique and margin as
+      // tests/storage/state-db-migrations.test.ts's own
+      // writer-exclusion-window tests.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+
+      // Release, then immediately race main's OWN publish attempt — issued
+      // on the very next line, no I/O in between — against the worker's
+      // already-blocked, busy_timeout-driven retry for the SAME
+      // freshly-released write lock. This is the genuine overlap C-09
+      // requires (§5.4): whichever wins, the loser's own SELECT can only run
+      // once it has acquired the lock in turn, i.e. strictly after the
+      // winner's commit — never before it.
+      db.exec("COMMIT");
 
       let mainThrew: unknown;
       let mainRow: ChildWorkflowRunRow | undefined;
@@ -459,6 +556,76 @@ describe("publishChildWorkflowRun — two concurrent publishers (C-09)", () => {
       db.close();
     }
   }, 20_000);
+});
+
+// ── C-09 (deterministic loser path): a raw-SQL pre-inserted winner ─────────
+//
+// Test-review round 3, finding 3. The worker-thread test above exercises a
+// GENUINE race for the write lock; this test isolates the other half of
+// §5.4's contract fully deterministically, with no concurrency, no timing,
+// and no worker at all: the SELECT-first branch must recognize an existing
+// (parent_run_id, invocation_key) row regardless of WHO inserted it — even
+// a row publishChildWorkflowRun never itself wrote — and must perform no
+// second insert and no second workflow_started event when it finds one.
+
+describe("publishChildWorkflowRun — deterministic loser path via a pre-inserted winner (C-09)", () => {
+  test("recognizes a winner row it did not insert itself — no second insert, no second event", () => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      const repo = new WorkflowRunsRepository(db);
+      // Resolved FIRST, before the raw SQL below ever touches migration
+      // 023's columns — a not-yet-implemented method fails this test
+      // directly and clearly here, exactly like every other test in this
+      // file, rather than surfacing as an unrelated "no such column" error
+      // out of rawInsertChildRun (same convention as the C-07 atomicity
+      // table's own `const child = childPublication(repo);` above).
+      const child = childPublication(repo);
+
+      const invocationKey = "key-preinserted-winner";
+      const winnerRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const loserCandidateRunId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+      const winnerInput = publicationInput({
+        parentRunId: PARENT_RUN_ID,
+        invocationKey,
+        runId: winnerRunId,
+        planMarker: "winner",
+      });
+      rawInsertChildRun(db, winnerInput);
+      const winnerRow = repo.getRunById(winnerRunId) as ChildWorkflowRunRow | undefined;
+      if (!winnerRow) throw new Error("expected the raw-inserted winner row to exist");
+
+      // No event exists yet — the winner row was written by raw SQL, never
+      // through publishChildWorkflowRun.
+      expect(readStateEvents(db, { type: "workflow_started", ref: "workflows/child" }).events).toHaveLength(0);
+
+      // A DIFFERENT candidate run id, plan, and steps under the SAME key —
+      // proving the SELECT-first branch returns early without ever writing
+      // them, not merely that an upsert happened to agree on shared values.
+      const loserInput = publicationInput({
+        parentRunId: PARENT_RUN_ID,
+        invocationKey,
+        runId: loserCandidateRunId,
+        planMarker: "loser-candidate",
+      });
+
+      const returned = child.publishChildWorkflowRun(loserInput);
+
+      expect(returned).toEqual(winnerRow);
+      expect(returned.id).toBe(winnerRunId);
+      // No second insert: the candidate's own run id and steps were never written.
+      expect(repo.getRunById(loserCandidateRunId)).toBeUndefined();
+      expect(repo.getStepsForRun(loserCandidateRunId)).toEqual([]);
+      // Still exactly one child row under this key.
+      const children = child.childRunsOf(PARENT_RUN_ID);
+      expect(children.map((row) => row.id)).toEqual([winnerRunId]);
+      // No second workflow_started event.
+      expect(readStateEvents(db, { type: "workflow_started", ref: "workflows/child" }).events).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 // ── C-11: never reads child source ──────────────────────────────────────────

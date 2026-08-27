@@ -573,7 +573,7 @@ test asserting both its code and its message text.
 | `src/workflows/ir/freeze-v4.ts` | `:21,84` re-point; a `composition` option is threaded (§4.3). |
 | `src/storage/repositories/workflow-runs-repository.ts` | `:525` `plan_ir_version = 4` → `= 5` (A-N11). |
 | `src/tasks/scheduler-sync.ts` | `:119` `readonly irVersion: 4` → `5`; `:637` `irVersion: 4 as const` → `5 as const` (A-N11). |
-| `src/workflows/exec/step-work.ts` | `:691,694` and `:1830,1833` bump to `hashVersion` 6 (§3.3). |
+| `src/workflows/exec/step-work.ts` | `:691,694` and `:1830,1833` bump to `hashVersion` 6 (§3.3). `:450`'s `timeoutMs` ternary gains a `target.kind === "child-workflow"` arm yielding `timeoutMs: null` (Review log R1, resolved test-review round 3, option 1: `FrozenChildWorkflowTarget` has no `.exec` field, and a child-workflow-targeted unit has no exec timeout of its own — "genuinely unbounded" is the reading the surrounding comment already documents for `timeout: none`; P3a does not dispatch child units at all, so nothing depends on this value for anything real yet). This is the ONLY authorized edit to `:450`; the ternary's `"command"` and `"shell"`/`"script"` arms are unchanged. |
 | `src/workflows/exec/child-invocation.ts` | **New**, pure. `computeChildInvocationKey` (§3.4). |
 | `src/core/errors.ts` | One `USAGE_HINTS` entry for `WORKFLOW_IR_VERSION_UNSUPPORTED` (§3.2). Additive — the union member already exists at `:81`. |
 
@@ -1467,10 +1467,14 @@ Every `akm` example must pass the doc-examples lint that `bun run lint` runs.
 
 ## Review log
 
-### R1 — `step-work.ts:450`'s timeoutMs ternary does not admit `kind: "child-workflow"` (OPEN — blocks A-15)
+### R1 — `step-work.ts:450`'s timeoutMs ternary does not admit `kind: "child-workflow"` (RESOLVED — test-review round 3, option 1 authorized)
 
-**Status: OPEN, unresolved. Preserving §3.1's authorization scope wins until
-this entry is amended.**
+**Status: RESOLVED**, test-review round 3. Option 1 below is authorized:
+§3.1's `step-work.ts` file-table row now includes the `:450` ternary
+extension alongside the two `hashVersion` 6 prefix bumps, landing as ONE
+edit in Lane A's single implement commit (§0.2 commit ladder, #3). The
+discovery narrative and the originally-rejected alternatives are kept below,
+verbatim in substance, as the record of why; only the outcome changed.
 
 Discovered by test review (round 2), against
 `tests/workflows/hash-v6.test.ts`. `computeStepWorkList`'s per-unit
@@ -1489,50 +1493,57 @@ unconditionally ahead of dispatch — it throws a bare `TypeError: undefined is
 not an object (evaluating 'target.exec.timeoutMs')`, before
 `computeUnitInputHash` is ever reached.
 
-§3.1's file table row for `step-work.ts` authorizes exactly two edits: the
-`hashVersion` 6 prefix bumps at `:691,:694` (unit hash) and `:1830,:1833`
-(gate hash). It does **not** authorize touching `:450`. Per §0's rule
-("Editing a pre-existing test that §6 does not name is a review-blocking
-violation") and the binding instruction "if preserving a behavior and
-implementing an authorized change appear to conflict, stop and record it —
-preserving wins until the Review log says otherwise", the `:450` edit is
-**not** made as part of this review-fix round, even though
+At round 2, §3.1's file table row for `step-work.ts` authorized exactly two
+edits: the `hashVersion` 6 prefix bumps at `:691,:694` (unit hash) and
+`:1830,:1833` (gate hash). It did **not** authorize touching `:450`. Per
+§0's rule ("Editing a pre-existing test that §6 does not name is a
+review-blocking violation") and the binding instruction "if preserving a
+behavior and implementing an authorized change appear to conflict, stop and
+record it — preserving wins until the Review log says otherwise", the
+`:450` edit was **not** made as part of that review-fix round, even though
 `tests/workflows/hash-v6.test.ts`'s own header comment (written by the
 original Lane A test-writing commit, `de45e7c3`) argues at length that it
-belongs in the same commit as the hash bump. That argument may well be right
-— P3b's `invocation_key` needs a computable unit input hash for a
-`child-workflow`-targeted unit, and row A-15 ("a changed embedded child
-planHash changes the parent unit's input hash") cannot go green without
-`computeStepWorkList` surviving contact with a `child-workflow` target at
-all — but "may well be right" is not the same as "spec-authorized", and this
-round's mandate is to fix tests, not to expand Lane A's src edit surface on
-its own authority.
+belongs in the same commit as the hash bump. Round 2 judged that argument
+"may well be right… but 'may well be right' is not the same as
+'spec-authorized'", and left the `:450` edit for a review round whose
+mandate covers expanding Lane A's authorized src edit surface — this is
+that round.
 
-**Consequence, pinned now:** `tests/workflows/hash-v6.test.ts`'s A-15 test
-("a changed embedded child planHash changes the unit's input hash") remains
-red via this `TypeError` — not via a hash mismatch — even after Lane A's
-`hashVersion` 6 bump lands, and **cannot go green** until one of:
+**Resolution (test-review round 3):** Option 1 from round 2's own list is
+chosen over the other two:
 
-1. This entry is amended to authorize extending the `:450` ternary to admit
-   `kind: "child-workflow"` (the natural value being `timeoutMs: null` — a
-   child-workflow-targeted unit has no single exec timeout of its own, so
-   `null` — "genuinely unbounded", the same fallback the surrounding comment
-   already documents for `timeout: none` — is the reading consistent with
-   existing precedent; P3a does not dispatch child units at all, so no
-   engine-side backstop needs this value for anything real yet); or
-2. §3.1's file table is amended in a later review round to add this edit
-   explicitly; or
-3. The fix rides in some other commit whose own authorization already covers
-   it (e.g. if P3b's executor work ends up touching this same line for its
-   own reasons).
+1. **Chosen.** Extend the `:450` ternary to admit `kind: "child-workflow"`,
+   yielding `timeoutMs: null` — a child-workflow-targeted unit has no single
+   exec timeout of its own, so `null` ("genuinely unbounded") is the reading
+   the surrounding comment already documents for `timeout: none`; P3a does
+   not dispatch child units at all, so no engine-side backstop needs this
+   value for anything real yet. §3.1's file table (above) now authorizes
+   exactly this one added arm; the ternary's `"command"` and
+   `"shell"`/`"script"` arms are unchanged, and this is the ONLY authorized
+   edit to `:450`.
+2. Rejected: leaving §3.1 unamended and hoping "the fix rides in some other
+   commit whose own authorization already covers it" (e.g. P3b's executor
+   work) would ship P3a with `tests/workflows/hash-v6.test.ts`'s A-15 — "the
+   single strongest guard that the hashVersion 6 preimage actually covers
+   the embedded child plan" — permanently red for the whole phase,
+   contradicting §0.2 ("Commit 3 must be green on its own"). This is exactly
+   the defect test-review round 3 raised against shipping R1 unresolved, so
+   it is rejected rather than deferred again.
 
-Until one of those happens, Lane A's implement commit (§0.2 commit ladder,
-#3) should expect `tests/workflows/hash-v6.test.ts`'s A-15 test to still be
-red after `hashVersion` 6 lands, and must not treat that as a signal to make
-the `:450` edit unilaterally. A-11 (the general preimage-shape/prefix claim)
-does **not** depend on this — see the test-review-fix round 2 rewrite of
-that file's fixtures, which moved the A-11 tests onto an ordinary,
-already-handled `shell` target for exactly this reason.
+**Consequence:** `tests/workflows/hash-v6.test.ts`'s A-15 test ("a changed
+embedded child planHash changes the unit's input hash") goes green in Lane
+A's single implement commit (§0.2 commit ladder, #3) — the SAME commit that
+lands the `hashVersion` 6 bump, since A-15 needs both changes together and
+neither alone makes it pass. A-11 (the general preimage-shape/prefix claim)
+never depended on this — see the test-review-fix round 2 rewrite of that
+file's fixtures, which moved the A-11 tests onto an ordinary,
+already-handled `shell` target for exactly this reason — and test-review
+round 3 additionally split A-17…A-19 (`computeChildInvocationKey`) out into
+their own file, `tests/workflows/child-invocation-key.test.ts`, so
+`hash-v6.test.ts` no longer imports the not-yet-existing
+`child-invocation.ts` module at all: A-11's and A-12's RED signal today is
+the intended `hashVersion` 6 mismatch, not an unrelated module-load
+failure.
 
 ### R2 — three pre-existing suites hard-coded `irVersion: 4` outside §6 (RESOLVED — F-A9/F-A10/F-A11)
 
