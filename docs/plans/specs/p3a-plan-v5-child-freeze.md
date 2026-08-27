@@ -1333,13 +1333,29 @@ record the P3a flip. Every other block in the file — the
 `INPUT_BINDING_INVALID` matrix, the normalize/merge rules, and the B-41/B-42
 hash-coverage block — is **byte-unchanged**.
 
-### F-B5 — `immutable-resolution-v4-red.test.ts` rejection row
+### F-B5 — `immutable-resolution-v4-red.test.ts` rejection row AND the
+task-composed standalone test (amended — code-review round 1, Review log R5)
 
-`tests/integration/workflows/immutable-resolution-v4-red.test.ts:307-311` —
-the `["nested-workflow", workflowYaml("… uses: workflows/child"),
-/nested workflow|unsupported/i]` row is **removed** from the `test.each`
-rejection table. The `remote-action`, `multi-job`, `nonprojectable-agent`, and
-`secret-literal` rows are byte-unchanged.
+`tests/integration/workflows/immutable-resolution-v4-red.test.ts`. TWO edits,
+both authorized:
+
+- `:307-311` — the `["nested-workflow", workflowYaml("… uses:
+  workflows/child"), /nested workflow|unsupported/i]` row is **removed** from
+  the `test.each` rejection table. The `remote-action`, `multi-job`,
+  `nonprojectable-agent`, and `secret-literal` rows are byte-unchanged.
+- The standalone test `"rejects a task-composed workflow target as forbidden
+  nested orchestration before mutation"` (formerly directly below the
+  `test.each` block) is **removed**, not flipped to a positive assertion. Its
+  fixture (`writeTask("delegate", ["uses: workflows/child"])` composed into
+  `workflows/task-nested`) never wrote a real `workflows/child` asset — under
+  the pre-P3a rejection, the throw fired at classification/prepare time,
+  before the target would ever need to resolve, so the fixture never needed
+  one. Once the task-composed route succeeds instead of rejecting (row B-12),
+  that same fixture would fail freeze on ordinary asset resolution ("workflow
+  not found"), not on anything this test exists to pin — flipping it to a
+  positive assertion is not a mechanical value change, it is authoring a new
+  test with new fixture content. See Review log R5 for why the no-mutation
+  property this test used to guard is left un-duplicated here.
 
 ### F-B6 — `USAGE_HINTS` pin
 
@@ -1350,13 +1366,46 @@ rejection table. The `remote-action`, `multi-job`, `nonprojectable-agent`, and
 in the new §7 suite. Listed here so a reviewer does not have to re-derive that
 it is untouched.
 
+### F-B7 — `task-fixture-vocabulary.test.ts` allowlist widening (added —
+code-review round 1, Review log R6)
+
+`tests/architecture/task-fixture-vocabulary.test.ts` — `ALLOWED_EXACT_FILES`
+gains two entries: `tests/workflows/child-workflow-freeze.test.ts` and
+`tests/integration/workflows/child-freeze-read-set.test.ts`. Both files
+author a `version: 3` task whose own `uses:` targets a workflow, specifically
+to prove the task-wrapped child-workflow composition path works from a v3
+task (rows B-12/B-14, and B-22's task-mediated composition-cycle fixture) —
+the same `PreparedTaskV3Workflow.params` code path the pre-existing
+`task-binding-identity.test.ts` allowlist entry already documents as
+"unaffected by [the v4 deferral]" and "the more faithful fixture" for a
+v3-specific claim. Converting either fixture to task source v4 would test the
+DIFFERENT v4 declared-`inputs:` binding path instead — already covered by
+F-B4's flip in `task-input-bindings.test.ts` — silently dropping
+v3-task-wrapped-workflow coverage entirely. See Review log R6.
+
+### F-C1 — `workflow-runs-repository.characterization.test.ts` row shape
+(added — code-review round 1, Review log R7)
+
+`tests/integration/storage/workflow-runs-repository.characterization.test.ts:104-111`
+— the one pre-existing full-row `WorkflowRunRow` fixture asserted via
+`toEqual` against a `SELECT *` result gains three fields migration 023 adds
+as nullable columns: `parent_run_id: null`, `parent_unit_id: null`,
+`invocation_key: null`, each on a top-level (non-child) run row. This is a
+mechanical, assertion-preserving addition — the ROW SHAPE change is forced by
+migration 023 landing (§5.1), not a behavior change this test exists to pin;
+every other field and every other assertion in the file is unchanged. This
+file MOVES OUT of the "Explicitly NOT flipped" table below: its prior "do not
+edit" entry was scoped to `:104`'s `plan_ir_version: null` (a
+missing-plan-fixture claim that genuinely stays version-agnostic and
+unchanged), not to the row's overall field set staying frozen against a
+future additive migration. See Review log R7.
+
 ### Explicitly NOT flipped (verified, do not edit)
 
 | File | Why |
 |---|---|
 | `tests/workflows/with-rejection.test.ts` | Contains no nested-workflow row at all (A-N5). |
 | `tests/integration/workflows/schema-drift.test.ts` | Pins authoring bounds only; nothing about `irVersion` or hash prefixes (A-N10). |
-| `tests/integration/storage/workflow-runs-repository.characterization.test.ts` | `:104`'s `plan_ir_version: null` is a missing-plan fixture, version-agnostic. |
 | `tests/workflows/characterization-with-drop.test.ts` | P1a's drop characterization; no version or nested-workflow pin. |
 | `tests/fixtures/execution-contracts/workflows/plan-v4/**` and `manifest.json` | Sources, not plan bytes. The family keeps its name (§1.5). |
 
@@ -1720,3 +1769,205 @@ own `tests/architecture/task-fixture-vocabulary.test.ts` fixture-allowlist
 gap) or Lane C (migration `023-child-workflow-runs` and
 `publishChildWorkflowRun`, not yet implemented) — none in Lane A's own
 files or the files this phase's `§6` table names.
+
+### R5 — `immutable-resolution-v4-red.test.ts`'s standalone task-composed test was DELETED, not flipped, and F-B5 did not say so (RESOLVED — code-review round 1, F-B5 amended)
+
+**Status: RESOLVED**, code-review round 1. §6's F-B5 entry is amended
+(above) to name both edits Lane B's implement commit (`4a23b181`) actually
+made to this file, and this entry records the deletion's rationale and where
+the property it used to guard is covered now.
+
+Found by code review after Lane B landed: F-B5, as originally written,
+authorized exactly one edit to
+`tests/integration/workflows/immutable-resolution-v4-red.test.ts` — removing
+the `["nested-workflow", …]` row from the `test.each` rejection table (row
+B-16's "zero reachable rejection paths" claim, and the direct-form mirror of
+F-A4/F-A5's `test.each`-row removals). The commit that landed Lane B also
+deleted a second, standalone test in the same file — `"rejects a
+task-composed workflow target as forbidden nested orchestration before
+mutation"` (8 lines) — pinning the identical now-superseded rejection for the
+TASK-WRAPPED form, with its own `mutationCounts()` no-mutation assertion.
+That second deletion was never named in F-B5 or anywhere else in §6: an
+unlisted edit to a pre-existing test, exactly the violation §0 calls
+review-blocking. (The commit's own message narrates the discovery candidly —
+"a standalone test asserting the identical now-false premise … that §6 did
+not separately name" — but the narration lived only in the commit message,
+never promoted into this spec document, which is the actual authorization
+surface §0 and §6 require.)
+
+Two remediations were available: restore the test as a flipped positive
+assertion (freeze succeeds; re-assert the `mutationCounts()`/
+`establishStateBaseline()` invariant that still holds for a NON-rejected
+freeze's tables unrelated to the run itself), or amend F-B5 and record the
+deletion here. Restoring it mechanically is not possible: the deleted test's
+fixture — `writeTask("delegate", ["uses: workflows/child"])` composed into
+`workflows/task-nested` — never wrote a real `workflows/child.yml` asset,
+because under the pre-P3a rejection the throw fired at classification/
+prepare time, before resolution would ever need one to exist. Now that the
+task-composed route succeeds (row B-12), freezing that exact fixture would
+fail on ordinary asset resolution ("workflow not found") instead of
+exercising anything this test was written to pin. Making it pass would mean
+authoring new fixture content (a real child workflow doc), which is not a
+"flip" under §0's discipline — it is a new test, and the identical scenario
+is already covered, more completely, by tests this same commit and F-B4
+landed: `tests/workflows/characterization-classification.test.ts`'s F-B1
+sites-2/3 test (`startWorkflowRun("workflows/nested-composition")` succeeds;
+frozen target is `{kind: "child-workflow", via: "task", taskRef: …}`),
+`tests/workflows/child-workflow-freeze.test.ts` rows B-12–B-17 (the dedicated
+new suite, both v3 and v4 task-wrapped forms), and
+`tests/workflows/task-input-bindings.test.ts`'s F-B4 block (task-wrapped
+composition with an authored `with:`, asserting the bound `inputBindings`
+entry reaches the child).
+
+The specific NO-MUTATION property the deleted test pinned — reject before
+touching the run/journal/usage/event tables — has no successful-freeze
+analog (a successful freeze is SUPPOSED to write a run row); its true
+successor is the ALL-OR-NOTHING atomicity property for a composing freeze,
+which is covered by `tests/integration/workflows/v4-atomic-publication-red.test.ts`
+(F-A3, extended per §4.4 to cover children, parent publication path
+unchanged) and, specifically for a composing step,
+`tests/integration/workflows/child-freeze-read-set.test.ts`'s row B-07 tests
+("editing child source between parent freeze and parent publication fails
+publication atomically … writes NO run row") — the direct-form composition
+route, but through the SAME `childWorkflowDispatch`/`absorb`/`revalidate()`
+machinery §4.2's "ONE recursive resolver" design routes the task-wrapped form
+through too, so the guarantee is not form-specific.
+
+Resolution: F-B5 (§6, above) now names both edits and their rationale
+directly; this entry is the fuller record. No further code or test change
+needed — the deletion stands, now authorized.
+
+### R6 — `task-fixture-vocabulary.test.ts`'s `ALLOWED_EXACT_FILES` widening was never authorized in `§6`, though R4 named the gap (RESOLVED — code-review round 1, F-B7 added)
+
+**Status: RESOLVED**, code-review round 1. §6 gained F-B7 (above).
+
+R4 (this log, above) closed out three files' current-version pins and, in
+its closing paragraph, named a second, separate gap in passing: "[the
+remaining Lane B failures belong to] its own
+`tests/architecture/task-fixture-vocabulary.test.ts` fixture-allowlist gap"
+— but R4 itself only resolved the three current-version-pin files; it never
+opened a dedicated entry for the fixture-allowlist gap, and no `§6` flip
+entry for it was ever written, either at that time or when Lane B actually
+landed the widening.
+
+The widening itself: Lane B's implement commit (`4a23b181`) added two
+entries to `ALLOWED_EXACT_FILES` — `tests/workflows/child-workflow-freeze.test.ts`
+and `tests/integration/workflows/child-freeze-read-set.test.ts` — each
+carrying a substantial in-file comment (mirroring this same file's
+pre-existing "Lane D sweep" / `task-binding-identity.test.ts` escape-valve
+entries) explaining that both files author a load-bearing `version: 3` task
+whose own `uses:` targets a workflow, to prove the task-wrapped
+child-workflow path from a v3 task specifically (rows B-12/B-14/B-22) — a
+DIFFERENT code path (`PreparedTaskV3Workflow.params`) than a v4 task's
+declared-`inputs:` binding (already covered by F-B4), so converting either
+fixture to v4 would silently drop v3-task-wrapped-workflow coverage rather
+than being a neutral rewrite. That reasoning is sound and, on inspection,
+identical in kind to the pre-existing allowlist entries this same ratchet
+file already carries for the same reason — but per §0's rule, a widening of
+an architecture ratchet's own allowlist is exactly the kind of change that
+needs `§6` authorization to not be review-blocking, the same as any other
+pre-existing test file edit, and none was written.
+
+Resolution: §6 gained F-B7 (above), authorizing the two allowlist additions
+verbatim per the reasoning already recorded in-file. No code or test change
+needed — the widening stands, now authorized, and the gap R4 named is
+closed.
+
+### R7 — `workflow-runs-repository.characterization.test.ts` is on `§6`'s "Explicitly NOT flipped" table, yet Lane C edited it, with no `§6` entry (RESOLVED — code-review round 1, F-C1 added)
+
+**Status: RESOLVED**, code-review round 1. §6 gained F-C1 (above); the file
+is moved out of the "Explicitly NOT flipped" table.
+
+Found by code review: `tests/integration/storage/workflow-runs-repository.characterization.test.ts`
+was listed in §6's "Explicitly NOT flipped (verified, do not edit)" table,
+scoped to the claim that its `:104` `plan_ir_version: null` fixture is a
+missing-plan case and version-agnostic — true, and still true. But Lane C's
+implement commit (`1adee4ef`) edited the SAME file's full-row `WorkflowRunRow`
+fixture a few lines later (the `toEqual` assertion covering a complete
+`SELECT *` row), adding three fields — `parent_run_id: null`,
+`parent_unit_id: null`, `invocation_key: null` — that migration 023 (§5.1)
+makes real, nullable columns on `workflow_runs`. Once those columns exist, a
+`SELECT *`-shaped `toEqual` fixture that omits them no longer matches the
+real row shape and the test fails outright, with no assertion about run
+BEHAVIOR at stake — the identical class of forced, mechanical fixture-sync
+edit F-A7 already authorizes for `tests/_helpers/workflow.ts`. The commit
+message says as much ("the same class of unavoidable fixture-sync fix
+already established by this plan's Review log (R2-R4)") but, like the Lane B
+commit R5/R6 above cover, never promoted that reasoning into `§6` itself, and
+left the file sitting in the "do not edit" table it had just edited.
+
+Resolution: §6 gained F-C1 (above), authorizing the three-field addition and
+narrowing the "Explicitly NOT flipped" table's prior claim to what it always
+actually meant (`:104` specifically, not the file's every fixture against
+every future additive migration); the table row for this file is removed.
+No code or test change needed — the edit stands, now authorized.
+
+### R8 — `step-work.ts:454` and `native-executor.ts:1001` asserted a false "P3a never dispatches a child-workflow unit" premise; nothing failed closed when one actually reached dispatch (RESOLVED — code-review round 1)
+
+**Status: RESOLVED**, code-review round 1.
+
+Found by code review: `computeStepWorkList` (`step-work.ts`) builds an
+ordinary work unit for ANY step, regardless of frozen target kind — nothing
+in Lane B's freeze-time work makes a `child-workflow`-targeted step's unit
+any different from a `command`/`shell`/`script` one once the plan is
+frozen and the run starts. R1 (above) already established that
+`computeStepWorkList` reaches the `:450` ternary unconditionally for such a
+unit; what R1 did not examine is what happens AFTER that ternary, when the
+same unit reaches actual dispatch. It reached
+`src/workflows/exec/unit-dispatch.ts`'s `dispatchWorkflowExecution` (via
+`native-executor.ts`'s `defaultUnitDispatcher`, which handles `"script"`/
+`"shell"` explicitly and falls through everything else — `"command"` AND, as
+of Lane B, `"child-workflow"` — into it) and hit the generic `kind !==
+"command"` guard, throwing `ConfigError("unit … is not a command target.",
+"INVALID_CONFIG_FILE")`. That message is FALSE (a `child-workflow` target is
+a legitimate, freeze-validated target kind, not a malformed one) and
+unhelpful (it does not say child execution is simply not implemented yet).
+The two comments this finding names — `step-work.ts:454`'s "a child-workflow
+target carries no exec spec of its own (§3.5); P3a never dispatches it" and
+`native-executor.ts:1001`'s "P3a dispatches no child-workflow unit at all, so
+this arm is unreached in practice" — both asserted, as settled fact, exactly
+the premise this finding falsifies: nothing before dispatch stops a
+`child-workflow`-targeted unit from reaching it, because P3a's own Lane B
+work makes freezing (and therefore running) such a step succeed. Shipped
+docs repeated the same false claim: `docs/reference/workflow-schema.md`'s
+"What is not yet available" section and `docs/reference/workflows.md`'s
+child-workflow paragraph both asserted composing a child is inert to the
+parent step ("nothing dispatches … the parent step is unaffected"), when in
+fact the parent step itself is the one that fails.
+
+This also means R1's own authorization rationale for the `:450` ternary —
+"P3a does not dispatch child units at all, so no engine-side backstop needs
+this value for anything real yet" — rested on a premise this finding shows
+is false in its strong form (dispatch IS reached); R1's CODE resolution
+stays correct and necessary regardless (the ternary must still avoid
+crashing on `target.exec.timeoutMs` for a target with no `.exec` field,
+independent of whether dispatch later succeeds or fails), but its narrative
+premise needed the same correction applied here.
+
+Resolution: `src/workflows/exec/unit-dispatch.ts`'s `dispatchWorkflowExecution`
+gains a dedicated guard for `frozenTarget.kind === "child-workflow"`, ahead
+of the generic `!== "command"` check, throwing `UsageError` under a new code,
+`WORKFLOW_CHILD_EXECUTION_UNSUPPORTED` (`src/core/errors.ts`, additive to the
+`UsageErrorCode` union, plus a `USAGE_HINTS` entry) — option (b) from the
+finding's two alternatives, chosen over option (a) (rejecting a
+`child-workflow` target AT FREEZE) because option (a) would nullify Lane B's
+entire authorized behavior surface (rows B-01…B-25, and every test §6's F-B1
+through F-B5/F-B7 already authorize), not merely correct a mislabeled error.
+The two false comments are corrected in place (no behavior change, comment
+text only). `docs/reference/workflow-schema.md`'s "What is not yet
+available" section and `docs/reference/workflows.md`'s child-workflow
+paragraph are corrected to say what actually happens: freeze and embedding
+still succeed; dispatching the composing step's own unit is what fails, with
+`WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`, naming the child ref; every other
+step in the same run is unaffected. `docs/architecture/workflow-engine.md`
+and the `CHANGELOG.md` `[Unreleased]` entry get the same one-sentence
+correction for consistency. Pinned by a new suite,
+`tests/workflows/child-workflow-dispatch-guard.test.ts` (both
+`dispatchWorkflowExecution` directly and `defaultUnitDispatcher`, the
+production seam, plus a negative control on an ordinary target kind) — a new
+file, not an edit to any pre-existing test, so it needs no `§6` entry.
+`bunx tsc --noEmit` clean; the new suite passes; every pre-existing suite
+this round's `bun run check` sweep touches is unaffected (no pre-existing
+test asserted the prior `ConfigError`/"is not a command target" message —
+`rg "is not a command target" src/ tests/` had exactly one hit, the throw
+site itself, before this fix).

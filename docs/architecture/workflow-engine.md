@@ -75,7 +75,10 @@ corruption boundary the top-level `plan_hash` check already closes, extended
 recursively through however many levels of composition a plan embeds.
 
 This release freezes child workflows into the parent's plan; it does not yet
-execute them. See [Workflow Schema: what is not yet available](../reference/workflow-schema.md#what-is-not-yet-available).
+execute them — dispatching a step whose target is `kind: "child-workflow"`
+fails closed with `UsageError` code `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`
+rather than running the child. See
+[Workflow Schema: what is not yet available](../reference/workflow-schema.md#what-is-not-yet-available).
 
 ## Resume is journaled replay
 

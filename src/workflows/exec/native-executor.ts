@@ -998,9 +998,13 @@ async function prepareAttemptWorktree(input: JournaledAttemptInput): Promise<Pre
     input.attemptId,
     // A child-workflow target (P3a, schema-v4.ts) carries no gitCommitOid of
     // its own — it is a composition target, never a worktree-isolated exec
-    // one — and P3a dispatches no child-workflow unit at all, so this arm is
-    // unreached in practice; it exists only to keep the field access total
-    // over the frozen-target union.
+    // one. Code-review fix (Review log R8): this arm IS reachable — a step
+    // that composes a child workflow and also declares `isolation: worktree`
+    // gets a worktree prepared here (worktree prep runs ahead of dispatch);
+    // the unit then fails closed once dispatch itself runs
+    // (unit-dispatch.ts's WORKFLOW_CHILD_EXECUTION_UNSUPPORTED guard) before
+    // that worktree is used for anything. This ternary keeps the field
+    // access total over the frozen-target union either way.
     input.workUnit.frozenTarget.kind === "child-workflow" ? undefined : input.workUnit.frozenTarget.gitCommitOid,
   );
   if (created.preservedLeftover !== undefined) {

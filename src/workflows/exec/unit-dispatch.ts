@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { ConfigError } from "../../core/errors";
+import { ConfigError, UsageError } from "../../core/errors";
 import { assertFrozenDirectoryIdentity } from "../../execution/directory-identity";
 import { assertFrozenExecutableIdentity } from "../../execution/executable-identity";
 import {
@@ -170,6 +170,21 @@ export async function dispatchWorkflowExecution(
   feedback?: string,
 ): Promise<UnitDispatchResult> {
   const prompt = feedback ? `${request.prompt}\n\n${feedback}` : request.prompt;
+  // Code-review fix (P3a Review log R8): freeze (Lane B,
+  // src/workflows/freeze/targets/child-workflow.ts) legitimately produces a
+  // `kind: "child-workflow"` frozen target for a step that composes a child
+  // workflow — that IS the phase's point — but nothing in P3a dispatches one;
+  // child execution is P3b. Fail closed here, on this dedicated code, BEFORE
+  // the generic `!== "command"` guard below would otherwise catch it and
+  // blame a legitimate target kind as "not a command target".
+  if (request.frozenTarget.kind === "child-workflow") {
+    throw new UsageError(
+      `unit ${JSON.stringify(request.unitId)} targets child workflow ${JSON.stringify(request.frozenTarget.ref)}: ` +
+        "child workflow execution arrives in a later 0.9.2 increment (P3b) and cannot be dispatched yet. " +
+        "The parent plan freezes and embeds the child successfully; only running through this step fails.",
+      "WORKFLOW_CHILD_EXECUTION_UNSUPPORTED",
+    );
+  }
   if (request.frozenTarget.kind !== "command") {
     throw new ConfigError(`unit ${JSON.stringify(request.unitId)} is not a command target.`, "INVALID_CONFIG_FILE");
   }

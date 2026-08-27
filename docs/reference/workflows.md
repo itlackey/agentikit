@@ -62,8 +62,10 @@ parent run is published. See
 [Workflow Schema: Child workflows](../reference/workflow-schema.md#child-workflows)
 for both forms and their limits. Child **execution** — a status tree that
 reflects child runs, and surfacing a child's outputs to its parent — is a
-later 0.9.2 increment; today, composing a child workflow freezes cleanly but
-nothing dispatches it yet.
+later 0.9.2 increment; today, composing a child workflow freezes and embeds
+cleanly, but actually running a step that composes one fails closed with a
+dedicated `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED` error the moment that
+step's unit is dispatched. Every other step in the same run is unaffected.
 
 ## Unsupported boundary and 0.9.3
 

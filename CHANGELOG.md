@@ -145,8 +145,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so editing the child's source afterward cannot affect an already-frozen
   parent, and the child's transitive sources join the parent's guarded
   source read set. This release freezes child workflows into the parent
-  plan; it does not yet execute them — `akm workflow list`/`status`/`next`
-  output is unaffected, and a child run does not yet dispatch. See
+  plan; it does not yet execute them — running a step that composes a child
+  workflow fails closed with `UsageError` code
+  `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED` the moment that step's unit
+  dispatches (every other step in the same run is unaffected), no child run
+  is ever created, and `akm workflow list`/`status`/`next` output is
+  unaffected. See
   [Workflow Schema: Child workflows](docs/reference/workflow-schema.md#child-workflows).
 - **`akm task explain <ref> [input flags]`** — read-only task introspection.
   Prints the task's source path and version, its declared `inputs:` (with

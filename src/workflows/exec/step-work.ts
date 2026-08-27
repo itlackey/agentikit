@@ -451,7 +451,14 @@ export function computeStepWorkList(plan: IrStepPlanV4, input: WorkListInput): C
     target.kind === "command"
       ? (target.runner.timeoutMs ?? null)
       : target.kind === "child-workflow"
-        ? null // a child-workflow target carries no exec spec of its own (§3.5); P3a never dispatches it.
+        ? // A child-workflow target carries no exec spec of its own (§3.5).
+          // Code-review fix (Review log R8): computeStepWorkList still builds
+          // this unit's context unconditionally — dispatch itself is what
+          // fails closed for a child-workflow target (unit-dispatch.ts's
+          // WORKFLOW_CHILD_EXECUTION_UNSUPPORTED guard), not this line, so
+          // `null` only needs to be a value this layer can carry, never one
+          // an engine acts on.
+          null
         : target.exec.timeoutMs;
 
   // Step-constant exec context: `AKM_PARAMS` / `AKM_INPUTS` depend only on

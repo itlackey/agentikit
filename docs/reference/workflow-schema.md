@@ -184,12 +184,18 @@ of this.
 ### What is not yet available
 
 Composing a child workflow into a parent's frozen plan does not yet mean the
-child *runs*. In this release, freezing a child workflow into a parent's
-plan succeeds, but nothing dispatches, schedules, or advances that child run
-— `akm workflow list` / `status` / `next` output is unaffected by whether a
-step composes a child workflow. Child execution, a status tree that reflects
-child runs, and surfacing a child's outputs to its parent are a later 0.9.2
-increment.
+child *runs*. Freezing succeeds — the parent's plan embeds the child
+completely, as described above — but **running** a step that composes a
+child workflow fails closed: the moment the parent workflow actually
+dispatches that step's unit, it fails with `UsageError` code
+`WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`, naming the child ref and pointing at
+the P3b release that adds child execution. Every other step in the same run
+is unaffected — only a step whose own target is `kind: "child-workflow"`
+hits this. No child run is ever created (`publishChildWorkflowRun` has no
+production caller in this release), so `akm workflow list` / `status` /
+`next` output never shows a child row. Child execution, a status tree that
+reflects child runs, and surfacing a child's outputs to its parent are a
+later 0.9.2 increment.
 
 ## Frontmatter keys
 

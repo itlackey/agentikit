@@ -123,7 +123,20 @@ export type UsageErrorCode =
   // the input is not malformed, it is a recognized construct this phase's
   // model does not model. Not yet reachable from any production path — the
   // adapter is additive in P1b (spec §3.4).
-  | "TASK_TARGET_UNSUPPORTED";
+  | "TASK_TARGET_UNSUPPORTED"
+  // Code-review fix (docs/plans/specs/p3a-plan-v5-child-freeze.md Review log
+  // R8): P3a's freeze side (src/workflows/freeze/targets/child-workflow.ts)
+  // legitimately produces a `kind: "child-workflow"` frozen target — that is
+  // the whole point of the phase — but nothing in P3a dispatches one; child
+  // execution is P3b. Before this code existed, a unit whose step composes a
+  // child workflow fell into src/workflows/exec/unit-dispatch.ts's generic
+  // `kind !== "command"` guard and failed with a `ConfigError` reading
+  // "... is not a command target." — false (it is a legitimate, freeze-
+  // validated target kind) and unhelpful. Thrown from
+  // `dispatchWorkflowExecution` the moment such a unit is actually
+  // dispatched, so the run fails closed with a dedicated, actionable
+  // message instead.
+  | "WORKFLOW_CHILD_EXECUTION_UNSUPPORTED";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -198,6 +211,10 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   // complete-or-abandon policy for a stored pre-irVersion-5 run.
   WORKFLOW_IR_VERSION_UNSUPPORTED:
     "Abandon the run with `akm workflow abandon <id>`, then start it again from the workflow source — pre-0.9.2 frozen plans are not re-executable.",
+  // Code-review fix (P3a Review log R8): see the UsageErrorCode doc comment
+  // above.
+  WORKFLOW_CHILD_EXECUTION_UNSUPPORTED:
+    "Freezing a workflow that composes a child still succeeds. Remove the composing step, or wait for the P3b release that adds child workflow execution before running this workflow.",
 };
 
 /** Default hint for each NotFoundError code. */
