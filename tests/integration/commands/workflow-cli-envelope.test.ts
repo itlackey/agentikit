@@ -167,4 +167,20 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
     expect(env.code).toBe("UNKNOWN_COMMAND");
     expect(env.hint).toContain("workflow run");
   });
+
+  // P3b Lane B (spec docs/plans/specs/p3b-child-executor.md §4.6, §6 F-B2):
+  // ONE additive arm, in the same additive convention P2b used for
+  // `task explain` (tests/integration/commands/tasks-explain.test.ts) —
+  // every pre-existing test above is byte-unchanged.
+  test("workflow plan --format json: envelope carries ok, planHash, published:false, and a steps array", async () => {
+    const stash = makeStashDir();
+    await createReleaseFlow(stash);
+    const { stdout, status } = await runCli(["workflow", "plan", "workflows/release-flow", "--format", "json"], stash);
+    expect(status).toBe(0);
+    const env = JSON.parse(stdout);
+    expect(env.ok).toBe(true);
+    expect(typeof env.planHash).toBe("string");
+    expect(env.published).toBe(false);
+    expect(Array.isArray(env.steps)).toBe(true);
+  });
 });
