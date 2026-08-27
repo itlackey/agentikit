@@ -1,5 +1,10 @@
 Usage: akm-migrate <command> [options]
 
+Converts task-v2 and task-v3 sources to task source v4, one generation per
+command below. `akm migrate status` / `akm migrate apply` (the wrapped CLI)
+run both generations in sequence and print one combined plan; each command
+here runs exactly one generation on its own.
+
 Commands:
   status                      Inspect task-v2 files without changing them.
   apply [--dry-run]           Convert eligible task-v2 files to task v3.
