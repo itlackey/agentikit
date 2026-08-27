@@ -71,13 +71,8 @@ import {
   applyTaskToV4MigrationPlan,
   inspectTaskToV4Files,
   taskMigrationBackupPathV4,
-  // @ts-expect-error P2b red-phase: scripts/akm-migrate/migrate/task-files-to-v4 lands in Implement (Lane C, spec §5.1)
 } from "../../scripts/akm-migrate/migrate/task-files-to-v4";
-import {
-  planTaskToV4File,
-  planTaskToV4Migration,
-  // @ts-expect-error P2b red-phase: scripts/akm-migrate/migrate/task-to-v4 lands in Implement (Lane C, spec §5.1)
-} from "../../scripts/akm-migrate/migrate/task-to-v4";
+import { planTaskToV4File, planTaskToV4Migration } from "../../scripts/akm-migrate/migrate/task-to-v4";
 import { parseTaskSourceV4 } from "../../src/tasks/source/task-source-v4";
 import {
   assertFixtureBytesUnchanged,

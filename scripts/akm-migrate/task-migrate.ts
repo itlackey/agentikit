@@ -20,6 +20,8 @@ import { resolveWritable } from "../../src/core/write-source";
 import { lockContentRootFor } from "../../src/integrations/lockfile";
 import { applyTaskToV3MigrationPlan, inspectTaskToV3Files, type TaskToV3Root } from "./migrate/task-files-to-v3";
 import { planTaskToV3Migration, type TaskToV3MigrationPlan } from "./migrate/task-to-v3";
+import { applyTaskToV4MigrationPlan, inspectTaskToV4Files } from "./migrate/task-files-to-v4";
+import { planTaskToV4Migration, type TaskToV4MigrationPlan } from "./migrate/task-to-v4";
 
 export interface MigrationCommandOptions {
   dryRun?: boolean;
@@ -166,7 +168,7 @@ export function inspectMigrationPlan(): MigrationPlan {
   return inspectCurrentTaskPlan().result;
 }
 
-function printPlan(plan: MigrationPlan): void {
+function printPlan(plan: { readonly status: "current" | "ready" | "blocked" }): void {
   console.log(JSON.stringify(plan));
   if (plan.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
 }
@@ -189,6 +191,115 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
       const after = inspectCurrentTaskPlan().result;
       if (after.status !== "current") {
         throw new ConfigError("Task migration did not converge to task v3.", "INVALID_CONFIG_FILE");
+      }
+      return { ...after, backupPath, applied: applied.changed.length };
+    }),
+  );
+  printPlan(result);
+}
+
+// ─── Second generation: task v3 -> task source v4 (spec docs/plans/specs/p2b-input-bindings.md §5) ───
+// Wired the SAME way as the v2 -> v3 generation above: same withConfigLock +
+// withMaintenanceStartBarrier + timestamped-UUID backup root + --dry-run plan
+// + summary shape. `taskRoots` is version-agnostic (it only locates each
+// bundle's task directory; it never reads file contents) so it is reused
+// as-is — `TaskToV3Root`'s fields are structurally identical to `TaskToV4Root`.
+
+export interface TaskV4MigrationFileSummary {
+  filePath: string;
+  status: "changed" | "skipped" | "blocked";
+  reason: string;
+  beforeHash: string;
+  afterHash?: string;
+  detail?: string;
+  notice?: string;
+}
+
+export interface TaskV4MigrationSummary {
+  schemaVersion: 1;
+  generation: string;
+  changed: number;
+  skipped: number;
+  blocked: number;
+  files: TaskV4MigrationFileSummary[];
+}
+
+export interface TaskV4MigrationStatus {
+  schemaVersion: 1;
+  status: "current" | "ready" | "blocked";
+  blockers: string[];
+  taskV4Migration: TaskV4MigrationSummary;
+  backupPath?: string;
+  applied?: number;
+}
+
+function summarizeV4(plan: TaskToV4MigrationPlan): TaskV4MigrationSummary {
+  const files = plan.files.map((file) => ({
+    filePath: file.filePath,
+    status: file.status,
+    reason: file.reason,
+    beforeHash: file.beforeHash,
+    ...(file.status === "changed" ? { afterHash: file.afterHash } : {}),
+    ...(file.detail ? { detail: file.detail } : {}),
+    ...(file.status === "changed" && file.notice ? { notice: file.notice } : {}),
+  }));
+  return {
+    schemaVersion: 1,
+    generation: plan.generation,
+    changed: files.filter((file) => file.status === "changed").length,
+    skipped: files.filter((file) => file.status === "skipped").length,
+    blocked: files.filter((file) => file.status === "blocked").length,
+    files,
+  };
+}
+
+function blockerTextV4(plan: TaskToV4MigrationPlan): string[] {
+  return plan.files.flatMap((file) =>
+    file.status === "blocked"
+      ? [`${file.filePath}: ${file.reason}${file.detail ? ` (${file.detail})` : ""}`]
+      : [],
+  );
+}
+
+function inspectCurrentTaskV4Plan(): { result: TaskV4MigrationStatus; plan: TaskToV4MigrationPlan } {
+  resetConfigCache();
+  const config = loadConfig();
+  const plan = planTaskToV4Migration(inspectTaskToV4Files(taskRoots(config)));
+  const blockers = blockerTextV4(plan);
+  const summary = summarizeV4(plan);
+  return {
+    plan,
+    result: {
+      schemaVersion: 1,
+      status: blockers.length > 0 ? "blocked" : summary.changed > 0 ? "ready" : "current",
+      blockers,
+      taskV4Migration: summary,
+    },
+  };
+}
+
+export function inspectTaskV4MigrationStatus(): TaskV4MigrationStatus {
+  return inspectCurrentTaskV4Plan().result;
+}
+
+export async function runTaskV4MigrationStatus(): Promise<void> {
+  printPlan(inspectTaskV4MigrationStatus());
+}
+
+export async function runTaskV4MigrationApply(options: MigrationCommandOptions = {}): Promise<void> {
+  if (options.dryRun) {
+    printPlan(inspectTaskV4MigrationStatus());
+    return;
+  }
+  const result = withConfigLock(() =>
+    withMaintenanceStartBarrier(() => {
+      const before = inspectCurrentTaskV4Plan();
+      if (before.result.status !== "ready") return before.result;
+      const backupPath = path.join(getDataDir(), "backups", "task-v4", `${Date.now()}-${randomUUID()}`);
+      const applied = applyTaskToV4MigrationPlan(before.plan, { backupRoot: backupPath });
+      const after = inspectCurrentTaskV4Plan().result;
+      if (after.status !== "current") {
+        throw new ConfigError("Task migration did not converge to task source v4.", "INVALID_CONFIG_FILE");
       }
       return { ...after, backupPath, applied: applied.changed.length };
     }),

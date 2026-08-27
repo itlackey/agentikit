@@ -1,5 +1,7 @@
 Usage: akm-migrate <command> [options]
 
 Commands:
-  status              Inspect task-v2 files without changing them.
-  apply [--dry-run]   Convert eligible task-v2 files to task v3.
+  status                      Inspect task-v2 files without changing them.
+  apply [--dry-run]           Convert eligible task-v2 files to task v3.
+  task-v4-status              Inspect task-v3 files without changing them.
+  task-v4-apply [--dry-run]   Convert eligible task-v3 files to task source v4.
