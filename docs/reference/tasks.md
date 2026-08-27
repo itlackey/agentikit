@@ -265,12 +265,26 @@ example above uses one task's actual declared names, not a fixed syntax.
 An undeclared flag fails with `UNKNOWN_FLAG`; a value that does not satisfy
 its declaration, or a missing `required: true` input supplied by neither a
 flag nor a default, fails with `INPUT_BINDING_INVALID` — both exit `2` with
-the usual `{ok:false,error,code}` envelope on stderr. The materialized
-values are **delivered** to the target: as one `AKM_TASK_INPUTS`
-environment variable (canonical JSON) for a `run:` shell or `scripts/<ref>`
-target, and as a `## Task inputs` prompt block for an `akm/command` /
-`commands/<ref>` target. `akm task add` does not gain input flags in this
-release; it continues to write task-v3 sources only.
+the usual `{ok:false,error,code}` envelope on stderr.
+
+Where the materialized values go next depends on the task's own target, and
+is narrower than it may look: when the target is `uses: workflows/<ref>`,
+the values become the child run's params (the same `with:` → params path a
+workflow step's own composition uses); for every other target — `run:`
+shell, `scripts/<ref>`, `commands/<ref>` — the values are validated and then
+**discarded**. `akm task run`'s own flags never populate an
+`AKM_TASK_INPUTS` environment variable or a `## Task inputs` prompt block.
+Those two surfaces are a *different* delivery path: they exist only when a
+**workflow step** composes this task through `uses: tasks/<ref>` and a
+`with:` binding, resolved fresh for that step's own dispatch — see
+[`with:` on a task-composed step](workflow-schema.md#github-shaped-yaml-subset).
+A scheduled run (`schedule[].inputs`, below) reaches the target through this
+same `akm task run` path, so it inherits the identical rule: delivered as
+params for a `workflows/<ref>` target, otherwise validated and discarded.
+`akm task explain` (below) shows the materialized values regardless of where
+they end up, which is the fastest way to check what a given `akm task run`
+invocation would actually deliver. `akm task add` does not gain input flags
+in this release; it continues to write task-v3 sources only.
 
 ### `akm task explain`
 

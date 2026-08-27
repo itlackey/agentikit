@@ -87,17 +87,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exact-name input flags for a task source v4 document's declared
   `inputs:` (an undeclared flag name fails `UNKNOWN_FLAG`; a bad value or
   an unsatisfied `required: true` declaration fails
-  `INPUT_BINDING_INVALID`; both exit 2 with the usual JSON error envelope)
-  and the materialized values are now **delivered** to the target: as the
-  task-composed step's bound `inputs:` (see the `with:`-binding bullet
-  above), as one `AKM_TASK_INPUTS` environment variable (canonical JSON) for
-  a shell/script target, and as a `## Task inputs` prompt block for a
-  command target — no longer validated-only. `schedule[].inputs` on a
-  `version: 4` task source are likewise delivered: `akm task sync` compiles
-  them into the scheduler binding's own invocation tail instead of only
-  validating and discarding them. `akm task add` is unchanged and still
-  writes only task-v3 sources. A `version: 4` task source is now a valid
-  workflow-step target (see above). The published
+  `INPUT_BINDING_INVALID`; both exit 2 with the usual JSON error envelope).
+  Where those materialized values go depends on the task's own target: for
+  `uses: workflows/<ref>` they become the child run's params (the existing
+  `with:` → params path); for a `run:`, `scripts/<ref>`, or `commands/<ref>`
+  target they are validated and then **discarded** — `akm task run`'s own
+  flags never populate an `AKM_TASK_INPUTS` environment variable or a
+  `## Task inputs` prompt block. Those two surfaces are a separate delivery
+  path: they carry a **workflow step's** `with:` binding into a task it
+  composes via `uses: tasks/<ref>` (see the `with:`-binding bullet above),
+  not `akm task run`'s own CLI flags. `schedule[].inputs` on a `version: 4`
+  task source are compiled the same way `akm task run`'s flags are: `akm
+  task sync` builds them into the scheduler binding's own invocation tail
+  instead of only validating and discarding them, so a scheduled run is
+  subject to the identical workflow-target-only delivery rule. `akm task
+  add` is unchanged and still writes only task-v3 sources. A `version: 4`
+  task source is now a valid workflow-step target (see above). The published
   [task schema](schemas/akm-task.json) now publishes both grammars as a
   two-arm `oneOf` keyed on `version`. **No plan/hash version changed**:
   `irVersion`, `hashVersion`, and every existing frozen plan's `plan_hash` /
@@ -124,12 +129,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (installed alongside `akm`) gains `task-v4-status` / `task-v4-apply
   [--dry-run]`, a second, independent generation of the same dry-run-first,
   `changed | skipped | blocked` migration planner — options bag flattened to
-  top-level keys, `with:` on a non-`akm/command` target converted to a
-  declared `inputs:` entry where the value shape makes it inferable.
-  Ambiguous or github-action-targeted sources are `blocked` for manual
-  review; nothing is overwritten without a backup, and task source v4 is
-  purely additive (`version: 3` sources are unaffected), so this migration
-  is entirely optional. Not (yet) reachable through `akm migrate`. See the
+  top-level keys. A `with:` authored on any target other than
+  `uses: akm/command` is `blocked` for manual review, alongside a
+  github-action-targeted `uses:` and anything else ambiguous: the migrator
+  translates structure, never intent, so `inputs:` is never invented on a
+  file's behalf — declaring it is an authoring decision left to the person
+  editing the migrated file. Nothing is overwritten without a backup, and
+  task source v4 is purely additive (`version: 3` sources are unaffected),
+  so this migration is entirely optional. Not (yet) reachable through
+  `akm migrate`. See the
   [0.9.1 to 0.9.2 migration guide](docs/migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4).
 
 ## [0.9.2-alpha.1] - 2026-08-24

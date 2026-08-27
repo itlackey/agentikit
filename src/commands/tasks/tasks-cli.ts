@@ -32,6 +32,7 @@ import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { UsageError } from "../../core/errors";
 import type { InputFlag } from "../../execution/input-contract";
+import { TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS } from "../../tasks/task-run-reserved-flags";
 import { akmTaskExplain } from "./explain";
 import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync } from "./tasks";
 
@@ -68,17 +69,14 @@ function rejectRetiredTaskTargetFlag(): void {
 // `rejectRetiredTaskTargetFlag()` above always runs first and throws before
 // this is ever reached (B-32) — it is not itself special-cased below.
 
-/** Every VALUE-taking flag `akm task run` declares (GLOBAL_OUTPUT_ARGS' value flags plus `--bundle`). */
-export const TASK_RUN_VALUE_FLAGS: readonly string[] = ["bundle", "format", "detail", "shape", "output"];
-/** Every BOOLEAN flag `akm task run` declares, including citty's `--no-` negations of the boolean pair above. */
-export const TASK_RUN_BOOLEAN_FLAGS: readonly string[] = [
-  "scheduled",
-  "quiet",
-  "verbose",
-  "help",
-  "no-quiet",
-  "no-verbose",
-];
+// `TASK_RUN_VALUE_FLAGS` / `TASK_RUN_BOOLEAN_FLAGS` are re-exported here
+// (unchanged in name, location, and value) from a dependency-free leaf module
+// so `src/tasks/source/task-source-v4.ts` can reject a declared `inputs:`
+// name that collides with one of them without importing this CLI file —
+// which would cycle back through `./tasks` -> `../../tasks/source/*` into the
+// parser (code-review finding, docs/plans/specs/p2b-input-bindings.md review
+// round 2; see `../../tasks/task-run-reserved-flags.ts`'s own header).
+export { TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS };
 
 const TASK_RUN_VALUE_FLAG_SET = new Set<string>(TASK_RUN_VALUE_FLAGS);
 const TASK_RUN_BOOLEAN_FLAG_SET = new Set<string>(TASK_RUN_BOOLEAN_FLAGS);

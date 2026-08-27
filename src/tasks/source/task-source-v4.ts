@@ -60,6 +60,7 @@ import {
   WORKFLOW_MAX_SCHEMA_BYTES,
 } from "../../workflows/resource-limits";
 import { TASK_V3_HOST_SHELLS, TASK_V3_MAX_SCHEDULES, type TaskV3Environment, type TaskV3HostShell } from "../source-v3";
+import { TASK_RUN_RESERVED_FLAG_NAMES } from "../task-run-reserved-flags";
 import {
   asRecord,
   type BoundedDocumentContext,
@@ -490,6 +491,26 @@ function parseInputDeclarations(value: ExecutionJsonValue, ctx: BoundedDocumentC
         ctx,
         ["inputs", name],
         "must match the input name pattern (a letter/underscore, then letters, digits, or underscores).",
+      );
+    }
+    // Code-review finding (docs/plans/specs/p2b-input-bindings.md review
+    // round 2, scheduler-binding.ts:238): a declared input name that
+    // collides with a flag `akm task run` already binds to itself (--bundle,
+    // --scheduled, …) can never be supplied through that CLI — parseTaskInputFlags
+    // (../../commands/tasks/tasks-cli.ts) always treats the name as its OWN
+    // flag, so the value is either silently misrouted (a second --bundle
+    // re-targets which bundle the task loads from) or left as an orphaned
+    // positional token that throws. Rejecting it HERE, at declaration time,
+    // closes every caller at once: a bare `akm task run --<name>`, `akm task
+    // explain --<name>`, and a `schedule[i].inputs` entry (whose keys are
+    // checked against this same contract below, so a banned name can never
+    // reach compileTaskSchedulerBindings's invocation tail either) — see
+    // ../task-run-reserved-flags.ts's own header.
+    if (TASK_RUN_RESERVED_FLAG_NAMES.has(name)) {
+      sourceError(
+        ctx,
+        ["inputs", name],
+        `collides with akm task run's own --${name} flag; declare the input under a different name.`,
       );
     }
     result[name] = parseInputDeclaration(name, input[name] as ExecutionJsonValue, ctx);

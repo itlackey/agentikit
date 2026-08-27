@@ -54,19 +54,42 @@ interface ResolvedTaskForComposition {
  * proven a valid binding surface", so it is refused the same
  * no-declared-inputs way — a `with:`-free step's resolution failure is
  * untouched and propagates as before.
+ *
+ * Code-review finding: that reconciliation must stay scoped to ASSET
+ * resolution (`resolveOwnedAsset`/`captureOwned`) only. Once the target
+ * resolves to a real file, `parseTaskSource`/`projectTaskSourceV4` reports a
+ * genuine, path-and-line-anchored defect in the composed task's OWN source
+ * (e.g. `TASK_SOURCE_INVALID` for an unsupported `inputs.<name>` field) —
+ * that is never "cannot be proven a valid binding surface" and must not be
+ * repainted as `noDeclaredInputsError`. Parsing therefore happens OUTSIDE
+ * the try/catch below, so its errors propagate unchanged regardless of
+ * whether this step authored a `with:`.
  */
 async function resolveTaskForComposition(
   source: WorkflowSourceStep,
   refInput: string,
   context: ResolutionContext,
 ): Promise<ResolvedTaskForComposition> {
+  const { owned, retained } = await resolveAndCaptureTaskAsset(source, refInput, context);
+  const parsed = parseTaskSource({ yaml: retained.content, filePath: owned.file, workspaceRoot: owned.root });
+  const contract = parsed.version === 4 ? parsed.v4.inputs : undefined;
+  const task = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
+  return { owned, task, contract };
+}
+
+/** The asset-resolution-only half of {@link resolveTaskForComposition} — the sole failure mode an authored `with:` on an unresolvable ref may repaint as `noDeclaredInputsError` (A-N5's `with-rejection.test.ts` B-02b). */
+async function resolveAndCaptureTaskAsset(
+  source: WorkflowSourceStep,
+  refInput: string,
+  context: ResolutionContext,
+): Promise<{
+  readonly owned: Awaited<ReturnType<typeof resolveOwnedAsset>>;
+  readonly retained: ReturnType<typeof captureOwned>;
+}> {
   try {
     const owned = await resolveOwnedAsset(refInput, "task", context);
     const retained = captureOwned(owned, context.collector);
-    const parsed = parseTaskSource({ yaml: retained.content, filePath: owned.file, workspaceRoot: owned.root });
-    const contract = parsed.version === 4 ? parsed.v4.inputs : undefined;
-    const task = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
-    return { owned, task, contract };
+    return { owned, retained };
   } catch (cause) {
     if (source.with !== undefined) throw noDeclaredInputsError(source.id, refInput);
     throw cause;
