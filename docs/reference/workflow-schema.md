@@ -59,12 +59,26 @@ jobs:
           ref: commands/review
 ```
 
+AKM's public position on this format: **AKM YAML uses a familiar
+GitHub-step-shaped syntax but is an AKM workflow format, executed by AKM's
+native engine.** It is not Marketplace-action-compatible, does not evaluate
+GitHub expressions or contexts, has no hosted runner images or service
+containers, and does not execute multiple jobs.
+
 The accepted 0.9.2 subset is deliberately closed:
 
 - `on` accepts five-field `schedule` entries and an empty or null
   `workflow_dispatch`; workflow_dispatch inputs are unsupported.
 - Service events are rejected.
   A rejected service event creates no watcher and no polling daemon.
+- **`jobs:` must contain exactly one job.** A document with zero, two, or
+  more jobs fails at the adapter with reason `multi-job-unsupported`,
+  surfaced as `UsageError` code `COMPOSITION_INVALID` when the workflow is
+  frozen (`akm workflow run` or `akm workflow plan`). Split a multi-job
+  document into separate single-job workflows and compose them with a
+  child-workflow step (`uses: workflows/<ref>`) instead. A job's `needs:`
+  must be empty — a non-empty `needs:` fails for the same reason, since a
+  single job has nothing to depend on.
 - Each job requires exactly `runs-on: [self-hosted]`. `name`, `needs`, and
   `steps` are the remaining job fields.
 - Each step requires `id` and exactly one `uses` or `run`; optional fields are
@@ -76,11 +90,16 @@ The accepted 0.9.2 subset is deliberately closed:
   command, script, task, and **child-workflow** composition are local
   targets — see [Child workflows](#child-workflows) for `uses:
   workflows/<ref>`.
-  Local actions and Docker actions are unsupported and rejected (including `./` and `docker://`); remote actions are rejected
-  because acquisition is out of scope.
+  Local actions and Docker actions are unsupported and rejected (including
+  `./` and `docker://`); a GitHub Action locator (`owner/repo[/path]@ref`,
+  e.g. `actions/checkout@v4`) and every other unrecognized shape fail the
+  same way — `unsupported-uses-target` — since AKM never acquires or
+  executes a remote action. AKM does not recognize the locator grammar as a
+  distinct case; it is simply not one of the four canonical asset-ref
+  families or the `akm/command` builtin.
 - `with:` on a **task-composed** step (`uses: tasks/<ref>`) **binds** the
-  target task source's declared `inputs:` (task source v4 only — see
-  [Task source v4](tasks.md#task-source-v4)). Each value is either a literal
+  target task source's declared `inputs:` — see
+  [Typed inputs and output](tasks.md#typed-inputs-and-output). Each value is either a literal
   (validated against the input's declared schema at freeze) or a reference
   `{from: "steps.<id>.output(.<segment>)*"}`, resolved just before the unit
   dispatches and re-validated against the same schema then. The reference
@@ -94,8 +113,8 @@ The accepted 0.9.2 subset is deliberately closed:
   missing required input with no default, or a reference naming a step that
   doesn't exist earlier in the job all fail at **freeze** with `UsageError`
   code `INPUT_BINDING_INVALID`, before the plan is ever published. If the
-  target task declares **no** `inputs:` at all (every `version: 3` task, or
-  a `version: 4` task with no `inputs:` key) — or the step targets
+  target task declares **no** `inputs:` at all (a `version: 4` task with no
+  `inputs:` key) — or the step targets
   `uses: commands/<ref>` / `uses: scripts/<ref>`, which are never binding
   surfaces — any authored
   `with:`, including an empty mapping (`with: {}`), is rejected at freeze

@@ -75,17 +75,41 @@ for the full status mapping and the blocked-child recovery flow, and
 [Running Workflows: Child runs](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md#child-runs) for a
 walkthrough.
 
+## Workflow outputs
+
+A workflow may declare a run-level export in its Markdown frontmatter —
+`outputs: {<name>: {from: steps.<id>.output(.<segment>)*, schema?}}`, up to
+64 entries — resolved once, from persisted step evidence, at run
+completion. A run with no `outputs:` declaration exports `{runId, status}`
+instead; a composing parent step promotes a completed child's `outputs:`
+(or that same `{runId, status}` fallback) as its own step output — see
+[Workflow Schema: Workflow outputs](../reference/workflow-schema.md#workflow-outputs).
+
+## Inspecting a workflow without running it
+
+`akm workflow plan <ref>` compiles, resolves, and freezes a workflow exactly
+as starting a run would, then stops — zero durable writes, no published run.
+It prints the canonical step graph, per-step frozen target kinds,
+task/child expansion, input bindings, and freeze-time lowering notices, and
+is secret-free by construction. Use it to check what a workflow would
+actually do — including which child workflows it would compose — before
+committing to a run. See
+[CLI reference: workflow plan](cli.md#workflow-plan).
+
 ## Unsupported boundary and 0.9.3
 
 The 0.9.2 GitHub-shaped adapter is a local interoperability seam, not GitHub
 Actions. Full GitHub expressions and contexts, local/Docker/remote actions,
-service events, arbitrary hosted runners, and multi-job runtime execution
-remain outside 0.9.2. Valid multi-job sources can be indexed and displayed,
-but the 0.9.2 runtime executes a single job only.
+service events, and arbitrary hosted runners remain outside 0.9.2.
+**Multi-job YAML is rejected outright** — `jobs:` must contain exactly one
+job; a document with zero, two, or more jobs fails to compile at all (it is
+not "indexed but not executed" — it never becomes a valid workflow). Split a
+multi-job source into single-job workflows and compose them with a
+child-workflow step instead. AKM neither fetches remote actions nor creates
+event watchers or polling daemons.
 
 These full GitHub semantics, actions, service events, and runner behaviors are
-explicit 0.9.3-or-later work. AKM neither fetches remote actions nor creates
-event watchers or polling daemons in the meantime.
+explicit 0.9.3-or-later work.
 
 Version 0.9.3 may extend full GitHub expressions and contexts, actions,
 service events, and runners; none of those capabilities is implied by 0.9.2.

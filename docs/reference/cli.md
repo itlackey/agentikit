@@ -2487,7 +2487,7 @@ not executable. `run` accepts a shell string with the closed shell and
 contained working-directory contract. The `akm` object owns scheduling,
 resolver overrides, `timeout`, `maxSteps`, `maxRetries`, and redaction names.
 Normal execution rejects v2 and points to `akm migrate apply --dry-run` followed
-by `akm migrate apply`. See [Tasks](tasks.md#migrating-task-v2-to-v3) for the
+by `akm migrate apply`. See [Tasks](tasks.md#migrating-to-task-source-v4) for the
 complete grammar and fail-closed migration behavior.
 
 **Task-log redaction and `redact:`.** A task's persisted output — the run `.log`

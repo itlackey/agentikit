@@ -5,49 +5,45 @@ Task assets are strict, local automation sources. They live at
 launchd, or Windows Task Scheduler with `akm task sync`. The task file is
 authored source; scheduler entries are derived OS state.
 
-Two task source grammars are recognized side by side in this release:
+**Task source v4 (`version: 4`) is the only task source grammar this
+release accepts.** A document with `version: 3` or `version: 2` (or any
+other value) fails to load with `UsageError` code
+`TASK_SCHEMA_VERSION_UNSUPPORTED`, naming the migrator. Task source v4 adds
+typed `inputs:` and a single bounded `output:` schema, and makes scheduling
+OPTIONAL rather than mandatory. `akm task add` authors task source v4
+directly.
 
-- **task v3** (`version: 3`) — the long-standing grammar: an `akm:` options
-  bag, an `on:` trigger block, and exactly one required scheduling source.
-  Still fully supported; nothing about it is being removed in this release.
-- **task source v4** (`version: 4`) — typed `inputs:`, a single bounded
-  `output:` schema, and scheduling that is OPTIONAL rather than required. See
-  [Task source v4](#task-source-v4) below.
-
-`akm task add` writes only task-v3 sources in this release; author a task
-source v4 document by hand (or edit an existing `.yml` in place) to use the
-newer grammar.
+If you have `version: 3` or `version: 2` files on disk (from an earlier
+akm release), see [Migrating to task source v4](#migrating-to-task-source-v4)
+below — `akm migrate apply` converts both generations in one pass. The
+retired v3 grammar itself is documented at the bottom of this page
+([Task v3 (retired): grammar reference for migration](#task-v3-retired-grammar-reference-for-migration))
+purely so you can read an old file while migrating it; it is not accepted
+by any command in this release.
 
 ## Files and schema
 
 The only recognized task extension is `.yml`. A `.yaml` near miss is never
-indexed, scheduled, or run. Every task must declare `version: 3` or
-`version: 4`; unknown top-level keys and any other version fail closed. The
-published [task schema](../../schemas/akm-task.json) describes the
-hand-authored contract for both grammars as a two-arm `oneOf` keyed on
-`version`, while `src/tasks/source-v3.ts` (task v3) and
-`src/tasks/source/task-source-v4.ts` (task source v4) remain the
-authoritative bounded parsers.
-
-The rest of this page documents task v3 first ([Executable targets](#executable-targets-uses-or-run)
-through [Scheduling and triggers](#scheduling-and-triggers)), then
-[Task source v4](#task-source-v4), then the task-v2-to-v3 migration guide
-(unrelated to task source v4) and day-to-day operations, which apply to both
-grammars.
-
-At the top level a task-v3 source can use `name`, exactly one executable
-selector, common step fields, and exactly one trigger source:
+indexed, scheduled, or run. Every task must declare `version: 4`; a
+document with no `version:` key, or a `version:` that is not a number,
+fails with `TASK_SOURCE_INVALID` (`must be exactly 4.` / `is required and
+must be exactly 4.`) — a genuinely malformed v4 document, not a legacy one.
+`version: 3` and `version: 2` fail with `TASK_SCHEMA_VERSION_UNSUPPORTED`
+instead (see [Migrating to task source v4](#migrating-to-task-source-v4)).
+The published [task schema](../../schemas/akm-task.json) describes the
+hand-authored contract; `src/tasks/source/task-source-v4.ts` is the
+authoritative bounded parser.
 
 ```yaml
-version: 3
+version: 4
 name: Nightly review
 uses: workflows/nightly-review
-with:
-  strict: true
-akm:
-  schedule: "0 4 * * *"
-  enabled: true
-  timeout: 30m
+inputs:
+  strict:
+    type: boolean
+    default: true
+schedule: "0 4 * * *"
+timeout: 30000
 ```
 
 Task YAML is bounded before expansion: source size, YAML depth, aggregate node
@@ -57,45 +53,41 @@ are rejected rather than normalized.
 
 ## Executable targets: `uses` or `run`
 
-This section describes task v3. Task source v4 selects targets the same way
-(exactly one of `uses` or `run`) with two differences, covered in
-[Task source v4](#task-source-v4): the GitHub-action `uses:` spelling is
-removed outright, and `with:` is legal only alongside `uses: akm/command`.
-
 A task selects exactly one of `uses` or `run`; the two fields are mutually
 exclusive.
 
-`uses` accepts these 0.9.2 target shapes:
+`uses` accepts these target shapes:
 
 - `akm/command`, the built-in inline/referenced command action. Its `with`
   object requires exactly one of `with.ref` or `with.content`; they are
   mutually exclusive. `with.arguments` is one optional portable string, used
-  for the single, one-pass `$ARGUMENTS` substitution.
+  for the single, one-pass `$ARGUMENTS` substitution. `with:` is legal
+  **only** alongside `uses: akm/command` — every other target uses typed
+  `inputs:` instead (see [Input flags](#input-flags)).
 - Asset refs rooted at `commands/`, `workflows/`, or `scripts/`, optionally
   qualified with a bundle such as `team//commands/review`.
-- A revision-qualified GitHub action spelling such as `owner/repo@ref` or
-  `owner/repo/path@revision`. That syntax is recognized so it cannot be
-  mistaken for an AKM ref, but remote action acquisition and execution are
-  unsupported in 0.9.2 and fail before dispatch.
+
+A GitHub Action locator (`owner/repo[/path]@ref`, e.g. `actions/checkout@v4`)
+is **not** a recognized `uses:` shape — it fails at parse with
+`TASK_SOURCE_INVALID` alongside every other unrecognized target. AKM never
+acquired or executed a remote action in any release; this is the removal of
+a recognized-but-rejected spelling, not a capability that used to work.
 
 Agent refs such as `agents/reviewer` are personas and are not executable.
 Task refs such as `tasks/nightly` are also not executable. Local actions
 (`./action`) are rejected and Docker actions (`docker://image`) are unsupported.
-GitHub expressions are unsupported and rejected before dispatch. Unqualified
-remote actions are rejected too.
+GitHub expressions are unsupported and rejected before dispatch.
 
 The runtime applies this target-by-target field matrix. Validation is strict;
 fields are not silently discarded.
-For `scripts/` asset refs, `with` is rejected before dispatch.
 
-| Target | `with` | task `env` | Interpreter / execution |
+| Target | `with` / `inputs` | task `env` | Interpreter / execution |
 |---|---|---|---|
-| `run` | Rejected; `with` is legal only with `uses` | Allowed | One authored string through the selected closed host `shell` |
+| `run` | No `with`; declare `inputs:` for typed parameters | Allowed | One authored string through the selected closed host `shell` |
 | `akm/command` | Required action object: exactly one of `ref` or `content`, plus optional portable `arguments` | Allowed and passed through the command resolver | Shared command authorization and lowering |
-| `commands/<name>` | Direct command refs: `with` is rejected; use `akm/command` for portable arguments | Allowed and passed through the command resolver | Shared command authorization and lowering |
-| `workflows/<name>` | Of asset refs, workflow refs alone consume `with` as workflow params | A nonempty task `env` is rejected because the durable workflow runtime cannot consume it in 0.9.2 | Fresh durable workflow start |
-| `scripts/<name>.<ext>` | Script refs: `with` is rejected | Allowed for the child process | Closed extension-to-interpreter table below |
-| `owner/repo[/path]@ref` | Not consumed | Not consumed | Recognized spelling, but remote acquisition is rejected in 0.9.2 |
+| `commands/<name>` | No `with`; declare `inputs:` for typed parameters | Allowed and passed through the command resolver | Shared command authorization and lowering |
+| `workflows/<name>` | Declared `inputs:` become the child run's params | A nonempty task `env` is rejected because the durable workflow runtime cannot consume it | Fresh durable workflow start |
+| `scripts/<name>.<ext>` | No `with`; declare `inputs:` for typed parameters | Allowed for the child process | Closed extension-to-interpreter table below |
 
 Script refs use this closed table; any other extension fails before dispatch:
 
@@ -122,61 +114,53 @@ shell from `uses`. `working-directory` must be a relative, contained path under
 the task's workspace root. Absolute paths, traversal, dangling links, and
 symlink escapes fail before execution.
 
-Common resolver fields live under `akm`: `agent`, `engine`, `model`,
-`inference`, `outputSchema`, `tools`, `timeout`, `redact`, `maxSteps`, and
-`maxRetries`. Environment entries are literal string, number, or boolean
-values. Keep credentials out of task source; `redact` contains environment
-variable names, never secret values.
+Every field that used to live under v3's `akm:` options bag is a top-level
+key in task source v4: `agent`, `engine`, `model`, `inference`, `tools`,
+`timeout`, `redact`, `maxSteps`, and `maxRetries`, plus `description`,
+`when_to_use`, and `tags`. Environment entries (`env`) are literal string,
+number, or boolean values. Keep credentials out of task source; `redact`
+contains environment variable names, never secret values.
 
-## Scheduling and triggers
+## Scheduling
 
-This section describes task v3, where scheduling is mandatory. Task source
-v4's `schedule:` is OPTIONAL instead — see [Task source v4](#task-source-v4).
-
-A task-v3 source has exactly one scheduling source: either `akm.schedule` or
-top-level `on`. The two sources are mutually exclusive.
-
-The compact AKM spelling is:
+Scheduling is **optional**. Omit `schedule:` entirely for a manual-only
+task: the source still parses, still runs with `akm task run`, and
+`akm task sync` silently contributes zero scheduler bindings for it (no OS
+entry, no failure) rather than rejecting the source for missing a trigger.
 
 ```yaml
-version: 3
+version: 4
+name: Nightly review
 run: akm improve --strategy default
-akm:
-  schedule: "@daily"
-  enabled: false
+schedule:
+  - cron: "@daily"
+    enabled: false
 ```
 
-The GitHub-shaped local trigger subset accepts schedule entries and an empty
-manual trigger:
+A bare string (`schedule: "0 8 * * 1"`) is shorthand for one enabled
+binding with no inputs. A list entry may set its own `enabled` (default
+`true`) and literal `inputs`; those literals are validated against the
+task's `inputs:` declarations both at parse time and again at
+`akm task sync` (once with declared defaults applied), and are
+**delivered** to the scheduled run: `akm task sync` compiles each entry's
+inputs into the scheduler binding's own invocation tail
+(`akm task run <id> --scheduled --<name> <value>…`, names sorted), so the
+fired run receives them exactly as `akm task run <id> --<name> <value>`
+would. Multiple schedule entries create deterministic scheduler bindings
+for the one source task.
 
-```yaml
-version: 3
-uses: commands/review
-on:
-  schedule:
-    - cron: "0 6 * * *"
-  workflow_dispatch: {}
-```
-
-`workflow_dispatch` accepts no inputs. Service events such as `push` are
-rejected and create no watcher or polling daemon. A source with only
-`workflow_dispatch` is manual-only and is not installed as a time schedule.
-Multiple schedule entries create deterministic scheduler bindings for the one
-source task.
+Task source v4 has **no document-level `enabled` flag** — enablement is
+per schedule binding. Disable one binding by setting its own
+`enabled: false`; a task with no `schedule:` at all has nothing to disable
+(it is already manual-only) — `akm task add --disabled` with no
+`--schedule` is a usage error naming `--schedule` for exactly this reason.
 
 `akm task run <id>` executes a task immediately, including a disabled task.
 `akm task sync` validates the complete desired set before atomically
 reconciling scheduler state. Scheduled invocations re-read the guarded current
 task bytes; workflow targets then create a fresh durable workflow freeze.
 
-## Task source v4
-
-Task source v4 (`version: 4`) is a second, additive grammar — task v3
-documents keep parsing, running, and scheduling unchanged. Task source v4
-adds typed `inputs:` and a single bounded `output:` schema, and makes
-scheduling OPTIONAL instead of required. It removes the `akm:` options bag
-and the `on:` trigger block entirely: every field they used to carry is a
-top-level key instead.
+## Typed inputs and output
 
 ```yaml
 version: 4
@@ -207,8 +191,6 @@ engine: reviewer
 redact: [TOKEN]
 ```
 
-Field notes:
-
 - `inputs:` declares named, typed parameters. Each declaration is a bounded
   JSON Schema (`type`, `enum`, `properties`, `items`, `minimum`/`maximum`,
   `allOf`/`anyOf`/`oneOf`/`not`, and similar keywords — an unlisted keyword is
@@ -222,35 +204,13 @@ Field notes:
   at declaration time, since `akm task run --<name>`, `akm task explain
   --<name>`, and a `schedule[].inputs` entry would otherwise route the value
   into `akm task run`'s own flag instead of the declared input.
+- **A `required: true` input with no default makes every scheduled run of
+  that task fail** unless the schedule binding's own `inputs:` supplies it
+  — there is no parse- or sync-time warning for this today. If a task has
+  both a required, default-less input and a `schedule:`, give every
+  schedule entry an explicit value for it, or provide a `default` instead.
 - `output:` is a single bounded JSON Schema, replacing v3's
   `akm.outputSchema`.
-- `schedule:` is OPTIONAL. Omit it entirely for a manual-only task: the
-  source still parses, still runs with `akm task run`, and `akm task sync`
-  silently contributes zero scheduler bindings for it (no OS entry, no
-  failure) rather than rejecting the source for missing a trigger. A bare
-  string (`schedule: "0 8 * * 1"`) is shorthand for one enabled binding with
-  no inputs. A list entry may set its own `enabled` (default `true`) and
-  literal `inputs`; those literals are validated against the task's
-  `inputs:` declarations both at parse time and again at `akm task sync`
-  (once with declared defaults applied), and are **delivered** to the
-  scheduled run: `akm task sync` compiles each entry's inputs into the
-  scheduler binding's own invocation tail (`akm task run <id> --scheduled
-  --<name> <value>…`, names sorted), so the fired run receives them exactly
-  as `akm task run <id> --<name> <value>` would.
-- Every v3 `akm.*` option is a top-level key in task source v4 instead: `agent`,
-  `engine`, `model`, `inference`, `tools`, `timeout`, `redact`, `maxSteps`,
-  and `maxRetries`, plus `description`, `when_to_use`, and `tags`.
-  `akm.enabled` becomes each schedule entry's own `enabled` rather than one
-  document-level flag.
-- `env`, `shell`, and `working-directory` keep v3's meaning and top-level
-  position: `shell`/`working-directory` are legal only with `run:`.
-- `with:` is legal only alongside `uses: akm/command` — it is that target's
-  own action-argument bag (`ref`/`content`/`arguments`), unchanged from v3.
-  Every other target (`commands/`, `scripts/`, `workflows/`, `run:`) uses
-  `inputs:` for typed parameters instead of `with:`.
-- The GitHub-action `uses:` spelling (`owner/repo@ref`) recognized (and
-  rejected before dispatch) by v3 is removed outright in task source v4 —
-  author a v3 source if you need that documented syntax.
 - A task source v4 document **can** be the target of a workflow step's
   `uses: tasks/<ref>` — see the
   [GitHub-shaped YAML subset](workflow-schema.md#github-shaped-yaml-subset)
@@ -284,13 +244,14 @@ Those two surfaces are a *different* delivery path: they exist only when a
 **workflow step** composes this task through `uses: tasks/<ref>` and a
 `with:` binding, resolved fresh for that step's own dispatch — see
 [`with:` on a task-composed step](workflow-schema.md#github-shaped-yaml-subset).
-A scheduled run (`schedule[].inputs`, below) reaches the target through this
+A scheduled run (`schedule[].inputs`, above) reaches the target through this
 same `akm task run` path, so it inherits the identical rule: delivered as
 params for a `workflows/<ref>` target, otherwise validated and discarded.
 `akm task explain` (below) shows the materialized values regardless of where
 they end up, which is the fastest way to check what a given `akm task run`
-invocation would actually deliver. `akm task add` does not gain input flags
-in this release; it continues to write task-v3 sources only.
+invocation would actually deliver. `akm task add --params` renders
+`--params` values as typed `inputs:` declarations with `default:` values
+(typed from each JSON value's runtime type), not a `with:` bag.
 
 ### `akm task explain`
 
@@ -309,31 +270,59 @@ as a name/ref only, never its resolved value.
 akm task explain review --scope all  # doclint:ignore
 ```
 
-## Migrating task v2 to v3
+`akm task explain` has no separate human-readable renderer: its default
+text output and its `--format json` output are the **same raw JSON**, byte
+for byte. There is nothing to lose by piping either form into `jq` or a
+script.
 
-Normal execution rejects task v2 and prints the migration hint. Preview the
-same fail-closed migration plan that apply consumes:
+> A secret-shaped **input default** (as opposed to a supplied value) is
+> redacted the same way, but its accompanying explanation currently reuses
+> workflow-parameter wording that does not quite fit a task input — treat
+> the redaction itself as reliable even where the prose reads oddly.
+> Likewise, `akm task run --<name> <secret-looking-value>` on a genuine
+> type mismatch (not `akm task explain`) can still echo the offered value
+> in its error envelope; this is a known gap, not something either of
+> these two commands' redaction is supposed to cover today.
+
+## Migrating to task source v4
+
+`akm migrate status` and `akm migrate apply [--dry-run]` run **both**
+migration generations against your task tree in one pass: task-v2 → task-v3
+first, then task-v3 → task source v4 against the resulting files. Each
+generation keeps its own lock, backup, prevalidation, and rollback — a file
+blocked in the first generation does not stop the second generation from
+converting files that are already `version: 3`.
 
 ```sh
 akm migrate apply --dry-run
 akm migrate apply
 ```
 
-The planner reports every input file as `changed`, `skipped`, or `blocked`.
-Deterministic prompt, command-ref, workflow-ref, and safe command-string cases
-become v3. An argv array or any command whose shell meaning cannot be preserved
-is blocked for manual review and remains untouched. Apply validates a complete
-v3 replacement before writing and backs up each original immediately before
-replacement.
+The planner reports every input file as `changed`, `skipped`, or `blocked`,
+for both generations combined. Resolve every blocked file manually, then
+preview again. Apply validates a complete replacement before writing and
+backs up each original immediately before replacement.
 
-See the [0.9.1 to 0.9.2 migration guide](../migration/v0.9.1-to-v0.9.2.md)
-for before/after examples, preserved fields, and recovery guidance.
+Common v3 → v4 blocked reasons and what to do about each:
 
-## Migrating task v3 to task source v4
+| Reason | Meaning | Fix |
+|---|---|---|
+| `github-action-target-removed` | The task's `uses:` is a GitHub Action locator (`owner/repo[/path]@ref`); that spelling has no task source v4 equivalent. | Rewrite the target as `commands/`, `scripts/`, `workflows/`, or `akm/command` by hand. |
+| `with-on-non-command-target` | A `with:` block is authored on a target other than `uses: akm/command`. | Task-call inputs are declared and bound separately in v4 — author `inputs:` on the task and, if it is a workflow step's own composition, bind them with the step's `with:` instead. |
+| `ambiguous-scheduling-source` | The document declares both `akm.schedule` and `on:`. | Pick one; the migrator will not guess which one wins. |
+| `enabled-false-has-no-schedule-entry` | `akm.enabled: false` with no cron trigger to attach it to (the only trigger is `on.workflow_dispatch`). | Task source v4 has no document-level `enabled` flag — decide whether the task should be scheduled (add a cron) or left manual-only (drop `akm.enabled`), then re-run. |
+| `read-only-source` | The owning source or file is not writable. | Move or re-source the file somewhere writable, or edit it by hand. |
+| `invalid-v3-task` | The v3 document itself is structurally invalid (unknown fields, missing selector, malformed trigger, etc). | Fix the underlying v3 document first — the migrator translates structure, it does not repair it. |
 
-A second, independent generation of the same fail-closed migrator — a
-separate `akm-migrate` executable, installed alongside `akm` — converts an
-eligible `version: 3` task source to `version: 4`:
+The migrator translates structure, never intent: it never invents an
+`inputs:` declaration on a file's behalf, regardless of how inferable a
+`with:` value's shape looks — declaring `inputs:` (and rewriting a step to
+bind it) is left to the person editing the migrated file by hand.
+
+If you only want to run one generation in isolation (for example, your
+tree is already all `version: 3` and you want to preview just the v4 step),
+the frozen migrator's standalone, single-generation entry points remain
+available as a separate executable:
 
 ```sh
 akm-migrate task-v4-status
@@ -341,24 +330,22 @@ akm-migrate task-v4-apply --dry-run
 akm-migrate task-v4-apply
 ```
 
-Task source v4 is purely additive (`version: 3` still parses, runs, and
-schedules unchanged), so this migration is entirely optional. See
-[Migrating task v3 to task source v4](../migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4)
-for what gets blocked and why, and recovery guidance.
+See the [0.9.1 to 0.9.2 migration guide](../migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4)
+for full before/after examples and recovery guidance.
 
 ## Operations
 
-- `akm search --type task` and `akm show tasks/<id>` inspect task assets of
-  either grammar.
+- `akm search --type task` and `akm show tasks/<id>` inspect task assets.
 - `akm task explain <ref>` prints a task's declared inputs, resolved target,
   effective execution settings, and schedule bindings without running
   anything — see [`akm task explain`](#akm-task-explain) above.
-- `akm task add` writes a task-v3 source and installs it after validation;
-  it does not author task source v4 in this release.
+- `akm task add` writes a task source v4 document and installs it after
+  validation. `--params` renders typed `inputs:` declarations instead of a
+  `with:` bag; `--disabled` requires `--schedule` and writes
+  `schedule: [{cron: …, enabled: false}]`.
 - `akm task history` reads durable run history from `state.db`.
-- Disable a binding by editing the source and syncing: task v3 sets
-  `akm.enabled: false`; task source v4 sets that schedule entry's own
-  `enabled: false`.
+- Disable a binding by editing the source and syncing: set that schedule
+  entry's own `enabled: false`.
 - Delete the `.yml` source and sync to remove its derived binding(s).
 - Use `akm task sync --rebind` only when deliberately changing the captured
   AKM runtime, then verify with `akm task doctor`.
@@ -367,6 +354,46 @@ Scheduler execution is at least once. Backends provide a stable invocation
 identity and AKM fences stale attempts, but an ambiguous process crash can be
 observed only after the external work has started. Make scheduled side effects
 idempotent where possible.
+
+## Task v3 (retired): grammar reference for migration
+
+Nothing in this section is accepted by `src/` in this release — it exists
+only so you can read an already-authored `version: 3` file while deciding
+how to migrate it. The v3 grammar used an `akm:` options bag, an `on:`
+trigger block, and exactly one required scheduling source:
+
+```yaml
+version: 3
+name: Nightly review
+uses: workflows/nightly-review
+with:
+  strict: true
+akm:
+  schedule: "0 4 * * *"
+  enabled: true
+  timeout: 30m
+```
+
+or, with the GitHub-shaped local trigger subset:
+
+```yaml
+version: 3
+uses: commands/review
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}
+```
+
+`with:` on any `uses:` target carried v3's untyped params bag (workflow
+refs consumed it as run params; command/script refs rejected it outright).
+A GitHub Action locator (`owner/repo[/path]@ref`) was a recognized `uses:`
+shape that was always rejected before dispatch — remote action acquisition
+was never implemented in any akm release. `akm.enabled: false` disabled the
+whole document, not a specific schedule binding.
+
+See [Migrating to task source v4](#migrating-to-task-source-v4) above to
+convert a file out of this grammar.
 
 ## See also
 
