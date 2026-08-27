@@ -15,6 +15,7 @@ tests/fixtures/openviking/workspace/viking/_system/accounts.json
 **/__pycache__/
 .claude/*
 !.claude/workflows/
+!.claude/skills/
 /docs/example-stash/.akm/
 /docs/example-stash/.akm-run/
 today.html

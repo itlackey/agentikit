@@ -1,0 +1,68 @@
+{
+  "_comment": "Seeded to $COUNCIL_HOME/config.json on first run. Keys are NOT stored here and never will be: each provider names an api_key_env and the runner reads that environment variable at request time (export it, or inject it with `akm secret run secrets/<name> <VAR> -- <command>`). These model IDs are a STARTING POINT, not a guarantee -- catalogs list models the gateway does not serve. Always run --list-models to find live IDs, then --check after configuring.",
+  "timeout_seconds": 600,
+  "providers": {
+    "nvidia": {
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key_env": "NVIDIA_API_KEY",
+      "_signup": "https://build.nvidia.com -- one account-level key works for every model in the catalog"
+    },
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "_signup": "https://platform.openai.com/api-keys"
+    }
+  },
+  "panelists": [
+    {
+      "name": "gpt",
+      "provider": "openai",
+      "model": "gpt-5.2",
+      "role": "correctness",
+      "enabled": true
+    },
+    {
+      "name": "gptoss",
+      "provider": "nvidia",
+      "model": "openai/gpt-oss-120b",
+      "role": "architecture",
+      "enabled": true,
+      "max_tokens": 8192,
+      "timeout": 300
+    },
+    {
+      "name": "deepseek",
+      "provider": "nvidia",
+      "model": "deepseek-ai/deepseek-v4-pro-0813",
+      "role": "data-integrity",
+      "enabled": true,
+      "max_tokens": 8192,
+      "timeout": 300
+    },
+    {
+      "name": "kimi",
+      "provider": "nvidia",
+      "model": "moonshotai/kimi-k3",
+      "role": "security",
+      "enabled": true,
+      "max_tokens": 8192
+    },
+    {
+      "name": "nemotron",
+      "provider": "nvidia",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b",
+      "role": "regression",
+      "enabled": true,
+      "max_tokens": 8192,
+      "timeout": 900
+    },
+    {
+      "name": "minimax",
+      "provider": "nvidia",
+      "model": "minimaxai/minimax-m3",
+      "role": "performance",
+      "enabled": true,
+      "max_tokens": 8192
+    }
+  ]
+}
