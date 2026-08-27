@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes & migration
+
+- **Workflows are disabled for the 0.9.2 release and will be re-enabled in
+  0.9.3.** Every `akm workflow` subcommand, `akm task add --workflow`, and
+  execution of workflow-bound scheduled tasks now exit with a
+  `WORKFLOWS_DISABLED` usage error (exit 2) naming the re-enable release.
+  Workflow assets stay indexed, searchable, showable, and lintable
+  (`akm lint --type workflows`), and `akm task sync` still validates them.
+  Set `AKM_ENABLE_WORKFLOWS=1` to opt back in early, at your own risk; the
+  variable is temporary and will be removed when 0.9.3 lifts the gate.
+
 ## [0.9.2-alpha.4] - 2026-08-26
 
 ### Added
@@ -254,7 +265,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Keep targeted embedding selection narrow and preserve targeted vec
   degradation.
-
 ## [0.9.2-alpha.1] - 2026-08-24
 
 ### Breaking changes & migration

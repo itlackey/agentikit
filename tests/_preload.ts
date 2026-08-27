@@ -77,6 +77,8 @@ const HARNESSED: readonly string[] = [
   "AKM_VERBOSE",
   "AKM_LLM_API_KEY",
   "AKM_EMBED_API_KEY",
+  // 0.9.2 workflow release gate escape hatch (src/core/workflows-gate.ts).
+  "AKM_ENABLE_WORKFLOWS",
   // Registry overrides used by registry-providers tests.
   "AKM_REGISTRY_URL",
   "AKM_NPM_REGISTRY",
@@ -118,6 +120,12 @@ function installSuiteWideSandbox(): void {
   delete process.env.AKM_VERBOSE;
   delete process.env.AKM_LLM_API_KEY;
   delete process.env.AKM_EMBED_API_KEY;
+  // Lift the 0.9.2 workflow release gate (src/core/workflows-gate.ts) for the
+  // whole suite so the workflow and task suites keep exercising the real
+  // implementation that ships re-enabled in 0.9.3. Tests that assert the
+  // gate's closed behavior delete this within the test; the afterEach
+  // snapshot (HARNESSED) restores it.
+  process.env.AKM_ENABLE_WORKFLOWS = "1";
   // Teardown must fire on signal-kills too, not just clean exit. A worker that
   // is SIGTERM/SIGINT/SIGHUP'd (e.g. an orphaned/hung `bun test` worker being
   // reaped) otherwise leaks its entire `akm-test-suite-*` root under /tmp — the

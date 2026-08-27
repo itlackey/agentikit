@@ -57,12 +57,12 @@ enumeration of the whole `proposal` noun group.
 | `akm search` | Stable | |
 | `akm curate` | Stable | |
 | `akm show` | Stable | |
-| `akm workflow status` | Stable | |
-| `akm workflow list` | Stable | |
-| `akm workflow create` | Stable | |
-| `akm workflow resume` | Stable | |
-| `akm workflow abandon` | Stable | |
-| `akm workflow run` | Stable | Canonical start/resume/execute command. |
+| `akm workflow status` | Stable | Disabled in 0.9.2; returns in 0.9.3 (see note below). |
+| `akm workflow list` | Stable | Disabled in 0.9.2; returns in 0.9.3 (see note below). |
+| `akm workflow create` | Stable | Disabled in 0.9.2; returns in 0.9.3 (see note below). |
+| `akm workflow resume` | Stable | Disabled in 0.9.2; returns in 0.9.3 (see note below). |
+| `akm workflow abandon` | Stable | Disabled in 0.9.2; returns in 0.9.3 (see note below). |
+| `akm workflow run` | Stable | Canonical start/resume/execute command. Disabled in 0.9.2; returns in 0.9.3 (see note below). |
 | `akm remember` | Stable | |
 | `akm import` | Stable | |
 | `akm sync` | Stable | |
@@ -110,6 +110,15 @@ enumeration of the whole `proposal` noun group.
 | `akm task history` | Evolving | |
 | `akm task sync` | Evolving | |
 | `akm task doctor` | Evolving | |
+
+**Workflows are disabled for the 0.9.2 release and return in 0.9.3.** Every
+`akm workflow` subcommand, `akm task add --workflow`, and execution of
+workflow-bound scheduled tasks exit with a `WORKFLOWS_DISABLED` usage error
+(exit 2) naming the re-enable release. The command contract itself is
+unchanged — the table classifications above describe the surface that
+returns in 0.9.3. Workflow assets remain indexed, searchable, showable, and
+lintable (`akm lint --type workflows`) in the meantime, and
+`AKM_ENABLE_WORKFLOWS=1` opts back in early, at your own risk.
 
 ## Stable
 
@@ -415,6 +424,7 @@ on them.
 | `AKM_INSTALL_DIR` | Install-script prefix |
 | `AKM_FORCE_SETUP_TMP_STASH` | Documented escape hatch for intentional temp-directory bundles |
 | `AKM_UPGRADE_SKIP_CHECKSUM` | Recovery hatch for a broken upgrade checksum |
+| `AKM_ENABLE_WORKFLOWS` | Set to `1` to lift the 0.9.2 workflow release gate early, at your own risk. Temporary — removed when 0.9.3 re-enables workflows |
 
 **Internal** — no compatibility guarantee, may vanish without notice:
 `AKM_NODE_ENTRY`, `AKM_EVENT_SOURCE`, `AKM_SESSION_ID`, `AKM_AGENT_HARNESS`,

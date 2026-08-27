@@ -549,6 +549,12 @@ to run `akm bundle add <origin>` first.
 
 Author, inspect, and execute structured workflow assets.
 
+> **Disabled in 0.9.2.** Every `workflow` subcommand — and workflow-bound
+> scheduled tasks — exits with a `WORKFLOWS_DISABLED` usage error in this
+> release; workflows are re-enabled in 0.9.3. Workflow assets stay indexed,
+> searchable, showable, and lintable (`akm lint --type workflows`). Set
+> `AKM_ENABLE_WORKFLOWS=1` to opt back in early, at your own risk.
+
 ```sh
 akm workflow create ship-release --print
 akm workflow create ship-release

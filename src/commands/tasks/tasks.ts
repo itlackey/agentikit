@@ -25,6 +25,7 @@ import type { AkmConfig } from "../../core/config/config-types";
 import { IMPROVE_AUTONOMY_CONFIG_KEY, isImproveAutonomyEnabled } from "../../core/config/experimental";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { getTaskHistoryDir, getTaskLogDir } from "../../core/paths";
+import { assertWorkflowsEnabled } from "../../core/workflows-gate";
 import {
   commitWriteTargetBoundary,
   deleteAssetFromSource,
@@ -324,6 +325,9 @@ function assertTaskAddTargetShape(input: TasksAddInput): void {
       "INVALID_FLAG_VALUE",
     );
   }
+  // 0.9.2 release gate: workflow-bound tasks cannot be created while the
+  // workflow feature is disabled (src/core/workflows-gate.ts).
+  if (input.workflow) assertWorkflowsEnabled();
   // `--timeout-ms` is the workflow's whole-run bound. Engine and model stay
   // prompt-only because workflow engines come from the frozen plan.
   if (input.workflow && (input.engine !== undefined || input.model !== undefined)) {

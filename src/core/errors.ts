@@ -79,6 +79,9 @@ export type UsageErrorCode =
   | "RESOURCE_ALREADY_EXISTS"
   | "TASK_SCHEMA_VERSION_UNSUPPORTED"
   | "WORKFLOW_IR_VERSION_UNSUPPORTED"
+  // The 0.9.2 release gate (src/core/workflows-gate.ts): workflow execution
+  // is disabled for this release and returns in 0.9.3. Remove with the gate.
+  | "WORKFLOWS_DISABLED"
   | "INVALID_PROPOSAL"
   | "NON_INTERACTIVE_REQUIRES_YES"
   // citty's own CLIError (unknown top-level command or subcommand), reclassified

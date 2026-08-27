@@ -14,6 +14,7 @@ import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cl
 import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { NotFoundError, UsageError } from "../core/errors";
+import { assertWorkflowsEnabled } from "../core/workflows-gate";
 import { akmIndex } from "../indexer/indexer";
 import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
 import type { WorkflowParameterFlag } from "../workflows/ir/params";
@@ -42,6 +43,7 @@ const workflowStatusCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    assertWorkflowsEnabled();
     const target = args.target;
     const includeUnits = args.units === true;
     if (await hasWorkflowRun(target)) {
@@ -75,6 +77,7 @@ const workflowListCommand = defineJsonCommand({
     active: { type: "boolean", description: "Only show active runs", default: false },
   },
   async run({ args }) {
+    assertWorkflowsEnabled();
     const result = await listWorkflowRuns({ workflowRef: args.ref, activeOnly: args.active });
     output("workflow-list", result);
   },
@@ -118,6 +121,7 @@ const workflowCreateCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
+    assertWorkflowsEnabled();
     // `name` is flat; subdirectory placement is `--path`'s job.
     assertFlatAssetName(args.name);
     const effectiveName = combineCreatePath(normalizeCreateSubPath(args.path), args.name);
@@ -166,6 +170,7 @@ const workflowRunCommand = defineJsonCommand({
     timeout: { type: "string", description: "Whole-run timeout: N, Nms, Ns, or Nm (bare N is milliseconds)" },
   },
   async run({ args, rawArgs }) {
+    assertWorkflowsEnabled();
     const { runWorkflowSteps } = await import("../workflows/exec/run-workflow.js");
     const parameterFlags = parseWorkflowParameterFlags(rawArgs, args.target);
     const maxSteps = parseIntegerFlag(getStringArg(args, "max-steps"), "--max-steps", 1);
@@ -331,6 +336,7 @@ const workflowAbandonCommand = defineJsonCommand({
     runId: { type: "positional", description: "Workflow run id", required: true },
   },
   async run({ args }) {
+    assertWorkflowsEnabled();
     const result = await abandonWorkflowRun(args.runId);
     output("workflow-abandon", result);
   },
@@ -345,6 +351,7 @@ const workflowResumeCommand = defineJsonCommand({
     runId: { type: "positional", description: "Workflow run id", required: true },
   },
   async run({ args }) {
+    assertWorkflowsEnabled();
     const result = await resumeWorkflowRun(args.runId);
     output("workflow-resume", result);
   },
@@ -353,7 +360,7 @@ const workflowResumeCommand = defineJsonCommand({
 export const workflowCommand = defineGroupCommand({
   meta: {
     name: "workflow",
-    description: "Author, inspect, and execute step-by-step workflow assets",
+    description: "Author, inspect, and execute step-by-step workflow assets (disabled in 0.9.2; returns in 0.9.3)",
   },
   subCommands: {
     status: workflowStatusCommand,

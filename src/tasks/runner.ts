@@ -40,6 +40,7 @@ import { getTaskLogDir } from "../core/paths";
 import { redactCredentialPatterns, redactSensitiveText } from "../core/redaction";
 import { withStateDb } from "../core/state-db";
 import { runManagedSubprocess, type SpawnFn } from "../core/subprocess";
+import { assertWorkflowsEnabled } from "../core/workflows-gate";
 import { resolveWriteTarget } from "../core/write-source";
 import { assertFrozenDirectoryIdentity } from "../execution/directory-identity";
 import type { LoweringNotice } from "../execution/resolved-request";
@@ -205,6 +206,11 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
       return finishDisabledTask(task, logPath, startedAt, now(), attempt.historyReserved);
     }
     if (task.kind === "workflow") {
+      // 0.9.2 release gate (src/core/workflows-gate.ts). Placed at the
+      // dispatch branch, after `reserveTaskAttempt`, so a scheduled
+      // workflow-bound task that fires while the gate is closed records a
+      // visible failed attempt in task history instead of vanishing.
+      assertWorkflowsEnabled();
       return await runWorkflowTask({
         task,
         logPath,
