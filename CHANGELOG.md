@@ -148,9 +148,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   plan; it does not yet execute them — running a step that composes a child
   workflow fails closed with `UsageError` code
   `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED` the moment that step's unit
-  dispatches (every other step in the same run is unaffected), no child run
-  is ever created, and `akm workflow list`/`status`/`next` output is
-  unaffected. See
+  dispatches (the run fails there — earlier steps keep their journaled
+  results and no other step's own target is affected, but the run does not
+  advance past it), no child run is ever created, and
+  `akm workflow list`/`status`/`next` output is unaffected. See
   [Workflow Schema: Child workflows](docs/reference/workflow-schema.md#child-workflows).
 - **`akm task explain <ref> [input flags]`** — read-only task introspection.
   Prints the task's source path and version, its declared `inputs:` (with

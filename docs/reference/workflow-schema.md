@@ -203,9 +203,12 @@ completely, as described above — but **running** a step that composes a
 child workflow fails closed: the moment the parent workflow actually
 dispatches that step's unit, it fails with `UsageError` code
 `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`, naming the child ref and pointing at
-the P3b release that adds child execution. Every other step in the same run
-is unaffected — only a step whose own target is `kind: "child-workflow"`
-hits this. No child run is ever created (`publishChildWorkflowRun` has no
+the P3b release that adds child execution — and the run fails there. Only a
+step whose own target is `kind: "child-workflow"` raises this error: no
+other step's own target is affected, and a step that already completed
+keeps its journaled results, but the run does not advance past the
+composing step — steps after it never dispatch. No child run is ever
+created (`publishChildWorkflowRun` has no
 production caller in this release), so `akm workflow list` / `status` /
 `next` output never shows a child row. Child execution, a status tree that
 reflects child runs, and surfacing a child's outputs to its parent are a

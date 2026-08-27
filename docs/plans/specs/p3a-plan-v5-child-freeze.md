@@ -1413,47 +1413,72 @@ future additive migration. See Review log R7.
 
 ## 7. Preservation gates (the reviewer runs these)
 
-- [ ] `bun run check` green.
-- [ ] `tests/integration/workflows/frozen-plan.test.ts` green, changed **only**
+- [x] `bun run check` green. Verified fresh at `f35d433d`: lint exit 0
+      (`lint-doc-examples: OK`), `bunx tsc --noEmit` clean, `test:unit` 4284
+      pass / 0 skip / 0 fail (313 files), `test:integration` 5760 pass / 57
+      skip / 0 fail (432 files).
+- [x] `tests/integration/workflows/frozen-plan.test.ts` green, changed **only**
       at F-A2's four sites.
-- [ ] `tests/integration/workflows/chaos.test.ts` and
+- [x] `tests/integration/workflows/chaos.test.ts` and
       `tests/integration/_helpers/workflow-chaos-runner.ts` green and
-      **byte-unchanged**.
-- [ ] `tests/integration/workflows/run-lease.test.ts` green and
-      **byte-unchanged**.
+      **byte-unchanged**. Verified: `git diff 7a491ff6 --stat` for both is
+      empty.
+- [x] `tests/integration/workflows/run-lease.test.ts` green and
+      **byte-unchanged**. Verified: `git diff 7a491ff6 --stat` is empty.
 - [ ] `tests/integration/workflow-crash-windows.test.ts` green and
-      **byte-unchanged**.
-- [ ] `tests/integration/workflows/v4-atomic-publication-red.test.ts` green
+      **byte-unchanged**. Green, but **not** byte-unchanged: R4 (above)
+      records that this pin is superseded for exactly its two F-A13 sites
+      (`:108,152`, a fresh run's own `planIrVersion` pin forced from `4` to
+      `5` by A-01) — `git diff 7a491ff6 --stat` shows only those two value
+      changes. Left unticked on the letter of "byte-unchanged"; the
+      substantive gate (green, minimal, spec-authorized diff) holds per R4.
+- [x] `tests/integration/workflows/v4-atomic-publication-red.test.ts` green
       with **only** F-A3's three value changes; every atomicity/rollback
       assertion byte-unchanged. Its subject stays the **parent** publication
       path — `publishChildWorkflowRun` gets its own suite, it does not join
-      this one.
-- [ ] `tests/integration/tasks-runtime-v3-runner.test.ts` (the
-      fail-before-mutation canary) green and **byte-unchanged**.
-- [ ] Every P2b binding suite green: `tests/workflows/task-input-bindings.test.ts`
+      this one. Verified: `git diff 7a491ff6` shows exactly the four F-A3
+      literal-value edits (irVersion, two `plan_ir_version` assertions, the
+      WP7 trigger predicate) and nothing else.
+- [x] `tests/integration/tasks-runtime-v3-runner.test.ts` (the
+      fail-before-mutation canary) green and **byte-unchanged**. Verified:
+      `git diff 7a491ff6 --stat` is empty.
+- [x] Every P2b binding suite green: `tests/workflows/task-input-bindings.test.ts`
       (changed only at F-B4), `tests/workflows/task-binding-identity.test.ts`
       (changed only at F-A6), `tests/workflows/with-rejection.test.ts`
       (**byte-unchanged**), `tests/integration/workflows/task-binding-resolution.test.ts`
       and `tests/integration/workflows/task-inputs-delivery.test.ts`
-      (**byte-unchanged**).
-- [ ] `tests/integration/workflows/schema-drift.test.ts` green and
-      **byte-unchanged** (A-N10).
-- [ ] The migration position/safety registry test green (`023-child-workflow-runs`
+      (**byte-unchanged**). Verified: `task-input-bindings.test.ts`'s diff is
+      confined to the two `describe` blocks F-B4 names;
+      `task-binding-identity.test.ts`'s diff matches F-A6's five sites
+      exactly; the other three files' diffs against `7a491ff6` are empty.
+- [x] `tests/integration/workflows/schema-drift.test.ts` green and
+      **byte-unchanged** (A-N10). Verified: `git diff 7a491ff6 --stat` is
+      empty.
+- [x] The migration position/safety registry test green (`023-child-workflow-runs`
       last in both `STATE_MIGRATIONS` and `STATE_MIGRATION_SAFETY_BY_ID`).
-- [ ] `tests/integration/workflows/shared-physical-owner-authority.test.ts`
+      Verified structurally: `023-child-workflow-runs` is the final array
+      element of `STATE_MIGRATIONS` (`migrations.ts:1085-1092`) and the
+      final key of `STATE_MIGRATION_SAFETY_BY_ID` (`:52`); covering tests
+      `tests/integration/state-migration-023.test.ts` and
+      `tests/storage/state-db-migrations.test.ts` both green.
+- [x] `tests/integration/workflows/shared-physical-owner-authority.test.ts`
       green and **byte-unchanged** — `absorb` must not weaken the aliasing
-      authority (A-N7).
-- [ ] `tests/architecture/import-cycle-ratchet.test.ts` green:
+      authority (A-N7). Verified: `git diff 7a491ff6 --stat` is empty.
+- [x] `tests/architecture/import-cycle-ratchet.test.ts` green:
       `src/execution/**` still imports nothing from `src/workflows/**`
       (`child-invocation.ts` lives under `src/workflows/`; `guarded-source.ts`
       gains no workflow import).
-- [ ] `rg "cannot compose a nested workflow" src/` returns **zero** hits
-      (row B-16).
-- [ ] `rg "WORKFLOW_IR_V4_VERSION" src/ tests/ scripts/` returns **zero** hits.
-- [ ] `rg 'akm\.workflow\.(unit|gate)\\0v5\\0' src/ tests/` returns **zero**
-      hits.
-- [ ] `bun run lint` includes the doc-examples check; every `akm …` example
-      added in §8 is lint-doc-examples-clean.
+- [x] `rg "cannot compose a nested workflow" src/` returns **zero** hits
+      (row B-16). Verified fresh.
+- [x] `rg "WORKFLOW_IR_V4_VERSION" src/ tests/ scripts/` returns **zero** hits.
+      Verified fresh.
+- [x] `rg 'akm\.workflow\.(unit|gate)\\0v5\\0' src/ tests/` returns **zero**
+      hits. Verified fresh.
+- [x] `bun run lint` includes the doc-examples check; every `akm …` example
+      added in §8 is lint-doc-examples-clean. Verified fresh
+      (`lint-doc-examples: OK — 0 doc-example violations found`); this
+      close-out's own doc edits (R12, three sites) add no new `akm …`
+      example lines.
 
 New suites this phase adds (these are NOT flips):
 
@@ -1486,74 +1511,124 @@ Every `akm` example must pass the doc-examples lint that `bun run lint` runs.
 
 **Structure**
 
-- [ ] `src/workflows/ir/schema-v4.ts` exports `WORKFLOW_IR_V5_VERSION = 5` and
+- [x] `src/workflows/ir/schema-v4.ts` exports `WORKFLOW_IR_V5_VERSION = 5` and
       no `WORKFLOW_IR_V4_VERSION`; its file name and every exported TYPE name
-      are unchanged (A-N1).
-- [ ] `FrozenChildWorkflowTarget` has exactly §3.5's key set, and
-      `inputBindings` is absent — never `[]` — when empty.
-- [ ] `decodeFrozenTarget` accepts exactly four kinds and keeps its closed-kind
-      `fail(...)` fallback verbatim.
-- [ ] `src/workflows/freeze/targets/child-workflow.ts` is the **only** module
+      are unchanged (A-N1). Verified: `rg WORKFLOW_IR_V4_VERSION` is empty;
+      the file is still named `schema-v4.ts`.
+- [x] `FrozenChildWorkflowTarget` has exactly §3.5's key set, and
+      `inputBindings` is absent — never `[]` — when empty. Verified at the
+      construction site (`child-workflow.ts`):
+      `...(inputBindings.length > 0 ? { inputBindings } : {})`.
+- [x] `decodeFrozenTarget` accepts exactly four kinds and keeps its closed-kind
+      `fail(...)` fallback verbatim. Verified: `command`, `shell`, `script`,
+      `child-workflow`, then `fail(\`unit ${unit.id} frozenTarget has
+      unsupported kind ${String(target.kind)}\`)`.
+- [x] `src/workflows/freeze/targets/child-workflow.ts` is the **only** module
       that lowers a child workflow; `resolve-steps.ts` and `targets/task.ts`
       call into it and contain no child-lowering logic of their own.
-- [ ] `src/workflows/exec/child-invocation.ts` is pure: it imports only
-      `node:crypto` and `canonicalJson`, and performs no IO.
-- [ ] `src/execution/**` still imports nothing from `src/workflows/**`.
-- [ ] `WORKFLOW_MAX_COMPOSITION_DEPTH` and
+      Verified: both import and call `childWorkflowDispatch`.
+- [x] `src/workflows/exec/child-invocation.ts` is pure: it imports only
+      `node:crypto` and `canonicalJson`, and performs no IO. Verified by
+      reading the file in full: exactly those two imports, no other IO.
+- [x] `src/execution/**` still imports nothing from `src/workflows/**`.
+      Verified via `tests/architecture/import-cycle-ratchet.test.ts`, green.
+- [x] `WORKFLOW_MAX_COMPOSITION_DEPTH` and
       `WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES` live in
       `src/workflows/resource-limits.ts`; `WORKFLOW_MAX_PLAN_BYTES` is
-      **unchanged** at `2 * 1024 * 1024` (A-N6).
-- [ ] `023-child-workflow-runs` is the last entry of `STATE_MIGRATIONS` **and**
+      **unchanged** at `2 * 1024 * 1024` (A-N6). Verified: both constants
+      import from `resource-limits.ts` in `child-workflow.ts`;
+      `WORKFLOW_MAX_PLAN_BYTES = 2 * 1024 * 1024` at `resource-limits.ts:7`.
+- [x] `023-child-workflow-runs` is the last entry of `STATE_MIGRATIONS` **and**
       the last key of `STATE_MIGRATION_SAFETY_BY_ID`, classified `"additive"`,
       and its comment carries §5.1's `parent_unit_id` disambiguation.
-- [ ] `publishChildWorkflowRun`, `childRunsOf`, and `getRunByInvocationKey`
-      have **no** production caller in P3a (§5.5).
+      Verified by reading `migrations.ts:1057-1092` and `:52` in full.
+- [x] `publishChildWorkflowRun`, `childRunsOf`, and `getRunByInvocationKey`
+      have **no** production caller in P3a (§5.5). Verified: `rg` across
+      `src/` finds no call site outside `workflow-runs-repository.ts` itself
+      (two unrelated doc-comment prose mentions only).
 
 **Behavior**
 
-- [ ] Every PRESERVE row of §2 holds, verified by its cited test.
-- [ ] Every NEW row of §2 has at least one test asserting its code **and** its
-      message text.
-- [ ] A fresh run persists `plan_ir_version = 5` and a plan whose
-      `irVersion` is 5 (A-01).
-- [ ] A stored `plan_ir_version = 4` run: `status`, `list`, and `abandon`
+- [x] Every PRESERVE row of §2 holds, verified by its cited test. `bun run
+      check` green end to end (4284/4284 unit, 5760 pass/57 skip/0 fail
+      integration).
+- [x] Every NEW row of §2 has at least one test asserting its code **and** its
+      message text. Covered by the six new suites below (§7's "New suites"
+      table) plus the flipped assertions in §6 — B-18…B-25 specifically live
+      in `tests/workflows/child-workflow-freeze.test.ts` (6
+      `COMPOSITION_INVALID` sites) rather than a separately-named
+      `child-workflow-limits.test.ts`, an organizational difference from
+      that table's forward-looking file list, not a coverage gap.
+- [x] A fresh run persists `plan_ir_version = 5` and a plan whose
+      `irVersion` is 5 (A-01). Verified directly in
+      `v4-atomic-publication-red.test.ts`'s "workflow v4 start publication"
+      test.
+- [x] A stored `plan_ir_version = 4` run: `status`, `list`, and `abandon`
       succeed; `resume`, `next`, `complete`, and `run` fail with
       `WORKFLOW_IR_VERSION_UNSUPPORTED` and §3.2's message (A-03…A-06).
-- [ ] `missing-plan` and `corrupt-plan` still fail with
-      `INVALID_JSON_ARGUMENT` (A-07, A-08).
-- [ ] Both hash prefixes and both `hashVersion` fields read 6, and the unit
-      preimage's field list is exactly §3.3's (A-11, A-12).
-- [ ] Freezing the same source twice is byte-identical at plan hash and unit
+      Covered by `frozen-plan.test.ts` (F-A2) and
+      `plan-v4-retirement.test.ts`.
+- [x] `missing-plan` and `corrupt-plan` still fail with
+      `INVALID_JSON_ARGUMENT` (A-07, A-08). Byte-unchanged sites in
+      `frozen-plan.test.ts` (§6, F-A2).
+- [x] Both hash prefixes and both `hashVersion` fields read 6, and the unit
+      preimage's field list is exactly §3.3's (A-11, A-12). Covered by
+      `hash-v6.test.ts`.
+- [x] Freezing the same source twice is byte-identical at plan hash and unit
       hash (A-13); a changed binding still changes the unit hash (A-14); a
-      changed child plan changes the parent unit hash (A-15).
-- [ ] `computeChildInvocationKey` is deterministic and sensitive to each of its
-      three inputs (A-17…A-19).
-- [ ] A direct `uses: workflows/<ref>` step classifies, decodes, compiles, and
-      freezes to a `child-workflow` target (B-01…B-04).
-- [ ] A task-wrapped workflow target freezes to a `child-workflow` target with
-      `via: "task"` from BOTH a v3 and a v4 task (B-12, B-13).
-- [ ] `rg "cannot compose a nested workflow" src/` is empty (B-16).
-- [ ] The parent's `sourceReadSet` covers every transitive child source file,
+      changed child plan changes the parent unit hash (A-15). A-13/A-14
+      preserved via `task-binding-identity.test.ts`'s B-43 (byte-unchanged);
+      A-15 covered by `hash-v6.test.ts`, unblocked by R1's resolution.
+- [x] `computeChildInvocationKey` is deterministic and sensitive to each of its
+      three inputs (A-17…A-19). Covered by `child-invocation-key.test.ts`.
+- [x] A direct `uses: workflows/<ref>` step classifies, decodes, compiles, and
+      freezes to a `child-workflow` target (B-01…B-04). Covered by
+      `child-workflow-freeze.test.ts` and `characterization-classification.test.ts`
+      (F-B1).
+- [x] A task-wrapped workflow target freezes to a `child-workflow` target with
+      `via: "task"` from BOTH a v3 and a v4 task (B-12, B-13). Covered by
+      `child-workflow-freeze.test.ts` (v3, per F-B7's allowlist rationale)
+      and `task-input-bindings.test.ts` (v4, F-B4).
+- [x] `rg "cannot compose a nested workflow" src/` is empty (B-16). Verified
+      fresh.
+- [x] The parent's `sourceReadSet` covers every transitive child source file,
       all relative (B-05), and a child edited before publication aborts the
-      whole publication with no run row (B-07).
-- [ ] Depth, cycle, and aggregate-bytes violations each fail at freeze with
+      whole publication with no run row (B-07). Covered by
+      `child-freeze-read-set.test.ts`.
+- [x] Depth, cycle, and aggregate-bytes violations each fail at freeze with
       `COMPOSITION_INVALID`, naming the path or the cap, with no run row, no
-      step rows, and no event (B-18…B-25).
-- [ ] A tampered embedded child plan, a tampered child `contentHash`, an
+      step rows, and no event (B-18…B-25). Covered by
+      `child-workflow-freeze.test.ts` (6 `COMPOSITION_INVALID` assertions).
+- [x] A tampered embedded child plan, a tampered child `contentHash`, an
       embedded child with the wrong `irVersion`, and an over-depth embedded
-      child each fail **decode** (A-20…A-23).
-- [ ] `publishChildWorkflowRun` is idempotent on `(parent_run_id,
+      child each fail **decode** (A-20…A-23). Covered by
+      `plan-v5-schema.test.ts`.
+- [x] `publishChildWorkflowRun` is idempotent on `(parent_run_id,
       invocation_key)`, races safely with a concurrent publisher (both outcomes
       asserted), applies no scope-conflict rule, and reads no source
-      (C-07…C-11).
-- [ ] The repository TS API says `spawnedByUnitId`, never `parentUnitId`
-      (C-15, A-N12).
+      (C-07…C-11). Covered by `child-run-publication.test.ts`, including its
+      dedicated `describe("publishChildWorkflowRun — two concurrent
+      publishers (C-09)")` block against the real partial unique index — see
+      also R10's caveat on the guarantee's scope when nested.
+- [x] The repository TS API says `spawnedByUnitId`, never `parentUnitId`
+      (C-15, A-N12). Verified: `parentUnitId` appears in this file only on
+      `ReserveUnitAttemptV4Input` — the unrelated, pre-existing
+      `workflow_run_units` map fan-out concept; every child-run accessor and
+      `PublishChildWorkflowRunInput` field uses `spawnedByUnitId`.
 
 **Gates**
 
-- [ ] Every §7 checkbox ticked.
-- [ ] Every §8 doc updated in the same commit range, examples lint-clean.
-- [ ] No pre-existing test outside §6 was edited.
+- [ ] Every §7 checkbox ticked. 15 of 16 are; the one exception
+      (`workflow-crash-windows.test.ts`'s literal byte-unchanged claim) is
+      left unticked with its reason inline, per R4.
+- [x] Every §8 doc updated in the same commit range, examples lint-clean.
+      Landed in `1f06b22c`; this close-out's own R12 edits further correct
+      three of those same doc sites within the same phase's commit range.
+      `lint-doc-examples: OK` fresh.
+- [x] No pre-existing test outside §6 was edited. Verified by auditing every
+      file in `git diff 7a491ff6 --stat -- tests/` (31 files): each
+      pre-existing file among them is named in §6 (F-A1…F-C1); every
+      remaining file is new, not a flip.
 
 ---
 
@@ -1971,3 +2046,268 @@ this round's `bun run check` sweep touches is unaffected (no pre-existing
 test asserted the prior `ConfigError`/"is not a command target" message —
 `rg "is not a command target" src/ tests/` had exactly one hit, the throw
 site itself, before this fix).
+
+### Close-out — review-round summary and gate status
+
+**Test-review** (ran against the red test suites before Lane A/B/C
+implementation landed):
+
+| Round | Verdict | Confirmed | Commit |
+|---|---|---|---|
+| 1 | CHANGES_REQUIRED | 2 | `15fa41d0` |
+| 2 | CHANGES_REQUIRED | 2 | `850fbc5a` |
+| 3 | CHANGES_REQUIRED | 3 | `08a91854` |
+
+(auto-adjudicated). Fully reconciled against the commits themselves: round
+1's two findings (a fixture-tamper fix on the then-not-yet-written
+`plan-v4-retirement.test.ts`, and landing F-A2 early) needed no Review-log
+entry — neither is a pre-existing-test edit outside §6. Round 2's two
+findings are R1 (opened here, "OPEN" — the `step-work.ts:450` ternary gap)
+and R2 (F-A9/F-A10/F-A11). Round 3's three findings are R1 (resolved, option
+1 chosen), a `tests/workflows/hash-v6.test.ts` / `child-invocation-key.test.ts`
+file-split fix folded into R1's own "Consequence" paragraph rather than
+broken out separately (it is test-infrastructure, not a §6 matter), and a
+determinism fix to `tests/integration/storage/child-run-publication.test.ts`'s
+C-09 concurrent-publisher test — the last of these needed no entry either,
+since that file did not exist before P3a and fixing a not-yet-landed new
+test is Implement's own purview, not a pre-existing-test edit. R3 and R4
+(F-A12, F-A13) were discovered directly by Implement during the same
+pre-implementation hardening window, outside this numbered sequence, and are
+recorded above regardless, per §0's rule that any pre-existing-test edit
+outside §6 needs a Review-log entry no matter who discovers it or when.
+Net: zero outstanding test-review gaps.
+
+**Code-review** (ran against the landed implementation, after `1f06b22c`
+closed P3a's own commit ladder):
+
+| Round | Verdict | Confirmed | Commit |
+|---|---|---|---|
+| 1 | CHANGES_REQUIRED | 4 | `e6a5aee0` |
+| 2 | CHANGES_REQUIRED | 4 | `6ec07482` |
+| 3 | CHANGES_REQUIRED | 1 | *(this close-out)* |
+
+(auto-adjudicated). Round 1's four findings are R5–R8 above. Round 2's four
+findings — `targets/task.ts`'s `bindingsToWithRecord()` round-tripping an
+already-classified v4 task binding through the `with:` grammar (fixed by
+`rebindTaskInputBindings` / the `AuthoredChildInputs` union, the direct
+ancestor of R9 below), `decodeChildWorkflowTarget` re-enforcing only the
+depth bound at decode and not the aggregate-embedded-bytes bound, stale
+RED-phase test narration across five files, and two false claims in
+`workflow-schema.md`'s Child workflows section (authorability in Markdown
+source; a `{from: "params.<name>"}` reference form) — are fixed and verified
+in commit `6ec07482`'s own message (`bunx tsc --noEmit` clean;
+`bun run test:unit` 4284/4284; `bun run test:integration` 5760 pass / 57
+skip). Unlike round 1, round 2's findings were never promoted into this
+Review log; that gap is noted here for the record, and this close-out does
+not re-litigate already-fixed, already-verified findings by reproducing
+their detail a second time — doing so is outside what this close-out was
+asked to do. Round 3's one confirmed finding is R9 below, the v3-task
+sibling of round 2's `bindingsToWithRecord()` fix. Three further findings
+(R10–R12 below) surfaced in an independent final verification pass ahead of
+close-out and are recorded the same way.
+
+**Gate status** (verified fresh against HEAD at `f35d433d`, before this
+close-out's own edits, none of which touch source behavior):
+
+- `bun run check` (lint + `bunx tsc --noEmit` + `bun run test:unit` +
+  `bun run test:integration`): green end to end — `bun run test:unit`
+  4284 pass / 0 skip / 0 fail across 313 files; `bun run test:integration`
+  5760 pass / 57 skip / 0 fail across 432 files; `lint-doc-examples: OK — 0
+  doc-example violations`; no `tsc` errors.
+- `rg "cannot compose a nested workflow" src/`,
+  `rg "WORKFLOW_IR_V4_VERSION" src/ tests/ scripts/`, and
+  `rg 'akm\.workflow\.(unit|gate)\0v5\0' src/ tests/`: all return **zero**
+  hits.
+- `023-child-workflow-runs` is the last entry of both `STATE_MIGRATIONS`
+  (`migrations.ts:1084`) and `STATE_MIGRATION_SAFETY_BY_ID` (`:52`),
+  classified `"additive"`, and its comment (`:1057-1083`) carries §5.1's
+  `parent_unit_id` disambiguation verbatim, including the `spawnedByUnitId`
+  naming rule.
+- `publishChildWorkflowRun` / `childRunsOf` / `getRunByInvocationKey`: `rg`
+  across `src/` finds no call site outside `workflow-runs-repository.ts`
+  itself (two doc-comment prose mentions only) — no production caller
+  (§5.5).
+- Every test file touched since the P2b baseline (`7a491ff6`, 31 files, via
+  `git diff --stat`) is accounted for: each pre-existing file among them is
+  named in §6's flip table (F-A1…F-C1); every remaining file is new, not a
+  flip. No pre-existing test outside §6 was edited.
+- §7 and §9 below are ticked accordingly. One exception:
+  `tests/integration/workflow-crash-windows.test.ts`'s literal
+  **byte-unchanged** claim is superseded by R4 for its two F-A13 sites, so
+  that box is left unticked with its reason inline rather than ticked on a
+  claim that is no longer exactly true.
+
+### R9 — a v3 task's authored `with:` gains reference semantics only when composed into a child workflow; standalone `akm task run` treats the identical value as a literal (RECORDED — decision point handed to P3b/P4)
+
+**Status: RECORDED**, not fixed. The divergence is produced by routing this
+spec's own §4.2 step 7 table specifies, not by an implementation bug, so
+fixing it would mean changing authorized behavior — out of scope for a
+close-out review under §0's rules of engagement ("A defect discovered that
+is not in §6 is recorded in the Review log and left unfixed"). Handed to
+P3b/P4 as a decision point instead.
+
+Found in the task-wrapped composition path,
+`src/workflows/freeze/targets/task.ts:180`. The `AuthoredChildInputs` union
+(`src/workflows/freeze/targets/child-workflow.ts:73-75`) carries two shapes:
+`{kind: "bindings"}` for a v4 task with a declared `inputs:` contract — round
+2 (`6ec07482`) fixed exactly this arm, adding `rebindTaskInputBindings` so an
+already-classified binding is re-bound against the child's `params:` without
+re-deriving its `kind` from the value's shape a second time — and
+`{kind: "with"}` for everything else, including every v3 task
+(`contract === undefined`, per `task.ts:118`), which still routes the task
+document's own `with:` (`PreparedTaskV3Workflow.params`) through the ONE
+value-shape-driven normalizer, `freezeTaskInputBindings` → `normalizeOneEntry`
+(`task-bindings.ts:239`): any plain object whose sole key is `from` becomes a
+live reference resolved against the PARENT workflow's earlier step outputs.
+
+Reproduced: a `version: 3` task with `uses: workflows/inner` and
+`with: {config: {from: "steps.first.output"}}`, composed into a parent
+workflow, freezes to
+`[{"kind":"reference","name":"config","from":"steps.first.output","schema":{"type":"object"}}]`.
+The SAME task run standalone (`akm task run`) passes `task.params` verbatim
+as literal run params (`src/tasks/run/run-workflow-task.ts:121`,
+`params: task.params`) — one authored task document means two different
+things depending on the composition route.
+
+This is spec-conformant: §4.2 step 7's routing table (above, the `"task"`,
+v3 task row: "`PreparedTaskV3Workflow.params` (`prepare/prepare.ts:126`),
+i.e. the task document's `with:`") directs exactly this case through the
+`{kind: "with"}` arm — the same arm a genuinely-authored step `with:` uses
+for the direct-composition form, where shape-driven classification is the
+correct, intended reading (a workflow step author who writes `{from: "..."}`
+does mean a live reference). A v3 task has no `inputs:` contract to trust the
+way round 2's fix lets the v4 arm trust one, so no equivalent of
+`rebindTaskInputBindings` is available for it: the value must be classified
+somehow, and the spec's own routing table already settled on shape-driven
+classification for this arm.
+
+**Decision point for P3b/P4** (two options, neither chosen here):
+
+1. Add a literal-only `AuthoredChildInputs` variant — e.g. `{kind:
+   "literals"}` — that binds every entry as `kind: "literal"`
+   unconditionally, never consulting the value's shape, and route a v3
+   task's `with:` (and a v4 task with no declared `inputs:`) through it
+   instead of `{kind: "with"}`.
+2. Explicitly document, in `docs/reference/workflow-schema.md`'s
+   composition section, that a v3 task's `with:` gains reference semantics
+   the moment it is composed into a parent workflow — different from its
+   meaning under `akm task run` — so the divergence is an authored contract,
+   not a latent defect.
+
+Neither this close-out nor round 2 (`6ec07482`) picked one; doing so changes
+authorized behavior beyond what a close-out review may do under §0.
+
+### R10 — `publishChildWorkflowRun`'s doc comment stated its serialization guarantee unconditionally; `withImmediateTransaction`'s re-entrancy join can silently drop it under a nested DEFERRED transaction (RESOLVED — doc comment tightened)
+
+**Status: RESOLVED**, this close-out. The doc comment on
+`publishChildWorkflowRun` (`src/storage/repositories/workflow-runs-repository.ts`,
+immediately above the method) is tightened; no behavior change.
+
+Found: the comment stated unconditionally that "Because the whole
+SELECT-else-INSERT sequence runs inside one `BEGIN IMMEDIATE` transaction,
+two concurrent callers … serialize on SQLite's write lock." But
+`withImmediateTransaction` (`src/core/state-db.ts:690-726`) has a
+re-entrancy guard (`:698`, "issue #686") that silently JOINS an
+already-open transaction on the connection — no `BEGIN` of its own — when
+`db.inTransaction` is already true. `WorkflowRunsRepository.transaction()`
+is `db.transaction(fn)()`, **DEFERRED** per its own doc comment
+(`state-db.ts:611`), and is already used in production at
+`resumeWorkflowRun` (`src/workflows/runtime/runs.ts:506`) and
+`completeWorkflowStep` (`:782`) — the latter the most plausible place a P3b
+child-spawn gets wired. A `publishChildWorkflowRun` call nested inside one of
+those DEFERRED outer transactions never issues its own `BEGIN IMMEDIATE`; it
+joins the outer transaction instead, so the SELECT can read a stale
+snapshot, both publishers can miss the existing row, and the loser's INSERT
+then hits `idx_workflow_runs_invocation_key` with a raw, unclassified
+`SQLiteError` rather than returning the winner's row — not idempotent, not a
+`UsageError`, contradicting C-09's "never a thrown conflict."
+
+P3a itself is unaffected: `publishChildWorkflowRun` has no production caller
+(§5.5), so this is a doc-and-contract issue, not a live bug. Verified: the
+real concurrent-publisher race (two connections, a worker thread holding the
+write lock) passes exactly as C-09 requires when this call is the OUTERMOST
+transaction on its connection —
+`tests/integration/storage/child-run-publication.test.ts`'s
+`describe("publishChildWorkflowRun — two concurrent publishers (C-09)")`
+block (`:438`) exercises exactly that case — and the transaction body itself
+(`workflow-runs-repository.ts`) is synchronous end to end (SELECT → INSERT →
+`insertSteps` → UPDATE → `insertEventOnce`, no `await` crossing the
+transaction boundary), so the guarantee genuinely holds whenever nothing
+nests it. The gap is specifically the nested case, which no current test
+exercises because no current caller nests it.
+
+**Resolution:** the doc comment now states the guarantee holds only when
+`publishChildWorkflowRun` is the outermost transaction on its connection,
+names `withImmediateTransaction`'s re-entrancy join as the mechanism that
+can break it, and names the two DEFERRED `repo.transaction()` call sites
+(`runs.ts:506`, `:782`) a P3b caller must not nest this call inside without
+its own accounting for the loss of isolation. No catch-and-reselect fallback
+is added: §5.5 already bars this method from having a production caller in
+P3a, so there is no live caller to protect yet, and adding untested new
+functional surface is not this close-out's place — P3b inherits the
+documented constraint and may add the fallback if it needs to nest the call.
+
+### R11 — `publishChildWorkflowRun` hand-rolls its own INSERT instead of extending `insertRun`, duplicating a 13-column list against §5.2's own wording (RECORDED — duplication accepted, not refactored)
+
+**Status: RECORDED**, not fixed. Between the two remediations available —
+extend `insertRun` with optional parentage parameters and call it from
+`publishChildWorkflowRun`, or record the duplication and its
+must-move-together constraint — this close-out takes the second.
+
+Found: `publishChildWorkflowRun` hand-rolls its own
+`INSERT INTO workflow_runs (id, workflow_ref, scope_key, workflow_entry_id,
+workflow_title, status, params_json, current_step_id, created_at, updated_at,
+agent_harness, agent_session_id, checkin_armed_at, parent_run_id,
+parent_unit_id, invocation_key)` rather than extending `insertRun` (the same
+13 columns, minus the three parentage ones) with optional parentage
+parameters. §5.2 itself describes the shape as "`insertRun` extended with
+the three parentage columns" — the landed code took the other path. The two
+13-column lists are in sync today (diffed column by column, in order, while
+preparing this entry) but nothing enforces that they stay in sync: a future
+migration adding a column to `InsertRunInput` / `insertRun` would silently
+leave it unwritten for every child run, and no existing test would catch it
+— the Lane C suite (`tests/integration/storage/child-run-publication.test.ts`)
+asserts the child row's fields explicitly, field by field, rather than
+comparing its shape against a freshly-inserted top-level row's.
+
+**Decision:** recorded rather than refactored. `publishChildWorkflowRun` has
+no production caller in P3a (§5.5), so there is no live behavior at stake;
+extending `insertRun`'s signature is exactly the kind of change P3b will
+need to revisit anyway once it wires a real caller and settles what, if
+anything, a child run's insert needs beyond what is here today (e.g.,
+whether `agent_harness` / `agent_session_id` should ever differ for a
+child) — deciding that shape now, with no caller to drive it, risks
+guessing at something P3b will have to re-derive regardless. Anyone touching
+`InsertRunInput` or `insertRun`'s column list going forward MUST update
+`publishChildWorkflowRun`'s hand-rolled list in the same change; this entry
+is that note.
+
+### R12 — R8's own docs fix overstated the blast radius of a composing step's dispatch failure: the run does not advance past it (RESOLVED — three doc sites reworded)
+
+**Status: RESOLVED**, this close-out. The same three doc sites R8 corrected
+in code-review round 1 are reworded again, this time to state what happens
+to the REST of the run, not just to the composing step's own unit.
+
+Found: `docs/reference/workflow-schema.md`'s "What is not yet available"
+section (mirrored at `docs/reference/workflows.md`'s child-workflow
+paragraph and `CHANGELOG.md`'s `[Unreleased]` entry — all three corrected
+together by R8) stated "Every other step in the same run is unaffected —
+only a step whose own target is `kind: "child-workflow"` hits this." Read
+end to end against the real path: a parent whose first step composes a
+child returns `run.status: "failed"`, `stepsProcessed: 1`, the step itself
+recorded as `failedUnits: 1 (dispatch_error)`. Steps after the composing
+step never dispatch, because the RUN fails at that step. R8's narrower claim
+two sentences earlier — "running a step that composes a child workflow
+fails closed… it fails with `UsageError` code
+`WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`" — is accurate; "every other step…
+is unaffected" reads as though the run continues past the failure to reach
+those other steps, which it does not.
+
+**Resolution:** all three sites are reworded to say only what is true: the
+composing step's own unit fails with `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`
+and the run fails there; a step that already completed keeps its journaled
+results and no other step's own target is touched by the failure, but the
+run does not advance past the composing step. `docs/architecture/workflow-engine.md`
+carries no matching claim (verified: `rg "unaffected" docs/architecture/workflow-engine.md`
+is empty — it documents the plan `irVersion` 5 shape and the decode
+integrity chain, not run-time dispatch behavior) and needs no edit.

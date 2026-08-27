@@ -595,9 +595,24 @@ export class WorkflowRunsRepository {
    * parent freeze, C-11); or touch {@link publishWorkflowRunV4} /
    * `startWorkflowRun` (untouched, C-12).
    *
-   * Because the whole SELECT-else-INSERT sequence runs inside one
-   * `BEGIN IMMEDIATE` transaction, two concurrent callers racing on the same
-   * `(parentRunId, invocationKey)` serialize on SQLite's write lock: the
+   * This method's serialization guarantee holds only when it is the
+   * OUTERMOST transaction on the connection (spec Review log R10,
+   * docs/plans/specs/p3a-plan-v5-child-freeze.md). `withImmediateTransaction`
+   * (src/core/state-db.ts) has a re-entrancy guard: if a transaction is
+   * already open on the connection, it SILENTLY JOINS that transaction
+   * instead of issuing its own `BEGIN IMMEDIATE`.
+   * `WorkflowRunsRepository.transaction()` is DEFERRED (`db.transaction(fn)()`)
+   * and is already used in production at `resumeWorkflowRun`
+   * (src/workflows/runtime/runs.ts:506) and `completeWorkflowStep` (:782) —
+   * a caller that wires this call inside one of those outer transactions
+   * loses the guarantee below: the SELECT can read a stale snapshot, both
+   * publishers can miss the existing row, and the loser's INSERT hits
+   * `idx_workflow_runs_invocation_key` with a raw `SQLiteError` instead of
+   * returning the winner's row.
+   *
+   * As the outermost transaction, the whole SELECT-else-INSERT sequence runs
+   * inside one `BEGIN IMMEDIATE`, so two concurrent callers racing on the
+   * same `(parentRunId, invocationKey)` serialize on SQLite's write lock: the
    * first to acquire it inserts and commits, and the second's own SELECT —
    * which can only run once it has acquired the lock in turn — finds and
    * returns the first's row rather than inserting a duplicate or throwing

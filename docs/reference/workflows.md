@@ -65,7 +65,9 @@ reflects child runs, and surfacing a child's outputs to its parent — is a
 later 0.9.2 increment; today, composing a child workflow freezes and embeds
 cleanly, but actually running a step that composes one fails closed with a
 dedicated `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED` error the moment that
-step's unit is dispatched. Every other step in the same run is unaffected.
+step's unit is dispatched. That failure fails the run at the composing
+step: a step that already completed keeps its journaled results and no
+other step's own target is affected, but the run does not advance past it.
 
 ## Unsupported boundary and 0.9.3
 
