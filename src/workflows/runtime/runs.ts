@@ -1067,12 +1067,30 @@ function buildWorkflowRunDetail(
 /**
  * Build the parent-child status tree rooted at `rootRunId`, recursively, for
  * whatever run's children are being listed (`forRunId`) — P3b, spec §4.5.
- * `rootRunId` is threaded unchanged through the recursion: every blocked
- * node's `resume.then` re-drives the SAME top-of-query run regardless of
- * nesting depth, because re-driving the root is what cascades back down
- * through every intermediate composing step (a blocked child blocks its own
- * parent's run too, transitively, row A-21 applied recursively) — never each
- * node's own immediate parent, which the tree's caller has no command for.
+ * `rootRunId` is threaded unchanged through the recursion, so every blocked
+ * node's `resume.then` names the SAME top-of-query run regardless of nesting
+ * depth: `akm workflow resume <rootRunId> && akm workflow run <rootRunId>` —
+ * never each node's own immediate parent, which the tree's caller has no
+ * command for.
+ *
+ * That command is sufficient to clear a block exactly ONE level deep (the
+ * root's own composing step blocked directly on this node) but NOT deeper
+ * (code-review round 4, finding 6 / Review log R6 — corrects a false claim
+ * this comment used to make here). Re-driving the root does **not** cascade
+ * back down through every intermediate composing step: `driveChildWorkflowUnit`
+ * (child-workflow.ts) never re-drives a child whose OWN status is `blocked`
+ * (row A-22) — no lease is even taken — so a re-drive just RE-OBSERVES the
+ * still-blocked status and re-propagates the block upward (an intermediate
+ * run is always blocked when a descendant is, row A-21, applied
+ * recursively), never reaching the deepest blocked node. Clearing a
+ * depth-2-or-deeper block requires resuming EVERY blocked run in the chain,
+ * deepest first, then re-running only the root — see "Recovering a blocked
+ * child" in docs/guides/run-workflows.md and "Blocked-child recovery" in
+ * docs/reference/workflow-schema.md for the worked multi-level sequence.
+ * `resume.then` is deliberately not widened to enumerate that chain (no
+ * envelope change, no new field) — the docs carry the multi-level sequence
+ * instead.
+ *
  * Absent, never `[]`, when `forRunId` has no children (P3a's `childRunsOf`
  * order: `created_at, id`).
  */

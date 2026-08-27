@@ -16,7 +16,8 @@ declaration), `src/workflows/freeze/child-output-references.ts` (new — the
 freeze-time reference check), `src/core/state/migrations.ts` (migration
 `024-workflow-run-outputs`),
 `src/storage/repositories/workflow-runs-repository.ts` (the `outputs_json`
-column and the three child-excluding scope queries),
+column and the four child-excluding scope queries — see B-N10, amended by
+Review log R2 from three to four),
 `src/commands/workflow/plan.ts` + `src/commands/workflow-cli.ts` (`akm workflow
 plan`), the §6 authorized behavior flips, and the §8 docs.
 
@@ -419,9 +420,9 @@ example against the real command tree. So: the verb is
 `akm workflow plan <ref> [--format json]`, and every doc example uses that
 spelling.
 
-**B-N10 — a child run must be invisible to the three scope queries.**
+**B-N10 — a child run must be invisible to the FOUR scope queries.**
 P3a §5.2 pins `run.scopeKey` = the PARENT's `scope_key` so a status tree can
-find children in one scope. Three pre-existing queries select by scope and would
+find children in one scope. Four pre-existing queries select by scope and would
 therefore start returning child rows:
 
 | Site | Consequence if unfiltered |
@@ -429,8 +430,9 @@ therefore start returning child rows:
 | `listRuns` (`workflow-runs-repository.ts:372`) | `akm workflow list` shows each child as a peer of its parent; `--active` double-counts one logical run |
 | `getActiveRunRowForScope` (`:352`) | `akm workflow run workflows/<childRef>` ATTACHES to a child a parent is currently driving (`resolveRunSpecifier`, `runs.ts:900,917`) — two drivers, one run |
 | `findActiveOrBlockedRunForScope` (`:415`) | `akm show`'s active-run guard (`getActiveWorkflowRun`, `runs.ts:1113-1121`) reports a child as "the" active run |
+| `findActiveRunForScope` (`:355`) | **Found by code review, round 4, finding 2 (Review log R2); missed by the original draft of this row.** `publishWorkflowRunV4`'s (`:593`) own "already has an active run in this scope" start guard, reached from `startWorkflowRun` when `resolveRunSpecifier`'s OWN (already-filtered) `getActiveRunRowForScope` check above found no top-level run to attach to. Left unfiltered, this site does not merely fail to exclude a child the way the other three would — it actively MISFIRES: `akm workflow run workflows/<childRef>` on a scope occupied only by a parent-driven child finds nothing to attach to (the site above correctly excludes the child), proceeds to start fresh, and then THIS site finds the child and refuses with `RESOURCE_ALREADY_EXISTS` naming the CHILD's own run id — inviting the operator to `akm workflow abandon` a run a parent is actively driving. |
 
-All three gain `AND parent_run_id IS NULL`. For any database with no child rows
+All four gain `AND parent_run_id IS NULL`. For any database with no child rows
 — every pre-P3b database and every non-composing workflow — the result set is
 **byte-identical**, which is what keeps these Stable-tier surfaces preserved.
 `listRuns` additionally gains an opt-in `includeChildren` filter, surfaced as
@@ -881,6 +883,7 @@ hashed artifact. Nothing needs to change there — assert it.
 | aborted mid-drive | `ok: false` | `aborted` | not finalized — `driveRun` breaks on `options.signal.aborted` | left active/resumable |
 | never reached (publication/integrity) | `ok: false` | `child_workflow_publish_failed` | `failed` | `failed` |
 | lease held by another driver | `ok: false` | `child_workflow_busy` | `failed` | `failed` |
+| any other throw out of the drive or its post-drive re-read (Review log R1) | `ok: false` | `child_workflow_drive_failed` | `failed` | `failed` |
 
 Failure-reason vocabulary (exact strings, and **none** is a member of
 `PROGRAM_RETRY_REASONS`):
@@ -890,7 +893,18 @@ child_workflow_failed
 child_workflow_blocked
 child_workflow_publish_failed
 child_workflow_busy
+child_workflow_drive_failed
 ```
+
+`child_workflow_drive_failed` is the catch-all sibling of
+`child_workflow_publish_failed`: added by Review log **R1** (code-review round
+4) once §3.5's original "classified by the existing `dispatch_error`
+handling" premise was found false — no handling exists at the dispatch seam
+for a throw out of this step, so every non-lease-busy throw between the drive
+call and the post-drive re-read must be mapped to an honest `UnitOutcome`
+here, never rethrown. See R1 for the full failure-scenario evidence and why
+`driveChildWorkflowUnit` (not the dispatch seam) is the correct place to catch
+it.
 
 `child_workflow_failed` error text (exact shape):
 
@@ -944,8 +958,15 @@ maps to `EXIT_CODES.GENERAL` (`workflow-cli.ts:208-210`).
 - A live foreign lease on the CHILD makes `acquireRunLease` throw its existing
   `UsageError`. `driveChildWorkflowUnit` catches exactly that shape and converts
   it to `child_workflow_busy`, preserving the holder/expiry text (row A-27).
-  It catches nothing else: any other throw out of `runWorkflowSteps` propagates
-  and is classified by the existing `dispatch_error` handling.
+  **Corrected by Review log R1** (this premise was false as originally
+  written): it does **not** catch "nothing else" and let the remainder
+  propagate to "the existing `dispatch_error` handling" — no such handling
+  exists at the dispatch seam (`dispatchJournaledAttempt` awaits
+  `driveChildWorkflowUnit` with no `try` of its own, §3.2). Every OTHER throw
+  — out of `runWorkflowSteps` itself, or out of the post-drive
+  `repo.getRunById` re-read (spec step 7) — is also caught, inside the SAME
+  `try` block, and mapped to `child_workflow_drive_failed` (§3.4). Nothing is
+  ever rethrown out of `driveChildWorkflowUnit`.
 
 ### 3.6 Why `hashVersion` stays 6
 
@@ -1545,6 +1566,78 @@ so does not belong in it, by that list's own stated rule (`:411-413`). The
 shape-registry guard it implements is instead satisfied by F-B2's envelope arm,
 which exercises the real `workflow-plan` shape end to end. §7 gate.
 
+### F-B6 — `tests/integration/state-migration-023.test.ts` (Lane B) — retroactive, code-review round 4 finding 4 / Review log R4
+
+`tests/integration/state-migration-023.test.ts` is a **P3a**-owned file (Lane
+C, added `497d3760`), not on Lane B's §4.1 list — but P3b's own migration
+`024-workflow-run-outputs` (§4.3) is authorized to (and, per §7/§9, MUST) land
+directly after `023-child-workflow-runs` in both registries, which falsifies
+the file's original claim that 023 is the FINAL entry of each. This is exactly
+the §0 case ("preserving a behavior and implementing an authorized change
+conflict — stop and record it"): the edit is an unavoidable, mechanical
+consequence of the authorized migration-024 addition, not an improvement made
+in passing.
+
+Two finality assertions, at (pre-existing) `:98-103` and `:105-111`, are
+replaced with position-RELATIVE assertions — 023 immediately follows 022, in
+both registries, still classified additive — mirroring the exact pattern this
+same file already used one migration earlier for 022 relative to 021:
+
+```ts
+test("appears in STATE_MIGRATIONS directly after 022-workflow-unit-attempts", () => {
+  const ids = STATE_MIGRATIONS.map((migration) => migration.id);
+  const index = ids.indexOf(MIGRATION_ID);
+  expect(index).toBeGreaterThan(-1);
+  expect(ids[index - 1]).toBe(PRECEDING_MIGRATION_ID);
+});
+
+test("is classified additive in STATE_MIGRATION_SAFETY_BY_ID, directly after 022-workflow-unit-attempts", () => {
+  const classifiedIds = Object.keys(STATE_MIGRATION_SAFETY_BY_ID);
+  const index = classifiedIds.indexOf(MIGRATION_ID);
+  expect(index).toBeGreaterThan(-1);
+  expect(classifiedIds[index - 1]).toBe(PRECEDING_MIGRATION_ID);
+  expect(getStateMigrationSafety(MIGRATION_ID)).toBe("additive");
+});
+```
+
+A one-line comment directly above the first test names the reason
+("Not asserted as the final entry: P3b's migration 024-workflow-run-outputs
+… is authorized to append after this one"). Every other test in the file —
+the additive-schema, additive-SQL, migration-comment, and partial-unique-
+index describes — is **byte-unchanged**.
+
+Landed in `77c656ea` (`docs(p3b): close out child-executor phase`) without a
+§6 entry — the commit's own message already named the change and its reason
+correctly, but the spec was never updated to match, which is the review-
+blocking gap this entry closes retroactively. The FINALITY property the
+original `.at(-1)` pins protected is not lost, only relocated: the new
+`tests/integration/state-migration-024.test.ts` (F-B7 below; code-review
+round 4 finding 5 / Review log R5) pins `024-workflow-run-outputs` as the
+migration that actually owns "final" now.
+
+### F-B7 — `tests/integration/storage/workflow-runs-repository.characterization.test.ts:113` (Lane B) — retroactive, code-review round 4 finding 4 / Review log R4
+
+Also a **P3a**-owned file (added `1adee4ef`), not on Lane B's §4.1 list.
+`getRunById returns the full row verbatim` exhaustively lists every
+`workflow_runs` column; P3b's migration `024-workflow-run-outputs` (§4.3)
+adds one (`outputs_json`), so the row's own commit message calls this "the
+direct, mechanical consequence of an authorized change" — the same §0 case
+as F-B6, and structurally identical to migration 023's own P3a-era precedent
+three lines above in the same object literal (`parent_run_id` /
+`parent_unit_id` / `invocation_key`, added when 023 landed). One field added
+directly after the existing `invocation_key: null,` line, with a comment
+naming the migration and the spec section:
+
+```ts
+// Resolved declared outputs: (migration 024, P3b §4.3): NULL until a
+// run whose plan declares outputs: completes.
+outputs_json: null,
+```
+
+No other line in the file changed. Landed in `c1dee6c4` (`feat(p3b): workflow
+outputs, the run status tree, and akm workflow plan`) without a §6 entry —
+closed retroactively here, same as F-B6.
+
 ### F-C1 — `tests/fixtures/execution-contracts/workflows/manifest.json` (Lane C)
 
 One new top-level key, `childWorkflow` (§5.5). The `schemaVersion`,
@@ -1805,7 +1898,7 @@ The `workflow-runs-repository.ts` line numbers this spec cites are stated
 | **B-N7** | **CONFIRMED** | `maxSteps` accounting at `run-workflow.ts:971-976`, consumed at `:1126` via `STEP_FINISHED_KINDS` (`:747`); the retry loop at `:245-275`. |
 | **B-N8** | **CONFIRMED** (one citation AMENDED) | `StepWorkUnit.unitId` `step-work.ts:139`, `journalBaseId` `:146`, derived `:551`; `attemptIdFor` returns `journalBaseId` at `native-executor.ts:840`, used at `:882`. **AMENDED:** the bare `:1040` cite for `repo.getUnit` → `workflow-runs-repository.ts:1055`. |
 | **B-N9** | **CONFIRMED** | `GLOBAL_OUTPUT_ARGS` `cli/shared.ts:163`; `defineJsonCommand` splices it at `:221`. No `--json` boolean exists anywhere. |
-| **B-N10** | **CONFIRMED** | `getActiveRunRowForScope` `:352`, `listRuns` `:372`, `findActiveOrBlockedRunForScope` `:415` — all three still scope-only; `getActiveWorkflowRun` reads the third at `runs.ts:1117`; the attach path is `runs.ts:900,917`. |
+| **B-N10** | **CONFIRMED as drafted, INCOMPLETE as drafted** | `getActiveRunRowForScope` `:352`, `listRuns` `:372`, `findActiveOrBlockedRunForScope` `:415` — all three still scope-only; `getActiveWorkflowRun` reads the third at `runs.ts:1117`; the attach path is `runs.ts:900,917`. **Post-implementation code review (round 4, finding 2 / Review log R2) found a FOURTH site this row never named:** `findActiveRunForScope` (`:355`), `publishWorkflowRunV4`'s (`:593`) own start guard — reached from `startWorkflowRun` exactly when the three-site check above found nothing to attach to. B-N10 in §1.6 above is amended in place to four sites; this adoption-time verification of the original three-site draft stands unedited as the historical record of what was checked at `c5432167`. |
 | **B-N11** | **CONFIRMED** | The P3a guard is live at `unit-dispatch.ts:173-187`; the code is at `errors.ts:139` and `USAGE_HINTS:216`; the two stale comments to correct are `step-work.ts:452-460` and `native-executor.ts:999-1008`. F-A1's line ranges in `child-workflow-dispatch-guard.test.ts` (`:5-36`, `:52-70`, `:82-92`, `:94-102`, `:104-111`, `:113-134`) are all exact. |
 | **B-N12** | **CONFIRMED** | `isTruncatedEvidence` `runs.ts:611`, `clipStepEvidenceForPersistence` `:642`; `driveRun`'s `liveEvidence` doc block `run-workflow.ts:942-959` still says in terms a later invocation "reads the rows, where a reference into a truncated artifact fails loudly by name". |
 | **B-N13** | **CONFIRMED** | `completeWorkflowStep` `:693`; its write transaction `:782`; `deriveRunState(refreshedSteps)` `:838`; `appendEvent` outside it at `:867`. |
@@ -1875,3 +1968,293 @@ the child-plan recursion. Every §4.1 edit to that function is to its
 ---
 
 ## Review log
+
+### R1 — a throw out of the child drive escaped `dispatchJournaledAttempt`, leaving the parent's composing attempt row stuck `running` and reporting a false "unit was not dispatched" diagnostic (RESOLVED — code-review round 4, finding 1)
+
+**Status: RESOLVED**, code-review round 4.
+
+Found by code review: `driveChildWorkflowUnit` (`child-workflow.ts`) caught
+only `isLeaseBusyError` around the drive call and rethrew everything else, on
+the strength of §3.5's claim that other throws are "classified by the
+existing `dispatch_error` handling". **That handling does not exist at this
+seam.** `dispatchJournaledAttempt` (`native-executor.ts`, the §3.2 branch)
+awaits `driveChildWorkflowUnit` with no `try` of its own, so a throw skips
+`finishJournaledDispatch` entirely and the parent's attempt row — reserved
+moments earlier by `reserveJournaledDispatch` — is never finished. The throw
+then escapes `runUnit` into `scheduleUnits` → `concurrentMap`
+(`src/core/concurrent.ts`), whose worker loop wraps `fn` in a bare
+`try {} catch {}` and leaves the result slot `undefined` by design (its own
+doc: "A thrown `fn` is SWALLOWED"). `executeStepPlanInConnection` then maps
+that `undefined` to `{failureReason: "aborted", error: "unit was not
+dispatched (aborted or scheduler failure)"}` — a diagnostic that is not just
+generic but actively FALSE (the unit WAS dispatched; the real cause was
+silently discarded).
+
+Failure scenario, reproduced deterministically: a GitHub-shaped parent
+composing a Markdown child that declares `outputs: {report: {from:
+steps.work.output.missing}}`. The child completes its only step; Lane B's
+`completeWorkflowStep` then tries to resolve the declared output, fails
+(missing property), and throws `UsageError("WORKFLOW_OUTPUT_INVALID", …)`
+INSIDE the child's own completion transaction — which propagates out of the
+child's own `runWorkflowAttempt`, out of `driveWithRealEngine`, and (before
+this fix) out of `driveChildWorkflowUnit` itself. Observed state: the parent
+run is `failed`; the composing unit's attempt row is stuck `status:
+"running"`, `failure_reason: null`, `finished_at: null`, with a live 90s
+claim; the child run row is published and left `active` (its own completion
+transaction rolled back, per B-N13 — fail-before-mutation held on the CHILD
+side); the step summary says the unit was never dispatched. A subsequent
+resume + re-drive reproduces the IDENTICAL false diagnostic — the composition
+is unrecoverable by inspection, since nothing in the observable state points
+at the real cause.
+
+Other reachable throws on the same (unwrapped) path, none matching
+`isLeaseBusyError`'s "is already being driven by engine" text: the child's
+own `LeaseHeartbeat.assertAlive()` firing mid-drive (a genuinely stolen CHILD
+lease, distinct from A-30's chained-parent-abort case, which does not throw
+— see the code comment at the fix site for why); `requireExecutableWorkflowPlan`
+rejecting a tampered child `plan_json`; and `runWorkflowAttempt`'s "is
+blocked/failed and cannot be executed" guard firing when the child's status
+changes between this function's own step 5 read and the drive's internal
+`getNextWorkflowStep` re-read.
+
+Resolution: `driveChildWorkflowUnit` now wraps BOTH the `driveWithRealEngine`
+call AND step 7's `getRunById` re-read in the SAME `try`, so every throw
+between them produces a `UnitOutcome` instead of escaping. The
+`isLeaseBusyError` arm is unchanged (`child_workflow_busy`, preserving the
+holder/expiry text); every other throw is mapped to a new sibling failure
+reason, `child_workflow_drive_failed` — same shape as
+`child_workflow_publish_failed`, carrying `errorMessage(err)`, the child run
+id, and the child ref (both already known at this point, unlike the publish
+arm) — and returned, never rethrown. This restores `finishJournaledDispatch`
+on every path: the parent's attempt row is always finished, with an honest
+reason.
+
+§3.4 (failure-reason vocabulary + status-mapping table) and §3.5
+(cancellation and leases) are corrected in place to state the new contract
+and retract the false "classified by the existing `dispatch_error` handling"
+premise. No `§6` flip was needed: `rg` across every P3b test file for
+`driveChildWorkflowUnit` combined with `.rejects`/`toThrow` found zero
+call sites depending on the old rethrow behavior, and the one test that
+exercises a REAL abort-vs-lost-lease distinction near this code
+(`child-cancellation.test.ts`'s A-30) throws from the PARENT's own
+`heartbeat.assertAlive()` call sites inside its OWN `driveRun`, strictly
+AFTER `driveChildWorkflowUnit` has already returned a normal outcome — a
+different code path this fix does not touch (traced in full during review;
+recorded here so a future reader does not have to re-derive it).
+Verification: `bunx tsc --noEmit` clean; every Lane A/C child-execution suite
+green; a `dispatch_error`-labeled negative-control assertion
+(`child-execution.test.ts`, row A-20's "never `dispatch_error`" check) is
+unaffected since it targets a different failure reason entirely.
+
+### R2 — `findActiveRunForScope`, the top-level start guard, was not filtered on `parent_run_id IS NULL` — a FOURTH site B-N10 never named (RESOLVED — code-review round 4, finding 2)
+
+**Status: RESOLVED**, code-review round 4.
+
+Found by code review: B-N10 (§1.6) named three scope-keyed queries a child
+run must be invisible to and filtered all three. It missed a fourth:
+`findActiveRunForScope` (`workflow-runs-repository.ts`), the guard
+`publishWorkflowRunV4` uses to refuse starting a second active run of the
+same ref in the same scope. Once P3b publishes child runs — which carry the
+PARENT's `scope_key` (P3a §5.2) — this uncaught site actively misfired: on a
+scope occupied only by a parent-driven child, `resolveRunSpecifier`'s OWN
+(already-filtered) `getActiveRunRowForScope` check correctly finds nothing to
+attach to and proceeds to start a fresh top-level run, and THEN
+`findActiveRunForScope`, unfiltered, finds the child and refuses with
+`RESOURCE_ALREADY_EXISTS` naming the CHILD's own run id — inviting the
+operator to `akm workflow abandon` a run a parent is actively driving. This
+violates row B-42 end to end, not merely in the narrow sense the original
+B-42 test checked (which asserted only `getActiveRunRowForScope(...) ===
+undefined` — a real property, but one layer short of the actual bug).
+
+Resolution: `findActiveRunForScope`'s `SELECT` gains `AND parent_run_id IS
+NULL`, identical in form to the other three B-N10 sites. B-N10 in §1.6 is
+amended from three sites to four, with the new site's row explaining the
+misfire (not merely "would return a child") in full; the top-of-file owner-
+artifacts line and the §10.1 head-reconciliation table's B-N10 row are cross-
+referenced accordingly (the latter is left as an accurate historical record
+of what was checked at adoption, with a note pointing at this entry rather
+than being silently rewritten). No `§6` flip was needed:
+`tests/integration/storage/child-run-publication.test.ts`'s only other
+`findActiveRunForScope` assertion (its C-10 test) seeds its "occupying-run"
+fixture as a genuine top-level run via the plain `seedWorkflowRun` helper
+(`parent_run_id` implicitly NULL), so it continues to match and stays green
+unmodified — verified by inspection and by the green suite. Row B-42's own
+test (`tests/integration/workflows/status-tree.test.ts`) is extended (not
+merely left as-is) with a full end-to-end `startWorkflowRun` drive against a
+real, on-disk, freshly-loaded child ref, asserting the result is a NEW top-
+level run id distinct from both the child's and the parent's — closing the
+gap between "the narrow property held" and "the operator-visible bug is
+fixed". `publishChildWorkflowRun` itself is untouched and, per P3a row C-10,
+deliberately never consults this guard.
+
+### R3 — `workflow plan`'s text-vs-JSON selection read the citty LEAF arg, violating (and breaking under) the one-parse rule (RESOLVED — code-review round 4, finding 3)
+
+**Status: RESOLVED**, code-review round 4.
+
+Found by code review: `workflowPlanCommand.run` selected its output branch
+with `getStringArg(args, "format") === undefined`, reading the citty-parsed
+LEAF `format` arg directly. `GLOBAL_OUTPUT_ARGS`'s own doc comment
+(`src/cli/shared.ts`) states the rule this violates: "no command body may
+read these args" — the one-parse rule, because citty parses each command
+level against only that level's own remaining argv. A GLOBAL, pre-subcommand
+`--format json` (the position every other multi-word akm invocation
+supports, e.g. `akm --format json workflow list`) is consumed by the ROOT
+command's own declared `format` arg before the `workflow`/`plan` subcommand
+tokens are even resolved, so the LEAF's `args.format` reads `undefined` in
+that case too — indistinguishable, at the leaf, from "no format was named at
+all". Reproduced live: `akm --format json workflow plan <ref>` printed the
+human TEXT summary at exit 0 even though `getOutputMode().format` was already
+`"json"`, while the control `akm --format json workflow list` correctly
+emitted JSON (that verb defers unconditionally to the shared `output()`
+dispatcher, which reads the singleton, not the leaf arg). An explicitly
+requested JSON envelope (row B-47) silently became text, and
+`tests/commands/workflow-plan.test.ts` never exercised the global flag
+position, so nothing caught it.
+
+Resolution: the branch now detects "the caller named no format at all" with
+`getParsedInvocation().getFlagValue("--format") === undefined`
+(`src/cli/invocation.ts`) — the explicit-format signal threaded off the
+invocation singleton, the SECOND of the two options this finding offered.
+The finding's first-listed option, `parseFlagValue(process.argv, "--format")`
+(`src/output/context.ts`), was tried first and is functionally equivalent —
+same canonical, position-independent scan, same argv — but `bun run lint`'s
+`lint-process-argv.ts` boundary rejected it: "Only `src/cli.ts` and
+`src/cli/invocation.ts` may read `process.argv` directly." `getParsedInvocation()`
+is that boundary's sanctioned indirection, and it agrees with
+`getOutputMode()` by construction for the same reason: `src/cli.ts`'s startup
+calls `setParsedInvocation(process.argv)` immediately before
+`initOutputMode(process.argv, …)`, from the identical (already-normalized)
+argv value, so the two singletons are always built from the same snapshot.
+The stale comment claiming `args.format` is `undefined` "exactly when the
+caller passed no `--format` at all — never when they passed `--format json`
+explicitly" is rewritten to state (and explain) the actual failure mode
+instead. A regression suite is added to
+`tests/commands/workflow-plan.test.ts`: the global-position invocation now
+emits the JSON envelope; the existing leaf-position invocation is
+unaffected (both positions now agree, asserted directly against each other);
+and the `akm --format json workflow list` control is pinned alongside it for
+contrast. `getStringArg` remains imported and used for `workflow run`'s
+`--max-steps`/`--max-retries`/`--timeout` (ordinary leaf-only args, outside
+`GLOBAL_OUTPUT_ARGS` and therefore outside the one-parse rule) — only the
+`format` read was wrong.
+
+### R4 — two PRE-EXISTING (P3a) tests were edited by P3b commits with no `§6` entry, a review-blocking gap under `§0`/`§9` (RESOLVED — code-review round 4, finding 4)
+
+**Status: RESOLVED**, code-review round 4.
+
+Found by code review: `§0` states that editing a pre-existing test `§6` does
+not name is a review-blocking violation, and that a conflict between
+preserving a behavior and an authorized change must be "stopped and
+recorded" in the Review log. Two P3a-owned files were edited across the P3b
+commit range with neither happening:
+
+- `tests/integration/state-migration-023.test.ts` (added by P3a `497d3760`,
+  weakened by P3b `77c656ea`): both `ids.at(-1)`/`classifiedIds.at(-1)`
+  finality pins were replaced with `indexOf`-relative checks, because P3b's
+  own migration `024-workflow-run-outputs` is authorized to land after 023.
+- `tests/integration/storage/workflow-runs-repository.characterization.test.ts:113`
+  (added by P3a `1adee4ef`, edited by P3b `c1dee6c4`): the exhaustive
+  `getRunById` characterization row gained `outputs_json: null,` for the
+  same migration.
+
+Both edits are unavoidable, mechanical consequences of authorized §4.1/§4.3
+changes — exactly the case `§0` says to stop and record — yet `docs/plans/
+specs/` was untouched across the whole range and this spec's Review log was
+empty before this entry. Both landing commits' own messages already
+correctly named the change and its reason (`77c656ea`: "Narrowed the two
+assertions to what the test actually owns … without asserting global
+finality"; `c1dee6c4`: "Two pre-existing, non-P3b-owned tests are touched
+only as the direct, mechanical consequence of an authorized change") — the
+process gap was narrowly that this spec was never updated to match, which
+left both edits `§6`-silent on the one document `§0`/`§9` designate as
+authoritative.
+
+Resolution: both files are added to `§6` as new flip entries — **F-B6**
+(`state-migration-023.test.ts`, with the exact old and new expectations) and
+**F-B7** (`workflow-runs-repository.characterization.test.ts:113`, with the
+exact added field and comment) — rather than left as bare Review-log
+mentions, so a future reviewer finds them where every other flip lives. See
+R5 immediately below for the coverage consequence F-B6 identifies (the
+finality property state-migration-023.test.ts used to pin needed a new
+home).
+
+### R5 — the migration-registry gate's finality pin was deleted by R4's fix and nothing replaced it — migration `024-workflow-run-outputs` had zero direct assertions (RESOLVED — code-review round 4, finding 5)
+
+**Status: RESOLVED**, code-review round 4.
+
+Found by code review, as a direct consequence of R4: weakening
+`state-migration-023.test.ts` (F-B6) deleted the only finality/ordering pin
+in the repository for the tail of `STATE_MIGRATIONS`/
+`STATE_MIGRATION_SAFETY_BY_ID`, and nothing replaced it for the migration
+that actually owns "final" now. `rg "024-workflow-run-outputs" tests/`
+returned exactly two hits, both prose comments (`state-migration-023.test.ts`'s
+own explanatory comment, and a docstring mention in
+`workflow-outputs-runtime.test.ts`) — zero assertions. `§7`'s own
+preservation-gate checklist and `§9`'s acceptance criteria both claim
+"`024-workflow-run-outputs` is the last entry of `STATE_MIGRATIONS` **and**
+the last key of `STATE_MIGRATION_SAFETY_BY_ID`, classified `"additive"`" —
+a claim nothing in the test suite directly checked. A future migration
+inserted out of order, or misclassified, would pass every existing test.
+
+Resolution: `tests/integration/state-migration-024.test.ts` (new; not a `§6`
+flip — it adds no code to a pre-existing file) mirrors
+`state-migration-023.test.ts`'s structure one migration later: `024-
+workflow-run-outputs` is asserted as the FINAL entry of `STATE_MIGRATIONS`
+and the FINAL key of `STATE_MIGRATION_SAFETY_BY_ID`, directly after `023-
+child-workflow-runs` in both (the `.at(-1)`/`.at(-2)` pins F-B6 removed from
+the 023 file, relocated here where they now belong), `getStateMigrationSafety
+(...)` returns `"additive"`, the migration's SQL is additive-only (no
+DROP/RENAME), a fresh `state.db` carries `workflow_runs.outputs_json` as a
+nullable TEXT column outside the primary key, and an existing pre-024
+database migrates additively with existing rows preserved and `outputs_json`
+NULL. Verified: `bunx tsc --noEmit` clean; the new suite passes; `state-
+migration-023.test.ts` (as narrowed by F-B6) stays green alongside it.
+
+### R6 — the status tree's `resume.then` doc comment claimed re-driving the root "cascades back down through every intermediate composing step"; it does not, past depth 1 (RESOLVED — code-review round 4, finding 6)
+
+**Status: RESOLVED**, code-review round 4.
+
+Found by code review: `childRunTree`'s doc comment (`src/workflows/runtime/
+runs.ts`) asserted that re-driving the root "cascades back down through
+every intermediate composing step", offered as the justification for why
+every blocked node's `resume.then` names only `<rootRunId>` regardless of
+nesting depth. This is false for composition depth ≥ 2.
+`driveChildWorkflowUnit` never re-drives a child whose own status is already
+`blocked` (row A-22 — no lease is even taken); an intermediate run is always
+blocked when a descendant is (row A-21, applied recursively). So re-driving
+the root just RE-OBSERVES an intermediate child's still-blocked status and
+re-propagates the block upward — it never reaches the deepest blocked node.
+
+Failure scenario: root `R` composes `C`, `C` composes `G`, `G` blocks (so `C`
+blocks too, transitively, then `R` blocks). The operator follows `G`'s
+printed `then` field exactly as documented — resumes `G`, then resumes and
+runs `R`. `R`'s composing step re-publishes/re-drives `C` (same
+`invocation_key`, idempotent); `driveChildWorkflowUnit` reads `C.status ===
+"blocked"`, skips the drive entirely, and maps straight to
+`child_workflow_blocked` again with the SAME notes — `R` re-blocks with
+identical output. `G` is never reached, `C`'s own composing step (which is
+what would actually re-drive `G`) was never itself resumed, and the printed
+command cannot break the loop by construction:
+`resumeWorkflowRun` (`runs.ts`) only reopens the run it is called on, never a
+descendant.
+
+Resolution: chosen the smaller of the two options this finding offered — no
+envelope/field change (`resume.then` stays exactly as shaped today; widening
+it to enumerate every ancestor would be a new field on a phase whose Stable-
+tier guard already governs the rest of this surface, for a case the docs can
+cover just as well). `childRunTree`'s doc comment is corrected in place: it
+now states plainly that the printed command clears exactly one level, states
+the mechanism (row A-22 + row A-21 applied recursively) that makes a deeper
+cascade impossible, and points at the docs for the multi-level sequence
+instead of overclaiming inline. Both doc sites named by this finding gain a
+"Nested blocks (composition depth 2+)" subsection immediately after the
+existing three-command sequence: `docs/guides/run-workflows.md`'s
+"Recovering a blocked child", and `docs/reference/workflow-schema.md`'s
+"Blocked-child recovery" — both stating the rule verbatim: resume every
+blocked run in the chain, deepest first, then re-run only the root, with a
+worked `<grandchildRunId>`/`<childRunId>`/`<rootRunId>` example. Verified:
+`docs/architecture/workflow-engine.md` and `CHANGELOG.md` were checked and
+make no cascade claim of their own (`rg cascade` across `docs/` before this
+fix found only this doc comment's own language and unrelated route-skip
+prose in `workflow-schema.md`), so no further doc site needed correction;
+`scripts/lint-doc-examples.ts` passes against both edited doc files.

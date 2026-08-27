@@ -352,6 +352,21 @@ export class WorkflowRunsRepository {
 
   // ── reads (fully materialised) ─────────────────────────────────────────────
 
+  /**
+   * The top-level start guard `publishWorkflowRunV4` uses to refuse starting
+   * a SECOND active run of the same ref in the same scope. `AND
+   * parent_run_id IS NULL` (B-N10's FOURTH site, code-review round 4 finding
+   * 2 / Review log R2): a child run carries the PARENT's `scope_key` (P3a
+   * §5.2), so once a parent publishes a child of some ref, starting a
+   * TOP-LEVEL run of that same ref in that scope must never resolve to the
+   * child — the child is not "already an active run in this scope" from a
+   * fresh top-level invocation's point of view; the PARENT, if anything, is.
+   * Before this filter, `publishWorkflowRunV4` refused with
+   * `RESOURCE_ALREADY_EXISTS` naming the CHILD's own run id, instructing the
+   * operator to `akm workflow abandon` a child a parent is actively driving.
+   * For any database with no child rows the result is byte-identical, same
+   * as the other three B-N10 sites below.
+   */
   findActiveRunForScope(
     workflowRefs: string | readonly string[],
     scopeKey: string | null,
@@ -360,7 +375,7 @@ export class WorkflowRunsRepository {
     if (refs.length === 0) return undefined;
     return this.db
       .prepare(
-        `SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+        `SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
       )
       .get(...refs, scopeKey) as { id: string; current_step_id: string | null } | undefined;
   }

@@ -27,13 +27,21 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { resetConfigCache } from "../../../src/core/config/config";
 import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
 import { formatWorkflowStatusPlain } from "../../../src/output/text/workflow-format";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { getCurrentWorkflowScopeKey } from "../../../src/workflows/authoring/scope-key";
 import { canonicalPlanJson, computePlanHash } from "../../../src/workflows/ir/plan-hash";
-import { getActiveWorkflowRun, getWorkflowStatus, listWorkflowRuns } from "../../../src/workflows/runtime/runs";
+import {
+  getActiveWorkflowRun,
+  getWorkflowStatus,
+  listWorkflowRuns,
+  startWorkflowRun,
+} from "../../../src/workflows/runtime/runs";
+import { loadWorkflowAsset } from "../../../src/workflows/runtime/workflow-asset-loader";
 import { runCliCapture } from "../../_helpers/cli";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
 import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
@@ -499,6 +507,45 @@ describe("child runs are invisible to the three scope queries (B-40, B-42, B-43,
     // top-level run instead of ATTACHING to the parent-driven child.
     const attach = await withWorkflowRunsRepo((repo) => repo.getActiveRunRowForScope([childRef], scopeKey));
     expect(attach).toBeUndefined();
+  });
+
+  test("B-42 (fourth site, code-review round 4 finding 2 / Review log R2): akm workflow run workflows/<childRef> starts a NEW top-level run end to end, never refusing in favor of the parent-driven child", async () => {
+    const parentId = randomUUID();
+    const scopeKey = seedParentRun(parentId);
+    await reserveParentUnit(parentId, "spawn", "spawn:1");
+
+    // A REAL, on-disk, freshly-indexable workflow file — unlike this
+    // describe block's other tests, this one drives the real
+    // `startWorkflowRun` (via `loadWorkflowAsset` + `startWorkflowRun`, the
+    // exact pair `akm workflow run <ref>` itself calls, runs.ts:263,268),
+    // not just the repository's scope-query method directly. That is what
+    // exercises `publishWorkflowRunV4`'s own scope-conflict guard
+    // (`findActiveRunForScope`, B-N10's FOURTH site) rather than only the
+    // ALREADY-filtered `getActiveRunRowForScope` the test above covers.
+    const childFileName = "status-tree-child-e2e";
+    fs.mkdirSync(path.join(storage.stashDir, "workflows"), { recursive: true });
+    fs.writeFileSync(path.join(storage.stashDir, "workflows", `${childFileName}.md`), CHILD_MD, "utf8");
+    const childRef = (await loadWorkflowAsset(`workflows/${childFileName}`)).ref;
+
+    const childId = randomUUID();
+    await publishChild({
+      parentRunId: parentId,
+      spawnedByUnitId: "spawn:1",
+      invocationKey: "key-attach-e2e",
+      childRunId: childId,
+      workflowRef: childRef,
+      scopeKey,
+    });
+
+    // Before the fix, `findActiveRunForScope` had no `parent_run_id IS NULL`
+    // predicate, so this resolved to the CHILD row and `startWorkflowRun`
+    // failed with `RESOURCE_ALREADY_EXISTS` naming the CHILD's own run id —
+    // telling the operator to `akm workflow abandon` a child a parent is
+    // actively driving. It must instead start cleanly with a brand-new id.
+    const started = await startWorkflowRun(`workflows/${childFileName}`, {});
+    expect(started.run.workflowRef).toBe(childRef);
+    expect(started.run.id).not.toBe(childId);
+    expect(started.run.id).not.toBe(parentId);
   });
 
   test("B-43: akm show's active-run guard (getActiveWorkflowRun) reports the PARENT run, never the child", async () => {

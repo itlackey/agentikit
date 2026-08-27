@@ -198,6 +198,52 @@ describe("akm workflow plan <ref> --format json (B-47, B-N9)", () => {
   });
 });
 
+describe("akm --format json workflow plan <ref> — global (pre-subcommand) flag position (code-review round 4, finding 3 / Review log R3)", () => {
+  test("--format json BEFORE the subcommand still emits the JSON envelope, not the text summary", async () => {
+    writeBasicWorkflow();
+    await index();
+
+    // citty parses each command level against only that level's own
+    // remaining argv (the one-parse rule, GLOBAL_OUTPUT_ARGS's doc comment
+    // in src/cli/shared.ts): `--format json` typed BEFORE `workflow plan`
+    // is consumed by the ROOT command's own declared `format` arg, so the
+    // LEAF's `args.format` reads `undefined` here even though a format WAS
+    // named explicitly. Reading that leaf arg (rather than the canonical,
+    // position-independent argv scan `getOutputMode()` itself is built from)
+    // used to fall back to the human-text branch for exactly this
+    // invocation shape, at exit 0 — silently discarding an explicit
+    // `--format json`.
+    const result = await runCliCapture(["--format", "json", "workflow", "plan", "workflows/basic-plan"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout.trimStart().startsWith("{")).toBe(true);
+    const envelope = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(envelope.ok).toBe(true);
+    expect(envelope.published).toBe(false);
+    expect(Array.isArray(envelope.steps)).toBe(true);
+  });
+
+  test("control: akm --format json workflow list in the same global position already emitted JSON (an unaffected verb, for contrast)", async () => {
+    writeBasicWorkflow();
+    await index();
+    const result = await runCliCapture(["--format", "json", "workflow", "list"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout.trimStart().startsWith("{")).toBe(true);
+  });
+
+  test("the LEAF (post-subcommand) position keeps working exactly as before — both positions now agree", async () => {
+    writeBasicWorkflow();
+    await index();
+    const globalPosition = await runCliCapture(["--format", "json", "workflow", "plan", "workflows/basic-plan"]);
+    const leafPosition = await runCliCapture(["workflow", "plan", "workflows/basic-plan", "--format", "json"]);
+    expect(globalPosition.code).toBe(0);
+    expect(leafPosition.code).toBe(0);
+    const globalEnvelope = JSON.parse(globalPosition.stdout) as Record<string, unknown>;
+    const leafEnvelope = JSON.parse(leafPosition.stdout) as Record<string, unknown>;
+    expect(globalEnvelope.ref).toBe(leafEnvelope.ref);
+    expect(globalEnvelope.planHash).toBe(leafEnvelope.planHash);
+  });
+});
+
 describe("akm workflow plan <ref> writes NOTHING durable (B-48)", () => {
   test("zero new rows across every workflow table, the events table, and usage_events — either mode", async () => {
     writeBasicWorkflow();

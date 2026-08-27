@@ -9,6 +9,7 @@
  * GitHub-shaped `.yml` workflow sources. Validate with `akm lint --type workflows`.
  */
 
+import { getParsedInvocation } from "../cli/invocation";
 import { getStringArg } from "../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
 import { armAbortDeadline } from "../core/abort-deadline";
@@ -356,17 +357,37 @@ const workflowPlanCommand = defineJsonCommand({
     // B-46/B-57: `akm workflow plan` is read-only introspection whose UNMARKED
     // default is a human summary — `--format json` (B-N9) is the opt-in for
     // the full structure, the mirror image of every other verb's json-by-
-    // default (DEFAULT_CONFIG.output.format). citty parses each command
-    // level against only its own args (the "one-parse rule",
-    // GLOBAL_OUTPUT_ARGS's own doc comment), so `args.format` is `undefined`
-    // here exactly when the caller passed no `--format` at all — never when
-    // they passed `--format json` explicitly. When explicit, this defers to
-    // the normal `output()` path (json/yaml/text/md/html/jsonl, `--output
-    // <path>`) unchanged; when absent, it reproduces `output()`'s OWN "text"
-    // branch verbatim (same shape/detail projection, same registered-
-    // formatter-or-generic-fallback, same `--output <path>` handling) without
-    // touching the shared dispatcher other commands rely on.
-    if (getStringArg(args, "format") === undefined) {
+    // default (DEFAULT_CONFIG.output.format).
+    //
+    // Detecting "the caller named no format at all" MUST NOT read
+    // `args.format` (code-review round 4, finding 3 / Review log R3):
+    // citty's one-parse rule (GLOBAL_OUTPUT_ARGS's own doc comment, "no
+    // command body may read these args") isn't just style here — reading it
+    // is actively wrong. citty parses each command level against only that
+    // level's own remaining argv, so a GLOBAL, pre-subcommand `--format json`
+    // (e.g. `akm --format json workflow plan <ref>`) is consumed by the ROOT
+    // command's own declared `format` arg before the `workflow`/`plan`
+    // subcommand tokens are even resolved — this LEAF's `args.format` reads
+    // `undefined` in exactly that case too, indistinguishable from "no
+    // format was named anywhere". Reproduced live: that invocation printed
+    // the human TEXT summary at exit 0 even though `getOutputMode().format`
+    // was already `"json"` (the control, `akm --format json workflow list`,
+    // correctly emitted JSON — only this leaf's own arg-read was wrong).
+    // Detect it instead off the process-wide invocation singleton
+    // (`getParsedInvocation`, src/cli/invocation.ts) — the same canonical,
+    // position-independent argv parse `src/cli.ts` mints ONCE at startup
+    // (`setParsedInvocation`, immediately before `initOutputMode` builds the
+    // `getOutputMode()` singleton from that identical argv), so this agrees
+    // with `getOutputMode()` regardless of where `--format` appeared. A bare
+    // `process.argv` read is reserved for `src/cli.ts`/`cli/invocation.ts`
+    // themselves (`lint-process-argv.ts`); every other module reads through
+    // this singleton instead. When explicit, this defers to the normal
+    // `output()` path (json/yaml/text/md/html/jsonl, `--output <path>`)
+    // unchanged; when absent, it reproduces `output()`'s OWN "text" branch
+    // verbatim (same shape/detail projection, same registered-formatter-or-
+    // generic-fallback, same `--output <path>` handling) without touching
+    // the shared dispatcher other commands rely on.
+    if (getParsedInvocation().getFlagValue("--format") === undefined) {
       const mode = getOutputMode();
       const shaped = shapeForCommand("workflow-plan", result, mode.detail, mode.shape);
       const plain = formatPlain("workflow-plan", shaped, mode.detail);

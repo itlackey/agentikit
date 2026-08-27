@@ -251,6 +251,8 @@ export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Pr
   // Step 6 — drive, or not (rows A-18, A-22, A-23). `blocked`/`failed` are
   // terminal-for-this-invocation and are never re-driven — no lease is taken.
   const shouldDrive = childRow.status !== "blocked" && childRow.status !== "failed";
+  // Step 7 — map the FINAL status through §3.4's table.
+  let finalRow: WorkflowRunRow;
   if (shouldDrive) {
     const driveOptions: ChildWorkflowDriveOptions = {
       target: childRow.id,
@@ -265,7 +267,22 @@ export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Pr
       // B-N7: deliberately no maxSteps, no maxRetries (rows A-25, A-26).
     };
     try {
+      // The re-read is INSIDE the same try as the drive (code-review round 4,
+      // finding 1; Review log R1): every throw between here and a mapped
+      // UnitOutcome — the drive itself, OR this immediately-following
+      // getRunById — must be caught. Left to escape, it skips past
+      // dispatchJournaledAttempt's finishJournaledDispatch (no try/catch
+      // wraps this seam there by design), so the parent's reserved attempt
+      // row is never finished; the throw then propagates through runUnit
+      // into concurrentMap's worker (src/core/concurrent.ts), which SWALLOWS
+      // it and leaves the unit's outcome slot `undefined`, which
+      // executeStepPlanInConnection then maps to the false diagnostic
+      // "unit was not dispatched (aborted or scheduler failure)" — losing
+      // the real cause and leaving the composing attempt row stuck
+      // `running` forever (unrecoverable by inspection; a resume + re-drive
+      // reproduces the identical false diagnostic).
       await driveWithRealEngine(driveOptions);
+      finalRow = (await withWorkflowRunsRepo((repo) => repo.getRunById(childRow.id))) ?? childRow;
     } catch (err) {
       if (isLeaseBusyError(err)) {
         return {
@@ -281,16 +298,41 @@ export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Pr
           },
         };
       }
-      // Any other throw propagates and is classified by the existing
-      // dispatch_error handling — this module catches nothing else (§3.5).
-      throw err;
+      // EVERY other throw is mapped here too — never rethrown. §3.5's
+      // original premise ("classified by the existing dispatch_error
+      // handling") was false: no handling exists at this seam
+      // (dispatchJournaledAttempt awaits this call with no try of its own),
+      // so an uncaught throw here escaped all the way into the scheduler and
+      // was silently swallowed (R1, above). Reachable causes include the
+      // child's own LeaseHeartbeat.assertAlive() firing mid-drive, a Lane B
+      // UsageError out of the child's own completeWorkflowStep (e.g.
+      // WORKFLOW_OUTPUT_INVALID), requireExecutableWorkflowPlan rejecting a
+      // tampered child plan_json, and the child's status changing between
+      // this function's own step 5 read and the drive's internal
+      // getNextWorkflowStep re-read — none of which match
+      // isLeaseBusyError's text. child_workflow_drive_failed is a SIBLING of
+      // child_workflow_publish_failed (row A-10…A-12): same shape, same
+      // errorMessage(err) content, but naming the child run id and ref
+      // (already known at this point, unlike the publish arm above) since
+      // driving — not publishing — is what failed.
+      return {
+        unitId: request.unitId,
+        ok: false,
+        failureReason: "child_workflow_drive_failed",
+        error:
+          `Workflow step "${request.stepId}" composes child workflow run ${childRow.id} (${target.ref}), ` +
+          `but driving it failed: ${errorMessage(err)}`,
+        childRun: {
+          runId: childRow.id,
+          ref: childRow.workflow_ref,
+          status: childRow.status,
+          currentStepId: childRow.current_step_id,
+        },
+      };
     }
+  } else {
+    finalRow = childRow;
   }
-
-  // Step 7 — map the FINAL status through §3.4's table.
-  const finalRow = shouldDrive
-    ? ((await withWorkflowRunsRepo((repo) => repo.getRunById(childRow.id))) ?? childRow)
-    : childRow;
   const childRunSummary = {
     runId: finalRow.id,
     ref: finalRow.workflow_ref,

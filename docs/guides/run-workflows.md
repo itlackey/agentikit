@@ -116,6 +116,28 @@ akm workflow resume <parentRunId>
 akm workflow run <parentRunId>
 ```
 
+**Nested blocks (composition depth 2+).** The three-command sequence above
+clears a block exactly one level deep. When a grandchild blocks — a root
+workflow composes a child, and that child composes the grandchild that
+actually blocks — re-driving the root does **not** cascade down into
+re-driving the still-blocked grandchild: a composing step never re-drives a
+child whose own status is already `blocked`, so re-running the root just
+re-observes the child's block and re-blocks the root the same way, without
+ever reaching the grandchild. Resume **every** blocked run in the chain,
+deepest first, then re-run only the root:
+
+```sh
+akm workflow resume <grandchildRunId>
+akm workflow resume <childRunId>
+akm workflow resume <rootRunId>
+akm workflow run <rootRunId>
+```
+
+The status tree prints `resume`/`then` commands on each blocked node, but
+those two commands alone only ever name that node and the root — they do not
+enumerate an intermediate chain. Read the tree top to bottom and resume every
+`blocked` row you see (deepest first) before re-running the root.
+
 **Child runs are hidden by default.** `akm workflow list` excludes child
 runs so the list stays a view of the runs you started; pass `--children` to
 include them:
