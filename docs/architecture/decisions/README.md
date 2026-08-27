@@ -59,6 +59,7 @@ existed.
 | [0008](./0008-task-binding-normalization.md) | Task input binding normalization and re-binding across a composition | `src/workflows/freeze/task-bindings.ts` (module header; `rebindTaskInputBindings`'s doc comment) | P4 |
 | [0009](./0009-child-run-publication-column-parity.md) | Child-run publication's hand-duplicated INSERT column list | New content — the R11/R-R3 disposition (`docs/plans/specs/p4-deletions-closeout.md` §8), not a moved essay | P4 |
 | [0010](./0010-driver-protocol-cut.md) | The external driver protocol (`workflow brief`/`workflow report`/`--settle`) was cut | Stub pointing at `docs/architecture/specs/driver-protocol-keep-or-cut.md`, which stays the normative decision record | P4 |
+| [0011](./0011-engine-run-loop-invariants.md) | The engine run loop's invariants: gate spine, frozen plan, run lease, process lifecycle | `src/workflows/exec/run-workflow.ts` module header | P4 |
 
 ADR 0006 is listed for completeness of the index; its file is authored by
 the family that owns `parse-task-source.ts` (`docs/plans/specs/

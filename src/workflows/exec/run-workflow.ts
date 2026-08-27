@@ -5,63 +5,15 @@
 /**
  * Engine-driven workflow execution — the `akm workflow run`
  * start/resume/execute path, and the single execution surface for a run: akm
- * walks the frozen plan and dispatches every unit itself.
+ * walks the frozen plan and dispatches every unit itself. Every step
+ * advances through `completeWorkflowStep` (never a direct step-row write),
+ * the plan is read from its frozen `plan_json` row rather than live source,
+ * a run lease enforces one driving engine invocation at a time, gate loops
+ * are bounded, and the SDK dispatch registry is drained in a `finally` on
+ * every exit path so no child process keeps the event loop open.
  *
- * Invariant (plan §*Never bypass the gate spine*): every step advances
- * through `completeWorkflowStep`, never by writing step rows directly, so the
- * summary-validation gate and run-state derivation stay authoritative. A gate
- * rejection (SummaryValidationFailure) STOPS the engine and surfaces the
- * corrective feedback — a gate is a gate, even for the engine.
- *
- * Artifact-judging gates (redesign addendum, R2): when a step declares
- * completion criteria, the engine hands the gate a summary BUILT FROM the
- * step's promoted artifact (canonical JSON, clipped, prefixed with a one-line
- * unit count — `buildArtifactSummary`) instead of the machine-prose execution
- * summary, so the judge evaluates real results. Each engine-driven judge call
- * is journaled as a unit row (`node_id "<stepId>.gate"`, `unit_id
- * "<stepId>.gate:l<loop>"`, runner "llm", result_json = the verdict) through
- * the writer queue — it is an LLM call like any other. Human approvals are
- * never cached: a blocked gate stays blocked.
- *
- * Bounded gate loops (`gate.max_loops`, addendum R2): a rejection on a step
- * with maxLoops > 1 re-executes the step subgraph with the judge's feedback +
- * missing[] threaded into every unit prompt (`gateFeedback` on
- * StepExecutionContext) — the feedback changes each unit's input hash, so the
- * loop re-dispatches naturally instead of reusing the rejected rows. After
- * maxLoops rejections the engine stops with the gate feedback, exactly like
- * the one-shot case. A typed-artifact schema mismatch feeds the same loop
- * (the validation errors are the feedback; no judge ran, so no gate unit is
- * journaled for that attempt) — only the FINAL loop's mismatch fails the run.
- * A step whose subgraph is an `exec` unit is judged but NEVER looped
- * (`effectiveGateMaxLoops`): its argv cannot read the feedback, so a second
- * loop would only re-run the identical side effect.
- *
- * Frozen plan (redesign addendum, R1): the plan graph is read from the run
- * row (`plan_json`, persisted by `startWorkflowRun` under migration 006) with
- * a `plan_hash` integrity check — the workflow asset file is NEVER re-read
- * for an in-flight run, so a mid-run asset edit cannot change behavior.
- * Durable-row resume: re-invoking a partially-executed run re-dispatches only
- * work that never completed.
- *
- * Run lease (redesign addendum, R2): exactly one engine invocation drives a
- * run at a time. The lease (random holder id + 90s expiry on the run row) is
- * acquired before any dispatch, renewed between steps, and released in a
- * `finally` unless a failed run retains it as forensic state; a second
- * `workflow run` on a live-leased run refuses up front,
- * and an expired lease is claimable (crash recovery). While the lease is
- * live, any competing spine advance is refused — the engine owns the run while
- * driving (enforced inside `completeWorkflowStep`).
- *
- * Process-lifecycle contract (owner finding 4 — no leaked handles): the SDK
- * dispatch path caches `opencode serve` CHILD PROCESSES in a per-env registry
- * for reuse across units. Each live child is an OS handle that keeps Bun's
- * event loop open; the registry's own teardown is wired only to
- * `process.once('exit')`, which never fires while a child holds the loop open.
- * That deadlock hangs a one-shot CLI (`akm workflow run` has no `process.exit`
- * on success — it relies on the loop draining). The engine therefore DRAINS
- * the dispatch registry ({@link disposeDispatchResources}) in its run `finally`,
- * on EVERY exit path, so the process exits cleanly the moment the run resolves.
- * The drain is synchronous, idempotent, and a no-op when no SDK server started.
+ * See docs/architecture/decisions/0011-engine-run-loop-invariants.md for the
+ * full design history behind each of these invariants.
  */
 
 import { randomUUID } from "node:crypto";
