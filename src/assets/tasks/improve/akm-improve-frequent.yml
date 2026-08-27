@@ -1,6 +1,4 @@
-version: 3
+version: 4
 run: akm improve --strategy frequent --skip-if-locked
-akm:
-  schedule: "40 * * * *"
-  enabled: true
-  description: Frequent inference pass (hourly at :40; improve-stage extract off)
+description: Frequent inference pass (hourly at :40; improve-stage extract off)
+schedule: "40 * * * *"

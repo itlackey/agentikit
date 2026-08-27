@@ -1,6 +1,4 @@
-version: 3
+version: 4
 run: akm proposal extract --auto
-akm:
-  schedule: "*/30 * * * *"
-  enabled: true
-  description: Opt-in all-harness session extraction every 30 min
+description: Opt-in all-harness session extraction every 30 min
+schedule: "*/30 * * * *"

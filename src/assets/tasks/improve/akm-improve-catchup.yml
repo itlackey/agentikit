@@ -1,9 +1,9 @@
-version: 3
+version: 4
 run: akm improve --strategy catchup --skip-if-locked
-akm:
-  schedule: "0 4 * * *"
+description: Manual recovery — consolidation + triage drain (run on demand via `akm task run akm-improve-catchup`)
 # Manual-recovery task: ships disabled (the retired registerDefaultTasks
 # marked it enableMode: "manual"). `akm task run` works while disabled;
-# opting into the schedule is `enabled: true` + `akm task sync`.
-  enabled: false
-  description: Manual recovery — consolidation + triage drain (run on demand via `akm task run akm-improve-catchup`)
+# opting into the schedule is `schedule[].enabled: true` + `akm task sync`.
+schedule:
+  - cron: "0 4 * * *"
+    enabled: false
