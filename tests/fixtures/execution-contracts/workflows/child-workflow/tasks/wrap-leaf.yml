@@ -1,0 +1,4 @@
+version: 3
+uses: workflows/leaf
+akm:
+  schedule: "@daily"

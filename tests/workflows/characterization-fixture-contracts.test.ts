@@ -42,7 +42,12 @@ import {
   type TaskV3UsesTarget,
 } from "../../src/tasks/source-v3";
 import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
-import { decodeWorkflowPlanV4, type WorkflowPlanGraphV4 } from "../../src/workflows/ir/schema-v4";
+import { computePlanHash } from "../../src/workflows/ir/plan-hash";
+import {
+  decodeWorkflowPlanV4,
+  type FrozenWorkflowTarget,
+  type WorkflowPlanGraphV4,
+} from "../../src/workflows/ir/schema-v4";
 import { startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { compileGithubWorkflowSource } from "../../src/workflows/source-ir/compile";
 import { EXECUTION_CONTRACT_FIXTURES } from "../_helpers/execution-contracts";
@@ -112,9 +117,29 @@ interface PlanV4ManifestEntry {
   readonly expectedTargetKindSet: readonly string[];
 }
 
+// ── workflows/manifest.json's childWorkflow extension (P3b Lane C) ──────────
+
+interface ChildWorkflowManifestEntry {
+  readonly id: string;
+  readonly file: string;
+  readonly ref: string;
+  readonly expectedStepTargetKinds: Record<string, string>;
+  /** Step id -> the composed child's ref (unqualified, e.g. "workflows/leaf"). Present only on composing entries. */
+  readonly expectedChildRefs?: Record<string, string>;
+  /** Count of distinct embedded plan documents in this entry's deepest composition chain. Present only on composing entries. */
+  readonly expectedChildDepth?: number;
+}
+
+interface ChildWorkflowManifestFragment {
+  readonly bundleRoot: string;
+  readonly workflows: readonly ChildWorkflowManifestEntry[];
+  readonly expectedTargetKindSet: readonly string[];
+}
+
 interface WorkflowsManifestFragment {
   readonly singleJob: SingleJobManifestEntry;
   readonly planV4: PlanV4ManifestEntry;
+  readonly childWorkflow: ChildWorkflowManifestFragment;
 }
 
 function readWorkflowsManifest(): WorkflowsManifestFragment {
@@ -296,5 +321,172 @@ describe("workflows/plan-v4 fixtures — freeze end to end into structurally val
     const files = plan.sourceReadSet.map((source) => source.identity.file);
     for (const relative of workflow.taskComposedRelativeRefs) expect(files).toContain(relative);
     for (const file of files) expect(path.isAbsolute(file)).toBe(false);
+  });
+});
+
+// ── workflows/child-workflow: structural invariants of a real durable v4 ────
+// ── freeze containing child-workflow targets (P3b Lane C, spec §5.5,     ────
+// ── rows C-08…C-13) ───────────────────────────────────────────────────────
+//
+// New describe blocks only — every block above this comment (including
+// "workflows/plan-v4 fixture registration" and its freeze-loop sibling) is
+// byte-unchanged (row C-13).
+
+/** The frozen target of one step, or undefined for a route-only step. Mirrors this file's own `stepTargetKinds`. */
+function stepTargetById(plan: WorkflowPlanGraphV4, stepId: string): FrozenWorkflowTarget | undefined {
+  const step = plan.steps.find((s) => s.stepId === stepId);
+  if (!step?.root) return undefined;
+  return step.root.kind === "map" ? step.root.template.frozenTarget : step.root.frozenTarget;
+}
+
+/** Every `child-workflow` target in `plan.steps`, recursing into each one's own embedded `frozenPlan`. */
+function everyChildWorkflowTarget(
+  plan: WorkflowPlanGraphV4,
+  visit: (target: Extract<FrozenWorkflowTarget, { kind: "child-workflow" }>) => void,
+): void {
+  for (const step of plan.steps) {
+    if (!step.root) continue;
+    const target = step.root.kind === "map" ? step.root.template.frozenTarget : step.root.frozenTarget;
+    if (target.kind !== "child-workflow") continue;
+    visit(target);
+    everyChildWorkflowTarget(target.frozenPlan, visit);
+  }
+}
+
+/** C-11: every embedded child plan's `planHash` is a real function of its own `frozenPlan` bytes, at every nesting level. */
+function assertEveryChildPlanHashMatches(plan: WorkflowPlanGraphV4): void {
+  everyChildWorkflowTarget(plan, (target) => {
+    expect(computePlanHash(target.frozenPlan)).toBe(target.planHash);
+    expect(target.frozenPlan.irVersion).toBe(5);
+  });
+}
+
+/** Count of distinct embedded plan documents in `plan`'s deepest `child-workflow` composition chain (the top plan itself counts as 1). */
+function deepestChildPlanDepth(plan: WorkflowPlanGraphV4): number {
+  let deepest = 1;
+  for (const step of plan.steps) {
+    if (!step.root) continue;
+    const target = step.root.kind === "map" ? step.root.template.frozenTarget : step.root.frozenTarget;
+    if (target.kind !== "child-workflow") continue;
+    deepest = Math.max(deepest, 1 + deepestChildPlanDepth(target.frozenPlan));
+  }
+  return deepest;
+}
+
+/**
+ * Reads `frozenPlan.outputs` without depending on the not-yet-added
+ * `WorkflowPlanGraphV4.outputs` TS field (P3b Lane B, spec B-N1) — mirrors
+ * `tests/workflows/workflow-outputs-source.test.ts`'s `outputsView` cast
+ * convention. A bare cast through `unknown` is always type-legal, so this
+ * needs no `@ts-expect-error` directive; Lane B's own landing of the real
+ * field does not require this helper to change.
+ */
+function embeddedOutputs(frozenPlan: WorkflowPlanGraphV4): Record<string, { from?: unknown }> | undefined {
+  return (frozenPlan as unknown as { outputs?: Record<string, { from?: unknown }> }).outputs;
+}
+
+describe("workflows/child-workflow fixture registration", () => {
+  // CHARACTERIZATION: pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
+  test("every *.yml AND *.md under child-workflow/workflows is registered in workflows/manifest.json's childWorkflow.workflows (no orphan fixtures)", () => {
+    const manifest = readWorkflowsManifest().childWorkflow;
+    const dir = path.join(WORKFLOWS_ROOT, manifest.bundleRoot, "workflows");
+    // Unlike planV4's `.yml`-only enumeration (byte-unchanged above), this
+    // family registers BOTH extensions: the parent must be GitHub-shaped
+    // (only `jobs.<id>.steps[].uses` composes) while a child declaring
+    // `outputs:` must be Markdown (B-N4) — so both live directly under this
+    // one `workflows/` directory and both must be swept.
+    const files = fs
+      .readdirSync(dir)
+      .filter((name) => name.endsWith(".yml") || name.endsWith(".md"))
+      .sort();
+    const registered = manifest.workflows.map((workflow) => path.basename(workflow.file)).sort();
+    expect(files).toEqual(registered);
+  });
+});
+
+describe("workflows/child-workflow fixtures — freeze end to end, including child-workflow targets (rows C-08…C-12)", () => {
+  const manifest = readWorkflowsManifest().childWorkflow;
+  let storage: IsolatedAkmStorage;
+
+  beforeEach(async () => {
+    storage = withIsolatedAkmStorage();
+    writeWorkflowTestConfig();
+    resetConfigCache();
+    copyFixtureTree(path.join(WORKFLOWS_ROOT, manifest.bundleRoot), storage.stashDir);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+  });
+
+  afterEach(() => {
+    resetConfigCache();
+    storage.cleanup();
+  });
+
+  async function freeze(ref: string): Promise<WorkflowPlanGraphV4> {
+    const started = await startWorkflowRun(ref);
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
+    return decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+  }
+
+  for (const workflow of manifest.workflows) {
+    // RED until Lane B's `outputs:` frontmatter key parses (`exporter` and
+    // `child-with-outputs`, which composes it, both fail to freeze today —
+    // see workflow-outputs-source.test.ts's own header). `direct-child`,
+    // `task-wrapped-child`, `leaf`, `mid`, and `three-level` freeze
+    // successfully already: P3a's freeze-side child-workflow support is
+    // shipped, so composition-only entries are a green characterization
+    // here, not a red one — only the outputs-dependent entries are new red
+    // coverage (§5.5, C-10).
+    test(`${workflow.id}: freezes with the manifest-declared per-step frozen target kinds, including child-workflow entries (C-10)`, async () => {
+      const plan = await freeze(workflow.ref);
+      expect(plan.irVersion).toBe(5);
+      expect(stepTargetKinds(plan)).toEqual(workflow.expectedStepTargetKinds);
+
+      for (const [stepId, expectedRef] of Object.entries(workflow.expectedChildRefs ?? {})) {
+        const target = stepTargetById(plan, stepId);
+        expect(target?.kind).toBe("child-workflow");
+        if (target?.kind === "child-workflow") {
+          expect(target.ref.endsWith(`//${expectedRef}`)).toBe(true);
+        }
+      }
+
+      assertEveryChildPlanHashMatches(plan);
+
+      if (workflow.expectedChildDepth !== undefined) {
+        expect(deepestChildPlanDepth(plan)).toBe(workflow.expectedChildDepth);
+      }
+    });
+  }
+
+  // CHARACTERIZATION: pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
+  test("frozen target kinds across the fixture set are exactly child-workflow, command, and shell (C-08)", async () => {
+    const kinds = new Set<string>();
+    for (const workflow of manifest.workflows) {
+      const plan = await freeze(workflow.ref);
+      for (const kind of Object.values(stepTargetKinds(plan))) kinds.add(kind);
+    }
+    expect([...kinds].sort()).toEqual([...manifest.expectedTargetKindSet].sort());
+  });
+
+  // RED until outputs: parses (workflow-outputs-source.test.ts) — the embedded
+  // exporter.md plan carries no `outputs` field today, so `embeddedOutputs`
+  // returns undefined and `.report` fails.
+  test("child-with-outputs: the embedded exporter child plan carries a declared `report` output (C-12)", async () => {
+    const workflow = manifest.workflows.find((entry) => entry.id === "child-with-outputs");
+    if (!workflow) throw new Error("childWorkflow manifest must register a child-with-outputs entry");
+    const plan = await freeze(workflow.ref);
+    const target = stepTargetById(plan, "dispatch");
+    expect(target?.kind).toBe("child-workflow");
+    if (target?.kind === "child-workflow") {
+      expect(embeddedOutputs(target.frozenPlan)?.report?.from).toBe("steps.summarize.output");
+    }
+  });
+
+  // CHARACTERIZATION: pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip. Recursive freeze-side embedding is P3a's own shipped capability (tests/workflows/child-workflow-freeze.test.ts already exercises a deep composition chain), so this row is green today, not red.
+  test("three-level: the embedded chain is 3 plans deep, each level's planHash verified (C-11)", async () => {
+    const workflow = manifest.workflows.find((entry) => entry.id === "three-level");
+    if (!workflow) throw new Error("childWorkflow manifest must register a three-level entry");
+    const plan = await freeze(workflow.ref);
+    expect(deepestChildPlanDepth(plan)).toBe(3);
+    assertEveryChildPlanHashMatches(plan);
   });
 });

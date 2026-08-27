@@ -57,5 +57,64 @@
       }
     ],
     "expectedTargetKindSet": ["command", "script", "shell"]
+  },
+  "childWorkflow": {
+    "description": "Source fixtures (not byte-snapshots) that freeze end to end into durable plans containing child-workflow targets. bundleRoot's subtree is copied verbatim into a sandboxed stash and indexed before each ref below is frozen.",
+    "bundleRoot": "child-workflow",
+    "workflows": [
+      {
+        "id": "leaf",
+        "file": "child-workflow/workflows/leaf.yml",
+        "ref": "workflows/leaf",
+        "expectedStepTargetKinds": { "work": "shell" }
+      },
+      {
+        "id": "direct-child",
+        "file": "child-workflow/workflows/direct-child.yml",
+        "ref": "workflows/direct-child",
+        "expectedStepTargetKinds": { "dispatch": "child-workflow" },
+        "expectedChildRefs": { "dispatch": "workflows/leaf" },
+        "expectedChildDepth": 2
+      },
+      {
+        "id": "task-wrapped-child",
+        "file": "child-workflow/workflows/task-wrapped-child.yml",
+        "ref": "workflows/task-wrapped-child",
+        "expectedStepTargetKinds": { "dispatch": "child-workflow" },
+        "expectedChildRefs": { "dispatch": "workflows/leaf" },
+        "expectedChildDepth": 2
+      },
+      {
+        "id": "exporter",
+        "file": "child-workflow/workflows/exporter.md",
+        "ref": "workflows/exporter",
+        "expectedStepTargetKinds": { "summarize": "command" }
+      },
+      {
+        "id": "child-with-outputs",
+        "file": "child-workflow/workflows/child-with-outputs.yml",
+        "ref": "workflows/child-with-outputs",
+        "expectedStepTargetKinds": { "dispatch": "child-workflow", "consume": "command" },
+        "expectedChildRefs": { "dispatch": "workflows/exporter" },
+        "expectedChildDepth": 2
+      },
+      {
+        "id": "mid",
+        "file": "child-workflow/workflows/mid.yml",
+        "ref": "workflows/mid",
+        "expectedStepTargetKinds": { "relay": "child-workflow" },
+        "expectedChildRefs": { "relay": "workflows/leaf" },
+        "expectedChildDepth": 2
+      },
+      {
+        "id": "three-level",
+        "file": "child-workflow/workflows/three-level.yml",
+        "ref": "workflows/three-level",
+        "expectedStepTargetKinds": { "dispatch": "child-workflow" },
+        "expectedChildRefs": { "dispatch": "workflows/mid" },
+        "expectedChildDepth": 3
+      }
+    ],
+    "expectedTargetKindSet": ["child-workflow", "command", "shell"]
   }
 }
