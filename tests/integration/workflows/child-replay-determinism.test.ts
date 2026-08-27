@@ -207,6 +207,24 @@ describe("a resumed parent replays a completed composing step without re-driving
     // forwarded through the SAME injected dispatcher (spec row A-33).
     expect(dispatched1.size).toBeGreaterThan(1);
 
+    // The composing ("dispatch") unit's own journal row, snapshotted BEFORE
+    // resume — pins C-05's reuse claim directly on the journal rather than
+    // only inferring it from the dispatcher call-count spy below, which is
+    // structurally blind to it: once the seam is wired, the composing unit
+    // never reaches UnitDispatcher in either invocation (row A-01), and a
+    // re-entered driveChildWorkflowUnit on an already-completed child
+    // republishes idempotently and drives nothing anyway (§3.3 step 6's
+    // completed arm is a documented no-op) — so an implementation with NO
+    // journal reuse at all for composing units would still pass every
+    // dispatcher-count assertion here.
+    const dispatchUnits = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(runId, "dispatch"));
+    const composingUnitId = dispatchUnits[0]?.unit_id;
+    if (!composingUnitId) throw new Error("expected a journaled unit row for the dispatch step after invocation 1");
+    const composingUnitBeforeResume = await withWorkflowRunsRepo((repo) => repo.getUnit(runId, composingUnitId));
+    if (!composingUnitBeforeResume) {
+      throw new Error("expected the composing unit's journal row to be readable before resume");
+    }
+
     // Resume flips the failed step back to pending; the completed "dispatch"
     // step (and its child) survive untouched.
     await resumeWorkflowRun(runId);
@@ -235,6 +253,18 @@ describe("a resumed parent replays a completed composing step without re-driving
       if (id === finishUnitId) continue;
       expect(dispatched2.has(id)).toBe(false);
     }
+
+    // C-05, pinned directly on the composing unit's own journal row: a
+    // re-drive re-reserves the attempt (bumping `attempts` and moving
+    // `started_at`/`finished_at`), so a byte-identical row is proof the
+    // composing unit was REUSED from the journal (classifyUnitReuse ->
+    // reuse) rather than re-attempted — unlike the dispatcher-count spy
+    // above, this is blind to nothing: it holds even if a re-attempt
+    // dispatched nothing new (e.g. an idempotent republish-and-no-op).
+    const composingUnitAfterResume = await withWorkflowRunsRepo((repo) => repo.getUnit(runId, composingUnitId));
+    expect(composingUnitAfterResume?.attempts).toBe(composingUnitBeforeResume.attempts);
+    expect(composingUnitAfterResume?.started_at).toBe(composingUnitBeforeResume.started_at);
+    expect(composingUnitAfterResume?.finished_at).toBe(composingUnitBeforeResume.finished_at);
 
     // The composing step's promoted evidence is byte-identical across the
     // crash + resume (C-06) — the child's exported result was never

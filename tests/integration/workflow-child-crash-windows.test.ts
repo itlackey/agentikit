@@ -72,7 +72,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
+import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
+import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
+import { readStateEvents } from "../../src/storage/repositories/events-repository";
+import {
+  type PublishChildWorkflowRunInput,
+  type WorkflowRunRow,
+  WorkflowRunsRepository,
+  withWorkflowRunsRepo,
+} from "../../src/storage/repositories/workflow-runs-repository";
 import { computeChildInvocationKey } from "../../src/workflows/exec/child-invocation";
 import type { UnitDispatchResult } from "../../src/workflows/exec/native-executor";
 import { runWorkflowSteps } from "../../src/workflows/exec/run-workflow";
@@ -218,6 +227,23 @@ describe.skipIf(!BUN)("multi-process crash windows around a composing child (C-0
     expect(finalChildren).toHaveLength(1);
     expect(finalChildren[0]?.id).toBe(childRunId);
     expect((await withWorkflowRunsRepo((repo) => repo.getRunById(childRunId)))?.status).toBe("completed");
+
+    // The test's own name promises "no duplicate workflow_started event" —
+    // childRunsOf(parent).length === 1 alone is satisfied by the unique
+    // index on invocation_key and says nothing about the event append, so
+    // read the events table directly (the readStateEvents technique already
+    // used at tests/integration/workflows/child-execution.test.ts:393 and
+    // tests/integration/storage/child-run-publication.test.ts:281).
+    const eventsDb = openStateDatabase(getStateDbPath());
+    let startedEventsForChild: number;
+    try {
+      startedEventsForChild = readStateEvents(eventsDb, { type: "workflow_started" }).events.filter(
+        (event) => event.metadata?.runId === childRunId,
+      ).length;
+    } finally {
+      eventsDb.close();
+    }
+    expect(startedEventsForChild).toBe(1);
   }, 45_000);
 
   test("CW-2 (C-02): SIGKILL mid-child-unit-dispatch → both runs resumable; resume re-dispatches ONLY the interrupted child unit, once", async () => {
@@ -317,7 +343,211 @@ describe.skipIf(!BUN)("multi-process crash windows around a composing child (C-0
 
 // ── C-04: two-parent-process contention on one child ────────────────────────
 
+/** Wait for `file` to exist, polling via Atomics.wait so no macrotask/timer scheduling is involved (mirrors tests/integration/storage/child-run-publication.test.ts's own C-09 helper). */
+function waitForFile(file: string, timeoutMs = 8_000): void {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(file) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+  }
+  if (!fs.existsSync(file)) throw new Error(`Timed out waiting for ${file}`);
+}
+
+/**
+ * A worker script that opens its OWN bun:sqlite connection to the SAME
+ * state.db file and calls the real, production `publishChildWorkflowRun` —
+ * the tests/integration/storage/child-run-publication.test.ts C-09
+ * technique, duplicated here per this repo's test-file self-containment
+ * convention (that file exports nothing). Mirrors openStateDatabase's own
+ * busy_timeout so a genuinely concurrent BEGIN IMMEDIATE blocks and retries
+ * instead of failing outright — see that file's header for why a bare
+ * file-polling handshake alone would NOT force a genuine overlap.
+ */
+function buildConcurrentPublisherWorkerScript(options: {
+  databaseModulePath: string;
+  repositoryModulePath: string;
+  dbPath: string;
+  readyFile: string;
+  resultFile: string;
+  input: PublishChildWorkflowRunInput;
+}): string {
+  return `
+import { openDatabase } from ${JSON.stringify(options.databaseModulePath)};
+import { WorkflowRunsRepository } from ${JSON.stringify(options.repositoryModulePath)};
+import { writeFileSync } from "node:fs";
+
+const db = openDatabase(${JSON.stringify(options.dbPath)});
+try {
+  db.exec("PRAGMA busy_timeout = 30000");
+  const repo = new WorkflowRunsRepository(db);
+  writeFileSync(${JSON.stringify(options.readyFile)}, "ready");
+  const row = repo.publishChildWorkflowRun(${JSON.stringify(options.input)});
+  writeFileSync(${JSON.stringify(options.resultFile)}, JSON.stringify({ ok: true, id: row.id }));
+} catch (error) {
+  writeFileSync(
+    ${JSON.stringify(options.resultFile)},
+    JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+  );
+} finally {
+  db.close();
+}
+`;
+}
+
 describe("two-parent-process contention on one child (C-04)", () => {
+  test("two genuinely concurrent publishers racing the identical (parentRunId, invocationKey) converge on one child row, one workflow_started event, and the same returned id (the SELECT-else-INSERT race half; B-N16)", async () => {
+    writeProgram(storage.stashDir, "c04-race-leaf", CHILD_LEAF_WF);
+    writeComposingParent(storage.stashDir, "c04-race-parent", "workflows/c04-race-leaf");
+    const started = await startWorkflowRun("workflows/c04-race-parent", {});
+    const parentRunId = started.run.id;
+
+    // Derive exactly what the engine's own dispatch seam independently
+    // derives for the composing unit (spec §3.3 steps 1-3) — the SAME
+    // (parentRunId, invocationKey) pair two genuinely concurrent processes
+    // reaching this composing step would each compute on their own, with no
+    // coordination between them.
+    const parentRow = await withWorkflowRunsRepo((repo) => repo.getRunById(parentRunId));
+    const plan = decodeWorkflowPlanV4(JSON.parse(parentRow?.plan_json ?? "null"));
+    const composingStep = plan.steps[0]!;
+    const root = composingStep.root;
+    if (!root) throw new Error("composing step must have a root");
+    const target = root.kind === "map" ? root.template.frozenTarget : root.frozenTarget;
+    if (target.kind !== "child-workflow") throw new Error(`expected a child-workflow target, got ${target.kind}`);
+
+    const work = computeStepWorkList(composingStep, { runId: parentRunId, params: {}, stepOutputs: {} });
+    if (!work.ok) throw new Error(work.error);
+    const composingUnit = work.list.units[0]!;
+
+    const invocationKey = computeChildInvocationKey({
+      parentRunId,
+      parentUnitId: composingUnit.journalBaseId,
+      unitInputHash: composingUnit.inputHash,
+    });
+
+    const now = new Date().toISOString();
+    const mainCandidateId = "c0400000-0000-4000-8000-000000000201";
+    const workerCandidateId = "c0400000-0000-4000-8000-000000000202";
+    const buildPublishInput = (childRunId: string): PublishChildWorkflowRunInput => ({
+      parentRunId,
+      spawnedByUnitId: composingUnit.journalBaseId,
+      invocationKey,
+      run: {
+        id: childRunId,
+        workflowRef: target.ref,
+        scopeKey: parentRow?.scope_key ?? null,
+        workflowEntryId: null,
+        workflowTitle: target.frozenPlan.title,
+        paramsJson: "{}",
+        currentStepId: target.frozenPlan.steps[0]?.stepId ?? null,
+        createdAt: now,
+        updatedAt: now,
+        agentHarness: parentRow?.agent_harness ?? null,
+        agentSessionId: parentRow?.agent_session_id ?? null,
+        checkinArmedAt: now,
+      },
+      steps: frozenStepRows(target.frozenPlan).map((step) => ({ runId: childRunId, ...step })),
+      planJson: canonicalPlanJson(target.frozenPlan),
+      planHash: target.planHash,
+    });
+
+    const dbPath = getStateDbPath();
+    const mainDb = openStateDatabase(dbPath);
+    try {
+      const mainRepo = new WorkflowRunsRepository(mainDb);
+
+      const readyFile = path.join(storage.root, "c04-race-ready");
+      const resultFile = path.join(storage.root, "c04-race-result.json");
+      const workerScript = path.join(storage.root, "c04-race-worker.mts");
+      fs.writeFileSync(
+        workerScript,
+        buildConcurrentPublisherWorkerScript({
+          databaseModulePath: path.resolve(import.meta.dir, "../../src/storage/database.ts"),
+          repositoryModulePath: path.resolve(
+            import.meta.dir,
+            "../../src/storage/repositories/workflow-runs-repository.ts",
+          ),
+          dbPath,
+          readyFile,
+          resultFile,
+          input: buildPublishInput(workerCandidateId),
+        }),
+        "utf8",
+      );
+
+      // Force a GENUINE overlap rather than racing on file-poll timing alone
+      // (the child-run-publication.test.ts C-09 technique, reused verbatim):
+      // take the write lock on a raw transaction BEFORE the worker can
+      // possibly attempt its own publish, so the worker's own BEGIN
+      // IMMEDIATE (inside its publishChildWorkflowRun call) is guaranteed to
+      // block against a real reserved lock — never a pre-decided sequential
+      // read. Release, then immediately race main's OWN publish attempt for
+      // the identical (parentRunId, invocationKey) pair.
+      mainDb.exec("BEGIN IMMEDIATE");
+
+      const worker = new Worker(pathToFileURL(workerScript));
+      let workerError = "";
+      const workerExit = new Promise<number>((resolve) => {
+        worker.once("exit", (code) => resolve(code));
+        worker.once("error", (error) => {
+          workerError = error.message;
+        });
+      });
+
+      // Confirm the worker's own connection is open and it has reached (or
+      // is immediately about to reach) its own publish call, which must now
+      // be blocked against the lock just taken above.
+      waitForFile(readyFile);
+      // Deterministic pause: give the worker's blocked BEGIN IMMEDIATE time
+      // to actually register against the held lock before releasing it —
+      // same margin as the C-09 precedent.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+      mainDb.exec("COMMIT");
+
+      let mainThrew: unknown;
+      let mainRow: WorkflowRunRow | undefined;
+      try {
+        mainRow = mainRepo.publishChildWorkflowRun(buildPublishInput(mainCandidateId));
+      } catch (error) {
+        mainThrew = error;
+      }
+
+      const exitCode = await Promise.race([
+        workerExit,
+        new Promise<number>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("concurrent child publisher timed out")), 15_000),
+        ),
+      ]);
+      expect(workerError).toBe("");
+      expect(exitCode).toBe(0);
+      const workerResult = JSON.parse(fs.readFileSync(resultFile, "utf8")) as {
+        ok: boolean;
+        id?: string;
+        error?: string;
+      };
+
+      // Neither publisher throws, and neither surfaces the other's
+      // unique-index conflict directly — the SELECT-else-INSERT race
+      // resolves cleanly to one committed winner.
+      expect(mainThrew).toBeUndefined();
+      expect(workerResult.ok).toBe(true);
+      if (!mainRow) throw new Error("expected the main publisher to return a row");
+
+      // Both publishers agree on exactly one winner, whichever candidate id it is.
+      expect([mainCandidateId, workerCandidateId]).toContain(mainRow.id);
+      expect(workerResult.id).toBe(mainRow.id);
+
+      const children = mainRepo.childRunsOf(parentRunId);
+      expect(children).toHaveLength(1);
+      expect(children[0]?.id).toBe(mainRow.id);
+
+      const startedEventsForChild = readStateEvents(mainDb, { type: "workflow_started" }).events.filter(
+        (event) => event.metadata?.runId === mainRow.id,
+      ).length;
+      expect(startedEventsForChild).toBe(1);
+    } finally {
+      mainDb.close();
+    }
+  }, 20_000);
+
   test("a live foreign lease on the pre-published child refuses the parent's real drive up front; a later resume (foreign lease released) converges on the SAME child", async () => {
     writeProgram(storage.stashDir, "c04-leaf", CHILD_LEAF_WF);
     writeComposingParent(storage.stashDir, "c04-parent", "workflows/c04-leaf");
