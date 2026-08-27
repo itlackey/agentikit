@@ -23,8 +23,13 @@ plan`), the §6 authorized behavior flips, and the §8 docs.
 This document is the **single source of truth** for P3b. Lanes do not
 re-derive these facts from the codebase and do not read the parent plan. Every
 `file:line` below was verified at the head of
-`claude/breaking-changes-0-9-2-3cfyvp` (P3a closed out through its code-review
-round 2, `6ec07482`).
+`claude/breaking-changes-0-9-2-3cfyvp` — originally at `6ec07482` (P3a's
+code-review round 2), and **re-verified through `c5432167`** (P3a's round 3
+`f35d433d` and its close-out) during adoption. Neither changed executable
+behavior, so the dispatch-seam and contract citations stand; the handful that
+did not survive re-verification, and the P3a Review log entries (R9–R12)
+recorded after this spec was drafted, are settled in **§10 Head reconciliation
+(adoption)**. Where §10 and an earlier section disagree, §10 wins.
 
 ---
 
@@ -79,6 +84,14 @@ P3b is **not**:
 - **a limit-relaxation phase.** `WORKFLOW_MAX_PLAN_BYTES`,
   `WORKFLOW_MAX_COMPOSITION_DEPTH` (8), and
   `WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES` (1 MiB) are unchanged.
+- **the phase that settles P3a Review log R9 or R11.** R9 (a v3 task's
+  authored `with:` gains reference semantics only when composed) is a
+  FREEZE-side decision whose two options both land in
+  `src/workflows/freeze/targets/task.ts` / `freeze/task-bindings.ts` — neither
+  file is on Lane A's (§3.1) or Lane B's (§4.1) list, and both lists are
+  binding. R11 (`publishChildWorkflowRun` hand-rolls `insertRun`'s column
+  list) stays RECORDED even though P3b wires that method's first production
+  caller. Both are deferred to P4; see §10.
 
 Rules of engagement (unchanged since P1b):
 
@@ -251,9 +264,12 @@ landed and specify exactly". **Verified: it does not.**
 steps}`; `decodeWorkflowPlanV4`'s closed key set (`:220-224`) and the shared
 `validateWorkflowPlanStructure` key set (`src/workflows/ir/schema.ts:163-168`,
 extended by `planExtraKeys: ["sourceReadSet"]` at `schema-v4.ts:231`) both omit
-it, and `rg outputs src/workflows/ir/` returns only the per-STEP `outputSchema`
-(a different concept — see B-N2). P3b therefore adds `outputs` as a new optional
-top-level plan field.
+it, and `rg outputs src/workflows/ir/` finds no field of that name anywhere —
+its single hit is prose inside `checkInputReference`'s diagnostic
+(`compile.ts:312`, "names step outputs (steps.<id>.output...)"). The only
+adjacent field is the per-STEP `outputSchema` (`schema-v4.ts:180`), a different
+concept — see B-N2. P3b therefore adds `outputs` as a new optional top-level
+plan field.
 
 That addition is **ADDITIVE within `irVersion` 5, and the version does not
 bump**, for two independent reasons, both of which must be stated in the code
@@ -379,7 +395,8 @@ content-derived base (`<node_id>:<sha256>` / `<node_id>:solo`), and
 
 - makes `workflow_runs.parent_unit_id` join **exactly** to a real
   `workflow_run_units` row, which is how §4.5's tree resolves a child's parent
-  STEP (`repo.getUnit(parentRunId, parent_unit_id)?.step_id`, `:1040`);
+  STEP (`repo.getUnit(parentRunId, parent_unit_id)?.step_id` —
+  `workflow-runs-repository.ts:1055`);
 - is **stable across parent retries** (`attemptIdFor` returns the same
   `journalBaseId` for every attempt of the same unit), so a retry reuses the
   same child (row A-15);
@@ -492,6 +509,38 @@ step's `summary`, which `formatWorkflowRunPlain` already renders
 (`:159-161`). Lane A therefore touches **no** output module, which is what keeps
 Lane A's and Lane B's file lists disjoint (Lane B owns `workflow-format.ts`
 exclusively, for §4.5's tree and §4.6's plan summary).
+
+**B-N16 — `publishChildWorkflowRun` MUST be the outermost transaction on its
+connection; the §3.2 seam already guarantees that, and no lane may move it.**
+Added during adoption, from P3a Review log **R10**, which landed after this
+spec was drafted. `WorkflowRunsRepository.publishChildWorkflowRun` reaches its
+`BEGIN IMMEDIATE` through `withImmediateTransaction`
+(`src/core/state-db.ts:690-726`), whose re-entrancy guard (`:698`) **silently
+joins** an already-open transaction instead of issuing its own `BEGIN`. Nested
+inside a DEFERRED `repo.transaction()`, the SELECT-else-INSERT can read a stale
+snapshot, both publishers can miss the existing row, and the loser's INSERT
+hits `idx_workflow_runs_invocation_key` with a raw `SQLiteError` — losing
+exactly the idempotency rows A-13, C-01, and C-04 depend on.
+
+P3b is correct **by construction**, and that is the property to pin rather than
+re-derive: `driveChildWorkflowUnit` is reached from `dispatchJournaledAttempt`
+(§3.2), which holds no open transaction — `reserveJournaledDispatch` and
+`finishJournaledDispatch` each open and close their own. The two DEFERRED
+`repo.transaction()` sites R10 names, `resumeWorkflowRun`
+(`src/workflows/runtime/runs.ts:506`) and `completeWorkflowStep` (`:782`), are
+both OUTSIDE the child drive, and R10 explicitly flags `completeWorkflowStep`
+as "the most plausible place a P3b child-spawn gets wired" — P3b deliberately
+does not wire it there. Consequences, all binding:
+
+- **Wiring the publication inside any `repo.transaction()` callback is a
+  review-blocking violation**, including as an "optimization" that batches the
+  child row with the parent step's completion.
+- No catch-and-reselect fallback is added. R10 declined to add one on the
+  grounds that P3a had no production caller; P3b's caller is un-nested, so the
+  fallback would be untested surface guarding a case the seam forbids.
+- Row C-04's contention test must exercise the real repository and the real
+  index (§5.3 already says so) — it is the test that would catch a future
+  nesting regression.
 
 ---
 
@@ -743,7 +792,9 @@ Ordered steps. Every failure before step 6 produces `child_workflow_publish_fail
    list fails with row A-11's message.
 3. **Key.** `computeChildInvocationKey({parentRunId: ctx.runId, parentUnitId:
    request.unitId, unitInputHash: inputHash})` (B-N8).
-4. **Publish.** `publishChildWorkflowRun` (P3a §5.2) with:
+4. **Publish.** `publishChildWorkflowRun` (P3a §5.2), called with **no
+   transaction open on the connection** (B-N16 — the seam guarantees it; do not
+   wrap this call), with:
 
    | Field | Value |
    |---|---|
@@ -920,7 +971,7 @@ review-blocking violation** (§0.1, B-N3).
 | `src/workflows/schema.ts` | `WorkflowDocument.outputs?: Record<string, WorkflowOutputDeclaration>`. |
 | `src/workflows/source-ir/schema.ts` | `WorkflowSourceIrV1.outputs?` (`:180-194`); the root `keys(...)` list (`:210-227`) gains `"outputs"`; `validateOutputs` beside `validateParams` (`:233`). |
 | `src/workflows/source-ir/compile.ts` | The Markdown→IR mapping (`:88-115`) carries `outputs` through `jsonClone`, exactly as `params` is carried at `:95`. `parseGithubWorkflowSource` is untouched (B-N4). |
-| `src/workflows/ir/compile.ts` | `WorkflowPlanDraft.outputs?` (`:91-98`); the draft assembly (`:160-180`) emits it, absent when empty; reference validation (`:338-390`) gains the `from`-names-a-declared-step check (row B-06) and the `params.*` rejection (row B-07). |
+| `src/workflows/ir/compile.ts` | `WorkflowPlanDraft.outputs?` (`:91-98`); the draft assembly (`:160-180`) emits it, absent when empty; reference validation (`checkReferenceField` `:282-297` / `checkInputReference` `:300-324` — NOT `collectWorkflowWarnings` at `:349`) gains the `from`-names-a-declared-step check (row B-06) and the `params.*` rejection (row B-07), reusing `checkInputReference`'s existing param-rejection message shape. |
 | `src/workflows/ir/schema-v4.ts` | `FrozenWorkflowOutput` + `WorkflowPlanGraphV4.outputs?` (`:184-193`); `decodeWorkflowPlanV4`'s `assertKeys` (`:220-224`) and the `planExtraKeys` array (`:231`) each gain `"outputs"`; `decodeWorkflowOutputs` added. **File name and every exported TYPE name unchanged.** |
 | `src/workflows/freeze/child-output-references.ts` | **New.** `assertChildOutputReferences(steps)` — the freeze-time first-segment check (§4.4, rows B-28…B-31). Pure over the frozen step list. |
 | `src/workflows/ir/freeze-v4.ts` | Carries `compiled.plan.outputs` onto the frozen plan; calls `assertChildOutputReferences(steps)` after `steps` is built and before the plan object is assembled. |
@@ -1209,10 +1260,13 @@ nothing else. It does **not** call `publishWorkflowRunV4`, `startWorkflowRun`,
 
 **Zero durable writes (row B-48), verified, not assumed.** `rg '\bwarn\(' src/workflows/freeze/ src/workflows/ir/ src/workflows/source-ir/` and
 `rg 'appendEvent|recordUsage' src/workflows/freeze/ src/workflows/ir/` are both
-empty at head: freeze itself emits no event and writes no warn log. Every
-`warn()` on the start path lives in `startWorkflowRun` (`runs.ts:279-281,
-:360-364`), which this verb does not call — `collectWorkflowWarnings` is called
-directly and its lines are returned in the envelope's `warnings[]` (row B-56).
+empty at head: freeze itself emits no event and writes no warn log.
+`src/workflows/runtime/runs.ts` contains exactly **two** `warn()` call sites —
+`:280`, inside `startWorkflowRun` (the `collectWorkflowWarnings` advisories),
+and `:818`, inside `completeWorkflowStep` (the evidence-truncation warning).
+This verb calls **neither** function — `collectWorkflowWarnings`
+(`ir/compile.ts:349`) is called directly and its lines are returned in the
+envelope's `warnings[]` (row B-56).
 The env-audit `appendEvent` calls are in `prepareStepDispatchPrerequisites`
 (`native-executor.ts`), which runs at DISPATCH, not at freeze. The test asserts
 row counts across `workflow_runs`, `workflow_run_steps`, `workflow_run_units`,
@@ -1623,7 +1677,7 @@ New suites this phase adds (these are NOT flips):
 | `docs/architecture/workflow-engine.md` | The child-workflow section (`:79`) is corrected: the dispatch seam (§3.2), the drive contract (§3.3), why `runWorkflowSteps` is reused rather than a second executor (B-N5), and why `hashVersion` stays 6 (§3.6). A short "Run outputs" subsection covers resolve-at-completion and the rollback rule (B-N13). |
 | `CHANGELOG.md` `[Unreleased]` | Three entries. (1) Under a feature heading: **child workflows now execute** — the status mapping, the blocked-child resume flow, and that a parent retry/resume reuses the same child. (2) **Workflow `outputs:`** — the declaration, the exported result, and the `{runId, status}` default. (3) **New verb `akm workflow plan`** (Evolving). Plus a correction line: the P3a entry at `:150` naming `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED` is amended to say that code existed only in the P3a increment and is gone in the shipped release. |
 | `docs/migration/v0.9.1-to-v0.9.2.md` | The "Workflow cutover" section (`:110`) gains a short subsection: nothing to migrate for child execution (no stored child run predates this release), plus the one operational note that `akm workflow list` hides child runs by default. |
-| `STABILITY.md` | One row in the tier table (`:60-65`): `` `akm workflow plan` `` | Evolving | New in 0.9.2; envelope shape may change. The five existing workflow rows are byte-unchanged. |
+| `STABILITY.md` | One row in the tier table (`:60-65`): `` `akm workflow plan` `` \| Evolving \| New in 0.9.2; envelope shape may change. The **six** existing workflow rows at `:60-65` — `status`, `list`, `create`, `resume`, `abandon`, `run` — are byte-unchanged. |
 
 Every `akm` example must pass the doc-examples lint that `bun run lint` runs,
 and none may spell `--json` (B-N9).
@@ -1641,6 +1695,9 @@ and none may spell `--json` (B-N9).
       goes through `runWorkflowSteps` (B-N5).
 - [ ] The child drive passes a no-op `disposeDispatchResources`, no `maxSteps`,
       and no `maxRetries` (B-N6, B-N7).
+- [ ] `publishChildWorkflowRun` is called with no transaction open on the
+      connection — it appears in no `repo.transaction()` callback anywhere in
+      `src/**` (B-N16, P3a Review log R10).
 - [ ] `WORKFLOW_IR_V5_VERSION === 5`; both hash prefixes read `\0v6\0`; the
       `hashVersion` preimage field reads `6`; the child-invocation prefix reads
       `\0v1\0` (§0.1).
@@ -1704,6 +1761,116 @@ and none may spell `--json` (B-N9).
 - [ ] Every §7 checkbox ticked.
 - [ ] Every §8 doc updated in the same commit range, examples lint-clean.
 - [ ] No pre-existing test outside §6 was edited.
+
+---
+
+## 10. Head reconciliation (adoption)
+
+This spec was pre-drafted at `fe74774a`, against a head of `6ec07482` (P3a's
+code-review round 2), while P3a was still closing out. It is **adopted** here,
+re-verified through head `c5432167`.
+
+**The one fact that shapes everything below:** the two commits P3a added after
+this spec was drafted changed no executable behavior.
+
+- `f35d433d` ("fix(p3): address review findings (round 3)") changed **exactly
+  one file — this spec** — a `lint-doc-examples` fix that backtick-quoted the
+  bare `akm` in §3.4's `blockStepForChildWorkflow` notes block.
+- `c5432167` ("docs(p3): close out plan v5 child-freeze phase") changed
+  `CHANGELOG.md`, `docs/reference/workflow-schema.md`,
+  `docs/reference/workflows.md`, the P3a spec's Review log (R9–R12, §10.2), and
+  **one doc comment** on `publishChildWorkflowRun` in
+  `src/storage/repositories/workflow-runs-repository.ts` — R10's tightening. No
+  statement, no signature, and no test changed.
+
+So every executable byte this spec cites is the byte it was verified against,
+and every dispatch-seam, contract, and file:line claim was re-checked at
+`c5432167`. The §3.2 seam citation is exact at head: `native-executor.ts:1168`
+reads `const dispatched = await dispatchUnit(request, dispatcher);` inside
+`dispatchJournaledAttempt` (`:1136`), with `dispatchUnit` itself at `:1267`.
+The `workflow-runs-repository.ts` line numbers this spec cites are stated
+**post-`c5432167`** (`publishChildWorkflowRun` `:624`, `childRunsOf` `:673`,
+`getUnit` `:1055`), so R10's doc-comment growth is already absorbed.
+
+### 10.1 The fifteen disambiguations, re-verified
+
+| # | Verdict | Evidence at head |
+|---|---|---|
+| **B-N1** | **CONFIRMED** (one citation AMENDED) | `WorkflowPlanGraphV4` `schema-v4.ts:184-193` carries no `outputs`; `decodeWorkflowPlanV4`'s `assertKeys` (`:220-224`) and `validateWorkflowPlanStructure` (`schema.ts:163-168`) + `planExtraKeys: ["sourceReadSet"]` (`:231`) both omit it. **AMENDED:** the `rg outputs src/workflows/ir/` claim — the grep's one hit is diagnostic prose at `compile.ts:312`, not a field; wording corrected in place. |
+| **B-N2** | **CONFIRMED** | `IrStepPlanV4.outputSchema` at `schema-v4.ts:180`; `validateStepArtifact` at `step-work.ts:891`. |
+| **B-N3** | **CONFIRMED** | `computeUnitInputHash` (`step-work.ts:701`) still emits `akm.workflow.unit\0v6\0` (`:703`) with `hashVersion: 6` (`:706`); `frozenTarget` remains a preimage field. |
+| **B-N4** | **CONFIRMED, and independently reinforced by P3a round 2** | `ROOT_KEYS = ["name","on","jobs"]` at `github-yaml.ts:36`, enforced at `:119`; `WORKFLOW_KEYS` at `parser.ts:116`; `parseParams` at `:548`. P3a round 2's finding 4 corrected `workflow-schema.md` to say composition is authorable **only** through the GitHub-shaped `jobs.<id>.steps[].uses` surface — which is exactly B-N4's parent-is-`.yml` / child-may-be-`.md` pairing, and exactly what §5.5's fixture family and its dual-extension enumeration already encode. No change. |
+| **B-N5** | **CONFIRMED** | `runWorkflowSteps` exported at `run-workflow.ts:231`, called by `workflow-cli.ts:191`; `runWorkflowAttempt` `:278` → `getNextWorkflowStep` `:282` → `resolveRunSpecifier` `runs.ts:879` whose first branch is `repo.getRunById(specifier)` `:886`; `requireExecutableWorkflowPlan` `:291`; `acquireRunLease` call `:315` (fn `:385`); `driveRun` `:937`, still module-private. |
+| **B-N6** | **CONFIRMED** | The registry drain is `run-workflow.ts:364`, `await (options.disposeDispatchResources ?? disposeDispatchResources)()`, inside the attempt `finally`. |
+| **B-N7** | **CONFIRMED** | `maxSteps` accounting at `run-workflow.ts:971-976`, consumed at `:1126` via `STEP_FINISHED_KINDS` (`:747`); the retry loop at `:245-275`. |
+| **B-N8** | **CONFIRMED** (one citation AMENDED) | `StepWorkUnit.unitId` `step-work.ts:139`, `journalBaseId` `:146`, derived `:551`; `attemptIdFor` returns `journalBaseId` at `native-executor.ts:840`, used at `:882`. **AMENDED:** the bare `:1040` cite for `repo.getUnit` → `workflow-runs-repository.ts:1055`. |
+| **B-N9** | **CONFIRMED** | `GLOBAL_OUTPUT_ARGS` `cli/shared.ts:163`; `defineJsonCommand` splices it at `:221`. No `--json` boolean exists anywhere. |
+| **B-N10** | **CONFIRMED** | `getActiveRunRowForScope` `:352`, `listRuns` `:372`, `findActiveOrBlockedRunForScope` `:415` — all three still scope-only; `getActiveWorkflowRun` reads the third at `runs.ts:1117`; the attach path is `runs.ts:900,917`. |
+| **B-N11** | **CONFIRMED** | The P3a guard is live at `unit-dispatch.ts:173-187`; the code is at `errors.ts:139` and `USAGE_HINTS:216`; the two stale comments to correct are `step-work.ts:452-460` and `native-executor.ts:999-1008`. F-A1's line ranges in `child-workflow-dispatch-guard.test.ts` (`:5-36`, `:52-70`, `:82-92`, `:94-102`, `:104-111`, `:113-134`) are all exact. |
+| **B-N12** | **CONFIRMED** | `isTruncatedEvidence` `runs.ts:611`, `clipStepEvidenceForPersistence` `:642`; `driveRun`'s `liveEvidence` doc block `run-workflow.ts:942-959` still says in terms a later invocation "reads the rows, where a reference into a truncated artifact fails loudly by name". |
+| **B-N13** | **CONFIRMED** | `completeWorkflowStep` `:693`; its write transaction `:782`; `deriveRunState(refreshedSteps)` `:838`; `appendEvent` outside it at `:867`. |
+| **B-N14** | **CONFIRMED** | `InsertRunInput.workflowEntryId: number \| null` at `workflow-runs-repository.ts:230`; `workflow_entry_id INTEGER` at `migrations.ts:886`; `resolveWorkflowEntryId` at `runs.ts:303`. |
+| **B-N15** | **CONFIRMED** | `formatWorkflowStatusPlain` `workflow-format.ts:34`, its `notes:` render `:59-60`; `formatWorkflowRunPlain` `:121`, its `summary` render `:159-161`. |
+
+Nothing in P3a's rounds 2–3 falsified a disambiguation's **substance**. Two
+line citations inside B-N1 and B-N8 were corrected in place; both were
+drafting errors, not head drift.
+
+### 10.2 P3a Review log entries recorded after this spec was drafted
+
+R1–R8 predate `fe74774a` and are already woven into §1.6, §2.1, and §6. R9–R12
+landed with P3a's round 3 and close-out.
+
+| Entry | Status for P3b |
+|---|---|
+| **R9** — a v3 task's authored `with:` gains reference semantics only when composed, RECORDED, "decision point handed to P3b/P4" | **DECLINED for P3b; deferred to P4.** Both options R9 offers are freeze-side: option 1 adds a literal-only `AuthoredChildInputs` variant in `freeze/targets/child-workflow.ts` + `freeze/task-bindings.ts`; option 2 documents the divergence in `workflow-schema.md`'s composition section. Neither file is on §3.1's or §4.1's binding file lists, and P3b changes no binding-classification behavior — §3.3 step 2 consumes `taskInputsResolution.values` through the **unchanged** P2b resolver. Picking either option inside P3b would be the "improve anything on the way past" §0 forbids. Recorded here so no lane adopts it mid-phase; added to §0's "P3b is not" list. |
+| **R10** — `publishChildWorkflowRun`'s idempotency guarantee holds only as the OUTERMOST transaction | **ADOPTED as new disambiguation B-N16**, with a §3.3 step 4 inline note and a §9 acceptance bullet. This is the one round-3 entry with live consequences for P3b: P3b wires this method's first production caller, and R10 names `completeWorkflowStep` (`runs.ts:782`) as "the most plausible place a P3b child-spawn gets wired". P3b does **not** wire it there — §3.2 places the seam at `dispatchJournaledAttempt`, outside any transaction — so P3b is correct by construction, and B-N16 pins that rather than leaving it to be re-derived. |
+| **R11** — `publishChildWorkflowRun` duplicates `insertRun`'s 13-column list, RECORDED, "P3b will need to revisit anyway once it wires a real caller" | **DECLINED for P3b; stays RECORDED.** P3b wires the caller but refactors nothing: `insertRun`'s signature is unchanged, §3.3 step 4's field table is written against the existing `PublishChildWorkflowRunInput` (`workflow-runs-repository.ts:273-284`), and `src/storage/repositories/workflow-runs-repository.ts` appears on §4.1's Lane B list only for `outputs_json`, `setRunOutputs`, `ListRunsFilter.includeChildren`, and the three `parent_run_id IS NULL` predicates. Extending `insertRun` is a P4 deletion/consolidation task. Added to §0's "P3b is not" list. |
+| **R12** — R8's docs fix overstated a composing step's dispatch-failure blast radius; three doc sites reworded | **CONFIRMED, no P3b change.** All three sites (`docs/reference/workflows.md`, `docs/reference/workflow-schema.md`'s "What is not yet available", `CHANGELOG.md`) are passages §8 already REPLACES or amends once child execution lands, so the rewording changes the text P3b deletes, not the instruction to delete it. §8's anchors survive: `workflow-schema.md`'s `### What is not yet available` is at `:198`, `workflows.md`'s `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED` sentence at `:67`, `CHANGELOG.md`'s P3a entry mention at `:150`, `docs/architecture/workflow-engine.md` at `:79`, `docs/migration/v0.9.1-to-v0.9.2.md`'s "## Workflow cutover" at `:110`. |
+
+### 10.3 Citations amended (the complete list)
+
+Every amendment is a corrected pointer or a corrected count; **no behavior
+table row, no §6 flip, and no §7 gate changed meaning.**
+
+| Site | Was | Is at head |
+|---|---|---|
+| §0 preamble | "verified at … `6ec07482`" | verified at `6ec07482`, re-verified at `f35d433d` |
+| B-N1 | "`rg outputs src/workflows/ir/` returns only the per-STEP `outputSchema`" | the grep's one hit is prose at `compile.ts:312`; `outputSchema` is at `schema-v4.ts:180` |
+| B-N8 | `repo.getUnit(...)`, `:1040` | `workflow-runs-repository.ts:1055` |
+| §4.1, `ir/compile.ts` row | reference validation `:338-390` | `checkReferenceField` `:282-297`, `checkInputReference` `:300-324`; `:338-390` lands on `collectWorkflowWarnings` (`:349`), the wrong function |
+| §4.6, zero-writes paragraph | "every `warn()` on the start path … (`runs.ts:279-281, :360-364`)" | `runs.ts` has exactly two `warn()` sites — `:280` (`startWorkflowRun`) and `:818` (`completeWorkflowStep`); there is no `warn()` at `:360-364`. The verb calls neither function, so the row B-48 guarantee is unchanged (and better evidenced) |
+| §8, `STABILITY.md` row | "The five existing workflow rows" | **six** at `:60-65`: `status`, `list`, `create`, `resume`, `abandon`, `run` |
+
+### 10.4 Verified unchanged, no amendment needed
+
+Spot-checked at head and exact: `WORKFLOW_MAX_PLAN_BYTES` /
+`WORKFLOW_MAX_SCHEMA_BYTES` / `WORKFLOW_MAX_COMPOSITION_DEPTH` /
+`WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES` (`resource-limits.ts:7,14,269,286`);
+`PROGRAM_RETRY_REASONS` (`program/schema.ts:77`);
+`computeChildInvocationKey` and its `akm.workflow.child-invocation\0v1\0`
+prefix (`child-invocation.ts:43,45`);
+`WorkflowSourceIrV1` (`source-ir/schema.ts:180-194`), its root `keys(...)`
+(`:210-227`) and `validateParams` (`:233`); the Markdown→IR `params` clone
+(`source-ir/compile.ts:95`); `WorkflowPlanDraft` (`ir/compile.ts:91`) and the
+draft assembly (`:160-180`); `frozenStepRows` (`runtime/plan-classifier.ts:102`)
+called at `runs.ts:340`; the two `startWorkflowRun` calls §4.6 mirrors
+(`runs.ts:263,268`); `completedRunResult` (`run-workflow.ts:545-553`) and
+`workflowSummaryJudge` (`:565-574`); `workflowListCommand.args`
+(`workflow-cli.ts:73-76`), `workflowCommand.subCommands` (`:358-365`), and the
+blocked-run exit code (`:209`); `PASSTHROUGH_COMMANDS`' workflow block
+(`passthrough.ts:66-72`) and `workflowFormatters` (`text/workflow.ts:16-23`);
+`ChildFreezeFn` (`ir/freeze-v4.ts:70`) and the plan assembly (`:123-127`).
+The §6 "no edit needed" verifications also hold verbatim: `schema-drift.test.ts`
+`:85-108` (F-B1), `completions.test.ts` `:73-90` (F-B3), `cli-errors.test.ts`
+`:411-423` (F-B5).
+
+One head observation with no spec consequence, recorded so a lane does not
+mistake it for drift: P3a round 2 gave `decodeWorkflowPlanV4` two new trailing
+parameters, `depth = 0` and `budget = { embeddedBytes: 0 }`
+(`schema-v4.ts:213-218`), threading the aggregate embedded-bytes bound through
+the child-plan recursion. Every §4.1 edit to that function is to its
+`assertKeys` list and `planExtraKeys`; the signature is untouched by P3b.
 
 ---
 
