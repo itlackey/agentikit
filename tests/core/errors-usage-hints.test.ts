@@ -53,7 +53,10 @@ const NEW_CODE_HINTS: ReadonlyArray<readonly [UsageErrorCode, string]> = [
     "TARGET_REF_INVALID",
     "Targets are canonical asset refs: `commands/review`, `scripts/build.sh`, `tasks/nightly`, `workflows/release`.",
   ],
-  ["WORKFLOW_SOURCE_INVALID", "Run `akm workflow validate <ref>` to see the failing source location."],
+  [
+    "WORKFLOW_SOURCE_INVALID",
+    "Run `akm lint` to see the failing source location, or `akm workflow plan <ref>` to compile it without writing.",
+  ],
   ["INPUT_BINDING_INVALID", "Check the step's with: keys against the target's declared inputs."],
 ];
 

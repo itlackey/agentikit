@@ -197,7 +197,12 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   TASK_SOURCE_INVALID: "Fix the task source at the reported path and line, then re-run.",
   TARGET_REF_INVALID:
     "Targets are canonical asset refs: `commands/review`, `scripts/build.sh`, `tasks/nightly`, `workflows/release`.",
-  WORKFLOW_SOURCE_INVALID: "Run `akm workflow validate <ref>` to see the failing source location.",
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §4.1, row B-53, R-R5): the
+  // original hint named `akm workflow validate`, a verb that was never
+  // implemented. Points at the two verbs that actually inspect a workflow
+  // source without executing it.
+  WORKFLOW_SOURCE_INVALID:
+    "Run `akm lint` to see the failing source location, or `akm workflow plan <ref>` to compile it without writing.",
   INPUT_BINDING_INVALID: "Check the step's with: keys against the target's declared inputs.",
   TASK_TARGET_UNSUPPORTED:
     "Task definitions support command, script, workflow, and shell (run:) targets in this version; akm/command and GitHub-action targets are not yet representable here.",

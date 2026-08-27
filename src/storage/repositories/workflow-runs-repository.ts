@@ -487,6 +487,13 @@ export class WorkflowRunsRepository {
   // ── writes ─────────────────────────────────────────────────────────────────
 
   insertRun(input: InsertRunInput): void {
+    // R-R3 (P3a Review log; docs/plans/specs/p4-deletions-closeout.md §8):
+    // this 13-column list is hand-duplicated by publishChildWorkflowRun's own
+    // INSERT below, which extends it with parent_run_id/parent_unit_id/
+    // invocation_key. A signature refactor to share one INSERT builder was
+    // considered and deliberately deferred — see
+    // docs/architecture/decisions/0009-child-run-publication-column-parity.md.
+    // Keep both column lists in sync by hand.
     this.db
       .prepare(
         `INSERT INTO workflow_runs (
@@ -688,6 +695,11 @@ export class WorkflowRunsRepository {
         .get(input.parentRunId, input.invocationKey) as WorkflowRunRow | undefined;
       if (existing) return existing;
 
+      // R-R3 (P3a Review log; docs/plans/specs/p4-deletions-closeout.md §8):
+      // the first 13 columns here must stay byte-identical to insertRun's own
+      // column list above (hand-duplicated, not shared, by deliberate choice
+      // — see docs/architecture/decisions/0009-child-run-publication-column-parity.md).
+      // Keep both column lists in sync by hand.
       db.prepare(
         `INSERT INTO workflow_runs (
           id, workflow_ref, scope_key, workflow_entry_id, workflow_title, status, params_json, current_step_id, created_at, updated_at,

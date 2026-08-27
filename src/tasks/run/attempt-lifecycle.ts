@@ -21,6 +21,23 @@
  * the same way production code observes it, through
  * `recordTaskAttemptFailure`'s one externally-visible effect (the stored
  * `detail.error` code).
+ *
+ * P4 (docs/plans/specs/p4-deletions-closeout.md §4.1, row B-55): the set
+ * additionally gains `TARGET_REF_INVALID`, `WORKFLOW_SOURCE_INVALID`,
+ * `INPUT_BINDING_INVALID`, and `TASK_TARGET_UNSUPPORTED` — every code P4's
+ * `INVALID_FLAG_VALUE` re-coding sweep (spec §5.2) makes reachable from the
+ * same post-reservation dispatch catch. `TARGET_REF_INVALID`
+ * (`execution/target-ref.ts`) and `INPUT_BINDING_INVALID`
+ * (`workflows/freeze/task-bindings.ts`) already reach it today through the
+ * same WORKFLOW arm as `COMPOSITION_INVALID` above — freezing a composed
+ * child (a `tasks/<ref>` or `workflows/<ref>` step) during dispatch can
+ * classify a malformed `uses:` or an invalid `with:` binding after the
+ * attempt is reserved. `WORKFLOW_SOURCE_INVALID` and `TASK_TARGET_UNSUPPORTED`
+ * get their first live throw sites in this same phase (the freeze wrapper's
+ * P4-N2 mapping, and `prepare/script-capture.ts`'s interpreter rejections,
+ * respectively) — added here ahead of / alongside that wiring rather than
+ * split across two commits, since an unreachable member of an allowlist Set
+ * is inert, not a defect.
  */
 
 import { AkmError, rethrowIfTestIsolationError } from "../../core/errors";
@@ -105,6 +122,10 @@ const SAFE_TASK_ATTEMPT_ERROR_CODES = new Set([
   "FILE_NOT_FOUND",
   "TASK_SOURCE_INVALID",
   "COMPOSITION_INVALID",
+  "TARGET_REF_INVALID",
+  "WORKFLOW_SOURCE_INVALID",
+  "INPUT_BINDING_INVALID",
+  "TASK_TARGET_UNSUPPORTED",
 ]);
 
 function safeTaskAttemptErrorCode(failure: unknown): string {
