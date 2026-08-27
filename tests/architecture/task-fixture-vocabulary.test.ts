@@ -199,6 +199,26 @@ const ALLOWED_EXACT_FILES = [
   // where the test expects a value. This subsystem is unrouted, not merely
   // v3-preferring — out of P2b's scope entirely.
   "tests/setup-scheduled-tasks.test.ts",
+
+  // P3a Lane B (docs/plans/specs/p3a-plan-v5-child-freeze.md §4, rows
+  // B-12/B-14/B-22), discovered load-bearing v3-ness (spec §6.3's escape
+  // valve, same as the "Lane D sweep" block above), 2026-08-27. Both files
+  // author a `version: 3` task whose OWN `uses:` targets a workflow,
+  // specifically to prove the task-wrapped child-workflow composition path
+  // works from a v3 task (B-12/B-14's "a v3 task whose own uses: targets a
+  // workflow freezes to a child-workflow target ... the task's own with:
+  // becomes the child's params", and B-22's task-mediated composition-cycle
+  // fixture) — the SAME `PreparedTaskV3Workflow.params` code path P2b's own
+  // "tests/workflows/task-binding-identity.test.ts" entry above documents as
+  // "unaffected by [the v4 deferral]" and "the more faithful fixture" for a
+  // v3-specific claim. Converting either to task source v4 would test the
+  // DIFFERENT v4 declared-`inputs:` binding path instead (already covered by
+  // this same spec's F-B4 flip in tests/workflows/task-input-bindings.test.ts),
+  // silently dropping v3-task-wrapped-workflow coverage entirely. The
+  // `schedule:` block is the same v3-mandatory-scheduling padding every other
+  // entry here carries (P0 row R-06) — not itself under test.
+  "tests/workflows/child-workflow-freeze.test.ts",
+  "tests/integration/workflows/child-freeze-read-set.test.ts",
 ] as const;
 
 function isAllowed(relPath: string): boolean {

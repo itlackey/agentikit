@@ -305,11 +305,6 @@ describe("workflow v4 fail-closed source targets", () => {
       /remote action|acquisition|out of scope/i,
     ],
     [
-      "nested-workflow",
-      workflowYaml("      - id: nested\n        uses: workflows/child"),
-      /nested workflow|unsupported/i,
-    ],
-    [
       "nonprojectable-agent",
       workflowYaml("      - id: persona\n        uses: agents/reviewer"),
       /agent|persona|not executable|unsupported/i,
@@ -327,14 +322,6 @@ describe("workflow v4 fail-closed source targets", () => {
     await expect(startWorkflowRun(`workflows/${name}`)).rejects.toThrow(pattern);
     expect(mutationCounts()).toEqual(before);
     expect((await listWorkflowRuns()).runs).toHaveLength(0);
-  });
-
-  test("rejects a task-composed workflow target as forbidden nested orchestration before mutation", async () => {
-    writeTask("delegate", ["uses: workflows/child"]);
-    writeWorkflow("task-nested", "      - id: nested\n        uses: tasks/delegate");
-    const before = await establishStateBaseline();
-    await expect(startWorkflowRun("workflows/task-nested")).rejects.toThrow(/nested|workflow target|task.*workflow/i);
-    expect(mutationCounts()).toEqual(before);
   });
 
   test("fails closed when two qualified refs alias the same physical command file", async () => {

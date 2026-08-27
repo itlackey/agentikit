@@ -9,6 +9,7 @@ import type { AkmConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { type GuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
 import { defaultMapConcurrency, workflowMaxConcurrency } from "../concurrency-policy";
+import type { ChildCompositionContext, ChildFreezeFn } from "../freeze/step-values";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
 import type { WorkflowUnitDraft } from "./compile";
 import { compileWorkflowPlan } from "./compile";
@@ -33,6 +34,17 @@ export interface FrozenWorkflowV4 {
 
 export interface FreezeWorkflowV4Options {
   readonly sourceCollector?: GuardedExecutionSourceCollector;
+  /**
+   * Recursive child-workflow composition state (spec docs/plans/specs/
+   * p3a-plan-v5-child-freeze.md §4.1/§4.3). Omitted at every PRODUCTION call
+   * site (`runtime/runs.ts`, `tasks/scheduler-sync.ts`) — those always freeze
+   * a ROOT plan, so the default below applies. Only
+   * `targets/child-workflow.ts`'s recursive call (via the injected
+   * {@link ChildFreezeFn}, never a direct import — see
+   * `freeze/step-values.ts`'s `ChildCompositionContext` doc for why) passes
+   * one explicitly.
+   */
+  readonly composition?: ChildCompositionContext;
 }
 
 /** Compile, resolve, and freeze one executable plan without publishing any state. */
@@ -42,8 +54,35 @@ export async function compileResolveFreezeWorkflowV4(
   options: FreezeWorkflowV4Options = {},
 ): Promise<FrozenWorkflowV4> {
   const sourceCollector = options.sourceCollector ?? new GuardedExecutionSourceCollector();
+  const composition: ChildCompositionContext = options.composition ?? {
+    depth: 0,
+    refPath: [asset.ref],
+    budget: { embeddedBytes: 0 },
+  };
+  // Injected rather than imported (A-N7/step-values.ts's `ChildCompositionContext`
+  // doc): `targets/child-workflow.ts` is downstream of this module (via
+  // `resolve-steps.ts` <- `source-freeze.ts` <- the `source-freeze-v4.ts`
+  // shim), so it cannot import `compileResolveFreezeWorkflowV4` directly
+  // without closing a static import cycle
+  // (tests/architecture/import-cycle-ratchet.test.ts, shrink-only, empty
+  // baseline). This closure is this function's own recursive call, passed
+  // down as a plain value through `ResolutionContext.freezeChild`.
+  const freezeChild: ChildFreezeFn = async (request) => {
+    const child = await compileResolveFreezeWorkflowV4(request.asset, config, {
+      sourceCollector: request.sourceCollector,
+      composition: request.composition,
+    });
+    return { plan: child.plan, sourceCollector: child.sourceCollector };
+  };
   const workflowSource = captureWorkflowSource(asset, sourceCollector);
-  const resolved = await resolveWorkflowSourceV4(asset, workflowSource, config, sourceCollector);
+  const resolved = await resolveWorkflowSourceV4(
+    asset,
+    workflowSource,
+    config,
+    sourceCollector,
+    composition,
+    freezeChild,
+  );
   const compiled = compileWorkflowPlan(resolved.sourceIr, asset.title, resolved.units);
   if (!compiled.ok) {
     throw new UsageError(

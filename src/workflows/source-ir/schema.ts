@@ -145,9 +145,12 @@ export interface WorkflowSourceStep {
    * A-N3 (P2b, docs/plans/specs/p2b-input-bindings.md §1.7): widened from
    * `Record<string, WorkflowSourceScalar>` so a `tasks/<ref>` step's `with:`
    * may bind a declared object/array-typed input, or a `{from: "..."}`
-   * reference. `scalarRecord` (below) narrows the "must be a scalar"
-   * restriction to non-task targets only — every other target's `with:` is
-   * still exactly scalar/null, byte-identical to before this widening.
+   * reference. Widened again in P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md
+   * A-N8) to ALSO cover a `workflows/<ref>` step's `with:`, which binds the
+   * composed child's declared `params:` the same way. `scalarRecord` (below)
+   * narrows the "must be a scalar" restriction to non-task, non-workflow
+   * targets only — every other target's `with:` is still exactly
+   * scalar/null, byte-identical to before this widening.
    */
   with?: Record<string, unknown>;
   env?: Record<string, WorkflowSourceEnvironmentValue>;
@@ -398,11 +401,13 @@ function validateStep(
     }
   }
   validateExec(step.exec, `step ${id} exec`, options);
-  // A-N3: the "must be a scalar" restriction narrows to non-task targets
-  // only. A tasks/<ref> step's with: may carry any JSON value the bounded
-  // document front end already accepts; freeze (src/workflows/freeze/**)
-  // decides what a declared input actually accepts.
-  scalarRecord(step.with, `step ${id} with`, true, usesTarget?.kind === "task");
+  // A-N3, widened in P3a (spec docs/plans/specs/p3a-plan-v5-child-freeze.md
+  // §4.2 step 7, row B-10, A-N8): the "must be a scalar" restriction narrows
+  // to non-task, non-workflow targets only. A tasks/<ref> or workflows/<ref>
+  // step's with: may carry any JSON value the bounded document front end
+  // already accepts; freeze (src/workflows/freeze/**) decides what a
+  // declared input/param actually accepts.
+  scalarRecord(step.with, `step ${id} with`, true, usesTarget?.kind === "task" || usesTarget?.kind === "workflow");
   environment(step.env, `step ${id} env`);
   rejectStepWithExpressions(step, id);
   rejectExpressionsInRecord(step.env, `step ${id} env`);
@@ -903,11 +908,12 @@ function stringList(value: unknown, location: string, max: number, allowEmpty: b
 }
 
 /**
- * `allowNonScalar` (A-N3, P2b): when true (a `tasks/<ref>` step's `with:`
- * only), the key-grammar check still runs but the scalar/null value
- * restriction is skipped entirely — a declared object/array-typed input or a
- * `{from: "..."}` reference may decode. Every other target keeps the
- * byte-identical scalar-or-null restriction.
+ * `allowNonScalar` (A-N3, P2b; widened in P3a, A-N8): when true (a
+ * `tasks/<ref>` or `workflows/<ref>` step's `with:`), the key-grammar check
+ * still runs but the scalar/null value restriction is skipped entirely — a
+ * declared object/array-typed input or param, or a `{from: "..."}`
+ * reference, may decode. Every other target keeps the byte-identical
+ * scalar-or-null restriction.
  */
 function scalarRecord(value: unknown, location: string, allowNull: boolean, allowNonScalar = false): void {
   if (value === undefined) return;

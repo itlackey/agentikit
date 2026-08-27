@@ -39,7 +39,7 @@ import type { UnresolvedExecutionDefaults } from "../../execution/source";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { defaultLlmEngineConcurrency } from "../concurrency-policy";
 import type { IrExecSpec } from "../ir/schema";
-import type { FrozenWorkflowEnvironmentBinding, FrozenWorkflowTarget } from "../ir/schema-v4";
+import type { FrozenWorkflowEnvironmentBinding, FrozenWorkflowTarget, WorkflowPlanGraphV4 } from "../ir/schema-v4";
 import type { ProgramExec, ProgramUnit } from "../program/schema";
 import { DEFAULT_EXEC_TIMEOUT_MS } from "../resource-limits";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
@@ -53,11 +53,67 @@ export interface OwnedAsset {
   readonly file: string;
 }
 
+/**
+ * Recursive child-workflow composition state, threaded through freeze (spec
+ * docs/plans/specs/p3a-plan-v5-child-freeze.md §4.3). Declared HERE — the
+ * deliberate leaf — rather than in `targets/child-workflow.ts`: `ir/freeze-v4.ts`
+ * (which is NOT downstream of this module) needs this type to build the
+ * root `ResolutionContext`'s default, and `targets/child-workflow.ts` IS
+ * downstream of `ir/freeze-v4.ts` (via `resolve-steps.ts` <- `source-freeze.ts`
+ * <- the `ir/source-freeze-v4.ts` shim), so an import from `ir/freeze-v4.ts`
+ * into `targets/child-workflow.ts` — or into this module, were the type
+ * declared there instead — would close a static import cycle
+ * (`tests/architecture/import-cycle-ratchet.test.ts`, shrink-only, empty
+ * baseline).
+ */
+export interface ChildCompositionContext {
+  /** 0 at the root workflow; +1 per child freeze. */
+  readonly depth: number;
+  /** Refs from the root to the current workflow, in order. Task refs appear for legibility (row B-22). */
+  readonly refPath: readonly string[];
+  /** MUTABLE accumulator shared by the ENTIRE freeze tree (A-N6's aggregate embedded-bytes bound). */
+  readonly budget: { embeddedBytes: number };
+}
+
+/**
+ * One recursive child-workflow freeze request (A-N7: the child freezes with
+ * its OWN fresh `GuardedExecutionSourceCollector`, then the parent absorbs
+ * it). Issued by `targets/child-workflow.ts` through
+ * `ResolutionContext.freezeChild` rather than a direct import of
+ * `compileResolveFreezeWorkflowV4` (`ir/freeze-v4.ts`), for the same
+ * cycle-avoidance reason {@link ChildCompositionContext} documents:
+ * `ir/freeze-v4.ts` injects the real implementation as a plain function
+ * VALUE when it builds the root context, so no `freeze/targets/**` module
+ * ever needs a static import of `ir/freeze-v4.ts`.
+ */
+export interface ChildFreezeRequest {
+  readonly asset: WorkflowAsset;
+  readonly sourceCollector: GuardedExecutionSourceCollector;
+  readonly composition: ChildCompositionContext;
+}
+
+/**
+ * The recursive freeze's result — exactly what `targets/child-workflow.ts`
+ * needs (the embedded plan and the child's own collector to absorb). A
+ * structural SUBSET of `FrozenWorkflowV4` (`ir/freeze-v4.ts`), which is not
+ * imported here for the cycle-avoidance reason {@link ChildCompositionContext}
+ * documents — `ir/freeze-v4.ts`'s own `FrozenWorkflowV4` satisfies this shape
+ * without a cast.
+ */
+export interface ChildFreezeResult {
+  readonly plan: WorkflowPlanGraphV4;
+  readonly sourceCollector: GuardedExecutionSourceCollector;
+}
+
+export type ChildFreezeFn = (request: ChildFreezeRequest) => Promise<ChildFreezeResult>;
+
 export interface ResolutionContext {
   readonly asset: WorkflowAsset;
   readonly config: AkmConfig;
   readonly collector: GuardedExecutionSourceCollector;
   readonly sourceIr: WorkflowSourceIrV1;
+  readonly composition: ChildCompositionContext;
+  readonly freezeChild: ChildFreezeFn;
 }
 
 export interface ResolvedDispatch {
@@ -123,4 +179,24 @@ export function executionUnitValues(
     ...(unit && "output" in unit && Object.hasOwn(unit, "output") ? { outputSchema: unit.output } : {}),
     workspace,
   }) as UnresolvedExecutionDefaults;
+}
+
+/**
+ * Step ids that appear BEFORE `stepId` in the frozen step order (A-N4) — the
+ * SAME ordering map.over/inputs[] rely on. Shared by `targets/task.ts` (a
+ * step's own `with:` against its composed task's declared `inputs:`) and
+ * `targets/child-workflow.ts` (the SAME step's effective inputs, re-bound
+ * against a composed child workflow's declared `params:`, spec A-N8) — moved
+ * here rather than duplicated so both can import it without either importing
+ * the other.
+ */
+export function earlierStepIds(sourceIr: WorkflowSourceIrV1, stepId: string): ReadonlySet<string> {
+  const steps = sourceIr.jobs[0]?.steps ?? [];
+  const index = steps.findIndex((step) => step.id === stepId);
+  return new Set(index < 0 ? [] : steps.slice(0, index).map((step) => step.id));
+}
+
+/** THIS workflow's own declared param names (A-N4) — never an outer composing task's. See {@link earlierStepIds}. */
+export function declaredParamNames(sourceIr: WorkflowSourceIrV1): ReadonlySet<string> {
+  return new Set(sourceIr.params ? Object.keys(sourceIr.params) : []);
 }

@@ -393,7 +393,6 @@ describe("whole-set v3 scheduler sync planning", () => {
   });
 
   test.each([
-    ["nested workflow", "workflows/child", /nested workflow|unsupported/i],
     ["remote action", "actions/checkout@v4", /remote action|acquisition|unsupported/i],
   ] as const)("rejects %s before scheduler signatures or mutation preparation", async (_label, uses, message) => {
     const bundleRoot = root();

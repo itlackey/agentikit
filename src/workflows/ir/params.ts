@@ -56,6 +56,18 @@ function contractFromPlan(plan: WorkflowParameterPlan): InputContract {
   return contract;
 }
 
+/**
+ * `contractFromPlan`, exported under its P3a-facing name (spec
+ * docs/plans/specs/p3a-plan-v5-child-freeze.md A-N8): a child workflow has no
+ * `inputs:` contract of its own (that is task source v4's vocabulary) — it
+ * declares `params:`, and this is the SAME adapter this file already uses
+ * for run-parameter validation, reused so `freezeTaskInputBindings`
+ * (`src/workflows/freeze/task-bindings.ts`, generic over `InputContract`) has
+ * exactly one normalizer for every binding surface. Additive; no behavior
+ * change to this file's own exports.
+ */
+export { contractFromPlan as workflowParamContract };
+
 function invalidParameter(name: string, message: string): UsageError {
   return new UsageError(`Workflow parameter "--${name}" ${message}.`, "INVALID_FLAG_VALUE");
 }

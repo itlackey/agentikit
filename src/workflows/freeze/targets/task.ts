@@ -13,11 +13,18 @@ import { projectTaskSourceV4 } from "../../../tasks/source/project-v4";
 import type { FrozenWorkflowShellTarget, FrozenWorkflowTarget } from "../../ir/schema-v4";
 import type { ProgramExec, ProgramUnit } from "../../program/schema";
 import { workflowShellCommand } from "../../source-ir/program";
-import type { WorkflowSourceIrV1, WorkflowSourceStep } from "../../source-ir/schema";
+import type { WorkflowSourceStep } from "../../source-ir/schema";
 import { captureOwned, freezeEnvironment, guardedExecutionSource, resolveOwnedAsset } from "../environment";
 import { gitIdentity } from "../identity";
-import { freezeExecSpec, type ResolutionContext, type ResolvedDispatch } from "../step-values";
+import {
+  declaredParamNames,
+  earlierStepIds,
+  freezeExecSpec,
+  type ResolutionContext,
+  type ResolvedDispatch,
+} from "../step-values";
 import { freezeTaskInputBindings } from "../task-bindings";
+import { childWorkflowDispatch } from "./child-workflow";
 import { commandResult } from "./command";
 import { scriptResult } from "./script";
 
@@ -112,9 +119,12 @@ export async function taskDispatch(
     throw noDeclaredInputsError(source.id, refInput);
   }
 
-  if (task.target.kind === "uses" && task.target.uses.kind === "workflow") {
-    throw new UsageError("A workflow task step cannot compose a nested workflow target.", "INVALID_FLAG_VALUE");
-  }
+  // P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md §4.2, row B-12): a task
+  // whose OWN target is `uses: workflows/<ref>` used to fast-fail here,
+  // before ever calling prepareTaskV3Execution. That rejection is REMOVED —
+  // flow continues to the bindings computation and the prepare call exactly
+  // as for any other task target, and `prepared.kind === "workflow"` below
+  // routes to the ONE child-workflow resolver instead.
 
   // Lane A2 (§3.2-§3.5): normalize THIS step's own with: against THIS task's
   // OWN declared inputs — no merge across a composition chain (B-29). A v3
@@ -146,7 +156,25 @@ export async function taskDispatch(
     readFile: (file, root = owned.root) => context.collector.readBytes(file, root),
   });
   if (prepared.kind === "workflow") {
-    throw new UsageError("A workflow task step cannot compose a nested workflow target.", "INVALID_FLAG_VALUE");
+    // P3a (spec §4.2, rows B-12/B-13): routes to the ONE child-workflow
+    // resolver instead of rejecting. `prepared.ref`/`prepared.taskRef` are
+    // already qualified (§4.2 step 1 re-resolves and re-canonicalizes them
+    // regardless). The with:-shaped authored source differs by task
+    // version (A-N8's routing table): a v4 task with a declared `inputs:`
+    // contract re-binds its OWN effective inputs (the bindings just
+    // computed above, against ITS contract) against the child's declared
+    // `params:`; a v3 task (or a v4 task with no `inputs:` at all, contract
+    // === undefined either way) hands the child its own raw with:
+    // (`PreparedTaskV3Workflow.params`) unchanged.
+    return childWorkflowDispatch({
+      source,
+      baseUnit,
+      childRefInput: prepared.ref,
+      context,
+      via: "task",
+      taskRef: prepared.taskRef,
+      authoredWith: contract !== undefined ? bindingsToWithRecord(bindings) : prepared.params,
+    });
   }
   const taskLiterals = Object.entries(prepared.environment).map(([name, value]) =>
     Object.freeze({ kind: "literal" as const, name, value }),
@@ -194,14 +222,20 @@ function withInputBindings(resolved: ResolvedDispatch, bindings: readonly TaskIn
   };
 }
 
-/** Step ids that appear BEFORE `stepId` in the frozen step order (A-N4) — the SAME ordering map.over/inputs[] rely on. */
-function earlierStepIds(sourceIr: WorkflowSourceIrV1, stepId: string): ReadonlySet<string> {
-  const steps = sourceIr.jobs[0]?.steps ?? [];
-  const index = steps.findIndex((step) => step.id === stepId);
-  return new Set(index < 0 ? [] : steps.slice(0, index).map((step) => step.id));
-}
-
-/** THIS workflow's own declared param names (A-N4) — never an outer composing task's. */
-function declaredParamNames(sourceIr: WorkflowSourceIrV1): ReadonlySet<string> {
-  return new Set(sourceIr.params ? Object.keys(sourceIr.params) : []);
+/**
+ * Convert an already-computed `TaskInputBinding[]` back into a with:-shaped
+ * record (A-N8's v4 routing arm): the composing task's own effective inputs
+ * — its declared `inputs:` defaults, overridden by any authored `with:`,
+ * already normalized once above against the TASK's own contract — become the
+ * authored source `childWorkflowDispatch` RE-normalizes against the CHILD's
+ * declared `params:`. A literal binding round-trips as its value; a
+ * reference binding round-trips as `{from}`, the exact shape
+ * `freezeTaskInputBindings`'s own reference grammar accepts.
+ */
+function bindingsToWithRecord(bindings: readonly TaskInputBinding[]): Record<string, unknown> {
+  const record: Record<string, unknown> = {};
+  for (const binding of bindings) {
+    record[binding.name] = binding.kind === "literal" ? binding.value : { from: binding.from };
+  }
+  return record;
 }

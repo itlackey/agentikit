@@ -248,3 +248,39 @@ export function utf8Bytes(value: string): number {
 export function jsonBytes(value: unknown): number {
   return utf8Bytes(JSON.stringify(value));
 }
+
+// ── Recursive child-workflow composition bounds (spec docs/plans/specs/
+// ── p3a-plan-v5-child-freeze.md §4.5, A-N6) ──────────────────────────────────
+//
+// Enforced ONCE, at freeze, before publication, in
+// `src/workflows/freeze/targets/child-workflow.ts` — the ONE resolver both the
+// direct `uses: workflows/<ref>` form and the task-wrapped form route through
+// — and re-enforced as a corruption gate whenever a parent plan is DECODED
+// (`src/workflows/ir/schema-v4.ts`'s recursive `decodeChildWorkflowTarget`).
+
+/**
+ * Max workflow composition depth: the root workflow plus this many
+ * descendant levels (root is depth 0, so 8 descendant levels freeze and a
+ * 9th fails). Deep enough that no legible authored composition hits it (the
+ * per-workflow bounds above — 256 steps, 64 engines, 10 000 map expansion —
+ * are the practical ceilings), shallow enough that the worst case is bounded
+ * recursion during freeze and decode.
+ */
+export const WORKFLOW_MAX_COMPOSITION_DEPTH = 8;
+
+/**
+ * Max AGGREGATE canonical-JSON bytes of every embedded child plan in ONE root
+ * freeze (the sum across the whole composition tree, not per child).
+ * Deliberately HALF of {@link WORKFLOW_MAX_PLAN_BYTES} rather than a larger
+ * value layered on top of it: an embedded child plan lives INSIDE its
+ * parent's own plan bytes, so a cap independent of (and comparable to) the
+ * total plan cap would let composition alone exhaust it. Halving keeps the
+ * parent's own content always able to claim at least half the budget, and
+ * lets this actionable, freeze-time `COMPOSITION_INVALID` (which names the
+ * offending child ref and the running total) fire before the terse, unlocated
+ * decoder message a reviewer would otherwise have to debug. Rejected
+ * alternative: raising `WORKFLOW_MAX_PLAN_BYTES` itself, which would relax a
+ * corruption/DoS bound for every plan — including ones with no children — to
+ * serve a bound only composition needs (A-N6).
+ */
+export const WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES = 1024 * 1024;

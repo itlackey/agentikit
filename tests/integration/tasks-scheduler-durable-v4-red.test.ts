@@ -149,11 +149,6 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
       /exactly one (?:source-IR )?job|single-job|multi-job|cannot project/i,
     ],
     [
-      "nested workflow",
-      workflow("invalid", ["      - id: nested", "        uses: workflows/child"]),
-      /nested workflow|unsupported/i,
-    ],
-    [
       "remote action",
       workflow("invalid", ["      - id: remote", "        uses: actions/checkout@v4"]),
       /remote action|acquisition|unsupported/i,

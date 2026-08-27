@@ -152,12 +152,13 @@ export function classifyWorkflowStepUses(
       `Remote action acquisition is out of scope for ${JSON.stringify(value)}.`,
     );
   }
-  if (target.kind === "workflow") {
-    throw new WorkflowSourceSemanticError(
-      "nested-workflow-unsupported",
-      `Nested workflow target ${JSON.stringify(value)} is unsupported in a workflow step.`,
-    );
-  }
+  // P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md §1.3(2)/§4, A-N4): a
+  // `kind: "workflow"` target used to throw `nested-workflow-unsupported`
+  // here. That rejection is REMOVED — classification returns the workflow
+  // target like any other target-ref-shaped `uses:`, and freeze decides
+  // (`src/workflows/freeze/targets/child-workflow.ts`, the ONE recursive
+  // child-workflow resolver both the direct and task-wrapped composition
+  // forms route through).
   return target;
 }
 

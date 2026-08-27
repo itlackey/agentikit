@@ -24,7 +24,7 @@ import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
 import { compileWorkflowSource } from "../source-ir/compile";
 import type { WorkflowSourceIrV1 } from "../source-ir/schema";
 import { resolveJudge, resolveStep } from "./resolve-steps";
-import type { ResolutionContext } from "./step-values";
+import type { ChildCompositionContext, ChildFreezeFn, ResolutionContext } from "./step-values";
 
 export interface ResolvedWorkflowUnitV4 {
   readonly target: FrozenWorkflowTarget;
@@ -41,12 +41,25 @@ export interface ResolvedWorkflowSourceV4 {
   readonly engineAnnouncement?: string;
 }
 
-/** Resolve every authored target through the shared command/task authorities before v4 publication. */
+/**
+ * Resolve every authored target through the shared command/task authorities
+ * before v4 publication.
+ *
+ * `composition` and `freezeChild` (spec docs/plans/specs/
+ * p3a-plan-v5-child-freeze.md §4.1/§4.3) thread the recursive
+ * child-workflow-freeze state down into every step's `ResolutionContext`;
+ * `ir/freeze-v4.ts`'s `compileResolveFreezeWorkflowV4` is this function's
+ * ONLY caller (via the `ir/source-freeze-v4.ts` shim) and supplies both —
+ * the root default composition, or the composition
+ * `targets/child-workflow.ts` built for a recursive child freeze.
+ */
 export async function resolveWorkflowSourceV4(
   asset: WorkflowAsset,
   workflowSource: GuardedExecutionSource,
   config: AkmConfig,
   collector: GuardedExecutionSourceCollector,
+  composition: ChildCompositionContext,
+  freezeChild: ChildFreezeFn,
 ): Promise<ResolvedWorkflowSourceV4> {
   const compiled = compileWorkflowSource(workflowSource.content, { path: asset.path, workspaceRoot: asset.sourcePath });
   if (!compiled.ok) {
@@ -61,7 +74,7 @@ export async function resolveWorkflowSourceV4(
       "INVALID_FLAG_VALUE",
     );
   }
-  const context: ResolutionContext = { asset, config, collector, sourceIr: compiled.ir };
+  const context: ResolutionContext = { asset, config, collector, sourceIr: compiled.ir, composition, freezeChild };
   const units = new Map<string, ResolvedWorkflowUnitV4>();
   const judges = new Map<string, FrozenWorkflowCommandTarget>();
   let engineAnnouncement: string | undefined;

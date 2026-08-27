@@ -585,14 +585,17 @@ function parseUsesStep(
   }
   const uses = reader.string(usesPair.value, "step.uses");
   const target = classifyUses(reader, uses, usesPair.value, options.classifyUses ?? classifyWorkflowSourceUses);
-  // A-N3 (P2b, docs/plans/specs/p2b-input-bindings.md §1.7): a tasks/<ref>
-  // step's with: may bind any JSON value the composed task's declared input
-  // needs (an object/array literal, or a {from: "..."} reference) — decoding
-  // it through the scalar-only parseScalarMap would reject the very shapes
-  // A-N3 exists to accept before decodeWorkflowSourceIrV1 (schema.ts) is ever
-  // reached. Every other target keeps the byte-identical scalar-only grammar.
+  // A-N3 (P2b, docs/plans/specs/p2b-input-bindings.md §1.7), widened in P3a
+  // (docs/plans/specs/p3a-plan-v5-child-freeze.md §4.2 step 7, row B-10) to
+  // ALSO cover a workflows/<ref> target: a tasks/<ref> or workflows/<ref>
+  // step's with: may bind any JSON value the composed target's declared
+  // input/param needs (an object/array literal, or a {from: "..."}
+  // reference) — decoding it through the scalar-only parseScalarMap would
+  // reject the very shapes both A-N3 and A-N8 exist to accept before
+  // decodeWorkflowSourceIrV1 (schema.ts) is ever reached. Every other target
+  // keeps the byte-identical scalar-only grammar.
   const withValues =
-    target.kind === "task"
+    target.kind === "task" || target.kind === "workflow"
       ? parsePlainMap(reader, fields.get("with"), "step.with", INPUT_KEY)
       : parseScalarMap(reader, fields.get("with"), "step.with", INPUT_KEY, true);
   const commandMode =

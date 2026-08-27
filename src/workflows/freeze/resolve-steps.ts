@@ -9,6 +9,7 @@ import type { WorkflowSourceStep } from "../source-ir/schema";
 import { classifyWorkflowStepUses } from "../source-ir/semantics";
 import { qualifyRef } from "./environment";
 import type { ResolutionContext, ResolvedDispatch } from "./step-values";
+import { childWorkflowDispatch } from "./targets/child-workflow";
 import { commandDispatch, commandResult, inlineDispatch } from "./targets/command";
 import { directScript } from "./targets/script";
 import { directShell } from "./targets/shell";
@@ -20,6 +21,20 @@ export async function resolveStep(source: WorkflowSourceStep, context: Resolutio
   if (!source.uses) return inlineDispatch(source, baseUnit, context);
   const target = classifyWorkflowStepUses(source.uses);
   if (target.kind === "task") return taskDispatch(source, baseUnit, target.ref, context);
+  // A direct `uses: workflows/<ref>` step (spec docs/plans/specs/
+  // p3a-plan-v5-child-freeze.md §4.2, row B-01/B-04). `with:` on this target
+  // IS a valid binding surface (A-N8) — unlike scripts/commands below,
+  // `rejectNonTaskBindingWith` must NOT be extended to it.
+  if (target.kind === "workflow") {
+    return childWorkflowDispatch({
+      source,
+      baseUnit,
+      childRefInput: target.ref,
+      context,
+      via: "direct",
+      authoredWith: source.with,
+    });
+  }
   if (target.kind === "script") {
     rejectNonTaskBindingWith(source, target.ref, "script");
     return directScript(source, baseUnit, target.ref, context);
