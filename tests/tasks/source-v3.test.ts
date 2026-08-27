@@ -29,21 +29,6 @@ describe("task v3 target grammar", () => {
     ["team//commands/review", { kind: "command", ref: "team//commands/review" }],
     ["workflows/release", { kind: "workflow", ref: "workflows/release" }],
     ["team//scripts/check", { kind: "script", ref: "team//scripts/check" }],
-    [
-      "actions/checkout@v4",
-      { kind: "github-action", ref: "actions/checkout@v4", owner: "actions", repository: "checkout", revision: "v4" },
-    ],
-    [
-      "octo-org/action-repo/sub/action@feature/v2",
-      {
-        kind: "github-action",
-        ref: "octo-org/action-repo/sub/action@feature/v2",
-        owner: "octo-org",
-        repository: "action-repo",
-        path: "sub/action",
-        revision: "feature/v2",
-      },
-    ],
   ] as const)("classifies %s deterministically", (input, expected) => {
     expect(classifyTaskV3Uses(input)).toEqual(expected);
   });
@@ -71,6 +56,12 @@ describe("task v3 target grammar", () => {
     "owner//repo@v1",
     "owner/repo@@v1",
     ["$", "{{ github.repository }}/action@v1"].join(""),
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.1, F-A1.1): these two
+    // used to classify as {kind:"github-action", ...} — the locator grammar
+    // is deleted, so a github-action-shaped uses: now falls to the same
+    // generic rejection as any other unrecognized shape.
+    "actions/checkout@v4",
+    "octo-org/action-repo/sub/action@feature/v2",
   ])("rejects non-executable, ambiguous, local, traversal, and malformed uses ref %p", (input) => {
     expect(() => classifyTaskV3Uses(input)).toThrow(/uses|executable|ref|action|agent|task/i);
   });

@@ -212,10 +212,11 @@ function ctxFrom(options: ParseTaskSourceV4DocumentOptions): BoundedDocumentCont
 /**
  * A value SHAPED like `owner/repo[/path]@revision` — used only to produce a
  * good "the github-action target was removed" message (B-13), never to
- * accept. Deliberately a shape test, not v3's full github-locator grammar
- * (`validGithubRevision`, `source-v3.ts:497-520`) — that full grammar exists
- * to decide ACCEPTANCE in v3; task source v4 never accepts a github locator,
- * so only the shape needs to be recognized here.
+ * accept. Deliberately a shape test, not a full github-locator grammar:
+ * native target classification recognizes no github-action variant at all
+ * (P4 deleted the last one, `classifyTaskV3Uses`'s locator branch in
+ * `source-v3.ts`) — only the shape needs to be recognized here, so the
+ * rejection can name the target the user typed rather than guess.
  */
 function looksLikeGithubActionLocator(value: string): boolean {
   const at = value.lastIndexOf("@");
@@ -232,9 +233,7 @@ function looksLikeGithubActionLocator(value: string): boolean {
  * to {@link classifyTargetRef} (`src/execution/target-ref.ts`) — the repo's
  * one canonical-ref classifier — rather than re-deriving ref grammar; layers
  * the `akm/command` builtin special case, the task-ref rejection (B-14), and
- * the github-locator-shape rejection (B-13) on top, mirroring how v3's own
- * `classifyTaskV3Uses` layers `akm/command` and the github-action grammar on
- * top of the same underlying bundle-ref parser.
+ * the github-locator-shape rejection (B-13) on top.
  */
 export function classifyTaskSourceV4Uses(value: string): TaskSourceV4UsesTarget {
   // Diagnostic-codes ratchet remedy (tests/architecture/diagnostic-codes.test.ts,

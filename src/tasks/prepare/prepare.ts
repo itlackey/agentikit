@@ -57,12 +57,6 @@ export async function prepareTaskV3Execution(
   }
 
   const target = document.target.uses;
-  if (target.kind === "github-action") {
-    throw new UsageError(
-      `GitHub action ${JSON.stringify(target.ref)} is recognized but remote action acquisition is unsupported in 0.9.2.`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
   if (target.kind === "builtin-command") {
     const command = document.target.command;
     if (!command) throw new Error("invariant: parsed built-in command target has no command action");

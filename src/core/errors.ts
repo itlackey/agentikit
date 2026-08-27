@@ -117,12 +117,12 @@ export type UsageErrorCode =
   | "INPUT_BINDING_INVALID"
   // P1b (docs/plans/specs/p1b-model-extraction.md, diagnostic-codes ratchet
   // remedy): src/tasks/source/parse-v3-adapter.ts's taskDefinitionFromV3
-  // rejects a validly-parsed task-v3 `uses:` kind (builtin-command,
-  // github-action) that has no representation in P1b's closed
-  // TaskDefinitionTarget vocabulary yet. Distinct from INVALID_FLAG_VALUE:
-  // the input is not malformed, it is a recognized construct this phase's
-  // model does not model. Not yet reachable from any production path — the
-  // adapter is additive in P1b (spec §3.4).
+  // rejects a validly-parsed task-v3 `uses:` kind (builtin-command) that has
+  // no representation in P1b's closed TaskDefinitionTarget vocabulary yet.
+  // Distinct from INVALID_FLAG_VALUE: the input is not malformed, it is a
+  // recognized construct this phase's model does not model. Not yet
+  // reachable from any production path — the adapter is additive in P1b
+  // (spec §3.4).
   | "TASK_TARGET_UNSUPPORTED"
   // P3b (docs/plans/specs/p3b-child-executor.md §4.3, B-N13): a declared
   // `outputs:` entry could not be resolved at run completion — a missing
@@ -205,7 +205,7 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
     "Run `akm lint` to see the failing source location, or `akm workflow plan <ref>` to compile it without writing.",
   INPUT_BINDING_INVALID: "Check the step's with: keys against the target's declared inputs.",
   TASK_TARGET_UNSUPPORTED:
-    "Task definitions support command, script, workflow, and shell (run:) targets in this version; akm/command and GitHub-action targets are not yet representable here.",
+    "Task definitions support command, script, workflow, and shell (run:) targets; akm/command is layered by callers.",
   // P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md §3.2, A-N2): the
   // complete-or-abandon policy for a stored pre-irVersion-5 run.
   WORKFLOW_IR_VERSION_UNSUPPORTED:

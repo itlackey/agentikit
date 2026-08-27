@@ -8,7 +8,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../../commands/command/builtin-action";
 import { validatePortableCommandTemplate } from "../../commands/command/portable-template";
-import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseSchedule } from "../../tasks/schedule";
 import { classifyWorkflowSourceUses, type WorkflowSourceUsesClassifier, type WorkflowSourceUsesTarget } from "./uses";
 
@@ -124,33 +123,11 @@ export function classifyWorkflowStepUses(
       "uses must be one exact, non-empty executable ref",
     );
   }
-  const task = canonicalTaskTarget(value);
-  if (task) return task;
   let target: WorkflowSourceUsesTarget;
   try {
     target = classifier(value);
   } catch (cause) {
-    const failure = usesFailure(value, cause);
-    // §4.3 step 8: a value that is github-locator-SHAPED still throws
-    // remote-action-acquisition-out-of-scope, even though the new classifier
-    // (classifyTargetRef, no locator grammar) rejects it as an unrecognized
-    // family. Ordering is load-bearing: usesFailure's own prefix
-    // classifications (docker://, ./ ../ /, agents/) must keep winning over
-    // locator-shape detection, so this only overrides the generic
-    // unsupported-uses-target fallback.
-    if (failure.code === "unsupported-uses-target" && isGithubLocatorShape(value)) {
-      throw new WorkflowSourceSemanticError(
-        "remote-action-acquisition-out-of-scope",
-        `Remote action acquisition is out of scope for ${JSON.stringify(value)}.`,
-      );
-    }
-    throw failure;
-  }
-  if (target.kind === "github-action") {
-    throw new WorkflowSourceSemanticError(
-      "remote-action-acquisition-out-of-scope",
-      `Remote action acquisition is out of scope for ${JSON.stringify(value)}.`,
-    );
+    throw usesFailure(value, cause);
   }
   // P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md §1.3(2)/§4, A-N4): a
   // `kind: "workflow"` target used to throw `nested-workflow-unsupported`
@@ -160,20 +137,6 @@ export function classifyWorkflowStepUses(
   // child-workflow resolver both the direct and task-wrapped composition
   // forms route through).
   return target;
-}
-
-function canonicalTaskTarget(value: string): { kind: "task"; ref: string } | undefined {
-  try {
-    const parsed = parseBundleRef(value);
-    if (parsed.fragment !== undefined || bundleRefToString(parsed) !== value) return undefined;
-    const slash = parsed.conceptId.indexOf("/");
-    if (slash < 0 || parsed.conceptId.slice(0, slash) !== "tasks" || parsed.conceptId.length === slash + 1) {
-      return undefined;
-    }
-    return { kind: "task", ref: value };
-  } catch {
-    return undefined;
-  }
 }
 
 /**
@@ -239,84 +202,6 @@ export function rejectNulInArgv(command: readonly string[]): void {
   if (command.some((argument) => argument.includes("\0"))) {
     throw new WorkflowSourceSemanticError("invalid-exec-argv", "Direct exec argv may not contain NUL bytes.");
   }
-}
-
-const GITHUB_LOCATOR_OWNER_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const GITHUB_LOCATOR_REPOSITORY_SEGMENT_RE = /^[A-Za-z0-9_.-]+$/;
-const GITHUB_LOCATOR_REVISION_FORBIDDEN = new Set(["~", "^", ":", "?", "*", "[", "\\"]);
-
-/**
- * Minimal GitHub-locator SHAPE detection (P1a §4.3), local to this file and
- * deliberately NOT the full `owner/repo[/path]@rev` grammar in
- * src/tasks/source-v3.ts — shape only, no import from that module. Exists
- * solely to keep `remote-action-acquisition-out-of-scope` winning over
- * `unsupported-uses-target` for a value that `classifyTargetRef` rejects
- * (it owns no locator grammar at all), preserving R-04(c) until P4 removes
- * the row entirely.
- *
- * The owner segment intentionally stays looser than source-v3.ts's
- * `GITHUB_OWNER` (no 39-char cap, `.`/`_` allowed): a value the old grammar
- * rejected on owner shape now yields `remote-action-acquisition-out-of-scope`
- * instead of `unsupported-uses-target`, which is the one-directional slack
- * Accepted deviation A-1 (spec §4.3) authorizes. The repository segment and
- * revision character sets, however, mirror source-v3.ts's `GITHUB_REPOSITORY`
- * and `validGithubRevision` (`:178`, `:497-520`) exactly: an earlier version
- * of this function used a strict allowlist for both, which rejected shapes
- * the old grammar accepted (`owner/.github@v1`, `owner/_repo@v1`,
- * `owner/-repo@v1`, `owner/repo@v1.0+meta`, `owner/repo@%40`) — the OPPOSITE,
- * unauthorized direction (a CONFIRMED code-review finding) — so those two
- * segments are checked by forbidden-character/charset rules matching the old
- * grammar instead.
- */
-function isGithubLocatorShape(value: string): boolean {
-  const at = value.lastIndexOf("@");
-  if (at <= 0 || at !== value.indexOf("@")) return false;
-
-  const locator = value.slice(0, at);
-  const segments = locator.split("/");
-  if (segments.length < 2 || segments.some((segment) => segment.length === 0)) return false;
-  const [owner, repository] = segments;
-  if (!owner || !repository) return false;
-  if (!GITHUB_LOCATOR_OWNER_SEGMENT_RE.test(owner)) return false;
-  if (!GITHUB_LOCATOR_REPOSITORY_SEGMENT_RE.test(repository) || repository === "." || repository === "..") {
-    return false;
-  }
-
-  return isGithubLocatorRevisionShape(value.slice(at + 1));
-}
-
-/** Revision-shape check mirroring `validGithubRevision` (source-v3.ts:497-520) by forbidden-character set rather than a strict allowlist. */
-function isGithubLocatorRevisionShape(revision: string): boolean {
-  if (
-    revision.length === 0 ||
-    hasForbiddenGithubLocatorRevisionCharacter(revision) ||
-    revision.startsWith("/") ||
-    revision.endsWith("/") ||
-    revision.includes("..") ||
-    revision.includes("@{") ||
-    revision.includes("@")
-  ) {
-    return false;
-  }
-  return revision
-    .split("/")
-    .every(
-      (segment) =>
-        segment.length > 0 &&
-        segment !== "." &&
-        segment !== ".." &&
-        !segment.startsWith(".") &&
-        !segment.endsWith(".") &&
-        !segment.endsWith(".lock"),
-    );
-}
-
-function hasForbiddenGithubLocatorRevisionCharacter(value: string): boolean {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0) ?? 0;
-    if (codePoint <= 0x20 || codePoint === 0x7f || GITHUB_LOCATOR_REVISION_FORBIDDEN.has(character)) return true;
-  }
-  return false;
 }
 
 function usesFailure(value: string, cause: unknown): WorkflowSourceSemanticError {

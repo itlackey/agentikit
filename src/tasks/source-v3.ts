@@ -108,15 +108,7 @@ export function taskExtensionDetail(relPath: string): string {
 
 export type TaskV3UsesTarget =
   | Readonly<{ kind: "builtin-command"; ref: "akm/command" }>
-  | Readonly<{ kind: "command" | "workflow" | "script"; ref: string }>
-  | Readonly<{
-      kind: "github-action";
-      ref: string;
-      owner: string;
-      repository: string;
-      path?: string;
-      revision: string;
-    }>;
+  | Readonly<{ kind: "command" | "workflow" | "script"; ref: string }>;
 
 export type TaskV3Environment = Readonly<Record<string, string | number | boolean>>;
 
@@ -225,18 +217,6 @@ const AKM_KEYS = [
 ];
 const ON_KEYS = ["schedule", "workflow_dispatch"];
 const SHELL_SET = new Set<string>(TASK_V3_HOST_SHELLS);
-const GITHUB_OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
-const GITHUB_REPOSITORY = /^[A-Za-z0-9_.-]+$/;
-const GITHUB_ACTION_PATH_SEGMENT = /^[A-Za-z0-9_.-]+$/;
-const GITHUB_REF_FORBIDDEN = new Set(["~", "^", ":", "?", "*", "[", "\\"]);
-
-function hasForbiddenGithubRefCharacter(value: string): boolean {
-  for (const character of value) {
-    const codePoint = character.codePointAt(0) ?? 0;
-    if (codePoint <= 0x20 || codePoint === 0x7f || GITHUB_REF_FORBIDDEN.has(character)) return true;
-  }
-  return false;
-}
 
 function nullableSelector(value: unknown, ctx: ParseContext, key: string): string | null {
   const selector = stringField(value, ctx, ["akm", key], { nullable: true });
@@ -308,31 +288,6 @@ function parseAkm(value: ExecutionJsonValue, ctx: ParseContext): Readonly<TaskV3
   return Object.freeze(out) as Readonly<TaskV3AkmOptions>;
 }
 
-function validGithubRevision(revision: string): boolean {
-  if (
-    revision.length === 0 ||
-    hasForbiddenGithubRefCharacter(revision) ||
-    revision.startsWith("/") ||
-    revision.endsWith("/") ||
-    revision.includes("..") ||
-    revision.includes("@{") ||
-    revision.includes("@")
-  ) {
-    return false;
-  }
-  return revision
-    .split("/")
-    .every(
-      (segment) =>
-        segment.length > 0 &&
-        segment !== "." &&
-        segment !== ".." &&
-        !segment.startsWith(".") &&
-        !segment.endsWith(".") &&
-        !segment.endsWith(".lock"),
-    );
-}
-
 /** Classify one exact `uses` string. This function never resolves or guesses. */
 export function classifyTaskV3Uses(value: string): TaskV3UsesTarget {
   if (
@@ -373,35 +328,8 @@ export function classifyTaskV3Uses(value: string): TaskV3UsesTarget {
     if (error instanceof UsageError && /agent ref|task ref/i.test(error.message)) throw error;
   }
 
-  const at = value.lastIndexOf("@");
-  if (at > 0 && at === value.indexOf("@")) {
-    const locator = value.slice(0, at);
-    const revision = value.slice(at + 1);
-    const segments = locator.split("/");
-    const [owner, repository, ...actionPath] = segments;
-    if (
-      owner &&
-      repository &&
-      GITHUB_OWNER.test(owner) &&
-      GITHUB_REPOSITORY.test(repository) &&
-      repository !== "." &&
-      repository !== ".." &&
-      actionPath.every((segment) => GITHUB_ACTION_PATH_SEGMENT.test(segment) && segment !== "." && segment !== "..") &&
-      validGithubRevision(revision)
-    ) {
-      const action = {
-        kind: "github-action" as const,
-        ref: value,
-        owner,
-        repository,
-        ...(actionPath.length > 0 ? { path: actionPath.join("/") } : {}),
-        revision,
-      };
-      return Object.freeze(action);
-    }
-  }
   throw new UsageError(
-    "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref, or owner/repo[/path]@ref. Agent/task/local/Docker/ambiguous targets are not executable.",
+    "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref. Agent/task/local/Docker/remote-action/ambiguous targets are not executable.",
     "INVALID_FLAG_VALUE",
   );
 }

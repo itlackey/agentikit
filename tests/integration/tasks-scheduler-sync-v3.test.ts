@@ -393,7 +393,13 @@ describe("whole-set v3 scheduler sync planning", () => {
   });
 
   test.each([
-    ["remote action", "actions/checkout@v4", /remote action|acquisition|unsupported/i],
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
+    // F-A1.15): the locator grammar is deleted — a github-action-shaped
+    // uses: in a workflow step now rejects as an unrecognized ref shape
+    // (unsupported-uses-target), not the old remote-action-acquisition
+    // reason. This file is deleted with the v3 scheduler-sync machinery in
+    // commit 3 (F-A2.6).
+    ["remote action", "actions/checkout@v4", /unsupported-uses-target/],
   ] as const)("rejects %s before scheduler signatures or mutation preparation", async (_label, uses, message) => {
     const bundleRoot = root();
     write(

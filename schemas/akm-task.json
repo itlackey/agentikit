@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://itlackey.github.io/akm/schemas/akm-task.json",
   "title": "AKM Task (v3 or task source v4)",
-  "description": "A task source document is either a strict task-v3 object (exactly one executable selector and exactly one scheduling source; GitHub action refs are recognized source syntax but are not executed by AKM 0.9.2) or a task source v4 object (typed inputs:, a single bounded output: schema, and OPTIONAL scheduling — a task source v4 document with no schedule: is valid and manual-only). Published as a two-arm oneOf at the document root, keyed on version.",
+  "description": "A task source document is either a strict task-v3 object (exactly one executable selector and exactly one scheduling source) or a task source v4 object (typed inputs:, a single bounded output: schema, and OPTIONAL scheduling — a task source v4 document with no schedule: is valid and manual-only). Published as a two-arm oneOf at the document root, keyed on version.",
   "x-akm-runtimeConstraints": {
     "authoritativeParser": ["src/tasks/source-v3.ts", "src/tasks/source/task-source-v4.ts"],
     "maxSourceUtf8Bytes": 1048576,
@@ -15,7 +15,7 @@
   "oneOf": [
     {
       "title": "AKM Task v3",
-      "description": "Strict task-v3 source document. Exactly one executable selector and exactly one scheduling source are required. GitHub action refs are recognized source syntax but are not executed by AKM 0.9.2.",
+      "description": "Strict task-v3 source document. Exactly one executable selector and exactly one scheduling source are required.",
       "type": "object",
       "required": ["version"],
       "additionalProperties": false,
@@ -25,8 +25,7 @@
         "uses": {
           "oneOf": [
             { "const": "akm/command" },
-            { "$ref": "#/definitions/akmExecutableRef" },
-            { "$ref": "#/definitions/githubActionRef" }
+            { "$ref": "#/definitions/akmExecutableRef" }
           ]
         },
         "run": { "$ref": "#/definitions/nonemptyLiteral" },
@@ -152,15 +151,10 @@
           }
         },
         {
-          "description": "A canonical AKM executable ref or GitHub action ref.",
+          "description": "A canonical AKM executable ref.",
           "required": ["uses"],
           "properties": {
-            "uses": {
-              "oneOf": [
-                { "$ref": "#/definitions/akmExecutableRef" },
-                { "$ref": "#/definitions/githubActionRef" }
-              ]
-            }
+            "uses": { "$ref": "#/definitions/akmExecutableRef" }
           },
           "not": {
             "anyOf": [
@@ -360,11 +354,6 @@
       "type": "string",
       "maxLength": 262144,
       "pattern": "^(?:[^\\s:.#/]+//)?(?:commands|workflows|scripts)/(?!\\.{1,2}(?:/|$))[^\\s#\\\\/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^\\s#\\\\/\\u0000]+)*$"
-    },
-    "githubActionRef": {
-      "type": "string",
-      "maxLength": 262144,
-      "pattern": "^(?!(?:commands|workflows|scripts)/)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/(?!\\.{1,2}(?:/|@))[A-Za-z0-9_.-]+(?:/(?!\\.{1,2}(?:/|@))[A-Za-z0-9_.-]+)*@(?![./])(?!.*(?:@|\\.\\.|//|/\\.|\\.(?:/|$)|\\.lock(?:/|$)))[^\\s\\u0000-\\u0020\\u007f~^:?*\\[\\\\/](?:[^\\s\\u0000-\\u0020\\u007f~^:?*\\[\\\\@]*[^\\s\\u0000-\\u0020\\u007f~^:?*\\[\\\\/.@])?$"
     },
     "taskSourceV4ScheduleEntry": {
       "description": "One schedule: list entry (D2-N5: per-entry enabled defaults true; inputs are validated against inputs: at parse time but not yet delivered to the scheduled run, P2b).",

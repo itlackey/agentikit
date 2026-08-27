@@ -217,10 +217,16 @@ describe("task lifecycle failure handling", () => {
     ).rejects.toMatchObject({ code: "INVALID_FLAG_VALUE" });
   });
 
-  test("add rejects a recognized remote action before source or scheduler mutation", async () => {
+  // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-01/B-03;
+  // implementer addition to §7.1, same root cause as F-A1.3/F-A1.4 — recorded
+  // in the commit body and the Review log): the locator grammar is deleted
+  // from classifyTaskV3Uses, so a github-action-shaped --workflow value is no
+  // longer a "recognized" construct — it fails the same generic trailing
+  // classification throw as any other unrecognized shape.
+  test("add rejects an unrecognized remote-action-shaped workflow before source or scheduler mutation", async () => {
     await expect(
       akmTasksAdd({ id: "remote", schedule: "@daily", workflow: "owner/repository/action@v1" }, { backend }),
-    ).rejects.toThrow(/GitHub action.*unsupported|remote GitHub actions/i);
+    ).rejects.toThrow(/not executable/i);
     expect(fs.existsSync(path.join(storage.stashDir, "tasks", "remote.yml"))).toBe(false);
     expect(installCalls).toEqual([]);
   });

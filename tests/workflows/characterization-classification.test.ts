@@ -17,12 +17,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { resetConfigCache } from "../../src/core/config/config";
-import type { AkmConfig } from "../../src/core/config/config-types";
 import { UsageError } from "../../src/core/errors";
 import { akmIndex } from "../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
-import { prepareTaskV3Execution } from "../../src/tasks/runtime-v3";
-import { classifyTaskV3Uses, parseTaskV3Yaml } from "../../src/tasks/source-v3";
+import { classifyTaskV3Uses } from "../../src/tasks/source-v3";
 import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
 import { decodeWorkflowPlanV4, type FrozenWorkflowTarget } from "../../src/workflows/ir/schema-v4";
 import { startWorkflowRun } from "../../src/workflows/runtime/runs";
@@ -58,103 +56,87 @@ function write(root: string, relative: string, content: string): string {
   return file;
 }
 
-// ── classifyTaskV3Uses: the GitHub-action locator grammar (R-04) ────────────
+// ── classifyTaskV3Uses: the (deleted) GitHub-action locator grammar (R-04) ──
 
-describe("classifyTaskV3Uses — GitHub-action locator grammar (R-04, task-v3/source-v3.ts:523-593)", () => {
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. Flips in P4 (grammar removal).
-  test("R-04(a): accepts owner/repo@rev and owner/repo/path@rev as kind github-action, parsed and frozen", () => {
-    const base = classifyTaskV3Uses("owner/repo@v1");
-    expect(base).toEqual({
-      kind: "github-action",
-      ref: "owner/repo@v1",
-      owner: "owner",
-      repository: "repo",
-      revision: "v1",
-    });
-    expect(Object.hasOwn(base, "path")).toBe(false);
-    expect(Object.isFrozen(base)).toBe(true);
+describe("classifyTaskV3Uses — GitHub-action locator grammar (R-04, task-v3/source-v3.ts) FLIPPED in P4", () => {
+  // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-01/B-02,
+  // F-A1.3): the locator branch is deleted from classifyTaskV3Uses entirely
+  // — a value that used to classify as kind github-action now falls to the
+  // same generic trailing throw as any other unrecognized shape.
+  test("R-04(a) FLIPPED in P4: owner/repo@rev and owner/repo/path@rev now reject with the trailing classification message", () => {
+    const base = thrown(() => classifyTaskV3Uses("owner/repo@v1"));
+    expect(base).toBeInstanceOf(UsageError);
+    expect((base as UsageError).code).toBe("INVALID_FLAG_VALUE");
+    expect((base as Error).message).toBe(
+      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref. Agent/task/local/Docker/remote-action/ambiguous targets are not executable.",
+    );
 
-    const withPath = classifyTaskV3Uses("owner/repo/sub/dir@v1");
-    expect(withPath).toEqual({
-      kind: "github-action",
-      ref: "owner/repo/sub/dir@v1",
-      owner: "owner",
-      repository: "repo",
-      path: "sub/dir",
-      revision: "v1",
-    });
+    const withPath = thrown(() => classifyTaskV3Uses("owner/repo/sub/dir@v1"));
+    expect(withPath).toBeInstanceOf(UsageError);
+    expect((withPath as UsageError).code).toBe("INVALID_FLAG_VALUE");
+    expect((withPath as Error).message).toBe(
+      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref. Agent/task/local/Docker/remote-action/ambiguous targets are not executable.",
+    );
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. Flips in P4 (grammar removal).
-  test("R-04(a): a near-miss locator (no @rev, no canonical asset family) falls through to the trailing classification error verbatim", () => {
+  // P4 FLIP (row B-03, F-A1.4): same trailing message, minus its
+  // "or owner/repo[/path]@ref" clause — the locator branch that clause
+  // described is gone, so both a non-locator-shaped value ("review") and a
+  // locator-shaped-but-incomplete one ("owner/repo", no "@rev") fall through
+  // to the identical generic throw.
+  test("R-04(a) FLIPPED in P4: a near-miss locator falls through to the trailing classification error, now without the owner/repo[/path]@ref clause", () => {
     const error = thrown(() => classifyTaskV3Uses("review"));
     expect(error).toBeInstanceOf(UsageError);
     expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
     expect((error as Error).message).toBe(
-      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref, or owner/repo[/path]@ref. Agent/task/local/Docker/ambiguous targets are not executable.",
+      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref. Agent/task/local/Docker/remote-action/ambiguous targets are not executable.",
     );
 
-    // "review" has no slash and no "@", so it never enters the
-    // owner/repo[/path]@rev locator branch at all — it is rejected before the
-    // grammar is even consulted. A genuine near-miss LOCATOR must also be
-    // pinned: "owner/repo" IS slash-shaped and reaches the locator branch
-    // (segments = ["owner", "repo"]), but has no "@rev" (`at > 0` fails, since
-    // `value.lastIndexOf("@")` is -1), so it falls through to the same
-    // trailing message for a different reason than "review" does.
     const locatorError = thrown(() => classifyTaskV3Uses("owner/repo"));
     expect(locatorError).toBeInstanceOf(UsageError);
     expect((locatorError as UsageError).code).toBe("INVALID_FLAG_VALUE");
     expect((locatorError as Error).message).toBe(
-      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref, or owner/repo[/path]@ref. Agent/task/local/Docker/ambiguous targets are not executable.",
+      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref. Agent/task/local/Docker/remote-action/ambiguous targets are not executable.",
     );
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. Flips in P4 (grammar removal).
-  test("R-04(b): a task whose uses: classifies as github-action is recognized at parse but rejected at prepare with the exact message (runtime-v3.ts:366-371)", async () => {
-    const task = parseTaskV3Yaml({
-      yaml: ["version: 3", "uses: actions/checkout@v4", "akm:", '  schedule: "@daily"', ""].join("\n"),
-      filePath: "tasks/gha.yml",
-    });
-    expect(task.target.kind).toBe("uses");
-    if (task.target.kind === "uses") expect(task.target.uses.kind).toBe("github-action");
-
-    const error = await rejection(
-      prepareTaskV3Execution(task, {
-        taskId: "gha",
-        taskRef: "primary//tasks/gha",
-        bundleName: "primary",
-        bundleRoot: "/nonexistent",
-        config: {} as AkmConfig,
-      }),
-    );
-    expect(error).toBeInstanceOf(UsageError);
-    expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    expect((error as Error).message).toBe(
-      'GitHub action "actions/checkout@v4" is recognized but remote action acquisition is unsupported in 0.9.2.',
-    );
-  });
+  // R-04(b) DELETED in P4 (F-A1.5): its subject — a task whose uses:
+  // classifies as github-action reaching prepare — cannot occur any more. A
+  // locator-shaped uses: now fails at classification (parse), verified by
+  // the R-04(a) tests above; prepare.ts's own github-action arm is deleted
+  // with it (§3.1.2).
 });
 
-// ── classifyWorkflowStepUses: task-ref priority, delegation, and the ────────
-// ── two direct-rejection kinds it wraps around the injected classifier ─────
+// ── classifyWorkflowStepUses: task-ref delegation, and the two direct- ──────
+// ── rejection kinds it wraps around the injected classifier ────────────────
 
-describe("classifyWorkflowStepUses — task-ref priority and delegation (source-ir/semantics.ts:111-148)", () => {
-  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
-  // later phase — a failure here is a regression, not an intended flip. This
-  // priority ordering is what R-01's fixtures depend on and is unrelated to
-  // R-01's own flip.
-  test("recognizes 'tasks/x' before ever calling the delegated classifier", () => {
+describe("classifyWorkflowStepUses — task-ref delegation (source-ir/semantics.ts) FLIPPED in P4", () => {
+  // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1.2, row B-09;
+  // implementer addition to §7.1 per the F-A1.19/F-A3.7 pattern — recorded in
+  // the commit body and the Review log): `canonicalTaskTarget`, the
+  // locator-parity pre-check that used to intercept a task ref BEFORE ever
+  // calling the classifier, is deleted along with the locator grammar it
+  // existed to keep priority over (P1a §4.3's own rationale). With the
+  // locator gone, `classifyTargetRef`'s own `tasks/` arm is the one authority
+  // (brief §8.1) — the classifier is now called for every value, task refs
+  // included, superseding this test's old "never calling the delegated
+  // classifier" pin.
+  test("B-09: 'tasks/x' is classified by delegating to the classifier, not intercepted ahead of it", () => {
     let calls = 0;
-    const spy = (_value: string): WorkflowSourceUsesTarget => {
+    let seen: string | undefined;
+    const spy = (value: string): WorkflowSourceUsesTarget => {
       calls++;
-      throw new Error("delegated classifier must not be called for a task ref");
+      seen = value;
+      return { kind: "task", ref: value };
     };
     const result = classifyWorkflowStepUses("tasks/build", spy);
+    expect(calls).toBe(1);
+    expect(seen).toBe("tasks/build");
     expect(result).toEqual({ kind: "task", ref: "tasks/build" });
-    expect(calls).toBe(0);
+
+    // The default classifier (classifyWorkflowSourceUses -> classifyTargetRef)
+    // reaches the identical answer with no injection at all.
+    expect(classifyWorkflowStepUses("tasks/build")).toEqual({ kind: "task", ref: "tasks/build" });
   });
 
   // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
@@ -183,13 +165,18 @@ describe("classifyWorkflowStepUses — task-ref priority and delegation (source-
     expect(result).toEqual({ kind: "workflow", ref: "workflows/child" });
   });
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. Flips in P4 (grammar removal).
-  test("R-04(c): a GitHub-action locator in a workflow step throws remote-action-acquisition-out-of-scope", () => {
+  // P4 FLIP (row B-05, F-A1.6): the github-locator-shape override that used
+  // to promote this to remote-action-acquisition-out-of-scope is deleted
+  // (§3.1.2) — the classifier (classifyTargetRef, no locator grammar) rejects
+  // it as an unrecognized ref shape, and usesFailure's generic fallback code
+  // wins with no override left to beat it.
+  test("R-04(c) FLIPPED in P4: a GitHub-action-shaped uses: in a workflow step now falls to the generic unsupported-uses-target rejection", () => {
     const error = thrown(() => classifyWorkflowStepUses("actions/checkout@v4"));
     expect(error).toBeInstanceOf(WorkflowSourceSemanticError);
-    expect((error as WorkflowSourceSemanticError).code).toBe("remote-action-acquisition-out-of-scope");
-    expect((error as Error).message).toBe('Remote action acquisition is out of scope for "actions/checkout@v4".');
+    expect((error as WorkflowSourceSemanticError).code).toBe("unsupported-uses-target");
+    expect((error as Error).message).toBe(
+      'Target ref "actions/checkout@v4" must be a canonical commands/, scripts/, tasks/, or workflows/ asset ref.',
+    );
   });
 });
 

@@ -148,10 +148,14 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
       ].join("\n"),
       /exactly one (?:source-IR )?job|single-job|multi-job|cannot project/i,
     ],
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
+    // F-A1.19): the locator grammar is deleted — this now rejects as an
+    // unrecognized ref shape (unsupported-uses-target), not the old
+    // remote-action-acquisition reason.
     [
       "remote action",
       workflow("invalid", ["      - id: remote", "        uses: actions/checkout@v4"]),
-      /remote action|acquisition|unsupported/i,
+      /unsupported-uses-target/,
     ],
   ] as const)("invalid %s causes zero descriptor or native mutation", async (_label, invalidSource, message) => {
     write(storage.stashDir, "workflows/a-valid.yml", workflow("valid", ["      - id: ok", "        run: echo ok"]));

@@ -73,7 +73,11 @@ describe("task-v3 runner mutation boundary", () => {
   for (const [label, yaml, message] of [
     ["v2", 'version: 2\nschedule: "@daily"\ncommand: echo legacy\n', "TASK_SCHEMA_VERSION_UNSUPPORTED"],
     ["malformed", 'version: 3\nrun: [unterminated\nakm:\n  schedule: "@daily"\n', "Invalid task v3"],
-    ["remote action", 'version: 3\nuses: actions/checkout@v4\nakm:\n  schedule: "@daily"\n', "unsupported"],
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-04,
+    // F-A1.14): the locator grammar is deleted from classifyTaskV3Uses, so a
+    // github-action-shaped uses: now fails at PARSE (not executable), not at
+    // the old prepare-side "remote action acquisition is unsupported" arm.
+    ["remote action", 'version: 3\nuses: actions/checkout@v4\nakm:\n  schedule: "@daily"\n', "not executable"],
     ["unresolved", 'version: 3\nuses: scripts/missing.sh\nakm:\n  schedule: "@daily"\n', "not found"],
     [
       "nonprojectable command parameters",

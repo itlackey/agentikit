@@ -120,10 +120,13 @@ describe("prepareTaskV3Execution", () => {
     ]);
   });
 
-  test("rejects nonprojectable and remote targets before returning a prepared dispatch", async () => {
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-04, F-A1.16):
+  // the locator prepare case is deleted — a github-action-shaped uses: now
+  // fails at parse (source(), which calls parseTaskV3Yaml, throws
+  // synchronously), so no document carrying one can ever reach prepare.
+  test("rejects nonprojectable targets before returning a prepared dispatch", async () => {
     const root = fixtureRoot();
     for (const yaml of [
-      'version: 3\nuses: actions/checkout@v4\nakm:\n  schedule: "@daily"\n',
       'version: 3\nuses: commands/review\nwith:\n  value: no\nakm:\n  schedule: "@daily"\n',
       'version: 3\nuses: scripts/missing\nakm:\n  schedule: "@daily"\n',
     ]) {

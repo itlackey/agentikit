@@ -299,11 +299,10 @@ describe("workflow v4 fail-closed source targets", () => {
       ].join("\n"),
       /multi-job|job boundaries|needs/i,
     ],
-    [
-      "remote-action",
-      workflowYaml("      - id: remote\n        uses: actions/checkout@v4"),
-      /remote action|acquisition|out of scope/i,
-    ],
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
+    // F-A1.19): the locator grammar is deleted — this now rejects as an
+    // unrecognized ref shape, not a recognized-but-out-of-scope one.
+    ["remote-action", workflowYaml("      - id: remote\n        uses: actions/checkout@v4"), /target ref/i],
     [
       "nonprojectable-agent",
       workflowYaml("      - id: persona\n        uses: agents/reviewer"),

@@ -219,7 +219,6 @@ test("every published pattern is valid ECMAScript and representative uses refs a
   for (const pattern of patterns) expect(() => new RegExp(pattern), pattern).not.toThrow();
 
   const executableRef = new RegExp(schema.definitions.akmExecutableRef?.pattern as string);
-  const githubActionRef = new RegExp(schema.definitions.githubActionRef?.pattern as string);
   expect(executableRef.test("commands/review")).toBe(true);
   expect(executableRef.test("team//workflows/release")).toBe(true);
   expect(executableRef.test("agents/reviewer")).toBe(false);
@@ -230,10 +229,19 @@ test("every published pattern is valid ECMAScript and representative uses refs a
     expect(executableRef.test(candidate), candidate).toBe(false);
     expect(() => classifyTaskV3Uses(candidate), candidate).toThrow();
   }
-  expect(githubActionRef.test("actions/checkout@v4")).toBe(true);
-  expect(githubActionRef.test("owner/repo@@v1")).toBe(false);
-  for (const candidate of ["owner/.@v1", "owner/..@v1", "owner/repo/.@v1", "owner/repo/..@v1", "owner/repo@v1\u007f"]) {
-    expect(githubActionRef.test(candidate), candidate).toBe(false);
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.1.2, F-A1.11): the
+  // githubActionRef definition and its probes are deleted along with the
+  // locator grammar itself — every github-locator-shaped value is exactly as
+  // rejected by the production parser as any other unrecognized shape now.
+  for (const candidate of [
+    "actions/checkout@v4",
+    "owner/repo@@v1",
+    "owner/.@v1",
+    "owner/..@v1",
+    "owner/repo/.@v1",
+    "owner/repo/..@v1",
+    "owner/repo@v1\u007f",
+  ]) {
     expect(() => classifyTaskV3Uses(candidate), candidate).toThrow();
   }
 
@@ -247,7 +255,11 @@ test("draft-07 validation follows the parser's exact uses-classification precede
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
   const executableRef = new RegExp(schema.definitions.akmExecutableRef?.pattern as string);
-  const githubActionRef = new RegExp(schema.definitions.githubActionRef?.pattern as string);
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.1.2, F-A1.11): the
+  // ["actions/checkout@v4", {}, 1] row is deleted — classifyTaskV3Uses no
+  // longer accepts a github-action-shaped uses: (it now throws, per B-01),
+  // so it fails this table's own "does not throw" premise. The remaining
+  // rows all select the one grammar the v3 arm's uses: still publishes.
   const cases = [
     ["akm/command", { with: { content: "" } }, 0],
     ["commands/review", {}, 1],
@@ -256,12 +268,11 @@ test("draft-07 validation follows the parser's exact uses-classification precede
     ["workflows/release@v1", {}, 1],
     ["scripts/check@v1", {}, 1],
     ["team//commands/review@v1", {}, 1],
-    ["actions/checkout@v4", {}, 1],
   ] as const;
 
   for (const [uses, extra, expectedPatternMatches] of cases) {
     expect(() => classifyTaskV3Uses(uses), uses).not.toThrow();
-    const patternMatches = Number(executableRef.test(uses)) + Number(githubActionRef.test(uses));
+    const patternMatches = Number(executableRef.test(uses));
     expect(patternMatches, `${uses} must select exactly its parser-precedence schema arm`).toBe(expectedPatternMatches);
     expect(
       validate({ version: 3, uses, ...extra, akm: { schedule: "@daily" } }),
@@ -395,20 +406,22 @@ test("published task schema's root oneOf validates version: 4 only against the v
   ).toBe(false);
 });
 
-test("published task schema's v4 arm removes the github-action uses: target while the v3 arm keeps it (B-13)", () => {
+// P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1.2, F-A1.12): the
+// githubActionRef definition and both $refs to it — the v3 arm's own
+// included — are deleted from the published schema (commit 2). No arm
+// accepts a github-action uses: shape any more. The v3 arm itself is
+// removed from the published schema in commit 3 (§3.2), at which point this
+// test's v3 half is deleted too.
+test("published task schema's no arm accepts a github-action uses: shape (B-13)", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
   const githubRef = "actions/checkout@v4";
 
-  // v3 still recognizes (and, per source-v3.ts, rejects at the parser layer
-  // with an "unsupported" message — but the PUBLISHED SCHEMA still accepts
-  // the shape, unchanged by P2a).
   expect(
     validate({ version: 3, uses: githubRef, akm: { schedule: "@daily" } }),
-    "v3 arm must still accept a github-action uses: shape",
-  ).toBe(true);
+    "v3 arm must reject a github-action uses: shape",
+  ).toBe(false);
 
-  // v4 removes the target outright: neither variant validates.
   expect(
     validate({ version: TASK_SOURCE_V4_VERSION, uses: githubRef }),
     "v4 arm must reject a github-action uses:",

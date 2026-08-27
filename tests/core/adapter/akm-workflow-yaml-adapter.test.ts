@@ -89,7 +89,11 @@ describe("GitHub YAML workflow adapter ownership", () => {
         line: 9,
         fixed: false,
       });
-      expect(diagnostics?.[0]?.detail.toLowerCase()).toContain("remote action acquisition");
+      // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
+      // F-A1.19): the locator grammar is deleted — this now rejects as an
+      // unrecognized ref shape, not the old "remote action acquisition"
+      // wording.
+      expect(diagnostics?.[0]?.detail.toLowerCase()).toContain("target ref");
       expect(diagnostics?.some(({ issue }) => issue === "invalid-task-yaml")).toBe(false);
       expect(
         akmWorkflowAdapter.recognize(component, buildFileContext(root, path.join(root, "contract.yml"))),

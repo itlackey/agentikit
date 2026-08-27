@@ -181,38 +181,39 @@ describe("classifyWorkflowStepUses — identical observable results through the 
   // ["workflows/child", "nested-workflow-unsupported"] row is removed —
   // classification no longer rejects it, so it moved to the accepted table
   // above.
+  //
+  // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
+  // F-A1.7): every github-locator-shaped value below used to earn its own
+  // remote-action-acquisition-out-of-scope code via semantics.ts's local
+  // isGithubLocatorShape override. That override — and the Accepted
+  // deviation A-1 slack it existed to preserve — is deleted with the locator
+  // grammar; a locator-shaped uses: is now just an unrecognized ref shape,
+  // same as any other, so every one of these rows becomes
+  // unsupported-uses-target.
   test("rejects every §4.5 non-accepted kind with its listed WorkflowSourceSemanticError code", () => {
     const rejected: Array<[string, string]> = [
-      ["actions/checkout@v4", "remote-action-acquisition-out-of-scope"],
+      ["actions/checkout@v4", "unsupported-uses-target"],
       ["./actions/review", "local-action-path-unsupported"],
       ["docker://alpine:latest", "docker-action-unsupported"],
       ["agents/reviewer", "non-executable-asset-ref"],
       ["akm:commands/review", "unsupported-uses-target"],
       ["bad.bundle//commands/review", "unsupported-uses-target"],
       ["commands/review#fragment", "unsupported-uses-target"],
-      // The one locator near-miss (§4.3 Accepted deviation A-1's control
-      // case): revision contains ":", so it is excluded by the charset rule
-      // in isGithubLocatorShape and keeps unsupported-uses-target rather than
-      // becoming remote-action-acquisition-out-of-scope.
       ["actions/checkout@bad:ref", "unsupported-uses-target"],
       ["review", "unsupported-uses-target"],
-      // Locator-shape parity pins (spec Review log, round-1 parity fix): the
-      // five values below regressed to unsupported-uses-target when the first
-      // isGithubLocatorShape rule was narrower than the task-v3 grammar, and
-      // were restored by the round-1 fix. Pinned so the shape check cannot
-      // silently narrow again before P4 retires it.
-      ["owner/.github@v1", "remote-action-acquisition-out-of-scope"],
-      ["owner/_repo@v1", "remote-action-acquisition-out-of-scope"],
-      ["owner/-repo@v1", "remote-action-acquisition-out-of-scope"],
-      ["owner/repo@v1.0+meta", "remote-action-acquisition-out-of-scope"],
-      ["owner/repo@%40", "remote-action-acquisition-out-of-scope"],
-      // A-1-authorized widenings (previously unsupported-uses-target under the
-      // full task-v3 grammar, locator-SHAPED under the sanctioned shape check):
-      ["owner/repo/../x@v1", "remote-action-acquisition-out-of-scope"],
-      ["owner/repo/.@v1", "remote-action-acquisition-out-of-scope"],
-      ["o.wner/repo@v1", "remote-action-acquisition-out-of-scope"],
-      ["own_er/repo@v1", "remote-action-acquisition-out-of-scope"],
-      ["a234567890123456789012345678901234567890/repo@v1", "remote-action-acquisition-out-of-scope"],
+      // Former locator-shape parity pins (spec Review log, round-1 parity
+      // fix; A-1-authorized widenings) — kept as regression coverage for
+      // these exact values, now that they all land on the one generic code.
+      ["owner/.github@v1", "unsupported-uses-target"],
+      ["owner/_repo@v1", "unsupported-uses-target"],
+      ["owner/-repo@v1", "unsupported-uses-target"],
+      ["owner/repo@v1.0+meta", "unsupported-uses-target"],
+      ["owner/repo@%40", "unsupported-uses-target"],
+      ["owner/repo/../x@v1", "unsupported-uses-target"],
+      ["owner/repo/.@v1", "unsupported-uses-target"],
+      ["o.wner/repo@v1", "unsupported-uses-target"],
+      ["own_er/repo@v1", "unsupported-uses-target"],
+      ["a234567890123456789012345678901234567890/repo@v1", "unsupported-uses-target"],
     ];
     for (const [value, code] of rejected) {
       const error = thrown(() => classifyWorkflowStepUses(value));
@@ -221,17 +222,18 @@ describe("classifyWorkflowStepUses — identical observable results through the 
     }
   });
 
-  // The behavior this test is named for: a github-locator-SHAPED value must
-  // still throw remote-action-acquisition-out-of-scope through the new seam.
-  // §4.3 step 8's ordering is what keeps this true once classifyTargetRef
-  // (which has NO locator grammar, §4.1) replaces classifyTaskV3Uses as the
-  // delegate — semantics.ts's own local isGithubLocatorShape takes over
-  // recognizing the shape.
-  test("a github-locator-shaped step uses still throws remote-action-acquisition-out-of-scope", () => {
+  // P4 FLIP (row B-05): a github-locator-shaped value no longer earns its own
+  // code/message through the new seam — classifyTargetRef (§4.1) has no
+  // locator grammar and semantics.ts's shape override that used to promote
+  // it is deleted, so it now falls to the same generic unsupported-uses-target
+  // rejection as any other unrecognized shape.
+  test("a github-locator-shaped step uses now falls to the generic unsupported-uses-target rejection", () => {
     const error = thrown(() => classifyWorkflowStepUses("actions/checkout@v4"));
     expect(error).toBeInstanceOf(WorkflowSourceSemanticError);
-    expect((error as WorkflowSourceSemanticError).code).toBe("remote-action-acquisition-out-of-scope");
-    expect((error as Error).message).toBe('Remote action acquisition is out of scope for "actions/checkout@v4".');
+    expect((error as WorkflowSourceSemanticError).code).toBe("unsupported-uses-target");
+    expect((error as Error).message).toBe(
+      'Target ref "actions/checkout@v4" must be a canonical commands/, scripts/, tasks/, or workflows/ asset ref.',
+    );
   });
 });
 

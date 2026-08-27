@@ -22,7 +22,7 @@
     {
       "id": "unsupported-remote-action",
       "file": "rejected/unsupported-remote-action.yml",
-      "reasonCode": "remote-action-acquisition-out-of-scope"
+      "reasonCode": "unsupported-uses-target"
     },
     {
       "id": "with-on-task-composition",

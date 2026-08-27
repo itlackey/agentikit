@@ -448,7 +448,10 @@ jobs:
       expect(result.ok, uses).toBe(true);
     }
     for (const [uses, code] of [
-      ["actions/checkout@v4", "remote-action-acquisition-out-of-scope"],
+      // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
+      // F-A1.9): the locator grammar and its shape override are deleted —
+      // a github-action-shaped uses: is now just an unrecognized ref shape.
+      ["actions/checkout@v4", "unsupported-uses-target"],
       ["./actions/review", "local-action-path-unsupported"],
       ["docker://alpine:latest", "docker-action-unsupported"],
       ["agents/reviewer", "non-executable-asset-ref"],
@@ -596,17 +599,25 @@ Review $ARGUMENTS and \${{ github.sha }} literally.
     expect(classified).toBe("commands/review");
   });
 
-  test("adds workflow-only task composition around the injected WP6 task-context classifier", () => {
+  // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1.2, row B-09;
+  // implementer addition to §7.1 alongside F-A1.9/F-A1.10, same root cause —
+  // recorded in the commit body and the Review log): canonicalTaskTarget,
+  // which used to intercept a task ref BEFORE ever calling the injected
+  // classifier, is deleted along with the locator grammar it existed to keep
+  // priority over. The injected classifier is now consulted for task refs
+  // exactly like any other uses: value — classifyTargetRef's own tasks/ arm
+  // is the one authority (brief §8.1).
+  test("consults the injected WP6 task-context classifier for task composition", () => {
     let calls = 0;
     const result = compileGithubWorkflowSource(`${VALID_HEADER}\n      - id: local\n        uses: tasks/review\n`, {
       path: "workflows/classified-task.yml",
-      classifyUses: () => {
+      classifyUses: (value) => {
         calls++;
-        throw new Error("task-context classifier does not accept task composition");
+        return { kind: "task", ref: value };
       },
     });
     expect(result.ok).toBe(true);
-    expect(calls).toBe(0);
+    expect(calls).toBe(1);
   });
 
   test.each([
@@ -1088,9 +1099,13 @@ describe("strict source IR decoder", () => {
     requireOnlyDecodedStep(controlCwd).workingDirectory = "packages\0cli";
     expect(() => decodeWorkflowSourceIrV1(controlCwd)).toThrow(/control/i);
 
+    // P4 FLIP (row B-05, F-A1.10): a github-action-shaped uses: is no longer
+    // a recognized-but-out-of-scope construct; the locator grammar is
+    // deleted, so this now rejects for the same generic reason as any other
+    // unrecognized ref shape.
     const remote = structuredClone(valid);
     replaceOnlyDecodedStep(remote, { id: "ok", uses: "actions/checkout@v4", source: remote.source });
-    expect(() => decodeWorkflowSourceIrV1(remote)).toThrow(/remote action/i);
+    expect(() => decodeWorkflowSourceIrV1(remote)).toThrow(/target ref/i);
 
     // P3a FLIP (spec §1.5/§6 F-B2, row B-02): decodeWorkflowSourceIrV1 no
     // longer throws for a step whose uses: is a workflow ref — A-N4's one

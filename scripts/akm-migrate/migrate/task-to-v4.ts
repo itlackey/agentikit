@@ -194,6 +194,33 @@ function exactString(value: unknown, label: string, nonempty = false): string {
 }
 
 /**
+ * Shape-only probe (P4, docs/plans/specs/p4-deletions-closeout.md §3.1/§7.1
+ * F-A1.18, mirrors `src/tasks/source/task-source-v4.ts`'s identically-named
+ * helper). `classifyTaskV3Uses` (`src/tasks/source-v3.ts`) no longer
+ * recognizes a github-action locator at all as of P4's commit 2 — it throws
+ * the generic "not an executable ref" message for one, same as for any other
+ * unrecognized shape. This migrator must still tell a github-action-shaped
+ * value apart from genuinely-malformed input so it can name the target
+ * explicitly (`github-action-target-removed`) rather than guess (P4-N1) —
+ * exactly the preservation §0 of that spec requires when an authorized
+ * deletion would otherwise regress a pinned migrator behavior
+ * (`tests/migrate/task-v3-to-v4.test.ts`'s `github-action-target-removed`
+ * case). Deliberately a shape test, not v3's old locator-acceptance grammar:
+ * this migrator never ACCEPTS a github locator, so only the shape needs
+ * recognizing here. P4's commit 3 replaces this with the full vendored v3
+ * grammar (`scripts/akm-migrate/migrate/task-source-v3-frozen.ts`).
+ */
+function looksLikeGithubActionLocator(value: string): boolean {
+  const at = value.lastIndexOf("@");
+  if (at <= 0) return false;
+  const locator = value.slice(0, at);
+  const revision = value.slice(at + 1);
+  if (revision.length === 0 || /\s/.test(revision)) return false;
+  if (locator.length === 0 || /\s/.test(locator) || !locator.includes("/")) return false;
+  return true;
+}
+
+/**
  * Vendored raw-record reader (mirrors `task-to-v3.ts`'s `parseLegacyTaskYaml`
  * exactly). Reading the RAW decoded record — rather than the typed
  * `parseTaskV3Yaml` — keeps every field's original value bytes (a duration
@@ -302,14 +329,19 @@ function planV3DataToV4(input: TaskToV4FileInput, data: Record<string, unknown>)
     try {
       usesTarget = classifyTaskV3Uses(usesValue);
     } catch (cause) {
+      // P4 (see looksLikeGithubActionLocator's own header above): a
+      // github-action-shaped value now reaches here as a throw, not a
+      // classified `{kind:"github-action"}` result, so the blocked reason
+      // this migrator has always reported for one is detected by shape
+      // instead of by classification result.
+      if (looksLikeGithubActionLocator(usesValue)) {
+        return blocked(
+          input,
+          "github-action-target-removed",
+          `"${usesValue}" is a github-action target; the github-action uses: variant was removed in task source v4. Use commands/, scripts/, workflows/, or akm/command instead.`,
+        );
+      }
       return blocked(input, "invalid-v3-task", causeMessage(cause));
-    }
-    if (usesTarget.kind === "github-action") {
-      return blocked(
-        input,
-        "github-action-target-removed",
-        `"${usesValue}" is a github-action target; the github-action uses: variant was removed in task source v4. Use commands/, scripts/, workflows/, or akm/command instead.`,
-      );
     }
     if (hasWith && usesTarget.kind !== "builtin-command") {
       return blocked(

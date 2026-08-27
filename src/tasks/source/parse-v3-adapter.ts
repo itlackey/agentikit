@@ -22,18 +22,18 @@
  * for the same reason (`src/tasks/runtime-v3.ts:108-110`).
  *
  * Out of scope in P1b (see tests/tasks/parse-v3-adapter.test.ts, design
- * decision 3): `akm/command` (builtin-command) and GitHub-action `uses:`
- * targets have no representation in the closed 4-kind `TaskDefinitionTarget`
- * vocabulary this phase pins. Inline builtin-command content in particular
- * carries no ref at all (`ParsedBuiltinCommandAction`'s `kind: "inline"`
- * variant, `src/commands/command/builtin-action.ts`), and a GitHub-action
- * locator (`owner/repo[/path]@rev`) is not an asset ref. Both throw rather
- * than silently mis-mapping into `{kind:"command", ref}` and losing or
- * misrepresenting the authored data — mirroring
- * `prepareTaskV3Execution`'s own github-action rejection
- * (`runtime-v3.ts:366-371`). No fixture in
- * tests/fixtures/execution-contracts/tasks/v3-migration/ exercises either
- * kind. Also out of scope: `TaskV3Target`'s `run` variant's
+ * decision 3): `akm/command` (builtin-command) has no representation in the
+ * closed 4-kind `TaskDefinitionTarget` vocabulary this phase pins. Inline
+ * builtin-command content in particular carries no ref at all
+ * (`ParsedBuiltinCommandAction`'s `kind: "inline"` variant,
+ * `src/commands/command/builtin-action.ts`). It throws rather than silently
+ * mis-mapping into `{kind:"command", ref}` and losing or misrepresenting the
+ * authored data. (P4 deleted the GitHub-action `uses:` locator grammar from
+ * `classifyTaskV3Uses` entirely — such a value now fails at parse, before a
+ * document ever reaches this adapter, so there is no longer a github-action
+ * case here to throw on.) No fixture in
+ * tests/fixtures/execution-contracts/tasks/v3-migration/ exercises the
+ * remaining kind. Also out of scope: `TaskV3Target`'s `run` variant's
  * `workingDirectory` has no slot in P1b's `TaskDefinitionTarget` shell
  * variant (a genuinely new, not-yet-complete type — see
  * tests/tasks/model-contracts.test.ts's file header) and is intentionally
@@ -62,9 +62,9 @@ function adaptTarget(target: TaskV3Target): TaskDefinitionTarget {
   }
   // Diagnostic-codes ratchet remedy (P1b Lane C code review,
   // tests/architecture/diagnostic-codes.test.ts): a code more specific than
-  // UsageError's own default — this is a recognized construct (builtin-command
-  // or github-action `uses:`) the adapter does not yet model, not a malformed
-  // shape. See src/core/errors.ts's TASK_TARGET_UNSUPPORTED.
+  // UsageError's own default — this is a recognized construct (builtin-command)
+  // the adapter does not yet model, not a malformed shape. See
+  // src/core/errors.ts's TASK_TARGET_UNSUPPORTED.
   throw new UsageError(
     `Task v3 uses kind ${JSON.stringify(uses.kind)} has no TaskDefinition target representation in P1b.`,
     "TASK_TARGET_UNSUPPORTED",

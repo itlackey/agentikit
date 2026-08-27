@@ -11,32 +11,23 @@
  * entrypoint): it recognizes the `akm/command` builtin special case and
  * otherwise delegates to `classifyTargetRef` (src/execution/target-ref.ts),
  * the canonical classifier for `commands/`, `scripts/`, `tasks/`, and
- * `workflows/` asset refs. `tasks/...` targets are actually recognized
- * earlier and never reach this function — `classifyWorkflowStepUses`'s own
- * `canonicalTaskTarget` helper (semantics.ts) matches them first.
+ * `workflows/` asset refs — including `tasks/...` targets, for which
+ * `classifyTargetRef`'s own `tasks/` arm is the one authority (brief §8.1;
+ * P4 deleted `classifyWorkflowStepUses`'s `canonicalTaskTarget` pre-check in
+ * semantics.ts, which used to match them first).
  *
  * This module imports NOTHING from `src/tasks/source-v3.ts`: workflow `uses:`
- * classification no longer delegates to the task-v3 grammar. The
- * `github-action` member of `WorkflowSourceUsesTarget` below is retained as a
- * TYPE only — nothing in this module produces it — because
- * `WorkflowSourceUsesClassifier` is also the type of an externally injected
- * classifier (`GithubWorkflowSourceOptions.classifyUses`, github-yaml.ts),
- * and an injected classifier may still return it.
+ * classification no longer delegates to the task-v3 grammar, and (P4) native
+ * target classification recognizes no GitHub Action variant at all —
+ * `WorkflowSourceUsesTarget` below has no `github-action` member, typed or
+ * otherwise.
  */
 
 import { classifyTargetRef } from "../../execution/target-ref";
 
 export type WorkflowSourceUsesTarget =
   | { readonly kind: "command" | "script" | "task" | "workflow"; readonly ref: string }
-  | { readonly kind: "builtin-command"; readonly ref: "akm/command" }
-  | {
-      readonly kind: "github-action";
-      readonly ref: string;
-      readonly owner: string;
-      readonly repository: string;
-      readonly path?: string;
-      readonly revision: string;
-    };
+  | { readonly kind: "builtin-command"; readonly ref: "akm/command" };
 export type WorkflowSourceUsesClassifier = (value: string) => WorkflowSourceUsesTarget;
 
 export interface WorkflowSourceScheduleBinding {
