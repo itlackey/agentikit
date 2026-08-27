@@ -3,35 +3,23 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The pure `with:` -> `TaskInputBinding[]` normalizer (spec
- * docs/plans/specs/p2b-input-bindings.md §3.2 A2, §3.3), plus the pure
- * re-binder a recursive composition needs on top of it (spec
- * docs/plans/specs/p3a-plan-v5-child-freeze.md A-N8).
- *
+ * The pure `with:` -> `TaskInputBinding[]` normalizer, plus the pure
+ * re-binder a recursive composition needs on top of it.
  * {@link freezeTaskInputBindings} classifies a genuinely AUTHORED `with:`
- * record against a contract; `src/workflows/freeze/targets/task.ts`'s
- * `taskDispatch` calls it with THIS step's own authored `with:` against the
- * composed task's own `InputContract`, never anything from an outer
- * composition (§3.5 — there is no merge across a composition chain).
- * {@link rebindTaskInputBindings} instead takes an ALREADY-classified
- * `TaskInputBinding[]` — a v4 task's own effective inputs — and re-binds it
- * by name against a DIFFERENT contract, trusting each entry's existing
- * `kind` rather than re-deriving it from the value's shape;
- * `src/workflows/freeze/targets/child-workflow.ts`'s `childWorkflowDispatch`
- * is its only caller, re-binding a task-wrapped composition's effective
- * inputs against the child workflow's declared `params:`.
+ * record against a contract (called by `freeze/targets/task.ts`'s
+ * `taskDispatch`, this step's own `with:` against the composed task's own
+ * contract only — no merge across a composition chain).
+ * {@link rebindTaskInputBindings} instead re-binds an ALREADY-classified
+ * `TaskInputBinding[]` by name against a DIFFERENT contract, trusting each
+ * entry's existing `kind` rather than re-deriving it from the value's shape
+ * (`freeze/targets/child-workflow.ts`'s only caller). Everything decidable
+ * at FREEZE time is decided here; a reference's *resolved* value is
+ * validated PRE-ATTEMPT instead (`exec/step-work.ts`). Pure function: no IO,
+ * no config reads.
  *
- * Everything decidable at FREEZE time is decided here: an unknown `with:`
- * key, a missing required-without-default input, a literal value failing its
- * declared schema, and a reference's syntax + "names an earlier step that
- * exists" / "names a declared workflow param" structural check. A
- * reference's *resolved* value is validated PRE-ATTEMPT instead
- * (`src/workflows/exec/step-work.ts`, §3.6) — this module never resolves
- * anything, so it needs no run params and no step outputs.
- *
- * Pure function: no IO, no config reads. Imports only
- * `src/execution/input-contract.ts`, `src/workflows/program/expressions.ts`,
- * and `src/core/errors.ts`.
+ * See docs/architecture/decisions/0008-task-binding-normalization.md for the
+ * full design history, including why re-binding cannot reuse the
+ * shape-driven normalizer (a code-review finding).
  */
 
 import { UsageError } from "../../core/errors";
@@ -118,20 +106,12 @@ export function freezeTaskInputBindings(input: FreezeTaskInputBindingsInput): re
  * Re-bind an ALREADY-NORMALIZED `TaskInputBinding[]` — a v4 task's own
  * effective inputs, classified once against the TASK's own declared
  * `inputs:` contract by {@link freezeTaskInputBindings} — against a
- * DIFFERENT contract (the child workflow's declared `params:`, A-N8) by
- * NAME, without re-deriving each entry's literal/reference classification
- * from its value's shape.
- *
- * This exists because a `kind: "literal"` binding's VALUE can be an
- * arbitrary JSON value, including one shaped exactly like the `{from:
- * "<ref>"}` reference grammar (e.g. a declared default for an object-typed
- * input). Round-tripping such a binding back through a `with:`-shaped record
- * and re-running {@link freezeTaskInputBindings}'s value-shape-driven
- * classification ({@link normalizeOneEntry}) would silently reinterpret that
- * literal as a live reference binding — the composing task's OWN contract
- * already settled `kind` once; this function trusts that answer instead of
- * asking the value's shape again (code-review finding, docs/plans/specs/
- * p3a-plan-v5-child-freeze.md).
+ * DIFFERENT contract (the child workflow's declared `params:`) by NAME,
+ * without re-deriving each entry's literal/reference classification from
+ * its value's shape (a code-review finding — see
+ * docs/architecture/decisions/0008-task-binding-normalization.md for why a
+ * shape-shifting round-trip through {@link normalizeOneEntry} would
+ * silently misclassify a literal value shaped like a reference).
  *
  * Per-entry rules, otherwise identical to {@link freezeTaskInputBindings}:
  * an entry naming a key the new `contract` does not declare is

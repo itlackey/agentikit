@@ -3,57 +3,19 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The shared input contract (P2a Lane B, docs/plans/specs/p2a-task-source-v4.md
- * §4, §1.3 D3, and the disambiguations D3-N1/D3-N2/D3-N3 in §1.5).
- *
- * This module GENERALIZES the pure module `src/workflows/ir/params.ts`
- * (`WorkflowParameterPlan`, `WorkflowParameterFlag`,
- * `materializeWorkflowParameterFlags`, `validateWorkflowParams`,
- * `assertRunParamsSatisfyPlan`) into a contract-shaped vocabulary that both
- * workflow params AND task source v4's `inputs:` declarations can consume.
- * `src/workflows/ir/params.ts` becomes a THIN CONSUMER of this module: it
- * adapts a `WorkflowParameterPlan` into an `InputContract`
- * (`contractFromPlan`), supplies the workflow-specific diagnostics
- * vocabulary, and re-exports its three wrappers under their existing names —
- * byte-identical messages, codes, and hints
- * (tests/workflows/workflow-param-flags.test.ts,
- * tests/integration/workflows/params-validation.test.ts).
- *
- * `TaskInputBinding` is declared here for P2b (task source v4 `inputs:`
- * delivery). P2a only ever produces `kind: "literal"` bindings, and nothing
- * consumes them yet — P2a's contract for inputs is VALIDATION only
- * (docs/plans/specs/p2a-task-source-v4.md §0).
- *
- * D3-N1 (import boundary): `src/execution/**` must never import
- * `src/workflows/**` — `tests/architecture/import-cycle-ratchet.test.ts` runs
- * a shrink-only, EMPTY baseline, and an `execution -> workflows` edge would
- * close a cycle the moment `workflows/ir/params.ts` imports back into this
- * module. `INPUT_NAME_PATTERN` is therefore DEFINED here (identical
- * source/flags to today's `PROGRAM_PARAM_NAME_PATTERN`) rather than imported
- * from the workflow program vocabulary; `src/workflows/program/schema.ts`
- * becomes a re-export of this constant instead. Permitted imports:
- * `node:crypto`, `src/core/errors`, `src/core/json-schema`, and
- * `src/execution/**` — see `tests/execution/input-contract.test.ts`'s purity
- * scan, which reads this file as text/AST and asserts the allowlist.
- *
- * D3-N2 (canonical JSON): `canonicalInputJson`/`canonicalInputHash`
- * implement the SAME recursive key-sort + `JSON.stringify` as `canonicalJson`
- * (`src/workflows/ir/plan-hash.ts`) locally, rather than importing it —
- * `plan-hash.ts` also imports `./schema-v4` and `../resource-limits`, so
- * importing it would drag workflow IR into `src/execution/**` and violate
- * D3-N1. `tests/execution/input-contract.test.ts` asserts BYTE EQUALITY with
- * `canonicalJson` over a fixture set covering nested objects, arrays, `null`,
- * unicode keys, and insertion-order permutations, so the duplication cannot
- * drift unnoticed.
- *
- * D3-N3 (injected diagnostics vocabulary): `materializeInputFlags` contains
- * no literal user-facing string. Every message/code it raises is produced by
- * a caller-supplied `InputFlagDiagnostics` — `params.ts`'s
- * `WORKFLOW_PARAMETER_DIAGNOSTICS` reproduces today's five workflow-parameter
- * strings/codes exactly; `src/tasks/source/task-input-diagnostics.ts` (Lane A)
- * supplies the task vocabulary.
- *
+ * The shared input contract, generalizing the pure module
+ * `src/workflows/ir/params.ts` (workflow parameters) into a contract-shaped
+ * vocabulary both workflow params AND task source v4's `inputs:`
+ * declarations consume — one validation/coercion implementation, injected
+ * per-caller diagnostics (D3-N3). Binding boundary: `src/execution/**` must
+ * never import `src/workflows/**` (D3-N1) — `INPUT_NAME_PATTERN` and the
+ * canonical-JSON helpers are therefore defined locally rather than imported
+ * from the workflow side (D3-N1/D3-N2), verified by
+ * `tests/execution/input-contract.test.ts`'s purity/byte-equality scans.
  * Pure module: no IO, no engine imports.
+ *
+ * See docs/architecture/decisions/0004-task-input-contract-and-flag-coercion.md
+ * for the full generalization history and the D3-N1/D3-N2/D3-N3 rationale.
  */
 
 import { createHash } from "node:crypto";

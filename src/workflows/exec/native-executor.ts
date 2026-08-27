@@ -9,31 +9,12 @@
  * persistence through the serialized writer queue, and `workflow_unit_*`
  * events for observability.
  *
- * Data flow (workflow-format-unification, spec §2.3): there is NO
- * interpolation language. A unit's instructions are the step's body prose
- * BYTE-EXACT — prose is never scanned for reference syntax, so a literal `${{`
- * in a body is content, not grammar. Data reaches the unit as ATTACHED
- * STRUCTURED CONTEXT rather than string splices: `buildUnitPrompt`
- * (`exec/step-work.ts`) wraps the verbatim instructions with JSON blocks for
- * the run params, a map unit's item + index, and the artifacts named by the
- * step's `inputs:`. Because nothing is ever substituted INTO the prose, the P1
- * `{{item}}` re-scan injection class is structurally impossible.
- *
- * References survive only in the three whole-value FRONTMATTER positions the
- * closed two-root grammar occupies (`program/expressions.ts`): `map.over`,
- * `route.input`, and each `inputs[]` entry. They resolve ONCE per step against
- * `{ params, stepOutputs }`. There is NO ambient key search: a
- * `steps.<id>.output.<path>` reference addresses INTO that step's recorded
- * output explicitly.
- *
- * Step outputs (`steps.<id>.output…`): every engine-executed step journals a
- * promoted ARTIFACT under `evidence.output` — the solo unit's result/text, the
- * collect reducer's per-item array, or the vote reducer's winner — and that
- * artifact is what the reference scope exposes ({@link projectStepOutput}).
- * The documented addressing (`steps.discover.output.files`) therefore resolves
- * against real step results, never the raw evidence envelope (peer review R1).
- * Steps completed manually (no `output` key in their evidence) expose their
- * recorded evidence object as-is.
+ * Data flow: there is no interpolation language — a unit's instructions are
+ * the step's body prose byte-exact, and data reaches it as attached
+ * structured context instead. References resolve once per step, only in the
+ * closed frontmatter positions, against the promoted step-output artifact.
+ * See docs/architecture/decisions/0001-no-interpolation-attached-structured-context.md
+ * for the full design history (peer review R1, the P1 injection class it closes).
  *
  * Empty free-text outputs (peer review): a SUCCESSFUL schemaless unit that
  * returns the empty string is normalized to "no output" — {@link dispatchUnit}

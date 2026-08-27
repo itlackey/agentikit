@@ -5,39 +5,15 @@
 /**
  * Shared step semantics — the ONE implementation of a step's orchestration
  * decisions, consumed by the engine loop (`run-workflow.ts` +
- * `native-executor.ts`) on both the fresh-execution and the resume/replay path.
- * The cardinal rule here is *no duplicated semantics*: work-list computation,
- * prompt assembly, reducer/artifact promotion, output-schema validation,
- * artifact-judged gate summaries, gate-feedback recovery, and route evaluation
- * live here so a first run and a resumed run of the same frozen plan produce
- * byte-identical unit graphs.
+ * `native-executor.ts`) on both the fresh-execution and the resume/replay
+ * path, so a first run and a resumed run of the same frozen plan produce
+ * byte-identical unit graphs. `computeStepWorkList` and its reducer/gate/route
+ * helpers are PURE (no clock, no IO, no journal read); the gate-evaluation
+ * journaling functions are the one deliberate exception. This module never
+ * dispatches a unit and never writes step rows.
  *
- * ## What is PURE here
- *
- * {@link computeStepWorkList} — given the frozen step plan and a
- * {@link WorkListInput} (params, prior step outputs, gate-loop number + its
- * recovered feedback) — is a pure function: same inputs ⇒ same unit ids, input
- * hashes, and fully-resolved prompts. It takes NO clock, NO IO, and NO journal
- * (journal-derived state, i.e. the recovered gate feedback, is passed in). This
- * is the load-bearing guarantee that a resumed run recomputes exactly the units
- * the original run dispatched, so journaled rows can be reused instead of
- * re-executed. So are the reducer/artifact helpers
- * ({@link buildEvidence}, {@link projectStepOutput}, {@link validateStepArtifact},
- * {@link buildArtifactSummary}), the gate-feedback recovery
- * ({@link recoverGateFeedback} / {@link activeGateLoop}), and route evaluation
- * ({@link evaluateRoute} and its bookkeeping).
- *
- * ## What does IO here
- *
- * The gate-evaluation journaling ({@link journalGateEvaluationStart} /
- * {@link journalGateEvaluationFinish}) writes `workflow_run_units` rows through
- * the serialized writer queue — an engine-driven judge call is an LLM call and
- * is journaled like a unit. It lives here (not in the engine loop) so every
- * caller journals gate evaluations through the identical writer.
- *
- * This module NEVER dispatches a unit and NEVER writes step rows: dispatch is
- * the executor's job (`native-executor.ts`), advancing the gated spine is the
- * engine loop's job (`run-workflow.ts` via `completeWorkflowStep`).
+ * See docs/architecture/decisions/0002-unit-reuse-and-input-hash-scope.md for
+ * the full purity-contract design history.
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -687,45 +663,16 @@ function buildExecContextEnv(args: {
 }
 
 /**
- * The canonical dispatch-input envelope (reviewer finding #1). Every field here
- * is a PLAN-FROZEN input that changes what the backend is actually asked to do,
- * so a completed unit is reused ONLY when all of them match; a change to any of
- * them re-dispatches. `canonicalJsonString` sorts keys recursively, so the
- * preimage is order-independent, and this is the ONE place a unit's inputHash
- * is computed (every caller goes through {@link computeStepWorkList}) — a hash
- * that is byte-identical across a fresh run and a resume is structural, not
- * coincidental.
+ * The canonical dispatch-input envelope: every field here is a PLAN-FROZEN
+ * input that changes what the backend is actually asked to do, so a completed
+ * unit is reused ONLY when all of them match. `env` carries names only, never
+ * resolved secret values. `retry`/`onError` are deliberately excluded — they
+ * govern failed-unit re-dispatch, not a completed unit's inputs/output.
+ * `gateFeedback` is included conditionally (a gate retry is a materially
+ * different ask). This is the ONE place a unit's inputHash is computed.
  *
- * Unit identity (workflow-format-unification, spec §2.3/§4) hashes the FROZEN
- * TEMPLATE BYTES (`template.instructions`, byte-exact, never an
- * instantiated/interpolated string) + the canonical item JSON + the
- * declared-input artifacts + the params snapshot — instead of a
- * resolved/spliced prompt string, since there is no more splicing.
- *
- * Included beyond the template/runner/model/schema baseline: resolved
- * timeoutMs, named environment bindings, and isolation —
- * each reaches dispatch and a changed one yields a materially different call.
- * `env` carries NAMES ONLY, never resolved values: hashing a resolved secret
- * would leak it into a durable hash oracle and would spuriously re-dispatch on
- * every secret rotation. `retry`/`onError` are DELIBERATELY excluded — they
- * govern failed-unit re-dispatch and step-level failure reduction, not a
- * COMPLETED unit's inputs/output, so a completed row stays valid across policy
- * changes.
- *
- * `gateFeedback` IS included (conditionally, so a no-feedback unit's preimage
- * is byte-identical to before): it is appended to the prompt by
- * `buildUnitPrompt`, so a gate loop's retry is materially a different ask than
- * the rejected attempt. Replay-safe: feedback is re-derived from the journaled
- * gate decision, so a resumed retry re-hashes identically.
- *
- * Command targets carry their frozen argv/script/cwd/timeout identity in the
- * same target slot used by agent, SDK, and direct-LLM work. The complete
- * current target is hashed once, so a completed unit is reused only for the
- * exact durable request that originally produced it.
- *
- * Ambient config is deliberately excluded because it is not consulted during
- * execution. The frozen target and named environment bindings are the runtime
- * identity boundary; only the values behind those names remain live.
+ * See docs/architecture/decisions/0002-unit-reuse-and-input-hash-scope.md for
+ * the full field-by-field inclusion/exclusion rationale (reviewer finding #1).
  */
 function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
   return createHash("sha256")

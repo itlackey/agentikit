@@ -4,44 +4,18 @@
 
 /**
  * The `exec` unit runner — the ONE place a frozen workflow spawns a shell
- * command as a unit. The invariants it exists to hold:
+ * command as a unit: argv-only (never a shell string), non-blocking,
+ * detached with a SIGTERM→SIGKILL ladder against the whole process group,
+ * cwd-contained by a resolved-path recheck, resource-bounded (timeout,
+ * output bytes, context size), and allowlisted-environment (see
+ * {@link childEnv}). `env` values reaching this module are already resolved
+ * from `env:` bindings by NAME — the caller scrubs the outcome with
+ * `redactUnitOutcome` before anything is journaled. A LEAF module by
+ * layering (Node built-ins, `core/spawn-env`, `core/subprocess`, `core/warn`,
+ * the import-free `workflows/resource-limits` only).
  *
- *   - ARGV, NEVER A SHELL STRING. {@link IrExecSpec.command} is an argv ARRAY
- *     and the format has no shell-string spelling at all; the child is spawned
- *     directly, so `;`, `|`, `&&`, `$(…)`, backticks, `>` and `*` are inert
- *     literal argument BYTES. A workflow that wants a pipeline names the
- *     interpreter itself (`["bash", "-lc", "a | b"]`), visibly in frontmatter.
- *   - NON-BLOCKING. Everything on this path is async. A synchronous call here
- *     blocks the event loop and with it every concurrently-scheduled unit, the
- *     run's lease heartbeat, and abort handling.
- *   - NO LEAKED CHILDREN. {@link runManagedSubprocess} spawns DETACHED and runs
- *     a SIGTERM→SIGKILL ladder against the whole process group, so `--timeout`
- *     and Ctrl-C really do stop a running command and its descendants.
- *   - CONTAINMENT. `exec.cwd` is relative and `..`-free by construction (parser
- *     and frozen-plan decoder), which is necessary but not sufficient: a
- *     subdirectory can be a symlink. The RESOLVED path is therefore re-checked
- *     against the RESOLVED base immediately before spawning.
- *   - BOUNDED SPEND. A command is arbitrary code with no resource discipline of
- *     its own, so each resource it spends on akm's behalf has a ceiling in
- *     `workflows/resource-limits.ts`: wall clock ({@link DEFAULT_EXEC_TIMEOUT_MS}
- *     or the authored `timeout:`), retained output
- *     ({@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} per pipe) and the context
- *     environment ({@link execContextLimits}, checked BEFORE the spawn so an
- *     oversized artifact yields an actionable akm error, not a bare `E2BIG`).
- *   - ALLOWLISTED ENVIRONMENT. The child does NOT inherit akm's environment: it
- *     starts EMPTY and receives exactly {@link EXEC_DEFAULT_ENV_PASSTHROUGH}
- *     plus the unit's `exec.passEnv`, then the resolved `env:` bindings, then
- *     the engine-authored `AKM_*` context. See {@link childEnv}.
- *
- * Secrets: `env` values reaching this module are already resolved from `env:`
- * bindings by NAME (`resolveEnvBinding`) — the plan never carries inline secrets
- * and the input hash only ever carries names. The caller scrubs the outcome with
- * `redactUnitOutcome` BEFORE anything is journaled, which is why this module may
- * return raw stdout/stderr diagnostics without knowing anything about redaction.
- *
- * Layering: a LEAF. Node built-ins, `core/spawn-env`, `core/subprocess`,
- * `core/warn` and the import-free `workflows/resource-limits` (plus erased
- * types) only, so the executor can consume it without opening an import cycle.
+ * See docs/architecture/decisions/0003-child-env-allowlist-and-provenance.md
+ * for the full per-invariant design history.
  *
  * @module workflows/exec/exec-unit
  */
@@ -84,58 +58,17 @@ const EXEC_STDERR_DIAGNOSTIC_CLIP = WORKFLOW_UNIT_DIAGNOSTIC_CLIP - 500;
 
 /**
  * The DEFAULT environment allowlist for an exec unit's child — the single
- * definition of the EXEC list (the docs describe it, the tests assert against
- * it, and `exec.passEnv` extends it per unit). The win32 process-creation
- * names are not re-spelled here: they are spread from
- * {@link WIN32_SPAWN_ENV_FLOOR}, which owns them.
+ * definition of the EXEC list; `exec.passEnv` extends it per unit. Extends
+ * {@link COMMON_SPAWN_ENV_PASSTHROUGH} (the same baseline agent-harness
+ * children use) plus POSIX/Windows names load-bearing for ordinary commands
+ * (PATH, HOME, USER/LOGNAME, SHELL, locale, TERM, TZ, TMPDIR, the
+ * {@link WIN32_SPAWN_ENV_FLOOR}, Windows toolchain roots) and
+ * `AKM_EVENT_SOURCE` (provenance, DRIFT-6). Deliberately ABSENT and reachable
+ * only through `exec.passEnv` / `env:`: credentials, cloud/CI vars, and the
+ * proxy family.
  *
- * The child starts from an EMPTY environment and receives only these names,
- * matching how an agent harness child is already built
- * (`profile.envPassthrough` → `collectAllowlistedEnv`) — and literally
- * extending the same {@link COMMON_SPAWN_ENV_PASSTHROUGH} baseline those
- * profiles start from, so the two child-spawn allowlists share one floor.
- * Every entry earns its place by being load-bearing for ordinary commands on
- * some supported platform:
- *
- *   - `PATH`        — command resolution. Without it only an absolute `argv[0]`
- *                     can ever be spawned.
- *   - `HOME`        — the config/cache root essentially every toolchain reads
- *                     (git, npm, bun, cargo, ssh). Absent, tools fall back to
- *                     `/` or fail outright.
- *   - `USER`, `LOGNAME` — process identity; git and ssh read them to attribute
- *                     and authenticate.
- *   - `SHELL`       — read by tools that re-exec a login shell for the user's
- *                     own environment (an explicit `["bash", "-lc", …]` argv
- *                     does not need it, but `git`'s pagers/editors do).
- *   - `LANG`, `LC_ALL`, `LC_CTYPE` — text encoding. Without a locale a command
- *                     falls back to the C locale and mangles non-ASCII stdout,
- *                     which IS this unit's artifact.
- *   - `TERM`        — some CLIs abort or emit raw escape bytes with no TERM.
- *   - `TZ`          — timestamps a command prints would otherwise silently
- *                     switch to the host default.
- *   - `TMPDIR`      — POSIX scratch space; absent, tools write to `/tmp` or
- *                     fail on read-only hosts.
- *   - {@link WIN32_SPAWN_ENV_FLOOR} — what Windows itself requires of any
- *                     child (process creation, command resolution, and the
- *                     win32 analogues of `HOME`/`TMPDIR`). Spread in rather
- *                     than re-spelled: `spawnEnvNamesFor` appends the same
- *                     names on win32, and two hand-written copies of one OS
- *                     requirement is exactly how a floor drifts.
- *   - `APPDATA`, `LOCALAPPDATA` — Windows config/cache roots (npm, bun, git).
- *   - `ProgramData`, `ProgramFiles` — machine-wide install roots that Windows
- *                     toolchain shims resolve against. These four are NOT on
- *                     the floor (a child is creatable without them), so an
- *                     arbitrary shell command asks for them here.
- *   - `AKM_EVENT_SOURCE` — provenance, never a secret: an exec unit that calls
- *                     `akm` must record machine traffic rather than user
- *                     demand, exactly as the agent passthrough list does
- *                     (`integrations/agent/profiles.ts`, DRIFT-6).
- *
- * Deliberately ABSENT and reachable only through `exec.passEnv` / `env:`:
- * credentials of every kind, cloud/CI vars, and the proxy
- * family (`HTTP_PROXY` & friends) — proxy URLs routinely embed credentials,
- * which is why akm's redaction policy already treats URL-shaped passthrough
- * values as credential-bearing.
+ * See docs/architecture/decisions/0003-child-env-allowlist-and-provenance.md
+ * for the per-entry rationale and why the default is an allowlist at all.
  */
 export const EXEC_DEFAULT_ENV_PASSTHROUGH: readonly string[] = [
   // PATH, HOME, USER, LANG, LC_ALL, TERM, TMPDIR, AKM_EVENT_SOURCE
@@ -203,57 +136,19 @@ export interface RunExecUnitInput {
 /**
  * Run one exec unit and map its process outcome onto the dispatch vocabulary:
  * non-zero exit → `non_zero_exit`, wall-clock expiry → `timeout`, cancellation
- * → `aborted`, a child that never started → `spawn_failed`. All four are
- * pre-existing `AgentFailureReason` members, so `retry.on` keeps working
- * unchanged. The out-of-taxonomy `exec_cwd_escape`, `exec_output_limit`,
- * `exec_context_too_large` and `exec_capture_incomplete` are deliberate: each is
- * tampering, a runaway, an authoring bug, or work that ALREADY RAN — never a
- * transient — so no `retry.on` value can ever re-dispatch one.
+ * → `aborted`, a child that never started → `spawn_failed` (all pre-existing
+ * `AgentFailureReason` members, so `retry.on` keeps working). The
+ * out-of-taxonomy `exec_cwd_escape`, `exec_output_limit`,
+ * `exec_context_too_large` and `exec_capture_incomplete` are deliberate: each
+ * is tampering, a runaway, an authoring bug, or work that ALREADY RAN — never
+ * a transient — so no `retry.on` value can ever re-dispatch one. An
+ * INCOMPLETE stdout capture is always a failure, never a partial artifact;
+ * output OVERFLOW past {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} does not fail a
+ * command that otherwise passed unless the unit declared an `output:` schema
+ * (a truncated JSON prefix cannot parse).
  *
- * ## An INCOMPLETE STDOUT capture is a failure, never a partial artifact
- *
- * `exitCode === 0` is not on its own proof that stdout was fully read: a pipe
- * can error, and the stream-drain timeout can fire while the command LEADER has
- * already exited 0 because a background descendant still holds the stdout fd
- * open. Both leave a PREFIX, and promoting it would hand the next step, the gate
- * judge and `steps.<id>.output` a silently truncated artifact. So the unit fails
- * instead, through the same shared classifier (`streamCaptureFailure`) the agent
- * spawn path uses.
- *
- * Only STDOUT is fatal here. stderr is a diagnostic channel that never
- * contributes to the artifact, so a stderr drain that did not finish leaves the
- * unit's actual result — a completed command, a fully captured stdout — intact;
- * failing it would throw away a valid artifact over a lost log tail. The agent
- * path classifies both pipes because there stderr genuinely feeds its
- * diagnostics; the difference lives in the CALLERS, not in the shared
- * classifier.
- *
- * The stdout reason is `exec_capture_incomplete`, deliberately OUTSIDE the
- * `retry.on` taxonomy, for the same reason `journal_write_failed` is: the
- * command RAN TO COMPLETION and exited 0 — what failed is akm's record of it. A
- * retryable reason here would let `retry.on: [spawn_failed]` re-dispatch
- * byte-identical argv for a command that already deployed, already published,
- * already migrated. `spawn_failed` keeps its documented meaning — the child
- * never started.
- *
- * ## Output OVERFLOW does not fail a command that passed
- *
- * Crossing {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES} is a different condition: the
- * reader DID drain the pipe to its end, it just stopped RETAINING, so the child
- * never blocked and its exit code is real. Failing a passing-but-chatty test
- * suite over its log volume would be a tripwire, so overflow splits by what the
- * unit PROMISED about its output:
- *
- *   - NO declared `output:` schema → success, with the artifact carrying a
- *     {@link WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER} block naming both byte
- *     counts, so truncated text can never pass for complete text.
- *   - a declared `output:` schema → `exec_output_limit`: stdout must parse as
- *     EXACTLY one JSON value, a truncated prefix cannot, and promoting it would
- *     corrupt every downstream reference to the typed artifact.
- *
- * stderr overflow never fails anything: stderr is a diagnostic channel, and
- * {@link EXEC_STDERR_DIAGNOSTIC_CLIP} already bounds and marks what reaches the
- * journal.
+ * See docs/architecture/decisions/0003-child-env-allowlist-and-provenance.md
+ * for the full capture/overflow reasoning.
  */
 export async function runExecUnit(input: RunExecUnitInput): Promise<UnitDispatchResult> {
   const cwd = await resolveExecCwd(input);
@@ -560,37 +455,14 @@ async function isExistingDirectory(candidate: string): Promise<boolean> {
 }
 
 /**
- * The child's environment, in three layers with fixed precedence:
+ * The child's environment, in three layers with fixed precedence: (1) the
+ * BASE — {@link EXEC_DEFAULT_ENV_PASSTHROUGH} plus the unit's `exec.passEnv`
+ * names; (2) the unit's resolved `env:` bindings; (3) the engine-authored
+ * `AKM_*` context, LAST so a workflow-supplied binding can never shadow the
+ * ids/item the engine is telling the command the truth about.
  *
- *   1. the BASE — {@link EXEC_DEFAULT_ENV_PASSTHROUGH} plus the unit's
- *      `exec.passEnv` names;
- *   2. the unit's resolved `env:` bindings;
- *   3. the engine-authored `AKM_*` context, LAST so a workflow-supplied binding
- *      can never shadow the ids/item the engine is telling the command the
- *      truth about.
- *
- * ## Why the default is an allowlist
- *
- * Not because it stops an attacker: a command that runs at all can read the
- * same credentials off disk that the environment would have handed it, and a
- * workflow source is executed code either way (`docs/guides/run-workflows.md`,
- * "workflow sources are executed code"). The allowlist earns its place for
- * three narrower, real reasons:
- *
- *   - it bounds ACCIDENTAL exposure — the ambient shell of whoever ran
- *     `akm workflow run` (or the CI job that did) routinely carries tokens for
- *     unrelated services, and a third-party workflow step that merely prints
- *     its environment, or a tool that ships one in a crash report, should not
- *     get them for free;
- *   - it makes the environment surface EXPLICIT and REVIEWABLE — what a
- *     command can see is this constant plus lines in the frontmatter diff,
- *     rather than "whatever the invoking shell happened to export";
- *   - it matches the convention akm already applies to spawned children —
- *     `profile.envPassthrough` in `integrations/agent/spawn.ts` has always
- *     built agent-harness children this way, and the SAME
- *     {@link collectAllowlistedEnv} does it here, so there is one mechanism to
- *     review instead of two.
- *
+ * See docs/architecture/decisions/0003-child-env-allowlist-and-provenance.md
+ * for why the default is an allowlist rather than full inheritance.
  */
 function childEnv(
   exec: IrExecSpec,

@@ -15,13 +15,10 @@
  * Moved from src/tasks/runner.ts (spec docs/plans/specs/p1b-model-extraction.md
  * §5.1, §9, runner.ts:87-103,105-143,256-292,1164-1177).
  *
- * D8 (§5.3, §6 F-2): `preparedResultTarget`'s prepared-command arm now
- * returns `{kind:"command", engine}` (formerly `{kind:"prompt", engine}`);
- * its native arm now returns the bare `{kind:"shell"}` / `{kind:"script"}`
- * (formerly one shared `{kind:"command"}`) — the arm-specific `cmd` is added
- * by run-native-task.ts once it has actually built the argv, mirroring the
- * pre-P1b shape where the bare disabled-task projection never carried `cmd`
- * either.
+ * `preparedResultTarget` implements the D8 result-vocabulary re-code — see
+ * docs/architecture/decisions/0005-task-result-vocabulary-and-legacy-read-mapping.md
+ * for why (the write side); task-history.ts carries the read-side legacy
+ * mapping this depends on.
  *
  * F-3 (§5.4): `RunTaskOptions.stashDir` is renamed to `bundleDir` here —
  * VALUE-preserving, only the option key changed.

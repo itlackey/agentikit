@@ -13,20 +13,22 @@
  * run-task.ts's disabled-task path all call it (spec §5.1's module split
  * moves what was one file's internal call graph across several files).
  *
- * D8 (spec §5.3, §6 F-2) result-vocabulary re-code, implemented entirely at
- * this read/write boundary:
- *   - WRITE: every row `appendHistory` writes now carries `targetVocab: 2` in
- *     its metadata, and the new target_kind strings ("command" for a prepared
- *     command/agent-LLM result, "shell", "script", "workflow" unchanged).
- *   - READ: `taskHistoryRowToResult` branches on the decoded metadata's
- *     `targetVocab` marker. Rows carrying `targetVocab: 2` read `target_kind`
- *     directly in the new vocabulary. LEGACY rows (no marker, written before
- *     this phase) are mapped: `"prompt"` -> `{kind:"command", engine}`,
- *     `"command"` -> `{kind:"shell"}`, `"workflow"` unchanged, anything else
- *     (including the new vocabulary's own "shell"/"script"/"prompt" written
- *     WITHOUT a marker, which no production writer ever does) -> `"unknown"`.
- *     The P0-pinned null fallbacks survive: workflow `ref` falls back to `""`,
- *     the command/prompt arm's `engine` falls back to `null`.
+ * D8 result-vocabulary re-code (why, and the WRITE side's exact shape): see
+ * docs/architecture/decisions/0005-task-result-vocabulary-and-legacy-read-mapping.md.
+ * The READ side's mapping rule is a PERMANENT invariant kept here, not moved
+ * — a maintainer touching `taskHistoryRowToResult` needs it right here, and
+ * row B-51 (docs/plans/specs/p4-deletions-closeout.md) makes deleting it a
+ * review-blocking violation: it reads rows written by every previous
+ * release, forever.
+ *
+ *   A legacy row (no `targetVocab` marker — written before D8) maps:
+ *   `"prompt"` -> `{kind:"command", engine}`, `"command"` -> `{kind:"shell"}`,
+ *   `"workflow"` unchanged, anything else (including the new vocabulary's own
+ *   "shell"/"script"/"prompt" written WITHOUT a marker, which no production
+ *   writer ever does) -> `"unknown"`. The P0-pinned null fallbacks survive:
+ *   workflow `ref` falls back to `""`, the command/prompt arm's `engine`
+ *   falls back to `null`. A row carrying `targetVocab: 2` reads `target_kind`
+ *   directly in the current vocabulary — no mapping needed.
  *
  * A DAG leaf with respect to the rest of src/tasks/run/**: this module
  * imports TaskRunResult/TaskRunStatus's TYPE from ./task-result but no VALUE
