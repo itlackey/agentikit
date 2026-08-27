@@ -45,7 +45,6 @@ import { randomUUID } from "node:crypto";
 import { UsageError } from "../../../src/core/errors";
 import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
-// @ts-expect-error P3b red-phase: run-outputs.ts lands in Implement (the implementation removes this directive)
 import * as RunOutputsModule from "../../../src/workflows/runtime/run-outputs";
 import { completeWorkflowStep, getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";

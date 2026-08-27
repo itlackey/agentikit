@@ -24,6 +24,7 @@ import { decodeExecutionSourceIdentity, type ExecutionSourceIdentity } from "../
 import { decodeFrozenRunnerSpec } from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { parseReference } from "../program/expressions";
+import { PROGRAM_PARAM_NAME_PATTERN } from "../program/schema";
 import { utf8Bytes, WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../resource-limits";
 import {
   decodeWorkflowExecSpec,
@@ -181,6 +182,18 @@ export interface IrStepPlanV4 {
   readonly gate: IrGateNodeV4;
 }
 
+/**
+ * One frozen `outputs:` entry (P3b, spec §4.2): a validated
+ * `steps.<id>.output(.<seg>)*` reference into a step artifact, plus an
+ * optional bounded JSON Schema. Absent, never `{}`, when undeclared.
+ */
+export interface FrozenWorkflowOutput {
+  /** A validated `steps.<id>.output(.<seg>)*` reference into a step artifact. */
+  readonly from: string;
+  /** Bounded JSON Schema (the `validateJsonSchemaSubset` subset). Absent when undeclared. */
+  readonly schema?: Record<string, unknown>;
+}
+
 export interface WorkflowPlanGraphV4 {
   readonly irVersion: typeof WORKFLOW_IR_V5_VERSION;
   readonly title: string;
@@ -190,6 +203,14 @@ export interface WorkflowPlanGraphV4 {
   readonly execution: { readonly maxConcurrency: number };
   readonly sourceReadSet: DurableWorkflowSourceSnapshot[];
   readonly steps: IrStepPlanV4[];
+  /**
+   * Named, optionally schema-validated projections of step artifacts,
+   * exported when the run completes (P3b, spec §4.2). ADDITIVE within
+   * `irVersion` 5 (B-N1) — `irVersion` does NOT bump. Absent, never `{}`,
+   * when the source declares none, so `canonicalPlanJson`/`computePlanHash`
+   * stay byte-identical for every workflow that does not use the feature.
+   */
+  readonly outputs?: Readonly<Record<string, FrozenWorkflowOutput>>;
 }
 
 /**
@@ -219,7 +240,7 @@ export function decodeWorkflowPlanV4(
   if (raw.irVersion !== WORKFLOW_IR_V5_VERSION) fail("irVersion must be 5");
   assertKeys(
     raw,
-    ["irVersion", "title", "params", "paramSchemas", "budget", "execution", "steps", "sourceReadSet"],
+    ["irVersion", "title", "params", "paramSchemas", "budget", "execution", "steps", "sourceReadSet", "outputs"],
     "plan",
   );
   if (!Object.hasOwn(raw, "sourceReadSet")) fail("sourceReadSet is required");
@@ -228,13 +249,14 @@ export function decodeWorkflowPlanV4(
     raw,
     {
       expectedVersion: WORKFLOW_IR_V5_VERSION,
-      planExtraKeys: ["sourceReadSet"],
+      planExtraKeys: ["sourceReadSet", "outputs"],
       unitExtraKeys: ["frozenTarget", "environment"],
       gateExtraKeys: ["frozenJudge"],
     },
     hooks,
   );
   const rawSteps = raw.steps as unknown[];
+  const stepIds = new Set(rawSteps.map((rawStep) => (rawStep as { stepId: string }).stepId));
   const requiredSources: ExecutionSourceIdentity[] = [];
   const steps = rawSteps.map((rawStep, index) => {
     const step = rawStep as Omit<IrStepPlanV4, "root" | "gate"> & { root?: unknown; gate: unknown };
@@ -260,12 +282,53 @@ export function decodeWorkflowPlanV4(
     return Object.freeze({ ...step, root, gate }) satisfies IrStepPlanV4;
   });
   assertRequiredSources(sourceReadSet, requiredSources);
+  const outputs = Object.hasOwn(raw, "outputs") ? decodeWorkflowOutputs(raw.outputs, stepIds) : undefined;
+  const { outputs: _rawOutputs, ...restRaw } = raw;
   return Object.freeze({
-    ...(raw as unknown as Omit<WorkflowPlanGraphV4, "steps" | "sourceReadSet">),
+    ...(restRaw as unknown as Omit<WorkflowPlanGraphV4, "steps" | "sourceReadSet" | "outputs">),
     irVersion: WORKFLOW_IR_V5_VERSION,
     sourceReadSet,
     steps,
+    ...(outputs ? { outputs } : {}),
   });
+}
+
+/**
+ * Decode a plan's `outputs` (P3b, spec §4.2): a corruption gate mirroring
+ * {@link decodeInputBindings} — non-empty, sorted-unique keys (canonical wire
+ * order, same rule `inputBindings` enforces), each name matching the
+ * `params:` name pattern, each entry's closed key set, `from` re-parsing as a
+ * `stepOutput` reference whose step id is declared in `plan.steps`.
+ */
+function decodeWorkflowOutputs(
+  value: unknown,
+  stepIds: ReadonlySet<string>,
+): Readonly<Record<string, FrozenWorkflowOutput>> {
+  const raw = record(value, "plan outputs");
+  const names = Object.keys(raw);
+  if (names.length === 0) fail("plan outputs must be a non-empty object");
+  let prior: string | undefined;
+  const outputs: Record<string, FrozenWorkflowOutput> = {};
+  for (const name of names) {
+    if (!PROGRAM_PARAM_NAME_PATTERN.test(name)) fail(`plan outputs has invalid name ${name}`);
+    if (prior !== undefined && compareCodePoints(prior, name) >= 0) {
+      fail("plan outputs must be sorted by unique name");
+    }
+    prior = name;
+    const entry = record(raw[name], `plan outputs.${name}`);
+    assertKeys(entry, ["from", "schema"], `plan outputs.${name}`);
+    if (typeof entry.from !== "string" || !entry.from) fail(`plan outputs.${name} from is invalid`);
+    const parsed = parseReference(entry.from);
+    if (!parsed.ok || parsed.expr.kind !== "stepOutput") {
+      fail(`plan outputs.${name} from must be a steps.<id>.output reference`);
+    }
+    if (!stepIds.has(parsed.expr.stepId)) {
+      fail(`plan outputs.${name} from names step ${parsed.expr.stepId}, which is not in plan.steps`);
+    }
+    const schema = Object.hasOwn(entry, "schema") ? record(entry.schema, `plan outputs.${name} schema`) : undefined;
+    outputs[name] = Object.freeze({ from: entry.from, ...(schema ? { schema: Object.freeze(schema) } : {}) });
+  }
+  return Object.freeze(outputs);
 }
 
 function decodeUnitV4(

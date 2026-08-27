@@ -15,6 +15,11 @@ import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
+import { getOutputMode } from "../output/context";
+import { renderGenericText } from "../output/generic-render";
+import { deliverRendered } from "../output/html-render";
+import { shapeForCommand } from "../output/shapes";
+import { formatPlain } from "../output/text";
 import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
 import type { WorkflowParameterFlag } from "../workflows/ir/params";
 import { WORKFLOW_MAX_RETRIES, WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/ir/schema";
@@ -25,6 +30,7 @@ import {
   listWorkflowRuns,
   resumeWorkflowRun,
 } from "../workflows/runtime/runs";
+import { akmWorkflowPlan } from "./workflow/plan";
 
 const workflowStatusCommand = defineJsonCommand({
   meta: {
@@ -73,9 +79,18 @@ const workflowListCommand = defineJsonCommand({
   args: {
     ref: { type: "string", description: "Filter to one workflow ref" },
     active: { type: "boolean", description: "Only show active runs", default: false },
+    children: {
+      type: "boolean",
+      description: "Also include child workflow runs (hidden by default, P3b)",
+      default: false,
+    },
   },
   async run({ args }) {
-    const result = await listWorkflowRuns({ workflowRef: args.ref, activeOnly: args.active });
+    const result = await listWorkflowRuns({
+      workflowRef: args.ref,
+      activeOnly: args.active,
+      includeChildren: args.children,
+    });
     output("workflow-list", result);
   },
 });
@@ -322,6 +337,46 @@ function parseWorkflowTimeout(raw: string | undefined): number | undefined {
   return timeoutMs;
 }
 
+// P3b Lane B (spec docs/plans/specs/p3b-child-executor.md §4.6): read-only
+// compile+freeze introspection — zero durable writes, zero usage/event rows
+// (row B-48). `--json` is deliberately NOT a flag anywhere in this CLI
+// (B-N9); the global `--format json` is spliced on by `defineJsonCommand`.
+const workflowPlanCommand = defineJsonCommand({
+  meta: {
+    name: "plan",
+    description:
+      "Compile and freeze a workflow WITHOUT publishing it: the canonical step graph, per-step frozen target " +
+      "kinds, task/child expansion, input bindings, source read set, and lowering notices. Zero durable writes.",
+  },
+  args: {
+    ref: { type: "positional", description: "Workflow ref (workflows/<name>)", required: true },
+  },
+  async run({ args }) {
+    const result = await akmWorkflowPlan(args.ref);
+    // B-46/B-57: `akm workflow plan` is read-only introspection whose UNMARKED
+    // default is a human summary — `--format json` (B-N9) is the opt-in for
+    // the full structure, the mirror image of every other verb's json-by-
+    // default (DEFAULT_CONFIG.output.format). citty parses each command
+    // level against only its own args (the "one-parse rule",
+    // GLOBAL_OUTPUT_ARGS's own doc comment), so `args.format` is `undefined`
+    // here exactly when the caller passed no `--format` at all — never when
+    // they passed `--format json` explicitly. When explicit, this defers to
+    // the normal `output()` path (json/yaml/text/md/html/jsonl, `--output
+    // <path>`) unchanged; when absent, it reproduces `output()`'s OWN "text"
+    // branch verbatim (same shape/detail projection, same registered-
+    // formatter-or-generic-fallback, same `--output <path>` handling) without
+    // touching the shared dispatcher other commands rely on.
+    if (getStringArg(args, "format") === undefined) {
+      const mode = getOutputMode();
+      const shaped = shapeForCommand("workflow-plan", result, mode.detail, mode.shape);
+      const plain = formatPlain("workflow-plan", shaped, mode.detail);
+      deliverRendered(plain ?? renderGenericText("workflow-plan", shaped), mode.outputPath);
+      return;
+    }
+    output("workflow-plan", result);
+  },
+});
+
 const workflowAbandonCommand = defineJsonCommand({
   meta: {
     name: "abandon",
@@ -362,6 +417,7 @@ export const workflowCommand = defineGroupCommand({
     resume: workflowResumeCommand,
     abandon: workflowAbandonCommand,
     run: workflowRunCommand,
+    plan: workflowPlanCommand,
   },
   // No `defaultRun`: bare `akm workflow` is a usage error (exit 2), the
   // canonical bare-group behavior — owner ruling 12. Run `akm workflow list

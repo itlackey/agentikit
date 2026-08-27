@@ -93,6 +93,12 @@ export interface WorkflowPlanDraft {
   title: string;
   params?: string[];
   paramSchemas?: Record<string, Record<string, unknown>>;
+  /**
+   * Named, optionally schema-validated projections of step artifacts,
+   * exported when the run completes (P3b, spec §4.2). Absent, never `{}`,
+   * when the source declares none.
+   */
+  outputs?: Record<string, { from: string; schema?: Record<string, unknown> }>;
   budget?: { maxTokens?: number; maxUnits?: number };
   steps: WorkflowStepDraft[];
 }
@@ -155,6 +161,14 @@ export function compileWorkflowPlan(
     earlierStepIds.add(step.id);
   });
 
+  // P3b (spec §4.2, rows B-06/B-07): `outputs:` references are validated
+  // against the FULL step id set (never `earlierStepIds` — resolution happens
+  // at RUN COMPLETION, after every step has run, so an output may legitimately
+  // name any declared step regardless of its position).
+  for (const [name, declaration] of Object.entries(sourceIr.outputs ?? {})) {
+    checkOutputReference(name, declaration.from, { errors, allStepIds, line: sourceIr.source.start });
+  }
+
   if (errors.length > 0) return { ok: false, errors };
 
   const paramNames = sourceIr.params ? Object.keys(sourceIr.params) : [];
@@ -167,6 +181,7 @@ export function compileWorkflowPlan(
       ...(sourceIr.params && paramNames.length > 0
         ? { paramSchemas: sourceIr.params as Record<string, Record<string, unknown>> }
         : {}),
+      ...(sourceIr.outputs ? { outputs: sourceIr.outputs } : {}),
       ...(sourceIr.budget
         ? {
             budget: {
@@ -320,6 +335,43 @@ function checkInputReference(text: string, index: number, check: ReferenceCheck)
     check.errors.push({
       line: check.line,
       message: `${check.label}[${index}]: "${formatReference(parsed.expr)}" cannot be resolved — ${why}.`,
+    });
+  }
+}
+
+/**
+ * Validate one `outputs.<name>.from` reference (P3b, spec §4.2, rows
+ * B-06/B-07): it must parse, it must name a STEP output — never a param (an
+ * output projects a step artifact; a param is already on the run row) — and
+ * that step must be DECLARED somewhere in the document. Unlike
+ * {@link checkInputReference}, the named step need not be EARLIER: an output
+ * resolves at run completion, after every step has already run.
+ */
+function checkOutputReference(
+  name: string,
+  text: string,
+  check: { errors: WorkflowError[]; allStepIds: ReadonlySet<string>; line: number },
+): void {
+  const parsed = parseReference(text);
+  if (!parsed.ok) {
+    check.errors.push({ line: check.line, message: `Output "${name}" from: ${parsed.message}` });
+    return;
+  }
+  if (parsed.expr.kind === "param") {
+    check.errors.push({
+      line: check.line,
+      message:
+        `Output "${name}" from: "${formatReference(parsed.expr)}" names a param, not a step output — an output ` +
+        `projects a STEP artifact, never a param. "outputs:" only names step outputs (steps.<id>.output...).`,
+    });
+    return;
+  }
+  if (!check.allStepIds.has(parsed.expr.stepId)) {
+    check.errors.push({
+      line: check.line,
+      message:
+        `Output "${name}" from: "${formatReference(parsed.expr)}" cannot be resolved — "${parsed.expr.stepId}" is ` +
+        `not a step in this workflow.`,
     });
   }
 }

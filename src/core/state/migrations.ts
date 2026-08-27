@@ -50,6 +50,7 @@ export const STATE_MIGRATION_SAFETY_BY_ID: Readonly<Record<string, StateMigratio
   "021-asset-state-missing-since": "additive",
   "022-workflow-unit-attempts": "additive",
   "023-child-workflow-runs": "additive",
+  "024-workflow-run-outputs": "additive",
 });
 
 export const STATE_MIGRATIONS: readonly Migration[] = [
@@ -1091,6 +1092,23 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       CREATE UNIQUE INDEX idx_workflow_runs_invocation_key
         ON workflow_runs(parent_run_id, invocation_key)
         WHERE parent_run_id IS NOT NULL;
+    `,
+  },
+
+  // ── Migration 024 — workflow run outputs (P3b) ─────────────────────────────
+  //
+  // Adds workflow_runs.outputs_json — the resolved map of a plan's declared
+  // outputs:, persisted once at run completion in the SAME transaction as the
+  // final step's completion (docs/plans/specs/p3b-child-executor.md §4.3,
+  // B-N13). NULL for every run whose plan declares no outputs: (the
+  // overwhelming majority, including every run before this migration) and for
+  // every run that fails or blocks before completing — never `{}`.
+  // `WorkflowRunsRepository.setRunOutputs` is the only writer;
+  // `src/workflows/runtime/run-outputs.ts` is the only resolver.
+  {
+    id: "024-workflow-run-outputs",
+    up: `
+      ALTER TABLE workflow_runs ADD COLUMN outputs_json TEXT;
     `,
   },
 ];

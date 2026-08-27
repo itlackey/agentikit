@@ -9,6 +9,7 @@ import type { AkmConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { type GuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
 import { defaultMapConcurrency, workflowMaxConcurrency } from "../concurrency-policy";
+import { assertChildOutputReferences } from "../freeze/child-output-references";
 import type { ChildCompositionContext, ChildFreezeFn } from "../freeze/step-values";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
 import type { WorkflowUnitDraft } from "./compile";
@@ -112,6 +113,9 @@ export async function compileResolveFreezeWorkflowV4(
         : freezeResolvedUnit(step.root, frozen);
     return Object.freeze({ ...step, root, gate });
   });
+  // P3b, spec §4.4: after every step's target is resolved (so every embedded
+  // child plan is available) and before the plan object is assembled.
+  assertChildOutputReferences(steps);
   const sourceReadSet = sourceCollector
     .snapshot()
     .sources.filter(
@@ -128,6 +132,7 @@ export async function compileResolveFreezeWorkflowV4(
     execution: { maxConcurrency: workflowMaxConcurrency(config.workflow?.maxConcurrency) },
     sourceReadSet,
     steps,
+    ...(compiled.plan.outputs ? { outputs: compiled.plan.outputs } : {}),
   });
   return Object.freeze({
     plan,

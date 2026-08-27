@@ -136,7 +136,14 @@ export type UsageErrorCode =
   // `dispatchWorkflowExecution` the moment such a unit is actually
   // dispatched, so the run fails closed with a dedicated, actionable
   // message instead.
-  | "WORKFLOW_CHILD_EXECUTION_UNSUPPORTED";
+  | "WORKFLOW_CHILD_EXECUTION_UNSUPPORTED"
+  // P3b (docs/plans/specs/p3b-child-executor.md §4.3, B-N13): a declared
+  // `outputs:` entry could not be resolved at run completion — a missing
+  // reference, a truncated source artifact, or a schema violation. Thrown
+  // from `completeWorkflowStep`'s write transaction, which SQLite rolls back
+  // whole: the step stays pending, the run stays active, fail-before-mutation
+  // preserved.
+  | "WORKFLOW_OUTPUT_INVALID";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -215,6 +222,9 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   // above.
   WORKFLOW_CHILD_EXECUTION_UNSUPPORTED:
     "Freezing a workflow that composes a child still succeeds. Remove the composing step, or wait for the P3b release that adds child workflow execution before running this workflow.",
+  // P3b (docs/plans/specs/p3b-child-executor.md §4.3).
+  WORKFLOW_OUTPUT_INVALID:
+    "Check each `outputs:` entry's `from:` against the step artifact it names, and its `schema:` against the value that step actually promotes.",
 };
 
 /** Default hint for each NotFoundError code. */

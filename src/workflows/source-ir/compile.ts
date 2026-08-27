@@ -93,6 +93,9 @@ export function compileMarkdownWorkflowSource(
       ...(parsed.document.description ? { description: parsed.document.description } : {}),
       ...(parsed.document.tags ? { tags: [...parsed.document.tags] } : {}),
       ...(parsed.document.params ? { params: jsonClone(parsed.document.params) as WorkflowSourceIrV1["params"] } : {}),
+      ...(parsed.document.outputs
+        ? { outputs: jsonClone(parsed.document.outputs) as WorkflowSourceIrV1["outputs"] }
+        : {}),
       ...(parsed.document.defaults
         ? { defaults: jsonClone(parsed.document.defaults) as WorkflowSourceIrV1["defaults"] }
         : {}),

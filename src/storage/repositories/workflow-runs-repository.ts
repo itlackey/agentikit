@@ -56,6 +56,21 @@ export type WorkflowRunRow = {
   parent_unit_id: string | null;
   /** This run's deterministic spawn identity (migration 023), unique per `parent_run_id`. NULL on a top-level run. */
   invocation_key: string | null;
+  /**
+   * Resolved declared `outputs:` (migration 024, P3b §4.3): the run plan's
+   * canonical JSON export map, persisted once at run completion in the SAME
+   * transaction as the final step's completion. NULL for every run whose
+   * plan declares no `outputs:` and for every run that fails or blocks
+   * before completing — never `{}`. `WorkflowRunsRepository.setRunOutputs`
+   * is the only writer.
+   *
+   * Optional (rather than required, unlike `parent_run_id` et al.) so a
+   * pre-existing hand-constructed `WorkflowRunRow` literal in a test this
+   * phase does not own stays type-valid without adding a key it never
+   * asserted on; every real row read via `SELECT *` still carries it
+   * (`null` until a completion sets it).
+   */
+  outputs_json?: string | null;
 };
 
 export type WorkflowRunStepRow = {
@@ -297,6 +312,14 @@ export interface ListRunsFilter {
    * (the `akm show` guard) use {@link WorkflowRunsRepository.findActiveOrBlockedRunForScope}.
    */
   activeOnly?: boolean;
+  /**
+   * Include child workflow runs (P3b, B-N10). Default `false`: a child run
+   * is invisible to this query unless explicitly opted in — surfaced as
+   * `akm workflow list --children`. For any database with no child rows —
+   * every pre-P3b database and every non-composing workflow — the result set
+   * is byte-identical regardless of this flag.
+   */
+  includeChildren?: boolean;
 }
 
 /**
@@ -349,17 +372,27 @@ export class WorkflowRunsRepository {
     );
   }
 
+  /**
+   * The scope-attach lookup `akm workflow run <ref>` uses to find an
+   * in-progress top-level run to resume instead of starting a new one.
+   * `AND parent_run_id IS NULL` (B-N10): a child run must never be attached
+   * to directly through this path — a parent-driven child would then have
+   * TWO drivers. For any database with no child rows the result is
+   * byte-identical.
+   */
   getActiveRunRowForScope(
     workflowRefs: string | readonly string[],
     scopeKey: string | null,
   ): WorkflowRunRow | undefined {
     const refs = typeof workflowRefs === "string" ? [workflowRefs] : [...workflowRefs];
     if (refs.length === 0) return undefined;
-    return this.db
-      .prepare(
-        `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
-      )
-      .get(...refs, scopeKey) as WorkflowRunRow | undefined;
+    return (
+      (this.db
+        .prepare(
+          `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+        )
+        .get(...refs, scopeKey) as WorkflowRunRow | undefined) ?? undefined
+    );
   }
 
   hasRun(runId: string): boolean {
@@ -394,6 +427,12 @@ export class WorkflowRunsRepository {
       // into this shared list filter.
       filters.push("status = 'active'");
     }
+    // B-N10: a child run is invisible to this scope query unless the caller
+    // explicitly opts in (`akm workflow list --children`). For any database
+    // with no child rows the result set is byte-identical either way.
+    if (!filter.includeChildren) {
+      filters.push("parent_run_id IS NULL");
+    }
     const where = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
     return this.db
       .prepare(`SELECT * FROM workflow_runs ${where} ORDER BY updated_at DESC, created_at DESC`)
@@ -412,13 +451,19 @@ export class WorkflowRunsRepository {
       | undefined;
   }
 
+  /**
+   * The `akm show` active-run guard: which run (if any) currently occupies
+   * this scope. `AND parent_run_id IS NULL` (B-N10) — a child a parent is
+   * driving must never be reported as "the" active run; the PARENT is. For
+   * any database with no child rows the result is byte-identical.
+   */
   findActiveOrBlockedRunForScope(
     scopeKey: string,
   ): { id: string; current_step_id: string | null; workflow_ref: string } | null {
     return (
       this.db
         .prepare<{ id: string; current_step_id: string | null; workflow_ref: string }>(
-          "SELECT id, current_step_id, workflow_ref FROM workflow_runs WHERE scope_key = ? AND status IN ('active', 'blocked') ORDER BY updated_at DESC LIMIT 1",
+          "SELECT id, current_step_id, workflow_ref FROM workflow_runs WHERE scope_key = ? AND status IN ('active', 'blocked') AND parent_run_id IS NULL ORDER BY updated_at DESC LIMIT 1",
         )
         .get(scopeKey) ?? null
     );
@@ -667,6 +712,16 @@ export class WorkflowRunsRepository {
 
       return db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(input.run.id) as WorkflowRunRow;
     });
+  }
+
+  /**
+   * Persist a run's resolved declared `outputs:` (migration 024, P3b §4.3).
+   * Called from INSIDE `completeWorkflowStep`'s own write transaction — this
+   * method opens none of its own, matching `updateStepCompletion` /
+   * `updateRunState` immediately above.
+   */
+  setRunOutputs(runId: string, outputsJson: string): void {
+    this.db.prepare("UPDATE workflow_runs SET outputs_json = ? WHERE id = ?").run(outputsJson, runId);
   }
 
   /** Every child run published under `parentRunId`, oldest first. `[]` when none. */

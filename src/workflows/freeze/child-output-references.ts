@@ -1,0 +1,103 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+/**
+ * The freeze-time child-output reference check (P3b, spec docs/plans/specs/
+ * p3b-child-executor.md §4.4, rows B-28…B-32).
+ *
+ * A parent step may read `steps.<child>.output(.<name>)*` where step
+ * `<child>`'s frozen target is `kind: "child-workflow"`. Only the FIRST path
+ * segment is a freeze-time concern: it must name one of the child's declared
+ * `outputs:` names, or — when the child declares none — `runId` or `status`
+ * (the default `workflowRunExportedResult` shape, `runtime/run-outputs.ts`).
+ * A reference AT `steps.<child>.output` with no further segment always
+ * accepts — it names the whole exported object. Anything deeper resolves (and,
+ * if wrong, fails) at pre-attempt through the existing, unchanged resolver —
+ * the value's shape past the first segment is unconstrained unless the
+ * output declares a `schema:`.
+ *
+ * Pure over the frozen step list — no IO, no config.
+ */
+
+import { UsageError } from "../../core/errors";
+import type { TaskInputBinding } from "../../execution/input-contract";
+import type { FrozenWorkflowTarget, IrStepPlanV4, IrUnitNodeV4 } from "../ir/schema-v4";
+import { formatReference, parseReference } from "../program/expressions";
+
+/** A single reference-bearing string, tagged with the step that authored it. */
+interface ReferenceSite {
+  readonly stepId: string;
+  readonly reference: string;
+}
+
+/** The frozen target a step's root unit (or map template) dispatches, if any. */
+function stepFrozenTarget(step: IrStepPlanV4 | undefined): FrozenWorkflowTarget | undefined {
+  const root = step?.root;
+  if (!root) return undefined;
+  const unit: IrUnitNodeV4 = root.kind === "map" ? root.template : root;
+  return unit.frozenTarget;
+}
+
+/** Every reference string a step's `inputs[]`, `map.over`, `route.input`, and reference-kind `inputBindings[].from` carry. */
+function collectReferenceSites(step: IrStepPlanV4): ReferenceSite[] {
+  const sites: ReferenceSite[] = [];
+  const push = (reference: string): void => {
+    sites.push({ stepId: step.stepId, reference });
+  };
+  if (step.route) push(step.route.input);
+  const root = step.root;
+  if (root) {
+    const unit: IrUnitNodeV4 = root.kind === "map" ? root.template : root;
+    if (root.kind === "map") push(root.over);
+    for (const reference of unit.inputs ?? []) push(reference);
+    const bindings = (unit.frozenTarget as { inputBindings?: readonly TaskInputBinding[] }).inputBindings ?? [];
+    for (const binding of bindings) {
+      if (binding.kind === "reference") push(binding.from);
+    }
+  }
+  return sites;
+}
+
+/** The names a `child-workflow` target's own exported result carries at its first segment. */
+function acceptedFirstSegments(target: Extract<FrozenWorkflowTarget, { kind: "child-workflow" }>): readonly string[] {
+  const declared = target.frozenPlan.outputs;
+  return declared ? Object.keys(declared) : ["runId", "status"];
+}
+
+function exportsDescription(target: Extract<FrozenWorkflowTarget, { kind: "child-workflow" }>): string {
+  const declared = target.frozenPlan.outputs;
+  return declared ? `outputs: ${Object.keys(declared).join(", ")}` : "only {runId, status} — it declares no `outputs:`";
+}
+
+function checkSite(site: ReferenceSite, stepsById: ReadonlyMap<string, IrStepPlanV4>): void {
+  const parsed = parseReference(site.reference);
+  if (!parsed.ok || parsed.expr.kind !== "stepOutput") return;
+  const targetStep = stepsById.get(parsed.expr.stepId);
+  const frozenTarget = stepFrozenTarget(targetStep);
+  if (!frozenTarget || frozenTarget.kind !== "child-workflow") return;
+  const first = parsed.expr.path[0];
+  if (first === undefined) return; // bare steps.<child>.output — the whole exported object, always accepted.
+  const accepted = acceptedFirstSegments(frozenTarget);
+  if (typeof first === "string" && accepted.includes(first)) return;
+  throw new UsageError(
+    `Workflow step ${site.stepId} reads "${formatReference(parsed.expr)}", but child workflow ${frozenTarget.ref} ` +
+      `exports ${exportsDescription(frozenTarget)}. Declare the output in the child's \`outputs:\` frontmatter, or ` +
+      `reference one of the names above.`,
+    "COMPOSITION_INVALID",
+  );
+}
+
+/**
+ * Assert every reference into a `child-workflow`-targeted step's output
+ * names an output the child actually exports. Throws `UsageError`
+ * (`COMPOSITION_INVALID`) on the first violation found.
+ */
+export function assertChildOutputReferences(steps: readonly IrStepPlanV4[]): void {
+  const stepsById = new Map(steps.map((step) => [step.stepId, step] as const));
+  for (const step of steps) {
+    for (const site of collectReferenceSites(step)) {
+      checkSite(site, stepsById);
+    }
+  }
+}

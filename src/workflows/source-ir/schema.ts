@@ -31,6 +31,7 @@ import {
   WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
   WORKFLOW_MAX_MAP_EXPANSION,
+  WORKFLOW_MAX_OUTPUTS,
   WORKFLOW_MAX_PARAMS,
   WORKFLOW_MAX_RETRIES,
   WORKFLOW_MAX_ROUTE_BRANCHES,
@@ -177,12 +178,23 @@ export interface WorkflowSourceJob {
   source: WorkflowSourceSpan;
 }
 
+/**
+ * One `outputs:` entry (P3b, spec §4.2): a validated `steps.<id>.output(.<seg>)*`
+ * reference into a step artifact, plus an optional bounded JSON Schema.
+ */
+export interface WorkflowSourceOutputDeclaration {
+  from: string;
+  schema?: WorkflowSourceJsonObject;
+}
+
 export interface WorkflowSourceIrV1 {
   sourceIrVersion: typeof WORKFLOW_SOURCE_IR_VERSION;
   name: string;
   description?: string;
   tags?: string[];
   params?: Record<string, WorkflowSourceJsonObject>;
+  /** Markdown-frontmatter-only (B-N4) — a GitHub-shaped source never produces this field. */
+  outputs?: Record<string, WorkflowSourceOutputDeclaration>;
   defaults?: Omit<WorkflowSourceUnit, "retry" | "output" | "env" | "isolation">;
   budget?: { maxTokens?: number; maxUnits?: number };
   preamble?: string;
@@ -215,6 +227,7 @@ export function decodeWorkflowSourceIrV1(
       "description",
       "tags",
       "params",
+      "outputs",
       "defaults",
       "budget",
       "preamble",
@@ -231,6 +244,7 @@ export function decodeWorkflowSourceIrV1(
   optionalString(root.preamble, "preamble");
   optionalStringList(root.tags, "tags", 256);
   validateParams(root.params);
+  validateOutputs(root.outputs);
   validateUnit(root.defaults, "defaults", true);
   validateBudget(root.budget);
   span(root.source, "source");
@@ -649,6 +663,28 @@ function validateParams(value: unknown): void {
   for (const [name, schema] of Object.entries(params)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) fail(`params has invalid name ${name}`);
     validateSchema(schema, `params.${name}`, false);
+  }
+}
+
+/**
+ * Structural re-validation of `outputs:` (P3b, spec §4.2) — the parser
+ * (`../parser.ts`) already enforces the same rules at authoring time; this is
+ * the corruption-gate re-check every source-IR field gets, mirroring
+ * `validateParams` immediately above.
+ */
+function validateOutputs(value: unknown): void {
+  if (value === undefined) return;
+  const outputs = record(value, "outputs");
+  if (Object.keys(outputs).length === 0 || Object.keys(outputs).length > WORKFLOW_MAX_OUTPUTS) {
+    fail(`outputs must contain 1 through ${WORKFLOW_MAX_OUTPUTS} entries`);
+  }
+  for (const [name, declaration] of Object.entries(outputs)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) fail(`outputs has invalid name ${name}`);
+    const decl = record(declaration, `outputs.${name}`);
+    keys(decl, ["from", "schema"], `outputs.${name}`);
+    nonEmptyString(decl.from, `outputs.${name}.from`);
+    validateReference(decl.from as string, `outputs.${name}.from`);
+    if (decl.schema !== undefined) validateSchema(decl.schema, `outputs.${name}.schema`, false);
   }
 }
 

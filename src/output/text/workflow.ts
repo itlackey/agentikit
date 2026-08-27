@@ -7,6 +7,7 @@
 import {
   formatWorkflowCreatePlain,
   formatWorkflowListPlain,
+  formatWorkflowPlanPlain,
   formatWorkflowResumePlain,
   formatWorkflowRunPlain,
   formatWorkflowStatusPlain,
@@ -20,4 +21,5 @@ export const workflowFormatters: TextFormatterEntry[] = [
   { command: "workflow-resume", handler: (r) => formatWorkflowResumePlain(r) },
   { command: "workflow-abandon", handler: (r) => formatWorkflowStatusPlain(r) },
   { command: "workflow-run", handler: (r) => formatWorkflowRunPlain(r) },
+  { command: "workflow-plan", handler: (r) => formatWorkflowPlanPlain(r) },
 ];

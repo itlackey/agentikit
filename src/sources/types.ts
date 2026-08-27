@@ -188,6 +188,16 @@ export interface WorkflowRunSummary {
   /** Frozen workflow plan format on this row; null for historical rows. */
   planIrVersion?: number | null;
   executionSupport?: "supported" | "unsupported-version" | "missing-plan" | "corrupt-plan";
+  /**
+   * Resolved declared `outputs:` (P3b), present only on a completed run
+   * whose plan declared any. Absent, never `null` — every pre-existing
+   * envelope stays byte-identical (Stable tier).
+   */
+  outputs?: Record<string, unknown>;
+  /** The parent run this run was spawned under (P3b); present only on a child run. */
+  parentRunId?: string;
+  /** The parent run's unit that spawned this run (P3b); present only on a child run. */
+  spawnedByUnitId?: string;
 }
 
 export interface AddResponse {

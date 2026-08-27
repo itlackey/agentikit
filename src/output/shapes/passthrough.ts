@@ -66,6 +66,7 @@ const PASSTHROUGH_COMMANDS = [
   "workflow-abandon",
   "workflow-create",
   "workflow-list",
+  "workflow-plan",
   "workflow-resume",
   "workflow-run",
   "workflow-status",

@@ -17,6 +17,8 @@ export const WORKFLOW_MAX_JSON_DEPTH = 64;
 export const WORKFLOW_MAX_MAP_EXPANSION = 10_000;
 /** Max declared `inputs:` reference strings on one unit/map step. */
 export const WORKFLOW_MAX_INPUTS = 64;
+/** Max declared `outputs:` entries on one workflow document (P3b, spec §4.1). */
+export const WORKFLOW_MAX_OUTPUTS = 64;
 
 // ── Dispatch-significant bounds shared across validation layers ──────────────
 //

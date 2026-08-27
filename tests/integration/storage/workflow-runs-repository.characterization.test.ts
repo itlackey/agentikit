@@ -108,6 +108,9 @@ describe("WorkflowRunsRepository reads", () => {
       parent_run_id: null,
       parent_unit_id: null,
       invocation_key: null,
+      // Resolved declared outputs: (migration 024, P3b §4.3): NULL until a
+      // run whose plan declares outputs: completes.
+      outputs_json: null,
     });
   });
 
