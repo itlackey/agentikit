@@ -855,7 +855,7 @@ sequence is worded, mirroring `judgeFailureNotes` (`step-work.ts:1666`):
 ```
 Step "<parentStepId>" composes child workflow run <childRunId> (<childRef>),
 which is blocked at its own step "<childStepId>". Nothing in this run advances
-until the child does — a gate is a gate for a child workflow too, so akm will
+until the child does — a gate is a gate for a child workflow too, so `akm` will
 not resume it for you. Clear it with `akm workflow resume <childRunId>`, then
 `akm workflow resume <parentRunId>` and `akm workflow run <parentRunId>` to
 continue: re-driving the parent drives the resumed child.
