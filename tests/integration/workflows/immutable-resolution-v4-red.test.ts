@@ -70,11 +70,7 @@ function writeWorkflow(name: string, steps: string, root = storage.stashDir): st
 }
 
 function writeTask(name: string, targetLines: readonly string[], root = storage.stashDir): string {
-  return write(
-    root,
-    `tasks/${name}.yml`,
-    ["version: 3", ...targetLines, "akm:", '  schedule: "@daily"', ""].join("\n"),
-  );
+  return write(root, `tasks/${name}.yml`, ["version: 4", ...targetLines, ""].join("\n"));
 }
 
 async function persistedPlan(runId: string) {

@@ -105,7 +105,7 @@ function rawMetadata(taskId: string): Record<string, unknown> | undefined {
 
 describe("F-2 (D8) — every NEW history row carries the targetVocab: 2 marker", () => {
   test('a prepared workflow run stores targetVocab: 2 alongside target_kind "workflow"', async () => {
-    writeTask("vocab-workflow", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
+    writeTask("vocab-workflow", "version: 4\nuses: workflows/noop\n");
 
     const result = await runTask("vocab-workflow", {
       bundleDir: storage.stashDir,
@@ -133,16 +133,7 @@ describe("F-2 (D8) — every NEW history row carries the targetVocab: 2 marker",
   test('a prepared command (agent/LLM) run stores targetVocab: 2, target_kind "command", and engine in metadata', async () => {
     writeTask(
       "vocab-command",
-      [
-        "version: 3",
-        "uses: akm/command",
-        "with:",
-        "  content: say hi",
-        "akm:",
-        '  schedule: "@daily"',
-        "  engine: opencode",
-        "",
-      ].join("\n"),
+      ["version: 4", "uses: akm/command", "with:", "  content: say hi", "engine: opencode", ""].join("\n"),
     );
 
     const result = await runTask("vocab-command", {
@@ -157,7 +148,7 @@ describe("F-2 (D8) — every NEW history row carries the targetVocab: 2 marker",
   });
 
   test('a prepared shell (run:) run stores targetVocab: 2 and target_kind "shell"', async () => {
-    writeTask("vocab-shell", 'version: 3\nrun: printf ok\nshell: sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("vocab-shell", "version: 4\nrun: printf ok\nshell: sh\n");
 
     const result = await runTask("vocab-shell", {
       bundleDir: storage.stashDir,
@@ -172,7 +163,7 @@ describe("F-2 (D8) — every NEW history row carries the targetVocab: 2 marker",
 
   test('a prepared script run stores targetVocab: 2 and target_kind "script" (distinguishable from shell)', async () => {
     fs.writeFileSync(path.join(scriptsDir, "vocab-script.sh"), "#!/bin/sh\nprintf ok\n");
-    writeTask("vocab-script", 'version: 3\nuses: scripts/vocab-script.sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("vocab-script", "version: 4\nuses: scripts/vocab-script.sh\n");
 
     const result = await runTask("vocab-script", {
       bundleDir: storage.stashDir,
@@ -202,7 +193,7 @@ describe("§5.6 C-7 — the exit-78 rewire survives the vocabulary re-code", () 
   // JSON result AND the preserved exit-78 passthrough, so a vocabulary-only
   // fix that forgets the tasks.ts rewire still fails it.
   test("a shell task whose command exits 78 exits the CLI with 78, and its JSON result reports the new vocabulary", async () => {
-    writeTask("vocab-exit-78", 'version: 3\nrun: "exit 78"\nshell: sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("vocab-exit-78", 'version: 4\nrun: "exit 78"\nshell: sh\n');
 
     const { code, stdout, stderr } = await runCliCapture(["task", "run", "vocab-exit-78"]);
 

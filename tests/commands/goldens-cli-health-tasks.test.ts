@@ -294,7 +294,7 @@ function writeTrueTask(): void {
   fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
   fs.writeFileSync(
     path.join(storage.stashDir, "tasks", `${TASK_TRUE_ID}.yml`),
-    ["version: 3", 'run: "true"', "akm:", '  schedule: "@daily"', "  enabled: true", ""].join("\n"),
+    ["version: 4", 'run: "true"', ""].join("\n"),
   );
 }
 
@@ -302,10 +302,7 @@ describe("family C — akm task", () => {
   test("tasks run maps a command task's non-zero status to akm failure exit 1", async () => {
     const id = "golden-false";
     fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
-    fs.writeFileSync(
-      path.join(storage.stashDir, "tasks", `${id}.yml`),
-      ["version: 3", 'run: "exit 7"', "akm:", '  schedule: "@daily"', "  enabled: true", ""].join("\n"),
-    );
+    fs.writeFileSync(path.join(storage.stashDir, "tasks", `${id}.yml`), ["version: 4", 'run: "exit 7"', ""].join("\n"));
 
     const run = await runCli(["task", "run", id, "--format=json"]);
     expect(run.code).toBe(1);

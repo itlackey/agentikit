@@ -136,6 +136,69 @@ const ALLOWED_EXACT_FILES = [
   // P2b v3 was the only reachable task-composition target, so this is the
   // more faithful fixture for that exact claim, not merely a workaround.
   "tests/workflows/task-binding-identity.test.ts",
+
+  // Lane D sweep, discovered load-bearing v3-ness (spec §6.3's own escape
+  // valve — "Any file where the conversion would change what the test
+  // asserts is moved into the exclusion list and the reason is recorded in
+  // the Review log"), 2026-08-27. Every entry below was verified by running
+  // its suite both before and after attempting conversion; converting broke
+  // the named assertion for an architectural reason unrelated to fixture
+  // authoring style.
+  //
+  // task source v4's per-schedule-binding `enabled` is deliberately NOT
+  // projected into the document-level flag runTask's own disabled-dispatch
+  // skip reads (src/tasks/source/project-v4.ts's own header: "carried
+  // separately to the scheduler seam, not this function"; the derivation is
+  // src/tasks/prepare/prepare-support.ts:120's
+  // `enabled: document.akm?.enabled !== false`, which is always `true` for a
+  // v4-projected document since `projectAkm` never sets `akm.enabled`). Every
+  // fixture below feeds a scheduled/`--scheduled` `runTask` dispatch whose
+  // assertion depends on the SKIP actually firing, which is unreachable for
+  // a v4 source under the current runtime — a v3->v4 rewrite would silently
+  // stop testing the skip at all (the dispatch would just run).
+  "tests/integration/commands/tasks-cli-envelope.test.ts",
+  "tests/integration/tasks-runner.test.ts",
+
+  // tests/integration/commands/tasks-lifecycle.test.ts's own
+  // `setEnabledInYaml` case ("setup-style enable edits stay inside the v3
+  // akm mapping") exercises that exact-named function byte-for-byte —
+  // `setEnabledInYaml` is a v3-YAML-text splice (the same family as
+  // src/setup/steps/tasks.ts's `setTaskV3EnabledInYaml`, both used only by
+  // codepaths `akm task add` keeps on v3, per this spec's §0 "P2b is not...
+  // an `akm task add` phase") and would not even produce valid task source
+  // v4 syntax if pointed at one. Every OTHER fixture in this file converted
+  // cleanly.
+  "tests/integration/commands/tasks-lifecycle.test.ts",
+
+  // tests/integration/tasks-scheduler-sync-v4.test.ts:105's own test name —
+  // "a manual-only version: 4 task alongside a normally-scheduled version: 3
+  // task: the v3 task still installs, the v4 task contributes nothing" — is
+  // a coexistence proof; its v3 half is the PRESERVE half of the claim by
+  // construction, and spec §7 F-B2's own disposition table already names
+  // this exact line "UNCHANGED, must stay green" alongside the file's other
+  // v4-only cases.
+  "tests/integration/tasks-scheduler-sync-v4.test.ts",
+
+  // tests/core/adapter/akm-validate.test.ts: every "version: 3"+"schedule:"
+  // occurrence sits in a test whose NAME says its subject is v3 parsing
+  // itself — "task missing the v3 version", "a valid v3 task omitting
+  // optional akm.enabled", "a task with a non-boolean akm.enabled", "a task
+  // omitting version" (falls through to v3's own preserved wording per
+  // src/tasks/source/parse-task-source.ts's routing table) — each asserts on
+  // v3-only field paths (`akm.enabled`) or v3's own error wording ("version
+  // ... required ... 3"), matching §6.2(b)'s catch-all ("any other test
+  // whose SUBJECT is v3 parsing").
+  "tests/core/adapter/akm-validate.test.ts",
+
+  // tests/setup-scheduled-tasks.test.ts: `akm setup`'s scheduled-task review
+  // step (src/setup/steps/tasks.ts's `listSetupTaskDefinitions` and
+  // `prepareSetupTaskDefinitions`) calls `parseTaskV3Yaml` and
+  // `setTaskV3EnabledInYaml` DIRECTLY — no `parseTaskSource` version routing
+  // exists on this path at all. A version: 4 fixture would not silently
+  // change behavior here; it would throw "version ... must be exactly 3"
+  // where the test expects a value. This subsystem is unrouted, not merely
+  // v3-preferring — out of P2b's scope entirely.
+  "tests/setup-scheduled-tasks.test.ts",
 ] as const;
 
 function isAllowed(relPath: string): boolean {

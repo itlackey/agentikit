@@ -91,24 +91,24 @@ function writeTask(id: string, body: string): void {
 
 function workflowTask(overrides: Record<string, unknown> = {}, params?: Record<string, unknown>): string {
   return stringifyYaml({
-    version: 3,
+    version: 4,
     uses: "workflows/noop",
     ...(params ? { with: params } : {}),
-    akm: { schedule: "@daily", enabled: true, ...overrides },
+    ...overrides,
   });
 }
 
 function shellTask(command: string | readonly string[], overrides: Record<string, unknown> = {}): string {
   const run = Array.isArray(command) ? command.map((value) => shellWord(value)).join(" ") : command;
-  return stringifyYaml({ version: 3, run, akm: { schedule: "@daily", enabled: true, ...overrides } });
+  return stringifyYaml({ version: 4, run, ...overrides });
 }
 
 function promptTask(content: string, overrides: Record<string, unknown> = {}): string {
   return stringifyYaml({
-    version: 3,
+    version: 4,
     uses: "akm/command",
     with: { content },
-    akm: { schedule: "@daily", enabled: true, ...overrides },
+    ...overrides,
   });
 }
 
@@ -527,7 +527,22 @@ describe("runTask — workflow target", () => {
   });
 
   test("threads declared maxSteps / maxRetries into the orchestrator", async () => {
-    writeTask("wf-bounds", workflowTask({ maxSteps: 4, maxRetries: 2 }, { region: "us-east-1" }));
+    // A v4 document may carry `with:` only on `uses: akm/command` (P2a
+    // D2-N1) — a `uses: workflows/<ref>` task has typed `inputs:` and no
+    // `with:`, so the `with:` -> child-run-params path this assertion
+    // exercises is reachable only from a v3 fixture (spec
+    // docs/plans/specs/p2b-input-bindings.md §4.3, mirroring P-03's own
+    // characterization). Kept v3 rather than routed through `workflowTask()`
+    // (Lane D sweep escape valve, spec §6.3).
+    writeTask(
+      "wf-bounds",
+      stringifyYaml({
+        version: 3,
+        uses: "workflows/noop",
+        with: { region: "us-east-1" },
+        akm: { schedule: "@daily", enabled: true, maxSteps: 4, maxRetries: 2 },
+      }),
+    );
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-bounds", {
@@ -588,10 +603,7 @@ describe("runTask — command target", () => {
   test.skipIf(process.platform === "win32")(
     "executes a bare akm run task when the scheduler PATH omits the installation",
     async () => {
-      writeTask(
-        "bare-current-install",
-        ["version: 3", "run: akm --version", "akm:", '  schedule: "@daily"', ""].join("\n"),
-      );
+      writeTask("bare-current-install", ["version: 4", "run: akm --version", ""].join("\n"));
 
       const result = await withEnv({ PATH: "/usr/bin:/bin" }, () =>
         runTask("bare-current-install", { bundleDir, logDir, scheduled: true }),
@@ -830,16 +842,14 @@ describe("runTask — prompt target", () => {
     writeTask(
       "scheduled-agent-context",
       [
-        "version: 3",
+        "version: 4",
         "uses: akm/command",
         "with:",
         "  content: keep nested akm calls in this scheduled installation",
         "env:",
         "  AKM_BUNDLE_DIR: /authored-override",
         "  TASK_FLAG: retained",
-        "akm:",
-        '  schedule: "@daily"',
-        "  engine: opencode",
+        "engine: opencode",
         "",
       ].join("\n"),
     );
@@ -1101,9 +1111,23 @@ describe("runTask — prompt target", () => {
   });
 });
 
+// task source v4's per-schedule-binding `enabled` is deliberately NOT
+// projected into `PreparableTaskDocument.enabled` (src/tasks/source/project-v4.ts's
+// own header: "carried separately to the scheduler seam, not this
+// function"; src/tasks/prepare/prepare-support.ts:120 derives
+// `enabled: document.akm?.enabled !== false`, which is always `true` for a
+// v4-projected document since `projectAkm` never sets `akm.enabled`). A v4
+// fixture therefore cannot exercise runTask's own disabled-task skip path —
+// this describe block's SUBJECT is that runtime check, so its two fixtures
+// stay task source v3 (Lane D sweep, docs/plans/specs/p2b-input-bindings.md
+// §6.3's "would change what the test asserts" escape valve).
+function disabledWorkflowTaskV3(): string {
+  return 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n  enabled: false\n';
+}
+
 describe("runTask — disabled tasks", () => {
   test("manual invocation dispatches an intentionally disabled task", async () => {
-    writeTask("off", workflowTask({ enabled: false }));
+    writeTask("off", disabledWorkflowTaskV3());
     let called = false;
     const fakeWf: FakeWorkflowRunner = async ({ target, params = {} }) => {
       called = true;
@@ -1136,7 +1160,7 @@ describe("runTask — disabled tasks", () => {
   });
 
   test("scheduler-generated invocation is recorded but not dispatched", async () => {
-    writeTask("off", workflowTask({ enabled: false }));
+    writeTask("off", disabledWorkflowTaskV3());
     let called = false;
     const fakeWf = async () => {
       called = true;

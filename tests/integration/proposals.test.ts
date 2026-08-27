@@ -445,7 +445,7 @@ describe("validation failure", () => {
     const taskDir = path.join(stash, "tasks");
     fs.mkdirSync(taskDir, { recursive: true });
     const taskPath = path.join(taskDir, "nightly.yml");
-    const original = 'version: 3\nrun: akm index\nakm:\n  schedule: "0 1 * * *"\n  enabled: true\n';
+    const original = "version: 4\nrun: akm index\n";
     fs.writeFileSync(taskPath, original, "utf8");
     await akmIndex({ stashDir: stash });
     expect(indexedEntry(taskPath)).toBeDefined();
@@ -461,10 +461,7 @@ describe("validation failure", () => {
     try {
       state
         .prepare("UPDATE proposals SET content = ? WHERE id = ?")
-        .run(
-          'version: 3\nrun: akm health\nuses: akm/command\nakm:\n  schedule: "0 1 * * *"\n  enabled: true\n',
-          created.id,
-        );
+        .run("version: 4\nrun: akm health\nuses: akm/command\n", created.id);
     } finally {
       state.close();
     }
@@ -1675,7 +1672,7 @@ describe("D2 (#730): promoteProposal stamps OKF v0.2 provenance onto AKM-native 
   test("a non-markdown promotion target (task YAML) is never stamped with frontmatter", async () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
-    const taskContent = 'version: 3\nrun: akm index\nakm:\n  schedule: "0 2 * * *"\n  enabled: true\n';
+    const taskContent = "version: 4\nrun: akm index\n";
     const created = createProposal(stash, {
       ref: "tasks/provenance-not-applicable",
       source: "distill",

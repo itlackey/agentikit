@@ -206,7 +206,7 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
   });
 
   test("final whole-set CAS covers cross-bundle task/script reads before the first backend operation", async () => {
-    write(assetsRoot, "tasks/child.yml", "version: 3\nuses: assets//scripts/release.sh\nakm:\n  schedule: '@daily'\n");
+    write(assetsRoot, "tasks/child.yml", "version: 4\nuses: assets//scripts/release.sh\n");
     const script = write(assetsRoot, "scripts/release.sh", "#!/bin/sh\nprintf frozen\n");
     write(
       storage.stashDir,

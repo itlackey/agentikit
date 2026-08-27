@@ -205,7 +205,7 @@ describe("CLI envelope coverage for P1a's diagnostic codes (COMPOSITION_INVALID,
     );
     fs.writeFileSync(
       path.join(stash.dir, "tasks", "nightly.yml"),
-      ["version: 3", "uses: commands/review", "akm:", '  schedule: "@daily"', ""].join("\n"),
+      ["version: 4", "uses: commands/review", ""].join("\n"),
     );
     // Lane A's with-rejection (P1a, taskDispatch's head guard): a workflow
     // step composing a task target with a with: block.
@@ -237,7 +237,7 @@ describe("CLI envelope coverage for P1a's diagnostic codes (COMPOSITION_INVALID,
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe("COMPOSITION_INVALID");
     expect(parsed.error).toBe(
-      "Workflow step dispatch cannot pass with: to task target tasks/nightly; task-call inputs are not supported yet.",
+      "Workflow step dispatch cannot pass with: to task target tasks/nightly; tasks/nightly declares no inputs.",
     );
     expect(parsed.hint).toBe(new UsageError("x", "COMPOSITION_INVALID").hint());
   });

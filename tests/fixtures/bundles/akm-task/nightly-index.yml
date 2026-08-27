@@ -1,7 +1,4 @@
-version: 3
+version: 4
 uses: akm/command
 with:
   content: "Re-index the knowledge base and report new or changed items."
-akm:
-  schedule: "@daily"
-  enabled: false

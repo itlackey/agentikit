@@ -159,9 +159,9 @@ describe("akm-task adapter — strict task-v3 validation", () => {
 
   test("delegates hostile and unsupported forms to the canonical production parser", async () => {
     const cases = [
-      ["unknown.yml", "version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\nsurprise: true\n", "surprise"],
+      ["unknown.yml", "version: 4\nuses: commands/review\nsurprise: true\n", "surprise"],
       ["event.yml", "version: 3\nrun: echo okay\non:\n  push: {}\n", "unsupported local service event"],
-      ["alias.yml", "version: 3\nrun: &shared echo okay\nakm:\n  schedule: *shared\n", "anchors"],
+      ["alias.yml", "version: 4\nrun: &shared echo okay\nname: *shared\n", "anchors"],
     ] as const;
     for (const [file, raw, detail] of cases) {
       const diagnostics = await akmTaskAdapter.validate(component(), [{ path: file, op: "update", after: raw }], ctx);
@@ -172,7 +172,7 @@ describe("akm-task adapter — strict task-v3 validation", () => {
   });
 
   test("keeps `.yaml` as a reported near miss and never validates it as a task", async () => {
-    const raw = "version: 3\nrun: echo okay\nakm:\n  schedule: '@daily'\n";
+    const raw = "version: 4\nrun: echo okay\n";
     const diagnostics = await akmTaskAdapter.validate(
       component(),
       [{ path: "misnamed.yaml", op: "update", after: raw }],

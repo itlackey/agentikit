@@ -1433,3 +1433,114 @@ that the flip touches.
 ## Review log
 
 <!-- Reviewers append dated entries below. -->
+
+### 2026-08-27 — Lane D (fixture sweep) close-out
+
+Re-derived the candidate set per D-N1's exact command at implementation time:
+72 files matched `version: 3` + `schedule:` (comm -12 over `rg -l`), minus
+`tests/architecture/task-fixture-vocabulary.test.ts` itself (D-N1's own
+inventory ratchet, which reimplements the same intersection in `node:fs` and
+excludes itself by construction) = 71 tracked matches. After applying §6.2's
+named exclusions plus the four files already carrying the flip/identity
+comments that self-declare their own exclusion (`tests/tasks/prepare-split.test.ts`,
+`tests/tasks/source-v4.test.ts`, `tests/tasks/source-v4-adapter.test.ts`,
+`tests/workflows/task-binding-identity.test.ts`), 31 files remained as the
+sweep's candidate set. All 31 were converted or, where conversion was
+genuinely load-bearing, excluded with a comment at the fixture site — the six
+files below are recorded here as spec §6.3 requires ("Any file where the
+conversion would change what the test asserts is moved into the exclusion
+list and the reason is recorded in the Review log") and are also added to
+`tests/architecture/task-fixture-vocabulary.test.ts`'s `ALLOWED_EXACT_FILES`
+with matching per-file comments, since that ratchet is this lane's own
+inventory contract and its own header text anticipates exactly this update
+("A file discovered mid-sweep whose v3-ness turns out to be genuinely
+load-bearing … is added to ALLOWED_EXACT_FILES below").
+
+**New exclusions found during the sweep (not previously named by §6.2):**
+
+1. `tests/integration/commands/tasks-cli-envelope.test.ts` and
+   `tests/integration/tasks-runner.test.ts` — task source v4's
+   per-schedule-binding `enabled` is deliberately NOT projected into the
+   document-level flag `runTask`'s own disabled-dispatch skip reads
+   (`src/tasks/source/project-v4.ts`'s header; `src/tasks/prepare/prepare-support.ts:120`
+   derives `enabled: document.akm?.enabled !== false`, always `true` for a
+   v4-projected document). Both files have one fixture each (a shared
+   `describe("runTask — disabled tasks", …)` case, and a "scheduler-generated
+   invocation … skips the disabled task" case) whose assertion depends on
+   that runtime skip actually firing — unreachable for a v4 source under the
+   current runtime. `tests/integration/tasks-runner.test.ts` additionally
+   keeps ONE more test (`"threads declared maxSteps / maxRetries into the
+   orchestrator"`) on v3: it asserts `with:` params flow to a
+   `uses: workflows/<ref>` task's child run, and P2a D2-N1 restricts v4's
+   `with:` to `uses: akm/command` only, so no v4 fixture can express the same
+   claim (spec §4.3 already calls out the sibling P-03 characterization for
+   the identical reason). Every OTHER fixture in both files converted
+   cleanly to schedule-free v4.
+2. `tests/integration/commands/tasks-lifecycle.test.ts` — one test
+   ("setup-style enable edits stay inside the v3 akm mapping") exercises
+   `setEnabledInYaml` (`src/commands/tasks/tasks.ts`) byte-for-byte; that
+   function is a v3-YAML-text splice used only by `akm task add`'s
+   `--disabled` path, which this spec's §0 says keeps writing v3 sources
+   throughout P2b. Every other fixture in the file converted cleanly.
+3. `tests/integration/tasks-scheduler-sync-v4.test.ts` — already named by
+   §7 F-B2's own disposition table ("tests/integration/tasks-scheduler-sync-v4.test.ts:60,80,105,131,158,242
+   — UNCHANGED, must stay green"); line 105's test is a v3/v4 coexistence
+   proof by construction ("a manual-only version: 4 task alongside a
+   normally-scheduled version: 3 task"). Recorded here only because D-N1's
+   inventory ratchet needed the file added to its allowlist to go green — no
+   new fact beyond what F-B2 already states.
+4. `tests/core/adapter/akm-validate.test.ts` — every occurrence sits in a
+   test whose own name says its subject is v3 parsing ("task missing the v3
+   version", "a valid v3 task omitting optional akm.enabled", "a task with a
+   non-boolean akm.enabled", "a task omitting version"), asserting v3-only
+   field paths or v3's own preserved error wording — squarely §6.2(b)'s
+   catch-all, just not enumerated by name there.
+5. `tests/setup-scheduled-tasks.test.ts` — `akm setup`'s scheduled-task
+   review step (`src/setup/steps/tasks.ts`'s `listSetupTaskDefinitions` /
+   `prepareSetupTaskDefinitions`) calls `parseTaskV3Yaml` and
+   `setTaskV3EnabledInYaml` directly; there is no `parseTaskSource` version
+   routing on this path at all. A v4 fixture would not silently change
+   behavior here, it would throw "version … must be exactly 3" — this
+   subsystem is unrouted, not merely v3-preferring, and is out of P2b's
+   scope entirely (not touched by any of the four P2b lanes).
+
+**Pre-existing failures on HEAD, unrelated to Lane D (verified by `git
+stash`-ing this lane's entire diff and re-running the named files in
+isolation — identical failures with or without the sweep):**
+
+- `tests/workflows/characterization-with-drop.test.ts` — `R-01(b)` and
+  `R-01(c)` fail; these are §7 F-A2 and F-A3's own named flips
+  ("characterization-with-drop.test.ts:98" re-scope, ":169" message-byte
+  flip) not yet applied to this file.
+- `tests/workflows/task-source-v4-deferral.test.ts` — the `LC-N1` test fails
+  (`TASK_SOURCE_INVALID` expected, `INVALID_FLAG_VALUE` received); this is
+  §7 F-A4's own named flip ("rewritten in place … to assert a version: 4
+  target composes"), not yet applied.
+- `tests/workflows/direct-script-typed.test.ts` — `taskDispatch (the same
+  file, unrelated to R-02) still legitimately calls parseTaskV3Yaml(...)`
+  fails (`parseTaskV3Yaml` expected in `taskDispatch`'s call set, not
+  found) — a consequence of A-N6 already routing `taskDispatch` through
+  `parseTaskSource` instead, uncaptured by this test.
+- `tests/workflows/task-binding-identity.test.ts` — `B-43` fails with
+  `RESOURCE_ALREADY_EXISTS` ("already has an active run in this scope") from
+  `publishWorkflowRunV4`, a workflow-run concurrency guard unrelated to task
+  source schema version.
+
+All four are Lane A's own follow-up (§7's F-A2/F-A3/F-A4 flips, and the
+freeze-split's own test surface), not task-fixture content, and are outside
+this lane's ownership (`tests/architecture/task-fixture-vocabulary.md`'s
+`ALLOWED_EXACT_FILES` already carries these files for reasons unrelated to
+the failures above). Left unfixed per this document's own rule of engagement
+("A defect discovered that is not in §7 is recorded in the Review log and
+left unfixed").
+
+**Verification:** `bun run test:integration` — 5733 pass / 57 skip / 0 fail
+across 428/428 files (floor 5000, exit 0). `bun run test:unit` — 4241 pass /
+0 skip / 5 fail across 308/308 files (floor 3500); the 5 failures are the
+four pre-existing cases above (`characterization-with-drop.test.ts` reports
+two of them). `bunx tsc --noEmit` clean. `bun run lint` exit 0 (1364
+pre-existing `noNonNullAssertion` advisories repo-wide, none introduced by
+this lane). Pre-sweep vs. post-sweep test counts are unchanged by
+construction — `git diff -- tests/` shows exactly one `test(...)` line
+touched across the whole sweep (a title rename, 1:1, not an add/remove);
+every other change is inside fixture strings or comments.

@@ -214,8 +214,7 @@ describe("createProposal validation", () => {
         source: "reflect",
         force: true,
         payload: {
-          content:
-            'version: 3\nuses: akm/command\nrun: akm index\nwith:\n  content: one\nakm:\n  schedule: "0 1 * * *"\n  enabled: true\n',
+          content: "version: 4\nuses: akm/command\nrun: akm index\nwith:\n  content: one\n",
         },
       }),
     ).toThrow(/invalid task structure.*exactly one.*uses or run/is);

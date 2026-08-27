@@ -129,12 +129,12 @@ function writeTask(id: string, yaml: string): string {
 
 function taskYaml(run: string, schedule: string, enabled = true, name?: string): string {
   return [
-    "version: 3",
+    "version: 4",
     `run: ${run}`,
     ...(name ? [`name: ${name}`] : []),
-    "akm:",
-    `  schedule: "${schedule}"`,
-    `  enabled: ${enabled}`,
+    "schedule:",
+    `  - cron: "${schedule}"`,
+    `    enabled: ${enabled}`,
   ].join("\n");
 }
 
@@ -278,12 +278,12 @@ describe("task lifecycle failure handling", () => {
 
   test("add --force quiesces prior scheduler state and restores its exact snapshot after install rejection", async () => {
     const priorYaml = [
-      "version: 3",
+      "version: 4",
       "run: echo prior",
       "name: Prior task",
-      "akm:",
-      '  schedule: "0 2 * * *"',
-      "  enabled: false",
+      "schedule:",
+      '  - cron: "0 2 * * *"',
+      "    enabled: false",
     ].join("\n");
     const taskPath = writeTask("nightly", priorYaml);
     const priorTask = nativeBinding("nightly", "0 2 * * *", false);
@@ -397,13 +397,12 @@ describe("task lifecycle failure handling", () => {
 
   test("add --force removes every stale higher-ordinal binding from the prior source", async () => {
     const priorYaml = [
-      "version: 3",
+      "version: 4",
       "run: echo prior",
-      "on:",
-      "  schedule:",
-      "    - cron: '0 1 * * *'",
-      "    - cron: '0 2 * * *'",
-      "    - cron: '0 3 * * *'",
+      "schedule:",
+      "  - cron: '0 1 * * *'",
+      "  - cron: '0 2 * * *'",
+      "  - cron: '0 3 * * *'",
       "",
     ].join("\n");
     writeTask("multi", priorYaml);
@@ -429,13 +428,12 @@ describe("task lifecycle failure handling", () => {
 
   test("add --force restores the exact full prior binding set when stale removal fails partway", async () => {
     const priorYaml = [
-      "version: 3",
+      "version: 4",
       "run: echo prior",
-      "on:",
-      "  schedule:",
-      "    - cron: '0 1 * * *'",
-      "    - cron: '0 2 * * *'",
-      "    - cron: '0 3 * * *'",
+      "schedule:",
+      "  - cron: '0 1 * * *'",
+      "  - cron: '0 2 * * *'",
+      "  - cron: '0 3 * * *'",
       "",
     ].join("\n");
     const taskPath = writeTask("multi-rollback", priorYaml);
@@ -467,11 +465,11 @@ describe("task lifecycle failure handling", () => {
 
   test("add --force preserves an unreceipted partial source instead of overwriting a possible racer", async () => {
     const priorYaml = [
-      "version: 3",
+      "version: 4",
       "run: echo prior",
-      "akm:",
-      '  schedule: "0 2 * * *"',
-      "  enabled: true # exact prior bytes",
+      "schedule:",
+      '  - cron: "0 2 * * *"',
+      "    enabled: true # exact prior bytes",
     ].join("\n");
     const taskPath = writeTask("nightly", priorYaml);
     let writeCalls = 0;
@@ -489,7 +487,7 @@ describe("task lifecycle failure handling", () => {
           async writeAsset(_source, _config, ref, content) {
             writeCalls += 1;
             if (writeCalls === 1) {
-              fs.writeFileSync(taskPath, "version: 3\nrun:", "utf8");
+              fs.writeFileSync(taskPath, "version: 4\nrun:", "utf8");
               throw new Error("partial source write failed");
             }
             fs.writeFileSync(taskPath, content, "utf8");
@@ -500,7 +498,7 @@ describe("task lifecycle failure handling", () => {
     ).rejects.toThrow("partial source write failed");
 
     expect(writeCalls).toBe(1);
-    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 3\nrun:");
+    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 4\nrun:");
     expect(installCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
   });
@@ -519,7 +517,7 @@ describe("task lifecycle failure handling", () => {
         {
           backend,
           async writeAsset() {
-            fs.writeFileSync(taskPath, "version: 3\nrun:", "utf8");
+            fs.writeFileSync(taskPath, "version: 4\nrun:", "utf8");
             throw new Error("partial source write failed");
           },
           async deleteAsset(_source, _config, ref) {
@@ -532,7 +530,7 @@ describe("task lifecycle failure handling", () => {
     ).rejects.toThrow("partial source write failed");
 
     expect(deleteCalls).toBe(0);
-    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 3\nrun:");
+    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 4\nrun:");
     expect(installCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
   });
@@ -725,9 +723,7 @@ describe("task lifecycle failure handling", () => {
   });
 
   test("sync installs command arguments without obsolete-command handling", async () => {
-    const yaml = ["version: 3", "run: akm db backups", "akm:", '  schedule: "0 3 * * 0"', "  enabled: true", ""].join(
-      "\n",
-    );
+    const yaml = ["version: 4", "run: akm db backups", 'schedule: "0 3 * * 0"', ""].join("\n");
     writeTask("backup", yaml);
 
     const result = await akmTasksSync({ backend });

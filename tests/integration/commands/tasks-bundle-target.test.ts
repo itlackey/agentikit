@@ -78,7 +78,7 @@ function writeTaskFile(dir: string, id: string, yaml: string): void {
 }
 
 function taskYaml(enabled = true): string {
-  return ["version: 3", 'run: "true"', "akm:", '  schedule: "@daily"', `  enabled: ${enabled}`, ""].join("\n");
+  return ["version: 4", 'run: "true"', "schedule:", '  - cron: "@daily"', `    enabled: ${enabled}`, ""].join("\n");
 }
 
 /** Extract the crontab body line (between BEGIN/END markers) for a task id. */

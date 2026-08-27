@@ -334,7 +334,7 @@ describe("Phase 4 parity: indexer.lookupBundleRef ↔ akmShowUnified", () => {
       name: "nightly-index",
       ref: "task-fixture//nightly-index",
     });
-    expect(shown.content).toContain('schedule: "@daily"');
+    expect(shown.content).toContain("Re-index the knowledge base and report new or changed items.");
   });
 
   test("OpenCode command and instruction paths keep their indexed native types", async () => {

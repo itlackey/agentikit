@@ -45,10 +45,7 @@ function completeSchedulerBackend(options: {
 
 function writeTask(stashDir: string): void {
   fs.mkdirSync(path.join(stashDir, "tasks"), { recursive: true });
-  fs.writeFileSync(
-    path.join(stashDir, "tasks", "ping.yml"),
-    'version: 3\nrun: echo ping\nakm:\n  schedule: "@daily"\n',
-  );
+  fs.writeFileSync(path.join(stashDir, "tasks", "ping.yml"), 'version: 4\nrun: echo ping\nschedule: "@daily"\n');
 }
 
 function configureStash(stashDir: string): void {
@@ -243,7 +240,7 @@ describe("scheduler runtime binding", () => {
       // task's `enabled:` field is now a plain file edit, reconciled by sync.
       fs.writeFileSync(
         path.join(storage.stashDir, "tasks", "ping.yml"),
-        'version: 3\nrun: echo ping\nakm:\n  schedule: "@daily"\n  enabled: false\n',
+        'version: 4\nrun: echo ping\nschedule:\n  - cron: "@daily"\n    enabled: false\n',
       );
       const installs: Array<SchedulerInstallOptions | undefined> = [];
       const backend = completeSchedulerBackend({

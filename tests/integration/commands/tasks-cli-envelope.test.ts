@@ -42,6 +42,14 @@ function makeStashDir(): string {
 }
 
 function writeDisabledCommandTask(stashDir: string): void {
+  // task source v4's per-schedule-binding `enabled` is not projected into the
+  // document-level flag runTask's own disabled-dispatch skip reads
+  // (src/tasks/source/project-v4.ts's header; src/tasks/prepare/prepare-support.ts:120
+  // derives `enabled: document.akm?.enabled !== false`, always `true` for a
+  // v4-projected document) — a v4 fixture cannot exercise the
+  // "scheduler-generated invocation ... skips the disabled task" case below,
+  // so this fixture stays task source v3 (Lane D sweep escape valve, spec
+  // docs/plans/specs/p2b-input-bindings.md §6.3).
   fs.writeFileSync(
     path.join(stashDir, "tasks", "disabled-command.yml"),
     ["version: 3", "run: exit 0", "akm:", '  schedule: "@daily"', "  enabled: false", ""].join("\n"),
@@ -101,7 +109,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     const stash = makeStashDir();
     fs.writeFileSync(
       path.join(stash, "tasks", "nightly.yml"),
-      ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+      ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
     );
 
     const canonical = await runCli(["task", "run", "tasks/nightly"], stash);
@@ -169,7 +177,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
       fs.mkdirSync(taskRoot, { recursive: true });
       fs.writeFileSync(
         path.join(taskRoot, "standalone.yml"),
-        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+        ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
       );
       saveConfig({
         configVersion: "0.9.0",
@@ -211,7 +219,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
       fs.mkdirSync(path.join(taskRoot, "sub", "deep"), { recursive: true });
       fs.writeFileSync(
         path.join(taskRoot, `${taskId}.yml`),
-        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+        ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
       );
       saveConfig({
         configVersion: "0.9.0",
@@ -247,7 +255,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
       fs.mkdirSync(path.join(bundle.dir, "tasks"), { recursive: true });
       fs.writeFileSync(
         path.join(bundle.dir, `${taskId}.yml`),
-        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+        ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
       );
       saveConfig({
         configVersion: "0.9.0",
@@ -287,7 +295,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
       fs.mkdirSync(path.dirname(path.join(bundle.dir, `${taskId}.yml`)), { recursive: true });
       fs.writeFileSync(
         path.join(bundle.dir, `${taskId}.yml`),
-        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+        ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
       );
       saveConfig({
         configVersion: "0.9.0",

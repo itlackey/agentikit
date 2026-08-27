@@ -100,7 +100,7 @@ function shellTask(command: readonly string[]): string {
   // while this file was red for unrelated (missing-API) reasons. Serialize
   // through `yaml`'s own stringifier instead, exactly as the sibling
   // characterization file's `shellTask` already does.
-  return stringifyYaml({ version: 3, run, akm: { schedule: "@daily" } });
+  return stringifyYaml({ version: 4, run });
 }
 
 describe("native (shell/script) arm reads provenance.eventSource, not a hardcoded literal", () => {
@@ -148,7 +148,7 @@ describe("native (shell/script) arm reads provenance.eventSource, not a hardcode
 
 describe("workflow arm threads an explicit provenance.eventSource to the eventSource option", () => {
   test("an explicit provenance.eventSource reaches runWorkflowSteps's eventSource option, and process.env is never mutated", async () => {
-    writeTask("wf-explicit-source", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
+    writeTask("wf-explicit-source", "version: 4\nuses: workflows/noop\n");
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
     let observedDuring: string | undefined;
     let observedEventSourceOption: string | undefined;
@@ -191,10 +191,7 @@ describe("workflow arm threads an explicit provenance.eventSource to the eventSo
 describe("command/prompt arm threads an explicit provenance.eventSource end to end", () => {
   function writeStoredCommandTask(id: string): void {
     fs.writeFileSync(path.join(storage.stashDir, "commands", `${id}.md`), "Notify the team.\n", "utf8");
-    writeTask(
-      id,
-      ["version: 3", `uses: commands/${id}`, "akm:", '  schedule: "@daily"', "  engine: opencode", ""].join("\n"),
-    );
+    writeTask(id, ["version: 4", `uses: commands/${id}`, "engine: opencode", ""].join("\n"));
   }
 
   test('an explicit provenance.eventSource=user overrides the "task" default in the dispatched engine env and the recorded usage-event row', async () => {
@@ -278,10 +275,7 @@ describe('CLI boundary (D5 "Construction", spec §5.2): `akm task run` builds { 
   ])('akm task run %s stamps a stored command dispatch\'s usage as "task"', async (...extraArgs) => {
     const id = `cli-prompt-${extraArgs.length > 0 ? "scheduled" : "unscheduled"}`;
     fs.writeFileSync(path.join(storage.stashDir, "commands", `${id}.md`), "Notify the team.\n", "utf8");
-    writeTask(
-      id,
-      ["version: 3", `uses: commands/${id}`, "akm:", '  schedule: "@daily"', "  engine: cli-audit", ""].join("\n"),
-    );
+    writeTask(id, ["version: 4", `uses: commands/${id}`, "engine: cli-audit", ""].join("\n"));
     writeSandboxConfig({
       bundles: { fixture: { path: storage.stashDir, writable: true } },
       defaultBundle: "fixture",
@@ -313,7 +307,7 @@ describe("F-3 (type-level only) — RunTaskOptions.bundleDir replaces stashDir",
   // authorized flips. This test only pins the TYPE-LEVEL shape: a bare
   // `bundleDir` (no `stashDir` anywhere) is a complete, valid RunTaskOptions.
   test("runTask accepts bundleDir (no stashDir) and resolves the task normally", async () => {
-    writeTask("bundledir-type-level", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
+    writeTask("bundledir-type-level", "version: 4\nuses: workflows/noop\n");
 
     const result = await runTask("bundledir-type-level", {
       bundleDir: storage.stashDir,
