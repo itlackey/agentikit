@@ -18,7 +18,7 @@ import {
   type IrExecNodeV4,
   type IrStepPlanV4,
   type IrUnitNodeV4,
-  WORKFLOW_IR_V4_VERSION,
+  WORKFLOW_IR_V5_VERSION,
   type WorkflowPlanGraphV4,
 } from "./schema-v4";
 import { resolveWorkflowSourceV4 } from "./source-freeze-v4";
@@ -81,7 +81,7 @@ export async function compileResolveFreezeWorkflowV4(
     )
     .map((source) => sourceSnapshot(source));
   const plan = decodeWorkflowPlanV4({
-    irVersion: WORKFLOW_IR_V4_VERSION,
+    irVersion: WORKFLOW_IR_V5_VERSION,
     title: compiled.plan.title,
     ...(compiled.plan.params ? { params: compiled.plan.params } : {}),
     ...(compiled.plan.paramSchemas ? { paramSchemas: compiled.plan.paramSchemas } : {}),

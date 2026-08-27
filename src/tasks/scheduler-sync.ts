@@ -116,7 +116,7 @@ export interface PreparedSchedulerSourceSet {
 
 export interface SchedulerExecutableWorkflowEvidence {
   readonly ref: string;
-  readonly irVersion: 4;
+  readonly irVersion: 5;
   readonly planHash: string;
   readonly sourceReadSet: import("../workflows/ir/schema-v4").WorkflowPlanGraphV4["sourceReadSet"];
   readonly executionEvidenceDigest: string;
@@ -634,7 +634,7 @@ async function compileWorkflowSources(
       evidence.push(
         Object.freeze({
           ref: qualifiedRef,
-          irVersion: 4 as const,
+          irVersion: 5 as const,
           planHash,
           sourceReadSet: frozen.plan.sourceReadSet,
           executionEvidenceDigest,

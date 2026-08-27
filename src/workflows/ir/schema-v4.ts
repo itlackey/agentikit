@@ -33,7 +33,7 @@ import {
   type WorkflowPlanValidationHooks,
 } from "./schema";
 
-export const WORKFLOW_IR_V4_VERSION = 4 as const;
+export const WORKFLOW_IR_V5_VERSION = 5 as const;
 
 export interface DurableWorkflowSourceSnapshot {
   readonly identity: Readonly<ExecutionSourceIdentity>;
@@ -119,7 +119,36 @@ export interface FrozenWorkflowScriptTarget {
   readonly inputBindings?: readonly TaskInputBinding[];
 }
 
-export type FrozenWorkflowTarget = FrozenWorkflowCommandTarget | FrozenWorkflowShellTarget | FrozenWorkflowScriptTarget;
+/**
+ * A `uses: workflows/<ref>` step (direct) or a `tasks/<ref>`-whose-task-
+ * targets-a-workflow step (task-wrapped), frozen with the COMPLETE child
+ * plan embedded (spec docs/plans/specs/p3a-plan-v5-child-freeze.md §3.5).
+ * The ONE producer is `src/workflows/freeze/targets/child-workflow.ts`
+ * (Lane B); this module owns the type and its decode/integrity chain only.
+ */
+export interface FrozenChildWorkflowTarget {
+  readonly kind: "child-workflow";
+  /** The child workflow's fully-qualified ref, as resolved at parent freeze. */
+  readonly ref: string;
+  /** sha256 (hex) of canonicalPlanJson(frozenPlan). Re-verified on every parent decode. */
+  readonly planHash: string;
+  /** The COMPLETE frozen child plan, embedded. irVersion 5, recursively. */
+  readonly frozenPlan: WorkflowPlanGraphV4;
+  /** This target's own content identity — see decodeChildWorkflowTarget's childWorkflowContentHash. */
+  readonly contentHash: string;
+  /** How the child was reached. */
+  readonly via: "direct" | "task";
+  /** Present only when via === "task": the composing task's qualified ref. */
+  readonly taskRef?: string;
+  /** A composing step's frozen with: bindings against the child's declared params: (A-N8). Absent, never [], when empty. */
+  readonly inputBindings?: readonly TaskInputBinding[];
+}
+
+export type FrozenWorkflowTarget =
+  | FrozenWorkflowCommandTarget
+  | FrozenWorkflowShellTarget
+  | FrozenWorkflowScriptTarget
+  | FrozenChildWorkflowTarget;
 
 export interface IrUnitNodeV4 extends IrUnitNodeCore {
   readonly frozenTarget: FrozenWorkflowTarget;
@@ -152,7 +181,7 @@ export interface IrStepPlanV4 {
 }
 
 export interface WorkflowPlanGraphV4 {
-  readonly irVersion: typeof WORKFLOW_IR_V4_VERSION;
+  readonly irVersion: typeof WORKFLOW_IR_V5_VERSION;
   readonly title: string;
   readonly params?: string[];
   readonly paramSchemas?: Record<string, Record<string, unknown>>;
@@ -162,10 +191,26 @@ export interface WorkflowPlanGraphV4 {
   readonly steps: IrStepPlanV4[];
 }
 
-/** Strict v4 corruption gate. No authored source or config is consulted here. */
-export function decodeWorkflowPlanV4(input: unknown, hooks: WorkflowPlanValidationHooks = {}): WorkflowPlanGraphV4 {
+/**
+ * Strict v4 corruption gate. No authored source or config is consulted here.
+ *
+ * `depth` is the composition-depth recursion counter (0 at the root
+ * workflow plan; +1 for every embedded child-workflow plan). It is internal
+ * to the recursive child-workflow decode path below
+ * (`decodeChildWorkflowTarget` calls this function again on an embedded
+ * `frozenPlan`) — every external caller decodes a plan at the top level and
+ * relies on the default. Re-enforces the composition depth bound at decode
+ * as a corruption gate (spec docs/plans/specs/p3a-plan-v5-child-freeze.md
+ * §3.6 step 6, row A-23); the actionable freeze-time `COMPOSITION_INVALID`
+ * gate lives in `src/workflows/freeze/targets/child-workflow.ts` (Lane B).
+ */
+export function decodeWorkflowPlanV4(
+  input: unknown,
+  hooks: WorkflowPlanValidationHooks = {},
+  depth = 0,
+): WorkflowPlanGraphV4 {
   const raw = record(input, "plan");
-  if (raw.irVersion !== WORKFLOW_IR_V4_VERSION) fail("irVersion must be 4");
+  if (raw.irVersion !== WORKFLOW_IR_V5_VERSION) fail("irVersion must be 5");
   assertKeys(
     raw,
     ["irVersion", "title", "params", "paramSchemas", "budget", "execution", "steps", "sourceReadSet"],
@@ -176,7 +221,7 @@ export function decodeWorkflowPlanV4(input: unknown, hooks: WorkflowPlanValidati
   validateWorkflowPlanStructure(
     raw,
     {
-      expectedVersion: WORKFLOW_IR_V4_VERSION,
+      expectedVersion: WORKFLOW_IR_V5_VERSION,
       planExtraKeys: ["sourceReadSet"],
       unitExtraKeys: ["frozenTarget", "environment"],
       gateExtraKeys: ["frozenJudge"],
@@ -197,22 +242,30 @@ export function decodeWorkflowPlanV4(input: unknown, hooks: WorkflowPlanValidati
             const { template: _template, ...map } = rawRoot;
             return {
               ...(map as unknown as Omit<IrMapNodeV4, "template">),
-              template: decodeUnitV4(record(rawRoot.template, `map ${String(rawRoot.id)} template`), requiredSources),
+              template: decodeUnitV4(
+                record(rawRoot.template, `map ${String(rawRoot.id)} template`),
+                requiredSources,
+                depth,
+              ),
             } satisfies IrMapNodeV4;
           })()
-        : decodeUnitV4(rawRoot, requiredSources);
+        : decodeUnitV4(rawRoot, requiredSources, depth);
     return Object.freeze({ ...step, root, gate }) satisfies IrStepPlanV4;
   });
   assertRequiredSources(sourceReadSet, requiredSources);
   return Object.freeze({
     ...(raw as unknown as Omit<WorkflowPlanGraphV4, "steps" | "sourceReadSet">),
-    irVersion: WORKFLOW_IR_V4_VERSION,
+    irVersion: WORKFLOW_IR_V5_VERSION,
     sourceReadSet,
     steps,
   });
 }
 
-function decodeUnitV4(raw: Record<string, unknown>, requiredSources: ExecutionSourceIdentity[]): IrUnitNodeV4 {
+function decodeUnitV4(
+  raw: Record<string, unknown>,
+  requiredSources: ExecutionSourceIdentity[],
+  depth: number,
+): IrUnitNodeV4 {
   const id = raw.id as string;
   if (!Object.hasOwn(raw, "frozenTarget")) fail(`unit ${id} frozenTarget is required`);
   if (!Object.hasOwn(raw, "environment")) fail(`unit ${id} environment is required`);
@@ -222,6 +275,7 @@ function decodeUnitV4(raw: Record<string, unknown>, requiredSources: ExecutionSo
     raw as unknown as IrUnitNodeCore,
     environment,
     requiredSources,
+    depth,
   );
   const { frozenTarget: _target, environment: _environment, ...core } = raw;
   return Object.freeze({
@@ -270,12 +324,111 @@ function decodeFrozenTarget(
   unit: IrUnitNodeCore,
   environment: readonly FrozenWorkflowEnvironmentBinding[],
   requiredSources: ExecutionSourceIdentity[],
+  depth: number,
 ): FrozenWorkflowTarget {
   const target = record(value, `unit ${unit.id} frozenTarget`);
   if (target.kind === "command") return decodeCommandTarget(target, unit, requiredSources);
   if (target.kind === "shell") return decodeShellTarget(target, unit, environment);
   if (target.kind === "script") return decodeScriptTarget(target, unit, requiredSources);
+  if (target.kind === "child-workflow") return decodeChildWorkflowTarget(target, unit, depth);
   fail(`unit ${unit.id} frozenTarget has unsupported kind ${String(target.kind)}`);
+}
+
+/**
+ * Composition-depth corruption bound (spec §3.6 step 6, §4.5, row A-23).
+ * Mirrors `WORKFLOW_MAX_COMPOSITION_DEPTH` (= 8), which Lane B adds to
+ * `src/workflows/resource-limits.ts` in a later commit as the freeze-time
+ * `COMPOSITION_INVALID` gate. Reproduced here — the decode-time corruption
+ * gate — rather than imported across the lane boundary, matching
+ * `tests/workflows/plan-v5-schema.test.ts`'s own header comment.
+ */
+const CHILD_WORKFLOW_DECODE_MAX_DEPTH = 8;
+
+/**
+ * Decode a `kind: "child-workflow"` frozen target (§3.5): the embedded
+ * COMPLETE child plan, re-verified against its own `planHash` and this
+ * target's own `contentHash` on every decode (rows A-20, A-21), recursively
+ * enforcing `irVersion` 5 (row A-22, via the recursive
+ * {@link decodeWorkflowPlanV4} call) and the composition depth bound (row
+ * A-23) as the decoder recurses. `frozenPlan` is covered wholesale through
+ * `planHash`, so it is deliberately NOT re-serialized into `contentHash`
+ * (§3.5). No `requiredSources` contribution: unlike a command/script
+ * target's own referenced source, the child's transitive sources live in
+ * the child's OWN `sourceReadSet`, verified by the recursive decode call
+ * itself; the PARENT's `sourceReadSet` absorbing the child's files (row
+ * B-05) is a freeze-time concern (Lane B), not a decode-time structural one.
+ */
+function decodeChildWorkflowTarget(
+  target: Record<string, unknown>,
+  unit: IrUnitNodeCore,
+  depth: number,
+): FrozenChildWorkflowTarget {
+  assertKeys(
+    target,
+    ["kind", "ref", "planHash", "frozenPlan", "contentHash", "via", "taskRef", "inputBindings"],
+    `unit ${unit.id} child workflow target`,
+  );
+  if (typeof target.ref !== "string" || !target.ref) fail(`unit ${unit.id} child workflow ref is invalid`);
+  const planHash = digest(target.planHash, `unit ${unit.id} child workflow planHash`);
+  if (target.via !== "direct" && target.via !== "task") fail(`unit ${unit.id} child workflow via is invalid`);
+  const via = target.via;
+  if (via === "task") {
+    if (typeof target.taskRef !== "string" || !target.taskRef) {
+      fail(`unit ${unit.id} child workflow via "task" requires a taskRef`);
+    }
+  } else if (target.taskRef !== undefined) {
+    fail(`unit ${unit.id} child workflow via "direct" cannot carry a taskRef`);
+  }
+  const taskRef = target.taskRef as string | undefined;
+  const inputBindings = decodeInputBindings(target.inputBindings, `unit ${unit.id} child workflow target`);
+  const contentHash = digest(target.contentHash, `unit ${unit.id} child workflow contentHash`);
+  const expectedContentHash = childWorkflowContentHash({ ref: target.ref, planHash, via, taskRef, inputBindings });
+  if (contentHash !== expectedContentHash) {
+    fail(`unit ${unit.id} child workflow contentHash does not match its frozen dispatch`);
+  }
+  const childDepth = depth + 1;
+  if (childDepth > CHILD_WORKFLOW_DECODE_MAX_DEPTH) {
+    fail(
+      `unit ${unit.id} child workflow ${target.ref} exceeds the max composition depth of ${CHILD_WORKFLOW_DECODE_MAX_DEPTH}`,
+    );
+  }
+  const frozenPlan = decodeWorkflowPlanV4(target.frozenPlan, {}, childDepth);
+  const actualPlanHash = sha256(canonicalJsonLocal(frozenPlan));
+  if (actualPlanHash !== planHash) {
+    fail(`unit ${unit.id} child workflow embedded plan does not match its frozen planHash`);
+  }
+  return Object.freeze({
+    kind: "child-workflow",
+    ref: target.ref,
+    planHash,
+    frozenPlan,
+    contentHash,
+    via,
+    ...(taskRef !== undefined ? { taskRef } : {}),
+    ...(inputBindings ? { inputBindings } : {}),
+  });
+}
+
+/** §3.5's exact `contentHash` formula. */
+function childWorkflowContentHash(fields: {
+  ref: string;
+  planHash: string;
+  via: "direct" | "task";
+  taskRef?: string;
+  inputBindings?: readonly TaskInputBinding[];
+}): string {
+  return createHash("sha256")
+    .update("akm.workflow.child-workflow\0v1\0")
+    .update(
+      canonicalJsonLocal({
+        ref: fields.ref,
+        planHash: fields.planHash,
+        via: fields.via,
+        taskRef: fields.taskRef ?? null,
+        inputBindings: fields.inputBindings ?? null,
+      }),
+    )
+    .digest("hex");
 }
 
 function decodeCommandTarget(

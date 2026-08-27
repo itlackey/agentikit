@@ -20,7 +20,7 @@ import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } f
 
 interface WorkflowEvidenceV4 {
   ref: string;
-  irVersion: 4;
+  irVersion: 5;
   planHash: string;
   sourceReadSet: readonly unknown[];
   executionEvidenceDigest: string;

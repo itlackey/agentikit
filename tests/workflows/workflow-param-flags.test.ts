@@ -20,7 +20,6 @@ import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../src/workflo
 // edit for the Implement lane to make.
 function parameterPlan(): WorkflowPlanGraph {
   return {
-    // @ts-expect-error P3a red-phase: WORKFLOW_IR_V5_VERSION lands in Implement (the implementation removes this directive)
     irVersion: 5,
     title: "parameters",
     params: ["include_processes", "count", "name", "tags", "metadata", "mode"],

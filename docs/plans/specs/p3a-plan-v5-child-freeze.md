@@ -1217,6 +1217,49 @@ file — all four tests pass unchanged both before and after this flip; it is
 purely a forward-compatibility fix for Implement's type narrowing, not a
 behavior pin.
 
+### F-A12 — `ir-compile.test.ts` version-value assertion (discovered by Implement; see Review log R3)
+
+`tests/workflows/ir-compile.test.ts:133` — `expect(WORKFLOW_IR_VERSION).toBe(4);` →
+`.toBe(5);`. **Mechanical value change only.** F-A8 authorized the import
+alias rename (`WORKFLOW_IR_V4_VERSION as WORKFLOW_IR_VERSION` →
+`WORKFLOW_IR_V5_VERSION as WORKFLOW_IR_VERSION`) and stated "every assertion
+in the file... are unchanged", citing `:136`'s
+`not.toHaveProperty("irVersion")` as its example — but did not separately
+account for `:133`'s own direct value comparison against the aliased
+constant, in the `"keeps executable versioning out of the unresolved draft"`
+test. Once `WORKFLOW_IR_VERSION` narrows to literal `5` (A-N1), `.toBe(4)`
+is both a `bunx tsc --noEmit` type error (`Argument of type '4' is not
+assignable to parameter of type '5'`) and, if merely type-suppressed, a
+false runtime assertion (`WORKFLOW_IR_VERSION` really is `5` at runtime).
+See Review log R3.
+
+### F-A13 — current-version pins in three unrelated-subject integration suites (discovered by Implement; see Review log R4)
+
+Three sites across three files, all the identical mechanical pattern — a
+fresh `startWorkflowRun` followed immediately by
+`expect(started.run.planIrVersion).toBe(4);` as a sanity pin before the
+file's real (version-unrelated) subject matter proceeds. Each becomes
+`.toBe(5);`. **Mechanical value change only; no other edit to any of the
+three files.**
+
+- `tests/integration/workflow-crash-windows.test.ts:108,152` (both sites,
+  identical text).
+- `tests/integration/workflow-db-contention.test.ts:76,141` (both sites,
+  identical text).
+- `tests/integration/workflow-lease-crossproc.test.ts:87`.
+
+§7 lists all three files as preservation gates ("byte-unchanged" for the
+first; the other two are not separately named in §7 but carry no `§6` flip
+either — same gap). That instruction and A-01 ("a fresh run persists
+`plan_ir_version = 5`") are jointly unsatisfiable once `WORKFLOW_IR_V5_VERSION`
+is current: every one of these call sites asserts the fresh run's OWN
+just-started `planIrVersion` against the hardcoded literal `4`, so leaving
+any of them untouched fails outright (a direct assertion mismatch, not a
+decode/policy failure), and none of the three files' actual subject matter
+(SIGKILL crash-window recovery, cross-process DB contention, cross-process
+lease arbitration) has anything to do with plan versioning — there is no
+reading under which `4` remains correct. See Review log R4.
+
 ### F-B1 — `characterization-classification.test.ts` R-03, both sites
 
 `tests/workflows/characterization-classification.test.ts`:
@@ -1592,3 +1635,88 @@ unaffected); `workflow-param-flags.test.ts` stays 4/4 passing throughout,
 because `materializeWorkflowParameterFlags`/`contractFromPlan`
 (`src/workflows/ir/params.ts:50-57`) never read `irVersion` at runtime — its
 flip is purely forward-compatible with Implement's type narrowing.
+
+### R3 — `ir-compile.test.ts:133`'s version-value assertion was outside F-A8's authorization (RESOLVED — F-A12)
+
+**Status: RESOLVED**, this round. §6 amended with F-A12 (above); the one-line
+fixture flip lands in the same Lane A implement commit as the rest of this
+phase's schema change, per the same rationale R2 already established for
+`immutable-execution-v4-red.test.ts`, `environment-v4-red.test.ts`, and
+`workflow-param-flags.test.ts`.
+
+Discovered by Implement while landing `WORKFLOW_IR_V5_VERSION`: F-A8 (§6)
+authorizes exactly one mechanical edit to
+`tests/workflows/ir-compile.test.ts` — the import alias at `:11`
+(`WORKFLOW_IR_V4_VERSION as WORKFLOW_IR_VERSION` →
+`WORKFLOW_IR_V5_VERSION as WORKFLOW_IR_VERSION`) — and states "every
+assertion in the file... are unchanged", citing `:136`'s
+`expect(result.plan).not.toHaveProperty("irVersion")` as the representative
+unchanged assertion. It does not separately name `:133`'s
+`expect(WORKFLOW_IR_VERSION).toBe(4);` (in the `"keeps executable versioning
+out of the unresolved draft"` test), which directly compares the aliased
+constant's VALUE, not merely its presence. Once `WORKFLOW_IR_VERSION` narrows
+from `typeof WORKFLOW_IR_V4_VERSION` (literal `4`) to
+`typeof WORKFLOW_IR_V5_VERSION` (literal `5`), `.toBe(4)` fails
+`bunx tsc --noEmit` ("Argument of type '4' is not assignable to parameter of
+type '5'") — the same class of gap R2 already found and fixed three times
+over (F-A9/F-A10/F-A11), here on the one call site F-A8's own rationale did
+not enumerate. Left unfixed, this single line would have blocked Implement's
+commit from being `tsc`-green with no `§6`-authorized path forward, for
+exactly the reason R2's entry already documents in general.
+
+Resolution: §6 gained F-A12 (above), a single mechanical `.toBe(4)` →
+`.toBe(5)` value change with no other edit to the file — `:11`'s alias and
+`:136`'s structural assertion (and every other assertion) are untouched.
+Verified: with the flip landed, `bunx tsc --noEmit` is clean for this file,
+and the fixed assertion is a genuine (not merely type-suppressed) runtime
+check — `WORKFLOW_IR_VERSION` really does equal `5` once Implement lands, so
+`.toBe(5)` is the correct value, not a suppression.
+
+### R4 — current-version pins in `workflow-crash-windows.test.ts`, `workflow-db-contention.test.ts`, `workflow-lease-crossproc.test.ts` were unnamed AND `§7` implies byte-unchanged (RESOLVED — F-A13)
+
+**Status: RESOLVED**, this round. §6 amended with F-A13 (above); §7's
+"byte-unchanged" instruction for `workflow-crash-windows.test.ts` is
+superseded for exactly its two mechanical sites (recorded here so a
+reviewer does not have to re-derive why the file is no longer byte-identical
+to head).
+
+Discovered by Implement while landing `WORKFLOW_IR_V5_VERSION`, first via a
+full `bun run test:unit` / `bun run test:integration` sweep run specifically
+to catch this class of gap after `v4-atomic-publication-red.test.ts` (F-A3)
+and the two scheduler suites (F-A4) turned out to need the identical
+mechanical fix beyond what §6 enumerated at the time: three files —
+`tests/integration/workflow-crash-windows.test.ts:108,152`,
+`tests/integration/workflow-db-contention.test.ts:76,141`, and
+`tests/integration/workflow-lease-crossproc.test.ts:87` — each assert
+`expect(started.run.planIrVersion).toBe(4);` immediately after a fresh
+`startWorkflowRun`, a direct pin on "the CURRENT executable version" that no
+other flip already covers. Only the first is separately named in §7 (under
+"green and **byte-unchanged**"); the other two carry no `§7` mention and no
+`§6` flip either — the identical gap, just less visible because §7 never
+claimed byte-unchanged for them in the first place. This is the same family
+R2 and R3 already found (a hardcoded current-version literal in a
+pre-existing suite the flip-authorization pass did not enumerate): §0.2's
+commit ladder states A-01 ("a fresh run persists `plan_ir_version = 5`") as
+the FIRST authorized behavior of Lane A's implement commit, and each of
+these three files' own fresh `startWorkflowRun` call is a direct instance of
+that behavior — leaving any literal at `4` fails its test outright (an
+assertion mismatch on the run's own just-frozen version, not a domain
+regression), for a reason wholly unrelated to any of the three files' actual
+subject matter (SIGKILL crash-window recovery, cross-process DB contention,
+cross-process lease arbitration), so there is no reading under which
+preserving the literal is the intended behavior.
+
+Resolution: §6 gained F-A13 (above), three identical mechanical `.toBe(4)`
+→ `.toBe(5)` value changes across the three files, no other edit to any of
+them. Verified: with the flips landed, all affected tests pass end-to-end
+with their real mechanics still exercised (real SIGKILL + resume + re-dispatch
+for crash-windows; real concurrent readers/writers for db-contention; real
+cross-process lease arbitration + reclaim for lease-crossproc) — the fix is
+on the version pin only in every case. A full `bun run test:unit` / `bun run
+test:integration` pass after this round shows every remaining failure
+belongs to Lane B (the `nested-workflow-unsupported` throw's callers, still
+present pending `src/workflows/freeze/targets/child-workflow.ts`, plus its
+own `tests/architecture/task-fixture-vocabulary.test.ts` fixture-allowlist
+gap) or Lane C (migration `023-child-workflow-runs` and
+`publishChildWorkflowRun`, not yet implemented) — none in Lane A's own
+files or the files this phase's `§6` table names.

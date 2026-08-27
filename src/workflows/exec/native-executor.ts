@@ -996,7 +996,12 @@ async function prepareAttemptWorktree(input: JournaledAttemptInput): Promise<Pre
     input.worktreeBase,
     input.ctx.runId,
     input.attemptId,
-    input.workUnit.frozenTarget.gitCommitOid,
+    // A child-workflow target (P3a, schema-v4.ts) carries no gitCommitOid of
+    // its own — it is a composition target, never a worktree-isolated exec
+    // one — and P3a dispatches no child-workflow unit at all, so this arm is
+    // unreached in practice; it exists only to keep the field access total
+    // over the frozen-target union.
+    input.workUnit.frozenTarget.kind === "child-workflow" ? undefined : input.workUnit.frozenTarget.gitCommitOid,
   );
   if (created.preservedLeftover !== undefined) {
     warn(

@@ -194,6 +194,10 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INPUT_BINDING_INVALID: "Check the step's with: keys against the target's declared inputs.",
   TASK_TARGET_UNSUPPORTED:
     "Task definitions support command, script, workflow, and shell (run:) targets in this version; akm/command and GitHub-action targets are not yet representable here.",
+  // P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md §3.2, A-N2): the
+  // complete-or-abandon policy for a stored pre-irVersion-5 run.
+  WORKFLOW_IR_VERSION_UNSUPPORTED:
+    "Abandon the run with `akm workflow abandon <id>`, then start it again from the workflow source — pre-0.9.2 frozen plans are not re-executable.",
 };
 
 /** Default hint for each NotFoundError code. */

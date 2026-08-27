@@ -85,9 +85,7 @@ describe("plan freezing at workflow start (migration 006)", () => {
 
     const plan = JSON.parse(row?.plan_json ?? "") as WorkflowPlanGraphV4;
     expect(plan.steps.map((s) => s.stepId)).toEqual(["only-step"]);
-    // @ts-expect-error P3a red-phase: WORKFLOW_IR_V5_VERSION lands in Implement (the implementation removes this directive)
     expect(plan.irVersion).toBe(5);
-    // @ts-expect-error P3a red-phase: WORKFLOW_IR_V5_VERSION lands in Implement (the implementation removes this directive)
     if (plan.irVersion !== 5) throw new Error("fresh starts must persist plan irVersion 5");
     expect(plan.steps[0]!.root?.kind).toBe("unit");
     expect(Object.hasOwn(plan.execution, "engines")).toBe(false);

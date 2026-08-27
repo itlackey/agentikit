@@ -447,7 +447,12 @@ export function computeStepWorkList(plan: IrStepPlanV4, input: WorkListInput): C
   // An exec unit's budget is frozen on its exec spec (there is no engine to
   // inherit one from); `ir/freeze.ts` resolved it once from unit `timeout:` →
   // `defaults.timeout` → DEFAULT_EXEC_TIMEOUT_MS.
-  const timeoutMs = target.kind === "command" ? (target.runner.timeoutMs ?? null) : target.exec.timeoutMs;
+  const timeoutMs =
+    target.kind === "command"
+      ? (target.runner.timeoutMs ?? null)
+      : target.kind === "child-workflow"
+        ? null // a child-workflow target carries no exec spec of its own (§3.5); P3a never dispatches it.
+        : target.exec.timeoutMs;
 
   // Step-constant exec context: `AKM_PARAMS` / `AKM_INPUTS` depend only on
   // step-level values, so they are serialized ONCE here and shared by every
@@ -688,10 +693,10 @@ function buildExecContextEnv(args: {
  */
 function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
   return createHash("sha256")
-    .update("akm.workflow.unit\0v5\0")
+    .update("akm.workflow.unit\0v6\0")
     .update(
       canonicalJsonString({
-        hashVersion: 5,
+        hashVersion: 6,
         role: "unit",
         stepId: ctx.plan.stepId,
         nodeId: ctx.template.id,
@@ -1827,10 +1832,10 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
             model: gateTarget.request.model?.resolved ?? null,
             runner: gateTarget.runner.kind,
             inputHash: createHash("sha256")
-              .update("akm.workflow.gate\0v5\0")
+              .update("akm.workflow.gate\0v6\0")
               .update(
                 canonicalJsonString({
-                  hashVersion: 5,
+                  hashVersion: 6,
                   dispatch: gateTarget,
                   invocation: null,
                   prompt,

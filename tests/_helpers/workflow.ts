@@ -28,7 +28,7 @@ import {
   type FrozenWorkflowShellTarget,
   type IrStepPlanV4,
   type IrUnitNodeV4,
-  WORKFLOW_IR_V4_VERSION,
+  WORKFLOW_IR_V5_VERSION,
   type WorkflowPlanGraphV4,
 } from "../../src/workflows/ir/schema-v4";
 import { parseWorkflow } from "../../src/workflows/parser";
@@ -127,7 +127,7 @@ export function freezeWorkflow(
     };
   });
   return decodeWorkflowPlanV4({
-    irVersion: WORKFLOW_IR_V4_VERSION,
+    irVersion: WORKFLOW_IR_V5_VERSION,
     title,
     ...(compiled.plan.params ? { params: compiled.plan.params } : {}),
     ...(compiled.plan.paramSchemas ? { paramSchemas: compiled.plan.paramSchemas } : {}),
@@ -377,7 +377,7 @@ export function storeFrozenWorkflowPlan(
          WHERE run_id = ? AND step_id = ?`,
     ).run(step.stepTitle, step.instructions, step.completionJson, step.sequenceIndex, runId, step.stepId);
   }
-  db.prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = 4 WHERE id = ?").run(
+  db.prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = 5 WHERE id = ?").run(
     canonicalPlanJson(plan),
     computePlanHash(plan),
     runId,

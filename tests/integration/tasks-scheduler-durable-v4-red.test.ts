@@ -14,7 +14,7 @@ import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } f
 
 type ExecutableWorkflowEvidence = Readonly<{
   ref: string;
-  irVersion: 4;
+  irVersion: 5;
   planHash: string;
   sourceReadSet: readonly Readonly<{ identity: Readonly<{ ref: string; hash: string }> }>[];
 }>;
@@ -113,7 +113,7 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
 
     expect(evidence.map(({ ref }) => ref)).toEqual(["team//workflows/alpha", "team//workflows/zeta"]);
     for (const item of evidence) {
-      expect(item.irVersion).toBe(4);
+      expect(item.irVersion).toBe(5);
       expect(item.planHash).toMatch(/^[a-f0-9]{64}$/);
       expect(item.sourceReadSet.map(({ identity }) => identity.ref)).toContain(item.ref);
       expect(item).not.toHaveProperty("planJson");
@@ -200,7 +200,7 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
     const started = await startWorkflowRun("team//workflows/release", {}, { force: true });
     const row = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
 
-    expect(row?.plan_ir_version).toBe(4);
+    expect(row?.plan_ir_version).toBe(5);
     expect(row?.plan_json).toContain("echo after-sync");
     expect(row?.plan_json).not.toContain("echo before-sync");
   });

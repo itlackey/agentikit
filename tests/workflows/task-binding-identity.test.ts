@@ -17,9 +17,10 @@
  *     every existing frozen target's canonical JSON, and therefore every
  *     existing plan_hash / unit inputHash, is untouched by this phase.
  *   - B-44 (PRESERVE, A-N7): `computeUnitInputHash`'s own prefix
- *     (`akm.workflow.unit\0v5\0`) and `hashVersion` (5), plus
- *     `WORKFLOW_IR_V4_VERSION`, are byte-unchanged — P2b bumps NEITHER
- *     (§1.1(4): "P2b bumps nothing. P3a owns irVersion 5 + hashVersion 6").
+ *     (`akm.workflow.unit\0v6\0`) and `hashVersion` (6), plus
+ *     `WORKFLOW_IR_V5_VERSION`, are byte-unchanged since P2b — P2b bumped
+ *     NEITHER (§1.1(4): "P2b bumps nothing. P3a owns irVersion 5 +
+ *     hashVersion 6"); this file's own fixture now pins P3a's landed values.
  *   - B-43 (NEW): freezing the identical BOUND workflow twice — the same
  *     `with:` literal, the same declared task — produces byte-identical
  *     plan hashes and unit input hashes, proving that folding
@@ -55,7 +56,7 @@ import { akmIndex } from "../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
 import { computeStepWorkList } from "../../src/workflows/exec/step-work";
 import { canonicalJson } from "../../src/workflows/ir/plan-hash";
-import { decodeWorkflowPlanV4, WORKFLOW_IR_V4_VERSION } from "../../src/workflows/ir/schema-v4";
+import { decodeWorkflowPlanV4, WORKFLOW_IR_V5_VERSION } from "../../src/workflows/ir/schema-v4";
 import { abandonWorkflowRun, startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
 
@@ -151,8 +152,8 @@ describe("P2b freeze identity — B-01: absence-when-empty is the identity-prese
 });
 
 describe("P2b freeze identity — B-44: the frozen hash vocabulary is unchanged (A-N7, §1.1(4))", () => {
-  test('WORKFLOW_IR_V4_VERSION is 4, and computeUnitInputHash\'s prefix + hashVersion are exactly "akm.workflow.unit\\0v5\\0" / 5 — P2b bumps neither', async () => {
-    expect(WORKFLOW_IR_V4_VERSION).toBe(4);
+  test('WORKFLOW_IR_V5_VERSION is 5, and computeUnitInputHash\'s prefix + hashVersion are exactly "akm.workflow.unit\\0v6\\0" / 6 — P2b bumped neither (P3a landed both)', async () => {
+    expect(WORKFLOW_IR_V5_VERSION).toBe(5);
 
     writeWorkflow("plain-command", [
       `      - id: ${STEP_ID}`,
@@ -171,7 +172,7 @@ describe("P2b freeze identity — B-44: the frozen hash vocabulary is unchanged 
     // (no fan-out, no declared step `inputs:`, no gate feedback) needs no
     // unlanded API to rebuild.
     const expectedPreimage = {
-      hashVersion: 5,
+      hashVersion: 6,
       role: "unit",
       stepId: plan.steps[0]!.stepId,
       nodeId: root.id,
@@ -185,7 +186,7 @@ describe("P2b freeze identity — B-44: the frozen hash vocabulary is unchanged 
       isolation: root.isolation ?? "none",
     };
     const expectedHash = createHash("sha256")
-      .update("akm.workflow.unit\0v5\0")
+      .update("akm.workflow.unit\0v6\0")
       .update(canonicalJson(expectedPreimage))
       .digest("hex");
 

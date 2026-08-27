@@ -38,7 +38,6 @@
 
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-// @ts-expect-error P3a red-phase: computeChildInvocationKey lands in Implement (the implementation removes this directive)
 import * as ChildInvocationModule from "../../src/workflows/exec/child-invocation";
 import { canonicalJson } from "../../src/workflows/ir/plan-hash";
 

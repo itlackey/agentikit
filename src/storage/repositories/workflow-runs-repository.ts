@@ -522,7 +522,7 @@ export class WorkflowRunsRepository {
       }
       this.insertRun(input.run);
       this.insertSteps(input.steps);
-      db.prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = 4 WHERE id = ?").run(
+      db.prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = 5 WHERE id = ?").run(
         input.planJson,
         input.planHash,
         input.run.id,
