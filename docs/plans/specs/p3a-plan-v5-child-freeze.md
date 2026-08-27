@@ -1151,6 +1151,72 @@ A shared helper, not a test: its flip is mechanical and touches no assertion.
 assertion in the file (including `:136`'s
 `expect(result.plan).not.toHaveProperty("irVersion")`) are unchanged.
 
+### F-A9 — `immutable-execution-v4-red.test.ts` fixture version
+
+`tests/workflows/immutable-execution-v4-red.test.ts:102` — the `commandPlan()`
+fixture builder's `irVersion: 4` → `5`. **Mechanical value change only; no
+assertion in the file changes.** This suite pins the single common frozen
+target shape (`command`/`shell`/`script`, executable identity, cwd identity,
+worktree `gitCommitOid`) via hand-built plans fed straight to
+`decodeWorkflowPlanV4` at `:140, :154, :158, :162, :167, :171, :175, :199,
+:227, :262, :298` (several `.not.toThrow()`), and was never in §6 because it
+was written before plan `irVersion` 5 existed as a concept. Discovered by
+review (round 2): once `WORKFLOW_IR_V5_VERSION` lands, `decodeWorkflowPlanV4`
+rejects every one of this file's `irVersion: 4` fixtures with "irVersion must
+be 5" — before ever reaching the executable/cwd/git-OID checks these tests
+exist to pin — which would silently break this **entire** file with no
+`§6` authorization for Implement (or a subsequent lane) to fix it. Landed
+directly in the test range (this fix), so the file is red **today**, for
+exactly that on-topic reason (`decodeWorkflowPlanV4` throws "irVersion must
+be 4" against a fixture that now says 5), and returns to green — with zero
+further edits — the moment Implement's version bump lands. `commandPlan()`'s
+return value is untyped (inferred, fed to `decodeWorkflowPlanV4(input:
+unknown, …)`), so this flip carries no type-level consequence and needs no
+`@ts-expect-error` pin.
+
+### F-A10 — `environment-v4-red.test.ts` fixture version
+
+`tests/workflows/environment-v4-red.test.ts:134` — the `v4ShellPlan()`
+fixture builder's `irVersion: 4` → `5`. **Mechanical value change only; no
+assertion in the file changes.** Same shape as F-A9: three tests in the
+`"durable workflow v4 environment schema"` describe (`:181, :206, :214`) feed
+this fixture straight to `decodeWorkflowPlanV4`; the `"freezeWorkflowEnvironment"`
+and `"materializeFrozenWorkflowEnvironment"` describes never call
+`decodeWorkflowPlanV4` and are untouched by this flip. Discovered and landed
+alongside F-A9 for the identical reason: unauthorized before this round,
+silently green today on the stale literal, would have gone red with no `§6`
+cover the moment `WORKFLOW_IR_V5_VERSION` lands. No type-level consequence
+(same untyped-return-value shape as `commandPlan()`), no `@ts-expect-error`
+pin needed.
+
+### F-A11 — `workflow-param-flags.test.ts` fixture version (type-only)
+
+`tests/workflows/workflow-param-flags.test.ts:12` — the `parameterPlan()`
+fixture's `irVersion: 4` → `5`, behind a directly-preceding
+`// @ts-expect-error P3a red-phase: WORKFLOW_IR_V5_VERSION lands in Implement`
+pin. **Mechanical value change only; no assertion in the file changes; no
+runtime behavior changes.** Unlike F-A9/F-A10, `parameterPlan()` is explicitly
+typed `WorkflowPlanGraphV4` (aliased `WorkflowPlanGraph`), so the object
+literal is checked against `irVersion`'s field type under full contextual
+typing — no widening. Discovered by review (round 2): once Implement narrows
+`WorkflowPlanGraphV4["irVersion"]` from `typeof WORKFLOW_IR_V4_VERSION` (4) to
+`typeof WORKFLOW_IR_V5_VERSION` (5), `irVersion: 4` here becomes a plain
+`tsc` error ("Type '4' is not assignable to type '5'") with no `§6`
+authorization for Implement to fix it — a `bunx tsc --noEmit` failure Implement
+cannot resolve without an unauthorized pre-existing-test edit. Landed directly
+in the test range (this fix), pinned red-phase exactly like
+`frozen-plan.test.ts:88,90`'s `WORKFLOW_IR_V5_VERSION` pins (§0's convention):
+`irVersion: 5` does not type-check today (the field is still literal `4`), so
+the pin keeps `tsc` green now, and Implement's own type narrowing makes the
+pin's line valid — at which point the unused-`@ts-expect-error` check forces
+Implement to delete it, same as every other red-phase pin in this phase.
+`materializeWorkflowParameterFlags` / `contractFromPlan`
+(`src/workflows/ir/params.ts:50-57`) read only `params`/`paramSchemas` off the
+plan and never inspect `irVersion` at runtime, so — confirmed by running the
+file — all four tests pass unchanged both before and after this flip; it is
+purely a forward-compatibility fix for Implement's type narrowing, not a
+behavior pin.
+
 ### F-B1 — `characterization-classification.test.ts` R-03, both sites
 
 `tests/workflows/characterization-classification.test.ts`:
@@ -1400,3 +1466,118 @@ Every `akm` example must pass the doc-examples lint that `bun run lint` runs.
 ---
 
 ## Review log
+
+### R1 — `step-work.ts:450`'s timeoutMs ternary does not admit `kind: "child-workflow"` (OPEN — blocks A-15)
+
+**Status: OPEN, unresolved. Preserving §3.1's authorization scope wins until
+this entry is amended.**
+
+Discovered by test review (round 2), against
+`tests/workflows/hash-v6.test.ts`. `computeStepWorkList`'s per-unit
+resolution (`step-work.ts`, building `StepWorkUnitContext`) computes:
+
+```ts
+const timeoutMs = target.kind === "command" ? (target.runner.timeoutMs ?? null) : target.exec.timeoutMs;
+```
+
+This assumes every non-`"command"` frozen target carries an `.exec` spec —
+true for `kind: "shell"` and `kind: "script"` today, but
+`FrozenChildWorkflowTarget` (§3.5) has no `.exec` field. The moment a
+`child-workflow`-targeted unit reaches this line — which happens for EVERY
+unit whose step composes a child workflow, since `computeStepWorkList` runs
+unconditionally ahead of dispatch — it throws a bare `TypeError: undefined is
+not an object (evaluating 'target.exec.timeoutMs')`, before
+`computeUnitInputHash` is ever reached.
+
+§3.1's file table row for `step-work.ts` authorizes exactly two edits: the
+`hashVersion` 6 prefix bumps at `:691,:694` (unit hash) and `:1830,:1833`
+(gate hash). It does **not** authorize touching `:450`. Per §0's rule
+("Editing a pre-existing test that §6 does not name is a review-blocking
+violation") and the binding instruction "if preserving a behavior and
+implementing an authorized change appear to conflict, stop and record it —
+preserving wins until the Review log says otherwise", the `:450` edit is
+**not** made as part of this review-fix round, even though
+`tests/workflows/hash-v6.test.ts`'s own header comment (written by the
+original Lane A test-writing commit, `de45e7c3`) argues at length that it
+belongs in the same commit as the hash bump. That argument may well be right
+— P3b's `invocation_key` needs a computable unit input hash for a
+`child-workflow`-targeted unit, and row A-15 ("a changed embedded child
+planHash changes the parent unit's input hash") cannot go green without
+`computeStepWorkList` surviving contact with a `child-workflow` target at
+all — but "may well be right" is not the same as "spec-authorized", and this
+round's mandate is to fix tests, not to expand Lane A's src edit surface on
+its own authority.
+
+**Consequence, pinned now:** `tests/workflows/hash-v6.test.ts`'s A-15 test
+("a changed embedded child planHash changes the unit's input hash") remains
+red via this `TypeError` — not via a hash mismatch — even after Lane A's
+`hashVersion` 6 bump lands, and **cannot go green** until one of:
+
+1. This entry is amended to authorize extending the `:450` ternary to admit
+   `kind: "child-workflow"` (the natural value being `timeoutMs: null` — a
+   child-workflow-targeted unit has no single exec timeout of its own, so
+   `null` — "genuinely unbounded", the same fallback the surrounding comment
+   already documents for `timeout: none` — is the reading consistent with
+   existing precedent; P3a does not dispatch child units at all, so no
+   engine-side backstop needs this value for anything real yet); or
+2. §3.1's file table is amended in a later review round to add this edit
+   explicitly; or
+3. The fix rides in some other commit whose own authorization already covers
+   it (e.g. if P3b's executor work ends up touching this same line for its
+   own reasons).
+
+Until one of those happens, Lane A's implement commit (§0.2 commit ladder,
+#3) should expect `tests/workflows/hash-v6.test.ts`'s A-15 test to still be
+red after `hashVersion` 6 lands, and must not treat that as a signal to make
+the `:450` edit unilaterally. A-11 (the general preimage-shape/prefix claim)
+does **not** depend on this — see the test-review-fix round 2 rewrite of
+that file's fixtures, which moved the A-11 tests onto an ordinary,
+already-handled `shell` target for exactly this reason.
+
+### R2 — three pre-existing suites hard-coded `irVersion: 4` outside §6 (RESOLVED — F-A9/F-A10/F-A11)
+
+**Status: RESOLVED**, this review round. §6 amended with F-A9, F-A10, F-A11
+(above); the three files' fixtures are flipped in the same commit as this
+entry.
+
+Discovered by test review (round 2): three suites written before plan
+`irVersion` 5 existed as a concept hard-code `irVersion: 4` in hand-built
+plan fixtures, and none of them were named in §6 at the time:
+
+- `tests/workflows/immutable-execution-v4-red.test.ts:102` —
+  `commandPlan()`, fed to `decodeWorkflowPlanV4` at eleven call sites,
+  several under `.not.toThrow()`.
+- `tests/workflows/environment-v4-red.test.ts:134` — `v4ShellPlan()`, fed to
+  `decodeWorkflowPlanV4` at three call sites.
+- `tests/workflows/workflow-param-flags.test.ts:12` — `parameterPlan()`,
+  explicitly typed `WorkflowPlanGraphV4`, so this one is a **type-level**
+  problem rather than a runtime one.
+
+Left un-flipped, all three would have gone from silently green today (the
+stale `4` literal matches today's still-current version) to broken the
+moment Implement's Lane A commit lands — the two `-red.test.ts` files via a
+`decodeWorkflowPlanV4` "irVersion must be 5" throw pre-empting every
+assertion in each file, `workflow-param-flags.test.ts` via a plain `tsc`
+error once `WorkflowPlanGraphV4["irVersion"]` narrows to literal `5`. Per
+§0's rule, Implement is not permitted to fix a pre-existing test §6 does not
+name, so all three would have left Lane A's implement commit blocked with no
+review-authorized path forward.
+
+Resolution: §6 gained F-A9 (`immutable-execution-v4-red.test.ts`), F-A10
+(`environment-v4-red.test.ts`), and F-A11 (`workflow-param-flags.test.ts`),
+each a mechanical `irVersion: 4` → `5` value change with **no assertion
+change**. F-A9/F-A10 needed no `@ts-expect-error` pin (both fixture builders
+return an untyped/inferred value fed to `decodeWorkflowPlanV4(input:
+unknown, …)`, so the literal carries no type-level consequence); F-A11
+needed one, following the exact convention `tests/integration/workflows/frozen-plan.test.ts:88,90`
+already established for a `WORKFLOW_IR_V5_VERSION`-shaped red-phase pin.
+Verified (this round): with the flips landed, `bunx tsc --noEmit` is clean;
+`immutable-execution-v4-red.test.ts` goes from 6/6 passing to 0/6 passing,
+every failure reading `"irVersion must be 4"` (on-topic, resolves the moment
+Implement's version bump lands, no residual edit needed); the three
+version-gated tests in `environment-v4-red.test.ts` go the same way (the
+file's other seven tests, which never call `decodeWorkflowPlanV4`, are
+unaffected); `workflow-param-flags.test.ts` stays 4/4 passing throughout,
+because `materializeWorkflowParameterFlags`/`contractFromPlan`
+(`src/workflows/ir/params.ts:50-57`) never read `irVersion` at runtime — its
+flip is purely forward-compatible with Implement's type narrowing.

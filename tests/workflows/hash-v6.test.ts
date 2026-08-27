@@ -49,6 +49,28 @@
  * plan") only makes sense if a child-workflow-targeted unit's OWN input hash
  * is computable (P3b's `invocation_key` needs exactly that value), so this
  * is read as in-scope for the same commit, not a separate finding to defer.
+ *
+ * TEST-REVIEW FOLLOW-UP (round 2): the `TypeError` above is not
+ * hypothetical — it fires for every hand-built `child-workflow` fixture in
+ * this file, unconditionally, because a static top-level import block-fails
+ * the ENTIRE file today (see above) so the failure was never actually
+ * observed against a real `hashVersion` mismatch. The spec's §3.1 file table
+ * for `step-work.ts` authorizes only the two prefix bumps (`:691,:694` and
+ * `:1830,:1833`); it does NOT authorize touching the `:450` ternary, so that
+ * fix is NOT assumed here — it is recorded, unresolved, in the spec's
+ * "Review log" (docs/plans/specs/p3a-plan-v5-child-freeze.md). Consequently:
+ * the "unit input hash (A-11, A-15)" describe block below now splits its
+ * fixtures by what each row actually needs to prove. A-11 — the general
+ * "does the preimage match §3.3's field list under the new prefix" claim —
+ * needs no child-workflow support at all, so its tests now use an ordinary,
+ * already-handled `shell` target (`buildOrdinaryShellTarget`) and are
+ * independently red on the `hashVersion` 6 bump alone, today, with no
+ * dependency on the `:450` ternary. A-15 — "a changed embedded child
+ * planHash changes the unit's input hash" — is inherently a claim about
+ * `child-workflow` targets and keeps its child-workflow fixture; it stays
+ * blocked on the same `TypeError` until the `:450` fix is either authorized
+ * (spec amendment) or the ternary fix rides in some other explicitly
+ * authorized commit. That is a known, recorded gap, not a bug in this file.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -165,14 +187,49 @@ function stepPlanWithTarget(target: FrozenWorkflowTarget, stepId = "spawn"): IrS
   };
 }
 
+/**
+ * An ORDINARY, already-supported `shell` target (see file header,
+ * "TEST-REVIEW FOLLOW-UP (round 2)"). Unlike `buildChildTargetFixture`, this
+ * needs no `@ts-expect-error` cast — `FrozenWorkflowShellTarget` is real,
+ * landed schema — and `computeStepWorkList`'s `:450` timeoutMs ternary
+ * already handles `kind: "shell"` correctly today, so a fixture built from
+ * this function can never trip the `target.exec.timeoutMs`-on-`undefined`
+ * `TypeError` that every `child-workflow` fixture in this file hits. Used by
+ * the A-11 tests below, which are claims about the preimage SHAPE and prefix
+ * in general — not about child-workflow composition specifically — so they
+ * do not need a child-workflow fixture to be meaningful.
+ */
+function buildOrdinaryShellTarget(options: { inputBindings?: readonly TaskInputBinding[] } = {}): FrozenWorkflowTarget {
+  return {
+    kind: "shell",
+    contentHash: "s".repeat(64),
+    exec: { command: ["/bin/sh", "-c", "echo hi"], timeoutMs: 60_000 },
+    cwdIdentity: {
+      requestedRoot: "/stash",
+      realRoot: "/stash",
+      rootDevice: "1",
+      rootInode: "1",
+      requestedCwd: "/stash",
+      realCwd: "/stash",
+      cwdDevice: "1",
+      cwdInode: "1",
+    },
+    ...(options.inputBindings ? { inputBindings: options.inputBindings } : {}),
+  };
+}
+
 // ── A-11, A-15: computeUnitInputHash (via computeStepWorkList) ─────────────
+//
+// A-11 (the preimage shape/prefix in general) uses buildOrdinaryShellTarget
+// so it is independently red on the hashVersion 6 bump alone, today — see
+// the file header's "TEST-REVIEW FOLLOW-UP (round 2)" note. A-15 (a claim
+// specifically about embedded child planHash sensitivity) keeps its
+// child-workflow fixture, and stays blocked on the recorded, unresolved
+// step-work.ts:450 gap until that gets its own explicit authorization.
 
 describe("hashVersion 6 — unit input hash (A-11, A-14, A-15)", () => {
-  test("the preimage matches §3.3's field list exactly, under the akm.workflow.unit\\0v6\\0 prefix", () => {
-    const planHash = "a".repeat(64);
-    const target = asFrozenTarget(
-      buildChildTargetFixture({ ref: "workflows/child", planHash, frozenPlan: { title: "child", irVersion: 5 } }),
-    );
+  test("the preimage matches §3.3's field list exactly, under the akm.workflow.unit\\0v6\\0 prefix (an ordinary target — independent of child-workflow support)", () => {
+    const target = buildOrdinaryShellTarget();
     const stepPlan = stepPlanWithTarget(target);
     const input: WorkListInput = { runId: "run-1", params: { p: 1 }, stepOutputs: {} };
 
@@ -230,20 +287,11 @@ describe("hashVersion 6 — unit input hash (A-11, A-14, A-15)", () => {
     expect(hashA).not.toBe(hashB);
   });
 
-  test("a changed inputBindings entry changes the unit's input hash, holding the embedded plan constant (A-11's frozenTarget field)", () => {
-    const childPlan = { title: "child", irVersion: 5 };
-    const planHash = "c".repeat(64);
-    const withoutBindings = asFrozenTarget(
-      buildChildTargetFixture({ ref: "workflows/child", planHash, frozenPlan: childPlan }),
-    );
-    const withBindings = asFrozenTarget(
-      buildChildTargetFixture({
-        ref: "workflows/child",
-        planHash,
-        frozenPlan: childPlan,
-        inputBindings: [{ kind: "literal", name: "x", value: "a" }],
-      }),
-    );
+  test("a changed inputBindings entry changes the unit's input hash, target kind held constant (A-11's frozenTarget field)", () => {
+    const withoutBindings = buildOrdinaryShellTarget();
+    const withBindings = buildOrdinaryShellTarget({
+      inputBindings: [{ kind: "literal", name: "x", value: "a" }],
+    });
     const input: WorkListInput = { runId: "run-1", params: {}, stepOutputs: {} };
 
     const resultA = computeStepWorkList(stepPlanWithTarget(withoutBindings), input);

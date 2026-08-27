@@ -98,8 +98,15 @@ function cwdTarget(overrides: Record<string, unknown> = {}) {
 function commandPlan(options: { isolation?: "none" | "worktree"; target?: Record<string, unknown> } = {}) {
   const isolation = options.isolation ?? "none";
   const target = options.target ?? cwdTarget(isolation === "worktree" ? { gitCommitOid: "a".repeat(40) } : {});
+  // F-A9 (docs/plans/specs/p3a-plan-v5-child-freeze.md §6): mechanical value
+  // bump only, no assertion below this fixture builder changes. This plan is
+  // fed to decodeWorkflowPlanV4 as `unknown`, so the literal here carries no
+  // type-level consequence — it is red today only because the decoder still
+  // requires exactly irVersion 4 and goes green once WORKFLOW_IR_V5_VERSION
+  // lands; every executable/cwd/gitCommitOid assertion in this file is
+  // otherwise untouched.
   return {
-    irVersion: 4,
+    irVersion: 5,
     title: "immutable",
     sourceReadSet: [sourceSnapshot()],
     execution: {

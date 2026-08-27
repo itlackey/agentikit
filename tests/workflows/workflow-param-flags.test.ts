@@ -7,9 +7,21 @@ import { parseWorkflowParameterFlags } from "../../src/commands/workflow-cli";
 import { materializeWorkflowParameterFlags } from "../../src/workflows/ir/params";
 import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../src/workflows/ir/schema-v4";
 
+// F-A11 (docs/plans/specs/p3a-plan-v5-child-freeze.md §6): mechanical value
+// bump only, no assertion in this file changes. `parameterPlan()` is
+// explicitly typed as WorkflowPlanGraphV4, so — unlike the two `unknown`-fed
+// fixture builders F-A9/F-A10 flip — the literal itself is type-checked
+// against `irVersion`'s still-literal-4 field type today, hence the pin
+// below. materializeWorkflowParameterFlags/contractFromPlan
+// (src/workflows/ir/params.ts:50-57) read only `params`/`paramSchemas` and
+// never inspect `irVersion` at runtime, so this flip has zero behavioral
+// effect — it exists solely so Implement's type narrowing to literal 5 does
+// not turn this pre-existing, not-in-§6-at-the-time file into an unauthorized
+// edit for the Implement lane to make.
 function parameterPlan(): WorkflowPlanGraph {
   return {
-    irVersion: 4,
+    // @ts-expect-error P3a red-phase: WORKFLOW_IR_V5_VERSION lands in Implement (the implementation removes this directive)
+    irVersion: 5,
     title: "parameters",
     params: ["include_processes", "count", "name", "tags", "metadata", "mode"],
     paramSchemas: {
