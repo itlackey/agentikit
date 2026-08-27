@@ -33,7 +33,7 @@
  *     `buildScheduledBindingInvocation` rejects ANY tail carrying input
  *     flags, and the round-trip test's "no throw" expectation fails.
  *
- * No `// @ts-expect-error P2b red-phase` pins: sync-time coverage goes
+ * No `@ts-expect-error` type-suppression pins: sync-time coverage goes
  * through the REAL task source v4 YAML grammar (schedule[].inputs already
  * parses today — P2a landed it) via the SAME `prepareSchedulerSyncSourceSet`
  * / `finalizeSchedulerSyncPlan` seam

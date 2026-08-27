@@ -20,7 +20,7 @@
  * `explain` key, so every invocation below fails with citty's own
  * unknown-subcommand error instead of the behavior pinned here.
  *
- * No `// @ts-expect-error P2b red-phase` pins: every scenario is driven
+ * No `@ts-expect-error` type-suppression pins: every scenario is driven
  * through the REAL `akm` CLI (`runCliCapture`) with plain string argv — no
  * not-yet-existing TypeScript export is referenced directly. The one
  * existing, ALREADY-STABLE export this file touches (`isTaskRunWithId`,

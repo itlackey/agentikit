@@ -54,7 +54,7 @@
  * the child run's `params` come back `{}` instead of the expected effective
  * inputs — an assertion failure, not a thrown error.
  *
- * No `// @ts-expect-error P2b red-phase` pins are needed anywhere in this
+ * No `@ts-expect-error` type-suppression pins are needed anywhere in this
  * file: every scenario is driven through the REAL workflow-source YAML
  * grammar (`with:` is authored as plain YAML/JSON, decoded structurally,
  * never a TypeScript symbol) and observed through REAL subprocess execution
