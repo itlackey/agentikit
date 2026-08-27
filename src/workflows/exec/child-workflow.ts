@@ -164,23 +164,29 @@ function childWorkflowFailedMessage(input: {
 }
 
 /**
- * `driveChildWorkflowUnit` — the ONE child drive (spec §3.3). Every failure
- * before step 6 (publication) produces `child_workflow_publish_failed`.
+ * Steps 1-3 (spec §3.3): integrity re-check, param validation, and the
+ * deterministic invocation key. Returns either the key or an already-shaped
+ * `child_workflow_publish_failed` outcome.
  */
-export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Promise<UnitOutcome> {
+function precheckAndDeriveInvocationKey(
+  input: Pick<DriveChildWorkflowInput, "request" | "target" | "ctx" | "childParams" | "inputHash">,
+): { ok: true; invocationKey: string } | { ok: false; outcome: UnitOutcome } {
   const { request, target, ctx, childParams, inputHash } = input;
 
   // Step 1 — integrity re-check (row A-10).
   const recomputedPlanHash = computePlanHash(target.frozenPlan);
   if (recomputedPlanHash !== target.planHash) {
     return {
-      unitId: request.unitId,
       ok: false,
-      failureReason: "child_workflow_publish_failed",
-      error:
-        `Workflow step "${request.stepId}" composes child workflow ${target.ref}, but its embedded plan's ` +
-        `recomputed hash (${recomputedPlanHash}) does not match the frozen target's planHash (${target.planHash}). ` +
-        "The frozen plan has been corrupted or tampered with.",
+      outcome: {
+        unitId: request.unitId,
+        ok: false,
+        failureReason: "child_workflow_publish_failed",
+        error:
+          `Workflow step "${request.stepId}" composes child workflow ${target.ref}, but its embedded plan's ` +
+          `recomputed hash (${recomputedPlanHash}) does not match the frozen target's planHash (${target.planHash}). ` +
+          "The frozen plan has been corrupted or tampered with.",
+      },
     };
   }
 
@@ -188,26 +194,41 @@ export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Pr
   const paramErrors = validateWorkflowParams(target.frozenPlan, childParams);
   if (paramErrors.length > 0) {
     return {
-      unitId: request.unitId,
       ok: false,
-      failureReason: "child_workflow_publish_failed",
-      error:
-        `Workflow step "${request.stepId}" composes child workflow ${target.ref}, but the resolved params do not ` +
-        `satisfy its declared param schemas:\n${paramErrors.map((e) => `  - ${e}`).join("\n")}`,
+      outcome: {
+        unitId: request.unitId,
+        ok: false,
+        failureReason: "child_workflow_publish_failed",
+        error:
+          `Workflow step "${request.stepId}" composes child workflow ${target.ref}, but the resolved params do not ` +
+          `satisfy its declared param schemas:\n${paramErrors.map((e) => `  - ${e}`).join("\n")}`,
+      },
     };
   }
 
   // Step 3 — the deterministic invocation key (B-N8: parentUnitId is request.unitId, the parent unit's journalBaseId).
-  const invocationKey = computeChildInvocationKey({
-    parentRunId: ctx.runId,
-    parentUnitId: request.unitId,
-    unitInputHash: inputHash,
-  });
+  return {
+    ok: true,
+    invocationKey: computeChildInvocationKey({
+      parentRunId: ctx.runId,
+      parentUnitId: request.unitId,
+      unitInputHash: inputHash,
+    }),
+  };
+}
 
-  // Step 4 — publish idempotently (B-N16: no transaction open on this connection — this seam is reached
-  // from dispatchJournaledAttempt, outside resumeWorkflowRun's and completeWorkflowStep's own transactions).
-  // Step 5 — pre-drive status read (the returned row IS that read).
-  let childRow: WorkflowRunRow;
+/**
+ * Step 4/5 (spec §3.3): publish the child run idempotently and return the
+ * pre-drive status read (the returned row IS that read). B-N16: no
+ * transaction open on this connection — this seam is reached from
+ * dispatchJournaledAttempt, outside resumeWorkflowRun's and
+ * completeWorkflowStep's own transactions.
+ */
+async function publishChildRun(
+  input: Pick<DriveChildWorkflowInput, "request" | "target" | "ctx" | "childParams">,
+  invocationKey: string,
+): Promise<{ ok: true; childRow: WorkflowRunRow } | { ok: false; outcome: UnitOutcome }> {
+  const { request, target, ctx, childParams } = input;
   try {
     const parentRow = await withWorkflowRunsRepo((repo) => repo.getRunById(ctx.runId));
     if (!parentRow) {
@@ -215,7 +236,7 @@ export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Pr
     }
     const now = new Date().toISOString();
     const childRunId = randomUUID();
-    childRow = await withWorkflowRunsRepo((repo) =>
+    const childRow = await withWorkflowRunsRepo((repo) =>
       repo.publishChildWorkflowRun({
         parentRunId: ctx.runId,
         spawnedByUnitId: request.unitId,
@@ -239,53 +260,72 @@ export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Pr
         planHash: target.planHash,
       }),
     );
+    return { ok: true, childRow };
   } catch (err) {
     return {
-      unitId: request.unitId,
       ok: false,
-      failureReason: "child_workflow_publish_failed",
-      error: `Workflow step "${request.stepId}" could not publish child workflow run for ${target.ref}: ${errorMessage(err)}`,
+      outcome: {
+        unitId: request.unitId,
+        ok: false,
+        failureReason: "child_workflow_publish_failed",
+        error: `Workflow step "${request.stepId}" could not publish child workflow run for ${target.ref}: ${errorMessage(err)}`,
+      },
     };
   }
+}
 
-  // Step 6 — drive, or not (rows A-18, A-22, A-23). `blocked`/`failed` are
-  // terminal-for-this-invocation and are never re-driven — no lease is taken.
+/**
+ * Step 6 (spec §3.3): drive the published child run with the real engine,
+ * unless it is already terminal-for-this-invocation (`blocked`/`failed`,
+ * rows A-22/A-23 — never re-driven, no lease taken). Returns the FINAL row
+ * (re-read after the drive) or an already-shaped `child_workflow_busy` /
+ * `child_workflow_drive_failed` outcome.
+ */
+async function driveChildRun(
+  input: Pick<DriveChildWorkflowInput, "request" | "target" | "ctx">,
+  childRow: WorkflowRunRow,
+): Promise<{ ok: true; finalRow: WorkflowRunRow } | { ok: false; outcome: UnitOutcome }> {
+  const { request, target, ctx } = input;
   const shouldDrive = childRow.status !== "blocked" && childRow.status !== "failed";
-  // Step 7 — map the FINAL status through §3.4's table.
-  let finalRow: WorkflowRunRow;
-  if (shouldDrive) {
-    const driveOptions: ChildWorkflowDriveOptions = {
-      target: childRow.id,
-      ...(ctx.signal ? { signal: ctx.signal } : {}),
-      ...(ctx.dispatcher ? { dispatcher: ctx.dispatcher } : {}),
-      ...(ctx.maxConcurrency !== undefined ? { maxConcurrency: ctx.maxConcurrency } : {}),
-      ...(ctx.eventSource !== undefined ? { eventSource: ctx.eventSource } : {}),
-      // B-N6: a no-op, distinct from the real registry drain — the PARENT's
-      // own `finally` remains the single owner of the process-lifecycle
-      // drain for the whole process (row A-24).
-      disposeDispatchResources: () => {},
-      // B-N7: deliberately no maxSteps, no maxRetries (rows A-25, A-26).
-    };
-    try {
-      // The re-read is INSIDE the same try as the drive (code-review round 4,
-      // finding 1; Review log R1): every throw between here and a mapped
-      // UnitOutcome — the drive itself, OR this immediately-following
-      // getRunById — must be caught. Left to escape, it skips past
-      // dispatchJournaledAttempt's finishJournaledDispatch (no try/catch
-      // wraps this seam there by design), so the parent's reserved attempt
-      // row is never finished; the throw then propagates through runUnit
-      // into concurrentMap's worker (src/core/concurrent.ts), which SWALLOWS
-      // it and leaves the unit's outcome slot `undefined`, which
-      // executeStepPlanInConnection then maps to the false diagnostic
-      // "unit was not dispatched (aborted or scheduler failure)" — losing
-      // the real cause and leaving the composing attempt row stuck
-      // `running` forever (unrecoverable by inspection; a resume + re-drive
-      // reproduces the identical false diagnostic).
-      await driveWithRealEngine(driveOptions);
-      finalRow = (await withWorkflowRunsRepo((repo) => repo.getRunById(childRow.id))) ?? childRow;
-    } catch (err) {
-      if (isLeaseBusyError(err)) {
-        return {
+  if (!shouldDrive) {
+    return { ok: true, finalRow: childRow };
+  }
+
+  const driveOptions: ChildWorkflowDriveOptions = {
+    target: childRow.id,
+    ...(ctx.signal ? { signal: ctx.signal } : {}),
+    ...(ctx.dispatcher ? { dispatcher: ctx.dispatcher } : {}),
+    ...(ctx.maxConcurrency !== undefined ? { maxConcurrency: ctx.maxConcurrency } : {}),
+    ...(ctx.eventSource !== undefined ? { eventSource: ctx.eventSource } : {}),
+    // B-N6: a no-op, distinct from the real registry drain — the PARENT's
+    // own `finally` remains the single owner of the process-lifecycle
+    // drain for the whole process (row A-24).
+    disposeDispatchResources: () => {},
+    // B-N7: deliberately no maxSteps, no maxRetries (rows A-25, A-26).
+  };
+  try {
+    // The re-read is INSIDE the same try as the drive (code-review round 4,
+    // finding 1; Review log R1): every throw between here and a mapped
+    // UnitOutcome — the drive itself, OR this immediately-following
+    // getRunById — must be caught. Left to escape, it skips past
+    // dispatchJournaledAttempt's finishJournaledDispatch (no try/catch
+    // wraps this seam there by design), so the parent's reserved attempt
+    // row is never finished; the throw then propagates through runUnit
+    // into concurrentMap's worker (src/core/concurrent.ts), which SWALLOWS
+    // it and leaves the unit's outcome slot `undefined`, which
+    // executeStepPlanInConnection then maps to the false diagnostic
+    // "unit was not dispatched (aborted or scheduler failure)" — losing
+    // the real cause and leaving the composing attempt row stuck
+    // `running` forever (unrecoverable by inspection; a resume + re-drive
+    // reproduces the identical false diagnostic).
+    await driveWithRealEngine(driveOptions);
+    const finalRow = (await withWorkflowRunsRepo((repo) => repo.getRunById(childRow.id))) ?? childRow;
+    return { ok: true, finalRow };
+  } catch (err) {
+    if (isLeaseBusyError(err)) {
+      return {
+        ok: false,
+        outcome: {
           unitId: request.unitId,
           ok: false,
           failureReason: "child_workflow_busy",
@@ -296,26 +336,29 @@ export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Pr
             status: childRow.status,
             currentStepId: childRow.current_step_id,
           },
-        };
-      }
-      // EVERY other throw is mapped here too — never rethrown. §3.5's
-      // original premise ("classified by the existing dispatch_error
-      // handling") was false: no handling exists at this seam
-      // (dispatchJournaledAttempt awaits this call with no try of its own),
-      // so an uncaught throw here escaped all the way into the scheduler and
-      // was silently swallowed (R1, above). Reachable causes include the
-      // child's own LeaseHeartbeat.assertAlive() firing mid-drive, a Lane B
-      // UsageError out of the child's own completeWorkflowStep (e.g.
-      // WORKFLOW_OUTPUT_INVALID), requireExecutableWorkflowPlan rejecting a
-      // tampered child plan_json, and the child's status changing between
-      // this function's own step 5 read and the drive's internal
-      // getNextWorkflowStep re-read — none of which match
-      // isLeaseBusyError's text. child_workflow_drive_failed is a SIBLING of
-      // child_workflow_publish_failed (row A-10…A-12): same shape, same
-      // errorMessage(err) content, but naming the child run id and ref
-      // (already known at this point, unlike the publish arm above) since
-      // driving — not publishing — is what failed.
-      return {
+        },
+      };
+    }
+    // EVERY other throw is mapped here too — never rethrown. §3.5's
+    // original premise ("classified by the existing dispatch_error
+    // handling") was false: no handling exists at this seam
+    // (dispatchJournaledAttempt awaits this call with no try of its own),
+    // so an uncaught throw here escaped all the way into the scheduler and
+    // was silently swallowed (R1, above). Reachable causes include the
+    // child's own LeaseHeartbeat.assertAlive() firing mid-drive, a Lane B
+    // UsageError out of the child's own completeWorkflowStep (e.g.
+    // WORKFLOW_OUTPUT_INVALID), requireExecutableWorkflowPlan rejecting a
+    // tampered child plan_json, and the child's status changing between
+    // this function's own step 5 read and the drive's internal
+    // getNextWorkflowStep re-read — none of which match
+    // isLeaseBusyError's text. child_workflow_drive_failed is a SIBLING of
+    // child_workflow_publish_failed (row A-10…A-12): same shape, same
+    // errorMessage(err) content, but naming the child run id and ref
+    // (already known at this point, unlike the publish arm above) since
+    // driving — not publishing — is what failed.
+    return {
+      ok: false,
+      outcome: {
         unitId: request.unitId,
         ok: false,
         failureReason: "child_workflow_drive_failed",
@@ -328,11 +371,35 @@ export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Pr
           status: childRow.status,
           currentStepId: childRow.current_step_id,
         },
-      };
-    }
-  } else {
-    finalRow = childRow;
+      },
+    };
   }
+}
+
+/**
+ * `driveChildWorkflowUnit` — the ONE child drive (spec §3.3). Every failure
+ * before step 6 (publication) produces `child_workflow_publish_failed`.
+ */
+export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Promise<UnitOutcome> {
+  const { request, target, ctx } = input;
+
+  const precheck = precheckAndDeriveInvocationKey(input);
+  if (!precheck.ok) {
+    return precheck.outcome;
+  }
+
+  const published = await publishChildRun(input, precheck.invocationKey);
+  if (!published.ok) {
+    return published.outcome;
+  }
+  const { childRow } = published;
+
+  const driven = await driveChildRun(input, childRow);
+  if (!driven.ok) {
+    return driven.outcome;
+  }
+  const { finalRow } = driven;
+
   const childRunSummary = {
     runId: finalRow.id,
     ref: finalRow.workflow_ref,
