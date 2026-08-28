@@ -35,7 +35,6 @@
  */
 
 import type { ParsedBuiltinCommandAction } from "../commands/command/builtin-action";
-import { UsageError } from "../core/errors";
 import type { ExecutionJsonObject } from "../execution/json";
 import { TASK_V3_MAX_SCHEDULES, TASK_V3_MAX_SOURCE_BYTES } from "./source/bounded-document";
 
@@ -132,9 +131,3 @@ export function taskSourceErrorDetail(cause: unknown): string {
       : undefined;
   return hint ? `${cause.message} ${hint}` : cause.message;
 }
-
-// Re-exported so callers that only reach this file via UsageError-adjacent
-// error handling do not need a second import — every consumer of
-// `taskSourceErrorDetail` (`scheduler-sync.ts`, `akm-lint.ts`,
-// `akm-task-adapter.ts`) already narrows on `UsageError` alongside it.
-export { UsageError };

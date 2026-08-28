@@ -421,7 +421,7 @@ export async function akmTasksRun(
       ? 78
       : exitCodeForStatus(result.status);
   return {
-    ok: result.status === "completed" || result.status === "disabled",
+    ok: result.status === "completed",
     result,
     exitCode,
   };

@@ -12,6 +12,17 @@
  * subject was always a WORKFLOW's `{akm?, on?}` trigger fragment, never a
  * task document, and it now lives independently of task source parsing
  * (P4-N3).
+ *
+ * Review finding (docs/plans/specs/p4-deletions-closeout.md review, on
+ * src/workflows/source-ir/triggers.ts): the `{akm?, on?}` fragment above is
+ * no longer accurate — the re-home's own `akm:` options-bag grammar was
+ * unreachable from the classifier's one production caller
+ * (`github-yaml.ts`'s `verifyOwnerTriggerPlan`, which only ever passes
+ * `{on: ...}`) and has been deleted. The first case below drops the `akm:`
+ * key it used to carry (it contributed nothing to the assertion — `enabled`
+ * was never read by `compileTriggers`); the second case is new and pins that
+ * `akm:` is now rejected as an unsupported field, same as any other stray
+ * top-level key.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -21,10 +32,7 @@ describe("classifyWorkflowYamlTriggers", () => {
   test("exports the same pure trigger classifier used by complete workflow-YAML parsing", () => {
     expect(
       classifyWorkflowYamlTriggers(
-        {
-          akm: { enabled: false },
-          on: { schedule: [{ cron: "0 1 * * *" }], workflow_dispatch: {} },
-        },
+        { on: { schedule: [{ cron: "0 1 * * *" }], workflow_dispatch: {} } },
         { filePath: "/stash/workflows/nightly.yml" },
       ),
     ).toEqual({
@@ -40,5 +48,20 @@ describe("classifyWorkflowYamlTriggers", () => {
         { filePath: "/stash/workflows/nightly.yml" },
       ),
     ).toThrow(/jobs.*unsupported field/);
+  });
+
+  test("rejects the retired task-v3 akm: options bag as an unsupported field", () => {
+    expect(() =>
+      classifyWorkflowYamlTriggers(
+        { akm: { enabled: false }, on: { workflow_dispatch: {} } },
+        { filePath: "/stash/workflows/nightly.yml" },
+      ),
+    ).toThrow(/akm.*unsupported field/);
+  });
+
+  test("requires on: — there is no second scheduling source to fall back to", () => {
+    expect(() => classifyWorkflowYamlTriggers({}, { filePath: "/stash/workflows/nightly.yml" })).toThrow(
+      /on is required/,
+    );
   });
 });
