@@ -35,7 +35,7 @@ type FakeRollbackGuard = Readonly<{
 let storage: IsolatedAkmStorage;
 
 function taskYaml(run: string, schedule: string): string {
-  return `version: 3\nrun: ${run}\nakm:\n  schedule: "${schedule}"\n`;
+  return `version: 4\nrun: ${run}\nschedule: "${schedule}"\n`;
 }
 
 function writeTask(id: string, run: string, schedule: string): void {
@@ -321,7 +321,7 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
   test("task add absent-source CAS preserves a concurrent create before publication", async () => {
     const backend = fakeBackend("cron");
     const file = path.join(storage.stashDir, "tasks", "alpha.yml");
-    const racer = "version: 3\nrun: echo racer\nakm:\n  schedule: '@hourly'\n";
+    const racer = "version: 4\nrun: echo racer\nschedule: '@hourly'\n";
 
     await expect(
       akmTasksAdd(
@@ -345,11 +345,11 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     true,
   ])("task add rollback preserves a concurrent source owner after transaction publication (force=%s)", async (force) => {
     const file = path.join(storage.stashDir, "tasks", "alpha.yml");
-    const prior = "version: 3\nrun: echo prior\nakm:\n  schedule: '0 1 * * *'\n";
+    const prior = "version: 4\nrun: echo prior\nschedule: '0 1 * * *'\n";
     if (force) fs.writeFileSync(file, prior);
     const previousBinding = binding("alpha", "0 1 * * *");
     const backend = fakeBackend("cron", force ? [previousBinding] : [], { kind: "install", id: "alpha" });
-    const racer = "version: 3\nrun: echo concurrent\nakm:\n  schedule: '@hourly'\n";
+    const racer = "version: 4\nrun: echo concurrent\nschedule: '@hourly'\n";
     const install = backend.install.bind(backend);
     backend.install = ((...args: Parameters<SchedulerBackend["install"]>) => {
       fs.writeFileSync(file, racer);
@@ -424,10 +424,7 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     "schtasks",
   ] as const)("task sync %s revalidates a multi-schedule source after its successful middle install", async (name) => {
     const file = path.join(storage.stashDir, "tasks", "alpha.yml");
-    fs.writeFileSync(
-      file,
-      'version: 3\nrun: echo alpha\non:\n  schedule:\n    - cron: "0 1 * * *"\n    - cron: "0 2 * * *"\n',
-    );
+    fs.writeFileSync(file, 'version: 4\nrun: echo alpha\nschedule:\n  - cron: "0 1 * * *"\n  - cron: "0 2 * * *"\n');
     const backend = fakeBackend(name);
     const raced = taskYaml("echo raced", "59 23 * * *");
     const install = backend.install.bind(backend);
@@ -478,7 +475,7 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
   test("task add --force updates the primary and removes a stale ordinal with exact CAS", async () => {
     fs.writeFileSync(
       path.join(storage.stashDir, "tasks", "alpha.yml"),
-      'version: 3\nrun: echo old\non:\n  schedule:\n    - cron: "0 1 * * *"\n    - cron: "0 2 * * *"\n',
+      'version: 4\nrun: echo old\nschedule:\n  - cron: "0 1 * * *"\n  - cron: "0 2 * * *"\n',
     );
     const previous = compileTaskSchedulerBindings({
       id: "alpha",
@@ -588,7 +585,7 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     fs.writeFileSync(script, "#!/bin/sh\necho original\n");
     fs.writeFileSync(
       path.join(storage.stashDir, "tasks", "alpha.yml"),
-      'version: 3\nuses: scripts/owned.sh\nakm:\n  schedule: "0 1 * * *"\n',
+      'version: 4\nuses: scripts/owned.sh\nschedule: "0 1 * * *"\n',
     );
     const backend = fakeBackend("cron");
 
@@ -615,7 +612,7 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     );
     fs.writeFileSync(
       path.join(storage.stashDir, "tasks", "alpha.yml"),
-      'version: 3\nuses: workflows/owned\nakm:\n  schedule: "0 1 * * *"\n',
+      'version: 4\nuses: workflows/owned\nschedule: "0 1 * * *"\n',
     );
     const backend = fakeBackend("cron");
 
@@ -649,13 +646,12 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     fs.writeFileSync(
       path.join(storage.stashDir, "tasks", "alpha.yml"),
       [
-        "version: 3",
+        "version: 4",
         "uses: akm/command",
         "with:",
         "  ref: commands/review",
-        "akm:",
-        "  agent: agents/reviewer",
-        '  schedule: "0 1 * * *"',
+        "agent: agents/reviewer",
+        'schedule: "0 1 * * *"',
         "",
       ].join("\n"),
     );

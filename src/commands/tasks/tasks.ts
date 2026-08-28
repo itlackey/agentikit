@@ -34,13 +34,18 @@ import {
   resolveWriteTarget,
   writeAssetToSource,
 } from "../../core/write-source";
+import type { InputFlag } from "../../execution/input-contract";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveAssetPath } from "../../sources/resolve";
 import { backendNameForPlatform, selectBackend } from "../../tasks/backends";
 import type { InstalledSchedulerBinding, RebindSchedulerBinding, SchedulerBackend } from "../../tasks/backends/types";
+import { prepareTaskV3Execution } from "../../tasks/prepare/prepare";
+import type { PrepareTaskV3ExecutionContext } from "../../tasks/prepare/prepared-execution";
 import { type ResolvedAkmInvocation, resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
-import { exitCodeForStatus, readTaskHistory, runTask, type TaskRunResult } from "../../tasks/runner";
-import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "../../tasks/runtime-v3";
+import { createExecutionProvenanceContext } from "../../tasks/run/provenance";
+import { runTask } from "../../tasks/run/run-task";
+import { readTaskHistory } from "../../tasks/run/task-history";
+import { exitCodeForStatus, type RunTaskOptions, type TaskRunResult } from "../../tasks/run/task-result";
 import { parseSchedule, SCHEDULE_SUPPORTED_SUBSET_HINT } from "../../tasks/schedule";
 import {
   assertSchedulerMutationArtifact,
@@ -70,7 +75,9 @@ import {
   prepareSchedulerSyncSourceSet,
   type SchedulerSyncPlan,
 } from "../../tasks/scheduler-sync";
-import { parseTaskV3Yaml, TASK_V3_MAX_SOURCE_BYTES, type TaskV3SourceDocument } from "../../tasks/source-v3";
+import { parseTaskSource } from "../../tasks/source/parse-task-source";
+import { projectTaskSourceV4 } from "../../tasks/source/project-v4";
+import { TASK_V3_MAX_SOURCE_BYTES, type TaskV3SourceDocument } from "../../tasks/source-v3";
 import { normaliseTaskConceptId, normaliseTaskId } from "../../tasks/task-id";
 import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
@@ -184,7 +191,8 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     enabled: input.disabled !== true,
   });
 
-  const task = parseTaskV3Yaml({ yaml, filePath: assetPath, workspaceRoot: stashDir });
+  const parsedTask = parseTaskSource({ yaml, filePath: assetPath, workspaceRoot: stashDir });
+  const task = projectTaskSourceV4(parsedTask.v4);
   const qualifiedRef = makeBundleRef(bundle.bundleName, `tasks/${id}`);
   await prepareTaskV3Execution(task, {
     taskId: id,
@@ -194,12 +202,27 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     config: bundle.config,
     resolveAsset: taskProjectionAssetResolver(bundle.config, bundle.bundleName, stashDir),
   });
+  // Bindings are compiled from the ORIGINAL parsed document, not the
+  // `task`/`projectTaskSourceV4` projection above — mirroring
+  // scheduler-sync.ts's compileTaskSources (spec §3.2.7's project-v4.ts
+  // header): the projection deliberately drops each schedule entry's own
+  // `enabled` (P4-N6), so building bindings from it would silently ignore
+  // `--disabled`. A task source v4 document has no document-level
+  // `akm.enabled`, so `enabled: true` is passed at the document level and
+  // every entry's own `enabled` (always present, defaulted at parse time)
+  // decides.
   const taskBindings = compileTaskSchedulerBindings({
     id,
     qualifiedRef,
     ...(bundle.installTarget ? { bundleTarget: bundle.installTarget } : {}),
-    enabled: task.akm?.enabled !== false,
-    schedules: task.triggers.schedules,
+    enabled: true,
+    schedules: parsedTask.v4.schedule.map((schedule) => ({
+      cron: schedule.cron,
+      ordinal: schedule.ordinal,
+      enabled: schedule.enabled,
+      source: schedule.source,
+      inputs: schedule.inputs,
+    })),
   });
   const taskBinding = taskBindings[0];
   if (!taskBinding) throw new UsageError(`Task "${id}" has no schedulable trigger.`, "INVALID_FLAG_VALUE");
@@ -346,27 +369,59 @@ export interface TasksRunResultEnvelope {
 
 export async function akmTasksRun(
   id: string,
-  options: { scheduled?: boolean; target?: string } = {},
+  options: { scheduled?: boolean; target?: string; inputFlags?: readonly InputFlag[] } = {},
 ): Promise<TasksRunResultEnvelope> {
   const parsed = parseTaskRef(id);
   const bundle = resolveTaskReadBundle(parsed.bundle, options.target);
   const adapterId = bundle.source.adapterId ?? detectAdapterId(bundle.source.path);
   const resolvedId = taskIdForAdapter(parsed.id, adapterId);
-  const runOptions = {
-    stashDir: bundle.source.path,
+  const scheduled = options.scheduled === true;
+  // D5 "Construction" (spec docs/plans/specs/p1b-model-extraction.md §1.2/
+  // §5.2): built ONCE at this invocation boundary. eventSource is "task"
+  // whether or not --scheduled was passed (§1.6 D5-N1) — scheduled stays a
+  // separate field carrying its own pre-existing meaning (activation policy,
+  // scheduler env), never selecting the event source.
+  const provenance = createExecutionProvenanceContext(scheduled);
+  // F-3 (spec §5.4): RunTaskOptions.stashDir renamed to bundleDir — VALUE-
+  // preserving, no CLI flag change.
+  //
+  // P2a Lane C (spec docs/plans/specs/p2a-task-source-v4.md §5.1): the raw,
+  // exact-name input flags `tasks-cli.ts`'s Stage 1 captures ride through
+  // unchanged to `runTask` -> `loadPreparedTask`'s Stage 2 materializer,
+  // which owns declaring `inputFlags` on `RunTaskOptions` and attaching the
+  // materialized literals to the constructed `TaskInvocation`. This is only
+  // the pass-through surface: a valid flag set stays byte-identical to the
+  // same run without flags (§0), and P2a delivers nothing to the target.
+  //
+  // No `as` cast (test-review finding, spec §6 F-5): `RunTaskOptions` (this
+  // literal's inferred type is checked directly against it, below) declares
+  // every one of these fields, so the compiler — not a suppressed excess-
+  // property check — enforces this seam. A future rename or removal on
+  // either side now fails `tsc`, not silently at the `runTask` boundary.
+  const runOptions: RunTaskOptions = {
+    bundleDir: bundle.source.path,
     bundleName: bundle.source.name,
     adapterId,
-    scheduled: options.scheduled === true,
-  } as Parameters<typeof runTask>[1] & { bundleName: string };
+    scheduled,
+    provenance,
+    inputFlags: options.inputFlags,
+  };
   // The runner owns the prepare-before-reserve boundary. Invalid source,
   // projectability, and resolver failures therefore create no history row.
   const result = await runTask(resolvedId, runOptions);
+  // C-7 (spec §5.6): after D8's result-vocabulary re-code, "command" means
+  // the agent/LLM arm — the native shell/script arm now reports "shell" /
+  // "script". Rewired in the SAME commit as the vocabulary re-code so a
+  // shell/script task's process exit 78 still passes through as CLI exit 78
+  // (documented behavior, src/assets/hints/cli-hints-short.md:95).
   const exitCode =
-    result.status === "failed" && result.target.kind === "command" && result.detail?.exitCode === 78
+    result.status === "failed" &&
+    (result.target.kind === "shell" || result.target.kind === "script") &&
+    result.detail?.exitCode === 78
       ? 78
       : exitCodeForStatus(result.status);
   return {
-    ok: result.status === "completed" || result.status === "disabled",
+    ok: result.status === "completed",
     result,
     exitCode,
   };
@@ -1318,7 +1373,17 @@ function taskProjectionAssetResolver(
   };
 }
 
-function resolveTaskReadBundle(refBundle: string | undefined, flagBundle: string | undefined): ResolvedWriteTarget {
+/**
+ * Exported for `src/commands/tasks/explain.ts` (P2b Lane B, spec
+ * docs/plans/specs/p2b-input-bindings.md §4.5, B-N4): `akm task explain`
+ * resolves its `--bundle` axis identically to every other read-only task
+ * verb here (`akm task history`, `akm task run`) — the SAME resolver, not a
+ * second one.
+ */
+export function resolveTaskReadBundle(
+  refBundle: string | undefined,
+  flagBundle: string | undefined,
+): ResolvedWriteTarget {
   if (refBundle && flagBundle && refBundle !== flagBundle) {
     throw new UsageError(
       `Task ref selects bundle ${JSON.stringify(refBundle)}, but --bundle selects ${JSON.stringify(flagBundle)}.`,
@@ -1426,34 +1491,76 @@ interface RenderInput {
   enabled: boolean;
 }
 
+/**
+ * Infer a JSON-Schema-subset `type` keyword from one `--params` value's
+ * runtime shape (spec docs/plans/specs/p4-deletions-closeout.md §3.2.6, row
+ * B-20). `null` is not one of the five runtime types the spec enumerates
+ * (string/number/boolean/object/array) but is a value JSON.parse can still
+ * produce for a param; `src/core/json-schema.ts`'s subset validator accepts
+ * `"null"` as a `type`, so it is handled rather than mis-typed.
+ */
+function jsonSchemaTypeOf(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * Render `--params` as typed `inputs:` declarations, one per key, each
+ * carrying a `default:` equal to the authored value and a `type:` inferred
+ * from its own JSON runtime shape (row B-20). Never emitted as `with:` —
+ * task source v4 accepts `with:` only on `uses: akm/command` (§3.2.6's
+ * `parseTarget`/`checkTopLevelKeys`), and a workflow target's declared
+ * inputs are what `load-task.ts`'s existing v4 delivery override binds into
+ * the child run's params.
+ */
+function renderInputsFromParams(params: Record<string, unknown>): Record<string, unknown> {
+  const inputs: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(params)) {
+    inputs[name] = { type: jsonSchemaTypeOf(value), default: value };
+  }
+  return inputs;
+}
+
 function renderTaskYaml(input: RenderInput): string {
-  const obj: Record<string, unknown> = { version: 3 };
+  const obj: Record<string, unknown> = { version: 4 };
   if (input.workflow) {
     obj.uses = input.workflow;
-    if (input.params) obj.with = parseJsonObjectArg(input.params);
+    if (input.params) obj.inputs = renderInputsFromParams(parseJsonObjectArg(input.params));
   } else if (input.prompt) {
     obj.uses = "akm/command";
     obj.with = { content: input.prompt };
   } else if (input.command !== undefined) {
     if (Array.isArray(input.command)) {
       throw new UsageError(
-        "Task v3 --command accepts one shell string; argv arrays require manual migration.",
+        "--command accepts one shell string; argv arrays require manual migration.",
         "INVALID_FLAG_VALUE",
       );
     }
     obj.run = input.command;
   }
   if (input.name) obj.name = input.name;
-  obj.akm = {
-    schedule: input.schedule,
-    enabled: input.enabled,
-    ...(input.description !== undefined ? { description: input.description } : {}),
-    ...(input.when_to_use !== undefined ? { when_to_use: input.when_to_use } : {}),
-    ...(input.tags && input.tags.length > 0 ? { tags: input.tags } : {}),
-    ...(input.engine !== undefined ? { engine: input.engine } : {}),
-    ...(input.model !== undefined ? { model: input.model } : {}),
-    ...(input.timeoutMs !== undefined ? { timeout: input.timeoutMs } : {}),
-  };
+  if (input.description !== undefined) obj.description = input.description;
+  if (input.when_to_use !== undefined) obj.when_to_use = input.when_to_use;
+  if (input.tags && input.tags.length > 0) obj.tags = input.tags;
+  if (input.engine !== undefined) obj.engine = input.engine;
+  if (input.model !== undefined) obj.model = input.model;
+  if (input.timeoutMs !== undefined) obj.timeout = input.timeoutMs;
+  // Task source v4's `enabled` is per schedule-binding, not document-level
+  // (P4-N6, row B-21): `--disabled` writes a one-entry schedule[] list
+  // carrying `enabled: false` rather than the v3 `akm.enabled: false` flag.
+  // `TasksAddInput.schedule`/the `add` CLI's `--schedule` are both still
+  // required, so the "no schedule to disable" usage error B-21 also
+  // describes is unreachable through this call site today; the check below
+  // still guards `renderTaskYaml` itself against ever being called with an
+  // empty schedule string.
+  if (input.schedule.length === 0) {
+    if (!input.enabled) {
+      throw new UsageError("--disabled requires --schedule; a task with no schedule is already manual-only.");
+    }
+  } else {
+    obj.schedule = input.enabled ? input.schedule : [{ cron: input.schedule, enabled: false }];
+  }
   return yamlStringify(obj);
 }
 
@@ -1483,36 +1590,116 @@ function parseJsonObjectArg(raw: string): Record<string, unknown> {
 }
 
 /**
- * Toggle the v3 `akm.enabled:` value in a task YAML file without a full
- * parse/render round-trip (which would reformat the file). Appends the key
- * if absent.
+ * Toggle a task source v4 YAML file's `enabled` state without a full
+ * parse/render round-trip (which would reformat the file). Task source v4
+ * has no document-level `enabled` flag — it lives on each `schedule[]` entry
+ * instead (D2-N5, P4-N6) — so this walks the top-level `schedule:` block,
+ * finds every list entry in it (each line starting with `-` at the block's
+ * item indent), and toggles that entry's own `enabled:` key, the closest v4
+ * equivalent of v3's single document-level flag broadcasting to every
+ * trigger. Each entry is handled independently — one entry already carrying
+ * `enabled:` and a sibling entry with no such key (D2-N3's `schedule[i]`
+ * shape: `{cron, enabled?, inputs?}`) toggles the first and inserts into the
+ * second, rather than one entry's existing key short-circuiting the other's
+ * insertion.
+ *
+ * A bare string-shorthand schedule (`schedule: "0 9 * * *"`) has nowhere for
+ * `enabled:` to live and is rewritten to the one-entry list form. A list
+ * entry with no explicit `enabled:` key (defaulting to `true` at parse) gets
+ * one inserted rather than being silently left unaffected. A document with
+ * no `schedule:` key at all throws — there is no trigger to enable or
+ * disable (mirrors `renderTaskYaml`'s `--disabled`-with-no-`--schedule`
+ * usage error, row B-21).
+ *
+ * Each entry's own key indent is taken from its `-` line (the indent before
+ * `-`, plus two spaces for the conventional single space after it), so a
+ * nested mapping inside an entry — e.g. `schedule[i].inputs` — sits deeper
+ * and is never mistaken for the entry's own `enabled:` key.
  *
  * Preserves inline comments (e.g. `enabled: true # important`) and uses
  * case-sensitive matching (YAML keys are case-sensitive).
  */
 export function setEnabledInYaml(yaml: string, enabled: boolean): string {
   const lines = yaml.replace(/\r\n/g, "\n").split("\n");
-  const akmLine = lines.findIndex((line) => /^akm:\s*(?:#.*)?$/.test(line));
-  if (akmLine < 0) return `${yaml.trimEnd()}\nakm:\n  enabled: ${enabled}\n`;
 
-  let insertAt = akmLine + 1;
-  for (let index = akmLine + 1; index < lines.length; index += 1) {
+  const scalarLine = lines.findIndex((line) => /^schedule:[ \t]+\S/.test(line));
+  if (scalarLine >= 0) {
+    const line = lines[scalarLine];
+    const match = line?.match(/^schedule:[ \t]+([^\r\n]+?)[ \t]*(#[^\r\n]*)?$/);
+    const cron = match?.[1] ?? "";
+    const comment = match?.[2] ? ` ${match[2]}` : "";
+    lines.splice(scalarLine, 1, "schedule:", `  - cron: ${cron}${comment}`, `    enabled: ${enabled}`);
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  const blockLine = lines.findIndex((line) => /^schedule:\s*(?:#.*)?$/.test(line));
+  if (blockLine < 0) {
+    throw new UsageError("Task source v4 must declare a schedule before its enabled state can be toggled.");
+  }
+
+  // Find the block's extent and every top-level list item (`-`) within it.
+  // Only items at the *first* item's own indent count as entries — anything
+  // deeper belongs to a nested mapping/list inside an entry (e.g. an array
+  // input under `inputs:`) and must not be treated as a sibling entry.
+  let blockEnd = lines.length;
+  const itemStarts: number[] = [];
+  let topIndent: string | null = null;
+  for (let index = blockLine + 1; index < lines.length; index += 1) {
     const line = lines[index];
-    if (line === undefined) break;
-    if (line !== "" && !/^[ \t]/.test(line)) break;
-    insertAt = index + 1;
-    const match = line.match(/^([ \t]+enabled:\s*)([^\s#\r\n][^\r\n]*?)(\s*(?:#[^\r\n]*))?$/);
-    if (match) {
-      lines[index] = `${match[1]}${enabled}${match[3] ?? ""}`;
-      return `${lines.join("\n").trimEnd()}\n`;
+    if (line === undefined) {
+      blockEnd = index;
+      break;
     }
-    const bare = line.match(/^([ \t]+enabled:)\s*$/);
-    if (bare) {
-      lines[index] = `${bare[1]} ${enabled}`;
-      return `${lines.join("\n").trimEnd()}\n`;
+    if (line !== "" && !/^[ \t]/.test(line)) {
+      blockEnd = index;
+      break;
+    }
+    const itemMatch = line.match(/^([ \t]*)-(?=[ \t]|$)/);
+    if (itemMatch) {
+      const itemIndent = itemMatch[1] ?? "";
+      if (topIndent === null) topIndent = itemIndent;
+      if (itemIndent === topIndent) itemStarts.push(index);
     }
   }
-  lines.splice(insertAt, 0, `  enabled: ${enabled}`);
+  if (itemStarts.length === 0) {
+    throw new UsageError("Task source v4's schedule: block has no entries to toggle enabled on.");
+  }
+
+  // Walk entries back-to-front: inserting a missing `enabled:` line shifts
+  // every later line index by one, but never touches `itemStarts[j]` for
+  // j <= i (an insertion for entry i lands at `itemStarts[i] + 1`, which is
+  // at or after entry i's own start), so already-computed start/end bounds
+  // for entries processed later in this loop (earlier in the list) stay valid.
+  for (let i = itemStarts.length - 1; i >= 0; i -= 1) {
+    const start = itemStarts[i]!;
+    const end = i + 1 < itemStarts.length ? itemStarts[i + 1]! : blockEnd;
+    const dashLead = lines[start]?.match(/^([ \t]*)-/)?.[1] ?? "";
+    const keyIndent = `${dashLead}  `;
+    let found = false;
+    for (let index = start; index < end; index += 1) {
+      const line = lines[index];
+      if (line === undefined) continue;
+      const isStart = index === start;
+      const prefixMatch = isStart ? line.match(/^([ \t]*-[ \t]*)(.*)$/) : line.match(/^([ \t]*)(.*)$/);
+      const prefix = prefixMatch?.[1] ?? "";
+      const content = prefixMatch?.[2] ?? "";
+      if (prefix.length !== keyIndent.length) continue;
+      const withValue = content.match(/^(enabled:[ \t]*)([^\s#\r\n][^\r\n]*?)([ \t]*(?:#[^\r\n]*))?$/);
+      if (withValue) {
+        lines[index] = `${prefix}${withValue[1]}${enabled}${withValue[3] ?? ""}`;
+        found = true;
+        continue;
+      }
+      const bare = content.match(/^(enabled:)[ \t]*$/);
+      if (bare) {
+        lines[index] = `${prefix}${bare[1]} ${enabled}`;
+        found = true;
+      }
+    }
+    if (!found) {
+      lines.splice(start + 1, 0, `${keyIndent}enabled: ${enabled}`);
+    }
+  }
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
@@ -1542,7 +1729,8 @@ export function parseTaskRef(input: string): { id: string; bundle?: string } {
   return { id: normaliseTaskId(trimmed) };
 }
 
-function taskIdForAdapter(parsedId: string, adapterId: string): string {
+/** Exported for `src/commands/tasks/explain.ts` — see {@link resolveTaskReadBundle}'s header. */
+export function taskIdForAdapter(parsedId: string, adapterId: string): string {
   if (adapterId === "akm-task") return normaliseTaskConceptId(parsedId);
   if (adapterId === "akm") {
     if (!parsedId.includes("/")) return normaliseTaskId(parsedId);

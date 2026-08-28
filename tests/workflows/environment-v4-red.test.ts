@@ -130,8 +130,15 @@ function v4ShellPlan(environment: unknown[]) {
   const directory = cwdIdentity(root);
   const contentHash = sha256(`akm.workflow.shell.v1\0${canonicalJson({ exec, environment, cwdIdentity: directory })}`);
   const workflowBytes = "symbolic environment workflow\n";
+  // F-A10 (docs/plans/specs/p3a-plan-v5-child-freeze.md §6): mechanical value
+  // bump only, no assertion below this fixture builder changes. This plan is
+  // fed to decodeWorkflowPlanV4 as `unknown`, so the literal here carries no
+  // type-level consequence — it is red today only because the decoder still
+  // requires exactly irVersion 4 and goes green once WORKFLOW_IR_V5_VERSION
+  // lands; every environment-schema assertion in this file is otherwise
+  // untouched.
   return {
-    irVersion: 4,
+    irVersion: 5,
     title: "symbolic environment",
     sourceReadSet: [
       {

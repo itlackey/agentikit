@@ -104,6 +104,13 @@ describe("WorkflowRunsRepository reads", () => {
       plan_ir_version: null,
       engine_lease_until: null,
       engine_lease_holder: null,
+      // Child workflow run parentage (migration 023, P3a): NULL on a top-level run.
+      parent_run_id: null,
+      parent_unit_id: null,
+      invocation_key: null,
+      // Resolved declared outputs: (migration 024, P3b §4.3): NULL until a
+      // run whose plan declares outputs: completes.
+      outputs_json: null,
     });
   });
 

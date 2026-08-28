@@ -49,6 +49,8 @@ export const STATE_MIGRATION_SAFETY_BY_ID: Readonly<Record<string, StateMigratio
   "020-three-db-cutover": "additive",
   "021-asset-state-missing-since": "additive",
   "022-workflow-unit-attempts": "additive",
+  "023-child-workflow-runs": "additive",
+  "024-workflow-run-outputs": "additive",
 });
 
 export const STATE_MIGRATIONS: readonly Migration[] = [
@@ -1050,6 +1052,63 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
         ON workflow_run_unit_attempts(run_id, step_id, unit_id, attempt);
       CREATE INDEX idx_workflow_run_unit_attempts_running_claim
         ON workflow_run_unit_attempts(run_id, status, claim_expires_at);
+    `,
+  },
+
+  // ── Migration 023 — child workflow run parentage (P3a) ────────────────────
+  //
+  // Adds the columns and partial unique index `publishChildWorkflowRun`
+  // (src/storage/repositories/workflow-runs-repository.ts) needs to record a
+  // durable child workflow run under the parent unit that spawned it, and to
+  // make that publication idempotent per invocation
+  // (docs/plans/specs/p3a-plan-v5-child-freeze.md §5.1).
+  //
+  // Disambiguation: this migration's `workflow_runs.parent_unit_id` is the
+  // PARENT RUN's unit that spawned this CHILD RUN — a cross-run composition
+  // edge, new in P3a. It is NOT the same concept as the pre-existing
+  // `workflow_run_units.parent_unit_id` (migration 004, consolidated above
+  // into migration 020's `workflow_run_units` table, migrations.ts:934),
+  // which records MAP FAN-OUT TEMPLATE PARENTAGE — one expanded unit's row
+  // pointing back at the map-template unit it fanned out from, WITHIN a
+  // single run. Same column name, two tables, two different concepts. So the
+  // two are never confused at a call site, the TypeScript repository API
+  // deliberately never spells this one `parentUnitId`: it is always
+  // `spawnedByUnitId` on `PublishChildWorkflowRunInput` and on every child
+  // run row the repository returns.
+  //
+  // `invocation_key` is the deterministic identity of one spawn attempt
+  // (`computeChildInvocationKey`, src/workflows/exec/child-invocation.ts).
+  // The unique index is partial (`WHERE parent_run_id IS NOT NULL`) because a
+  // top-level run — every run before this migration, and every run started
+  // directly by `akm workflow run` — has no parent and no invocation key, and
+  // must never be constrained by this uniqueness rule.
+  {
+    id: "023-child-workflow-runs",
+    up: `
+      ALTER TABLE workflow_runs ADD COLUMN parent_run_id  TEXT;
+      ALTER TABLE workflow_runs ADD COLUMN parent_unit_id TEXT;
+      ALTER TABLE workflow_runs ADD COLUMN invocation_key TEXT;
+      CREATE INDEX idx_workflow_runs_parent ON workflow_runs(parent_run_id);
+      CREATE UNIQUE INDEX idx_workflow_runs_invocation_key
+        ON workflow_runs(parent_run_id, invocation_key)
+        WHERE parent_run_id IS NOT NULL;
+    `,
+  },
+
+  // ── Migration 024 — workflow run outputs (P3b) ─────────────────────────────
+  //
+  // Adds workflow_runs.outputs_json — the resolved map of a plan's declared
+  // outputs:, persisted once at run completion in the SAME transaction as the
+  // final step's completion (docs/plans/specs/p3b-child-executor.md §4.3,
+  // B-N13). NULL for every run whose plan declares no outputs: (the
+  // overwhelming majority, including every run before this migration) and for
+  // every run that fails or blocks before completing — never `{}`.
+  // `WorkflowRunsRepository.setRunOutputs` is the only writer;
+  // `src/workflows/runtime/run-outputs.ts` is the only resolver.
+  {
+    id: "024-workflow-run-outputs",
+    up: `
+      ALTER TABLE workflow_runs ADD COLUMN outputs_json TEXT;
     `,
   },
 ];

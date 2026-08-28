@@ -7,12 +7,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { parseTaskV3Yaml } from "../../scripts/akm-migrate/migrate/task-source-v3-frozen";
 import {
   planTaskToV3File,
   planTaskToV3Migration,
   type TaskToV3FileInput,
 } from "../../scripts/akm-migrate/migrate/task-to-v3";
-import { parseTaskV3Yaml, TASK_V3_MAX_SOURCE_BYTES } from "../../src/tasks/source-v3";
+import { TASK_V3_MAX_SOURCE_BYTES } from "../../src/tasks/source-v3";
 import {
   assertFixtureBytesUnchanged,
   captureFixtureBytes,

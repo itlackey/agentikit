@@ -1,0 +1,5 @@
+version: 4
+name: task source v4 fixture - run shell target
+run: akm index --full
+shell: bash
+schedule: "15 4 * * 1"

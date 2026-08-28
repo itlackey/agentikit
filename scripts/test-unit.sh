@@ -49,7 +49,16 @@ total="${#files[@]}"
 # `--shard` incident where shards 2-4 ran ZERO tests at exit 0 — this is the
 # same hole reached through skips instead of sharding (#795). Set below the
 # current unit count with room for churn; raise it as the suite grows.
-MIN_TESTS="${AKM_MIN_UNIT_TESTS:-3500}"
+#
+# P4 (docs/plans/specs/p4-deletions-closeout.md §5.3/P4-N5, row B-62):
+# RAISED 3500 -> 4000. Measured at Lane C's commit: 4213 pass / 0 skip
+# (executed 4213), after the deletion families (§3) removed
+# tests/tasks/source-v3.test.ts, tests/tasks-runtime-v3.test.ts,
+# tests/tasks/parse-v3-adapter.test.ts, and trimmed several other suites'
+# v3/multi-job blocks — see the commit body for the per-suite deleted-test
+# table. P4-N5's formula: floor(executed * 0.95 / 100) * 100 =
+# floor(4213 * 0.95 / 100) * 100 = floor(40.0235) * 100 = 4000.
+MIN_TESTS="${AKM_MIN_UNIT_TESTS:-4000}"
 if [ "$total" -eq 0 ]; then
   echo "── unit: no test files found under tests/ (excluding integration)" >&2
   exit 1

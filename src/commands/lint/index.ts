@@ -31,7 +31,7 @@ import { warn } from "../../core/warn";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import { TASK_EXTENSION, TASK_NEAR_MISS_EXTENSION, taskExtensionDetail } from "../../tasks/source-v3";
 import { resolveWorkflowSourceDomains } from "../../workflows/source-files";
-import { compareWorkflowSourceCodePoints } from "../../workflows/source-ir/ordering";
+import { compareWorkflowSourceCodePoints } from "../../workflows/source-ir/compare";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
 import { isAdvisoryLintIssue, type LintContext, type LintIssue, type LintIssueType } from "./types";

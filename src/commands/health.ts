@@ -25,6 +25,7 @@ import { HEALTH_CHECKS, type HealthCheckContext, runHealthEngineProbes } from ".
 import {
   buildImproveSkipSummary,
   computeWallTimeStats,
+  isAgentTaskHistoryRow,
   parseTaskMetadata,
   roundRate,
   summarizeImproveCompleted,
@@ -223,14 +224,18 @@ function gatherTaskHistoryPhase(
   const failedTaskRows = taskRows.filter((row) => row.status === "failed");
   const activeRows = taskRows.filter((row) => row.status === "active" && row.completed_at === null);
   const stuckActiveRows = activeRows.filter((row) => now() - new Date(row.started_at).getTime() > ACTIVE_RUN_WARN_MS);
-  const promptRows = taskRows.filter((row) => row.target_kind === "prompt");
-  const promptFailures = promptRows.filter((row) => {
+  // D8 (spec §5.3): a marked "command" row or a legacy (unmarked) "prompt"
+  // row is the agent/LLM arm; an unmarked "command" row is the legacy
+  // native shell/script arm and must not be counted here (see
+  // isAgentTaskHistoryRow's header comment for the full mapping).
+  const agentRows = taskRows.filter((row) => isAgentTaskHistoryRow(row));
+  const agentFailures = agentRows.filter((row) => {
     const detail = parseTaskMetadata(row).detail;
     return typeof detail?.reason === "string" && detail.reason.length > 0;
   });
   const logBackingRate = taskRowsWithLogs.length === 0 ? 1 : existingLogRows.length / taskRowsWithLogs.length;
   const taskFailRate = taskRows.length === 0 ? 0 : failedTaskRows.length / taskRows.length;
-  const agentFailureRate = promptRows.length === 0 ? 0 : promptFailures.length / promptRows.length;
+  const agentFailureRate = agentRows.length === 0 ? 0 : agentFailures.length / agentRows.length;
 
   return {
     tableNames,

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { renderUsage } from "citty";
 import { extractCommand } from "../../src/commands/improve/extract-cli";
 import { listEmbeddedTasks } from "../../src/tasks/embedded";
-import { parseTaskV3Yaml } from "../../src/tasks/source-v3";
+import { parseTaskSourceV4 } from "../../src/tasks/source/task-source-v4";
 // These flag-rejection tests run on the in-process harness
 // (tests/_helpers/cli.ts): they fail during arg parsing before any DB access,
 // so they need no stash and carry no subprocess cost.
@@ -45,7 +45,7 @@ describe("standalone extract CLI engine boundary", () => {
       const embedded = listEmbeddedTasks().find((task) => task.id === "extract");
       expect(embedded).toBeDefined();
       if (!embedded) throw new Error("missing embedded extract task");
-      const task = parseTaskV3Yaml({ filePath: "embedded:extract", yaml: embedded.yaml });
+      const task = parseTaskSourceV4({ filePath: "embedded:extract", yaml: embedded.yaml });
       if (task.target.kind !== "run") throw new Error("embedded extract task must be an exact shell run");
       expect(task.target.run).toBe("akm proposal extract --auto");
 

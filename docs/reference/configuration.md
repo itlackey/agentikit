@@ -11,8 +11,8 @@ A present configuration file must set `configVersion` to exactly `"0.9.0"`.
 Missing, older, newer, numeric, and malformed versions are rejected by ordinary
 commands without rewriting the file. Pre-0.9 config and database layouts are
 not runtime inputs and are not migrated by `akm upgrade`. Configure the current
-schema directly. The standalone migrator exists only for explicit task v2 to
-task v3 conversion.
+schema directly. The standalone migrator exists only for explicit task
+migration: task v2 to task v3, then task v3 to task source v4, in one pass.
 
 ```jsonc
 {
@@ -141,7 +141,7 @@ known merged alias, selecting an engine with no mapping is an actionable
 configuration error rather than silently sending the alias as a model ID.
 
 The common execution cascade reads these files for current direct command and
-non-interactive agent calls, task-v3 runs, and improve/proposal/index
+non-interactive agent calls, task source v4 runs, and improve/proposal/index
 model work routed through that resolver. A structured alias expands as
 defaults at the layer that selected it; explicit sibling fields and nearer
 layers still win. The resulting request carries the exact model ID and merged

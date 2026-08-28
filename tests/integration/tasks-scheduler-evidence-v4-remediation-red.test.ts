@@ -20,7 +20,7 @@ import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } f
 
 interface WorkflowEvidenceV4 {
   ref: string;
-  irVersion: 4;
+  irVersion: 5;
   planHash: string;
   sourceReadSet: readonly unknown[];
   executionEvidenceDigest: string;
@@ -174,7 +174,7 @@ describe("scheduled workflow execution evidence", () => {
     const scriptFile = path.join(storage.stashDir, "scripts", "child.sh");
     fs.mkdirSync(path.dirname(taskFile), { recursive: true });
     fs.mkdirSync(path.dirname(scriptFile), { recursive: true });
-    fs.writeFileSync(taskFile, "version: 3\nuses: scripts/child.sh\nakm:\n  schedule: '@daily'\n");
+    fs.writeFileSync(taskFile, "version: 4\nuses: scripts/child.sh\n");
     fs.writeFileSync(scriptFile, "#!/bin/sh\nprintf first\n");
     const workflowFile = path.join(storage.stashDir, "workflows", "scheduled.yml");
     fs.mkdirSync(path.dirname(workflowFile), { recursive: true });

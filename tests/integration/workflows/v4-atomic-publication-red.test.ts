@@ -94,7 +94,7 @@ function v4ExecUnit(id: string, script: string) {
 function v4Plan(): WorkflowPlanGraphV4 {
   const sourceBytes = "durable atomic workflow source\n";
   return decodeWorkflowPlanV4({
-    irVersion: 4,
+    irVersion: 5,
     title: "atomic publication",
     sourceReadSet: [
       {
@@ -286,7 +286,7 @@ describe("workflow v4 atomic repository publication", () => {
       const row = repo.getRunById(RUN_ID);
       expect(row?.plan_json).toBe(canonicalPlanJson(plan));
       expect(row?.plan_hash).toBe(computePlanHash(plan));
-      expect(row?.plan_ir_version).toBe(4);
+      expect(row?.plan_ir_version).toBe(5);
       expect(repo.getStepsForRun(RUN_ID).map((step) => step.step_id)).toEqual(["prepare", "publish"]);
       const source = plan.sourceReadSet[0];
       if (!source) throw new Error("v4 fixture requires its workflow source identity");
@@ -342,7 +342,7 @@ describe("workflow v4 atomic repository publication", () => {
     ],
     [
       "plan attachment",
-      `CREATE TRIGGER wp7_fail_plan AFTER UPDATE OF plan_json ON workflow_runs WHEN NEW.id = '${RUN_ID}' AND NEW.plan_ir_version = 4 BEGIN SELECT RAISE(ABORT, 'wp7-fail-plan'); END`,
+      `CREATE TRIGGER wp7_fail_plan AFTER UPDATE OF plan_json ON workflow_runs WHEN NEW.id = '${RUN_ID}' AND NEW.plan_ir_version = 5 BEGIN SELECT RAISE(ABORT, 'wp7-fail-plan'); END`,
     ],
     [
       "workflow_started insert",
@@ -377,7 +377,7 @@ describe("workflow v4 start publication", () => {
     writeWorkflow("fresh-v4");
     const started = await startWorkflowRun("workflows/fresh-v4", {});
     const row = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
-    expect(row?.plan_ir_version).toBe(4);
+    expect(row?.plan_ir_version).toBe(5);
     expect(row?.plan_json).not.toBeNull();
     const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
     expect(row?.plan_json).toBe(canonicalPlanJson(plan));

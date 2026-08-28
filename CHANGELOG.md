@@ -6,6 +6,407 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking changes & migration
+
+- **Durable workflow plans bump to `irVersion` 5.** A stored run frozen
+  before this release (`irVersion` 4 or earlier) can no longer `resume`,
+  `next`, `complete`, or `run` — those fail closed with `UsageError` code
+  `WORKFLOW_IR_VERSION_UNSUPPORTED`, naming the run and pointing at
+  `akm workflow abandon`. `akm workflow status`, `akm workflow list`, and
+  `akm workflow abandon` keep working on those runs — no data is lost, and
+  their step spine is untouched by abandoning. **Before upgrading**, run
+  `akm workflow list --active` and either let in-flight runs finish or
+  abandon them; after upgrading, recover a blocked run with
+  `akm workflow abandon <id>` followed by `akm workflow run <ref>` to start
+  fresh from the current authored source. There is no second executor and no
+  compatibility replay layer for a pre-`irVersion`-5 plan. The unit and gate
+  input-hash prefixes bump alongside it, from `hashVersion` 5 to
+  `hashVersion` 7, so that a freshly frozen plan's units are never
+  content-addressed the same way an old, no-longer-executable plan's were.
+  (`hashVersion` 6 existed only inside this release's own development and
+  never shipped in any version — the durable step a released install sees is
+  5 → 7.) The unit preimage also gains one **conditional** field,
+  `taskInputs`: the *resolved* values of a task-composing step's input
+  bindings, present only for a unit whose frozen target carries
+  `inputBindings` — a binding-free unit's preimage keeps exactly the shape it
+  had. Hashing the resolved values, not just the frozen binding expression,
+  is what makes a resumed run whose upstream step output changed under a
+  `{from: "steps.<id>.output"}` binding fail loudly as a replay divergence
+  instead of silently reusing the completed unit's stale result.
+  See [Migrating from akm 0.9.1 to 0.9.2](docs/migration/v0.9.1-to-v0.9.2.md#workflow-cutover).
+- A workflow step that passes `with:` to a `tasks/<ref>` target whose task
+  declares **no** `inputs:` (a `version: 4` task with no `inputs:` key at
+  all) is now **rejected** (`UsageError` code
+  `COMPOSITION_INVALID`, exit 2) instead of having the authored mapping
+  silently dropped at freeze — for any authored shape, including `with: {}`.
+  When the target's task source **does** declare `inputs:`, `with:` now
+  **binds** them instead: a literal value, or a `{from: "steps.<id>.output…"}`
+  reference resolved just before the unit dispatches (the reference grammar
+  also accepts `{from: "params.<name>"}`, but a composing step's own
+  document can never declare `params:`, so that form is not reachable in
+  this release). See [Task input bindings](docs/reference/tasks.md#typed-inputs-and-output)
+  for the full grammar. `with:` on `uses: akm/command` is unaffected — it is
+  still that builtin's own action-argument bag, never an input binding.
+- **New rejection:** `with:` on a workflow step targeting `uses:
+  commands/<ref>` or `uses: scripts/<ref>` is now **rejected**
+  (`COMPOSITION_INVALID`, exit 2) instead of being silently discarded at
+  freeze — neither target is a binding surface. Remove the `with:` block from
+  any such step; a command/script-composing step never accepted its values
+  in the first place, so this closes a defect rather than a feature.
+- Composing a task source v4 document from a workflow step's `uses:
+  tasks/<ref>`, where the task's own target is a workflow, is no longer
+  deferred: it now **freezes and dispatches** normally, the same as a
+  direct `uses: workflows/<ref>` step. The prior release's
+  `TASK_SOURCE_INVALID` "arrives in a later 0.9.x release" rejection for this
+  case is gone.
+- Task-source validation errors raised through the shared `sourceError`
+  funnel (field- and semantic-level checks: missing/invalid fields, schedule
+  conflicts, and similar) now report code **`TASK_SOURCE_INVALID`** instead of
+  `INVALID_FLAG_VALUE`. YAML syntax, size, structure, and expansion failures
+  (malformed YAML, oversized source, unsupported YAML constructs, and
+  alias/tag/depth/node-count limits) are raised earlier, before that funnel is
+  reached — early in this release these still reported `INVALID_FLAG_VALUE`,
+  but by 0.9.2's release they report `TASK_SOURCE_INVALID` too (the terminal
+  diagnostics ratchet, see the Changed entry below): task-source failures no
+  longer split across two codes, so **scripts that were branching on both
+  `TASK_SOURCE_INVALID` and `INVALID_FLAG_VALUE` for a task-source error can
+  drop the `INVALID_FLAG_VALUE` arm**. Every such error's message prefix is
+  `Invalid task source at <path>[:<line>]: …` — not `Invalid task v3 source`,
+  since the label no longer names a specific schema generation (task source
+  v4 is the only version `src/` accepts by release; see the "Task v3 sources
+  no longer parse" entry below). The envelope's `error` message text and exit
+  code 2 are unchanged for every task-source error. The envelope's `hint`
+  field and the `detail` text `akm lint` and the akm-task adapter report for
+  the same failure change from `… Run \`akm <command> --help\` to see
+  accepted values.` to `… Fix the task source at the reported path and line,
+  then re-run.`
+- **Task-history / JSON-output `target.kind` vocabulary changed.** A prepared
+  command (agent/LLM) run now reports `"command"` (formerly the confusingly
+  inverted `"prompt"`); the former shared `"command"` string for the native
+  arm splits into `"shell"` and `"script"`, now distinguishable in history;
+  `"workflow"` and `"unknown"` are unchanged. **Consumers branching on
+  `"prompt"` must handle `"command"`** — this affects `akm task run`'s and
+  `akm task history`'s JSON output (`result.target.kind` /
+  `rows[].target.kind`) and any code reading `task_history.target_kind`
+  directly. Rows written by earlier akm versions are read back **mapped** to
+  the new vocabulary (legacy `"prompt"` → `{kind:"command", engine}`, legacy
+  `"command"` → `{kind:"shell"}`), so `akm task history` output stays uniform
+  across vintages. New rows carry a `targetVocab: 2` marker inside their
+  `metadata_json`, which akm versions before this one reject as an unknown
+  metadata field — a mixed-version fleet must upgrade every `akm` that writes
+  task history before an older one reads it.
+- **Task source v4 (`version: 4`) is the task source grammar.** By 0.9.2's
+  release, `version: 4` is the *only* version `src/` accepts — see the
+  "Task v3 sources no longer parse" entry below for the cutover, the
+  `TASK_SCHEMA_VERSION_UNSUPPORTED` rejection, and the migration path. What
+  follows describes the v4 grammar itself. Scheduling is **optional**: a
+  task source v4 document with no `schedule:` parses, is runnable with
+  `akm task run`, and is **skipped** by `akm task sync` (zero bindings, zero
+  failures) instead of being rejected for missing a trigger — this is now
+  the *only* scheduling grammar; the second syntax task v3 offered
+  (`akm.schedule` / a document's top-level `on:`) is retired along with v3
+  itself. Task source v4 removes the `akm:` options bag and the `on:`
+  trigger block outright;
+  every field they carried is a top-level key instead: `akm.description` →
+  `description`, `akm.when_to_use` → `when_to_use`, `akm.tags` → `tags`,
+  `akm.agent` → `agent`, `akm.engine` → `engine`, `akm.model` → `model`,
+  `akm.inference` → `inference`, `akm.outputSchema` → `output`,
+  `akm.tools` → `tools`, `akm.timeout` → `timeout`, `akm.redact` →
+  `redact`, `akm.maxSteps` → `maxSteps`, `akm.maxRetries` → `maxRetries`,
+  `akm.schedule` → top-level `schedule:`, and `akm.enabled` → each
+  `schedule:` entry's own `enabled` (v3's single document-level flag
+  becomes per-binding in task source v4, defaulting to `true`; the
+  document-level `enabled` skip that read it is gone with v3, since a v4
+  document has no document-level `enabled` key to read). The GitHub-action
+  `uses:` target (`owner/repo@ref`) is removed outright — see the "GitHub
+  Action locators are no longer recognized anywhere" entry below.
+  `with:` is legal in task source v4 only alongside
+  `uses: akm/command`; every other target uses the new typed `inputs:`
+  declarations instead of `with:`. A declared `inputs:` name may not collide
+  with a flag `akm task run` already declares for itself (`bundle`, `format`,
+  `detail`, `shape`, `output`, `scheduled`, `quiet`, `verbose`, `help`,
+  `no-quiet`, `no-verbose`) or with `target`, the spelling `akm task`
+  retired in 0.9 and still answers with a rename hint in every spelling —
+  such a document now fails `TASK_SOURCE_INVALID` at parse time, since the
+  colliding name would otherwise route a caller's value into `akm task run`'s
+  own flag, or into that rename hint, instead of the declared input. `akm
+  task run <id>` now accepts exact-name input flags for a task source v4
+  document's declared `inputs:` (an undeclared flag name fails
+  `UNKNOWN_FLAG`; a bad value or an unsatisfied `required: true` declaration
+  fails `INPUT_BINDING_INVALID`; both exit 2 with the usual JSON error
+  envelope).
+  Where those materialized values go depends on the task's own target: for
+  `uses: workflows/<ref>` they become the child run's params (the existing
+  `with:` → params path); for a `run:`, `scripts/<ref>`, or `commands/<ref>`
+  target they are validated and then **discarded** — `akm task run`'s own
+  flags never populate an `AKM_TASK_INPUTS` environment variable or a
+  `## Task inputs` prompt block. Those two surfaces are a separate delivery
+  path: they carry a **workflow step's** `with:` binding into a task it
+  composes via `uses: tasks/<ref>` (see the `with:`-binding bullet above),
+  not `akm task run`'s own CLI flags. `schedule[].inputs` on a `version: 4`
+  task source are compiled the same way `akm task run`'s flags are: `akm
+  task sync` builds them into the scheduler binding's own invocation tail
+  instead of only validating and discarding them, so a scheduled run is
+  subject to the identical workflow-target-only delivery rule. `akm task
+  add` now authors task source v4 (see the "Task v3 sources no longer
+  parse" entry below for the `--params` → typed `inputs:` change). A
+  `version: 4` task source is now a valid workflow-step target (see above).
+  The published [task schema](schemas/akm-task.json) now publishes only the
+  single `version: 4` shape — the `version: 3` arm and its `githubActionRef`
+  definition are removed; a `version: 2` or `version: 3` document validates
+  against nothing in this schema and is converted by `akm migrate apply`
+  instead. **Binding a task's inputs adds nothing to the hash preimage of a
+  step that binds none**: a unit whose frozen target carries no
+  `inputBindings` has exactly the preimage *shape* it had before this
+  feature — no `taskInputs` key at all. Its hash *value* still moves, because
+  every unit and gate hash in this release re-versions once (`hashVersion`
+  5 → 7, see the `irVersion` 5 entry above), and no pre-`irVersion`-5 plan can
+  execute here to be compared against.
+- **A task's `output:` is legal only with a command target.** `output:`
+  alongside `run:`, `uses: scripts/<ref>`, or `uses: workflows/<ref>` now
+  fails `TASK_SOURCE_INVALID` (exit 2) at parse instead of being accepted and
+  never enforced: those runtimes decide success from the process exit code or
+  from a child run's own status and consume no task-level response schema, so
+  an authored contract there was silently unenforced. `uses: commands/<ref>`
+  and `uses: akm/command` — the targets that forward it as the model's
+  response schema — are unchanged. The published
+  [task schema](schemas/akm-task.json) enforces the same rule, so an editor
+  validating against it no longer green-lights a document `akm task run`
+  refuses to load. Migration handles this for you: `akm migrate apply` drops
+  an `akm.outputSchema` that sat on one of those three targets (it was inert
+  in v3 as well — nothing ever read it there) and reports the drop as a
+  notice on that file's plan entry rather than blocking the file.
+- **A `schedule:` entry must be able to satisfy the task's declared
+  `inputs:`.** A scheduled firing supplies no input flags, so a task
+  declaring a `required: true` input — which may not also carry a
+  `default:` — and a `schedule:` entry that names no value for it could only
+  ever install a binding that fails at every firing. Such a document now
+  fails `TASK_SOURCE_INVALID` (exit 2) at parse, naming the unsatisfied
+  input, instead of syncing cleanly and failing once per fire. This covers
+  every entry shape: the `schedule: "<cron>"` string shorthand and a list
+  entry with no `inputs:` key are held to the same contract as one that
+  authors `inputs:`. Give the entry an `inputs:` value for each named input,
+  or declare a `default:` on the input instead. Manual-only tasks are
+  unaffected — a `required: true` input with no `schedule:` is still valid
+  and is supplied per run with `akm task run <id> --<name> <value>`.
+- **`akm workflow create --json` renames its `stashDir` envelope field to
+  `bundleDir`.** The success envelope now reads
+  `{ok, ref, path, bundleDir}`; the value (the owning bundle's directory) is
+  unchanged. Scripts reading `stashDir` off `akm workflow create --json`
+  must read `bundleDir`. This was the last `stash`-vocabulary field on a
+  0.9.2 command envelope; the indexer's internal `IndexOptions.stashDir` is
+  not a CLI surface and is unchanged.
+- **Task v3 sources no longer parse.** A task document with `version: 3`
+  (or `version: 2`) fails with `UsageError` code
+  `TASK_SCHEMA_VERSION_UNSUPPORTED` (exit 2) instead of executing — the v3
+  parser is gone from `src/`; it survives only vendored inside the
+  `akm-migrate` executable, which is how the migrator still reads what it
+  converts. Run `akm migrate apply --dry-run`, review every `changed` /
+  `skipped` / `blocked` result, then `akm migrate apply` — the command now
+  runs **both** generations in one pass: task-v2 → task-v3, then
+  task-v3 → task source v4, against the same tree. `akm task add` authors
+  task source v4 directly; a task's `--params` becomes typed `inputs:` with
+  defaults instead of a `with:` bag. A task's enabled state is now per
+  schedule binding (`schedule[].enabled`) rather than a document-level
+  `akm.enabled` flag — `akm task add --disabled` writes
+  `schedule: [{cron: …, enabled: false}]` instead of a document-level
+  `akm.enabled: false`. See
+  [Migrating task v3 to task source v4](docs/migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4).
+- **GitHub Action locators are no longer recognized anywhere.** A task's
+  `uses: owner/repo[/path]@rev` is now a source error at parse
+  (`TASK_SOURCE_INVALID`); a workflow step's `uses: owner/repo[/path]@rev`
+  now fails with reason `unsupported-uses-target` instead of
+  `remote-action-acquisition-out-of-scope`. Nothing acquired or executed a
+  remote action in any akm release — this deletes the *recognition* of the
+  shape, not a capability that ever worked. The migrator still names the
+  target explicitly when it blocks a file
+  (`github-action-target-removed`).
+- **Multi-job YAML is rejected at the adapter boundary.** A GitHub-shaped
+  workflow document whose `jobs:` map does not contain exactly one job now
+  fails at the source adapter with reason `multi-job-unsupported`, surfaced
+  from `akm workflow run` (and `akm workflow plan`) as `UsageError` code
+  `COMPOSITION_INVALID` (exit 2). Previously such a document parsed and
+  ordered its jobs cleanly and was refused only later, in two different
+  places, with two different shapes (one thrown error, one `ok: false`
+  compile result). Split a multi-job document into separate single-job
+  workflows and compose them with a child-workflow step
+  (`uses: workflows/<ref>`). Every other workflow-source compile failure now
+  reports `UsageError` code `WORKFLOW_SOURCE_INVALID` rather than
+  `INVALID_FLAG_VALUE`.
+- **The second task scheduling syntax is removed.** `akm.schedule` and a
+  task document's top-level `on:` are gone along with task v3 (see "Task v3
+  sources no longer parse" above); task source v4's optional top-level
+  `schedule:` is the one canonical scheduling form, and a task with no
+  `schedule:` is manual-only and fully composable as a workflow-step
+  target.
+
+### Changed
+
+- **`INVALID_FLAG_VALUE` is now rare in task or workflow domain failures,
+  with two named exceptions.** Every task-source, workflow-source,
+  target-classification, and composition failure now reports a
+  phase-specific code — `TASK_SOURCE_INVALID`, `TARGET_REF_INVALID`,
+  `COMPOSITION_INVALID`, `WORKFLOW_SOURCE_INVALID`, `INPUT_BINDING_INVALID`,
+  `TASK_SCHEMA_VERSION_UNSUPPORTED`, or `TASK_TARGET_UNSUPPORTED` — **except**
+  a task's workflow-target `env:` composition rejection (a `uses:
+  workflows/<ref>` task that also authors `env:`) and a workflow child-ref
+  asset-resolution failure (`Workflow source target <ref> was not found.`),
+  both deliberately preserved as `INVALID_FLAG_VALUE` so an existing pinned
+  test's code and message stay byte-unchanged. The remaining
+  `INVALID_FLAG_VALUE` sites in the task/workflow domains (38 total, across
+  `src/tasks/**` and `src/workflows/**`) are these two preserved exceptions
+  plus scalar CLI-argument parsing (a cron expression, a task id, a workflow
+  parameter flag) and one code-allowlist membership entry — genuine
+  flag-value validation or a pinned exception, not a re-codable
+  task/workflow source or composition failure. **Scripts branching on
+  `code` for a task/workflow domain error should switch on the specific
+  code above rather than assuming `INVALID_FLAG_VALUE` — except for the two
+  named exceptions, which still report `INVALID_FLAG_VALUE`.** Exit codes
+  are unchanged (2 for every one of these).
+- **A typed task-input flag that can't be coerced no longer echoes the
+  supplied value in its error.** `akm task run <ref> --<input> <value>`
+  against a `type:`-declared input used to report
+  `must be <types>; received "<value>"` on coercion failure; since typed
+  flags can carry credentials and this detail lands in stderr envelopes
+  that get pasted into CI logs and issue reports, the message now names
+  only the input and its accepted types. The error code
+  (`INPUT_BINDING_INVALID`) and exit code (2) are unchanged.
+
+### Added
+
+- **Child workflows.** A workflow step can now compose another workflow —
+  directly (`uses: workflows/<ref>`) or through a task source v4 document
+  whose own target is a workflow (`uses: tasks/<ref>`) — instead of
+  failing to freeze. `with:` on the composing step binds the child's
+  declared `params:`. Composition is bounded: depth (8 levels), a
+  composition cycle, and aggregate embedded plan bytes (1 MiB total across
+  one root freeze) are all checked at **freeze**, before the parent run is
+  published, and fail with `UsageError` code `COMPOSITION_INVALID`. The
+  child workflow is compiled, validated, and frozen **completely** — its own
+  complete plan embedded inside the parent's — before the parent run exists,
+  so editing the child's source afterward cannot affect an already-frozen
+  parent, and the child's transitive sources join the parent's guarded
+  source read set. Running a step that composes a child workflow now drives
+  the child to completion — see **Child workflows now execute** and
+  **Workflow `outputs:`** below. (Correction: an earlier development
+  increment of this same 0.9.2 release briefly made an unexecuted composing
+  step fail closed with `UsageError` code
+  `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`. That code never reached a release
+  and is gone from the shipped 0.9.2 — it is listed here only because a
+  0.9.2 pre-release snapshot may otherwise be the sole place it was seen.)
+  See
+  [Workflow Schema: Child workflows](docs/reference/workflow-schema.md#child-workflows).
+- **Child workflows now execute.** Running a step whose target is a child
+  workflow drives that child inline, in the parent's own process, with the
+  same engine `akm workflow run` uses — publication is idempotent, so a
+  retried or resumed composing step reuses the same child rather than
+  starting a new one. The child's final status maps onto the composing
+  step and the parent run: `completed` promotes the child's exported result
+  as the step's output and the parent continues; `failed` fails the step
+  and the run; `blocked` blocks the step and the run, with recovery notes
+  naming the exact sequence — `akm workflow resume <childRunId>`, then
+  `akm workflow resume <parentRunId>` and `akm workflow run <parentRunId>`.
+  `akm workflow status` on a run that composes children now renders a
+  `children:` tree; `akm workflow list` excludes child runs by default
+  (`--children` includes them), and a child run id always works directly
+  with `status`/`resume`/`abandon`/`run`. See
+  [Workflow Schema: Child execution](docs/reference/workflow-schema.md#child-execution)
+  and [Running Workflows: Child runs](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md#child-runs).
+- **Workflow `outputs:`.** A workflow may declare a run-level export in its
+  Markdown frontmatter — `outputs: {<name>: {from: steps.<id>.output(.<seg>)*,
+  schema?}}`, up to 64 entries — resolved once, from persisted step
+  evidence, at run completion. An unresolvable reference, a truncated
+  step artifact, or a schema violation rolls the completion back
+  (`UsageError` code `WORKFLOW_OUTPUT_INVALID`): the run stays `active` and
+  its final step stays `pending` rather than completing with missing
+  exports. A run with no `outputs:` declaration exports `{runId, status}`
+  instead. This is a Markdown-frontmatter-only key — a GitHub-shaped
+  workflow's closed root key set has no extension surface for it, the same
+  reason it cannot declare `params:` either. See
+  [Workflow Schema: Workflow outputs](docs/reference/workflow-schema.md#workflow-outputs).
+- **`akm workflow plan <ref>`** (Evolving) — compiles, resolves, and freezes
+  a workflow exactly as starting a run would, then stops: zero durable
+  writes, no published run, no event, no lease. Prints the canonical step
+  graph, per-step frozen target kinds, task/child expansion, input
+  bindings, the source read set, and freeze-time lowering notices —
+  secret-free by construction (no resolved reference value, request
+  content, script bytes, or credential is ever printed). Defaults to a
+  human-readable summary; `--format json` returns the full envelope. See
+  [CLI reference: workflow plan](docs/reference/cli.md#workflow-plan).
+- **`akm task explain <ref> [input flags]`** — read-only task introspection.
+  Prints the task's source path and version, its declared `inputs:` (with
+  defaults — a secret-shaped default prints as `<redacted>`), the supplied
+  values with provenance (`default` | `flag` | `schedule-binding`, likewise
+  redacted when secret-shaped), the resolved target kind/ref, effective
+  execution settings with field-level provenance, and schedule bindings.
+  Never spawns anything, writes history, or touches the scheduler; never
+  prints an `env:` value, a credential, a prompt body, a `run:` string, or
+  `with.content`. It accepts the task's own declared input flags and nothing
+  else: `--scheduled` — which `explain` neither declares nor implements —
+  fails `UNKNOWN_FLAG` (exit 2) rather than being silently discarded, in
+  every spelling (`--scheduled`, `--scheduled=false`, …). See
+  [CLI reference: task](docs/reference/cli.md#task).
+- **`AKM_TASK_INPUTS`** — the exec-context environment variable a
+  task-composed step's shell/script target receives: canonical JSON of its
+  resolved, schema-validated `inputs:` bindings. Present only when the
+  bindings are non-empty; subject to the same per-platform size ceiling as
+  `AKM_INPUTS` / `AKM_PARAMS`. See
+  [Context reaching the command](docs/reference/workflow-schema.md#context-reaching-the-command).
+- **A v3 → task source v4 migrator**: the separate `akm-migrate` executable
+  (installed alongside `akm`) gains `task-v4-status` / `task-v4-apply
+  [--dry-run]`, a second, independent generation of the same dry-run-first,
+  `changed | skipped | blocked` migration planner — options bag flattened to
+  top-level keys. A `with:` authored on any target other than
+  `uses: akm/command` is `blocked` for manual review, alongside a
+  github-action-targeted `uses:` (blocked reason
+  `github-action-target-removed`) and anything else ambiguous: the migrator
+  translates structure, never intent, so `inputs:` is never invented on a
+  file's behalf — declaring it is an authoring decision left to the person
+  editing the migrated file. Nothing is overwritten without a backup. A
+  `changed` file can carry an informational **notice** for a translation that
+  is faithful but not one-to-one — a manual-dispatch-only trigger that v4
+  expresses as "no `schedule:`", and an `akm.outputSchema` dropped because v4
+  accepts `output:` only with a command target — so read the notices on a
+  dry-run plan, not just the outcomes. A v3 document that was never valid in
+  the first place (an empty `on:`, or a `workflow_dispatch:` carrying
+  `inputs:`) is `blocked` as `invalid-v3-task` rather than being converted
+  into runnable v4 bytes. By
+  0.9.2's release this generation runs automatically as the second half of
+  `akm migrate status` / `akm migrate apply [--dry-run]` (see "Task v3
+  sources no longer parse" above) — `task-v4-status`/`task-v4-apply` remain
+  as the standalone, single-generation entry points the frozen migrator
+  always exposes. See the
+  [0.9.1 to 0.9.2 migration guide](docs/migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4).
+
+### Fixed
+
+- **A flag value for a parameter or input declaring both `array` and a
+  scalar type is no longer forced into an array.** `akm workflow run <ref>
+  --<param> <value>` (and, new in this release, `akm task run <id>
+  --<input> <value>`) unconditionally grouped a supplied value into an array
+  whenever the declaration mentioned `array` at all, so
+  `type: ["array", "string"]` with `--x hello` delivered `["hello"]` instead
+  of the permitted string, and `type: ["array", "null"]` could never produce
+  `null` — silently, since the altered value still satisfied the array
+  branch. A single, non-bracketed value now tries the union's scalar
+  alternatives first. An `array`-only declaration, the JSON-array shorthand
+  (`--x '["a","b"]'`), and grouping a repeated flag are all unchanged.
+- **`akm task <subcommand> --target=<value>` now answers with the 0.9 rename
+  hint instead of ignoring the flag.** The retired-spelling check compared
+  whole argv tokens, so it caught a bare `--target` but not `--target=team`;
+  because `target` is exempt from the generic unknown-flag gate on `task`
+  subcommands precisely so that check can answer, the `=`-spelling was
+  rejected by nothing at all and the bundle the caller named was silently
+  dropped. It now fails with `UsageError` code `INVALID_FLAG_VALUE` (exit 2)
+  naming `--bundle`, in every spelling.
+- **The embedded `akm` hint sheet no longer teaches a task format this
+  release rejects.** Its "Scheduled Tasks" section still told readers to
+  author `version: 3` with `akm.enabled` and `akm.timeout`; it now describes
+  task source v4 (`version: 4`, per-entry `schedule[].enabled`, top-level
+  `timeout`, typed `inputs:`/`output:`) and points at `akm migrate apply`.
+  The `stash`-terminology doc lint now scans the shipped hint assets too, so
+  the embedded help cannot drift out of the active-docs vocabulary again.
+
 ## [0.9.2-alpha.4] - 2026-08-26
 
 ### Added

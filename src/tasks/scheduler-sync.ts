@@ -18,6 +18,7 @@ import {
   type GuardedExecutionSource,
   GuardedExecutionSourceCollector,
 } from "../execution/guarded-source";
+import { applyInputDefaults, validateInputs } from "../execution/input-contract";
 import type { FileContext } from "../indexer/walk/file-context";
 import { compileWorkflowPlan } from "../workflows/ir/compile";
 import { compileResolveFreezeWorkflowV4 } from "../workflows/ir/freeze-v4";
@@ -31,7 +32,8 @@ import {
   workflowNameForSourcePath,
 } from "../workflows/source-files";
 import { compileWorkflowSource } from "../workflows/source-ir/compile";
-import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "./runtime-v3";
+import { prepareTaskV3Execution } from "./prepare/prepare";
+import type { PrepareTaskV3ExecutionContext } from "./prepare/prepared-execution";
 import { parseSchedule, type ScheduleBackend } from "./schedule";
 import {
   assertSchedulerNativeArtifactCardinality,
@@ -49,7 +51,9 @@ import {
   schedulerNativeArtifactKey,
   schedulerNativeBindingId,
 } from "./scheduler-binding";
-import { parseTaskV3Yaml, taskV3SourceErrorDetail } from "./source-v3";
+import { parseTaskSource } from "./source/parse-task-source";
+import { projectTaskSourceV4 } from "./source/project-v4";
+import { taskSourceErrorDetail } from "./source-v3";
 
 export interface SchedulerSyncPlanInput {
   readonly sourceRoot: string;
@@ -112,7 +116,7 @@ export interface PreparedSchedulerSourceSet {
 
 export interface SchedulerExecutableWorkflowEvidence {
   readonly ref: string;
-  readonly irVersion: 4;
+  readonly irVersion: 5;
   readonly planHash: string;
   readonly sourceReadSet: import("../workflows/ir/schema-v4").WorkflowPlanGraphV4["sourceReadSet"];
   readonly executionEvidenceDigest: string;
@@ -442,7 +446,7 @@ async function compileDesiredSourceSet(
   if (failures.length > 0) {
     throw new UsageError(
       `Scheduler sync rejected the desired source set before mutation:\n${failures.map((failure) => `- ${failure}`).join("\n")}`,
-      "INVALID_FLAG_VALUE",
+      "TASK_SOURCE_INVALID",
     );
   }
   return Object.freeze({
@@ -476,12 +480,47 @@ async function compileTaskSources(
         );
       }
       physicalOwners.set(physicalIdentity, sourcePath);
-      const document = parseTaskV3Yaml({
+      // Project BEFORE prepareTaskV3Execution so projectability is checked —
+      // but build the scheduler bindings from the ORIGINAL task source v4
+      // document, not the projection, which deliberately drops per-entry
+      // `enabled` and `schedule[i].inputs` (D2-N5, project-v4.ts) —
+      // schedule-supplied inputs are delivered through the scheduler
+      // binding's own compiled invocation tail (P2b Lane B, spec §4.4,
+      // B-N3), not through the prepare-seam projection. A task source v4
+      // document has no document-level `akm.enabled`, so `enabled: true` is
+      // passed at the document level and every entry's own `enabled`
+      // (always present, defaulted at parse time) decides.
+      const parsed = parseTaskSource({
         yaml: guarded.content,
         filePath: sourcePath,
         workspaceRoot: input.sourceRoot,
       });
+      const document = projectTaskSourceV4(parsed.v4);
       const qualifiedRef = makeBundleRef(input.bundleName, conceptId);
+      // P2b Lane B (spec docs/plans/specs/p2b-input-bindings.md §4.4, rows
+      // B-50/F-B2): validate each v4 schedule entry's inputs against the
+      // task's OWN declared contract WITH DEFAULTS APPLIED — the same
+      // applyInputDefaults + validateInputs pair akm task run uses
+      // (src/tasks/run/load-task.ts). parseTaskSource's own parse-time check
+      // (task-source-v4.ts's parseScheduleEntry) already rejects an
+      // unknown/malformed entry against the RAW supplied values; this is a
+      // deliberate second, independent gate over the DEFAULTED view — the
+      // exact set of values the compiled invocation below actually delivers
+      // — so a violation fails HERE, recorded as a task failure at sync,
+      // rather than surfacing for the first time when the scheduler fires
+      // the compiled invocation.
+      const contract = parsed.v4.inputs ?? {};
+      for (const scheduleEntry of parsed.v4.schedule) {
+        const defaultedInputs = applyInputDefaults(contract, { ...scheduleEntry.inputs });
+        const errors = validateInputs(contract, defaultedInputs);
+        if (errors.length > 0) {
+          throw new UsageError(
+            `Task ${JSON.stringify(qualifiedRef)} schedule[${scheduleEntry.ordinal}].inputs does not satisfy ` +
+              `its declared inputs once defaults are applied: ${errors.join("; ")}`,
+            "TASK_SOURCE_INVALID",
+          );
+        }
+      }
       await prepareTaskV3Execution(document, {
         taskId: id,
         taskRef: qualifiedRef,
@@ -500,14 +539,22 @@ async function compileTaskSources(
             : loadAdapterExecutionSource(ref, "persona", guardedOptions);
         },
       });
+      const relSource = toPosix(path.relative(input.sourceRoot, sourcePath));
       const sourceBindings = compileTaskSchedulerBindings({
         id,
         qualifiedRef,
         ...(input.bundleTarget ? { bundleTarget: input.bundleTarget } : {}),
-        enabled: document.akm?.enabled !== false,
-        schedules: document.triggers.schedules.map((schedule) => ({
-          ...schedule,
-          source: `${toPosix(path.relative(input.sourceRoot, sourcePath))}:${schedule.source}`,
+        enabled: true,
+        schedules: parsed.v4.schedule.map((schedule) => ({
+          cron: schedule.cron,
+          ordinal: schedule.ordinal,
+          enabled: schedule.enabled,
+          source: `${relSource}:${schedule.source}`,
+          // P2b Lane B (spec §4.4, B-N3): delivered through the compiled
+          // binding's own invocation tail below — the F-B2 flip that closes
+          // the P2a B-38 "validated but not yet delivered" gap this comment
+          // used to describe.
+          inputs: schedule.inputs,
         })),
       });
       for (const binding of sourceBindings) {
@@ -548,14 +595,14 @@ async function compileWorkflowSources(
           compiled.errors
             .map((error) => `${error.path}:${error.line ?? 1} [${error.code}] ${error.message}`)
             .join("; "),
-          "INVALID_FLAG_VALUE",
+          "WORKFLOW_SOURCE_INVALID",
         );
       }
       const planDraft = compileWorkflowPlan(compiled.ir, canonicalName);
       if (!planDraft.ok) {
         throw new UsageError(
           planDraft.errors.map((error) => `${guarded.relativePath}:${error.line} ${error.message}`).join("; "),
-          "INVALID_FLAG_VALUE",
+          "WORKFLOW_SOURCE_INVALID",
         );
       }
       const conceptId = input.adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName;
@@ -577,7 +624,7 @@ async function compileWorkflowSources(
       evidence.push(
         Object.freeze({
           ref: qualifiedRef,
-          irVersion: 4 as const,
+          irVersion: 5 as const,
           planHash,
           sourceReadSet: frozen.plan.sourceReadSet,
           executionEvidenceDigest,
@@ -708,7 +755,7 @@ function assertUniqueInstalledIds(installed: readonly InstalledSchedulerBinding[
 }
 
 function taskFailure(file: string, cause: unknown): string {
-  const detail = taskV3SourceErrorDetail(cause);
+  const detail = taskSourceErrorDetail(cause);
   return detail === errorMessage(cause) ? `${file}: ${detail}` : detail;
 }
 

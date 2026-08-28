@@ -294,7 +294,7 @@ function writeTrueTask(): void {
   fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
   fs.writeFileSync(
     path.join(storage.stashDir, "tasks", `${TASK_TRUE_ID}.yml`),
-    ["version: 3", 'run: "true"', "akm:", '  schedule: "@daily"', "  enabled: true", ""].join("\n"),
+    ["version: 4", 'run: "true"', ""].join("\n"),
   );
 }
 
@@ -302,17 +302,14 @@ describe("family C — akm task", () => {
   test("tasks run maps a command task's non-zero status to akm failure exit 1", async () => {
     const id = "golden-false";
     fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
-    fs.writeFileSync(
-      path.join(storage.stashDir, "tasks", `${id}.yml`),
-      ["version: 3", 'run: "exit 7"', "akm:", '  schedule: "@daily"', "  enabled: true", ""].join("\n"),
-    );
+    fs.writeFileSync(path.join(storage.stashDir, "tasks", `${id}.yml`), ["version: 4", 'run: "exit 7"', ""].join("\n"));
 
     const run = await runCli(["task", "run", id, "--format=json"]);
     expect(run.code).toBe(1);
     expect(JSON.parse(run.stdout).result.detail.exitCode).toBe(7);
   });
 
-  test("tasks run / history / doctor — command-type task running `true`", async () => {
+  test("tasks run / history / doctor / explain — command-type task running `true`", async () => {
     writeTrueTask();
 
     const run = await runCli(["task", "run", "--format", "json", TASK_TRUE_ID]);
@@ -327,6 +324,13 @@ describe("family C — akm task", () => {
     expect(doctor.code).toBe(0);
     const doctorJson = JSON.parse(doctor.stdout) as Record<string, unknown>;
     if (doctorJson.remediation !== undefined) expect(doctorJson.remediation).toBe("akm task sync --rebind");
+
+    // P2b Lane B (spec §1.7 B-N4, §7 F-B3): read-only introspection — no
+    // history write, no scheduler touch, no execution spawn — over the SAME
+    // command-type task the run/history/doctor golden above already covers.
+    const explain = await runCli(["task", "explain", TASK_TRUE_ID, "--format=json"]);
+    expect(explain.code).toBe(0);
+    const explainJson = JSON.parse(explain.stdout) as Record<string, unknown>;
 
     expectGolden(
       "tests/fixtures/goldens/cli/c-tasks-family.json",
@@ -344,6 +348,7 @@ describe("family C — akm task", () => {
             .filter((key) => key !== "remediation")
             .sort(),
         },
+        explain: { exitCode: explain.code, stdoutKeys: Object.keys(explainJson).sort() },
       },
       { stash: storage.stashDir, data: storage.dataDir },
     );

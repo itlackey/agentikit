@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { openLogsDatabase, queryTaskLogs } from "../../src/core/logs-db";
 import type { SpawnFn } from "../../src/core/subprocess";
-import { readTaskHistory, runTask } from "../../src/tasks/runner";
+import { runTask } from "../../src/tasks/run/run-task";
+import { readTaskHistory } from "../../src/tasks/run/task-history";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
@@ -69,25 +70,41 @@ function outputSpawn(stdout: string, stderr = ""): ReturnType<SpawnFn> {
   };
 }
 
-describe("task-v3 runner mutation boundary", () => {
+describe("task runner mutation boundary", () => {
   for (const [label, yaml, message] of [
     ["v2", 'version: 2\nschedule: "@daily"\ncommand: echo legacy\n', "TASK_SCHEMA_VERSION_UNSUPPORTED"],
-    ["malformed", 'version: 3\nrun: [unterminated\nakm:\n  schedule: "@daily"\n', "Invalid task v3"],
-    ["remote action", 'version: 3\nuses: actions/checkout@v4\nakm:\n  schedule: "@daily"\n', "unsupported"],
-    ["unresolved", 'version: 3\nuses: scripts/missing.sh\nakm:\n  schedule: "@daily"\n', "not found"],
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2, row B-14, F-A2.5):
+    // task source v3 is retired from `src` — a version: 3 document now fails
+    // the SAME way a version: 2 document does, with the SAME migrate hint
+    // (row B-15).
+    ["v3", 'version: 3\nrun: echo legacy\nschedule: "@daily"\n', "TASK_SCHEMA_VERSION_UNSUPPORTED"],
+    // P4 (spec §3.2.2, row B-17): the bounded YAML front end's sourceLabel is
+    // "task source" now, not "task v3 source".
+    ["malformed", 'version: 4\nrun: [unterminated\nschedule: "@daily"\n', "Invalid task source"],
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-04,
+    // F-A1.14): the locator grammar is deleted from classifyTaskSourceV4Uses,
+    // so a github-action-shaped uses: fails at PARSE with task source v4's
+    // own B-11 message, not the old prepare-side "remote action acquisition
+    // is unsupported" arm.
+    [
+      "remote action",
+      'version: 4\nuses: actions/checkout@v4\nschedule: "@daily"\n',
+      "GitHub Action targets were removed",
+    ],
+    ["unresolved", 'version: 4\nuses: scripts/missing.sh\nschedule: "@daily"\n', "not found"],
     [
       "nonprojectable command parameters",
-      'version: 3\nuses: commands/missing\nwith:\n  value: no\nakm:\n  schedule: "@daily"\n',
-      "do not accept with",
+      'version: 4\nuses: commands/missing\nwith:\n  value: no\nschedule: "@daily"\n',
+      "with is legal only with",
     ],
     [
       "secret-shaped literal env",
-      'version: 3\nrun: printf no\nenv:\n  API_TOKEN: github_pat_012345678901234567890123456789\nakm:\n  schedule: "@daily"\n',
+      'version: 4\nrun: printf no\nenv:\n  API_TOKEN: github_pat_012345678901234567890123456789\nschedule: "@daily"\n',
       "secret-shaped literal env",
     ],
     [
       "unresolved engine",
-      'version: 3\nuses: akm/command\nwith:\n  content: Review\nakm:\n  schedule: "@daily"\n  engine: missing\n',
+      'version: 4\nuses: akm/command\nwith:\n  content: Review\nengine: missing\nschedule: "@daily"\n',
       "missing",
     ],
   ] as const) {
@@ -95,13 +112,13 @@ describe("task-v3 runner mutation boundary", () => {
       writeTask("blocked", yaml);
       let failure: unknown;
       try {
-        await runTask("blocked", { stashDir: storage.stashDir, bundleName: "fixture", scheduled: true });
+        await runTask("blocked", { bundleDir: storage.stashDir, bundleName: "fixture", scheduled: true });
       } catch (error) {
         failure = error;
       }
       expect(failure).toBeInstanceOf(Error);
       expect((failure as Error).message).toContain(message);
-      if (label === "v2") {
+      if (label === "v2" || label === "v3") {
         expect((failure as Error & { hint(): string }).hint()).toContain("akm migrate apply --dry-run");
       }
       expect(readTaskHistory({ id: "blocked" })).toEqual([]);
@@ -110,13 +127,19 @@ describe("task-v3 runner mutation boundary", () => {
   }
 
   test("a post-dispatch nonzero shell result records exactly one failed attempt", async () => {
-    writeTask("fails", 'version: 3\nrun: exit 7\nshell: sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("fails", 'version: 4\nrun: exit 7\nshell: sh\nschedule: "@daily"\n');
     const result = await runTask("fails", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       scheduled: true,
     });
-    expect(result).toMatchObject({ status: "failed", target: { kind: "command" }, detail: { exitCode: 7 } });
+    // D8 (spec docs/plans/specs/p1b-model-extraction.md §5.3, §6 F-2):
+    // corollary of the authorized result-vocabulary flip — a shell dispatch
+    // now reports "shell", not the former shared "command" string. This is
+    // the one necessary follow-on edit G-1's stashDir->bundleDir rename does
+    // not itself cover; every other line in this file's diff is that
+    // mechanical substitution.
+    expect(result).toMatchObject({ status: "failed", target: { kind: "shell" }, detail: { exitCode: 7 } });
     expect(readTaskHistory({ id: "fails" })).toHaveLength(1);
     expect(logFiles().some((file) => file.endsWith(".log"))).toBe(true);
   });
@@ -144,11 +167,17 @@ describe("task-v3 runner mutation boundary", () => {
         "",
       ].join("\n"),
     );
-    writeTask("multi", 'version: 3\nuses: workflows/multi\nakm:\n  schedule: "@daily"\n');
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, F-A2.5): the
+    // wrapping task fixture converts to task source v4 — task source version
+    // is orthogonal to this rejection, which fires at workflow compilation.
+    // FLIPPED in P4 (§3.3, row B-34, F-A3.5): the rejection now fires at
+    // PARSE (multi-job-unsupported), not at compileWorkflowPlan's deleted
+    // "exactly one source-IR job" check — this document never reaches it.
+    writeTask("multi", 'version: 4\nuses: workflows/multi\nschedule: "@daily"\n');
 
     await expect(
-      runTask("multi", { stashDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
-    ).rejects.toThrow(/exactly one source-IR job/i);
+      runTask("multi", { bundleDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
+    ).rejects.toThrow(/requires exactly one job/i);
     expect(readTaskHistory({ id: "multi" })).toEqual([]);
     expect(logFiles()).toEqual([]);
   });
@@ -174,10 +203,10 @@ describe("task-v3 runner mutation boundary", () => {
         "",
       ].join("\n"),
     );
-    writeTask("services", 'version: 3\nuses: workflows/services\nakm:\n  schedule: "@daily"\n');
+    writeTask("services", 'version: 4\nuses: workflows/services\nschedule: "@daily"\n');
 
     await expect(
-      runTask("services", { stashDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
+      runTask("services", { bundleDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
     ).rejects.toThrow(/services/i);
     expect(readTaskHistory({ id: "services" })).toEqual([]);
     expect(logFiles()).toEqual([]);
@@ -203,12 +232,11 @@ describe("task-v3 runner mutation boundary", () => {
     writeTask(
       "workflow-env",
       [
-        "version: 3",
+        "version: 4",
         "uses: workflows/env-target",
         "env:",
         "  TASK_LOCAL_VALUE: ordinary-local-value",
-        "akm:",
-        '  schedule: "@daily"',
+        'schedule: "@daily"',
         "",
       ].join("\n"),
     );
@@ -216,7 +244,7 @@ describe("task-v3 runner mutation boundary", () => {
 
     await expect(
       runTask("workflow-env", {
-        stashDir: storage.stashDir,
+        bundleDir: storage.stashDir,
         bundleName: "fixture",
         scheduled: true,
         runWorkflowStepsImpl: async () => {
@@ -242,14 +270,17 @@ describe("task-v3 runner mutation boundary", () => {
       defaultBundle: "fixture",
       semanticSearchMode: "off",
     });
-    writeTask("qualified", 'version: 3\nuses: shared//scripts/ok.sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("qualified", 'version: 4\nuses: shared//scripts/ok.sh\nschedule: "@daily"\n');
 
     const result = await runTask("qualified", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       scheduled: true,
     });
-    expect(result).toMatchObject({ status: "completed", target: { kind: "command" } });
+    // D8 (spec §5.3, §6 F-2) corollary — a script dispatch now reports
+    // "script", not the former shared "command" string. See the comment at
+    // this file's other vocabulary-corollary edit.
+    expect(result).toMatchObject({ status: "completed", target: { kind: "script" } });
     expect(fs.readFileSync(result.log, "utf8")).toContain("qualified");
     expect(readTaskHistory({ id: "qualified" })).toHaveLength(1);
   });
@@ -260,15 +291,14 @@ describe("task-v3 runner mutation boundary", () => {
     writeTask(
       "exact-shell",
       [
-        "version: 3",
+        "version: 4",
         `run: ${JSON.stringify(command)}`,
         "shell: zsh",
         "working-directory: work",
         "env:",
         "  COUNT: 0",
         "  ENABLED: false",
-        "akm:",
-        '  schedule: "@daily"',
+        'schedule: "@daily"',
         "",
       ].join("\n"),
     );
@@ -294,7 +324,7 @@ describe("task-v3 runner mutation boundary", () => {
     };
 
     const result = await runTask("exact-shell", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       spawnFn,
     });
@@ -309,19 +339,18 @@ describe("task-v3 runner mutation boundary", () => {
     writeTask(
       "local-redaction",
       [
-        "version: 3",
+        "version: 4",
         "run: echo ignored",
         "env:",
         `  TASK_LOCAL_VALUE: ${secret}`,
-        "akm:",
-        '  schedule: "@daily"',
-        "  redact: [TASK_LOCAL_VALUE]",
+        'schedule: "@daily"',
+        "redact: [TASK_LOCAL_VALUE]",
         "",
       ].join("\n"),
     );
 
     const result = await runTask("local-redaction", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       scheduled: true,
       spawnFn: (_cmd, options) => {
@@ -356,18 +385,17 @@ describe("task-v3 runner mutation boundary", () => {
       writeTask(
         "cwd-swap",
         [
-          "version: 3",
+          "version: 4",
           "run: printf safe",
           ...(authoredCwd ? [`working-directory: ${authoredCwd}`] : []),
-          "akm:",
-          '  schedule: "@daily"',
+          'schedule: "@daily"',
           "",
         ].join("\n"),
       );
       let spawned = false;
 
       const result = await runTask("cwd-swap", {
-        stashDir: storage.stashDir,
+        bundleDir: storage.stashDir,
         bundleName: "fixture",
         beforeNativeDispatch: () => {
           if (replacement === "bundle-root") {
@@ -406,12 +434,12 @@ describe("task-v3 runner mutation boundary", () => {
     const script = path.join(scripts, "frozen.js");
     const original = 'console.log("original frozen bytes")\n';
     fs.writeFileSync(script, original);
-    writeTask("frozen-js", 'version: 3\nuses: scripts/frozen.js\nakm:\n  schedule: "@daily"\n');
+    writeTask("frozen-js", 'version: 4\nuses: scripts/frozen.js\nschedule: "@daily"\n');
     let materializedFile: string | undefined;
     let sourceMutated = false;
 
     const result = await runTask("frozen-js", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       beforeNativeDispatch: () => {
         if (replacement === undefined) fs.rmSync(script);
@@ -444,7 +472,7 @@ describe("task-v3 runner mutation boundary", () => {
     fs.writeFileSync(path.join(scripts, "cleanup.ts"), 'console.log("cleanup")\n');
     writeTask(
       "cleanup",
-      `version: 3\nuses: scripts/cleanup.ts\nakm:\n  schedule: "@daily"\n  timeout: ${outcome === "timeout" ? 1 : "null"}\n`,
+      `version: 4\nuses: scripts/cleanup.ts\nschedule: "@daily"\ntimeout: ${outcome === "timeout" ? 1 : "null"}\n`,
     );
     let directory: string | undefined;
     let settle: ((code: number) => void) | undefined;
@@ -473,7 +501,7 @@ describe("task-v3 runner mutation boundary", () => {
     };
 
     const result = await runTask("cleanup", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       bundleName: "fixture",
       spawnFn,
     });

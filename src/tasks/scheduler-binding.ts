@@ -14,6 +14,7 @@
 import { createHash } from "node:crypto";
 import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { UsageError } from "../core/errors";
+import { canonicalInputJson } from "../execution/input-contract";
 import type { ScheduleBackend } from "./schedule";
 import { normaliseTaskConceptId } from "./task-id";
 
@@ -42,6 +43,24 @@ export interface SchedulerSourceSchedule {
   readonly cron: string;
   readonly source: string;
   readonly ordinal: number;
+  /**
+   * Per-entry override of the document-level `enabled` (D2-N5, spec
+   * docs/plans/specs/p2a-task-source-v4.md §1.5). v3 sources never set this
+   * — every v3 projection keeps resolving to the document-level `enabled`
+   * unchanged. A task source v4 document's `schedule[i].enabled` carries it
+   * through so `compileTaskSchedulerBindings` can disable one binding
+   * without touching its siblings.
+   */
+  readonly enabled?: boolean;
+  /**
+   * P2b Lane B (spec docs/plans/specs/p2b-input-bindings.md §4.4, §1.7 B-N3):
+   * a v4 `schedule[i].inputs` literal override, additive exactly as `enabled`
+   * above — v3 never sets this, so its compiled invocation tail gains not a
+   * single byte (B-03). When present and non-empty,
+   * {@link compileTaskSchedulerBindings} appends a canonically-sorted
+   * `--<name> <value>` flag tail after `--scheduled`.
+   */
+  readonly inputs?: Readonly<Record<string, unknown>>;
 }
 
 export interface CompileTaskSchedulerBindingsInput {
@@ -168,10 +187,21 @@ export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindings
   const ref = assertQualifiedRef(input.qualifiedRef, "task");
   const bundle = parseBundleRef(ref).bundle;
   if (!bundle) throw new Error("invariant: qualified scheduler task ref lost its bundle");
-  const invocation = Object.freeze(["task", "run", id, "--bundle", bundle, "--scheduled"]);
+  // P2b Lane B (B-N3): the invocation is compiled PER schedule entry now —
+  // each entry's own `inputs` produces its own trailing flag tail, so it can
+  // no longer be hoisted as one binding shared by every entry.
   return Object.freeze(
     input.schedules.map((schedule) => {
       const bindingId = schedule.ordinal === 0 ? id : digestBindingId("task", ref, schedule.ordinal);
+      const invocation = Object.freeze([
+        "task",
+        "run",
+        id,
+        "--bundle",
+        bundle,
+        "--scheduled",
+        ...schedulerInputFlagTail(schedule.inputs),
+      ]);
       return freezeBinding({
         id: bindingId,
         nativeId: schedulerNativeBindingId(bindingId),
@@ -179,11 +209,60 @@ export function compileTaskSchedulerBindings(input: CompileTaskSchedulerBindings
         cron: schedule.cron,
         source: schedule.source,
         ordinal: schedule.ordinal,
-        enabled: input.enabled,
+        enabled: schedule.enabled ?? input.enabled,
         invocation,
       });
     }),
   );
+}
+
+/**
+ * The canonically-sorted `--<name> <value>` flag tail for one schedule
+ * entry's `inputs` (spec §1.7 B-N3). Empty/absent `inputs` yields an empty
+ * tail — the fixed six-token invocation, byte-identical to every schedule
+ * entry before P2b (B-03).
+ *
+ * Code-review finding (scheduler-binding.ts:536): a value whose exact text
+ * begins with `-` (a negative number, or a string that just happens to
+ * start with a dash) is indistinguishable from a NEW flag in the two-token
+ * `--<name> <value>` form — `isValidSchedulerInputFlagTail`
+ * (scheduler-invocation.ts) refuses it outright, and even a looser parser
+ * would still be wrong for a non-numeric dash-leading string: the real `akm
+ * task run` flag parser (`parseTaskInputFlags`, tasks-cli.ts) only
+ * special-cases a dash-DIGIT lead, so it would silently treat `--scope
+ * -urgent` as the boolean flag `--scope` followed by an orphaned,
+ * dropped `-urgent` token. The inline `--<name>=<value>` form has no such
+ * ambiguity on EITHER side — `isValidSchedulerInputFlagTail` accepts it
+ * unconditionally, and `parseTaskInputFlags`'s own inline-`=` branch splits
+ * on the first `=` without ever inspecting the value's leading character —
+ * so it is used whenever the value's exact text would otherwise be
+ * ambiguous. Every other value keeps the existing two-token form
+ * byte-identical to before this fix (B-03/B-45).
+ */
+function schedulerInputFlagTail(inputs: Readonly<Record<string, unknown>> | undefined): readonly string[] {
+  if (!inputs) return [];
+  const names = Object.keys(inputs).sort();
+  const tail: string[] = [];
+  for (const name of names) {
+    const text = schedulerInputFlagValueText(inputs[name]);
+    if (text.startsWith("-")) tail.push(`--${name}=${text}`);
+    else tail.push(`--${name}`, text);
+  }
+  return tail;
+}
+
+/**
+ * One input value's argv text. A scalar is its exact text — `String(value)`
+ * for a number/boolean (a `true` boolean is `"true"`, never a bare flag, so
+ * the tail round-trips through one parser), the string itself for a string.
+ * An object/array value is its `canonicalInputJson` text, which
+ * `materializeInputFlags`'s JSON-shorthand path already coerces back through
+ * the declaration.
+ */
+function schedulerInputFlagValueText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return canonicalInputJson(value);
 }
 
 export function compileWorkflowSchedulerBindings(

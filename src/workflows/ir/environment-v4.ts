@@ -76,11 +76,11 @@ export function freezeWorkflowEnvironment(
     if (!match || match[1] !== resolved.bundle) {
       throw new UsageError(
         `Workflow env ref ${JSON.stringify(inputRef)} did not resolve to a canonical fully-qualified owner.`,
-        "INVALID_FLAG_VALUE",
+        "WORKFLOW_SOURCE_INVALID",
       );
     }
     if (logical.has(resolved.ref)) {
-      throw new UsageError(`Workflow environment contains duplicate ref ${resolved.ref}.`, "INVALID_FLAG_VALUE");
+      throw new UsageError(`Workflow environment contains duplicate ref ${resolved.ref}.`, "WORKFLOW_SOURCE_INVALID");
     }
     logical.add(resolved.ref);
 
@@ -386,5 +386,5 @@ function physicalIdentity(realPath: string, stat: fs.BigIntStats): string {
 }
 
 function invalid(message: string): never {
-  throw new UsageError(`Invalid frozen workflow environment: ${message}.`, "INVALID_FLAG_VALUE");
+  throw new UsageError(`Invalid frozen workflow environment: ${message}.`, "WORKFLOW_SOURCE_INVALID");
 }

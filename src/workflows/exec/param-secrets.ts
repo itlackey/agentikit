@@ -24,6 +24,18 @@
  * strings. It is purely advisory — it NEVER blocks a run and NEVER mutates
  * params — and is surfaced when a run starts. False positives and false
  * negatives are expected; it is a nudge, not a scanner.
+ *
+ * ## Reused as `akm task explain`'s redaction check
+ *
+ * `src/commands/tasks/explain.ts` reuses this same heuristic (via its own
+ * `isSecretShapedValue` wrapper) to decide which task-input values to print
+ * as `"<redacted>"` instead of in full. That reuse does NOT upgrade this
+ * detector into a hard guarantee: `explain`'s redaction is exactly as
+ * best-effort as the warnings above — a short, low-entropy, or
+ * unusually-named credential that this function does not flag prints
+ * UNREDACTED there too. Do not describe either surface as "secret-free by
+ * construction"; describe it as "secret-shaped values are redacted on a
+ * best-effort basis."
  */
 
 /**

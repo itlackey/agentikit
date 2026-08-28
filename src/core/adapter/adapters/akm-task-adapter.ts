@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The `akm-task` adapter for strict task-v3 `.yml` sources.
+ * The `akm-task` adapter for task `.yml` sources.
  *
  * A native akm task-YAML bundle (spec §6/§7). A `.yml` file derives
  * `type: task`; conceptId strips the `.yml` extension. Tasks are AKM-native
@@ -17,11 +17,13 @@
  *
  * ── validate (spec §6 task validation column) ──
  *
- * Validation enters the canonical task-v3 source parser. That parser owns the
- * closed key sets, executable-selector XOR, scheduling-source XOR, hostile
- * YAML policy, trigger classification, built-in action validation, bounds,
- * and physical `working-directory` containment. The adapter only translates a
- * parser failure into the format-family diagnostic shape.
+ * Validation enters the canonical task source parser (`parseTaskSource`,
+ * task source v4 only as of P4 — a `version: 3` or `version: 2` document now
+ * fails closed with `TASK_SCHEMA_VERSION_UNSUPPORTED`). That parser owns the
+ * closed key sets, the executable-selector XOR, hostile YAML policy, the
+ * `akm/command` builtin, bounds, and physical `working-directory`
+ * containment. The adapter only translates a parser failure into the
+ * format-family diagnostic shape.
  *
  * Conformance oracle (authored, DO NOT modify): fixture
  * `tests/fixtures/bundles/akm-task/` + goldens
@@ -31,12 +33,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
+import { parseTaskSource } from "../../../tasks/source/parse-task-source";
 import {
-  parseTaskV3Yaml,
   TASK_EXTENSION,
   TASK_NEAR_MISS_EXTENSION,
   taskExtensionDetail,
-  taskV3SourceErrorDetail,
+  taskSourceErrorDetail,
 } from "../../../tasks/source-v3";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
@@ -96,12 +98,12 @@ async function validate(c: BundleComponent, changes: FileChange[], ctx: Validate
       continue;
     }
     try {
-      parseTaskV3Yaml({ yaml: raw, filePath: relPath, workspaceRoot: c.root });
+      parseTaskSource({ yaml: raw, filePath: relPath, workspaceRoot: c.root });
     } catch (cause) {
       diagnostics.push({
         file: relPath,
         issue: "invalid-task-yaml",
-        detail: taskV3SourceErrorDetail(cause),
+        detail: taskSourceErrorDetail(cause),
         fixed: false,
       });
     }
@@ -161,7 +163,7 @@ export const akmTaskAdapter: BundleAdapter = {
         continue;
       }
       try {
-        parseTaskV3Yaml({ yaml: raw, filePath: entry.name, workspaceRoot: root });
+        parseTaskSource({ yaml: raw, filePath: entry.name, workspaceRoot: root });
         return true;
       } catch {
         // Continue probing the remaining top-level .yml files.

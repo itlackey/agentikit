@@ -4,7 +4,6 @@
 
 import path from "node:path";
 import { parseFrontmatterBlock } from "../../core/asset/frontmatter";
-import { classifyTaskV3Triggers, classifyTaskV3Uses } from "../../tasks/source-v3";
 import { parseWorkflow } from "../parser";
 import { type ProgramUnit, projectExecCore } from "../program/schema";
 import type { WorkflowStep as MarkdownWorkflowStep } from "../schema";
@@ -18,6 +17,8 @@ import {
   type WorkflowSourceStep,
 } from "./schema";
 import { canonicalizeWorkflowWorkingDirectory, WorkflowSourceSemanticError } from "./semantics";
+import { classifyWorkflowYamlTriggers } from "./triggers";
+import { classifyWorkflowSourceUses } from "./uses";
 
 export type { GithubWorkflowSourceOptions } from "./github-yaml";
 export { looksLikeGithubWorkflowSource } from "./github-yaml";
@@ -38,8 +39,8 @@ export function compileGithubWorkflowSource(
       ir: decodeWorkflowSourceIrV1(
         parseGithubWorkflowSource(source, {
           ...options,
-          classifyUses: options.classifyUses ?? classifyTaskV3Uses,
-          classifyTriggers: options.classifyTriggers ?? classifyTaskV3Triggers,
+          classifyUses: options.classifyUses ?? classifyWorkflowSourceUses,
+          classifyTriggers: options.classifyTriggers ?? classifyWorkflowYamlTriggers,
         }),
         {
           workspaceRoot: options.workspaceRoot,
@@ -92,6 +93,9 @@ export function compileMarkdownWorkflowSource(
       ...(parsed.document.description ? { description: parsed.document.description } : {}),
       ...(parsed.document.tags ? { tags: [...parsed.document.tags] } : {}),
       ...(parsed.document.params ? { params: jsonClone(parsed.document.params) as WorkflowSourceIrV1["params"] } : {}),
+      ...(parsed.document.outputs
+        ? { outputs: jsonClone(parsed.document.outputs) as WorkflowSourceIrV1["outputs"] }
+        : {}),
       ...(parsed.document.defaults
         ? { defaults: jsonClone(parsed.document.defaults) as WorkflowSourceIrV1["defaults"] }
         : {}),

@@ -21,6 +21,7 @@
     "stale_after": { "$ref": "akm-asset-envelope.json#/definitions/stale_after" },
     "params": {
       "type": "object",
+      "minProperties": 1,
       "maxProperties": 128,
       "description": "Run parameters: param name -> JSON Schema declaration. Names must be params.<name>-addressable identifiers.",
       "propertyNames": {
@@ -28,6 +29,18 @@
       },
       "additionalProperties": {
         "$ref": "#/definitions/jsonSchemaObject"
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "description": "Named, optionally schema-validated projections of step artifacts, exported when the run completes. Names must be steps.<child>.output.<name>-addressable identifiers. Each entry: { from: steps.<id>.output(.<seg>)*, schema?: <bounded JSON Schema> }. Markdown-frontmatter only.",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/outputDeclaration"
       }
     },
     "defaults": {
@@ -150,6 +163,21 @@
     "jsonSchemaObject": {
       "type": "object",
       "description": "A JSON Schema declaration. The parser validates it as a schema definition against the runtime's enforced subset (src/core/json-schema.ts checkJsonSchemaDefinition): typo'd type names and keywords outside the subset (e.g. $ref, const, format, patternProperties) are authoring-time errors, not silent no-ops."
+    },
+    "outputDeclaration": {
+      "type": "object",
+      "description": "One outputs: entry: a validated steps.<id>.output(.<seg>)* reference into a step artifact, plus an optional bounded JSON Schema.",
+      "required": ["from"],
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "A steps.<id>.output(.<seg>)* reference into a step artifact. Never params.<name> — an output projects a step artifact, never a param."
+        },
+        "schema": {
+          "$ref": "#/definitions/jsonSchemaObject"
+        }
+      }
     },
     "retry": {
       "type": "object",

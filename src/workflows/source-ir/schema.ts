@@ -31,13 +31,14 @@ import {
   WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
   WORKFLOW_MAX_MAP_EXPANSION,
+  WORKFLOW_MAX_OUTPUTS,
   WORKFLOW_MAX_PARAMS,
   WORKFLOW_MAX_RETRIES,
   WORKFLOW_MAX_ROUTE_BRANCHES,
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../resource-limits";
-import { canonicalTopologicalJobs, compareWorkflowSourceCodePoints } from "./ordering";
+import { compareWorkflowSourceCodePoints } from "./compare";
 import {
   canonicalizeWorkflowCron,
   canonicalizeWorkflowRun,
@@ -141,7 +142,18 @@ export interface WorkflowSourceStep {
   commandMode?: WorkflowSourceCommandMode;
   /** Lossless direct-spawn argv. It is never joined into a shell string. */
   exec?: WorkflowSourceExec;
-  with?: Record<string, WorkflowSourceScalar>;
+  /**
+   * A-N3 (P2b, docs/plans/specs/p2b-input-bindings.md §1.7): widened from
+   * `Record<string, WorkflowSourceScalar>` so a `tasks/<ref>` step's `with:`
+   * may bind a declared object/array-typed input, or a `{from: "..."}`
+   * reference. Widened again in P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md
+   * A-N8) to ALSO cover a `workflows/<ref>` step's `with:`, which binds the
+   * composed child's declared `params:` the same way. `scalarRecord` (below)
+   * narrows the "must be a scalar" restriction to non-task, non-workflow
+   * targets only — every other target's `with:` is still exactly
+   * scalar/null, byte-identical to before this widening.
+   */
+  with?: Record<string, unknown>;
   env?: Record<string, WorkflowSourceEnvironmentValue>;
   shell?: WorkflowSourceHostShell;
   workingDirectory?: string;
@@ -166,17 +178,28 @@ export interface WorkflowSourceJob {
   source: WorkflowSourceSpan;
 }
 
+/**
+ * One `outputs:` entry (P3b, spec §4.2): a validated `steps.<id>.output(.<seg>)*`
+ * reference into a step artifact, plus an optional bounded JSON Schema.
+ */
+export interface WorkflowSourceOutputDeclaration {
+  from: string;
+  schema?: WorkflowSourceJsonObject;
+}
+
 export interface WorkflowSourceIrV1 {
   sourceIrVersion: typeof WORKFLOW_SOURCE_IR_VERSION;
   name: string;
   description?: string;
   tags?: string[];
   params?: Record<string, WorkflowSourceJsonObject>;
+  /** Markdown-frontmatter-only (B-N4) — a GitHub-shaped source never produces this field. */
+  outputs?: Record<string, WorkflowSourceOutputDeclaration>;
   defaults?: Omit<WorkflowSourceUnit, "retry" | "output" | "env" | "isolation">;
   budget?: { maxTokens?: number; maxUnits?: number };
   preamble?: string;
   triggers: WorkflowSourceTrigger[];
-  /** Dependency-topological order with lexical tie-breaking. */
+  /** Exactly one entry (P4 §3.3): an AKM workflow source declares one job. */
   jobs: WorkflowSourceJob[];
   extensions?: WorkflowSourceExtensions;
   source: WorkflowSourceSpan;
@@ -204,6 +227,7 @@ export function decodeWorkflowSourceIrV1(
       "description",
       "tags",
       "params",
+      "outputs",
       "defaults",
       "budget",
       "preamble",
@@ -220,6 +244,7 @@ export function decodeWorkflowSourceIrV1(
   optionalString(root.preamble, "preamble");
   optionalStringList(root.tags, "tags", 256);
   validateParams(root.params);
+  validateOutputs(root.outputs);
   validateUnit(root.defaults, "defaults", true);
   validateBudget(root.budget);
   span(root.source, "source");
@@ -230,15 +255,14 @@ export function decodeWorkflowSourceIrV1(
   }
   validateTriggers(root.triggers);
 
-  if (!Array.isArray(root.jobs) || root.jobs.length === 0 || root.jobs.length > 256) {
-    fail("jobs must contain 1 through 256 entries");
+  if (!Array.isArray(root.jobs) || root.jobs.length !== 1) {
+    fail("jobs must contain exactly 1 entry");
   }
   const jobIds = new Set<string>();
   for (const [index, job] of root.jobs.entries()) validateJob(job, index, jobIds, options);
   for (const job of root.jobs as unknown as WorkflowSourceJob[]) {
     for (const need of job.needs) if (!jobIds.has(need)) fail(`job ${job.id} needs missing job ${need}`);
   }
-  validateTopologicalJobs(root.jobs as unknown as WorkflowSourceJob[]);
   return decoded as WorkflowSourceIrV1;
 }
 
@@ -352,6 +376,9 @@ function validateStep(
   }
   if (step.uses !== undefined && !hasUses) fail(`step ${id} uses must be a non-empty string`);
   if (step.run !== undefined && !hasRun) fail(`step ${id} run must be a non-empty string`);
+  // A-N3: captured at the outer scope so scalarRecord's task-scoped widening
+  // (below) can consult it without re-classifying `step.uses`.
+  let usesTarget: ReturnType<typeof classifyWorkflowStepUses> | undefined;
   if (hasUses) {
     let target: ReturnType<typeof classifyWorkflowStepUses>;
     try {
@@ -359,6 +386,7 @@ function validateStep(
     } catch (cause) {
       semanticFail(cause, `step ${id} uses`);
     }
+    usesTarget = target;
     if (target.kind === "builtin-command") {
       if (
         step.commandMode !== "literal" &&
@@ -386,7 +414,13 @@ function validateStep(
     }
   }
   validateExec(step.exec, `step ${id} exec`, options);
-  scalarRecord(step.with, `step ${id} with`, true);
+  // A-N3, widened in P3a (spec docs/plans/specs/p3a-plan-v5-child-freeze.md
+  // §4.2 step 7, row B-10, A-N8): the "must be a scalar" restriction narrows
+  // to non-task, non-workflow targets only. A tasks/<ref> or workflows/<ref>
+  // step's with: may carry any JSON value the bounded document front end
+  // already accepts; freeze (src/workflows/freeze/**) decides what a
+  // declared input/param actually accepts.
+  scalarRecord(step.with, `step ${id} with`, true, usesTarget?.kind === "task" || usesTarget?.kind === "workflow");
   environment(step.env, `step ${id} env`);
   rejectStepWithExpressions(step, id);
   rejectExpressionsInRecord(step.env, `step ${id} env`);
@@ -430,17 +464,6 @@ function validateStep(
   }
   extensions(step.extensions, `step ${id} extensions`);
   span(step.source, `step ${id} source`);
-}
-
-function validateTopologicalJobs(jobs: WorkflowSourceJob[]): void {
-  const result = canonicalTopologicalJobs(jobs);
-  if (!result.ok) {
-    if (result.kind === "missing") fail(`job ${result.job.id} needs missing job ${result.dependency}`);
-    fail("jobs contain a dependency cycle");
-  }
-  if (result.jobs.some((job, index) => job.id !== jobs[index]?.id)) {
-    fail("jobs are not in canonical dependency-topological order");
-  }
 }
 
 function compareCodePoints(left: string, right: string): number {
@@ -614,9 +637,12 @@ function validateRouteTargets(steps: WorkflowSourceStep[], jobId: string): void 
   }
 }
 
-function validateReference(value: string, location: string): void {
+function validateReference(value: string, location: string, expectedKind?: "stepOutput"): void {
   const parsed = parseReference(value);
   if (!parsed.ok) fail(`${location} is invalid: ${parsed.message}`);
+  if (expectedKind && parsed.expr.kind !== expectedKind) {
+    fail(`${location} must reference a step output (steps.<id>.output...), not a param`);
+  }
 }
 
 function validateParams(value: unknown): void {
@@ -628,6 +654,28 @@ function validateParams(value: unknown): void {
   for (const [name, schema] of Object.entries(params)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) fail(`params has invalid name ${name}`);
     validateSchema(schema, `params.${name}`, false);
+  }
+}
+
+/**
+ * Structural re-validation of `outputs:` (P3b, spec §4.2) — the parser
+ * (`../parser.ts`) already enforces the same rules at authoring time; this is
+ * the corruption-gate re-check every source-IR field gets, mirroring
+ * `validateParams` immediately above.
+ */
+function validateOutputs(value: unknown): void {
+  if (value === undefined) return;
+  const outputs = record(value, "outputs");
+  if (Object.keys(outputs).length === 0 || Object.keys(outputs).length > WORKFLOW_MAX_OUTPUTS) {
+    fail(`outputs must contain 1 through ${WORKFLOW_MAX_OUTPUTS} entries`);
+  }
+  for (const [name, declaration] of Object.entries(outputs)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) fail(`outputs has invalid name ${name}`);
+    const decl = record(declaration, `outputs.${name}`);
+    keys(decl, ["from", "schema"], `outputs.${name}`);
+    nonEmptyString(decl.from, `outputs.${name}.from`);
+    validateReference(decl.from as string, `outputs.${name}.from`, "stepOutput");
+    if (decl.schema !== undefined) validateSchema(decl.schema, `outputs.${name}.schema`, false);
   }
 }
 
@@ -717,11 +765,21 @@ function rejectExpressionsInRecord(value: unknown, location: string): void {
   }
 }
 
+/** A-N3: recurses into nested values, since a task step's with: may now carry an object/array. */
+function containsUnsupportedExpression(value: unknown): boolean {
+  if (typeof value === "string") return value.includes("${{");
+  if (Array.isArray(value)) return value.some((item) => containsUnsupportedExpression(item));
+  if (value !== null && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some((item) => containsUnsupportedExpression(item));
+  }
+  return false;
+}
+
 function rejectStepWithExpressions(step: Record<string, unknown>, id: string): void {
   if (step.with === undefined) return;
   for (const [key, item] of Object.entries(record(step.with, `step ${id} with`))) {
-    if (typeof item !== "string" || !item.includes("${{")) continue;
     if (step.uses === "akm/command" && step.commandMode === "literal" && key === "content") continue;
+    if (!containsUnsupportedExpression(item)) continue;
     fail(`step ${id} with.${key} contains an unsupported expression`);
   }
 }
@@ -876,11 +934,20 @@ function stringList(value: unknown, location: string, max: number, allowEmpty: b
   }
 }
 
-function scalarRecord(value: unknown, location: string, allowNull: boolean): void {
+/**
+ * `allowNonScalar` (A-N3, P2b; widened in P3a, A-N8): when true (a
+ * `tasks/<ref>` or `workflows/<ref>` step's `with:`), the key-grammar check
+ * still runs but the scalar/null value restriction is skipped entirely — a
+ * declared object/array-typed input or param, or a `{from: "..."}`
+ * reference, may decode. Every other target keeps the byte-identical
+ * scalar-or-null restriction.
+ */
+function scalarRecord(value: unknown, location: string, allowNull: boolean, allowNonScalar = false): void {
   if (value === undefined) return;
   const map = record(value, location);
   for (const [key, item] of Object.entries(map)) {
     if (!/^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/.test(key)) fail(`${location} has invalid key ${key}`);
+    if (allowNonScalar) continue;
     if (item === null && allowNull) continue;
     if (typeof item !== "string" && typeof item !== "number" && typeof item !== "boolean") {
       fail(`${location}.${key} must be a scalar`);

@@ -20,7 +20,7 @@ import {
   isInferredSecretName,
   MIN_INFERRED_SECRET_LENGTH,
 } from "../../src/tasks/log-redaction";
-import { scrubDbLines } from "../../src/tasks/runner";
+import { scrubDbLines } from "../../src/tasks/run/task-log";
 
 describe("secret-name inference (#755)", () => {
   test("matches credential-ish names without swallowing ordinary configuration", () => {

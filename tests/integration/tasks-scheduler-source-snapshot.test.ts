@@ -49,9 +49,9 @@ afterEach(() => storage.cleanup());
 
 describe("guarded scheduler source byte snapshots", () => {
   test("rejects an original-to-raced-to-original ABA and never compiles the transient task bytes", async () => {
-    writeTask("a", 'version: 3\nuses: scripts/first.sh\nakm:\n  schedule: "0 1 * * *"\n');
-    const original = 'version: 3\nuses: scripts/original.sh\nakm:\n  schedule: "0 2 * * *"\n';
-    const raced = 'version: 3\nuses: scripts/raced.sh\nakm:\n  schedule: "59 23 * * *"\n';
+    writeTask("a", 'version: 4\nuses: scripts/first.sh\nschedule: "0 1 * * *"\n');
+    const original = 'version: 4\nuses: scripts/original.sh\nschedule: "0 2 * * *"\n';
+    const raced = 'version: 4\nuses: scripts/raced.sh\nschedule: "59 23 * * *"\n';
     const beta = writeTask("b", original);
 
     await expect(
@@ -74,24 +74,21 @@ describe("guarded scheduler source byte snapshots", () => {
   });
 
   test("rejects an oversized task source at the guarded read boundary", async () => {
-    writeTask(
-      "oversized",
-      `version: 3\nrun: echo safe\nakm:\n  schedule: "@daily"\n#${"x".repeat(TASK_V3_MAX_SOURCE_BYTES)}`,
-    );
+    writeTask("oversized", `version: 4\nrun: echo safe\n#${"x".repeat(TASK_V3_MAX_SOURCE_BYTES)}`);
 
     await expect(prepareSchedulerSyncSourceSet(sourceInput())).rejects.toThrow(/1 MiB|source.*limit/i);
   });
 
   test("rejects a symbolic authored source at the no-follow guarded read boundary", async () => {
     const owner = path.join(storage.root, "owner.yml");
-    fs.writeFileSync(owner, 'version: 3\nrun: echo owner\nakm:\n  schedule: "@daily"\n');
+    fs.writeFileSync(owner, "version: 4\nrun: echo owner\n");
     fs.symlinkSync(owner, path.join(storage.stashDir, "tasks", "linked.yml"));
 
     await expect(prepareSchedulerSyncSourceSet(sourceInput())).rejects.toThrow(/symbolic|outside|identity/i);
   });
 
   test("final source CAS rejects an inode replacement even when replacement bytes are identical", async () => {
-    const file = writeTask("alpha", 'version: 3\nrun: echo alpha\nakm:\n  schedule: "@daily"\n');
+    const file = writeTask("alpha", "version: 4\nrun: echo alpha\n");
     const prepared = await prepareSchedulerSyncSourceSet(sourceInput());
     const replacement = path.join(storage.stashDir, "tasks", ".alpha-replacement.yml");
     fs.writeFileSync(replacement, fs.readFileSync(file));
@@ -101,7 +98,7 @@ describe("guarded scheduler source byte snapshots", () => {
   });
 
   test("final source CAS rejects an authored-directory ancestor swap through a symlink", async () => {
-    const source = 'version: 3\nrun: echo alpha\nakm:\n  schedule: "@daily"\n';
+    const source = "version: 4\nrun: echo alpha\n";
     writeTask("alpha", source);
     const prepared = await prepareSchedulerSyncSourceSet(sourceInput());
     const taskRoot = path.join(storage.stashDir, "tasks");
@@ -116,7 +113,7 @@ describe("guarded scheduler source byte snapshots", () => {
   });
 
   test("coherent inspection rejects two exact artifacts for one normalized native key", async () => {
-    writeTask("alpha", 'version: 3\nrun: echo alpha\nakm:\n  schedule: "0 1 * * *"\n');
+    writeTask("alpha", 'version: 4\nrun: echo alpha\nschedule: "0 1 * * *"\n');
     const prepared = await prepareSchedulerSyncSourceSet(sourceInput());
     const desired = prepared.desired[0]!;
     const nativeId = schedulerBindingNativeId(desired);

@@ -415,6 +415,71 @@ blast radius before running it.
    [Workflow Schema: Gates and verification](../reference/workflow-schema.md#gates-and-verification)),
    so this is worth confirming once per workflow rather than assuming.
 
+## Composing a task with typed inputs
+
+A `uses: tasks/<ref>` step in the GitHub-shaped YAML format can bind a task
+source v4 target's declared `inputs:` through `with:`. Given this task:
+
+```yaml
+# tasks/ticket-review.yml
+version: 4
+name: Ticket review
+inputs:
+  ticket:
+    type: string
+    required: true
+  scope:
+    type: string
+    enum: [changed, all]
+    default: changed
+uses: commands/review
+```
+
+a workflow step can bind `ticket` from an EARLIER step's output, and override
+`scope` with a literal:
+
+```yaml
+# workflows/nightly.yml
+name: Nightly review
+on:
+  workflow_dispatch: {}
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: pick
+        run: echo T-42
+      - id: dispatch
+        uses: tasks/ticket-review
+        with:
+          ticket: { from: "steps.pick.output" }
+          scope: all
+```
+
+`{from: "steps.<id>.output(.<segment>)*"}` and `{from: "params.<name>"}` are
+the only two reference roots; anything else, or an object carrying `from`
+plus any other key, is `INPUT_BINDING_INVALID` at freeze — never silently
+reinterpreted as a literal. `pick`'s output is resolved just before the
+`dispatch` unit dispatches, then validated against `ticket`'s declared
+schema; a literal (like `scope: all` here) is validated at freeze instead,
+before the plan is ever published.
+
+The composed target — `commands/review` here — receives the resolved
+bindings on whichever delivery surface matches its kind: an
+`akm/command`/`commands/<ref>` target gets a `## Task inputs` block appended
+to its prompt; a `run:` shell or `scripts/<ref>` target gets one
+`AKM_TASK_INPUTS` environment variable (canonical JSON of the resolved
+bindings). Inspect exactly what each step's `with:` would deliver, without
+running anything, with `akm workflow plan workflows/nightly --format json`
+— its per-step `inputBindings` show `dispatch`'s `scope` as the literal
+`all` and `ticket` as the unresolved reference `steps.pick.output`, the
+same shape freezing a real run would produce. `akm task explain` is not a
+substitute here: it only reflects a task's OWN CLI flags, declared
+defaults, and `schedule[].inputs` — it never reads a workflow step's
+`with:` binding at all, so pointing it at `tasks/ticket-review` prints
+`scope`'s task-level default (`changed`), not the `all` this step actually
+sends.
+
 ## Troubleshooting
 
 **Every workflow run needs a selected engine.** Freezing resolves an engine

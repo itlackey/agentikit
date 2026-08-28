@@ -1,0 +1,9 @@
+name: Child workflow leaf
+on:
+  workflow_dispatch:
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: work
+        run: printf child-workflow-leaf-ok

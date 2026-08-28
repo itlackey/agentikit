@@ -1065,11 +1065,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     try {
       const tasksDir = path.join(stash.dir, "tasks");
       fs.mkdirSync(tasksDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(tasksDir, "ping.yml"),
-        'version: 3\nrun: echo ping\nakm:\n  schedule: "0 9 * * *"\n  enabled: true\n',
-        "utf8",
-      );
+      fs.writeFileSync(path.join(tasksDir, "ping.yml"), 'version: 4\nrun: echo ping\nschedule: "0 9 * * *"\n', "utf8");
       const { backend, exec, fs: launchdFs } = makeBackend();
       exec.loadedLabels.add("com.akm.task.ping");
       exec.calls.length = 0;
@@ -1728,11 +1724,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     try {
       const tasksDir = path.join(stash.dir, "tasks");
       fs.mkdirSync(tasksDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(tasksDir, "ping.yml"),
-        'version: 3\nrun: echo ping\nakm:\n  schedule: "0 9 * * *"\n  enabled: true\n',
-        "utf8",
-      );
+      fs.writeFileSync(path.join(tasksDir, "ping.yml"), 'version: 4\nrun: echo ping\nschedule: "0 9 * * *"\n', "utf8");
       const { backend, exec } = makeBackend();
       expect((await akmTasksSync({ backend })).installed).toEqual(["ping"]);
       exec.loadedLabels.delete("com.akm.task.ping");
@@ -1755,11 +1747,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     try {
       const tasksDir = path.join(stash.dir, "tasks");
       fs.mkdirSync(tasksDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(tasksDir, "ping.yml"),
-        'version: 3\nrun: echo ping\nakm:\n  schedule: "0 9 * * *"\n  enabled: true\n',
-        "utf8",
-      );
+      fs.writeFileSync(path.join(tasksDir, "ping.yml"), 'version: 4\nrun: echo ping\nschedule: "0 9 * * *"\n', "utf8");
       const { backend, exec } = makeBackend();
       expect((await akmTasksSync({ backend })).installed).toEqual(["ping"]);
 

@@ -508,6 +508,57 @@ export class GuardedExecutionSourceCollector {
     });
   }
 
+  /**
+   * Merge another collector's captured sources and directory manifests into
+   * this one (A-N7, spec docs/plans/specs/p3a-plan-v5-child-freeze.md §4.2
+   * step 6). The recursive child-workflow freeze gives each child its OWN
+   * fresh collector, so a child's plan (and therefore its `planHash`) is a
+   * pure function of its own source, independent of its position in the
+   * parent (A-N7's rejected alternative: sharing the parent's collector,
+   * which would make an identical child hash differently depending on what
+   * the parent had already captured). The parent then absorbs the child's
+   * records so its own final pre-publication CAS ({@link revalidate}) covers
+   * every child file too.
+   *
+   * Re-runs `#assertNoPhysicalOwnerAlias` for each newly-absorbed source
+   * record, so the shared-physical-owner authority holds ACROSS the
+   * composition, not just within one workflow's own freeze. A record whose
+   * key (resolved source path) is already present is required to be
+   * byte-identical to the one already held — two DISJOINT branches
+   * composing the SAME child (a diamond, not a cycle) absorb the same file
+   * twice with identical content and pass silently; two branches that
+   * somehow captured the same path with different content fail closed.
+   */
+  absorb(other: GuardedExecutionSourceCollector): void {
+    for (const [key, record] of other.#sources) {
+      const existing = this.#sources.get(key);
+      if (existing) {
+        if (!sameSnapshotValue(existing.source, record.source)) {
+          throw new UsageError(
+            `${record.source.sourcePath} was captured with conflicting content across a composed workflow freeze.`,
+            "RESOURCE_ALREADY_EXISTS",
+          );
+        }
+        continue;
+      }
+      this.#assertNoPhysicalOwnerAlias(record.source);
+      this.#sources.set(key, record);
+    }
+    for (const [key, manifest] of other.#directories) {
+      const existing = this.#directories.get(key);
+      if (existing) {
+        if (!sameSnapshotValue(existing, manifest)) {
+          throw new UsageError(
+            `${manifest.directoryPath} changed between guarded directory reads across a composed workflow freeze.`,
+            "RESOURCE_ALREADY_EXISTS",
+          );
+        }
+        continue;
+      }
+      this.#directories.set(key, manifest);
+    }
+  }
+
   revalidate(): void {
     for (const record of this.#sources.values()) {
       let current: GuardedExecutionSource;

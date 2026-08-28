@@ -44,7 +44,7 @@ my-bundle/
   lessons/        # Distilled lessons (.md, see akm improve / proposals)
   memories/       # Recalled context fragments (.md, see Memory reference)
   facts/          # Durable bundle-level facts (.md)
-  tasks/          # Strict task-v3 scheduled or on-demand automation (.yml only)
+  tasks/          # Task source v4 scheduled or on-demand automation (.yml only)
   sessions/       # Machine-placed indexed session summaries (.md)
   .meta/          # Optional bundle orientation, not indexed (see "Bundle orientation" below)
 ```

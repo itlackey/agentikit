@@ -4,7 +4,6 @@
 
 import { isAlias, isMap, isScalar, isSeq, LineCounter, type Pair, type ParsedNode, parseDocument } from "yaml";
 import { utf8Bytes, WORKFLOW_MAX_SOURCE_BYTES } from "../resource-limits";
-import { canonicalTopologicalJobs } from "./ordering";
 import { WorkflowSourceFailure } from "./result";
 import {
   WORKFLOW_SOURCE_HOST_SHELLS,
@@ -52,9 +51,9 @@ type YamlPair = Pair<ParsedNode, ParsedNode | null>;
 export interface GithubWorkflowSourceOptions {
   path: string;
   workspaceRoot?: string;
-  /** Canonical task-v3 uses classifier; injectable only for bounded compiler tests/consumers. */
+  /** Canonical workflow uses: classifier; injectable only for bounded compiler tests/consumers. */
   classifyUses?: WorkflowSourceUsesClassifier;
-  /** Canonical task-v3 trigger classifier; injectable only for bounded compiler tests/consumers. */
+  /** Canonical workflow YAML trigger classifier; injectable only for bounded compiler tests/consumers. */
   classifyTriggers?: WorkflowSourceTriggerClassifier;
 }
 
@@ -442,7 +441,7 @@ function verifyOwnerTriggerPlan(
   if (!matches) {
     throw new WorkflowSourceFailure(
       "trigger-classifier-drift",
-      "The workflow trigger parser disagrees with the canonical task-v3 trigger classifier.",
+      "The workflow trigger parser disagrees with the canonical workflow YAML trigger classifier.",
       reader.span(onNode),
     );
   }
@@ -456,30 +455,44 @@ function validateCron(reader: StrictYamlReader, cron: string, node: ParsedNode |
   }
 }
 
+/**
+ * The ONE place a job-count or job-dependency policy is enforced (P4 §3.3,
+ * docs/plans/specs/p4-deletions-closeout.md): AKM's YAML adapter accepts a
+ * familiar GitHub-step-shaped `name:`/`on:`/`jobs:` document, but requires
+ * exactly one job (brief §10) — it is an AKM workflow format executed by
+ * AKM's native engine, not a GitHub Actions graph. Job ordering, dependency
+ * validation and the 256-job bound all existed only to support MULTIPLE
+ * jobs; they are gone with the machinery, not relocated.
+ */
 function parseJobs(
   reader: StrictYamlReader,
   node: ParsedNode | null,
   options: GithubWorkflowSourceOptions,
 ): WorkflowSourceJob[] {
   const fields = reader.arbitraryFields(node, "workflow.jobs");
-  if (fields.size === 0 || fields.size > 256) {
-    reader.fail("job-count-limit", "workflow.jobs must contain 1 through 256 jobs.", node);
+  let first: [string, YamlPair] | undefined;
+  let second: [string, YamlPair] | undefined;
+  for (const entry of fields) {
+    if (!first) first = entry;
+    else if (!second) second = entry;
   }
-  const jobs = [...fields.entries()].map(([id, pair]) => parseJob(reader, id, pair, options));
-  const ordered = canonicalTopologicalJobs(jobs);
-  if (ordered.ok) return ordered.jobs;
-  if (ordered.kind === "missing") {
-    throw new WorkflowSourceFailure(
-      "missing-job-dependency",
-      `Job ${ordered.job.id} needs missing job ${ordered.dependency}.`,
-      ordered.job.source,
+  if (fields.size !== 1 || !first) {
+    reader.fail(
+      "multi-job-unsupported",
+      `AKM workflow YAML requires exactly one job; this document declares ${fields.size}. AKM's YAML is an AKM workflow format executed by AKM's native engine, not GitHub Actions — split the jobs into separate workflows.`,
+      second ? second[1].key : node,
     );
   }
-  throw new WorkflowSourceFailure(
-    "job-dependency-cycle",
-    "Workflow jobs contain a dependency cycle.",
-    ordered.job.source,
-  );
+  const [id, pair] = first;
+  const job = parseJob(reader, id, pair, options);
+  if (job.needs.length > 0) {
+    reader.fail(
+      "multi-job-unsupported",
+      `Job ${job.id} declares needs, but an AKM workflow has exactly one job; remove needs.`,
+      pair.key,
+    );
+  }
+  return [job];
 }
 
 function parseJob(
@@ -532,9 +545,10 @@ function parseNeeds(reader: StrictYamlReader, pair: YamlPair | undefined, jobId:
     : [reader.string(pair.value, `workflow.jobs.${jobId}.needs`)];
   for (const need of values)
     if (!SOURCE_ID.test(need)) reader.fail("invalid-job-id", `Invalid needs id ${need}.`, pair.value);
-  if (new Set(values).size !== values.length) {
-    reader.fail("duplicate-job-dependency", `Job ${jobId} has duplicate needs entries.`, pair.value);
-  }
+  // Duplicate-entry checking (code duplicate-job-dependency) deleted with the
+  // rest of the multi-job dependency machinery (P4 §3.3): ANY non-empty
+  // needs — duplicated or not — is multi-job-unsupported at the caller
+  // (parseJobs), since a single-job workflow has nothing to depend on.
   return values.sort();
 }
 
@@ -585,10 +599,26 @@ function parseUsesStep(
   }
   const uses = reader.string(usesPair.value, "step.uses");
   const target = classifyUses(reader, uses, usesPair.value, options.classifyUses ?? classifyWorkflowSourceUses);
-  const withValues = parseScalarMap(reader, fields.get("with"), "step.with", INPUT_KEY, true);
+  // A-N3 (P2b, docs/plans/specs/p2b-input-bindings.md §1.7), widened in P3a
+  // (docs/plans/specs/p3a-plan-v5-child-freeze.md §4.2 step 7, row B-10) to
+  // ALSO cover a workflows/<ref> target: a tasks/<ref> or workflows/<ref>
+  // step's with: may bind any JSON value the composed target's declared
+  // input/param needs (an object/array literal, or a {from: "..."}
+  // reference) — decoding it through the scalar-only parseScalarMap would
+  // reject the very shapes both A-N3 and A-N8 exist to accept before
+  // decodeWorkflowSourceIrV1 (schema.ts) is ever reached. Every other target
+  // keeps the byte-identical scalar-only grammar.
+  const withValues =
+    target.kind === "task" || target.kind === "workflow"
+      ? parsePlainMap(reader, fields.get("with"), "step.with", INPUT_KEY)
+      : parseScalarMap(reader, fields.get("with"), "step.with", INPUT_KEY, true);
   const commandMode =
     target.kind === "builtin-command"
-      ? validateBuiltinCommand(reader, withValues, fields.get("with")?.value ?? usesPair.value)
+      ? validateBuiltinCommand(
+          reader,
+          withValues as Record<string, WorkflowSourceScalar> | undefined,
+          fields.get("with")?.value ?? usesPair.value,
+        )
       : undefined;
   return {
     ...common,
@@ -674,6 +704,32 @@ function parseScalarMap(
     if (!keyPattern.test(key))
       reader.fail("invalid-mapping-key", `${context} has invalid key ${JSON.stringify(key)}.`, valuePair.key);
     out[key] = reader.scalar(valuePair.value, `${context}.${key}`, allowNull);
+  }
+  return out;
+}
+
+/**
+ * Like {@link parseScalarMap} but accepts an arbitrary JSON value per key —
+ * a task-composition with: binding may be the declared input's own shape (an
+ * object/array literal, or a `{from: "..."}` reference), not just a scalar
+ * (A-N3). Depth/node bounds are already enforced document-wide by
+ * `checkTree`/`rejectAliases` before any field-level parsing runs, so this
+ * adds no new bound. `decodeWorkflowSourceIrV1` (schema.ts) decides what a
+ * declared input actually accepts.
+ */
+function parsePlainMap(
+  reader: StrictYamlReader,
+  pair: YamlPair | undefined,
+  context: string,
+  keyPattern: RegExp,
+): Record<string, unknown> | undefined {
+  if (!pair) return undefined;
+  const fields = reader.arbitraryFields(pair.value, context);
+  const out: Record<string, unknown> = {};
+  for (const [key, valuePair] of fields) {
+    if (!keyPattern.test(key))
+      reader.fail("invalid-mapping-key", `${context} has invalid key ${JSON.stringify(key)}.`, valuePair.key);
+    out[key] = reader.plain(valuePair.value, `${context}.${key}`);
   }
   return out;
 }

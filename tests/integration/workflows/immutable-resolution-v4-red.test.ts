@@ -70,11 +70,7 @@ function writeWorkflow(name: string, steps: string, root = storage.stashDir): st
 }
 
 function writeTask(name: string, targetLines: readonly string[], root = storage.stashDir): string {
-  return write(
-    root,
-    `tasks/${name}.yml`,
-    ["version: 3", ...targetLines, "akm:", '  schedule: "@daily"', ""].join("\n"),
-  );
+  return write(root, `tasks/${name}.yml`, ["version: 4", ...targetLines, ""].join("\n"));
 }
 
 async function persistedPlan(runId: string) {
@@ -287,6 +283,11 @@ describe("workflow v4 common target resolution", () => {
 
 describe("workflow v4 fail-closed source targets", () => {
   test.each([
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.3, row B-34,
+    // F-A3.11 — discovered flip, recorded in the Review log): a 2-job
+    // document now fails at PARSE, at the adapter boundary
+    // (multi-job-unsupported), not at the freeze-time "job boundaries and
+    // needs" check that row B-44 deletes.
     [
       "multi-job",
       [
@@ -301,18 +302,12 @@ describe("workflow v4 fail-closed source targets", () => {
         "    steps: [{ id: two, run: printf two }]",
         "",
       ].join("\n"),
-      /multi-job|job boundaries|needs/i,
+      /requires exactly one job/i,
     ],
-    [
-      "remote-action",
-      workflowYaml("      - id: remote\n        uses: actions/checkout@v4"),
-      /remote action|acquisition|out of scope/i,
-    ],
-    [
-      "nested-workflow",
-      workflowYaml("      - id: nested\n        uses: workflows/child"),
-      /nested workflow|unsupported/i,
-    ],
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
+    // F-A1.19): the locator grammar is deleted — this now rejects as an
+    // unrecognized ref shape, not a recognized-but-out-of-scope one.
+    ["remote-action", workflowYaml("      - id: remote\n        uses: actions/checkout@v4"), /target ref/i],
     [
       "nonprojectable-agent",
       workflowYaml("      - id: persona\n        uses: agents/reviewer"),
@@ -331,14 +326,6 @@ describe("workflow v4 fail-closed source targets", () => {
     await expect(startWorkflowRun(`workflows/${name}`)).rejects.toThrow(pattern);
     expect(mutationCounts()).toEqual(before);
     expect((await listWorkflowRuns()).runs).toHaveLength(0);
-  });
-
-  test("rejects a task-composed workflow target as forbidden nested orchestration before mutation", async () => {
-    writeTask("delegate", ["uses: workflows/child"]);
-    writeWorkflow("task-nested", "      - id: nested\n        uses: tasks/delegate");
-    const before = await establishStateBaseline();
-    await expect(startWorkflowRun("workflows/task-nested")).rejects.toThrow(/nested|workflow target|task.*workflow/i);
-    expect(mutationCounts()).toEqual(before);
   });
 
   test("fails closed when two qualified refs alias the same physical command file", async () => {

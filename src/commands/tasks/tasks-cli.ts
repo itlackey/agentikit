@@ -31,6 +31,9 @@ import { getParsedInvocation } from "../../cli/invocation";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { UsageError } from "../../core/errors";
+import type { InputFlag } from "../../execution/input-contract";
+import { TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS } from "../../tasks/task-run-reserved-flags";
+import { akmTaskExplain } from "./explain";
 import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync } from "./tasks";
 
 /** Shared `--bundle <bundle>` arg wired onto every task subcommand. */
@@ -42,17 +45,163 @@ const bundleArg = {
 } as const;
 
 /**
+ * True when argv carries a `--<name>` flag in ANY spelling — bare,
+ * `--<name>=<value>` for any value, or a trailing `=` — stopping at a literal
+ * `--` separator exactly as `hasFlagIn` (`../../cli/invocation.ts`) does.
+ *
+ * `ParsedInvocation.hasFlag` cannot be used for the rejections below: it
+ * compares WHOLE tokens against `--<name>` and `--<name>=true` only, so every
+ * other value spelling (`--<name>=false`, `--<name>=1`, `--<name>=`) walks
+ * straight past it and is then absorbed downstream — by citty's non-strict
+ * parser, or by `parseTaskInputFlags`' reserved-name skip — exactly the
+ * silent-discard defect these rejecters exist to close (review round 1). The
+ * name is taken as everything before the FIRST `=`, which is
+ * `parseTaskInputFlags`' own split (see its `body.indexOf("=")` below), so the
+ * rejecter and the scanner can never disagree about what a token names.
+ */
+function hasFlagNamed(name: string): boolean {
+  for (const token of getParsedInvocation().argv) {
+    if (token === "--") return false;
+    if (!token.startsWith("--")) continue;
+    const body = token.slice(2);
+    const equalsAt = body.indexOf("=");
+    if ((equalsAt === -1 ? body : body.slice(0, equalsAt)) === name) return true;
+  }
+  return false;
+}
+
+/**
  * `--target` was renamed to `--bundle` on `task` in 0.9 (S8.4). citty is
  * non-strict, so the retired spelling is silently absorbed rather than
  * rejected — reject it explicitly instead (mirrors improve-cli.ts /
- * remember-cli.ts).
+ * remember-cli.ts). The generic pre-dispatch gate cannot catch it either: it
+ * exempts `target` on every `task` subcommand precisely so this handler can
+ * answer with the rename (`../../cli/unknown-flags`'s `SELF_DIAGNOSED_FLAGS`),
+ * and that exemption is keyed on the flag NAME — so `--target=team` must be
+ * rejected here by name too, or nothing rejects it at all.
+ *
+ * Rejecting by NAME means `--target=<value>` can no longer carry a declared
+ * task input named `target` either (0.9.2 review round 2). That is settled on
+ * the DECLARATION side, not by narrowing this rejecter back to whole-token
+ * matching: `target` is listed in `TASK_RUN_SELF_DIAGNOSED_FLAGS`
+ * (`../../tasks/task-run-reserved-flags.ts`), so `parseInputDeclarations`
+ * refuses `inputs: {target: …}` with TASK_SOURCE_INVALID at authoring time and
+ * no task can reach `akm task run` needing the flag this throws on. Do not
+ * re-narrow the match here — the silently-ignored `--target=team` that round 1
+ * closed would come straight back.
  */
 function rejectRetiredTaskTargetFlag(): void {
-  if (!getParsedInvocation().hasFlag("--target")) return;
+  if (!hasFlagNamed("target")) return;
   throw new UsageError(
     "`akm task --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
     "INVALID_FLAG_VALUE",
   );
+}
+
+/**
+ * `--scheduled` is `akm task run`'s own declared flag (an internal marker for
+ * scheduler-generated runs) — `task explain` declares no such flag. Because
+ * `explain` reuses `parseTaskInputFlags` (the same exact-name scanner `task
+ * run` uses, see that function's docstring below) to capture input flags, and
+ * `scheduled` is one of that scanner's reserved boolean-flag names
+ * (`TASK_RUN_BOOLEAN_FLAG_SET`, from `../../tasks/task-run-reserved-flags`),
+ * the scanner silently skips over `--scheduled` rather than ever surfacing it
+ * as an input flag — so it reached neither `materializeInputFlags`' own
+ * unknown-flag diagnostic nor the generic pre-dispatch flag gate (which
+ * exempts `task explain`'s whole dynamic namespace, `../../cli/unknown-flags`
+ * §`dynamicNamedFlagCommands`). The net effect: `akm task explain <ref>
+ * --scheduled` silently accepted and discarded the flag instead of rejecting
+ * it (finding F7) — `scheduled` can never be a declared input name either
+ * (same reserved-name module), so this can never reject a flag that was ever
+ * a valid input binding. Reject it explicitly, before the shared scanner ever
+ * sees it — same UNKNOWN_FLAG diagnostic family the generic gate uses.
+ *
+ * Rejection is keyed on the flag NAME (`hasFlagNamed` above), not on a literal
+ * token: `parseTaskInputFlags` splits on the first `=` BEFORE its reserved-name
+ * check, so `--scheduled=false` and `--scheduled=1` are swallowed by that skip
+ * just as the bare token is. A whole-token test would leave every spelling but
+ * `--scheduled` / `--scheduled=true` in the hole this exists to close.
+ */
+function rejectExplainScheduledFlag(): void {
+  if (!hasFlagNamed("scheduled")) return;
+  throw new UsageError('Unknown flag "--scheduled".', "UNKNOWN_FLAG");
+}
+
+// ── `akm task run` input flags — Stage 1: capture (spec §5.1) ──────────────
+//
+// Mirrors `parseWorkflowParameterFlags` (src/commands/workflow-cli.ts:232-289)
+// exactly: the CLI carries RAW string/boolean flag values to the boundary
+// that knows the task's declared contract (Stage 2, src/tasks/run/load-task.ts)
+// — coercion happens once, there. `akm task run`'s own declared flags
+// (GLOBAL_OUTPUT_ARGS, --bundle, --scheduled) are excluded so they are never
+// mistaken for inputs (B-33); `--target` is excluded too, but only because
+// `rejectRetiredTaskTargetFlag()` above always runs first and throws before
+// this is ever reached (B-32) — it is not itself special-cased below.
+
+// `TASK_RUN_VALUE_FLAGS` / `TASK_RUN_BOOLEAN_FLAGS` are re-exported here
+// (unchanged in name, location, and value) from a dependency-free leaf module
+// so `src/tasks/source/task-source-v4.ts` can reject a declared `inputs:`
+// name that collides with one of them without importing this CLI file —
+// which would cycle back through `./tasks` -> `../../tasks/source/*` into the
+// parser (code-review finding, docs/plans/specs/p2b-input-bindings.md review
+// round 2; see `../../tasks/task-run-reserved-flags.ts`'s own header).
+export { TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS };
+
+const TASK_RUN_VALUE_FLAG_SET = new Set<string>(TASK_RUN_VALUE_FLAGS);
+const TASK_RUN_BOOLEAN_FLAG_SET = new Set<string>(TASK_RUN_BOOLEAN_FLAGS);
+
+/**
+ * Scan `akm task run`'s raw argv for exact-name input flags, excluding the
+ * task id and every declared flag above. Input flags must come after the
+ * task id (mirrors `parseWorkflowParameterFlags`'s positional rule); a bare
+ * `--` is rejected, matching `workflow run`.
+ */
+export function parseTaskInputFlags(rawArgs: readonly string[], id: string): InputFlag[] {
+  const flags: InputFlag[] = [];
+  let idSeen = false;
+  for (let index = 0; index < rawArgs.length; index += 1) {
+    const token = rawArgs[index] as string;
+    if (token === "--") {
+      throw new UsageError("`akm task run` does not accept positional arguments after `--`.", "INVALID_FLAG_VALUE");
+    }
+    if (!token.startsWith("-") || token === "-" || /^-\d/.test(token)) {
+      if (!idSeen) {
+        if (token !== id) {
+          throw new UsageError("Task input flags must come after the task id.", "INVALID_FLAG_VALUE");
+        }
+        idSeen = true;
+        continue;
+      }
+      throw new UsageError(`Unexpected positional task argument "${token}".`, "INVALID_FLAG_VALUE");
+    }
+    if (!token.startsWith("--")) continue;
+
+    const body = token.slice(2);
+    const equalsAt = body.indexOf("=");
+    const name = equalsAt === -1 ? body : body.slice(0, equalsAt);
+    const inlineValue = equalsAt === -1 ? undefined : body.slice(equalsAt + 1);
+    if (TASK_RUN_VALUE_FLAG_SET.has(name)) {
+      if (inlineValue === undefined) index += 1;
+      continue;
+    }
+    if (TASK_RUN_BOOLEAN_FLAG_SET.has(name)) continue;
+    if (!idSeen) {
+      throw new UsageError("Task input flags must come after the task id.", "INVALID_FLAG_VALUE");
+    }
+
+    if (inlineValue !== undefined) {
+      flags.push({ name, value: inlineValue });
+      continue;
+    }
+    const next = rawArgs[index + 1];
+    if (next !== undefined && (!next.startsWith("-") || /^-\d/.test(next))) {
+      flags.push({ name, value: next });
+      index += 1;
+    } else {
+      flags.push({ name, value: true });
+    }
+  }
+  return flags;
 }
 
 const tasksAddCommand = defineJsonCommand({
@@ -129,12 +278,14 @@ const tasksRunCommand = defineCommand({
     ...bundleArg,
     scheduled: { type: "boolean", description: "Internal marker for scheduler-generated runs", default: false },
   },
-  async run({ args }) {
+  async run({ args, rawArgs }) {
     await runWithJsonErrors(async () => {
       rejectRetiredTaskTargetFlag();
+      const inputFlags = parseTaskInputFlags(rawArgs, args.id);
       const envelope = await akmTasksRun(args.id, {
         scheduled: args.scheduled === true,
         ...(args.bundle !== undefined ? { target: args.bundle } : {}),
+        inputFlags,
       });
       output("task-run", envelope);
       // F4: was `process.exit(envelope.exitCode)`, terminating synchronously
@@ -182,6 +333,40 @@ const tasksSyncCommand = defineJsonCommand({
   },
 });
 
+// ── `akm task explain` — read-only introspection (P2b Lane B, spec
+// docs/plans/specs/p2b-input-bindings.md §4.5, §1.7 B-N4) ──────────────────
+
+const tasksExplainCommand = defineJsonCommand({
+  meta: {
+    name: "explain",
+    description:
+      "Print a task's source, declared inputs (with provenance), resolved target, execution settings, and " +
+      "schedule bindings — read-only and secret-free; never spawns anything",
+  },
+  args: {
+    ref: { type: "positional", description: "Task ref or id", required: true },
+    ...bundleArg,
+  },
+  async run({ args, rawArgs }) {
+    rejectRetiredTaskTargetFlag();
+    // `--scheduled` must be rejected BEFORE the shared scanner below ever
+    // sees it — the scanner treats it as `task run`'s own reserved flag
+    // (silently skipped, never surfaced as unknown) rather than explain's,
+    // since it has no way to know which command called it (F7 fix).
+    rejectExplainScheduledFlag();
+    // Stage 1 (capture): the SAME exact-name flag scanner `akm task run`
+    // uses (`parseTaskInputFlags` above) — `explain` never declares
+    // `--scheduled`, but reusing the identical scanner is deliberate: one
+    // implementation of "which argv tokens are task input flags", not two.
+    const inputFlags = parseTaskInputFlags(rawArgs, args.ref);
+    const result = await akmTaskExplain(args.ref, {
+      ...(args.bundle !== undefined ? { target: args.bundle } : {}),
+      inputFlags,
+    });
+    output("task-explain", result);
+  },
+});
+
 const tasksDoctorCommand = defineJsonCommand({
   meta: {
     name: "doctor",
@@ -203,6 +388,7 @@ export const taskCommand = defineGroupCommand({
   subCommands: {
     add: tasksAddCommand,
     run: tasksRunCommand,
+    explain: tasksExplainCommand,
     history: tasksHistoryCommand,
     sync: tasksSyncCommand,
     doctor: tasksDoctorCommand,

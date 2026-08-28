@@ -560,6 +560,8 @@ akm workflow status workflows/ship-release
 akm workflow resume <run-id>
 akm workflow abandon <run-id>
 akm workflow list --active
+akm workflow list --children               # also list child workflow runs
+akm workflow plan workflows/ship-release    # compile+freeze preview, zero writes
 ```
 
 Bare `akm workflow` (no subcommand) is a usage error (exit 2), the canonical
@@ -571,10 +573,11 @@ Subcommands:
 | --- | --- |
 | `create <name>` | Validate and write a Markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
 | `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or continues the active run in the current scope; a run id continues that exact active run. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
-| `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only) |
-| `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`) |
+| `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only). Renders a `children:` tree when the run composes child workflows |
+| `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`). Child workflow runs are excluded unless `--children` is passed |
 | `resume <run-id>` | Flip a `blocked` or `failed` run back to `active`. Completed runs cannot be resumed |
 | `abandon <run-id>` | Mark a run failed so it stops counting as active (`resume` can reopen it) |
+| `plan <ref>` | **Evolving.** Compile and freeze a workflow WITHOUT publishing a run: the canonical step graph, per-step frozen target kinds, task/child expansion, input bindings, source read set, and lowering notices — zero durable writes. Defaults to a human-readable summary; pass `--format json` for the full envelope |
 
 The public `workflow start`, `next`, and `complete` lifecycle was removed in
 0.9, along with the experimental `brief`/`report` external-driver protocol.
@@ -703,6 +706,70 @@ to the most-recently-updated run for that ref in the current working scope.
 `--units` adds per-unit rows (unit id, status, failure reason, and any
 result/error diagnostic text) from the run journal — diagnostics only; step
 evidence stays deterministic and is unaffected.
+
+#### workflow plan
+
+```sh
+akm workflow plan workflows/release
+akm workflow plan workflows/release --format json
+```
+
+**Evolving** (see [STABILITY.md](../../STABILITY.md)). Compiles, resolves,
+and freezes the named workflow exactly as `akm workflow run` would when
+starting a new run — the same two calls, `loadWorkflowAsset` +
+`compileResolveFreezeWorkflowV4` — and stops. It publishes **no** run row,
+takes **no** lease, appends **no** event, and writes to no other table:
+zero durable writes, verified by row count before and after, not merely
+assumed. Use it to preview what a run *would* freeze — the canonical step
+graph, which steps expand through a task or a composed child workflow, and
+any freeze-time lowering notices or compile warnings — before committing to
+a run, or to inspect a workflow's shape without side effects.
+
+Two output modes:
+
+- **No `--format`** (the default for this command only — every other verb
+  defaults to JSON): a human-readable text summary.
+- **`--format json`**: the full envelope — `ok`, `ref`, `title`,
+  `sourceFormat`, `sourcePath`, `irVersion`, `planHash`, `published` (always
+  `false`, so a consumer can never mistake this for a run envelope),
+  `execution`, `budget?`, `params?`, `outputs?`, `steps[]`, `sourceReadSet[]`,
+  `notices[]`, `warnings[]`. Each step entry carries an `expansion` field
+  naming how its target was reached: `{via: "direct"}`, `{via: "task",
+  taskRef}`, or — for a step composing a child workflow —
+  `{via: "child", childRef, childPlanHash, childOutputs, steps[]}` with the
+  child's own step list nested recursively in the same shape.
+
+Text-mode example:
+
+```
+workflow: team//workflows/release (markdown)
+source:   workflows/release.md
+plan:     irVersion 5, hash 4f2ba91c3d0e… (not published)
+limits:   maxConcurrency 4; budget max_units 50, max_tokens 100000
+params:   channel, version
+outputs:  report <- steps.summarize.output
+steps:
+  1. notify   [command]        direct
+  2. build    [script]         via tasks/plan-v4-task
+  3. dispatch [child-workflow] -> workflows/release-checklist (plan 91acbe20f5d1…)
+       with: channel="stable" (literal), files <- steps.build.output.files (reference)
+       exports: report, changed_count
+       3.1 verify [command] direct
+  4. summarize [command]       direct
+read set:
+  workflows/release.md
+  commands/notify.md
+  workflows/release-checklist.md
+```
+
+**Secret-free by construction.** Neither mode ever prints a resolved
+reference value (references resolve at pre-attempt, not here), request
+content (`request.command.content`, `request.persona`, `request.conversation`,
+`request.runtime.environment`), a script's `bytesBase64`, or any credential —
+only binding *shapes* (`inputBindings[].name`/`.kind`, a literal's `.value`,
+a reference's `.from`), environment binding *names* (`environment[].kind`/
+`.name`, an `env-ref`'s `.ref`/`.keys`/`.secretNames`), and engine *names*
+(`gate.judgeEngine`).
 
 #### workflow resume
 
@@ -1366,10 +1433,15 @@ akm registry remove my-team --yes    # Skip the confirmation prompt
 
 ### migrate
 
-Inspect or apply the explicit one-way task-v2 to task-v3 conversion. Normal task
-execution accepts only task v3. Database schema upgrades are additive and run
-automatically when `state.db` opens; config and workflow formats have no runtime
-compatibility migrator.
+Inspect or apply the explicit, one-way conversion of on-disk task sources to
+task source v4, the only grammar normal task execution accepts. `akm migrate`
+runs **both** migration generations in one pass — task-v2 to task-v3, then
+task-v3 to task source v4 against the resulting files — each keeping its own
+lock, backup, prevalidation, and rollback, so a file blocked in the first
+generation does not stop the second generation from converting files that are
+already `version: 3`. Database schema upgrades are additive and run
+automatically when `state.db` opens; config and workflow formats have no
+runtime compatibility migrator.
 
 ```sh
 akm migrate status
@@ -1377,9 +1449,17 @@ akm migrate apply --dry-run
 akm migrate apply
 ```
 
-`status` and `apply --dry-run` are read-only. Apply refuses blocked task sources,
-backs up each changed file, atomically publishes strict v3 YAML, and is
-idempotent: an already-v3 file is skipped.
+`status` and `apply --dry-run` are read-only. Apply refuses blocked task
+sources, backs up each changed file immediately before replacement, and
+atomically publishes strict task source v4 YAML; it is idempotent per
+generation, skipping a file already at that generation's target version
+(`already-v3`, `already-v4`). To run only the second generation in isolation
+(for example, previewing just the v3-to-v4 step against a tree that is
+already all `version: 3`), the frozen migrator's standalone entry points
+remain available as a separate executable: `akm-migrate task-v4-status` /
+`akm-migrate task-v4-apply [--dry-run]`. See [Tasks: Migrating to task
+source v4](tasks.md#migrating-to-task-source-v4) for the full blocked-reason
+table and worked examples.
 
 ### config
 
@@ -2335,10 +2415,11 @@ prompts. Negative feedback requires a reason by default.
 `akm task` is the scheduling surface for workflows, agent prompts, and
 shell commands. It manages on-disk task definitions under
 `<bundle>/tasks/<id>.yml` and reconciles them with the OS-native scheduler
-(cron / launchd / schtasks). Strict task v3 YAML is the executable source
-contract; see the canonical [Tasks reference](tasks.md). The
-group is `add | run | sync | doctor | history` — there is no `list` or
-`remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
+(cron / launchd / schtasks). Task source v4 YAML (`version: 4`) is the only
+executable source contract this release accepts; `akm task add` writes v4 —
+see the canonical [Tasks reference](tasks.md). The
+group is `add | run | explain | sync | doctor | history` — there is no `list`
+or `remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
 and edit the file + `akm task sync` to change or remove a schedule.
 
 ```sh
@@ -2350,6 +2431,7 @@ akm task add review --schedule "@daily" --prompt "Review recent changes" --engin
 akm task add nightly --schedule "@daily" --command "akm improve" --disabled  # register but leave off
 akm task add nightly --schedule "@daily" --command "akm improve" --force    # overwrite an existing task id
 akm task run <id>                           # Execute now (what the scheduler calls)
+akm task explain <ref>                      # Read-only: declared inputs, target, schedule — spawns nothing
 akm task history [--id <id>] [--limit <n>]  # Recent runs from state.db
 akm task sync                               # Reconcile on-disk YAML with scheduler
 akm task sync --rebind                      # Also capture the current installed runtime
@@ -2361,14 +2443,23 @@ scheduler), `--force` (overwrite an existing task with the same id), and
 `--rebind` (explicitly permit scheduler creation from a local invocation that
 would otherwise be considered ineligible).
 
+`akm task explain <ref> [input flags]` prints a task's declared `inputs:`,
+the values that would actually be supplied (with provenance), the resolved
+target, effective execution settings, and schedule bindings — **read-only**:
+it never spawns anything, writes history, or touches the scheduler. A
+secret-shaped value prints as `<redacted>`. See
+[`akm task explain`](tasks.md#akm-task-explain).
+
 `akm task run` is what cron / launchd / schtasks invoke at the scheduled
 time. Each run is recorded as a row in the durable `task_history` table
 (`state.db`), surfaced by `akm task history` — **not** by `akm log`; there is
 no `task_invoked`/`task_completed` event type on the `akm log` stream.
 
-To disable a scheduled task, set `enabled: false` in its file and run
-`akm task sync`. To remove one, delete its file (`<bundle>/tasks/<id>.yml`)
-and run `akm task sync` — sync uninstalls the orphaned scheduler entry.
+To disable a scheduled task, set `enabled: false` on its `schedule:` entry
+(task source v4 has no document-level `enabled` flag — it lives per
+schedule-binding) and run `akm task sync`. To remove one, delete its file
+(`<bundle>/tasks/<id>.yml`) and run `akm task sync` — sync uninstalls the
+orphaned scheduler entry.
 
 Scheduler activation captures the installed akm runtime. Ordinary `task sync`
 reconciles definitions, schedules, and enabled state while preserving that
@@ -2384,10 +2475,10 @@ the AKM storage path or installed runtime path therefore requires an explicit
 `akm task sync --rebind`; setup does not silently migrate those entries.
 
 **Bundle targeting (`--bundle <bundle>`).** By default every subcommand
-operates on the primary/default bundle. `add`, `history`, `sync`, and `run`
-all accept `--bundle <bundle>` to schedule and reconcile tasks that live in
-another configured bundle (`doctor` reports scheduler-wide state and takes no
-`--bundle`):
+operates on the primary/default bundle. `add`, `history`, `sync`, `run`, and
+`explain` all accept `--bundle <bundle>` to schedule, reconcile, or inspect
+tasks that live in another configured bundle (`doctor` reports scheduler-wide
+state and takes no `--bundle`):
 
 ```sh
 akm task add nightly --schedule "@daily" --command "akm improve" --bundle team-bundle
@@ -2403,15 +2494,17 @@ are never namespaced: registering a task whose id is already scheduled from a
 different bundle is a hard error.
 
 `task add` accepts exactly one CLI target selector (`--workflow <ref>`,
-`--prompt <text-or-ref>`, or `--command <shell>`) and writes a strict task v3
-source. In the file, exactly one of `uses` or `run` is allowed. `uses` accepts
-command, workflow, and script refs plus `akm/command`; agents and task refs are
-not executable. `run` accepts a shell string with the closed shell and
-contained working-directory contract. The `akm` object owns scheduling,
-resolver overrides, `timeout`, `maxSteps`, `maxRetries`, and redaction names.
-Normal execution rejects v2 and points to `akm migrate apply --dry-run` followed
-by `akm migrate apply`. See [Tasks](tasks.md#migrating-task-v2-to-v3) for the
-complete grammar and fail-closed migration behavior.
+`--prompt <text-or-ref>`, or `--command <shell>`) and writes a task source v4
+document (`version: 4`). In the file, exactly one of `uses` or `run` is
+allowed. `uses` accepts command, workflow, and script refs plus `akm/command`;
+agents and task refs are not executable. `run` accepts a shell string with the
+closed shell and contained working-directory contract. Task source v4 has no
+`akm:` options bag or `on:` trigger block — scheduling, resolver overrides,
+`timeout`, `maxSteps`, `maxRetries`, and redaction names are all top-level
+keys on the document itself. Normal execution rejects v2 and v3 and points to
+`akm migrate apply --dry-run` followed by `akm migrate apply`. See
+[Tasks](tasks.md#migrating-to-task-source-v4) for the complete grammar and
+fail-closed migration behavior.
 
 **Task-log redaction and `redact:`.** A task's persisted output — the run `.log`
 file and its `logs.db` rows — is scrubbed before it is written. Two passes run:
@@ -2428,11 +2521,10 @@ Any task kind may add `redact:` for a secret exported under a name none of those
 rules recognise:
 
 ```yaml
-version: 3
+version: 4
 run: ./deploy.sh
-akm:
-  schedule: "0 3 * * *"
-  redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values
+schedule: "0 3 * * *"
+redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values
 ```
 
 akm looks each name up in the environment the run is given; a name that is unset
@@ -2445,16 +2537,17 @@ units' `pass_env:` follows.
 A workflow-target task executes the same native orchestration as `akm workflow
 run`; it does not stop after creating a run. Completion maps to task
 `completed`, while workflow failure or verifier rejection maps to task
-`failed`. The task schema's `params` mapping remains the non-CLI way a scheduled
-definition supplies its new-run parameter snapshot.
+`failed`. A workflow-target task's declared `inputs:` (with their `default:`
+values) remain the non-CLI way a scheduled definition supplies its new-run
+parameter snapshot.
 
-**Workflow-task run bounds.** `akm.timeout`, `akm.maxSteps`, and
-`akm.maxRetries` correspond to `akm workflow run --timeout`, `--max-steps`, and
+**Workflow-task run bounds.** Top-level `timeout`, `maxSteps`, and
+`maxRetries` correspond to `akm workflow run --timeout`, `--max-steps`, and
 `--max-retries`. Unlike the interactive command, a scheduled workflow task gets
 a **default whole-run timeout of 6 hours**
 (`DEFAULT_WORKFLOW_TASK_TIMEOUT_MS`): nobody is at the terminal to Ctrl-C an
 unattended run, so without one a single wedged unit hangs the task forever. An
-explicit `akm.timeout` always wins, and `timeout: null` opts out entirely. On
+explicit `timeout` always wins, and `timeout: null` opts out entirely. On
 expiry the runner aborts the run's signal, which the engine treats as a
 graceful break at the next step boundary — the journal is kept and the run
 stays resumable with `akm workflow resume <run-id>` (the run id is in the task
@@ -2462,13 +2555,14 @@ run's `detail.error` and log). The attempt itself is recorded as `failed`, so
 the OS scheduler sees a non-zero exit.
 
 ```yaml
-version: 3
+version: 4
 uses: workflows/nightly-report
-with:
-  region: us-east-1
-akm:
-  schedule: "@daily"
-  timeout: 3600000   # 1h whole-run bound (omit for the 6h default, null for none)
-  maxSteps: 20       # optional
-  maxRetries: 1      # optional
+inputs:
+  region:
+    type: string
+    default: us-east-1
+schedule: "@daily"
+timeout: 3600000   # 1h whole-run bound (omit for the 6h default, null for none)
+maxSteps: 20       # optional
+maxRetries: 1      # optional
 ```

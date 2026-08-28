@@ -58,6 +58,7 @@ enumeration of the whole `proposal` noun group.
 | `akm curate` | Stable | |
 | `akm show` | Stable | |
 | `akm workflow status` | Stable | |
+| `akm workflow plan` | Evolving | New in 0.9.2; secret-free provenance output; envelope shape may change. |
 | `akm workflow list` | Stable | |
 | `akm workflow create` | Stable | |
 | `akm workflow resume` | Stable | |
@@ -110,6 +111,7 @@ enumeration of the whole `proposal` noun group.
 | `akm task history` | Evolving | |
 | `akm task sync` | Evolving | |
 | `akm task doctor` | Evolving | |
+| `akm task explain` | Evolving | New in 0.9.2; secret-shaped values in provenance output are redacted on a best-effort heuristic basis (not a guarantee). |
 
 ## Stable
 
@@ -254,11 +256,27 @@ CHANGELOG with a migration note.
   `akm improve && akm proposal drain --promote --yes`, or a `triage` block
   with `applyMode: "promote"` in your strategy.
 - **Tasks** — `akm task` subcommand surface (`add | run | sync | doctor |
-  history`; no alias, no `list`/`remove`/`init`/`enable`/`disable`); strict
-  version-2 YAML for scheduled tasks. Prompt tasks use named engines and task
-  history metadata is versioned. Schema additions in patch releases; removals
-  only at minor. Bare `akm task` is a usage error naming the subcommands
-  (`akm task doctor` reports scheduler diagnostics).
+  history | explain`; no alias, no `list`/`remove`/`init`/`enable`/`disable`);
+  task source v4 YAML (typed `inputs:`, optional `schedule:`) is the only
+  accepted version — task v3 and task v2 sources are converted by
+  `akm migrate apply`. Command tasks use named engines and task history
+  metadata is versioned. Schema additions in patch releases; removals only at
+  minor. Bare `akm task` is a usage error naming the subcommands
+  (`akm task doctor` reports scheduler diagnostics). `akm task explain <ref>`
+  (new in 0.9.2) and `akm workflow plan <ref>` are both zero-write
+  provenance surfaces: they show what a task or workflow would do —
+  resolved target, input bindings, child expansion — without starting or
+  publishing a run. `akm workflow plan` is secret-free **by construction**
+  (the excluded data never reaches the command). `akm task explain`
+  instead **redacts** secret-shaped input values on a best-effort
+  heuristic basis — a value that doesn't match the heuristic can still
+  print unredacted.
+- **Workflow plan** — `akm workflow plan <ref>`, new in 0.9.2: zero-write
+  compile+freeze introspection (the canonical step graph, task/child
+  expansion, input bindings, and lowering notices for a workflow, without
+  starting or publishing a run). The envelope shape may still change; the
+  five long-Stable `workflow` verbs (`status`, `list`, `create`, `resume`,
+  `abandon`) and `run` are unaffected.
 - **Events / log** — `akm log` is the event-stream surface (0.9.0: the
   asset-scoped `akm history` surface, and `log`'s own `tail` subcommand, were
   both removed; `log` is now a leaf command — the former `list` surface).

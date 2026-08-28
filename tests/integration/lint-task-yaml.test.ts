@@ -37,9 +37,9 @@ import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/san
  * continuation. `yaml`'s parser throws on this — it is not merely a document
  * that parses to a non-mapping.
  */
-const MALFORMED_TASK = "version: 3\nrun: 'echo hi\nakm:\n\tschedule: '@daily'\n";
+const MALFORMED_TASK = "version: 4\nrun: 'echo hi\nname:\n\tbroken: '@daily'\n";
 
-const VALID_TASK = "version: 3\nrun: echo hi\nakm:\n  schedule: '@daily'\n";
+const VALID_TASK = "version: 4\nrun: echo hi\n";
 
 function writeTask(stashDir: string, relPath: string, content: string): string {
   const full = path.join(stashDir, "tasks", relPath);

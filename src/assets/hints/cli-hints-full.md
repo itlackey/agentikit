@@ -362,16 +362,21 @@ akm task sync --rebind                         # Also re-pin the scheduler's akm
 akm task doctor                                # Scheduler binding + runtime eligibility diagnosis
 akm task history                               # Recent run rows (status, timing)
 akm task run <id>                              # Run one task immediately (works when disabled)
+akm task explain <ref>                         # Read-only: declared inputs, target, schedule — spawns nothing
 akm search --type task                         # Enumerate task assets (there is no `task list`)
 ```
 
-Task files use strict task v3 (`version: 3`). To disable one, set
-`akm.enabled: false` and run `akm task sync`
-(the cron line stays, commented). To remove one, delete the YAML and run
-`akm task sync` — the scheduler entry is unbound. Per-task `akm.timeout` may
-be `null` (disable the invocation timer) or a duration/number overriding the
-selected engine invocation timeout. Preview old task-v2 conversion with
-`akm migrate apply --dry-run`.
+Task files use task source v4 (`version: 4`). There is no `akm:` options bag
+or `on:` block — every control (`schedule`, `timeout`, `engine`, `model`,
+`redact`, `maxSteps`, `maxRetries`, …) is a top-level key now. Typed
+`inputs:` declarations and a bounded `output:` schema work like a
+workflow's (`output:` replaces v3's `akm.outputSchema`). To disable one
+schedule entry, set that entry's `enabled: false` under `schedule:` and run
+`akm task sync` (the cron line stays, commented); to remove one, delete the
+YAML and run `akm task sync` — the scheduler entry is unbound. Top-level
+`timeout:` may be `null` (disable the invocation timer) or a duration/number
+overriding the selected engine invocation timeout. Preview old task-v2/v3
+conversion with `akm migrate apply --dry-run`.
 
 ## Agent Dispatch
 

@@ -9,6 +9,7 @@ import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
 import { resolveStashDir } from "../core/common";
 import { ConfigError } from "../core/errors";
 import { getCacheDir, getConfigDir, getDataDir, getTaskContextDir } from "../core/paths";
+import { INPUT_NAME_PATTERN } from "../execution/input-contract";
 import { normaliseTaskConceptId } from "./task-id";
 
 export const SCHEDULED_TASK_CONTEXT_KEYS = [
@@ -233,10 +234,18 @@ function parsePublicSchedulerInvocation(
       if (!target) return undefined;
       index += 2;
     }
-    if (invocation[index] !== "--scheduled" || index !== invocation.length - 1) return undefined;
+    if (invocation[index] !== "--scheduled") return undefined;
+    // P2b Lane B (spec §4.4, §1.7 B-N3): zero or more `--<name> <value>`
+    // schedule-supplied input flags may follow `--scheduled` — the same
+    // trailing tail `compileTaskSchedulerBindings` compiles from
+    // `schedule[i].inputs`. Absent/empty is the pre-P2b shape, byte-identical
+    // (B-03).
+    if (!isValidSchedulerInputFlagTail(invocation.slice(index + 1))) return undefined;
     return { invocation: [...invocation], ...(target !== undefined ? { target } : {}) };
   }
-  if (invocation[0] !== "workflow" || invocation[1] !== "run" || invocation.length !== 3) return undefined;
+  if (invocation[0] !== "workflow" || invocation[1] !== "run" || invocation.length !== 3) {
+    return undefined;
+  }
   const ref = invocation[2];
   if (!ref) return undefined;
   try {
@@ -246,6 +255,52 @@ function parsePublicSchedulerInvocation(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Validate an OPTIONAL trailing schedule-input flag tail (spec §1.7 B-N3):
+ * empty is valid (the pre-P2b shape). Otherwise the tail is a sequence of
+ * entries, each EITHER:
+ *
+ *   - a single inline `--<name>=<value>` token (code-review finding,
+ *     scheduler-binding.ts:536 — the ONLY encoding a dash-leading value's
+ *     exact text can round-trip through, since `<value>` here is everything
+ *     after the first `=`, whatever its leading character); or
+ *   - a `(--<name>, <value>)` pair, where `<value>` is a single non-flag
+ *     token (does not start with `-`) — the pre-P2b shape.
+ *
+ * In both forms `<name>` matches {@link INPUT_NAME_PATTERN} and no name
+ * repeats. A bare flag, a repeated name, a flag-shaped value in the pair
+ * form, or a malformed token are all refused. This validates SHAPE only;
+ * the real materialization against the task's declared contract happens
+ * through the same `parseTaskInputFlags` + `materializeInputFlags` path
+ * `akm task run --<name>` already uses (B-48) — `parseTaskInputFlags`
+ * accepts both forms natively (its inline-`=` branch never inspects the
+ * value's leading character).
+ */
+function isValidSchedulerInputFlagTail(tail: readonly string[]): boolean {
+  if (tail.length === 0) return true;
+  const seen = new Set<string>();
+  let index = 0;
+  while (index < tail.length) {
+    const token = tail[index];
+    if (!token || !token.startsWith("--")) return false;
+    const body = token.slice(2);
+    const equalsAt = body.indexOf("=");
+    if (equalsAt !== -1) {
+      const name = body.slice(0, equalsAt);
+      if (!INPUT_NAME_PATTERN.test(name) || seen.has(name)) return false;
+      seen.add(name);
+      index += 1;
+      continue;
+    }
+    if (!INPUT_NAME_PATTERN.test(body) || seen.has(body)) return false;
+    const value = tail[index + 1];
+    if (value === undefined || value.startsWith("-")) return false;
+    seen.add(body);
+    index += 2;
+  }
+  return true;
 }
 
 function canonicalContext(input: Record<string, unknown>): ScheduledTaskContext {
@@ -361,7 +416,8 @@ function invalidSchedulerContext(): ConfigError {
 
 function invalidSchedulerInvocation(): ConfigError {
   return new ConfigError(
-    "Invalid scheduler invocation; expected public `task run <id> [--bundle <bundle>] --scheduled` or `workflow run <qualified-ref>` argv.",
+    "Invalid scheduler invocation; expected public " +
+      "`task run <id> [--bundle <bundle>] --scheduled [--<input> <value>…]` or `workflow run <qualified-ref>` argv.",
     "INVALID_CONFIG_FILE",
   );
 }

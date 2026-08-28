@@ -89,7 +89,50 @@ export type UsageErrorCode =
   // strict: false) silently ignores these, so a typo used to parse
   // "successfully" and exit 0 — a `--fail-on-flaged`
   // in CI meant the gate never fired.
-  | "UNKNOWN_FLAG";
+  | "UNKNOWN_FLAG"
+  // P1a (docs/plans/specs/p1a-with-rejection-classifier.md §2.1, D7): a
+  // workflow step authors with: on a target that cannot bind it. The
+  // authored mapping used to be silently dropped at freeze; now it is
+  // rejected instead (the fail-closed correction). P2b
+  // (docs/plans/specs/p2b-input-bindings.md §1.7 A-N5) narrows this to a
+  // tasks/<ref> target that declares no inputs: at all, and grows it to
+  // commands/<ref> and scripts/<ref> targets, which are never binding
+  // surfaces. Thrown from src/workflows/freeze/targets/task.ts's
+  // taskDispatch and src/workflows/freeze/resolve-steps.ts's resolveStep.
+  | "COMPOSITION_INVALID"
+  // P1a: the sourceError funnel in src/tasks/source-v3.ts, re-coded from
+  // INVALID_FLAG_VALUE. Message text, field-path rendering (`$` for the
+  // empty path), and the file:line location string are unchanged.
+  | "TASK_SOURCE_INVALID"
+  // P1a: src/execution/target-ref.ts's classifyTargetRef rejects any value
+  // that is not a canonical commands/, scripts/, tasks/, or workflows/ asset
+  // ref (fragments, malformed shapes, non-canonical spellings, other asset
+  // families, GitHub locators, etc).
+  | "TARGET_REF_INVALID"
+  // P1a: declared only in this phase — wired to workflow source validation
+  // (e.g. `akm workflow validate`) in a later phase.
+  | "WORKFLOW_SOURCE_INVALID"
+  // P1a: declared only in this phase — wired in P2b when with: bindings are
+  // validated against a target's declared inputs.
+  | "INPUT_BINDING_INVALID"
+  // P1b (docs/plans/specs/p1b-model-extraction.md, diagnostic-codes ratchet
+  // remedy): originated in the now-deleted src/tasks/source/parse-v3-adapter.ts's
+  // taskDefinitionFromV3, which rejected a validly-parsed task-v3 `uses:`
+  // kind (builtin-command) that had no representation in P1b's closed
+  // TaskDefinitionTarget vocabulary. Distinct from INVALID_FLAG_VALUE: the
+  // input is not malformed, it is a recognized construct the target model
+  // does not model. The code and its hint survive that adapter's P4 deletion
+  // (spec docs/plans/specs/p4-deletions-closeout.md §3.2.7); §5.2 gives it a
+  // live consumer in `prepare/script-capture.ts`'s interpreter rejections
+  // (a later commit in this same phase — not yet wired as of this file).
+  | "TASK_TARGET_UNSUPPORTED"
+  // P3b (docs/plans/specs/p3b-child-executor.md §4.3, B-N13): a declared
+  // `outputs:` entry could not be resolved at run completion — a missing
+  // reference, a truncated source artifact, or a schema violation. Thrown
+  // from `completeWorkflowStep`'s write transaction, which SQLite rolls back
+  // whole: the step stays pending, the run stays active, fail-before-mutation
+  // preserved.
+  | "WORKFLOW_OUTPUT_INVALID";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -128,6 +171,22 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   EXECUTION_NOT_AUTHORIZED: "Change the selected tools or update the machine/user execution policy, then retry.",
 };
 
+// Code-review finding: COMPOSITION_INVALID covers several unrelated causes
+// (a rejected with:, a multi-job source, a composition cycle/depth/size
+// violation, an invalid child-output reference). USAGE_HINTS below carries
+// only the with:-rejection text — accurate for every with:-rejection throw
+// site (none of which pass an explicit constructor hint), but wrong for the
+// others. Those throw sites pass their OWN explicit hint (the constructor's
+// 3rd argument overrides USAGE_HINTS, per errors-usage-hints.test.ts's
+// "explicit constructor hint still overrides the USAGE_HINTS default").
+// Multi-job rejection is thrown from 5 separate call sites across
+// src/tasks/prepare/prepare-support.ts and src/workflows/**, so its hint is
+// centralized here as the one shared string all 5 import, rather than
+// duplicated at each site and risking drift.
+export const COMPOSITION_INVALID_MULTI_JOB_HINT =
+  "AKM workflows support exactly one job per source, with no needs: between jobs. Split the extra job(s) into " +
+  "their own workflow file, and compose them with uses: workflows/<ref> instead.";
+
 /** Default hint for each UsageError code. */
 const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INVALID_FLAG_VALUE: "Run `akm <command> --help` to see accepted values.",
@@ -144,6 +203,43 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
     "Refs use the form [bundle//]conceptId, e.g. `akm show knowledge/guide.md` or `akm show skills/deploy`.",
   UNKNOWN_COMMAND: "Run `akm --help` to see available commands.",
   UNKNOWN_FLAG: "Run the command with `--help` to see its accepted flags.",
+  // P2b (docs/plans/specs/p2b-input-bindings.md §1.7 A-N5, §7 F-A3): the
+  // "arrives in a later 0.9.x release" promise is gone now that task-call
+  // inputs are implemented. Names the two real rejection causes instead:
+  // (1) a task target that declares no inputs: at all, (2) commands/<ref> /
+  // scripts/<ref>, which are never binding surfaces. F-A3 authorizes this
+  // edit and the matching pinned-string update in
+  // tests/core/errors-usage-hints.test.ts in the same commit.
+  //
+  // Code-review finding: this default is reached ONLY by with:-rejection
+  // throw sites (the ones above, plus task.ts's noDeclaredInputsError and
+  // resolve-steps.ts's rejectNonTaskBindingWith) — every other
+  // COMPOSITION_INVALID throw site (multi-job source, composition
+  // cycle/depth/size, invalid child-output reference, an env: on a
+  // composing step) passes its own explicit constructor hint instead of
+  // falling through to this text, so this stays scoped and accurate rather
+  // than generalized into something vaguer.
+  COMPOSITION_INVALID:
+    "Remove the with: block, or target a tasks/<ref> whose source declares inputs: — commands/<ref> and scripts/<ref> steps are not binding surfaces.",
+  TASK_SOURCE_INVALID: "Fix the task source at the reported path and line, then re-run.",
+  TARGET_REF_INVALID:
+    "Targets are canonical asset refs: `commands/review`, `scripts/build.sh`, `tasks/nightly`, `workflows/release`.",
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §4.1, row B-53, R-R5): the
+  // original hint named `akm workflow validate`, a verb that was never
+  // implemented. Points at the two verbs that actually inspect a workflow
+  // source without executing it.
+  WORKFLOW_SOURCE_INVALID:
+    "Run `akm lint` to see the failing source location, or `akm workflow plan <ref>` to compile it without writing.",
+  INPUT_BINDING_INVALID: "Check the step's with: keys against the target's declared inputs.",
+  TASK_TARGET_UNSUPPORTED:
+    "Task definitions support command, script, workflow, and shell (run:) targets; akm/command is layered by callers.",
+  // P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md §3.2, A-N2): the
+  // complete-or-abandon policy for a stored pre-irVersion-5 run.
+  WORKFLOW_IR_VERSION_UNSUPPORTED:
+    "Abandon the run with `akm workflow abandon <id>`, then start it again from the workflow source — pre-0.9.2 frozen plans are not re-executable.",
+  // P3b (docs/plans/specs/p3b-child-executor.md §4.3).
+  WORKFLOW_OUTPUT_INVALID:
+    "Check each `outputs:` entry's `from:` against the step artifact it names, and its `schema:` against the value that step actually promotes.",
 };
 
 /** Default hint for each NotFoundError code. */

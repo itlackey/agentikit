@@ -39,7 +39,7 @@ function memoryExec(initial = ""): CronExec & { current: () => string } {
 function writeTask(id: string, schedule: string, enabled = true): void {
   fs.writeFileSync(
     path.join(tasksDir, `${id}.yml`),
-    `version: 3\nrun: echo ${id}\nname: ${id}\nakm:\n  schedule: "${schedule}"\n  enabled: ${enabled}\n`,
+    `version: 4\nrun: echo ${id}\nname: ${id}\nschedule:\n  - cron: "${schedule}"\n    enabled: ${enabled}\n`,
     "utf8",
   );
 }
@@ -148,7 +148,7 @@ describe("akmTasksSync — schedule drift", () => {
       "utf8",
     );
 
-    await expect(akmTasksSync({ backend })).rejects.toThrow(/version is required and must be 3/);
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/version is required and must be 4/);
     expect(exec.current()).toBe("");
   });
 

@@ -1,0 +1,11 @@
+name: With rejected on task composition
+on:
+  workflow_dispatch:
+jobs:
+  contract:
+    runs-on: [self-hosted]
+    steps:
+      - id: dispatch
+        uses: tasks/nightly
+        with:
+          scope: all

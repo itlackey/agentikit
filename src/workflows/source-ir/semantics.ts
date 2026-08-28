@@ -8,7 +8,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../../commands/command/builtin-action";
 import { validatePortableCommandTemplate } from "../../commands/command/portable-template";
-import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseSchedule } from "../../tasks/schedule";
 import { classifyWorkflowSourceUses, type WorkflowSourceUsesClassifier, type WorkflowSourceUsesTarget } from "./uses";
 
@@ -124,41 +123,20 @@ export function classifyWorkflowStepUses(
       "uses must be one exact, non-empty executable ref",
     );
   }
-  const task = canonicalTaskTarget(value);
-  if (task) return task;
   let target: WorkflowSourceUsesTarget;
   try {
     target = classifier(value);
   } catch (cause) {
     throw usesFailure(value, cause);
   }
-  if (target.kind === "github-action") {
-    throw new WorkflowSourceSemanticError(
-      "remote-action-acquisition-out-of-scope",
-      `Remote action acquisition is out of scope for ${JSON.stringify(value)}.`,
-    );
-  }
-  if (target.kind === "workflow") {
-    throw new WorkflowSourceSemanticError(
-      "nested-workflow-unsupported",
-      `Nested workflow target ${JSON.stringify(value)} is unsupported in a workflow step.`,
-    );
-  }
+  // P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md §1.3(2)/§4, A-N4): a
+  // `kind: "workflow"` target used to throw `nested-workflow-unsupported`
+  // here. That rejection is REMOVED — classification returns the workflow
+  // target like any other target-ref-shaped `uses:`, and freeze decides
+  // (`src/workflows/freeze/targets/child-workflow.ts`, the ONE recursive
+  // child-workflow resolver both the direct and task-wrapped composition
+  // forms route through).
   return target;
-}
-
-function canonicalTaskTarget(value: string): { kind: "task"; ref: string } | undefined {
-  try {
-    const parsed = parseBundleRef(value);
-    if (parsed.fragment !== undefined || bundleRefToString(parsed) !== value) return undefined;
-    const slash = parsed.conceptId.indexOf("/");
-    if (slash < 0 || parsed.conceptId.slice(0, slash) !== "tasks" || parsed.conceptId.length === slash + 1) {
-      return undefined;
-    }
-    return { kind: "task", ref: value };
-  } catch {
-    return undefined;
-  }
 }
 
 /**

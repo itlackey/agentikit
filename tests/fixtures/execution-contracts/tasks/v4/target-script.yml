@@ -1,0 +1,4 @@
+version: 4
+name: task source v4 fixture - script target
+uses: scripts/nightly-cleanup.sh
+schedule: "15 4 * * 1"

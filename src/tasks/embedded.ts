@@ -24,7 +24,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getDirname } from "../runtime";
-import { parseTaskV3Yaml, type TaskV3SourceDocument } from "./source-v3";
+import { parseTaskSource } from "./source/parse-task-source";
 
 /** Directory holding the bundled task template categories. */
 const TASKS_ASSETS_DIR = path.join(getDirname(import.meta.url), "../assets/tasks");
@@ -87,20 +87,26 @@ export function listEmbeddedTasks(): EmbeddedTask[] {
       } catch {
         continue;
       }
-      let task: TaskV3SourceDocument;
+      let parsed: ReturnType<typeof parseTaskSource>;
       try {
-        task = parseTaskV3Yaml({ yaml, filePath, workspaceRoot: TASKS_ASSETS_DIR });
+        parsed = parseTaskSource({ yaml, filePath, workspaceRoot: TASKS_ASSETS_DIR });
       } catch {
         continue;
       }
-      if (task.target.kind !== "run" || task.akm?.schedule === undefined) continue;
+      // Shipped templates are task source v4 (spec docs/plans/specs/p4-deletions-closeout.md
+      // §3.2.6, row B-24): a template's `enabled` is per schedule-binding, so
+      // the single-cron display shape here reads the FIRST schedule entry —
+      // every shipped template authors exactly one.
+      const task = parsed.v4;
+      const [firstSchedule] = task.schedule;
+      if (task.target.kind !== "run" || !firstSchedule) continue;
       tasks.push({
         id,
         label: `${category}/${id}`,
         command: task.target.run,
-        schedule: task.akm.schedule,
-        description: task.akm.description ?? "",
-        enabled: task.akm.enabled !== false,
+        schedule: firstSchedule.cron,
+        description: task.description ?? "",
+        enabled: firstSchedule.enabled,
         yaml,
       });
     }

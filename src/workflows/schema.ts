@@ -73,12 +73,30 @@ export interface WorkflowStep {
   source: SourceRef;
 }
 
+/**
+ * One `outputs:` entry (P3b, spec §4.2): a validated `steps.<id>.output(.<seg>)*`
+ * reference into a step artifact, plus an optional bounded JSON Schema. A
+ * run-level export projection over already-promoted step artifacts — distinct
+ * from a step's own `output:` (`outputSchema`), which is a typed-artifact
+ * contract on ONE step (B-N2).
+ */
+export interface WorkflowOutputDeclaration {
+  from: string;
+  schema?: Record<string, unknown>;
+}
+
 export interface WorkflowDocument {
   schemaVersion: typeof WORKFLOW_SCHEMA_VERSION;
   description?: string;
   tags?: string[];
   /** Run parameters: name -> JSON Schema declaration (adopted from the program vocabulary). */
   params?: Record<string, Record<string, unknown>>;
+  /**
+   * Named, optionally schema-validated projections of step artifacts,
+   * exported when the run completes (P3b, spec §4.2). Markdown-frontmatter
+   * only — symmetrical with `params:` (B-N4).
+   */
+  outputs?: Record<string, WorkflowOutputDeclaration>;
   defaults?: ProgramDefaults;
   budget?: { maxTokens?: number; maxUnits?: number };
   steps: WorkflowStep[];

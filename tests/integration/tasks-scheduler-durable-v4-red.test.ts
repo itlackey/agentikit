@@ -14,7 +14,7 @@ import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } f
 
 type ExecutableWorkflowEvidence = Readonly<{
   ref: string;
-  irVersion: 4;
+  irVersion: 5;
   planHash: string;
   sourceReadSet: readonly Readonly<{ identity: Readonly<{ ref: string; hash: string }> }>[];
 }>;
@@ -113,7 +113,7 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
 
     expect(evidence.map(({ ref }) => ref)).toEqual(["team//workflows/alpha", "team//workflows/zeta"]);
     for (const item of evidence) {
-      expect(item.irVersion).toBe(4);
+      expect(item.irVersion).toBe(5);
       expect(item.planHash).toMatch(/^[a-f0-9]{64}$/);
       expect(item.sourceReadSet.map(({ identity }) => identity.ref)).toContain(item.ref);
       expect(item).not.toHaveProperty("planJson");
@@ -148,15 +148,14 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
       ].join("\n"),
       /exactly one (?:source-IR )?job|single-job|multi-job|cannot project/i,
     ],
-    [
-      "nested workflow",
-      workflow("invalid", ["      - id: nested", "        uses: workflows/child"]),
-      /nested workflow|unsupported/i,
-    ],
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
+    // F-A1.19): the locator grammar is deleted — this now rejects as an
+    // unrecognized ref shape (unsupported-uses-target), not the old
+    // remote-action-acquisition reason.
     [
       "remote action",
       workflow("invalid", ["      - id: remote", "        uses: actions/checkout@v4"]),
-      /remote action|acquisition|unsupported/i,
+      /unsupported-uses-target/,
     ],
   ] as const)("invalid %s causes zero descriptor or native mutation", async (_label, invalidSource, message) => {
     write(storage.stashDir, "workflows/a-valid.yml", workflow("valid", ["      - id: ok", "        run: echo ok"]));
@@ -200,13 +199,13 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
     const started = await startWorkflowRun("team//workflows/release", {}, { force: true });
     const row = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
 
-    expect(row?.plan_ir_version).toBe(4);
+    expect(row?.plan_ir_version).toBe(5);
     expect(row?.plan_json).toContain("echo after-sync");
     expect(row?.plan_json).not.toContain("echo before-sync");
   });
 
   test("final whole-set CAS covers cross-bundle task/script reads before the first backend operation", async () => {
-    write(assetsRoot, "tasks/child.yml", "version: 3\nuses: assets//scripts/release.sh\nakm:\n  schedule: '@daily'\n");
+    write(assetsRoot, "tasks/child.yml", "version: 4\nuses: assets//scripts/release.sh\n");
     const script = write(assetsRoot, "scripts/release.sh", "#!/bin/sh\nprintf frozen\n");
     write(
       storage.stashDir,

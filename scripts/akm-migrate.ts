@@ -8,7 +8,12 @@ import { pathToFileURL } from "node:url";
 import { runWithJsonErrors } from "../src/cli/shared";
 import { UsageError } from "../src/core/errors";
 import helpText from "./akm-migrate/help.txt" with { type: "text" };
-import { runMigrationApply, runMigrationStatus } from "./akm-migrate/task-migrate";
+import {
+  runMigrationApply,
+  runMigrationStatus,
+  runTaskV4MigrationApply,
+  runTaskV4MigrationStatus,
+} from "./akm-migrate/task-migrate";
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
   const [command, ...rest] = args;
@@ -27,8 +32,20 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
         dryRun: rest.includes("--dry-run"),
       });
       return;
+    case "task-v4-status":
+      if (rest.length > 0) throw new UsageError("`task-v4-status` accepts no options.", "INVALID_FLAG_VALUE");
+      await runTaskV4MigrationStatus();
+      return;
+    case "task-v4-apply":
+      await runTaskV4MigrationApply({
+        dryRun: rest.includes("--dry-run"),
+      });
+      return;
     default:
-      throw new UsageError("Choose `status` or `apply`.", "MISSING_REQUIRED_ARGUMENT");
+      throw new UsageError(
+        "Choose `status`, `apply`, `task-v4-status`, or `task-v4-apply`.",
+        "MISSING_REQUIRED_ARGUMENT",
+      );
   }
 }
 

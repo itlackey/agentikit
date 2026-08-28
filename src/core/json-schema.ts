@@ -66,10 +66,14 @@ const MAX_DEFINITION_DEPTH = 64;
 /** Total (schema node × value node) visits one {@link validateJsonSchemaSubset} call may make. */
 const MAX_VALIDATION_NODES = 100_000;
 
-export function validateJsonSchemaSubset(value: unknown, schema: Record<string, unknown>): string[] {
+export function validateJsonSchemaSubset(
+  value: unknown,
+  schema: Record<string, unknown>,
+  options?: { readonly redactValues?: boolean },
+): string[] {
   const errors: string[] = [];
   const budget = { nodes: MAX_VALIDATION_NODES };
-  validateNode(value, schema, "$", { errors, budget, depth: 0 });
+  validateNode(value, schema, "$", { errors, budget, depth: 0, redactValues: options?.redactValues ?? false });
   if (budget.nodes < 0) {
     errors.push(`$: schema evaluation exceeded the limit of ${MAX_VALIDATION_NODES} checks and was stopped`);
   }
@@ -449,6 +453,13 @@ interface EvalCtx {
   errors: string[];
   budget: { nodes: number };
   depth: number;
+  /**
+   * When true, value-echoing branches (`enum`, `minimum`, `maximum`) omit the
+   * supplied value from their message — the caller's data may carry a
+   * credential. The declared constraint (allowed list / bound) is still
+   * shown, since it comes from the author's schema, not the user's input.
+   */
+  redactValues: boolean;
 }
 
 /** Evaluate `schema` against `value` in a scratch error list, sharing the caller's budget. */
@@ -531,7 +542,15 @@ function validateNode(value: unknown, schema: Record<string, unknown>, path: str
   if (Array.isArray(schema.enum) && schema.enum.length > 0) {
     const allowed = schema.enum;
     if (!allowed.some((candidate) => candidate === value)) {
-      errors.push(`${path}: value ${JSON.stringify(value)} is not one of ${JSON.stringify(allowed)}`);
+      // Never echo the supplied value when redacting: enum-constrained inputs
+      // can carry credentials, and this detail lands in stderr envelopes that
+      // get pasted into CI logs. The allowed list is safe — it comes from the
+      // author-declared schema, not from user-supplied data.
+      errors.push(
+        ctx.redactValues
+          ? `${path}: value is not one of ${JSON.stringify(allowed)}`
+          : `${path}: value ${JSON.stringify(value)} is not one of ${JSON.stringify(allowed)}`,
+      );
       return;
     }
   }
@@ -553,10 +572,18 @@ function validateNode(value: unknown, schema: Record<string, unknown>, path: str
 
   if ((actual === "number" || actual === "integer") && typeof value === "number") {
     if (typeof schema.minimum === "number" && value < schema.minimum) {
-      errors.push(`${path}: ${value} is below minimum ${schema.minimum}`);
+      errors.push(
+        ctx.redactValues
+          ? `${path}: value is below minimum ${schema.minimum}`
+          : `${path}: ${value} is below minimum ${schema.minimum}`,
+      );
     }
     if (typeof schema.maximum === "number" && value > schema.maximum) {
-      errors.push(`${path}: ${value} is above maximum ${schema.maximum}`);
+      errors.push(
+        ctx.redactValues
+          ? `${path}: value is above maximum ${schema.maximum}`
+          : `${path}: ${value} is above maximum ${schema.maximum}`,
+      );
     }
     return;
   }
