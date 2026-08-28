@@ -16,25 +16,18 @@ export interface MigrateToolCall {
   readonly plan?: Record<string, unknown>;
 }
 
-// ── Test seam ────────────────────────────────────────────────────────────────
-
-let runMigrationToolForTests: typeof runMigrationTool | undefined;
-
 /**
- * TEST-ONLY. Swap the standalone-migrator subprocess call; pass undefined to
- * restore the real one. `runMigrationTool` is the single seam between this
- * module and the real `spawnSync`, so overriding it is what lets a test drive
- * `runMigrateSubcommand`'s two-generation orchestration through genuinely
- * blocked and hard-failed generations — states the real migrator only reaches
- * from a crashed subprocess, which file content alone cannot reliably produce.
- * Used via `tests/_helpers/seams.ts` so restoration is automatic.
+ * The one seam between this module and the real `spawnSync`. Passed as a
+ * parameter rather than swapped through module-level state: the two
+ * generations' orchestration is only reachable through
+ * {@link runMigrateSubcommand}, so a caller can hand it a stand-in directly
+ * and nothing process-wide is mutated, left to be restored, or visible to a
+ * concurrent caller.
  */
-export function _setRunMigrationToolForTests(fake?: typeof runMigrationTool): void {
-  runMigrationToolForTests = fake;
-}
+export type RunMigrationTool = typeof runMigrationTool;
 
-async function callMigrateTool(args: string[]): Promise<MigrateToolCall> {
-  const result = await (runMigrationToolForTests ?? runMigrationTool)(args);
+async function callMigrateTool(args: string[], runTool: RunMigrationTool): Promise<MigrateToolCall> {
+  const result = await runTool(args);
   if (result.stderr) process.stderr.write(result.stderr);
   const resultLine = result.stdout.trim();
   if (!resultLine) return { status: result.status };
@@ -107,18 +100,19 @@ export function resolveGenerationStatus(call: MigrateToolCall, label: string): {
  * a config error, a crash) aborts the second call, since generation 1 never
  * got to look at a stable tree in that case.
  */
-async function runMigrateSubcommand(
+export async function runMigrateSubcommand(
   command: "migrate-status" | "migrate-apply",
   genOneArgs: string[],
   genTwoArgs: string[],
+  runTool: RunMigrationTool = runMigrationTool,
 ): Promise<void> {
-  const first = await callMigrateTool(genOneArgs);
+  const first = await callMigrateTool(genOneArgs, runTool);
   if (first.status !== EXIT_CODES.SUCCESS && first.status !== EXIT_CODES.GENERAL) {
     process.exitCode = first.status;
     return;
   }
 
-  const second = await callMigrateTool(genTwoArgs);
+  const second = await callMigrateTool(genTwoArgs, runTool);
   if (second.status !== EXIT_CODES.SUCCESS && second.status !== EXIT_CODES.GENERAL) {
     process.exitCode = second.status;
     return;
@@ -129,9 +123,27 @@ async function runMigrateSubcommand(
     return;
   }
 
+  const combined = combineMigrationPlans(first, second);
+  output(command, combined);
+
+  if (combined.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
+}
+
+/**
+ * Merge both generations' plans into the one combined envelope the command
+ * prints. Deliberately PURE — every rule the combined plan encodes (the
+ * {@link worstStatus} rollup, the fail-closed
+ * {@link resolveGenerationStatus} contribution, and the blockers merge, which
+ * orders generation 1's own blockers after its resolution error and before
+ * generation 2's) is decided here from two plain values, so it is provable
+ * without a subprocess, a CLI dispatch, or an output-mode singleton. The
+ * caller keeps the only two effectful decisions: whether generation 2 runs at
+ * all, and the process exit code.
+ */
+export function combineMigrationPlans(first: MigrateToolCall, second: MigrateToolCall) {
   const firstResolved = resolveGenerationStatus(first, "task-v2-to-v3");
   const secondResolved = resolveGenerationStatus(second, "task-v3-to-task-source-v4");
-  const combined = {
+  return {
     schemaVersion: 1 as const,
     status: worstStatus(firstResolved.status, secondResolved.status),
     blockers: [
@@ -147,9 +159,6 @@ async function runMigrateSubcommand(
     ...(second.plan?.backupPath !== undefined ? { taskV4BackupPath: second.plan.backupPath } : {}),
     ...(second.plan?.applied !== undefined ? { taskV4Applied: second.plan.applied } : {}),
   };
-  output(command, combined);
-
-  if (combined.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
 }
 
 export const migrateCommand = defineGroupCommand({
