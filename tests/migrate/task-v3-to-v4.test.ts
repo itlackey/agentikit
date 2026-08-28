@@ -209,6 +209,29 @@ describe("pure task v3 to v4 migration planner", () => {
     });
   });
 
+  // F3: the frozen v3 reader accepts `akm.outputSchema: null` verbatim as
+  // "no schema" (task-source-v3-frozen.ts:256-258), but v4's `output:` has
+  // no null form — parseOutputSchema always requires a mapping. Emitting
+  // `output: null` used to fail the real parseTaskSourceV4 prevalidation and
+  // block a valid, previously-runnable v3 file. Omitting the key entirely is
+  // the faithful v4 equivalent of an explicit v3 null.
+  test("treats akm.outputSchema: null as no schema — the output: key is omitted, not emitted as null", () => {
+    const yaml = [
+      "version: 3",
+      "uses: commands/publish-report",
+      "akm:",
+      "  schedule: '@daily'",
+      "  outputSchema: null",
+      "",
+    ].join("\n");
+    const outcome = planTaskToV4File(memoryInput(yaml));
+    expect(outcome.status).toBe("changed");
+    if (outcome.status !== "changed") throw new Error(`expected changed: ${outcome.detail ?? outcome.reason}`);
+    const parsed = parseYaml(outcome.after.toString("utf8"));
+    expect(Object.hasOwn(parsed, "output")).toBe(false);
+    expect(parseTaskSourceV4({ yaml: outcome.after.toString("utf8"), filePath: outcome.filePath }).version).toBe(4);
+  });
+
   test("distributes akm.enabled: false onto every compiled schedule entry — the single-cron shorthand and the on.schedule list alike", () => {
     const singleCron = fixtureOutcome("enabled-false-akm-schedule");
     const list = fixtureOutcome("enabled-false-on-schedule");
@@ -277,6 +300,40 @@ describe("pure task v3 to v4 migration planner", () => {
     const outcome = planTaskToV4File(memoryInput(yaml));
     expect(outcome.status).toBe("blocked");
     expect(outcome.reason).toMatch(/akm|unknown|unrecognized|invalid/i);
+  });
+
+  // F2: the frozen v3 reader rejects `on: {}` outright — "on must declare
+  // schedule and/or workflow_dispatch." (task-source-v3-frozen.ts:396). A v3
+  // document the oracle itself refuses to parse must never be laundered into
+  // runnable v4 bytes; a schedule-less, trigger-less `on: {}` must block, not
+  // fall through to the manual-dispatch notice as if workflow_dispatch had
+  // actually been declared.
+  test("blocks a v3 document whose on: declares no keys, instead of silently emitting a schedule-less v4 task", () => {
+    const yaml = ["version: 3", "uses: commands/publish-report", "on: {}", ""].join("\n");
+    const outcome = planTaskToV4File(memoryInput(yaml));
+    expect(outcome.status).toBe("blocked");
+    expect(outcome.reason).toBe("invalid-v3-task");
+    expect(outcome.before.toString("utf8")).toBe(yaml);
+  });
+
+  // F2: the frozen v3 reader also rejects a non-empty on.workflow_dispatch —
+  // "must be null or an empty mapping; inputs are unsupported."
+  // (task-source-v3-frozen.ts:426). Same fail-closed requirement as above.
+  test("blocks a v3 document whose on.workflow_dispatch carries inputs, mirroring the frozen v3 reader's own rejection", () => {
+    const yaml = [
+      "version: 3",
+      "uses: commands/publish-report",
+      "on:",
+      "  workflow_dispatch:",
+      "    inputs:",
+      "      foo:",
+      "        type: string",
+      "",
+    ].join("\n");
+    const outcome = planTaskToV4File(memoryInput(yaml));
+    expect(outcome.status).toBe("blocked");
+    expect(outcome.reason).toBe("invalid-v3-task");
+    expect(outcome.before.toString("utf8")).toBe(yaml);
   });
 
   test("blocks a task source whose version is neither 3 nor 4", () => {

@@ -282,9 +282,34 @@ function planV3DataToV4(input: TaskToV4FileInput, data: Record<string, unknown>)
     } catch (cause) {
       return blocked(input, "invalid-v3-task", causeMessage(cause));
     }
+    // Mirrors the frozen v3 reader's own `parseOn` gates exactly
+    // (task-source-v3-frozen.ts:395-427): an empty `on: {}` declares no
+    // trigger at all, and `on.workflow_dispatch` accepts only null or an
+    // empty mapping (inputs are unsupported in v3). The frozen parser
+    // rejects both shapes outright, so this migrator must too — translating
+    // a document the v3 oracle would refuse to parse into runnable v4 bytes
+    // would launder invalid input into a valid, schedule-less task.
+    if (Object.keys(onRecord).length === 0) {
+      return blocked(input, "invalid-v3-task", "on must declare schedule and/or workflow_dispatch.");
+    }
     const unknownOn = Object.keys(onRecord).filter((key) => !V3_ON_KEYS.has(key));
     if (unknownOn.length > 0) {
       return blocked(input, "invalid-v3-task", `on has unknown field(s): ${unknownOn.join(", ")}`);
+    }
+    if (Object.hasOwn(onRecord, "workflow_dispatch") && onRecord.workflow_dispatch !== null) {
+      let dispatchMapping: Record<string, unknown>;
+      try {
+        dispatchMapping = plainRecord(onRecord.workflow_dispatch, "on.workflow_dispatch");
+      } catch (cause) {
+        return blocked(input, "invalid-v3-task", causeMessage(cause));
+      }
+      if (Object.keys(dispatchMapping).length > 0) {
+        return blocked(
+          input,
+          "invalid-v3-task",
+          "on.workflow_dispatch must be null or an empty mapping; inputs are unsupported.",
+        );
+      }
     }
   }
 
@@ -394,7 +419,13 @@ function planV3DataToV4(input: TaskToV4FileInput, data: Record<string, unknown>)
     for (const key of AKM_HOIST_KEYS) {
       if (Object.hasOwn(akm, key)) out[key] = akm[key];
     }
-    if (Object.hasOwn(akm, "outputSchema")) out.output = akm.outputSchema;
+    // v3's `akm.outputSchema: null` means "no schema" (accepted verbatim by
+    // the frozen v3 reader, task-source-v3-frozen.ts:256-258); v4's
+    // `output:` has no null form (parseOutputSchema always requires a
+    // mapping). Omitting the key is the faithful v4 equivalent of an
+    // explicit v3 null — emitting `output: null` would fail the real
+    // parseTaskSourceV4 validation below and block the whole file.
+    if (Object.hasOwn(akm, "outputSchema") && akm.outputSchema !== null) out.output = akm.outputSchema;
   }
 
   const afterYaml = stringifyYaml(out);
