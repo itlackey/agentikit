@@ -495,10 +495,10 @@ External coding agents are reachable via two execution paths:
   startup against its own deadline (including `null`); no caller's timeout is
   stored in the shared lifecycle.
 
-New tasks are strict task-v3 `.yml` assets. Normal execution rejects v2 and
-directs operators to the explicit preview/apply migrator. Task-v3 command,
-workflow, script, and shell targets use the common resolved/lowered execution
-boundary. Historical task-run metadata remains readable.
+New tasks are task source v4 `.yml` assets. Normal execution rejects v2 and v3
+and directs operators to the explicit preview/apply migrator. Task source v4
+command, workflow, script, and shell targets use the common resolved/lowered
+execution boundary. Historical task-run metadata remains readable.
 
 Long-lived mutable operations coordinate start ownership through one maintenance
 barrier. Index writers, improve/extract process locks, lockfile writers, and

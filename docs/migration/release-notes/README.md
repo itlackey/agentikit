@@ -7,8 +7,8 @@ live one level up in `docs/migration/`.
 
 ## Available notes
 
-- [0.9.2](0.9.2.md) — task v3, workflow source IR v1 and durable v4,
-  command diagnostics, and strategy judgment migration
+- [0.9.2](0.9.2.md) — task source v4 migration, workflow source IR v1 and
+  durable v4, command diagnostics, and strategy judgment migration
 
 ## Adding notes for a new release
 

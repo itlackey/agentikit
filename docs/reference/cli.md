@@ -1433,10 +1433,14 @@ akm registry remove my-team --yes    # Skip the confirmation prompt
 
 ### migrate
 
-Inspect or apply the explicit one-way task-v2 to task-v3 conversion. Normal task
-execution accepts task v3 and task source v4; `akm migrate` itself only
-converts task-v2 sources to task v3. Database schema upgrades are additive and
-run automatically when `state.db` opens; config and workflow formats have no
+Inspect or apply the explicit, one-way conversion of on-disk task sources to
+task source v4, the only grammar normal task execution accepts. `akm migrate`
+runs **both** migration generations in one pass — task-v2 to task-v3, then
+task-v3 to task source v4 against the resulting files — each keeping its own
+lock, backup, prevalidation, and rollback, so a file blocked in the first
+generation does not stop the second generation from converting files that are
+already `version: 3`. Database schema upgrades are additive and run
+automatically when `state.db` opens; config and workflow formats have no
 runtime compatibility migrator.
 
 ```sh
@@ -1445,9 +1449,17 @@ akm migrate apply --dry-run
 akm migrate apply
 ```
 
-`status` and `apply --dry-run` are read-only. Apply refuses blocked task sources,
-backs up each changed file, atomically publishes strict v3 YAML, and is
-idempotent: an already-v3 file is skipped.
+`status` and `apply --dry-run` are read-only. Apply refuses blocked task
+sources, backs up each changed file immediately before replacement, and
+atomically publishes strict task source v4 YAML; it is idempotent per
+generation, skipping a file already at that generation's target version
+(`already-v3`, `already-v4`). To run only the second generation in isolation
+(for example, previewing just the v3-to-v4 step against a tree that is
+already all `version: 3`), the frozen migrator's standalone entry points
+remain available as a separate executable: `akm-migrate task-v4-status` /
+`akm-migrate task-v4-apply [--dry-run]`. See [Tasks: Migrating to task
+source v4](tasks.md#migrating-to-task-source-v4) for the full blocked-reason
+table and worked examples.
 
 ### config
 
@@ -2403,8 +2415,8 @@ prompts. Negative feedback requires a reason by default.
 `akm task` is the scheduling surface for workflows, agent prompts, and
 shell commands. It manages on-disk task definitions under
 `<bundle>/tasks/<id>.yml` and reconciles them with the OS-native scheduler
-(cron / launchd / schtasks). Strict task v3 YAML and task source v4 YAML are
-both executable source contracts (`akm task add` still writes only task v3);
+(cron / launchd / schtasks). Task source v4 YAML (`version: 4`) is the only
+executable source contract this release accepts; `akm task add` writes v4 —
 see the canonical [Tasks reference](tasks.md). The
 group is `add | run | explain | sync | doctor | history` — there is no `list`
 or `remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
@@ -2443,9 +2455,11 @@ time. Each run is recorded as a row in the durable `task_history` table
 (`state.db`), surfaced by `akm task history` — **not** by `akm log`; there is
 no `task_invoked`/`task_completed` event type on the `akm log` stream.
 
-To disable a scheduled task, set `enabled: false` in its file and run
-`akm task sync`. To remove one, delete its file (`<bundle>/tasks/<id>.yml`)
-and run `akm task sync` — sync uninstalls the orphaned scheduler entry.
+To disable a scheduled task, set `enabled: false` on its `schedule:` entry
+(task source v4 has no document-level `enabled` flag — it lives per
+schedule-binding) and run `akm task sync`. To remove one, delete its file
+(`<bundle>/tasks/<id>.yml`) and run `akm task sync` — sync uninstalls the
+orphaned scheduler entry.
 
 Scheduler activation captures the installed akm runtime. Ordinary `task sync`
 reconciles definitions, schedules, and enabled state while preserving that
@@ -2480,15 +2494,17 @@ are never namespaced: registering a task whose id is already scheduled from a
 different bundle is a hard error.
 
 `task add` accepts exactly one CLI target selector (`--workflow <ref>`,
-`--prompt <text-or-ref>`, or `--command <shell>`) and writes a strict task v3
-source. In the file, exactly one of `uses` or `run` is allowed. `uses` accepts
-command, workflow, and script refs plus `akm/command`; agents and task refs are
-not executable. `run` accepts a shell string with the closed shell and
-contained working-directory contract. The `akm` object owns scheduling,
-resolver overrides, `timeout`, `maxSteps`, `maxRetries`, and redaction names.
-Normal execution rejects v2 and points to `akm migrate apply --dry-run` followed
-by `akm migrate apply`. See [Tasks](tasks.md#migrating-to-task-source-v4) for the
-complete grammar and fail-closed migration behavior.
+`--prompt <text-or-ref>`, or `--command <shell>`) and writes a task source v4
+document (`version: 4`). In the file, exactly one of `uses` or `run` is
+allowed. `uses` accepts command, workflow, and script refs plus `akm/command`;
+agents and task refs are not executable. `run` accepts a shell string with the
+closed shell and contained working-directory contract. Task source v4 has no
+`akm:` options bag or `on:` trigger block — scheduling, resolver overrides,
+`timeout`, `maxSteps`, `maxRetries`, and redaction names are all top-level
+keys on the document itself. Normal execution rejects v2 and v3 and points to
+`akm migrate apply --dry-run` followed by `akm migrate apply`. See
+[Tasks](tasks.md#migrating-to-task-source-v4) for the complete grammar and
+fail-closed migration behavior.
 
 **Task-log redaction and `redact:`.** A task's persisted output — the run `.log`
 file and its `logs.db` rows — is scrubbed before it is written. Two passes run:
@@ -2505,11 +2521,10 @@ Any task kind may add `redact:` for a secret exported under a name none of those
 rules recognise:
 
 ```yaml
-version: 3
+version: 4
 run: ./deploy.sh
-akm:
-  schedule: "0 3 * * *"
-  redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values
+schedule: "0 3 * * *"
+redact: [ACME_DEPLOY_TOKEN]   # NAMES, never values
 ```
 
 akm looks each name up in the environment the run is given; a name that is unset
@@ -2522,16 +2537,17 @@ units' `pass_env:` follows.
 A workflow-target task executes the same native orchestration as `akm workflow
 run`; it does not stop after creating a run. Completion maps to task
 `completed`, while workflow failure or verifier rejection maps to task
-`failed`. The task schema's `params` mapping remains the non-CLI way a scheduled
-definition supplies its new-run parameter snapshot.
+`failed`. A workflow-target task's declared `inputs:` (with their `default:`
+values) remain the non-CLI way a scheduled definition supplies its new-run
+parameter snapshot.
 
-**Workflow-task run bounds.** `akm.timeout`, `akm.maxSteps`, and
-`akm.maxRetries` correspond to `akm workflow run --timeout`, `--max-steps`, and
+**Workflow-task run bounds.** Top-level `timeout`, `maxSteps`, and
+`maxRetries` correspond to `akm workflow run --timeout`, `--max-steps`, and
 `--max-retries`. Unlike the interactive command, a scheduled workflow task gets
 a **default whole-run timeout of 6 hours**
 (`DEFAULT_WORKFLOW_TASK_TIMEOUT_MS`): nobody is at the terminal to Ctrl-C an
 unattended run, so without one a single wedged unit hangs the task forever. An
-explicit `akm.timeout` always wins, and `timeout: null` opts out entirely. On
+explicit `timeout` always wins, and `timeout: null` opts out entirely. On
 expiry the runner aborts the run's signal, which the engine treats as a
 graceful break at the next step boundary — the journal is kept and the run
 stays resumable with `akm workflow resume <run-id>` (the run id is in the task
@@ -2539,13 +2555,14 @@ run's `detail.error` and log). The attempt itself is recorded as `failed`, so
 the OS scheduler sees a non-zero exit.
 
 ```yaml
-version: 3
+version: 4
 uses: workflows/nightly-report
-with:
-  region: us-east-1
-akm:
-  schedule: "@daily"
-  timeout: 3600000   # 1h whole-run bound (omit for the 6h default, null for none)
-  maxSteps: 20       # optional
-  maxRetries: 1      # optional
+inputs:
+  region:
+    type: string
+    default: us-east-1
+schedule: "@daily"
+timeout: 3600000   # 1h whole-run bound (omit for the 6h default, null for none)
+maxSteps: 20       # optional
+maxRetries: 1      # optional
 ```

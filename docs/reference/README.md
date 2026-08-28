@@ -6,7 +6,7 @@ Authoritative reference documentation for the akm CLI and its data.
 - [CLI](cli.md) -- All `akm` commands and flags
 - [Configuration](configuration.md) -- Engines, strategies, bundles, and settings
 - [Supported Formats](supported-formats.md) -- Formats akm can index, from its own bundle layout to other tools' existing asset directories
-- [Tasks](tasks.md) -- Strict task-v3 source grammar, executable targets, triggers, migration, and scheduler operations
+- [Tasks](tasks.md) -- Task source v4 grammar, executable targets, scheduling, migration, and scheduler operations
 - [Workflow Schema](workflow-schema.md) -- Authoritative reference for a workflow asset's exact frontmatter and body syntax
 - [Workflows](workflows.md) -- Map of the workflow documentation: running, authoring, the schema, and the engine
 - [Memory](https://github.com/itlackey/akm/blob/main/docs/reference/memory.md) -- The `memory` asset type: capture, belief states, and derived memories
