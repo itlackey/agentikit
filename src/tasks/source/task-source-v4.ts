@@ -45,6 +45,7 @@ import {
 import { DURATION_UNITS, parseDuration } from "../../core/time";
 import { warn } from "../../core/warn";
 import {
+  applyInputDefaults,
   INPUT_NAME_PATTERN,
   type InputContract,
   type InputDeclaration,
@@ -554,6 +555,54 @@ function targetConsumesOutputSchema(target: TaskSourceV4Target): boolean {
 
 // ── schedule: -> TaskSourceV4ScheduleBinding[] (D2-N5, D2-N6, B-06..B-10, B-38) ──
 
+/**
+ * Every schedule binding must be independently runnable (0.9.2 review round 2).
+ *
+ * A scheduled firing supplies NO input flags — `compileTaskSchedulerBindings`
+ * (../scheduler-binding.ts) appends only the entry's own
+ * `schedule[i].inputs` to the `["task","run",id,"--bundle",b,"--scheduled"]`
+ * tail — so that literal PLUS the declared defaults is the complete value set
+ * `akm task run --scheduled` will see, and it is checked there by the very
+ * same `applyInputDefaults` + `validateInputs` pair (../run/load-task.ts).
+ * A `required: true` declaration may not also carry a `default` (D2-N3,
+ * `parseInputDeclaration` above), so an entry that names no value for one can
+ * never satisfy the contract, at any hour, ever.
+ *
+ * The source document alone knows both halves of that contradiction, so it is
+ * a grammar error: TASK_SOURCE_INVALID at the entry's own field path, naming
+ * the unsatisfied input(s). `akm task sync`'s projectability proof
+ * (../scheduler-sync.ts) keeps its own independent copy of this check over
+ * the DEFAULTED view — that gate is what makes such a schedule unreachable
+ * rather than merely ill-advised, and it still guards a task source reaching
+ * sync through any other path — but an author should not have to run `akm
+ * task sync` to learn that a document contradicts itself (the parse-time
+ * rejection p2a's own review log named as the natural fix). Manual `akm task
+ * run` is deliberately unaffected: a manual run takes the value from the
+ * input's own `--<name>` flag, so a required, default-less input plus NO
+ * `schedule:` stays valid and manual-only (B-06, D2-N6).
+ *
+ * Runs for every entry, AFTER the raw `schedule[i].inputs` check below, so an
+ * entry that authors an `inputs:` mapping keeps that check's exact
+ * message/field path; defaults can only add values already validated against
+ * their own declaration, so this pass can add nothing but missing-required.
+ */
+function checkScheduleEntryRunnable(
+  inputs: Readonly<Record<string, unknown>>,
+  contract: InputContract,
+  ctx: BoundedDocumentContext,
+  entryPath: readonly (string | number)[],
+): void {
+  const errors = validateInputs(contract, applyInputDefaults(contract, { ...inputs }), { pathRoot: "inputs" });
+  if (errors.length === 0) return;
+  sourceError(
+    ctx,
+    entryPath,
+    `does not satisfy the task's declared inputs once defaults are applied: ${errors.join("; ")}. ` +
+      "A scheduled run supplies no input flags — give this schedule entry an inputs: value for each input " +
+      "named above, or declare a default: on the input instead (a required: true input may not carry one).",
+  );
+}
+
 function parseScheduleEntry(
   entryRaw: ExecutionJsonValue,
   index: number,
@@ -595,6 +644,7 @@ function parseScheduleEntry(
     if (errors.length > 0) sourceError(ctx, [...entryPath, "inputs"], errors.join("; "));
     inputsLiteral = Object.freeze({ ...inputsValue });
   }
+  checkScheduleEntryRunnable(inputsLiteral, contract, ctx, entryPath);
 
   return Object.freeze({ cron, enabled, inputs: inputsLiteral, source: `schedule[${index}].cron`, ordinal: index });
 }
@@ -610,6 +660,11 @@ function parseSchedule(
   if (typeof raw === "string") {
     const cron = stringField(raw, ctx, ["schedule"], { nonempty: true }) as string;
     noGithubExpression(cron, ctx, ["schedule"]);
+    // B-08's SHAPE is unchanged — one enabled binding, no inputs — but the
+    // shorthand is a schedule entry like any other, so it is held to the same
+    // runnability contract, at the `schedule` key's own field path (it has
+    // neither an ordinal nor an `inputs:` sub-path to point at).
+    checkScheduleEntryRunnable(Object.freeze({}), contract, ctx, ["schedule"]);
     return Object.freeze([
       Object.freeze({ cron, enabled: true, inputs: Object.freeze({}), source: "schedule", ordinal: 0 }),
     ]);

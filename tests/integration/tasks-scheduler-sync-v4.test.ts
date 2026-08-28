@@ -302,6 +302,44 @@ describe("whole-set task source v4 scheduler sync planning — B-45/F-B2 (schedu
       }),
     ).rejects.toThrow(UsageError);
   });
+
+  test("a required, default-less input paired with the schedule: shorthand is rejected at PARSE time, before any scheduler mutation (0.9.2 review)", async () => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "tasks", "unrunnable-schedule.yml"),
+      [
+        "version: 4",
+        "run: echo needs-a-ticket",
+        "shell: sh",
+        "inputs:",
+        "  ticket:",
+        "    type: string",
+        "    required: true",
+        "schedule: '0 8 * * 1'",
+        "",
+      ].join("\n"),
+    );
+
+    // The scheduled invocation tail carries only the entry's own
+    // `schedule[i].inputs` (scheduler-binding.ts), and a `required: true`
+    // declaration may not carry a `default`, so this schedule could never
+    // run. sync's own projectability proof (scheduler-sync.ts) still holds
+    // an independent copy of the check over the DEFAULTED view; what changed
+    // is that the contradiction is now caught by `parseTaskSource` itself, so
+    // the failure names the offending `schedule` FIELD PATH rather than only
+    // the task ref, and an author sees it without running `akm task sync`.
+    const rejection = prepareSchedulerSyncSourceSet({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+    });
+    await expect(rejection).rejects.toThrow(UsageError);
+    await expect(rejection).rejects.toThrow(/schedule does not satisfy the task's declared inputs/);
+    await expect(rejection).rejects.toThrow(/inputs\.ticket: is required/);
+  });
 });
 
 // ── Ported from the deleted tests/integration/tasks-scheduler-sync-v3.test.ts ──

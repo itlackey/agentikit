@@ -185,7 +185,7 @@ uses: commands/review
 schedule:
   - cron: "0 8 * * 1"
     enabled: true
-    inputs: { scope: all }
+    inputs: { scope: all, ticket: OPS-1234 }
 timeout: 45000
 engine: reviewer
 redact: [TOKEN]
@@ -205,16 +205,22 @@ redact: [TOKEN]
   --<name>`, and a `schedule[].inputs` entry would otherwise route the value
   into `akm task run`'s own flag instead of the declared input.
 - **A `required: true` input with no default must be satisfied by every
-  schedule binding.** A schedule entry that authors an `inputs:` mapping is
-  checked against the declarations at parse time (`TASK_SOURCE_INVALID` at
-  `schedule[].inputs`). The string shorthand and a list entry with no
-  `inputs:` key do parse, but `akm task sync` validates every entry — with
-  declared defaults applied — and rejects the whole desired set with
-  `TASK_SOURCE_INVALID`, naming the unsatisfied input, before touching any
-  scheduler state, so such a schedule is never installed. Give every
-  schedule entry an explicit value for the input, or declare a `default`
-  instead; manual `akm task run` is unaffected either way — it takes the
-  value from the input's own flag.
+  schedule binding.** A scheduled run supplies no input flags — the entry's
+  own `inputs:` literals plus the declared defaults are the whole value set
+  it gets — and a `required: true` input may not carry a `default`, so an
+  entry that names no value for one could never run. Parsing rejects that
+  contradiction with `TASK_SOURCE_INVALID` at the offending entry's own
+  field path (`schedule`, or `schedule[<i>]`), naming the unsatisfied
+  input. The rule covers every entry: the `schedule: "<cron>"` string
+  shorthand, a list entry with no `inputs:` key, and an entry whose
+  `inputs:` mapping is present but incomplete — including one written
+  `enabled: false`, so enabling it later can never turn a parsed document
+  unrunnable. `akm task sync` keeps its own equivalent check over the
+  defaulted values and still rejects the whole desired set before touching
+  any scheduler state. Give every schedule entry an explicit value for the
+  input, or declare a `default` instead; manual runs are unaffected — a
+  task with no `schedule:` stays valid whatever it requires, and `akm task
+  run` takes the value from the input's own flag.
 - `output:` is a single bounded JSON Schema, replacing v3's
   `akm.outputSchema`. It is legal only on a command target
   (`uses: commands/<ref>` or `uses: akm/command`), where it is forwarded to

@@ -847,6 +847,130 @@ describe("task source v4 — optional schedule (D2-N6, D2-N5, B-06..B-10, B-38)"
   });
 });
 
+// ── Every schedule binding must be independently runnable (0.9.2 review) ────
+
+/**
+ * A scheduled firing supplies NO input flags — `compileTaskSchedulerBindings`
+ * appends only the entry's own `schedule[i].inputs` to the invocation tail
+ * (`src/tasks/scheduler-binding.ts`) — so an entry's literals PLUS the
+ * declared defaults are the complete value set the run will see. A
+ * `required: true` declaration may not carry a `default` (D2-N3), so a
+ * schedule entry that names no value for it can never satisfy the contract.
+ *
+ * Before this gate, only an entry that AUTHORED an `inputs:` mapping was
+ * checked at parse time; the string shorthand and a list entry with no
+ * `inputs:` key parsed clean and deferred to `akm task sync`'s own
+ * projectability proof (`src/tasks/scheduler-sync.ts`) — which does reject
+ * the desired set before mutation, so no unrunnable schedule was ever
+ * installed, but the author only learned at sync time and only for the
+ * install path. The source document alone knows both the contract and the
+ * schedule, so the contradiction is a grammar error (p2a review log:
+ * "The natural P2b fix is a sync-time warn (or a parse-time rejection) when a
+ * scheduled v4 task declares a required input that no schedule entry or
+ * default can ever satisfy").
+ */
+describe("task source v4 — a schedule entry must satisfy the declared inputs once defaults are applied", () => {
+  const REQUIRED_TICKET = { ticket: { type: "string", required: true } } as const;
+
+  test("schedule: string shorthand + a required, default-less input is TASK_SOURCE_INVALID naming the input (B-08 shape is unchanged; the contradiction is)", () => {
+    const error = expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: REQUIRED_TICKET, schedule: "0 8 * * 1" }), {
+          filePath: "/x.yml",
+        }),
+      [/schedule /, /ticket/, /is required/],
+    );
+    // Located at the `schedule` key itself — the shorthand has no entry index
+    // and no `inputs:` sub-path to point at.
+    expect(error.message).toContain("/x.yml: schedule ");
+  });
+
+  test("a schedule LIST entry with no inputs: key at all is rejected the same way, at its own ordinal", () => {
+    const error = expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({
+            uses: "commands/review",
+            inputs: REQUIRED_TICKET,
+            schedule: [{ cron: "0 6 * * *", inputs: { ticket: "OPS-1" } }, { cron: "30 18 * * 1-5" }],
+          }),
+          { filePath: "/x.yml" },
+        ),
+      [/ticket/, /is required/],
+    );
+    // The FIRST entry satisfies the contract; only the second is at fault.
+    expect(error.message).toContain("schedule[1]");
+    expect(error.message).not.toContain("schedule[0]");
+  });
+
+  test("an entry that supplies the required input parses, and its literal survives verbatim", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({
+        uses: "commands/review",
+        inputs: REQUIRED_TICKET,
+        schedule: [{ cron: "0 6 * * *", inputs: { ticket: "OPS-7" } }],
+      }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.schedule[0]?.inputs).toEqual({ ticket: "OPS-7" });
+  });
+
+  test("a declared default satisfies the contract for every entry — shorthand and inputs-less list entry alike (defaults are applied first)", () => {
+    const defaulted = { scope: { type: "string", enum: ["changed", "all"], default: "changed" } };
+    expect(
+      parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: defaulted, schedule: "0 8 * * 1" }), {
+        filePath: "/x.yml",
+      }).schedule,
+    ).toHaveLength(1);
+    expect(
+      parseTaskSourceV4Document(
+        v4Doc({ uses: "commands/review", inputs: defaulted, schedule: [{ cron: "0 6 * * *" }] }),
+        { filePath: "/x.yml" },
+      ).schedule[0]?.inputs,
+      // The default is NOT materialized into the frozen binding — it is
+      // applied again at run time (load-task.ts) from the same declaration.
+    ).toEqual({});
+  });
+
+  test("manual runs are unaffected: the SAME required, default-less declaration with no schedule: still parses (B-06/D2-N6)", () => {
+    const doc = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: REQUIRED_TICKET }), {
+      filePath: "/x.yml",
+    });
+    expect(doc.manualOnly).toBe(true);
+    expect(doc.schedule).toEqual([]);
+    expect(doc.inputs?.ticket?.required).toBe(true);
+  });
+
+  test("a DISABLED schedule entry is held to the same contract — enabling it later must never turn a parsed document unrunnable", () => {
+    expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({
+            uses: "commands/review",
+            inputs: REQUIRED_TICKET,
+            schedule: [{ cron: "0 6 * * *", enabled: false }],
+          }),
+          { filePath: "/x.yml" },
+        ),
+      [/schedule\[0\]/, /ticket/, /is required/],
+    );
+  });
+
+  test("the YAML entry point reports the failing schedule key's own line", () => {
+    const yaml = [
+      "version: 4",
+      "uses: commands/review",
+      "inputs:",
+      "  ticket:",
+      "    type: string",
+      "    required: true",
+      'schedule: "0 8 * * 1"',
+      "",
+    ].join("\n");
+    expectTaskSourceInvalid(() => parseTaskSourceV4({ yaml, filePath: "/t.yml" }), [/\/t\.yml:7/, /ticket/]);
+  });
+});
+
 // ── Typed input declarations (D2-N3, B-19..B-23) ────────────────────────────
 
 describe("task source v4 — typed input declarations (D2-N3, B-19..B-23)", () => {
