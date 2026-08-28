@@ -338,6 +338,41 @@ describe("classifyTaskSourceV4Uses — target classification (spec §3.3)", () =
   test("a canonical tasks/ ref containing '@' takes the task-ref rejection (B-14), not the github-removal message", () => {
     expect(() => classifyTaskSourceV4Uses("tasks/nightly@v1")).toThrow(/task ref/i);
   });
+
+  // p2a §6 item 4(b) / p4 R-R14: every rejection message must advertise only
+  // the set this function actually returns. It used to re-raise
+  // `classifyTargetRef`'s SHARED message, which names `tasks/` as canonical
+  // (true for the workflow classifier, false here) one branch before B-14
+  // rejects exactly that — advice the very next check refused.
+  test.each([
+    "agents/reviewer",
+    "docker://alpine:3",
+    "tasks/nightly",
+    "actions/checkout@v4",
+  ])("the rejection for %p never advertises a target this function would itself reject", (input) => {
+    let message = "";
+    try {
+      classifyTaskSourceV4Uses(input);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).not.toBe("");
+    // The remedy names the three accepted families plus the builtin...
+    expect(message).toContain("commands/");
+    expect(message).toContain("scripts/");
+    expect(message).toContain("workflows/");
+    expect(message).toContain("akm/command");
+    // ...and never `tasks/`, which B-14 rejects. (`tasks/nightly` itself
+    // appears in no message: the rejection describes the KIND, not the ref.)
+    expect(message).not.toContain("tasks/");
+  });
+
+  test("every family the remedy advertises actually classifies", () => {
+    for (const ref of ["commands/review", "scripts/deploy.sh", "workflows/release"]) {
+      expect(() => classifyTaskSourceV4Uses(ref), ref).not.toThrow();
+    }
+    expect(classifyTaskSourceV4Uses("akm/command")).toEqual({ kind: "builtin-command", ref: "akm/command" });
+  });
 });
 
 // ── parseTaskSourceV4Document — target union, with:, shell/working-directory ──

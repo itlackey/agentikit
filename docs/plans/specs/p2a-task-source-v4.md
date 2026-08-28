@@ -1376,7 +1376,7 @@ each is recorded here rather than fixed:
    that ref kind (B-14). Neither string is spec-mandated; left as message-quality warts for a future
    pass rather than fixed in this close-out.
 
-   **2026-08-28 — PR-844 review-pass note (part (a) fixed).** `parseScheduleEntry` now passes
+   **2026-08-28 — PR-844 review-pass note (parts (a) and (b) both fixed).** `parseScheduleEntry` now passes
    `validateInputs(contract, inputsValue, { pathRoot: "inputs" })` and roots the `sourceError` call at
    `entryPath` (not `[...entryPath, "inputs"]`) — matching `checkScheduleEntryRunnable`'s own
    convention, which already did both. The example above now renders as `Invalid task source v4 at

@@ -3245,3 +3245,30 @@ is itself recorded here — this note narrows the caveat's scope, it does not cl
 §10.3's criterion-24 section, and §10.3's summary line above are not edited — they were historically
 accurate at the sweep's own head and are superseded, not wrong; this entry is the correction the
 "Supersessions" table above should have carried.
+
+**2026-08-28 — PR-844 review-pass note (row R-R14, both halves now fixed).**
+R-R14 was recorded as "RECORDED, NOT FIXED (both halves)": the doubled `$`
+path root in a schedule-inputs error, and a `uses:` error listing `tasks/` as
+valid. Both are now closed in the PR-844 review pass.
+
+(a) `parseScheduleEntry` passes `{ pathRoot: "inputs" }` to `validateInputs`,
+matching its sibling `checkScheduleEntryRunnable`, so a schedule-inputs
+violation renders one coherent path instead of two roots.
+
+(b) The `uses:` half is fixed WITHOUT touching `classifyTargetRef`'s shared
+text, which this row correctly identified as the reason the conditional
+"fixed for free" never triggered. That message names all four canonical
+families because it is shared with the workflow classifier, where a `tasks/`
+target IS executable — it is right for its own contract. The defect was that
+`classifyTaskSourceV4Uses` re-raised it verbatim in a context where `tasks/`
+is rejected one branch later by B-14, so the message advertised a target the
+very next check refused. `classifyTaskSourceV4Uses` now restates the
+rejection against the set it actually returns (`TaskSourceV4UsesTarget`:
+`commands/`, `scripts/`, `workflows/`, and the `akm/command` builtin), via a
+single `TASK_SOURCE_V4_USES_REMEDY` constant shared by all three of its
+rejection paths so the advice cannot drift from the accepted set again. A
+`UsageError` from the shared classifier carrying any code other than
+`TARGET_REF_INVALID` still propagates unchanged. `tests/tasks/source-v4.test.ts`
+pins the alignment in both directions: no rejection message may name a target
+this function would itself reject, and every family the remedy advertises must
+actually classify.

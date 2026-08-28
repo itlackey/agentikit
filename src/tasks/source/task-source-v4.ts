@@ -246,6 +246,14 @@ function looksLikeGithubActionLocator(value: string): boolean {
  * — on the classification-failure path only — the github-locator-shape
  * rejection (B-13) on top.
  */
+/**
+ * The remedy sentence every `uses:` rejection below ends with. ONE constant so
+ * the advice can never drift from what {@link TaskSourceV4UsesTarget} actually
+ * admits — `commands/`, `scripts/`, `workflows/`, and the `akm/command`
+ * builtin. Notably NOT `tasks/`: a task ref is rejected by B-14 below.
+ */
+const TASK_SOURCE_V4_USES_REMEDY = "Use a canonical commands/, scripts/, or workflows/ ref, or akm/command, instead.";
+
 export function classifyTaskSourceV4Uses(value: string): TaskSourceV4UsesTarget {
   // Diagnostic-codes ratchet remedy (tests/architecture/diagnostic-codes.test.ts,
   // established pattern at src/tasks/model/definition.ts:66-79): every
@@ -273,13 +281,25 @@ export function classifyTaskSourceV4Uses(value: string): TaskSourceV4UsesTarget 
     if (looksLikeGithubActionLocator(value)) {
       throw new UsageError(
         "GitHub Action targets were removed in task source v4 — the github-action uses: variant no longer exists. " +
-          "Use commands/, scripts/, workflows/, or akm/command instead.",
+          `${TASK_SOURCE_V4_USES_REMEDY}`,
+      );
+    }
+    // `classifyTargetRef` is SHARED with the workflow classifier, where a
+    // `tasks/` target IS executable, so its message names all four canonical
+    // families. Re-raising it verbatim here advertised `tasks/` one branch
+    // before the B-14 check below rejects exactly that — the message named a
+    // target this function does not accept. Restate it against the set this
+    // function actually returns (p2a §6 item 4(b) / p4 R-R14). Anything the
+    // shared classifier throws for another reason still propagates unchanged.
+    if (cause instanceof UsageError && cause.code === "TARGET_REF_INVALID") {
+      throw new UsageError(
+        `${JSON.stringify(value)} is not an executable task source v4 target. ${TASK_SOURCE_V4_USES_REMEDY}`,
       );
     }
     throw cause instanceof Error ? cause : new UsageError(String(cause));
   }
   if (classified.kind === "task") {
-    throw new UsageError("A task ref is not an executable task source v4 target.");
+    throw new UsageError(`A task ref is not an executable task source v4 target. ${TASK_SOURCE_V4_USES_REMEDY}`);
   }
   return Object.freeze({ kind: classified.kind, ref: classified.ref }) as TaskSourceV4UsesTarget;
 }
