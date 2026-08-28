@@ -52,7 +52,8 @@ Moved verbatim from `exec-unit.ts`'s module header:
 > which is why this module may return raw stdout/stderr diagnostics without
 > knowing anything about redaction.
 >
-> Layering: a LEAF. Node built-ins, `core/spawn-env`, `core/subprocess`,
+> Layering: a LEAF. Node built-ins, `core/common` (for `isWithinAsync`, the
+> CONTAINMENT recheck above), `core/spawn-env`, `core/subprocess`,
 > `core/warn` and the import-free `workflows/resource-limits` (plus erased
 > types) only, so the executor can consume it without opening an import
 > cycle.

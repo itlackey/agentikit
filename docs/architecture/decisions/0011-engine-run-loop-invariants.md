@@ -45,9 +45,20 @@ Moved verbatim from `run-workflow.ts`'s module header:
 > exactly like the one-shot case. A typed-artifact schema mismatch feeds
 > the same loop (the validation errors are the feedback; no judge ran, so
 > no gate unit is journaled for that attempt) — only the FINAL loop's
-> mismatch fails the run. A step whose subgraph is an `exec` unit is judged
-> but NEVER looped (`effectiveGateMaxLoops`): its argv cannot read the
-> feedback, so a second loop would only re-run the identical side effect.
+> mismatch fails the run. `effectiveGateMaxLoops` caps a step to a SINGLE
+> loop whenever its subgraph's frozen target is anything other than a
+> `command` (agent/SDK/LLM-runner) target — which covers both an `exec`
+> unit (a `shell`/`script` target) and a composed `child-workflow` step,
+> for two DIFFERENT reasons that both land on the same cap. An exec unit's
+> argv is frozen and never interpolated, so it cannot read the feedback: a
+> second loop would only re-run the identical side effect. A child-workflow
+> unit has no prompt to thread feedback into either — its only frozen input
+> is the composing step's resolved `with:` bindings, published once to the
+> child run — so a second loop would re-publish the same child with
+> byte-identical bindings rather than asking it anything new. Only a
+> `command`-targeted (engine) step, whose feedback is threaded into its
+> prompt, can loop past one; an authored `gate.max_loops` on an engine step
+> is untouched.
 >
 > **Frozen plan (redesign addendum, R1):** the plan graph is read from the
 > run row (`plan_json`, persisted by `startWorkflowRun` under migration

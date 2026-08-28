@@ -60,6 +60,16 @@ section:
   6") that P4 is expressly forbidden from changing — a P4 commit that
   touches either is a review-blocking violation, and the same discipline
   should apply to any later phase unless a spec explicitly re-opens it.
+  **2026-08-27 update:** `hashVersion` itself moved on from that pinned
+  value after this ADR was written — P4's R-R15 advisory (a reference
+  binding's resolved value sitting outside the unit-input hash) was closed
+  by bumping `hashVersion` 5 → 7 to fold `taskInputs` into the preimage
+  (`src/workflows/exec/step-work.ts`, `.update("akm.workflow.unit\0v7\0")`,
+  `hashVersion: 7`); see ADR 0002's "Consequences" entry for the full
+  supersession. The composition-bounds discipline this entry describes
+  still applies to `WORKFLOW_MAX_COMPOSITION_DEPTH` and the aggregate-bytes
+  cap unchanged — only the `hashVersion` figure in the quoted §0 sentence is
+  now stale.
 - The half-of-plan-bytes ratio is a relationship, not an independent
   constant — if `WORKFLOW_MAX_PLAN_BYTES` itself is ever revisited, the
   composition cap should move with it rather than being independently
