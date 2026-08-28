@@ -663,23 +663,32 @@ function buildExecContextEnv(args: {
 }
 
 /**
- * The canonical dispatch-input envelope: every field here is a PLAN-FROZEN
- * input that changes what the backend is actually asked to do, so a completed
- * unit is reused ONLY when all of them match. `env` carries names only, never
+ * The canonical dispatch-input envelope: every field here is an input that
+ * changes what the backend is actually asked to do, so a completed unit is
+ * reused ONLY when all of them match. `env` carries names only, never
  * resolved secret values. `retry`/`onError` are deliberately excluded — they
  * govern failed-unit re-dispatch, not a completed unit's inputs/output.
  * `gateFeedback` is included conditionally (a gate retry is a materially
- * different ask). This is the ONE place a unit's inputHash is computed.
+ * different ask). `taskInputs` is likewise included conditionally (R-R15,
+ * `hashVersion` 7): a reference binding's RESOLVED value reaches the unit's
+ * prompt / `AKM_TASK_INPUTS` / `childParams`, so a changed upstream value is a
+ * materially different ask even though the binding's authored shape inside
+ * `frozenTarget` is unchanged — hashing it makes a resume whose journaled
+ * upstream output was altered fail loudly as replay divergence instead of
+ * silently reusing the stale row. The key is absent for a unit whose target
+ * carries no `inputBindings`, so a binding-free unit's preimage keeps the same
+ * shape it had (only the version fields moved 6 → 7). This is the ONE place a
+ * unit's inputHash is computed.
  *
  * See docs/architecture/decisions/0002-unit-reuse-and-input-hash-scope.md for
  * the full field-by-field inclusion/exclusion rationale (reviewer finding #1).
  */
 function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
   return createHash("sha256")
-    .update("akm.workflow.unit\0v6\0")
+    .update("akm.workflow.unit\0v7\0")
     .update(
       canonicalJsonString({
-        hashVersion: 6,
+        hashVersion: 7,
         role: "unit",
         stepId: ctx.plan.stepId,
         nodeId: ctx.template.id,
@@ -691,6 +700,7 @@ function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
         environment: ctx.template.environment,
         schema: ctx.template.schema ?? null,
         isolation: ctx.template.isolation ?? "none",
+        ...(ctx.taskInputs !== undefined ? { taskInputs: ctx.taskInputs } : {}),
         ...(ctx.input.gateFeedback ? { gateFeedback: ctx.input.gateFeedback } : {}),
       }),
     )
@@ -1944,11 +1954,15 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
             engine: engineName,
             model: gateTarget.request.model?.resolved ?? null,
             runner: gateTarget.runner.kind,
+            // The gate prefix rides the unit prefix's version — unit and gate
+            // hashVersion are one vocabulary (p3a §0.1; the R-R15 fix moved
+            // both 6 → 7 in lockstep even though the gate preimage's own
+            // fields are unchanged).
             inputHash: createHash("sha256")
-              .update("akm.workflow.gate\0v6\0")
+              .update("akm.workflow.gate\0v7\0")
               .update(
                 canonicalJsonString({
-                  hashVersion: 6,
+                  hashVersion: 7,
                   dispatch: gateTarget,
                   invocation: null,
                   prompt,

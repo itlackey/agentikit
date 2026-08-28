@@ -3,8 +3,20 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * P3a Lane A TESTS — `hashVersion` 6 (spec
+ * P3a Lane A TESTS — the unit/gate `hashVersion` vocabulary (spec
  * docs/plans/specs/p3a-plan-v5-child-freeze.md §3.3, rows A-11…A-16).
+ *
+ * NOW AT `hashVersion` 7: the R-R15 fix (PR #844 review finding F6) added the
+ * conditional `taskInputs` preimage field — the RESOLVED values of a target's
+ * `inputBindings`, striking §3.3's documented exclusion #4 — and bumped the
+ * unit AND gate prefixes 6 → 7 in lockstep (P4's own recorded imperative,
+ * docs/plans/specs/p4-deletions-closeout.md §8 criterion 8; ADR-0002's rule
+ * that changing the preimage's coverage requires a bump). `hashVersion` 6
+ * never shipped in any released tag (v0.9.2-alpha.1…4 all carry v5), so the
+ * bump invalidates no released user's journal. The file KEEPS its historical
+ * name — sibling suites reference `hash-v6.test.ts` by name in their headers,
+ * and the P3a narrative below is history, accurate as written for the values
+ * P3a landed.
  *
  * `computeChildInvocationKey` (§3.4, rows A-17…A-19) is deliberately NOT in
  * this file — see `tests/workflows/child-invocation-key.test.ts` and its own
@@ -225,8 +237,8 @@ function buildOrdinaryShellTarget(options: { inputBindings?: readonly TaskInputB
 // hashVersion 6 bump and the now-authorized `:450` extension land together
 // (Review log R1, resolved test-review round 3).
 
-describe("hashVersion 6 — unit input hash (A-11, A-14, A-15)", () => {
-  test("the preimage matches §3.3's field list exactly, under the akm.workflow.unit\\0v6\\0 prefix (an ordinary target — independent of child-workflow support)", () => {
+describe("hashVersion 7 — unit input hash (A-11, A-14, A-15)", () => {
+  test("the preimage matches §3.3's field list exactly, under the akm.workflow.unit\\0v7\\0 prefix (an ordinary target — independent of child-workflow support)", () => {
     const target = buildOrdinaryShellTarget();
     const stepPlan = stepPlanWithTarget(target);
     const input: WorkListInput = { runId: "run-1", params: { p: 1 }, stepOutputs: {} };
@@ -237,11 +249,61 @@ describe("hashVersion 6 — unit input hash (A-11, A-14, A-15)", () => {
     const unit = result.list.units[0];
     if (!unit) throw new Error("expected exactly one unit");
 
+    // CHARACTERIZATION (R-R15 fix is shape-preserving for binding-free
+    // units): this reconstruction is byte-for-byte the object this test
+    // pinned under hashVersion 6 (base e640a23a) apart from the prefix and
+    // the hashVersion field — in particular it has NO `taskInputs` key, so
+    // the exact-hash equality below proves a unit whose target carries no
+    // `inputBindings` gained no preimage field from the fix.
+    const preimage = {
+      hashVersion: 7,
+      role: "unit",
+      stepId: stepPlan.stepId,
+      nodeId: unit.nodeId,
+      template: "Spawn the child workflow.",
+      item: null,
+      inputs: [],
+      params: input.params,
+      frozenTarget: unit.frozenTarget,
+      environment: [],
+      schema: null,
+      isolation: "none",
+    };
+    expect(canonicalJson(preimage)).not.toContain("taskInputs");
     const expectedHash = createHash("sha256")
-      .update("akm.workflow.unit\0v6\0")
+      .update("akm.workflow.unit\0v7\0")
+      .update(canonicalJson(preimage))
+      .digest("hex");
+
+    expect(unit.inputHash).toBe(expectedHash);
+  });
+
+  test("a target WITH inputBindings adds exactly ONE preimage field — taskInputs, the RESOLVED values — in gateFeedback's conditional style (R-R15)", () => {
+    const target = buildOrdinaryShellTarget({
+      inputBindings: [
+        { kind: "literal", name: "ticket", value: "T-1" },
+        { kind: "reference", name: "payload", from: "steps.prev.output", schema: { type: "string" } },
+      ],
+    });
+    const stepPlan = stepPlanWithTarget(target);
+    const input: WorkListInput = { runId: "run-1", params: { p: 1 }, stepOutputs: { prev: "VALUE-ONE" } };
+
+    const result = computeStepWorkList(stepPlan, input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const unit = result.list.units[0];
+    if (!unit) throw new Error("expected exactly one unit");
+
+    // Same field list as the binding-free reconstruction above PLUS
+    // `taskInputs` carrying the resolved effective values: the literal's
+    // frozen value and the reference's value as resolved against THIS
+    // invocation's stepOutputs — never the binding expressions (those are
+    // already covered inside frozenTarget).
+    const expectedHash = createHash("sha256")
+      .update("akm.workflow.unit\0v7\0")
       .update(
         canonicalJson({
-          hashVersion: 6,
+          hashVersion: 7,
           role: "unit",
           stepId: stepPlan.stepId,
           nodeId: unit.nodeId,
@@ -253,6 +315,7 @@ describe("hashVersion 6 — unit input hash (A-11, A-14, A-15)", () => {
           environment: [],
           schema: null,
           isolation: "none",
+          taskInputs: { ticket: "T-1", payload: "VALUE-ONE" },
         }),
       )
       .digest("hex");
@@ -326,8 +389,8 @@ const GATE_WF = [
   "",
 ].join("\n");
 
-describe("hashVersion 6 — the gate hash (A-12)", () => {
-  test("the gate hash prefix is akm.workflow.gate\\0v6\\0 with hashVersion 6 in the preimage, dispatch/invocation/prompt otherwise unchanged", async () => {
+describe("hashVersion 7 — the gate hash (A-12)", () => {
+  test("the gate hash prefix is akm.workflow.gate\\0v7\\0 with hashVersion 7 in the preimage — bumped in lockstep with the unit prefix — dispatch/invocation/prompt otherwise unchanged", async () => {
     writeProgram("gate-hash", GATE_WF);
     const started = await startWorkflowRun("workflows/gate-hash");
     const runId = started.run.id;
@@ -357,8 +420,8 @@ describe("hashVersion 6 — the gate hash (A-12)", () => {
     expect(gateTarget).toBeTruthy();
 
     const expectedHash = createHash("sha256")
-      .update("akm.workflow.gate\0v6\0")
-      .update(canonicalJson({ hashVersion: 6, dispatch: gateTarget, invocation: null, prompt: capturedPrompt }))
+      .update("akm.workflow.gate\0v7\0")
+      .update(canonicalJson({ hashVersion: 7, dispatch: gateTarget, invocation: null, prompt: capturedPrompt }))
       .digest("hex");
 
     expect(gateRow?.input_hash).toBe(expectedHash);

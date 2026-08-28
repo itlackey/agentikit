@@ -17,10 +17,14 @@
  *     every existing frozen target's canonical JSON, and therefore every
  *     existing plan_hash / unit inputHash, is untouched by this phase.
  *   - B-44 (PRESERVE, A-N7): `computeUnitInputHash`'s own prefix
- *     (`akm.workflow.unit\0v6\0`) and `hashVersion` (6), plus
- *     `WORKFLOW_IR_V5_VERSION`, are byte-unchanged since P2b — P2b bumped
- *     NEITHER (§1.1(4): "P2b bumps nothing. P3a owns irVersion 5 +
- *     hashVersion 6"); this file's own fixture now pins P3a's landed values.
+ *     (now `akm.workflow.unit\0v7\0`) and `hashVersion` (now 7), plus
+ *     `WORKFLOW_IR_V5_VERSION`, are pinned externally. P2b bumped NOTHING
+ *     (§1.1(4): "P2b bumps nothing. P3a owns irVersion 5 + hashVersion 6");
+ *     P3a landed 6; the R-R15 fix (PR #844 review F6) then bumped unit+gate
+ *     to 7 when the resolved-`taskInputs` preimage field landed, and this
+ *     file's fixture pins those current values. The binding-free preimage's
+ *     FIELD LIST below is still byte-identical to P3a's — a step with no
+ *     bindings gained no `taskInputs` key.
  *   - B-43 (NEW): freezing the identical BOUND workflow twice — the same
  *     `with:` literal, the same declared task — produces byte-identical
  *     plan hashes and unit input hashes, proving that folding
@@ -147,7 +151,7 @@ describe("P2b freeze identity — B-01: absence-when-empty is the identity-prese
 });
 
 describe("P2b freeze identity — B-44: the frozen hash vocabulary is unchanged (A-N7, §1.1(4))", () => {
-  test('WORKFLOW_IR_V5_VERSION is 5, and computeUnitInputHash\'s prefix + hashVersion are exactly "akm.workflow.unit\\0v6\\0" / 6 — P2b bumped neither (P3a landed both)', async () => {
+  test('WORKFLOW_IR_V5_VERSION is 5, and computeUnitInputHash\'s prefix + hashVersion are exactly "akm.workflow.unit\\0v7\\0" / 7 — P3a landed 6, the R-R15 taskInputs fix bumped 7', async () => {
     expect(WORKFLOW_IR_V5_VERSION).toBe(5);
 
     writeWorkflow("plain-command", [
@@ -163,11 +167,12 @@ describe("P2b freeze identity — B-44: the frozen hash vocabulary is unchanged 
     if (!root || root.kind === "map") throw new Error("expected the step to freeze a solo unit root");
 
     // Reconstructed EXTERNALLY, field-for-field, from step-work.ts's own
-    // computeUnitInputHash preimage (:585-605) — a plain akm/command step
-    // (no fan-out, no declared step `inputs:`, no gate feedback) needs no
-    // unlanded API to rebuild.
+    // computeUnitInputHash preimage — a plain akm/command step (no fan-out,
+    // no declared step `inputs:`, no gate feedback, and NO inputBindings, so
+    // no `taskInputs` key: the R-R15 field is conditional and absent here)
+    // needs no unlanded API to rebuild.
     const expectedPreimage = {
-      hashVersion: 6,
+      hashVersion: 7,
       role: "unit",
       stepId: plan.steps[0]!.stepId,
       nodeId: root.id,
@@ -181,7 +186,7 @@ describe("P2b freeze identity — B-44: the frozen hash vocabulary is unchanged 
       isolation: root.isolation ?? "none",
     };
     const expectedHash = createHash("sha256")
-      .update("akm.workflow.unit\0v6\0")
+      .update("akm.workflow.unit\0v7\0")
       .update(canonicalJson(expectedPreimage))
       .digest("hex");
 

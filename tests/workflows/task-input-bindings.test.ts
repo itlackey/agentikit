@@ -933,4 +933,45 @@ describe("P2b freeze-time — hash coverage: a changed binding changes the unit 
     const stepOutputs = { collect: { a: ["fileA"], b: ["fileB"] } };
     expect(unitHash(planA, runA.run.id, stepOutputs)).not.toBe(unitHash(planB, runB.run.id, stepOutputs));
   });
+
+  test("R-R15 (hashVersion 7): changing a reference binding's RESOLVED value — same from path, changed upstream output — changes the unit input hash; an unchanged value keeps it byte-stable", async () => {
+    // The case B-41/B-42 could not cover: both of those vary the FROZEN
+    // binding (a literal's value, a reference's from path), which lives
+    // inside frozenTarget and was hashed all along. Here ONE frozen plan is
+    // hashed against two different upstream outputs, so the only thing that
+    // changes is what `from: steps.collect.output.a` RESOLVES to — exactly
+    // the value the unit actually receives (prompt "## Task inputs" block /
+    // AKM_TASK_INPUTS / childParams). Under hashVersion 6 these two hashes
+    // were IDENTICAL (R-R15, the documented resume caveat); the taskInputs
+    // preimage field makes them differ, so a resume whose upstream journaled
+    // output was altered raises replay divergence instead of silently
+    // reusing the stale row.
+    writeCentralTaskFixture();
+    writeWorkflow("case-resolved", [
+      "      - id: collect",
+      "        uses: akm/command",
+      "        with:",
+      "          content: Collect data.",
+      `      - id: ${STEP_ID}`,
+      `        uses: ${TASK_REF}`,
+      "        with:",
+      "          ticket: T-1",
+      "          files:",
+      "            from: steps.collect.output.a",
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const run = await startWorkflowRun("workflows/case-resolved");
+    const plan = decodeWorkflowPlanV4(JSON.parse((await planRow(run.run.id))?.plan_json ?? "null"));
+
+    const hashOne = unitHash(plan, run.run.id, { collect: { a: ["fileA"] } });
+    const hashOneAgain = unitHash(plan, run.run.id, { collect: { a: ["fileA"] } });
+    const hashTwo = unitHash(plan, run.run.id, { collect: { a: ["fileB"] } });
+
+    // Unchanged upstream value ⇒ byte-stable hash: a resume that recomputes
+    // the work list against identical journaled evidence still reuses.
+    expect(hashOneAgain).toBe(hashOne);
+    // Changed RESOLVED value ⇒ different hash — a materially different ask.
+    expect(hashTwo).not.toBe(hashOne);
+  });
 });
