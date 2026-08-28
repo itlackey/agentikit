@@ -79,6 +79,16 @@ function hasFlagNamed(name: string): boolean {
  * answer with the rename (`../../cli/unknown-flags`'s `SELF_DIAGNOSED_FLAGS`),
  * and that exemption is keyed on the flag NAME — so `--target=team` must be
  * rejected here by name too, or nothing rejects it at all.
+ *
+ * Rejecting by NAME means `--target=<value>` can no longer carry a declared
+ * task input named `target` either (0.9.2 review round 2). That is settled on
+ * the DECLARATION side, not by narrowing this rejecter back to whole-token
+ * matching: `target` is listed in `TASK_RUN_SELF_DIAGNOSED_FLAGS`
+ * (`../../tasks/task-run-reserved-flags.ts`), so `parseInputDeclarations`
+ * refuses `inputs: {target: …}` with TASK_SOURCE_INVALID at authoring time and
+ * no task can reach `akm task run` needing the flag this throws on. Do not
+ * re-narrow the match here — the silently-ignored `--target=team` that round 1
+ * closed would come straight back.
  */
 function rejectRetiredTaskTargetFlag(): void {
   if (!hasFlagNamed("target")) return;

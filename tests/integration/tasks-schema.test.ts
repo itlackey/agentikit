@@ -52,6 +52,7 @@ import {
 } from "../../src/tasks/source/bounded-document";
 import {
   classifyTaskSourceV4Uses,
+  parseTaskSourceV4,
   TASK_INPUT_DECLARATION_KEYS,
   TASK_SOURCE_V4_SCHEDULE_KEYS,
   TASK_SOURCE_V4_TOP_LEVEL_KEYS,
@@ -330,21 +331,86 @@ test("published task schema's output: rejects null (schema/parser agreement)", (
   // task source v4's parseOutputSchema (src/tasks/source/task-source-v4.ts)
   // goes straight to asRecord and rejects null with "output must be a
   // mapping." — the published schema must reject it too, not accept a shape
-  // the production parser never does.
+  // the production parser never does. Probed on a COMMAND target, the one
+  // kind where `output:` is legal at all (see the target-agreement test
+  // below), so what fails here is the null, not the target kind.
+  expect(
+    validate({ version: TASK_SOURCE_V4_VERSION, uses: "commands/review", output: null }),
+    "output: null must be rejected — the production parser does",
+  ).toBe(false);
   expect(
     validate({ version: TASK_SOURCE_V4_VERSION, run: "echo hi", output: null }),
-    "output: null must be rejected — the production parser does",
+    "output: null must be rejected on a run: target too",
   ).toBe(false);
 
   // A valid bounded schema is still accepted.
   expect(
     validate({
       version: TASK_SOURCE_V4_VERSION,
-      run: "echo hi",
+      uses: "commands/review",
       output: { type: "object", properties: { summary: { type: "string" } } },
     }),
     JSON.stringify(validate.errors),
   ).toBe(true);
+});
+
+// 0.9.2 review round 2: c09ad27b made parseTaskSourceV4 reject `output:` on
+// every target whose runtime never consumes it (`targetConsumesOutputSchema`
+// — only `uses: commands/<ref>` and `uses: akm/command` do), but the
+// published schema still accepted it everywhere, so an author's editor
+// green-lit a document `akm task run` refuses to load. `schemas/` ships in
+// package.json `files` and is served at the `$id` URL, so that divergence is
+// user-visible, not editor-only.
+test("published task schema's output: is legal only on a command target, exactly as targetConsumesOutputSchema decides (schema/parser agreement)", () => {
+  const schema = readTaskSchema();
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+  const outputSchema = { type: "object", properties: { summary: { type: "string" } } };
+
+  // The two target kinds whose runtime forwards output: as the invocation's
+  // outputSchema — the schema must keep accepting both.
+  for (const target of [
+    { uses: "commands/review" },
+    { uses: "team//commands/review" },
+    { uses: "akm/command", with: { ref: "commands/review" } },
+  ]) {
+    const document = { version: TASK_SOURCE_V4_VERSION, ...target, output: outputSchema };
+    expect(validate(document), `${JSON.stringify(target)}: ${JSON.stringify(validate.errors)}`).toBe(true);
+  }
+
+  // The three kinds that carry no output schema anywhere — the schema must
+  // now refuse each, and the production parser must agree.
+  for (const target of [
+    { run: "echo hi", shell: "sh" },
+    { uses: "scripts/deploy" },
+    { uses: "workflows/nightly" },
+    { uses: "team//scripts/deploy" },
+  ]) {
+    const document = { version: TASK_SOURCE_V4_VERSION, ...target, output: outputSchema };
+    const label = JSON.stringify(target);
+    expect(validate(document), `${label} + output: must be rejected — the production parser rejects it`).toBe(false);
+    expect(() => parseTaskSourceV4({ yaml: JSON.stringify(document), filePath: "/b/tasks/x.yml" }), label).toThrow(
+      /output is legal only with a command target/,
+    );
+
+    // …and each is still perfectly valid WITHOUT output:, so the rejection is
+    // scoped to the field, not to the target kind.
+    expect(
+      validate({ version: TASK_SOURCE_V4_VERSION, ...target }),
+      `${label} without output: ${JSON.stringify(validate.errors)}`,
+    ).toBe(true);
+  }
+
+  // The commands/-only ref pattern the arm keys on agrees with the production
+  // classifier about which executable refs are commands.
+  const commandRef = new RegExp(schema.definitions.akmCommandRef?.pattern as string);
+  for (const ref of ["commands/review", "team//commands/review", "commands/nested/review"]) {
+    expect(classifyTaskSourceV4Uses(ref).kind, ref).toBe("command");
+    expect(commandRef.test(ref), ref).toBe(true);
+  }
+  for (const ref of ["scripts/deploy", "workflows/nightly", "team//scripts/deploy"]) {
+    expect(classifyTaskSourceV4Uses(ref).kind, ref).not.toBe("command");
+    expect(commandRef.test(ref), ref).toBe(false);
+  }
 });
 
 test("published task schema's schedule[].inputs is closed to the input name pattern, not the free-form jsonObject $ref (fail-closed hardening)", () => {

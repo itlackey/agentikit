@@ -96,6 +96,12 @@ import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
 import * as ParseTaskSourceModule from "../../src/tasks/source/parse-task-source";
 import * as TaskSourceV4Module from "../../src/tasks/source/task-source-v4";
 import { TASK_V3_MAX_SCHEDULES } from "../../src/tasks/source-v3";
+import {
+  TASK_RUN_BOOLEAN_FLAGS,
+  TASK_RUN_RESERVED_FLAG_NAMES,
+  TASK_RUN_SELF_DIAGNOSED_FLAGS,
+  TASK_RUN_VALUE_FLAGS,
+} from "../../src/tasks/task-run-reserved-flags";
 import { detectSecretShapedParams } from "../../src/workflows/exec/param-secrets";
 import { PROGRAM_PARAM_NAME_PATTERN } from "../../src/workflows/program/schema";
 import {
@@ -844,6 +850,68 @@ describe("task source v4 — optional schedule (D2-N6, D2-N5, B-06..B-10, B-38)"
         ),
       /schedule\[0\]\.inputs\.anything/,
     );
+  });
+});
+
+// ── A declared inputs: name may not collide with a flag `akm task` claims ──
+
+describe("task source v4 — inputs: names that collide with akm task's own flags are rejected at declaration time", () => {
+  test("every TASK_RUN_RESERVED_FLAG_NAMES member is rejected as a declared input name", () => {
+    for (const name of TASK_RUN_RESERVED_FLAG_NAMES) {
+      const error = expectTaskSourceInvalid(
+        () =>
+          parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: { [name]: { type: "string" } } }), {
+            filePath: "/x.yml",
+          }),
+        new RegExp(`inputs\\.${name.replace(/-/g, "\\-")} `),
+      );
+      // `no-quiet` / `no-verbose` are citty's `--no-` negations: a hyphen is
+      // not a legal input name to begin with, so they are already rejected one
+      // check earlier by INPUT_NAME_PATTERN. Every name that COULD have been
+      // declared reaches the collision rejection itself.
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        expect(error.message, name).toContain("declare the input under a different name.");
+      } else {
+        expect(error.message, name).toContain("must match the input name pattern");
+      }
+    }
+  });
+
+  // 0.9.2 review round 2. `target` is reserved from the DIAGNOSTIC side, not
+  // the declared-arg side: it is in neither scanner set, so
+  // `parseTaskInputFlags` (src/commands/tasks/tasks-cli.ts) happily captured
+  // `--target=<value>` as an input flag — but
+  // `rejectRetiredTaskTargetFlag` throws the 0.9 `--target` -> `--bundle`
+  // rename hint for EVERY spelling of the name before that scanner ever runs,
+  // so a task declaring an input named `target` had no reachable way to be
+  // given one. Reserving the NAME here makes the unusable declaration
+  // impossible to author instead of narrowing the rejecter (which would
+  // reopen the silently-ignored `--target=team` that round 1 closed).
+  test("`target` is reserved even though it is in neither scanner set, and its message names the retired spelling", () => {
+    expect(TASK_RUN_SELF_DIAGNOSED_FLAGS).toEqual(["target"]);
+    expect(TASK_RUN_VALUE_FLAGS).not.toContain("target");
+    expect(TASK_RUN_BOOLEAN_FLAGS).not.toContain("target");
+    expect(TASK_RUN_RESERVED_FLAG_NAMES.has("target")).toBe(true);
+
+    const error = expectTaskSourceInvalid(
+      () =>
+        parseTaskSourceV4Document(
+          v4Doc({ run: "echo hi", inputs: { target: { type: "string", default: "staging" } } }),
+          {
+            filePath: "/x.yml",
+          },
+        ),
+      /inputs\.target/,
+    );
+    expect(error.message).toContain("collides with the retired `akm task --target` spelling");
+  });
+
+  test("a name that is merely SIMILAR to a reserved flag still parses — the check is exact-name, not fuzzy", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({ run: "echo hi", inputs: { target_env: { type: "string" }, bundles: { type: "string" } } }),
+      { filePath: "/x.yml" },
+    );
+    expect(Object.keys(doc.inputs ?? {}).sort()).toEqual(["bundles", "target_env"]);
   });
 });
 

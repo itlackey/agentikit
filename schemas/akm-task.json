@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://itlackey.github.io/akm/schemas/akm-task.json",
   "title": "AKM Task source v4",
-  "description": "Task source v4: typed inputs:, a single bounded output: schema, and OPTIONAL scheduling — a document with no schedule: is valid, runnable manually, composable, and is skipped (not rejected) by `akm task sync`. The akm: options bag and the on: trigger block from task v3 are gone (their members are top-level); there is no github-action uses: target; with: is legal only alongside uses: akm/command (use inputs: everywhere else for typed parameters). task-v2 and task-v3 sources are converted to this schema by `akm migrate apply` — this document publishes only the version: 4 shape a task source parses to today.",
+  "description": "Task source v4: typed inputs:, a single bounded output: schema, and OPTIONAL scheduling — a document with no schedule: is valid, runnable manually, composable, and is skipped (not rejected) by `akm task sync`. The akm: options bag and the on: trigger block from task v3 are gone (their members are top-level); there is no github-action uses: target; with: is legal only alongside uses: akm/command (use inputs: everywhere else for typed parameters), and output: is legal only on a command target (uses: commands/<ref> or uses: akm/command) — the only kinds whose runtime enforces it. task-v2 and task-v3 sources are converted to this schema by `akm migrate apply` — this document publishes only the version: 4 shape a task source parses to today.",
   "x-akm-runtimeConstraints": {
     "authoritativeParser": "src/tasks/source/task-source-v4.ts",
     "maxSourceUtf8Bytes": 1048576,
@@ -124,7 +124,7 @@
       }
     },
     {
-      "description": "A canonical AKM executable ref (commands/, scripts/, or workflows/). No with: here — declare typed parameters with inputs: instead.",
+      "description": "A canonical AKM executable ref (commands/, scripts/, or workflows/). No with: here — declare typed parameters with inputs: instead. output: is legal only on the commands/ arm: a scripts/ or workflows/ execution consumes no output schema, so an authored one would be a silently unenforced contract (src/tasks/source/task-source-v4.ts's targetConsumesOutputSchema).",
       "required": ["uses"],
       "properties": {
         "uses": { "$ref": "#/definitions/akmExecutableRef" }
@@ -136,15 +136,21 @@
           { "required": ["shell"] },
           { "required": ["working-directory"] }
         ]
-      }
+      },
+      "if": {
+        "required": ["uses"],
+        "properties": { "uses": { "$ref": "#/definitions/akmCommandRef" } }
+      },
+      "else": { "not": { "required": ["output"] } }
     },
     {
-      "description": "One exact host-shell string.",
+      "description": "One exact host-shell string. No output: here — a run: execution decides status from its exit code alone and never enforces an output schema.",
       "required": ["run"],
       "not": {
         "anyOf": [
           { "required": ["uses"] },
-          { "required": ["with"] }
+          { "required": ["with"] },
+          { "required": ["output"] }
         ]
       }
     }
@@ -166,6 +172,12 @@
       "type": "string",
       "maxLength": 262144,
       "pattern": "^(?:[^\\s:.#/]+//)?(?:commands|workflows|scripts)/(?!\\.{1,2}(?:/|$))[^\\s#\\\\/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^\\s#\\\\/\\u0000]+)*$"
+    },
+    "akmCommandRef": {
+      "description": "The commands/-only subset of akmExecutableRef — the executable-ref kind whose runtime actually consumes output: (the other consumer, uses: akm/command, is a const, not a ref). Same grammar, with the kind alternation narrowed to commands.",
+      "type": "string",
+      "maxLength": 262144,
+      "pattern": "^(?:[^\\s:.#/]+//)?commands/(?!\\.{1,2}(?:/|$))[^\\s#\\\\/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^\\s#\\\\/\\u0000]+)*$"
     },
     "taskSourceV4ScheduleEntry": {
       "description": "One schedule: list entry (D2-N5: per-entry enabled defaults true; inputs are validated against inputs: at parse time and delivered to the scheduled run's own invocation, P2b).",

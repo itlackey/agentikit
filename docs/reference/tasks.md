@@ -331,12 +331,30 @@ Common v3 → v4 blocked reasons and what to do about each:
 | `enabled-false-has-no-schedule-entry` | `akm.enabled: false` with no cron trigger to attach it to (the only trigger is `on.workflow_dispatch`). | Task source v4 has no document-level `enabled` flag — decide whether the task should be scheduled (add a cron) or left manual-only (drop `akm.enabled`), then re-run. |
 | `read-only-source` | The owning source or file is not writable. | Move or re-source the file somewhere writable, or edit it by hand. |
 | `invalid-v3-task` | The v3 document itself is structurally invalid (unknown fields, missing selector, malformed trigger, etc). | Fix the underlying v3 document first — the migrator translates structure, it does not repair it. |
-| `generated-v4-validation-failed` | The converted bytes fail the real task source v4 parser; the detail carries the parse error. Most commonly `akm.outputSchema` authored on a `run:`, `scripts/`, or `workflows/` target — v4's `output:` is legal only on command targets, and nothing ever enforced the schema on those targets in v3 either. | Drop `akm.outputSchema` from the v3 file (or move the work behind a command target that consumes it), then re-run. |
+| `generated-v4-validation-failed` | The converted bytes fail the real task source v4 parser; the detail carries the parse error. | Read the detail — it names the offending field and why v4 refuses it — then fix that field in the v3 file and preview again. |
 
 The migrator translates structure, never intent: it never invents an
 `inputs:` declaration on a file's behalf, regardless of how inferable a
 `with:` value's shape looks — declaring `inputs:` (and rewriting a step to
 bind it) is left to the person editing the migrated file by hand.
+
+A `changed` file can still carry an informational **notice** alongside its
+converted bytes, for a translation that is faithful but not one-to-one. Each
+notice is reported on that file's own plan entry, and it is the only record of
+a field the migrator resolved by dropping rather than rewriting — read them.
+Two cases produce one today:
+
+- **`akm.outputSchema` on a `run:`, `uses: scripts/`, or `uses: workflows/`
+  target is dropped, not hoisted to `output:`.** v4 accepts `output:` only on
+  a command target (`uses: commands/<ref>` or `uses: akm/command`) — the only
+  kinds whose runtime enforces it — and on the other three v3 never enforced
+  it either, so nothing enforceable is lost. The file migrates as `changed`
+  with a notice naming the dropped field; it is not blocked, and there is
+  nothing to edit by hand first. If you *wanted* that schema enforced, move
+  the work behind a command target and author `output:` there.
+- **`on.workflow_dispatch` with no `on.schedule` drops silently**, since every
+  v4 task is runnable manually with `akm task run` whether or not it has a
+  `schedule:`. The migrated document simply has no `schedule:` key.
 
 If you only want to run one generation in isolation (for example, your
 tree is already all `version: 3` and you want to preview just the v4 step),

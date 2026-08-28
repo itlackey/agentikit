@@ -471,6 +471,48 @@ describe("akm task run <id> --target x — the retired-flag usage error is uncha
       );
     }
   });
+
+  // Review round 2, the other half of that widening: rejecting `--target` by
+  // NAME also swallowed `--target=<value>`, which was the last working way to
+  // supply a legally-declared task input NAMED `target` — `target` sits in
+  // neither TASK_RUN_VALUE_FLAGS nor TASK_RUN_BOOLEAN_FLAGS, so
+  // parseTaskInputFlags captured it as an ordinary input flag, and the bare
+  // `--target x` spelling was already rejected at whole-token level before
+  // round 1. The fix is NOT to narrow the rejecter back (that reopens the
+  // silently-ignored `--target=team` above): `target` is reserved at
+  // DECLARATION time instead (TASK_RUN_SELF_DIAGNOSED_FLAGS,
+  // src/tasks/task-run-reserved-flags.ts), so the unusable declaration cannot
+  // be authored and the rename hint stays the only thing `--target` can mean.
+  test("a task that DECLARES an input named `target` is rejected at parse time, so no run can ever need the flag the rename hint eats", async () => {
+    writeTask(
+      "deploy",
+      [
+        "version: 4",
+        "inputs:",
+        "  target:",
+        "    type: string",
+        "    default: staging",
+        'run: "true"',
+        "shell: sh",
+        "",
+      ].join("\n"),
+    );
+
+    for (const argv of [
+      ["task", "run", "deploy"],
+      ["task", "explain", "deploy"],
+    ]) {
+      const label = argv.join(" ");
+      const result = await runCliCapture(argv);
+
+      expect(result.code, label).toBe(2);
+      const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string };
+      expect(envelope.ok, label).toBe(false);
+      expect(envelope.code, label).toBe("TASK_SOURCE_INVALID");
+      expect(envelope.error, label).toContain("inputs.target collides with the retired `akm task --target` spelling");
+      expect(envelope.error, label).toContain("declare the input under a different name.");
+    }
+  });
 });
 
 describe("parseTaskInputFlags — akm task run's own declared flags are excluded from the captured input set (B-33, PRESERVE)", () => {
