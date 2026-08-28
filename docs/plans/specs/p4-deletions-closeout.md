@@ -1466,52 +1466,70 @@ not get normal CI coverage. Each must therefore be verified locally with
 
 **Structure**
 
-- [ ] The three deletion families landed as three commits in the §0.2 order,
+- [x] The three deletion families landed as three commits in the §0.2 order,
       each with its zero-consumer proof, its dead-code sweep report and its
       `bun run check` result in the commit body.
-- [ ] Every file on §6's DELETE list is absent; every symbol §3 names is
+- [x] Every file on §6's DELETE list is absent; every symbol §3 names is
       gone from `src/`; §9's greps all return zero.
-- [ ] `scripts/akm-migrate/migrate/task-source-v3-frozen.ts` exists, carries
+- [x] `scripts/akm-migrate/migrate/task-source-v3-frozen.ts` exists, carries
       the frozen-migrator header, retains the GitHub locator grammar, and is
       the only v3 parser in the repository. `src/` imports nothing from
       `scripts/`.
-- [ ] `akm migrate status` / `apply` cover both migration generations; the
+- [x] `akm migrate status` / `apply` cover both migration generations; the
       `TASK_SCHEMA_VERSION_UNSUPPORTED` hint names a command that performs
       the conversion.
-- [ ] All 10 shipped assets under `src/assets/tasks/**` are task source v4
+- [x] All 10 shipped assets under `src/assets/tasks/**` are task source v4
       with unchanged cron, target and enablement.
-- [ ] `docs/architecture/decisions/` exists with a README and the §4.2 ADR
+- [x] `docs/architecture/decisions/` exists with a README and the §4.2 ADR
       set; every extracted essay left a one-line invariant comment linking to
-      its ADR; no reasoning was deleted.
+      its ADR; no reasoning was deleted. (Authored late — ADR 0006 was
+      missing until review-fix commit `f9ea73b8` — see the Review log's
+      final entry, Scope 1 F7 / Scope 2 Finding 2.)
 
 **Behavior**
 
-- [ ] Every row of §2's behavior tables holds, verified by its §7 test.
-- [ ] Every §7 flip is a **visible test diff**; no test was deleted to make a
+- [x] Every row of §2's behavior tables holds, verified by its §7 test.
+- [x] Every §7 flip is a **visible test diff**; no test was deleted to make a
       flip disappear, and every deletion is accounted for in §5.3's floor
-      evidence.
-- [ ] `bun run check` green with the new floors, the terminal ratchet, and
-      the terminal v3-fixture allowed set.
-- [ ] Plan `irVersion`, `hashVersion`, the child-invocation prefix, the
+      evidence. (The one close call — the bounded-document hostile-input
+      suite deleted alongside `source-v3.test.ts` while its actual subject
+      survived — is fixed; see the Review log's final entry, Scope 1 F3.)
+- [x] `bun run check` green with the new floors, the terminal ratchet, and
+      the terminal v3-fixture allowed set. (Briefly false between commits
+      `d24f432a` and `f9ea73b8` — `migration-help.test.ts` — fixed and
+      reconfirmed green at final HEAD; see the Review log's final entry,
+      Scope 2 Finding 3.)
+- [x] Plan `irVersion`, `hashVersion`, the child-invocation prefix, the
       `WORKFLOW_MAX_*` limits and `EXIT_CODES` are all unchanged.
 
 **Close-out**
 
-- [ ] §4.3's net-LOC checkpoint carries measured numbers and states honestly
-      whether `src/` shrank.
-- [ ] `driver-protocol-keep-or-cut.md` is RESOLVED with its three greps
+- [x] §4.3's net-LOC checkpoint carries measured numbers and states honestly
+      whether `src/` shrank. (Authored late, by review-fix commit `5393e1ca`
+      — the section was byte-unchanged and stale through commit 8; see the
+      Review log's final entry, Scope 2 Finding 1.)
+- [x] `driver-protocol-keep-or-cut.md` is RESOLVED with its three greps
       pasted and both cross-references in place.
-- [ ] The CHANGELOG, migration guide and release notes describe the **whole**
+- [x] The CHANGELOG, migration guide and release notes describe the **whole**
       refactor and are internally consistent with each other and with
-      `STABILITY.md`.
-- [ ] Every §8 row is dispositioned; every `RECORDED, NOT FIXED` row appears
+      `STABILITY.md`. (Seven ledger-truth drifts — GitHub-locator error
+      text, the `INVALID_FLAG_VALUE` claim, the two-arm-`oneOf` claim, the
+      workflow-schema multi-job text, the v3-task-wrapped claim, the
+      `{from: "params.<name>"}` caveat, and the D8 `target.kind` break —
+      found and fixed by review-fix commit `120e1c0b`; see the Review log's
+      final entry, Scope 2 Findings 4-10.)
+- [x] Every §8 row is dispositioned; every `RECORDED, NOT FIXED` row appears
       in §10.3's sweep under the criterion it bears on.
-- [ ] §5.5's P0 Review-log entry lists R-01…R-09 and the superseded P rows.
-- [ ] §10's sweep is appended to this file, covers all 25 criteria, cites a
+- [x] §5.5's P0 Review-log entry lists R-01…R-09 and the superseded P rows.
+- [x] §10's sweep is appended to this file, covers all 25 criteria, cites a
       grep or `file:symbol` for each, and lists every UNMET criterion with
-      exactly what remains.
-- [ ] Every behavior difference observed during implementation that is not in
-      §7 is recorded in the Review log and **not** silently absorbed.
+      exactly what remains. (0 UNMET, 19 MET, 6 MET WITH CAVEAT — see §10.3,
+      appended to the Review log's final entry below.)
+- [x] Every behavior difference observed during implementation that is not in
+      §7 is recorded in the Review log and **not** silently absorbed. (Four
+      ADVISORY-tier items — Scope 1 F5/F6, Scope 2 A1/A2 — remain open at
+      final HEAD; auto-adjudicated non-blocking and recorded, not absorbed,
+      in the Review log's final entry.)
 
 ---
 
@@ -1608,3 +1626,1434 @@ Post-deletion sweep (§3.4 point 3/4) confirms zero live-code survivors: the sam
 *§5.5 — the P0 Review log's final entry is appended to `docs/plans/specs/p0-invariants.md`, prose-only, no pinned row edited* — §5.5's disposition table (R-01…R-09, P-01…P-08) verbatim, plus two observed-not-asserted notes tying P-04 and R-08's "PRESERVE forever" dispositions to what this same commit's own §5.2 sweep actually measured (both held).
 
 *Verification, this commit, final state.* `bunx tsc --noEmit` clean throughout every edit in this entry. `bunx biome check --write src/ tests/` — 2 files reformatted (line-wrap only, on `bounded-document.ts` and `workflow-asset-loader.ts`; content diff confirmed unchanged by `git diff` before/after). `bun run lint` exit 0 (every named sub-check reports OK; the ~1400 biome warnings surfaced are pre-existing repo-wide `noNonNullAssertion` style warnings in files this commit does not touch, e.g. `scripts/lint-doc-examples.ts`, `tests/workflows/unit-checkin.test.ts` — not a P4 concern, not fixed here). `bun run test:unit`: **4213 pass / 0 skip / 0 fail**, 315/315 files. `bun run test:integration`: **5825 pass / 57 skip / 1 fail**, 438/438 files, AT THE TIME OF THIS COMMIT — the one failure is the `migration-help.test.ts` regression the Family A2 entry above measures as P4-introduced (base `0f16f70fdc61`: 12 pass / 0 fail; P4 head before the fix: 11 pass / 1 fail) and fixes, not a pre-existing/out-of-scope defect as first recorded there. Both new floors (4000, 5500) clear against these executed counts regardless (the floor formula excludes fail counts). `tests/contracts/ci-test-paths.test.ts` green with no edit — verified none of the five CI-named suites (`semantic-search-e2e`, `docker-install`, `linux-standalone-scheduler`, `native-scheduler`, `workflow-release`) were touched by any P4 family, and all five files still exist. No `.github/workflows/*.yml` edit was needed for the same reason.
+
+**2026-08-28 — Final close-out: review scope verdicts, gate summary, and the 25-criteria acceptance sweep.**
+
+This entry closes Lane D (commit 10, §10). It records, in order: (1) the
+verdicts of the two scoped adversarial reviews run against the full P4
+diff, what each found, and what landed to fix it; (2) the residual
+advisory-tier findings neither review's follow-up commits touched,
+auto-adjudicated here per §0.3; (3) a freshly re-run gate summary at final
+HEAD; and (4) the full 25-criteria acceptance sweep (§10, Lane D's own
+report), appended verbatim below as §10.3, independently spot-checked
+before appending.
+
+### Review scope verdicts
+
+Two independent scoped adversarial reviews ran against the complete P4
+diff before this close-out. Both are stored in full under
+`/root/.claude/projects/-home-user-akm/ab1e859c-154d-5696-a33a-d338372a4c43/scratch/`
+(`p4-review-deletions.findings.md`, `p4-review-closeout.findings.md`) and
+are summarized here so every finding's disposition is visible in this file,
+not only in a scratch directory outside the repo.
+
+**Scope 1 — deletion completeness & safety** (reviewer lane (a)-(h) of §3;
+range `0f16f70fdc61..HEAD` at review time). Verified CLEAN: the §9
+file-absence gate, every deleted path accounted for by a §6/§7 row, the §9
+grammar/symbol greps, the frozen migrator (P4-N1), all 10 shipped task-v4
+assets, `akm task add`'s v4 authoring, the `TASK_SCHEMA_VERSION_UNSUPPORTED`
+migrate hint, and every named preservation-gate suite (54 pass / 0 fail).
+Seven findings — four CONFIRMED-and-required, one CONFIRMED-and-shared with
+Scope 2, two ADVISORY:
+
+| # | Finding | Verdict | Disposition |
+|---|---|---|---|
+| F1 | `task-result.ts:finishDisabledTask` (+ its sole helper, the `"disabled"` `TaskRunStatus` member, and `exitCodeForStatus`'s dead arm) was dead code left behind when P4-N6 deleted its only caller | CONFIRMED | **FIXED** — `9902d86b` deletes all four |
+| F2 | The task-v3 `akm:` options-bag grammar (`AKM_KEYS`, `parseAkm`, the "exactly one scheduling source" rejection) survived P4-N3's re-home into `src/workflows/source-ir/triggers.ts`, unreachable from the one production caller | CONFIRMED | **FIXED** — `9902d86b` deletes it per §3.2.3's own "DELETE, except the parts `classifyTaskV3Triggers` needs" instruction; narrows `checkKeys` to `["on"]`; makes §5.5's R-06 disposition true of the code, not just the retired grammar |
+| F3 | The bounded-document front end's hostile-input/resource-bound suite (Proxy, prototype, cycle, depth, byte-bound, hostile-YAML — 7 cases incl. a 5-row `test.each`) was deleted along with `tests/tasks/source-v3.test.ts`, but its actual subject (`bounded-document.ts`) survived and is still routed through by the v4 parser, leaving it with zero regression coverage | CONFIRMED | **FIXED** — `9902d86b` ports the block into `tests/tasks/bounded-document.test.ts` against the v4 entry points |
+| F4 | `src/tasks/source-v3.ts` carried a dead `export { UsageError }` (plus its now-solely-supporting import), added during the file's shrink purely to silence biome, with zero importers anywhere | CONFIRMED | **FIXED** — `9902d86b` deletes both |
+| F5 | Five exports lost their last external importer to a Lane-A-deleted shim and were neither deleted nor named in a commit body, as §3.4 step 5 requires (`ReadHistoryOptions`, `INVALID_TASK_ATTEMPT_ID`, `ResolvedWorkflowSourceV4`, `yamlAstError`/`yamlProblem`/`TASK_V3_MAX_JSON_DEPTH`/`TASK_V3_MAX_JSON_NODES`/`TASK_V3_MAX_OBJECT_KEYS`, `buildArtifactSummary`) | ADVISORY | **RECORDED, NOT FIXED — auto-adjudicated below.** Re-verified still present at final HEAD. |
+| F6 | Four comments in surviving modules still describe a deleted file in the present tense (`tasks/model/definition.ts`, `tasks/runner.ts`) | ADVISORY | **RECORDED, NOT FIXED — auto-adjudicated below.** Re-verified still present at final HEAD. |
+| F7 | Required ADR `0006-task-source-version-routing.md` was never authored; the ADR-index README links to a nonexistent file and the pre-P4 routing reasoning it was to carry is gone from the code it once lived in | CONFIRMED (= Scope 2 Finding 2, one shared fix) | **FIXED** — `f9ea73b8` authors the ADR with the pre-P4 three-generation routing table and both recorded warts verbatim, plus removal dates; updates the README index row |
+
+**Scope 2 — docs/ledger truth, net-LOC, STABILITY, driver-protocol, ADRs,
+floors, lint-doc-examples** (range `0f16f70fdc61..HEAD`, 14 commits, at
+review time). Verified CLEAN: the driver-protocol decision record and its
+three zero-hit greps, `STABILITY.md`'s tier index, all ten ADRs' in-code
+invariant backlinks, both test floors' arithmetic, `lint-doc-examples`, and
+the migration guide's ten-section structure. Ten findings, all CONFIRMED
+and required (Finding 2 = Scope 1's F7, one shared fix), plus three
+advisories:
+
+| # | Finding | Verdict | Disposition |
+|---|---|---|---|
+| 1 | §4.3's net-LOC checkpoint section was never written — `docs/plans/0.9.2-architecture-deletion-audit.md`'s Size checkpoint was still citing a stale `origin/main` baseline from before P3a/P3b/P4 | CONFIRMED | **FIXED** — `5393e1ca`, §4.3's four required items, all measured at that commit |
+| 2 | ADR `0006` indexed but the file did not exist (= Scope 1 F7) | CONFIRMED | **FIXED** — `f9ea73b8` (shared fix) |
+| 3 | `bun run check` was RED at HEAD: `migration-help.test.ts` was a P4-introduced regression (commit `d24f432a` rewrote the string the test pinned), twice misrecorded in this Review log as pre-existing via a `git blame`-on-the-assertion check that cannot detect a doc-content regression | CONFIRMED | **FIXED** — `f9ea73b8` fixes the assertion and replaces all four false Review-log provenance claims with the measured base-vs-HEAD result |
+| 4 | The migration guide's GitHub-locator "0.9.2" error block quoted a task-v3 parser message (`classifyTaskV3Uses`'s, deleted from `src/` by §3.2) under a workflow-step heading | CONFIRMED | **FIXED** — `120e1c0b` replaces it with the message `target-ref.ts:targetRefInvalid` actually emits (row B-05), pinned byte-exact by `tests/execution/target-ref.test.ts` |
+| 5 | CHANGELOG + migration guide both claimed `INVALID_FLAG_VALUE` no longer appears in task/workflow domain failures at all; two deliberate preservation-gate survivors (Lane C's P-04/B-11 deviations) contradict it | CONFIRMED | **FIXED** — `120e1c0b` names both exceptions in both docs, matching the measured 38-site terminal count |
+| 6 | CHANGELOG claimed the published task schema is a two-arm `oneOf`; it is single-arm at HEAD | CONFIRMED | **FIXED** — `120e1c0b` rewrites the bullet |
+| 7 | CHANGELOG's child-workflow entry still advertised task-wrapped composition "from either a v3 or v4 task" and benchmarked new behavior against a removed `version: 3` task target | CONFIRMED | **FIXED** — `120e1c0b`, matching the fix `7a7013b5` had already applied to `docs/reference/workflow-schema.md` |
+| 8 | `docs/reference/workflow-schema.md` still said multi-job documents are "dependency-validated, indexed, and displayable" — the pre-P4, display-only-core-behavior description brief §10 and §3.3 exist to delete — directly contradicting its own "`jobs:` must contain exactly one job" bullet three lines above | CONFIRMED | **FIXED** — `120e1c0b` deletes the stale sentence |
+| 9 | Release notes and CHANGELOG presented `{from: "params.<name>"}` as a usable reference form without R-R16's unreachability caveat (already applied to the long-form guide by `2329715c`) | CONFIRMED | **FIXED** — `120e1c0b` adds the caveat to both |
+| 10 | The D8 `target.kind` vocabulary break — including its one-way `targetVocab: 2` mixed-fleet ordering constraint — was a CHANGELOG Breaking entry with zero coverage in the migration guide or release notes | CONFIRMED | **FIXED** — `120e1c0b` adds a migration-guide section, a release-notes paragraph, and a "Before you upgrade" checklist item |
+| A1 | The deletion audit's "Target architecture" and "Kept boundaries" sections (outside §4.3's named scope) still describe the pre-refactor world (task v3, plan IR v4) | ADVISORY | **RECORDED, NOT FIXED — auto-adjudicated below.** Re-verified still present at final HEAD. |
+| A2 | The migration guide's hand-off to `tasks.md`'s correct R-R13 documentation mislabels the trap as "the 'no document-level enabled' trap" (a different subject) rather than naming it | ADVISORY | **RECORDED, NOT FIXED — auto-adjudicated below.** Re-verified still present at final HEAD. |
+| A3 | Process note: the §0.2 commit ladder ran out of its binding order (Lane B's docs commits 5-8 landed before Lane A's deletion commits 3-4), the single root cause of Findings 4-8 | ADVISORY (process) | **CLOSED — historical.** No standing defect once Findings 4-10 are fixed; recorded as a lesson for future phases, not an action item. |
+
+Combined: **14 distinct CONFIRMED findings** across both scopes (Scope 1's
+F1-F4 and F7, Scope 2's Findings 1, 3-10, with F7/Finding-2 counted once),
+covered by four follow-up commits (`9902d86b`, `f9ea73b8`, `120e1c0b`,
+`5393e1ca`) whose commit-message numbering (findings 1-15, two of which —
+5 and 15 — share one fix) reconciles exactly against this table. **All 14
+are re-verified FIXED at this entry's own re-check of final HEAD**, not
+merely trusted from the fix commits' own claims:
+`ls docs/architecture/decisions/0006-task-source-version-routing.md`
+(6865 bytes, present); the rewritten `## Size checkpoint` section read in
+full from `docs/plans/0.9.2-architecture-deletion-audit.md`; zero hits for
+the two-arm-`oneOf` / "from either a v3 or v4" / `version: 3\` task target`
+phrasings in `CHANGELOG.md`; zero hits for "dependency-validated, indexed"
+in `docs/reference/workflow-schema.md`; `tests/integration/migration-help.test.ts`
+folded into the full green `test:integration` run below. **Four items stay
+open — F5, F6, A1, A2, all ADVISORY-tier, none CONFIRMED —** adjudicated
+next.
+
+### Residual advisories — auto-adjudicated per §0.3, recorded and left open
+
+§0.3 caps this mechanical phase at `MAX_REVIEW_ROUNDS = 2` with
+auto-adjudication on budget exhaustion: "if the last round's fixes were
+applied and its own findings were the sole basis of an abort flag, log the
+adjudication in the Review log and **proceed**." Round 1 (the two scoped
+reviews above) is exhausted; every CONFIRMED, required finding it raised is
+fixed and re-verified. No round 2 ran, and none is needed: the four
+remaining items are all ADVISORY-tier by the reviewing agents' own
+classification, none is cited by either review as blocking, and each is
+adjudicated individually below rather than silently dropped (§12's own
+closing acceptance criterion: "every behavior difference observed during
+implementation that is not in §7 is recorded in the Review log and **not**
+silently absorbed").
+
+- **F5 — five orphaned exports.** `src/tasks/run/task-history.ts`'s
+  `ReadHistoryOptions`, `src/tasks/run/attempt-lifecycle.ts`'s
+  `INVALID_TASK_ATTEMPT_ID`, `src/workflows/freeze/source-freeze.ts`'s
+  `ResolvedWorkflowSourceV4`, `src/tasks/source/bounded-document.ts`'s
+  `yamlAstError`/`yamlProblem`/`TASK_V3_MAX_JSON_DEPTH`/`TASK_V3_MAX_JSON_NODES`/`TASK_V3_MAX_OBJECT_KEYS`,
+  and `src/workflows/exec/step-work.ts`'s `buildArtifactSummary` all lost
+  their last importer outside their own module when a Lane A shim was
+  deleted, and none was named in the deleting commit's body as §3.4 step 5
+  requires. Adjudicated **non-blocking**: every symbol is still used inside
+  its own module (only the `export` keyword, not the code, is dead), each
+  file is used correctly and completely by its live consumers, dropping the
+  keyword is a zero-behavior biome-safe cleanup, and §0 forbids "improving"
+  anything on the way past that §7 does not name — deleting five unrelated
+  `export` keywords now is exactly that kind of drive-by. Named here per
+  F5's own offered resolution ("list them in the Review log with the reason
+  they stay exported"), which discharges §3.4 step 5's disjunctive
+  requirement retroactively. Carried to a future housekeeping pass, not to
+  0.9.2's release blockers.
+- **F6 — four stale present-tense comments.** `tasks/model/invocation.ts:25`
+  ("`src/tasks/model/definition.ts` is unchanged"), `task-source-v4.ts:240`
+  (a file:line citation into the same deleted file), `task-result.ts:13`
+  ("the compat shim (`src/tasks/runner.ts`) re-exports"), and two
+  present-tense mentions of `tasks/runner.ts` in
+  `workflow-cli.ts`/`abort-deadline.ts` all cite files P4 deleted.
+  Adjudicated **non-blocking**: these are prose citations with no
+  behavioral weight — nothing reads or resolves them at runtime — and a
+  stale file:line pointer in a comment is a documentation nit, not a
+  correctness or completeness defect. Carried to the same future
+  housekeeping pass as F5.
+- **A1 — the deletion audit's "Target architecture" / "Kept boundaries"
+  sections are stale** (task v3, plan IR v4 language, outside §4.3's four
+  named items). Adjudicated **non-blocking** on the reviewing agent's own
+  terms: "outside the letter of P4's charter." §4.3's actual four required
+  items (Size checkpoint, per-family deletion table, honest net-positive
+  statement, Active-audit close-out) are all fixed and verified above;
+  these two sections were never in scope, and correcting them is a
+  legitimate, low-cost future cleanup rather than a P4 obligation.
+- **A2 — the migration guide's R-R13 hand-off mislabels the trap it points
+  to.** `docs/reference/tasks.md#typed-inputs-and-output` documents R-R13's
+  actual trap (a `required: true` input with no default failing every
+  scheduled run) correctly and completely — confirmed by both this review
+  and the earlier closeout review's own "Verified CLEAN" section. The one
+  open item is that the migration guide's *inline* sentence names the wrong
+  clause when it hands the reader to that correct documentation. Adjudicated
+  **non-blocking**: §8 R-R13's binding requirement — "§4.7's migration
+  guide must document the trap" — is met by the correct target document;
+  this is a cross-reference wording polish, not a missing disclosure.
+
+None of F5, F6, A1, or A2 falsifies any sentence of §12's acceptance
+criteria at final HEAD; all four are appropriate candidates for a routine
+post-0.9.2 documentation-and-lint pass alongside R-R1/R-R20's
+already-deferred rename (§8).
+
+### Gate summary — final, all green
+
+Independently re-run at this entry's own HEAD (`5393e1ca` — this append is
+docs-only and changes nothing that would move it):
+
+```
+$ bunx tsc --noEmit
+(exit 0, no output)
+
+$ bun run lint
+lint-tests-isolation: OK
+MPL-2.0 header present in all 651 src/**/*.ts files.
+lint-runtime-boundary: OK
+lint-write-source-chokepoint: OK
+lint-secret-resolver-boundary: OK
+lint-execution-boundary: OK
+lint-process-argv: OK
+lint-repository-sql: OK
+lint-goldens-presence: OK — 51 designated golden asset(s) present
+lint-golden-captured-at-head: OK — 13/17 judged pins resolve; 4 unjudged (shallow clone)
+lint-shipped-assets: OK - 0 dead type:name ref token(s)
+lint-doc-examples: OK - 0 doc-example violations found.
+schemas/akm-config.json is up to date.
+lint-active-docs-terminology: OK - 0 "stash" terminology violations across 91 active doc file(s).
+Found 1397 warnings.   <- pre-existing repo-wide noNonNullAssertion style
+Found 2 infos.             notices in files P4 did not touch; exit 0
+(exit 0)
+
+$ bun run test:unit
+── unit: 4 shards over 315 files
+── unit: 4227 pass / 0 skip / 0 fail across 4 process-shards (315/315 files)
+
+$ bun run test:integration
+── integration: 4 shards over 438 files
+── integration: 5826 pass / 57 skip / 0 fail across 4 process-shards (438/438 files)
+```
+
+`bun run check` (lint && `tsc --noEmit` && test:unit && test:integration)
+is **green** — every named check passes, zero test failures across 753
+executed files (315 unit + 438 integration). The unit count (4227) is 14
+above Lane C's own recorded 4213 and the acceptance sweep's own citation,
+matching exactly the net new tests Scope-1 F3's port added (`9902d86b`,
+landing after both Lane C's floor commit and the sweep's run); the unit
+floor (4000) and the integration floor (5500) both clear with room, as
+§5.3 predicts they must once §7's whole-file deletions are the only
+floor-relevant change. This closes out the one gate that was genuinely RED
+mid-phase (Scope 2 Finding 3, `migration-help.test.ts`, live between
+commits `d24f432a` and `f9ea73b8`) — confirmed green at every commit from
+`f9ea73b8` onward, and, independently, right now at final HEAD.
+
+Also re-verified directly in this entry, not merely inherited from the
+sweep: every §9 grammar/symbol/machinery grep (`github-action`,
+`remote-action-acquisition`, `isGithubLocatorShape`, `GITHUB_OWNER`,
+`parseTaskV3Yaml`, `parseTaskV3Document`, `classifyTaskV3Uses`,
+`TASK_V3_SCHEMA_VERSION`, `canonicalTopologicalJobs`, `job-count-limit`,
+`missing-job-dependency`, `job-dependency-cycle`,
+`duplicate-job-dependency`, `exactly one source-IR job`, `Multi-job
+workflow cannot execute`) returns only historical prose or the frozen
+migrator's own vendored copy, never live `src/` grammar; every §6 DELETE-list
+file (`runtime-v3.ts`, `runner.ts`, `ir/source-freeze-v4.ts`,
+`source-ir/ordering.ts`, `source/parse-v3-adapter.ts`, `model/definition.ts`,
+`model/schedule.ts`) is absent; `src/` imports nothing from `scripts/`
+(the two live `scripts/akm-migrate*` references in
+`migration-tool.ts` are a spawn-path `new URL(...)`/`fileURLToPath(...)`
+construction, not an `import` statement); `^version: 3` fixtures are
+confined to the two migrator-input directories; the driver-protocol greps
+(`brief.ts|report.ts`, `experimental.workflowEngine`) are zero;
+`git diff 0f16f70fdc61..HEAD -- src/cli/shared.ts` is empty (`EXIT_CODES`
+byte-unchanged); and `WORKFLOW_IR_V5_VERSION` is still `5`.
+
+### §12 acceptance checkboxes — final disposition
+
+All 17 checkboxes in §12 below (Structure, Behavior, Close-out) are ticked
+at their original location in this document, on the evidence assembled
+above plus §10.3's sweep appended next. None is unmet at final HEAD. The
+one item worth flagging explicitly rather than silently ticking: §9's
+separate "green at every commit in §0.2" gate (not itself a §12 checkbox)
+was briefly violated between `d24f432a` and `f9ea73b8` (Scope 2 Finding 3)
+— corrected, and green at every commit from `f9ea73b8` onward and at final
+HEAD, which is what §12's own undated `bun run check` criterion asks for.
+
+### The 25-criteria acceptance sweep (§10, Lane D's report — appended as §10.3)
+
+Produced by the report-only Lane D sweep agent per §10.1's protocol,
+walking all 25 criteria of §10.2 against final HEAD (`5393e1ca`).
+Spot-verified independently in this entry — the DELETE-list `ls`, the
+grammar/symbol/machinery greps, `EXIT_CODES`, `WORKFLOW_IR_V5_VERSION`, and
+the full gate run above all reproduce the sweep's own citations — before
+being appended below exactly as produced. Only its Markdown heading levels
+are nested one level deeper (`##`→`###`, `###`→`####`) to sit inside this
+Review log entry; no wording, table, code block, or citation was altered.
+
+### 10.3 The acceptance sweep (Lane D, report-only)
+
+Run at `5393e1ca` (head of `claude/breaking-changes-0-9-2-3cfyvp`, commits 2-9 plus
+the review-round fix commits all landed). Base for all diffs:
+`origin/release/0.9.2` = `2aaaf98d`. Protocol per §10.1: verdict, a runnable
+citation, one sentence of what it proves, and for anything short of MET, exactly
+what remains. §8's `RECORDED, NOT FIXED` rows are surfaced under the criterion
+they bear on.
+
+---
+
+#### 1. AKM still uses its native workflow engine with no new external runtime dependency. — **MET**
+
+**Citation.**
+```
+$ git diff origin/release/0.9.2...HEAD -- package.json
+(no output — the file is byte-identical)
+$ rg -n 'experimental\.workflowEngine|workflowEngine' src/     -> exit 1, zero hits
+$ rg -n 'brief\.ts|report\.ts' src/workflows/exec/             -> exit 1, zero hits
+$ rg -n 'from "\./native-executor"' src/
+src/workflows/exec/run-workflow.ts:39:} from "./native-executor";
+```
+`package.json`'s `dependencies` are unchanged across the entire refactor
+(`@clack/prompts`, `@huggingface/transformers`, `@opencode-ai/sdk`, `citty`,
+`dotenv`, `fast-xml-parser`, `node-html-parser`, `semver`, `turndown`, `yaml`,
+`zod` — the same 11, no additions), and `src/workflows/exec/run-workflow.ts` still
+reaches exactly one executor module, so the 328-file diff bought child workflows
+and bindings without an engine or a runtime dependency.
+
+---
+
+#### 2. Existing command, shell, script, retry, gate, worktree, and resume behavior remains intact. — **MET**
+
+**Citation.**
+```
+$ bun test tests/contracts/resolved-execution-contract.test.ts \
+    tests/contracts/command-invocation-contract.test.ts \
+    tests/contracts/command-execution-preparation.test.ts \
+    tests/contracts/execution-cascade-resolver.test.ts \
+    tests/contracts/engine-lowering-conformance.test.ts --timeout=120000
+160 pass / 0 fail / 1888 expect() calls  (5 files)
+
+$ bun test tests/integration/workflows/run-lease.test.ts \
+    tests/integration/workflows/chaos.test.ts \
+    tests/integration/workflows/worktree-concurrency.test.ts \
+    tests/integration/workflow-worktree-leftovers.test.ts \
+    tests/integration/workflows/gate-artifacts.test.ts \
+    tests/integration/workflows/run-controls.test.ts \
+    tests/integration/workflows/native-executor.test.ts --timeout=120000
+130 pass / 0 fail / 854 expect() calls  (7 files)
+
+$ git diff --numstat 0f16f70fdc61..HEAD -- <each of the 11 files above>
+(no output for any of them — all byte-unchanged across every P4 commit)
+```
+All eleven suites are green AND byte-unchanged across the whole of P4 (base
+`0f16f70f`, P3b's last commit, to head), so command/shell/script preparation,
+retry and gate artifacts, worktree lifecycle and lease-based resume all pass
+against assertions P4 never touched — the strongest available form of "intact",
+since the tests could not have been bent to fit.
+
+---
+
+#### 3. A workflow task call can no longer silently discard `with`. — **MET**
+
+**Citation.** `src/workflows/freeze/targets/task.ts:noDeclaredInputsError` +
+`src/workflows/freeze/targets/task.ts:taskDispatch`:
+```ts
+function noDeclaredInputsError(stepId: string, ref: string): UsageError {
+  return new UsageError(
+    `Workflow step ${stepId} cannot pass with: to task target ${ref}; ${ref} declares no inputs.`,
+    "COMPOSITION_INVALID",
+  );
+}
+...
+if (source.with !== undefined && contract === undefined) {
+  throw noDeclaredInputsError(source.id, refInput);
+}
+```
+```
+$ bun test tests/workflows/with-rejection.test.ts \
+    tests/workflows/task-input-bindings.test.ts \
+    tests/workflows/characterization-with-drop.test.ts --timeout=120000
+42 pass / 0 fail
+```
+Both halves are closed: an authored `with:` on a target with no `inputs:` throws
+`COMPOSITION_INVALID` on **any** shape including `{}` (the guard is
+`!== undefined`, pinned by `with-rejection.test.ts:"B-03: an empty with: {}
+mapping rejects identically to a non-empty one"`), the rejection fires even when
+the ref is unresolvable so it cannot be lost behind an asset error
+(`:"B-02b: the with: rejection fires before resolveOwnedAsset"`), and when the
+target DOES declare `inputs:` the mapping is bound rather than dropped
+(`task-input-bindings.test.ts`) — so there is no path left on which a `with:` is
+accepted and ignored.
+
+---
+
+#### 4. Tasks can exist and compose without schedule metadata. — **MET**
+
+**Citation.** `src/tasks/source/task-source-v4.ts:parseSchedule` /
+`parseTaskSourceV4Document`:
+```ts
+if (!own(input, "schedule")) return Object.freeze([]);
+...
+schedule,
+manualOnly: schedule.length === 0,
+```
+`tests/tasks/source-v4.test.ts:"absent schedule: parses as valid, manual-only,
+and akm task sync's projection input (B-06, D2-N6)"` pins *exists*;
+`tests/workflows/task-input-bindings.test.ts`'s `tasks/nightly-v4.yml` and
+`tasks/no-inputs-v4.yml` fixtures (both `version: 4` with no `schedule:` key)
+are composed from workflow steps throughout that suite, pinning *composes*.
+The old grammar that forced the choice is gone: §3.2's parser deletion took
+`akm.schedule` and a task's top-level `on:` with it, and the v4 parser now
+rejects an `on:` key outright (`task-source-v4.ts`: `"is removed in task source
+v4; declare a top-level schedule: instead."`).
+
+**Carried advisory surfaced here per §10.1 — R-R13 (RECORDED, NOT FIXED).**
+A `required: true` input with no `default:` makes every *scheduled* run fail at
+dispatch, with no parse-time or `akm task sync`-time warning. It does not bear
+on this criterion's own claim (it is a scheduled-task trap, not a
+schedule-less-task one) and P4 declined to fix it because a new diagnostic is
+new behavior. §4.7's documentation obligation IS discharged:
+`docs/migration/v0.9.1-to-v0.9.2.md` (Typed `inputs:` bullet) names "the
+'no document-level enabled' trap for a `required: true` input with no default
+on a scheduled task" and links `docs/reference/tasks.md#typed-inputs-and-output`.
+
+---
+
+#### 5. CLI, scheduler, and workflow calls use one task-invocation resolver. — **MET**
+
+**Citation.** `src/tasks/prepare/prepare.ts:prepareTaskV3Execution` is the only
+exported task-invocation resolver, reached by every invocation path:
+```
+$ rg -n 'prepareTaskV3Execution' src/ --glob '!**/*.md' | rg -v '^\S+:\d+: \*|//'
+src/tasks/run/load-task.ts:116          <- CLI:       akm task run
+src/tasks/scheduler-sync.ts:524         <- scheduler: akm task sync
+src/workflows/freeze/targets/task.ts:143<- workflow:  uses: tasks/<ref> composition
+src/commands/tasks/tasks.ts:197         <- CLI:       akm task add (authoring validation)
+src/tasks/prepare/prepare.ts:42         <- the definition
+```
+```
+$ bun test tests/tasks/prepare-split.test.ts --timeout=120000
+4 pass / 0 fail
+```
+`prepare-split.test.ts` pins each caller's context shape by name
+(`:"run/load-task.ts's context shape…"`, `:"scheduler-sync.ts's context
+shape…"`, `:"workflows/freeze/targets/task.ts's context shape…"`) and
+`:"does not exist — every caller is rewired to prepare/prepare.ts directly"`
+pins that `src/tasks/runner.ts`'s re-export shim is gone, so no caller reaches
+the resolver through an alias. Upstream of it, `parseTaskSource` is likewise the
+one version router and now has a single accepted version (§3.2), so the four
+paths share both the parse and the resolve step.
+
+**Two observations that do not change the verdict, recorded so a reviewer does
+not read them as drift.**
+1. §10.3's starting point says "three callers"; there are now **four** — `akm
+   task add` (`src/commands/tasks/tasks.ts:akmTasksAdd`) prepares the document
+   it just authored as a write-time validation. That is a fourth *caller of the
+   one resolver*, which is what the criterion asks for, not a fourth resolver.
+2. `akm task explain` (`src/commands/tasks/explain.ts`) deliberately does NOT
+   call it — its module header states it never resolves or executes — and
+   reaches provenance through `parseTaskSource` + `projectTaskSourceV4` +
+   `prepareResolvedExecution` instead. Explain is not an invocation, so this is
+   by design, not a second invocation path.
+
+---
+
+#### 6. Typed task inputs support defaults, validation, literals, and explicit workflow references. — **MET WITH CAVEAT**
+
+**Citation.** All four capabilities exist and three of four are reachable from
+authored source:
+
+| Capability | Symbol | Reachable? |
+|---|---|---|
+| defaults | `src/execution/input-contract.ts:applyInputDefaults` | yes |
+| validation | `src/execution/input-contract.ts:validateInputs` (+ `materializeInputFlags` for the CLI coercion) | yes |
+| literals | `src/workflows/freeze/task-bindings.ts:normalizeOneEntry` — `return Object.freeze({ kind: "literal", name, value })` | yes |
+| references — `{from: "steps.<id>.output…"}` | `normalizeOneEntry`'s `parsed.expr.kind === "stepOutput"` arm, gated on `earlierStepIds` | yes |
+| references — `{from: "params.<name>"}` | `normalizeOneEntry`'s `declaredParamNames` arm | **no — unauthorable** |
+
+```
+$ bun test tests/workflows/task-input-bindings.test.ts \
+    tests/integration/workflows/task-binding-resolution.test.ts \
+    tests/integration/workflows/task-inputs-delivery.test.ts --timeout=120000
+42 pass / 0 fail
+```
+`task-input-bindings.test.ts:"B-14: a {from: steps.<id>.output.<path>} with:
+value freezes to a kind:reference binding naming the parsed reference"` proves
+the reachable reference form end to end; `:"B-16c: {from: \"steps.x\"}
+(incomplete reference grammar) is rejected, never reinterpreted as a literal"`
+proves the literal/reference discrimination is fail-closed.
+
+**Caveat — R-R16 (§8, RECORDED, NOT FIXED), independently re-verified here.**
+The `{from: "params.<name>"}` arm is dead at authoring time, and I confirmed the
+mechanism rather than taking the advisory's word for it:
+- `src/workflows/freeze/step-values.ts:declaredParamNames` reads
+  `sourceIr.params`, which only `src/workflows/source-ir/compile.ts` populates —
+  from `parsed.document.params`, i.e. the **Markdown** front end's front-matter.
+- `rg -n '\bparams\b' src/workflows/source-ir/github-yaml.ts` → **zero hits**:
+  the GitHub-YAML front end, the only one that can author `uses: tasks/<ref>`,
+  has no `params:` surface at all.
+- `src/workflows/source-ir/compile.ts:markdownStep` can only ever emit
+  `uses: "akm/command"` (hardcoded in its return), `exec`, or `run` — a Markdown
+  step cannot name a task target.
+
+So no document can simultaneously declare `params:` and compose a task with a
+`with:`. `tests/integration/workflows/task-binding-resolution.test.ts` already
+carries an in-code note to the same effect.
+
+**What remains (imperative).** Either open a `params:` authoring surface on the
+GitHub-YAML front end in `src/workflows/source-ir/github-yaml.ts` so the arm
+becomes reachable, or delete the `declaredParamNames` arm from
+`src/workflows/freeze/task-bindings.ts:normalizeOneEntry` and its
+`declaredParamNames` plumbing in `src/workflows/freeze/step-values.ts`. Both are
+behavior changes and are correctly out of P4's charter; `docs/migration/v0.9.1-to-v0.9.2.md`
+discharges §8's documentation obligation by stating that
+`{from: "steps.<id>.output…"}` is the reachable reference form today.
+
+---
+
+#### 7. Task inputs are attached as structured context and are not interpolated into arbitrary prose. — **MET**
+
+**Citation.** Two delivery channels, both append-only and both structured:
+- command targets — `src/workflows/exec/step-work.ts:buildUnitPrompt`:
+  ```ts
+  ? `\n\n## Task inputs\nThe composed task's declared inputs resolved to:\n\`\`\`json\n${canonicalInputJson(taskInputs)}\n\`\`\``
+  ```
+  a fenced JSON block **appended** to the authored prose — no template token, no
+  `${...}` splice into the prose body.
+- shell/script targets — `src/workflows/exec/step-work.ts:buildExecContextEnv`:
+  ```ts
+  if (ctx.taskInputsJson !== undefined) env.AKM_TASK_INPUTS = ctx.taskInputsJson;
+  ```
+  exactly one env var carrying canonical JSON, never per-input vars.
+
+```
+$ bun test tests/integration/workflows/task-inputs-delivery.test.ts --timeout=120000
+10 pass / 0 fail
+```
+The suite pins both the structure and the non-interpolation directly:
+`:"the assembled prompt carries the resolved inputs as a fenced JSON block; the
+composed command's authored prose survives byte-exact; the bound value is never
+spliced into prose"` (B-38/B-N2), and
+`:"a shell-target (run:/shell:) task receives AKM_TASK_INPUTS with the exact
+canonical JSON, and no per-input var exists under any spelling"` (B-35), whose
+assertion is a set equality against an empirical baseline
+(`expect(boundAkmNames.sort()).toEqual([...baselineAkmNames, "AKM_TASK_INPUTS"].sort())`)
+— so a leaked per-input variable under any name would fail. The empty case is
+pinned too: `:"the target declares no inputs: at all — the prompt has no '## Task
+inputs' heading, and the authored prose is byte-unchanged"` (B-39), meaning the
+attachment is absent rather than an empty stub when there is nothing to attach.
+
+---
+
+#### 8. Effective task inputs participate in durable execution identity. — **MET WITH CAVEAT**
+
+**Citation.** `src/workflows/exec/step-work.ts:computeUnitInputHash`, the whole
+preimage:
+```ts
+createHash("sha256")
+  .update("akm.workflow.unit\0v6\0")
+  .update(canonicalJsonString({
+    hashVersion: 6, role: "unit",
+    stepId, nodeId, template, item,
+    inputs: ctx.resolvedInputs,
+    params: ctx.input.params,
+    frozenTarget: ctx.target,        // <- carries the frozen `inputBindings`
+    environment, schema, isolation, ...gateFeedback,
+  }))
+```
+```
+$ bun test tests/workflows/task-binding-identity.test.ts --timeout=120000
+3 pass / 0 fail
+```
+`frozenTarget` is the frozen dispatch target and carries
+`inputBindings?: readonly TaskInputBinding[]`
+(`src/workflows/ir/schema-v4.ts:93/104/121/146`), so:
+- a **`{kind:"literal"}`** binding's `value` is inside the preimage — its
+  effective value *is* its frozen value, so literals fully participate;
+- absence-when-empty is identity-preserving, pinned by
+  `task-binding-identity.test.ts:"a task-composing step whose target declares no
+  inputs: at all, with no with:, freezes a target with no OWN inputBindings key"`,
+  so adding the feature did not perturb the identity of unbound steps;
+- freeze is deterministic over bindings, pinned by `:"two independent freezes of
+  the same with:-bound task-composing step produce byte-identical plan hashes
+  and unit input hashes"`.
+
+**Caveat — R-R15 (§8, RECORDED, NOT FIXED; the spec calls it "the most
+consequential open item on the branch"). Independently confirmed here.**
+A `{kind:"reference"}` binding contributes only its **authored shape**
+(`{kind, name, from, schema}`) to the preimage, never its **resolved value**.
+The resolution happens first — `step-work.ts:398`,
+`const taskInputsResolution = resolveTaskInputBindings(...)` — and its output is
+on the very context object the hash function receives
+(`ctx.taskInputs`, set at `step-work.ts:494`, read at `:581` by
+`computeUnitInputHash(ctx, item)`), yet the preimage at `:677` does not read it.
+So two runs of the same plan in which an earlier step's output differs compute
+the **same** unit input hash, and a resumed run can reuse a unit whose bound
+value is stale. For reference bindings the criterion's word "effective" is not
+satisfied.
+
+**What remains (imperative).** Add `ctx.taskInputs` (or equivalently
+`taskInputsJson`) to the preimage object in
+`src/workflows/exec/step-work.ts:computeUnitInputHash` and bump the unit/gate
+`hashVersion` from 6 to 7 (`akm.workflow.unit\0v7\0`,
+`akm.workflow.gate\0v7\0`) with the corresponding plan-compatibility handling.
+P4 correctly did not do this: §0 declares a P4 commit that changes
+`hashVersion` "a review-blocking violation", and §4.7's migration guide carries
+the resume caveat instead.
+
+---
+
+#### 9. Task output contracts are enforced consistently. — **MET**
+
+**Citation.** One declaration site, one definition checker, one value validator.
+
+*Declaration* — `src/tasks/source/task-source-v4.ts:parseOutputSchema` is the
+single bounded `output:` key that replaced v3's `akm.outputSchema`:
+```ts
+const schema = asRecord(value, ctx, ["output"]);
+const issue = checkJsonSchemaDefinition(schema as Record<string, unknown>)[0];
+if (issue) sourceError(ctx, ["output"], `is not a supported JSON schema: ${issue.message}`);
+```
+
+*Definition checking is shared with the workflow side* —
+`src/core/json-schema.ts:checkJsonSchemaDefinition` has exactly four callers,
+covering both domains:
+```
+src/tasks/source/task-source-v4.ts:457   (task inputs + output)
+src/workflows/source-ir/schema.ts:740    (workflow source schemas)
+src/workflows/parser.ts:1470             (markdown workflow schemas)
+```
+
+*Value validation is likewise shared* —
+`src/core/json-schema.ts:validateJsonSchemaSubset` is called from
+`src/workflows/exec/step-work.ts:869` (a step unit's evidence against
+`plan.outputSchema`), `src/workflows/exec/native-executor.ts:1331`,
+`src/workflows/runtime/run-outputs.ts:100` (a workflow's declared `outputs:`),
+and `src/execution/input-contract.ts:129` (task inputs) — one implementation,
+never a per-domain reimplementation.
+
+*The task's declaration reaches both execution paths from the same field* —
+`src/tasks/source/project-v4.ts`: `if (document.output !== undefined)
+out.outputSchema = document.output;`, which then lowers into a direct engine
+dispatch (`src/integrations/agent/execution-lowering.ts:735`
+`chatOptions.responseSchema = request.outputSchema`) and into the frozen unit
+for a workflow-composed task (`src/workflows/freeze/targets/command.ts:92`,
+`...(request.outputSchema ? { output: request.outputSchema } : {})`).
+
+```
+$ bun test tests/tasks/source-v4.test.ts tests/workflows/workflow-outputs-source.test.ts --timeout=120000
+114 pass / 0 fail
+```
+`source-v4.test.ts:"a malformed output schema is TASK_SOURCE_INVALID, re-rooted
+at 'output' (not 'akm.outputSchema')"` pins the fail-closed definition check and
+the single-key vocabulary; `:"output: is optional; absent leaves doc.output
+undefined"` pins that undeclared means unenforced rather than a defaulted stub.
+
+---
+
+#### 10. Direct workflow references and task-wrapped workflow references lower to the same child-workflow target. — **MET**
+
+**Citation.** `src/workflows/freeze/targets/child-workflow.ts:childWorkflowDispatch`
+is one resolver with exactly two callers, one per authoring form:
+```
+$ rg -n 'childWorkflowDispatch' src/
+src/workflows/freeze/resolve-steps.ts:29        <- direct: uses: workflows/<ref>
+src/workflows/freeze/targets/task.ts:173        <- task-wrapped: uses: tasks/<ref> whose own target is a workflow
+src/workflows/freeze/targets/child-workflow.ts:177  <- the definition
+```
+The two forms differ only by a discriminant the resolver takes as a parameter
+(`readonly via: "direct" | "task"`, plus `taskRef` present only when
+`via === "task"`), and both are inside the target's own content hash
+(`childWorkflowContentHash({ ref, planHash, via, taskRef, inputBindings })`), so
+the distinction is durable rather than erased.
+
+```
+$ bun test tests/workflows/child-workflow-freeze.test.ts \
+    tests/workflows/child-workflow-dispatch-guard.test.ts \
+    tests/workflows/child-output-references.test.ts \
+    tests/workflows/child-invocation-key.test.ts \
+    tests/workflows/plan-v5-schema.test.ts --timeout=120000
+37 pass / 0 fail
+```
+The criterion is pinned literally by
+`child-workflow-freeze.test.ts:"a direct step and a task-wrapped step composing
+the same child with the same effective params freeze to structurally equal
+child-workflow targets — only via/taskRef (and contentHash, whose preimage
+covers them) differ"`, with the two shapes independently asserted at
+`expect(target).toMatchObject({ kind: "child-workflow", via: "direct" })` and
+`... via: "task" })`.
+
+---
+
+**Criteria 11–16 share one suite run.** All citations below draw on:
+```
+$ bun test tests/workflows/child-workflow-freeze.test.ts \
+    tests/workflows/child-workflow-dispatch-guard.test.ts \
+    tests/workflows/child-invocation-key.test.ts \
+    tests/workflows/plan-v5-schema.test.ts \
+    tests/workflows/child-output-references.test.ts --timeout=120000
+37 pass / 0 fail
+
+$ bun test tests/integration/workflows/child-freeze-read-set.test.ts \
+    tests/integration/workflows/child-cancellation.test.ts \
+    tests/integration/workflows/status-tree.test.ts \
+    tests/integration/storage/child-run-publication.test.ts \
+    tests/integration/workflow-child-crash-windows.test.ts \
+    tests/integration/workflows/child-nesting.test.ts --timeout=120000
+47 pass / 0 fail
+```
+
+#### 11. Child plans are frozen before parent publication. — **MET**
+
+**Citation.** `src/workflows/runtime/runs.ts:startWorkflowRun` orders the two
+operations unambiguously — `compileResolveFreezeWorkflowV4(asset, loadConfig())`
+at `runs.ts:294`, `repo.publishWorkflowRunV4({...})` at `runs.ts:349` — and the
+child's plan is embedded *in the parent's frozen plan*, not fetched later:
+`src/workflows/ir/schema-v4.ts:454` decodes a child-workflow target's fields as
+`["kind","ref","planHash","frozenPlan","contentHash","via","taskRef","inputBindings"]`.
+`child-workflow-freeze.test.ts:"B-04: a direct uses: workflows/<ref> step freezes
+to a child-workflow target with the embedded frozen child plan and its planHash"`
+proves the embedding, and `:"B-09: with: naming an undeclared child param fails
+INPUT_BINDING_INVALID at freeze, before publication"` proves the ordering is
+load-bearing — a composition error is raised while nothing durable has been
+written.
+
+#### 12. Child source edits cannot alter an in-flight parent run. — **MET**
+
+**Citation.** `tests/integration/workflows/child-freeze-read-set.test.ts` closes
+both windows:
+- after publication —
+  `:"re-reading the stored run's plan_json shows the ORIGINAL child content,
+  byte-identical, not the edited one"` (B-06): the parent replays from its own
+  embedded copy, so an edit is simply not consulted;
+- between freeze and publication —
+  `:"revalidate() (the same call publishWorkflowRunV4 runs first, inside
+  IMMEDIATE, before any write) throws once the child has been mutated"` and
+  `:"publishing through the real repository call with that same
+  revalidateSources writes NO run row"` (B-07): the source-CAS check runs inside
+  the publication transaction before any write, so a mid-flight edit aborts
+  publication rather than producing a run bound to source nobody froze.
+The read set that CAS covers is transitive, pinned by
+`:"child doc + its direct command ref + its task ref's OWN command ref all
+appear as relative paths"` (B-05) — an edit to a grandchild command is caught
+too, not just the child document.
+
+#### 13. Parent-child run creation is idempotent across crash windows. — **MET**
+
+**Citation.** `src/storage/repositories/workflow-runs-repository.ts:publishChildWorkflowRun`,
+keyed on `(parentRunId, invocationKey)`. Idempotency is pinned at three levels:
+- repository — `tests/integration/storage/child-run-publication.test.ts:"a second
+  call with the same (parentRunId, invocationKey) returns the SAME child row —
+  no second insert, event, or step set"` (C-08), plus `:"the loser reads the
+  winner's row — never a duplicate row, never a thrown conflict"` (C-09) and
+  `:"recognizes a winner row it did not insert itself — no second insert, no
+  second event"`;
+- real crash windows — `tests/integration/workflow-child-crash-windows.test.ts:"CW-1
+  (C-01): SIGKILL as soon as the child row is published → resume finds it by
+  invocation_key, no duplicate child, no duplicate workflow_started event"`,
+  `:"CW-2 (C-02): SIGKILL mid-child-unit-dispatch → both runs resumable; resume
+  re-dispatches ONLY the interrupted child unit, once"`, and `:"CW-3 (C-03):
+  SIGKILL after the child completes but before the parent's composing unit
+  finalizes → resume completes the parent WITHOUT re-running the child"`;
+- genuine process contention — `:"two genuinely concurrent publishers racing the
+  identical (parentRunId, invocationKey) converge on one child row, one
+  workflow_started event, and the same returned id"` (C-04).
+The key itself is stable and versioned (`akm.workflow.child-invocation\0v1\0`),
+pinned by `tests/workflows/child-invocation-key.test.ts`.
+
+#### 14. Parent cancellation propagates to the child. — **MET**
+
+**Citation.** `tests/integration/workflows/child-cancellation.test.ts`:
+- `:"A-28: the child drive returns ok: false, failureReason 'aborted', once the
+  signal fires mid-drive"` — an explicit parent `AbortSignal` reaches the child;
+- `:"A-30: the heartbeat's lost-lease abort cascades into the child; the parent
+  rejects loudly (assertAlive); the child is left resumable"` — the *implicit*
+  cancellation (parent loses its run lease) propagates too, which is the harder
+  half;
+- `:"A-29: after the abort, the child's own lease is released and the child run
+  stays active (resumable)"` — propagation cancels the *drive*, it does not
+  orphan or corrupt the child run, which is what makes criterion 15 hold after a
+  cancellation.
+
+#### 15. Parent and child runs are independently resumable and clearly linked. — **MET**
+
+**Citation.** *Independently resumable*:
+`child-cancellation.test.ts:"A-29: … the child run stays active (resumable)"`
+and `workflow-child-crash-windows.test.ts:"CW-2 … both runs resumable; resume
+re-dispatches ONLY the interrupted child unit, once"`; a child blocked on its
+own gate carries its own resume instruction —
+`status-tree.test.ts:"B-35: a blocked child carries a resume {command, then}"`.
+*Clearly linked*: `status-tree.test.ts:"a parent with one child gains children:
+[...] carrying the documented shape, ordered by created_at then id"` (B-34) and
+`:"children nest recursively — depth of the rendered tree equals composition
+depth"` (B-37) for a 3-level tree, with `:"B-38: a children: block renders after
+steps:, one glyph-prefixed line per child"` for the text renderer. The link is
+additive, not a reshaping of the existing contract:
+`:"the JSON envelope carries no children key, and the text renderer's line shape
+is exactly today's"` (B-33, PRESERVE) and `:"akm workflow list on a childless
+scope carries no parentRunId/spawnedByUnitId/outputs on any run"` (B-45).
+
+#### 16. Composition cycles fail before durable mutation. — **MET**
+
+**Citation.** `tests/workflows/child-workflow-freeze.test.ts`'s "composition
+bounds" describe block — every one of these is a **freeze-time** rejection, and
+freeze precedes publication (criterion 11):
+- `:"B-20: a direct self-reference (A -> A) fails COMPOSITION_INVALID naming the
+  cycle path"`;
+- `:"B-21: an indirect cycle (A -> B -> A) fails COMPOSITION_INVALID naming
+  A -> B -> A"`;
+- `:"B-22: a task-mediated cycle (A -> tasks/w -> B -> A) fails
+  COMPOSITION_INVALID, the reported path naming the intermediate task ref"` —
+  the cycle detector sees through the task indirection, which is the case a
+  per-form check would miss;
+- the neighbouring bounds fail the same way and at the same moment:
+  `:"B-18: a composition chain 9 levels deep … fails COMPOSITION_INVALID naming
+  the depth limit and the ref path"` and `:"B-24: aggregate embedded child plan
+  bytes over the 1 MiB cap fails COMPOSITION_INVALID naming the cap, the running
+  total, and the child that crossed it"`;
+- and the detector is not over-eager: `:"B-23: the same workflow reached twice on
+  disjoint branches (a diamond) is not a cycle and freezes, each occurrence
+  embedding its own copy"`.
+
+---
+
+#### 17. No internal path fabricates YAML to reuse another parser. — **MET**
+
+**Citation.** `src/tasks/prepare/prepare-script-target.ts:prepareScriptTarget`
+replaced `directScript`'s synthetic-task-YAML fabrication, and
+`tests/workflows/direct-script-typed.test.ts` guards it with a **source-text
+scan over every file under `src/`**, not a single-file check — the distinction
+its own header calls out, because a one-file assertion would only prove the
+fabrication moved:
+```
+$ bun test tests/workflows/direct-script-typed.test.ts --timeout=120000
+7 pass / 0 fail
+```
+- `:"the literal fabricated schedule string is absent from every file under src/"`
+- `:"the synthetic 'version: 3' task-document template is absent from every file under src/"`
+- `:"the fabricated fragment filePath fed to parseTaskV3Yaml is absent from every file under src/"`
+- `:"directScript's body contains no parseTaskV3Yaml(...) call and does contain a prepareScriptTarget(...) call"`
+- `:"taskDispatch (the same file, unrelated to R-02) still legitimately resolves a real document via resolveTaskForComposition -> parseTaskSource(...)"`
+  — the positive control, so the scan cannot pass by having deleted real parsing too.
+
+Independently re-run outside the suite:
+```
+$ rg -Fn 'schedule: "@daily"' src/     -> exit 1, zero hits
+```
+P4 strengthened this structurally rather than merely leaving it green: the
+parser the fabrication existed to reach (`parseTaskV3Yaml`) no longer exists in
+`src/` at all (§3.2), so the class of defect is now unreachable, not just
+unrepresented.
+
+**Two `version: N` literals in `src/` that are NOT fabrication, checked so a
+reviewer does not misread the grep.**
+- `src/tasks/source/project-v4.ts:93` — `version: 3,` is a TypeScript object
+  **discriminant** on the prepare seam's `PreparableTaskDocument`, never
+  serialized to YAML and never parsed. §3.2.7 authorizes exactly this and §0/R-R1
+  defers renaming the type family.
+- `src/commands/tasks/tasks.ts:1526` — `{ version: 4 }` in `renderTaskYaml` is
+  `akm task add` **authoring the user's real file**, which is then re-read
+  through the one router (`parseTaskSource`, `tasks.ts:194`) as write-time
+  validation. Synthesizing the artifact a command exists to create is not
+  fabricating input to borrow a parser.
+
+---
+
+#### 18. Native target classification contains no GitHub Action variant. — **MET**
+
+**Citation.** All three classification unions are now four-way, with no
+`github-action` member:
+```ts
+// src/execution/target-ref.ts  (the shared classifier)
+export type TargetRefKind = "command" | "script" | "task" | "workflow";
+
+// src/tasks/source-v3.ts        (the prepare seam's document vocabulary)
+export type TaskV3UsesTarget =
+  | Readonly<{ kind: "builtin-command"; ref: "akm/command" }>
+  | Readonly<{ kind: "command" | "workflow" | "script"; ref: string }>;
+
+// src/workflows/source-ir/uses.ts
+export type WorkflowSourceUsesTarget =
+  | { readonly kind: "command" | "script" | "task" | "workflow"; readonly ref: string }
+  | { readonly kind: "builtin-command"; readonly ref: "akm/command" };
+```
+```
+$ rg -n '"github-action"' src/     -> exit 1, zero hits (no arm, no discriminant)
+$ rg -n 'githubActionRef' schemas/ src/  -> exit 1, zero hits (the JSON Schema definition and both $refs are gone)
+$ bun test tests/execution/target-ref.test.ts \
+    tests/workflows/characterization-classification.test.ts \
+    tests/workflows/source-ir-contract.test.ts --timeout=120000
+68 pass / 0 fail
+```
+§9's broader gate grep
+(`rg -n 'github-action|remote-action-acquisition|isGithubLocatorShape|GITHUB_OWNER' src/ schemas/`)
+is not literally empty, and I checked every surviving hit rather than treating
+the gate as failed:
+- `src/workflows/source-ir/uses.ts:22`, `src/tasks/source/task-source-v4.ts:16/214/216/217`
+  — **comments** stating the absence (`"has no github-action member, typed or
+  …"`); prose, not grammar;
+- `src/tasks/source/task-source-v4.ts:260` — the **B-11 upgrade-helpfulness
+  message**, which §3.1.3 explicitly preserves ("Task source v4's own B-11
+  message" is on the do-not-touch list);
+- `schemas/akm-task.json:5` — the root `description` telling an upgrader "there
+  is no github-action uses: target".
+`remote-action-acquisition`, `isGithubLocatorShape` and `GITHUB_OWNER` return
+zero hits of any kind. So the gate's intent — no live grammar — holds; only its
+literal string form catches the sentences announcing the deletion.
+
+---
+
+#### 19. Workflow source classification no longer depends on the task source parser. — **MET WITH CAVEAT**
+
+**Citation — the criterion itself holds.** `src/workflows/source-ir/semantics.ts:classifyWorkflowStepUses`
+takes its classifier as a parameter defaulting to the workflow-side one:
+```ts
+classifier: WorkflowSourceUsesClassifier = classifyWorkflowSourceUses,   // semantics.ts:112
+target = classifier(value);                                             // semantics.ts:128
+```
+`classifyWorkflowSourceUses` (`src/workflows/source-ir/uses.ts:60`) delegates to
+the shared `classifyTargetRef`, never to a task-source parser. Neither
+`compile.ts` nor `uses.ts` imports anything from `src/tasks/**` at all
+(`rg -n 'from ".*tasks' src/workflows/source-ir/compile.ts` → exit 1), and the
+ratchet confirms it:
+```
+$ bun test tests/architecture/diagnostic-codes.test.ts --timeout=120000
+2 pass / 0 fail
+```
+`tests/architecture/diagnostic-codes.test.ts:"semantics.ts, uses.ts, and
+compile.ts reference nothing from tasks/source-v3 (named, namespace, re-export,
+import-type, or dynamic import)"` — and row B-60's widening is real, not
+reserved: the helper is `moduleReferencesFrom`, a recursive AST walk covering
+namespace imports, `export … from`, `ImportTypeNode` queries and dynamic
+`import()`.
+
+**Caveat 1 — §3.2.3's stronger stated outcome is not true at head, and the
+ratchet does not enforce it.** §3.2.3 asserts: "After this, `src/workflows/**`
+imports nothing at all from `src/tasks/**` source modules — §5.2's seam
+assertion tightens to the empty list for all three files." Neither half holds:
+```
+$ rg -n 'from ".*tasks/' src/workflows/source-ir/
+src/workflows/source-ir/semantics.ts:11:import { parseSchedule } from "../../tasks/schedule";
+src/workflows/source-ir/triggers.ts:67:} from "../../tasks/source/bounded-document";
+```
+`src/workflows/source-ir/triggers.ts` — the file §3.2.3 itself created to
+re-home the trigger classifier — imports eleven symbols
+(`asRecord`, `BoundedDocumentContext`, `checkKeys`, `cloneBoundedJson`,
+`noGithubExpression`, `own`, `presentJsonValue`, `sourceError`, `stringField`,
+`TASK_V3_MAX_SCHEDULES`, `ExecutionJsonObject`) from
+`src/tasks/source/bounded-document.ts`, a module literally under
+`src/tasks/source/`. And `src/workflows/source-ir/compile.ts:20` imports
+`classifyWorkflowYamlTriggers` from `./triggers`, so **workflow source
+compilation transitively depends on the task-source bounded-document front
+end**. (`semantics.ts`'s `parseSchedule` import is from `src/tasks/schedule.ts`,
+the cron module — not a source module — so that one is consistent with the
+claim.)
+
+This does not falsify the criterion: `bounded-document.ts` is the shared bounded
+YAML/field-reading layer, not the task **parser** — the v3 grammar
+(`parseTaskV3Yaml`, `classifyTaskV3Uses`) is genuinely gone from `src/`
+(§9 gate G2 returns only comments). But the seam is weaker than the spec says it
+is, and nothing detects a regression.
+
+**Caveat 2 — the seam scan's file set and specifier were never widened to match
+the re-home.** The assertion still scans exactly `semantics.ts`, `uses.ts`,
+`compile.ts` for exactly the specifier `"tasks/source-v3"`. `triggers.ts` — now
+part of the classification path — is not scanned at all, and the specifier the
+dependency actually uses (`tasks/source/bounded-document`) is not checked
+anywhere.
+
+**What remains (imperative).** In
+`tests/architecture/diagnostic-codes.test.ts`, add
+`src/workflows/source-ir/triggers.ts` to the scanned file set and assert against
+the `tasks/source/` prefix (not just `tasks/source-v3`), then either (a) hoist
+the bounded-document primitives `triggers.ts` needs into a
+domain-neutral module such as `src/core/bounded-document.ts` that both
+`src/tasks/source/` and `src/workflows/source-ir/` import, or (b) amend
+`docs/plans/specs/p4-deletions-closeout.md` §3.2.3's "imports nothing at all
+from `src/tasks/**` source modules" sentence to name the one intended exception
+and say why. Neither is a P4 deletion, so leaving it is defensible — but leaving
+the spec's claim unqualified and the ratchet unwidened is not.
+
+---
+
+#### 20. The task runner no longer mutates global process environment state. — **MET**
+
+**Citation.** §10.3's two named greps, plus a deliberately broader one I ran to
+make sure the property is not merely true for the one variable P1b removed:
+```
+$ rg -n 'process\.env\.AKM_EVENT_SOURCE\s*=' src/            -> exit 1, zero hits
+$ rg -n 'delete process\.env\.AKM_EVENT_SOURCE' src/         -> exit 1, zero hits
+$ rg -n 'process\.env\.[A-Za-z_]+\s*=[^=]|delete process\.env' src/tasks/ src/workflows/
+                                                             -> exit 1, zero hits
+```
+No assignment to, and no deletion of, ANY `process.env` key anywhere under
+`src/tasks/**` or `src/workflows/**` — so this is a structural property of both
+domains now, not a single patched call site.
+
+The replacement mechanism is explicit threading: provenance travels as
+`ExecutionProvenanceContext` (`src/tasks/model/invocation.ts`, the one member of
+the task model that P4 §3.2.7 deliberately kept) and is stamped into the
+**child's** env at spawn
+(`src/commands/command/command-execution.ts:157`:
+`return { ...rest, eventSource: process.env.AKM_EVENT_SOURCE ?? eventSource };`
+— a read of the ambient value, never a write).
+
+```
+$ bun test tests/integration/tasks-provenance-context.test.ts \
+    tests/integration/tasks-provenance-characterization.test.ts \
+    tests/workflows/unit-dispatch-event-source.test.ts --timeout=120000
+43 pass / 0 fail
+```
+`tasks-provenance-context.test.ts:"an explicit provenance.eventSource reaches
+runWorkflowSteps's eventSource option, and process.env is never mutated"` asserts
+the non-mutation directly, and `:"a pre-set ambient AKM_EVENT_SOURCE still wins
+over an explicit non-default provenance.eventSource"` proves the runner reads
+the ambient value rather than overwriting it. The repo-wide harness backstops
+this independently: `tests/_preload.ts`'s tripwire **throws** if any test leaks
+an `AKM_*` env var that was not present at preload, so a reintroduced mutation
+would fail the whole suite, not just this one.
+
+---
+
+#### 21. Runtime vocabulary no longer exposes `stash` or mislabels commands as prompts. — **MET WITH CAVEAT**
+
+**The `prompt` half — fully MET.**
+```
+$ rg -n '"prompt"' src/tasks/ src/workflows/
+src/tasks/run/run-command-task.ts:20:  * — formerly `{kind:"prompt", engine}`.        (comment)
+src/tasks/run/task-history.ts:25/27:                                              (comments)
+src/tasks/run/task-history.ts:141:      case "prompt":                           (the D8 legacy READ mapping)
+```
+The only live occurrence is `task-history.ts:141`'s `case "prompt":`, which is
+row B-51's PRESERVE surface — it reads rows written by every previous release
+and deleting it is a review-blocking violation. Nothing **writes** `"prompt"` as
+a result kind (row B-52 proven by the same grep); the written vocabulary is
+`{kind:"command", engine}` / `{kind:"shell"}`
+(`src/tasks/run/run-command-task.ts`). The legacy mapping's own tests are
+byte-unchanged per §9.
+
+**The `stash` half — one deliberate survival (fine) and one real leak (not).**
+
+*Deliberate and authorized:* `src/tasks/run/load-task.ts:46`
+`export const DEFAULT_BUNDLE_NAME = "stash";` — row B-48, user on-disk data
+compatibility. §4.1's first proof holds exactly as written:
+```
+$ rg -n '"stash"' src/tasks/ src/workflows/ src/execution/ src/commands/tasks/
+src/tasks/run/load-task.ts:44:  * `"stash"` became this at the P1b runner.ts split.   (comment)
+src/tasks/run/load-task.ts:46:export const DEFAULT_BUNDLE_NAME = "stash";
+```
+`src/indexer/**` is out of scope by row B-50, recorded since P0.
+
+*The leak.* §4.1's second proof — row B-49, "`rg -n 'stashDir' src/tasks/
+src/workflows/ src/commands/tasks/` returns zero hits" — **is false at head**:
+```
+$ rg -n 'stashDir' src/tasks/ src/workflows/ src/commands/tasks/ | wc -l
+34
+```
+Most are internal local variable names, but one reaches the user:
+```ts
+// src/workflows/authoring/authoring.ts:64
+export function createWorkflowAsset(input: {...}): { ref: string; path: string; stashDir: string; }
+
+// src/commands/workflow-cli.ts:168
+output("workflow-create", { ok: true, ...result });
+```
+so **`akm workflow create` emits a `stashDir` key in its JSON envelope** — live
+runtime vocabulary exposing `stash`, on a Stable-tier command. Row B-49's own
+narrow claim (that `RunTaskOptions` carries no legacy alias) IS true —
+`src/commands/tasks/tasks.ts:329` passes `bundleDir: stashDir` — but the grep the
+spec offers as its proof does not prove it, and the wider property the criterion
+states is not achieved.
+
+P4 could not have fixed this without a lane violation: `src/workflows/authoring/**`
+and `src/commands/workflow-cli.ts` are on **no** lane's §6 file list, and §4.8
+forbids Lane B any signature change. So this is correctly *not* P4 work — but it
+is unfinished work, and §4.1 states it as done.
+
+**What remains (imperative).** (1) Rename the `stashDir` member of
+`createWorkflowAsset`'s return type in `src/workflows/authoring/authoring.ts` to
+`bundleDir` and update `src/commands/workflow-cli.ts:168`'s envelope, treating
+it as a documented breaking change to the `akm workflow create --json` shape
+(add a CHANGELOG entry — `akm workflow *` is **Stable** in `STABILITY.md`).
+(2) Correct row B-49 / §4.1 in
+`docs/plans/specs/p4-deletions-closeout.md` so the grep it publishes matches the
+claim it makes — today a reviewer running the stated command sees 34 hits and
+cannot tell whether the phase failed or the proof was mis-specified.
+
+**Adjacent finding, same family — a shipped user-facing asset still teaches the
+deleted task v3 vocabulary.** Not `stash`/`prompt`, so it does not change this
+criterion's verdict, but it is a vocabulary close-out miss and nothing in the
+repo detects it:
+```
+$ rg -n 'task v3|version: 3|akm\.enabled|akm\.timeout' src/assets/
+src/assets/hints/cli-hints-full.md:369:Task files use strict task v3 (`version: 3`). To disable one, set
+src/assets/hints/cli-hints-full.md:370:`akm.enabled: false` and run `akm task sync`
+src/assets/hints/cli-hints-full.md:372:`akm task sync` — the scheduler entry is unbound. Per-task `akm.timeout` may
+```
+This file is embedded into the binary
+(`src/output/cli-hints.ts:14`, `import EMBEDDED_HINTS_FULL from
+"../assets/hints/cli-hints-full.md" with { type: "text" }`), so the CLI now
+instructs users to author `version: 3` documents that fail with
+`TASK_SCHEMA_VERSION_UNSUPPORTED`, and to set an `akm.enabled: false` key P4-N6
+deleted. Neither lint catches it: `scripts/lint-shipped-assets.ts` scans
+`src/assets` but only for dead `type:name` ref tokens, and
+`scripts/lint-active-docs-terminology.ts`'s `SCAN_FILES`/`SCAN_DIRS` cover only
+`README.md`, `.github/README.npm.md`, `docs/README.md` and four `docs/`
+subtrees — never `src/assets`.
+**What remains (imperative).** Rewrite `src/assets/hints/cli-hints-full.md`'s
+task paragraph for task source v4 (`version: 4`, `schedule[].enabled`,
+top-level `timeout:`, and `akm migrate apply` for task-v2 **and** task-v3), and
+add `src/assets/**` to `scripts/lint-active-docs-terminology.ts`'s scan roots so
+the next grammar deletion cannot leave a shipped hint stale.
+
+---
+
+#### 22. Domain failures use stable, phase-specific diagnostic codes. — **MET WITH CAVEAT**
+
+**Citation.** All six D7 codes are declared on the one union and carry usage
+hints — `src/core/errors.ts:UsageErrorCode`:
+```
+102:  | "COMPOSITION_INVALID"     106:  | "TASK_SOURCE_INVALID"
+111:  | "TARGET_REF_INVALID"      114:  | "WORKFLOW_SOURCE_INVALID"
+117:  | "INPUT_BINDING_INVALID"   128:  | "TASK_TARGET_UNSUPPORTED"
+```
+and the exit-code contract is untouched, as D7 requires:
+```
+$ git diff 0f16f70fdc61..HEAD -- src/cli/shared.ts | wc -l
+0
+```
+The ratchet is genuinely terminal and self-documenting:
+`tests/architecture/diagnostic-codes.test.ts` — `const INVALID_FLAG_VALUE_BASELINE = 38;
+// TERMINAL (spec §5.2, row B-59) … An increase is a defect, not a number to
+re-measure and accept.` I re-measured it independently:
+```
+$ grep -rn "INVALID_FLAG_VALUE" src/tasks/ src/workflows/ | wc -l
+38
+$ grep -rn "INVALID_FLAG_VALUE" src/tasks/ src/workflows/ | cut -d: -f1 | sort | uniq -c | sort -rn
+  12 src/tasks/schedule.ts            (rule a — cron scalar)
+  10 src/tasks/scheduler-binding.ts   (rule a — argv scalar)
+   7 src/tasks/task-id.ts             (rule a — the <id> argument)
+   2 src/workflows/runtime/runs.ts    (rule a — ref filter flags)
+   2 src/workflows/ir/params.ts       (rule a — --<name> param flags)
+   2 src/tasks/run/attempt-lifecycle.ts (rule b membership + 1 doc comment)
+   1 src/workflows/freeze/environment.ts   <- deviation
+   1 src/tasks/source/bounded-document.ts  <- doc comment only
+   1 src/tasks/prepare/prepare.ts          <- deviation
+```
+`TARGET_REF_INVALID` is CLI-observable despite Lane C's note that
+`classifyTargetRef`'s own throw is re-coded by both its callers: it has two
+further throw sites on the live `akm workflow run` path —
+`src/workflows/runtime/workflow-asset-loader.ts:55/61`
+(`parseWorkflowRefInput`), reached from `src/workflows/runtime/runs.ts:289`
+`loadWorkflowAsset(ref)`.
+
+**Caveat — two genuine domain failures still carry the generic code, by
+deliberate, recorded choice.** §5.2's classification rule permits a survivor
+only if it is (a) a user-typed scalar or (b) an allowlist membership entry.
+These two are neither:
+- `src/tasks/prepare/prepare.ts:119` — the workflow-target `env:` rejection, a
+  **composition** failure, kept as `INVALID_FLAG_VALUE` because
+  `tests/integration/tasks-with-classification-characterization.test.ts`'s P-04
+  block is dispositioned **CONVERT** (assertions unchanged) by §7.2 F-A2.8 and
+  its test title literally names the code.
+- `src/workflows/freeze/environment.ts:114` —
+  `throw new UsageError(\`Workflow source target ${refInput} was not found.\`, "INVALID_FLAG_VALUE");`,
+  a **workflow-source** failure, kept because row B-11 in
+  `tests/workflows/child-workflow-freeze.test.ts` pins it as "unchanged in code
+  and shape" and that file is a §9 byte-unchanged preservation gate.
+
+Both are correctly resolved in favour of preservation per §0 ("preserving wins
+until the Review log says otherwise") and both are recorded in the Lane C
+Review-log entry. The verdict is not MET because the criterion says domain
+failures use phase-specific codes and two of them still do not — a script
+branching on `COMPOSITION_INVALID` for an env-on-workflow-target rejection, or
+on `WORKFLOW_SOURCE_INVALID` for an unresolvable workflow target, gets
+`INVALID_FLAG_VALUE` instead.
+
+**What remains (imperative).** In one post-0.9.2 commit, re-code
+`src/tasks/prepare/prepare.ts:119` to `COMPOSITION_INVALID` and
+`src/workflows/freeze/environment.ts:114` to `WORKFLOW_SOURCE_INVALID`, flipping
+the two pinned tests in the same commit
+(`tests/integration/tasks-with-classification-characterization.test.ts`'s P-04
+title and assertion; `tests/workflows/child-workflow-freeze.test.ts`'s B-11
+case), and lower `INVALID_FLAG_VALUE_BASELINE` from 38 to 36 in
+`tests/architecture/diagnostic-codes.test.ts`. That requires authorization to
+edit two preservation-gate tests, which is precisely why P4 could not do it.
+
+---
+
+#### 23. Multi-job YAML is either executable or rejected at the adapter boundary; it is not display-only core behavior. — **MET**
+
+**Citation — one rejection, at the adapter.**
+`src/workflows/source-ir/github-yaml.ts:parseJobs`:
+```ts
+if (fields.size !== 1 || !first) {
+  reader.fail("multi-job-unsupported",
+    `AKM workflow YAML requires exactly one job; this document declares ${fields.size}. AKM's YAML is an AKM workflow format executed by AKM's native engine, not GitHub Actions — split the jobs into separate workflows.`,
+    second ? second[1].key : node);
+}
+const [id, pair] = first;
+const job = parseJob(reader, id, pair, options);
+if (job.needs.length > 0) {
+  reader.fail("multi-job-unsupported",
+    `Job ${job.id} declares needs, but an AKM workflow has exactly one job; remove needs.`, pair.key);
+}
+```
+
+**The display-only machinery is gone, not merely bypassed.**
+```
+$ ls src/workflows/source-ir/ordering.ts   -> No such file or directory
+$ rg -n 'validateTopologicalJobs|canonicalTopologicalJobs' src/
+src/workflows/source-ir/compare.ts:11:  * `canonicalTopologicalJobs`, existed only to order MULTIPLE ready jobs — (comment)
+$ rg -n 'jobs\.length' src/workflows/ir/compile.ts src/workflows/freeze/source-freeze.ts -> exit 1
+```
+`compileWorkflowPlan`'s `sourceIr.jobs.length !== 1` early return (row B-43, the
+return-vs-throw asymmetry P0 R-05(c) pinned) and `source-freeze.ts`'s
+"Multi-job workflow cannot execute…" throw (row B-44) are both deleted, and the
+decoder now enforces the invariant structurally —
+`src/workflows/source-ir/schema.ts:259`, `fail("jobs must contain exactly 1
+entry")` (row B-42). So there is no longer a layer that parses a multi-job graph
+successfully and refuses it later.
+
+**P4-N2's code mapping is applied at all four compile→UsageError boundaries**,
+not the two the note names — I checked each:
+```
+src/workflows/freeze/source-freeze.ts:74
+src/workflows/ir/freeze-v4.ts:97
+src/workflows/runtime/workflow-asset-loader.ts:183     <- the one Lane A discovered empirically
+src/tasks/prepare/prepare-support.ts:188
+```
+each with the identical two-arm shape (`errors.length === 1 && code ===
+"multi-job-unsupported"` → `COMPOSITION_INVALID`, else
+`WORKFLOW_SOURCE_INVALID`) and no blanket recoding — a YAML syntax error is
+still `WORKFLOW_SOURCE_INVALID`. The fourth site matters:
+`workflow-asset-loader.ts` sits **before** `source-freeze.ts` on the
+`akm workflow run` path (`runs.ts:289` `loadWorkflowAsset` precedes `:294`
+`compileResolveFreezeWorkflowV4`), so without it row B-44 would not hold on the
+commonest entry point.
+
+```
+$ bun test tests/workflows/characterization-fixture-contracts.test.ts \
+    tests/workflows/source-ir-contract.test.ts \
+    tests/workflows/characterization-classification.test.ts --timeout=120000
+78 pass / 0 fail
+```
+Row B-46's acceptance baseline is intact: `characterization-fixture-contracts.test.ts`'s
+`workflows/single-job` block is byte-unchanged and green, so a single-job
+GitHub-shaped document still parses, compiles and freezes — the criterion's
+"either executable or rejected" half.
+
+---
+
+#### 24. Task and workflow explain/plan output exposes target, input, source, and child provenance without secrets. — **MET WITH CAVEAT**
+
+```
+$ bun test tests/integration/commands/tasks-explain.test.ts \
+    tests/integration/commands/workflow-cli-envelope.test.ts --timeout=120000
+21 pass / 0 fail
+$ bun test tests/commands/workflow-plan.test.ts --timeout=120000
+19 pass / 0 fail
+```
+
+**`akm task explain` — target, input and schedule provenance, secret-free.**
+`tests/integration/commands/tasks-explain.test.ts`:
+- coverage — `:"prints declarations+defaults, target kind+ref, effective
+  execution settings, and schedule bindings"`;
+- *structural* provenance, not string-sniffing —
+  `:"an unflagged input's supplied value is attributed to its DEFAULT,
+  structurally — not merely because the word 'default' appears anywhere in the
+  envelope"`, `:"--scope urgent overrides the default: … attributed to FLAG
+  provenance, structurally"`, and `:"the schedule binding's own inputs are
+  attributed to SCHEDULE-BINDING provenance — coexisting with, and distinct
+  from, the CURRENT row's default/flag provenance for the identical input
+  name"`;
+- secret-freeness by **enumerated ban in both formats** —
+  `:"never prints a resolved env: value, a prompt body, or a run:/script
+  sentinel — in EITHER output format"` and `:"a shell task's run: command text
+  never appears — only its target kind/ref"`;
+- and it is genuinely read-only: `:"isTaskRunWithId — akm task explain never
+  classifies as a task run (B-59, PRESERVE)"`.
+
+**`akm workflow plan` — source and child provenance, secret-free.**
+`tests/commands/workflow-plan.test.ts`:
+- the envelope is a **closed key set**, which is what makes secret-freeness
+  enforceable rather than aspirational — `:"prints one JSON object with the
+  exact closed key set"`;
+- child provenance — `:"a per-step expansion names via: child, the child ref,
+  its planHash, and its declared output names"`;
+- source provenance without host paths — `:"every sourceReadSet entry is a
+  relative path"`;
+- no durable side effects and no stderr leakage — `:"zero new rows across every
+  workflow table, the events table, and usage_events — either mode"` and
+  `:"emits no warn()/log output — stderr stays empty on a successful plan"`.
+
+The runtime redaction machinery backing the executor is separate and intact:
+`src/workflows/exec/param-secrets.ts:detectSecretShapedParams` and
+`src/workflows/exec/dispatch-redaction.ts:{collectWorkflowDispatchSensitiveValues,
+redactUnitOutcome, withDispatchRedaction}`.
+
+**Caveat — R-R12 (§8, RECORDED, NOT FIXED, flagged by the spec as "the
+highest-severity carried item"). Cited explicitly here per §10.1, and confirmed
+still live at head.** The defect is not in explain/plan output; it is in the
+**sibling input surface the same refactor added**,
+`akm task run <id> --<input> <value>`:
+```ts
+// src/execution/input-contract.ts:coerceFlagValue — final line
+throw diagnostics.invalidValue(name, `must be ${types.join(" | ")}; received ${JSON.stringify(raw)}`);
+```
+`TASK_INPUT_DIAGNOSTICS.invalidValue` (`src/tasks/source/task-input-diagnostics.ts`)
+renders that into an `INPUT_BINDING_INVALID` envelope on stderr, so
+`akm task run deploy --token hunter2` against an input declared
+`type: number` prints `received "hunter2"` — the credential, verbatim, in the
+error output, which is exactly where CI logs and issue reports get pasted. It is
+the **only** `${JSON.stringify(raw)}` of a user-supplied value in that module;
+the neighbouring diagnostics (`unknownFlag`, `duplicateNonArray`,
+`malformedJson`, `contractViolation`, and `coerceFlagValue`'s own boolean arm at
+`:225`) all name the input and its expected type without echoing the value, so
+the fix is narrow. No test asserts the echoed value, so removing it breaks
+nothing:
+```
+$ rg -n 'received' tests/integration/commands/tasks-input-flags.test.ts tests/integration/cli-errors.test.ts
+(no output)
+```
+P4 correctly declined: redaction is new behavior and outside the charter.
+`STABILITY.md`'s note calling `akm task explain` / `akm workflow plan`
+"secret-free provenance output" is true as written — but a reader could
+reasonably generalize it to the task-input CLI surface, where it is false.
+
+**What remains (imperative).** Change
+`src/execution/input-contract.ts:coerceFlagValue`'s final throw to
+`` `must be ${types.join(" | ")}` `` (dropping `; received
+${JSON.stringify(raw)}`), or route the value through the existing redactor
+before interpolating it, and add a regression case to
+`tests/integration/commands/tasks-input-flags.test.ts` asserting that a
+type-mismatched flag value does not appear anywhere in the stderr envelope.
+
+---
+
+#### 25. All fail-before-mutation, crash-window, source-CAS, plan-hash, and replay-divergence tests pass. — **MET**
+
+**Citation — the whole suite, at head, not a selection.**
+```
+$ bun run test:unit
+── unit: 4 shards over 315 files
+── unit: 4227 pass / 0 skip / 0 fail across 4 process-shards (315/315 files)
+
+$ bun run test:integration
+── integration: 4 shards over 438 files
+── integration: 5826 pass / 57 skip / 0 fail across 4 process-shards (438/438 files)
+```
+Zero failures in either target, all 753 files executed. This also closes the one
+red gate the Lane C Review-log entry recorded (`migration-help.test.ts`, 1 fail
+at that commit) — it is green at head.
+
+Each named family, with the specific test:
+| Family | Test |
+|---|---|
+| fail-before-mutation | `tests/integration/tasks-runtime-v3-runner.test.ts:"<label> source fails before any history or log mutation"` (the parameterized canary P3a named a preservation gate), plus `:"a multi-job workflow target fails the 0.9.2 runtime boundary before attempt reservation"` — P4's own §3.3 rejection, still ahead of the mutation boundary — and `:"workflow task env fails closed before history because the workflow start contract has no consumer"` |
+| crash windows | `tests/integration/workflow-crash-windows.test.ts`; `tests/integration/workflow-child-crash-windows.test.ts:"CW-1/CW-2/CW-3"` (criterion 13) |
+| source CAS | `tests/workflows/guarded-execution-source-red.test.ts:"fails closed when before/after fstat proves a read-time mutation"`, `:"rejects an oversized source at the guarded descriptor boundary"`, `:"rejects invalid UTF-8 rather than returning lossy adapter input"`; child-scope CAS in `tests/integration/workflows/child-freeze-read-set.test.ts` (criterion 12) |
+| plan hash / schema drift | `tests/integration/workflows/schema-drift.test.ts`, `tests/integration/workflows/v4-atomic-publication-red.test.ts`, `tests/workflows/plan-v5-schema.test.ts`, `tests/workflows/task-binding-identity.test.ts` |
+| replay divergence | `tests/integration/workflows/child-replay-determinism.test.ts:"the composing unit is REUSED from the journal on resume — the child's own leaf unit is never re-dispatched, and the composing step's evidence is byte-identical"` and `:"engine resume fails the run loudly, naming the tampered composing unit — the child is never touched"` |
+
+The floors are consistent with these counts under P4-N5
+(`floor(executed × 0.95 / 100) × 100`):
+`scripts/test-unit.sh:61` `MIN_TESTS="${AKM_MIN_UNIT_TESTS:-4000}"` — executed
+4227 → 4000; `scripts/test-integration.sh:53`
+`MIN_TESTS="${AKM_MIN_INTEGRATION_TESTS:-5500}"` — executed 5883 → 5500. Both
+rose from 3500 / 5000, as §5.3 requires.
+
+**Read this verdict against criterion 8's caveat.** Every replay-divergence test
+passes, and R-R15 is not a failing test — it is a divergence the current
+`hashVersion` 6 preimage cannot *detect*, so no test exists to fail. The suite
+being green is not evidence against R-R15.
+
+---
+
+### Sweep close-out
+
+#### Gate state at head (`5393e1ca`)
+
+```
+$ bunx tsc --noEmit                 -> exit 0, no output
+$ bun run lint                      -> exit 0
+   lint-tests-isolation OK · MPL-2.0 headers OK (651 files) · lint-runtime-boundary OK
+   lint-write-source-chokepoint OK · lint-secret-resolver-boundary OK
+   lint-execution-boundary OK · lint-process-argv OK · lint-repository-sql OK
+   lint-goldens-presence OK · lint-golden-captured-at-head OK (13/17 judged; 4 unjudged, shallow clone)
+   lint-shipped-assets OK · lint-doc-examples OK · gen-config-schema --check up to date
+   lint-active-docs-terminology OK (0 violations across 91 active doc files)
+$ bun run test:unit                 -> 4227 pass / 0 skip / 0 fail (315/315 files)
+$ bun run test:integration          -> 5826 pass / 57 skip / 0 fail (438/438 files)
+```
+So `bun run check` is green at head. (`bun run lint`'s 1397 biome *warnings* are
+pre-existing repo-wide `noNonNullAssertion` style notices in files P4 did not
+touch; the command's exit status is 0.)
+
+#### §12 close-out items spot-checked while sweeping
+
+| Item | Result |
+|---|---|
+| Plan `irVersion` unchanged | `src/workflows/ir/schema-v4.ts:38` `export const WORKFLOW_IR_V5_VERSION = 5 as const;` |
+| `hashVersion` unchanged | `src/workflows/exec/step-work.ts:679` `"akm.workflow.unit\0v6\0"`, `:1948` `"akm.workflow.gate\0v6\0"` |
+| Child-invocation prefix unchanged | `src/workflows/exec/child-invocation.ts:45` `"akm.workflow.child-invocation\0v1\0"` |
+| `EXIT_CODES` byte-unchanged | `git diff 0f16f70fdc61..HEAD -- src/cli/shared.ts \| wc -l` → `0` |
+| Frozen migrator parser exists, keeps the locator grammar | `scripts/akm-migrate/migrate/task-source-v3-frozen.ts` present (23 211 bytes); 9 lines matching `classifyTaskV3Uses\|parseTaskV3Yaml\|github-action` |
+| `src/` imports nothing from `scripts/` | no `import … from` a `scripts/` specifier; `src/commands/migration-tool.ts:migrationEntryPoint` builds a **spawn path** with `fileURLToPath(new URL("../scripts/akm-migrate.js", import.meta.url))` and `fs.existsSync`, not an import — the binding constraint holds, though §3.2.4/§9's literal grep does return those prose/spawn hits |
+| Files on §6's DELETE list absent | `runtime-v3.ts`, `runner.ts`, `ir/source-freeze-v4.ts`, `source-ir/ordering.ts`, `source/parse-v3-adapter.ts`, `model/definition.ts`, `model/schedule.ts` — all "No such file or directory" |
+| `version: 3` fixtures confined | only under `tests/fixtures/execution-contracts/tasks/v3-to-v4/**` (and `…/v2/**`), the migrator's own inputs |
+| ADRs exist | `docs/architecture/decisions/` — `README.md` + `0001`…`0011` (§4.2 asked for `0001`…`0010`; `0011-engine-run-loop-invariants.md` is an extra the implementer added) |
+| Driver-protocol record flipped | `docs/architecture/specs/driver-protocol-keep-or-cut.md:3` `Status: RESOLVED (2026-08-27) — Option B, cut.` |
+| Test floors raised | 3500 → 4000 (unit), 5000 → 5500 (integration) |
+| Diagnostics ratchet terminal | `INVALID_FLAG_VALUE_BASELINE = 38`, measured, comment says TERMINAL |
+
+#### §8 carried-advisory rows, surfaced where §10.1 directs
+
+Placed under their criterion above: **R-R13** → 4 · **R-R16** → 6 ·
+**R-R15** → 8 · **R-R12** → 24.
+
+The remaining `RECORDED, NOT FIXED` / `DEFERRED` rows bear on no single
+criterion; recorded here so none is lost:
+
+| ID | Status | Note |
+|---|---|---|
+| **R-R1**, **R-R20** | DEFERRED | The `schema-v4.ts` / `freeze-v4.ts` / `environment-v4.ts` and `TaskV3*` / `PreparableTaskDocument` renames, and `environment-v4.ts`'s re-home. Confirmed still pending: `src/tasks/source/project-v4.ts:93` still emits the `version: 3` discriminant and `src/tasks/source-v3.ts` still holds the `TaskV3*` family. Correctly deferred (§0's rationale: a ~40-site rename storm would bury the deletion diff), but it is now the only named remaining work on the branch. |
+| **R-R10** | RECORDED, NOT FIXED | P1b's shared-capture structural check and the adapter-header P2a cross-reference. Neither is a deletion; both survive P4 unchanged. |
+| **R-R11** | RECORDED, NOT FIXED | Secret-shaped task **input default** warns with workflow-parameter prose. Adjacent to criterion 24's subject but a message-quality issue, not a disclosure. |
+| **R-R14** | RECORDED, NOT FIXED (both halves) | The doubled `$` path root in a schedule-inputs error, and a `uses:` error listing `tasks/` as valid. §3.1's message rewrite did **not** touch `classifyTargetRef`'s text — `src/execution/target-ref.ts:49` (inside `targetRefInvalid`) still reads `must be a canonical commands/, scripts/, tasks/, or workflows/ asset ref.`, i.e. it still lists `tasks/` — so the conditional "fixed for free" in R-R14 did not trigger. Per that row's own instruction ("State which in the Review log"), the answer is: **neither half fixed**. |
+| **R-R17** | RECORDED, NOT FIXED | An unresolvable `uses: tasks/<ref>` with a `with:` reports "declares no inputs". Confirmed by inspection at `src/workflows/freeze/targets/task.ts:101`, `if (source.with !== undefined) throw noDeclaredInputsError(source.id, refInput);` inside the `catch` around `resolveOwnedAsset` — the asset-resolution cause is swallowed. Deliberate (it is what makes criterion 3's B-02b case fail-closed), so the fix is to improve the message, not the control flow. |
+| **R-R2 – R-R9, R-R18, R-R19, R-R21** | RESOLVED / RETIRED / CLOSED | Verified in passing by the criteria above: R-R2/R-R9 by criterion 18's zero greps, R-R4 by criterion 19's `moduleReferencesFrom`, R-R5/R-R6 by `src/core/errors.ts`'s hints and `SAFE_TASK_ATTEMPT_ERROR_CODES`, R-R7/R-R8 by the `cli-errors.test.ts` extension and `bounded-document.ts`'s explicit `TASK_SOURCE_INVALID`, R-R3 by criterion 13's publication tests plus ADR `0009`. |
+
+#### Findings this sweep raised that no §8 row covers
+
+Both are stated in full under their criterion; listed together so they are not
+lost in a long document.
+
+1. **`akm workflow create --json` emits a `stashDir` key** (criterion 21).
+   `src/workflows/authoring/authoring.ts:createWorkflowAsset` returns
+   `{ ref, path, stashDir }` and `src/commands/workflow-cli.ts:168` spreads it
+   into the envelope. Row B-49's proof grep (`rg -n 'stashDir' src/tasks/
+   src/workflows/ src/commands/tasks/` → "zero hits") returns 34 hits at head,
+   so §4.1 publishes a proof that does not hold.
+2. **A shipped, embedded CLI hint still teaches task v3** (criterion 21).
+   `src/assets/hints/cli-hints-full.md:369-372` tells users to author
+   `version: 3` and set `akm.enabled: false`; both now fail. No lint covers it —
+   `lint-shipped-assets` scans `src/assets` only for dead `type:name` tokens,
+   and `lint-active-docs-terminology`'s roots are `docs/` + three README files.
+
+A third, milder one is under criterion 19: §3.2.3's claim that
+`src/workflows/**` imports nothing from `src/tasks/**` source modules is false
+(`src/workflows/source-ir/triggers.ts` → `src/tasks/source/bounded-document`),
+and the seam ratchet does not scan `triggers.ts`.
+
+#### Verdict table
+
+| # | Criterion (abbreviated) | Verdict |
+|---|---|---|
+| 1 | Native engine, no new runtime dependency | MET |
+| 2 | Command/shell/script/retry/gate/worktree/resume intact | MET |
+| 3 | A workflow task call cannot silently discard `with` | MET |
+| 4 | Tasks exist and compose without schedule metadata | MET |
+| 5 | One task-invocation resolver | MET |
+| 6 | Typed inputs: defaults, validation, literals, references | **MET WITH CAVEAT** — the `{from: "params.<name>"}` arm is unauthorable (R-R16) |
+| 7 | Inputs attached as structured context, never interpolated | MET |
+| 8 | Effective inputs participate in durable identity | **MET WITH CAVEAT** — a reference binding's *resolved* value is outside `computeUnitInputHash` (R-R15) |
+| 9 | Output contracts enforced consistently | MET |
+| 10 | Direct and task-wrapped refs lower to one child target | MET |
+| 11 | Child plans frozen before parent publication | MET |
+| 12 | Child source edits cannot alter an in-flight parent | MET |
+| 13 | Parent-child creation idempotent across crash windows | MET |
+| 14 | Parent cancellation propagates to the child | MET |
+| 15 | Parent and child independently resumable and linked | MET |
+| 16 | Composition cycles fail before durable mutation | MET |
+| 17 | No internal path fabricates YAML to reuse a parser | MET |
+| 18 | No GitHub Action variant in native classification | MET |
+| 19 | Workflow classification independent of the task parser | **MET WITH CAVEAT** — §3.2.3's stronger claim is false and the seam ratchet does not enforce it |
+| 20 | Task runner mutates no global process env | MET |
+| 21 | No `stash` vocabulary; commands not mislabelled prompts | **MET WITH CAVEAT** — `akm workflow create` emits `stashDir`; a shipped hint still teaches task v3 |
+| 22 | Domain failures use phase-specific diagnostic codes | **MET WITH CAVEAT** — two domain failures keep `INVALID_FLAG_VALUE` to preserve pinned tests |
+| 23 | Multi-job rejected at the adapter boundary | MET |
+| 24 | Explain/plan expose provenance without secrets | **MET WITH CAVEAT** — R-R12: `akm task run --<input> <secret>` echoes the value on a type mismatch |
+| 25 | Fail-before-mutation / crash-window / CAS / hash / replay pass | MET |
+
+**19 MET, 6 MET WITH CAVEAT, 0 UNMET.** No criterion is unproven. Every caveat
+is either an §8 row P4 deliberately declined (6, 8, 24, and half of 22) or a
+spec-claim/ratchet gap this sweep found (19, 21, and the other half of 22); none
+requires reopening a P4 commit, and each carries an imperative fix above.
