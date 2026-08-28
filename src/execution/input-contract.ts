@@ -202,8 +202,24 @@ function materializeFlagValues(
       if (!Array.isArray(parsed)) throw diagnostics.invalidValue(name, "must be a JSON array");
       return parsed;
     }
-    const itemSchema = isRecord(schema?.items) ? schema.items : undefined;
-    return values.map((value) => coerceFlagValue(name, value, itemSchema, diagnostics));
+    // "array" is the sole declared type, or there is more than one supplied
+    // flag occurrence: a lone-array declaration always wraps its value(s),
+    // and repeated flags on an array-CAPABLE declaration always group,
+    // regardless of what else the type union permits. A union that ALSO
+    // permits a scalar type (e.g. `["array","string"]`) must not force a
+    // single, non-bracketed value into this branch, though — F1: without
+    // this guard, `--x hello` against `type:["array","string"]` silently
+    // became `["hello"]` instead of staying the string "hello", because the
+    // per-element map below coerces each value against `items` (or nothing)
+    // rather than trying the union's scalar alternatives first. Route that
+    // single-value case through `coerceFlagValue` with the FULL schema
+    // instead, so its string-preservation (B-30) and null/number/boolean/
+    // object arms run before "array" is ever assumed.
+    if (types.length === 1 || values.length > 1) {
+      const itemSchema = isRecord(schema?.items) ? schema.items : undefined;
+      return values.map((value) => coerceFlagValue(name, value, itemSchema, diagnostics));
+    }
+    return coerceFlagValue(name, values[0] as string | boolean, schema, diagnostics);
   }
 
   if (values.length > 1) throw diagnostics.duplicateNonArray(name);

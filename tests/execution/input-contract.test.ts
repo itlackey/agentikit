@@ -536,6 +536,56 @@ describe("materializeInputFlags (§4.2, D3-N3) — exact-name matching and coerc
     });
   });
 
+  // Regression (finding F1): `materializeFlagValues` took the array-grouping
+  // branch whenever "array" appeared ANYWHERE in a union type — even when the
+  // union also permits a scalar type that a single, non-bracketed value could
+  // satisfy directly. A single `--x hello` against `type:["array","string"]`
+  // was silently wrapped into `["hello"]` instead of staying the string
+  // "hello", because the per-element map coerced against `items` (or nothing)
+  // rather than trying the union's scalar alternatives first. This is
+  // distinct from, and must not change, an array-ONLY declaration's existing
+  // behavior (the two tests directly above, and the "repeated flag" / "JSON
+  // shorthand" tests earlier in this describe block, all use a sole
+  // `type: "array"` and are unaffected by this fix).
+  describe('a union type that includes "array" alongside a scalar type (F1)', () => {
+    test('a single, non-bracketed value on type:["array","string"] stays the string, never wrapped in an array', () => {
+      const contract: InputContract = { x: { schema: { type: ["array", "string"] }, required: false } };
+      const result = materializeInputFlags(contract, [{ name: "x", value: "hello" }], poisonedDiagnostics());
+      expect(result).toEqual({ x: "hello" });
+      expect(Array.isArray((result as { x: unknown }).x)).toBe(false);
+    });
+
+    test('a single "null" value on type:["array","null"] coerces to real null, not ["null"]', () => {
+      const contract: InputContract = { x: { schema: { type: ["array", "null"] }, required: false } };
+      expect(materializeInputFlags(contract, [{ name: "x", value: "null" }], poisonedDiagnostics())).toEqual({
+        x: null,
+      });
+    });
+
+    test('a numeric-looking string on type:["array","string"] is preserved exactly too (B-30 still applies inside the union)', () => {
+      const contract: InputContract = { version: { schema: { type: ["array", "string"] }, required: false } };
+      const result = materializeInputFlags(contract, [{ name: "version", value: "001" }], poisonedDiagnostics());
+      expect(result).toEqual({ version: "001" });
+      expect(typeof (result as { version: unknown }).version).toBe("string");
+    });
+
+    test("repeated flags on the same union still group into an array (unaffected by this fix)", () => {
+      const contract: InputContract = { x: { schema: { type: ["array", "string"] }, required: false } };
+      const flags: InputFlag[] = [
+        { name: "x", value: "a" },
+        { name: "x", value: "b" },
+      ];
+      expect(materializeInputFlags(contract, flags, poisonedDiagnostics())).toEqual({ x: ["a", "b"] });
+    });
+
+    test("the `[`-prefixed JSON-array shorthand still parses as an array on a union too (unaffected by this fix)", () => {
+      const contract: InputContract = { x: { schema: { type: ["array", "string"] }, required: false } };
+      expect(materializeInputFlags(contract, [{ name: "x", value: "[1,2]" }], poisonedDiagnostics())).toEqual({
+        x: [1, 2],
+      });
+    });
+  });
+
   test("invalid value error code: an unsatisfiable type coercion throws invalidValue with a detail naming the accepted types", () => {
     const probe = probeDiagnostics();
     const contract: InputContract = { count: { schema: { type: "integer" }, required: false } };
