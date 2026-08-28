@@ -1593,9 +1593,15 @@ function parseJsonObjectArg(raw: string): Record<string, unknown> {
  * Toggle a task source v4 YAML file's `enabled` state without a full
  * parse/render round-trip (which would reformat the file). Task source v4
  * has no document-level `enabled` flag — it lives on each `schedule[]` entry
- * instead (D2-N5, P4-N6) — so this walks the top-level `schedule:` block and
- * toggles every `enabled:` key it finds there, the closest v4 equivalent of
- * v3's single document-level flag broadcasting to every trigger.
+ * instead (D2-N5, P4-N6) — so this walks the top-level `schedule:` block,
+ * finds every list entry in it (each line starting with `-` at the block's
+ * item indent), and toggles that entry's own `enabled:` key, the closest v4
+ * equivalent of v3's single document-level flag broadcasting to every
+ * trigger. Each entry is handled independently — one entry already carrying
+ * `enabled:` and a sibling entry with no such key (D2-N3's `schedule[i]`
+ * shape: `{cron, enabled?, inputs?}`) toggles the first and inserts into the
+ * second, rather than one entry's existing key short-circuiting the other's
+ * insertion.
  *
  * A bare string-shorthand schedule (`schedule: "0 9 * * *"`) has nowhere for
  * `enabled:` to live and is rewritten to the one-entry list form. A list
@@ -1604,6 +1610,11 @@ function parseJsonObjectArg(raw: string): Record<string, unknown> {
  * no `schedule:` key at all throws — there is no trigger to enable or
  * disable (mirrors `renderTaskYaml`'s `--disabled`-with-no-`--schedule`
  * usage error, row B-21).
+ *
+ * Each entry's own key indent is taken from its `-` line (the indent before
+ * `-`, plus two spaces for the conventional single space after it), so a
+ * nested mapping inside an entry — e.g. `schedule[i].inputs` — sits deeper
+ * and is never mistaken for the entry's own `enabled:` key.
  *
  * Preserves inline comments (e.g. `enabled: true # important`) and uses
  * case-sensitive matching (YAML keys are case-sensitive).
@@ -1626,31 +1637,68 @@ export function setEnabledInYaml(yaml: string, enabled: boolean): string {
     throw new UsageError("Task source v4 must declare a schedule before its enabled state can be toggled.");
   }
 
-  let firstItemLine = -1;
-  let toggledAny = false;
+  // Find the block's extent and every top-level list item (`-`) within it.
+  // Only items at the *first* item's own indent count as entries — anything
+  // deeper belongs to a nested mapping/list inside an entry (e.g. an array
+  // input under `inputs:`) and must not be treated as a sibling entry.
+  let blockEnd = lines.length;
+  const itemStarts: number[] = [];
+  let topIndent: string | null = null;
   for (let index = blockLine + 1; index < lines.length; index += 1) {
     const line = lines[index];
-    if (line === undefined) break;
-    if (line !== "" && !/^[ \t]/.test(line)) break;
-    if (firstItemLine < 0 && /^[ \t]*-/.test(line)) firstItemLine = index;
-    const match = line.match(/^([ \t]+enabled:[ \t]*)([^\s#\r\n][^\r\n]*?)([ \t]*(?:#[^\r\n]*))?$/);
-    if (match) {
-      lines[index] = `${match[1]}${enabled}${match[3] ?? ""}`;
-      toggledAny = true;
-      continue;
+    if (line === undefined) {
+      blockEnd = index;
+      break;
     }
-    const bare = line.match(/^([ \t]+enabled:)[ \t]*$/);
-    if (bare) {
-      lines[index] = `${bare[1]} ${enabled}`;
-      toggledAny = true;
+    if (line !== "" && !/^[ \t]/.test(line)) {
+      blockEnd = index;
+      break;
+    }
+    const itemMatch = line.match(/^([ \t]*)-(?=[ \t]|$)/);
+    if (itemMatch) {
+      const itemIndent = itemMatch[1] ?? "";
+      if (topIndent === null) topIndent = itemIndent;
+      if (itemIndent === topIndent) itemStarts.push(index);
     }
   }
-  if (!toggledAny) {
-    if (firstItemLine < 0) {
-      throw new UsageError("Task source v4's schedule: block has no entries to toggle enabled on.");
+  if (itemStarts.length === 0) {
+    throw new UsageError("Task source v4's schedule: block has no entries to toggle enabled on.");
+  }
+
+  // Walk entries back-to-front: inserting a missing `enabled:` line shifts
+  // every later line index by one, but never touches `itemStarts[j]` for
+  // j <= i (an insertion for entry i lands at `itemStarts[i] + 1`, which is
+  // at or after entry i's own start), so already-computed start/end bounds
+  // for entries processed later in this loop (earlier in the list) stay valid.
+  for (let i = itemStarts.length - 1; i >= 0; i -= 1) {
+    const start = itemStarts[i]!;
+    const end = i + 1 < itemStarts.length ? itemStarts[i + 1]! : blockEnd;
+    const dashLead = lines[start]?.match(/^([ \t]*)-/)?.[1] ?? "";
+    const keyIndent = `${dashLead}  `;
+    let found = false;
+    for (let index = start; index < end; index += 1) {
+      const line = lines[index];
+      if (line === undefined) continue;
+      const isStart = index === start;
+      const prefixMatch = isStart ? line.match(/^([ \t]*-[ \t]*)(.*)$/) : line.match(/^([ \t]*)(.*)$/);
+      const prefix = prefixMatch?.[1] ?? "";
+      const content = prefixMatch?.[2] ?? "";
+      if (prefix.length !== keyIndent.length) continue;
+      const withValue = content.match(/^(enabled:[ \t]*)([^\s#\r\n][^\r\n]*?)([ \t]*(?:#[^\r\n]*))?$/);
+      if (withValue) {
+        lines[index] = `${prefix}${withValue[1]}${enabled}${withValue[3] ?? ""}`;
+        found = true;
+        continue;
+      }
+      const bare = content.match(/^(enabled:)[ \t]*$/);
+      if (bare) {
+        lines[index] = `${prefix}${bare[1]} ${enabled}`;
+        found = true;
+      }
     }
-    const indent = lines[firstItemLine]?.match(/^([ \t]*)-/)?.[1] ?? "  ";
-    lines.splice(firstItemLine + 1, 0, `${indent}  enabled: ${enabled}`);
+    if (!found) {
+      lines.splice(start + 1, 0, `${keyIndent}enabled: ${enabled}`);
+    }
   }
   return `${lines.join("\n").trimEnd()}\n`;
 }

@@ -14,7 +14,20 @@ import {
   type SchedulerBinding,
   type SchedulerNativeArtifact,
 } from "../../../src/tasks/scheduler-binding";
+import { parseTaskSource } from "../../../src/tasks/source/parse-task-source";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
+
+/**
+ * Round-trip a `setEnabledInYaml` result through the real task source v4
+ * parser and return each `schedule[]` entry's resolved `enabled` state (an
+ * absent `enabled:` key defaults to `true` at parse — B-21) so tests can
+ * assert per-entry state instead of substring-matching the whole document.
+ */
+function scheduleEnabledFlags(yaml: string): boolean[] {
+  const parsed = parseTaskSource({ yaml, filePath: "/bundle/tasks/x.yml" });
+  if (parsed.version !== 4) throw new Error("unreachable: asserted above");
+  return parsed.v4.schedule.map((entry) => entry.enabled);
+}
 
 let storage: IsolatedAkmStorage;
 let backendName: ScheduleBackend;
@@ -183,6 +196,55 @@ describe("task lifecycle failure handling", () => {
 
     // No schedule: at all — nothing to toggle.
     expect(() => setEnabledInYaml("version: 4\nrun: echo yes\n", false)).toThrow(/must declare a schedule/);
+  });
+
+  // A multi-entry schedule is broadcast per-entry, not short-circuited the
+  // moment ANY entry's existing `enabled:` key is found (the bug row B-21's
+  // doc comment promises against: one entry toggled, a sibling entry left
+  // stale — silently keeping a "disabled" task live). Every case below is
+  // asserted by parsing the rewritten YAML with the real task source v4
+  // parser and reading each entry's resolved `enabled` (an absent key
+  // defaults to `true` at parse), not by substring-matching the document.
+  test("multi-entry schedules broadcast enabled to every entry independently (row B-21)", () => {
+    // Both entries already carry `enabled:` — both must toggle.
+    const bothPresent =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n    enabled: true\n  - cron: '30 13 * * 1,2,3,4,5'\n    enabled: true\n";
+    expect(scheduleEnabledFlags(setEnabledInYaml(bothPresent, false))).toEqual([false, false]);
+    expect(scheduleEnabledFlags(setEnabledInYaml(bothPresent, true))).toEqual([true, true]);
+
+    // Mixed: only the FIRST entry carries `enabled:`; the second has no key
+    // at all. This is the exact defect case — before the fix, the loop
+    // toggled entry 1, set `toggledAny = true`, and never inserted a key
+    // into entry 2, silently leaving it defaulted to `true` regardless of
+    // the requested disable.
+    const mixed =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n    enabled: true\n  - cron: '30 13 * * 1,2,3,4,5'\n";
+    expect(scheduleEnabledFlags(setEnabledInYaml(mixed, false))).toEqual([false, false]);
+    // And the reverse key order — no key first, key second — must not
+    // let the second entry's key short-circuit the first entry's insertion.
+    const mixedReversed =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n  - cron: '30 13 * * 1,2,3,4,5'\n    enabled: true\n";
+    expect(scheduleEnabledFlags(setEnabledInYaml(mixedReversed, false))).toEqual([false, false]);
+
+    // Neither entry carries `enabled:` — both must get one inserted, not
+    // just the first.
+    const neitherPresent =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n  - cron: '30 13 * * 1,2,3,4,5'\n";
+    expect(scheduleEnabledFlags(setEnabledInYaml(neitherPresent, false))).toEqual([false, false]);
+    expect(scheduleEnabledFlags(setEnabledInYaml(neitherPresent, true))).toEqual([true, true]);
+
+    // A nested `inputs:` mapping inside an entry must not be mistaken for
+    // that entry's own key level — an `enabled:` name nested under `inputs:`
+    // is a coincidentally-named input, not the entry's trigger flag, and
+    // must be left untouched while the entry's own (missing) `enabled:` is
+    // still inserted at the entry's own indent. (Left unparsed by the real
+    // v4 parser here since an undeclared `inputs.enabled` would fail input
+    // contract validation unrelated to what this asserts.)
+    const withInputs =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n    inputs:\n      enabled: keep-me\n  - cron: '30 13 * * 1,2,3,4,5'\n    enabled: true\n";
+    expect(setEnabledInYaml(withInputs, false)).toBe(
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n    enabled: false\n    inputs:\n      enabled: keep-me\n  - cron: '30 13 * * 1,2,3,4,5'\n    enabled: false\n",
+    );
   });
 
   // Issue 11: a workflow task's `timeoutMs` is its whole-run bound (the task
