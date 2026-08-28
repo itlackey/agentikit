@@ -206,10 +206,12 @@ describe("R-01(c) — with: on tasks/<ref> now rejects at freeze (source-freeze-
   // this one test, per F-01b.
   test("R-01(c): a task-composed step's with: now rejects at freeze with COMPOSITION_INVALID; the without-half still freezes unchanged", async () => {
     write("commands/review.md", "Review the dropped with value.\n");
-    write(
-      "tasks/command-task.yml",
-      ["version: 3", "uses: commands/review", "akm:", '  schedule: "@daily"', ""].join("\n"),
-    );
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2, row B-28)
+    // converted from a version: 3 fixture: task source v3 acceptance is
+    // retired, and a task with no inputs: key declared is now the faithful
+    // fixture for "declares no inputs" (F-A2.30's own reasoning, mirroring
+    // tests/workflows/with-rejection.test.ts).
+    write("tasks/command-task.yml", ["version: 4", "uses: commands/review", 'schedule: "@daily"', ""].join("\n"));
     write(
       "workflows/with-drop-with.yml",
       [
@@ -255,9 +257,9 @@ describe("R-01(c) — with: on tasks/<ref> now rejects at freeze (source-freeze-
     expect(withError).toBeInstanceOf(UsageError);
     if (!(withError instanceof UsageError)) return;
     expect(withError.code).toBe("COMPOSITION_INVALID");
-    // P2b (spec §1.7 A-N5, §7 F-A3) message-byte flip: the fixture's
-    // version: 3 task declares no inputs: at all, so the rejection is now
-    // the no-declared-inputs COMPOSITION_INVALID (src/workflows/freeze/targets/task.ts's
+    // P2b (spec §1.7 A-N5, §7 F-A3) message-byte flip: the fixture's task
+    // declares no inputs: at all, so the rejection is now the
+    // no-declared-inputs COMPOSITION_INVALID (src/workflows/freeze/targets/task.ts's
     // noDeclaredInputsError), not P1a's "not supported yet" placeholder.
     expect(withError.message).toBe(
       "Workflow step dispatch cannot pass with: to task target tasks/command-task; tasks/command-task declares no inputs.",

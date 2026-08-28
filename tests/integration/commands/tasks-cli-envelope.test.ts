@@ -19,12 +19,6 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { saveConfig } from "../../../src/core/config/config";
-import {
-  buildScheduledBindingInvocation,
-  consumeSchedulerContextArg,
-  schedulerContextDescriptor,
-  writeSchedulerContextDescriptor,
-} from "../../../src/tasks/scheduler-invocation";
 import { runCliCapture } from "../../_helpers/cli";
 import { makeSandboxDir, type SandboxedDir, withEnv, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
@@ -42,17 +36,16 @@ function makeStashDir(): string {
 }
 
 function writeDisabledCommandTask(stashDir: string): void {
-  // task source v4's per-schedule-binding `enabled` is not projected into the
-  // document-level flag runTask's own disabled-dispatch skip reads
-  // (src/tasks/source/project-v4.ts's header; src/tasks/prepare/prepare-support.ts:120
-  // derives `enabled: document.akm?.enabled !== false`, always `true` for a
-  // v4-projected document) — a v4 fixture cannot exercise the
-  // "scheduler-generated invocation ... skips the disabled task" case below,
-  // so this fixture stays task source v3 (Lane D sweep escape valve, spec
-  // docs/plans/specs/p2b-input-bindings.md §6.3).
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, row B-22, F-A2.18)
+  // DELETED run-task.ts's shouldSkipUnactivatedTask entirely — task source v4
+  // has no document-level enabled/disabled concept, and manual dispatch was
+  // never gated by schedule[i].enabled either way (that flag only decides
+  // whether scheduler-sync installs a binding, row B-21). Converted to task
+  // source v4: a schedule-disabled task still runs fine on a manual `akm task
+  // run` (no --scheduled).
   fs.writeFileSync(
     path.join(stashDir, "tasks", "disabled-command.yml"),
-    ["version: 3", "run: exit 0", "akm:", '  schedule: "@daily"', "  enabled: false", ""].join("\n"),
+    ["version: 4", "run: exit 0", "schedule:", "  - cron: '@daily'", "    enabled: false", ""].join("\n"),
   );
 }
 
@@ -95,7 +88,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     expect(env.code).toBe("ASSET_NOT_FOUND");
   });
 
-  test("tasks run manually executes an intentionally disabled task", async () => {
+  test("tasks run manually executes a schedule-disabled task", async () => {
     const stash = makeStashDir();
     writeDisabledCommandTask(stash);
 
@@ -145,24 +138,6 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     } finally {
       storage.cleanup();
     }
-  });
-
-  test("a backend-generated invocation uses its captured stash and skips the disabled task", async () => {
-    const capturedStash = makeStashDir();
-    const ambientStash = makeStashDir();
-    writeDisabledCommandTask(capturedStash);
-    const generated = await withEnv({ AKM_BUNDLE_DIR: capturedStash }, () => {
-      const contextPath = writeSchedulerContextDescriptor(schedulerContextDescriptor());
-      return buildScheduledBindingInvocation(["akm"], contextPath, ["task", "run", "disabled-command", "--scheduled"]);
-    });
-
-    const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: ambientStash }, () => {
-      const consumed = consumeSchedulerContextArg(generated.argv);
-      return runCliCapture([...consumed.slice(1)]);
-    });
-
-    expect(code, stderr).toBe(0);
-    expect(JSON.parse(stdout).result.status).toBe("disabled");
   });
 
   test.each([

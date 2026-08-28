@@ -97,7 +97,6 @@ export function listEmbeddedTasks(): EmbeddedTask[] {
       // §3.2.6, row B-24): a template's `enabled` is per schedule-binding, so
       // the single-cron display shape here reads the FIRST schedule entry —
       // every shipped template authors exactly one.
-      if (parsed.version !== 4) continue;
       const task = parsed.v4;
       const [firstSchedule] = task.schedule;
       if (task.target.kind !== "run" || !firstSchedule) continue;

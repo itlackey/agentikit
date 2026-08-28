@@ -293,49 +293,60 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
     write("workflows/child.md", paramWorkflowDoc());
   }
 
-  test("B-12/B-14: a v3 task whose own uses: targets a workflow freezes to a child-workflow target, via task, and the task's own with: becomes the child's params", async () => {
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2, row B-28, F-A2.29)
+  // retired task source v3 acceptance — a task's own `with:` on a workflow
+  // target no longer exists as a grammar at all (v4 accepts `with:` only
+  // alongside `uses: akm/command`, R-R2 resolved by deletion, spec §8).
+  // Converted to a task source v4 wrapper that declares a typed `inputs:`
+  // with a default value instead: `resolveTaskForComposition`'s bindings are
+  // computed from the wrapper's OWN declared-input contract regardless of
+  // whether the composing step authors a `with:` (it cannot, on a task
+  // target), so the child's params still arrive as a literal binding — just
+  // sourced from the input's `default:` rather than an authored `with:`.
+  test("B-12/B-14: a task whose own uses: targets a workflow freezes to a child-workflow target, via task, and the task's own declared input default becomes the child's params", async () => {
     writeChild();
     write(
-      "tasks/v3-wrapper.yml",
+      "tasks/v4-wrapper.yml",
       [
-        "version: 3",
+        "version: 4",
         "uses: workflows/child",
-        "with:",
-        "  scope: from-v3-task",
-        "akm:",
-        '  schedule: "@daily"',
+        "inputs:",
+        "  scope:",
+        "    type: string",
+        "    default: from-v4-task",
+        'schedule: "@daily"',
         "",
       ].join("\n"),
     );
-    writeParent("v3-wrapped", ["      - id: dispatch", "        uses: tasks/v3-wrapper"]);
+    writeParent("v4-wrapped", ["      - id: dispatch", "        uses: tasks/v4-wrapper"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const started = await startWorkflowRun("workflows/v3-wrapped");
+    const started = await startWorkflowRun("workflows/v4-wrapped");
     const row = await planRow(started.run.id);
     const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
     const target = stepTarget(plan, 0);
 
     expect(target).toMatchObject({ kind: "child-workflow", via: "task" });
     const fields = childWorkflowFields(target);
-    expect(fields.taskRef).toMatch(/\/\/tasks\/v3-wrapper$/);
-    expect(fields.inputBindings).toEqual([{ kind: "literal", name: "scope", value: "from-v3-task" }]);
+    expect(fields.taskRef).toMatch(/\/\/tasks\/v4-wrapper$/);
+    expect(fields.inputBindings).toEqual([{ kind: "literal", name: "scope", value: "from-v4-task" }]);
   });
 
-  test("B-15: a v3 task with env: on a workflow target still rejects, byte-unchanged (PRESERVE)", async () => {
+  test("B-15: a task with env: on a workflow target still rejects, byte-unchanged (PRESERVE)", async () => {
     writeChild();
     write(
-      "tasks/v3-env-wrapper.yml",
-      ["version: 3", "uses: workflows/child", "env:", "  FOO: bar", "akm:", '  schedule: "@daily"', ""].join("\n"),
+      "tasks/v4-env-wrapper.yml",
+      ["version: 4", "uses: workflows/child", "env:", "  FOO: bar", 'schedule: "@daily"', ""].join("\n"),
     );
-    writeParent("v3-env-wrapped", ["      - id: dispatch", "        uses: tasks/v3-env-wrapper"]);
+    writeParent("v4-env-wrapped", ["      - id: dispatch", "        uses: tasks/v4-env-wrapper"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await captureRejection("workflows/v3-env-wrapped");
+    const error = await captureRejection("workflows/v4-env-wrapped");
     expect(error).toBeInstanceOf(UsageError);
     if (!(error instanceof UsageError)) throw new Error("unreachable");
     expect(error.code).toBe("INVALID_FLAG_VALUE");
     expect(error.message).toBe(
-      "Task v3 workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
+      "Task workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
     );
     await expectNoRunRowWritten();
   });
@@ -346,15 +357,20 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
 describe("direct and task-wrapped composition of the SAME child lower to the same target shape, modulo identity fields", () => {
   test("a direct step and a task-wrapped step composing the same child with the same effective params freeze to structurally equal child-workflow targets — only via/taskRef (and contentHash, whose preimage covers them) differ", async () => {
     write("workflows/shared-child.md", paramWorkflowDoc());
+    // P4 (spec §3.2, row B-28, F-A2.29): the wrapper's own with: is retired
+    // along with task source v3 — a declared input default reaches the
+    // identical literal binding the direct step's authored with: does, which
+    // is exactly the equality this test proves.
     write(
       "tasks/shared-wrapper.yml",
       [
-        "version: 3",
+        "version: 4",
         "uses: workflows/shared-child",
-        "with:",
-        "  scope: shared-value",
-        "akm:",
-        '  schedule: "@daily"',
+        "inputs:",
+        "  scope:",
+        "    type: string",
+        "    default: shared-value",
+        'schedule: "@daily"',
         "",
       ].join("\n"),
     );
@@ -459,7 +475,7 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
     writeParent("task-cycle-a", ["      - id: hop", "        uses: tasks/wrap-task-cycle-b"]);
     write(
       "tasks/wrap-task-cycle-b.yml",
-      ["version: 3", "uses: workflows/task-cycle-b", "akm:", '  schedule: "@daily"', ""].join("\n"),
+      ["version: 4", "uses: workflows/task-cycle-b", 'schedule: "@daily"', ""].join("\n"),
     );
     writeParent("task-cycle-b", ["      - id: back", "        uses: workflows/task-cycle-a"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });

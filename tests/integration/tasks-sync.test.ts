@@ -148,7 +148,7 @@ describe("akmTasksSync — schedule drift", () => {
       "utf8",
     );
 
-    await expect(akmTasksSync({ backend })).rejects.toThrow(/version is required and must be 3/);
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/version is required and must be 4/);
     expect(exec.current()).toBe("");
   });
 

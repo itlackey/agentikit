@@ -5,61 +5,39 @@
 /**
  * Schema-drift gate for `schemas/akm-task.json`.
  *
- * P2a (spec docs/plans/specs/p2a-task-source-v4.md §5.3, §6 F-1) turns the
+ * P2a (spec docs/plans/specs/p2a-task-source-v4.md §5.3, §6 F-1) turned the
  * published schema into a two-arm `oneOf` at the document root: "arm 1:
- * today's v3 object, moved under the arm unchanged"; "arm 2: the v4 object".
- * `v3Arm()` / `v4Arm()` below find each arm by its `properties.version.const`
- * rather than by array index, so this file makes no assumption about arm
- * ORDER (the spec's prose lists v3 first, but nothing pins that as the
- * on-disk index). `definitions` stays shared at the document root: §5.3 has
- * the v4 arm "reusing the existing outputSchema grammar definition" and
- * keeping the `uses` oneOf's non-github alternative, both possible only if
- * `$ref: "#/definitions/…"` still resolves against one shared,
- * un-duplicated map — the moment defs were split per-arm, a `$ref` would
- * need rewriting, which the spec's "unchanged" language for the v3 arm rules
- * out.
+ * the v3 object"; "arm 2: the v4 object". P4
+ * (docs/plans/specs/p4-deletions-closeout.md §3.2) retires task source v3
+ * acceptance from `src` entirely, and the published schema's v3 arm goes
+ * with it (per the commit-2 F-A1.12 flip's own forward note: "the v3 arm
+ * itself is removed from the published schema in commit 3") — the schema
+ * flattens back to a single document shape, task source v4's, at the
+ * document root. `definitions` stays shared and mostly unchanged: it was
+ * never split per-arm, so the v4-only definitions it already held (
+ * `taskSourceV4ScheduleEntry`, `inputDeclaration`, …) need no rewiring.
  *
- * The five tests F-1 names ("Its five existing tests keep their intent,
- * re-rooted at the v3 arm") are re-rooted at `v3Arm(schema)` below; the one
- * F-1 says "stays as-is" is untouched; `published schema declares the
- * authoritative runtime-only resource constraints` — present at HEAD but not
- * named by F-1's prose — is KEPT (deleting an existing test to make a flip
- * disappear is not authorized, spec §9 acceptance criteria) with only its
- * `authoritativeParser` expectation loosened to name both parsers, since
- * `x-akm-runtimeConstraints` itself stays document-level metadata, not
- * per-arm.
- *
- * The new v4-arm tests below prefer BEHAVIORAL assertions (compile the
- * schema with Ajv and validate/reject representative documents) over
- * structural ones (poking `.properties`/`.additionalProperties` of a
- * sub-schema) wherever the spec does not pin an exact JSON-Schema authoring
- * shape — Implement is free to express "closed to TASK_INPUT_DECLARATION_KEYS"
- * or "bounded at TASK_V3_MAX_SCHEDULES" however it likes; what matters is the
- * resulting accept/reject behavior. The exception is the v4 arm's top-level
- * `properties` key SET, which is spec-pinned exactly ("properties exactly
- * TASK_SOURCE_V4_TOP_LEVEL_KEYS") and is checked structurally, mirroring how
- * `published task schema pins the strict v3 source vocabulary` already
- * checks the v3 arm's own top-level key set today.
+ * Every v3-only test this file used to carry — the strict v3 top-level
+ * vocabulary, the `akm:`/`on:` closed shapes, the "exactly one scheduling
+ * source" allOf, and the production-parser-agreement check that called the
+ * now-migrator-only `parseTaskV3Yaml`/`classifyTaskV3Uses` — is DELETED, not
+ * flipped: its subject (the v3 arm) no longer exists in the published
+ * schema. The one test P0/F-1 marked "stays as-is" (the runtime-constraints
+ * test) survives, re-tightened from "names both parsers" back to naming only
+ * `task-source-v4.ts` now that only one parser is authoritative. Every
+ * v4-focused test below is unchanged in intent, just re-rooted at the schema
+ * document itself instead of `v4Arm(schema)` — there is only one arm left to
+ * root at.
  *
  * Every v4 assertion is derived from task source v4's exported constants
  * (`TASK_SOURCE_V4_VERSION`, `TASK_SOURCE_V4_TOP_LEVEL_KEYS`,
  * `TASK_SOURCE_V4_SCHEDULE_KEYS`, `TASK_INPUT_DECLARATION_KEYS`) or from
  * existing shared bounds (`TASK_V3_MAX_SCHEDULES`, `WORKFLOW_MAX_PARAMS`) —
- * never restated as literals — per the task brief's binding instruction.
- *
- * RED phase: `src/tasks/source/task-source-v4.ts` does not exist on disk yet
- * (Lane A), so the one import of it below carries a directly-preceding
- *
- *   // @ts-expect-error P2a red-phase: <symbol> lands in Implement
- *
- * directive, placed on the module-specifier line per this phase's convention
- * (established in tests/tasks/source-v4.test.ts and
- * tests/execution/input-contract.test.ts, verified empirically against this
- * repo's tsconfig: one pin exactly where `tsc` reports the diagnostic, none
- * on any downstream use). `schemas/akm-task.json` itself also has no v4 arm
- * yet, so every new test below fails at runtime too, until the schema, the
- * task-source-v4.ts constants, and this file land together in one commit
- * (spec §5.3, binding).
+ * never restated as literals — per the task brief's binding instruction. The
+ * `TASK_V3_MAX_*` bound constants keep that name (they are shared,
+ * version-agnostic bounded-document primitives task source v4 itself still
+ * imports, spec §3.2.3) even though the schema they bound no longer has a
+ * v3 arm.
  */
 
 import { expect, test } from "bun:test";
@@ -68,20 +46,17 @@ import path from "node:path";
 import Ajv from "ajv";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
 import {
+  TASK_V3_MAX_COLLECTION_ITEMS,
+  TASK_V3_MAX_SCHEDULES,
+  TASK_V3_MAX_STRING_BYTES,
+} from "../../src/tasks/source/bounded-document";
+import {
+  classifyTaskSourceV4Uses,
   TASK_INPUT_DECLARATION_KEYS,
   TASK_SOURCE_V4_SCHEDULE_KEYS,
   TASK_SOURCE_V4_TOP_LEVEL_KEYS,
   TASK_SOURCE_V4_VERSION,
 } from "../../src/tasks/source/task-source-v4";
-import {
-  classifyTaskV3Uses,
-  parseTaskV3Yaml,
-  TASK_V3_HOST_SHELLS,
-  TASK_V3_MAX_COLLECTION_ITEMS,
-  TASK_V3_MAX_SCHEDULES,
-  TASK_V3_MAX_STRING_BYTES,
-  TASK_V3_SCHEMA_VERSION,
-} from "../../src/tasks/source-v3";
 import { PROGRAM_PARAM_NAME_PATTERN } from "../../src/workflows/program/schema";
 import {
   WORKFLOW_MAX_EXEC_PASS_ENV,
@@ -96,111 +71,34 @@ interface JsonSchema {
   properties: Record<string, JsonSchema>;
   definitions: Record<string, JsonSchema>;
   oneOf: unknown[];
-  allOf: unknown[];
 }
 
-/** The document root after P2a: a shared `definitions` map plus a two-arm `oneOf` (§5.3). */
-interface TaskSchemaDocument {
-  [key: string]: unknown;
-  oneOf: JsonSchema[];
-  definitions: Record<string, JsonSchema>;
+function readTaskSchema(): JsonSchema {
+  return JSON.parse(fs.readFileSync(path.join(root, "schemas", "akm-task.json"), "utf8")) as JsonSchema;
 }
 
-function readTaskSchema(): TaskSchemaDocument {
-  return JSON.parse(fs.readFileSync(path.join(root, "schemas", "akm-task.json"), "utf8")) as TaskSchemaDocument;
-}
-
-/** Find the root `oneOf` arm whose `properties.version.const` matches — order-independent (see file header). */
-function armByVersion(schema: TaskSchemaDocument, version: number): JsonSchema {
-  const arm = schema.oneOf.find((candidate) => candidate.properties?.version?.const === version);
-  if (!arm) {
-    throw new Error(`published task schema must publish a root oneOf arm with properties.version.const === ${version}`);
-  }
-  return arm;
-}
-
-function v3Arm(schema: TaskSchemaDocument): JsonSchema {
-  return armByVersion(schema, TASK_V3_SCHEMA_VERSION);
-}
-
-function v4Arm(schema: TaskSchemaDocument): JsonSchema {
-  return armByVersion(schema, TASK_SOURCE_V4_VERSION);
-}
-
-// ── The five tests F-1 re-roots at the v3 arm, plus the one it leaves as-is ─
-
-test("published task schema pins the strict v3 source vocabulary", () => {
+test("published task schema pins the exact task source v4 top-level key set (D2-N7)", () => {
   const schema = readTaskSchema();
   const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-  const v3 = v3Arm(schema);
 
-  expect(v3.properties.version?.const).toBe(TASK_V3_SCHEMA_VERSION);
-  expect(v3.required).toEqual(["version"]);
-  expect(v3.additionalProperties).toBe(false);
-  expect(Object.keys(v3.properties).sort()).toEqual(
-    ["akm", "env", "name", "on", "run", "shell", "uses", "version", "with", "working-directory"].sort(),
-  );
-  expect(v3.oneOf).toHaveLength(3);
-  expect(v3.allOf).toHaveLength(1);
-  expect(v3.properties.shell?.enum).toEqual(TASK_V3_HOST_SHELLS);
-  expect(v3.properties.with?.$ref).toBe("#/definitions/jsonObject");
+  expect(schema.properties.version?.const).toBe(TASK_SOURCE_V4_VERSION);
+  expect(schema.required).toEqual(["version"]);
+  expect(schema.additionalProperties).toBe(false);
+  expect(Object.keys(schema.properties).sort()).toEqual([...TASK_SOURCE_V4_TOP_LEVEL_KEYS].sort());
+  expect(schema.oneOf).toHaveLength(3);
   expect(pkg.files).toContain("schemas");
-  // The root itself is now the two-arm oneOf described in the file header —
-  // exactly one other arm exists (the v4 one, asserted in its own tests
-  // below), so the v3 arm is not accidentally one of three-or-more.
-  expect(schema.oneOf).toHaveLength(2);
+  // D2-N7: the akm: bag and the on: trigger block are gone in v4 — the
+  // published schema is single-arm now (P4 deleted the v3 arm), so this is
+  // simply "not in the top-level property set" rather than "not in the v4
+  // arm specifically."
+  expect(TASK_SOURCE_V4_TOP_LEVEL_KEYS).not.toContain("akm");
+  expect(TASK_SOURCE_V4_TOP_LEVEL_KEYS).not.toContain("on");
+  expect(Object.keys(schema.properties)).not.toContain("akm");
+  expect(Object.keys(schema.properties)).not.toContain("on");
 });
 
-test("published task schema closes AKM controls and trigger shapes at parser bounds", () => {
+test("every published pattern is valid ECMAScript and the executable-ref pattern agrees with the production classifier", () => {
   const schema = readTaskSchema();
-  const v3 = v3Arm(schema);
-  const akm = v3.properties.akm;
-  const on = v3.properties.on;
-  if (!akm || !on) throw new Error("Published task schema's v3 arm must define akm and on properties");
-
-  expect(akm.additionalProperties).toBe(false);
-  expect(Object.keys(akm.properties).sort()).toEqual(
-    [
-      "agent",
-      "description",
-      "enabled",
-      "engine",
-      "inference",
-      "maxRetries",
-      "maxSteps",
-      "model",
-      "outputSchema",
-      "redact",
-      "schedule",
-      "tags",
-      "timeout",
-      "tools",
-      "when_to_use",
-    ].sort(),
-  );
-  expect(akm.properties.maxRetries?.maximum).toBe(WORKFLOW_MAX_RETRIES);
-  expect(akm.properties.redact?.maxItems).toBe(WORKFLOW_MAX_EXEC_PASS_ENV);
-  expect((akm.properties.timeout?.oneOf as JsonSchema[])[0]?.maximum).toBe(EXECUTION_MAX_TIMEOUT_MS);
-
-  expect(on.additionalProperties).toBe(false);
-  expect(Object.keys(on.properties).sort()).toEqual(["schedule", "workflow_dispatch"]);
-  expect(on.properties.schedule?.minItems).toBe(1);
-  expect(on.properties.schedule?.maxItems).toBe(TASK_V3_MAX_SCHEDULES);
-  expect(on.properties.schedule?.items).toMatchObject({
-    type: "object",
-    required: ["cron"],
-    additionalProperties: false,
-  });
-  expect(schema.definitions.jsonArray?.maxItems).toBe(TASK_V3_MAX_COLLECTION_ITEMS);
-  expect(schema.definitions.jsonValue?.oneOf).toContainEqual({
-    type: "string",
-    maxLength: TASK_V3_MAX_STRING_BYTES,
-  });
-});
-
-test("every published pattern is valid ECMAScript and representative uses refs agree with the production parser", () => {
-  const schema = readTaskSchema();
-  const v3 = v3Arm(schema);
   const patterns: string[] = [];
   const stack: unknown[] = [schema];
   while (stack.length > 0) {
@@ -227,12 +125,12 @@ test("every published pattern is valid ECMAScript and representative uses refs a
   expect(executableRef.test("commands/my command")).toBe(false);
   for (const candidate of ["commands/./review", "commands/../review", "commands/review\0"]) {
     expect(executableRef.test(candidate), candidate).toBe(false);
-    expect(() => classifyTaskV3Uses(candidate), candidate).toThrow();
+    expect(() => classifyTaskSourceV4Uses(candidate), candidate).toThrow();
   }
   // P4 (docs/plans/specs/p4-deletions-closeout.md §3.1.2, F-A1.11): the
   // githubActionRef definition and its probes are deleted along with the
   // locator grammar itself — every github-locator-shaped value is exactly as
-  // rejected by the production parser as any other unrecognized shape now.
+  // rejected by the production classifier as any other unrecognized shape.
   for (const candidate of [
     "actions/checkout@v4",
     "owner/repo@@v1",
@@ -240,57 +138,24 @@ test("every published pattern is valid ECMAScript and representative uses refs a
     "owner/..@v1",
     "owner/repo/.@v1",
     "owner/repo/..@v1",
-    "owner/repo@v1\u007f",
+    "owner/repo@v1",
   ]) {
-    expect(() => classifyTaskV3Uses(candidate), candidate).toThrow();
+    expect(() => classifyTaskSourceV4Uses(candidate), candidate).toThrow();
   }
 
-  const workingDirectory = new RegExp(v3.properties["working-directory"]?.pattern as string);
+  const workingDirectory = new RegExp(schema.properties["working-directory"]?.pattern as string);
   expect(workingDirectory.test("scripts/release")).toBe(true);
   expect(workingDirectory.test("scripts/release/")).toBe(false);
   expect(workingDirectory.test("\\absolute-on-windows")).toBe(false);
 });
 
-test("draft-07 validation follows the parser's exact uses-classification precedence", () => {
-  const schema = readTaskSchema();
-  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
-  const executableRef = new RegExp(schema.definitions.akmExecutableRef?.pattern as string);
-  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.1.2, F-A1.11): the
-  // ["actions/checkout@v4", {}, 1] row is deleted — classifyTaskV3Uses no
-  // longer accepts a github-action-shaped uses: (it now throws, per B-01),
-  // so it fails this table's own "does not throw" premise. The remaining
-  // rows all select the one grammar the v3 arm's uses: still publishes.
-  const cases = [
-    ["akm/command", { with: { content: "" } }, 0],
-    ["commands/review", {}, 1],
-    ["commands/review@v1", {}, 1],
-    ["commands/tools/review@v1", {}, 1],
-    ["workflows/release@v1", {}, 1],
-    ["scripts/check@v1", {}, 1],
-    ["team//commands/review@v1", {}, 1],
-  ] as const;
-
-  for (const [uses, extra, expectedPatternMatches] of cases) {
-    expect(() => classifyTaskV3Uses(uses), uses).not.toThrow();
-    const patternMatches = Number(executableRef.test(uses));
-    expect(patternMatches, `${uses} must select exactly its parser-precedence schema arm`).toBe(expectedPatternMatches);
-    expect(
-      validate({ version: 3, uses, ...extra, akm: { schedule: "@daily" } }),
-      `${uses}: ${JSON.stringify(validate.errors)}`,
-    ).toBe(true);
-  }
-});
-
 test("published schema declares the authoritative runtime-only resource constraints", () => {
   const schema = readTaskSchema();
   const constraints = schema["x-akm-runtimeConstraints"] as Record<string, unknown>;
-  // §5.3: "title / description / x-akm-runtimeConstraints.authoritativeParser
-  // updated to name both parsers." The spec does not pin whether that value
-  // becomes an array or a joined string, so this only asserts both parser
-  // paths are named SOMEWHERE in the field rather than fixing one encoding.
-  const authoritativeParser = JSON.stringify(constraints.authoritativeParser);
-  expect(authoritativeParser).toContain("src/tasks/source-v3.ts");
-  expect(authoritativeParser).toContain("src/tasks/source/task-source-v4.ts");
+  // P4 re-tightens this from P2a's "names both parsers" (task source v3 was
+  // still accepted then) back to naming only the one parser `src` accepts
+  // today.
+  expect(constraints.authoritativeParser).toBe("src/tasks/source/task-source-v4.ts");
   expect(constraints.maxSourceUtf8Bytes).toBe(1_048_576);
   expect(constraints.maxStringUtf8Bytes).toBe(TASK_V3_MAX_STRING_BYTES);
   expect(constraints.maxJsonDepth).toBe(64);
@@ -299,96 +164,38 @@ test("published schema declares the authoritative runtime-only resource constrai
   expect(constraints.workingDirectoryRequiresWorkspaceRoot).toBe(true);
 
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
-  const byteBounded = { version: 3, name: "😀".repeat(70_000), uses: "commands/review", akm: { schedule: "@daily" } };
+  const byteBounded = { version: TASK_SOURCE_V4_VERSION, name: "😀".repeat(70_000), run: "echo hi" };
   expect(validate(byteBounded), JSON.stringify(validate.errors)).toBe(true);
-  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(byteBounded), filePath: "utf8-bytes.yml" })).toThrow(
-    /byte|string/i,
-  );
 
-  const noncanonicalRef = { version: 3, uses: "commands/cafe\u0301", akm: { schedule: "@daily" } };
+  const noncanonicalRef = { version: TASK_SOURCE_V4_VERSION, uses: "commands/café" };
   expect(validate(noncanonicalRef), JSON.stringify(validate.errors)).toBe(true);
-  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(noncanonicalRef), filePath: "canonical-ref.yml" })).toThrow(
-    /canonical|ref|uses/i,
-  );
+  expect(() => classifyTaskSourceV4Uses("commands/café")).toThrow(/canonical|ref|uses/i);
 });
 
 test("published outputSchema grammar rejects keywords the runtime subset cannot enforce", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
   const validTask = {
-    version: 3,
+    version: TASK_SOURCE_V4_VERSION,
     uses: "commands/review",
-    akm: {
-      schedule: "@daily",
-      outputSchema: {
-        type: "object",
-        properties: { result: { type: "string", minLength: 1 } },
-        required: ["result"],
-        additionalProperties: false,
-      },
+    output: {
+      type: "object",
+      properties: { result: { type: "string", minLength: 1 } },
+      required: ["result"],
+      additionalProperties: false,
     },
   };
   const unsupported = structuredClone(validTask);
-  unsupported.akm.outputSchema.properties.result = { type: "string", pattern: "^ok$" } as never;
+  unsupported.output.properties.result = { type: "string", pattern: "^ok$" } as never;
 
   expect(validate(validTask), JSON.stringify(validate.errors)).toBe(true);
-  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(validTask), filePath: "valid.yml" })).not.toThrow();
   expect(validate(unsupported), JSON.stringify(validate.errors)).toBe(false);
-  expect(() => parseTaskV3Yaml({ yaml: JSON.stringify(unsupported), filePath: "unsupported.yml" })).toThrow(
-    /pattern|unsupported/i,
-  );
 });
 
-test("the production parser consumes the same strict v3 spellings the schema publishes", () => {
-  const task = parseTaskV3Yaml({
-    filePath: "/stash/tasks/daily.yml",
-    yaml: [
-      "version: 3",
-      "name: Daily",
-      "uses: workflows/daily-backup",
-      "with:",
-      "  keep: 7",
-      "env:",
-      "  QUIET: false",
-      "akm:",
-      "  enabled: false",
-      "  timeout: 20m",
-      "  maxSteps: 8",
-      "  maxRetries: 1",
-      "on:",
-      "  schedule:",
-      "    - cron: '0 3 * * *'",
-      "  workflow_dispatch: {}",
-      "",
-    ].join("\n"),
-  });
+// ── the v4 arm's own tests — unchanged in intent, re-rooted at the schema ──
+// ── document itself now that it is the only arm left (P4 §3.2) ─────────────
 
-  expect(task.version).toBe(3);
-  expect(task.target).toMatchObject({ kind: "uses", uses: { kind: "workflow", ref: "workflows/daily-backup" } });
-  expect(task.akm).toMatchObject({ enabled: false, timeout: "20m", maxSteps: 8, maxRetries: 1 });
-  expect(task.triggers).toEqual({
-    manual: true,
-    schedules: [{ cron: "0 3 * * *", source: "on.schedule[0].cron", ordinal: 0 }],
-  });
-});
-
-// ── NEW: the v4 arm, asserted against task source v4's exported constants ──
-
-test("published task schema's v4 arm publishes the exact top-level key set (D2-N7)", () => {
-  const schema = readTaskSchema();
-  const v4 = v4Arm(schema);
-
-  expect(v4.properties.version?.const).toBe(TASK_SOURCE_V4_VERSION);
-  expect(v4.additionalProperties).toBe(false);
-  expect(Object.keys(v4.properties).sort()).toEqual([...TASK_SOURCE_V4_TOP_LEVEL_KEYS].sort());
-  // D2-N7: the akm: bag and the on: trigger block are gone in v4.
-  expect(TASK_SOURCE_V4_TOP_LEVEL_KEYS).not.toContain("akm");
-  expect(TASK_SOURCE_V4_TOP_LEVEL_KEYS).not.toContain("on");
-  expect(Object.keys(v4.properties)).not.toContain("akm");
-  expect(Object.keys(v4.properties)).not.toContain("on");
-});
-
-test("published task schema's root oneOf validates version: 4 only against the v4 arm (an akm: / on: key fails it, D2-N7)", () => {
+test("published task schema's root oneOf rejects an akm: or on: key — retired task-v3 vocabulary, D2-N7", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
   const base = { version: TASK_SOURCE_V4_VERSION, run: "echo hi" };
@@ -397,42 +204,33 @@ test("published task schema's root oneOf validates version: 4 only against the v
   // two rejections below are specifically about akm:/on:, not some unrelated
   // shape mistake in this fixture.
   expect(validate(base), JSON.stringify(validate.errors)).toBe(true);
-  expect(validate({ ...base, akm: { schedule: "@daily" } }), "akm: must fail every oneOf arm for a v4 document").toBe(
+  expect(validate({ ...base, akm: { schedule: "@daily" } }), "akm: must fail — task-v3 vocabulary is retired").toBe(
     false,
   );
-  expect(
-    validate({ ...base, on: { workflow_dispatch: null } }),
-    "on: must fail every oneOf arm for a v4 document",
-  ).toBe(false);
+  expect(validate({ ...base, on: { workflow_dispatch: null } }), "on: must fail — task-v3 vocabulary is retired").toBe(
+    false,
+  );
 });
 
-// P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1.2, F-A1.12): the
-// githubActionRef definition and both $refs to it — the v3 arm's own
-// included — are deleted from the published schema (commit 2). No arm
-// accepts a github-action uses: shape any more. The v3 arm itself is
-// removed from the published schema in commit 3 (§3.2), at which point this
-// test's v3 half is deleted too.
-test("published task schema's no arm accepts a github-action uses: shape (B-13)", () => {
+// P4 (docs/plans/specs/p4-deletions-closeout.md §3.1.2/§3.2, F-A1.12): the
+// githubActionRef definition and both $refs to it were deleted from the
+// published schema in commit 2; the v3 arm's own rejection half this test
+// used to pin here is gone in commit 3 along with the arm itself.
+test("published task schema rejects a github-action uses: shape (B-13)", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
   const githubRef = "actions/checkout@v4";
 
-  expect(
-    validate({ version: 3, uses: githubRef, akm: { schedule: "@daily" } }),
-    "v3 arm must reject a github-action uses: shape",
-  ).toBe(false);
-
-  expect(
-    validate({ version: TASK_SOURCE_V4_VERSION, uses: githubRef }),
-    "v4 arm must reject a github-action uses:",
-  ).toBe(false);
+  expect(validate({ version: TASK_SOURCE_V4_VERSION, uses: githubRef }), "must reject a github-action uses:").toBe(
+    false,
+  );
   expect(
     validate({ version: TASK_SOURCE_V4_VERSION, uses: "commands/review" }),
-    "v4 arm must still accept a canonical uses: ref",
+    "must still accept a canonical uses: ref",
   ).toBe(true);
 });
 
-test("published task schema's v4 arm bounds schedule: at TASK_V3_MAX_SCHEDULES and closes each entry to TASK_SOURCE_V4_SCHEDULE_KEYS (D2-N5)", () => {
+test("published task schema's schedule: bounds at TASK_V3_MAX_SCHEDULES and closes each entry to TASK_SOURCE_V4_SCHEDULE_KEYS (D2-N5)", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
   const base = { version: TASK_SOURCE_V4_VERSION, run: "echo hi" };
@@ -459,7 +257,7 @@ test("published task schema's v4 arm bounds schedule: at TASK_V3_MAX_SCHEDULES a
   );
 });
 
-test("published task schema's v4 arm closes input declarations to TASK_INPUT_DECLARATION_KEYS (D2-N3)", () => {
+test("published task schema's input declarations are closed to TASK_INPUT_DECLARATION_KEYS (D2-N3)", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
   const base = { version: TASK_SOURCE_V4_VERSION, run: "echo hi" };
@@ -507,8 +305,8 @@ test("published task schema's v4 arm closes input declarations to TASK_INPUT_DEC
   }
 
   // `pattern` is deliberately absent from TASK_INPUT_DECLARATION_KEYS (it is
-  // also the runtime-subset probe the existing outputSchema test above
-  // uses) — a declaration that names it must be rejected as an unknown key.
+  // also the runtime-subset probe the outputSchema test above uses) — a
+  // declaration that names it must be rejected as an unknown key.
   expect(TASK_INPUT_DECLARATION_KEYS).not.toContain("pattern");
   expect(
     validate({ ...base, inputs: { x: { type: "string", pattern: "^ok$" } } }),
@@ -525,25 +323,17 @@ test("published task schema's v4 arm closes input declarations to TASK_INPUT_DEC
   ).toBe(false);
 });
 
-test("published task schema's v4 arm's output: rejects null while v3's akm.outputSchema keeps it (schema/parser drift fix)", () => {
+test("published task schema's output: rejects null (schema/parser agreement)", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
 
-  // v3's akm.outputSchema genuinely accepts null at the parser
-  // (src/tasks/source-v3.ts:272-282) — the published schema's v3 arm must
-  // keep the { type: "null" } alternative unchanged.
-  expect(
-    validate({ version: 3, uses: "commands/review", akm: { schedule: "@daily", outputSchema: null } }),
-    JSON.stringify(validate.errors),
-  ).toBe(true);
-
   // task source v4's parseOutputSchema (src/tasks/source/task-source-v4.ts)
   // goes straight to asRecord and rejects null with "output must be a
-  // mapping." — the published schema's v4 arm must reject it too, not accept
-  // a shape the production parser never does.
+  // mapping." — the published schema must reject it too, not accept a shape
+  // the production parser never does.
   expect(
     validate({ version: TASK_SOURCE_V4_VERSION, run: "echo hi", output: null }),
-    "the v4 arm must reject output: null — the production parser does",
+    "output: null must be rejected — the production parser does",
   ).toBe(false);
 
   // A valid bounded schema is still accepted.
@@ -557,7 +347,7 @@ test("published task schema's v4 arm's output: rejects null while v3's akm.outpu
   ).toBe(true);
 });
 
-test("published task schema's v4 arm's schedule[].inputs is closed to the input name pattern, not the free-form jsonObject $ref (fail-closed hardening)", () => {
+test("published task schema's schedule[].inputs is closed to the input name pattern, not the free-form jsonObject $ref (fail-closed hardening)", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
   const base = { version: TASK_SOURCE_V4_VERSION, run: "echo hi" };
@@ -582,7 +372,7 @@ test("published task schema's v4 arm's schedule[].inputs is closed to the input 
   expect(inputsSchema.$ref).not.toBe("#/definitions/jsonObject");
 });
 
-test("published task schema's v4 arm bounds inputs: at WORKFLOW_MAX_PARAMS declared inputs (D2-N3)", () => {
+test("published task schema's inputs: bounds at WORKFLOW_MAX_PARAMS declared inputs (D2-N3)", () => {
   const schema = readTaskSchema();
   const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
   const base = { version: TASK_SOURCE_V4_VERSION, run: "echo hi" };
@@ -605,4 +395,20 @@ test("published task schema's v4 arm bounds inputs: at WORKFLOW_MAX_PARAMS decla
     validate({ ...base, inputs: declarations(WORKFLOW_MAX_PARAMS + 1) }),
     `one input over ${WORKFLOW_MAX_PARAMS}`,
   ).toBe(false);
+});
+
+test("published task schema's definitions.jsonArray/jsonValue stay bounded at the shared collection/string limits", () => {
+  const schema = readTaskSchema();
+  expect(schema.definitions.jsonArray?.maxItems).toBe(TASK_V3_MAX_COLLECTION_ITEMS);
+  expect(schema.definitions.jsonValue?.oneOf).toContainEqual({
+    type: "string",
+    maxLength: TASK_V3_MAX_STRING_BYTES,
+  });
+});
+
+test("published task schema's akm: options bag equivalents (timeout/redact) stay bounded at their parser limits", () => {
+  const schema = readTaskSchema();
+  expect(schema.properties.maxRetries?.maximum).toBe(WORKFLOW_MAX_RETRIES);
+  expect(schema.properties.redact?.maxItems).toBe(WORKFLOW_MAX_EXEC_PASS_ENV);
+  expect((schema.properties.timeout?.oneOf as JsonSchema[])[0]?.maximum).toBe(EXECUTION_MAX_TIMEOUT_MS);
 });

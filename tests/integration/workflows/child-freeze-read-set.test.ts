@@ -121,10 +121,7 @@ describe("the parent's sourceReadSet covers the child workflow doc and every tra
   test("child doc + its direct command ref + its task ref's OWN command ref all appear as relative paths", async () => {
     write("commands/child-command.md", "Do the child's own direct command.\n");
     write("commands/task-command.md", "Do the task-mediated command.\n");
-    write(
-      "tasks/child-task.yml",
-      ["version: 3", "uses: commands/task-command", "akm:", '  schedule: "@daily"', ""].join("\n"),
-    );
+    write("tasks/child-task.yml", ["version: 4", "uses: commands/task-command", 'schedule: "@daily"', ""].join("\n"));
     write(
       "workflows/child.yml",
       [

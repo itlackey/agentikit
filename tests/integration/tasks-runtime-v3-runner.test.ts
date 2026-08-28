@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { openLogsDatabase, queryTaskLogs } from "../../src/core/logs-db";
 import type { SpawnFn } from "../../src/core/subprocess";
-import { readTaskHistory, runTask } from "../../src/tasks/runner";
+import { runTask } from "../../src/tasks/run/run-task";
+import { readTaskHistory } from "../../src/tasks/run/task-history";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
@@ -69,29 +70,41 @@ function outputSpawn(stdout: string, stderr = ""): ReturnType<SpawnFn> {
   };
 }
 
-describe("task-v3 runner mutation boundary", () => {
+describe("task runner mutation boundary", () => {
   for (const [label, yaml, message] of [
     ["v2", 'version: 2\nschedule: "@daily"\ncommand: echo legacy\n', "TASK_SCHEMA_VERSION_UNSUPPORTED"],
-    ["malformed", 'version: 3\nrun: [unterminated\nakm:\n  schedule: "@daily"\n', "Invalid task v3"],
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2, row B-14, F-A2.5):
+    // task source v3 is retired from `src` — a version: 3 document now fails
+    // the SAME way a version: 2 document does, with the SAME migrate hint
+    // (row B-15).
+    ["v3", 'version: 3\nrun: echo legacy\nschedule: "@daily"\n', "TASK_SCHEMA_VERSION_UNSUPPORTED"],
+    // P4 (spec §3.2.2, row B-17): the bounded YAML front end's sourceLabel is
+    // "task source" now, not "task v3 source".
+    ["malformed", 'version: 4\nrun: [unterminated\nschedule: "@daily"\n', "Invalid task source"],
     // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-04,
-    // F-A1.14): the locator grammar is deleted from classifyTaskV3Uses, so a
-    // github-action-shaped uses: now fails at PARSE (not executable), not at
-    // the old prepare-side "remote action acquisition is unsupported" arm.
-    ["remote action", 'version: 3\nuses: actions/checkout@v4\nakm:\n  schedule: "@daily"\n', "not executable"],
-    ["unresolved", 'version: 3\nuses: scripts/missing.sh\nakm:\n  schedule: "@daily"\n', "not found"],
+    // F-A1.14): the locator grammar is deleted from classifyTaskSourceV4Uses,
+    // so a github-action-shaped uses: fails at PARSE with task source v4's
+    // own B-11 message, not the old prepare-side "remote action acquisition
+    // is unsupported" arm.
+    [
+      "remote action",
+      'version: 4\nuses: actions/checkout@v4\nschedule: "@daily"\n',
+      "GitHub Action targets were removed",
+    ],
+    ["unresolved", 'version: 4\nuses: scripts/missing.sh\nschedule: "@daily"\n', "not found"],
     [
       "nonprojectable command parameters",
-      'version: 3\nuses: commands/missing\nwith:\n  value: no\nakm:\n  schedule: "@daily"\n',
-      "do not accept with",
+      'version: 4\nuses: commands/missing\nwith:\n  value: no\nschedule: "@daily"\n',
+      "with is legal only with",
     ],
     [
       "secret-shaped literal env",
-      'version: 3\nrun: printf no\nenv:\n  API_TOKEN: github_pat_012345678901234567890123456789\nakm:\n  schedule: "@daily"\n',
+      'version: 4\nrun: printf no\nenv:\n  API_TOKEN: github_pat_012345678901234567890123456789\nschedule: "@daily"\n',
       "secret-shaped literal env",
     ],
     [
       "unresolved engine",
-      'version: 3\nuses: akm/command\nwith:\n  content: Review\nakm:\n  schedule: "@daily"\n  engine: missing\n',
+      'version: 4\nuses: akm/command\nwith:\n  content: Review\nengine: missing\nschedule: "@daily"\n',
       "missing",
     ],
   ] as const) {
@@ -105,7 +118,7 @@ describe("task-v3 runner mutation boundary", () => {
       }
       expect(failure).toBeInstanceOf(Error);
       expect((failure as Error).message).toContain(message);
-      if (label === "v2") {
+      if (label === "v2" || label === "v3") {
         expect((failure as Error & { hint(): string }).hint()).toContain("akm migrate apply --dry-run");
       }
       expect(readTaskHistory({ id: "blocked" })).toEqual([]);
@@ -114,7 +127,7 @@ describe("task-v3 runner mutation boundary", () => {
   }
 
   test("a post-dispatch nonzero shell result records exactly one failed attempt", async () => {
-    writeTask("fails", 'version: 3\nrun: exit 7\nshell: sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("fails", 'version: 4\nrun: exit 7\nshell: sh\nschedule: "@daily"\n');
     const result = await runTask("fails", {
       bundleDir: storage.stashDir,
       bundleName: "fixture",
@@ -154,7 +167,13 @@ describe("task-v3 runner mutation boundary", () => {
         "",
       ].join("\n"),
     );
-    writeTask("multi", 'version: 3\nuses: workflows/multi\nakm:\n  schedule: "@daily"\n');
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, F-A2.5): the
+    // wrapping task fixture converts to task source v4 — task source version
+    // is orthogonal to this rejection, which fires at workflow compilation.
+    // The `/exactly one source-IR job/i` expectation itself is UNTOUCHED —
+    // spec §7.3 F-A3.5 moves that flip to commit 4 (multi-job confinement),
+    // out of this family's scope.
+    writeTask("multi", 'version: 4\nuses: workflows/multi\nschedule: "@daily"\n');
 
     await expect(
       runTask("multi", { bundleDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
@@ -184,7 +203,7 @@ describe("task-v3 runner mutation boundary", () => {
         "",
       ].join("\n"),
     );
-    writeTask("services", 'version: 3\nuses: workflows/services\nakm:\n  schedule: "@daily"\n');
+    writeTask("services", 'version: 4\nuses: workflows/services\nschedule: "@daily"\n');
 
     await expect(
       runTask("services", { bundleDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
@@ -213,12 +232,11 @@ describe("task-v3 runner mutation boundary", () => {
     writeTask(
       "workflow-env",
       [
-        "version: 3",
+        "version: 4",
         "uses: workflows/env-target",
         "env:",
         "  TASK_LOCAL_VALUE: ordinary-local-value",
-        "akm:",
-        '  schedule: "@daily"',
+        'schedule: "@daily"',
         "",
       ].join("\n"),
     );
@@ -252,7 +270,7 @@ describe("task-v3 runner mutation boundary", () => {
       defaultBundle: "fixture",
       semanticSearchMode: "off",
     });
-    writeTask("qualified", 'version: 3\nuses: shared//scripts/ok.sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("qualified", 'version: 4\nuses: shared//scripts/ok.sh\nschedule: "@daily"\n');
 
     const result = await runTask("qualified", {
       bundleDir: storage.stashDir,
@@ -273,15 +291,14 @@ describe("task-v3 runner mutation boundary", () => {
     writeTask(
       "exact-shell",
       [
-        "version: 3",
+        "version: 4",
         `run: ${JSON.stringify(command)}`,
         "shell: zsh",
         "working-directory: work",
         "env:",
         "  COUNT: 0",
         "  ENABLED: false",
-        "akm:",
-        '  schedule: "@daily"',
+        'schedule: "@daily"',
         "",
       ].join("\n"),
     );
@@ -322,13 +339,12 @@ describe("task-v3 runner mutation boundary", () => {
     writeTask(
       "local-redaction",
       [
-        "version: 3",
+        "version: 4",
         "run: echo ignored",
         "env:",
         `  TASK_LOCAL_VALUE: ${secret}`,
-        "akm:",
-        '  schedule: "@daily"',
-        "  redact: [TASK_LOCAL_VALUE]",
+        'schedule: "@daily"',
+        "redact: [TASK_LOCAL_VALUE]",
         "",
       ].join("\n"),
     );
@@ -369,11 +385,10 @@ describe("task-v3 runner mutation boundary", () => {
       writeTask(
         "cwd-swap",
         [
-          "version: 3",
+          "version: 4",
           "run: printf safe",
           ...(authoredCwd ? [`working-directory: ${authoredCwd}`] : []),
-          "akm:",
-          '  schedule: "@daily"',
+          'schedule: "@daily"',
           "",
         ].join("\n"),
       );
@@ -419,7 +434,7 @@ describe("task-v3 runner mutation boundary", () => {
     const script = path.join(scripts, "frozen.js");
     const original = 'console.log("original frozen bytes")\n';
     fs.writeFileSync(script, original);
-    writeTask("frozen-js", 'version: 3\nuses: scripts/frozen.js\nakm:\n  schedule: "@daily"\n');
+    writeTask("frozen-js", 'version: 4\nuses: scripts/frozen.js\nschedule: "@daily"\n');
     let materializedFile: string | undefined;
     let sourceMutated = false;
 
@@ -457,7 +472,7 @@ describe("task-v3 runner mutation boundary", () => {
     fs.writeFileSync(path.join(scripts, "cleanup.ts"), 'console.log("cleanup")\n');
     writeTask(
       "cleanup",
-      `version: 3\nuses: scripts/cleanup.ts\nakm:\n  schedule: "@daily"\n  timeout: ${outcome === "timeout" ? 1 : "null"}\n`,
+      `version: 4\nuses: scripts/cleanup.ts\nschedule: "@daily"\ntimeout: ${outcome === "timeout" ? 1 : "null"}\n`,
     );
     let directory: string | undefined;
     let settle: ((code: number) => void) | undefined;

@@ -6,8 +6,8 @@
  * `projectTaskSourceV4()` — the task source v4 -> prepare-seam projection
  * (spec docs/plans/specs/p2a-task-source-v4.md §3.5).
  *
- * `prepareTaskV3Execution` (`src/tasks/prepare/prepare.ts`) is NOT modified
- * in P2a. This is a pure, typed transform from an already-parsed
+ * `prepareTaskV3Execution` (`src/tasks/prepare/prepare.ts`) has never needed
+ * to change. This is a pure, typed transform from an already-parsed
  * `TaskSourceV4Document` into a `PreparableTaskDocument` (a name for
  * `TaskV3SourceDocument` that is not version-bound,
  * `src/tasks/prepare/prepared-execution.ts`) — no YAML string is fabricated
@@ -21,10 +21,12 @@
  * The projection is DELIBERATELY LOSSY relative to the parsed document:
  *
  *   - per-schedule-binding `enabled` is NOT projected into `akm.enabled`
- *     (D2-N5) — it is carried separately to the scheduler seam (Lane C's
- *     `scheduler-sync.ts` edit), not this function.
+ *     (D2-N5) — it is carried separately to the scheduler seam
+ *     (`scheduler-sync.ts`, `src/commands/tasks/tasks.ts`'s `akmTasksAdd`),
+ *     not this function.
  *   - `inputs` (the document's typed input declarations) is NOT projected
- *     anywhere — input delivery is P2b (spec §0).
+ *     anywhere — input delivery reads the ORIGINAL parsed document directly
+ *     (`src/tasks/run/load-task.ts`), not this projection.
  *   - `schedule[i].inputs` (per-binding literal overrides) is NOT projected
  *     onto `triggers.schedules[i]` — same reason (B-38).
  *   - `schedule.length === 0` projects to `triggers = { manual: true,
@@ -32,13 +34,17 @@
  *     only", so no downstream consumer of `PreparableTaskDocument` learns a
  *     new shape.
  *   - the projected `version` is the LITERAL `3` — the prepare contract's
- *     discriminant, not a re-assertion that the source was v3. This is a
- *     recorded wart (§3.5); P4 retires it with the type rename.
+ *     discriminant, not a re-assertion that the source was v3
+ *     (spec docs/plans/specs/p4-deletions-closeout.md §3.2.7). P4 deleted
+ *     `TASK_V3_SCHEMA_VERSION` (task v3 acceptance is gone from `src`) but
+ *     left `PreparableTaskDocument`'s NAME and shape alone (§0, R-R1 —
+ *     the rename is deferred to a follow-up commit after the sweep), so
+ *     this recorded wart persists; see the literal's own inline comment
+ *     below.
  */
 
 import type { PreparableTaskDocument } from "../prepare/prepared-execution";
 import type { TaskV3AkmOptions } from "../source-v3";
-import { TASK_V3_SCHEMA_VERSION } from "../source-v3";
 import type { TaskSourceV4Document } from "./task-source-v4";
 
 /**
@@ -79,7 +85,12 @@ export function projectTaskSourceV4(document: TaskSourceV4Document): PreparableT
     document.schedule.map((entry) => Object.freeze({ cron: entry.cron, source: entry.source, ordinal: entry.ordinal })),
   );
   return Object.freeze({
-    version: TASK_V3_SCHEMA_VERSION,
+    // The literal `3` is the prepare seam's own discriminant
+    // (PreparableTaskDocument = TaskV3SourceDocument), not an assertion that
+    // the source this was projected from was task v3 — `TASK_V3_SCHEMA_VERSION`
+    // is gone (P4 deleted task v3 acceptance from src), and this projection
+    // only ever runs on a task source v4 document (P2a §3.5's recorded wart).
+    version: 3,
     ...(document.name !== undefined ? { name: document.name } : {}),
     target: document.target,
     ...(document.env !== undefined ? { env: document.env } : {}),

@@ -91,34 +91,27 @@ function normaliseTaskIdForMatch(raw: string): string {
 }
 
 /**
- * Toggle a task's enabled state via a full parse/render round-trip (setup's
- * own edits are infrequent and not comment-preservation-sensitive, unlike
- * `commands/tasks/tasks.ts`'s `setEnabledInYaml` line splice). Handles both
- * task source v4 (`schedule[].enabled`, broadcast to every entry — the
- * closest v4 equivalent of v3's single document-level flag) and the legacy
- * task v3 `akm.enabled` shape, since an already-installed file predating
- * this conversion may still be v3 on disk.
+ * Toggle a task source v4 file's enabled state via a full parse/render
+ * round-trip (setup's own edits are infrequent and not comment-preservation-
+ * sensitive, unlike `commands/tasks/tasks.ts`'s `setEnabledInYaml` line
+ * splice). Broadcasts `enabled` across every `schedule[]` entry — the
+ * closest v4 equivalent of v3's single document-level flag. `src` no longer
+ * accepts a task v3 file at all (P4 §3.2) — `listSetupTaskDefinitions` below
+ * already fails closed on one before this function is ever reached, so
+ * there is no legacy `akm.enabled` shape left to handle here.
  */
 function setTaskEnabledInYaml(yaml: string, enabled: boolean): string {
   const document = yamlParse(yaml) as Record<string, unknown>;
-  if (document.version === 4) {
-    const schedule = document.schedule;
-    if (typeof schedule === "string") {
-      document.schedule = [{ cron: schedule, enabled }];
-    } else if (Array.isArray(schedule) && schedule.length > 0) {
-      document.schedule = schedule.map((entry) =>
-        entry && typeof entry === "object" && !Array.isArray(entry) ? { ...entry, enabled } : entry,
-      );
-    } else {
-      throw new UsageError("Task source v4 must declare a schedule before setup can change enabled state.");
-    }
-    return yamlStringify(document);
+  const schedule = document.schedule;
+  if (typeof schedule === "string") {
+    document.schedule = [{ cron: schedule, enabled }];
+  } else if (Array.isArray(schedule) && schedule.length > 0) {
+    document.schedule = schedule.map((entry) =>
+      entry && typeof entry === "object" && !Array.isArray(entry) ? { ...entry, enabled } : entry,
+    );
+  } else {
+    throw new UsageError("Task source v4 must declare a schedule before setup can change enabled state.");
   }
-  const akm = document.akm;
-  if (!akm || typeof akm !== "object" || Array.isArray(akm)) {
-    throw new UsageError("Task v3 source must declare an akm mapping before setup can change enabled state.");
-  }
-  (akm as Record<string, unknown>).enabled = enabled;
   return yamlStringify(document);
 }
 
@@ -161,31 +154,18 @@ export function listSetupTaskDefinitions(): SetupTaskDefinition[] {
         filePath,
         workspaceRoot: target.source.path,
       });
-      if (parsed.version === 4) {
-        const document = parsed.v4;
-        if (document.schedule.length === 0) continue;
-        const schedules = document.schedule.map((entry) => entry.cron);
-        tasks.push({
-          id,
-          schedule: schedules[0]!,
-          schedules: Object.freeze(schedules),
-          // task source v4 has no document-level enabled (P4-N6) — a task is
-          // considered enabled for review purposes when at least one of its
-          // schedule bindings will actually fire.
-          enabled: document.schedule.some((entry) => entry.enabled),
-          ...(document.description !== undefined ? { description: document.description } : {}),
-        });
-        continue;
-      }
-      const task = parsed.v3;
-      if (task.triggers.schedules.length === 0) continue;
-      const schedules = task.triggers.schedules.map((schedule) => schedule.cron);
+      const document = parsed.v4;
+      if (document.schedule.length === 0) continue;
+      const schedules = document.schedule.map((entry) => entry.cron);
       tasks.push({
         id,
         schedule: schedules[0]!,
         schedules: Object.freeze(schedules),
-        enabled: task.akm?.enabled !== false,
-        ...(task.akm?.description !== undefined ? { description: task.akm.description } : {}),
+        // task source v4 has no document-level enabled (P4-N6) — a task is
+        // considered enabled for review purposes when at least one of its
+        // schedule bindings will actually fire.
+        enabled: document.schedule.some((entry) => entry.enabled),
+        ...(document.description !== undefined ? { description: document.description } : {}),
       });
     } catch (error) {
       throw new UsageError(
@@ -226,19 +206,12 @@ export async function prepareSetupTaskDefinitions(
       yaml = setTaskEnabledInYaml(original, plan.enabled);
     } else {
       const document = yamlParse(plan.task.yaml) as Record<string, unknown>;
-      if (document.version === 4) {
-        document.schedule = plan.enabled ? plan.schedule : [{ cron: plan.schedule, enabled: false }];
-      } else {
-        const akm = document.akm as Record<string, unknown>;
-        akm.schedule = plan.schedule;
-        akm.enabled = plan.enabled;
-      }
+      document.schedule = plan.enabled ? plan.schedule : [{ cron: plan.schedule, enabled: false }];
       yaml = yamlStringify(document);
     }
 
     const parsed = parseTaskSource({ yaml, filePath, workspaceRoot: target.source.path });
-    const schedules = parsed.version === 4 ? parsed.v4.schedule : parsed.v3.triggers.schedules;
-    for (const schedule of schedules) {
+    for (const schedule of parsed.v4.schedule) {
       parseSchedule(schedule.cron, backendNameForPlatform());
     }
     return { filePath, original, yaml, ref: { type: "task" as const, name: plan.task.id } };

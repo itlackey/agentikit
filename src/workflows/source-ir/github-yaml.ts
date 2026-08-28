@@ -52,9 +52,9 @@ type YamlPair = Pair<ParsedNode, ParsedNode | null>;
 export interface GithubWorkflowSourceOptions {
   path: string;
   workspaceRoot?: string;
-  /** Canonical task-v3 uses classifier; injectable only for bounded compiler tests/consumers. */
+  /** Canonical workflow uses: classifier; injectable only for bounded compiler tests/consumers. */
   classifyUses?: WorkflowSourceUsesClassifier;
-  /** Canonical task-v3 trigger classifier; injectable only for bounded compiler tests/consumers. */
+  /** Canonical workflow YAML trigger classifier; injectable only for bounded compiler tests/consumers. */
   classifyTriggers?: WorkflowSourceTriggerClassifier;
 }
 
@@ -442,7 +442,7 @@ function verifyOwnerTriggerPlan(
   if (!matches) {
     throw new WorkflowSourceFailure(
       "trigger-classifier-drift",
-      "The workflow trigger parser disagrees with the canonical task-v3 trigger classifier.",
+      "The workflow trigger parser disagrees with the canonical workflow YAML trigger classifier.",
       reader.span(onNode),
     );
   }

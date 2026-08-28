@@ -43,13 +43,9 @@ import { prepareTaskV3Execution } from "../../tasks/prepare/prepare";
 import type { PrepareTaskV3ExecutionContext } from "../../tasks/prepare/prepared-execution";
 import { type ResolvedAkmInvocation, resolveAkmInvocation } from "../../tasks/resolve-akm-bin";
 import { createExecutionProvenanceContext } from "../../tasks/run/provenance";
-import {
-  exitCodeForStatus,
-  type RunTaskOptions,
-  readTaskHistory,
-  runTask,
-  type TaskRunResult,
-} from "../../tasks/runner";
+import { runTask } from "../../tasks/run/run-task";
+import { readTaskHistory } from "../../tasks/run/task-history";
+import { exitCodeForStatus, type RunTaskOptions, type TaskRunResult } from "../../tasks/run/task-result";
 import { parseSchedule, SCHEDULE_SUPPORTED_SUBSET_HINT } from "../../tasks/schedule";
 import {
   assertSchedulerMutationArtifact,
@@ -195,14 +191,8 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     enabled: input.disabled !== true,
   });
 
-  // Version-routing seam (spec docs/plans/specs/p4-deletions-closeout.md
-  // §3.2.6, row B-20): `renderTaskYaml` above always renders a `version: 4`
-  // document and `TasksAddInput` has no raw-YAML override, so the task v3
-  // arm is unreachable here in production — routed anyway so this call site
-  // consumes the union per P2a §9 rather than special-casing itself out of
-  // it.
   const parsedTask = parseTaskSource({ yaml, filePath: assetPath, workspaceRoot: stashDir });
-  const task = parsedTask.version === 4 ? projectTaskSourceV4(parsedTask.v4) : parsedTask.v3;
+  const task = projectTaskSourceV4(parsedTask.v4);
   const qualifiedRef = makeBundleRef(bundle.bundleName, `tasks/${id}`);
   await prepareTaskV3Execution(task, {
     taskId: id,
@@ -225,17 +215,14 @@ export async function akmTasksAdd(input: TasksAddInput, deps: TaskMutationDeps =
     id,
     qualifiedRef,
     ...(bundle.installTarget ? { bundleTarget: bundle.installTarget } : {}),
-    enabled: parsedTask.version === 4 ? true : task.akm?.enabled !== false,
-    schedules:
-      parsedTask.version === 4
-        ? parsedTask.v4.schedule.map((schedule) => ({
-            cron: schedule.cron,
-            ordinal: schedule.ordinal,
-            enabled: schedule.enabled,
-            source: schedule.source,
-            inputs: schedule.inputs,
-          }))
-        : task.triggers.schedules,
+    enabled: true,
+    schedules: parsedTask.v4.schedule.map((schedule) => ({
+      cron: schedule.cron,
+      ordinal: schedule.ordinal,
+      enabled: schedule.enabled,
+      source: schedule.source,
+      inputs: schedule.inputs,
+    })),
   });
   const taskBinding = taskBindings[0];
   if (!taskBinding) throw new UsageError(`Task "${id}" has no schedulable trigger.`, "INVALID_FLAG_VALUE");

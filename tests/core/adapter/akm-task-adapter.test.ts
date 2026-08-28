@@ -129,7 +129,7 @@ describe("akm-task adapter — renderer golden", () => {
   }
 });
 
-describe("akm-task adapter — strict task-v3 validation", () => {
+describe("akm-task adapter — strict task source validation", () => {
   const perType = loadGolden("lint").perType as Record<string, { relPath: string; issues: Diagnostic[] }>;
 
   test("each task validates to exactly the golden's issue codes", async () => {
@@ -160,7 +160,11 @@ describe("akm-task adapter — strict task-v3 validation", () => {
   test("delegates hostile and unsupported forms to the canonical production parser", async () => {
     const cases = [
       ["unknown.yml", "version: 4\nuses: commands/review\nsurprise: true\n", "surprise"],
-      ["event.yml", "version: 3\nrun: echo okay\non:\n  push: {}\n", "unsupported local service event"],
+      // A task schema version outside {4} (row B-14) is itself an unsupported
+      // form the parser fails closed on — task v3 sources are no longer read
+      // by `src` at all (P4 §3.2.2), so this is the version router's own
+      // TASK_SCHEMA_VERSION_UNSUPPORTED, not a v3-specific field error.
+      ["legacy-version.yml", "version: 3\nrun: echo okay\n", "task schema version 3"],
       ["alias.yml", "version: 4\nrun: &shared echo okay\nname: *shared\n", "anchors"],
     ] as const;
     for (const [file, raw, detail] of cases) {

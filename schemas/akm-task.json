@@ -1,10 +1,10 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://itlackey.github.io/akm/schemas/akm-task.json",
-  "title": "AKM Task (v3 or task source v4)",
-  "description": "A task source document is either a strict task-v3 object (exactly one executable selector and exactly one scheduling source) or a task source v4 object (typed inputs:, a single bounded output: schema, and OPTIONAL scheduling — a task source v4 document with no schedule: is valid and manual-only). Published as a two-arm oneOf at the document root, keyed on version.",
+  "title": "AKM Task source v4",
+  "description": "Task source v4: typed inputs:, a single bounded output: schema, and OPTIONAL scheduling — a document with no schedule: is valid, runnable manually, composable, and is skipped (not rejected) by `akm task sync`. The akm: options bag and the on: trigger block from task v3 are gone (their members are top-level); there is no github-action uses: target; with: is legal only alongside uses: akm/command (use inputs: everywhere else for typed parameters). task-v2 and task-v3 sources are converted to this schema by `akm migrate apply` — this document publishes only the version: 4 shape a task source parses to today.",
   "x-akm-runtimeConstraints": {
-    "authoritativeParser": ["src/tasks/source-v3.ts", "src/tasks/source/task-source-v4.ts"],
+    "authoritativeParser": "src/tasks/source/task-source-v4.ts",
     "maxSourceUtf8Bytes": 1048576,
     "maxStringUtf8Bytes": 262144,
     "maxJsonDepth": 64,
@@ -12,329 +12,141 @@
     "canonicalRefsRequireNfc": true,
     "workingDirectoryRequiresWorkspaceRoot": true
   },
-  "oneOf": [
-    {
-      "title": "AKM Task v3",
-      "description": "Strict task-v3 source document. Exactly one executable selector and exactly one scheduling source are required.",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 4 },
+    "name": { "type": "string", "maxLength": 262144 },
+    "description": { "type": "string", "maxLength": 262144 },
+    "when_to_use": { "type": "string", "maxLength": 262144 },
+    "tags": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": { "type": "string", "minLength": 1, "maxLength": 262144 }
+    },
+    "inputs": {
       "type": "object",
-      "required": ["version"],
-      "additionalProperties": false,
-      "properties": {
-        "version": { "const": 3 },
-        "name": { "type": "string", "maxLength": 262144 },
-        "uses": {
-          "oneOf": [
-            { "const": "akm/command" },
-            { "$ref": "#/definitions/akmExecutableRef" }
-          ]
-        },
-        "run": { "$ref": "#/definitions/nonemptyLiteral" },
-        "with": { "$ref": "#/definitions/jsonObject" },
-        "env": {
-          "type": "object",
-          "maxProperties": 256,
-          "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
-          "additionalProperties": {
-            "oneOf": [
-              { "type": "string", "maxLength": 262144 },
-              { "type": "number" },
-              { "type": "boolean" }
-            ]
-          }
-        },
-        "shell": { "enum": ["bash", "sh", "zsh", "pwsh", "powershell", "cmd"] },
-        "working-directory": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 262144,
-          "pattern": "^(?![\\\\/])(?![A-Za-z]:[\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$))(?!.*[\\\\/]{2})(?!.*[\\\\/]$)[^\\u0000]+$"
-        },
-        "akm": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "schedule": { "$ref": "#/definitions/nonemptyLiteral" },
-            "enabled": { "type": "boolean" },
-            "description": { "type": "string", "maxLength": 262144 },
-            "when_to_use": { "type": "string", "maxLength": 262144 },
-            "tags": {
-              "type": "array",
-              "maxItems": 1024,
-              "items": { "type": "string", "minLength": 1, "maxLength": 262144 }
-            },
-            "agent": { "$ref": "#/definitions/nullableSelector" },
-            "engine": { "$ref": "#/definitions/nullableSelector" },
-            "model": { "$ref": "#/definitions/nullableSelector" },
-            "inference": {
-              "oneOf": [
-                { "$ref": "#/definitions/jsonObject" },
-                { "type": "null" }
-              ]
-            },
-            "outputSchema": {
-              "description": "A JSON Schema accepted by AKM's bounded execution-schema subset, or null. Runtime byte, depth, and node limits are declared by x-akm-runtimeConstraints.",
-              "oneOf": [
-                { "$ref": "#/definitions/outputSchemaDefinition" },
-                { "type": "null" }
-              ]
-            },
-            "tools": {
-              "oneOf": [
-                { "type": "string", "maxLength": 262144 },
-                {
-                  "type": "array",
-                  "maxItems": 1024,
-                  "items": { "type": "string", "maxLength": 262144 }
-                },
-                { "$ref": "#/definitions/jsonObject" },
-                { "type": "null" }
-              ]
-            },
-            "timeout": {
-              "oneOf": [
-                { "type": "integer", "minimum": 0, "maximum": 2147483647 },
-                { "type": "string", "pattern": "^\\d+[mMhHdD]$" },
-                { "type": "null" }
-              ]
-            },
-            "redact": {
-              "type": "array",
-              "maxItems": 32,
-              "uniqueItems": true,
-              "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
-            },
-            "maxSteps": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
-            "maxRetries": { "type": "integer", "minimum": 0, "maximum": 100 }
-          }
-        },
-        "on": {
-          "type": "object",
-          "minProperties": 1,
-          "additionalProperties": false,
-          "properties": {
-            "schedule": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 64,
-              "items": {
-                "type": "object",
-                "required": ["cron"],
-                "additionalProperties": false,
-                "properties": {
-                  "cron": { "$ref": "#/definitions/nonemptyLiteral" }
-                }
-              }
-            },
-            "workflow_dispatch": {
-              "oneOf": [
-                { "type": "null" },
-                { "type": "object", "maxProperties": 0, "additionalProperties": false }
-              ]
-            }
-          }
-        }
-      },
+      "maxProperties": 128,
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "additionalProperties": { "$ref": "#/definitions/inputDeclaration" }
+    },
+    "output": { "$ref": "#/definitions/outputSchemaDefinition" },
+    "uses": {
       "oneOf": [
+        { "const": "akm/command" },
+        { "$ref": "#/definitions/akmExecutableRef" }
+      ]
+    },
+    "run": { "$ref": "#/definitions/nonemptyLiteral" },
+    "with": { "$ref": "#/definitions/builtinCommandWith" },
+    "env": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string", "maxLength": 262144 },
+          { "type": "number" },
+          { "type": "boolean" }
+        ]
+      }
+    },
+    "shell": { "enum": ["bash", "sh", "zsh", "pwsh", "powershell", "cmd"] },
+    "working-directory": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 262144,
+      "pattern": "^(?![\\\\/])(?![A-Za-z]:[\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$))(?!.*[\\\\/]{2})(?!.*[\\\\/]$)[^\\u0000]+$"
+    },
+    "schedule": {
+      "oneOf": [
+        { "$ref": "#/definitions/nonemptyLiteral" },
         {
-          "description": "AKM's built-in anonymous/stored command action.",
-          "required": ["uses", "with"],
-          "properties": {
-            "uses": { "const": "akm/command" },
-            "with": { "$ref": "#/definitions/builtinCommandWith" }
-          },
-          "not": {
-            "anyOf": [
-              { "required": ["run"] },
-              { "required": ["shell"] },
-              { "required": ["working-directory"] }
-            ]
-          }
-        },
-        {
-          "description": "A canonical AKM executable ref.",
-          "required": ["uses"],
-          "properties": {
-            "uses": { "$ref": "#/definitions/akmExecutableRef" }
-          },
-          "not": {
-            "anyOf": [
-              { "required": ["run"] },
-              { "required": ["shell"] },
-              { "required": ["working-directory"] }
-            ]
-          }
-        },
-        {
-          "description": "One exact host-shell string.",
-          "required": ["run"],
-          "not": {
-            "anyOf": [
-              { "required": ["uses"] },
-              { "required": ["with"] }
-            ]
-          }
-        }
-      ],
-      "allOf": [
-        {
-          "description": "Exactly one scheduling source: akm.schedule or on.",
-          "oneOf": [
-            {
-              "required": ["akm"],
-              "properties": { "akm": { "required": ["schedule"] } },
-              "not": { "required": ["on"] }
-            },
-            {
-              "required": ["on"],
-              "not": {
-                "required": ["akm"],
-                "properties": { "akm": { "required": ["schedule"] } }
-              }
-            }
-          ]
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/definitions/taskSourceV4ScheduleEntry" }
         }
       ]
     },
-    {
-      "title": "AKM Task source v4",
-      "description": "Task source v4: typed inputs:, a single bounded output: schema, and OPTIONAL scheduling — a document with no schedule: is valid, runnable manually, composable, and is skipped (not rejected) by `akm task sync`. The akm: options bag and the on: trigger block are gone (their members are top-level); there is no github-action uses: target; with: is legal only alongside uses: akm/command (use inputs: everywhere else for typed parameters).",
-      "type": "object",
-      "required": ["version"],
-      "additionalProperties": false,
-      "properties": {
-        "version": { "const": 4 },
-        "name": { "type": "string", "maxLength": 262144 },
-        "description": { "type": "string", "maxLength": 262144 },
-        "when_to_use": { "type": "string", "maxLength": 262144 },
-        "tags": {
+    "agent": { "$ref": "#/definitions/nullableSelector" },
+    "engine": { "$ref": "#/definitions/nullableSelector" },
+    "model": { "$ref": "#/definitions/nullableSelector" },
+    "inference": {
+      "oneOf": [
+        { "$ref": "#/definitions/jsonObject" },
+        { "type": "null" }
+      ]
+    },
+    "tools": {
+      "oneOf": [
+        { "type": "string", "maxLength": 262144 },
+        {
           "type": "array",
           "maxItems": 1024,
-          "items": { "type": "string", "minLength": 1, "maxLength": 262144 }
+          "items": { "type": "string", "maxLength": 262144 }
         },
-        "inputs": {
-          "type": "object",
-          "maxProperties": 128,
-          "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
-          "additionalProperties": { "$ref": "#/definitions/inputDeclaration" }
-        },
-        "output": { "$ref": "#/definitions/outputSchemaDefinition" },
-        "uses": {
-          "oneOf": [
-            { "const": "akm/command" },
-            { "$ref": "#/definitions/akmExecutableRef" }
-          ]
-        },
-        "run": { "$ref": "#/definitions/nonemptyLiteral" },
-        "with": { "$ref": "#/definitions/builtinCommandWith" },
-        "env": {
-          "type": "object",
-          "maxProperties": 256,
-          "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
-          "additionalProperties": {
-            "oneOf": [
-              { "type": "string", "maxLength": 262144 },
-              { "type": "number" },
-              { "type": "boolean" }
-            ]
-          }
-        },
-        "shell": { "enum": ["bash", "sh", "zsh", "pwsh", "powershell", "cmd"] },
-        "working-directory": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 262144,
-          "pattern": "^(?![\\\\/])(?![A-Za-z]:[\\\\/])(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$))(?!.*[\\\\/]{2})(?!.*[\\\\/]$)[^\\u0000]+$"
-        },
-        "schedule": {
-          "oneOf": [
-            { "$ref": "#/definitions/nonemptyLiteral" },
-            {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 64,
-              "items": { "$ref": "#/definitions/taskSourceV4ScheduleEntry" }
-            }
-          ]
-        },
-        "agent": { "$ref": "#/definitions/nullableSelector" },
-        "engine": { "$ref": "#/definitions/nullableSelector" },
-        "model": { "$ref": "#/definitions/nullableSelector" },
-        "inference": {
-          "oneOf": [
-            { "$ref": "#/definitions/jsonObject" },
-            { "type": "null" }
-          ]
-        },
-        "tools": {
-          "oneOf": [
-            { "type": "string", "maxLength": 262144 },
-            {
-              "type": "array",
-              "maxItems": 1024,
-              "items": { "type": "string", "maxLength": 262144 }
-            },
-            { "$ref": "#/definitions/jsonObject" },
-            { "type": "null" }
-          ]
-        },
-        "timeout": {
-          "oneOf": [
-            { "type": "integer", "minimum": 0, "maximum": 2147483647 },
-            { "type": "string", "pattern": "^\\d+[mMhHdD]$" },
-            { "type": "null" }
-          ]
-        },
-        "redact": {
-          "type": "array",
-          "maxItems": 32,
-          "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
-        },
-        "maxSteps": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
-        "maxRetries": { "type": "integer", "minimum": 0, "maximum": 100 }
-      },
-      "oneOf": [
-        {
-          "description": "AKM's built-in anonymous/stored command action.",
-          "required": ["uses", "with"],
-          "properties": {
-            "uses": { "const": "akm/command" },
-            "with": { "$ref": "#/definitions/builtinCommandWith" }
-          },
-          "not": {
-            "anyOf": [
-              { "required": ["run"] },
-              { "required": ["shell"] },
-              { "required": ["working-directory"] }
-            ]
-          }
-        },
-        {
-          "description": "A canonical AKM executable ref (commands/, scripts/, or workflows/). No with: here — declare typed parameters with inputs: instead.",
-          "required": ["uses"],
-          "properties": {
-            "uses": { "$ref": "#/definitions/akmExecutableRef" }
-          },
-          "not": {
-            "anyOf": [
-              { "required": ["run"] },
-              { "required": ["with"] },
-              { "required": ["shell"] },
-              { "required": ["working-directory"] }
-            ]
-          }
-        },
-        {
-          "description": "One exact host-shell string.",
-          "required": ["run"],
-          "not": {
-            "anyOf": [
-              { "required": ["uses"] },
-              { "required": ["with"] }
-            ]
-          }
-        }
+        { "$ref": "#/definitions/jsonObject" },
+        { "type": "null" }
       ]
+    },
+    "timeout": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+        { "type": "string", "pattern": "^\\d+[mMhHdD]$" },
+        { "type": "null" }
+      ]
+    },
+    "redact": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+    },
+    "maxSteps": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "maxRetries": { "type": "integer", "minimum": 0, "maximum": 100 }
+  },
+  "oneOf": [
+    {
+      "description": "AKM's built-in anonymous/stored command action.",
+      "required": ["uses", "with"],
+      "properties": {
+        "uses": { "const": "akm/command" },
+        "with": { "$ref": "#/definitions/builtinCommandWith" }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["run"] },
+          { "required": ["shell"] },
+          { "required": ["working-directory"] }
+        ]
+      }
+    },
+    {
+      "description": "A canonical AKM executable ref (commands/, scripts/, or workflows/). No with: here — declare typed parameters with inputs: instead.",
+      "required": ["uses"],
+      "properties": {
+        "uses": { "$ref": "#/definitions/akmExecutableRef" }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["run"] },
+          { "required": ["with"] },
+          { "required": ["shell"] },
+          { "required": ["working-directory"] }
+        ]
+      }
+    },
+    {
+      "description": "One exact host-shell string.",
+      "required": ["run"],
+      "not": {
+        "anyOf": [
+          { "required": ["uses"] },
+          { "required": ["with"] }
+        ]
+      }
     }
   ],
   "definitions": {
@@ -356,7 +168,7 @@
       "pattern": "^(?:[^\\s:.#/]+//)?(?:commands|workflows|scripts)/(?!\\.{1,2}(?:/|$))[^\\s#\\\\/\\u0000]+(?:/(?!\\.{1,2}(?:/|$))[^\\s#\\\\/\\u0000]+)*$"
     },
     "taskSourceV4ScheduleEntry": {
-      "description": "One schedule: list entry (D2-N5: per-entry enabled defaults true; inputs are validated against inputs: at parse time but not yet delivered to the scheduled run, P2b).",
+      "description": "One schedule: list entry (D2-N5: per-entry enabled defaults true; inputs are validated against inputs: at parse time and delivered to the scheduled run's own invocation, P2b).",
       "type": "object",
       "required": ["cron"],
       "additionalProperties": false,

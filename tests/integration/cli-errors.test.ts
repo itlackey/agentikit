@@ -175,13 +175,21 @@ describe("CLI error handling", () => {
 // already-correct throw, not a behavior flip: one test per code asserting
 // the {ok:false,error,code} JSON envelope on stderr and exit 2.
 describe("CLI envelope coverage for P1a's diagnostic codes (COMPOSITION_INVALID, TASK_SOURCE_INVALID)", () => {
-  test("akm task run of a task source with no scheduling source emits {ok:false,code:TASK_SOURCE_INVALID} on stderr, exit 2", async () => {
+  test("akm task run of a malformed task source emits {ok:false,code:TASK_SOURCE_INVALID} on stderr, exit 2", async () => {
     const stash = makeStashDir();
     disposers.push(stash);
     fs.mkdirSync(path.join(stash.dir, "tasks"), { recursive: true });
-    // R-06 shape (parseTaskV3Yaml's sourceError funnel, re-coded by P1a):
-    // neither akm.schedule nor on: declared.
-    fs.writeFileSync(path.join(stash.dir, "tasks", "bad-source.yml"), "version: 3\nrun: echo hi\n", "utf8");
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.2, row B-18/B-19,
+    // F-A2.35) retired the R-06 shape this fixture used to pin — task source
+    // v4 makes scheduling OPTIONAL, so "neither akm.schedule nor on:
+    // declared" is no longer an error at all (D2-N6). `run:` and `uses:`
+    // both present is task source v4's own "exactly one executable selector"
+    // TASK_SOURCE_INVALID instead — the same code, a different malformation.
+    fs.writeFileSync(
+      path.join(stash.dir, "tasks", "bad-source.yml"),
+      "version: 4\nrun: echo hi\nuses: commands/x\n",
+      "utf8",
+    );
 
     const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () => runCli("task", "run", "bad-source"));
 
@@ -191,6 +199,31 @@ describe("CLI envelope coverage for P1a's diagnostic codes (COMPOSITION_INVALID,
     expect(parsed.code).toBe("TASK_SOURCE_INVALID");
     expect(typeof parsed.error).toBe("string");
     expect(parsed.hint).toBe(new UsageError("x", "TASK_SOURCE_INVALID").hint());
+  });
+
+  // P4 (spec §3.2.2, rows B-14/B-15, F-A2.35): task source v3 AND v2 are
+  // both retired from `src` now, with the SAME TASK_SCHEMA_VERSION_UNSUPPORTED
+  // code and migrate hint (the migrator runs both generations in sequence).
+  test.each([
+    ["v3", "version: 3\nrun: echo hi\nschedule: '@daily'\n"],
+    ["v2", "version: 2\nschedule: '@daily'\ncommand: echo hi\n"],
+  ] as const)("akm task run of a %s task source emits {ok:false,code:TASK_SCHEMA_VERSION_UNSUPPORTED} on stderr, exit 2, naming the migrate command", async (_label, yaml) => {
+    const stash = makeStashDir();
+    disposers.push(stash);
+    fs.mkdirSync(path.join(stash.dir, "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(stash.dir, "tasks", "legacy-source.yml"), yaml, "utf8");
+
+    const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () =>
+      runCli("task", "run", "legacy-source"),
+    );
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
+    expect(typeof parsed.error).toBe("string");
+    expect(parsed.hint).toContain("akm migrate apply --dry-run");
+    expect(parsed.hint).toContain("akm migrate apply");
   });
 
   test("akm workflow run of a step passing with: to a task target emits {ok:false,code:COMPOSITION_INVALID} on stderr, exit 2", async () => {

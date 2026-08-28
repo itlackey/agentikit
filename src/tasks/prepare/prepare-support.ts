@@ -39,7 +39,7 @@ export function environmentSnapshot(environment: TaskV3Environment | undefined):
     const value = String(raw);
     if (isInferredSecretName(key) || detectSecretShapedParams({ [key]: value }).length > 0) {
       throw new UsageError(
-        `Task v3 env.${key} is a secret-shaped literal env value. Store credentials in a secret/env binding rather than durable task source.`,
+        `Task env.${key} is a secret-shaped literal env value. Store credentials in a secret/env binding rather than durable task source.`,
         "INVALID_FLAG_VALUE",
       );
     }
@@ -117,7 +117,6 @@ export function base(
   return Object.freeze({
     taskId: context.taskId,
     taskRef: context.taskRef,
-    enabled: document.akm?.enabled !== false,
     environment,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     redact: Object.freeze([...(document.akm?.redact ?? [])]),

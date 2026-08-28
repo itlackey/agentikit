@@ -10,6 +10,7 @@ import { UsageError } from "../../core/errors";
 import { type GuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
 import { defaultMapConcurrency, workflowMaxConcurrency } from "../concurrency-policy";
 import { assertChildOutputReferences } from "../freeze/child-output-references";
+import { resolveWorkflowSourceV4 } from "../freeze/source-freeze";
 import type { ChildCompositionContext, ChildFreezeFn } from "../freeze/step-values";
 import type { WorkflowAsset } from "../runtime/workflow-asset-loader";
 import type { WorkflowUnitDraft } from "./compile";
@@ -23,7 +24,6 @@ import {
   WORKFLOW_IR_V5_VERSION,
   type WorkflowPlanGraphV4,
 } from "./schema-v4";
-import { resolveWorkflowSourceV4 } from "./source-freeze-v4";
 
 export interface FrozenWorkflowV4 {
   readonly plan: WorkflowPlanGraphV4;
@@ -62,9 +62,10 @@ export async function compileResolveFreezeWorkflowV4(
   };
   // Injected rather than imported (A-N7/step-values.ts's `ChildCompositionContext`
   // doc): `targets/child-workflow.ts` is downstream of this module (via
-  // `resolve-steps.ts` <- `source-freeze.ts` <- the `source-freeze-v4.ts`
-  // shim), so it cannot import `compileResolveFreezeWorkflowV4` directly
-  // without closing a static import cycle
+  // `resolve-steps.ts` <- `source-freeze.ts`, imported directly above — the
+  // `source-freeze-v4.ts` shim P4 deleted used to sit on this edge), so it
+  // cannot import `compileResolveFreezeWorkflowV4` directly without closing
+  // a static import cycle
   // (tests/architecture/import-cycle-ratchet.test.ts, shrink-only, empty
   // baseline). This closure is this function's own recursive call, passed
   // down as a plain value through `ResolutionContext.freezeChild`.

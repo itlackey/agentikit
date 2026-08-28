@@ -7,24 +7,24 @@
  * scheduled moment.
  *
  * The durable boundary is intentional: id/bundle resolution, source read,
- * strict v3 parsing, target resolution, command authorization/lowering,
- * workflow projectability, and frozen script-byte capture (load-task.ts) all
- * finish before an attempt is reserved or a log is created
- * (attempt-lifecycle.ts). Once prepared, the runner skips disabled scheduler
- * firings or dispatches the immutable command, workflow, shell, or script
- * projection to its own arm module (run-command-task.ts,
- * run-workflow-task.ts, run-native-task.ts) and records that actual attempt.
+ * strict task source parsing, target resolution, command
+ * authorization/lowering, workflow projectability, and frozen script-byte
+ * capture (load-task.ts) all finish before an attempt is reserved or a log is
+ * created (attempt-lifecycle.ts). Once prepared, the runner dispatches the
+ * immutable command, workflow, shell, or script projection to its own arm
+ * module (run-command-task.ts, run-workflow-task.ts, run-native-task.ts) and
+ * records that actual attempt. Task source v4 has no document-level disabled
+ * state to skip at fire time (P4-N6) — a schedule binding that should not
+ * fire is never installed with the OS scheduler in the first place
+ * (scheduler-sync.ts), so every invocation that reaches `runTask` dispatches.
  *
- * Orchestration only. Moved from src/tasks/runner.ts's `runTask` (spec
- * docs/plans/specs/p1b-model-extraction.md §5.1, §9, runner.ts:150-254) — the
- * one function this module exists to define.
+ * Orchestration only.
  *
  * D5 (spec §1.2/§5.2, "Threading"): resolves `options.provenance` against the
  * default context (run/provenance.ts) ONCE per call, and threads the result
  * into every dispatch arm.
  */
 
-import { shouldSkipUnactivatedTask } from "../../core/activation-policy";
 import { runWorkflowSteps } from "../../workflows/exec/run-workflow";
 import { recordTaskAttemptFailure, reserveTaskAttempt } from "./attempt-lifecycle";
 import { loadPreparedTask } from "./load-task";
@@ -32,9 +32,8 @@ import { resolveProvenanceContext } from "./provenance";
 import { runPreparedCommandTask } from "./run-command-task";
 import { runNativeTask } from "./run-native-task";
 import { runWorkflowTask } from "./run-workflow-task";
-import { appendHistory } from "./task-history";
 import { resolveTaskLogPath } from "./task-log";
-import { finishDisabledTask, type RunTaskOptions, type TaskRunResult } from "./task-result";
+import type { RunTaskOptions, TaskRunResult } from "./task-result";
 
 export async function runTask(id: string, options: RunTaskOptions): Promise<TaskRunResult> {
   const runWorkflowStepsImpl = options.runWorkflowStepsImpl ?? runWorkflowSteps;
@@ -52,11 +51,6 @@ export async function runTask(id: string, options: RunTaskOptions): Promise<Task
   const startedIso = startedAt.toISOString();
   const logPath = resolveTaskLogPath(options.logDir, id, startedIso);
   try {
-    if (shouldSkipUnactivatedTask({ enabled: task.enabled, scheduled: options.scheduled === true })) {
-      const result = finishDisabledTask(task, logPath, startedAt, now());
-      appendHistory(result, attempt.historyReserved);
-      return result;
-    }
     if (task.kind === "workflow") {
       return await runWorkflowTask({
         task,

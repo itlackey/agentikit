@@ -29,7 +29,8 @@ import path from "node:path";
 import { openStateDatabase } from "../../src/core/state-db";
 import type { SpawnFn } from "../../src/core/subprocess";
 import { getTaskHistory, upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
-import { readTaskHistory, runTask } from "../../src/tasks/runner";
+import { runTask } from "../../src/tasks/run/run-task";
+import { readTaskHistory } from "../../src/tasks/run/task-history";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
@@ -102,7 +103,7 @@ function storedTargetKind(taskId: string): string | null | undefined {
 describe("R-08 — legacy vocabulary: stored target_kind strings + read-back shape", () => {
   test('R-08 — a prepared workflow target stores target_kind "workflow" and reads back { kind: "workflow", ref }', async () => {
     // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later phase flips this deliberately.
-    writeTask("arm-workflow", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
+    writeTask("arm-workflow", 'version: 4\nuses: workflows/noop\nschedule:\n  - cron: "@daily"\n');
 
     const result = await runTask("arm-workflow", {
       bundleDir: storage.stashDir,
@@ -141,13 +142,13 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
     writeTask(
       "arm-command",
       [
-        "version: 3",
+        "version: 4",
         "uses: akm/command",
         "with:",
         "  content: say hi",
-        "akm:",
-        '  schedule: "@daily"',
-        "  engine: opencode",
+        "schedule:",
+        '  - cron: "@daily"',
+        "engine: opencode",
         "",
       ].join("\n"),
     );
@@ -170,7 +171,7 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
   // stores "shell"; reads back {kind:"shell"}.": D8's re-code gives the
   // native shell arm its own name instead of the former borrowed "command".
   test('R-08 — a prepared shell (run:) target stores target_kind "shell" and reads back { kind: "shell" } with cmd dropped', async () => {
-    writeTask("arm-shell", 'version: 3\nrun: printf ok\nshell: sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("arm-shell", 'version: 4\nrun: printf ok\nshell: sh\nschedule:\n  - cron: "@daily"\n');
 
     const result = await runTask("arm-shell", {
       bundleDir: storage.stashDir,
@@ -197,7 +198,7 @@ describe("R-08 — legacy vocabulary: stored target_kind strings + read-back sha
   // flips to its opposite.
   test('R-08 — a prepared script target stores its OWN target_kind "script" (distinguishable from shell) and reads back { kind: "script" }', async () => {
     fs.writeFileSync(path.join(scriptsDir, "arm-script.sh"), "#!/bin/sh\nprintf ok\n");
-    writeTask("arm-script", 'version: 3\nuses: scripts/arm-script.sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("arm-script", 'version: 4\nuses: scripts/arm-script.sh\nschedule:\n  - cron: "@daily"\n');
 
     const result = await runTask("arm-script", {
       bundleDir: storage.stashDir,
@@ -308,7 +309,7 @@ describe('R-09 — bundleName fallback resolves to the literal "stash" bundle', 
   // option key below changes — every assertion, including the resolved ref
   // string, is byte-identical to the P0 pin.
   test('R-09 — with no options.bundleName and no config.defaultBundle, the qualified ref resolves against bundle "stash"', async () => {
-    writeTask("arm-fallback", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
+    writeTask("arm-fallback", 'version: 4\nuses: workflows/noop\nschedule:\n  - cron: "@daily"\n');
     const captured: string[] = [];
 
     const result = await runTask("arm-fallback", {

@@ -36,12 +36,15 @@
  *
  * B-01 and B-44 need no unlanded API and carry no `@ts-expect-error` pin —
  * each exercises ONLY already-working freeze/hash machinery: B-01's target
- * is a `version: 3` task (still unaffected by A-N6's still-active LC-N1
- * deferral, which blocks EVERY `version: 4` task composed from a workflow
- * step today, `with:` or not — see that test's own comment), and B-44's
- * fixture is a plain `akm/command` step that never reaches task composition
- * at all. `computeUnitInputHash` itself is untouched code. Both are GREEN
- * today and stay green as a continuous ratchet through Implement. B-43
+ * is a task with no `inputs:` key declared (P4
+ * docs/plans/specs/p4-deletions-closeout.md §7.2 F-A2.30 converted this from
+ * a `version: 3` fixture — A-N6's LC-N1 deferral this comment used to cite
+ * was already lifted by P2b itself, and task source v3 acceptance is retired
+ * by P4, so a `version: 4` task with no `inputs:` key is now the faithful
+ * fixture for the identical "declares no inputs" claim), and B-44's fixture
+ * is a plain `akm/command` step that never reaches task composition at all.
+ * `computeUnitInputHash` itself is untouched code. Both are GREEN today and
+ * stay green as a continuous ratchet through Implement. B-43
  * needs the `with:`-bindings path (A-N3's decode widening, A-N6's
  * composition-deferral lift) and is RED today for the same two reasons
  * documented at the top of task-input-bindings.test.ts.
@@ -116,24 +119,16 @@ async function freeze(ref: string) {
 
 describe("P2b freeze identity — B-01: absence-when-empty is the identity-preserving default (A-N7)", () => {
   test("a task-composing step whose target declares no inputs: at all, with no with:, freezes a target with no OWN inputBindings key", async () => {
-    // Deliberately a version: 3 task target, not version: 4 — mirroring
+    // task source v4, no `inputs:` key declared — mirroring
     // tests/workflows/with-rejection.test.ts's own reasoning (its header
-    // comment): a v3 task can never declare `inputs:` at all (P2a §1.2 D2),
-    // so "declares no inputs" holds structurally, independent of any
-    // binding logic, AND unaffected by A-N6 (the still-active LC-N1
-    // deferral rejects EVERY version: 4 task composed from a workflow step,
-    // with: or not — a v4 fixture here would be RED for an unrelated
-    // reason). B-01's own claim is a PRESERVATION claim — "byte-identical to
-    // TODAY" — and before P2b, v3 was the ONLY reachable task-composition
-    // target, so this is the more faithful fixture for exactly that claim,
-    // not merely a workaround. This mirrors Lane D's own exclusion (a) — see
-    // tests/architecture/task-fixture-vocabulary.test.ts's
-    // ALLOWED_EXACT_FILES, which excludes this file for the identical
-    // reason.
-    write(
-      "tasks/no-inputs.yml",
-      ["version: 3", "uses: commands/review", "akm:", '  schedule: "@daily"', ""].join("\n"),
-    );
+    // comment, P4 F-A2.30): "declares no inputs" holds structurally,
+    // independent of any binding logic, regardless of task source version.
+    // Converted from a `version: 3` fixture (P4 retired task source v3
+    // acceptance); B-01's own claim is a PRESERVATION claim — "byte-
+    // identical to TODAY" — and the v4 form makes the identical claim the v3
+    // one used to, so this stays the more faithful fixture, not merely a
+    // workaround.
+    write("tasks/no-inputs.yml", ["version: 4", "uses: commands/review", 'schedule: "@daily"', ""].join("\n"));
     write("commands/review.md", "Review the composed task target.\n");
     writeWorkflow("no-with", [`      - id: ${STEP_ID}`, "        uses: tasks/no-inputs"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });

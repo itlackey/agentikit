@@ -291,7 +291,7 @@ export async function akmTaskExplain(ref: string, options: TaskExplainOptions = 
   const yaml = fs.readFileSync(sourcePath, "utf8");
   const parsed = parseTaskSource({ yaml, filePath: sourcePath, workspaceRoot: bundle.source.path });
 
-  const inputContract: InputContract = parsed.version === 4 ? (parsed.v4.inputs ?? {}) : {};
+  const inputContract: InputContract = parsed.v4.inputs ?? {};
   // Code-review finding (explain.ts:299, B-N4): `akm task run`'s
   // load-task.ts copies this same materialize -> applyInputDefaults ->
   // validateInputs ladder, but its own trailing `validateInputs` +
@@ -312,39 +312,27 @@ export async function akmTaskExplain(ref: string, options: TaskExplainOptions = 
   const materializedInputs = materializeInputFlags(inputContract, options.inputFlags ?? [], TASK_INPUT_DIAGNOSTICS);
   const defaultedInputs = applyInputDefaults(inputContract, materializedInputs);
 
-  const document: PreparableTaskDocument = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
+  const document: PreparableTaskDocument = projectTaskSourceV4(parsed.v4);
 
-  const schedule: ScheduleBindingRow[] =
-    parsed.version === 4
-      ? parsed.v4.schedule.map((entry) => ({
-          ordinal: entry.ordinal,
-          cron: entry.cron,
-          enabled: entry.enabled,
-          source: entry.source,
-          inputs: Object.fromEntries(
-            Object.entries(entry.inputs).map(([name, value]) => {
-              const redaction = redactIfSecretShaped(name, value);
-              return [
-                name,
-                {
-                  value: redaction.value,
-                  provenance: "schedule-binding" as const,
-                  ...(redaction.redacted ? { redacted: true } : {}),
-                },
-              ];
-            }),
-          ),
-        }))
-      : parsed.v3.triggers.schedules.map((entry) => ({
-          ordinal: entry.ordinal,
-          cron: entry.cron,
-          // v3 has no per-entry enabled: the DOCUMENT-level akm.enabled
-          // governs every schedule entry uniformly (D2-N5 is a v4-only
-          // per-entry refinement).
-          enabled: parsed.v3.akm?.enabled !== false,
-          source: entry.source,
-          inputs: {},
-        }));
+  const schedule: ScheduleBindingRow[] = parsed.v4.schedule.map((entry) => ({
+    ordinal: entry.ordinal,
+    cron: entry.cron,
+    enabled: entry.enabled,
+    source: entry.source,
+    inputs: Object.fromEntries(
+      Object.entries(entry.inputs).map(([name, value]) => {
+        const redaction = redactIfSecretShaped(name, value);
+        return [
+          name,
+          {
+            value: redaction.value,
+            provenance: "schedule-binding" as const,
+            ...(redaction.redacted ? { redacted: true } : {}),
+          },
+        ];
+      }),
+    ),
+  }));
 
   return {
     ref,
@@ -352,12 +340,8 @@ export async function akmTaskExplain(ref: string, options: TaskExplainOptions = 
     bundleName: bundle.source.name,
     sourcePath,
     sourceVersion: parsed.version,
-    ...(parsed.version === 4 && parsed.v4.name !== undefined ? { name: parsed.v4.name } : {}),
-    ...(parsed.version === 3 && parsed.v3.name !== undefined ? { name: parsed.v3.name } : {}),
-    ...(parsed.version === 4 && parsed.v4.description !== undefined ? { description: parsed.v4.description } : {}),
-    ...(parsed.version === 3 && parsed.v3.akm?.description !== undefined
-      ? { description: parsed.v3.akm.description }
-      : {}),
+    ...(parsed.v4.name !== undefined ? { name: parsed.v4.name } : {}),
+    ...(parsed.v4.description !== undefined ? { description: parsed.v4.description } : {}),
     target: targetSection(document),
     inputDeclarations: buildInputDeclarations(inputContract),
     suppliedInputs: buildSuppliedInputs(defaultedInputs, materializedInputs),

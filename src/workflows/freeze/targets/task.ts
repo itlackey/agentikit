@@ -79,8 +79,8 @@ async function resolveTaskForComposition(
 ): Promise<ResolvedTaskForComposition> {
   const { owned, retained } = await resolveAndCaptureTaskAsset(source, refInput, context);
   const parsed = parseTaskSource({ yaml: retained.content, filePath: owned.file, workspaceRoot: owned.root });
-  const contract = parsed.version === 4 ? parsed.v4.inputs : undefined;
-  const task = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
+  const contract = parsed.v4.inputs;
+  const task = projectTaskSourceV4(parsed.v4);
   return { owned, task, contract };
 }
 
@@ -111,10 +111,9 @@ export async function taskDispatch(
 ): Promise<ResolvedDispatch> {
   const { owned, task, contract } = await resolveTaskForComposition(source, refInput, context);
 
-  // A-N5: a with: on a target that declares no inputs: at all — a v3 task,
-  // or a v4 task with no inputs: — is COMPOSITION_INVALID. Fires on ANY
-  // authored with: shape, including `{}` (the check is `!== undefined`, not
-  // "non-empty").
+  // A-N5: a with: on a target that declares no inputs: at all is
+  // COMPOSITION_INVALID. Fires on ANY authored with: shape, including `{}`
+  // (the check is `!== undefined`, not "non-empty").
   if (source.with !== undefined && contract === undefined) {
     throw noDeclaredInputsError(source.id, refInput);
   }
@@ -127,11 +126,11 @@ export async function taskDispatch(
   // routes to the ONE child-workflow resolver instead.
 
   // Lane A2 (§3.2-§3.5): normalize THIS step's own with: against THIS task's
-  // OWN declared inputs — no merge across a composition chain (B-29). A v3
-  // task (or a v4 task with no inputs:) has contract === undefined, so an
-  // empty {} contract is used; freezeTaskInputBindings then produces no
-  // bindings for it (there is nothing to bind, and the COMPOSITION_INVALID
-  // check above already fired for any authored with:).
+  // OWN declared inputs — no merge across a composition chain (B-29). A task
+  // with no inputs: has contract === undefined, so an empty {} contract is
+  // used; freezeTaskInputBindings then produces no bindings for it (there is
+  // nothing to bind, and the COMPOSITION_INVALID check above already fired
+  // for any authored with:).
   const bindings = freezeTaskInputBindings({
     stepId: source.id,
     targetRef: refInput,
@@ -159,16 +158,18 @@ export async function taskDispatch(
     // P3a (spec §4.2, rows B-12/B-13): routes to the ONE child-workflow
     // resolver instead of rejecting. `prepared.ref`/`prepared.taskRef` are
     // already qualified (§4.2 step 1 re-resolves and re-canonicalizes them
-    // regardless). The mapping fed to the child differs by task version
-    // (A-N8's routing table): a v4 task with a declared `inputs:` contract
-    // hands over the bindings just computed above — ITS OWN effective
-    // inputs, already classified once against ITS contract — to be RE-bound
-    // against the child's declared `params:` (never round-tripped through
-    // the `with:` grammar: doing so would let a literal value shaped like
-    // `{from: ...}` be silently reinterpreted as a reference, code-review
-    // finding); a v3 task (or a v4 task with no `inputs:` at all, contract
-    // === undefined either way) hands the child its own raw, never-yet-
-    // normalized with: (`PreparedTaskV3Workflow.params`) unchanged.
+    // regardless). Always hands over the bindings just computed above — this
+    // task's OWN effective inputs, already classified once against its own
+    // contract — to be RE-bound against the child's declared `params:`
+    // (never round-tripped through the `with:` grammar: doing so would let a
+    // literal value shaped like `{from: ...}` be silently reinterpreted as a
+    // reference, code-review finding). Task source v4 rejects `with:` on any
+    // target but `uses: akm/command` (row B-28), so a workflow-target task
+    // can no longer author `with:` at all — the `{kind:"with"}` arm this
+    // ternary used to reach for a v3 task, or a v4 task with no `inputs:`,
+    // is unreachable from here and deleted (P4 §3.2.7, row B-30).
+    // `AuthoredChildInputs`'s `{kind:"with"}` member itself stays — the
+    // DIRECT composition path (`resolve-steps.ts`) still produces it.
     return childWorkflowDispatch({
       source,
       baseUnit,
@@ -176,8 +177,7 @@ export async function taskDispatch(
       context,
       via: "task",
       taskRef: prepared.taskRef,
-      authoredInputs:
-        contract !== undefined ? { kind: "bindings", value: bindings } : { kind: "with", value: prepared.params },
+      authoredInputs: { kind: "bindings", value: bindings },
     });
   }
   const taskLiterals = Object.entries(prepared.environment).map(([name, value]) =>

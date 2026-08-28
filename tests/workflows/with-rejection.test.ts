@@ -42,9 +42,16 @@
  * DECLARED input contract (task-input-bindings.test.ts owns that new
  * behavior). `COMPOSITION_INVALID` survives only for the case this fixture
  * happens to already be: a target that declares NO inputs at all — every
- * fixture below keeps its task at `version: 3` on purpose (§6.2 (d)), since a
- * v3 task can never declare `inputs:` (P2a §1.2 D2), so "no declared inputs"
- * stays true here unconditionally, independent of any binding logic. This is
+ * fixture below keeps its task with no `inputs:` key on purpose (§6.2 (d)
+ * originally, now P4 docs/plans/specs/p4-deletions-closeout.md §7.2 F-A2.30):
+ * task source v4 makes `inputs:` optional and this fixture simply never
+ * declares one, so "no declared inputs" stays true here unconditionally,
+ * independent of any binding logic — the fixture used to be pinned at
+ * `version: 3` for the SAME reason back when v3 could never declare
+ * `inputs:` at all (P2a §1.2 D2); P4 retired task source v3 acceptance, so a
+ * `version: 4` task with no `inputs:` key is now the faithful fixture for
+ * this exact claim (F-A2.30: "converting them would silently change what's
+ * asserted" no longer applies once the v4 form makes the same point). This is
  * flip F-A3: CODE stays `COMPOSITION_INVALID` on every assertion below;
  * only the trailing MESSAGE CLAUSE changes, from "task-call inputs are not
  * supported yet" to "<ref> declares no inputs" — the message text this file
@@ -76,9 +83,10 @@ const STEP_ID = "dispatch";
 const TASK_REF = "tasks/nightly";
 // P2b flip (F-A3): the trailing clause changed from "task-call inputs are not
 // supported yet" to naming the actual reason this fixture's target still
-// rejects a with: — tasks/nightly is version: 3, which can never declare
-// inputs: (P2a §1.2 D2), so it is a "no declared inputs" target ANY version
-// would be if it declared none. See this file's header comment.
+// rejects a with: — tasks/nightly declares no inputs: key, so it is a
+// "no declared inputs" target regardless of task source version. See this
+// file's header comment (P4 F-A2.30: converted from a version: 3 fixture,
+// which pinned the identical claim for the same underlying reason).
 const COMPOSITION_INVALID_MESSAGE = `Workflow step ${STEP_ID} cannot pass with: to task target ${TASK_REF}; ${TASK_REF} declares no inputs.`;
 
 interface RejectedFixtureEntry {
@@ -153,7 +161,7 @@ describe("P1a Lane A — with: on uses: tasks/<ref> rejects at freeze (COMPOSITI
    * must be "silently succeeds", not "fails for the wrong reason". */
   function writeTaskTarget(): void {
     write("commands/review.md", "Review the workflow-composed task target.\n");
-    write("tasks/nightly.yml", ["version: 3", "uses: commands/review", "akm:", '  schedule: "@daily"', ""].join("\n"));
+    write("tasks/nightly.yml", ["version: 4", "uses: commands/review", 'schedule: "@daily"', ""].join("\n"));
   }
 
   async function planRow(runId: string) {

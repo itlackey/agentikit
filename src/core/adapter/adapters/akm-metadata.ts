@@ -239,18 +239,11 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
     case "task-yaml": {
       out.tags = Array.from(new Set([...(out.tags ?? []), "task", "scheduled"]));
       try {
-        // Version-routing seam (spec docs/plans/specs/p2a-task-source-v4.md
-        // §3.6, B-37): a task source v4 document's target/schedule shapes are
-        // structurally interchangeable with v3's here (same `kind`/`uses`/
-        // `command`/`run`/`cron` field names), so the hint-building logic
-        // below is unchanged for both arms. Task source v4's OWN top-level
-        // description/tags/when_to_use are ADDITIONALLY extracted below —
-        // v3's akm.* options are NOT (unaffected by this phase's routing).
         const parsed = parseTaskSource({ yaml: file.content(), filePath: file.absPath, workspaceRoot: file.stashRoot });
-        const target = parsed.version === 4 ? parsed.v4.target : parsed.v3.target;
-        const schedules = parsed.version === 4 ? parsed.v4.schedule : parsed.v3.triggers.schedules;
+        const v4 = parsed.v4;
+        const target = v4.target;
         const hints = new Set<string>();
-        for (const binding of schedules) hints.add(`schedule:${binding.cron}`);
+        for (const binding of v4.schedule) hints.add(`schedule:${binding.cron}`);
         if (target.kind === "uses") {
           if (target.uses.kind === "workflow") hints.add(`workflow:${target.uses.ref}`);
           else if (target.uses.kind === "command") hints.add(`prompt:${target.uses.ref}`);
@@ -260,18 +253,15 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
         } else {
           hints.add(`run:${target.run}`);
         }
-        if (parsed.version === 4) {
-          const v4 = parsed.v4;
-          if (v4.description && !out.description) {
-            out.description = v4.description;
-            out.source = "task-source";
-            out.confidence = 0.9;
-          }
-          if (v4.tags && v4.tags.length > 0) {
-            out.tags = Array.from(new Set([...(out.tags ?? []), ...v4.tags]));
-          }
-          if (v4.when_to_use) hints.add(`when_to_use:${v4.when_to_use}`);
+        if (v4.description && !out.description) {
+          out.description = v4.description;
+          out.source = "task-source";
+          out.confidence = 0.9;
         }
+        if (v4.tags && v4.tags.length > 0) {
+          out.tags = Array.from(new Set([...(out.tags ?? []), ...v4.tags]));
+        }
+        if (v4.when_to_use) hints.add(`when_to_use:${v4.when_to_use}`);
         finalizeHints(out, hints);
       } catch {
         // Non-fatal: skip metadata extraction on parse error

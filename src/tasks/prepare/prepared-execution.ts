@@ -51,7 +51,6 @@ export type TaskV3ScriptInterpreter =
 export interface TaskV3PreparedBase {
   readonly taskId: string;
   readonly taskRef: string;
-  readonly enabled: boolean;
   readonly environment: Readonly<Record<string, string>>;
   readonly timeoutMs?: number | null;
   readonly redact: readonly string[];

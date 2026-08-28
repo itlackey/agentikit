@@ -15,7 +15,8 @@ import {
   getTaskHistoryRuns,
   reserveTaskHistoryAttempt,
 } from "../../src/storage/repositories/task-history-repository";
-import { readTaskHistory, runTask } from "../../src/tasks/runner";
+import { runTask } from "../../src/tasks/run/run-task";
+import { readTaskHistory } from "../../src/tasks/run/task-history";
 import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 

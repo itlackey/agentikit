@@ -55,7 +55,7 @@
 import path from "node:path";
 import { isDangerousEnvKey } from "../../../commands/lint/env-key-rules";
 import { parseTaskSource } from "../../../tasks/source/parse-task-source";
-import { taskV3SourceErrorDetail } from "../../../tasks/source-v3";
+import { taskSourceErrorDetail } from "../../../tasks/source-v3";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
@@ -328,7 +328,7 @@ export function taskDiagnostics(relPath: string, raw: string, workspaceRoot?: st
       {
         file: relPath,
         issue: "invalid-task-yaml",
-        detail: taskV3SourceErrorDetail(cause),
+        detail: taskSourceErrorDetail(cause),
         fixed: false,
       },
     ];

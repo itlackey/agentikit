@@ -59,8 +59,10 @@ export interface OwnedAsset {
  * deliberate leaf — rather than in `targets/child-workflow.ts`: `ir/freeze-v4.ts`
  * (which is NOT downstream of this module) needs this type to build the
  * root `ResolutionContext`'s default, and `targets/child-workflow.ts` IS
- * downstream of `ir/freeze-v4.ts` (via `resolve-steps.ts` <- `source-freeze.ts`
- * <- the `ir/source-freeze-v4.ts` shim), so an import from `ir/freeze-v4.ts`
+ * downstream of `ir/freeze-v4.ts` (via `resolve-steps.ts` <- `source-freeze.ts`,
+ * which `ir/freeze-v4.ts` imports directly — P4 deleted the
+ * `ir/source-freeze-v4.ts` shim that used to sit on this edge), so an
+ * import from `ir/freeze-v4.ts`
  * into `targets/child-workflow.ts` — or into this module, were the type
  * declared there instead — would close a static import cycle
  * (`tests/architecture/import-cycle-ratchet.test.ts`, shrink-only, empty

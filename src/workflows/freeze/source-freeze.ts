@@ -7,8 +7,9 @@
  * docs/plans/specs/p2b-input-bindings.md §3.1, A-N1): resolves every
  * authored workflow step through the shared command/task authorities and
  * publishes the frozen v4 unit/source shapes `src/workflows/ir/freeze-v4.ts`
- * builds a plan from. `src/workflows/ir/source-freeze-v4.ts` is now a pure
- * re-export shim over this module.
+ * builds a plan from. `ir/freeze-v4.ts` imports this module directly — the
+ * `src/workflows/ir/source-freeze-v4.ts` re-export shim that used to sit
+ * between them is deleted (P4 §3.2.7, row B-27).
  */
 
 import type { AkmConfig } from "../../core/config/config-types";
@@ -49,8 +50,9 @@ export interface ResolvedWorkflowSourceV4 {
  * p3a-plan-v5-child-freeze.md §4.1/§4.3) thread the recursive
  * child-workflow-freeze state down into every step's `ResolutionContext`;
  * `ir/freeze-v4.ts`'s `compileResolveFreezeWorkflowV4` is this function's
- * ONLY caller (via the `ir/source-freeze-v4.ts` shim) and supplies both —
- * the root default composition, or the composition
+ * ONLY caller (directly — P4 deleted the `ir/source-freeze-v4.ts` shim that
+ * used to sit on this edge) and supplies both — the root default
+ * composition, or the composition
  * `targets/child-workflow.ts` built for a recursive child freeze.
  */
 export async function resolveWorkflowSourceV4(

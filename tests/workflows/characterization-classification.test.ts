@@ -20,7 +20,6 @@ import { resetConfigCache } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
 import { akmIndex } from "../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
-import { classifyTaskV3Uses } from "../../src/tasks/source-v3";
 import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
 import { decodeWorkflowPlanV4, type FrozenWorkflowTarget } from "../../src/workflows/ir/schema-v4";
 import { startWorkflowRun } from "../../src/workflows/runtime/runs";
@@ -56,56 +55,23 @@ function write(root: string, relative: string, content: string): string {
   return file;
 }
 
-// ── classifyTaskV3Uses: the (deleted) GitHub-action locator grammar (R-04) ──
-
-describe("classifyTaskV3Uses — GitHub-action locator grammar (R-04, task-v3/source-v3.ts) FLIPPED in P4", () => {
-  // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-01/B-02,
-  // F-A1.3): the locator branch is deleted from classifyTaskV3Uses entirely
-  // — a value that used to classify as kind github-action now falls to the
-  // same generic trailing throw as any other unrecognized shape.
-  test("R-04(a) FLIPPED in P4: owner/repo@rev and owner/repo/path@rev now reject with the trailing classification message", () => {
-    const base = thrown(() => classifyTaskV3Uses("owner/repo@v1"));
-    expect(base).toBeInstanceOf(UsageError);
-    expect((base as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    expect((base as Error).message).toBe(
-      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref. Agent/task/local/Docker/remote-action/ambiguous targets are not executable.",
-    );
-
-    const withPath = thrown(() => classifyTaskV3Uses("owner/repo/sub/dir@v1"));
-    expect(withPath).toBeInstanceOf(UsageError);
-    expect((withPath as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    expect((withPath as Error).message).toBe(
-      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref. Agent/task/local/Docker/remote-action/ambiguous targets are not executable.",
-    );
-  });
-
-  // P4 FLIP (row B-03, F-A1.4): same trailing message, minus its
-  // "or owner/repo[/path]@ref" clause — the locator branch that clause
-  // described is gone, so both a non-locator-shaped value ("review") and a
-  // locator-shaped-but-incomplete one ("owner/repo", no "@rev") fall through
-  // to the identical generic throw.
-  test("R-04(a) FLIPPED in P4: a near-miss locator falls through to the trailing classification error, now without the owner/repo[/path]@ref clause", () => {
-    const error = thrown(() => classifyTaskV3Uses("review"));
-    expect(error).toBeInstanceOf(UsageError);
-    expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    expect((error as Error).message).toBe(
-      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref. Agent/task/local/Docker/remote-action/ambiguous targets are not executable.",
-    );
-
-    const locatorError = thrown(() => classifyTaskV3Uses("owner/repo"));
-    expect(locatorError).toBeInstanceOf(UsageError);
-    expect((locatorError as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    expect((locatorError as Error).message).toBe(
-      "Task v3 uses must be akm/command, a canonical commands/, workflows/, or scripts/ asset ref. Agent/task/local/Docker/remote-action/ambiguous targets are not executable.",
-    );
-  });
-
-  // R-04(b) DELETED in P4 (F-A1.5): its subject — a task whose uses:
-  // classifies as github-action reaching prepare — cannot occur any more. A
-  // locator-shaped uses: now fails at classification (parse), verified by
-  // the R-04(a) tests above; prepare.ts's own github-action arm is deleted
-  // with it (§3.1.2).
-});
+// classifyTaskV3Uses — the GitHub-action locator grammar this describe block
+// used to pin (R-04(a), F-A1.3/F-A1.4) — is DELETED along with task source
+// v3 acceptance itself (P4 docs/plans/specs/p4-deletions-closeout.md §3.2.3,
+// F-A2.1: "the parser" including its uses: classifier is vendored into the
+// migrator, never re-accepted by `src`). The vendored copy
+// (scripts/akm-migrate/migrate/task-source-v3-frozen.ts) is deliberately
+// FROZEN at its pre-A1 shape — it still accepts a locator-shaped ref, since
+// a real migration source may still contain one — so it cannot stand in for
+// this block's post-A1-flip expectations, and task source v4's own
+// classifyTaskSourceV4Uses (src/tasks/source/task-source-v4.ts) rejects the
+// same inputs through a different code/message taxonomy (TARGET_REF_INVALID
+// for a non-locator-shaped ref, INVALID_FLAG_VALUE with the B-11 message for
+// a locator-shaped one) — not a byte-compatible successor to re-point this
+// block at. The locator grammar's absence stays pinned elsewhere: row
+// F-A1.7 (tests/execution/target-ref.test.ts, the canonical classifier) and
+// F-A1.9 (tests/workflows/source-ir-contract.test.ts, the workflow-step
+// parity table).
 
 // ── classifyWorkflowStepUses: task-ref delegation, and the two direct- ──────
 // ── rejection kinds it wraps around the injected classifier ────────────────
@@ -215,7 +181,7 @@ describe("R-03 (sites 2/3, freeze/targets/task.ts:116,149) FLIPPED in P3a — a 
     write(
       storage.stashDir,
       "tasks/nested-workflow-task.yml",
-      ["version: 3", "uses: workflows/child", "akm:", '  schedule: "@daily"', ""].join("\n"),
+      ["version: 4", "uses: workflows/child", 'schedule: "@daily"', ""].join("\n"),
     );
     write(
       storage.stashDir,

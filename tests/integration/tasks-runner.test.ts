@@ -10,7 +10,10 @@ import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import type { AgentRunResult } from "../../src/integrations/agent";
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
 import { resolveAkmInvocation } from "../../src/tasks/resolve-akm-bin";
-import { DEFAULT_WORKFLOW_TASK_TIMEOUT_MS, exitCodeForStatus, readTaskHistory, runTask } from "../../src/tasks/runner";
+import { runTask } from "../../src/tasks/run/run-task";
+import { DEFAULT_WORKFLOW_TASK_TIMEOUT_MS } from "../../src/tasks/run/run-workflow-task";
+import { readTaskHistory } from "../../src/tasks/run/task-history";
+import { exitCodeForStatus } from "../../src/tasks/run/task-result";
 import { withEnv } from "../_helpers/sandbox";
 
 type FakeWorkflowRunner = (options: { target: string; params?: Record<string, unknown> }) => Promise<{
@@ -527,22 +530,16 @@ describe("runTask — workflow target", () => {
   });
 
   test("threads declared maxSteps / maxRetries into the orchestrator", async () => {
-    // A v4 document may carry `with:` only on `uses: akm/command` (P2a
-    // D2-N1) — a `uses: workflows/<ref>` task has typed `inputs:` and no
-    // `with:`, so the `with:` -> child-run-params path this assertion
-    // exercises is reachable only from a v3 fixture (spec
-    // docs/plans/specs/p2b-input-bindings.md §4.3, mirroring P-03's own
-    // characterization). Kept v3 rather than routed through `workflowTask()`
-    // (Lane D sweep escape valve, spec §6.3).
-    writeTask(
-      "wf-bounds",
-      stringifyYaml({
-        version: 3,
-        uses: "workflows/noop",
-        with: { region: "us-east-1" },
-        akm: { schedule: "@daily", enabled: true, maxSteps: 4, maxRetries: 2 },
-      }),
-    );
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2, row B-28) retired
+    // this test's v3 fixture along with task source v3 acceptance itself —
+    // the `with:` -> child-run-params path it exercised on a
+    // `uses: workflows/<ref>` target is now UNREACHABLE (task source v4
+    // rejects `with:` on any target but `uses: akm/command`; R-R2 is
+    // resolved by deletion, spec §8). Converted to task source v4:
+    // maxSteps/maxRetries are top-level fields there, and `params` is now
+    // the task's defaulted declared inputs — `{}` here, since this fixture
+    // declares none (row B-28's new answer).
+    writeTask("wf-bounds", workflowTask({ maxSteps: 4, maxRetries: 2 }));
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-bounds", {
@@ -554,7 +551,7 @@ describe("runTask — workflow target", () => {
     expect(result.status).toBe("completed");
     expect(captured[0]!.maxSteps).toBe(4);
     expect(captured[0]!.maxRetries).toBe(2);
-    expect(captured[0]!.params).toEqual({ region: "us-east-1" });
+    expect(captured[0]!.params).toEqual({});
   });
 
   test("omits maxSteps / maxRetries when the task declares none", async () => {
@@ -1111,79 +1108,19 @@ describe("runTask — prompt target", () => {
   });
 });
 
-// task source v4's per-schedule-binding `enabled` is deliberately NOT
-// projected into `PreparableTaskDocument.enabled` (src/tasks/source/project-v4.ts's
-// own header: "carried separately to the scheduler seam, not this
-// function"; src/tasks/prepare/prepare-support.ts:120 derives
-// `enabled: document.akm?.enabled !== false`, which is always `true` for a
-// v4-projected document since `projectAkm` never sets `akm.enabled`). A v4
-// fixture therefore cannot exercise runTask's own disabled-task skip path —
-// this describe block's SUBJECT is that runtime check, so its two fixtures
-// stay task source v3 (Lane D sweep, docs/plans/specs/p2b-input-bindings.md
-// §6.3's "would change what the test asserts" escape valve).
-function disabledWorkflowTaskV3(): string {
-  return 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n  enabled: false\n';
-}
-
-describe("runTask — disabled tasks", () => {
-  test("manual invocation dispatches an intentionally disabled task", async () => {
-    writeTask("off", disabledWorkflowTaskV3());
-    let called = false;
-    const fakeWf: FakeWorkflowRunner = async ({ target, params = {} }) => {
-      called = true;
-      return {
-        run: {
-          id: "manual-disabled",
-          workflowRef: target,
-          workflowTitle: "Manual disabled run",
-          status: "completed",
-          params,
-          createdAt: "2025-01-01T00:00:00Z",
-          updatedAt: "2025-01-01T00:00:00Z",
-          completedAt: "2025-01-01T00:00:00Z",
-          currentStepId: null,
-        },
-        executed: [],
-        done: true,
-      };
-    };
-
-    const result = await runTask("off", {
-      bundleDir,
-      logDir,
-      runWorkflowStepsImpl: fakeWf as never,
-      now: () => new Date("2025-01-01T00:00:00Z"),
-    });
-
-    expect(called).toBe(true);
-    expect(result.status).toBe("completed");
-  });
-
-  test("scheduler-generated invocation is recorded but not dispatched", async () => {
-    writeTask("off", disabledWorkflowTaskV3());
-    let called = false;
-    const fakeWf = async () => {
-      called = true;
-      throw new Error("should not be called");
-    };
-    const result = await runTask("off", {
-      bundleDir,
-      logDir,
-      runWorkflowStepsImpl: fakeWf as never,
-      now: () => new Date("2025-01-01T00:00:00Z"),
-      scheduled: true,
-    });
-    expect(called).toBe(false);
-    expect(result.status).toBe("disabled");
-    expect(exitCodeForStatus(result.status)).toBe(0);
-
-    // #579: even a skipped run leaves a queryable trace in logs.db.
-    const logRows = readRunLogRows("off");
-    expect(logRows).toHaveLength(1);
-    expect(logRows[0]!.line).toContain("disabled");
-    expect(logRows[0]!.run_id).toBe(buildTaskRunId("off", result.startedAt));
-  });
-});
+// P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, row B-22, F-A2.17)
+// DELETED src/tasks/run/run-task.ts's shouldSkipUnactivatedTask call and the
+// helper itself, along with prepare-support.ts's `enabled:
+// document.akm?.enabled !== false` derivation — task source v4 has no
+// document-level `enabled` at all (P4-N6: `enabled` is per-schedule-binding,
+// enforced once at sync time by scheduler-sync.ts, never re-checked at fire
+// time). The "runTask — disabled tasks" describe block this comment used to
+// introduce (manual dispatch of an intentionally disabled task; a
+// scheduler-generated invocation recorded but not dispatched, asserting
+// `result.status === "disabled"`) tested exactly that now-deleted runtime
+// skip — its two version: 3 fixtures are gone with it, not merely
+// unreachable: a version: 3 document now fails TASK_SCHEMA_VERSION_UNSUPPORTED
+// before runTask ever sees it (row B-14).
 
 describe("resolveAkmInvocation", () => {
   function packageLauncher(packageRoot: string): string {

@@ -53,7 +53,7 @@ import {
 } from "./scheduler-binding";
 import { parseTaskSource } from "./source/parse-task-source";
 import { projectTaskSourceV4 } from "./source/project-v4";
-import { taskV3SourceErrorDetail } from "./source-v3";
+import { taskSourceErrorDetail } from "./source-v3";
 
 export interface SchedulerSyncPlanInput {
   readonly sourceRoot: string;
@@ -480,24 +480,22 @@ async function compileTaskSources(
         );
       }
       physicalOwners.set(physicalIdentity, sourcePath);
-      // Version-routing seam (spec docs/plans/specs/p2a-task-source-v4.md
-      // §3.6, §5.2): route through the union. On the task source v4 arm,
-      // project BEFORE prepareTaskV3Execution so projectability is checked
-      // identically to v3's own parse — but build the scheduler bindings
-      // from the ORIGINAL task source v4 document, not the projection,
-      // which deliberately drops per-entry `enabled` and `schedule[i].inputs`
-      // (D2-N5, project-v4.ts) — schedule-supplied inputs are delivered
-      // through the scheduler binding's own compiled invocation tail (P2b
-      // Lane B, spec §4.4, B-N3), not through the prepare-seam projection. A
-      // task source v4 document has no document-level `akm.enabled`, so
-      // `enabled: true` is passed at the document level and every entry's own
-      // `enabled` (always present, defaulted at parse time) decides.
+      // Project BEFORE prepareTaskV3Execution so projectability is checked —
+      // but build the scheduler bindings from the ORIGINAL task source v4
+      // document, not the projection, which deliberately drops per-entry
+      // `enabled` and `schedule[i].inputs` (D2-N5, project-v4.ts) —
+      // schedule-supplied inputs are delivered through the scheduler
+      // binding's own compiled invocation tail (P2b Lane B, spec §4.4,
+      // B-N3), not through the prepare-seam projection. A task source v4
+      // document has no document-level `akm.enabled`, so `enabled: true` is
+      // passed at the document level and every entry's own `enabled`
+      // (always present, defaulted at parse time) decides.
       const parsed = parseTaskSource({
         yaml: guarded.content,
         filePath: sourcePath,
         workspaceRoot: input.sourceRoot,
       });
-      const document = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
+      const document = projectTaskSourceV4(parsed.v4);
       const qualifiedRef = makeBundleRef(input.bundleName, conceptId);
       // P2b Lane B (spec docs/plans/specs/p2b-input-bindings.md §4.4, rows
       // B-50/F-B2): validate each v4 schedule entry's inputs against the
@@ -511,18 +509,16 @@ async function compileTaskSources(
       // — so a violation fails HERE, recorded as a task failure at sync,
       // rather than surfacing for the first time when the scheduler fires
       // the compiled invocation.
-      if (parsed.version === 4) {
-        const contract = parsed.v4.inputs ?? {};
-        for (const scheduleEntry of parsed.v4.schedule) {
-          const defaultedInputs = applyInputDefaults(contract, { ...scheduleEntry.inputs });
-          const errors = validateInputs(contract, defaultedInputs);
-          if (errors.length > 0) {
-            throw new UsageError(
-              `Task ${JSON.stringify(qualifiedRef)} schedule[${scheduleEntry.ordinal}].inputs does not satisfy ` +
-                `its declared inputs once defaults are applied: ${errors.join("; ")}`,
-              "TASK_SOURCE_INVALID",
-            );
-          }
+      const contract = parsed.v4.inputs ?? {};
+      for (const scheduleEntry of parsed.v4.schedule) {
+        const defaultedInputs = applyInputDefaults(contract, { ...scheduleEntry.inputs });
+        const errors = validateInputs(contract, defaultedInputs);
+        if (errors.length > 0) {
+          throw new UsageError(
+            `Task ${JSON.stringify(qualifiedRef)} schedule[${scheduleEntry.ordinal}].inputs does not satisfy ` +
+              `its declared inputs once defaults are applied: ${errors.join("; ")}`,
+            "TASK_SOURCE_INVALID",
+          );
         }
       }
       await prepareTaskV3Execution(document, {
@@ -548,24 +544,18 @@ async function compileTaskSources(
         id,
         qualifiedRef,
         ...(input.bundleTarget ? { bundleTarget: input.bundleTarget } : {}),
-        enabled: parsed.version === 4 ? true : parsed.v3.akm?.enabled !== false,
-        schedules:
-          parsed.version === 4
-            ? parsed.v4.schedule.map((schedule) => ({
-                cron: schedule.cron,
-                ordinal: schedule.ordinal,
-                enabled: schedule.enabled,
-                source: `${relSource}:${schedule.source}`,
-                // P2b Lane B (spec §4.4, B-N3): delivered through the
-                // compiled binding's own invocation tail below — the F-B2
-                // flip that closes the P2a B-38 "validated but not yet
-                // delivered" gap this comment used to describe.
-                inputs: schedule.inputs,
-              }))
-            : parsed.v3.triggers.schedules.map((schedule) => ({
-                ...schedule,
-                source: `${relSource}:${schedule.source}`,
-              })),
+        enabled: true,
+        schedules: parsed.v4.schedule.map((schedule) => ({
+          cron: schedule.cron,
+          ordinal: schedule.ordinal,
+          enabled: schedule.enabled,
+          source: `${relSource}:${schedule.source}`,
+          // P2b Lane B (spec §4.4, B-N3): delivered through the compiled
+          // binding's own invocation tail below — the F-B2 flip that closes
+          // the P2a B-38 "validated but not yet delivered" gap this comment
+          // used to describe.
+          inputs: schedule.inputs,
+        })),
       });
       for (const binding of sourceBindings) {
         parseSchedule(binding.cron, input.backend);
@@ -765,7 +755,7 @@ function assertUniqueInstalledIds(installed: readonly InstalledSchedulerBinding[
 }
 
 function taskFailure(file: string, cause: unknown): string {
-  const detail = taskV3SourceErrorDetail(cause);
+  const detail = taskSourceErrorDetail(cause);
   return detail === errorMessage(cause) ? `${file}: ${detail}` : detail;
 }
 

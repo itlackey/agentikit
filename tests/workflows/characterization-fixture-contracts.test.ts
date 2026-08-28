@@ -7,11 +7,8 @@
  * this file owns is itself sound today, before Lanes A and B build on it.
  *
  * This file does not pin an R-nn/P-nn row from docs/plans/specs/p0-invariants.md
- * directly — it exercises the three new fixture families Lane C contributes:
+ * directly — it exercises the fixture families Lane C contributes:
  *
- *   - tests/fixtures/execution-contracts/tasks/v3-migration/     representative
- *     task-v3 sources the future v3->v4 migrator must handle (every trigger
- *     form, every target form, and the env/timeout/redact option bundle).
  *   - tests/fixtures/execution-contracts/workflows/single-job/    the accepted
  *     single-job GitHub-shaped baseline, cribbed from the existing
  *     workflows/equivalent/contract-review.yml accepted subset, contrasted
@@ -20,6 +17,12 @@
  *     fixtures (never byte-snapshots of plans — plans carry machine-dependent
  *     identity) that freeze end to end into durable v4 plans, proving the
  *     structural invariants a later phase's plan-shape assertions can lean on.
+ *
+ * P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, F-A2.24) DELETED this
+ * file's third original family — tests/fixtures/execution-contracts/tasks/
+ * v3-migration/'s representative task-v3 sources and the describe block that
+ * proved each parsed per src/tasks/source-v3.ts — along with task source v3
+ * acceptance itself; the fixture family it exercised is gone too (F-A2.25).
  *
  * Fixture pattern for the plan-v4 sandbox/freeze pipeline follows
  * tests/workflows/characterization-with-drop.test.ts and
@@ -32,15 +35,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { resetConfigCache } from "../../src/core/config/config";
-import type { ExecutionJsonObject } from "../../src/execution/json";
 import { akmIndex } from "../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
-import {
-  parseTaskV3Yaml,
-  type TaskV3Environment,
-  type TaskV3HostShell,
-  type TaskV3UsesTarget,
-} from "../../src/tasks/source-v3";
 import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
 import { computePlanHash } from "../../src/workflows/ir/plan-hash";
 import {
@@ -53,47 +49,7 @@ import { compileGithubWorkflowSource } from "../../src/workflows/source-ir/compi
 import { EXECUTION_CONTRACT_FIXTURES } from "../_helpers/execution-contracts";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
 
-const TASKS_ROOT = path.join(EXECUTION_CONTRACT_FIXTURES, "tasks/v3-migration");
 const WORKFLOWS_ROOT = path.join(EXECUTION_CONTRACT_FIXTURES, "workflows");
-
-// ── tasks/v3-migration manifest shape ────────────────────────────────────────
-
-type TaskV3MigrationExpectedTarget =
-  | { readonly kind: "run"; readonly run: string; readonly shell?: TaskV3HostShell }
-  | {
-      readonly kind: "uses";
-      readonly usesKind: TaskV3UsesTarget["kind"];
-      readonly ref: string;
-      readonly with?: ExecutionJsonObject;
-    };
-
-interface TaskV3MigrationExpected {
-  readonly triggers: {
-    readonly manual: boolean;
-    readonly schedules: ReadonlyArray<{ cron: string; source: string; ordinal: number }>;
-  };
-  readonly target: TaskV3MigrationExpectedTarget;
-  readonly env?: TaskV3Environment;
-  readonly akmTimeout?: string;
-  readonly akmRedact?: readonly string[];
-}
-
-interface TaskV3MigrationFixture {
-  readonly id: string;
-  readonly file: string;
-  readonly represents: readonly string[];
-  readonly expected: TaskV3MigrationExpected;
-}
-
-interface TaskV3MigrationManifest {
-  readonly schemaVersion: 1;
-  readonly sourceSchemaVersion: 3;
-  readonly fixtures: readonly TaskV3MigrationFixture[];
-}
-
-function readTasksManifest(): TaskV3MigrationManifest {
-  return JSON.parse(fs.readFileSync(path.join(TASKS_ROOT, "manifest.json"), "utf8")) as TaskV3MigrationManifest;
-}
 
 // ── workflows/manifest.json's singleJob + planV4 extensions ─────────────────
 
@@ -145,52 +101,6 @@ interface WorkflowsManifestFragment {
 function readWorkflowsManifest(): WorkflowsManifestFragment {
   return JSON.parse(fs.readFileSync(path.join(WORKFLOWS_ROOT, "manifest.json"), "utf8")) as WorkflowsManifestFragment;
 }
-
-// ── tasks/v3-migration: every fixture is valid v3 per src/tasks/source-v3.ts ─
-
-describe("tasks/v3-migration fixtures (Lane C shared surface) — each is valid task-v3 source", () => {
-  const manifest = readTasksManifest();
-
-  for (const fixture of manifest.fixtures) {
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); flips in P2a/P2c (task source v4
-    // makes scheduling optional and P4a retires v3 acceptance — these v3 fixtures then serve the migrator only).
-    test(`${fixture.id}: parses per src/tasks/source-v3.ts and matches its manifest-declared shape`, () => {
-      const yaml = fs.readFileSync(path.join(TASKS_ROOT, fixture.file), "utf8");
-      const document = parseTaskV3Yaml({ yaml, filePath: `tasks/v3-migration/${fixture.file}` });
-
-      expect(document.version).toBe(3);
-      expect(document.triggers).toEqual(fixture.expected.triggers);
-
-      if (fixture.expected.target.kind === "run") {
-        expect(document.target.kind).toBe("run");
-        if (document.target.kind !== "run") return;
-        expect(document.target.run).toBe(fixture.expected.target.run);
-        if (fixture.expected.target.shell) expect(document.target.shell).toBe(fixture.expected.target.shell);
-        else expect(document.target.shell).toBeUndefined();
-      } else {
-        expect(document.target.kind).toBe("uses");
-        if (document.target.kind !== "uses") return;
-        expect(document.target.uses.kind).toBe(fixture.expected.target.usesKind);
-        expect(document.target.uses.ref).toBe(fixture.expected.target.ref);
-        if (fixture.expected.target.with) expect(document.target.with).toEqual(fixture.expected.target.with);
-      }
-
-      if (fixture.expected.env) expect(document.env).toEqual(fixture.expected.env);
-      if (fixture.expected.akmTimeout !== undefined) expect(document.akm?.timeout).toBe(fixture.expected.akmTimeout);
-      if (fixture.expected.akmRedact) expect(document.akm?.redact).toEqual(fixture.expected.akmRedact);
-    });
-  }
-
-  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
-  test("every *.yml fixture file is registered in manifest.json (no orphan fixtures)", () => {
-    const files = fs
-      .readdirSync(TASKS_ROOT)
-      .filter((name) => name.endsWith(".yml"))
-      .sort();
-    const registered = manifest.fixtures.map((fixture) => fixture.file).sort();
-    expect(files).toEqual(registered);
-  });
-});
 
 // ── workflows/single-job: the accepted single-job baseline ──────────────────
 

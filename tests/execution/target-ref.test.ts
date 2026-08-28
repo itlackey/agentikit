@@ -34,11 +34,18 @@
  *      unchanged, rewriting should be avoided").
  *   3. Import boundary: `src/workflows/source-ir/{semantics,uses}.ts` must
  *      import nothing from `src/tasks/source-v3.ts` (§4.2/§4.3, §9 assertion
- *      2). This group is RED today for a real, CURRENT reason, independent
- *      of whether src/execution/target-ref.ts exists: `uses.ts` still
- *      delegates to `classifyTaskV3Uses` imported from that module. This is
- *      the lane's assertion-level red — a genuine failing expectation rather
- *      than a module-resolution crash.
+ *      2). RED when this group was written: `uses.ts` still delegated to
+ *      `classifyTaskV3Uses` imported from that module, a genuine failing
+ *      expectation rather than a module-resolution crash. GREEN since P1a's
+ *      own implement step landed `classifyTargetRef` and re-pointed `uses.ts`
+ *      at it. `compile.ts` carried the seam's one remaining exception
+ *      (`classifyTaskV3Triggers`) until P4
+ *      (docs/plans/specs/p4-deletions-closeout.md §3.2.3, P4-N3) re-homed it
+ *      into `src/workflows/source-ir/triggers.ts` as
+ *      `classifyWorkflowYamlTriggers` — the full three-file seam
+ *      (`semantics.ts`, `uses.ts`, `compile.ts`) is asserted together in
+ *      `tests/architecture/diagnostic-codes.test.ts`; this file's own two
+ *      tests below cover `semantics.ts` and `uses.ts` only.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -258,10 +265,8 @@ function isSourceV3Specifier(specifier: string): boolean {
 }
 
 describe("import boundary — the workflow uses-classification seam imports nothing from tasks/source-v3 (P1a §4.2/§4.3)", () => {
-  // RED today for a real, current reason (independent of whether
-  // src/execution/target-ref.ts exists): uses.ts:12 still imports
-  // classifyTaskV3Uses from "../../tasks/source-v3". This is the lane's
-  // assertion-level red — see the file docstring.
+  // GREEN since P1a's implement step re-pointed uses.ts at
+  // classifyTargetRef — see the file docstring for the RED-phase history.
   test("src/workflows/source-ir/uses.ts imports nothing from tasks/source-v3", () => {
     const specifiers = importedModuleSpecifiers(path.join(ROOT, "src/workflows/source-ir/uses.ts"));
     expect(specifiers.filter(isSourceV3Specifier)).toEqual([]);

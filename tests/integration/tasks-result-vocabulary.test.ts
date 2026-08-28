@@ -36,7 +36,9 @@ import { UsageError } from "../../src/core/errors";
 import { openStateDatabase } from "../../src/core/state-db";
 import type { SpawnFn } from "../../src/core/subprocess";
 import { getTaskHistory } from "../../src/storage/repositories/task-history-repository";
-import { readTaskHistory, recordTaskAttemptFailure, runTask } from "../../src/tasks/runner";
+import { recordTaskAttemptFailure } from "../../src/tasks/run/attempt-lifecycle";
+import { runTask } from "../../src/tasks/run/run-task";
+import { readTaskHistory } from "../../src/tasks/run/task-history";
 import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 

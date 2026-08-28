@@ -32,7 +32,7 @@ import { openStateDatabase } from "../../src/core/state-db";
 import { akmIndex } from "../../src/indexer/indexer";
 import { resolveUsageEventSource, type UsageEventSource } from "../../src/indexer/usage/usage-events";
 import type { AgentRunResult } from "../../src/integrations/agent";
-import { runTask } from "../../src/tasks/runner";
+import { runTask } from "../../src/tasks/run/run-task";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 type FakeRunAgent = (...args: unknown[]) => Promise<AgentRunResult>;
@@ -76,7 +76,7 @@ function shellWord(value: string): string {
 /** Crib of tests/integration/tasks-runner.test.ts's `shellTask` helper. */
 function shellTask(command: readonly string[]): string {
   const run = command.map((value) => shellWord(value)).join(" ");
-  return stringifyYaml({ version: 3, run, akm: { schedule: "@daily", enabled: true } });
+  return stringifyYaml({ version: 4, run, schedule: "@daily" });
 }
 
 function completedWorkflowRun(id: string, target: string, params: Record<string, unknown>) {
@@ -139,7 +139,7 @@ describe("P-06 — native shell/script arm sets AKM_EVENT_SOURCE only in the chi
       path.join(storage.stashDir, "scripts", "echo-source.sh"),
       '#!/bin/sh\nprintf "AKM_EVENT_SOURCE=%s" "$AKM_EVENT_SOURCE"\n',
     );
-    writeTask("script-provenance", 'version: 3\nuses: scripts/echo-source.sh\nakm:\n  schedule: "@daily"\n');
+    writeTask("script-provenance", 'version: 4\nuses: scripts/echo-source.sh\nschedule: "@daily"\n');
 
     const result = await runTask("script-provenance", { bundleDir: storage.stashDir, bundleName: "fixture" });
 
@@ -180,7 +180,7 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
   // AKM_EVENT_SOURCE=task from that option is exercised at the workflow-exec
   // layer (run-workflow.ts / step-work.ts / exec-unit.ts), not re-proven here.
   test('P-05 — process.env.AKM_EVENT_SOURCE is never written for an in-process workflow run; the run observes "task" through the explicit eventSource option', async () => {
-    writeTask("wf-provenance", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
+    writeTask("wf-provenance", 'version: 4\nuses: workflows/noop\nschedule: "@daily"\n');
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
     let observedDuring: string | undefined;
     let observedEventSourceOption: string | undefined;
@@ -216,7 +216,7 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
   // an explicit provenance value is only a FALLBACK, so a recognized ambient
   // value still wins over the default "task" in the explicit option too.
   test("P-05 — a pre-set, more-specific AKM_EVENT_SOURCE still wins over the workflow arm's default, in-process and in the explicit option", async () => {
-    writeTask("wf-provenance-preset", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
+    writeTask("wf-provenance-preset", 'version: 4\nuses: workflows/noop\nschedule: "@daily"\n');
     let observedDuring: string | undefined;
     let observedEventSourceOption: string | undefined;
 
@@ -252,7 +252,7 @@ describe("P-05 (RECLASSIFIED — F-1) — workflow arm never mutates global proc
   // is unrelated production logic and stays unchanged — only the removed
   // env-restore side of the `finally` block is asserted differently.
   test("P-05 — process.env.AKM_EVENT_SOURCE stays untouched on the throwing path too, and the thrown failure still surfaces unchanged", async () => {
-    writeTask("wf-provenance-throws", 'version: 3\nuses: workflows/noop\nakm:\n  schedule: "@daily"\n');
+    writeTask("wf-provenance-throws", 'version: 4\nuses: workflows/noop\nschedule: "@daily"\n');
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
     let observedDuring: string | undefined;
     let observedEventSourceOption: string | undefined;
@@ -350,7 +350,7 @@ describe("P-05 real-orchestrator coverage — an exec-unit child of a workflow-t
   test("ambient AKM_EVENT_SOURCE unset: a real workflow run's exec-unit child still observes AKM_EVENT_SOURCE=task", async () => {
     const marker = markerPath(storage.root);
     writeEchoSourceWorkflow(storage.stashDir, marker);
-    writeTask("wf-real-exec-unit", 'version: 3\nuses: workflows/echo-source\nakm:\n  schedule: "@daily"\n');
+    writeTask("wf-real-exec-unit", 'version: 4\nuses: workflows/echo-source\nschedule: "@daily"\n');
     await akmIndex({ stashDir: storage.stashDir, full: true });
     expect(process.env.AKM_EVENT_SOURCE).toBeUndefined();
 
@@ -365,7 +365,7 @@ describe("P-05 real-orchestrator coverage — an exec-unit child of a workflow-t
   test("a pre-set ambient AKM_EVENT_SOURCE: a real workflow run's exec-unit child observes AKM_EVENT_SOURCE=improve (ambient wins)", async () => {
     const marker = markerPath(storage.root);
     writeEchoSourceWorkflow(storage.stashDir, marker);
-    writeTask("wf-real-exec-unit-preset", 'version: 3\nuses: workflows/echo-source\nakm:\n  schedule: "@daily"\n');
+    writeTask("wf-real-exec-unit-preset", 'version: 4\nuses: workflows/echo-source\nschedule: "@daily"\n');
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const result = await withEnv({ AKM_EVENT_SOURCE: "improve" }, () =>
@@ -500,7 +500,7 @@ describe('R-07 (FIXED — F-1) — prompt/command arm now stamps AKM_EVENT_SOURC
     fs.writeFileSync(path.join(storage.stashDir, "commands", "notify.md"), "Notify the team.\n", "utf8");
     writeTask(
       "prompt-provenance",
-      ["version: 3", "uses: commands/notify", "akm:", '  schedule: "@daily"', "  engine: opencode", ""].join("\n"),
+      ["version: 4", "uses: commands/notify", 'schedule: "@daily"', "engine: opencode", ""].join("\n"),
     );
     await akmIndex({ stashDir: storage.stashDir, full: true });
     const seed = openStateDatabase();
@@ -568,10 +568,13 @@ describe("F-3 (spec §5.4/§9) — RunTaskOptions.bundleDir REPLACES stashDir; t
   // field, so runTask would actually resolve the task and this test's
   // "rejects" expectation is what makes it red today) and after (when a
   // CORRECT bundleDir-only implementation makes the same call fail because
-  // `bundleDir` is undefined — see src/tasks/runner.ts:154-165 at head, where
-  // an unresolved owner throws NotFoundError before the try/catch boundary,
-  // i.e. before any mutation, so the call REJECTS rather than resolving to a
-  // "failed" TaskRunResult).
+  // `bundleDir` is undefined — see src/tasks/run/load-task.ts's
+  // loadPreparedTask (P4 deleted the src/tasks/runner.ts:154-165 shim this
+  // NotFoundError-before-mutation invariant used to cite; loadPreparedTask
+  // is where the same unresolved-owner check has lived since the P1b
+  // runner.ts split), where an unresolved owner throws NotFoundError before
+  // the try/catch boundary, i.e. before any mutation, so the call REJECTS
+  // rather than resolving to a "failed" TaskRunResult).
   test("a stashDir-only options object (no bundleDir) does not resolve the task — the rename is a replacement, not an addition", async () => {
     writeTask("stashdir-only-rejects", shellTask([process.execPath, "-e", ECHO_SOURCE_SNIPPET]));
 

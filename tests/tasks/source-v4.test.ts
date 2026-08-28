@@ -59,17 +59,21 @@
  * produce — the derivation ties this file's pins to real, already-shipped
  * behavior instead of speculative prose.
  *
- * D2-N2 divergence from a naive reading of the task brief's one-line
- * summary ("other -> TASK_SCHEMA_VERSION_UNSUPPORTED"), recorded here so a
- * future reader does not "fix" this file to match the wrong summary: the
- * SPEC (authoritative, §1.5 D2-N2) says only `version: 2` raises
- * TASK_SCHEMA_VERSION_UNSUPPORTED. A missing version, or any OTHER
- * non-3/non-4 value (5, "3", null, …), routes through the EXISTING v3
- * parser and its already-shipped, byte-pinned wording — "$ version is
- * required and must be 3." / "$ version must be exactly 3." — under
- * TASK_SOURCE_INVALID, not TASK_SCHEMA_VERSION_UNSUPPORTED. That stale
- * "must be exactly 3" text is a DELIBERATELY preserved wart (spec §3.4); P4
- * owns the final version-error text, not P2a.
+ * D2-N2/B-16 routing (P4 docs/plans/specs/p4-deletions-closeout.md §3.2.2
+ * closed the P2a-era wart this paragraph used to record): task source v3
+ * acceptance is retired from `src` entirely (§3.2). `version: 2` AND
+ * `version: 3` both raise TASK_SCHEMA_VERSION_UNSUPPORTED now, with the SAME
+ * migrate hint (rows B-14/B-15) — the migrator runs both the v2->v3 and
+ * v3->v4 generations in sequence, so one hint covers both starting points.
+ * Any OTHER defined NUMBER outside {2, 3, 4} (5, …) is unambiguously a
+ * version number this release does not support, so it ALSO takes the
+ * migrate-hint UNSUPPORTED path, never TASK_SOURCE_INVALID. Only a MISSING
+ * `version:` key, or a `version:` that is not a number at all ("3", null,
+ * …), falls through to task source v4's OWN field-level TASK_SOURCE_INVALID
+ * wording — "version is required and must be 4." / "version must be exactly
+ * 4." (row B-16) — because those inputs are not version numbers to begin
+ * with, so there is nothing to route on; they are malformed v4 documents,
+ * not legacy ones.
  *
  * D1 naming: this grammar is "task source v4", never bare "v4", in every
  * comment and test title below — the workflow plan IR is separately
@@ -91,7 +95,7 @@ import { _setWarnSinkForTests } from "../../src/core/warn";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
 import * as ParseTaskSourceModule from "../../src/tasks/source/parse-task-source";
 import * as TaskSourceV4Module from "../../src/tasks/source/task-source-v4";
-import { parseTaskV3Yaml, TASK_V3_MAX_SCHEDULES } from "../../src/tasks/source-v3";
+import { TASK_V3_MAX_SCHEDULES } from "../../src/tasks/source-v3";
 import { detectSecretShapedParams } from "../../src/workflows/exec/param-secrets";
 import { PROGRAM_PARAM_NAME_PATTERN } from "../../src/workflows/program/schema";
 import {
@@ -569,73 +573,105 @@ describe("task source v4 — version router (spec §3.4, D2-N2's exact routing t
     expect(result.v4.manualOnly).toBe(true);
   });
 
-  test("version: 3 routes to the EXISTING v3 parser, byte-identical to calling parseTaskV3Yaml directly", () => {
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.2, row B-14, F-A2.12):
+  // task source v3 acceptance is retired from `src` — `version: 3` now fails
+  // the SAME way `version: 2` does (row B-15's SAME migrate hint, since the
+  // migrator runs both generations), not a route to a v3 parser this file no
+  // longer imports.
+  test("version: 3 raises TASK_SCHEMA_VERSION_UNSUPPORTED with the migrate hint (row B-14)", () => {
     const yaml = "version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\n";
     const filePath = "/bundle/tasks/x.yml";
-    const direct = parseTaskV3Yaml({ yaml, filePath });
-    const result = parseTaskSource({ yaml, filePath });
-    expect(result.version).toBe(3);
-    if (result.version !== 3) throw new Error("unreachable: asserted above");
-    expect(result.v3).toEqual(direct);
+    let error: unknown;
+    try {
+      parseTaskSource({ yaml, filePath });
+    } catch (cause) {
+      error = cause;
+    }
+    expect(error).toBeInstanceOf(UsageError);
+    expect((error as UsageError).code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
+    expect((error as UsageError).message).toBe(
+      `TASK_SCHEMA_VERSION_UNSUPPORTED: Task at ${filePath} uses task schema version 3, which this release does not accept.`,
+    );
+    expect((error as UsageError).hint()).toBe(
+      "Run `akm migrate apply --dry-run` to preview the task-v3 to task-source-v4 conversion, then run `akm migrate apply`.",
+    );
   });
 
-  test("version: 2 raises TASK_SCHEMA_VERSION_UNSUPPORTED, byte-identical to today (D2-N2)", () => {
+  // Row B-15: version: 2 gets the SAME migrate hint as version: 3 now — the
+  // migrator runs both the v2->v3 and v3->v4 generations in sequence (spec
+  // §3.2.5), so one hint covers both starting points.
+  test("version: 2 raises TASK_SCHEMA_VERSION_UNSUPPORTED with the SAME migrate hint as version: 3 (row B-15)", () => {
     const yaml = "version: 2\nschedule: '@daily'\nprompt: hi\n";
     const filePath = "/bundle/tasks/legacy.yml";
-    let direct: unknown;
-    try {
-      parseTaskV3Yaml({ yaml, filePath });
-    } catch (error) {
-      direct = error;
-    }
-    let routed: unknown;
+    let error: unknown;
     try {
       parseTaskSource({ yaml, filePath });
-    } catch (error) {
-      routed = error;
+    } catch (cause) {
+      error = cause;
     }
-    expect(direct).toBeInstanceOf(UsageError);
-    expect(routed).toBeInstanceOf(UsageError);
-    expect((routed as UsageError).code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
-    expect((routed as UsageError).message).toBe((direct as UsageError).message);
+    expect(error).toBeInstanceOf(UsageError);
+    expect((error as UsageError).code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
+    expect((error as UsageError).message).toBe(
+      `TASK_SCHEMA_VERSION_UNSUPPORTED: Task at ${filePath} uses task schema version 2, which this release does not accept.`,
+    );
+    expect((error as UsageError).hint()).toBe(
+      "Run `akm migrate apply --dry-run` to preview the task-v3 to task-source-v4 conversion, then run `akm migrate apply`.",
+    );
   });
 
+  // Row B-16: a document with no version: key, or a version: that is NOT A
+  // NUMBER, is a malformed v4 document — v4's own TASK_SOURCE_INVALID field
+  // error, not the migrate-hint UNSUPPORTED path. Verified empirically
+  // against parseTaskSource directly (spec §3.2.2's binding detail, not
+  // table B-16's own terse one-line summary): a NUMERIC version outside
+  // {2, 3, 4} is still unambiguously a version number, so it takes the
+  // migrate-hint path below, not this one.
   test.each([
-    ["missing version", "uses: commands/review\nakm:\n  schedule: '@daily'\n"],
-    ["version: 5", "version: 5\nuses: commands/review\nakm:\n  schedule: '@daily'\n"],
-    ["version: '3' (string, not number)", "version: '3'\nuses: commands/review\nakm:\n  schedule: '@daily'\n"],
-    ["version: null", "version: null\nuses: commands/review\nakm:\n  schedule: '@daily'\n"],
-  ] as const)("D2-N2 divergence pin: %s routes to the v3 parser's OWN preserved wording under TASK_SOURCE_INVALID, never TASK_SCHEMA_VERSION_UNSUPPORTED", (_label, yaml) => {
+    ["missing version", "uses: commands/review\n", "version is required and must be 4."],
+    ["version: '3' (string, not number)", "version: '3'\nuses: commands/review\n", "version must be exactly 4."],
+    ["version: null", "version: null\nuses: commands/review\n", "version must be exactly 4."],
+  ] as const)("D2-N2/B-16: %s routes to task source v4's OWN TASK_SOURCE_INVALID wording", (_label, yaml, detail) => {
     const filePath = "/bundle/tasks/x.yml";
-    let direct: unknown;
-    try {
-      parseTaskV3Yaml({ yaml, filePath });
-    } catch (error) {
-      direct = error;
-    }
-    let routed: unknown;
+    let error: unknown;
     try {
       parseTaskSource({ yaml, filePath });
-    } catch (error) {
-      routed = error;
+    } catch (cause) {
+      error = cause;
     }
-    expect(direct).toBeInstanceOf(UsageError);
-    expect(routed).toBeInstanceOf(UsageError);
-    expect((routed as UsageError).code).toBe("TASK_SOURCE_INVALID");
-    expect((routed as UsageError).message).toBe((direct as UsageError).message);
+    expect(error).toBeInstanceOf(UsageError);
+    expect((error as UsageError).code).toBe("TASK_SOURCE_INVALID");
+    expect((error as UsageError).message).toBe(`Invalid task source v4 at ${filePath}:1: ${detail}`);
   });
 
-  test("front-end (pre-version) YAML failures render with the v3 label even when the document later declares version: 4 (§3.4, recorded wart)", () => {
+  // A defined version NUMBER outside {2, 3, 4} is unambiguously a version —
+  // "unsupported", not "malformed" (spec §3.2.2's binding detail).
+  test("D2-N2: version: 5 (a number, but not one this release accepts) still raises TASK_SCHEMA_VERSION_UNSUPPORTED with the migrate hint, never TASK_SOURCE_INVALID", () => {
+    const yaml = "version: 5\nuses: commands/review\n";
+    const filePath = "/bundle/tasks/x.yml";
+    let error: unknown;
+    try {
+      parseTaskSource({ yaml, filePath });
+    } catch (cause) {
+      error = cause;
+    }
+    expect(error).toBeInstanceOf(UsageError);
+    expect((error as UsageError).code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
+    expect((error as UsageError).message).toBe(
+      `TASK_SCHEMA_VERSION_UNSUPPORTED: Task at ${filePath} uses task schema version 5, which this release does not accept.`,
+    );
+  });
+
+  // Row B-17: the bounded YAML front end's sourceLabel is "task source" now
+  // — P2a's recorded wart ("always renders the v3 label even for a
+  // version: 4 document") is CLOSED by task source v3's retirement, not
+  // merely relabeled; do not reintroduce "task v3 source" here.
+  test("front-end (pre-version) YAML failures render with the 'task source' label (row B-17, P2a's wart closed)", () => {
     // The bounded YAML front end runs ONCE, before `root.version` is even
     // read, so a hostile/malformed-YAML failure has no version to route on
-    // yet and always renders "Invalid task v3 source …" in P2a — byte-
-    // identical to what parseTaskV3Yaml alone would render for the same
-    // malformed bytes. This is a DELIBERATE, spec-recorded wart (§3.4): "P4
-    // owns the final label once v3 is gone." Do not "fix" this to say "task
-    // source v4" without re-reading §3.4 first.
+    // yet.
     const yaml = "version: 4\nuses: [\n";
     const filePath = "/bundle/tasks/hostile.yml";
-    expect(() => parseTaskSource({ yaml, filePath })).toThrow(/task v3 source/);
+    expect(() => parseTaskSource({ yaml, filePath })).toThrow(/^Invalid task source at/);
   });
 });
 

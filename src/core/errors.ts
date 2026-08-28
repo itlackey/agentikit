@@ -116,13 +116,15 @@ export type UsageErrorCode =
   // validated against a target's declared inputs.
   | "INPUT_BINDING_INVALID"
   // P1b (docs/plans/specs/p1b-model-extraction.md, diagnostic-codes ratchet
-  // remedy): src/tasks/source/parse-v3-adapter.ts's taskDefinitionFromV3
-  // rejects a validly-parsed task-v3 `uses:` kind (builtin-command) that has
-  // no representation in P1b's closed TaskDefinitionTarget vocabulary yet.
-  // Distinct from INVALID_FLAG_VALUE: the input is not malformed, it is a
-  // recognized construct this phase's model does not model. Not yet
-  // reachable from any production path — the adapter is additive in P1b
-  // (spec §3.4).
+  // remedy): originated in the now-deleted src/tasks/source/parse-v3-adapter.ts's
+  // taskDefinitionFromV3, which rejected a validly-parsed task-v3 `uses:`
+  // kind (builtin-command) that had no representation in P1b's closed
+  // TaskDefinitionTarget vocabulary. Distinct from INVALID_FLAG_VALUE: the
+  // input is not malformed, it is a recognized construct the target model
+  // does not model. The code and its hint survive that adapter's P4 deletion
+  // (spec docs/plans/specs/p4-deletions-closeout.md §3.2.7); §5.2 gives it a
+  // live consumer in `prepare/script-capture.ts`'s interpreter rejections
+  // (a later commit in this same phase — not yet wired as of this file).
   | "TASK_TARGET_UNSUPPORTED"
   // P3b (docs/plans/specs/p3b-child-executor.md §4.3, B-N13): a declared
   // `outputs:` entry could not be resolved at run completion — a missing

@@ -3,14 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Load and project one task-v3 asset into immutable executable work: id
- * validation, adapter detection, owner resolution, source read, strict v3
- * parsing, config selection, bundle-name resolution, and the
+ * Load and project one task asset into immutable executable work: id
+ * validation, adapter detection, owner resolution, source read, strict task
+ * source parsing, config selection, bundle-name resolution, and the
  * `prepareTaskV3Execution` call. Everything here is non-mutating — run-task.ts
  * reserves a durable attempt only after this resolves.
- *
- * Moved from src/tasks/runner.ts's `runTask` body (spec
- * docs/plans/specs/p1b-model-extraction.md §5.1, §9, runner.ts:154-194).
  */
 
 import fs from "node:fs";
@@ -43,7 +40,8 @@ import type { RunTaskOptions } from "./task-result";
 /**
  * F-3 (spec §5.4): the literal bundle-name fallback, hoisted to a named
  * constant — the VALUE does not change (it is user-visible data, R-09's
- * observable behavior). `runner.ts:173`'s bare `"stash"` becomes this.
+ * observable behavior). The now-deleted `runner.ts:173`'s (P4) bare
+ * `"stash"` became this at the P1b runner.ts split.
  */
 export const DEFAULT_BUNDLE_NAME = "stash";
 
@@ -68,12 +66,8 @@ export async function loadPreparedTask(id: string, options: RunTaskOptions): Pro
   }
   const filePath = owner.path;
   const yaml = fs.readFileSync(filePath, "utf8");
-  // Version-routing seam (spec docs/plans/specs/p2a-task-source-v4.md §3.6):
-  // a task source v4 document projects into the same PreparableTaskDocument
-  // shape v3 already produces, so every line below is unchanged for both
-  // versions.
   const parsed = parseTaskSource({ yaml, filePath, workspaceRoot: bundleDir });
-  const source = parsed.version === 4 ? projectTaskSourceV4(parsed.v4) : parsed.v3;
+  const source = projectTaskSourceV4(parsed.v4);
   const requiresCommandConfig =
     source.target.kind === "uses" &&
     (source.target.uses.kind === "builtin-command" || source.target.uses.kind === "command");
@@ -81,20 +75,17 @@ export async function loadPreparedTask(id: string, options: RunTaskOptions): Pro
   const bundleName = options.bundleName ?? config.defaultBundle ?? DEFAULT_BUNDLE_NAME;
   // P2a Lane C, Stage 2 (spec docs/plans/specs/p2a-task-source-v4.md §5.1):
   // materialize akm task run's raw input flags (Stage 1,
-  // src/commands/tasks/tasks-cli.ts) against the task's own contract —
-  // task source v4: its inputs: declarations; v3: the empty contract, so
-  // ANY input flag on a v3 task fails UNKNOWN_FLAG (there is nothing
-  // declared to match against).
+  // src/commands/tasks/tasks-cli.ts) against the task's own declared
+  // inputs: contract (empty when the document declares none, so any input
+  // flag on such a task fails UNKNOWN_FLAG — there is nothing declared to
+  // match against).
   // materializeInputFlags already validates the flag-supplied values; a
   // required input satisfied only by its own default (never supplied as a
   // flag) needs the SEPARATE validateInputs call below, run after defaults
   // are applied — materializeInputFlags returns {} immediately for zero
   // flags, before ever checking `required` (spec §5.1, input-contract.ts's
-  // own header). Nothing downstream consumes `inputs` in P2a (spec §0); a
-  // valid flag set therefore changes nothing about `source`/`config`/dispatch
-  // below, only what gets attached to the TaskInvocation this function
-  // constructs.
-  const inputContract: InputContract = parsed.version === 4 ? (parsed.v4.inputs ?? {}) : {};
+  // own header).
+  const inputContract: InputContract = parsed.v4.inputs ?? {};
   const materializedInputs = materializeInputFlags(inputContract, options.inputFlags ?? [], TASK_INPUT_DIAGNOSTICS);
   const defaultedInputs = applyInputDefaults(inputContract, materializedInputs);
   const requiredErrors = validateInputs(inputContract, defaultedInputs);
@@ -117,13 +108,9 @@ export async function loadPreparedTask(id: string, options: RunTaskOptions): Pro
   // `document.target.with`) — task source v4 never authors `with:` on a
   // workflow target itself (task-source-v4.ts's own parser accepts `with:`
   // only on `uses: akm/command`, source/task-source-v4.ts:329-333), so this
-  // override is purely additive for a v4 workflow-target task. Scoped to
-  // `parsed.version === 4` only: a v3 workflow task's own authored `with:`
-  // already flows through this identical path untouched (P0 row P-03), and
-  // `defaultedInputs` is always `{}` for v3 (its input contract is empty),
-  // which would otherwise silently clobber a v3 task's real `with:` values.
+  // override is purely additive for a workflow-target task.
   const deliverySource =
-    parsed.version === 4 && source.target.kind === "uses" && source.target.uses.kind === "workflow"
+    source.target.kind === "uses" && source.target.uses.kind === "workflow"
       ? { ...source, target: { ...source.target, with: defaultedInputs as ExecutionJsonObject } }
       : source;
   return prepareTaskV3Execution(deliverySource, {

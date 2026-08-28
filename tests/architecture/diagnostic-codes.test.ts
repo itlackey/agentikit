@@ -18,12 +18,16 @@
  *     throw was added to task/workflow code, exactly what this ratchet
  *     exists to prevent.
  *
- *  2. The classification import seam: `src/workflows/source-ir/semantics.ts`
- *     and `src/workflows/source-ir/uses.ts` must import NOTHING from
- *     `src/tasks/source-v3.ts`, and `src/workflows/source-ir/compile.ts`
- *     must import ONLY `classifyTaskV3Triggers` from it. This is what keeps
- *     spec §4.2/§4.4 (the Lane B classifier seam) from silently regressing
- *     back onto the task-v3 grammar.
+ *  2. The classification import seam: `src/workflows/source-ir/semantics.ts`,
+ *     `src/workflows/source-ir/uses.ts`, and `src/workflows/source-ir/compile.ts`
+ *     must import NOTHING from `src/tasks/source-v3.ts` (P4
+ *     docs/plans/specs/p4-deletions-closeout.md §3.2.3, row B-60:
+ *     `compile.ts`'s former one exception, `classifyTaskV3Triggers`, is
+ *     re-homed to `src/workflows/source-ir/triggers.ts` as
+ *     `classifyWorkflowYamlTriggers` — after the re-home, `src/workflows/**`
+ *     imports nothing at all from `src/tasks/**` source modules). This is
+ *     what keeps spec §4.2/§4.4 (the Lane B classifier seam) from silently
+ *     regressing back onto the task-v3 grammar.
  *
  * STATUS: this file was authored under Lane C (tests) ahead of the Lane
  * 0/Lane B implementation landing, so both assertions were originally
@@ -33,9 +37,9 @@
  *     comment on INVALID_FLAG_VALUE_BASELINE below for the exact grep. It is
  *     not a forward guess.
  *   - Assertion 2 passes now that Lane B rewired `uses.ts`/`semantics.ts`/
- *     `compile.ts` per spec §4.2-§4.4: neither `uses.ts` nor `semantics.ts`
- *     imports from `tasks/source-v3` any more, and `compile.ts` imports only
- *     `classifyTaskV3Triggers` from it.
+ *     `compile.ts` per spec §4.2-§4.4, and P4 (§3.2.3, row B-60) re-homed
+ *     `compile.ts`'s former exception out of `tasks/source-v3` entirely: none
+ *     of the three files import anything from `tasks/source-v3` any more.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -134,9 +138,17 @@ describe("D7 diagnostics ratchet (spec p1a-with-rejection-classifier.md §9)", (
     expect(count).toBeLessThanOrEqual(INVALID_FLAG_VALUE_BASELINE);
   });
 
-  test("semantics.ts and uses.ts import nothing from tasks/source-v3; compile.ts imports only classifyTaskV3Triggers from it", () => {
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.3, row B-60) re-homes
+  // classifyTaskV3Triggers to src/workflows/source-ir/triggers.ts
+  // (classifyWorkflowYamlTriggers) — compile.ts now imports it from there,
+  // not from tasks/source-v3, so its import list from tasks/source-v3 is
+  // empty too. This is the mechanically-forced correction the re-home
+  // requires; B-60's own WIDENED scan (namespace imports, re-exports,
+  // import-type queries, dynamic import()) is Lane C's separate commit
+  // (spec §5.2/§7.4 F-C.1) and is not implemented here.
+  test("semantics.ts, uses.ts, and compile.ts import nothing from tasks/source-v3", () => {
     expect(importBindingsFrom(SEMANTICS_FILE, "tasks/source-v3")).toEqual([]);
     expect(importBindingsFrom(USES_FILE, "tasks/source-v3")).toEqual([]);
-    expect(importBindingsFrom(COMPILE_FILE, "tasks/source-v3")).toEqual(["classifyTaskV3Triggers"]);
+    expect(importBindingsFrom(COMPILE_FILE, "tasks/source-v3")).toEqual([]);
   });
 });

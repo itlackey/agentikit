@@ -3,19 +3,21 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Pure task-v3 runtime projection.
+ * Pure task runtime projection.
  *
- * This is the only bridge from authored task-v3 source into executable work.
- * It performs all source/config/asset reads before the task runner reserves a
- * durable attempt and returns immutable snapshots. In particular, script work
- * contains frozen bytes and their digest, never a path that can be reread when
- * a delayed or resumed dispatch begins.
+ * This is the only bridge from an already-parsed, already-projected task
+ * source document (the `PreparableTaskDocument` seam, P4-N4) into executable
+ * work. It performs all source/config/asset reads before the task runner
+ * reserves a durable attempt and returns immutable snapshots. In particular,
+ * script work contains frozen bytes and their digest, never a path that can
+ * be reread when a delayed or resumed dispatch begins.
  *
- * Moved body-intact out of the pre-P1b src/tasks/runtime-v3.ts (spec
- * docs/plans/specs/p1b-model-extraction.md §4.1, Lane B / D4 module map).
- * runtime-v3.ts is now a compat re-export shim; prepareTaskV3Execution's
- * three production callers (src/tasks/runner.ts, src/tasks/scheduler-sync.ts,
- * src/workflows/ir/source-freeze-v4.ts's taskDispatch) import it from here.
+ * `prepareTaskV3Execution`'s three production callers are
+ * `src/tasks/run/load-task.ts`, `src/tasks/scheduler-sync.ts`, and
+ * `src/workflows/freeze/targets/task.ts`'s `taskDispatch`. The name and the
+ * `TaskV3*` type family it takes stay (spec docs/plans/specs/p4-deletions-closeout.md
+ * §0, R-R1) — only task source v4 ever reaches this function now, always via
+ * `src/tasks/source/project-v4.ts`'s `projectTaskSourceV4()`.
  */
 
 import fs from "node:fs";
@@ -82,9 +84,12 @@ export async function prepareTaskV3Execution(
 
   const { qualified } = qualifyOwnedRef(target.ref, context);
   if (target.kind === "command") {
+    // Unreachable from any parsed source: task source v4 accepts with: only
+    // on uses: akm/command. Kept as a seam invariant — this function takes a
+    // structurally-typed document.
     if (document.target.with !== undefined) {
       throw new UsageError(
-        "Task v3 command refs do not accept with; use akm/command with {ref, arguments} for portable arguments.",
+        "Command refs do not accept with; use akm/command with {ref, arguments} for portable arguments.",
         "INVALID_FLAG_VALUE",
       );
     }
@@ -101,9 +106,10 @@ export async function prepareTaskV3Execution(
     return Object.freeze({ ...common, kind: "command" as const, invocation });
   }
   if (target.kind === "workflow") {
+    // Stays reachable — task source v4 still has a top-level env: (P4-N4).
     if (Object.keys(environment).length > 0) {
       throw new UsageError(
-        "Task v3 workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
+        "Task workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
         "INVALID_FLAG_VALUE",
       );
     }
@@ -122,8 +128,11 @@ export async function prepareTaskV3Execution(
       ...(document.akm?.maxRetries !== undefined ? { maxRetries: document.akm.maxRetries } : {}),
     });
   }
+  // Unreachable from any parsed source: task source v4 accepts with: only on
+  // uses: akm/command. Kept as a seam invariant — this function takes a
+  // structurally-typed document.
   if (document.target.with !== undefined) {
-    throw new UsageError("Task v3 script refs do not accept with.", "INVALID_FLAG_VALUE");
+    throw new UsageError("Script refs do not accept with.", "INVALID_FLAG_VALUE");
   }
   const resolved = await resolvedOwnedAsset(qualified, "script", context);
   // Shared with prepare-script-target.ts's prepareScriptTarget() (spec §4.3):

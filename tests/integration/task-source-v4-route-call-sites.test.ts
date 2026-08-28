@@ -13,25 +13,23 @@
  * separately in tests/integration/tasks-scheduler-sync-v4.test.ts (B-07/B-38)
  * rather than duplicated here.
  *
- * RED today: every call site below still calls `parseTaskV3Yaml` directly
- * (not yet routed through the not-yet-existing `parseTaskSource`), so a
- * `version: 4` document fails v3's own `version must be exactly 3.` check at
- * every one of them today — each test pins the CORRECT (routed) outcome,
- * which is therefore red until Implement routes that call site.
+ * Each call site below is now routed through `parseTaskSource`, which
+ * accepts exactly one version (spec docs/plans/specs/p4-deletions-closeout.md
+ * §7.2, F-A2.14: "every call site now has exactly one accepted version") —
+ * every test in this file exercises that call site against a `version: 4`
+ * document.
  *
- * `src/commands/tasks/tasks.ts:189` (§3.6's remaining ROUTE call site) is
- * DELIBERATELY not covered here: it is the ONE `parseTaskV3Yaml` call in that
- * file (verified: `grep -n parseTaskV3Yaml src/commands/tasks/tasks.ts`
- * returns exactly this one hit), and it lives inside `akmTasksAdd`, re-parsing
- * the YAML `renderTaskYaml` JUST rendered — which is hardcoded to
- * `version: 3` (spec §0: "an `akm task add` phase... `akm task add` keeps
- * writing v3 sources"). `TasksAddInput` has no raw-YAML override, so no public
- * call path can ever hand this call site a `version: 4` document; the v4 arm
- * is unreachable there in production, not merely untested. A "does not throw
- * on the v4 arm" smoke test would have to bypass `akmTasksAdd`'s own YAML
- * generation to fabricate a call this call site can never actually receive —
- * that is not a meaningful regression guard, so it is omitted rather than
- * faked.
+ * `src/commands/tasks/tasks.ts:189` (§3.6's remaining ROUTE call site,
+ * `akmTasksAdd` re-parsing the YAML `renderTaskYaml` just rendered) is not
+ * duplicated here: P4 moved `akm task add` to AUTHOR task source v4 directly
+ * (`--params` projects into typed `inputs:`, spec row B-20), so
+ * `renderTaskYaml` now always emits `version: 4` and this call site always
+ * exercises the v4 arm — the "v4 arm is unreachable in production" premise
+ * that used to justify excluding it no longer holds. Real coverage already
+ * exists through `akmTasksAdd`'s own round trip
+ * (tests/integration/commands/tasks-write-target.test.ts and
+ * tests/integration/commands/tasks-lifecycle.test.ts both call it directly,
+ * un-mocked), so adding a smoke test here would only duplicate that.
  */
 
 import { describe, expect, test } from "bun:test";

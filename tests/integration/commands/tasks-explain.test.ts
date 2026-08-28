@@ -479,26 +479,14 @@ describe("akm task explain <ref> — SECRET-FREE, enumerated bans (B-56, B-N4)",
   });
 });
 
-describe("akm task explain <ref> — a version: 3 task (B-57)", () => {
-  test("works on a v3 task: no declared inputs, target kind/ref and execution settings still resolve", async () => {
-    writeTask(
-      "explain-v3",
-      ["version: 3", "run: echo v3-explain", "shell: sh", "akm:", '  schedule: "@daily"', ""].join("\n"),
-    );
-    const result = await runCliCapture(["task", "explain", "explain-v3", "--format", "json"]);
-
-    expect(result.code).toBe(0);
-    const envelope = JSON.parse(result.stdout);
-    const rendered = JSON.stringify(envelope);
-    expect(rendered).toMatch(/shell/i);
-    expect(rendered).toContain("@daily");
-
-    // (P2b test-review finding #3) the source version resolved for a v3 task
-    // is 3, structurally distinct from the v4 fixture's 4 above — proving
-    // the field tracks the REAL parsed version rather than a hardcoded 4.
-    expect(hasNamedVersionField(envelope, /version/i, 3)).toBe(true);
-  });
-});
+// P4 (docs/plans/specs/p4-deletions-closeout.md §3.2, row B-57) DELETES this
+// describe block, not flips it: task source v3 acceptance is retired from
+// `src` entirely, so "akm task explain resolves a genuine legacy-schema
+// (version:3) task" is no longer a claim any fixture can demonstrate — there
+// is no second version left to structurally distinguish the row-310 v4
+// case's `hasNamedVersionField(..., 4)` check against. B-57's underlying
+// claim (declared inputs/target/execution settings resolve for whatever
+// version a task actually is) stays covered by this file's v4 fixtures.
 
 describe("akm task explain — no ref / an unknown ref (B-58)", () => {
   test("no ref at all: usage error, exit 2", async () => {

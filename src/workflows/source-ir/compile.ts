@@ -4,7 +4,6 @@
 
 import path from "node:path";
 import { parseFrontmatterBlock } from "../../core/asset/frontmatter";
-import { classifyTaskV3Triggers } from "../../tasks/source-v3";
 import { parseWorkflow } from "../parser";
 import { type ProgramUnit, projectExecCore } from "../program/schema";
 import type { WorkflowStep as MarkdownWorkflowStep } from "../schema";
@@ -18,6 +17,7 @@ import {
   type WorkflowSourceStep,
 } from "./schema";
 import { canonicalizeWorkflowWorkingDirectory, WorkflowSourceSemanticError } from "./semantics";
+import { classifyWorkflowYamlTriggers } from "./triggers";
 import { classifyWorkflowSourceUses } from "./uses";
 
 export type { GithubWorkflowSourceOptions } from "./github-yaml";
@@ -40,7 +40,7 @@ export function compileGithubWorkflowSource(
         parseGithubWorkflowSource(source, {
           ...options,
           classifyUses: options.classifyUses ?? classifyWorkflowSourceUses,
-          classifyTriggers: options.classifyTriggers ?? classifyTaskV3Triggers,
+          classifyTriggers: options.classifyTriggers ?? classifyWorkflowYamlTriggers,
         }),
         {
           workspaceRoot: options.workspaceRoot,

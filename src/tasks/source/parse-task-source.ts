@@ -3,46 +3,42 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * The task source version router (spec docs/plans/specs/p2a-task-source-v4.md
- * §3.4, §1.5 D2-N2).
+ * The task source version router (spec docs/plans/specs/p4-deletions-closeout.md
+ * §3.2.2).
  *
  * Runs the bounded YAML front end ONCE (`readBoundedTaskSourceYaml`), reads
- * `root.version`, and dispatches into `parseTaskV3Document` (unmodified,
- * exported from `../source-v3`) or `parseTaskSourceV4Document` with that
- * SAME `{root, lineAt}` — no second parse, no re-serialization, no synthetic
- * document (the P1b §4.3 invariant this phase carries forward).
+ * `root.version`, and either dispatches into `parseTaskSourceV4Document` or
+ * fails closed — no second parse, no re-serialization, no synthetic document
+ * (the P1b §4.3 invariant this phase carries forward).
  *
- * D2-N2's exact routing table:
+ * The terminal routing table:
  *
- *   | root `version` | routed to                  | observable result                       |
- *   |-----------------|-----------------------------|------------------------------------------|
- *   | `4`             | `parseTaskSourceV4Document` | new grammar                              |
- *   | `3`             | `parseTaskV3Document`       | byte-identical to today                  |
- *   | `2`             | `parseTaskV3Document`       | byte-identical (raises TASK_SCHEMA_VERSION_UNSUPPORTED itself) |
- *   | absent/other    | `parseTaskV3Document`       | byte-identical (its own preserved wording) |
+ *   | root `version`        | outcome                                                        |
+ *   |------------------------|-----------------------------------------------------------------|
+ *   | `4`                    | `parseTaskSourceV4Document` — the new grammar (row B-13)        |
+ *   | any other number       | `TASK_SCHEMA_VERSION_UNSUPPORTED`, naming the migrator (B-14/B-15) |
+ *   | absent / not a number  | `parseTaskSourceV4Document` — its own `TASK_SOURCE_INVALID` "version is required and must be 4" / "must be exactly 4" wording (row B-16) |
  *
- * Only `version: 4` needs an explicit branch: `parseTaskV3Document` already
- * raises `taskV2UnsupportedError` for `version: 2` and its own "version is
- * required.../must be exactly 3" wording for everything else
- * (`source-v3.ts:720-722`) — a DELIBERATELY preserved wart, not fixed here
- * (P4 owns the final version-error text).
+ * A missing or non-numeric `version:` is a MALFORMED v4 document, not a
+ * legacy one — it routes into the v4 parser so the field error names the
+ * one grammar `src` still accepts, rather than a generic "unsupported"
+ * message that would send the user to the migrator for a document that was
+ * never task v2 or v3 in the first place.
  *
- * The front end's own pre-version failures (source not a string, source too
- * large, YAML parse/warning/expansion) ALWAYS render with the "task v3
- * source" label, even when the document later declares `version: 4` —
- * `root.version` cannot be read until the front end already succeeded. This
- * is a deliberate, spec-recorded wart (§3.4): "P4 owns the final label once
- * v3 is gone."
+ * task v2 and task v3 sources are no longer read by `src` at all — the only
+ * surviving reader is the frozen, vendored copy in
+ * `scripts/akm-migrate/migrate/task-source-v3-frozen.ts`, reachable only
+ * through `akm migrate apply` / `akm-migrate`. The front end's own
+ * pre-version failures (source not a string, source too large, YAML
+ * parse/warning/expansion) render with the label `task source` (row B-17,
+ * closing the "task v3 source" label wart P2a's §3.4 recorded).
  */
 
-import type { TaskV3SourceDocument } from "../source-v3";
-import { parseTaskV3Document } from "../source-v3";
+import { UsageError } from "../../core/errors";
 import { readBoundedTaskSourceYaml } from "./bounded-document";
 import { parseTaskSourceV4Document, TASK_SOURCE_V4_VERSION, type TaskSourceV4Document } from "./task-source-v4";
 
-export type ParsedTaskSource =
-  | Readonly<{ version: 3; v3: TaskV3SourceDocument }>
-  | Readonly<{ version: 4; v4: TaskSourceV4Document }>;
+export type ParsedTaskSource = Readonly<{ version: 4; v4: TaskSourceV4Document }>;
 
 export interface ParseTaskSourceInput {
   readonly yaml: string;
@@ -57,16 +53,24 @@ export function peekTaskSourceVersion(root: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
 }
 
-/** Parse task source YAML, routing to the task v3 or task source v4 grammar per D2-N2's table. */
+const TASK_MIGRATE_HINT =
+  "Run `akm migrate apply --dry-run` to preview the task-v3 to task-source-v4 conversion, then run `akm migrate apply`.";
+
+/** Parse task source YAML, routing per the terminal table above. */
 export function parseTaskSource(input: ParseTaskSourceInput): ParsedTaskSource {
-  const { root, lineAt } = readBoundedTaskSourceYaml(input, { sourceLabel: "task v3 source" });
+  const { root, lineAt } = readBoundedTaskSourceYaml(input, { sourceLabel: "task source" });
+  const version = peekTaskSourceVersion(root);
+  if (version !== undefined && version !== TASK_SOURCE_V4_VERSION) {
+    throw new UsageError(
+      `TASK_SCHEMA_VERSION_UNSUPPORTED: Task at ${input.filePath} uses task schema version ${version}, which this release does not accept.`,
+      "TASK_SCHEMA_VERSION_UNSUPPORTED",
+      TASK_MIGRATE_HINT,
+    );
+  }
   const documentOptions = {
     filePath: input.filePath,
     ...(input.workspaceRoot ? { workspaceRoot: input.workspaceRoot } : {}),
     lineAt,
   };
-  if (peekTaskSourceVersion(root) === TASK_SOURCE_V4_VERSION) {
-    return Object.freeze({ version: 4 as const, v4: parseTaskSourceV4Document(root, documentOptions) });
-  }
-  return Object.freeze({ version: 3 as const, v3: parseTaskV3Document(root, documentOptions) });
+  return Object.freeze({ version: 4 as const, v4: parseTaskSourceV4Document(root, documentOptions) });
 }

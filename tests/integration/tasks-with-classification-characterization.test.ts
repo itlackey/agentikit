@@ -3,25 +3,38 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * P0 characterization (Lane B) — task-layer `with:` handling, per `uses`
- * target kind: loud rejection on a *command* ref (P-01) and on a *script*
- * ref (P-02), quiet acceptance as the child workflow's frozen `params` on a
- * *workflow* ref (P-03) — the one `with` consumer that works today, and the
- * shape P2b generalizes to workflow steps — plus the workflow-target `env:`
- * rejection adjacent to P-03 (P-04).
+ * P0 characterization (Lane B) — task-layer `with:` handling on a *workflow*
+ * ref (P-03): quiet acceptance as the child workflow's frozen `params` — and
+ * the workflow-target `env:` rejection adjacent to P-03 (P-04).
  *
- * See docs/plans/specs/p0-invariants.md rows P-01, P-02, P-03, P-04. Every
- * row pinned in this file is a Behavior to PRESERVE, not a defect: P-01 and
- * P-02 are the loud-rejection contrast that gives R-01's silent
- * workflow-step `with:` drop (tests/workflows/characterization-with-drop.test.ts)
- * its meaning.
+ * See docs/plans/specs/p0-invariants.md rows P-01, P-02, P-03, P-04. P4
+ * (docs/plans/specs/p4-deletions-closeout.md §5.5, F-A2.8) resolves P-01 and
+ * P-02 BY DELETION, not by flipping them: task source v4 rejects `with:` on
+ * any target but `uses: akm/command` at PARSE time (row B-11/B-28) — a
+ * `commands/`/`scripts/` ref with `with:` never reaches
+ * `prepareTaskV3Execution`'s runtime guard any more, so those two blocks'
+ * SUBJECT (that runtime guard firing) is unreachable. The guards themselves
+ * are KEPT as seam invariants (P4-N4, `src/tasks/prepare/prepare.ts`'s own
+ * comment explains why) — this file's job was only ever to prove they fire
+ * from a real parsed document, and no parsed document can reach them any
+ * more.
+ *
+ * P-03's "params deep-equal the authored mapping" case is deleted the same
+ * way — task source v4 has no grammar for authoring `with:` on a workflow
+ * target at all. What survives, converted to task source v4 (row B-28): a
+ * workflow-target task with no `inputs:` declared still prepares
+ * `params: {}` (never undefined), frozen. P-04 stays fully reachable and
+ * pinned — the workflow-target `env:` rejection is a `prepare.ts` seam
+ * invariant independent of task source version.
  */
 
 import { describe, expect, test } from "bun:test";
 import type { AkmConfig } from "../../src/core/config/config-types";
 import { UsageError } from "../../src/core/errors";
-import { type PrepareTaskV3ExecutionContext, prepareTaskV3Execution } from "../../src/tasks/runtime-v3";
-import { parseTaskV3Yaml } from "../../src/tasks/source-v3";
+import { prepareTaskV3Execution } from "../../src/tasks/prepare/prepare";
+import type { PrepareTaskV3ExecutionContext } from "../../src/tasks/prepare/prepared-execution";
+import { parseTaskSource } from "../../src/tasks/source/parse-task-source";
+import { projectTaskSourceV4 } from "../../src/tasks/source/project-v4";
 
 /** Capture a promise rejection once, so a message/code pin never re-invokes the function under test. */
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -60,73 +73,17 @@ function resolvedWorkflowAsset(): Partial<PrepareTaskV3ExecutionContext> {
   };
 }
 
-describe("P-01 — task-layer with on a command ref is rejected loudly (runtime-v3.ts:397-401)", () => {
-  test("P-01 — uses: commands/<ref> with with: throws UsageError INVALID_FLAG_VALUE with the exact message", async () => {
-    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
-    const task = parseTaskV3Yaml({
-      yaml: ["version: 3", "uses: commands/review", "with:", "  scope: all", "akm:", '  schedule: "@daily"', ""].join(
-        "\n",
-      ),
-      filePath: "tasks/p01-command-with.yml",
-    });
-    expect(task.target.kind).toBe("uses");
-    if (task.target.kind === "uses") expect(task.target.uses.kind).toBe("command");
+function v4Task(yaml: string, filePath: string) {
+  const parsed = parseTaskSource({ yaml, filePath });
+  return projectTaskSourceV4(parsed.v4);
+}
 
-    const error = await rejection(prepareTaskV3Execution(task, context()));
-    expect(error).toBeInstanceOf(UsageError);
-    expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    expect((error as Error).message).toBe(
-      "Task v3 command refs do not accept with; use akm/command with {ref, arguments} for portable arguments.",
-    );
-  });
-});
-
-describe("P-02 — task-layer with on a script ref is rejected loudly (runtime-v3.ts:437-439)", () => {
-  test("P-02 — uses: scripts/<ref> with with: throws UsageError INVALID_FLAG_VALUE with the exact message", async () => {
-    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
-    const task = parseTaskV3Yaml({
-      yaml: ["version: 3", "uses: scripts/build.sh", "with:", "  scope: all", "akm:", '  schedule: "@daily"', ""].join(
-        "\n",
-      ),
-      filePath: "tasks/p02-script-with.yml",
-    });
-    expect(task.target.kind).toBe("uses");
-    if (task.target.kind === "uses") expect(task.target.uses.kind).toBe("script");
-
-    const error = await rejection(prepareTaskV3Execution(task, context()));
-    expect(error).toBeInstanceOf(UsageError);
-    expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
-    expect((error as Error).message).toBe("Task v3 script refs do not accept with.");
-  });
-});
-
-describe("P-03 — task-layer with on a workflow ref becomes the child workflow's frozen params (runtime-v3.ts:432)", () => {
-  test('P-03 — uses: workflows/<ref> with with: prepares { kind: "workflow", ref, params }, params deep-equal to the authored mapping and frozen', async () => {
-    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
-    const task = parseTaskV3Yaml({
-      yaml: ["version: 3", "uses: workflows/child", "with:", "  scope: all", "akm:", '  schedule: "@daily"', ""].join(
-        "\n",
-      ),
-      filePath: "tasks/p03-workflow-with.yml",
-    });
-    expect(task.target.kind).toBe("uses");
-    if (task.target.kind === "uses") expect(task.target.uses.kind).toBe("workflow");
-
-    const prepared = await prepareTaskV3Execution(task, context(resolvedWorkflowAsset()));
-    expect(prepared.kind).toBe("workflow");
-    if (prepared.kind !== "workflow") return;
-    expect(prepared.ref).toBe("primary//workflows/child");
-    expect(prepared.params).toEqual({ scope: "all" });
-    expect(Object.isFrozen(prepared)).toBe(true);
-    expect(Object.isFrozen(prepared.params)).toBe(true);
-  });
-
-  test("P-03 — absent with: prepares params as {} (not undefined), and the result stays frozen", async () => {
-    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
-    const task = parseTaskV3Yaml({
-      yaml: ["version: 3", "uses: workflows/child", "akm:", '  schedule: "@daily"', ""].join("\n"),
-      filePath: "tasks/p03-workflow-no-with.yml",
-    });
+describe("P-03 — task-layer with on a workflow ref becomes the child workflow's frozen params (prepare.ts)", () => {
+  test("row B-28 — no inputs: declared prepares params as {} (not undefined), and the result stays frozen", async () => {
+    // CHARACTERIZATION (P0, converted to task source v4 — spec §7.2 F-A2.8):
+    // pins behavior that must be PRESERVED through every later phase — a
+    // failure here is a regression, not an intended flip.
+    const task = v4Task(["version: 4", "uses: workflows/child", "schedule: '@daily'", ""].join("\n"), "tasks/p03.yml");
     expect(task.target.kind).toBe("uses");
     if (task.target.kind === "uses") expect(task.target.with).toBeUndefined();
 
@@ -139,34 +96,36 @@ describe("P-03 — task-layer with on a workflow ref becomes the child workflow'
   });
 });
 
-describe("P-04 — a workflow-target task with any env: is rejected (runtime-v3.ts:415-421)", () => {
+describe("P-04 — a workflow-target task with any env: is rejected (prepare.ts)", () => {
   test("P-04 — uses: workflows/<ref> with a non-empty env: throws UsageError INVALID_FLAG_VALUE with the exact message", async () => {
-    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
-    const task = parseTaskV3Yaml({
-      yaml: ["version: 3", "uses: workflows/child", "env:", "  FOO: bar", "akm:", '  schedule: "@daily"', ""].join(
-        "\n",
-      ),
-      filePath: "tasks/p04-workflow-env.yml",
-    });
+    // CHARACTERIZATION (P0, converted to task source v4): pins behavior that
+    // must be PRESERVED through every later phase — a failure here is a
+    // regression, not an intended flip.
+    const task = v4Task(
+      ["version: 4", "uses: workflows/child", "env:", "  FOO: bar", "schedule: '@daily'", ""].join("\n"),
+      "tasks/p04-workflow-env.yml",
+    );
     expect(Object.keys(task.env ?? {}).length).toBeGreaterThan(0);
 
     const error = await rejection(prepareTaskV3Execution(task, context(resolvedWorkflowAsset())));
     expect(error).toBeInstanceOf(UsageError);
     expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
     expect((error as Error).message).toBe(
-      "Task v3 workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
+      "Task workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
     );
   });
 
   test("P-04 — the rejection fires exactly when Object.keys(environment).length > 0, not merely when env: is authored", async () => {
-    // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
+    // CHARACTERIZATION (P0, converted to task source v4): pins behavior that
+    // must be PRESERVED through every later phase — a failure here is a
+    // regression, not an intended flip.
     // An authored-but-empty env: mapping owns the `env` key yet yields zero
     // environment entries — proving the guard reads Object.keys(environment)
     // rather than merely `document.env !== undefined`.
-    const task = parseTaskV3Yaml({
-      yaml: ["version: 3", "uses: workflows/child", "env: {}", "akm:", '  schedule: "@daily"', ""].join("\n"),
-      filePath: "tasks/p04-workflow-empty-env.yml",
-    });
+    const task = v4Task(
+      ["version: 4", "uses: workflows/child", "env: {}", "schedule: '@daily'", ""].join("\n"),
+      "tasks/p04-workflow-empty-env.yml",
+    );
     expect(task.env).toEqual({});
 
     const prepared = await prepareTaskV3Execution(task, context(resolvedWorkflowAsset()));

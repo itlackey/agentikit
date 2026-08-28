@@ -59,10 +59,15 @@ const NEEDLE_SCHEDULE = "schedule:";
 const ALLOWED_PREFIXES = [
   // §6.2(a) — tests/fixtures/execution-contracts/tasks/v2/**
   "tests/fixtures/execution-contracts/tasks/v2/",
-  // §6.2(a) — the v2->v3 migrator's own fixtures
-  "tests/fixtures/execution-contracts/tasks/v3-migration/",
-  // §6.2(a) — Lane C's own new v3->v4 migrator fixtures (does not exist until
-  // Lane C lands; excluded pre-emptively so its arrival needs no edit here)
+  // §6.2(a) — the v3->v4 migrator's own fixtures (spec
+  // docs/plans/specs/p4-deletions-closeout.md §3.2.4).
+  //
+  // The v2->v3 migrator's own tasks/v3-migration/ fixture family this prefix
+  // used to name is DELETED (P4 §3.2.7, F-A2.25) along with task source v3
+  // acceptance — its only consumers (tests/tasks/parse-v3-adapter.test.ts,
+  // and this same file's now-deleted tasks/v3-migration describe block, spec
+  // §7.2 F-A2.24) are gone. B-61's terminal allowed set (spec §2.5) names
+  // exactly these two prefixes.
   "tests/fixtures/execution-contracts/tasks/v3-to-v4/",
 ] as const;
 
@@ -73,23 +78,47 @@ const ALLOWED_EXACT_FILES = [
   "tests/tasks/migrate-v2-to-v3.test.ts",
 
   // §6.2(b) — SUBJECT is v3 parsing, v3 routing, or v3 migration
-  "tests/tasks/source-v3.test.ts",
-  "tests/tasks-runtime-v3.test.ts",
-  "tests/tasks/parse-v3-adapter.test.ts",
-  "tests/tasks/bounded-document.test.ts",
+  //
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, F-A2.1/F-A2.2/
+  // F-A2.3/F-A2.6/F-A2.7) DELETED tests/tasks/source-v3.test.ts,
+  // tests/tasks-runtime-v3.test.ts, tests/tasks/parse-v3-adapter.test.ts,
+  // tests/integration/tasks-scheduler-sync-v3.test.ts, and
+  // tests/integration/tasks-scheduling-characterization.test.ts along with
+  // task source v3 acceptance itself — their entries are trimmed here, not
+  // merely left stale, per this ratchet's own stale-entry check.
+  //
+  // tests/tasks/bounded-document.test.ts (F-A2.11) FLIPped its "task v3
+  // source" label to "task source" (row B-17) and its hostile-alias fixture
+  // to task source v4 — it no longer carries a "version: 3" occurrence, so
+  // its entry is trimmed here too rather than left stale.
   "tests/tasks/source-v4.test.ts",
   // source-v4-adapter.test.ts's ROUTING fixtures are what §6.2(b) names; the
   // sweep operates file-by-file, so the whole file is excluded here.
   "tests/tasks/source-v4-adapter.test.ts",
   "tests/integration/tasks-runtime-v3-runner.test.ts",
-  "tests/integration/tasks-scheduler-sync-v3.test.ts",
-  "tests/integration/tasks-schema.test.ts",
+  // tests/integration/tasks-schema.test.ts's published-schema drift gate lost
+  // its v3 arm entirely (P4 §3.2, schemas/akm-task.json flattens to task
+  // source v4 only) — the file no longer carries a "version: 3" occurrence
+  // anywhere, so its entry here is trimmed rather than left stale.
 
   // §6.2(c) — P0 characterization files pinning v3 behavior
-  "tests/integration/tasks-scheduling-characterization.test.ts", // R-06 must stay true for v3
-  "tests/integration/tasks-provenance-characterization.test.ts",
-  "tests/integration/tasks-legacy-vocabulary-characterization.test.ts",
-  "tests/integration/tasks-with-classification-characterization.test.ts",
+  //
+  // tests/integration/tasks-provenance-characterization.test.ts (F-A2.10)
+  // CONVERTED every fixture to task source v4 (P-05/P-06/R-07 assertions
+  // unchanged) — no "version: 3" occurrence remains, so its entry is
+  // trimmed here.
+  //
+  // tests/integration/tasks-legacy-vocabulary-characterization.test.ts
+  // (F-A2.9) CONVERTED all five R-08/R-09 fixtures (arm-workflow, arm-command,
+  // arm-shell, arm-script, arm-fallback) to task source v4 — every assertion
+  // (stored target_kind strings, read-back shapes, the "stash" fallback ref)
+  // is byte-identical, since D8's vocabulary re-code and R-09's option-key
+  // rename are both orthogonal to the source document's schema version. No
+  // "version: 3" occurrence remains, so its entry is trimmed here too.
+  // tests/integration/tasks-with-classification-characterization.test.ts
+  // (F-A2.8) deleted its P-01/P-02 blocks (unreachable, spec §5.5) and
+  // converted its surviving P-03/P-04 fixtures to task source v4 — no
+  // "version: 3" occurrence remains, so its entry is trimmed here too.
   "tests/workflows/characterization-classification.test.ts",
   "tests/workflows/characterization-with-drop.test.ts", // also named again by §6.2(d)
 
@@ -98,7 +127,11 @@ const ALLOWED_EXACT_FILES = [
   // change the thing being tested)
   "tests/workflows/with-rejection.test.ts",
   "tests/workflows/direct-script-typed.test.ts",
-  "tests/workflows/task-source-v4-deferral.test.ts",
+  // tests/workflows/task-source-v4-deferral.test.ts (F-A2.31) DELETED its
+  // v3-contrast companion test — the LC-N1 guard it isolated was already
+  // superseded, and with task source v3 gone there is no second version left
+  // to contrast against. No "version: 3" occurrence remains, so its entry is
+  // trimmed here.
 
   // §6.2(a)/(b) — Lane C's own migrator suite. This generation's reference
   // suite (spec §5.1) combines the translation-table coverage (B-60..B-69)
@@ -110,19 +143,39 @@ const ALLOWED_EXACT_FILES = [
   "tests/migrate/task-v3-to-v4.test.ts",
 
   // §6.2(b) catch-all ("any other test whose SUBJECT is v3 parsing, v3
-  // routing, or v3 migration") — spec row B-57 requires `akm task explain
-  // <ref>` to be proven against a genuine version: 3 task (declarations
-  // list resolves empty; target kind/ref and execution settings still
-  // resolve). Converting that fixture would remove the only v3 case this
-  // acceptance row covers.
-  "tests/integration/commands/tasks-explain.test.ts",
+  // routing, or v3 migration") —
+  // tests/integration/cli-errors.test.ts's new B-14/B-15 envelope coverage
+  // (P4 docs/plans/specs/p4-deletions-closeout.md §7.2 F-A2.35) is exactly
+  // this catch-all: its SUBJECT is proving `akm task run` on a genuine
+  // version: 3 (and version: 2) source emits the TASK_SCHEMA_VERSION_UNSUPPORTED
+  // envelope with the migrate hint — the fixture's v3-ness IS the point.
+  "tests/integration/cli-errors.test.ts",
+  //
+  // tests/integration/commands/tasks-explain.test.ts's B-57 entry that used
+  // to live here is DELETED, not converted: task source v3 acceptance is
+  // retired entirely (spec §3.2), so "akm task explain resolves a genuine
+  // version: 3 task" is no longer a claim any fixture can demonstrate — the
+  // describe block asserting it is deleted outright (mechanically forced by
+  // the retirement, not itself a named F-A2 row), so there is no v4 fixture
+  // standing in for it either. The file's entry is trimmed here.
 
-  // §8 preservation gate (binding, reviewer-run): "tests/tasks/source-v3.test.ts,
+  // P1b's own §8 preservation gate named "tests/tasks/source-v3.test.ts,
   // tests/tasks/parse-v3-adapter.test.ts, tests/tasks/prepare-split.test.ts,
   // tests/tasks/run-split.test.ts, tests/tasks/model-contracts.test.ts,
-  // tests/tasks/bounded-document.test.ts green and byte-unchanged." — its
-  // parseTaskV3Yaml fixture must stay v3 byte-for-byte.
-  "tests/tasks/prepare-split.test.ts",
+  // tests/tasks/bounded-document.test.ts green and byte-unchanged" — this
+  // entry used to keep tests/tasks/prepare-split.test.ts's parseTaskV3Yaml
+  // fixture on the allow-list for exactly that reason. P4
+  // (docs/plans/specs/p4-deletions-closeout.md §3.2.7, F-A2.15) SUPERSEDES
+  // that gate for all six of P1b's named files, exactly as P2a superseded
+  // P1b §9's structure criterion (spec §3.2.7's own citation): two are
+  // deleted (source-v3.test.ts, parse-v3-adapter.test.ts, F-A2.1/F-A2.3),
+  // and prepare-split.test.ts/run-split.test.ts/model-contracts.test.ts
+  // (F-A2.15/F-A2.16/F-A2.4) are FLIPped to import the split modules
+  // directly rather than through the now-deleted runtime-v3.ts/runner.ts
+  // shims their "byte-unchanged" comparisons depended on —
+  // prepare-split.test.ts's own fixture converts to task source v4 as part
+  // of that flip, so its entry here is trimmed rather than left stale.
+  // bounded-document.test.ts (F-A2.11) still carries the shape; see below.
 
   // P2b test-review finding #4 (tests/workflows/task-input-bindings.test.ts:1):
   // the missing identity suite (B-01, B-43, B-44). Its B-01 case's
@@ -137,77 +190,60 @@ const ALLOWED_EXACT_FILES = [
   // more faithful fixture for that exact claim, not merely a workaround.
   "tests/workflows/task-binding-identity.test.ts",
 
-  // Lane D sweep, discovered load-bearing v3-ness (spec §6.3's own escape
-  // valve — "Any file where the conversion would change what the test
-  // asserts is moved into the exclusion list and the reason is recorded in
-  // the Review log"), 2026-08-27. Every entry below was verified by running
-  // its suite both before and after attempting conversion; converting broke
-  // the named assertion for an architectural reason unrelated to fixture
-  // authoring style.
-  //
-  // task source v4's per-schedule-binding `enabled` is deliberately NOT
-  // projected into the document-level flag runTask's own disabled-dispatch
-  // skip reads (src/tasks/source/project-v4.ts's own header: "carried
-  // separately to the scheduler seam, not this function"; the derivation is
-  // src/tasks/prepare/prepare-support.ts:120's
-  // `enabled: document.akm?.enabled !== false`, which is always `true` for a
-  // v4-projected document since `projectAkm` never sets `akm.enabled`). Every
-  // fixture below feeds a scheduled/`--scheduled` `runTask` dispatch whose
-  // assertion depends on the SKIP actually firing, which is unreachable for
-  // a v4 source under the current runtime — a v3->v4 rewrite would silently
-  // stop testing the skip at all (the dispatch would just run).
-  "tests/integration/commands/tasks-cli-envelope.test.ts",
-  "tests/integration/tasks-runner.test.ts",
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, row B-22, F-A2.17/
+  // F-A2.18) DELETED run-task.ts's shouldSkipUnactivatedTask (the disabled-
+  // dispatch skip the Lane D sweep escape-valve entries here used to
+  // protect) ENTIRELY — not merely made it unreachable for a v4 source, as
+  // the P2b-era reasoning below assumed.
+  // tests/integration/commands/tasks-cli-envelope.test.ts deleted its "skips
+  // the disabled task" case with the skip and converted its remaining
+  // fixtures to task source v4. tests/integration/tasks-runner.test.ts
+  // converted every fixture the same way (including "threads declared
+  // maxSteps / maxRetries into the orchestrator", whose
+  // `with:`-on-a-workflow-target -> child-run-params path is retired along
+  // with task source v3 itself, row B-28/R-R2) — its own helpers build task
+  // YAML from object literals via the `yaml` package's `stringify`, so a
+  // schedule-free (task source v4's OPTIONAL scheduling, D2-N6) fixture
+  // never even spells the literal text "schedule:" in source. Neither file
+  // matches the ratchet's two-needle shape at all now, so both entries are
+  // trimmed here rather than left stale.
 
-  // tests/integration/tasks-scheduler-sync-v4.test.ts:105's own test name —
-  // "a manual-only version: 4 task alongside a normally-scheduled version: 3
-  // task: the v3 task still installs, the v4 task contributes nothing" — is
-  // a coexistence proof; its v3 half is the PRESERVE half of the claim by
-  // construction, and spec §7 F-B2's own disposition table already names
-  // this exact line "UNCHANGED, must stay green" alongside the file's other
-  // v4-only cases.
-  "tests/integration/tasks-scheduler-sync-v4.test.ts",
+  // tests/integration/tasks-scheduler-sync-v4.test.ts's "v3 alongside v4
+  // coexistence" case is FLIPped by P4 (spec §7.2, F-A2.33) to a two-v4-task
+  // case, since coexistence is no longer expressible once task source v3 is
+  // gone — the file no longer carries a "version: 3" occurrence at all, so
+  // its entry here is trimmed rather than left stale. (Its later port of the
+  // deleted tests/integration/tasks-scheduler-sync-v3.test.ts, F-A2.6, is
+  // v4-only for the same reason.)
 
-  // tests/core/adapter/akm-validate.test.ts: every "version: 3"+"schedule:"
-  // occurrence sits in a test whose NAME says its subject is v3 parsing
-  // itself — "task missing the v3 version", "a valid v3 task omitting
-  // optional akm.enabled", "a task with a non-boolean akm.enabled", "a task
-  // omitting version" (falls through to v3's own preserved wording per
-  // src/tasks/source/parse-task-source.ts's routing table) — each asserts on
-  // v3-only field paths (`akm.enabled`) or v3's own error wording ("version
-  // ... required ... 3"), matching §6.2(b)'s catch-all ("any other test
-  // whose SUBJECT is v3 parsing").
+  // tests/core/adapter/akm-validate.test.ts (F-A2.21): every other
+  // "v3 parsing" case FLIPped to its task source v4 equivalent (the
+  // remaining "version: 3"+"schedule:" occurrence sits only in the new "a v3
+  // task is flagged with the canonical migration preview hint (row B-14)"
+  // case, whose SUBJECT is proving a genuine version: 3 document still fails
+  // closed with the migrate hint — matching §6.2(b)'s catch-all, "any other
+  // test whose SUBJECT is v3 parsing/routing").
   "tests/core/adapter/akm-validate.test.ts",
 
-  // tests/setup-scheduled-tasks.test.ts: `akm setup`'s scheduled-task review
-  // step (src/setup/steps/tasks.ts's `listSetupTaskDefinitions` and
-  // `prepareSetupTaskDefinitions`) calls `parseTaskV3Yaml` and
-  // `setTaskV3EnabledInYaml` DIRECTLY — no `parseTaskSource` version routing
-  // exists on this path at all. A version: 4 fixture would not silently
-  // change behavior here; it would throw "version ... must be exactly 3"
-  // where the test expects a value. This subsystem is unrouted, not merely
-  // v3-preferring — out of P2b's scope entirely.
-  "tests/setup-scheduled-tasks.test.ts",
+  // tests/setup-scheduled-tasks.test.ts (F-A2.20): `akm setup`'s scheduled-
+  // task review step (src/setup/steps/tasks.ts's `listSetupTaskDefinitions`
+  // and `prepareSetupTaskDefinitions`) is REWIRED to `parseTaskSource` by P4
+  // (§3.2.6, row B-23) — the "this subsystem is unrouted" reasoning that used
+  // to keep this file's v3 fixtures on the allow-list no longer holds; its
+  // fixtures convert to task source v4, so its entry is trimmed here too.
 
-  // P3a Lane B (docs/plans/specs/p3a-plan-v5-child-freeze.md §4, rows
-  // B-12/B-14/B-22), discovered load-bearing v3-ness (spec §6.3's escape
-  // valve, same as the "Lane D sweep" block above), 2026-08-27. Both files
-  // author a `version: 3` task whose OWN `uses:` targets a workflow,
-  // specifically to prove the task-wrapped child-workflow composition path
-  // works from a v3 task (B-12/B-14's "a v3 task whose own uses: targets a
-  // workflow freezes to a child-workflow target ... the task's own with:
-  // becomes the child's params", and B-22's task-mediated composition-cycle
-  // fixture) — the SAME `PreparedTaskV3Workflow.params` code path P2b's own
-  // "tests/workflows/task-binding-identity.test.ts" entry above documents as
-  // "unaffected by [the v4 deferral]" and "the more faithful fixture" for a
-  // v3-specific claim. Converting either to task source v4 would test the
-  // DIFFERENT v4 declared-`inputs:` binding path instead (already covered by
-  // this same spec's F-B4 flip in tests/workflows/task-input-bindings.test.ts),
-  // silently dropping v3-task-wrapped-workflow coverage entirely. The
-  // `schedule:` block is the same v3-mandatory-scheduling padding every other
-  // entry here carries (P0 row R-06) — not itself under test.
-  "tests/workflows/child-workflow-freeze.test.ts",
-  "tests/integration/workflows/child-freeze-read-set.test.ts",
+  // P3a Lane B's own "load-bearing v3-ness" note for these two files (rows
+  // B-12/B-14/B-22) is SUPERSEDED by P4 (docs/plans/specs/
+  // p4-deletions-closeout.md §7.2, F-A2.29): the `with:`-on-a-workflow-target
+  // grammar this note worried about losing coverage of is itself retired
+  // along with task source v3 acceptance (row B-28, R-R2 resolved by
+  // deletion, spec §8) — there is no "DIFFERENT v4 declared-inputs: binding
+  // path" to silently fall back to any more, since the `with:` path no
+  // longer exists at all. Both files now declare a typed `inputs:` default
+  // instead, proving the child's params still arrive as a literal binding —
+  // sourced from the default rather than an authored `with:`. Neither file
+  // carries a "version: 3" occurrence any more, so both entries are trimmed
+  // here.
 ] as const;
 
 function isAllowed(relPath: string): boolean {

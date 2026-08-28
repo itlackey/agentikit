@@ -273,6 +273,11 @@ describe("task lifecycle failure handling", () => {
 
   test("sync validates the entire desired set before runtime preparation or native mutation", async () => {
     writeTask("a-valid", taskYaml("echo yes", "@daily"));
+    // A version: 2 document is now rejected by the version router itself
+    // (TASK_SCHEMA_VERSION_UNSUPPORTED, row B-15) before it ever reaches a
+    // field-level parser — the old v3 parser's own "must be exactly 3"
+    // wording this test used to assert is unreachable for a version: 2
+    // document under any routing this phase produces.
     writeTask("b-invalid", 'version: 2\nschedule: "@daily"\ncommand: echo no\n');
     const prior = nativeBinding("old-installed", "0 2 * * *");
     installed.set(prior.id, prior);
@@ -286,7 +291,7 @@ describe("task lifecycle failure handling", () => {
           return { binding: ["/test/akm"], contextPath: "/test/context.json" };
         },
       }),
-    ).rejects.toThrow(/version must be exactly 3|version 2/i);
+    ).rejects.toThrow(/task schema version 2/i);
 
     expect(runtimeCalls).toBe(0);
     expect(installCalls).toEqual([]);
