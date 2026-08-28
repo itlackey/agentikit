@@ -204,11 +204,17 @@ redact: [TOKEN]
   at declaration time, since `akm task run --<name>`, `akm task explain
   --<name>`, and a `schedule[].inputs` entry would otherwise route the value
   into `akm task run`'s own flag instead of the declared input.
-- **A `required: true` input with no default makes every scheduled run of
-  that task fail** unless the schedule binding's own `inputs:` supplies it
-  — there is no parse- or sync-time warning for this today. If a task has
-  both a required, default-less input and a `schedule:`, give every
-  schedule entry an explicit value for it, or provide a `default` instead.
+- **A `required: true` input with no default must be satisfied by every
+  schedule binding.** A schedule entry that authors an `inputs:` mapping is
+  checked against the declarations at parse time (`TASK_SOURCE_INVALID` at
+  `schedule[].inputs`). The string shorthand and a list entry with no
+  `inputs:` key do parse, but `akm task sync` validates every entry — with
+  declared defaults applied — and rejects the whole desired set with
+  `TASK_SOURCE_INVALID`, naming the unsatisfied input, before touching any
+  scheduler state, so such a schedule is never installed. Give every
+  schedule entry an explicit value for the input, or declare a `default`
+  instead; manual `akm task run` is unaffected either way — it takes the
+  value from the input's own flag.
 - `output:` is a single bounded JSON Schema, replacing v3's
   `akm.outputSchema`. It is legal only on a command target
   (`uses: commands/<ref>` or `uses: akm/command`), where it is forwarded to
