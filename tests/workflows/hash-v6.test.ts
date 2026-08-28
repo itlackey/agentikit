@@ -224,6 +224,41 @@ function buildOrdinaryShellTarget(options: { inputBindings?: readonly TaskInputB
   };
 }
 
+/**
+ * A minimal `command` target carrying a resolved persona snapshot
+ * (`request.persona.content`) — the byte-exact persona text resolved at
+ * freeze time (A-N9: "persona snapshots ARE in the preimage... transitively
+ * and wholesale", `docs/plans/specs/p3a-plan-v5-child-freeze.md`).
+ * `ResolvedExecutionRequestV1`'s `command`/`persona` content types carry
+ * private module-local brand symbols (`src/execution/resolved-request.ts`)
+ * this test file has no access to construct directly, so this fixture routes
+ * through the SAME `unknown` cast `asFrozenTarget` establishes above for the
+ * mirror-image `child-workflow` case — this file only ever HASHES the frozen
+ * target, it never decodes or dispatches it, so a fully-branded, schema-valid
+ * fixture would add weight nothing here reads.
+ */
+function buildCommandTargetWithPersona(personaContent: string): FrozenWorkflowTarget {
+  const target = {
+    kind: "command",
+    ref: null,
+    contentHash: "c".repeat(64),
+    request: {
+      schemaVersion: 1,
+      command: { template: "echo hi", content: "echo hi", source: null },
+      engine: { name: "test-engine", kind: "agent" },
+      persona: {
+        content: personaContent,
+        source: { ref: "stash//agents/reviewer", hash: "h".repeat(64) },
+      },
+      authorization: { status: "allowed" },
+      runtime: {},
+      notices: [],
+    },
+    runner: { kind: "agent", timeoutMs: 60_000 },
+  };
+  return target as unknown as FrozenWorkflowTarget;
+}
+
 // ── A-11, A-15: computeUnitInputHash (via computeStepWorkList) ─────────────
 //
 // A-11 (the preimage shape/prefix in general) uses buildOrdinaryShellTarget,
@@ -345,6 +380,33 @@ describe("hashVersion 7 — unit input hash (A-11, A-14, A-15)", () => {
     expect(hashA).toBeTruthy();
     expect(hashA).toMatch(/^[0-9a-f]{64}$/);
     expect(hashA).not.toBe(hashB);
+  });
+
+  test("a changed persona snapshot changes the unit's input hash (A-N9: persona snapshots ARE in the preimage, transitively via frozenTarget.request.persona)", () => {
+    const targetA = buildCommandTargetWithPersona("You are a careful reviewer, PERSONA-A.");
+    const targetB = buildCommandTargetWithPersona("You are a careful reviewer, PERSONA-B.");
+    const input: WorkListInput = { runId: "run-1", params: {}, stepOutputs: {} };
+
+    const resultA = computeStepWorkList(stepPlanWithTarget(targetA), input);
+    const resultB = computeStepWorkList(stepPlanWithTarget(targetB), input);
+    expect(resultA.ok).toBe(true);
+    expect(resultB.ok).toBe(true);
+    if (!resultA.ok || !resultB.ok) return;
+
+    const hashA = resultA.list.units[0]?.inputHash;
+    const hashB = resultB.list.units[0]?.inputHash;
+    expect(hashA).toBeTruthy();
+    expect(hashA).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashA).not.toBe(hashB);
+
+    // Byte-identical persona content (everything else held constant) must
+    // hash identically — this isn't merely sensitive to SOME field on the
+    // fixture, it is specifically sensitive to the persona snapshot.
+    const targetA2 = buildCommandTargetWithPersona("You are a careful reviewer, PERSONA-A.");
+    const resultA2 = computeStepWorkList(stepPlanWithTarget(targetA2), input);
+    expect(resultA2.ok).toBe(true);
+    if (!resultA2.ok) return;
+    expect(resultA2.list.units[0]?.inputHash).toBe(hashA);
   });
 
   test("a changed inputBindings entry changes the unit's input hash, target kind held constant (A-11's frozenTarget field)", () => {
