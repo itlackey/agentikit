@@ -71,6 +71,21 @@ below):
   related but separate allowlist — it decides which error CODES are safe to
   surface verbatim in a `detail.error` column, not which result-kind
   strings are legal. Do not conflate the two when reading either file.
+- **Removed 2026-08-28** (review finding against this phase's own close-out
+  spec, `docs/plans/specs/p4-deletions-closeout.md`): `finishDisabledTask`
+  and `preparedResultTarget`, quoted above as part of the moved essay, are no
+  longer in `src/tasks/run/task-result.ts`. `finishDisabledTask`'s only
+  caller — `run-task.ts`'s `shouldSkipUnactivatedTask` — was deleted by the
+  SAME phase's P4-N6 (task source v4 has no document-level `enabled` to skip
+  at fire time), which left `finishDisabledTask` fully dead; `preparedResultTarget`
+  was in turn `finishDisabledTask`'s only caller, so it went dead with it.
+  Deleting them also retired the `"disabled"` `TaskRunStatus` member
+  `finishDisabledTask` was the sole producer of, and the now-unreachable
+  `result.status === "disabled"` branch in `src/commands/tasks/tasks.ts`.
+  This does not touch the D8 vocabulary or the legacy read mapping this ADR
+  is about — every OTHER dispatch arm still builds its own
+  `TaskRunResult.target` per the Decision above, and `task-history.ts`'s read
+  side is unchanged.
 
 ## Provenance
 

@@ -54,7 +54,13 @@ describe("migration help", () => {
   test("the 0.9.2 terminal note points task-v2 users at the fail-closed migration", () => {
     const result = renderMigrationHelp("v0.9.2", undefined);
     expect(result).toContain("Migration notes for akm v0.9.2");
-    expect(result).toContain("Task v3");
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §4.7, F-A2.28) rewrote
+    // the 0.9.2 release notes off the capitalized "Task v3" proper-noun
+    // wording onto "task source v4" (the destination) / "task-v3" (the
+    // retired generation, §0.1's one permitted bare "task v3" form) — this
+    // pin follows the rewrite rather than the retired string.
+    expect(result).toContain("task source v4");
+    expect(result).toContain("TASK_SCHEMA_VERSION_UNSUPPORTED");
     expect(result).toContain("akm migrate apply --dry-run");
     expect(result).toMatch(/\[[^\]]+\]\(\.\.\/v0\.9\.1-to-v0\.9\.2\.md(?:#[^)]+)?\)/i);
   });
