@@ -412,7 +412,7 @@ export function yamlAstError(options: BoundedTaskYamlOptions, node: unknown, det
   const line = range && options.lineCounter ? options.lineCounter.linePos(range[0] ?? 0).line : undefined;
   throw new UsageError(
     `Invalid ${options.sourceLabel} at ${options.filePath}${line === undefined ? "" : `:${line}`}: ${detail}`,
-    "INVALID_FLAG_VALUE",
+    "TASK_SOURCE_INVALID",
   );
 }
 
@@ -504,20 +504,24 @@ export function readBoundedTaskSourceYaml(
   options: { readonly sourceLabel: string },
 ): BoundedTaskSourceYamlResult {
   const sourceLabel = options.sourceLabel;
-  // Diagnostic-codes ratchet remedy (tests/architecture/diagnostic-codes.test.ts,
-  // established pattern at src/tasks/model/definition.ts:66-79): every
-  // `UsageError` below omits its `code` argument — the constructor already
-  // defaults to the exact code these throws need (src/core/errors.ts), so
-  // the thrown type, `.code`, and `.hint()` are all unchanged; this keeps
-  // the literal code string out of the ratchet's grep-style count, which
-  // only ever declines. This mirrors v3's OWN front end before this move
-  // (`source-v3.ts:894-937`, pre-P2a).
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §5.2, row R-R8): these six
+  // throws used to omit their `code` argument and rely on the constructor's
+  // `INVALID_FLAG_VALUE` default (a pre-P4 ratchet-gaming trick that kept the
+  // literal string out of the grep-style count while the effective code
+  // stayed generic). §5.2's target table closes that gap: every pre-version
+  // failure in this bounded YAML front end (not a string, too large, YAML
+  // parse/expansion) is a task-source defect, not a flag-parsing one, so each
+  // now carries `TASK_SOURCE_INVALID` explicitly.
   if (typeof input.yaml !== "string") {
-    throw new UsageError(`Invalid ${sourceLabel} at ${input.filePath}: source must be a string.`);
+    throw new UsageError(
+      `Invalid ${sourceLabel} at ${input.filePath}: source must be a string.`,
+      "TASK_SOURCE_INVALID",
+    );
   }
   if (utf8Bytes(input.yaml) > TASK_V3_MAX_SOURCE_BYTES) {
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}: source exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) resource limit.`,
+      "TASK_SOURCE_INVALID",
     );
   }
   const lineCounter = new LineCounter();
@@ -527,6 +531,7 @@ export function readBoundedTaskSourceYaml(
   } catch (cause) {
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}: YAML parsing failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      "TASK_SOURCE_INVALID",
     );
   }
   const [problem] = document.errors;
@@ -534,12 +539,14 @@ export function readBoundedTaskSourceYaml(
     const offset = Array.isArray(problem.pos) ? problem.pos[0] : 0;
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}:${lineCounter.linePos(offset).line}: ${yamlProblem(problem.message)}`,
+      "TASK_SOURCE_INVALID",
     );
   }
   const [warning] = document.warnings;
   if (warning) {
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}: unsupported YAML construct: ${yamlProblem(warning.message)}`,
+      "TASK_SOURCE_INVALID",
     );
   }
   assertBoundedTaskYamlDocument(document, { filePath: input.filePath, sourceLabel, lineCounter });
@@ -549,6 +556,7 @@ export function readBoundedTaskSourceYaml(
   } catch (cause) {
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}: YAML expansion failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      "TASK_SOURCE_INVALID",
     );
   }
   const lineAt = (fieldPath: readonly (string | number)[]): number | undefined => {

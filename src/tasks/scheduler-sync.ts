@@ -446,7 +446,7 @@ async function compileDesiredSourceSet(
   if (failures.length > 0) {
     throw new UsageError(
       `Scheduler sync rejected the desired source set before mutation:\n${failures.map((failure) => `- ${failure}`).join("\n")}`,
-      "INVALID_FLAG_VALUE",
+      "TASK_SOURCE_INVALID",
     );
   }
   return Object.freeze({
@@ -595,14 +595,14 @@ async function compileWorkflowSources(
           compiled.errors
             .map((error) => `${error.path}:${error.line ?? 1} [${error.code}] ${error.message}`)
             .join("; "),
-          "INVALID_FLAG_VALUE",
+          "WORKFLOW_SOURCE_INVALID",
         );
       }
       const planDraft = compileWorkflowPlan(compiled.ir, canonicalName);
       if (!planDraft.ok) {
         throw new UsageError(
           planDraft.errors.map((error) => `${guarded.relativePath}:${error.line} ${error.message}`).join("; "),
-          "INVALID_FLAG_VALUE",
+          "WORKFLOW_SOURCE_INVALID",
         );
       }
       const conceptId = input.adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName;

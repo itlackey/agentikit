@@ -20,7 +20,7 @@ export function gitIdentity(unit: ProgramUnit, root: string): { gitCommitOid?: s
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(oid)) {
     throw new UsageError(
       `Worktree-isolated workflow root ${root} has no immutable Git HEAD OID.`,
-      "INVALID_FLAG_VALUE",
+      "WORKFLOW_SOURCE_INVALID",
     );
   }
   return { gitCommitOid: oid };

@@ -320,3 +320,36 @@ preservation gates. R-06 therefore stands, unflipped, for every `version: 3` doc
 behavior table). v3's exactly-one-scheduling-source rule stands until **P4** removes v3 acceptance
 outright — this row should not be read as "replaced" in the sense of no longer holding for any
 document, only as "superseded for the one new document shape that did not exist before P2a."
+
+**2026-08-28 — P4 close-out (Lane C, docs/plans/specs/p4-deletions-closeout.md §5.5): final
+disposition of every R row, and of the P rows P4 supersedes.** P4 is the last phase in the
+refactor ladder; the three deletion families (§3) and the vocabulary/documentation close-out (§4)
+are landed at Lane C's head. This entry appends §5.5's disposition table verbatim — no pinned row's
+text above is edited, this is prose-only closure:
+
+| Row | Final disposition |
+|---|---|
+| **R-01** | RESOLVED — P1a rejected the silent `with:` drop (`COMPOSITION_INVALID`); P2b replaced the rejection with real bindings when the target declares `inputs:`. |
+| **R-02** | RESOLVED — P1b's `prepareScriptTarget()` deleted the synthetic task YAML; no `src` file fabricates a task-source header (`tests/workflows/direct-script-typed.test.ts`'s source scan). |
+| **R-03** | RESOLVED — P3a replaced all three nested-workflow rejections with the ONE recursive child-workflow resolver; the documented-dead duplicate went with them. |
+| **R-04** | RESOLVED by deletion — P4 §3.1. The grammar, both consumers and the `remote-action-acquisition-out-of-scope` code are gone from `src`; the frozen migrator keeps a copy so it can still name the target when it blocks a file. |
+| **R-05** | RESOLVED by deletion — P4 §3.3. Parse-then-reject becomes one adapter-boundary rejection; the return-vs-throw asymmetry the row pinned no longer exists. |
+| **R-06** | RESOLVED by deletion — P2a made scheduling optional for task source v4; P4 §3.2 removed v3 acceptance, so the exactly-one-scheduling-source rule has no document left to apply to. |
+| **R-07** | RESOLVED — P1b threaded `ExecutionProvenanceContext`; the prompt/command arm records `"task"`. |
+| **R-08** | RESOLVED — P1b's D8 vocabulary + read-boundary mapping. The mapping itself is a PRESERVE surface forever (row B-51). |
+| **R-09** | RESOLVED at the boundary — P1b renamed `stashDir` → `bundleDir`; P4 §4.1 consolidated the stray literals onto `DEFAULT_BUNDLE_NAME`, whose VALUE stays `"stash"` for user-data compatibility. `src/indexer/**` was out of scope from P0 onward. |
+| **P-01 / P-02** | SUPERSEDED by P4 §3.2 — unreachable from any parseable source (task source v4 accepts `with:` only on `uses: akm/command`). The seam guards are retained as invariants (P4-N4); the pinned tests are deleted with floor accounting. |
+| **P-03** | SUPERSEDED by P4 §3.2 — a task document can no longer author `with:` on a workflow target; `prepared.params` is the task's defaulted declared inputs, or `{}`. |
+| **P-04** | PRESERVED, re-fixtured — task source v4 still has a top-level `env:`, so the workflow-target env rejection stays reachable and stays pinned. |
+| **P-05 / P-06 / P-07** | PRESERVED (P-05 reclassified by P1b's D5 — see the 2026-08-26 entries). |
+| **P-08** | SUPERSEDED by P4 §3.3 — the multi-job parser's job model was pinned as the thing the P4 adapter boundary would be built on; the boundary was built by **deleting** it instead, per brief §10. Job-count bounds, `needs` validation, cycle/duplicate detection and canonical ordering are all unreachable with exactly one job. |
+
+Two dispositions above are worth flagging as observed, not merely asserted, at P4 Lane C's head:
+P-04's "stays pinned" held through §5.2's own `INVALID_FLAG_VALUE` re-coding sweep — the workflow-
+target `env:` guard's code was measured, found pinned by
+`tests/integration/tasks-with-classification-characterization.test.ts`'s P-04 block, and left
+`INVALID_FLAG_VALUE` rather than recoded to `COMPOSITION_INVALID` as §5.2's generic target table
+would otherwise have applied, exactly as this table's row anticipates. R-08's "PRESERVE surface
+forever" held the same way against `src/tasks/source/bounded-document.ts`'s six-throw front-end
+recode: the D8 legacy read mapping in `src/tasks/run/task-history.ts` was not among the sites
+touched, and its own byte-unchanged tests stayed green throughout.

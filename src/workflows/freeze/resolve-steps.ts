@@ -47,7 +47,7 @@ export async function resolveStep(source: WorkflowSourceStep, context: Resolutio
         : { ref: qualifyRef(target.ref, "commands", context.asset, context.config) };
     return commandDispatch(source, baseUnit, action, context);
   }
-  throw new UsageError(`Workflow target ${source.uses} is not executable in 0.9.2.`, "INVALID_FLAG_VALUE");
+  throw new UsageError(`Workflow target ${source.uses} is not executable in 0.9.2.`, "WORKFLOW_SOURCE_INVALID");
 }
 
 /**

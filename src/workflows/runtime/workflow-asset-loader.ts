@@ -52,13 +52,13 @@ export function parseWorkflowRefInput(ref: string): BundleRef {
   if (parsed.fragment !== undefined) {
     throw new UsageError(
       `Export fragment "#${parsed.fragment}" is not accepted in a workflow ref.`,
-      "INVALID_FLAG_VALUE",
+      "TARGET_REF_INVALID",
     );
   }
   if (parsed.conceptId.startsWith("workflow:")) {
     throw new UsageError(
       `Invalid workflow ref "${ref.trim()}". Use [bundle//]conceptId, such as workflows/release.`,
-      "INVALID_FLAG_VALUE",
+      "TARGET_REF_INVALID",
     );
   }
   return parsed;
@@ -84,7 +84,10 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
     return [{ source, bundleId }];
   });
   if (bundleRef.bundle && searchSources.length === 0) {
-    throw new UsageError(`Bundle "${bundleRef.bundle}" was not found among configured sources.`, "INVALID_FLAG_VALUE");
+    throw new UsageError(
+      `Bundle "${bundleRef.bundle}" was not found among configured sources.`,
+      "WORKFLOW_SOURCE_INVALID",
+    );
   }
   let assetPath: string | undefined;
   let sourcePath: string | undefined;
@@ -117,7 +120,7 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
       const adapterId = rejectedSource.source.adapterId ?? "unassigned";
       throw new UsageError(
         `Bundle "${sourceName}" uses adapter "${adapterId}", which does not support native workflow execution.`,
-        "INVALID_FLAG_VALUE",
+        "WORKFLOW_SOURCE_INVALID",
       );
     }
     throw new NotFoundError(`Workflow not found for ref: ${ref}`);

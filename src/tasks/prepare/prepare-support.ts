@@ -40,7 +40,7 @@ export function environmentSnapshot(environment: TaskV3Environment | undefined):
     if (isInferredSecretName(key) || detectSecretShapedParams({ [key]: value }).length > 0) {
       throw new UsageError(
         `Task env.${key} is a secret-shaped literal env value. Store credentials in a secret/env binding rather than durable task source.`,
-        "INVALID_FLAG_VALUE",
+        "TASK_SOURCE_INVALID",
       );
     }
     Object.defineProperty(out, key, { value, enumerable: true, configurable: false, writable: false });
@@ -68,7 +68,7 @@ export function commandEnvironmentSnapshot(
 function normalizeTimeout(value: string | number | null | undefined): number | null | undefined {
   if (value === undefined || value === null || typeof value === "number") return value;
   const parsed = parseDuration(value, DURATION_UNITS);
-  if (parsed === null) throw new UsageError(`Invalid task timeout ${JSON.stringify(value)}.`, "INVALID_FLAG_VALUE");
+  if (parsed === null) throw new UsageError(`Invalid task timeout ${JSON.stringify(value)}.`, "TASK_SOURCE_INVALID");
   return parsed;
 }
 

@@ -43,14 +43,14 @@ export function scriptInterpreter(extension: string, ref: string): TaskV3ScriptI
   if (!interpreter) {
     throw new UsageError(
       `Task v3 script target ${JSON.stringify(ref)} has no closed runtime interpreter for extension ${JSON.stringify(extension)}.`,
-      "INVALID_FLAG_VALUE",
+      "TASK_TARGET_UNSUPPORTED",
     );
   }
   if (interpreter !== "bun") return interpreter;
   if (!process.versions.bun) {
     throw new UsageError(
       `Task v3 script target ${JSON.stringify(ref)} requires Bun for ${extension} execution, but this runtime cannot provide it.`,
-      "INVALID_FLAG_VALUE",
+      "TASK_TARGET_UNSUPPORTED",
     );
   }
   return isBunStandaloneMain() ? "bun-standalone" : "bun";
@@ -66,7 +66,7 @@ export function captureDirectoryIdentity(
     if (cause instanceof UsageError) throw cause;
     throw new UsageError(
       `Task working directory ${JSON.stringify(workingDirectory ?? ".")} cannot be physically verified: ${cause instanceof Error ? cause.message : String(cause)}`,
-      "INVALID_FLAG_VALUE",
+      "TASK_SOURCE_INVALID",
     );
   }
 }

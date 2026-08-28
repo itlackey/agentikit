@@ -34,7 +34,7 @@ export function freezeEnvironment(
     collector: context.collector,
     resolveRef: (ref) => {
       const parsedEnv = parseEnvRef(ref);
-      if (parsedEnv.type !== "env") throw new UsageError(`Expected an env ref; got ${ref}.`, "INVALID_FLAG_VALUE");
+      if (parsedEnv.type !== "env") throw new UsageError(`Expected an env ref; got ${ref}.`, "WORKFLOW_SOURCE_INVALID");
       const owned = resolveOwnedAssetSync(ref, "env", context);
       return { ref: owned.ref, bundle: owned.bundle, adapter: owned.adapter, root: owned.root, path: owned.file };
     },
@@ -105,6 +105,12 @@ export function resolveOwnedAssetCore(
         }
       }
     }
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §5.2, row B-11 preservation
+    // gate): PRESERVED, not re-coded — tests/workflows/child-workflow-freeze.test.ts's
+    // "B-11: workflows/<ref> that does not resolve fails the existing
+    // asset-resolution failure, unchanged in code and shape" pins this exact
+    // code by name and by its own title. Recorded deviation from §5.2's flat
+    // "→ WORKFLOW_SOURCE_INVALID" for this file's 3 sites.
     throw new UsageError(`Workflow source target ${refInput} was not found.`, "INVALID_FLAG_VALUE");
   };
   if (sync) return findSync();
@@ -191,7 +197,7 @@ export function qualifyRef(ref: string, plural: string, asset: WorkflowAsset, co
   const parsed = parseBundleRef(ref);
   if (parsed.bundle) return ref;
   const bundle = parseBundleRef(asset.ref).bundle ?? config.defaultBundle;
-  if (!bundle) throw new UsageError(`Workflow ref ${ref} has no owning bundle.`, "INVALID_FLAG_VALUE");
+  if (!bundle) throw new UsageError(`Workflow ref ${ref} has no owning bundle.`, "WORKFLOW_SOURCE_INVALID");
   const concept = parsed.conceptId.startsWith(`${plural}/`) ? parsed.conceptId : `${plural}/${parsed.conceptId}`;
   return makeBundleRef(bundle, concept);
 }

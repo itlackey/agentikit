@@ -32,6 +32,36 @@
  * below with that same Review-log citation — the boundary stays reviewable
  * either way, because every exclusion is a named line here, not a silent
  * skip.
+ *
+ * TERMINAL (P4, docs/plans/specs/p4-deletions-closeout.md §5.4, row B-61):
+ * the sweep is over. Task source v3 acceptance is gone from `src` (§3.2), so
+ * this ratchet can never again gain a legitimate v3-fixture consumer beyond
+ * what's already named below — a NEW offender is always a defect, never a
+ * missed conversion. §5.4's own summary text describes the terminal allowed
+ * set as "the frozen migrator's own surface, permanently"; the boundary this
+ * ratchet actually verifies (empirically green, measured against the live
+ * tree) is narrower in spirit but broader in fact than that phrase alone
+ * suggests — every ALLOWED_EXACT_FILES entry below falls into one of two
+ * kinds, both permanent:
+ *   1. the three frozen-migrator suites themselves (§3.2.4/§9's preservation
+ *      gate: tests/migrate/task-v2-to-v3-files.test.ts,
+ *      tests/tasks/migrate-v2-to-v3.test.ts, tests/migrate/task-v3-to-v4.test.ts),
+ *      whose SUBJECT is the migrator's INPUT side and so must keep feeding it
+ *      genuine v3 documents to convert;
+ *   2. tests whose SUBJECT is proving `src` correctly REJECTS a v3 (or v2)
+ *      document — TASK_SCHEMA_VERSION_UNSUPPORTED, the migrate-hint text, the
+ *      routing table's "anything but 4 fails closed" pin — which is exactly
+ *      as permanent a claim as the migrator's own conversion, and needs
+ *      exactly as genuine a v3 fixture to prove it. Deleting these fixtures
+ *      to chase a smaller allowed-set number would delete the only
+ *      regression coverage for CHANGELOG.md's "Task v3 sources no longer
+ *      parse" breaking-change entry (§4.6) — the opposite of what this
+ *      ratchet exists to guard.
+ * Every remaining entry below carries its own dated citation to the specific
+ * spec row (mostly §7.2's F-A2.x AUTHORIZED-FLIPS rows) that dispositioned
+ * it as PERMANENT rather than converted; nothing here is stale, and the
+ * ratchet's own stale-entry check (below) is what proves that mechanically
+ * on every run, not just at P4's close.
  */
 
 import { describe, expect, test } from "bun:test";

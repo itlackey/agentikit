@@ -90,7 +90,7 @@ export async function prepareTaskV3Execution(
     if (document.target.with !== undefined) {
       throw new UsageError(
         "Command refs do not accept with; use akm/command with {ref, arguments} for portable arguments.",
-        "INVALID_FLAG_VALUE",
+        "COMPOSITION_INVALID",
       );
     }
     const invocation = validatePreparedCommand(
@@ -108,6 +108,12 @@ export async function prepareTaskV3Execution(
   if (target.kind === "workflow") {
     // Stays reachable — task source v4 still has a top-level env: (P4-N4).
     if (Object.keys(environment).length > 0) {
+      // P4 (docs/plans/specs/p4-deletions-closeout.md §5.5, row P-04): PRESERVED,
+      // not re-coded — tests/integration/tasks-with-classification-characterization.test.ts's
+      // P-04 block pins this exact code (CONVERT, not FLIP, per §7.2 F-A2.8:
+      // "the P-04 block ... stays reachable and stays pinned"). §5.2's target
+      // table predicted all 3 of this file's remaining sites → COMPOSITION_INVALID;
+      // this is the recorded deviation for the one site a preservation gate blocks.
       throw new UsageError(
         "Task workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
         "INVALID_FLAG_VALUE",
@@ -132,7 +138,7 @@ export async function prepareTaskV3Execution(
   // uses: akm/command. Kept as a seam invariant — this function takes a
   // structurally-typed document.
   if (document.target.with !== undefined) {
-    throw new UsageError("Script refs do not accept with.", "INVALID_FLAG_VALUE");
+    throw new UsageError("Script refs do not accept with.", "COMPOSITION_INVALID");
   }
   const resolved = await resolvedOwnedAsset(qualified, "script", context);
   // Shared with prepare-script-target.ts's prepareScriptTarget() (spec §4.3):

@@ -204,7 +204,7 @@ function captureWorkflowSource(
   if (!parsed.bundle || !asset.adapterId) {
     throw new UsageError(
       `Workflow ${asset.ref} has no fully-qualified bundle/adapter owner for durable publication.`,
-      "INVALID_FLAG_VALUE",
+      "WORKFLOW_SOURCE_INVALID",
     );
   }
   return collector.bindIdentity(file, root, {

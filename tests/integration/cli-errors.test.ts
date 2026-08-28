@@ -276,6 +276,43 @@ describe("CLI envelope coverage for P1a's diagnostic codes (COMPOSITION_INVALID,
   });
 });
 
+// P4 (docs/plans/specs/p4-deletions-closeout.md §5.2, carried advisory R-R7):
+// investigated adding CLI-envelope + exit-2 coverage for TARGET_REF_INVALID
+// and TASK_TARGET_UNSUPPORTED — the two D7 codes with no test at this level
+// before P4's INVALID_FLAG_VALUE re-coding sweep — and found BOTH
+// unreachable through any real `akm` invocation, so no test is added for
+// either (a fabricated assertion of an unreachable code would be worse than
+// no coverage). Recorded per the phase's own rule ("a defect discovered …
+// is recorded … and left unfixed") rather than silently absorbed:
+//
+//   - TARGET_REF_INVALID: `classifyTargetRef`'s only two callers each
+//     immediately re-code its thrown UsageError before it can reach a CLI
+//     boundary. `src/tasks/source/task-source-v4.ts`'s `parseTarget` wraps
+//     it through `sourceError(ctx, ["uses"], cause.message)`, which always
+//     re-throws as TASK_SOURCE_INVALID (verified empirically: a v4 task with
+//     `uses: nonsense/target` surfaces `{code:"TASK_SOURCE_INVALID"}`, not
+//     TARGET_REF_INVALID). `src/workflows/source-ir/uses.ts`'s
+//     `classifyWorkflowSourceUses` similarly feeds a compile-time
+//     `WorkflowSourceSemanticError` (its own `unsupported-uses-target` family
+//     of codes), which the freeze wrapper's P4-N2 mapping (§3.3.4) recodes
+//     onto WORKFLOW_SOURCE_INVALID or COMPOSITION_INVALID at the CLI
+//     boundary. TARGET_REF_INVALID's `.code` is exercised only at the unit
+//     level (`tests/execution/target-ref.test.ts`).
+//   - TASK_TARGET_UNSUPPORTED: script-capture.ts's two live throw sites are
+//     both structurally unreachable in THIS runtime — `SCRIPT_EXTENSIONS`
+//     (src/core/recognition-util.ts) and `SCRIPT_INTERPRETERS`'s key set
+//     (script-capture.ts) are the identical 16 extensions, so no script
+//     asset can ever resolve (a prerequisite reached before
+//     `scriptInterpreter` runs) with an extension `scriptInterpreter` then
+//     rejects; and the Bun-required arm's guard (`!process.versions.bun`) is
+//     always false under `bun test`.
+//
+// WORKFLOW_SOURCE_INVALID, TASK_SOURCE_INVALID, COMPOSITION_INVALID, and
+// INPUT_BINDING_INVALID all already have CLI-level coverage: the describe
+// block above; tests/integration/commands/tasks-input-flags.test.ts;
+// tests/integration/workflows/workflow-source-collision.test.ts;
+// tests/integration/commands/workflow-cli-contract.test.ts.
+
 describe("error class hints", () => {
   test("ConfigError derives hint from code by default", () => {
     expect(new ConfigError("missing stash", "STASH_DIR_NOT_FOUND").hint()).toContain("akm setup");
