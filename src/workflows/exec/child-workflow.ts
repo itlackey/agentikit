@@ -135,7 +135,7 @@ export interface DriveChildWorkflowInput {
   readonly target: FrozenChildWorkflowTarget;
   readonly ctx: DriveChildWorkflowContext;
   readonly childParams: Readonly<Record<string, unknown>>;
-  /** The `hashVersion` 6 unit input hash. */
+  /** The `hashVersion` 7 unit input hash. */
   readonly inputHash: string;
   readonly dispatcher: UnitDispatcher;
 }

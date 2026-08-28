@@ -367,7 +367,11 @@ function planV3DataToV4(input: TaskToV4FileInput, data: Record<string, unknown>)
 
   const enabledFalse = akm !== undefined && akm.enabled === false;
   let scheduleField: string | ScheduleEntry[] | undefined;
-  let notice: string | undefined;
+  // Several independent translation facts can need reporting on the SAME
+  // file (a manual-only trigger AND a dropped output schema, say), so
+  // notices accumulate and are joined into the single `notice` string the
+  // outcome carries.
+  const notices: string[] = [];
 
   if (hasAkmSchedule) {
     const cron = (akm as Record<string, unknown>).schedule as string;
@@ -401,8 +405,9 @@ function planV3DataToV4(input: TaskToV4FileInput, data: Record<string, unknown>)
         "akm.enabled: false has no schedule entry to attach to (the only trigger is on.workflow_dispatch); task source v4 has no top-level enabled flag.",
       );
     } else {
-      notice =
-        "schedule: is absent from the migrated document — the source's only trigger was on.workflow_dispatch (manual dispatch); task source v4 tasks are always runnable manually via `akm task run`, so no schedule: entry was emitted.";
+      notices.push(
+        "schedule: is absent from the migrated document — the source's only trigger was on.workflow_dispatch (manual dispatch); task source v4 tasks are always runnable manually via `akm task run`, so no schedule: entry was emitted.",
+      );
     }
   }
 
@@ -425,7 +430,28 @@ function planV3DataToV4(input: TaskToV4FileInput, data: Record<string, unknown>)
     // mapping). Omitting the key is the faithful v4 equivalent of an
     // explicit v3 null — emitting `output: null` would fail the real
     // parseTaskSourceV4 validation below and block the whole file.
-    if (Object.hasOwn(akm, "outputSchema") && akm.outputSchema !== null) out.output = akm.outputSchema;
+    if (Object.hasOwn(akm, "outputSchema") && akm.outputSchema !== null) {
+      // v4 accepts `output:` ONLY on a command target — `uses: commands/<ref>`
+      // or `uses: akm/command` (src/tasks/source/task-source-v4.ts's
+      // `targetConsumesOutputSchema`). v3 enforced no such rule: the frozen v3
+      // reader accepts `akm.outputSchema` on ANY target kind
+      // (task-source-v3-frozen.ts:256-263), and on `run:`/`uses: scripts/`/
+      // `uses: workflows/` it was equally inert there — nothing ever consumed
+      // it. Hoisting it unconditionally would therefore emit bytes the real
+      // parseTaskSourceV4 below rejects, blocking a valid, previously-runnable
+      // v3 file — and one blocked file aborts the whole plan
+      // (`applyTaskToV4MigrationPlan`, ./task-files-to-v4.ts). Dropping an
+      // already-inert field and SAYING SO is the faithful translation, and
+      // keeps spec row B-66 / §5.3's `changed` guarantee intact.
+      if (usesTarget !== undefined && (usesTarget.kind === "command" || usesTarget.kind === "builtin-command")) {
+        out.output = akm.outputSchema;
+      } else {
+        const targetLabel = usesTarget === undefined ? "a run: target" : `the "${usesTarget.ref}" target`;
+        notices.push(
+          `akm.outputSchema was dropped rather than hoisted to output: — task source v4 accepts output: only with a command target (uses: commands/<ref> or uses: akm/command), and ${targetLabel} never consumed the schema in v3 either, so nothing enforceable was lost.`,
+        );
+      }
+    }
   }
 
   const afterYaml = stringifyYaml(out);
@@ -440,6 +466,7 @@ function planV3DataToV4(input: TaskToV4FileInput, data: Record<string, unknown>)
     return blocked(input, "generated-v4-validation-failed", causeMessage(cause));
   }
 
+  const notice = notices.join(" ");
   return Object.freeze({
     status: "changed" as const,
     ...base(input),

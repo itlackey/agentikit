@@ -9,7 +9,7 @@
  * and canonicalJson.
  *
  * P3a has no production caller: P3b's child executor derives this key from
- * the parent unit's `hashVersion` 6 input hash and passes it to
+ * the parent unit's `hashVersion` 7 input hash and passes it to
  * `publishChildWorkflowRun` (src/storage/repositories/workflow-runs-repository.ts,
  * Lane C) as the `(parent_run_id, invocation_key)` idempotency pair.
  */
@@ -28,7 +28,7 @@ export interface ChildInvocationKeyInput {
    * a wire format, not that API.
    */
   readonly parentUnitId: string;
-  /** The `hashVersion` 6 unit input hash of the parent unit that spawns the child. */
+  /** The `hashVersion` 7 unit input hash of the parent unit that spawns the child. */
   readonly unitInputHash: string;
 }
 

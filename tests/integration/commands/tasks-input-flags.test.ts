@@ -444,6 +444,33 @@ describe("akm task run <id> --target x — the retired-flag usage error is uncha
     expect(envelope.code).toBe("INVALID_FLAG_VALUE");
     expect(envelope.error).toBe("`akm task --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.");
   });
+
+  // Review round 1: the rejecter tested `hasFlag("--target")`, which compares
+  // WHOLE tokens against `--target` and `--target=true` only — so the inline
+  // `=` spellings slipped past it. Nothing else caught them either: the
+  // generic pre-dispatch gate exempts `target` on every `task` subcommand by
+  // NAME (`src/cli/unknown-flags.ts`'s `SELF_DIAGNOSED_FLAGS`) precisely so
+  // this handler can answer with the rename hint, so an unrejected
+  // `--target=team` was absorbed silently by citty's non-strict parser and the
+  // user's chosen bundle was quietly ignored.
+  test("the inline `--target=<value>` spelling gets the SAME rename error, on every task subcommand that declares --bundle", async () => {
+    for (const argv of [
+      ["task", "run", "anything", "--target=x"],
+      ["task", "history", "--target=x"],
+      ["task", "sync", "--target=x"],
+    ]) {
+      const label = argv.join(" ");
+      const result = await runCliCapture(argv);
+
+      expect(result.code, label).toBe(2);
+      const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; error: string; code: string };
+      expect(envelope.ok, label).toBe(false);
+      expect(envelope.code, label).toBe("INVALID_FLAG_VALUE");
+      expect(envelope.error, label).toBe(
+        "`akm task --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
+      );
+    }
+  });
 });
 
 describe("parseTaskInputFlags — akm task run's own declared flags are excluded from the captured input set (B-33, PRESERVE)", () => {

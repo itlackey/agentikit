@@ -462,17 +462,27 @@ describe("akm task explain <ref> --<undeclared> — UNKNOWN_FLAG (B-55)", () => 
 // name (same reserved-name module) — so `--scheduled` can never be anything
 // but a mistake on `explain`. Same B-55 diagnostic shape: UNKNOWN_FLAG,
 // exit 2, `{ok:false,error,code}` on stderr.
+//
+// The table below covers every spelling of the SAME flag NAME, not just the
+// bare token (review round 1): the first fix rejected only the two literal
+// tokens `--scheduled` and `--scheduled=true`, so `--scheduled=false` and
+// `--scheduled=1` still slipped through to the shared scanner — which splits
+// on `=` before its reserved-name check and therefore swallowed them exactly
+// as before. Rejection is now keyed on the name before the first `=`, the
+// same split `parseTaskInputFlags` itself performs.
 describe("akm task explain <ref> --scheduled — UNKNOWN_FLAG (F7)", () => {
-  test("`--scheduled` (task run's own reserved flag) fails UNKNOWN_FLAG on explain instead of being silently discarded", async () => {
-    writeExplainDemoFixture();
-    const result = await runCliCapture(["task", "explain", "explain-demo", "--scheduled"]);
+  for (const token of ["--scheduled", "--scheduled=true", "--scheduled=false", "--scheduled=1"]) {
+    test(`\`${token}\` (task run's own reserved flag) fails UNKNOWN_FLAG on explain instead of being silently discarded`, async () => {
+      writeExplainDemoFixture();
+      const result = await runCliCapture(["task", "explain", "explain-demo", token]);
 
-    expect(result.code).toBe(2);
-    const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; code: string };
-    expect(envelope.ok).toBe(false);
-    expect(envelope.code).toBe("UNKNOWN_FLAG");
-    expect(result.stderr).toContain("scheduled");
-  });
+      expect(result.code, token).toBe(2);
+      const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; code: string };
+      expect(envelope.ok, token).toBe(false);
+      expect(envelope.code, token).toBe("UNKNOWN_FLAG");
+      expect(result.stderr, token).toContain("scheduled");
+    });
+  }
 });
 
 describe("akm task explain <ref> — SECRET-FREE, enumerated bans (B-56, B-N4)", () => {

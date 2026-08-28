@@ -120,13 +120,21 @@ lower-level `driveRun` that `runWorkflowSteps` wraps stays module-private —
 reaching for it directly, instead of the public entry point, would be
 exactly the second executor this design avoids.
 
-**Why `hashVersion` stays 6.** The parent unit's input-hash preimage already
-covers everything the child drive depends on: the frozen target carries the
-child's ref, plan hash, content hash, binding mode, and its entire embedded
-plan, so any change anywhere in the child changes the parent unit's own
-input hash transitively. The child run id (minted at dispatch) and its
-exported result are unit *outputs*, not inputs, so neither belongs in the
-preimage — adding either would be a hashing-boundary violation, not a fix.
+**Why `hashVersion` is 7, and why child composition did not move it.** The
+version prefix mixed into a unit's input hash is 7
+(`src/workflows/exec/step-work.ts`); 0.9.2 bumped it — a single, durable
+5 → 7 step, since every released tag on the line carries 5 — when
+`taskInputs`, the resolved values of a composed task's reference-kind
+`inputBindings`, joined the preimage (see [ADR
+0002](decisions/0002-unit-reuse-and-input-hash-scope.md)). Child composition
+itself contributed nothing to that bump: the parent unit's input-hash
+preimage already covers everything the child drive depends on — the frozen
+target carries the child's ref, plan hash, content hash, binding mode, and
+its entire embedded plan, so any change anywhere in the child changes the
+parent unit's own input hash transitively. The child run id (minted at
+dispatch) and its exported result are unit *outputs*, not inputs, so neither
+belongs in the preimage — adding either would be a hashing-boundary
+violation, not a fix.
 
 ### Run outputs
 

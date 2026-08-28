@@ -45,13 +45,43 @@ const bundleArg = {
 } as const;
 
 /**
+ * True when argv carries a `--<name>` flag in ANY spelling — bare,
+ * `--<name>=<value>` for any value, or a trailing `=` — stopping at a literal
+ * `--` separator exactly as `hasFlagIn` (`../../cli/invocation.ts`) does.
+ *
+ * `ParsedInvocation.hasFlag` cannot be used for the rejections below: it
+ * compares WHOLE tokens against `--<name>` and `--<name>=true` only, so every
+ * other value spelling (`--<name>=false`, `--<name>=1`, `--<name>=`) walks
+ * straight past it and is then absorbed downstream — by citty's non-strict
+ * parser, or by `parseTaskInputFlags`' reserved-name skip — exactly the
+ * silent-discard defect these rejecters exist to close (review round 1). The
+ * name is taken as everything before the FIRST `=`, which is
+ * `parseTaskInputFlags`' own split (see its `body.indexOf("=")` below), so the
+ * rejecter and the scanner can never disagree about what a token names.
+ */
+function hasFlagNamed(name: string): boolean {
+  for (const token of getParsedInvocation().argv) {
+    if (token === "--") return false;
+    if (!token.startsWith("--")) continue;
+    const body = token.slice(2);
+    const equalsAt = body.indexOf("=");
+    if ((equalsAt === -1 ? body : body.slice(0, equalsAt)) === name) return true;
+  }
+  return false;
+}
+
+/**
  * `--target` was renamed to `--bundle` on `task` in 0.9 (S8.4). citty is
  * non-strict, so the retired spelling is silently absorbed rather than
  * rejected — reject it explicitly instead (mirrors improve-cli.ts /
- * remember-cli.ts).
+ * remember-cli.ts). The generic pre-dispatch gate cannot catch it either: it
+ * exempts `target` on every `task` subcommand precisely so this handler can
+ * answer with the rename (`../../cli/unknown-flags`'s `SELF_DIAGNOSED_FLAGS`),
+ * and that exemption is keyed on the flag NAME — so `--target=team` must be
+ * rejected here by name too, or nothing rejects it at all.
  */
 function rejectRetiredTaskTargetFlag(): void {
-  if (!getParsedInvocation().hasFlag("--target")) return;
+  if (!hasFlagNamed("target")) return;
   throw new UsageError(
     "`akm task --target` was renamed to `--bundle` in 0.9. Use `--bundle <name>` instead.",
     "INVALID_FLAG_VALUE",
@@ -75,9 +105,15 @@ function rejectRetiredTaskTargetFlag(): void {
  * (same reserved-name module), so this can never reject a flag that was ever
  * a valid input binding. Reject it explicitly, before the shared scanner ever
  * sees it — same UNKNOWN_FLAG diagnostic family the generic gate uses.
+ *
+ * Rejection is keyed on the flag NAME (`hasFlagNamed` above), not on a literal
+ * token: `parseTaskInputFlags` splits on the first `=` BEFORE its reserved-name
+ * check, so `--scheduled=false` and `--scheduled=1` are swallowed by that skip
+ * just as the bare token is. A whole-token test would leave every spelling but
+ * `--scheduled` / `--scheduled=true` in the hole this exists to close.
  */
 function rejectExplainScheduledFlag(): void {
-  if (!getParsedInvocation().hasFlag("--scheduled")) return;
+  if (!hasFlagNamed("scheduled")) return;
   throw new UsageError('Unknown flag "--scheduled".', "UNKNOWN_FLAG");
 }
 

@@ -86,6 +86,16 @@ Moved verbatim from `computeUnitInputHash`'s doc comment:
 > than the rejected attempt. Replay-safe: feedback is re-derived from the
 > journaled gate decision, so a resumed retry re-hashes identically.
 >
+> `taskInputs` IS included, on the same conditional terms (R-R15,
+> `hashVersion` 7): a reference binding's RESOLVED value reaches the unit's
+> prompt / `AKM_TASK_INPUTS` / `childParams`, so a changed upstream value is
+> a materially different ask even though the binding's authored shape inside
+> `frozenTarget` is unchanged. Hashing it makes a resume whose journaled
+> upstream output was altered fail loudly as replay divergence instead of
+> silently reusing the stale row. The key is absent for a unit whose target
+> carries no `inputBindings`, so a binding-free unit's preimage keeps the
+> shape it had — only the version fields moved.
+>
 > Command targets carry their frozen argv/script/cwd/timeout identity in the
 > same target slot used by agent, SDK, and direct-LLM work. The complete
 > current target is hashed once, so a completed unit is reused only for the
@@ -106,12 +116,19 @@ Moved verbatim from `computeUnitInputHash`'s doc comment:
   Getting this wrong either lets a materially different request reuse a
   stale journaled row, or spuriously invalidates every journaled row on an
   unrelated change.
-- `hashVersion` (currently 6) is the version prefix mixed into this hash;
-  changing what this preimage covers requires bumping it, which is why P4's
-  R-R15 carried advisory (a reference binding's resolved value sitting
-  outside this hash) was explicitly left unfixed rather than folded in as a
-  quiet scope change — see
-  `docs/plans/specs/p4-deletions-closeout.md` §8 R-R15.
+- `hashVersion` (currently **7**) is the version prefix mixed into this hash;
+  changing what this preimage covers requires bumping it. P4's R-R15 carried
+  advisory — a reference binding's RESOLVED value sitting outside this hash —
+  is exactly such a scope change, and it is now **resolved**: `taskInputs`
+  (the resolved values of a composed task's reference-kind `inputBindings`) is
+  a conditional preimage field, present only for a unit whose frozen target
+  carries `inputBindings`, and closing it came with the bump this rule
+  mandates. The 0.9.2 line's released tags (`v0.9.2-alpha.1`…`alpha.4`) all
+  carry 5, so the durable, user-visible step is 5 → 7. The "left unfixed
+  rather than folded in as a quiet scope change" note in
+  `docs/plans/specs/p4-deletions-closeout.md` §8 R-R15 (and p3b §3.6's "why
+  `hashVersion` stays 6") records the state BEFORE that bump and is
+  superseded by this entry.
 - Because the whole module is import-cycle-free with respect to dispatch
   (it never dispatches, never writes step rows), the fresh-execution and
   resume/replay paths cannot silently diverge by one of them bypassing this

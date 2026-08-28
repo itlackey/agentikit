@@ -232,6 +232,68 @@ describe("pure task v3 to v4 migration planner", () => {
     expect(parseTaskSourceV4({ yaml: outcome.after.toString("utf8"), filePath: outcome.filePath }).version).toBe(4);
   });
 
+  // Review round 1: task source v4 accepts `output:` only on a command target
+  // (`targetConsumesOutputSchema`, src/tasks/source/task-source-v4.ts), while
+  // the frozen v3 reader accepted `akm.outputSchema` on ANY target kind
+  // (task-source-v3-frozen.ts:256-263) — and on run:/scripts//workflows/ it
+  // was equally inert there. Hoisting it unconditionally emitted bytes the
+  // real parseTaskSourceV4 prevalidation rejects, so a valid, previously-
+  // runnable v3 file blocked with `generated-v4-validation-failed` — and one
+  // blocked file aborts the entire plan (`applyTaskToV4MigrationPlan`), taking
+  // every other task in the bundle with it. Spec rows B-66 / §5.3 make the
+  // outcome `changed` unconditionally: drop the already-inert field and say so
+  // in a notice.
+  test("drops akm.outputSchema on a non-command target with a notice instead of blocking the file", () => {
+    const cases = [
+      { target: 'run: "echo hi"', label: "run" },
+      { target: "uses: scripts/deploy", label: "scripts/" },
+      { target: "uses: workflows/nightly", label: "workflows/" },
+    ];
+    for (const { target, label } of cases) {
+      const yaml = [
+        "version: 3",
+        target,
+        "akm:",
+        "  schedule: '@daily'",
+        "  outputSchema:",
+        "    type: object",
+        "",
+      ].join("\n");
+      const outcome = planTaskToV4File(memoryInput(yaml));
+      expect(outcome.status, label).toBe("changed");
+      if (outcome.status !== "changed") throw new Error(`expected changed for ${label}: ${outcome.detail ?? ""}`);
+      expect(outcome.reason, label).toBe("task-converted");
+      const parsed = parseYaml(outcome.after.toString("utf8"));
+      expect(Object.hasOwn(parsed, "output"), label).toBe(false);
+      expect(outcome.notice, label).toMatch(/outputSchema/);
+      expect(
+        parseTaskSourceV4({ yaml: outcome.after.toString("utf8"), filePath: outcome.filePath }).version,
+        label,
+      ).toBe(4);
+    }
+  });
+
+  // The control for the case above: a command target still hoists the schema
+  // AND carries no drop notice, so the fix cannot silently widen into one.
+  test("still hoists akm.outputSchema to output: on uses: akm/command, with no drop notice", () => {
+    const yaml = [
+      "version: 3",
+      "uses: akm/command",
+      "with:",
+      "  ref: commands/publish-report",
+      "akm:",
+      "  schedule: '@daily'",
+      "  outputSchema:",
+      "    type: object",
+      "",
+    ].join("\n");
+    const outcome = planTaskToV4File(memoryInput(yaml));
+    expect(outcome.status).toBe("changed");
+    if (outcome.status !== "changed") throw new Error(`expected changed: ${outcome.detail ?? outcome.reason}`);
+    expect(parseYaml(outcome.after.toString("utf8"))).toMatchObject({ output: { type: "object" } });
+    expect(outcome.notice).toBeUndefined();
+  });
+
   test("distributes akm.enabled: false onto every compiled schedule entry — the single-cron shorthand and the on.schedule list alike", () => {
     const singleCron = fixtureOutcome("enabled-false-akm-schedule");
     const list = fixtureOutcome("enabled-false-on-schedule");
