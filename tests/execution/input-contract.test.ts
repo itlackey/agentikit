@@ -544,7 +544,17 @@ describe("materializeInputFlags (§4.2, D3-N3) — exact-name matching and coerc
     );
     expect(err).toBe(probe.errors.invalidValue);
     expect((err as UsageError).code).toBe("INPUT_BINDING_INVALID");
-    expect(probe.calls.invalidValue).toEqual([{ name: "count", detail: 'must be integer; received "not-a-number"' }]);
+    expect(probe.calls.invalidValue).toEqual([{ name: "count", detail: "must be integer" }]);
+  });
+
+  test("an unsatisfiable coercion never echoes the supplied value — typed flags can carry credentials", () => {
+    const probe = probeDiagnostics();
+    const contract: InputContract = { token: { schema: { type: "number" }, required: false } };
+    const err = thrown(() =>
+      materializeInputFlags(contract, [{ name: "token", value: "hunter2-secret" }], probe.diagnostics),
+    );
+    expect((err as UsageError).message).not.toContain("hunter2-secret");
+    expect(JSON.stringify(probe.calls.invalidValue)).not.toContain("hunter2-secret");
   });
 
   test("ends by running validateInputs and raising contractViolation(errors) when the materialized flags violate the contract", () => {

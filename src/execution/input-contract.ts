@@ -261,7 +261,9 @@ function coerceFlagValue(
       }
     }
   }
-  throw diagnostics.invalidValue(name, `must be ${types.join(" | ")}; received ${JSON.stringify(raw)}`);
+  // Never echo the supplied value: typed-input flags can carry credentials,
+  // and this detail lands in stderr envelopes that get pasted into CI logs.
+  throw diagnostics.invalidValue(name, `must be ${types.join(" | ")}`);
 }
 
 function schemaTypes(schema: Readonly<Record<string, unknown>> | undefined): string[] {

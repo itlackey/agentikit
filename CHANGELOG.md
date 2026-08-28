@@ -212,6 +212,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   code above rather than assuming `INVALID_FLAG_VALUE` — except for the two
   named exceptions, which still report `INVALID_FLAG_VALUE`.** Exit codes
   are unchanged (2 for every one of these).
+- **A typed task-input flag that can't be coerced no longer echoes the
+  supplied value in its error.** `akm task run <ref> --<input> <value>`
+  against a `type:`-declared input used to report
+  `must be <types>; received "<value>"` on coercion failure; since typed
+  flags can carry credentials and this detail lands in stderr envelopes
+  that get pasted into CI logs and issue reports, the message now names
+  only the input and its accepted types. The error code
+  (`INPUT_BINDING_INVALID`) and exit code (2) are unchanged.
 
 ### Added
 
