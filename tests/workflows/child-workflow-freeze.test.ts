@@ -42,6 +42,7 @@ import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-ru
 import { compileResolveFreezeWorkflowV4 } from "../../src/workflows/ir/freeze-v4";
 import { computePlanHash } from "../../src/workflows/ir/plan-hash";
 import { decodeWorkflowPlanV4, type FrozenWorkflowTarget } from "../../src/workflows/ir/schema-v4";
+import { WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../../src/workflows/resource-limits";
 import { listWorkflowRuns, startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../src/workflows/runtime/workflow-asset-loader";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
@@ -352,6 +353,63 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
   });
 });
 
+// ── Code-review finding: a composing step's own env: has no path into a ────
+// ── child run (the frozen environment is the CHILD's own, not the parent ───
+// ── step's) — src/workflows/freeze/targets/child-workflow.ts's ─────────────
+// ── assertNoStepEnvironment. Distinct from B-15 above: B-15 is the ─────────
+// ── task DOCUMENT's own top-level env:; this is env: authored on the ───────
+// ── WORKFLOW STEP that composes a child, direct or task-wrapped. ───────────
+
+describe("a step composing a child workflow that also authors env: rejects instead of silently dropping it", () => {
+  function writeChild(): void {
+    write("workflows/child.md", paramWorkflowDoc());
+  }
+
+  test("a direct uses: workflows/<ref> step with env: rejects COMPOSITION_INVALID naming the step and the child ref", async () => {
+    writeChild();
+    writeParent("direct-env", [
+      "      - id: dispatch",
+      "        uses: workflows/child",
+      "        env:",
+      "          FOO: bar",
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const error = await expectCompositionInvalid("workflows/direct-env");
+    expect(error.message).toContain("Workflow step dispatch cannot pass env:");
+    expect(error.message).toContain("//workflows/child");
+    expect(error.hint()).not.toContain("with:");
+    await expectNoRunRowWritten();
+  });
+
+  test("a task-wrapped uses: tasks/<t> step (t targets a workflow) with env: on the COMPOSING STEP rejects COMPOSITION_INVALID the same way", async () => {
+    writeChild();
+    write("tasks/wrapper.yml", ["version: 4", "uses: workflows/child", 'schedule: "@daily"', ""].join("\n"));
+    writeParent("task-env", [
+      "      - id: dispatch",
+      "        uses: tasks/wrapper",
+      "        env:",
+      "          FOO: bar",
+    ]);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const error = await expectCompositionInvalid("workflows/task-env");
+    expect(error.message).toContain("Workflow step dispatch cannot pass env:");
+    await expectNoRunRowWritten();
+  });
+
+  test("a direct uses: workflows/<ref> step with NO env: still freezes fine (regression guard)", async () => {
+    writeChild();
+    writeParent("direct-no-env", ["      - id: dispatch", "        uses: workflows/child"]);
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const started = await startWorkflowRun("workflows/direct-no-env");
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    expect(stepTarget(plan, 0)).toMatchObject({ kind: "child-workflow", via: "direct" });
+  });
+});
+
 // ── Direct and task-wrapped composition lower to the SAME target shape ─────
 
 describe("direct and task-wrapped composition of the SAME child lower to the same target shape, modulo identity fields", () => {
@@ -446,6 +504,11 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
     const error = await expectCompositionInvalid("workflows/chain-0");
     expect(error.message).toContain("8");
     expect(error.message.toLowerCase()).toContain("level");
+    // The title also promises the ref path — the full composition chain from
+    // the root down to the descendant that crossed the bound — is named, not
+    // just the depth number.
+    expect(error.message).toContain("workflows/chain-0");
+    expect(error.message).toContain("workflows/chain-9");
     await expectNoRunRowWritten();
   });
 
@@ -496,12 +559,29 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
     ]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
+    // Independently freeze the leaf and compare hashes at BOTH occurrences,
+    // exactly as B-04 does for a single occurrence, so this proves each step
+    // embeds its OWN correct copy of the child's frozen plan — not merely
+    // that both steps froze to SOME child-workflow-shaped target (which
+    // `toMatchObject({ kind: "child-workflow" })` alone cannot distinguish
+    // from a wrong, stale, or empty embedded plan on either occurrence).
+    const leafAsset = await loadWorkflowAsset("workflows/diamond-leaf");
+    const independentLeaf = await compileResolveFreezeWorkflowV4(leafAsset, loadConfig());
+    const expectedPlanHash = computePlanHash(independentLeaf.plan);
+
     const started = await startWorkflowRun("workflows/diamond-root");
     const row = await planRow(started.run.id);
     const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
 
-    expect(stepTarget(plan, 0)).toMatchObject({ kind: "child-workflow" });
-    expect(stepTarget(plan, 1)).toMatchObject({ kind: "child-workflow" });
+    const fields1 = childWorkflowFields(stepTarget(plan, 0));
+    const fields2 = childWorkflowFields(stepTarget(plan, 1));
+
+    expect(fields1.ref).toMatch(/\/\/workflows\/diamond-leaf$/);
+    expect(fields2.ref).toMatch(/\/\/workflows\/diamond-leaf$/);
+    expect(fields1.planHash).toBe(expectedPlanHash);
+    expect(fields2.planHash).toBe(expectedPlanHash);
+    expect(fields1.frozenPlanTitle).toBe(fields2.frozenPlanTitle);
+    expect(fields1.frozenPlanIrVersion).toBe(fields2.frozenPlanIrVersion);
   });
 
   test("B-24: aggregate embedded child plan bytes over the 1 MiB cap fails COMPOSITION_INVALID naming the cap, the running total, and the child that crossed it", async () => {
@@ -521,6 +601,13 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
 
     const error = await expectCompositionInvalid("workflows/aggregate-root");
     expect(error.message.toLowerCase()).toContain("byte");
+    // The title promises the cap, the running total, and the child that
+    // crossed it all appear — not just SOME mention of "byte".
+    expect(error.message).toContain(String(WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES));
+    const totalMatch = error.message.match(/total (\d+) bytes/);
+    expect(totalMatch).not.toBeNull();
+    expect(Number(totalMatch?.[1])).toBeGreaterThan(WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES);
+    expect(error.message).toMatch(/workflows\/big-\d/);
     await expectNoRunRowWritten();
   });
 });

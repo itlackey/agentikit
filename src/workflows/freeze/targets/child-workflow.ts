@@ -114,6 +114,33 @@ function childWorkflowContentHash(fields: {
     .digest("hex");
 }
 
+/**
+ * Code-review finding (see this file's `environment: []` return field): a
+ * step composing a child workflow has no path to honor its own authored
+ * `env:` — the child run carries its own frozen environment inside its own
+ * plan, so `freezeEnvironment` (the ONE mechanism a step's `env:` reaches a
+ * frozen unit through, `../environment.ts`) is never called for this
+ * target. Leaving that silent would repeat exactly the defect A-N5 already
+ * closed for `with:` on a non-binding surface — an authored construct that
+ * cannot be honored on this composing target now rejects instead of
+ * vanishing. Checks BOTH shapes a step's `env:` can take (`../environment.ts`'s
+ * `freezeEnvironment`): literal `env:` values and `unit: {env: [...]}` refs.
+ * An absent/empty `env:` is not authored and stays valid.
+ */
+function assertNoStepEnvironment(stepId: string, childRef: string, source: WorkflowSourceStep): void {
+  const hasLiteralEnv = Object.keys(source.env ?? {}).length > 0;
+  const hasEnvRefs = (source.unit?.env ?? []).length > 0;
+  if (!hasLiteralEnv && !hasEnvRefs) return;
+  throw new UsageError(
+    `Workflow step ${stepId} cannot pass env: while composing ${childRef}: a child run carries its own frozen ` +
+      `environment inside its own plan, so a parent-level env: on the composing step cannot be honored. Remove ` +
+      `env: from this step, or move it into ${childRef}'s own source.`,
+    "COMPOSITION_INVALID",
+    "Remove the env: (or unit: env:) block from this step, or set those variables inside the child workflow's " +
+      "own source — a composing step's environment is never delivered into a child run.",
+  );
+}
+
 /** A workflow entry of a composition `refPath` — the only entries a cycle can close through (§4.5: a task target can never itself be a task, so no task->task chain exists to close one). */
 function isWorkflowRef(ref: string): boolean {
   try {
@@ -133,6 +160,8 @@ function assertNoCompositionCycle(stepId: string, childRef: string, refPath: rea
     `Workflow step ${stepId} cannot compose ${childRef}: that would create a composition cycle. ` +
       `Path: ${compositionPath(refPath, childRef)}.`,
     "COMPOSITION_INVALID",
+    "Break the cycle: remove or redirect one of the compositions in the path above so no workflow ends up " +
+      "composing itself, directly or through intermediates.",
   );
 }
 
@@ -147,6 +176,8 @@ function assertCompositionDepthAllowed(
     `Workflow step ${stepId} cannot compose ${childRef}: workflow composition is limited to ` +
       `${WORKFLOW_MAX_COMPOSITION_DEPTH} levels. Path: ${compositionPath(refPath, childRef)}.`,
     "COMPOSITION_INVALID",
+    `Flatten the composition chain to ${WORKFLOW_MAX_COMPOSITION_DEPTH} levels or fewer — inline one of the ` +
+      "intermediate workflows, or restructure the chain so fewer child compositions are nested.",
   );
 }
 
@@ -169,6 +200,8 @@ function chargeEmbeddedBudget(
       `Workflow step ${stepId} cannot compose ${childRef}: the embedded child plans would total ${projected} ` +
         `bytes, over the ${WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES}-byte limit for one workflow run.`,
       "COMPOSITION_INVALID",
+      "Reduce the number or size of workflows composed into this run — split the work across separate " +
+        "top-level runs, or trim the composed children's own plans.",
     );
   }
   budget.embeddedBytes = projected;
@@ -183,6 +216,11 @@ export async function childWorkflowDispatch(input: ChildWorkflowDispatchInput): 
   const owned = await resolveOwnedAsset(childRefInput, "workflow", context);
   const childAsset = await loadWorkflowAsset(owned.ref);
   const childRef = childAsset.ref;
+
+  // Code-review finding: an authored env: on the composing step has no
+  // path to reach the child run and must reject, not vanish (see
+  // assertNoStepEnvironment's doc comment).
+  assertNoStepEnvironment(source.id, childRef, source);
 
   // §4.2 steps 2-3: the composition bounds, before any child compilation.
   assertNoCompositionCycle(source.id, childRef, context.composition.refPath);
@@ -262,9 +300,9 @@ export async function childWorkflowDispatch(input: ChildWorkflowDispatchInput): 
 
   return {
     target,
-    // A child run carries its own frozen environment inside its own plan;
-    // the parent unit's environment stays whatever the step itself declares
-    // elsewhere (§4.2 step 8).
+    // A child run carries its own frozen environment inside its own plan.
+    // A composing step's own env: cannot reach it, so assertNoStepEnvironment
+    // above rejects one instead of it silently vanishing here (§4.2 step 8).
     environment: [],
     unit: baseUnit,
     instructions:

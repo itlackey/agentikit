@@ -13,7 +13,7 @@
 import path from "node:path";
 import type { PreparedCommandInvocation } from "../../commands/command/command-execution";
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
-import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
+import { COMPOSITION_INVALID_MULTI_JOB_HINT, ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { DURATION_UNITS, parseDuration } from "../../core/time";
 import { isPortableExecutionAgentSelector, type UnresolvedExecutionDefaults } from "../../execution/source";
 import { requireAuthorizedExecutionPlan } from "../../integrations/agent/execution-cascade";
@@ -184,11 +184,13 @@ export function validateWorkflowRuntimeSource(
     // failure, same as freezing it directly would be; any other compile
     // failure is WORKFLOW_SOURCE_INVALID.
     const detail = compiled.errors.map((error) => `${error.path}:${error.line}: ${error.message}`).join("; ");
-    const code =
-      compiled.errors.length === 1 && compiled.errors[0]?.code === "multi-job-unsupported"
-        ? "COMPOSITION_INVALID"
-        : "WORKFLOW_SOURCE_INVALID";
-    throw new UsageError(`Task workflow target is not projectable: ${detail}`, code);
+    const isMultiJob = compiled.errors.length === 1 && compiled.errors[0]?.code === "multi-job-unsupported";
+    const code = isMultiJob ? "COMPOSITION_INVALID" : "WORKFLOW_SOURCE_INVALID";
+    throw new UsageError(
+      `Task workflow target is not projectable: ${detail}`,
+      code,
+      isMultiJob ? COMPOSITION_INVALID_MULTI_JOB_HINT : undefined,
+    );
   }
   const planned = compileWorkflowPlan(compiled.ir, path.basename(file, path.extname(file)));
   if (!planned.ok) {
@@ -196,10 +198,12 @@ export function validateWorkflowRuntimeSource(
     // guaranteed exactly one job here, so this arm always resolves to
     // WORKFLOW_SOURCE_INVALID in practice.
     const detail = planned.errors.map((error) => `${file}:${error.line}: ${error.message}`).join("; ");
-    const code =
-      planned.errors.length === 1 && planned.errors[0]?.code === "multi-job-unsupported"
-        ? "COMPOSITION_INVALID"
-        : "WORKFLOW_SOURCE_INVALID";
-    throw new UsageError(`Task workflow target is not projectable: ${detail}`, code);
+    const isMultiJob = planned.errors.length === 1 && planned.errors[0]?.code === "multi-job-unsupported";
+    const code = isMultiJob ? "COMPOSITION_INVALID" : "WORKFLOW_SOURCE_INVALID";
+    throw new UsageError(
+      `Task workflow target is not projectable: ${detail}`,
+      code,
+      isMultiJob ? COMPOSITION_INVALID_MULTI_JOB_HINT : undefined,
+    );
   }
 }

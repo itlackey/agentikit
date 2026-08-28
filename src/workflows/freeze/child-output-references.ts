@@ -85,6 +85,8 @@ function checkSite(site: ReferenceSite, stepsById: ReadonlyMap<string, IrStepPla
       `exports ${exportsDescription(frozenTarget)}. Declare the output in the child's \`outputs:\` frontmatter, or ` +
       `reference one of the names above.`,
     "COMPOSITION_INVALID",
+    `Fix the reference to name one of: ${accepted.join(", ")} — or add the missing name to ${frozenTarget.ref}'s ` +
+      "own `outputs:` frontmatter.",
   );
 }
 

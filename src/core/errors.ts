@@ -171,6 +171,22 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   EXECUTION_NOT_AUTHORIZED: "Change the selected tools or update the machine/user execution policy, then retry.",
 };
 
+// Code-review finding: COMPOSITION_INVALID covers several unrelated causes
+// (a rejected with:, a multi-job source, a composition cycle/depth/size
+// violation, an invalid child-output reference). USAGE_HINTS below carries
+// only the with:-rejection text — accurate for every with:-rejection throw
+// site (none of which pass an explicit constructor hint), but wrong for the
+// others. Those throw sites pass their OWN explicit hint (the constructor's
+// 3rd argument overrides USAGE_HINTS, per errors-usage-hints.test.ts's
+// "explicit constructor hint still overrides the USAGE_HINTS default").
+// Multi-job rejection is thrown from 5 separate call sites across
+// src/tasks/prepare/prepare-support.ts and src/workflows/**, so its hint is
+// centralized here as the one shared string all 5 import, rather than
+// duplicated at each site and risking drift.
+export const COMPOSITION_INVALID_MULTI_JOB_HINT =
+  "AKM workflows support exactly one job per source, with no needs: between jobs. Split the extra job(s) into " +
+  "their own workflow file, and compose them with uses: workflows/<ref> instead.";
+
 /** Default hint for each UsageError code. */
 const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INVALID_FLAG_VALUE: "Run `akm <command> --help` to see accepted values.",
@@ -194,6 +210,15 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   // scripts/<ref>, which are never binding surfaces. F-A3 authorizes this
   // edit and the matching pinned-string update in
   // tests/core/errors-usage-hints.test.ts in the same commit.
+  //
+  // Code-review finding: this default is reached ONLY by with:-rejection
+  // throw sites (the ones above, plus task.ts's noDeclaredInputsError and
+  // resolve-steps.ts's rejectNonTaskBindingWith) — every other
+  // COMPOSITION_INVALID throw site (multi-job source, composition
+  // cycle/depth/size, invalid child-output reference, an env: on a
+  // composing step) passes its own explicit constructor hint instead of
+  // falling through to this text, so this stays scoped and accurate rather
+  // than generalized into something vaguer.
   COMPOSITION_INVALID:
     "Remove the with: block, or target a tasks/<ref> whose source declares inputs: — commands/<ref> and scripts/<ref> steps are not binding surfaces.",
   TASK_SOURCE_INVALID: "Fix the task source at the reported path and line, then re-run.",

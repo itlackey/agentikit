@@ -6,7 +6,7 @@ import fs from "node:fs";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { loadConfig } from "../../core/config/config";
-import { NotFoundError, UsageError } from "../../core/errors";
+import { COMPOSITION_INVALID_MULTI_JOB_HINT, NotFoundError, UsageError } from "../../core/errors";
 import { getDbPath } from "../../core/paths";
 import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import { deriveInstallations } from "../../indexer/installations";
@@ -179,11 +179,13 @@ function compileWorkflowSourceFromDisk(assetPath: string, workspaceRoot: string)
     // row B-44's COMPOSITION_INVALID promise never reaches `startWorkflowRun`
     // callers, which never get past this point on a multi-job source.
     const details = result.errors.map((error) => `  ${error.path}:${error.line} — ${error.message}`).join("\n");
-    const code =
-      result.errors.length === 1 && result.errors[0]?.code === "multi-job-unsupported"
-        ? "COMPOSITION_INVALID"
-        : "WORKFLOW_SOURCE_INVALID";
-    throw new UsageError(`Workflow source has ${result.errors.length} error(s):\n${details}`, code);
+    const isMultiJob = result.errors.length === 1 && result.errors[0]?.code === "multi-job-unsupported";
+    const code = isMultiJob ? "COMPOSITION_INVALID" : "WORKFLOW_SOURCE_INVALID";
+    throw new UsageError(
+      `Workflow source has ${result.errors.length} error(s):\n${details}`,
+      code,
+      isMultiJob ? COMPOSITION_INVALID_MULTI_JOB_HINT : undefined,
+    );
   }
   return result.ir;
 }

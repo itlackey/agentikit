@@ -13,7 +13,7 @@
  */
 
 import type { AkmConfig } from "../../core/config/config-types";
-import { UsageError } from "../../core/errors";
+import { COMPOSITION_INVALID_MULTI_JOB_HINT, UsageError } from "../../core/errors";
 import type { GuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
 import type {
   FrozenWorkflowCommandTarget,
@@ -70,13 +70,12 @@ export async function resolveWorkflowSourceV4(
     // surfaces as COMPOSITION_INVALID — one authoritative composition
     // policy; every other compile failure (a YAML syntax error, an
     // unsupported trigger, …) is WORKFLOW_SOURCE_INVALID. Never blanket-recode.
-    const code =
-      compiled.errors.length === 1 && compiled.errors[0]?.code === "multi-job-unsupported"
-        ? "COMPOSITION_INVALID"
-        : "WORKFLOW_SOURCE_INVALID";
+    const isMultiJob = compiled.errors.length === 1 && compiled.errors[0]?.code === "multi-job-unsupported";
+    const code = isMultiJob ? "COMPOSITION_INVALID" : "WORKFLOW_SOURCE_INVALID";
     throw new UsageError(
       `Workflow source cannot be frozen: ${compiled.errors.map((error) => error.message).join("; ")}`,
       code,
+      isMultiJob ? COMPOSITION_INVALID_MULTI_JOB_HINT : undefined,
     );
   }
   const context: ResolutionContext = { asset, config, collector, sourceIr: compiled.ir, composition, freezeChild };

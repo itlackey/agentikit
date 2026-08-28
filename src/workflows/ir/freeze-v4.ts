@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { parseBundleRef } from "../../core/asset/asset-ref";
 import type { AkmConfig } from "../../core/config/config";
-import { UsageError } from "../../core/errors";
+import { COMPOSITION_INVALID_MULTI_JOB_HINT, UsageError } from "../../core/errors";
 import { type GuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
 import { defaultMapConcurrency, workflowMaxConcurrency } from "../concurrency-policy";
 import { assertChildOutputReferences } from "../freeze/child-output-references";
@@ -93,13 +93,12 @@ export async function compileResolveFreezeWorkflowV4(
     // succeeded), so this compiler's own errors never carry the
     // multi-job-unsupported code — the arm always resolves to
     // WORKFLOW_SOURCE_INVALID.
-    const code =
-      compiled.errors.length === 1 && compiled.errors[0]?.code === "multi-job-unsupported"
-        ? "COMPOSITION_INVALID"
-        : "WORKFLOW_SOURCE_INVALID";
+    const isMultiJob = compiled.errors.length === 1 && compiled.errors[0]?.code === "multi-job-unsupported";
+    const code = isMultiJob ? "COMPOSITION_INVALID" : "WORKFLOW_SOURCE_INVALID";
     throw new UsageError(
       compiled.errors.map((error) => `${asset.path}:${error.line}: ${error.message}`).join("\n"),
       code,
+      isMultiJob ? COMPOSITION_INVALID_MULTI_JOB_HINT : undefined,
     );
   }
   const steps = compiled.plan.steps.map((step): IrStepPlanV4 => {
