@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2-alpha.5] - 2026-08-28
+
 ### Breaking changes & migration
 
 - **Durable workflow plans bump to `irVersion` 5.** A stored run frozen
@@ -263,14 +265,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   code above rather than assuming `INVALID_FLAG_VALUE` — except for the two
   named exceptions, which still report `INVALID_FLAG_VALUE`.** Exit codes
   are unchanged (2 for every one of these).
-- **A typed task-input flag that can't be coerced no longer echoes the
-  supplied value in its error.** `akm task run <ref> --<input> <value>`
+- **A typed task-input or workflow-param flag no longer echoes the supplied
+  value in a validation error.** `akm task run <ref> --<input> <value>`
   against a `type:`-declared input used to report
-  `must be <types>; received "<value>"` on coercion failure; since typed
-  flags can carry credentials and this detail lands in stderr envelopes
-  that get pasted into CI logs and issue reports, the message now names
-  only the input and its accepted types. The error code
-  (`INPUT_BINDING_INVALID`) and exit code (2) are unchanged.
+  `must be <types>; received "<value>"` on a coercion failure, and a value
+  that failed its declared `enum:`/`minimum:`/`maximum:` constraint reported
+  the value in that message too — both are closed now, since a typed flag
+  can carry a credential and this detail lands in stderr envelopes that get
+  pasted into CI logs and issue reports. The declared constraint (the
+  allowed list or the bound) is still named, since it comes from the
+  author's own schema rather than the caller's data. Error and exit codes
+  are unchanged.
 
 ### Added
 
@@ -286,7 +291,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   complete plan embedded inside the parent's — before the parent run exists,
   so editing the child's source afterward cannot affect an already-frozen
   parent, and the child's transitive sources join the parent's guarded
-  source read set. Running a step that composes a child workflow now drives
+  source read set. A composing step's own `env:` is rejected at freeze
+  (`UsageError` code `COMPOSITION_INVALID`) rather than silently dropped —
+  a child run carries its own frozen environment inside its own plan, so a
+  parent-level `env:` on the composing step has nothing to apply to.
+  Running a step that composes a child workflow now drives
   the child to completion — see **Child workflows now execute** and
   **Workflow `outputs:`** below. (Correction: an earlier development
   increment of this same 0.9.2 release briefly made an unexecuted composing
@@ -406,6 +415,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `timeout`, typed `inputs:`/`output:`) and points at `akm migrate apply`.
   The `stash`-terminology doc lint now scans the shipped hint assets too, so
   the embedded help cannot drift out of the active-docs vocabulary again.
+- **The macOS native scheduler backend no longer refuses a real
+  `launchctl` inventory.** Its loaded-service reader enforced a narrow,
+  hand-written grammar over `launchctl print`'s full output and rejected
+  the entire read — surfacing as `INVALID_CONFIG_FILE` from every akm
+  scheduler command — the moment any line fell outside it, which real
+  `launchctl` output on a real Mac routinely does. It now scans for akm's
+  own `com.akm.task.*` labels and ignores everything else, which is what
+  every caller actually needed. Caught by the gated native-scheduler
+  suite's first run against macOS.
+- **The Windows-built package no longer ships without its embedded
+  template assets.** The build's asset-copy step matched paths against a
+  forward-slash pattern, but path separators on Windows are backslashes,
+  so the match silently failed and `dist/assets/` was never populated —
+  the packaged npm tarball built on Windows carried no templates at all,
+  and any command rendering one (for example `akm health --format html`)
+  crashed with `ERR_MODULE_NOT_FOUND`. Also caught by the gated
+  native-scheduler suite's first run, this time against Windows.
 
 ## [0.9.2-alpha.4] - 2026-08-26
 
