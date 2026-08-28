@@ -1095,6 +1095,34 @@ describe("task source v4 — optional output schema", () => {
       /output/i,
     );
   });
+
+  // 0.9.2 review round 2: only command invocations consume output: — the
+  // prepare seam forwards it into prepareCommandInvocation
+  // (src/tasks/prepare/prepare.ts) for uses: commands/<ref> and uses:
+  // akm/command, while run:/scripts//workflows/ executions carry no output
+  // schema anywhere (run-native-task.ts decides status from the exit code
+  // alone; the workflow arm freezes a child plan without one). An authored
+  // output: on those kinds was a silently unenforced contract; parse now
+  // fails closed, mirroring with:'s target-kind restriction (D2-N1).
+  test.each([
+    ["run: echo hi", { run: "echo hi" }],
+    ["uses: scripts/nightly-cleanup.sh", { uses: "scripts/nightly-cleanup.sh" }],
+    ["uses: workflows/release", { uses: "workflows/release" }],
+  ])("output: on a non-command target (%s) is TASK_SOURCE_INVALID at field path output, naming the restriction", (_label, target) => {
+    const error = expectTaskSourceInvalid(
+      () => parseTaskSourceV4Document(v4Doc({ ...target, output: { type: "object" } }), { filePath: "/x.yml" }),
+      [/output/i, /command target/i],
+    );
+    expectTopLevelFieldPath(error.message, "output");
+  });
+
+  test("output: stays legal on uses: akm/command — the builtin command target consumes it too", () => {
+    const doc = parseTaskSourceV4Document(
+      v4Doc({ uses: "akm/command", with: { content: "hi" }, output: { type: "object" } }),
+      { filePath: "/x.yml" },
+    );
+    expect(doc.output).toEqual({ type: "object" });
+  });
 });
 
 // ── Top-level execution controls (§3.2 item 8: same extracted helpers as v3, ──

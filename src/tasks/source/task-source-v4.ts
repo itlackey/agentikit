@@ -8,7 +8,9 @@
  * §3). Never call this grammar bare "v4" in prose — the workflow plan IR is
  * separately versioned (D1).
  *
- * `version: 4` introduces typed `inputs:`, a single bounded `output:` schema,
+ * `version: 4` introduces typed `inputs:`, a single bounded `output:` schema
+ * (legal only on command targets, the one kind whose runtime consumes it —
+ * see `targetConsumesOutputSchema` below),
  * OPTIONAL scheduling (absent `schedule:` is valid and manual-only, D2-N6),
  * and top-level execution controls (the `akm:` options bag and the `on:`
  * trigger block are both GONE — every `akm:` member that D2 does not
@@ -534,6 +536,22 @@ function parseOutputSchema(value: ExecutionJsonValue, ctx: BoundedDocumentContex
   return schema;
 }
 
+/**
+ * True for the target kinds whose runtime actually consumes `output:` —
+ * command invocations (`uses: commands/<ref>` and `uses: akm/command`), where
+ * `prepareTaskV3Execution` forwards it as the invocation's outputSchema
+ * (../prepare/prepare.ts, via prepare-support.ts's currentExecutionValues).
+ * `run:`, `uses: scripts/`, and `uses: workflows/` executions carry no
+ * output schema anywhere (run-native-task.ts decides status from the exit
+ * code alone; the workflow arm freezes a child plan without one), so an
+ * authored `output:` there would be a silently unenforced contract — the
+ * fifth state the fail-closed rule forbids (0.9.2 review round 2; same
+ * grammar pattern as `with:` being legal only with `uses: akm/command`).
+ */
+function targetConsumesOutputSchema(target: TaskSourceV4Target): boolean {
+  return target.kind === "uses" && (target.uses.kind === "command" || target.uses.kind === "builtin-command");
+}
+
 // ── schedule: -> TaskSourceV4ScheduleBinding[] (D2-N5, D2-N6, B-06..B-10, B-38) ──
 
 function parseScheduleEntry(
@@ -663,9 +681,18 @@ export function parseTaskSourceV4Document(
   const inputs = own(input, "inputs")
     ? parseInputDeclarations(presentJsonValue(input.inputs, ctx, ["inputs"]), ctx)
     : undefined;
-  const output = own(input, "output")
-    ? parseOutputSchema(presentJsonValue(input.output, ctx, ["output"]), ctx)
-    : undefined;
+  let output: Readonly<Record<string, unknown>> | undefined;
+  if (own(input, "output")) {
+    if (!targetConsumesOutputSchema(target)) {
+      sourceError(
+        ctx,
+        ["output"],
+        "is legal only with a command target (uses: commands/<ref> or uses: akm/command); " +
+          "run:, uses: scripts/, and uses: workflows/ targets do not enforce an output schema.",
+      );
+    }
+    output = parseOutputSchema(presentJsonValue(input.output, ctx, ["output"]), ctx);
+  }
   const schedule = parseSchedule(input, inputs ?? Object.freeze({}), ctx);
   const execution = parseExecutionControls(input, ctx);
 

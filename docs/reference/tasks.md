@@ -9,9 +9,9 @@ authored source; scheduler entries are derived OS state.
 release accepts.** A document with `version: 3` or `version: 2` (or any
 other value) fails to load with `UsageError` code
 `TASK_SCHEMA_VERSION_UNSUPPORTED`, naming the migrator. Task source v4 adds
-typed `inputs:` and a single bounded `output:` schema, and makes scheduling
-OPTIONAL rather than mandatory. `akm task add` authors task source v4
-directly.
+typed `inputs:` and a single bounded `output:` schema (command targets
+only), and makes scheduling OPTIONAL rather than mandatory. `akm task add`
+authors task source v4 directly.
 
 If you have `version: 3` or `version: 2` files on disk (from an earlier
 akm release), see [Migrating to task source v4](#migrating-to-task-source-v4)
@@ -210,7 +210,13 @@ redact: [TOKEN]
   both a required, default-less input and a `schedule:`, give every
   schedule entry an explicit value for it, or provide a `default` instead.
 - `output:` is a single bounded JSON Schema, replacing v3's
-  `akm.outputSchema`.
+  `akm.outputSchema`. It is legal only on a command target
+  (`uses: commands/<ref>` or `uses: akm/command`), where it is forwarded to
+  the prepared invocation as a response-shaping schema. `run:`,
+  `uses: scripts/`, and `uses: workflows/` executions have no output-schema
+  consumer — a native run's status comes from its exit code alone — so
+  declaring `output:` on them fails parsing with `TASK_SOURCE_INVALID`
+  instead of silently recording a contract nothing enforces.
 - A task source v4 document **can** be the target of a workflow step's
   `uses: tasks/<ref>` — see the
   [GitHub-shaped YAML subset](workflow-schema.md#github-shaped-yaml-subset)
@@ -313,6 +319,7 @@ Common v3 → v4 blocked reasons and what to do about each:
 | `enabled-false-has-no-schedule-entry` | `akm.enabled: false` with no cron trigger to attach it to (the only trigger is `on.workflow_dispatch`). | Task source v4 has no document-level `enabled` flag — decide whether the task should be scheduled (add a cron) or left manual-only (drop `akm.enabled`), then re-run. |
 | `read-only-source` | The owning source or file is not writable. | Move or re-source the file somewhere writable, or edit it by hand. |
 | `invalid-v3-task` | The v3 document itself is structurally invalid (unknown fields, missing selector, malformed trigger, etc). | Fix the underlying v3 document first — the migrator translates structure, it does not repair it. |
+| `generated-v4-validation-failed` | The converted bytes fail the real task source v4 parser; the detail carries the parse error. Most commonly `akm.outputSchema` authored on a `run:`, `scripts/`, or `workflows/` target — v4's `output:` is legal only on command targets, and nothing ever enforced the schema on those targets in v3 either. | Drop `akm.outputSchema` from the v3 file (or move the work behind a command target that consumes it), then re-run. |
 
 The migrator translates structure, never intent: it never invents an
 `inputs:` declaration on a file's behalf, regardless of how inferable a
