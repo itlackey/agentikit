@@ -766,3 +766,104 @@ describe("publishChildWorkflowRun accessors — childRunsOf, getRunByInvocationK
     }
   });
 });
+
+// ── The outermost-transaction precondition (Review log R10) ────────────────
+//
+// publishChildWorkflowRun's method doc names an explicit precondition: its
+// SELECT-else-INSERT atomicity guarantee holds ONLY when it is the OUTERMOST
+// transaction on the connection, because `withImmediateTransaction`'s
+// re-entrancy guard (src/core/state-db.ts) SILENTLY JOINS an already-open
+// transaction instead of issuing its own `BEGIN IMMEDIATE` — a caller that
+// wires this call inside `WorkflowRunsRepository.transaction()` or another
+// `immediateTransaction` loses the guarantee with no error at the call site.
+//
+// A genuine two-connection race that PROVES the corruption this precondition
+// guards against (two nested callers both missing each other's SELECT and
+// hitting a raw UNIQUE-constraint SQLiteError instead of C-09's graceful
+// "loser reads the winner's row") would need to inject an artificial delay
+// between this method's own SELECT and INSERT — which means calling a
+// hand-rolled stand-in for the method's SQL, not the real method, undermining
+// the "real call path" this is meant to prove. What CAN be proven against the
+// real method, deterministically, with no timing and no second connection: it
+// opens its own `BEGIN IMMEDIATE`/`COMMIT` when nothing else has a transaction
+// open on the connection (the safe case every other describe block above
+// exercises), and — the precondition's exact failure mode — executes NOT ONE
+// exec() of its own when a transaction is already open, silently forfeiting
+// the isolation boundary the SELECT-else-INSERT sequence depends on. This
+// pins the exact mechanism by which nesting silently defeats the guarantee,
+// through the real, unmodified `publishChildWorkflowRun`.
+describe("publishChildWorkflowRun — the outermost-transaction precondition (Review log R10)", () => {
+  test("issues its own BEGIN IMMEDIATE/COMMIT when it is the outermost transaction", () => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      const repo = new WorkflowRunsRepository(db);
+      const originalExec = db.exec.bind(db);
+      const execCalls: string[] = [];
+      const spy = spyOn(db, "exec").mockImplementation((sql: string) => {
+        execCalls.push(sql);
+        return originalExec(sql);
+      });
+      try {
+        childPublication(repo).publishChildWorkflowRun(
+          publicationInput({
+            parentRunId: PARENT_RUN_ID,
+            invocationKey: "key-outermost",
+            runId: "c0000000-0000-4000-8000-0000000000c1",
+          }),
+        );
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(execCalls).toEqual(["BEGIN IMMEDIATE", "COMMIT"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a caller that already has a transaction open on the connection makes publishChildWorkflowRun silently JOIN it — no BEGIN IMMEDIATE, no COMMIT, no isolation boundary of its own", () => {
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      seedParentRun(db);
+      const repo = new WorkflowRunsRepository(db);
+
+      // Simulate exactly the risk the method doc names: a caller (e.g. a
+      // future `resumeWorkflowRun`/`completeWorkflowStep` refactor) already
+      // has a transaction open on this SAME connection before reaching
+      // publishChildWorkflowRun.
+      db.exec("BEGIN");
+      try {
+        const originalExec = db.exec.bind(db);
+        const execCalls: string[] = [];
+        const spy = spyOn(db, "exec").mockImplementation((sql: string) => {
+          execCalls.push(sql);
+          return originalExec(sql);
+        });
+        let row: ChildWorkflowRunRow;
+        try {
+          row = childPublication(repo).publishChildWorkflowRun(
+            publicationInput({
+              parentRunId: PARENT_RUN_ID,
+              invocationKey: "key-nested",
+              runId: "c0000000-0000-4000-8000-0000000000c2",
+            }),
+          );
+        } finally {
+          spy.mockRestore();
+        }
+
+        // The row is still written correctly — nesting does not corrupt a
+        // SOLO call. What's lost is the ISOLATION boundary: no exec() of its
+        // own ran, so nothing here would stop a second, concurrent nested
+        // caller from reading the same "not found yet" snapshot this one did.
+        expect(row.invocation_key).toBe("key-nested");
+        expect(execCalls).toEqual([]);
+      } finally {
+        db.exec("COMMIT");
+      }
+    } finally {
+      db.close();
+    }
+  });
+});
