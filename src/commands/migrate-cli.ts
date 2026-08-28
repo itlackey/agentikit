@@ -16,8 +16,25 @@ export interface MigrateToolCall {
   readonly plan?: Record<string, unknown>;
 }
 
+// ── Test seam ────────────────────────────────────────────────────────────────
+
+let runMigrationToolForTests: typeof runMigrationTool | undefined;
+
+/**
+ * TEST-ONLY. Swap the standalone-migrator subprocess call; pass undefined to
+ * restore the real one. `runMigrationTool` is the single seam between this
+ * module and the real `spawnSync`, so overriding it is what lets a test drive
+ * `runMigrateSubcommand`'s two-generation orchestration through genuinely
+ * blocked and hard-failed generations — states the real migrator only reaches
+ * from a crashed subprocess, which file content alone cannot reliably produce.
+ * Used via `tests/_helpers/seams.ts` so restoration is automatic.
+ */
+export function _setRunMigrationToolForTests(fake?: typeof runMigrationTool): void {
+  runMigrationToolForTests = fake;
+}
+
 async function callMigrateTool(args: string[]): Promise<MigrateToolCall> {
-  const result = await runMigrationTool(args);
+  const result = await (runMigrationToolForTests ?? runMigrationTool)(args);
   if (result.stderr) process.stderr.write(result.stderr);
   const resultLine = result.stdout.trim();
   if (!resultLine) return { status: result.status };
