@@ -58,6 +58,29 @@ function rejectRetiredTaskTargetFlag(): void {
   );
 }
 
+/**
+ * `--scheduled` is `akm task run`'s own declared flag (an internal marker for
+ * scheduler-generated runs) — `task explain` declares no such flag. Because
+ * `explain` reuses `parseTaskInputFlags` (the same exact-name scanner `task
+ * run` uses, see that function's docstring below) to capture input flags, and
+ * `scheduled` is one of that scanner's reserved boolean-flag names
+ * (`TASK_RUN_BOOLEAN_FLAG_SET`, from `../../tasks/task-run-reserved-flags`),
+ * the scanner silently skips over `--scheduled` rather than ever surfacing it
+ * as an input flag — so it reached neither `materializeInputFlags`' own
+ * unknown-flag diagnostic nor the generic pre-dispatch flag gate (which
+ * exempts `task explain`'s whole dynamic namespace, `../../cli/unknown-flags`
+ * §`dynamicNamedFlagCommands`). The net effect: `akm task explain <ref>
+ * --scheduled` silently accepted and discarded the flag instead of rejecting
+ * it (finding F7) — `scheduled` can never be a declared input name either
+ * (same reserved-name module), so this can never reject a flag that was ever
+ * a valid input binding. Reject it explicitly, before the shared scanner ever
+ * sees it — same UNKNOWN_FLAG diagnostic family the generic gate uses.
+ */
+function rejectExplainScheduledFlag(): void {
+  if (!getParsedInvocation().hasFlag("--scheduled")) return;
+  throw new UsageError('Unknown flag "--scheduled".', "UNKNOWN_FLAG");
+}
+
 // ── `akm task run` input flags — Stage 1: capture (spec §5.1) ──────────────
 //
 // Mirrors `parseWorkflowParameterFlags` (src/commands/workflow-cli.ts:232-289)
@@ -280,6 +303,11 @@ const tasksExplainCommand = defineJsonCommand({
   },
   async run({ args, rawArgs }) {
     rejectRetiredTaskTargetFlag();
+    // `--scheduled` must be rejected BEFORE the shared scanner below ever
+    // sees it — the scanner treats it as `task run`'s own reserved flag
+    // (silently skipped, never surfaced as unknown) rather than explain's,
+    // since it has no way to know which command called it (F7 fix).
+    rejectExplainScheduledFlag();
     // Stage 1 (capture): the SAME exact-name flag scanner `akm task run`
     // uses (`parseTaskInputFlags` above) — `explain` never declares
     // `--scheduled`, but reusing the identical scanner is deliberate: one

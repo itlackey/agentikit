@@ -450,6 +450,31 @@ describe("akm task explain <ref> --<undeclared> — UNKNOWN_FLAG (B-55)", () => 
   });
 });
 
+// Regression (finding F7): `--scheduled` is `akm task run`'s own reserved
+// boolean flag (`../../../src/tasks/task-run-reserved-flags.ts`), so the
+// exact-name scanner `task explain` shares with `task run`
+// (`parseTaskInputFlags`) silently skipped it instead of ever surfacing it as
+// an input flag — and the generic pre-dispatch flag gate exempts `task
+// explain`'s whole dynamic namespace (`../../../src/cli/unknown-flags.ts`'s
+// `dynamicNamedFlagCommands`), so nothing else caught it either. `akm task
+// explain <ref> --scheduled` silently accepted and discarded the flag rather
+// than rejecting it, even though `scheduled` can never be a declared input
+// name (same reserved-name module) — so `--scheduled` can never be anything
+// but a mistake on `explain`. Same B-55 diagnostic shape: UNKNOWN_FLAG,
+// exit 2, `{ok:false,error,code}` on stderr.
+describe("akm task explain <ref> --scheduled — UNKNOWN_FLAG (F7)", () => {
+  test("`--scheduled` (task run's own reserved flag) fails UNKNOWN_FLAG on explain instead of being silently discarded", async () => {
+    writeExplainDemoFixture();
+    const result = await runCliCapture(["task", "explain", "explain-demo", "--scheduled"]);
+
+    expect(result.code).toBe(2);
+    const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; code: string };
+    expect(envelope.ok).toBe(false);
+    expect(envelope.code).toBe("UNKNOWN_FLAG");
+    expect(result.stderr).toContain("scheduled");
+  });
+});
+
 describe("akm task explain <ref> — SECRET-FREE, enumerated bans (B-56, B-N4)", () => {
   test("never prints a resolved env: value, a prompt body, or a run:/script sentinel — in EITHER output format", async () => {
     writeExplainDemoFixture();
