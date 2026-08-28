@@ -100,9 +100,13 @@ export function finishAttempt(startedAt: Date, observedFinishedAt: Date): Date {
  * reservation (load-task.ts), so the direct parse path never reaches it.
  * Both codes reach it through the WORKFLOW arm instead: a workflow task whose
  * plan freezes a `tasks/<ref>` step raises `TASK_SOURCE_INVALID` (via
- * `taskDispatch`'s `parseTaskV3Yaml`) or `COMPOSITION_INVALID` (the P1a
- * with-rejection guard) DURING dispatch, after the attempt was already
- * reserved. Before this widening, both were recorded as `"INTERNAL"`.
+ * `taskDispatch`'s `parseTaskSource`/`parseTaskSourceV4Document` —
+ * `src/workflows/freeze/targets/task.ts`; `parseTaskV3Yaml` no longer exists
+ * in `src`, P4 deleted task v3 acceptance, spec
+ * docs/plans/specs/p4-deletions-closeout.md §3.2) or `COMPOSITION_INVALID`
+ * (the P1a with-rejection guard) DURING dispatch, after the attempt was
+ * already reserved. Before this widening, both were recorded as
+ * `"INTERNAL"`.
  */
 const SAFE_TASK_ATTEMPT_ERROR_CODES = new Set([
   "CONFIG_DIR_UNRESOLVABLE",

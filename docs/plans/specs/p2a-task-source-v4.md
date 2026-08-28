@@ -1409,3 +1409,26 @@ for P2a's own scope and is superseded, not wrong. The corresponding P2a test
 (`tests/workflows/task-source-v4-deferral.test.ts`, its `LC-N1` describe
 block) was rewritten in place by P2b to assert composition succeeds instead
 — its v3-contrast companion test is unaffected and stays verbatim.
+
+**2026-08-28 — P4 deletion note (§6 F-0's table, §7's preservation-gate
+checkbox at lines 1032-1033).**
+`tests/integration/tasks-scheduling-characterization.test.ts` — F-0's table
+cites it as the file whose `:45`/`:57`/`:73` tests must stay "UNCHANGED, must
+stay green" for R-06, and §7 checks it off as green and byte-unchanged ("all
+three R-06 tests") — was **deleted** by commit `0969162` ("refactor(p4):
+remove task source v3 acceptance from src", spec
+`docs/plans/specs/p4-deletions-closeout.md` §3.2, row **F-A2.7**: "DELETE —
+all three tests are R-06, resolved by deletion (§5.5)"). This does not
+falsify F-0 or §7's gate: at P2a's own head the file was live and all three
+tests stayed green, byte-unchanged, exactly as pinned. The deletion is a
+downstream consequence of P4 §3.2 removing task v3 acceptance from `src`
+altogether, which retires the exactly-one-scheduling-source rule (R-06) these
+three tests characterized — `docs/plans/specs/p0-invariants.md`'s final
+disposition table records R-06 as "RESOLVED by deletion." No replacement test
+exists; the coverage was intentionally retired along with the rule it tested,
+not relocated. Matching notes are appended to
+`docs/plans/specs/p1a-with-rejection-classifier.md` and
+`docs/plans/specs/p2b-input-bindings.md` (both 2026-08-28 entries). This
+entry is prose-only; F-0's table and §7's checkbox above are not edited —
+they are historically accurate for P2a's own scope and are superseded, not
+wrong.

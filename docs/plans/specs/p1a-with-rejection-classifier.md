@@ -693,3 +693,46 @@ outside R-01) — P2b's binding work must close it and the docs note it until th
 **2026-08-26 — phase gate green.** lint green, tsc green, unit 3908 pass / 0 fail (291 files),
 integration 5622 pass / 57 skip / 0 fail (419 files), with the close-out parity pins included.
 P1a is complete.
+
+**2026-08-28 — P4 deletion note (row F-02 / §6 Lane 0 file list): the canary this row flips no
+longer exists.** `tests/integration/tasks-scheduling-characterization.test.ts` — named above as the
+FLIP target for F-02 (the `INVALID_FLAG_VALUE` → `TASK_SOURCE_INVALID` code-only flip on R-06's
+neither-case and both-case) and listed in §6's Lane 0 file table — was **deleted** by commit
+`0969162` ("refactor(p4): remove task source v3 acceptance from src", spec
+`docs/plans/specs/p4-deletions-closeout.md` §3.2, its own row **F-A2.7**: "DELETE — all three tests
+are R-06, resolved by deletion (§5.5)"). This is a downstream consequence of R-06 itself, not a
+regression of F-02: R-06 ("task v3 requires exactly one scheduling source") is a **v3** rule, and P4
+§3.2 removed task v3 acceptance from `src` entirely, so the rule the deleted file's three tests
+pinned has no document shape left to apply to — `docs/plans/specs/p0-invariants.md`'s final
+disposition table records it as **"RESOLVED by deletion."** F-02's own flip is not falsified by this:
+it landed as specified and stayed byte-unchanged through P2a's own close-out sweep
+(`docs/plans/specs/p2a-task-source-v4.md:1318-1326`, "Every canary named in §7 —
+… `tests/integration/tasks-scheduling-characterization.test.ts` … — is byte-unchanged from P1b's
+head … to this commit; no test file under `tests/` was deleted anywhere in the phase") before P4
+deleted the file three phases later. **Where the coverage lives now: nowhere, by design** — P4's
+F-A2.7 disposition is deletion, not relocation; no replacement test exists for the neither-case,
+both-case, or `akm.schedule` success-shape assertions, because task source v4 (the only schema `src`
+still accepts) makes `schedule:` optional rather than exactly-one-required (P2a §1.5 D2-N6), so the
+behavior itself has no live subject to characterize. This entry is prose-only; the row's F-02 text
+above is not edited — it is historically accurate for P1a's own scope and is superseded, not wrong.
+
+**2026-08-28 — P2b supersession note (§3.1's pinned message, rows B-02/B-03).** §3.1's code block and
+"pinned message contract" (`Workflow step <id> cannot pass with: to task target <ref>; task-call
+inputs are not supported yet.`) and the behavior table's B-02/B-03 rows above describe an
+**unconditional** rejection: any authored `with:` on a `uses: tasks/<ref>` step throws
+`COMPOSITION_INVALID`, regardless of what the target declares. That is no longer what the shipped
+code does. `docs/plans/specs/p2b-input-bindings.md` (§1.7 A-N5/A-N6, §3) turned the unconditional
+rejection into real typed bindings: `src/workflows/freeze/targets/task.ts`'s `taskDispatch` now
+parses the composed target's own `inputs:` contract and only raises `COMPOSITION_INVALID` (via the
+renamed `noDeclaredInputsError`) when the target declares **no inputs at all** — `if (source.with
+!== undefined && contract === undefined)`. The pinned message text changed with it: `` `Workflow step
+${stepId} cannot pass with: to task target ${ref}; ${ref} declares no inputs.` `` (verified at HEAD,
+`src/workflows/freeze/targets/task.ts:32-37,117-119` — note the message now also names the target
+ref a second time in place of the retired "task-call inputs are not supported yet." clause). When
+the target DOES declare `inputs:`, an authored `with:` binds through `freezeTaskInputBindings`
+instead of being rejected at all. This entry is prose-only; §3.1's code block and the B-02/B-03 rows
+above are not edited — they are historically accurate for P1a's own scope (the fail-closed gate that
+existed before task input bindings shipped) and are superseded, not wrong. The corresponding test
+(`tests/workflows/characterization-with-drop.test.ts:169`, R-01(c) — this spec's own F-01a flip
+target) was authorized to flip again, message-bytes-only, under P2b's own §7 flips table
+(`docs/plans/specs/p2b-input-bindings.md:1174`); see that spec for the current pinned assertions.

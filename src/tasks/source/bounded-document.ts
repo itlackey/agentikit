@@ -69,7 +69,15 @@ export const TASK_V3_MAX_SCHEDULES = 64;
 /** Parse context every helper in this module takes. `workspaceRoot` is used only by {@link validateWorkingDirectory}. */
 export interface BoundedDocumentContext {
   readonly filePath: string;
-  /** "task v3 source" or "task source v4" — the ONLY text that differs between the two renderings (D2-N4). */
+  /**
+   * The text substituted into `Invalid <sourceLabel> at <path>: …` — the ONLY
+   * text that differs between callers. P4 (docs/plans/specs/p4-deletions-closeout.md
+   * §3.2) deleted task v3 acceptance from `src`, so the "task v3 source"
+   * label this field once carried no longer has a live caller here; today's
+   * two values are `"task source v4"` (`task-source-v4.ts`'s `SOURCE_LABEL`)
+   * and `"task source"` (the version router, `parse-task-source.ts`, whose
+   * front end runs before `root.version` is read).
+   */
   readonly sourceLabel: string;
   readonly workspaceRoot?: string;
   readonly lineAt?: (fieldPath: readonly (string | number)[]) => number | undefined;
@@ -488,16 +496,21 @@ export function assertBoundedTaskYamlDocument(
 
 /**
  * Parse hostile YAML without aliases/tags/merges, then hand back the bounded
- * `{root, lineAt}` pair both `parseTaskV3Document` and
- * `parseTaskSourceV4Document` consume — lifted from `parseTaskV3Yaml`
- * (originally `source-v3.ts:894-952`), generalized only by `sourceLabel`.
- * `parseTaskV3Yaml` (`../source-v3.ts`) now calls this directly with
- * `sourceLabel: "task v3 source"` instead of carrying its own copy of this
- * logic; `parseTaskSourceV4`'s own standalone YAML-string entry passes
- * `"task source v4"`. The version router (`parse-task-source.ts`) also calls
- * this directly, always with `sourceLabel: "task v3 source"` (spec §3.4's
- * recorded wart: the front end runs before `root.version` is even read, so
- * it cannot know the document is task source v4 yet).
+ * `{root, lineAt}` pair both grammars that read a task document consume —
+ * originally lifted from the now-deleted `parseTaskV3Yaml`
+ * (`source-v3.ts:894-952`), generalized only by `sourceLabel`.
+ *
+ * P4 (docs/plans/specs/p4-deletions-closeout.md §3.2) deleted task v3
+ * acceptance from `src` entirely — `parseTaskV3Yaml` and its `"task v3
+ * source"` label no longer exist here (the grammar survives only in the
+ * vendored, frozen `scripts/akm-migrate/migrate/task-source-v3-frozen.ts`
+ * copy, which does not call this function). The two live `src` callers
+ * today: `parseTaskSourceV4`'s standalone YAML-string entry
+ * (`task-source-v4.ts:790`) passes `sourceLabel: "task source v4"`; the
+ * version router (`parse-task-source.ts:61`) calls this directly with
+ * `sourceLabel: "task source"` — not "task v3 source" — because its front
+ * end runs before `root.version` is even read, so it cannot yet know which
+ * schema version the document will turn out to be.
  */
 export function readBoundedTaskSourceYaml(
   input: BoundedTaskSourceYamlInput,

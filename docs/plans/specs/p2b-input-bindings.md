@@ -1939,3 +1939,20 @@ advisory describes is one layer up, at `src/commands/tasks/tasks-cli.ts:292`,
 with `"task-explain"` confirmed present in `PASSTHROUGH_COMMANDS` at
 `src/output/shapes/passthrough.ts:60` — the finding itself is unaffected,
 only its anchor line.
+
+**2026-08-28 — P4 deletion note (§6.2(c) exclusion list, §7's canary list at line 1111, §8's
+preservation-gate checkbox at lines 1276-1278).** `tests/integration/tasks-scheduling-characterization.test.ts`
+— named above as one of the P0 characterization files pinning v3 behavior that P2b's own test sweep
+must leave untouched, and checked off in §8 as a byte-unchanged preservation gate for "all three
+R-06 tests" — was **deleted** three phases later by commit `0969162` ("refactor(p4): remove task
+source v3 acceptance from src", spec `docs/plans/specs/p4-deletions-closeout.md` §3.2, row
+**F-A2.7**: "DELETE — all three tests are R-06, resolved by deletion (§5.5)"). This does not
+falsify P2b's own gate: at P2b's head the file was still live and still R-06-pinned for `version: 3`
+documents (rows B-08, B-78 above), and it stayed green and byte-unchanged through P2b's own close-out
+sweep — P4's deletion is a downstream consequence of P4 §3.2 removing task v3 acceptance from `src`
+altogether, which retires the exactly-one-scheduling-source rule the file's three tests characterized
+(`docs/plans/specs/p0-invariants.md`'s final disposition table: R-06 "RESOLVED by deletion"). No
+replacement test exists — the coverage was intentionally retired along with the rule it tested, not
+relocated. See the matching note appended to `docs/plans/specs/p1a-with-rejection-classifier.md`
+(2026-08-28 entry) for the full citation chain. This entry is prose-only; no row or checkbox above is
+edited.

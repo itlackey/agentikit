@@ -689,7 +689,18 @@ outcome:
   `src/commands/tasks/**` references the constant instead. Proof:
   `rg -n '"stash"' src/tasks/ src/workflows/ src/execution/ src/commands/tasks/`
   returns exactly the constant's own declaration.
-- `RunTaskOptions` carries **no** legacy alias: `rg -n 'stashDir' src/tasks/ src/workflows/ src/commands/tasks/` returns zero hits (row B-49).
+- `RunTaskOptions` carries **no** legacy alias (row B-49): `rg -n 'stashDir' src/tasks/ src/workflows/ src/commands/tasks/`
+  does **not** return zero hits — 27 hits at this entry's own re-verification (34 at the acceptance
+  sweep's original measurement, §10's criterion-21 caveat; the gap is F11's `71703e76` renaming the
+  `createWorkflowAsset`/`workflow-cli.ts` envelope key). Every surviving hit is a local variable name
+  or an explanatory comment about the rename, never a `RunTaskOptions` member or another live
+  user-facing key — confirmed by inspection of the current list
+  (`src/commands/tasks/tasks.ts`'s many local `const stashDir = …` bindings and its
+  `bundleDir: stashDir` value-preserving pass-through at `:329`; `task-result.ts`'s two rename
+  comments; `authoring.ts`'s two rename comments; `scope-key.ts`'s local `stashDir` binding). Row
+  B-49's own narrow claim — that `RunTaskOptions` itself carries no legacy alias — holds; the grep it
+  publishes as proof does not, and never did (§10's acceptance sweep found this at 34 hits and
+  instructed correcting this text; the correction was not made until this entry).
 - `src/indexer/**` is untouched (row B-50). Say so in the commit body so a
   reviewer does not read the untouched hits as an oversight.
 - `"prompt"` appears in `src/` only inside the D8 legacy read mapping in
@@ -2514,12 +2525,17 @@ src/workflows/source-ir/semantics.ts:11:import { parseSchedule } from "../../tas
 src/workflows/source-ir/triggers.ts:67:} from "../../tasks/source/bounded-document";
 ```
 `src/workflows/source-ir/triggers.ts` — the file §3.2.3 itself created to
-re-home the trigger classifier — imports eleven symbols
+re-home the trigger classifier — imports ten symbols
 (`asRecord`, `BoundedDocumentContext`, `checkKeys`, `cloneBoundedJson`,
 `noGithubExpression`, `own`, `presentJsonValue`, `sourceError`, `stringField`,
-`TASK_V3_MAX_SCHEDULES`, `ExecutionJsonObject`) from
+`TASK_V3_MAX_SCHEDULES`) from
 `src/tasks/source/bounded-document.ts`, a module literally under
-`src/tasks/source/`. And `src/workflows/source-ir/compile.ts:20` imports
+`src/tasks/source/`. (`ExecutionJsonObject` — and its sibling
+`ExecutionJsonValue`, both type-only — are imported separately, from
+`src/execution/json.ts`, not from `bounded-document.ts`; verified at HEAD,
+`src/workflows/source-ir/triggers.ts:55`. An earlier draft of this caveat
+miscounted them into the `bounded-document.ts` list as an eleventh symbol —
+corrected here.) And `src/workflows/source-ir/compile.ts:20` imports
 `classifyWorkflowYamlTriggers` from `./triggers`, so **workflow source
 compilation transitively depends on the task-source bounded-document front
 end**. (`semantics.ts`'s `parseSchedule` import is from `src/tasks/schedule.ts`,
@@ -3193,3 +3209,39 @@ regression tests added for the findings above. The terminology lint's 91
 scanned files became 93 for a different reason: F4 added
 `src/assets/hints`'s two shipped `.md` assets to its roots. `bun run check` is
 green at head.
+
+---
+
+**2026-08-28 — accuracy-review correction: criterion 24 / R-R12's "MET WITH CAVEAT" / "RECORDED, NOT
+FIXED" disposition (§8's R-R12 row, §10.3's criterion-24 section, §10.3's summary line, and this
+document's own "Supersessions" table above) is stale — the `coerceFlagValue` coercion-path half of
+the caveat was already fixed by commit `e640a23` ("fix(execution): stop echoing the supplied value
+in typed-input coercion errors") before this document's own final commit (`dbfb502`).** `e640a23`
+lands at `2026-08-28T04:52:50Z`; `dbfb502` — the commit that carries the "Supersessions and criterion
+movement" table's most recent entries above — lands later the same day at `08:02:09Z`, so the fix
+predates this document's own close of business but was never reconciled against R-R12/criterion 24's
+text, unlike the four items the Supersessions table does cover (R-R15, criterion 8, criterion 21,
+R-R13). Verified at HEAD: `src/execution/input-contract.ts`'s `coerceFlagValue` no longer interpolates
+the supplied value into its final throw —
+```ts
+// Never echo the supplied value: typed-input flags can carry credentials,
+// and this detail lands in stderr envelopes that get pasted into CI logs.
+throw diagnostics.invalidValue(name, `must be ${types.join(" | ")}`);
+```
+— matching exactly the "What remains (imperative)" fix this document's own §10.3 caveat prescribed
+(drop `; received ${JSON.stringify(raw)}`), with a regression test added per `git show e640a23 --numstat`
+(`tests/execution/input-contract.test.ts`, +11/-1 lines) and a `CHANGELOG.md` entry.
+
+**Corrected disposition.** R-R12's *coercion-path* half — `akm task run <id> --<input> <value>`
+echoing the value when a flag fails `coerceFlagValue`'s type coercion (e.g. a non-numeric string
+against a `type: number` input) — is **RESOLVED** by `e640a23`, not RECORDED-NOT-FIXED. This is a
+**partial**, not full, close of R-R12/criterion 24: a *second*, independently-discovered
+credential-echo path — the JSON-Schema `enum`/`minimum`/`maximum` validation branches reached via
+`validateInputs` (as opposed to `coerceFlagValue`'s type-coercion branch) — was identified after this
+sweep and is being closed in this same accuracy-review pass, in `src/execution/input-contract.ts` and
+`src/core/json-schema.ts`, by the pass's own code-fixing agent (not this document, and not this note's
+author). Criterion 24 therefore stands at **MET WITH CAVEAT** until that second path's fix lands and
+is itself recorded here — this note narrows the caveat's scope, it does not close it. §8's R-R12 row,
+§10.3's criterion-24 section, and §10.3's summary line above are not edited — they were historically
+accurate at the sweep's own head and are superseded, not wrong; this entry is the correction the
+"Supersessions" table above should have carried.

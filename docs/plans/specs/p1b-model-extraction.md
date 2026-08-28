@@ -1131,3 +1131,28 @@ cross-reference.
 **2026-08-26 — phase gate green at final head (`775d146`+docs).** lint green, tsc green, unit
 3960 pass / 0 fail (297 files), integration 5655 pass / 57 skip / 0 fail (421 files), including
 the close-out advisory fixes. P1b — and with it Phase 1 — is complete.
+
+**2026-08-28 — P4 close-out: final disposition of §2's `runtime-v3.ts`-anchored PRESERVE rows.**
+`src/tasks/runtime-v3.ts` — the module §2's behavior table cites as the "Evidence at head" for rows
+B-01 through B-05 (and whose `runner.ts` sibling is cited for B-06 through B-22) — is **deleted**.
+P4 (`docs/plans/specs/p4-deletions-closeout.md` §3.2, row **B-25**: "DELETE the file. Zero `src`
+importers today") removed task source v3 acceptance from `src` entirely in commit `0969162`
+("refactor(p4): remove task source v3 acceptance from src"); task source v3 is no longer accepted
+anywhere in `src` (`rg -n 'parseTaskV3Yaml|parseTaskV3Document' src/` returns no live consumer — the
+grammar survives only in the vendored, frozen `scripts/akm-migrate/migrate/task-source-v3-frozen.ts`
+copy). This entry appends, prose-only, the final disposition of the rows this spec pinned against
+that file — mirroring `docs/plans/specs/p0-invariants.md`'s own P4 disposition table (its
+2026-08-28 entry), whose P-01…P-08 rows are the direct ancestors of this table's B-01…B-05/B-22:
+
+| Row | Final disposition |
+|---|---|
+| **B-01 / B-02** (`with:` on a task-v3 command / script ref) | SUPERSEDED by P4 §3.2 (= p0-invariants.md P-01/P-02) — unreachable from any parseable source once task source v4 accepts `with:` only on `uses: akm/command`. The seam guards this row pinned are retained as invariants elsewhere (P4-N4); the pinned tests were deleted with floor accounting per P4 §6/§7. |
+| **B-03** (`with:` on a task-v3 workflow ref) | SUPERSEDED by P4 §3.2 (= P-03) — a task document can no longer author `with:` on a workflow target at all; `prepared.params` is the task's defaulted declared inputs, or `{}`. |
+| **B-04** (workflow ref + `env:`) | PRESERVED, re-fixtured (= P-04) — task source v4 still has a top-level `env:`, so the workflow-target `env:` rejection stays reachable; it is pinned by `tests/integration/tasks-with-classification-characterization.test.ts`'s P-04 block against the v4 grammar now, not against the deleted `runtime-v3.ts:415-421`. |
+| **B-05** (GitHub-action `uses:` prepared) | RESOLVED by deletion (= R-04) — P4 §3.1 deleted the remote-action-acquisition grammar, both consumers, and the `remote-action-acquisition-out-of-scope` code from `src`; the frozen migrator keeps a copy so it can still name the target when it blocks a file. |
+| **B-22** (`runTask` bundle default) | RESOLVED at the boundary (= R-09) — P1b (this phase) renamed `stashDir` → `bundleDir`; P4 §4.1 consolidated the stray `"stash"` literals onto `DEFAULT_BUNDLE_NAME`, whose VALUE stays `"stash"` for on-disk user-data compatibility; the option-key rename this row's own §6 F-3 authorized stands. |
+
+None of §2's row text above is edited — every row was historically accurate for P1b's own scope
+(`runtime-v3.ts` was the real evidence at that head), and every one is superseded, not wrong. See
+`docs/plans/specs/p4-deletions-closeout.md` §3.2 and §5.5, and `docs/plans/specs/p0-invariants.md`'s
+2026-08-28 entry, for the authorizing text.
