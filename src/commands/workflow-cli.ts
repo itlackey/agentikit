@@ -164,7 +164,9 @@ const workflowCreateCommand = defineJsonCommand({
     // Index the newly-written workflow so `akm workflow run` can resolve
     // a workflowEntryId without requiring an explicit `akm index` call
     // first. Uses the same incremental index path that `akm add` uses.
-    await akmIndex({ stashDir: result.stashDir });
+    // `result.bundleDir` — the indexer's own `IndexOptions.stashDir` field
+    // name is unchanged (indexer vocabulary is out of scope, P4 row B-50).
+    await akmIndex({ stashDir: result.bundleDir });
     output("workflow-create", { ok: true, ...result });
   },
 });

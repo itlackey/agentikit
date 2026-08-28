@@ -95,6 +95,12 @@ describe("akm workflow — JSON envelope snapshot (WS6)", () => {
     expect(env.ok).toBe(true);
     expect(typeof env.path).toBe("string");
     expect(fs.existsSync(env.path as string)).toBe(true);
+    // 0.9.2 review round 2 (P4 sweep criterion-21 caveat, spec
+    // docs/plans/specs/p4-deletions-closeout.md §4.1 row B-49): the
+    // envelope's third member is `bundleDir` — BREAKING vs 0.9.1, which
+    // leaked `stashDir` here (src/workflows/authoring/authoring.ts).
+    expect(env.bundleDir).toBe(stash);
+    expect(env.stashDir).toBeUndefined();
   });
 
   test("workflow list: envelope wraps runs under `runs`", async () => {
