@@ -217,6 +217,13 @@ function ctxFrom(options: ParseTaskSourceV4DocumentOptions): BoundedDocumentCont
  * (P4 deleted the last one, `classifyTaskV3Uses`'s locator branch in
  * `source-v3.ts`) — only the shape needs to be recognized here, so the
  * rejection can name the target the user typed rather than guess.
+ *
+ * Runs ONLY on {@link classifyTargetRef}'s failure path (0.9.2 review round 2):
+ * `@` is a legal character in a canonical asset ref, so a value the canonical
+ * classifier accepts (`commands/review@v2`) is a valid target even though it
+ * also matches this shape — the shape test upgrades the generic invalid-ref
+ * message, and never vetoes a ref classification accepts (spec §3.3: "exists
+ * only to produce a good message, never to accept").
  */
 function looksLikeGithubActionLocator(value: string): boolean {
   const at = value.lastIndexOf("@");
@@ -233,7 +240,8 @@ function looksLikeGithubActionLocator(value: string): boolean {
  * to {@link classifyTargetRef} (`src/execution/target-ref.ts`) — the repo's
  * one canonical-ref classifier — rather than re-deriving ref grammar; layers
  * the `akm/command` builtin special case, the task-ref rejection (B-14), and
- * the github-locator-shape rejection (B-13) on top.
+ * — on the classification-failure path only — the github-locator-shape
+ * rejection (B-13) on top.
  */
 export function classifyTaskSourceV4Uses(value: string): TaskSourceV4UsesTarget {
   // Diagnostic-codes ratchet remedy (tests/architecture/diagnostic-codes.test.ts,
@@ -255,16 +263,16 @@ export function classifyTaskSourceV4Uses(value: string): TaskSourceV4UsesTarget 
   if (value === "akm/command") {
     return Object.freeze({ kind: "builtin-command" as const, ref: "akm/command" as const });
   }
-  if (looksLikeGithubActionLocator(value)) {
-    throw new UsageError(
-      "GitHub Action targets were removed in task source v4 — the github-action uses: variant no longer exists. " +
-        "Use commands/, scripts/, workflows/, or akm/command instead.",
-    );
-  }
   let classified: ReturnType<typeof classifyTargetRef>;
   try {
     classified = classifyTargetRef(value);
   } catch (cause) {
+    if (looksLikeGithubActionLocator(value)) {
+      throw new UsageError(
+        "GitHub Action targets were removed in task source v4 — the github-action uses: variant no longer exists. " +
+          "Use commands/, scripts/, workflows/, or akm/command instead.",
+      );
+    }
     throw cause instanceof Error ? cause : new UsageError(String(cause));
   }
   if (classified.kind === "task") {

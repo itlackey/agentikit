@@ -314,6 +314,24 @@ describe("classifyTaskSourceV4Uses — target classification (spec §3.3)", () =
     expect(githubMessage).not.toBe(genericMessage);
     expect(githubMessage).toMatch(/github/i);
   });
+
+  // 0.9.2 review round 2: `@` is a legal character in a canonical asset ref
+  // (`parseBundleRef`/`classifyTargetRef` both accept it), so a value the
+  // canonical classifier accepts must classify — the B-13 locator SHAPE test
+  // runs only on the classification-failure path and never vetoes a valid
+  // ref (spec §3.3: "exists only to produce a good message, never to
+  // accept").
+  test.each([
+    ["commands/review@v2", { kind: "command", ref: "commands/review@v2" }],
+    ["core//commands/review@v2", { kind: "command", ref: "core//commands/review@v2" }],
+    ["scripts/deploy@nightly", { kind: "script", ref: "scripts/deploy@nightly" }],
+  ] as const)("classifies the canonical '@'-bearing ref %s instead of misreading it as a github locator", (input, expected) => {
+    expect(classifyTaskSourceV4Uses(input)).toEqual(expected);
+  });
+
+  test("a canonical tasks/ ref containing '@' takes the task-ref rejection (B-14), not the github-removal message", () => {
+    expect(() => classifyTaskSourceV4Uses("tasks/nightly@v1")).toThrow(/task ref/i);
+  });
 });
 
 // ── parseTaskSourceV4Document — target union, with:, shell/working-directory ──
@@ -361,6 +379,14 @@ describe("parseTaskSourceV4Document — target union (uses/run exactly one, D2-N
       () => parseTaskSourceV4Document(v4Doc({ uses: "actions/checkout@v4" }), { filePath: "/x.yml" }),
       /github/i,
     );
+  });
+
+  // 0.9.2 review round 2: the B-13 shape test must never reject a ref the
+  // canonical classifier accepts — a versioned-looking but perfectly
+  // canonical command ref parses to an ordinary command target.
+  test("uses: with a canonical '@'-bearing command ref parses to a command target, not the github-removal rejection", () => {
+    const doc = parseTaskSourceV4Document(v4Doc({ uses: "commands/review@v2" }), { filePath: "/x.yml" });
+    expect(doc.target).toEqual({ kind: "uses", uses: { kind: "command", ref: "commands/review@v2" } });
   });
 
   test("uses: commands/, scripts/, and workflows/ all parse to the nested TaskSourceV4Target shape", () => {
