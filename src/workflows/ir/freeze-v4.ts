@@ -87,9 +87,19 @@ export async function compileResolveFreezeWorkflowV4(
   );
   const compiled = compileWorkflowPlan(resolved.sourceIr, asset.title, resolved.units);
   if (!compiled.ok) {
+    // P4-N2's mapping (docs/plans/specs/p4-deletions-closeout.md §3.3.4)
+    // applies here too, though `resolved.sourceIr` is already guaranteed
+    // exactly one job by this point (source-freeze.ts's own compile already
+    // succeeded), so this compiler's own errors never carry the
+    // multi-job-unsupported code — the arm always resolves to
+    // WORKFLOW_SOURCE_INVALID.
+    const code =
+      compiled.errors.length === 1 && compiled.errors[0]?.code === "multi-job-unsupported"
+        ? "COMPOSITION_INVALID"
+        : "WORKFLOW_SOURCE_INVALID";
     throw new UsageError(
       compiled.errors.map((error) => `${asset.path}:${error.line}: ${error.message}`).join("\n"),
-      "INVALID_FLAG_VALUE",
+      code,
     );
   }
   const steps = compiled.plan.steps.map((step): IrStepPlanV4 => {

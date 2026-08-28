@@ -169,8 +169,18 @@ function compileWorkflowSourceFromDisk(assetPath: string, workspaceRoot: string)
   const content = fs.readFileSync(assetPath, "utf8");
   const result = compileWorkflowSource(content, { path: assetPath, workspaceRoot });
   if (!result.ok) {
+    // P4-N2's mapping (docs/plans/specs/p4-deletions-closeout.md §3.3.4): this
+    // is the FIRST compile of a workflow's own source that a ref resolves
+    // through (loadWorkflowAsset runs before compileResolveFreezeWorkflowV4),
+    // so it must apply the same code split as the freeze wrapper — otherwise
+    // row B-44's COMPOSITION_INVALID promise never reaches `startWorkflowRun`
+    // callers, which never get past this point on a multi-job source.
     const details = result.errors.map((error) => `  ${error.path}:${error.line} — ${error.message}`).join("\n");
-    throw new UsageError(`Workflow source has ${result.errors.length} error(s):\n${details}`);
+    const code =
+      result.errors.length === 1 && result.errors[0]?.code === "multi-job-unsupported"
+        ? "COMPOSITION_INVALID"
+        : "WORKFLOW_SOURCE_INVALID";
+    throw new UsageError(`Workflow source has ${result.errors.length} error(s):\n${details}`, code);
   }
   return result.ir;
 }

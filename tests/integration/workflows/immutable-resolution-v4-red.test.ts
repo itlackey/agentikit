@@ -283,6 +283,11 @@ describe("workflow v4 common target resolution", () => {
 
 describe("workflow v4 fail-closed source targets", () => {
   test.each([
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.3, row B-34,
+    // F-A3.11 — discovered flip, recorded in the Review log): a 2-job
+    // document now fails at PARSE, at the adapter boundary
+    // (multi-job-unsupported), not at the freeze-time "job boundaries and
+    // needs" check that row B-44 deletes.
     [
       "multi-job",
       [
@@ -297,7 +302,7 @@ describe("workflow v4 fail-closed source targets", () => {
         "    steps: [{ id: two, run: printf two }]",
         "",
       ].join("\n"),
-      /multi-job|job boundaries|needs/i,
+      /requires exactly one job/i,
     ],
     // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
     // F-A1.19): the locator grammar is deleted — this now rejects as an

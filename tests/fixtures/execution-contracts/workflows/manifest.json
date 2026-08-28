@@ -33,7 +33,7 @@
     }
   ],
   "singleJob": {
-    "description": "One GitHub-shaped single-job .yml, cribbed from the equivalent/contract-review.yml accepted subset, that parses and compiles cleanly today (the positive baseline R-05/P-08's multi-job fixtures are contrasted against).",
+    "description": "One GitHub-shaped single-job .yml, cribbed from the equivalent/contract-review.yml accepted subset, that parses and compiles cleanly today (the positive baseline a multi-job document is now rejected against, per P4's one adapter-boundary multi-job-unsupported rejection).",
     "file": "single-job/single-job.yml",
     "expectedJobId": "main",
     "expectedStepIds": ["prepare", "review", "summarize"]

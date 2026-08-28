@@ -4,8 +4,10 @@
 
 /**
  * P0 characterization (Lane A): the workflow-step `uses:` classification
- * matrix, the nested-workflow rejection sites (R-03), and multi-job
- * parse-vs-execute behavior (R-05, P-08).
+ * matrix, the nested-workflow rejection sites (R-03), and (P4 FLIP,
+ * docs/plans/specs/p4-deletions-closeout.md §3.3) the ONE multi-job
+ * adapter-boundary rejection that replaced R-05/P-08's parse-vs-execute
+ * split.
  *
  * See docs/plans/specs/p0-invariants.md, "Lane pin checklists" / Lane A, for
  * the authoritative source-site citations reproduced in the comments below.
@@ -20,7 +22,6 @@ import { resetConfigCache } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
 import { akmIndex } from "../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
-import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
 import { decodeWorkflowPlanV4, type FrozenWorkflowTarget } from "../../src/workflows/ir/schema-v4";
 import { startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { compileGithubWorkflowSource } from "../../src/workflows/source-ir/compile";
@@ -310,134 +311,18 @@ describe("R-02 — a direct scripts/<ref> workflow step (source-freeze-v4.ts:274
   });
 });
 
-// ── R-05 / P-08: multi-job parses and orders deterministically, but the ────
-// ── current runtime refuses to execute more than one job ────────────────────
+// ── R-05/P-08 RETIRED in P4 (docs/plans/specs/p4-deletions-closeout.md §3.3,
+// ── §5.5 P-08 disposition): multi-job parsing, ordering, needs validation
+// ── and the 256-job bound all existed only to support MORE THAN ONE job.
+// ── The adapter now confines a workflow source to exactly one job (F-A3.1
+// ── DELETED the describe block that lived here — "multi-job source IR
+// ── (P-08, R-05(a)) — parses and orders deterministically", 6 tests
+// ── covering canonical ordering, needs sorting, the 0/256/257 job-count
+// ── bounds, missing-needs, cycle and duplicate-needs — none of those
+// ── scenarios has a reachable document any more). The one surviving
+// ── describe below now pins the single adapter-boundary rejection.
 
-describe("multi-job source IR (P-08, R-05(a)) — parses and orders deterministically", () => {
-  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
-  // later phase — a failure here is a regression, not an intended flip. This
-  // is the parser behavior later phases build the durable job-boundary
-  // adapter on top of.
-  test("P-08: emits ready jobs in canonical dependency-topological, lexical-tie-break order, recomputed after each emission", () => {
-    const result = compileGithubWorkflowSource(
-      "name: Ordering\non: { workflow_dispatch: null }\njobs:\n" +
-        "  zulu:\n    runs-on: [self-hosted]\n    steps: [{ id: zulu, run: echo zulu }]\n" +
-        "  bravo:\n    runs-on: [self-hosted]\n    steps: [{ id: bravo, run: echo bravo }]\n" +
-        "  alpha:\n    needs: bravo\n    runs-on: [self-hosted]\n    steps: [{ id: alpha, run: echo alpha }]\n",
-      { path: "workflows/order.yml" },
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    // "alpha" becomes ready only once "bravo" is emitted, then out-ranks
-    // "zulu" (both ready at that point) purely by lexical order — proving
-    // readiness is recomputed after each emission rather than sorted once.
-    expect(result.ir.jobs.map((job) => job.id)).toEqual(["bravo", "alpha", "zulu"]);
-  });
-
-  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
-  // later phase — a failure here is a regression, not an intended flip. P-08:
-  // `needs` sorting.
-  test("P-08: needs entries are stored in sorted order regardless of authored order", () => {
-    const result = compileGithubWorkflowSource(
-      "name: G\non: { workflow_dispatch: null }\njobs:\n" +
-        "  report:\n    needs: [test, build]\n    runs-on: [self-hosted]\n    steps: [{ id: report, run: echo report }]\n" +
-        "  test:\n    needs: build\n    runs-on: [self-hosted]\n    steps: [{ id: test, run: echo test }]\n" +
-        "  build:\n    runs-on: [self-hosted]\n    steps: [{ id: build, run: echo build }]\n",
-      { path: "workflows/g.yml" },
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.ir.jobs.map((job) => job.id)).toEqual(["build", "test", "report"]);
-    expect(result.ir.jobs.find((job) => job.id === "report")?.needs).toEqual(["build", "test"]);
-  });
-
-  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
-  // later phase — a failure here is a regression, not an intended flip. P-08:
-  // job-count bounds. Message pinned verbatim (p0-invariants.md:36-38 — where
-  // a message string is quoted in the spec, pin it verbatim), not just the code
-  // (p0-invariants.md:62).
-  test("P-08: rejects 0 jobs and 257 jobs, accepts exactly 256, all with code job-count-limit", () => {
-    const empty = compileGithubWorkflowSource("name: Empty\non: { workflow_dispatch: null }\njobs: {}\n", {
-      path: "workflows/empty.yml",
-    });
-    expect(empty.ok).toBe(false);
-    if (!empty.ok)
-      expect(empty.errors.find((error) => error.code === "job-count-limit")?.message).toBe(
-        "workflow.jobs must contain 1 through 256 jobs.",
-      );
-
-    const jobsBlock = (count: number) =>
-      Array.from(
-        { length: count },
-        (_, index) => `  j${index}:\n    runs-on: [self-hosted]\n    steps: [{ id: s, run: echo ${index} }]`,
-      ).join("\n");
-
-    const at256 = compileGithubWorkflowSource(
-      `name: At256\non: { workflow_dispatch: null }\njobs:\n${jobsBlock(256)}\n`,
-      { path: "workflows/at256.yml" },
-    );
-    expect(at256.ok).toBe(true);
-    if (at256.ok) expect(at256.ir.jobs).toHaveLength(256);
-
-    const over256 = compileGithubWorkflowSource(
-      `name: Over256\non: { workflow_dispatch: null }\njobs:\n${jobsBlock(257)}\n`,
-      { path: "workflows/over256.yml" },
-    );
-    expect(over256.ok).toBe(false);
-    if (!over256.ok)
-      expect(over256.errors.find((error) => error.code === "job-count-limit")?.message).toBe(
-        "workflow.jobs must contain 1 through 256 jobs.",
-      );
-  });
-
-  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
-  // later phase — a failure here is a regression, not an intended flip. P-08:
-  // needs validation.
-  test("P-08: rejects a missing needs target with the exact message and code missing-job-dependency", () => {
-    const result = compileGithubWorkflowSource(
-      "name: Missing\non: { workflow_dispatch: null }\njobs:\n" +
-        "  main:\n    needs: absent\n    runs-on: [self-hosted]\n    steps: [{ id: ok, run: echo ok }]\n",
-      { path: "workflows/missing.yml" },
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    const error = result.errors.find((entry) => entry.code === "missing-job-dependency");
-    expect(error?.message).toBe("Job main needs missing job absent.");
-  });
-
-  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
-  // later phase — a failure here is a regression, not an intended flip. P-08:
-  // needs validation.
-  test("P-08: rejects a dependency cycle with code job-dependency-cycle and the exact message", () => {
-    const result = compileGithubWorkflowSource(
-      "name: Cycle\non: { workflow_dispatch: null }\njobs:\n" +
-        "  a:\n    needs: b\n    runs-on: [self-hosted]\n    steps: [{ id: a, run: echo a }]\n" +
-        "  b:\n    needs: a\n    runs-on: [self-hosted]\n    steps: [{ id: b, run: echo b }]\n",
-      { path: "workflows/cycle.yml" },
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    const error = result.errors.find((entry) => entry.code === "job-dependency-cycle");
-    expect(error?.message).toBe("Workflow jobs contain a dependency cycle.");
-  });
-
-  // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every
-  // later phase — a failure here is a regression, not an intended flip. P-08:
-  // needs validation.
-  test("P-08: rejects duplicate needs entries with code duplicate-job-dependency", () => {
-    const result = compileGithubWorkflowSource(
-      "name: Dup\non: { workflow_dispatch: null }\njobs:\n" +
-        "  main:\n    needs: [build, build]\n    runs-on: [self-hosted]\n    steps: [{ id: ok, run: echo ok }]\n" +
-        "  build:\n    runs-on: [self-hosted]\n    steps: [{ id: build, run: echo build }]\n",
-      { path: "workflows/dup.yml" },
-    );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.errors.some((entry) => entry.code === "duplicate-job-dependency")).toBe(true);
-  });
-});
-
-describe("R-05 — multi-job parses clean, but the current runtime refuses to execute it", () => {
+describe("R-05 — multi-job now fails at the adapter boundary, not at freeze/execute", () => {
   const TWO_JOB_YAML = [
     "name: Two-job",
     "on:",
@@ -453,28 +338,23 @@ describe("R-05 — multi-job parses clean, but the current runtime refuses to ex
     "",
   ].join("\n");
 
-  // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-  // phase flips this deliberately. Flips in P4 (adapter-boundary rejection).
-  // Pins the RETURN-vs-THROW asymmetry against R-05(b) below: this path
-  // returns `ok: false`, it never throws.
-  test("R-05(c): compileWorkflowPlan RETURNS ok:false (never throws) with the exact message and the second job's source line", () => {
+  // FLIPPED in P4 (docs/plans/specs/p4-deletions-closeout.md §3.3, row B-34,
+  // F-A3.2): a 2-job document now fails to PARSE — compileWorkflowPlan never
+  // sees it, so the RETURN-vs-THROW asymmetry this test used to pin against
+  // R-05(b) below no longer exists (row B-43: the check compileWorkflowPlan
+  // used to return ok:false from is deleted, unreachable by construction).
+  test("a 2-job document fails to parse with multi-job-unsupported, anchored at the second job", () => {
     const parsed = compileGithubWorkflowSource(TWO_JOB_YAML, { path: "workflows/two-job.yml" });
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.ir.jobs.map((job) => job.id)).toEqual(["build", "deploy"]);
-    const secondJob = parsed.ir.jobs[1];
-    if (!secondJob) throw new Error("fixture must contain a second job");
-
-    let compiled: ReturnType<typeof compileWorkflowPlan> | undefined;
-    expect(() => {
-      compiled = compileWorkflowPlan(parsed.ir, "two-job");
-    }).not.toThrow();
-    expect(compiled?.ok).toBe(false);
-    if (!compiled || compiled.ok) return;
-    expect(compiled.errors).toEqual([
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) return;
+    expect(parsed.errors).toEqual([
       {
-        line: secondJob.source.start,
-        message: "Current workflow execution requires exactly one source-IR job.",
+        code: "multi-job-unsupported",
+        message:
+          "AKM workflow YAML requires exactly one job; this document declares 2. AKM's YAML is an AKM workflow " +
+          "format executed by AKM's native engine, not GitHub Actions — split the jobs into separate workflows.",
+        path: "workflows/two-job.yml",
+        line: 8,
       },
     ]);
   });
@@ -493,16 +373,24 @@ describe("R-05 — multi-job parses clean, but the current runtime refuses to ex
       storage.cleanup();
     });
 
-    // CHARACTERIZATION (P0): pins CURRENT behavior (defect included); a later
-    // phase flips this deliberately. Flips in P4 (adapter-boundary rejection).
-    test("throws the exact multi-job UsageError instead of executing (source-freeze-v4.ts:105-110)", async () => {
+    // FLIPPED in P4 (docs/plans/specs/p4-deletions-closeout.md §3.3.4, row
+    // B-44, P4-N2, F-A3.2): the ref resolves through loadWorkflowAsset's own
+    // compile (workflow-asset-loader.ts) before compileResolveFreezeWorkflowV4
+    // is ever reached, so THAT site — not source-freeze.ts's wrapper — is
+    // what a `startWorkflowRun` caller observes; it carries the same P4-N2
+    // code split. The message's leading "Workflow source has N error(s)"
+    // frame and absolute asset path are that site's own, unrelated to the
+    // freeze wrapper's "Workflow source cannot be frozen" text — only the
+    // adapter's policy message (pinned below) and the CODE are shared.
+    test("throws COMPOSITION_INVALID wrapping the adapter's multi-job-unsupported rejection", async () => {
       write(storage.stashDir, "workflows/two-job.yml", TWO_JOB_YAML);
 
       const error = await rejection(startWorkflowRun("workflows/two-job"));
       expect(error).toBeInstanceOf(UsageError);
-      expect((error as UsageError).code).toBe("INVALID_FLAG_VALUE");
-      expect((error as Error).message).toBe(
-        "Multi-job workflow cannot execute until job boundaries and needs have a durable runtime representation.",
+      expect((error as UsageError).code).toBe("COMPOSITION_INVALID");
+      expect((error as Error).message).toContain(
+        "AKM workflow YAML requires exactly one job; this document declares 2. AKM's YAML is an AKM workflow " +
+          "format executed by AKM's native engine, not GitHub Actions — split the jobs into separate workflows.",
       );
     });
   });

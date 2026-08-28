@@ -38,7 +38,7 @@ import {
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../resource-limits";
-import { canonicalTopologicalJobs, compareWorkflowSourceCodePoints } from "./ordering";
+import { compareWorkflowSourceCodePoints } from "./compare";
 import {
   canonicalizeWorkflowCron,
   canonicalizeWorkflowRun,
@@ -199,7 +199,7 @@ export interface WorkflowSourceIrV1 {
   budget?: { maxTokens?: number; maxUnits?: number };
   preamble?: string;
   triggers: WorkflowSourceTrigger[];
-  /** Dependency-topological order with lexical tie-breaking. */
+  /** Exactly one entry (P4 §3.3): an AKM workflow source declares one job. */
   jobs: WorkflowSourceJob[];
   extensions?: WorkflowSourceExtensions;
   source: WorkflowSourceSpan;
@@ -255,15 +255,14 @@ export function decodeWorkflowSourceIrV1(
   }
   validateTriggers(root.triggers);
 
-  if (!Array.isArray(root.jobs) || root.jobs.length === 0 || root.jobs.length > 256) {
-    fail("jobs must contain 1 through 256 entries");
+  if (!Array.isArray(root.jobs) || root.jobs.length !== 1) {
+    fail("jobs must contain exactly 1 entry");
   }
   const jobIds = new Set<string>();
   for (const [index, job] of root.jobs.entries()) validateJob(job, index, jobIds, options);
   for (const job of root.jobs as unknown as WorkflowSourceJob[]) {
     for (const need of job.needs) if (!jobIds.has(need)) fail(`job ${job.id} needs missing job ${need}`);
   }
-  validateTopologicalJobs(root.jobs as unknown as WorkflowSourceJob[]);
   return decoded as WorkflowSourceIrV1;
 }
 
@@ -465,17 +464,6 @@ function validateStep(
   }
   extensions(step.extensions, `step ${id} extensions`);
   span(step.source, `step ${id} source`);
-}
-
-function validateTopologicalJobs(jobs: WorkflowSourceJob[]): void {
-  const result = canonicalTopologicalJobs(jobs);
-  if (!result.ok) {
-    if (result.kind === "missing") fail(`job ${result.job.id} needs missing job ${result.dependency}`);
-    fail("jobs contain a dependency cycle");
-  }
-  if (result.jobs.some((job, index) => job.id !== jobs[index]?.id)) {
-    fail("jobs are not in canonical dependency-topological order");
-  }
 }
 
 function compareCodePoints(left: string, right: string): number {

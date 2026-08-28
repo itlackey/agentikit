@@ -65,15 +65,18 @@ export async function resolveWorkflowSourceV4(
 ): Promise<ResolvedWorkflowSourceV4> {
   const compiled = compileWorkflowSource(workflowSource.content, { path: asset.path, workspaceRoot: asset.sourcePath });
   if (!compiled.ok) {
+    // P4-N2 (docs/plans/specs/p4-deletions-closeout.md §3.3.4): a compile
+    // result whose single error is the adapter's multi-job rejection
+    // surfaces as COMPOSITION_INVALID — one authoritative composition
+    // policy; every other compile failure (a YAML syntax error, an
+    // unsupported trigger, …) is WORKFLOW_SOURCE_INVALID. Never blanket-recode.
+    const code =
+      compiled.errors.length === 1 && compiled.errors[0]?.code === "multi-job-unsupported"
+        ? "COMPOSITION_INVALID"
+        : "WORKFLOW_SOURCE_INVALID";
     throw new UsageError(
       `Workflow source cannot be frozen: ${compiled.errors.map((error) => error.message).join("; ")}`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
-  if (compiled.ir.jobs.length !== 1) {
-    throw new UsageError(
-      "Multi-job workflow cannot execute until job boundaries and needs have a durable runtime representation.",
-      "INVALID_FLAG_VALUE",
+      code,
     );
   }
   const context: ResolutionContext = { asset, config, collector, sourceIr: compiled.ir, composition, freezeChild };

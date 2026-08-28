@@ -4,7 +4,6 @@
 
 import { isAlias, isMap, isScalar, isSeq, LineCounter, type Pair, type ParsedNode, parseDocument } from "yaml";
 import { utf8Bytes, WORKFLOW_MAX_SOURCE_BYTES } from "../resource-limits";
-import { canonicalTopologicalJobs } from "./ordering";
 import { WorkflowSourceFailure } from "./result";
 import {
   WORKFLOW_SOURCE_HOST_SHELLS,
@@ -456,30 +455,44 @@ function validateCron(reader: StrictYamlReader, cron: string, node: ParsedNode |
   }
 }
 
+/**
+ * The ONE place a job-count or job-dependency policy is enforced (P4 §3.3,
+ * docs/plans/specs/p4-deletions-closeout.md): AKM's YAML adapter accepts a
+ * familiar GitHub-step-shaped `name:`/`on:`/`jobs:` document, but requires
+ * exactly one job (brief §10) — it is an AKM workflow format executed by
+ * AKM's native engine, not a GitHub Actions graph. Job ordering, dependency
+ * validation and the 256-job bound all existed only to support MULTIPLE
+ * jobs; they are gone with the machinery, not relocated.
+ */
 function parseJobs(
   reader: StrictYamlReader,
   node: ParsedNode | null,
   options: GithubWorkflowSourceOptions,
 ): WorkflowSourceJob[] {
   const fields = reader.arbitraryFields(node, "workflow.jobs");
-  if (fields.size === 0 || fields.size > 256) {
-    reader.fail("job-count-limit", "workflow.jobs must contain 1 through 256 jobs.", node);
+  let first: [string, YamlPair] | undefined;
+  let second: [string, YamlPair] | undefined;
+  for (const entry of fields) {
+    if (!first) first = entry;
+    else if (!second) second = entry;
   }
-  const jobs = [...fields.entries()].map(([id, pair]) => parseJob(reader, id, pair, options));
-  const ordered = canonicalTopologicalJobs(jobs);
-  if (ordered.ok) return ordered.jobs;
-  if (ordered.kind === "missing") {
-    throw new WorkflowSourceFailure(
-      "missing-job-dependency",
-      `Job ${ordered.job.id} needs missing job ${ordered.dependency}.`,
-      ordered.job.source,
+  if (fields.size !== 1 || !first) {
+    reader.fail(
+      "multi-job-unsupported",
+      `AKM workflow YAML requires exactly one job; this document declares ${fields.size}. AKM's YAML is an AKM workflow format executed by AKM's native engine, not GitHub Actions — split the jobs into separate workflows.`,
+      second ? second[1].key : node,
     );
   }
-  throw new WorkflowSourceFailure(
-    "job-dependency-cycle",
-    "Workflow jobs contain a dependency cycle.",
-    ordered.job.source,
-  );
+  const [id, pair] = first;
+  const job = parseJob(reader, id, pair, options);
+  if (job.needs.length > 0) {
+    reader.fail(
+      "multi-job-unsupported",
+      `Job ${job.id} declares needs, but an AKM workflow has exactly one job; remove needs.`,
+      pair.key,
+    );
+  }
+  return [job];
 }
 
 function parseJob(
@@ -532,9 +545,10 @@ function parseNeeds(reader: StrictYamlReader, pair: YamlPair | undefined, jobId:
     : [reader.string(pair.value, `workflow.jobs.${jobId}.needs`)];
   for (const need of values)
     if (!SOURCE_ID.test(need)) reader.fail("invalid-job-id", `Invalid needs id ${need}.`, pair.value);
-  if (new Set(values).size !== values.length) {
-    reader.fail("duplicate-job-dependency", `Job ${jobId} has duplicate needs entries.`, pair.value);
-  }
+  // Duplicate-entry checking (code duplicate-job-dependency) deleted with the
+  // rest of the multi-job dependency machinery (P4 §3.3): ANY non-empty
+  // needs — duplicated or not — is multi-job-unsupported at the caller
+  // (parseJobs), since a single-job workflow has nothing to depend on.
   return values.sort();
 }
 

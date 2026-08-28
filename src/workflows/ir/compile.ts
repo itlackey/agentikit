@@ -120,17 +120,9 @@ export function compileWorkflowPlan(
 ): WorkflowPlanCompileResult {
   const sourceIr = decodeWorkflowSourceIrV1(input);
   const errors: WorkflowError[] = [];
-  if (sourceIr.jobs.length !== 1) {
-    return {
-      ok: false,
-      errors: [
-        {
-          line: sourceIr.jobs[1]?.source.start ?? sourceIr.source.start,
-          message: "Current workflow execution requires exactly one source-IR job.",
-        },
-      ],
-    };
-  }
+  // The decoder guarantees exactly one job (P4 §3.3, docs/plans/specs/
+  // p4-deletions-closeout.md, row B-43) — a 2+-job document is rejected at
+  // the adapter boundary and never reaches this compiler.
   const sourceSteps = sourceIr.jobs[0]?.steps ?? [];
   const allStepIds = new Set(sourceSteps.map((step) => step.id));
   const earlierStepIds = new Set<string>();

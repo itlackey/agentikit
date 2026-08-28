@@ -11,8 +11,10 @@
  *
  *   - tests/fixtures/execution-contracts/workflows/single-job/    the accepted
  *     single-job GitHub-shaped baseline, cribbed from the existing
- *     workflows/equivalent/contract-review.yml accepted subset, contrasted
- *     against R-05/P-08's multi-job fixtures elsewhere.
+ *     workflows/equivalent/contract-review.yml accepted subset — the
+ *     acceptance baseline the one adapter-boundary multi-job-unsupported
+ *     rejection contrasts against (P4, docs/plans/specs/p4-deletions-closeout.md
+ *     §3.3, F-A3.4 — R-05/P-08's own multi-job fixtures retired by deletion).
  *   - tests/fixtures/execution-contracts/workflows/plan-v4/       source
  *     fixtures (never byte-snapshots of plans — plans carry machine-dependent
  *     identity) that freeze end to end into durable v4 plans, proving the
@@ -119,7 +121,10 @@ describe("workflows/single-job fixture — the accepted single-job baseline pars
   });
 
   // CHARACTERIZATION (P0): pins behavior that must be PRESERVED through every later phase — a failure here is a regression, not an intended flip.
-  test("compiles cleanly via compileWorkflowPlan — the single-job acceptance R-05/P-08's multi-job rejection contrasts against", () => {
+  // Row IDs dropped in P4 (docs/plans/specs/p4-deletions-closeout.md §3.3,
+  // F-A3.4) — R-05/P-08 retired by deletion; this baseline now contrasts
+  // against the ONE adapter-boundary multi-job-unsupported rejection.
+  test("compiles cleanly via compileWorkflowPlan — the single-job acceptance baseline multi-job YAML is rejected against", () => {
     const parsed = compileGithubWorkflowSource(yaml, { path: "workflows/single-job.yml" });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;

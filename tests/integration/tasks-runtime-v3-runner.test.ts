@@ -170,14 +170,14 @@ describe("task runner mutation boundary", () => {
     // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, F-A2.5): the
     // wrapping task fixture converts to task source v4 — task source version
     // is orthogonal to this rejection, which fires at workflow compilation.
-    // The `/exactly one source-IR job/i` expectation itself is UNTOUCHED —
-    // spec §7.3 F-A3.5 moves that flip to commit 4 (multi-job confinement),
-    // out of this family's scope.
+    // FLIPPED in P4 (§3.3, row B-34, F-A3.5): the rejection now fires at
+    // PARSE (multi-job-unsupported), not at compileWorkflowPlan's deleted
+    // "exactly one source-IR job" check — this document never reaches it.
     writeTask("multi", 'version: 4\nuses: workflows/multi\nschedule: "@daily"\n');
 
     await expect(
       runTask("multi", { bundleDir: storage.stashDir, bundleName: "fixture", scheduled: true }),
-    ).rejects.toThrow(/exactly one source-IR job/i);
+    ).rejects.toThrow(/requires exactly one job/i);
     expect(readTaskHistory({ id: "multi" })).toEqual([]);
     expect(logFiles()).toEqual([]);
   });

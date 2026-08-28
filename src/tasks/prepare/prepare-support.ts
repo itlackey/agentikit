@@ -179,12 +179,27 @@ export function validateWorkflowRuntimeSource(
   const source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readFile(file, workspaceRoot));
   const compiled = compileWorkflowSource(source, { path: file, workspaceRoot });
   if (!compiled.ok) {
+    // P4-N2's mapping (docs/plans/specs/p4-deletions-closeout.md §3.3.4): a
+    // task-wrapped workflow target's own multi-job source is a composition
+    // failure, same as freezing it directly would be; any other compile
+    // failure is WORKFLOW_SOURCE_INVALID.
     const detail = compiled.errors.map((error) => `${error.path}:${error.line}: ${error.message}`).join("; ");
-    throw new UsageError(`Task workflow target is not projectable: ${detail}`, "INVALID_FLAG_VALUE");
+    const code =
+      compiled.errors.length === 1 && compiled.errors[0]?.code === "multi-job-unsupported"
+        ? "COMPOSITION_INVALID"
+        : "WORKFLOW_SOURCE_INVALID";
+    throw new UsageError(`Task workflow target is not projectable: ${detail}`, code);
   }
   const planned = compileWorkflowPlan(compiled.ir, path.basename(file, path.extname(file)));
   if (!planned.ok) {
+    // Same mapping applied for consistency; `compiled.ir` is already
+    // guaranteed exactly one job here, so this arm always resolves to
+    // WORKFLOW_SOURCE_INVALID in practice.
     const detail = planned.errors.map((error) => `${file}:${error.line}: ${error.message}`).join("; ");
-    throw new UsageError(`Task workflow target is not projectable: ${detail}`, "INVALID_FLAG_VALUE");
+    const code =
+      planned.errors.length === 1 && planned.errors[0]?.code === "multi-job-unsupported"
+        ? "COMPOSITION_INVALID"
+        : "WORKFLOW_SOURCE_INVALID";
+    throw new UsageError(`Task workflow target is not projectable: ${detail}`, code);
   }
 }

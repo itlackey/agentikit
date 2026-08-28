@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { compileWorkflowPlan } from "../../src/workflows/ir/compile";
 import { compileGithubWorkflowSource, compileMarkdownWorkflowSource } from "../../src/workflows/source-ir/compile";
 import { sourceStepInstructions, sourceStepProgramUnit } from "../../src/workflows/source-ir/program";
 import { decodeWorkflowSourceIrV1, type WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
@@ -205,86 +204,50 @@ Run the direct command.
     });
   });
 
-  test("normalizes a multi-job graph into deterministic dependency order", () => {
-    const a = github(`name: Graph
-on:
-  schedule:
-    - cron: "0 8 * * 1"
-  workflow_dispatch: {}
-jobs:
-  report:
-    needs: [test, build]
-    runs-on: [self-hosted]
-    steps:
-      - id: report
-        uses: commands/report
-        with: { arguments: weekly }
-  test:
-    needs: build
-    runs-on: [self-hosted]
-    steps:
-      - id: test
-        run: bun test
-  build:
-    runs-on: [self-hosted]
-    steps:
-      - id: build
-        uses: scripts/build.sh
-`);
-    const b = github(`name: Graph
-on:
-  workflow_dispatch:
-  schedule: [{ cron: "0 8 * * 1" }]
-jobs:
-  build:
-    steps: [{ id: build, uses: scripts/build.sh }]
-    runs-on: [self-hosted]
-  report:
-    runs-on: [self-hosted]
-    steps: [{ id: report, uses: commands/report, with: { arguments: weekly } }]
-    needs: [build, test]
-  test:
-    steps: [{ id: test, run: bun test }]
-    runs-on: [self-hosted]
-    needs: build
-`);
-    expect(a.ok).toBe(true);
-    expect(b.ok).toBe(true);
-    if (!a.ok || !b.ok) return;
-    expect(a.ir.jobs.map((job) => job.id)).toEqual(["build", "test", "report"]);
-    expect(a.ir.jobs[2]?.needs).toEqual(["build", "test"]);
-    expect(a.ir.triggers.map(({ kind }) => kind)).toEqual(["schedule", "workflow_dispatch"]);
-    expect(canonicalPortableWorkflowSourceBytes(a.ir)).toEqual(canonicalPortableWorkflowSourceBytes(b.ir));
-  });
+  // P4 DELETE (docs/plans/specs/p4-deletions-closeout.md §3.3, F-A3.8 —
+  // discovered flip, recorded in the Review log): "normalizes a multi-job
+  // graph into deterministic dependency order" tested that two
+  // differently-authored multi-job documents (different job order, different
+  // needs spellings) normalize to the same canonical portable bytes. Both
+  // fixtures are 3-job documents; a workflow source now accepts exactly one
+  // job (row B-34), so neither `a` nor `b` parses any more — the capability
+  // this test pinned no longer exists to normalize.
 
-  test("uses locale-independent code-point ordering for ready jobs and mapping keys", () => {
+  // FLIPPED in P4 (F-A3.8): the job-ordering half of this test ("ready jobs")
+  // has no reachable scenario once a source is confined to one job — the
+  // mapping-key half (locale-independent ordering of a `with:` object's own
+  // keys, unrelated to job count) survives on a single-job fixture.
+  test("uses locale-independent code-point ordering for with: mapping keys", () => {
     const result = github(`name: Ordering
 on: { workflow_dispatch: null }
 jobs:
-  a:
+  main:
     runs-on: [self-hosted]
     steps:
       - id: lower
         uses: commands/lower
         with: { a: second, Z: first }
-  B:
-    runs-on: [self-hosted]
-    steps: [{ id: upper, run: echo upper }]
 `);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.ir.jobs.map(({ id }) => id)).toEqual(["B", "a"]);
     expect(canonicalPortableWorkflowSourceBytes(result.ir)).toContain('"with":{"Z":"first","a":"second"}');
   });
 
-  test("rejects missing and cyclic job dependencies before an IR is returned", () => {
+  // FLIPPED in P4 (docs/plans/specs/p4-deletions-closeout.md §3.3, F-A3.8):
+  // `missing-job-dependency` and `job-dependency-cycle` are deleted with the
+  // rest of the multi-job dependency machinery. A single job with a
+  // non-empty `needs:` (however it fails to resolve) and a 2-job cycle
+  // attempt both now hit the SAME multi-job-unsupported rejection — the
+  // first because one job has nothing to depend on, the second because the
+  // document never reaches per-job needs validation at all.
+  test("rejects a job needs (single-job) and a job-count mismatch (multi-job) with multi-job-unsupported", () => {
     expectGithubError(
       `${VALID_HEADER}
       - id: ok
         run: echo ok
     needs: absent
 `,
-      "missing-job-dependency",
+      "multi-job-unsupported",
     );
     expectGithubError(
       `name: Cycle
@@ -299,7 +262,7 @@ jobs:
     runs-on: [self-hosted]
     steps: [{ id: b, run: echo b }]
 `,
-      "job-dependency-cycle",
+      "multi-job-unsupported",
     );
   });
 });
@@ -702,28 +665,19 @@ jobs:
     expect(canonicalPortableWorkflowSourceBytes(left.ir)).toBe(canonicalPortableWorkflowSourceBytes(right.ir));
   });
 
-  test("uses one greedy lexical topological order in producer and decoder", () => {
-    const result = github(`name: Topology
-on: { workflow_dispatch: null }
-jobs:
-  z:
-    runs-on: [self-hosted]
-    steps: [{ id: z, run: echo z }]
-  b:
-    runs-on: [self-hosted]
-    steps: [{ id: b, run: echo b }]
-  a:
-    needs: b
-    runs-on: [self-hosted]
-    steps: [{ id: a, run: echo a }]
-`);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.ir.jobs.map(({ id }) => id)).toEqual(["b", "a", "z"]);
-    expect(decodeWorkflowSourceIrV1(result.ir)).toEqual(result.ir);
-  });
+  // P4 DELETE (docs/plans/specs/p4-deletions-closeout.md §3.3, F-A3.9 —
+  // discovered flip, recorded in the Review log): this test pinned
+  // cross-job topological/decoder-idempotence behavior for a 3-job document
+  // ("z"/"b"/"a", with "a" depending on "b") — unreachable once a source is
+  // confined to exactly one job (row B-34).
 
-  test("keeps multi-job YAML displayable but refuses to fabricate legacy runtime semantics", () => {
+  // FLIPPED in P4 (docs/plans/specs/p4-deletions-closeout.md §3.3, row B-34,
+  // F-A3.3): a multi-job document no longer "parses clean, but the runtime
+  // refuses to execute it" (R-05) — it now fails at PARSE, at the adapter
+  // boundary, with multi-job-unsupported. compileWorkflowPlan's own "exactly
+  // one source-IR job" check is deleted (row B-43); it never sees this
+  // document, so this is no longer "display-only" — criterion 23.
+  test("rejects multi-job YAML at the adapter boundary — it is not display-only core behavior", () => {
     const result = github(`name: Multi-job
 on: { workflow_dispatch: null }
 jobs:
@@ -735,12 +689,18 @@ jobs:
     runs-on: [self-hosted]
     steps: [{ id: deploy, run: echo deploy }]
 `);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.ir.jobs.flatMap((job) => job.steps.map(({ id }) => id))).toEqual(["build", "deploy"]);
-    const compiled = compileWorkflowPlan(result.ir, "multi");
-    expect(compiled.ok).toBe(false);
-    if (!compiled.ok) expect(compiled.errors[0]?.message).toContain("exactly one source-IR job");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.errors).toEqual([
+      {
+        code: "multi-job-unsupported",
+        message:
+          "AKM workflow YAML requires exactly one job; this document declares 2. AKM's YAML is an AKM workflow " +
+          "format executed by AKM's native engine, not GitHub Actions — split the jobs into separate workflows.",
+        path: "workflows/contract.yml",
+        line: 7,
+      },
+    ]);
   });
 
   test("rejects NUL and control bytes in compiler working directories", () => {
@@ -1220,7 +1180,7 @@ describe("strict source IR decoder", () => {
     expect(() => decodeWorkflowSourceIrV1(invalidSchema)).toThrow(/pattern|schema|unsupported/i);
   });
 
-  test("rejects noncanonical trigger, needs, and ready-job ordering", () => {
+  test("rejects noncanonical trigger and needs order, and a job count other than 1", () => {
     const triggers = structuredClone(valid);
     triggers.triggers = [
       { kind: "workflow_dispatch", source: { path: "x.yml", start: 2, end: 2 } },
@@ -1228,6 +1188,12 @@ describe("strict source IR decoder", () => {
     ];
     expect(() => decodeWorkflowSourceIrV1(triggers)).toThrow(/canonical schedule-then-manual order/i);
 
+    // FLIPPED in P4 (docs/plans/specs/p4-deletions-closeout.md §3.3, row
+    // B-42, F-A3.10 — discovered flip, recorded in the Review log):
+    // validateTopologicalJobs (and its "canonical dependency-topological
+    // order" message) is deleted with the rest of the multi-job machinery;
+    // the decoder's own jobs-array-length check now fires first — it
+    // requires EXACTLY 1 entry, not 1 through 256 in canonical order.
     const jobs = structuredClone(valid);
     const baseJob = jobs.jobs[0];
     const baseStep = baseJob?.steps[0];
@@ -1236,22 +1202,17 @@ describe("strict source IR decoder", () => {
       { id: "a", needs: [], steps: baseJob.steps, source: baseJob.source },
       { id: "B", needs: [], steps: [{ ...baseStep, id: "upper" }], source: baseJob.source },
     ];
-    expect(() => decodeWorkflowSourceIrV1(jobs)).toThrow(/canonical dependency-topological order/i);
+    expect(() => decodeWorkflowSourceIrV1(jobs)).toThrow(/jobs must contain exactly 1 entry/i);
 
+    // FLIPPED in P4 (F-A3.10): the per-job needs-canonical-order check
+    // SURVIVES — it validates one job's own `needs:` array, independent of
+    // job count — but can no longer be exercised via a 3-job fixture now
+    // that jobs must be exactly 1 entry; the probe moves onto a single job
+    // whose own needs are unsorted.
     const needs = structuredClone(valid);
     const needsBaseJob = needs.jobs[0];
-    const needsBaseStep = needsBaseJob?.steps[0];
-    if (!needsBaseJob || !needsBaseStep) throw new Error("source IR fixture must contain a baseline job and step");
-    needs.jobs = [
-      { id: "B", needs: [], steps: needsBaseJob.steps, source: needsBaseJob.source },
-      { id: "a", needs: [], steps: [{ ...needsBaseStep, id: "lower" }], source: needsBaseJob.source },
-      {
-        id: "child",
-        needs: ["a", "B"],
-        steps: [{ ...needsBaseStep, id: "child" }],
-        source: needsBaseJob.source,
-      },
-    ];
+    if (!needsBaseJob) throw new Error("source IR fixture must contain a baseline job");
+    needs.jobs = [{ ...needsBaseJob, needs: ["b", "a"] }];
     expect(() => decodeWorkflowSourceIrV1(needs)).toThrow(/needs are not in canonical order/i);
   });
 });
