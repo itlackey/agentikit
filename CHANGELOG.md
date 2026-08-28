@@ -208,8 +208,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   task source v4 directly; a task's `--params` becomes typed `inputs:` with
   defaults instead of a `with:` bag. A task's enabled state is now per
   schedule binding (`schedule[].enabled`) rather than a document-level
-  `akm.enabled` flag — `akm task add --disabled` now requires `--schedule`
-  and writes `schedule: [{cron: …, enabled: false}]`. See
+  `akm.enabled` flag — `akm task add --disabled` writes
+  `schedule: [{cron: …, enabled: false}]` instead of a document-level
+  `akm.enabled: false`. See
   [Migrating task v3 to task source v4](docs/migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4).
 - **GitHub Action locators are no longer recognized anywhere.** A task's
   `uses: owner/repo[/path]@rev` is now a source error at parse

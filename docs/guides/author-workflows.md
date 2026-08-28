@@ -469,8 +469,16 @@ bindings on whichever delivery surface matches its kind: an
 `akm/command`/`commands/<ref>` target gets a `## Task inputs` block appended
 to its prompt; a `run:` shell or `scripts/<ref>` target gets one
 `AKM_TASK_INPUTS` environment variable (canonical JSON of the resolved
-bindings). Inspect exactly what a task would receive, without running
-anything, with `akm task explain tasks/ticket-review --ticket T-42`.
+bindings). Inspect exactly what each step's `with:` would deliver, without
+running anything, with `akm workflow plan workflows/nightly --format json`
+— its per-step `inputBindings` show `dispatch`'s `scope` as the literal
+`all` and `ticket` as the unresolved reference `steps.pick.output`, the
+same shape freezing a real run would produce. `akm task explain` is not a
+substitute here: it only reflects a task's OWN CLI flags, declared
+defaults, and `schedule[].inputs` — it never reads a workflow step's
+`with:` binding at all, so pointing it at `tasks/ticket-review` prints
+`scope`'s task-level default (`changed`), not the `all` this step actually
+sends.
 
 ## Troubleshooting
 
