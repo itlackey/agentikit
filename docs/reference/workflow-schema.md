@@ -304,6 +304,9 @@ families) plus the orchestration keys:
   than dropping the settings for that step. There is no per-step opt-out (`llm:
   {}` is a no-op and `llm: null` is a parse error), so in a mixed document put
   `llm:` on the `unit:` of each LLM step instead of in `defaults:`.
+- `outputs` — name → `{ from, schema? }`, a run-level export projected from
+  a step's own artifact (Markdown-only; see [Workflow
+  outputs](#workflow-outputs) below).
 - `budget` — run-lifetime ceilings (`max_units`, `max_tokens`; see
   [Budget ceilings](#budget-ceilings) below).
 - `steps` — an ordered list. Each step has an `id`

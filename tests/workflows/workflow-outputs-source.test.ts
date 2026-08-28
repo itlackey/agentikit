@@ -62,6 +62,7 @@ import { startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../src/workflows/runtime/workflow-asset-loader";
 import { compileWorkflowSource, type WorkflowSourceCompileResult } from "../../src/workflows/source-ir/compile";
 import { sourceStepInstructions, sourceStepProgramUnit } from "../../src/workflows/source-ir/program";
+import { decodeWorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
 import { freezeWorkflow, type WorkflowPlanFixture } from "../_helpers/workflow";
 
@@ -295,6 +296,14 @@ describe("outputs: — decode integrity (B-11…B-16)", () => {
     const error = expectDecodeUsageError(spliced);
     expect(error.message).toContain("bogus");
   });
+
+  test("regression: decodeWorkflowSourceIrV1 rejects outputs.<n>.from that parses but names a param, not just the parser", () => {
+    const compiled = compileSource(twoStepDoc(["outputs:", "  report:", "    from: steps.summarize.output"]));
+    if (!compiled.ok) throw new Error("unreachable");
+    const raw = JSON.parse(JSON.stringify(compiled.ir)) as { outputs: Record<string, unknown> };
+    raw.outputs.report = { from: "params.scope" };
+    expect(() => decodeWorkflowSourceIrV1(raw)).toThrow();
+  });
 });
 
 // ── B-01, B-02, B-17: the full author -> compile -> freeze -> durable-plan
@@ -363,5 +372,22 @@ describe("outputs: — end-to-end freeze into the durable plan irVersion 5 plan 
     const second = await compileResolveFreezeWorkflowV4(asset, config);
     expect(computePlanHash(second.plan)).toBe(computePlanHash(first.plan));
     expect(canonicalPlanJson(second.plan)).toBe(canonicalPlanJson(first.plan));
+  });
+
+  test("regression: outputs: declared out of alphabetical author order still freezes, embedded in sorted order", async () => {
+    write(
+      "workflows/unsorted-outputs.md",
+      twoStepDoc([
+        "outputs:",
+        "  zebra:",
+        "    from: steps.summarize.output",
+        "  alpha:",
+        "    from: steps.collect.output",
+      ]),
+    );
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+
+    const decoded = await frozenPlan("workflows/unsorted-outputs");
+    expect(Object.keys(outputsView(decoded).outputs ?? {})).toEqual(["alpha", "zebra"]);
   });
 });

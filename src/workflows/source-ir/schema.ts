@@ -637,9 +637,12 @@ function validateRouteTargets(steps: WorkflowSourceStep[], jobId: string): void 
   }
 }
 
-function validateReference(value: string, location: string): void {
+function validateReference(value: string, location: string, expectedKind?: "stepOutput"): void {
   const parsed = parseReference(value);
   if (!parsed.ok) fail(`${location} is invalid: ${parsed.message}`);
+  if (expectedKind && parsed.expr.kind !== expectedKind) {
+    fail(`${location} must reference a step output (steps.<id>.output...), not a param`);
+  }
 }
 
 function validateParams(value: unknown): void {
@@ -671,7 +674,7 @@ function validateOutputs(value: unknown): void {
     const decl = record(declaration, `outputs.${name}`);
     keys(decl, ["from", "schema"], `outputs.${name}`);
     nonEmptyString(decl.from, `outputs.${name}.from`);
-    validateReference(decl.from as string, `outputs.${name}.from`);
+    validateReference(decl.from as string, `outputs.${name}.from`, "stepOutput");
     if (decl.schema !== undefined) validateSchema(decl.schema, `outputs.${name}.schema`, false);
   }
 }

@@ -21,6 +21,7 @@
     "stale_after": { "$ref": "akm-asset-envelope.json#/definitions/stale_after" },
     "params": {
       "type": "object",
+      "minProperties": 1,
       "maxProperties": 128,
       "description": "Run parameters: param name -> JSON Schema declaration. Names must be params.<name>-addressable identifiers.",
       "propertyNames": {
@@ -32,6 +33,7 @@
     },
     "outputs": {
       "type": "object",
+      "minProperties": 1,
       "maxProperties": 64,
       "description": "Named, optionally schema-validated projections of step artifacts, exported when the run completes. Names must be steps.<child>.output.<name>-addressable identifiers. Each entry: { from: steps.<id>.output(.<seg>)*, schema?: <bounded JSON Schema> }. Markdown-frontmatter only.",
       "propertyNames": {

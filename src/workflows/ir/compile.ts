@@ -173,7 +173,7 @@ export function compileWorkflowPlan(
       ...(sourceIr.params && paramNames.length > 0
         ? { paramSchemas: sourceIr.params as Record<string, Record<string, unknown>> }
         : {}),
-      ...(sourceIr.outputs ? { outputs: sourceIr.outputs } : {}),
+      ...(sourceIr.outputs ? { outputs: sortedOutputs(sourceIr.outputs) } : {}),
       ...(sourceIr.budget
         ? {
             budget: {
@@ -185,6 +185,26 @@ export function compileWorkflowPlan(
       steps,
     },
   };
+}
+
+/**
+ * Re-key `outputs:` into canonical wire order (code-point-ascending by name)
+ * — the order {@link decodeWorkflowOutputs} in `ir/schema-v4.ts` requires,
+ * mirroring how `freeze/task-bindings.ts`'s `finalizeBindings` sorts
+ * `inputBindings` before freezing. The source parser preserves AUTHOR order
+ * (P3b spec §4.2 places no ordering requirement on authoring), so this is the
+ * one place that must impose it.
+ */
+function sortedOutputs<T>(outputs: Record<string, T>): Record<string, T> {
+  const sorted: Record<string, T> = {};
+  for (const name of Object.keys(outputs).sort(compareCodePoints)) {
+    sorted[name] = outputs[name] as T;
+  }
+  return sorted;
+}
+
+function compareCodePoints(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function compileStep(
