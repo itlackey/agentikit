@@ -128,11 +128,6 @@ The accepted 0.9.2 subset is deliberately closed:
 - GitHub expressions and contexts are unsupported and rejected anywhere in
   the parsed tree.
 
-Multi-job documents are dependency-validated, indexed, and displayable, but
-cannot execute in 0.9.2 because the runtime boundary is single-job execution.
-The runtime refuses instead of flattening `needs` or fabricating job
-semantics.
-
 ## Child workflows
 
 A step can compose another workflow, two ways. Composition is authored only

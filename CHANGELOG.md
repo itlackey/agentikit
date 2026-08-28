@@ -31,8 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   silently dropped at freeze — for any authored shape, including `with: {}`.
   When the target's task source **does** declare `inputs:`, `with:` now
   **binds** them instead: a literal value, or a `{from: "steps.<id>.output…"}`
-  / `{from: "params.<name>"}` reference resolved just before the unit
-  dispatches. See [Task input bindings](docs/reference/tasks.md#typed-inputs-and-output)
+  reference resolved just before the unit dispatches (the reference grammar
+  also accepts `{from: "params.<name>"}`, but a composing step's own
+  document can never declare `params:`, so that form is not reachable in
+  this release). See [Task input bindings](docs/reference/tasks.md#typed-inputs-and-output)
   for the full grammar. `with:` on `uses: akm/command` is unaffected — it is
   still that builtin's own action-argument bag, never an input binding.
 - **New rejection:** `with:` on a workflow step targeting `uses:
@@ -41,9 +43,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   freeze — neither target is a binding surface. Remove the `with:` block from
   any such step; a command/script-composing step never accepted its values
   in the first place, so this closes a defect rather than a feature.
-- Composing a `version: 4` task source from a workflow step's `uses:
-  tasks/<ref>` is no longer deferred: it now **freezes and dispatches**
-  exactly like a `version: 3` task target. The prior release's
+- Composing a task source v4 document from a workflow step's `uses:
+  tasks/<ref>`, where the task's own target is a workflow, is no longer
+  deferred: it now **freezes and dispatches** normally, the same as a
+  direct `uses: workflows/<ref>` step. The prior release's
   `TASK_SOURCE_INVALID` "arrives in a later 0.9.x release" rejection for this
   case is gone.
 - Task-source validation errors raised through the shared `sourceError`
@@ -136,9 +139,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   add` now authors task source v4 (see the "Task v3 sources no longer
   parse" entry below for the `--params` → typed `inputs:` change). A
   `version: 4` task source is now a valid workflow-step target (see above).
-  The published [task schema](schemas/akm-task.json) now publishes both
-  grammars as a
-  two-arm `oneOf` keyed on `version`. **No plan/hash version changed**:
+  The published [task schema](schemas/akm-task.json) now publishes only the
+  single `version: 4` shape — the `version: 3` arm and its `githubActionRef`
+  definition are removed; a `version: 2` or `version: 3` document validates
+  against nothing in this schema and is converted by `akm migrate apply`
+  instead. **No plan/hash version changed**:
   `irVersion`, `hashVersion`, and every existing frozen plan's `plan_hash` /
   unit `inputHash` are byte-identical for a step that authors no `with:`.
 - **Task v3 sources no longer parse.** A task document with `version: 3`
@@ -186,25 +191,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **`INVALID_FLAG_VALUE` no longer appears in task or workflow domain
-  failures.** Every task-source, workflow-source, target-classification, and
-  composition failure now reports a phase-specific code:
-  `TASK_SOURCE_INVALID`, `TARGET_REF_INVALID`, `COMPOSITION_INVALID`,
-  `WORKFLOW_SOURCE_INVALID`, `INPUT_BINDING_INVALID`,
-  `TASK_SCHEMA_VERSION_UNSUPPORTED`, or `TASK_TARGET_UNSUPPORTED`. The
-  remaining `INVALID_FLAG_VALUE` sites in the task/workflow domains are
-  scalar CLI-argument parsing (a cron expression, a task id, a workflow
-  parameter flag) — genuine flag-value validation, not a task/workflow
-  source or composition failure. **Scripts branching on `code` for a
-  task/workflow domain error should switch on the specific code above
-  rather than assuming `INVALID_FLAG_VALUE`.** Exit codes are unchanged (2
-  for every one of these).
+- **`INVALID_FLAG_VALUE` is now rare in task or workflow domain failures,
+  with two named exceptions.** Every task-source, workflow-source,
+  target-classification, and composition failure now reports a
+  phase-specific code — `TASK_SOURCE_INVALID`, `TARGET_REF_INVALID`,
+  `COMPOSITION_INVALID`, `WORKFLOW_SOURCE_INVALID`, `INPUT_BINDING_INVALID`,
+  `TASK_SCHEMA_VERSION_UNSUPPORTED`, or `TASK_TARGET_UNSUPPORTED` — **except**
+  a task's workflow-target `env:` composition rejection (a `uses:
+  workflows/<ref>` task that also authors `env:`) and a workflow child-ref
+  asset-resolution failure (`Workflow source target <ref> was not found.`),
+  both deliberately preserved as `INVALID_FLAG_VALUE` so an existing pinned
+  test's code and message stay byte-unchanged. The remaining
+  `INVALID_FLAG_VALUE` sites in the task/workflow domains (38 total, across
+  `src/tasks/**` and `src/workflows/**`) are these two preserved exceptions
+  plus scalar CLI-argument parsing (a cron expression, a task id, a workflow
+  parameter flag) and one code-allowlist membership entry — genuine
+  flag-value validation or a pinned exception, not a re-codable
+  task/workflow source or composition failure. **Scripts branching on
+  `code` for a task/workflow domain error should switch on the specific
+  code above rather than assuming `INVALID_FLAG_VALUE` — except for the two
+  named exceptions, which still report `INVALID_FLAG_VALUE`.** Exit codes
+  are unchanged (2 for every one of these).
 
 ### Added
 
 - **Child workflows.** A workflow step can now compose another workflow —
-  directly (`uses: workflows/<ref>`) or through a task whose own target is a
-  workflow (`uses: tasks/<ref>`, from either a v3 or v4 task) — instead of
+  directly (`uses: workflows/<ref>`) or through a task source v4 document
+  whose own target is a workflow (`uses: tasks/<ref>`) — instead of
   failing to freeze. `with:` on the composing step binds the child's
   declared `params:`. Composition is bounded: depth (8 levels), a
   composition cycle, and aggregate embedded plan bytes (1 MiB total across
