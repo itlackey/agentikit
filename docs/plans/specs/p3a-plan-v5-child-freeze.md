@@ -475,6 +475,13 @@ test asserting both its code and its message text.
 | A-14 | A changed `with:` literal or reference on a task step | Still changes the unit input hash (P2b B-41/B-42 semantics under the new prefix) | PRESERVE |
 | A-15 | A changed child `planHash` (any byte of child source) | Changes the parent unit's input hash, via `frozenTarget.contentHash` and `frozenTarget.planHash` | NEW |
 | A-16 | Any in-flight run frozen before the bump | Cannot execute at all (A-06), so no unit is ever re-hashed under a mixed vocabulary. No replay-compat shim exists or is needed | NEW |
+| A-17 | A changed RESOLVED value of a reference binding, under an unchanged `from:` | Changes the unit input hash — a resumed run reports replay divergence instead of reusing the stale completed unit | AMENDED 2026-08-28 (R-R15) |
+
+**A-11/A-12 amended 2026-08-28:** both prefixes and both `hashVersion` fields
+now read **7**, not 6, and the unit preimage gains the conditional
+`taskInputs` field A-17 exercises. A-13 – A-16 are unaffected. §3.3's amended
+table is the authority; the rest of this document's `hashVersion` 6 prose is
+P3a's own phase history.
 
 ### 2.3 `invocation_key` (Lane A)
 
@@ -619,14 +626,27 @@ non-throwing `classifyWorkflowRunPlan` at `:994`), and `abandonWorkflowRun`
 **No v4 decoder, no replay layer, no second executor** exists after this
 phase. `decodeWorkflowPlanV4` accepts exactly `irVersion: 5`.
 
-### 3.3 The FULL `hashVersion` 6 preimage table
+### 3.3 The FULL `hashVersion` preimage table
 
-`computeUnitInputHash` (`step-work.ts:689-711`) — prefix
-`akm.workflow.unit\0v6\0`, then `canonicalJsonString` of:
+**AMENDED 2026-08-28 (`hashVersion` 6 → 7).** P3a landed `hashVersion` 6 and
+deliberately excluded `taskInputs` (old exclusion 4, struck below). The 0.9.2
+close-out review confirmed that exclusion as a defect — carried advisory
+§8 **R-R15** in `p4-deletions-closeout.md`, and criterion 8's "MET WITH
+CAVEAT" — and the fix bumps both prefixes once more, 6 → 7, adding the
+conditional `taskInputs` field. `hashVersion` 6 never shipped in a release
+(every released tag on the line carries 5), so the durable step a released
+install sees is 5 → 7. **This section is the authority for what ships**; the
+`hashVersion` 6 statements elsewhere in this document are P3a's own phase
+history and are left as written. Disposition: see the external-review entry
+in `docs/plans/specs/p4-deletions-closeout.md`'s Review log.
+
+`computeUnitInputHash` (`step-work.ts:686-708`) — prefix
+`akm.workflow.unit\0v7\0`, then `canonicalJsonString` (recursive key-sort, so
+literal field order in the object is irrelevant) of:
 
 | Field | Value at head | Present |
 |---|---|---|
-| `hashVersion` | `6` | always |
+| `hashVersion` | `7` | always |
 | `role` | `"unit"` | always |
 | `stepId` | `ctx.plan.stepId` | always |
 | `nodeId` | `ctx.template.id` | always |
@@ -638,17 +658,22 @@ phase. `decodeWorkflowPlanV4` accepts exactly `irVersion: 5`.
 | `environment` | `ctx.template.environment` — binding **names** and literal values; env-ref bindings contribute names/keys, never resolved secret values | always |
 | `schema` | `ctx.template.schema ?? null` | always |
 | `isolation` | `ctx.template.isolation ?? "none"` | always |
+| `taskInputs` | `ctx.taskInputs` — the **resolved** effective values of the frozen target's `inputBindings` (a literal value as frozen; a reference value as resolved against THIS invocation's scope) | **conditional** (R-R15) — present iff the frozen target carries at least one `inputBindings` entry. `resolveTaskInputBindings` writes exactly one key per binding, so there is no in-between case: a binding-free unit never gains the key and keeps the preimage shape it had |
 | `gateFeedback` | `ctx.input.gateFeedback` | **conditional** — the key is absent when there is no feedback, so a no-feedback unit's preimage keeps the same shape it had |
 
-The gate hash (`step-work.ts:1829-1839`) — prefix
-`akm.workflow.gate\0v6\0`, then `canonicalJsonString` of exactly:
+The gate hash (`step-work.ts:1961-1971`) — prefix
+`akm.workflow.gate\0v7\0`, then `canonicalJsonString` of exactly:
 
 | Field | Value |
 |---|---|
-| `hashVersion` | `6` |
+| `hashVersion` | `7` |
 | `dispatch` | `gateTarget` — the frozen judge `FrozenWorkflowCommandTarget` |
 | `invocation` | `null` |
 | `prompt` | the assembled judge prompt |
+
+The gate preimage's own field list is unchanged by the R-R15 fix; only its
+version moves, because unit and gate `hashVersion` are ONE vocabulary
+(§0.1) and must never disagree.
 
 The gate preimage has **no** `role` field. Do not add one.
 
@@ -663,10 +688,18 @@ The gate preimage has **no** `role` field. Do not add one.
 3. **Resolved** environment values. `environment` carries NAMES only — hashing
    a resolved secret would leak it into a durable hash oracle and would
    re-dispatch every unit on every secret rotation (`step-work.ts:667-670`).
-4. `taskInputs` — the *resolved* values of reference-kind `inputBindings`.
+4. ~~`taskInputs` — the *resolved* values of reference-kind `inputBindings`.
    They reach the unit through the prompt and `AKM_TASK_INPUTS`
    (`step-work.ts:562-563`), not the preimage; the BINDINGS themselves are
-   covered wholesale via `frozenTarget`. Pre-existing P2b behavior, unchanged.
+   covered wholesale via `frozenTarget`. Pre-existing P2b behavior,
+   unchanged.~~ **STRUCK 2026-08-28 — this exclusion was the defect.** The
+   frozen binding expression is constant across invocations, so covering it
+   "wholesale via `frozenTarget`" left a resumed unit whose referenced
+   upstream output had CHANGED indistinguishable from one whose had not:
+   `classifyUnitReuse` accepted the completed row and returned the stale
+   output instead of reporting replay divergence. `taskInputs` is now a
+   conditional preimage field (see the table above); the prompt /
+   `AKM_TASK_INPUTS` delivery path it describes is unchanged.
 5. **Persona snapshots are NOT excluded — see A-N9.** They are already
    covered, transitively, inside `frozenTarget.request.persona`. The
    instruction's operative half stands: **P3a changes nothing about persona
@@ -692,8 +725,8 @@ computeChildInvocationKey({ parentRunId, parentUnitId, unitInputHash }): string
     )
 ```
 
-- `unitInputHash` is the **`hashVersion` 6 unit hash** of the parent unit that
-  spawns the child.
+- `unitInputHash` is the **current unit hash** (`hashVersion` 7 as shipped —
+  §3.3's amendment) of the parent unit that spawns the child.
 - `parentUnitId` is the parent run's unit id (the value stored in
   `workflow_runs.parent_unit_id` and surfaced as `spawnedByUnitId` in the TS
   API — A-N12 below).

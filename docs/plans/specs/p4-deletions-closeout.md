@@ -3057,3 +3057,139 @@ and the seam ratchet does not scan `triggers.ts`.
 is either an §8 row P4 deliberately declined (6, 8, 24, and half of 22) or a
 spec-claim/ratchet gap this sweep found (19, 21, and the other half of 22); none
 requires reopening a P4 commit, and each carries an imperative fix above.
+
+---
+
+**2026-08-28 — External review of PR itlackey/akm#844 (Codex), dispositions and
+close-out.**
+
+*Provenance.* After the sweep above, the PR owner asked the repo's Codex
+reviewer for a deep pass over the whole branch. It reviewed commit
+`e640a23a` and left **ten** inline threads
+(`https://github.com/itlackey/akm/pull/844#pullrequestreview-5048104859`,
+2026-08-28 05:13 UTC; the parallel Copilot review found no specific bug and
+generated zero comments). Those ten, plus **F11** — this document's own
+criterion-21 sweep finding, `akm workflow create --json` emitting `stashDir`,
+which no §8 row covered — were adjudicated as one batch of eleven under the
+ids `F1`–`F11` used by the fix lanes. Every id below was worked to a verdict
+against the real code: **CONFIRMED** only with the defect demonstrated (call
+path traced, and where cheap a red-before/green-after test), **REFUTED** only
+with the code that makes the claimed behavior impossible cited.
+
+*Verdicts: 9 CONFIRMED, 2 REFUTED. Fixes landed for 10 of 11 — every
+CONFIRMED finding, plus F9, whose parse-time rejection was directed as
+defense-in-depth even though the finding as filed was refuted.*
+
+| ID | Codex finding (its own title) | Reviewed at | Verdict | Disposition |
+|---|---|---|---|---|
+| **F1** | Honor non-array branches in array union inputs | `src/execution/input-contract.ts:203` | **CONFIRMED** | `f5aa5fc9` — the array branch is taken unconditionally only when `array` is the sole declared type or more than one flag occurrence was supplied; a single non-bracketed value against a union routes through `coerceFlagValue` with the FULL schema. Array-only, JSON-array shorthand, and repeated-flag grouping unchanged. |
+| **F2** | Reject malformed `workflow_dispatch` triggers before migration | `scripts/akm-migrate/migrate/task-to-v4.ts:298` | **CONFIRMED** | `3c4ff8ef` — `planV3DataToV4`'s `on:` block now mirrors the frozen v3 reader's `parseOn` gates: an empty `on: {}` and a non-empty `on.workflow_dispatch` both `blocked` as `invalid-v3-task` instead of being laundered into runnable v4 bytes with a false manual-dispatch notice. |
+| **F3** | Omit null legacy output schemas during v4 conversion | `scripts/akm-migrate/migrate/task-to-v4.ts` | **CONFIRMED** | `3c4ff8ef` — an explicit `akm.outputSchema: null` (v3 for "no schema") is omitted rather than emitted as `output: null`, which the real `parseTaskSourceV4` rejects; one such file previously blocked the whole migration plan. Extended by `385408bc` (below). |
+| **F4** | Replace the embedded task-v3 instructions | `src/assets/hints/cli-hints-full.md:365` | **CONFIRMED** | `dbf1a6dc` — the shipped hint's "Scheduled Tasks" section now teaches `version: 4`, per-entry `schedule[].enabled`, top-level `timeout`, and typed `inputs:`/`output:`; `scripts/lint-active-docs-terminology.ts`'s scan roots widen to include `src/assets/hints` so the shipped help cannot silently drift again. Closes half of criterion 21's caveat. |
+| **F5** | Compile the child bytes recorded in the read set | `src/workflows/freeze/targets/child-workflow.ts:184` | **REFUTED** | No window exists: the embedded child plan is compiled FROM the captured bytes. `ir/freeze-v4.ts:79` calls `captureWorkflowSource` first — `guarded-source.ts:196-224` reads the file once and stores `content` beside the sha256 that enters the read set — and `freeze/source-freeze.ts:66` compiles `workflowSource.content`, that same buffer; `freeze-v4.ts:88` builds the plan from the resulting `compiled.ir`. `loadWorkflowAsset`'s own `asset.sourceIr` is used for ref/adapter identity, never to build the embedded plan, so capture and compile cannot disagree. No change. |
+| **F6** | Hash resolved task bindings before reusing units | `src/workflows/exec/step-work.ts:494` | **CONFIRMED** | `e2ad3679` — reproduced against the round base in a throwaway worktree: one fixture, two different resolved values for the same frozen `{from: "steps.prev.output"}` binding, produced the IDENTICAL unit hash under `hashVersion` 6. `computeUnitInputHash` gains the conditional `taskInputs` field and both prefixes bump 6 → 7. §8 **R-R15** and criterion 8's caveat are hereby closed (see "Supersessions" below). |
+| **F7** | Reject the unsupported `scheduled` flag on task explain | `src/commands/tasks/tasks-cli.ts:361` | **CONFIRMED** | `64d73c26` — `akm task explain <ref> --scheduled` exited 0 with the flag silently discarded by the shared scanner's reserved set; it now fails `UNKNOWN_FLAG` (exit 2) before `parseTaskInputFlags` runs. `task run`'s own reserved set is untouched. Widened to every spelling by `385408bc` (below). |
+| **F8** | Enforce output schemas for every accepted task target | `src/tasks/source/task-source-v4.ts` | **CONFIRMED** | `c09ad27b` — `output:` is rejected (`TASK_SOURCE_INVALID`) on `run:`, `uses: scripts/`, and `uses: workflows/` targets, whose runtimes never consume it; command targets are unchanged. The published `schemas/akm-task.json` was brought into agreement by `9fe86464` (below). |
+| **F9** | Reject scheduled tasks missing required input values | `src/tasks/source/task-source-v4.ts:680` | **REFUTED** (fixed anyway) | The finding's operative half — "parses and **syncs successfully** … leaving an installed schedule that can never run" — was already false at the reviewed commit: `src/tasks/scheduler-sync.ts:503-521` applies defaults and validates EVERY entry against the declared contract and throws `TASK_SOURCE_INVALID` at sync, so such a binding could never be installed. The parse half was real, and the parent directed the earlier gate regardless: `585a3afb` runs the same `applyInputDefaults` + `validateInputs` pair for every schedule entry at parse, including the `schedule: "<cron>"` shorthand and an entry with no `inputs:` key, which were the two shapes no check covered. |
+| **F10** | Classify canonical refs before GitHub locator lookalikes | `src/tasks/source/task-source-v4.ts` | **CONFIRMED** | `b73cf9ff` — `classifyTaskSourceV4Uses` delegates to `classifyTargetRef` first and runs the github-locator lookalike diagnostic only on its catch path, so a valid `commands/review@v2` is no longer rejected as a removed GitHub Action target. |
+| **F11** | (Not Codex — this document's criterion-21 sweep finding) `akm workflow create --json` emits a `stashDir` key | `src/workflows/authoring/authoring.ts` | **CONFIRMED** | `71703e76` — `createWorkflowAsset` returns `bundleDir`; the one consumer (`src/commands/workflow-cli.ts:167-169`) is updated and the envelope key is pinned in `tests/integration/commands/workflow-cli-envelope.test.ts`. The indexer's own `IndexOptions.stashDir` is not a CLI surface and stays (row B-50). Closes the other half of criterion 21's caveat. |
+
+*Two follow-on review rounds over those fixes (§0.3's `MAX_REVIEW_ROUNDS = 2`,
+both exhausted).* The lane fixes were themselves reviewed twice, and both
+rounds' CONFIRMED findings were fixed before this entry:
+
+- **Round 1 — 4 findings, 3 CONFIRMED, all fixed in `385408bc`.** (a) F3's
+  migrator hoist regressed under F8's new grammar: hoisting `akm.outputSchema`
+  onto a non-command target emitted bytes the real parser now rejects, so a
+  valid v3 file came back `generated-v4-validation-failed` and one blocked file
+  aborts the whole plan; the hoist gained an explicit target-kind arm that
+  drops the (already inert) field and says so in a notice, keeping the
+  `changed` outcome §5.3 mandates. (b) F7's gate keyed on whole argv tokens, so
+  `--scheduled=false` walked past it; a `hasFlagNamed` helper splits on the
+  first `=` exactly as `parseTaskInputFlags` does — and the identical
+  whole-token hole in `rejectRetiredTaskTargetFlag` meant `--target=team` was
+  rejected by nothing at all and the caller's bundle silently ignored, so it
+  uses the same helper now. (c) Active docs and comments stating the unit-hash
+  vocabulary caught up with `hashVersion` 7 (ADR `0002`,
+  `docs/architecture/workflow-engine.md`, two child-executor comments).
+- **Round 2 — 6 findings, 4 CONFIRMED, all fixed in `9fe86464`.** (a) Round 1's
+  by-name `--target` rejection made a legally-declared input named `target`
+  unreachable through every spelling, so `target` joins the reserved input-name
+  set via `TASK_RUN_SELF_DIAGNOSED_FLAGS` (deliberately OUT of the two scanner
+  sets, so `parseTaskInputFlags`' behavior is unchanged) and such a declaration
+  now fails at authoring time. (b) `schemas/akm-task.json` still validated the
+  documents F8 taught the parser to reject — the schema ships in `files` and is
+  served at its `$id`, so an author's editor green-lit a file `akm task run`
+  refuses; the root `oneOf` now forbids `output:` on the `run:` arm and allows
+  it on the executable-ref arm only for a commands-only `akmCommandRef`, pinned
+  by an Ajv agreement test. (c) The `generated-v4-validation-failed` row in the
+  migrator's blocked-reason table described behavior round 1 removed. (d) The
+  same round's docs pass corrected the remaining stale prose.
+
+**Auto-adjudication (§0.3), invoked.** §0.3 caps this phase at
+`MAX_REVIEW_ROUNDS = 2` "with auto-adjudication on budget exhaustion: if the
+last round's fixes were applied and its own findings were the sole basis of an
+abort flag, log the adjudication in the Review log and **proceed**. Return
+`blocked` only when a round produced findings that were never fixed." Round 2
+is the budget's end; every CONFIRMED finding it raised is fixed and re-verified
+in `9fe86464`, and no finding from either round is left unfixed. The branch
+therefore **proceeds**; no round-3 review was run, and none is owed.
+
+*Supersessions and criterion movement.* This round changes four earlier
+dispositions in this document, and nothing else:
+
+| Item | Was | Now |
+|---|---|---|
+| §8 **R-R15** (`:1278`) | RECORDED, NOT FIXED — "a divergence the current `hashVersion` 6 preimage cannot detect" | **RESOLVED** by `e2ad3679`. The bump ADR `0002`'s own rule demands rode with it. |
+| Criterion **8** (`:2158`, `:3037`) | MET WITH CAVEAT — a reference binding's resolved value sits outside `computeUnitInputHash` | **MET.** The caveat's subject is now a preimage field. |
+| Criterion **21** | MET WITH CAVEAT — `akm workflow create` emits `stashDir`; a shipped hint still teaches task v3 | **MET.** `71703e76` (F11) and `dbf1a6dc` (F4) close both halves; the terminology lint now scans `src/assets/hints`. |
+| §8 **R-R13** | RECORDED, NOT FIXED — "a new diagnostic is new behavior" | **RESOLVED at both gates**: `scheduler-sync.ts:503-521` already refused to install an unsatisfiable binding, and `585a3afb` now refuses to parse one. Licensed by p2a's own review log (`p2a-task-source-v4.md:1362-1364`), which named a parse-time rejection as an acceptable fix. |
+| Advisory **A2** (this sweep) | non-blocking — the migration guide's hand-off names the wrong clause | **DISCHARGED.** `docs/migration/v0.9.1-to-v0.9.2.md` now states the rule itself (a `required: true` input must be named by every `schedule:` entry, rejected at parse) instead of pointing at a "trap". |
+
+The sweep's remaining caveats (criteria 6, 19, 22, 24) and the residual
+advisories F5/F6/A1 recorded above are untouched by this round and stand as
+adjudicated.
+
+*Docs this entry updates alongside itself.* `CHANGELOG.md` `[Unreleased]` — the
+`hashVersion` line moves 5 → 6 to **5 → 7** with the conditional `taskInputs`
+field described, the "no plan/hash version changed" claim about `with:`
+bindings is restated as preimage-SHAPE stability, `target` joins the reserved
+input-name list, and three new Breaking entries (the `output:` command-target
+rule, the schedule-satisfies-inputs rejection, the `stashDir` → `bundleDir`
+envelope rename) plus a `Fixed` section (F1's union coercion, the
+`--target=<value>` hole, the embedded hint) are added.
+`docs/plans/specs/p3a-plan-v5-child-freeze.md` §3.3's preimage table is amended
+to the shipped `hashVersion` 7 — its documented exclusion 4 struck, `taskInputs`
+added as a conditional field — with §2.2's A-11/A-12 rows annotated and a new
+A-17 row for the resolved-value case; every other `hashVersion` 6 mention in
+that document is P3a's phase history and is left as written, with §3.3 named as
+the authority.
+
+*Gate at this entry's HEAD (`9fe86464`; this append is docs-only).* Raw output,
+per §0.3's raw-output rule:
+
+```
+$ bun run lint                      -> exit 0
+   biome: checked 1523 files, no fixes applied, 1409 warnings + 2 infos
+          (pre-existing repo-wide noNonNullAssertion notices; exit status 0)
+   lint-tests-isolation OK · MPL-2.0 headers OK (653 files) · lint-runtime-boundary OK
+   lint-write-source-chokepoint OK · lint-secret-resolver-boundary OK
+   lint-execution-boundary OK · lint-process-argv OK · lint-repository-sql OK
+   lint-goldens-presence OK — 51 golden asset(s), 27 frozen and hash-verified
+   lint-golden-captured-at-head OK — 13 of 17 pins judged; 4 unjudged (shallow clone)
+   lint-shipped-assets OK — 0 dead type:name ref token(s)
+   lint-doc-examples OK — 0 violations · gen-config-schema --check up to date
+   lint-active-docs-terminology OK — 0 "stash" violations across 93 active doc files
+$ bunx tsc --noEmit                 -> exit 0 (no output — zero diagnostics)
+$ bun run test:unit                 -> exit 0
+   4304 pass / 0 skip / 0 fail across 4 process-shards (317/317 files)
+$ bun run test:integration          -> exit 0
+   5860 pass / 57 skip / 0 fail across 4 process-shards (442/442 files)
+```
+
+Both §5.3 floors hold with room (`4304 >= 4000`, `5860 >= 5500`), and both
+counts rose against the sweep's own numbers (`4227` / `5826`) purely by
+regression tests added for the findings above. The terminology lint's 91
+scanned files became 93 for a different reason: F4 added
+`src/assets/hints`'s two shipped `.md` assets to its roots. `bun run check` is
+green at head.
