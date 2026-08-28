@@ -126,7 +126,12 @@ export function validateInputs(
   const schemaErrors =
     Object.keys(properties).length === 0
       ? []
-      : validateJsonSchemaSubset(values, { type: "object", properties }).map((error) => error.replace(/^\$/, pathRoot));
+      : // redactValues: true — declared inputs can carry credentials, and this
+        // contract-violation text lands in stderr envelopes that get pasted into
+        // CI logs. See `coerceFlagValue`'s matching comment above.
+        validateJsonSchemaSubset(values, { type: "object", properties }, { redactValues: true }).map((error) =>
+          error.replace(/^\$/, pathRoot),
+        );
 
   const missingRequired: string[] = [];
   for (const [name, declaration] of Object.entries(contract)) {

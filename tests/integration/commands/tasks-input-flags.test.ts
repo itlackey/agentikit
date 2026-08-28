@@ -287,7 +287,15 @@ describe("akm task run — exact-name input flags materialize literal bindings (
     // convention. The declaration's `default`/root `required` are stripped
     // before validation (D2-N3), so the schema handed to the validator here
     // omits both, matching what `validateInputs` will actually check against.
-    const [rawDetail] = validateJsonSchemaSubset("bogus", { type: "string", enum: ["changed", "all"] });
+    // `redactValues: true` mirrors `validateInputs`'s own call (credential
+    // safety: typed-input flags can carry credentials, so the CLI's actual
+    // envelope never echoes the supplied "bogus" value — this oracle must not
+    // either, or the `toContain` check below could never pass).
+    const [rawDetail] = validateJsonSchemaSubset(
+      "bogus",
+      { type: "string", enum: ["changed", "all"] },
+      { redactValues: true },
+    );
     if (!rawDetail) throw new Error("expected validateJsonSchemaSubset to report a violation for this fixture");
     const detailSuffix = rawDetail.replace(/^\$:\s*/, "");
 

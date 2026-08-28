@@ -207,8 +207,8 @@ function expectedValidateInputsErrors(
   values: Record<string, unknown>,
   pathRoot = "$",
 ): string[] {
-  const schemaErrors = validateJsonSchemaSubset(values, syntheticObjectSchema(contract)).map((error) =>
-    error.replace(/^\$/, pathRoot),
+  const schemaErrors = validateJsonSchemaSubset(values, syntheticObjectSchema(contract), { redactValues: true }).map(
+    (error) => error.replace(/^\$/, pathRoot),
   );
   const missingRequired = Object.entries(contract)
     .filter(([name, declaration]) => declaration.required && !Object.hasOwn(values, name))
@@ -249,7 +249,7 @@ describe("validateInputs (§4.2) — path-prefixed error strings", () => {
 
   test("enum violation", () => {
     const contract: InputContract = { mode: { schema: { type: "string", enum: ["quick", "full"] }, required: false } };
-    expect(validateInputs(contract, { mode: "slow" })).toEqual(['$.mode: value "slow" is not one of ["quick","full"]']);
+    expect(validateInputs(contract, { mode: "slow" })).toEqual(['$.mode: value is not one of ["quick","full"]']);
   });
 
   test("nested object violation — path descends through properties, including additionalProperties:false", () => {
@@ -264,7 +264,7 @@ describe("validateInputs (§4.2) — path-prefixed error strings", () => {
       },
     };
     expect(validateInputs(contract, { profile: { level: "medium" } })).toEqual([
-      '$.profile.level: value "medium" is not one of ["low","high"]',
+      '$.profile.level: value is not one of ["low","high"]',
     ]);
     expect(validateInputs(contract, { profile: { level: "low", extra: 1 } })).toEqual([
       '$.profile: unexpected property "extra" (additionalProperties: false)',
@@ -295,7 +295,7 @@ describe("validateInputs (§4.2) — path-prefixed error strings", () => {
     };
     const values = { count: 1 };
     expect(validateInputs(contract, values)).toEqual(expectedValidateInputsErrors(contract, values));
-    expect(validateInputs(contract, values)).toEqual(["$.count: 1 is below minimum 5", "$.ticket: is required"]);
+    expect(validateInputs(contract, values)).toEqual(["$.count: value is below minimum 5", "$.ticket: is required"]);
   });
 });
 
@@ -612,7 +612,7 @@ describe("materializeInputFlags (§4.2, D3-N3) — exact-name matching and coerc
     const contract: InputContract = { count: { schema: { type: "integer", minimum: 5 }, required: false } };
     const values = { count: 2 };
     const expectedErrors = expectedValidateInputsErrors(contract, values);
-    expect(expectedErrors).toEqual(["$.count: 2 is below minimum 5"]);
+    expect(expectedErrors).toEqual(["$.count: value is below minimum 5"]);
 
     const err = thrown(() => materializeInputFlags(contract, [{ name: "count", value: "2" }], probe.diagnostics));
     expect(err).toBe(probe.errors.contractViolation);
@@ -777,7 +777,7 @@ describe("delegation guarantee — materializeWorkflowParameterFlags keeps its e
   test("schema-violating flag value: exact wrapper message built from validateWorkflowParams' own re-rooted errors", () => {
     const plan: WorkflowParameterPlan = { params: ["count"], paramSchemas: { count: { type: "integer", minimum: 5 } } };
     const expectedErrors = validateWorkflowParams(plan, { count: 2 });
-    expect(expectedErrors).toEqual(["params.count: 2 is below minimum 5"]);
+    expect(expectedErrors).toEqual(["params.count: value is below minimum 5"]);
 
     const err = thrown(() => materializeWorkflowParameterFlags(plan, [{ name: "count", value: "2" }]));
     const usageError = err as UsageError;
@@ -802,7 +802,7 @@ describe("delegation guarantee — validateWorkflowParams keeps its exact curren
   test("an enum violation re-roots the leading $ to params.", () => {
     const plan: WorkflowParameterPlan = { paramSchemas: { mode: { type: "string", enum: ["quick", "full"] } } };
     expect(validateWorkflowParams(plan, { mode: "slow" })).toEqual([
-      'params.mode: value "slow" is not one of ["quick","full"]',
+      'params.mode: value is not one of ["quick","full"]',
     ]);
     expect(validateWorkflowParams(plan, { mode: "quick" })).toEqual([]);
   });
@@ -832,7 +832,7 @@ describe("delegation guarantee — assertRunParamsSatisfyPlan keeps its exact cu
   test("schema-violating journaled params: the exact current long integrity-check message, default INVALID_FLAG_VALUE code (params.ts:197-209)", () => {
     const plan: WorkflowParameterPlan = { paramSchemas: { mode: { type: "string", enum: ["quick", "full"] } } };
     const expectedErrors = validateWorkflowParams(plan, { mode: "slow" });
-    expect(expectedErrors).toEqual(['params.mode: value "slow" is not one of ["quick","full"]']);
+    expect(expectedErrors).toEqual(['params.mode: value is not one of ["quick","full"]']);
 
     const err = thrown(() => assertRunParamsSatisfyPlan("run-42", plan, { mode: "slow" }));
     expect(err).toBeInstanceOf(UsageError);
