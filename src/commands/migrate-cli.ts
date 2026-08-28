@@ -11,7 +11,7 @@ import { runMigrationTool } from "./migration-tool";
  * (absent when the child produced none — e.g. a hard failure before its own
  * `printPlan` ran, whose `{ok:false,...}` envelope already went to stderr).
  */
-interface MigrateToolCall {
+export interface MigrateToolCall {
   readonly status: number;
   readonly plan?: Record<string, unknown>;
 }
@@ -35,6 +35,40 @@ function worstStatus(left: PlanStatus, right: PlanStatus): PlanStatus {
   if (left === "blocked" || right === "blocked") return "blocked";
   if (left === "ready" || right === "ready") return "ready";
   return "current";
+}
+
+/**
+ * Resolve one generation's contribution to the combined status — fail
+ * CLOSED, never open (code-review finding: this tool advertises itself as
+ * "blocked-not-guessed").
+ *
+ * A generation that exited SUCCESS with no plan on stdout legitimately means
+ * "nothing to report" and defaults to `"current"`. A generation that exited
+ * NON-SUCCESS (by the caller's own guard, this can only be `EXIT_CODES.
+ * GENERAL` — the "blocked" code) with a parsed `plan.status` reports that
+ * status verbatim, same as before.
+ *
+ * The gap this closes: NON-SUCCESS with NO parseable plan at all —
+ * `runMigrationTool` coerces a `spawnSync` `status` of `null` (the child was
+ * killed by a signal — OOM, a timeout, a manual kill — never scheduled to
+ * exit) to `1`, indistinguishable from the migrator's own legitimate
+ * "blocked" exit code, and truncated/malformed stdout hits the same
+ * `JSON.parse` catch in `callMigrateTool`. Previously `?? "current"` silently
+ * read a crashed generation as "nothing to migrate"; this reports it as
+ * `"blocked"` with an explanatory blocker instead, so the combined exit code
+ * (`EXIT_CODES.GENERAL` below) actually reflects that the generation's real
+ * state is unknown, rather than reporting success at exit 0.
+ */
+export function resolveGenerationStatus(call: MigrateToolCall, label: string): { status: PlanStatus; error?: string } {
+  const planStatus = call.plan?.status as PlanStatus | undefined;
+  if (planStatus !== undefined) return { status: planStatus };
+  if (call.status !== EXIT_CODES.SUCCESS) {
+    return {
+      status: "blocked",
+      error: `${label}: the child process exited without printing a plan (exit status ${call.status}) — its real migration state is unknown.`,
+    };
+  }
+  return { status: "current" };
 }
 
 /**
@@ -78,13 +112,15 @@ async function runMigrateSubcommand(
     return;
   }
 
-  const firstStatus = (first.plan?.status as PlanStatus | undefined) ?? "current";
-  const secondStatus = (second.plan?.status as PlanStatus | undefined) ?? "current";
+  const firstResolved = resolveGenerationStatus(first, "task-v2-to-v3");
+  const secondResolved = resolveGenerationStatus(second, "task-v3-to-task-source-v4");
   const combined = {
     schemaVersion: 1 as const,
-    status: worstStatus(firstStatus, secondStatus),
+    status: worstStatus(firstResolved.status, secondResolved.status),
     blockers: [
+      ...(firstResolved.error ? [firstResolved.error] : []),
       ...((first.plan?.blockers as string[] | undefined) ?? []),
+      ...(secondResolved.error ? [secondResolved.error] : []),
       ...((second.plan?.blockers as string[] | undefined) ?? []),
     ],
     taskV3Migration: first.plan?.taskV3Migration,

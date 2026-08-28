@@ -389,8 +389,23 @@ const workflowPlanCommand = defineJsonCommand({
     // verbatim (same shape/detail projection, same registered-formatter-or-
     // generic-fallback, same `--output <path>` handling) without touching
     // the shared dispatcher other commands rely on.
-    if (getParsedInvocation().getFlagValue("--format") === undefined) {
-      const mode = getOutputMode();
+    //
+    // "No format named anywhere" also has to check the RESOLVED mode, not
+    // just argv: `getOutputMode().format` already folds a persisted
+    // `output.format` config default in ahead of the hardcoded "json"
+    // fallback (`resolveOutputMode`, src/output/context.ts — argv ?? config
+    // default ?? "json"). A user who has configured e.g. `output.format:
+    // "yaml"` gets yaml from every other command with no `--format` on the
+    // line; `workflow plan` must honor that too instead of forcing its
+    // human-text branch over a real persisted default. A resolved format of
+    // exactly "json" is deliberately left on the text branch below: it's
+    // indistinguishable from "nothing configured" (DEFAULT_CONFIG.output.format
+    // is also "json" — OutputConfigSchema's `format` carries no independent
+    // zod default, so the merge is the only source), and collapsing that case
+    // onto the JSON envelope would erase the documented unmarked-default text
+    // summary for the overwhelmingly common "user configured nothing" case.
+    const mode = getOutputMode();
+    if (getParsedInvocation().getFlagValue("--format") === undefined && mode.format === "json") {
       const shaped = shapeForCommand("workflow-plan", result, mode.detail, mode.shape);
       const plain = formatPlain("workflow-plan", shaped, mode.detail);
       deliverRendered(plain ?? renderGenericText("workflow-plan", shaped), mode.outputPath);

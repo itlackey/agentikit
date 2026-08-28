@@ -32,11 +32,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { parse as yamlParse } from "yaml";
 import { resetConfigCache } from "../../src/core/config/config";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { akmIndex } from "../../src/indexer/indexer";
 import { runCliCapture } from "../_helpers/cli";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
+import {
+  type IsolatedAkmStorage,
+  withIsolatedAkmStorage,
+  writeSandboxConfig,
+  writeWorkflowTestConfig,
+} from "../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
 
@@ -244,6 +250,46 @@ describe("akm --format json workflow plan <ref> — global (pre-subcommand) flag
   });
 });
 
+describe("akm workflow plan <ref> honors a persisted output.format config default (code review finding A)", () => {
+  test("no --format anywhere, but config sets output.format: yaml -> yaml envelope, not the text summary", async () => {
+    writeBasicWorkflow();
+    await index();
+    writeSandboxConfig({ output: { format: "yaml" } });
+
+    const result = await runCliCapture(["workflow", "plan", "workflows/basic-plan"]);
+    expect(result.code).toBe(0);
+    // Not the human-text branch's shape (that always contains the bare ref
+    // on its own descriptive line, never valid YAML/JSON on its own).
+    const parsed = yamlParse(result.stdout) as Record<string, unknown>;
+    expect(parsed.ok).toBe(true);
+    expect(parsed.published).toBe(false);
+    expect(Array.isArray(parsed.steps)).toBe(true);
+  });
+
+  test("no --format anywhere, config sets output.format: json (matches the hardcoded default) -> still the human text summary", async () => {
+    writeBasicWorkflow();
+    await index();
+    writeSandboxConfig({ output: { format: "json" } });
+
+    const result = await runCliCapture(["workflow", "plan", "workflows/basic-plan"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout.trimStart().startsWith("{")).toBe(false);
+    expect(result.stdout).toContain("workflows/basic-plan");
+  });
+
+  test("an explicit --format on the line still wins over a persisted yaml default", async () => {
+    writeBasicWorkflow();
+    await index();
+    writeSandboxConfig({ output: { format: "yaml" } });
+
+    const result = await runCliCapture(["workflow", "plan", "workflows/basic-plan", "--format", "json"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout.trimStart().startsWith("{")).toBe(true);
+    const envelope = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(envelope.ok).toBe(true);
+  });
+});
+
 describe("akm workflow plan <ref> writes NOTHING durable (B-48)", () => {
   test("zero new rows across every workflow table, the events table, and usage_events — either mode", async () => {
     writeBasicWorkflow();
@@ -401,6 +447,58 @@ describe("akm workflow plan <ref> — a workflow composing a child (B-49)", () =
     expect(typeof expansion.childPlanHash).toBe("string");
     expect(expansion.childOutputs).toEqual(["report"]);
     expect(Array.isArray(expansion.steps)).toBe(true);
+  });
+
+  // Code review finding B: text mode must carry the same child plan hash,
+  // `with:` input bindings, and `exports:` line the spec's §4.6 worked
+  // example prescribes — not just --format json.
+  test("text mode: the step line carries the child's plan hash, a with: line for its bindings, and an exports: line", async () => {
+    write(
+      "workflows/plan-child-params.md",
+      [
+        "---",
+        "type: workflow",
+        "params:",
+        "  scope: { type: string }",
+        "outputs:",
+        "  report:",
+        "    from: steps.work.output",
+        "steps:",
+        "  - id: work",
+        "---",
+        "",
+        "## work",
+        "",
+        "Do the work.",
+        "",
+      ].join("\n"),
+    );
+    writeParent("plan-composes-child-text", [
+      "      - id: dispatch",
+      "        uses: workflows/plan-child-params",
+      "        with:",
+      "          scope: urgent",
+    ]);
+    await index();
+
+    const jsonResult = await runCliCapture([
+      "workflow",
+      "plan",
+      "workflows/plan-composes-child-text",
+      "--format",
+      "json",
+    ]);
+    expect(jsonResult.code).toBe(0);
+    const envelope = JSON.parse(jsonResult.stdout) as { steps: Array<Record<string, unknown>> };
+    const dispatch = envelope.steps.find((s) => s.stepId === "dispatch") as Record<string, unknown>;
+    const expansion = dispatch.expansion as Record<string, unknown>;
+    const childPlanHash = String(expansion.childPlanHash);
+
+    const textResult = await runCliCapture(["workflow", "plan", "workflows/plan-composes-child-text"]);
+    expect(textResult.code).toBe(0);
+    expect(textResult.stdout).toContain(`(plan ${childPlanHash})`);
+    expect(textResult.stdout).toContain('with: scope="urgent" (literal)');
+    expect(textResult.stdout).toContain("exports: report");
   });
 });
 

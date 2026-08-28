@@ -250,21 +250,56 @@ export function formatWorkflowResumePlain(r: Record<string, unknown>): string {
   return formatWorkflowStatusPlain(r) ?? `Resumed workflow run ${String(r.id ?? r.runId ?? "?")}`;
 }
 
-/** One `akm workflow plan` step line (P3b, spec §4.6), plus its child-workflow expansion's own steps, recursively, indented one level per composition boundary. */
+/**
+ * A step's `inputBindings[]` (P3b §4.6's `with:` line) — a literal shows its
+ * value, a reference shows only its unresolved `from` (never a resolved
+ * value; B-52/B-53's closed print list explicitly allows a literal *task/
+ * child* input binding's `.value`, unlike a literal **environment** binding's).
+ */
+function formatInputBindingsList(bindings: readonly Record<string, unknown>[]): string {
+  return bindings
+    .map((binding) => {
+      const name = String(binding.name ?? "");
+      return binding.kind === "literal"
+        ? `${name}=${JSON.stringify(binding.value)} (literal)`
+        : `${name} <- ${String(binding.from ?? "")} (reference)`;
+    })
+    .join(", ");
+}
+
+/**
+ * One `akm workflow plan` step line (P3b, spec §4.6), plus its child-workflow
+ * expansion's own steps, recursively, indented one level per composition
+ * boundary. A child step also carries the child's `planHash` on the step
+ * line itself, and (when present) a `with:` line for the step's own
+ * `inputBindings[]` and an `exports:` line for the child's declared output
+ * names — §4.6's worked example.
+ */
 function renderPlanStepLines(step: Record<string, unknown>, ordinal: number, lines: string[], prefix = "  "): void {
   const stepId = typeof step.stepId === "string" ? step.stepId : "unknown";
   const targetKind = typeof step.targetKind === "string" ? `[${step.targetKind}]` : "";
   const expansion =
     typeof step.expansion === "object" && step.expansion !== null ? (step.expansion as Record<string, unknown>) : {};
   const via = typeof expansion.via === "string" ? expansion.via : "direct";
+  const childPlanHash = typeof expansion.childPlanHash === "string" ? expansion.childPlanHash : undefined;
   const viaText =
     via === "task"
       ? `via ${String(expansion.taskRef ?? "")}`
       : via === "child"
-        ? `-> ${String(expansion.childRef ?? "")}`
+        ? `-> ${String(expansion.childRef ?? "")}${childPlanHash ? ` (plan ${childPlanHash})` : ""}`
         : "direct";
   lines.push(`${prefix}${ordinal}. ${stepId} ${targetKind} ${viaText}`.replace(/ +/g, " ").trimEnd());
+
+  const detailPrefix = `${prefix}  `;
+  const inputBindings = Array.isArray(step.inputBindings) ? (step.inputBindings as Record<string, unknown>[]) : [];
+  if (inputBindings.length > 0) {
+    lines.push(`${detailPrefix}with: ${formatInputBindingsList(inputBindings)}`);
+  }
   if (via === "child") {
+    const childOutputs = Array.isArray(expansion.childOutputs) ? expansion.childOutputs : [];
+    if (childOutputs.length > 0) {
+      lines.push(`${detailPrefix}exports: ${childOutputs.map(String).join(", ")}`);
+    }
     const childSteps = Array.isArray(expansion.steps) ? (expansion.steps as Array<Record<string, unknown>>) : [];
     for (const [index, childStep] of childSteps.entries()) {
       renderPlanStepLines(childStep, index + 1, lines, `${prefix}  ${ordinal}.`);
