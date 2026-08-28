@@ -336,7 +336,11 @@ function resolveTaskInputBindings(
     const errors = validateInputs(
       { [binding.name]: { schema: binding.schema, required: false } },
       { [binding.name]: resolved.value },
-      { pathRoot: binding.name },
+      // Fixed neutral namespace (matches `checkScheduleEntryRunnable`'s
+      // `pathRoot: "inputs"` and the `contractViolation` diagnostics' own
+      // `$`-strip) — NOT `binding.name`, which would double the input name
+      // (`count.count: ...`) since the outer message below already names it.
+      { pathRoot: "inputs" },
     );
     if (errors.length > 0) {
       return {

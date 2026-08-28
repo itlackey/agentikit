@@ -198,6 +198,13 @@ describe("P2b pre-attempt — a resolved reference violating its declared schema
     expect(computed.error).toContain("scope");
     expect(computed.error).toContain("steps.collect.output.scope");
     expect(computed.error).toContain("is not one of");
+
+    // Code-review finding: the pre-attempt schema check used to path-root
+    // the inner validateInputs call at `binding.name` itself, which doubled
+    // the input name in the rendered path (e.g. "scope.scope: ..." for an
+    // input named "scope") since validateInputs already re-roots its `$`
+    // prefix at the SAME name. Guard against that regression directly.
+    expect(computed.error).not.toContain("scope.scope");
   });
 
   // Deliberately steps-based, not params-based: GitHub-shaped YAML's

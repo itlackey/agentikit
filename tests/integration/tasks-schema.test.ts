@@ -58,6 +58,7 @@ import {
   TASK_SOURCE_V4_TOP_LEVEL_KEYS,
   TASK_SOURCE_V4_VERSION,
 } from "../../src/tasks/source/task-source-v4";
+import { TASK_RUN_RESERVED_FLAG_NAMES } from "../../src/tasks/task-run-reserved-flags";
 import { PROGRAM_PARAM_NAME_PATTERN } from "../../src/workflows/program/schema";
 import {
   WORKFLOW_MAX_EXEC_PASS_ENV,
@@ -477,4 +478,27 @@ test("published task schema's akm: options bag equivalents (timeout/redact) stay
   expect(schema.properties.maxRetries?.maximum).toBe(WORKFLOW_MAX_RETRIES);
   expect(schema.properties.redact?.maxItems).toBe(WORKFLOW_MAX_EXEC_PASS_ENV);
   expect((schema.properties.timeout?.oneOf as JsonSchema[])[0]?.maximum).toBe(EXECUTION_MAX_TIMEOUT_MS);
+});
+
+test("published task schema's inputs: rejects every name akm task run reserves for its own flags (code-review finding)", () => {
+  // `parseInputDeclarations` (src/tasks/source/task-source-v4.ts) rejects any
+  // declared input name in TASK_RUN_RESERVED_FLAG_NAMES with
+  // TASK_SOURCE_INVALID — the CLI would always treat that flag as its own,
+  // never as this input's (src/tasks/task-run-reserved-flags.ts's header).
+  // The published schema must reject the same documents, not merely accept
+  // and defer to the runtime parser.
+  const schema = readTaskSchema();
+  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
+  const base = { version: TASK_SOURCE_V4_VERSION, run: "echo hi" };
+
+  for (const name of TASK_RUN_RESERVED_FLAG_NAMES) {
+    expect(
+      validate({ ...base, inputs: { [name]: { type: "string" } } }),
+      `inputs: declaring reserved name "${name}" must be rejected: ${JSON.stringify(validate.errors)}`,
+    ).toBe(false);
+  }
+
+  // A name that is NOT reserved must still validate — the fix must not have
+  // over-tightened `propertyNames` into rejecting everything.
+  expect(validate({ ...base, inputs: { ticket: { type: "string" } } }), JSON.stringify(validate.errors)).toBe(true);
 });

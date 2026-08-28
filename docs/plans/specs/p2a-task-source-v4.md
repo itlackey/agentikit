@@ -1376,6 +1376,15 @@ each is recorded here rather than fixed:
    that ref kind (B-14). Neither string is spec-mandated; left as message-quality warts for a future
    pass rather than fixed in this close-out.
 
+   **2026-08-28 — PR-844 review-pass note (part (a) fixed).** `parseScheduleEntry` now passes
+   `validateInputs(contract, inputsValue, { pathRoot: "inputs" })` and roots the `sourceError` call at
+   `entryPath` (not `[...entryPath, "inputs"]`) — matching `checkScheduleEntryRunnable`'s own
+   convention, which already did both. The example above now renders as `Invalid task source v4 at
+   t.yml:7: schedule[0] inputs.scope: value "zzz" is not one of ["changed","all"]` — one coherent
+   path (`inputs.scope`) in the detail, not the JSON-pointer `$` colliding with the dotted
+   `schedule[0].inputs` field path. Part (b) (`uses:` naming `tasks/` as valid) is unrelated to
+   `validateInputs`/`pathRoot` and is NOT addressed by this note; it remains an open wart.
+
 **2026-08-26 — commit-history note (orchestrator).** The bulk of this phase's implementation is
 recorded under commit `894ed58`, whose message reads `wip(p2): in-flight implement snapshot —
 typecheck RED`. That message is wrong about the final state: it was an orchestrator safety snapshot

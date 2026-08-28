@@ -650,8 +650,15 @@ function parseScheduleEntry(
     // exact-name rule at the grammar layer: closed against the declared
     // contract, TASK_SOURCE_INVALID at schedule[<i>].inputs.<name>.
     checkKeys(inputsValue, Object.keys(contract), ctx, [...entryPath, "inputs"]);
-    const errors = validateInputs(contract, inputsValue as Record<string, unknown>);
-    if (errors.length > 0) sourceError(ctx, [...entryPath, "inputs"], errors.join("; "));
+    // pathRoot "inputs" (matching checkScheduleEntryRunnable below) and the
+    // sourceError call rooted at entryPath, not [...entryPath, "inputs"]: the
+    // per-error detail already carries "inputs.<name>" (validateInputs), so
+    // adding a SECOND ".inputs" segment to the field path here would render
+    // two path roots in one message (code-review finding, was the bare "$"
+    // default leaking through — see docs/plans/specs/p2a-task-source-v4.md
+    // review-log item 4a).
+    const errors = validateInputs(contract, inputsValue as Record<string, unknown>, { pathRoot: "inputs" });
+    if (errors.length > 0) sourceError(ctx, entryPath, errors.join("; "));
     inputsLiteral = Object.freeze({ ...inputsValue });
   }
   checkScheduleEntryRunnable(inputsLiteral, contract, ctx, entryPath);

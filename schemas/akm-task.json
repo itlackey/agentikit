@@ -28,7 +28,7 @@
     "inputs": {
       "type": "object",
       "maxProperties": 128,
-      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "propertyNames": { "$ref": "#/definitions/taskInputName" },
       "additionalProperties": { "$ref": "#/definitions/inputDeclaration" }
     },
     "output": { "$ref": "#/definitions/outputSchemaDefinition" },
@@ -196,6 +196,27 @@
       "maxProperties": 128,
       "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
       "additionalProperties": { "$ref": "#/definitions/jsonValue" }
+    },
+    "taskInputName": {
+      "description": "One `inputs:` declaration key. Matches the identifier pattern AND excludes every name `akm task run` reserves for its own flags (src/tasks/task-run-reserved-flags.ts's TASK_RUN_RESERVED_FLAG_NAMES — the union of TASK_RUN_VALUE_FLAGS, TASK_RUN_BOOLEAN_FLAGS, and TASK_RUN_SELF_DIAGNOSED_FLAGS) — declaring an input under one of these names is rejected at parse time (TASK_SOURCE_INVALID, parseInputDeclarations) because the CLI would always treat the flag as its own, never as this input's. `no-quiet`/`no-verbose` are citty's negations of the `quiet`/`verbose` booleans and are listed for completeness even though the identifier pattern already excludes any hyphenated name.",
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "not": {
+        "enum": [
+          "bundle",
+          "format",
+          "detail",
+          "shape",
+          "output",
+          "scheduled",
+          "quiet",
+          "verbose",
+          "help",
+          "no-quiet",
+          "no-verbose",
+          "target"
+        ]
+      }
     },
     "inputDeclaration": {
       "description": "One inputs: declaration: a bounded JSON Schema. At the declaration ROOT, required is task source v4's own boolean flag, not JSON Schema's required array; default must itself satisfy the remaining schema; default + required:true together is invalid (D2-N3). Nested schemas (properties/items/allOf/anyOf/oneOf/not) keep ordinary JSON-Schema meaning via outputSchemaDefinition. Closed to exactly this key set — an unlisted keyword (e.g. pattern) is rejected here even though the runtime subset accepts it inside output:, because a task input declaration is intentionally narrower.",
