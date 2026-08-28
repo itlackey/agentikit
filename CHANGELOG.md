@@ -307,6 +307,255 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   always exposes. See the
   [0.9.1 to 0.9.2 migration guide](docs/migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4).
 
+## [0.9.2-alpha.4] - 2026-08-26
+
+### Added
+
+- **`akm health`: flag assets whose resolved type disagrees with their
+  directory** (#837). Adds a `type-directory-disagreement` advisory that
+  compares every indexed asset's resolved type against the type its
+  `DIR_TYPE_MAP` directory declares (`memories/`, `knowledge/`, `commands/`,
+  `agents/`, `workflows/`, `facts/`, `lessons/`, `sessions/`,
+  `instructions/`, `scripts/`, `env/`, `secrets/`, `tasks/`). This is the
+  diagnostic that would have caught #824 (three `memories/` files silently
+  indexed as commands) the day it was introduced. Since `knowledge/` +
+  `$ARGUMENTS` and `agents/` + `agent:` frontmatter are deliberate command
+  overrides, the check never hard-fails: every disagreement is reported as a
+  warning naming the winning classifier signal, with a `knownGoodOverride`
+  flag so a sanctioned override reads differently from an unexplained one.
+- **`akm health`: report the Claude harness plugin's version and warn when
+  it's stale or out of range** (#838). Adds a `plugin-version` advisory that
+  reports each installed Claude Code `akm` plugin's version, warns when a
+  newer tag is published upstream (naming the update command), and warns
+  when the plugin's own declared `AKM_VERSION_RANGE` no longer admits the
+  running CLI — meaning the plugin has silently disabled itself. Makes an
+  outbound `git ls-remote` when network is available to check for a newer
+  tag; per owner decision, this is read-only and degrades to a benign pass
+  (no plugin, no marketplace clone, unreadable manifest, malformed range, or
+  a failed remote lookup) rather than crashing or blocking offline use.
+
+### Changed
+
+- **Extract: LLM prompt is now built from parent-origin events only —
+  "harvest-without-prompting hybrid" (#840).** #830 folds a session's
+  subagent transcripts into its event stream for hashing and inline-ref
+  harvesting; the prompt sent to the extraction LLM previously included that
+  folded subagent content too, competing with the parent's own transcript
+  for the 80,000-char pre-filter budget. #840's design-determination doc
+  (`docs/plans/subagent-extraction-design.md`) measured that this "fold"
+  approach evicts up to 28.6% of parent-origin content on real sessions to
+  make room for subagent noise that mostly gets evicted anyway, while a
+  "harvest-without-prompting hybrid" — keep folding for hashing/inline-ref
+  purposes, but filter the prompt down to `data.events` whose `filePath`
+  matches the session's own (`data.ref.filePath`) — matches or beats the
+  folded prompt's size with zero eviction on every session measured, and
+  recovers the exact same inline refs (`akm remember`/`akm feedback` calls
+  the agent made inside a subagent), because that harvesting already runs on
+  the raw stream independent of what reaches the prompt. Only
+  `runPreLlmSessionGates`'s call into `preFilterSession` changed; folding
+  (`session-log.ts`) and `buildExtractPrompt` are untouched.
+  - **No forced re-extraction wave.** `hashSessionContent` still hashes the
+    full folded `data` (parent + subagents), computed before the
+    parent-origin view is built — no previously-computed session hash
+    changes, so no session already extracted under the fold prompt shape is
+    automatically re-processed. Use `--force` to re-process a specific
+    session under the new, parent-only prompt shape.
+  - **`processes.extract.maxTotalChars` is unchanged in meaning and default**
+    — it still caps the single-call prompt built from parent-origin events;
+    it simply no longer has to compete against subagent-origin noise for
+    that budget.
+  - **`minContentChars`** (the raw-size skip gate, #595/#596) is still
+    measured on the FULL folded `data.events` (parent + subagents),
+    deliberately left unchanged: narrowing it to parent-origin chars would
+    newly skip delegation-heavy sessions with a thin parent transcript
+    before extraction runs at all, even though their subagent-origin work is
+    still fully harvested via inline refs. The full-stream measurement is
+    today's existing behavior; the worst case it preserves is an LLM call
+    over a small parent-only prompt, not a missed extraction.
+  - #839's task-notification dedupe (which stubs a parent's
+    `<task-notification>` only when the matching subagent's own event ALSO
+    survives into the same kept prompt set) composes safely with this
+    change without modification: subagent-origin events never reach
+    `preFilterSession` on this path, so the dedupe's own scoping check
+    naturally makes it a no-op — the parent's notification (the only
+    remaining trace of delegated work in the prompt) survives untouched.
+
+### Fixed
+
+- **`akm remember` synthesizes a description when the caller doesn't supply
+  one** (#835). Both the zero-flag hot path and the structured-args path
+  (e.g. `--tag`-only, with no `--description`/`--enrich`) previously wrote
+  memories with no `description:` and no `tags:`. akm's indexer covers only
+  synthesized frontmatter/headings, never body prose, so those memories were
+  retrievable only by whatever words survived into the auto-generated
+  filename — effectively write-only. Verified on a real stash: 272/3169
+  memories lacked a description, 100% of those written via `akm remember`.
+  The new `synthesizeMemoryDescription` (ported from akm-eval's
+  `firstSentencesCapped` rule, which independently arrived at the same fix)
+  is deterministic and makes no LLM call: it accumulates whole sentences
+  from the body up to `DESCRIPTION_MAX_CHARS`, skipping a leading markdown
+  heading so the description doesn't just repeat the title. Wired into both
+  write paths as a fallback only — a caller-supplied `--description` (or one
+  derived by `--enrich`) is never overwritten. Closes the write-only-memories
+  gap on 0.9.1 indexes.
+- **Extract: deduped the doubled subagent conclusion in the extraction prompt**
+  (#839). After #830 folded a session's subagent transcripts into its event
+  stream, a completed subagent's final report could appear twice in the same
+  extraction prompt: once as the subagent's own folded final message, once as
+  the parent's `<task-notification>` record of that same call (#836 measured
+  ~92-99% textual overlap on a real pair; reproduced here as a byte-identical
+  match after decoding the XML entities Claude Code escapes into `<result>`).
+  The parent's notification copy is now stubbed to `[subagent <agentId>
+  completed: <description>]` when its `<result>` is a near-duplicate
+  (Dice-bigram similarity ≥ 0.9) of a folded subagent transcript's own text;
+  the subagent's original is untouched, per #839's owner-decided direction
+  (the inverse — dropping the subagent's own terminal event — was evaluated
+  and rejected in #836 because some subagent transcripts consist only of
+  that one event). Matching is scoped by `<task-id>` to the one subagent
+  transcript it names and still requires content similarity, so an earlier
+  notification for a *resumed* agent (Claude Code re-notifies the same
+  task-id on each stop) that carries a genuinely different, intermediate
+  result is left alone.
+  **Scoped to the final, post-budget kept set — not the raw stream** (#840's
+  design-determination doc flagged this as a hazard while this PR was in
+  flight): the dedupe only fires when the subagent's own event ALSO survives
+  into the same kept set as the notification. #840 measured that today's
+  recency-biased 80k budget already evicts one side of nearly every raw
+  duplicate pair before dedupe would matter (0 of 89 raw pairs across four
+  real sessions had both sides survive); an unconditional raw-stream stub
+  would, under that same eviction pattern, sometimes delete a parent's
+  notification whose subagent copy never made the cut in the first place —
+  and would unconditionally delete the *only* surviving trace of delegated
+  work under #840's recommended future design (prompting from parent-origin
+  events only). Verified against the real session #836 and #839 both cite
+  (`4a0d9e9b…`): under the actual 80,000-char budget, 0 notifications are
+  stubbed today (consistent with #840's finding) because the cited pair's
+  subagent copy doesn't survive the budget; with the budget cap lifted,
+  1 of 10 raw duplicate pairs in that session both survive AND still exceed
+  the 0.9 similarity bar after the pre-filter's independent per-event
+  2000-char truncation (the other 9 exceed that per-event cap and truncate
+  down far enough to fall below the bar — a conservative miss, never a wrong
+  stub). The fix is real and correct for sessions/pairs small enough to avoid
+  both eviction and truncation, and is structurally inert wherever it would
+  be unsafe to fire.
+  Implemented in the pre-filter (`preFilterSession`), which runs AFTER
+  `hashSessionContent` — so **no `contentHash` moves and no re-extraction
+  wave is triggered** (unlike #830's own folding change, which changed the
+  raw event stream #602's hash covers).
+- **Extract: regression-tested the no-double-extraction guarantee** (#839).
+  Discovery-mode extraction over a project with a parent + subagent
+  transcripts now has an explicit end-to-end test proving exactly one
+  session is processed, that `--session-id agent-<hash>` resolves to the
+  not-found result rather than an extraction, and that folded subagent
+  content is attributed only to the parent's session/contentHash. Pins
+  behavior already true since #830 (`listSessions()` excludes `subagents/`
+  dirs for both discovery and `--session-id` lookup); nothing tested it
+  end-to-end before.
+
+### Documentation
+
+- **Measured whether subagent-transcript folding (#830) duplicates the
+  parent's own summary, and disclosed the one-time re-extraction cost
+  (#833).** Using the actual reader/pre-filter/prompt-builder code against 3
+  real sessions on this machine — no LLM calls; `contentHash`,
+  `preFilterSession`, and `buildExtractPrompt` are deterministic:
+  - Raw event counts grow 2x-12x once subagent transcripts are folded in
+    (measured: 1209 -> 14224; 1583 -> 6738, the exact session cited in
+    #829/#833's "1583 -> 6738" figure; 155 -> 2408). `contentHash` is
+    computed over that stream, so every previously-extracted session's hash
+    changes and the next `--since` run re-extracts all of them once, each
+    with a larger prompt (+1.2% to +5.2% prompt chars across the 3 sessions,
+    since the 80,000-char pre-filter budget caps how much of the growth
+    actually reaches the LLM).
+  - The result is a genuine tradeoff, not a clean win or loss. **Benefit:**
+    inline `akm remember`/`akm feedback` calls made *by subagents* are
+    recovered regardless of the budget cap (inline-ref extraction runs on
+    the raw event stream, not the pre-filtered one) — up to 162 refs
+    recovered on the largest session measured (was 2 without folding),
+    fixing #829's "delegated work is never harvested" defect. **Cost:** on
+    sessions whose raw content is near or under the pre-filter's character
+    budget, folding evicts a large share of the parent's own kept content to
+    make room for subagent tool-call trace — parent-origin kept events
+    dropped 27% and 71% respectively on the two smaller sessions measured.
+    On the largest session the budget was already saturated by the parent's
+    own tail, so folding changed nothing there. Duplication is real, not
+    hypothetical: on the smallest session, one subagent's conclusion appears
+    twice in the same prompt sent to the extraction LLM — once via its own
+    folded final message, once via the parent's own record of that
+    delegated call's result, which independently already captured ~92% of
+    the same text verbatim.
+  - A narrowing that drops a subagent transcript's terminal event (its
+    apparent "final report") to avoid this specific duplication was
+    considered and rejected: the existing #830 regression fixture has a
+    subagent transcript whose *only* event is that terminal turn (a single
+    delegated `akm remember` call) — the same rule would drop the only
+    content in short single-step delegations, undoing the harvesting #830
+    added.
+  - **Decision: keep folding as shipped.** The data does not cleanly favor
+    removing or narrowing it, and the one narrowing considered would cost
+    more than it fixes. #829's phantom-session exclusion is unaffected
+    either way.
+- Recorded the fold-vs-link subagent-extraction design determination in
+  `docs/plans/subagent-extraction-design.md` (#840). Measured four candidates
+  (fold+dedupe as shipped, link-only, a harvest-without-prompting hybrid, and
+  chunked map-reduce extraction) on the same real sessions #836 used plus one
+  added for scale. Headline: the hybrid recovers 100% of #830's inline-ref
+  harvesting (162/162, 38/38, 1/1, 8/8 across the four sessions) with zero
+  parent-content eviction (vs 27.5%/28.6% evicted under fold on two of the
+  four), and #839's dedupe was measured to have zero effect on the actual
+  LLM prompt on all four sessions (the flagged duplicate content is already
+  evicted by the recency-biased budget before dedupe would matter). Chunked
+  extraction was measured at 9x-229x more LLM calls per session on real
+  data and is not recommended. No behavior changes shipped in this PR.
+
+## [0.9.2-alpha.3] - 2026-08-26
+
+### Fixed
+
+- **Currency in prose no longer retypes an asset as a command** (#824). The
+  smart-Markdown classifier matched `$1`/`$2`/`$3` with a trailing word
+  boundary, and that boundary sits between the `2` and the comma in `$2,000` —
+  so any note quoting a price was indexed as a `command`, its ref moved to
+  `commands/<dir>/<slug>`, and it left its own namespace. Measured on a real
+  corpus, 3 of 51 memory documents were affected, and those 3 were exactly the
+  3 whose bodies matched. `$ARGUMENTS` is unambiguous and keeps its existing
+  precedence over a directory hint; the numeric placeholders now exclude a
+  following digit (or a `.`/`,` followed by one), and where they still
+  disagree with a directory that declares a type, the declaration wins. The
+  defect is present identically in 0.9.1 — it only became visible once the
+  0.9.2-alpha.2 retrieval work let mistyped assets surface in results.
+
+### Documentation
+
+- Recorded the 0.9.2 retrieval measurement in
+  `docs/plans/benchmark-tuning-findings.md` §2e (#825). Retrieval-only probes
+  with no model in the loop, identical corpora, only the CLI version differing:
+  LoCoMo zero-hit 75.0% -> 0.0% and evidence recall@5 0.154 -> 0.590;
+  LongMemEval zero-hit 100% -> 0.0% and recall@5 0.000 -> 1.000.
+
+## [0.9.2-alpha.2] - 2026-08-25
+
+### Fixed
+
+- **Retrieval:** relaxed zero-hit lexical queries centrally, stabilized
+  relaxed-retrieval quality, and preserved name quality through relaxed
+  ranking. This is the change measured in §2e above — it is what lifted the
+  retrieval ceiling that had floored memory-backed evaluation.
+- **Indexing:** verify vec completeness before promotion; compare vec IDs as
+  exact sets; materialize vectors for targeted writes; make nested entry
+  mutation atomic; reconcile clean before final verification; restore static
+  embedding imports.
+- **Markdown projection:** parse nested links safely, parse destination
+  phases, and project with stateful delimiters.
+- **Sources:** reconcile local bundle updates and report incomplete filesystem
+  reconciliation.
+- **Extract:** keep malformed model output retryable.
+
+### Performance
+
+- Keep targeted embedding selection narrow and preserve targeted vec
+  degradation.
+
 ## [0.9.2-alpha.1] - 2026-08-24
 
 ### Breaking changes & migration

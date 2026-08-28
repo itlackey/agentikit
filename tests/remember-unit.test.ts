@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { parse as yamlParse } from "yaml";
-import { buildMemoryFrontmatter, parseDuration, runAutoHeuristics } from "../src/commands/remember";
+import {
+  buildMemoryFrontmatter,
+  parseDuration,
+  runAutoHeuristics,
+  synthesizeMemoryDescription,
+} from "../src/commands/remember";
 
 describe("parseDuration", () => {
   test("parses days", () => {
@@ -197,5 +202,63 @@ describe("runAutoHeuristics", () => {
     expect(result.source).toBeUndefined();
     expect(result.observed_at).toBeUndefined();
     expect(result.subjective).toBeUndefined();
+  });
+});
+
+// #834: `akm remember` wrote memories with no `description:`, and akm's
+// indexer covers only frontmatter/headings — never body prose — so those
+// memories were retrievable only by whatever words survived into the
+// auto-generated filename. `synthesizeMemoryDescription` closes that gap
+// deterministically (no LLM call) at write time.
+describe("synthesizeMemoryDescription", () => {
+  test("returns the first sentence of a single-sentence body", () => {
+    expect(synthesizeMemoryDescription("Deployment needs VPN access.")).toBe("Deployment needs VPN access.");
+  });
+
+  test("accumulates whole sentences until the next would exceed the cap", () => {
+    const body =
+      "akm's measured value comes entirely from being called, not from being present. " +
+      "Harbor A/B benchmark, 138 trials, showed a real engagement lift when the trigger wording changed.";
+    const out = synthesizeMemoryDescription(body, 120);
+    // The full first sentence fits; the second is dropped because appending it
+    // would exceed the cap. A distinctive term from mid-body ("Harbor") must
+    // still not require truncating the first sentence to admit it.
+    expect(out).toBe("akm's measured value comes entirely from being called, not from being present.");
+    expect(out.length).toBeLessThanOrEqual(120);
+  });
+
+  test("captures a distinctive mid-body term when it fits within the cap", () => {
+    const body = "Harbor A/B benchmark, 138 trials, showed a real engagement lift when the trigger wording changed.";
+    const out = synthesizeMemoryDescription(body);
+    expect(out).toContain("Harbor");
+    expect(out).toContain("engagement");
+    expect(out).toContain("trigger wording");
+  });
+
+  test("hard-truncates a single sentence longer than the cap", () => {
+    const longSentence = `This is a very long single sentence that keeps going ${"and going ".repeat(20)}without stopping.`;
+    const out = synthesizeMemoryDescription(longSentence, 50);
+    expect(out.length).toBe(50);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  test("skips a leading markdown heading so the description isn't a repeated title", () => {
+    const out = synthesizeMemoryDescription("# Deploy Notes\n\nVPN required for staging deploys.");
+    expect(out).toBe("VPN required for staging deploys.");
+  });
+
+  test("falls back to the heading itself when the body is only a heading", () => {
+    const out = synthesizeMemoryDescription("# Deploy Notes");
+    expect(out).toBe("# Deploy Notes");
+  });
+
+  test("swallows a trailing quote so a quoted sentence isn't split mid-quote", () => {
+    const out = synthesizeMemoryDescription('Alice said, "hi there." Then she left.', 100);
+    expect(out).toBe('Alice said, "hi there." Then she left.');
+  });
+
+  test("returns empty string for empty/whitespace-only input", () => {
+    expect(synthesizeMemoryDescription("")).toBe("");
+    expect(synthesizeMemoryDescription("   \n  ")).toBe("");
   });
 });

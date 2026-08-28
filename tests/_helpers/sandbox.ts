@@ -328,6 +328,8 @@ export interface IsolatedAkmStorage {
   readonly stateDir: string;
   /** Isolated Claude session-log root (`AKM_CLAUDE_PROJECTS_DIR`), empty by default. */
   readonly sessionLogsDir: string;
+  /** Isolated Claude plugins root (`AKM_CLAUDE_PLUGINS_DIR`), empty by default. */
+  readonly claudePluginsDir: string;
   /** The single per-call temp root that contains every dir above. */
   readonly root: string;
   /** Restore every overridden env var and remove the temp root. Idempotent. */
@@ -383,6 +385,9 @@ export function withIsolatedAkmStorage(overrides?: Record<string, string | undef
   const sessionLogsDir = path.join(root, "claude-projects");
   fs.mkdirSync(sessionLogsDir, { recursive: true });
 
+  const claudePluginsDir = path.join(root, "claude-plugins");
+  fs.mkdirSync(claudePluginsDir, { recursive: true });
+
   const env: Record<string, string> = {
     AKM_BUNDLE_DIR: stashDir,
     XDG_DATA_HOME: dataDir,
@@ -393,6 +398,10 @@ export function withIsolatedAkmStorage(overrides?: Record<string, string | undef
     // synchronous `akm health` session-log scan stays hermetic and fast
     // instead of walking the host's real (and potentially huge) history.
     AKM_CLAUDE_PROJECTS_DIR: sessionLogsDir,
+    // Same reasoning for the `plugin-version` advisory (itlackey/akm#832): an
+    // empty fixture dir means "no plugin installed" instead of scanning the
+    // host's real `~/.claude/plugins` cache.
+    AKM_CLAUDE_PLUGINS_DIR: claudePluginsDir,
   };
 
   // Snapshot + apply env (managed defaults first, then caller overrides so they
@@ -420,7 +429,7 @@ export function withIsolatedAkmStorage(overrides?: Record<string, string | undef
     }
   };
 
-  return { stashDir, dataDir, cacheDir, configDir, stateDir, sessionLogsDir, root, cleanup };
+  return { stashDir, dataDir, cacheDir, configDir, stateDir, sessionLogsDir, claudePluginsDir, root, cleanup };
 }
 
 // ── Config writer ────────────────────────────────────────────────────────────

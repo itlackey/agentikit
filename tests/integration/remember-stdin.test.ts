@@ -79,7 +79,10 @@ describe("remember stdin", () => {
     // write — without it, `akm lint` flagged its own `remember` output as
     // `missing-updated`.
     expect(parsed.data.updated).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode", "type", "updated"]);
+    // #834: the zero-flag hot path now also synthesizes `description` from
+    // the body — previously this memory would index only on filename words.
+    expect(parsed.data.description).toBe("VPN needed for staging deploys");
+    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode", "description", "type", "updated"]);
   });
 
   test("reads stdin when --format json is present", () => {

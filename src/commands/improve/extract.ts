@@ -567,7 +567,20 @@ function runPreLlmSessionGates(args: {
     return { skip: alreadyExtractedResult(harness.name, sessionRef.sessionId, prior, contentHash) };
   }
 
-  const filtered = preFilterSession(data, {
+  // #840 — harvest-without-prompting hybrid: the LLM prompt is built only from
+  // parent-origin events (folding stays as infrastructure for hashing above
+  // and inline-ref harvesting on `data.inlineRefs`, both of which still see
+  // the FULL folded stream). Subagent-origin events never reach
+  // `preFilterSession`, so #839's `dedupeTaskNotifications` naturally becomes
+  // a no-op on this path — a subagent's own event can no longer be in the
+  // kept set for a notification to be deduped against, leaving the parent's
+  // `<task-notification>` (the only surviving trace of that delegated work)
+  // untouched. See docs/plans/subagent-extraction-design.md §6.
+  const parentOriginData: typeof data = {
+    ...data,
+    events: data.events.filter((e) => e.filePath === data.ref.filePath),
+  };
+  const filtered = preFilterSession(parentOriginData, {
     ...(typeof maxTotalChars === "number" ? { maxTotalChars } : {}),
   });
 
@@ -579,6 +592,14 @@ function runPreLlmSessionGates(args: {
   // fix gated on `filtered.stats.inputCount`, which is an EVENT count, not a
   // char count — this port measures actual raw chars so the threshold matches
   // the config key's documented unit.
+  // #840 — deliberately measured on the FULL folded `data.events` (parent +
+  // subagents), not the parent-origin view above: narrowing this to
+  // parent-origin chars would newly skip delegation-heavy sessions with a
+  // thin parent transcript before extraction runs at all, even though their
+  // subagent work is still fully harvested via `data.inlineRefs` above. The
+  // full-stream measurement is today's unchanged behavior, so the worst case
+  // this preserves is an LLM call over a small parent-only prompt, not a
+  // missed extraction.
   const rawContentChars = data.events.reduce((sum, event) => sum + event.text.length, 0);
   if (minContentChars > 0 && rawContentChars < minContentChars) {
     return {

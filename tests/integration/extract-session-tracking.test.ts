@@ -25,7 +25,9 @@ import type { AkmConfig } from "../../src/core/config/config";
 import { tryAcquireLockSync } from "../../src/core/file-lock";
 import { openStateDatabase } from "../../src/core/state-db";
 import type {
+  InlineRefMention,
   SessionData,
+  SessionEvent,
   SessionLogHarness,
   SessionRef,
   SessionSummary,
@@ -235,6 +237,157 @@ describe("hashSessionContent", () => {
       { harness: "claude", text: "second", role: "assistant", sessionId: "ses_forge_b" },
     ];
     expect(hashSessionContent(single)).not.toBe(hashSessionContent(split));
+  });
+});
+
+// ── #840 harvest-without-prompting hybrid — prompt-composition invariants ───
+//
+// docs/plans/subagent-extraction-design.md §6: the LLM prompt is built from
+// parent-origin events only (`data.events.filter(e => e.filePath ===
+// data.ref.filePath)` inside `runPreLlmSessionGates`), while
+// `hashSessionContent` and `data.inlineRefs` keep seeing the FULL folded
+// stream (parent + subagents). These three tests exercise the real
+// `akmExtract` pipeline end-to-end (fake harness, no filesystem, `chat`
+// mocked to capture the built prompt) against one folded fixture that
+// carries all three ingredients at once: a subagent-origin folded event, a
+// subagent-only inline ref, and a parent `<task-notification>` whose
+// `<result>` near-duplicates that same subagent's own text (the #839/#842
+// dedupe's exact trigger shape).
+describe("akmExtract — harvest-without-prompting hybrid prompt composition (#840)", () => {
+  const PARENT_PATH = "/proj/parent.jsonl";
+  const SUBAGENT_PATH = "/proj/parent/subagents/agent-agentXYZ.jsonl";
+  const SUBAGENT_RESULT_TEXT = "Audited every release branch, all clean. SUBAGENT_UNIQUE_MARKER_9f3a";
+  const SUBAGENT_ONLY_REF_TEXT = "release branch audit checklist should include tag verification";
+
+  function buildHybridSession(): SessionData {
+    const t0 = 1_800_000_000_000;
+    const events: SessionEvent[] = [
+      {
+        harness: "claude",
+        role: "user",
+        ts: t0,
+        filePath: PARENT_PATH,
+        sessionId: "ses_hybrid",
+        text: "Please delegate the release-branch audit to a subagent and report back with the finding.",
+      },
+      {
+        harness: "claude",
+        role: "assistant",
+        ts: t0 + 1000,
+        filePath: PARENT_PATH,
+        sessionId: "ses_hybrid",
+        text: "Delegating the release-branch audit now via the Task tool.",
+      },
+      // Subagent's own folded event (#830) — provenance-prefixed, on the
+      // subagent's own `agent-<id>.jsonl` filePath.
+      {
+        harness: "claude",
+        role: "assistant",
+        ts: t0 + 2000,
+        filePath: SUBAGENT_PATH,
+        sessionId: "ses_hybrid",
+        text: `[subagent:general-purpose] Audit release branches\n${SUBAGENT_RESULT_TEXT}`,
+      },
+      // Parent's own <task-notification> record of that same delegated call —
+      // a parent-origin event whose <result> near-duplicates the subagent's
+      // own text above (this is exactly what #839's dedupeTaskNotifications
+      // matches on when BOTH copies reach the same kept set).
+      {
+        harness: "claude",
+        role: "user",
+        ts: t0 + 3000,
+        filePath: PARENT_PATH,
+        sessionId: "ses_hybrid",
+        text:
+          "<task-notification>\n<task-id>agentXYZ</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n" +
+          '<status>completed</status>\n<summary>Agent "Audit release branches" finished</summary>\n' +
+          `<result>${SUBAGENT_RESULT_TEXT}</result>\n</task-notification>`,
+      },
+      {
+        harness: "claude",
+        role: "assistant",
+        ts: t0 + 4000,
+        filePath: PARENT_PATH,
+        sessionId: "ses_hybrid",
+        text: "Great, the audit is done and every release branch is clean. Wrapping up.",
+      },
+    ];
+    // Harvested from the subagent's own transcript (#830) — its only source is
+    // the subagent, never the parent's own text.
+    const inlineRefs: InlineRefMention[] = [{ kind: "remember", text: SUBAGENT_ONLY_REF_TEXT, ts: t0 + 2500 }];
+    return {
+      ref: {
+        harness: "claude",
+        sessionId: "ses_hybrid",
+        filePath: PARENT_PATH,
+        startedAt: t0,
+        endedAt: t0 + 4000,
+        title: "Hybrid prompt filter fixture",
+      },
+      events,
+      inlineRefs,
+    };
+  }
+
+  async function runAndCapturePrompt(session: SessionData): Promise<{ prompt: string; contentHash?: string }> {
+    const stash = makeStashDir();
+    const db = openStateDatabase(":memory:");
+    let prompt = "";
+    const result = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config: configEnabled(stash),
+      harnesses: [makeHarness([session])],
+      stateDb: db,
+      chat: async (_cfg, msgs) => {
+        prompt = msgs[0]?.content ?? "";
+        return JSON.stringify({ candidates: [] });
+      },
+    });
+    db.close();
+    expect(result.sessionsProcessed).toBe(1); // sanity: the model path actually ran, nothing skipped
+    return { prompt, contentHash: result.sessions[0]?.contentHash };
+  }
+
+  // Invariant 1 (hash stability): the recorded contentHash — computed inside
+  // runPreLlmSessionGates via `hashSessionContent(data)` BEFORE the
+  // parent-origin view is built — must equal hashing the same FULL folded
+  // SessionData directly, unaffected by the parent-origin filter applied
+  // later for `preFilterSession`. Reverting the filter (passing the full
+  // `data` straight to `preFilterSession`) does NOT change this: the hash
+  // call site is untouched either way, so this test does not distinguish the
+  // two — see invariants 2/3 for that.
+  test("contentHash equals hashSessionContent of the full folded session", async () => {
+    const session = buildHybridSession();
+    const expectedHash = hashSessionContent(session);
+    const { contentHash } = await runAndCapturePrompt(session);
+    expect(contentHash).toBe(expectedHash);
+  });
+
+  // Invariant 2 (prompt composition): no subagent-provenance text reaches the
+  // transcript section, but the subagent-only inline ref still reaches the
+  // "Already preserved" section (built from `data.inlineRefs`, which keeps
+  // seeing the full folded harvest regardless of the prompt filter).
+  test("prompt has no [subagent:-prefixed transcript text, but Already-preserved includes the subagent-only ref", async () => {
+    const { prompt } = await runAndCapturePrompt(buildHybridSession());
+    expect(prompt).not.toContain("[subagent:");
+    expect(prompt).toContain(SUBAGENT_ONLY_REF_TEXT);
+  });
+
+  // Invariant 3 (#842 composition hazard): under the hybrid filter, the
+  // subagent's own event never reaches `preFilterSession`, so
+  // `dedupeTaskNotifications`'s `byAgentId` map is built from an empty kept
+  // set and the stub never fires (see pre-filter.ts's own "#840 hazard"
+  // unit test for the same mechanism at the preFilterSession layer). The
+  // parent's <task-notification> — the ONLY surviving trace of the delegated
+  // work — must reach the prompt untouched, not stubbed to
+  // `[subagent agentXYZ completed: ...]`.
+  test("keeps the parent's <task-notification> un-stubbed (composes safely with #842's dedupe)", async () => {
+    const { prompt } = await runAndCapturePrompt(buildHybridSession());
+    expect(prompt).toContain("<task-notification>");
+    expect(prompt).toContain("<task-id>agentXYZ</task-id>");
+    expect(prompt).toContain(SUBAGENT_RESULT_TEXT);
+    expect(prompt).not.toContain("[subagent agentXYZ completed:");
   });
 });
 
