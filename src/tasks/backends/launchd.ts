@@ -1198,85 +1198,42 @@ function normalizeSignature(xml: string): string {
   return xml.replace(/\r\n/g, "\n").trim();
 }
 
-/** Parse only proven loaded-service labels from bounded launchctl domain/list output. */
+/**
+ * Collect the akm-owned service labels present in `launchctl` output.
+ *
+ * This reads the CURRENT USER'S OWN scheduler inventory — the tasks they asked
+ * akm to schedule, on their own machine. It is not an attacker-controlled
+ * document, so it is parsed permissively: scan for labels in our own
+ * `com.akm.task.` namespace and ignore everything else.
+ *
+ * It previously enforced a rigid grammar over the whole document and returned
+ * `undefined` — surfacing as a hard INVALID_CONFIG_FILE that refused to inspect
+ * scheduler state at all — if ANY line failed to match. Real
+ * `launchctl print gui/<uid>` output on macOS is far richer than that grammar
+ * allowed, so on a real Mac this rejected the user's own inventory and broke
+ * every launchd operation. Caught by the gated native-scheduler suite, which
+ * had never been dispatched before.
+ *
+ * The two bounds that remain are real resource bounds, not structural ones: a
+ * cap on how much output we will read, and a cap on how many distinct akm
+ * labels we will track. Exceeding either still returns `undefined`.
+ */
 export function parseLaunchdLoadedLabels(output: string): Set<string> | undefined {
-  if (Buffer.byteLength(output, "utf8") > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES || hasUnsafeLaunchdControlCharacter(output)) {
-    return undefined;
-  }
-  const lines = output.replace(/\r\n?/gu, "\n").split("\n");
+  if (Buffer.byteLength(output, "utf8") > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES) return undefined;
+
   const labels = new Set<string>();
-  let akmEntryCount = 0;
-  const add = (label: string): boolean => {
-    if (!LAUNCHD_AKM_LABEL_RE.test(label)) return false;
-    akmEntryCount += 1;
-    if (akmEntryCount > MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES || labels.has(label)) return false;
+  // Our own namespace is the only thing we look for. `[^\s"{}=,()]` stops the
+  // token at whatever punctuation the surrounding launchctl syntax uses, so a
+  // label works whether it appears as a bare table cell, a quoted string, or a
+  // dictionary key.
+  const labelPattern = /com\.akm\.task\.[^\s"{}=,()]+/gu;
+  for (const match of output.matchAll(labelPattern)) {
+    const label = match[0];
+    if (!LAUNCHD_AKM_LABEL_RE.test(label)) continue;
     labels.add(label);
-    return true;
-  };
-  const firstContent = lines.findIndex((line) => line.trim() !== "");
-  if (firstContent >= 0 && /^PID\s+Status\s+Label$/iu.test(lines[firstContent]!.trim())) {
-    for (const line of lines.slice(firstContent + 1)) {
-      if (!line.trim()) continue;
-      const row = /^\s*(?:-|\d+)\s+-?\d+\s+(\S+)\s*$/u.exec(line);
-      if (!row?.[1]) return undefined;
-      if (row[1].startsWith(LAUNCHD_LABEL_PREFIX) && !add(row[1])) return undefined;
-    }
-    return labels;
+    if (labels.size > MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) return undefined;
   }
-
-  const firstLine = firstContent < 0 ? undefined : lines[firstContent];
-  if (firstLine === undefined || !/^\s*(?:gui|user)\/\d+\s*=\s*\{\s*$/u.test(firstLine)) return undefined;
-  let lastContent = lines.length - 1;
-  while (lastContent >= 0 && !lines[lastContent]?.trim()) lastContent -= 1;
-  const lastLine = lines[lastContent];
-  if (lastContent <= firstContent || lastLine === undefined || !/^\s*\}\s*$/u.test(lastLine)) return undefined;
-
-  let depth = 1;
-  let servicesSeen = false;
-  let insideServices = false;
-  for (let index = firstContent + 1; index <= lastContent; index += 1) {
-    const line = lines[index]!;
-    if (index === lastContent) {
-      if (insideServices || depth !== 1) return undefined;
-      depth = 0;
-      continue;
-    }
-
-    const servicesBlock = /^\s*services\s*=\s*\{\s*$/u.test(line);
-    const emptyServicesBlock = /^\s*services\s*=\s*\{\s*\}\s*$/u.test(line);
-    if (servicesBlock || emptyServicesBlock) {
-      if (servicesSeen || insideServices || depth !== 1) return undefined;
-      servicesSeen = true;
-      if (servicesBlock) {
-        insideServices = true;
-        depth += 1;
-      }
-      continue;
-    }
-    if (/^\s*services\s*=/u.test(line)) return undefined;
-
-    if (insideServices && depth === 2) {
-      if (!line.trim()) continue;
-      if (/^\s*\}\s*$/u.test(line)) {
-        insideServices = false;
-        depth -= 1;
-        continue;
-      }
-      const assignment = /^\s*-?\d+\s*=\s*"?([^"\s{}=]+)"?\s*$/u.exec(line);
-      const domainTable = /^\s*(?:-|\d+)\s+(?:-|-?\d+)\s+(\S+)\s*$/u.exec(line);
-      const dictionary = /^\s*"?([^"\s{}=]+)"?\s*=\s*\{\s*$/u.exec(line);
-      const candidate = assignment?.[1] ?? domainTable?.[1] ?? dictionary?.[1];
-      if (!candidate) return undefined;
-      if (candidate.startsWith(LAUNCHD_LABEL_PREFIX) && !add(candidate)) return undefined;
-      if (dictionary) depth += 1;
-      continue;
-    }
-
-    if (line.includes(LAUNCHD_LABEL_PREFIX)) return undefined;
-    depth += countCharacter(line, "{") - countCharacter(line, "}");
-    if (depth < 1 || (insideServices && depth < 2)) return undefined;
-  }
-  return servicesSeen && depth === 0 ? labels : undefined;
+  return labels;
 }
 
 function countCharacter(value: string, needle: "{" | "}"): number {

@@ -17,8 +17,19 @@ import { chmodSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 
+// `Bun.Glob.scan()` yields paths using the PLATFORM separator, so on Windows
+// every entry comes back backslash-separated (`src\assets\...`). The
+// forward-slash rewrites below would then silently not match, leaving
+// `dest === src` — `Bun.write` would copy each asset onto itself and
+// `dist/assets/` would never be created at all. That is invisible on
+// Linux/macOS and breaks every `with { type: "text" }` import on Windows at
+// runtime (ERR_MODULE_NOT_FOUND on the first embedded asset). Normalize once,
+// here, so the rewrites are separator-independent.
+const toPosix = (filePath: string): string => filePath.replaceAll("\\", "/");
+
 const assetGlob = new Bun.Glob("src/assets/**/*");
-for await (const src of assetGlob.scan(".")) {
+for await (const entry of assetGlob.scan(".")) {
+  const src = toPosix(entry);
   const dest = src.replace(/^src\/assets\//, "dist/assets/");
   await mkdir(dirname(dest), { recursive: true });
   await Bun.write(dest, Bun.file(src));
@@ -29,7 +40,8 @@ for await (const src of assetGlob.scan(".")) {
 // tsc only emits .ts sources, so mirror them into dist/ at the same relative
 // path the compiled importer expects.
 const yamlTemplateGlob = new Bun.Glob("src/**/*.{yaml,yml}");
-for await (const src of yamlTemplateGlob.scan(".")) {
+for await (const entry of yamlTemplateGlob.scan(".")) {
+  const src = toPosix(entry); // see the separator note above — Windows yields backslashes
   if (src.startsWith("src/assets/")) continue; // already mirrored above
   const dest = src.replace(/^src\//, "dist/");
   await mkdir(dirname(dest), { recursive: true });

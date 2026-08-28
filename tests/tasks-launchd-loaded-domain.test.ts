@@ -2,11 +2,28 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+// `parseLaunchdLoadedLabels` reads the current user's OWN launchd inventory —
+// the tasks they asked akm to schedule, on their own machine. It is not an
+// attacker-controlled document.
+//
+// This file used to assert the opposite. Most of its cases pinned a rigid
+// whole-document grammar that returned `undefined` — a hard
+// INVALID_CONFIG_FILE that refused to inspect scheduler state at all — if any
+// line failed to match: unrecognized token shapes, duplicate labels, nested
+// blocks, extra columns, trailing text. Real `launchctl print gui/<uid>` output
+// on macOS is far richer than that grammar allowed, so on a real Mac it
+// rejected the user's own inventory and broke every launchd operation. The
+// gated native-scheduler suite caught it the first time it was ever dispatched.
+//
+// What is pinned now is what the function is actually for: find the labels in
+// our own `com.akm.task.` namespace, ignore everything else, and hold two real
+// resource bounds (output size, label count).
+
 import { describe, expect, test } from "bun:test";
 import { parseLaunchdLoadedLabels } from "../src/tasks/backends/launchd";
 
 describe("parseLaunchdLoadedLabels", () => {
-  test("reads a real launchctl domain services table row with an idle status", () => {
+  test("reads a domain services table row", () => {
     const output = `gui/501 = {
   services = {
     799  -  com.akm.task.ping
@@ -16,7 +33,7 @@ describe("parseLaunchdLoadedLabels", () => {
     expect([...parseLaunchdLoadedLabels(output)!]).toEqual(["com.akm.task.ping"]);
   });
 
-  test("accepts every valid PID and status spelling in a domain services table", () => {
+  test("reads every PID and status spelling in a domain services table", () => {
     const output = `gui/501 = {
   services = {
     0  0  com.akm.task.zero
@@ -36,7 +53,7 @@ describe("parseLaunchdLoadedLabels", () => {
     ]);
   });
 
-  test("reads only direct AKM services from a launchctl domain print envelope", () => {
+  test("reads bare, quoted, and dictionary-key label spellings, ignoring non-akm services", () => {
     const output = `gui/501 = {
   type = login
   services = {
@@ -61,103 +78,77 @@ describe("parseLaunchdLoadedLabels", () => {
     expect([...parseLaunchdLoadedLabels(output)!]).toEqual(["com.akm.task.ping", "com.akm.task.ping."]);
   });
 
-  test("rejects a duplicate AKM label occurrence in launchctl list output", () => {
+  test("a label repeated across the inventory is reported once, not treated as corruption", () => {
     const output = `PID Status Label
 123 0 com.akm.task.ping
 - 0 com.akm.task.ping
 `;
 
-    expect(parseLaunchdLoadedLabels(output)).toBeUndefined();
+    expect([...parseLaunchdLoadedLabels(output)!]).toEqual(["com.akm.task.ping"]);
   });
 
-  test.each([
-    ["domain table", "gui/501 = {\n  services = {\n    123 0 com.akm.task.ping\n    - 0 com.akm.task.ping\n  }\n}\n"],
-    [
-      "domain dictionary",
-      'gui/501 = {\n  services = {\n    "com.akm.task.ping" = {\n    }\n    "com.akm.task.ping" = {\n    }\n  }\n}\n',
-    ],
-  ])("rejects a duplicate AKM label occurrence in %s output", (_shape, output) => {
-    expect(parseLaunchdLoadedLabels(output)).toBeUndefined();
+  test("reads a realistically-shaped launchctl print envelope with unrelated sections", () => {
+    // The shape that broke macOS: sections beyond `services`, nested
+    // dictionaries, arrays, and an akm label appearing outside the services
+    // block. Every one of these previously returned undefined.
+    const output = `gui/501 = {
+	type = login
+	handle = 501
+	active count = 482
+	properties = {
+		system domain
+		exempt from dyld cache
+	}
+	endpoints = {
+		"com.akm.task.ping" = {
+			active = 1
+			managed = 0
+		}
+	}
+	services = {
+		799     0       com.akm.task.ping
+		-       0       com.akm.task.nightly
+		1021    0       com.apple.WindowServer
+	}
+}`;
+
+    expect([...parseLaunchdLoadedLabels(output)!].sort()).toEqual(["com.akm.task.nightly", "com.akm.task.ping"]);
   });
 
-  test("does not apply domain-table status grammar to launchctl list output", () => {
-    expect(parseLaunchdLoadedLabels("PID Status Label\n799 - com.akm.task.ping\n")).toBeUndefined();
-    expect([...parseLaunchdLoadedLabels("PID Status Label\n- -9 com.akm.task.failed\n")!]).toEqual([
-      "com.akm.task.failed",
-    ]);
-  });
-
-  test("rejects an AKM-looking token outside a recognized loaded-service shape", () => {
-    expect(parseLaunchdLoadedLabels("gui/501 = {\n  note = com.akm.task.unproven\n}\n")).toBeUndefined();
-  });
-
-  test("rejects a dictionary-shaped AKM label outside the single services block", () => {
+  test("ignores tokens that are not valid labels in our namespace", () => {
+    // The prefix appears, but the token is not a well-formed label, so it is
+    // skipped rather than poisoning the whole read.
     const output = `gui/501 = {
   services = {
-    799 - com.akm.task.ping
-  }
-  endpoints = {
-    "com.akm.task.not-a-service" = {
-    }
+    799 - com.akm.task.ok
+    note = com.akm.task.bad$token
+    bare = com.akm.task.
   }
 }`;
 
-    expect(parseLaunchdLoadedLabels(output)).toBeUndefined();
+    // `bad$token` carries a character outside the label charset and
+    // `com.akm.task.` has no suffix at all; both are skipped, and the valid
+    // sibling on the line above is still read.
+    expect([...parseLaunchdLoadedLabels(output)!]).toEqual(["com.akm.task.ok"]);
   });
 
-  test("rejects extra domain table columns and malformed services braces", () => {
-    expect(
-      parseLaunchdLoadedLabels("gui/501 = {\n  services = {\n    799 - com.akm.task.ping extra\n  }\n}\n"),
-    ).toBeUndefined();
-    expect(
-      parseLaunchdLoadedLabels(
-        'gui/501 = {\n  services = {\n    "com.akm.task.ping" = {\n      active count = 1\n  }\n',
-      ),
-    ).toBeUndefined();
+  test("control characters elsewhere in the inventory do not discard the read", () => {
+    const output = "gui/501 = {\n  services = {\n    799 - com.akm.task.ping\n    note = \n  }\n}\n";
+
+    expect([...parseLaunchdLoadedLabels(output)!]).toEqual(["com.akm.task.ping"]);
   });
 
-  test("rejects duplicate services blocks even when both use dictionary-shaped AKM labels", () => {
-    const output = `gui/501 = {
-  services = {
-    "com.akm.task.ping" = {
-    }
-  }
-  services = {
-    "com.akm.task.PING" = {
-    }
-  }
-}`;
-
-    expect(parseLaunchdLoadedLabels(output)).toBeUndefined();
-  });
-
-  test("rejects nested services blocks and extra outer braces", () => {
-    expect(parseLaunchdLoadedLabels("gui/501 = {\n  wrapper = {\n    services = {\n    }\n  }\n}\n")).toBeUndefined();
-    expect(parseLaunchdLoadedLabels("gui/501 = {\n  services = {\n  }\n}\n}\n")).toBeUndefined();
-    expect(parseLaunchdLoadedLabels("gui/501 = {\n  services = {\n  }\n}\ntrailing\n")).toBeUndefined();
-  });
-
-  test("rejects control characters anywhere in launchctl inventory output", () => {
-    expect(
-      parseLaunchdLoadedLabels("gui/501 = {\n  services = {\n    799 - com.akm.task.ping\n    note = \u0001\n  }\n}\n"),
-    ).toBeUndefined();
-  });
-
-  test("fails closed when domain bytes or AKM namespace cardinality exceed their bounds", () => {
+  test("fails closed when the output exceeds the size bound", () => {
     expect(
       parseLaunchdLoadedLabels(`PID Status Label\n- 0 com.apple.${"x".repeat(4 * 1024 * 1024)}\n`),
     ).toBeUndefined();
-    const excessive = Array.from({ length: 4097 }, (_, index) => `${index + 1} 0 com.akm.task.task-${index}`).join(
-      "\n",
-    );
-    expect(parseLaunchdLoadedLabels(`PID Status Label\n${excessive}\n`)).toBeUndefined();
   });
 
-  test("accepts exactly 4096 raw unique AKM entries and rejects a 4097th repeated entry", () => {
+  test("accepts 4096 distinct labels and fails closed on the 4097th", () => {
     const maximum = Array.from({ length: 4096 }, (_, index) => `${index + 1} 0 com.akm.task.task-${index}`).join("\n");
     expect(parseLaunchdLoadedLabels(`PID Status Label\n${maximum}\n`)?.size).toBe(4096);
 
-    const repeatedOverflow = `${maximum}\n4097 0 com.akm.task.task-0`;
-    expect(parseLaunchdLoadedLabels(`PID Status Label\n${repeatedOverflow}\n`)).toBeUndefined();
+    const overflow = `${maximum}\n4097 0 com.akm.task.task-4096`;
+    expect(parseLaunchdLoadedLabels(`PID Status Label\n${overflow}\n`)).toBeUndefined();
   });
 });
