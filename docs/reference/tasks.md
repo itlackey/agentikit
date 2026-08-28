@@ -151,9 +151,11 @@ for the one source task.
 
 Task source v4 has **no document-level `enabled` flag** — enablement is
 per schedule binding. Disable one binding by setting its own
-`enabled: false`; a task with no `schedule:` at all has nothing to disable
-(it is already manual-only) — `akm task add --disabled` with no
-`--schedule` is a usage error naming `--schedule` for exactly this reason.
+`enabled: false`. `--schedule` is a required flag on every `akm task add`
+invocation, `--disabled` included — not a check specific to `--disabled` —
+so `akm task add --disabled` always has a schedule to write `enabled: false`
+onto and never needs to reject a schedule-less task with "nothing to
+disable."
 
 `akm task run <id>` executes a task immediately, including a disabled task.
 `akm task sync` validates the complete desired set before atomically
@@ -288,19 +290,21 @@ as a name/ref only, never its resolved value.
 akm task explain review --scope all  # doclint:ignore
 ```
 
-`akm task explain` has no separate human-readable renderer: its default
-text output and its `--format json` output are the **same raw JSON**, byte
-for byte. There is nothing to lose by piping either form into `jq` or a
-script.
+`akm task explain`'s default output (no `--format` flag) is the **same raw
+JSON** as `--format json`, byte for byte — there is nothing to lose by
+piping the default form into `jq` or a script. `--format text` is a
+separate renderer: it flattens the same envelope into `dotted.path=value`
+lines (the same convention `akm config list --format text` uses), not a
+copy of the JSON.
 
 > A secret-shaped **input default** (as opposed to a supplied value) is
 > redacted the same way, but its accompanying explanation currently reuses
 > workflow-parameter wording that does not quite fit a task input — treat
 > the redaction itself as reliable even where the prose reads oddly.
-> Likewise, `akm task run --<name> <secret-looking-value>` on a genuine
-> type mismatch (not `akm task explain`) can still echo the offered value
-> in its error envelope; this is a known gap, not something either of
-> these two commands' redaction is supposed to cover today.
+> `akm task run --<name> <secret-looking-value>` never echoes the offered
+> value in its error envelope, whether the value fails typed-flag coercion
+> or fails the declared schema (an `enum`/`minimum`/`maximum` mismatch
+> included) — both paths report only the violated constraint.
 
 ## Migrating to task source v4
 
@@ -378,8 +382,9 @@ for full before/after examples and recovery guidance.
   anything — see [`akm task explain`](#akm-task-explain) above.
 - `akm task add` writes a task source v4 document and installs it after
   validation. `--params` renders typed `inputs:` declarations instead of a
-  `with:` bag; `--disabled` requires `--schedule` and writes
-  `schedule: [{cron: …, enabled: false}]`.
+  `with:` bag; `--schedule` is required on every invocation, and
+  `--disabled` writes `schedule: [{cron: …, enabled: false}]` instead of a
+  document-level flag.
 - `akm task history` reads durable run history from `state.db`.
 - Disable a binding by editing the source and syncing: set that schedule
   entry's own `enabled: false`.

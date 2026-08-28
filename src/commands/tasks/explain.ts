@@ -23,7 +23,9 @@
  * index` to build it", which is the wrong shape of dependency for a command
  * whose whole point is to work on a task the caller just wrote).
  *
- * SECRET-FREE, by construction (B-N4's enumerated bans):
+ * SECRET-FREE BY CONSTRUCTION for the structural bans below — these hold
+ * regardless of any value's shape, because the excluded data never reaches
+ * this module in the first place:
  *
  *   - a resolved `env:` value never reaches this module at all — the task's
  *     OWN `env:` map is deliberately never read from the parsed document;
@@ -51,13 +53,23 @@
  *     `{layer,kind,via}` provenance map are read back — never
  *     `request.command`, `request.persona`, `request.conversation`, or
  *     `request.runtime.environment`/`.workspace`.
- *   - a secret-shaped input value (`detectSecretShapedParams`) prints as the
- *     literal string `"<redacted>"`, with its row marked `redacted: true`,
- *     instead of the real value — applied uniformly across every row that
- *     echoes a value: a declaration's own `default`, a `suppliedInputs`
- *     entry regardless of provenance, and a `schedule[].inputs` entry
- *     (code-review finding: the declaration row alone left the identical
- *     value printed verbatim one section over, in `suppliedInputs`).
+ *
+ * BEST-EFFORT, NOT A GUARANTEE, for input VALUES: a secret-shaped input
+ * value is redacted only when `detectSecretShapedParams`
+ * (`src/workflows/exec/param-secrets.ts`) recognizes its shape, and that
+ * detector is an explicitly best-effort heuristic — its own doc comment
+ * acknowledges expected false negatives (a short, low-entropy, or
+ * unusually-named credential prints unredacted). A recognized value prints
+ * as the literal string `"<redacted>"`, with its row marked
+ * `redacted: true`, instead of the real value — applied uniformly across
+ * every place a declared or supplied VALUE can appear in this envelope: a
+ * declaration's own `default`, each entry of a declaration's own `enum`
+ * list (checked per-entry, not as one blanked list — code-review finding,
+ * explain.ts:184), a `suppliedInputs` entry regardless of provenance, and a
+ * `schedule[].inputs` entry (code-review finding: the declaration row alone
+ * left the identical value printed verbatim one section over, in
+ * `suppliedInputs`). Do not paste this command's output into an untrusted
+ * place on the assumption that it can never contain a credential.
  *
  * Field-level execution provenance is READ from `planExecutionCascade`'s own
  * `ResolvedExecutionPlanV1.provenance` (via `prepareResolvedExecution`) —
@@ -154,9 +166,9 @@ function isSecretShapedValue(name: string, value: unknown): boolean {
  * a v4 schedule entry's own `inputs`, printed verbatim from the source)
  * echoed the identical value unredacted in the same envelope — a
  * `sk-live-…` default appeared in full in both output formats. Applied to
- * every supplied/schedule-binding row regardless of provenance, so B-N4's
- * "never printed" guarantee holds across the whole envelope, not just the
- * declaration row.
+ * every supplied/schedule-binding row regardless of provenance, so the same
+ * best-effort redaction (see this file's header) applies uniformly across
+ * the whole envelope, not just the declaration row.
  */
 function redactIfSecretShaped(name: string, value: unknown): Readonly<{ value: unknown; redacted?: boolean }> {
   if (!isSecretShapedValue(name, value)) return { value };
@@ -171,22 +183,49 @@ function declarationEnum(schema: Readonly<Record<string, unknown>>): readonly un
   return Array.isArray(schema.enum) ? schema.enum : undefined;
 }
 
+/**
+ * Code-review finding (explain.ts:184, B-N4): `buildInputDeclarations`
+ * already redacted a secret-shaped `default`, via {@link redactIfSecretShaped}
+ * applied to the WHOLE default value, but the identical value appearing in
+ * that same declaration's JSON-Schema `enum:` list printed unredacted one
+ * key over — an `enum: [..., "sk-live-…"]` list echoed the credential in
+ * full even though the matching `default:` on the same declaration was
+ * already redacted. Fixed by applying the SAME per-value check
+ * ({@link isSecretShapedValue}) to each entry independently, replacing only
+ * the secret-shaped ones with `"<redacted>"` — deliberately NOT collapsing
+ * the whole list to one `"<redacted>"` sentinel the way a single `default`
+ * value is, since an `enum` list's non-secret alternatives are useful
+ * provenance in their own right and dropping them would over-redact.
+ */
+function redactEnum(
+  name: string,
+  values: readonly unknown[],
+): Readonly<{ enum: readonly unknown[]; redacted: boolean }> {
+  let redacted = false;
+  const out = values.map((value) => {
+    if (!isSecretShapedValue(name, value)) return value;
+    redacted = true;
+    return "<redacted>";
+  });
+  return { enum: out, redacted };
+}
+
 function buildInputDeclarations(contract: InputContract): Record<string, InputDeclarationRow> {
   const out: Record<string, InputDeclarationRow> = {};
   for (const [name, declaration] of Object.entries(contract)) {
     const typedDeclaration = declaration as InputDeclaration;
     const hasDefault = Object.hasOwn(typedDeclaration, "default");
-    const secret = hasDefault && isSecretShapedValue(name, typedDeclaration.default);
+    const secretDefault = hasDefault && isSecretShapedValue(name, typedDeclaration.default);
+    const enumValues = declarationEnum(typedDeclaration.schema);
+    const enumRedaction = enumValues !== undefined ? redactEnum(name, enumValues) : undefined;
     out[name] = {
       ...(declarationType(typedDeclaration.schema) !== undefined
         ? { type: declarationType(typedDeclaration.schema) }
         : {}),
-      ...(declarationEnum(typedDeclaration.schema) !== undefined
-        ? { enum: declarationEnum(typedDeclaration.schema) }
-        : {}),
+      ...(enumRedaction !== undefined ? { enum: enumRedaction.enum } : {}),
       required: typedDeclaration.required,
-      ...(hasDefault ? { default: secret ? "<redacted>" : typedDeclaration.default } : {}),
-      ...(secret ? { redacted: true } : {}),
+      ...(hasDefault ? { default: secretDefault ? "<redacted>" : typedDeclaration.default } : {}),
+      ...(secretDefault || enumRedaction?.redacted ? { redacted: true } : {}),
     };
   }
   return out;
@@ -268,9 +307,10 @@ function resolveExecutionSettings(document: PreparableTaskDocument): ExecutionSe
 }
 
 /**
- * Resolve, parse, and project one task asset into a secret-free explain
- * envelope. Read-only: no history write, no scheduler touch, no execution
- * spawn (see this file's header).
+ * Resolve, parse, and project one task asset into an explain envelope with
+ * every secret-shaped value redacted on a best-effort basis (see this
+ * file's header). Read-only: no history write, no scheduler touch, no
+ * execution spawn.
  */
 export async function akmTaskExplain(ref: string, options: TaskExplainOptions = {}): Promise<TaskExplainEnvelope> {
   const parsedRef = parseTaskRef(ref);

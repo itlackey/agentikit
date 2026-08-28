@@ -111,7 +111,7 @@ enumeration of the whole `proposal` noun group.
 | `akm task history` | Evolving | |
 | `akm task sync` | Evolving | |
 | `akm task doctor` | Evolving | |
-| `akm task explain` | Evolving | New in 0.9.2; secret-free provenance output. |
+| `akm task explain` | Evolving | New in 0.9.2; secret-shaped values in provenance output are redacted on a best-effort heuristic basis (not a guarantee). |
 
 ## Stable
 
@@ -263,10 +263,14 @@ CHANGELOG with a migration note.
   metadata is versioned. Schema additions in patch releases; removals only at
   minor. Bare `akm task` is a usage error naming the subcommands
   (`akm task doctor` reports scheduler diagnostics). `akm task explain <ref>`
-  (new in 0.9.2) and `akm workflow plan <ref>` are both zero-write,
-  secret-free provenance surfaces: they show what a task or workflow would do
-  — resolved target, input bindings, child expansion — without starting or
-  publishing a run and without ever printing a resolved secret value.
+  (new in 0.9.2) and `akm workflow plan <ref>` are both zero-write
+  provenance surfaces: they show what a task or workflow would do —
+  resolved target, input bindings, child expansion — without starting or
+  publishing a run. `akm workflow plan` is secret-free **by construction**
+  (the excluded data never reaches the command). `akm task explain`
+  instead **redacts** secret-shaped input values on a best-effort
+  heuristic basis — a value that doesn't match the heuristic can still
+  print unredacted.
 - **Workflow plan** — `akm workflow plan <ref>`, new in 0.9.2: zero-write
   compile+freeze introspection (the canonical step graph, task/child
   expansion, input bindings, and lowering notices for a workflow, without

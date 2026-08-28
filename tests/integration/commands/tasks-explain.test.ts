@@ -12,8 +12,14 @@
  * declarations with defaults, supplied values WITH PROVENANCE (`default` |
  * `flag` | `schedule-binding`), the resolved target kind + ref, effective
  * execution settings with field-level provenance, and schedule bindings. It
- * is SECRET-FREE: never a resolved `env:` value, a credential, a prompt
- * body, or a `run:`/script body.
+ * never prints a resolved `env:` value, a prompt body, or a `run:`/script
+ * body — those are structural bans, true regardless of shape. A
+ * secret-shaped INPUT value (a declaration's `default`, an `enum` entry, a
+ * `suppliedInputs` entry, or a `schedule[].inputs` entry) is redacted only
+ * on a BEST-EFFORT heuristic basis (`detectSecretShapedParams`,
+ * `src/workflows/exec/param-secrets.ts`) — not a guarantee. See the
+ * "secret-shaped VALUE redaction" describe block below for the coverage
+ * that actually exercises that path.
  *
  * RED TODAY: `akm task explain` does not exist as a subcommand at all —
  * `taskCommand.subCommands` (`src/commands/tasks/tasks-cli.ts`) has no
@@ -243,6 +249,92 @@ function hasRequiredDeclarationRow(json: unknown, inputName: string): boolean {
       }
     }
     return Object.values(obj).some(visit);
+  }
+  return visit(json);
+}
+
+/**
+ * Locate the DECLARATION row for `inputName` (shape (a) or (b), mirroring
+ * {@link hasRequiredDeclarationRow}) and return it WHOLE, so a test can read
+ * its `enum`/`default`/`redacted` fields directly rather than only checking
+ * for presence.
+ */
+function findDeclarationRow(json: unknown, inputName: string): Record<string, unknown> | undefined {
+  function visit(node: unknown): Record<string, unknown> | undefined {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const found = visit(item);
+        if (found) return found;
+      }
+      return undefined;
+    }
+    if (node === null || typeof node !== "object") return undefined;
+    const obj = node as Record<string, unknown>;
+
+    const nameField = obj.name ?? obj.input ?? obj.key;
+    if (typeof nameField === "string" && nameField === inputName && Object.hasOwn(obj, "required")) return obj;
+
+    if (Object.hasOwn(obj, inputName)) {
+      const entry = obj[inputName];
+      if (
+        entry !== null &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        Object.hasOwn(entry as object, "required")
+      ) {
+        return entry as Record<string, unknown>;
+      }
+    }
+    for (const value of Object.values(obj)) {
+      const found = visit(value);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  return visit(json);
+}
+
+/**
+ * Locate a SUPPLIED-VALUE (or schedule-binding) row for `inputName` whose
+ * `provenance` equals `provenance` (shape (a) or (b), mirroring
+ * {@link suppliedValueProvenances}), and return it WHOLE so a test can read
+ * its `value`/`redacted` fields directly.
+ */
+function findSuppliedInputRow(
+  json: unknown,
+  inputName: string,
+  provenance: string,
+): Record<string, unknown> | undefined {
+  function visit(node: unknown): Record<string, unknown> | undefined {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const found = visit(item);
+        if (found) return found;
+      }
+      return undefined;
+    }
+    if (node === null || typeof node !== "object") return undefined;
+    const obj = node as Record<string, unknown>;
+
+    const nameField = obj.name ?? obj.input ?? obj.key;
+    if (typeof nameField === "string" && nameField === inputName && obj.provenance === provenance) return obj;
+
+    if (Object.hasOwn(obj, inputName)) {
+      const entry = obj[inputName];
+      if (
+        entry !== null &&
+        typeof entry === "object" &&
+        !Array.isArray(entry) &&
+        (entry as Record<string, unknown>).provenance === provenance
+      ) {
+        return entry as Record<string, unknown>;
+      }
+    }
+    for (const value of Object.values(obj)) {
+      const found = visit(value);
+      if (found) return found;
+    }
+    return undefined;
   }
   return visit(json);
 }
@@ -485,7 +577,7 @@ describe("akm task explain <ref> --scheduled — UNKNOWN_FLAG (F7)", () => {
   }
 });
 
-describe("akm task explain <ref> — SECRET-FREE, enumerated bans (B-56, B-N4)", () => {
+describe("akm task explain <ref> — structural bans (B-56, B-N4): env:/prompt/run: bodies never reach this module", () => {
   test("never prints a resolved env: value, a prompt body, or a run:/script sentinel — in EITHER output format", async () => {
     writeExplainDemoFixture();
     const text = await runCliCapture(["task", "explain", "explain-demo"]);
@@ -511,6 +603,172 @@ describe("akm task explain <ref> — SECRET-FREE, enumerated bans (B-56, B-N4)",
     expect(result.code).toBe(0);
     expect(result.stdout).not.toContain(RUN_SENTINEL);
     expect(result.stdout).toMatch(/shell/i);
+  });
+});
+
+// Finding 1 (code review): a secret-shaped value survived unredacted when it
+// appeared in an input declaration's JSON-Schema `enum:` list, even though
+// the IDENTICAL value was already redacted under that same declaration's
+// `default:`, in `suppliedInputs`, and in `schedule[].inputs`. Finding 3: no
+// test in this file exercised ANY of those redaction paths at all — this
+// describe block is that missing coverage, for every place a declared or
+// supplied VALUE can appear. Each secret-shaped sentinel below is chosen to
+// trip `detectSecretShapedParams`'s VALUE-shape heuristic on its own (the
+// `sk-` prefix, `src/workflows/exec/param-secrets.ts`'s
+// `SECRET_VALUE_PREFIX`) — deliberately under an input NAME
+// (`scope`/`note`) that does not itself match the heuristic's KEY-name hint
+// list, so a passing test proves value-shape detection specifically, not
+// merely name-based detection. `apiKey` is the inverse case: a plainly
+// non-secret VALUE under a secret-suggesting NAME, proving the existing
+// (previously untested) `default:` redaction still fires on name alone.
+const ENUM_SECRET_SENTINEL = "sk-EnumSecretSentinelValue1234567890";
+const SUPPLIED_SECRET_SENTINEL = "sk-SuppliedSecretSentinelValue1234567890";
+const SCHEDULE_SECRET_SENTINEL = "sk-ScheduleSecretSentinelValue1234567890";
+// `scope`'s default must itself satisfy its own `enum:` (task source v4
+// validates a declaration's default against its own schema), so the
+// non-secret control value here is the enum's own plain member "public"
+// rather than an arbitrary string.
+const PLAIN_SCOPE_DEFAULT = "public";
+const PLAIN_NOTE_DEFAULT = "plain-note-default";
+const PLAIN_APIKEY_DEFAULT = "plain-apikey-default-value";
+
+function writeExplainSecretsFixture(): void {
+  writeTask(
+    "explain-secrets",
+    [
+      "version: 4",
+      "name: Explain secrets demo",
+      "description: A demo task for secret-shaped VALUE redaction (Finding 1).",
+      "inputs:",
+      "  scope:",
+      "    type: string",
+      "    enum:",
+      "      - public",
+      `      - "${ENUM_SECRET_SENTINEL}"`,
+      `    default: ${PLAIN_SCOPE_DEFAULT}`,
+      "  note:",
+      "    type: string",
+      `    default: ${PLAIN_NOTE_DEFAULT}`,
+      "  apiKey:",
+      "    type: string",
+      `    default: ${PLAIN_APIKEY_DEFAULT}`,
+      "run: echo ok",
+      "shell: sh",
+      "schedule:",
+      `  - cron: "${SCHEDULE_CRON}"`,
+      "    inputs:",
+      // `scope` carries an `enum:` constraint, so a schedule literal for it
+      // must itself be one of the two declared enum values — bind the
+      // schedule's own secret-shaped literal to `note` instead (no `enum:`
+      // constraint) so this fixture can use a THIRD, independent sentinel.
+      `      note: "${SCHEDULE_SECRET_SENTINEL}"`,
+      "",
+    ].join("\n"),
+  );
+}
+
+describe("akm task explain <ref> — secret-shaped VALUE redaction (Finding 1: enum was NOT covered; Finding 3: this coverage did not exist)", () => {
+  test("a secret-shaped enum ENTRY is redacted per-value — the sibling non-secret entry and the declaration's own default stay visible", async () => {
+    writeExplainSecretsFixture();
+    const result = await runCliCapture(["task", "explain", "explain-secrets", "--format", "json"]);
+    expect(result.code).toBe(0);
+    const envelope = JSON.parse(result.stdout);
+
+    const row = findDeclarationRow(envelope, "scope");
+    expect(row).toBeDefined();
+    expect(row?.enum).toEqual(["public", "<redacted>"]);
+    expect(row?.redacted).toBe(true);
+    // The declaration's OWN default is a DIFFERENT, non-secret-shaped value
+    // under a non-secret-shaped name — proof this is a per-VALUE check, not
+    // a check that blanks the whole declaration once ANY field on it looks
+    // secret-shaped.
+    expect(row?.default).toBe(PLAIN_SCOPE_DEFAULT);
+
+    for (const output of [result.stdout, result.stderr]) {
+      expect(output).not.toContain(ENUM_SECRET_SENTINEL);
+    }
+  });
+
+  test("a plainly non-secret enum entry and default are NOT redacted (over-redaction guard)", async () => {
+    writeExplainSecretsFixture();
+    const result = await runCliCapture(["task", "explain", "explain-secrets", "--format", "json"]);
+    const envelope = JSON.parse(result.stdout);
+
+    const row = findDeclarationRow(envelope, "scope");
+    expect(row?.enum).toContain("public");
+    expect(row?.default).toBe(PLAIN_SCOPE_DEFAULT);
+
+    const noteRow = findDeclarationRow(envelope, "note");
+    expect(noteRow?.default).toBe(PLAIN_NOTE_DEFAULT);
+    expect(noteRow?.redacted).toBeUndefined();
+  });
+
+  test("a secret-SUGGESTING input NAME redacts its default even when the value itself doesn't look secret-shaped", async () => {
+    writeExplainSecretsFixture();
+    const result = await runCliCapture(["task", "explain", "explain-secrets", "--format", "json"]);
+    const envelope = JSON.parse(result.stdout);
+
+    const row = findDeclarationRow(envelope, "apiKey");
+    expect(row?.default).toBe("<redacted>");
+    expect(row?.redacted).toBe(true);
+    expect(result.stdout).not.toContain(PLAIN_APIKEY_DEFAULT);
+  });
+
+  test("a secret-shaped SUPPLIED (flag) value is redacted in suppliedInputs; the unflagged default is not", async () => {
+    writeExplainSecretsFixture();
+
+    const defaulted = await runCliCapture(["task", "explain", "explain-secrets", "--format", "json"]);
+    expect(defaulted.code).toBe(0);
+    const defaultedEnvelope = JSON.parse(defaulted.stdout);
+    const defaultRow = findSuppliedInputRow(defaultedEnvelope, "note", "default");
+    expect(defaultRow?.value).toBe(PLAIN_NOTE_DEFAULT);
+    expect(defaultRow?.redacted).toBeUndefined();
+
+    const flagged = await runCliCapture([
+      "task",
+      "explain",
+      "explain-secrets",
+      "--note",
+      SUPPLIED_SECRET_SENTINEL,
+      "--format",
+      "json",
+    ]);
+    expect(flagged.code).toBe(0);
+    const flaggedEnvelope = JSON.parse(flagged.stdout);
+    const flagRow = findSuppliedInputRow(flaggedEnvelope, "note", "flag");
+    expect(flagRow?.value).toBe("<redacted>");
+    expect(flagRow?.redacted).toBe(true);
+
+    for (const output of [flagged.stdout, flagged.stderr]) {
+      expect(output).not.toContain(SUPPLIED_SECRET_SENTINEL);
+    }
+  });
+
+  test("a secret-shaped schedule[].inputs literal is redacted", async () => {
+    writeExplainSecretsFixture();
+    const result = await runCliCapture(["task", "explain", "explain-secrets", "--format", "json"]);
+    expect(result.code).toBe(0);
+    const envelope = JSON.parse(result.stdout);
+
+    const row = findSuppliedInputRow(envelope, "note", "schedule-binding");
+    expect(row?.value).toBe("<redacted>");
+    expect(row?.redacted).toBe(true);
+
+    for (const output of [result.stdout, result.stderr]) {
+      expect(output).not.toContain(SCHEDULE_SECRET_SENTINEL);
+    }
+  });
+
+  test("text output (no --format) never leaks any of the secret-shaped sentinels either", async () => {
+    writeExplainSecretsFixture();
+    const result = await runCliCapture(["task", "explain", "explain-secrets", "--note", SUPPLIED_SECRET_SENTINEL]);
+    expect(result.code).toBe(0);
+
+    for (const output of [result.stdout, result.stderr]) {
+      expect(output).not.toContain(ENUM_SECRET_SENTINEL);
+      expect(output).not.toContain(SUPPLIED_SECRET_SENTINEL);
+      expect(output).not.toContain(SCHEDULE_SECRET_SENTINEL);
+    }
   });
 });
 
