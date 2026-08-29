@@ -63,11 +63,14 @@ function getStep(job: WorkflowJob, name: string): WorkflowStep {
 }
 
 describe("gated CI workflow", () => {
-  test("supports weekly, manual, and narrowly tagged candidates without ordinary push or PR work", () => {
+  test("supports weekly, manual, tagged-candidate, and path-filtered pull-request runs", () => {
     expect(source, "Missing .github/workflows/gated-ci.yml").not.toBe("");
     expect(workflow.on?.push?.tags).toEqual(["gated-ci/candidate-*"]);
-    expect(workflow.on?.pull_request).toBeUndefined();
     expect(workflow.on?.schedule).toEqual([{ cron: "23 5 * * 1" }]);
+    // A pull request touching a gated surface runs that surface's suite
+    // automatically, so "did the relevant gate run before merge" is a CI
+    // status rather than a checklist item a maintainer has to remember.
+    expect(workflow.on?.pull_request).toMatchObject({ branches: ["main", "release/*"] });
 
     const inputs = workflow.on?.workflow_dispatch?.inputs;
     expect(inputs?.candidate_sha).toMatchObject({ required: true, type: "string" });
@@ -85,9 +88,35 @@ describe("gated CI workflow", () => {
       EVENT_SHA: "${{ github.sha }}",
     });
     expect(resolver.run).toContain('if [ "${EVENT_SHA,,}" != "${actual_sha,,}" ]');
+
+    // Every gated suite is selected by one place, so a PR pays only for the
+    // surfaces it actually touched — the cost control that keeps paid
+    // macOS/Windows runners and real model downloads off routine commits.
     for (const id of ["semantic-search", "docker-install", "native-scheduler"]) {
-      expect(getJob(id).if).toContain("github.event_name == 'push'");
+      expect(getJob(id).needs).toContain("detect-changes");
+      expect(getJob(id).if).toContain("needs.detect-changes.outputs.");
     }
+  });
+
+  test("selects every suite for schedule, tag, and all-dispatch, and only changed surfaces for a PR", () => {
+    const decide = getStep(getJob("detect-changes"), "Decide which gated suites this run needs");
+    const run = decide.run ?? "";
+    // The three "run everything" paths stay exhaustive: weekly drift
+    // detection, the release-candidate tag, and an explicit all-dispatch.
+    expect(run).toContain('"$EVENT_NAME" = "schedule"');
+    expect(run).toContain('"$EVENT_NAME" = "push"');
+    expect(run).toContain('"$GATED_SUITE" = "all"');
+    expect(run).toContain("emit_all");
+    // A single-suite dispatch still narrows to just that suite.
+    expect(run).toContain('"$EVENT_NAME" = "workflow_dispatch"');
+    // Each suite has a path filter naming the sources that can break it.
+    expect(run).toContain("src/tasks/"); // native-scheduler
+    expect(run).toContain("docker-install\\.test\\.ts"); // docker
+    expect(run).toContain("src/llm/embed"); // semantic
+    // The PR comparison is against the merge base, not the branch tip.
+    expect(run).toContain('git diff --name-only "$BASE_SHA"...HEAD');
+    expect(decide.env).toMatchObject({ BASE_SHA: "${{ github.event.pull_request.base.sha }}" });
+    expect(getJob("detect-changes").steps?.some((step) => step.uses === "actions/checkout@v5")).toBe(true);
   });
 
   test("keeps stable visible names for the three gated surfaces", () => {
@@ -133,12 +162,17 @@ describe("gated CI workflow", () => {
     expect(fs.readFileSync(path.join(root, ".gitignore"), "utf8")).toContain(".ci-cache/");
   });
 
-  test("runs the Docker gate only on its scheduled or explicitly requested path", () => {
+  test("runs the Docker gate only when its own surface is selected", () => {
     const job = getJob("docker-install");
     expect(job.env).toMatchObject({ AKM_DOCKER_TESTS: "1", DOCKER_BUILDKIT: "1" });
-    expect(job.if).toContain("github.event_name == 'schedule'");
-    expect(job.if).toContain("github.event_name == 'push'");
-    expect(job.if).toContain("inputs.gated_suite == 'docker'");
+    // Never on every PR: the container matrix runs only when the selector
+    // turned this specific surface on (schedule/tag/all-dispatch, an explicit
+    // docker dispatch, or a PR that touched a packaging/install path).
+    expect(job.if).toBe("needs.detect-changes.outputs.docker == 'true'");
+    const decide = getStep(getJob("detect-changes"), "Decide which gated suites this run needs");
+    expect(decide.run).toContain('"$GATED_SUITE" = "$name"');
+    expect(decide.run).toContain("docker=true");
+    expect(decide.run).toContain("docker=false");
     const preflight = getStep(job, "Verify Docker daemon");
     expect(preflight.run).toContain("docker info");
     expect(JSON.stringify(job)).toContain("tests/integration/docker-install.test.ts");

@@ -22,7 +22,7 @@
 import path from "node:path";
 import { assertNever } from "../../core/assert";
 import type { TaskLogLineInput } from "../../core/logs-db";
-import { runManagedSubprocess, type SpawnFn } from "../../core/subprocess";
+import { runManagedSubprocess, type SpawnFn, streamCaptureFailure } from "../../core/subprocess";
 import { assertFrozenDirectoryIdentity } from "../../execution/directory-identity";
 import { cleanupFrozenScript, frozenScriptCommand, materializeFrozenScript } from "../frozen-script";
 import type { ExecutionProvenanceContext } from "../model/invocation";
@@ -190,6 +190,17 @@ export async function runNativeTask(input: {
 
     const { stdout, stderr, timedOut } = result;
     exitCode = result.exitCode ?? (timedOut ? 143 : 1);
+
+    // A pipe that errored or stopped draining yields EMPTY output that is
+    // otherwise indistinguishable from a command that printed nothing — the
+    // log reads like a clean success. Say so instead, the way the workflow
+    // (exec-unit.ts) and agent (agent/spawn.ts) capture paths already do.
+    const captureFailure = streamCaptureFailure(result.stdoutRead, result.stderrRead);
+    if (captureFailure) {
+      const line = `output_capture_incomplete=${captureFailure}`;
+      logLines.push(line);
+      dbLines.push({ level: "warn", line });
+    }
 
     if (timedOut) {
       logLines.push(`timed_out=true timeout_ms=${timeoutMs}`);

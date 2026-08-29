@@ -8,8 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`state.db` could fail to open on macOS with "this platform has no
-  descriptor-backed path."** The descriptor-alias optimization used to bind a
+- **Scheduled tasks on Windows ran but recorded no output.** A task fired by
+  Task Scheduler logged `exit_code=0` with an empty log: the command really
+  ran, but nothing it printed was captured. Captured runs asked for their own
+  process group, which is what lets a timeout reap the whole descendant tree
+  on macOS/Linux; on Windows that same flag instead means "start with no
+  console", and a console host started that way (`powershell.exe`, `cmd.exe`)
+  allocates its own console and thereby replaces the pipes it was handed, so
+  its output went nowhere. Windows got no reaping benefit in exchange — the
+  group kill it enables is a POSIX-only call — so captured Windows runs no
+  longer ask for it. A run whose output capture is incomplete for any other
+  reason now says so in the task log instead of leaving a silent gap.
+- **A scheduled shell task could fail instantly with exit code 1 on Windows.**
+  Two defects on the default Windows task shell (`powershell`): a
+  scheduler-fired run restores the PATH captured at install time, which can be
+  minimal, and `powershell.exe` is not on it (it lives in a `WindowsPowerShell`
+  subdirectory, not `System32`), so the spawn failed outright; and rebinding a
+  bare leading `akm` produced a quoted path, which PowerShell parses as a
+  string rather than a command to run. Both shells are now resolved to
+  absolute paths on Windows, and a rebound invocation carries PowerShell's
+  call operator. `cmd`-shell tasks additionally pass their hand-quoted command
+  line through verbatim, since `cmd /s /c` does not read a standard argv.
+- **`state.db` could fail to open on macOS** with "this platform has no
+  descriptor-backed path." The descriptor-alias optimization used to bind a
   SQLite open to its exact held inode isn't reliably available everywhere —
   Windows never has one, and macOS's `/dev/fd` is a small fixed-size table
   that a process holding higher file-descriptor numbers (as a bundled
@@ -17,30 +38,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (dev/ino/uid, re-verified immediately before and after every open) are the
   real protection; a missing alias now falls back to the plain path on any
   platform instead of throwing, matching the fallback Windows already used.
-- **A scheduled shell task could fail instantly with exit code 1 on Windows**
-  whenever its resolved command line needed its own quoting (for example, any
-  path containing a space — a common case, not just a CI artifact). `cmd.exe`
-  reads its `/S /C` tail as one hand-quoted command line rather than standard
-  argv, and the default per-argument escaping added an incompatible second
-  layer of quotes on top of it. Spawning now passes that command line through
-  verbatim on Windows for `cmd`-shell tasks specifically (PowerShell and POSIX
-  shells are unaffected — they already parse standard argv correctly).
-- Two `native-scheduler` integration tests asserted a forward-slash path
-  suffix (`dist/akm`) against the real on-disk path, which uses `\` on
-  Windows; they now compare against the native separator.
-
-### Changed
-
-- **Gated CI's expensive suites (`semantic`, `docker`, `native-scheduler`)
-  now run themselves automatically on a pull request that touches their own
-  surface**, instead of relying on a maintainer remembering to dispatch the
-  relevant suite before merge. A new `Gated / Detect Changed Paths` job reads
-  the PR's changed files and turns on only the suite(s) that surface actually
-  needs, so a scheduler-backend change doesn't also pay for a Docker install
-  matrix or a real-embeddings run. A PR touching none of these paths gets a
-  fast, all-skipped green run. The weekly schedule, `workflow_dispatch`, and
-  the release-candidate tag trigger are unchanged. See
-  [`docs/maintainers/release-checklist.md`](docs/maintainers/release-checklist.md#3-the-focused-gate-on-a-pull-request).
+- The Windows build shipped no embedded template assets, because the
+  build-time asset copy anchored its rewrites on forward slashes while the
+  glob yields platform-native separators.
 
 ## [0.9.2-alpha.5] - 2026-08-28
 
