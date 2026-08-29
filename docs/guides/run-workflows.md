@@ -19,9 +19,9 @@ current project directory (nearest `.akm/config.json`, git root, bundle root,
 or current directory), so the same workflow can run independently in separate
 projects.
 
-Every new run/start compiles source IR v1 and freezes durable plan v4 before
-publishing the run. Markdown `.md` and GitHub-shaped `.yml` refs use the same
-freeze path.
+Every new run/start compiles source IR v1 and freezes the durable plan v4
+family's current executable format (`irVersion: 5`) before publishing the run.
+Markdown `.md` and GitHub-shaped `.yml` refs use the same freeze path.
 
 ```sh
 akm workflow run workflows/ship-release --version 1.2.3
@@ -187,9 +187,10 @@ resumed. Use `akm workflow list` to find runs by status. Once resumed,
 rather than replayed (see
 [Architecture: Resume is journaled replay](../architecture/workflow-engine.md#resume-is-journaled-replay)).
 
-Only durable v4 plans resume. Pre-v4 stored plans are rejected; start a new run
-from current source. A v4 resume consumes the journaled plan and attempts; it
-does not re-read the authored workflow, configuration, or current index.
+Only plan `irVersion: 5` resumes. Pre-`irVersion`-5 stored plans are rejected;
+start a new run from current source. A resume consumes the journaled plan and
+attempts; it does not re-read the authored workflow, configuration, or current
+index.
 
 ## Abandon a run
 
@@ -247,8 +248,9 @@ treat package dependencies**:
 - **Audit before run** for any workflow that touches secrets, deploys to
   production, or writes outside the project tree. Read the `env:` bindings a
   workflow declares, and read its `exec.pass_env` lines.
-  Durable v4 rejects `inherit_env`, and pre-v4 stored plans do not execute.
-  Authors must use exact named bindings and `pass_env` names.
+  The durable v4 family (`irVersion: 5`) rejects `inherit_env`, and
+  pre-`irVersion`-5 stored plans do not execute. Authors must use exact named
+  bindings and `pass_env` names.
 - **Pin known-good versions** when adding workflow sources from a registry
   or git remote (`akm bundle add github:owner/repo#v1.2.3`), and update
   deliberately rather than via `akm bundle update --all`. A trusted workflow

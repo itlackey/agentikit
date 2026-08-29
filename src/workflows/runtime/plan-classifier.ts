@@ -159,8 +159,11 @@ export function assertWorkflowSpineMatchesPlan(
       corruptSpine(run.id, `${run.status} status does not match the current plan step`);
   } else if (run.status === "failed") {
     // `workflow abandon` marks the run failed while intentionally leaving its
-    // current step pending so `resume` can reopen the same work.
-    if (!current || (current.status !== "failed" && current.status !== "pending"))
+    // current step unchanged so `resume` can reopen the same work. An active
+    // run leaves a pending step; a blocked run leaves a blocked step; and an
+    // execution failure already carries a failed step. All three are honest
+    // failed-run spines that `resumeWorkflowRun` normalizes back to pending.
+    if (!current || (current.status !== "failed" && current.status !== "pending" && current.status !== "blocked"))
       corruptSpine(run.id, `${run.status} status does not match the current plan step`);
   } else if (run.status === "completed") {
     if (

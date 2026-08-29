@@ -56,7 +56,7 @@ describe("plugin-version advisory wiring (itlackey/akm#832)", () => {
   });
 
   test("an installed plugin whose range rejects the running CLI is surfaced as a warn advisory", () => {
-    installPlugin(storage.claudePluginsDir, "0.9.1", "^0.9.0");
+    installPlugin(storage.claudePluginsDir, "0.9.1", "0.9.1");
 
     const result = akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "plugin-version");

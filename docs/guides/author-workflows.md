@@ -183,9 +183,10 @@ Widen it only by naming what the unit needs:
 Secrets and fixed values belong in exact named `env:` bindings: those values
 are redacted out of everything journaled, and `pass_env:` values are not.
 
-Workflow starts freeze durable v4 plans, and v4 rejects `inherit_env` instead
-of persisting an unbounded ambient environment. Pre-v4 stored plans do not
-execute; start a new run after updating the source.
+Workflow starts freeze the durable plan v4 family's current executable format
+(`irVersion: 5`), which rejects `inherit_env` instead of persisting an
+unbounded ambient environment. Pre-`irVersion`-5 stored plans do not execute;
+start a new run after updating the source.
 
 Named bindings and `pass_env:` are part of the unit's input hash, so changing
 either re-runs the command instead of reusing a row recorded under another
@@ -212,7 +213,8 @@ Full list of allowlisted names:
 - **Don't assume your shell's environment.** The child gets an allowlist, not
   an inheritance. If a command fails with "not found" or reads a missing
   toolchain variable, name it in `pass_env:`; use a named `env:` binding for a
-  fixed or secret value. Durable v4 deliberately has no whole-process fallback.
+  fixed or secret value. The durable v4 family (`irVersion: 5`) deliberately
+  has no whole-process fallback.
 - **A very chatty command still passes; its artifact just says so.** akm retains
   8 MiB of stdout and 8 MiB of stderr. Past that it keeps draining and discards,
   so the command runs to completion and its exit code decides the step. The

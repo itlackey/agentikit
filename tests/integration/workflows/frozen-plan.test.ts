@@ -251,6 +251,30 @@ describe("plan freezing at workflow start (migration 006)", () => {
     expect(await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(started.run.id))).toEqual(unitsBefore);
   });
 
+  test("a blocked run can be abandoned and resumed without corrupting its durable spine (#847)", async () => {
+    writeWorkflow("blocked-abandon-resume", "Do recoverable work.");
+    const started = await startWorkflowRun("workflows/blocked-abandon-resume", {});
+
+    const blocked = await completeWorkflowStep({
+      runId: started.run.id,
+      stepId: "only-step",
+      status: "blocked",
+    });
+    if (!("run" in blocked)) {
+      throw new Error("blocking a step unexpectedly returned a summary validation failure");
+    }
+    expect(blocked.run.status).toBe("blocked");
+    expect(blocked.workflow.steps[0]?.status).toBe("blocked");
+
+    const abandoned = await abandonWorkflowRun(started.run.id);
+    expect(abandoned.run.status).toBe("failed");
+    expect(abandoned.workflow.steps[0]?.status).toBe("blocked");
+
+    const resumed = await resumeWorkflowRun(started.run.id);
+    expect(resumed.run.status).toBe("active");
+    expect(resumed.workflow.steps[0]?.status).toBe("pending");
+  });
+
   test("non-current workflow IR is unsupported on every live plan surface", async () => {
     writeWorkflow("noncurrent-plan", "Do work.");
     const started = await startWorkflowRun("workflows/noncurrent-plan", {});

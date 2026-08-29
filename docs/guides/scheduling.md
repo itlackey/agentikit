@@ -51,7 +51,8 @@ execution does not silently switch to a different checkout or package.
 Editing definitions and running ordinary `akm task sync` preserves that
 captured runtime.
 
-A scheduled fire re-reads the guarded current source and creates a fresh durable-v4 freeze.
+A scheduled fire re-reads the guarded current source and creates a fresh
+durable-v4-family freeze at executable `irVersion: 5`.
 Scheduler sync/validation evidence is not an executable snapshot and is never reused as the later run plan.
 
 ## Rerunning setup preserves scheduler bindings

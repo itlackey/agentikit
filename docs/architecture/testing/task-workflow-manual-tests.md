@@ -1,4 +1,4 @@
-# Manual tests — `akm task` and `akm workflow` (0.9.2-alpha.5)
+# Manual tests — `akm task` and `akm workflow` (0.9.2)
 
 This document is a focused manual-QA suite for the `akm task` and `akm
 workflow` subsystems shipped in PR #844 ("Task/workflow final refactor:
@@ -21,6 +21,12 @@ JSON field names, error strings, and exit codes here before relying on them
 against a later release** — none of this is covered by automated tests
 (that's the point of a manual suite), so it can drift silently.
 
+The two defects discovered during that live pass were fixed before stable:
+#846 is now a cross-bundle scheduler-isolation regression, and #847 is now an
+abandon/resume durable-spine regression. Their corrected expectations below
+are pinned by automated integration coverage on the stable candidate; the
+remaining "verified live" labels still refer to the alpha.5 run above.
+
 ## Read this first — the one safety-critical finding
 
 **`akm task sync` (and, to a lesser extent, `akm task add`) write to the
@@ -30,27 +36,22 @@ real, global, per-OS-user scheduler (cron / launchd / schtasks) — no
 scheduler is one shared, host-global resource with no concept of your
 sandbox.
 
-Worse, `task sync`'s orphan-removal is scoped by **bundle NAME equality**
-(`belongsToBundle`, `src/tasks/scheduler-sync.ts`), not by directory path. A
-bundle's name defaults to its directory's **basename** when not explicitly
-registered, de-duplicated only against names in that bundle's own
-`config.json` — never against any other bundle on the machine. Two bundles
-that happen to derive the same name (e.g. both directories literally named
-`bundle`) look identical to the scoping check. This is tracked as **akm#846**:
-in live testing that produced this document, `task sync` run inside a
-believed-isolated sandbox inspected a real, unrelated production cron entry
-(`akm-dogfood-091-capture`) as a removal candidate, and was stopped only by
-an incidental fingerprint-mismatch guard on that one entry — not by any
-designed cross-bundle protection. **There is no `--dry-run` for `task
-add`/`task sync` today.**
+Before #846 was fixed, `task sync`'s orphan-removal used bundle-name equality
+without also confirming the installed entry's resolved bundle path. Two
+unregistered bundles with the same directory basename could therefore make
+one bundle inspect another's scheduler entry as an orphan. Stable 0.9.2
+requires both the matching name and matching resolved owner path for this
+primary-bundle case, and refuses to remove an entry whose owner path cannot be
+established. DT-5 below pins that boundary. **There is still no `--dry-run`
+for `task add`/`task sync`, so scheduler tests remain destructive.**
 
 Practical rule for every test below that touches `add`/`sync`:
 
 1. Never run them on a machine with real akm-managed scheduler entries
    unless you have taken a `crontab -l` (or platform equivalent) backup
    immediately beforehand and can restore it.
-2. Always pass an explicit, collision-proof `--bundle <name>` — never rely
-   on the directory-basename default.
+2. Prefer an explicit, collision-proof `--bundle <name>` so evidence and
+   cleanup are unambiguous, even though #846 now protects basename collisions.
 3. Prefer a disposable container/VM with an empty scheduler.
 4. Every destructive test below states its own backup/restore commands and
    uses an obviously-throwaway id (`akm-manual-test-*`). Follow them exactly;
@@ -79,7 +80,7 @@ cd "$AKM_SANDBOX"   # workflow list/status scope by cwd — see WF-8
 
 # Pick ONE binary and use it consistently for a given test run:
 akm() { bun /home/founder3/code/github/itlackey/akm/src/cli.ts "$@"; }   # repo checkout
-# akm() { "$AKM_SANDBOX/npm/bin/akm" "$@"; }   # after: npm i -g --prefix "$AKM_SANDBOX/npm" akm-cli@0.9.2-alpha.5
+# akm() { "$AKM_SANDBOX/npm/bin/akm" "$@"; }   # after: npm i -g --prefix "$AKM_SANDBOX/npm" akm-cli@0.9.2
 ```
 
 This hand-written `config.json` is enough for every `task` and `workflow`
@@ -119,7 +120,7 @@ separate cleanup that includes restoring the OS scheduler.
 | WF-3 | Child workflow: `plan` expansion + `run` execution | No | Any | Yes | — |
 | WF-4 | `plan` makes zero durable writes | No | Any | Yes | — |
 | WF-5 | Failing step surfaces a clear diagnostic | No | Any | Yes | — |
-| WF-6 | Blocked run → `abandon` → `resume` | No | Any | Yes | **akm#847** (resume fails on corrupt-spine error) |
+| WF-6 | Blocked run → `abandon` → `resume` | No | Any | Alpha.5 bug reproduced; stable regression automated | — |
 | WF-7 | Active (paused) run → `abandon` → `resume` (contrast to WF-6) | No | Any | Yes | — |
 | WF-8 | `list` is cwd-scoped; `status <id>` is not | No | Any | Yes | — |
 | WF-9 | Pre-`irVersion`-5 stored plan is retired | No | Any | Yes | — |
@@ -133,7 +134,7 @@ separate cleanup that includes restoring the OS scheduler.
 | DT-2 | `task add --disabled` writes a disabled binding | **Yes** | Linux (cron) | Partial | — |
 | DT-3 | `task sync` drift reconciliation (shell-target task) | **Yes** | Linux (cron), VM recommended | No — **UNVERIFIED** | — |
 | DT-4 | `task sync` reconciling a workflow-targeting task's schedule | **Yes** | Linux (cron), VM recommended | No — **UNVERIFIED** | — |
-| DT-5 | Cross-bundle name collision makes `sync` remove another bundle's entries | **Yes** | Linux (cron), VM required | No — **UNVERIFIED** | Reproduces **akm#846** |
+| DT-5 | Cross-bundle name collision cannot make `sync` remove another bundle's entries | **Yes** | Linux (cron), VM required | Automated; manual platform run **UNVERIFIED** | — |
 | DT-6 | macOS launchd equivalents of DT-1..DT-3 | **Yes** | macOS — **PLATFORM-GATED, UNVERIFIED** | No | Issue #770 (no automated coverage) |
 | DT-7 | Windows schtasks equivalents of DT-1..DT-3 | **Yes** | Windows — **PLATFORM-GATED, UNVERIFIED** | No | Issue #770 (no automated coverage) |
 
@@ -557,13 +558,11 @@ instead).
 checkout invocation (<argv...>).` (Source:
 `src/commands/tasks/tasks.ts`, `resolveAndValidateSchedulerInvocation`.)
 
-**Note (verified live during authoring):** on a machine that already has
-real akm-managed cron entries, this exact repro can instead hit the akm#846
-fingerprint guard from "Read this first" before reaching this guard —
-either error is acceptable evidence the write was refused, but **only the
-fingerprint-guard variant was actually observed live**; the clean
-`INVALID_FLAG_VALUE` wording on a machine with zero pre-existing akm cron
-entries is **UNVERIFIED**.
+**Historical note:** the alpha.5 live run encountered #846's unrelated-entry
+fingerprint guard before this invocation guard. Stable 0.9.2's owner-path
+scoping prevents that cross-bundle detour, so the expected result above is the
+one this test now requires. Its exact wording remains **UNVERIFIED live** in
+this manual suite, although the guard has automated coverage.
 
 Verify outside akm: `crontab -l` (or platform equivalent) is byte-identical
 before and after.
@@ -827,19 +826,15 @@ Then `akm workflow status <run-id> --units --format json`:
 `.workflow.steps[1].status == "failed"`;
 `.workflow.steps[1].evidence.units[0].failureReason == "non_zero_exit"`.
 
-### WF-6 — Blocked run: `resume` works; `abandon` → `resume` does not (akm#847)
-
-> **This test asserts the CURRENT, buggy, verified-live behavior. It is
-> expected to fail as described here until akm#847 is fixed — do not
-> "fix" the expectation without re-verifying against a build that actually
-> resolves the issue.**
+### WF-6 — Blocked run: both direct `resume` and `abandon` → `resume` work (#847 regression)
 
 **Why it matters:** `akm workflow abandon --help` promises "mark it failed
-so it stops counting as active (resume can reopen it)". For a run that was
-`blocked` by a judge-infrastructure failure, resuming after abandon throws a
-hard, unrecoverable error instead of reopening it — a user following the
-CLI's own documented recovery path can permanently strand the run. Filed as
-**akm#847**.
+so it stops counting as active (resume can reopen it)". Alpha.5 violated that
+promise for a run blocked by a judge-infrastructure failure: abandon left the
+step blocked, and resume rejected that honest failed-run spine as corrupt.
+Stable 0.9.2 accepts the three legitimate failed-run current-step states and
+normalizes each back to pending on resume. This test keeps the exact #847
+reproduction as a regression.
 
 **How "blocked" is produced without any real LLM/API key:** a workflow with
 a non-empty `### gate` requires `workflow.judgeEngine` to be *configured*
@@ -906,7 +901,7 @@ akm workflow resume <run-id> --format json
 `.workflow.steps[0].status` becomes `"pending"` (evidence cleared — the
 next `run` re-evaluates the gate, not the exec unit).
 
-**Part B — abandon then resume: the bug.** Start a **fresh** run (do not
+**Part B — abandon then resume.** Start a **fresh** run (do not
 reuse Part A's run — re-running against the ref resumes the existing active
 run rather than starting a new one; see the note at the end of this test):
 ```sh
@@ -915,20 +910,14 @@ akm workflow abandon <run-id> --format json
 akm workflow resume <run-id> --format json
 ```
 
-**Expected result (verified live, exact — reproduced during review of this
-document):**
-- `abandon` succeeds, exit `0`. `.run.status` becomes `"failed"` — but
-  `.workflow.steps[0].status` **stays `"blocked"`** (abandon does not
-  reconcile the step's own status with the run's new status).
-- `resume` then **fails**, exit **`2`**:
-  ```json
-  {"ok": false, "error": "Workflow run <run-id> has a corrupt durable step spine: failed status does not match the current plan step. Refusing to mutate state that disagrees with its frozen plan.", "code": "INVALID_JSON_ARGUMENT"}
-  ```
-- The run is now permanently stuck: `resume` always fails this way, and a
-  second `abandon` fails with `"is already failed"` (`INVALID_FLAG_VALUE`,
-  exit `2`). `status`/`list` still report `status: "failed"` (no data
-  lost), but the CLI's own "resume can reopen it" promise is false for this
-  state.
+**Expected result (stable regression, automated):**
+- `abandon` succeeds, exit `0`. `.run.status` becomes `"failed"`; the current
+  step honestly remains `"blocked"` until a resume is requested.
+- `resume` succeeds, exit `0`. `.run.status` becomes `"active"` and
+  `.workflow.steps[0].status` becomes `"pending"`, with the blocked notes and
+  evidence cleared so the gate can be evaluated again.
+- No corrupt-spine error is emitted. A subsequent `run <run-id>` re-enters
+  the current step normally.
 
 **Note on `run <ref>` semantics:** `akm workflow run workflows/<name>` does
 not always start a brand-new run — if an **active** run already exists for
@@ -937,11 +926,12 @@ that ref in the current scope, it resumes that run instead, consistent with
 
 **Cleanup:** `rm -rf "$AKM_SANDBOX"`.
 
-### WF-7 — Active (paused) run → `abandon` → `resume` round-trips cleanly (contrast to WF-6)
+### WF-7 — Active (paused) run → `abandon` → `resume` round-trips cleanly (companion to WF-6)
 
-**Why it matters:** proves the WF-6 corrupt-spine bug is specific to
-abandoning a `blocked` run, not a general abandon/resume defect. This is a
-deliberate contrast pair with WF-6, not a duplicate of it — keep both.
+**Why it matters:** pins the other legitimate abandoned-run spine: an active
+run leaves its current step pending, while WF-6 leaves it blocked. Resume must
+normalize both without weakening corruption detection for impossible shapes.
+This is a deliberate contrast pair with WF-6, not a duplicate — keep both.
 
 **Preconditions:** fresh sandbox, no `engines` config needed. Use `demo.md`
 from WF-1.
@@ -1122,8 +1112,8 @@ true`, and the frozen step's `.environment` array gains `{"kind":
 Scope: only scenarios where `akm task` and `akm workflow` genuinely meet —
 a task whose target is a workflow, a workflow step that targets a task, and
 the shared identity/failure machinery. The destructive `task sync` seam
-tests (a workflow-targeting task's schedule, and the akm#846 cross-bundle
-hazard) are in [Destructive & platform-gated](#destructive--platform-gated-tests).
+tests (a workflow-targeting task's schedule, and the #846 cross-bundle
+regression) are in [Destructive & platform-gated](#destructive--platform-gated-tests).
 
 ### INT-1 — A task that runs a workflow (the headline case)
 
@@ -1486,8 +1476,9 @@ before running any of it.** Mandatory for every test below:
    or similarly namespaced) so a stray leftover is identifiable later.
 3. Restore explicitly at the end: `crontab <backup-file>`, then verify with
    `crontab -l`.
-4. **Never use `akm task sync` as a cleanup step** — it can attempt to
-   remove entries it didn't create (see DT-5 / akm#846). Clean up by hand.
+4. **Never use `akm task sync` as a cleanup step** — it performs a broad
+   reconcile, while cleanup should remove only the exact test fixture. DT-5
+   separately proves #846's owner-path isolation. Clean up by hand.
 5. Prefer a disposable OS account, VM, or container over a real machine.
 
 `add` writes only its own binding (narrower blast radius); `sync` does a
@@ -1547,7 +1538,7 @@ observed on this host. Verify and clean up identically to DT-1.
 ### DT-3 — `task sync` drift reconciliation, shell-target task [Linux: cron; VM/disposable-account strongly recommended]
 
 **Why it matters:** the actual "scheduler and bundle disagree" scenario —
-the highest-risk test given the akm#846 finding.
+a high-risk mutation path that also exercises #846's owner-path scoping.
 
 **Mandatory precondition:**
 ```sh
@@ -1586,8 +1577,8 @@ the target kind is different and both paths need independent coverage.
 **Mandatory precondition:** `crontab -l > "$AKM_SANDBOX/crontab-backup-$(date +%Y%m%d-%H%M%S).txt" 2>&1` — stop if it shows unrecognized real entries.
 
 **Setup** (disposable container/VM with an empty crontab only; use a
-collision-proof bundle name per akm#846, never the directory-basename
-default):
+collision-proof bundle name so the resulting scheduler evidence is easy to
+identify and clean up):
 ```sh
 export SEAM_BUNDLE_NAME="akm-manual-test-seam-$(date +%s)"
 cat > "$AKM_BUNDLE_DIR/workflows/leaf.yml" <<'EOF'
@@ -1644,20 +1635,14 @@ before relying on this test.
 **Cleanup:** if step 4 was reached the crontab is already clean; regardless,
 restore the mandatory backup and verify with `crontab -l`.
 
-### DT-5 — Cross-bundle name collision makes `sync` remove another bundle's entries (akm#846) [Linux: cron; disposable VM/container REQUIRED]
+### DT-5 — Cross-bundle name collision cannot make `sync` remove another bundle's entries (#846 regression) [Linux: cron; disposable VM/container REQUIRED]
 
-**Why it matters:** not a hypothetical. Live testing during this
-document's own review process showed `task sync`, run inside a believed-
-isolated bundle, inspecting a real, unrelated production task
-(`akm-dogfood-091-capture`) as a removal candidate — see [Read this
-first](#read-this-first--the-one-safety-critical-finding) and **akm#846**.
-Tracing the code: removal scope is keyed on `bundle.source.name` equality
-(`belongsToBundle`, `src/tasks/scheduler-sync.ts:715`) — correct in
-principle, but silently unsafe whenever two bundles derive the same name,
-which the directory-basename default makes easy to hit by accident. This
-test reproduces the exact collision mechanism safely, using two disposable
-throwaway bundles — neither is any machine's real bundle, so only the
-test's own entries are at risk.
+**Why it matters:** alpha.5 could inspect and remove an unrelated scheduler
+entry when two primary bundles derived the same basename. Stable 0.9.2
+requires a name match *and* a resolved owner-path match before an entry is in
+scope, and refuses ownership when the scheduler-context descriptor is missing,
+unreadable, corrupt, or belongs to another OS user. This test reproduces the
+original collision safely and proves task A survives bundle B's sync.
 
 **`UNVERIFIED` — even this fully self-contained, two-throwaway-bundle
 reproduction was refused by the coding-agent sandbox's destructive-action
@@ -1702,7 +1687,7 @@ schedule:
 EOF
 ```
 
-**Steps and expected (predicted) results:**
+**Steps and expected results:**
 1. Install bundle A with **no** `--bundle` flag (name comes from the
    directory-basename default):
    ```sh
@@ -1719,20 +1704,16 @@ EOF
           AKM_DATA_DIR="$BASE/b-collide/data" AKM_CACHE_DIR="$BASE/b-collide/cache" AKM_STATE_DIR="$BASE/b-collide/state"
    akm index && akm task sync
    ```
-   **Predicted (per traced source, UNVERIFIED live):** because bundle B
-   derives the same name as bundle A, `belongsToBundle` treats task A's
-   installed binding as bundle B's own orphan. Expect `.removed` contains
-   `"akm-manual-test-collide-a"` and `.installed` contains
+   Expected: `.removed == []` for task A and `.installed` contains
    `"akm-manual-test-collide-b"`. Cross-check: `crontab -l | grep -c
-   akm-manual-test-collide-a` prints `0` — task A's binding was deleted by
-   a sync that never mentioned task A. **This is the falsifiable core of
-   the test:** if task A survives instead, the collision hazard does not
-   reproduce as predicted and akm#846 needs re-verification against this
-   build.
+   akm-manual-test-collide-a` prints `1`, and its line still shows `1 1 * *
+   *`. **This is the falsifiable core of the regression:** a removal of task A
+   is a release-blocking recurrence of #846.
 3. **Negative control**, proving scoping DOES work when names differ.
    Reinstall task A (repeat step 1), then repeat step 2 with a
    non-colliding directory name, e.g. `"$BASE/b-safe/bundle-safe"`.
-   Expected: `.removed == []`, task A's entry is untouched.
+   Expected: `.removed == []`, task A's entry is still untouched. This proves
+   the non-colliding case stays unchanged alongside the collision fix.
 
 **Cleanup:** `crontab "$AKM_SANDBOX/crontab-backup-"*.txt` to restore, then
 verify with `crontab -l` that only the original entries remain. `rm -rf
@@ -1789,12 +1770,14 @@ specific corrections from that review:
    WF-3 already demonstrates for a direct (non-task) child dispatch whose
    child workflow *does* declare `outputs:`.
 
-Live spot-checks performed (in addition to the two above): TASK-3, TASK-6,
-TASK-9, TASK-12, TASK-13, WF-2, WF-5 (incl. `status --units`), WF-3/INT-2's
-`.children` shape, WF-6/akm#847's exact reproduction, WF-9's sqlite
-table/column names and exact error message, and INT-1 end to end. All
-matched their source draft's claimed exact fields, error codes, and exit
-codes with no further discrepancies found. No test was found using
+Live alpha.5 spot-checks performed (in addition to the two above): TASK-3,
+TASK-6, TASK-9, TASK-12, TASK-13, WF-2, WF-5 (incl. `status --units`),
+WF-3/INT-2's `.children` shape, WF-6/#847's original reproduction, WF-9's
+sqlite table/column names and exact error message, and INT-1 end to end. All
+matched their source draft's claimed exact fields, error codes, and exit codes
+with no further discrepancies found. Stable 0.9.2 changes WF-6 and DT-5 to
+the fixed regression expectations documented above; both are now automated.
+No test was found using
 non-falsifiable language ("works correctly", "runs successfully", "no
 errors"); the three source drafts were already disciplined about naming
 exact exit codes, JSON fields, and error strings. No true duplicate tests
@@ -1808,7 +1791,7 @@ The AKM bundle asset `knowledge/projects/akm/akm-manual-testing-checklist`
 (frontmatter `updated: 2026-05-17`) has stale Tasks (§5) and Workflows (§7)
 sections: it references `akm tasks list` (the command is `task`, singular
 — `akm tasks list` does not exist) and `akm workflow next` (no such
-subcommand exists in alpha.5; the current surface is `status|list|create|
+subcommand exists in 0.9.2; the current surface is `status|list|create|
 resume|abandon|run|plan`). Recommend replacing those two sections with a
 pointer to this document rather than trying to patch them in place. This
 document does not edit that bundle asset — only its author/owner should.

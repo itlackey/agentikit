@@ -438,7 +438,8 @@ never falls through to another configured engine.
 
 Task-v3 execution and durable workflow-v4 dispatch use this runtime boundary.
 Markdown and GitHub-shaped YAML compile through source IR v1; new starts freeze
-v4, and only v4 plans execute. Pre-v4 stored plans are rejected; start a new
+v4-family `irVersion: 5`, and only `irVersion: 5` plans execute.
+Pre-`irVersion`-5 stored plans are rejected; start a new
 run from current source. AKM does not support full GitHub Actions semantics or
 arbitrary remote action execution.
 

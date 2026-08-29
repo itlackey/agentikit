@@ -6,7 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-29
+
 ### Fixed
+
+- **A blocked workflow run became permanently unresumable after `akm
+  workflow abandon` (#847).** Abandon correctly moved the run to `failed`
+  but left its current step `blocked`; the durable-spine validator then
+  rejected that honest abandoned shape as corruption before `resume` could
+  reopen the step. Failed-run validation now accepts the three legitimate
+  current-step states — `pending` for an abandoned active run, `blocked` for
+  an abandoned blocked run, and `failed` for an execution failure — and
+  `resume` normalizes each back to `pending` as promised by the CLI help.
 
 - **`akm task sync` could compute another bundle's real scheduler entries as
   drift and try to remove them (#846).** Removal was scoped by a bundle

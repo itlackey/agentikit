@@ -1021,16 +1021,17 @@ a committed *value*, so it cannot carry "whatever this build agent's
 Values passed through this way are **not** redacted from the command's output
 the way `env:` binding values are, so never list a credential here.
 
-#### Durable v4 forbids `inherit_env`
+#### Durable v4 (`irVersion: 5`) forbids `inherit_env`
 
-Every new workflow start freezes a durable v4 plan. V4 rejects
-`inherit_env: true` and any other request for whole-process inheritance; use
-exact named environment bindings and `pass_env:` instead. Both mechanisms are
-dispatch-significant, keep the visible environment surface bounded, and form
-part of the unit's input hash.
+Every new workflow start freezes the durable plan v4 family's current
+executable format, `irVersion: 5`. It rejects `inherit_env: true` and any other
+request for whole-process inheritance; use exact named environment bindings
+and `pass_env:` instead. Both mechanisms are dispatch-significant, keep the
+visible environment surface bounded, and form part of the unit's input hash.
 
-The historical `inherit_env` spelling is unsupported. Pre-v4 stored plans are
-rejected; they are never upgraded or replayed through a second runtime.
+The historical `inherit_env` spelling is unsupported. Pre-`irVersion`-5 stored
+plans are rejected; they are never upgraded or replayed through a second
+runtime.
 
 ### What `akm show` reports for an exec step
 

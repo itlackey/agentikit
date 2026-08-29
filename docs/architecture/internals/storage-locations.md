@@ -194,7 +194,8 @@ explicit retention policy removes them.
 
 #### Table: `workflow_runs`
 
-New starts persist plan IR v4, the sole executable plan format. Pre-v4 stored
+New starts persist durable-v4-family plan `irVersion: 5`, the sole executable
+plan format. Pre-`irVersion`-5 stored
 plans are rejected rather than upgraded or replayed through another runtime.
 
 | Column | Type | Notes |
