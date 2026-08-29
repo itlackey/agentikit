@@ -1802,13 +1802,13 @@ were found across the three drafts — the deliberate contrast pairs (WF-6 vs
 WF-7; DT-3 vs DT-4) were kept, and no accidental duplication existed thanks
 to the drafts' explicit scope carve-outs.
 
-## A note on the existing stash checklist
+## A note on the existing bundle checklist
 
-The AKM stash asset `knowledge/projects/akm/akm-manual-testing-checklist`
+The AKM bundle asset `knowledge/projects/akm/akm-manual-testing-checklist`
 (frontmatter `updated: 2026-05-17`) has stale Tasks (§5) and Workflows (§7)
 sections: it references `akm tasks list` (the command is `task`, singular
 — `akm tasks list` does not exist) and `akm workflow next` (no such
 subcommand exists in alpha.5; the current surface is `status|list|create|
 resume|abandon|run|plan`). Recommend replacing those two sections with a
 pointer to this document rather than trying to patch them in place. This
-document does not edit that stash asset — only its author/owner should.
+document does not edit that bundle asset — only its author/owner should.
