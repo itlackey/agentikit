@@ -11,9 +11,11 @@ import {
   schedulerNativeBindingId,
 } from "../../src/tasks/scheduler-binding";
 import {
+  resolveScheduledTaskContext,
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
+  writeSchedulerContextDescriptor,
 } from "../../src/tasks/scheduler-invocation";
 import { sandboxStashDir } from "../_helpers/sandbox";
 import {
@@ -1725,7 +1727,17 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
       const tasksDir = path.join(stash.dir, "tasks");
       fs.mkdirSync(tasksDir, { recursive: true });
       fs.writeFileSync(path.join(tasksDir, "ping.yml"), 'version: 4\nrun: echo ping\nschedule: "0 9 * * *"\n', "utf8");
-      const { backend, exec } = makeBackend();
+      // #846: this describe block's default SCHEDULED_CONTEXT points at an
+      // intentionally unwritable fake path (exercising special-character
+      // handling), so belongsToBundle's owning-path check could never
+      // resolve it. Use the real, writable sandboxed context instead, so
+      // the backend's own default scheduler-context descriptor is one this
+      // test can actually write and read back.
+      const { backend, exec } = makeBackend(undefined, undefined, resolveScheduledTaskContext());
+      // The backend falls back to its own default context descriptor path
+      // (no `schedulerRuntime` deps here) — write it for real so the
+      // second sync's owning-path lookup can read it back.
+      writeSchedulerContextDescriptor(schedulerContextDescriptor(resolveScheduledTaskContext(), ""));
       expect((await akmTasksSync({ backend })).installed).toEqual(["ping"]);
       exec.loadedLabels.delete("com.akm.task.ping");
       exec.calls.length = 0;
@@ -1748,7 +1760,11 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
       const tasksDir = path.join(stash.dir, "tasks");
       fs.mkdirSync(tasksDir, { recursive: true });
       fs.writeFileSync(path.join(tasksDir, "ping.yml"), 'version: 4\nrun: echo ping\nschedule: "0 9 * * *"\n', "utf8");
-      const { backend, exec } = makeBackend();
+      // #846: same rationale as the previous test — this describe block's
+      // default SCHEDULED_CONTEXT can't back a resolvable owning path, so
+      // use the real, writable sandboxed context instead.
+      const { backend, exec } = makeBackend(undefined, undefined, resolveScheduledTaskContext());
+      writeSchedulerContextDescriptor(schedulerContextDescriptor(resolveScheduledTaskContext(), ""));
       expect((await akmTasksSync({ backend })).installed).toEqual(["ping"]);
 
       exec.disabledLabels.add("com.akm.task.ping");

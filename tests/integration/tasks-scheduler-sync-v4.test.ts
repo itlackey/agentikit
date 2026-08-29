@@ -1242,3 +1242,145 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
     expect(signatures).toBe(0);
   });
 });
+
+describe("#846: belongsToBundle scopes by resolved bundle path, not display name", () => {
+  test("two bundles at different paths sharing the same display name: bundle A's sync does not compute bundle B's installed binding as removable", async () => {
+    const componentRoot = root();
+    const bundleAPath = "/home/user/work/akm";
+    const bundleBPath = "/home/user/personal/akm";
+    // Both bundles resolve to the same unconfigured display name ("akm" —
+    // the lowercased directory basename, bundle-id.ts:10-18) because
+    // ensureUniqueId only dedupes within its OWN config's bundle set
+    // (bundle-id.ts:46) and has no visibility into the other bundle.
+    const foreignInvocation = ["task", "run", "akm-dogfood-091-capture", "--bundle", "akm", "--scheduled"];
+    const foreignEntry = {
+      id: "akm-dogfood-091-capture",
+      nativeId: "task-foreign",
+      binding: ["/opt/akm"],
+      contextPath: "/data/context-b.json",
+      target: "akm",
+      ownerBundlePath: bundleBPath,
+      invocation: foreignInvocation,
+      signature: "foreign-fingerprint",
+    };
+
+    const plan = await planSchedulerSync({
+      sourceRoot: componentRoot,
+      adapterId: "akm-task",
+      bundleName: "akm",
+      bundlePath: bundleAPath,
+      backend: "cron",
+      installed: [foreignEntry],
+      nativeArtifacts: [
+        {
+          nativeId: "task-foreign",
+          bindingId: "akm-dogfood-091-capture",
+          invocation: foreignInvocation,
+          fingerprint: "foreign-fingerprint",
+        },
+      ],
+    });
+
+    // Bundle A has zero task ids in common with bundle B — bundle B's real
+    // binding must never show up as bundle A's drift to remove.
+    expect(plan.removed).toEqual([]);
+    expect(plan.operations).toEqual([]);
+  });
+
+  test("an installed binding whose owning path cannot be established is never treated as belonging to the invoking bundle", async () => {
+    const bundleRoot = root();
+    write(
+      path.join(bundleRoot, "tasks", "nightly.yml"),
+      "version: 4\nrun: echo nightly\nshell: sh\nschedule: '@daily'\n",
+    );
+
+    // Same id and same legacy `target` name as the invoking bundle, but its
+    // scheduler-context descriptor could not be read/validated (deleted,
+    // corrupted, owned by another OS user, or predates the descriptor
+    // mechanism) — ownerBundlePath is therefore absent. A missing owning
+    // path must never be assumed to mean "mine".
+    const installed = {
+      id: "nightly",
+      nativeId: "task-nightly",
+      binding: ["/opt/akm"],
+      contextPath: "/data/unreadable-context.json",
+      target: "team",
+      invocation: ["task", "run", "nightly", "--bundle", "team", "--scheduled"],
+      signature: "installed-fingerprint",
+    };
+
+    await expect(
+      planSchedulerSync({
+        sourceRoot: bundleRoot,
+        adapterId: "akm",
+        bundleName: "team",
+        bundlePath: "/home/user/work/akm",
+        backend: "cron",
+        installed: [installed],
+        nativeArtifacts: [
+          {
+            nativeId: "task-nightly",
+            bindingId: "nightly",
+            invocation: installed.invocation,
+            fingerprint: "installed-fingerprint",
+          },
+        ],
+        expectedSignature: (binding) => `sig:${binding.id}`,
+      }),
+    ).rejects.toThrow(/already scheduled/i);
+  });
+
+  test("a binding genuinely owned by the invoking bundle (matching resolved path) is still removed as drift", async () => {
+    const componentRoot = root();
+    const nativeId = "task-owned";
+    const bundlePath = "/home/user/work/akm";
+    const installed = {
+      id: "sub/nightly",
+      nativeId,
+      binding: ["/opt/akm"],
+      contextPath: "/data/context-a.json",
+      target: "team",
+      ownerBundlePath: bundlePath,
+      invocation: ["task", "run", "sub/nightly", "--bundle", "team", "--scheduled"],
+      signature: "installed-fingerprint",
+    };
+
+    const plan = await planSchedulerSync({
+      sourceRoot: componentRoot,
+      adapterId: "akm-task",
+      bundleName: "team",
+      bundlePath,
+      backend: "cron",
+      installed: [installed],
+      nativeArtifacts: [
+        {
+          nativeId,
+          bindingId: "sub/nightly",
+          invocation: installed.invocation,
+          fingerprint: "installed-fingerprint",
+        },
+      ],
+    });
+
+    // No desired source declares "sub/nightly" — it is genuinely orphaned
+    // drift owned by THIS bundle, and must still be reconciled away exactly
+    // as before the path-scoping fix.
+    expect(plan.removed).toEqual(["sub/nightly"]);
+    expect(plan.operations).toEqual([
+      {
+        kind: "remove",
+        id: "sub/nightly",
+        nativeId,
+        expected: {
+          state: "present",
+          bindingId: "sub/nightly",
+          nativeId,
+          logicalSource: { kind: "task", ref: "team//sub/nightly" },
+          ordinal: 0,
+          invocation: installed.invocation,
+          fingerprint: "installed-fingerprint",
+        },
+      },
+    ]);
+  });
+});

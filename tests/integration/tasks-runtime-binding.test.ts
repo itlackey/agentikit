@@ -9,6 +9,8 @@ import { withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox"
 function completeSchedulerBackend(options: {
   binding: readonly string[];
   contextPath: string;
+  /** #846: resolved path of the "stash" bundle this fixture's entry belongs to. */
+  ownerBundlePath?: string;
   onInstall?: (installOptions: SchedulerInstallOptions | undefined) => void;
 }): SchedulerBackend {
   const invocation = ["task", "run", "ping", "--bundle", "stash", "--scheduled"] as const;
@@ -19,6 +21,7 @@ function completeSchedulerBackend(options: {
     target: "stash",
     binding: [...options.binding],
     contextPath: options.contextPath,
+    ...(options.ownerBundlePath !== undefined ? { ownerBundlePath: options.ownerBundlePath } : {}),
     invocation,
   };
   const artifact = {
@@ -112,6 +115,7 @@ describe("scheduler runtime binding", () => {
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
         onInstall: (options) => installs.push(options),
       });
 
@@ -146,6 +150,7 @@ describe("scheduler runtime binding", () => {
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
       });
 
       const result = await akmTasksSync(
@@ -180,6 +185,7 @@ describe("scheduler runtime binding", () => {
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
       });
 
       const result = await akmTasksSync(
@@ -211,6 +217,7 @@ describe("scheduler runtime binding", () => {
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
         onInstall: (options) => installs.push(options),
       });
 
@@ -246,6 +253,7 @@ describe("scheduler runtime binding", () => {
       const backend = completeSchedulerBackend({
         binding: ["/current/akm"],
         contextPath: "/current/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
         onInstall: (options) => installs.push(options),
       });
 

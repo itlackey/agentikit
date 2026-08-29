@@ -92,6 +92,10 @@ function fakeBackend(
       contextPath: "/test/context.json",
       signature: fingerprint,
       target: "stash",
+      // #846: this fixture's entries are always this file's own primary
+      // ("stash") bundle — record its resolved path so belongsToBundle's
+      // path-scoped check recognizes them as such.
+      ownerBundlePath: path.resolve(storage.stashDir),
       invocation: item.invocation,
     }));
     const artifacts = [...stored.values()].map(({ binding: item, fingerprint }) => ({

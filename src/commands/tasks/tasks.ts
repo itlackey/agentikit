@@ -494,18 +494,34 @@ export async function akmTasksSync(
   }
   const inspection = await sched.inspectBindings({ rebind: options.rebind === true });
   const rawEntries: Array<InstalledSchedulerBinding | RebindSchedulerBinding> = [...inspection.installed];
-  const allEntries: InstalledSchedulerBinding[] = rawEntries.map((entry) => ({
-    ...entry,
-    ...(entry.nativeId !== undefined ? { nativeId: entry.nativeId } : {}),
-    ...(entry.invocation !== undefined ? { invocation: Object.freeze([...entry.invocation]) } : {}),
-    binding: "binding" in entry ? [...entry.binding] : [],
-    contextPath: "contextPath" in entry ? entry.contextPath : "",
-  }));
+  const allEntries: InstalledSchedulerBinding[] = rawEntries.map((entry) => {
+    const contextPath = "contextPath" in entry ? entry.contextPath : "";
+    // #846: recover the resolved bundle path this entry was installed
+    // under from its own scheduler-context descriptor. Any failure (no
+    // descriptor, unreadable, corrupt, owned by another user) leaves
+    // ownerBundlePath unset — belongsToBundle must never treat that as
+    // "mine".
+    const ownerBundlePath = contextPath ? resolveInstalledOwnerPath(contextPath) : undefined;
+    return {
+      ...entry,
+      ...(entry.nativeId !== undefined ? { nativeId: entry.nativeId } : {}),
+      ...(entry.invocation !== undefined ? { invocation: Object.freeze([...entry.invocation]) } : {}),
+      binding: "binding" in entry ? [...entry.binding] : [],
+      contextPath,
+      ...(ownerBundlePath !== undefined ? { ownerBundlePath } : {}),
+    };
+  });
   const nativeArtifacts = inspection.artifacts;
   const common = {
     sourceRoot: stashDir,
     adapterId: resolved.source.adapterId ?? detectAdapterId(stashDir),
     bundleName: resolved.source.name,
+    // #846: only meaningful for a primary/unconfigured-bundle sync. A
+    // `--bundle <target>` entry's scheduler-context descriptor records the
+    // invoking process's OWN primary AKM_BUNDLE_DIR, not the targeted
+    // bundle's directory, so path-scoping stays gated on the case it's
+    // actually valid for (see belongsToBundle).
+    ...(syncTarget === undefined ? { bundlePath: path.resolve(stashDir) } : {}),
     ...(syncTarget ? { bundleTarget: syncTarget } : {}),
     backend: sched.name,
     installed: allEntries,
@@ -1125,6 +1141,15 @@ function groupInstalledBindings(
     });
   }
   return [...groups.values()].map((group) => ({ ...group, taskIds: group.taskIds.sort() }));
+}
+
+/** Best-effort recovery of an installed binding's owning bundle path (#846). */
+function resolveInstalledOwnerPath(contextPath: string): string | undefined {
+  try {
+    return validateSchedulerContextDescriptor(contextPath).environment.AKM_BUNDLE_DIR;
+  } catch {
+    return undefined;
+  }
 }
 
 function inspectInstalledBinding(entry: InstalledSchedulerBinding, invocation: TasksDoctorResult["akm"]): string[] {
