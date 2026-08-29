@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`state.db` could fail to open on macOS with "this platform has no
+  descriptor-backed path."** The descriptor-alias optimization used to bind a
+  SQLite open to its exact held inode isn't reliably available everywhere —
+  Windows never has one, and macOS's `/dev/fd` is a small fixed-size table
+  that a process holding higher file-descriptor numbers (as a bundled
+  standalone binary routinely does) can miss. The surrounding identity checks
+  (dev/ino/uid, re-verified immediately before and after every open) are the
+  real protection; a missing alias now falls back to the plain path on any
+  platform instead of throwing, matching the fallback Windows already used.
+- **A scheduled shell task could fail instantly with exit code 1 on Windows**
+  whenever its resolved command line needed its own quoting (for example, any
+  path containing a space — a common case, not just a CI artifact). `cmd.exe`
+  reads its `/S /C` tail as one hand-quoted command line rather than standard
+  argv, and the default per-argument escaping added an incompatible second
+  layer of quotes on top of it. Spawning now passes that command line through
+  verbatim on Windows for `cmd`-shell tasks specifically (PowerShell and POSIX
+  shells are unaffected — they already parse standard argv correctly).
+- Two `native-scheduler` integration tests asserted a forward-slash path
+  suffix (`dist/akm`) against the real on-disk path, which uses `\` on
+  Windows; they now compare against the native separator.
+
+### Changed
+
+- **Gated CI's expensive suites (`semantic`, `docker`, `native-scheduler`)
+  now run themselves automatically on a pull request that touches their own
+  surface**, instead of relying on a maintainer remembering to dispatch the
+  relevant suite before merge. A new `Gated / Detect Changed Paths` job reads
+  the PR's changed files and turns on only the suite(s) that surface actually
+  needs, so a scheduler-backend change doesn't also pay for a Docker install
+  matrix or a real-embeddings run. A PR touching none of these paths gets a
+  fast, all-skipped green run. The weekly schedule, `workflow_dispatch`, and
+  the release-candidate tag trigger are unchanged. See
+  [`docs/maintainers/release-checklist.md`](docs/maintainers/release-checklist.md#3-the-focused-gate-on-a-pull-request).
+
 ## [0.9.2-alpha.5] - 2026-08-28
 
 ### Breaking changes & migration

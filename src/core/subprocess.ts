@@ -53,6 +53,7 @@ export type SpawnFn = (
     env?: Record<string, string>;
     cwd?: string;
     detached?: boolean;
+    windowsVerbatimArguments?: boolean;
   },
 ) => SpawnedSubprocess;
 
@@ -343,6 +344,12 @@ export interface RunManagedSubprocessOptions {
   signal?: AbortSignal;
   /** SIGTERM→SIGKILL grace period (ms). Defaults to 5000. */
   graceMs?: number;
+  /**
+   * Windows only: forwarded to the spawn call. Set when `cmd` is itself a
+   * shell invocation (e.g. `cmd /S /C "<hand-quoted command line>"`) whose
+   * tail argument must reach the child exactly as built. No-op elsewhere.
+   */
+  windowsVerbatimArguments?: boolean;
   /** Spawn function. Defaults to the runtime spawn. Tests inject a fake. */
   spawnFn?: SpawnFn;
   /** `setTimeout` shim. Defaults to the global. Tests pass a synchronous driver. */
@@ -439,6 +446,7 @@ export async function runManagedSubprocess(
       // descendants. Only in captured mode — interactive mode inherits the
       // parent terminal's process group intentionally.
       ...(capture ? { detached: true } : {}),
+      ...(opts.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
   } catch (err) {
     return {

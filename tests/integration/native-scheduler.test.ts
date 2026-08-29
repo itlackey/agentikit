@@ -304,7 +304,7 @@ test.skipIf(!ENABLED || process.platform !== "win32")(
       expectSuccess(doctor, "packed Node tasks doctor");
       const doctorJson = JSON.parse(doctor.stdout) as { akm: { argv: string[]; via: string } };
       expect(fs.realpathSync(doctorJson.akm.argv[0]!)).toBe(fs.realpathSync(nodeBinary));
-      expect(doctorJson.akm.argv[1]).toEndWith("dist/akm");
+      expect(doctorJson.akm.argv[1]).toEndWith(path.join("dist", "akm"));
       expect(doctorJson.akm).toMatchObject({ via: "npm" });
 
       const add = runPackedCli(["task", "add", id as string, "--schedule", "@daily", "--command", "akm --version"]);
@@ -316,7 +316,7 @@ test.skipIf(!ENABLED || process.platform !== "win32")(
       const query = run(["schtasks", "/Query", "/TN", target, "/XML"], env);
       expectSuccess(query, "schtasks query packed Node XML");
       expect(query.stdout).toContain(nodeBinary);
-      expect(query.stdout).toContain("dist/akm");
+      expect(query.stdout).toContain(path.join("dist", "akm"));
       expect(query.stdout).toContain(" ");
       expectSuccess(run(["schtasks", "/Run", "/TN", target], env), "schtasks run packed Node task");
 

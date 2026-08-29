@@ -71,6 +71,15 @@ export interface SpawnOptions {
   env?: Record<string, string>;
   cwd?: string;
   detached?: boolean;
+  /**
+   * Windows only: hand argv to the child exactly as given, with no automatic
+   * per-argument quoting/escaping. Required when an argv element is already a
+   * complete, hand-quoted command line meant for a shell (like `cmd /S /C`)
+   * whose own tail parsing is not the standard CommandLineToArgvW convention —
+   * the default quoting would add a second, incompatible layer of escaping on
+   * top of it. No-op on other platforms.
+   */
+  windowsVerbatimArguments?: boolean;
 }
 
 /** Result shape of {@link spawnSync}, mirroring Bun's `SyncSubprocess`. */
@@ -134,6 +143,7 @@ function nodeSpawnAdapter(cmd: string[], options: SpawnOptions): Subprocess {
     env: options.env ?? process.env,
     detached: options.detached,
     stdio: [stdioFor(options.stdin), stdioFor(options.stdout), stdioFor(options.stderr)],
+    windowsVerbatimArguments: options.windowsVerbatimArguments,
   });
   // Node's 'exit' fires (null, signal) when the child dies from a signal.
   // Resolving `code ?? 0` reported that as SUCCESS, so an OOM-killed or

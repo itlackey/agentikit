@@ -74,22 +74,29 @@ SHA into both the release PR and its milestone/parent tracker. Do not publish
 from a candidate whose evidence link names a different SHA, whose final
 evidence job is skipped, or whose run was re-run after the candidate changed.
 
-## 3. Request a focused gate before merge
+## 3. The focused gate on a pull request
 
-Heavy gated suites do not run on ordinary pushes or pull requests. When a
-change touches one of these surfaces and **Gated CI** is already on the default
-branch, dispatch the relevant suite against the change's full commit SHA before
-merge:
+Heavy gated suites do not run in full on every push or pull request — but each
+one now runs itself automatically on a PR whose diff touches its surface. The
+`Gated / Detect Changed Paths` job inspects the PR's changed files and turns on
+only the suite(s) that surface actually needs:
 
-| Changed surface | `gated_suite` |
+| Changed surface | Suite that runs automatically |
 | --- | --- |
-| Embedding provider, semantic index/search, Transformers dependency | `semantic` |
-| Dockerfiles, install scripts, packaging, Linux runtime dependencies | `docker` |
-| Task scheduling, launcher binding, standalone/package entrypoints | `native-scheduler` |
+| Embedding provider, semantic index/search, Transformers dependency, `package.json`/lockfile | `semantic` |
+| Setup/install providers, packaging scripts, `package.json`/lockfile | `docker` |
+| `src/tasks/**`, `src/runtime.ts`, `src/core/subprocess.ts`/`state-db.ts`, standalone/asset build scripts | `native-scheduler` |
 
-Use `all` only when the combined evidence is needed, especially for a release
-candidate. This keeps heavyweight model downloads, container builds, and paid
-macOS/Windows runner time off routine commit CI.
+A PR touching none of these paths gets a fast, green `Gated CI` run with every
+suite skipped — nothing else to do. Nothing to dispatch by hand: this closed
+the gap where "remember to dispatch the relevant suite" was an unenforced
+checklist rule. Manual `workflow_dispatch` (`gated_suite: <name>`) is still
+there for re-running one suite in isolation (a transient failure, or checking
+a fix before opening the PR) and `all` for combined evidence, especially for a
+release candidate — see step 2. This keeps heavyweight model downloads,
+container builds, and paid macOS/Windows runner time off routine commit CI
+while making the "did the relevant suite run" question a CI status, not a
+memory test.
 
 The candidate-tag trigger is reserved for release evidence and workflow
 rollout: it always runs `all`, because a tag-push workflow is the path available

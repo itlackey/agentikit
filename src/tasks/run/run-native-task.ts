@@ -132,6 +132,11 @@ export async function runNativeTask(input: {
         ...task.environment,
         AKM_EVENT_SOURCE: process.env.AKM_EVENT_SOURCE ?? provenance.eventSource,
       },
+      // cmd.exe's `/S /C` reads its tail as one hand-quoted command line, not
+      // standard argv — shellCommand() already built and quoted it for that.
+      // The default per-argument escaping would add an incompatible second
+      // layer on top and break any resolved path containing a space.
+      windowsVerbatimArguments: task.kind === "shell" && task.shell === "cmd",
       timeoutMs,
       ...(input.spawnFn ? { spawnFn: input.spawnFn } : {}),
       ...(input.setTimeoutFn ? { setTimeoutFn: input.setTimeoutFn } : {}),

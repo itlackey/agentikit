@@ -597,6 +597,53 @@ describe("runTask — command target", () => {
     expect(shellText).toContain(command.slice(1).map(shellWord).join(" "));
   });
 
+  test("spawns a cmd-shell task with windowsVerbatimArguments so its hand-quoted command line survives", async () => {
+    // cmd.exe's `/S /C` reads its tail as one hand-quoted command line, not
+    // standard argv — shellCommand() already builds and quotes it for that.
+    // Default per-argument escaping would add an incompatible second layer of
+    // quoting on top and break any resolved path containing a space (#844
+    // gated-CI: the native scheduler suite's first real Windows run).
+    writeTask("cmd-shell-task", shellTask("akm --version", { shell: "cmd" }));
+    let capturedOptions: { windowsVerbatimArguments?: boolean } | undefined;
+    const spawnFn: SpawnFn = (_cmd, options) => {
+      capturedOptions = options;
+      return {
+        exitCode: 0,
+        exited: Promise.resolve(0),
+        stdout: emptyReadableStream(),
+        stderr: emptyReadableStream(),
+        stdin: null,
+        kill() {},
+      };
+    };
+
+    const result = await runTask("cmd-shell-task", { bundleDir, logDir, spawnFn });
+
+    expect(result.status).toBe("completed");
+    expect(capturedOptions?.windowsVerbatimArguments).toBe(true);
+  });
+
+  test("does not set windowsVerbatimArguments for a posix-shell task", async () => {
+    writeTask("sh-shell-task", shellTask("akm --version", { shell: "sh" }));
+    let capturedOptions: { windowsVerbatimArguments?: boolean } | undefined;
+    const spawnFn: SpawnFn = (_cmd, options) => {
+      capturedOptions = options;
+      return {
+        exitCode: 0,
+        exited: Promise.resolve(0),
+        stdout: emptyReadableStream(),
+        stderr: emptyReadableStream(),
+        stdin: null,
+        kill() {},
+      };
+    };
+
+    const result = await runTask("sh-shell-task", { bundleDir, logDir, spawnFn });
+
+    expect(result.status).toBe("completed");
+    expect(capturedOptions?.windowsVerbatimArguments).toBeFalsy();
+  });
+
   test.skipIf(process.platform === "win32")(
     "executes a bare akm run task when the scheduler PATH omits the installation",
     async () => {
