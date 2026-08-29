@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "../errors";
+import { liftLegacyEngineExtraParams } from "../extra-params";
 import {
   acquireConfigLock,
   backupExistingConfig,
@@ -203,18 +204,42 @@ export function acquireConfigReadFence(): { config: AkmConfig; release: () => vo
  * canonical shape before defaults are merged.
  */
 export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
-  const raw = parseConfigText(text, sourcePath);
-  if (raw.configVersion !== CURRENT_CONFIG_VERSION) {
+  const parsedRaw = parseConfigText(text, sourcePath);
+  if (parsedRaw.configVersion !== CURRENT_CONFIG_VERSION) {
     throw new ConfigError(
       `Unsupported configVersion${sourcePath ? ` at ${sourcePath}` : ""}: expected "${CURRENT_CONFIG_VERSION}".`,
       "UNSUPPORTED_CONFIG_VERSION",
       "Recreate engines and improve.strategies manually for AKM 0.9.0; profile-based configuration is not translated automatically.",
     );
   }
+
+  // #852 (following #815): lift legacy `extraParams` keys — e.g.
+  // `reasoning_effort`, a documented 0.9.1 workaround — onto the first-class
+  // engine field they now shadow, before the protected-key check in
+  // `ExtraParamsSchema` gets a chance to hard-reject them. In-memory only;
+  // never written back to the file.
+  const { config: raw, lifted, conflicts } = liftLegacyEngineExtraParams(parsedRaw);
+  const where = sourcePath ? ` at ${sourcePath}` : "";
+  if (conflicts.length > 0) {
+    const lines = conflicts
+      .map(
+        (c) =>
+          `  - engines.${c.engine}.extraParams.${c.key} (${JSON.stringify(c.extraParamsValue)}) conflicts with engines.${c.engine}.${c.field} (${JSON.stringify(c.fieldValue)})`,
+      )
+      .join("\n");
+    throw new ConfigError(
+      `Invalid config${where}: extraParams and the first-class field disagree:\n${lines}\n\nEach extraParams key above has a first-class equivalent and akm will not guess which value you meant — remove the extraParams entry once the field carries the value you want.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  if (lifted.length > 0) {
+    warn(
+      `Config${where} uses deprecated extraParams keys with first-class equivalents; treating them as the first-class fields for this run (not written back to the file):\n  - ${lifted.join("\n  - ")}`,
+    );
+  }
   const parsed = AkmConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const lines = parsed.error.issues.map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`).join("\n");
-    const where = sourcePath ? ` at ${sourcePath}` : "";
     throw new ConfigError(`Invalid config${where}:\n${lines}`, "INVALID_CONFIG_FILE");
   }
   const merged = deepMergeConfig(DEFAULT_CONFIG, parsed.data as Partial<AkmConfig>) as AkmConfig;

@@ -171,7 +171,11 @@ describe("0.9 config contract", () => {
     expect(() => loadUserConfig()).toThrow(ConfigError);
   });
 
-  test("rejects reasoning_effort extraParams overrides", () => {
+  // #852 (following #815): `extraParams.reasoning_effort` was the documented
+  // 0.9.1 workaround for LM Studio, where `enableThinking` is a no-op.
+  // `reasoningEffort` became a first-class — and therefore protected — field
+  // in 0.9.2, so this now lifts onto it on load instead of hard-failing.
+  test("lifts a legacy reasoning_effort extraParams override onto the first-class field", () => {
     writeConfig({
       configVersion: "0.9.0",
       engines: {
@@ -179,6 +183,24 @@ describe("0.9 config contract", () => {
           kind: "llm",
           endpoint: "https://example.test/v1/chat/completions",
           model: "test",
+          extraParams: { reasoning_effort: "high" },
+        },
+      },
+    });
+    const config = loadUserConfig();
+    expect(config.engines?.fast?.reasoningEffort).toBe("high");
+    expect((config.engines?.fast as Record<string, unknown>).extraParams).toBeUndefined();
+  });
+
+  test("rejects a reasoning_effort extraParams override that conflicts with a different first-class reasoningEffort", () => {
+    writeConfig({
+      configVersion: "0.9.0",
+      engines: {
+        fast: {
+          kind: "llm",
+          endpoint: "https://example.test/v1/chat/completions",
+          model: "test",
+          reasoningEffort: "none",
           extraParams: { reasoning_effort: "high" },
         },
       },

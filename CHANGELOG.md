@@ -26,6 +26,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unverified on a real Windows host pending the owner's manual run (see the
   PR body for the procedure) — Windows scheduler paths still have no
   automated coverage (#770).
+- **A valid 0.9.1 config hard-failed to load after upgrading to 0.9.2
+  (#852).** `reasoningEffort` became a first-class `engines.<name>` field in
+  0.9.2 (#815), so `extraParams.reasoning_effort` — the documented 0.9.1
+  workaround for LM Studio, where `enableThinking` is a no-op — started
+  tripping the extraParams protected-key check and hard-failing every
+  command that loads config, with no migration. Config load now lifts
+  `extraParams.{reasoning_effort,temperature,maxtokens,enablethinking}`
+  onto their first-class field automatically (in-memory only; the file is
+  not rewritten, and a warning names each lifted key) unless the
+  extraParams value and the first-class field disagree, in which case
+  config load still fails, now naming both values and the field to keep.
+  Any other protected `extraParams` key without a first-class equivalent
+  still hard-fails, but the error now names the fix instead of only the
+  rule.
 
 ## [0.9.2] - 2026-08-29
 
