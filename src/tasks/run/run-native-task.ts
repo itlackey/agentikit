@@ -19,6 +19,7 @@
  * `{kind:"script", cmd}` — formerly one shared `{kind:"command", cmd}`.
  */
 
+import path from "node:path";
 import { assertNever } from "../../core/assert";
 import type { TaskLogLineInput } from "../../core/logs-db";
 import { runManagedSubprocess, type SpawnFn } from "../../core/subprocess";
@@ -33,7 +34,43 @@ import { appendHistory } from "./task-history";
 import { persistRunLog, streamLines } from "./task-log";
 import type { TaskRunResult, TaskRunStatus } from "./task-result";
 
-function shellCommand(task: PreparedTaskV3Shell): string[] {
+/**
+ * Resolve the host shell to something spawnable in a scheduler-fired process.
+ *
+ * A scheduled run restores the PATH captured at install time
+ * (scheduler-invocation.ts), which can be minimal — the native-scheduler CI
+ * gate installs with PATH = System32 + SystemRoot, modeling what a real
+ * scheduler hands a job. powershell.exe does not live in System32 itself but
+ * in the WindowsPowerShell\v1.0 subdirectory, so a bare "powershell" spawn
+ * resolves only when that PATH happens to carry the extra entry; cmd.exe has
+ * a canonical ComSpec location for the same reason. Resolve both absolutely
+ * on Windows. pwsh has no fixed install location and the POSIX shells always
+ * live on the scheduler's default /bin:/usr/bin, so those stay PATH-resolved.
+ *
+ * Exported for direct unit testing with an explicit platform/env.
+ */
+export function shellExecutable(
+  shell: PreparedTaskV3Shell["shell"],
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (platform !== "win32") return shell;
+  const systemRoot = env.SystemRoot ?? "C:\\Windows";
+  if (shell === "powershell") {
+    return path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  }
+  if (shell === "cmd") {
+    return env.ComSpec ?? path.win32.join(systemRoot, "System32", "cmd.exe");
+  }
+  return shell;
+}
+
+/** Exported for direct unit testing with an explicit platform/env. */
+export function shellCommand(
+  task: Pick<PreparedTaskV3Shell, "command" | "shell">,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
   const command = resolveLeadingBareAkmCommand(task.command, task.shell);
   switch (task.shell) {
     case "sh":
@@ -42,9 +79,9 @@ function shellCommand(task: PreparedTaskV3Shell): string[] {
       return [task.shell, "-c", command];
     case "pwsh":
     case "powershell":
-      return [task.shell, "-NoProfile", "-NonInteractive", "-Command", command];
+      return [shellExecutable(task.shell, platform, env), "-NoProfile", "-NonInteractive", "-Command", command];
     case "cmd":
-      return ["cmd", "/d", "/s", "/c", command];
+      return [shellExecutable("cmd", platform, env), "/d", "/s", "/c", command];
     default:
       return assertNever(task.shell, "shellCommand");
   }
@@ -58,9 +95,15 @@ function shellCommand(task: PreparedTaskV3Shell): string[] {
 function resolveLeadingBareAkmCommand(command: string, shell: PreparedTaskV3Shell["shell"]): string {
   const leadingBareAkm = /^(\s*)(?:akm(?:\.exe)?|'akm(?:\.exe)?'|"akm(?:\.exe)?")(?=$|[\s;|&])/i;
   if (!leadingBareAkm.test(command)) return command;
-  const invocation = resolveAkmInvocation()
+  const quoted = resolveAkmInvocation()
     .argv.map((part) => quoteShellArgument(part, shell))
     .join(" ");
+  // PowerShell parses a quoted string in command position as a string
+  // EXPRESSION, not an invocation — `'C:\akm.exe' --version` is a parse
+  // error. The call operator makes it a command. sh and cmd both treat a
+  // quoted word in command position as the command, so only PowerShell
+  // needs the prefix.
+  const invocation = shell === "pwsh" || shell === "powershell" ? `& ${quoted}` : quoted;
   return command.replace(leadingBareAkm, (_match, leadingWhitespace: string) => `${leadingWhitespace}${invocation}`);
 }
 

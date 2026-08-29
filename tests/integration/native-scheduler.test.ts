@@ -263,6 +263,21 @@ test.skipIf(!ENABLED || process.platform !== "win32")(
     ].join(path.delimiter);
     expect(restrictedPath.toLowerCase()).not.toContain("bun");
 
+    // The CI workflow installs the packed tarball with `npm install --prefix
+    // <installDir>`, which produces exactly the on-disk layout of an npm
+    // GLOBAL install under that prefix (<prefix>\node_modules\akm-cli) — but
+    // npm only *reports* that prefix as global when npm_config_prefix says
+    // so. akm's own eligibility probe is `npm root --global` in the process
+    // env, so exporting the prefix here is what makes this fixture a
+    // faithful npm-global install by npm's own definition, rather than a
+    // package-local one (via: "package-local", eligible: false).
+    // launcher is <installDir>\node_modules\.bin\akm.cmd (gated-ci.yml), so
+    // three dirnames reach the install prefix whose node_modules holds the
+    // package. Pin that shape so the math fails loudly if the workflow's
+    // launcher layout ever changes instead of silently deriving a wrong
+    // prefix.
+    expect(launcher.toLowerCase().endsWith(path.join("node_modules", ".bin", "akm.cmd"))).toBe(true);
+    const npmGlobalPrefix = path.dirname(path.dirname(path.dirname(launcher)));
     const env = withoutHarnessOverrides({
       AKM_BUNDLE_DIR: stashDir,
       AKM_CONFIG_DIR: configDir,
@@ -270,6 +285,7 @@ test.skipIf(!ENABLED || process.platform !== "win32")(
       AKM_CACHE_DIR: cacheDir,
       AKM_STATE_DIR: stateDir,
       PATH: restrictedPath,
+      npm_config_prefix: npmGlobalPrefix,
       NO_COLOR: "1",
       CI: "true",
     });

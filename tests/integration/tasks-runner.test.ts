@@ -10,6 +10,7 @@ import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import type { AgentRunResult } from "../../src/integrations/agent";
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
 import { resolveAkmInvocation } from "../../src/tasks/resolve-akm-bin";
+import { shellCommand, shellExecutable } from "../../src/tasks/run/run-native-task";
 import { runTask } from "../../src/tasks/run/run-task";
 import { DEFAULT_WORKFLOW_TASK_TIMEOUT_MS } from "../../src/tasks/run/run-workflow-task";
 import { readTaskHistory } from "../../src/tasks/run/task-history";
@@ -621,6 +622,71 @@ describe("runTask — command target", () => {
 
     expect(result.status).toBe("completed");
     expect(capturedOptions?.windowsVerbatimArguments).toBe(true);
+  });
+
+  test("a bare akm run task under a PowerShell shell gets the call operator", async () => {
+    // PowerShell parses `'C:\akm.exe' --version` as a string expression
+    // followed by a parse error, not an invocation — the gated Windows
+    // native-scheduler suite failed exactly there, since powershell is the
+    // Windows default task shell. The rebound command must start with `&`.
+    writeTask("pwsh-bare-akm", shellTask("akm --version", { shell: "pwsh" }));
+    let spawned: string[] | undefined;
+    const spawnFn: SpawnFn = (cmd) => {
+      spawned = cmd;
+      return {
+        exitCode: 0,
+        exited: Promise.resolve(0),
+        stdout: emptyReadableStream(),
+        stderr: emptyReadableStream(),
+        stdin: null,
+        kill() {},
+      };
+    };
+
+    const result = await withEnv({ PATH: "" }, () => runTask("pwsh-bare-akm", { bundleDir, logDir, spawnFn }));
+
+    expect(result.status).toBe("completed");
+    expect(spawned?.slice(1, 4)).toEqual(["-NoProfile", "-NonInteractive", "-Command"]);
+    const command = spawned?.[4];
+    expect(command?.startsWith("& '")).toBe(true);
+    expect(command).toContain("--version");
+    // The invocation parts are PowerShell single-quoted; none may be bare.
+    expect(command).toBe(
+      `& ${resolveAkmInvocation()
+        .argv.map((p) => `'${p.replaceAll("'", "''")}'`)
+        .join(" ")} --version`,
+    );
+  });
+
+  test("shellCommand resolves powershell and cmd to absolute Windows paths", () => {
+    // A scheduler-fired run restores the PATH captured at install time,
+    // which can be minimal (the CI gate: System32 + SystemRoot). Bare
+    // "powershell" is NOT resolvable on that PATH — powershell.exe lives in
+    // the WindowsPowerShell\v1.0 subdirectory — so the spawn must use the
+    // canonical absolute path. Same for cmd via ComSpec.
+    const env = { SystemRoot: "C:\\Windows" };
+    expect(shellExecutable("powershell", "win32", env)).toBe(
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+    expect(shellExecutable("cmd", "win32", { ...env, ComSpec: "C:\\Windows\\System32\\cmd.exe" })).toBe(
+      "C:\\Windows\\System32\\cmd.exe",
+    );
+    expect(shellExecutable("cmd", "win32", env)).toBe("C:\\Windows\\System32\\cmd.exe");
+    // pwsh has no canonical install path; POSIX shells stay bare everywhere.
+    expect(shellExecutable("pwsh", "win32", env)).toBe("pwsh");
+    expect(shellExecutable("powershell", "linux", {})).toBe("powershell");
+    expect(shellExecutable("sh", "darwin", {})).toBe("sh");
+
+    const psCommand = shellCommand({ command: "echo hi", shell: "powershell" }, "win32", env);
+    expect(psCommand).toEqual([
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "echo hi",
+    ]);
+    const cmdCommand = shellCommand({ command: "echo hi", shell: "cmd" }, "win32", env);
+    expect(cmdCommand).toEqual(["C:\\Windows\\System32\\cmd.exe", "/d", "/s", "/c", "echo hi"]);
   });
 
   test("does not set windowsVerbatimArguments for a posix-shell task", async () => {
