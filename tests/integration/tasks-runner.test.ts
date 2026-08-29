@@ -89,6 +89,12 @@ function shellWord(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
+// Mirrors withExitCodePropagation() in run-native-task.ts (#845): appended to
+// every pwsh/powershell -Command invocation so a failing native exit code
+// isn't collapsed to 1 by -Command's own $?-based exit-code handling.
+const POWERSHELL_EXIT_CODE_SUFFIX =
+  "; if ($?) { exit 0 } elseif ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE } else { exit 1 }";
+
 function writeTask(id: string, body: string): void {
   fs.writeFileSync(path.join(tasksDir, `${id}.yml`), body, "utf8");
 }
@@ -654,8 +660,20 @@ describe("runTask — command target", () => {
     expect(command).toBe(
       `& ${resolveAkmInvocation()
         .argv.map((p) => `'${p.replaceAll("'", "''")}'`)
-        .join(" ")} --version`,
+        .join(" ")} --version${POWERSHELL_EXIT_CODE_SUFFIX}`,
     );
+  });
+
+  test("shellCommand appends an exit-code-preserving guard for pwsh and powershell (#845)", () => {
+    // -Command's own exit code is $? -based (0/1) and collapses any other
+    // native exit code to 1 — see withExitCodePropagation() in
+    // run-native-task.ts for why a bare `exit $LASTEXITCODE` is unsafe
+    // (stays $null, and `exit $null` is 0, for a pure-PowerShell command).
+    const env = { SystemRoot: "C:\\Windows" };
+    for (const shell of ["powershell", "pwsh"] as const) {
+      const command = shellCommand({ command: "Write-Output hi", shell }, "win32", env);
+      expect(command.at(-1)).toBe(`Write-Output hi${POWERSHELL_EXIT_CODE_SUFFIX}`);
+    }
   });
 
   test("shellCommand resolves powershell and cmd to absolute Windows paths", () => {
@@ -683,7 +701,7 @@ describe("runTask — command target", () => {
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      "echo hi",
+      `echo hi${POWERSHELL_EXIT_CODE_SUFFIX}`,
     ]);
     const cmdCommand = shellCommand({ command: "echo hi", shell: "cmd" }, "win32", env);
     expect(cmdCommand).toEqual(["C:\\Windows\\System32\\cmd.exe", "/d", "/s", "/c", "echo hi"]);

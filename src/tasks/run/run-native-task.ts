@@ -79,12 +79,40 @@ export function shellCommand(
       return [task.shell, "-c", command];
     case "pwsh":
     case "powershell":
-      return [shellExecutable(task.shell, platform, env), "-NoProfile", "-NonInteractive", "-Command", command];
+      return [
+        shellExecutable(task.shell, platform, env),
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        withExitCodePropagation(command),
+      ];
     case "cmd":
       return [shellExecutable("cmd", platform, env), "/d", "/s", "/c", command];
     default:
       return assertNever(task.shell, "shellCommand");
   }
+}
+
+/**
+ * `-Command` (documented identically for powershell.exe 5.1 and pwsh 7+, in
+ * about_PowerShell_exe / about_Pwsh) already derives its own process exit
+ * code from `$?`, so a genuinely failing last statement already yields a
+ * nonzero exit and status "failed" — but any native exit code outside {0, 1}
+ * is collapsed to 1, discarding the real value that task history reports.
+ *
+ * Appending a bare `exit $LASTEXITCODE` to recover it is unsafe on its own:
+ * `$LASTEXITCODE` stays `$null` for a command that never runs a native
+ * executable (a pure PowerShell/cmdlet command), and `exit $null` resolves
+ * to exit code 0 — turning a failed cmdlet into a false "completed".
+ *
+ * Reading `$?` first, before anything else can run, reproduces -Command's
+ * own completed/failed determination exactly (immune to that regression and
+ * to a `$LASTEXITCODE` left stale by an earlier native call in the same
+ * command), then upgrades to the precise native exit code only when the
+ * failing last statement actually set one.
+ */
+function withExitCodePropagation(command: string): string {
+  return `${command}; if ($?) { exit 0 } elseif ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE } else { exit 1 }`;
 }
 
 /**
