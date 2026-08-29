@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-08-29
+
 ### Fixed
 
 - **A failing Windows `shell: powershell`/`pwsh` task could lose its exit
