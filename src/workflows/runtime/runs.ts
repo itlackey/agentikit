@@ -47,6 +47,7 @@ import {
   frozenStepRows,
   requireExecutableWorkflowPlan,
 } from "./plan-classifier";
+import { resolveWorkflowRunOutputs } from "./run-outputs";
 import { evaluateStaleUnits, type StaleUnit } from "./unit-checkin";
 import { canonicalizeWorkflowRefInput, loadWorkflowAsset, resolveWorkflowEntryId } from "./workflow-asset-loader";
 
@@ -72,6 +73,31 @@ export interface WorkflowRunDetail {
    * {@link WorkflowUnitDiagnostic}.
    */
   units?: WorkflowUnitDiagnostic[];
+  /**
+   * The parent-child status tree (P3b, spec §4.5). Absent, never `[]`, when
+   * this run has no children — so a childless run's envelope stays
+   * byte-identical to pre-P3b (Stable tier, row B-33).
+   */
+  children?: WorkflowChildRunNode[];
+}
+
+/** One node of the parent-child status tree (P3b, spec §4.5, rows B-34…B-37). */
+export interface WorkflowChildRunNode {
+  runId: string;
+  workflowRef: string;
+  workflowTitle: string;
+  status: WorkflowRunStatus;
+  /** `workflow_runs.parent_unit_id` — the parent unit that spawned it. */
+  spawnedByUnitId: string;
+  /** The parent STEP that unit belongs to; `null` when its unit row is gone. */
+  stepId: string | null;
+  currentStepId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Present only when `status === "blocked"`. */
+  resume?: { command: string; then: string };
+  /** This child's own children. Absent, never `[]`, when it has none. */
+  children?: WorkflowChildRunNode[];
 }
 
 /**
@@ -373,7 +399,7 @@ export async function getWorkflowStatus(
   return withWorkflowRunsRepo((repo) => {
     const run = readWorkflowRun(repo, runId);
     const steps = readWorkflowRunSteps(repo, run.id);
-    const detail = buildWorkflowRunDetail(run, steps);
+    const detail = buildWorkflowRunDetail(repo, run, steps);
     if (opts?.includeUnits) {
       // The honest diagnostic surface (#22): read the unit journal straight and
       // project each row, INCLUDING failures whose diagnostic text the
@@ -393,14 +419,26 @@ export async function hasWorkflowRun(runId: string): Promise<boolean> {
   return withWorkflowRunsRepo((repo) => repo.hasRun(runId));
 }
 
-export async function listWorkflowRuns(input?: { workflowRef?: string; activeOnly?: boolean }): Promise<{
+export async function listWorkflowRuns(input?: {
+  workflowRef?: string;
+  activeOnly?: boolean;
+  /** Include child workflow runs (P3b, B-N10). Default `false`. */
+  includeChildren?: boolean;
+}): Promise<{
   runs: WorkflowRunSummary[];
 }> {
   const scopeKey = getCurrentWorkflowScopeKey();
   const activeOnly = input?.activeOnly === true;
+  const includeChildren = input?.includeChildren === true;
   if (input?.workflowRef === undefined) {
     return withWorkflowRunsRepo((repo) => ({
-      runs: repo.listRuns({ scopeKey, ...(activeOnly ? { activeOnly: true } : {}) }).map(toWorkflowRunSummary),
+      runs: repo
+        .listRuns({
+          scopeKey,
+          ...(activeOnly ? { activeOnly: true } : {}),
+          ...(includeChildren ? { includeChildren: true } : {}),
+        })
+        .map(toWorkflowRunSummary),
     }));
   }
 
@@ -418,7 +456,9 @@ export async function listWorkflowRuns(input?: { workflowRef?: string; activeOnl
     workflowRefs = await workflowRunRefSet(canonicalRef, exactRef);
   } catch (error) {
     if (parsedExactRef.bundle !== undefined) {
-      const exactRows = await withWorkflowRunsRepo((repo) => repo.listRuns({ scopeKey, workflowRef: exactRef }));
+      const exactRows = await withWorkflowRunsRepo((repo) =>
+        repo.listRuns({ scopeKey, workflowRef: exactRef, ...(includeChildren ? { includeChildren: true } : {}) }),
+      );
       if (exactRows.length === 0) throw error;
       return {
         runs: exactRows.filter((row) => !activeOnly || row.status === "active").map(toWorkflowRunSummary),
@@ -428,7 +468,12 @@ export async function listWorkflowRuns(input?: { workflowRef?: string; activeOnl
   }
   return withWorkflowRunsRepo((repo) => ({
     runs: repo
-      .listRuns({ scopeKey, workflowRefs, ...(activeOnly ? { activeOnly: true } : {}) })
+      .listRuns({
+        scopeKey,
+        workflowRefs,
+        ...(activeOnly ? { activeOnly: true } : {}),
+        ...(includeChildren ? { includeChildren: true } : {}),
+      })
       .map(toWorkflowRunSummary),
   }));
 }
@@ -498,7 +543,7 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
       throw new UsageError(`Workflow run ${run.id} is already completed and cannot be resumed.`);
     }
     if (run.status === "active") {
-      return buildWorkflowRunDetail(run, steps);
+      return buildWorkflowRunDetail(repo, run, steps);
     }
     // blocked or failed → flip back to active and re-open the current step so
     // it can be reclassified (completed, failed, skipped) after resuming.
@@ -511,7 +556,7 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
     });
     const updated: WorkflowRunRow = { ...run, status: "active", updated_at: now };
     const refreshedSteps = readWorkflowRunSteps(repo, run.id);
-    return buildWorkflowRunDetail(updated, refreshedSteps);
+    return buildWorkflowRunDetail(repo, updated, refreshedSteps);
   });
 }
 
@@ -550,7 +595,7 @@ export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDeta
       checkin_armed_at: now,
     };
     const steps = readWorkflowRunSteps(repo, run.id);
-    const detail = buildWorkflowRunDetail(updated, steps);
+    const detail = buildWorkflowRunDetail(repo, updated, steps);
     return detail;
   });
 }
@@ -836,6 +881,28 @@ export async function completeWorkflowStep(
 
       refreshedSteps = readWorkflowRunSteps(repo, run.id);
       const state = deriveRunState(refreshedSteps);
+
+      // P3b (spec §4.3, B-N13): resolve + persist declared outputs INSIDE
+      // this same transaction, immediately after the run is known to have
+      // COMPLETED. A resolution failure throws here, and the transaction
+      // rolls back whole — the step completion included — so the observable
+      // outcome is fail-before-mutation: the step stays pending, the run
+      // stays active, and (since appendEvent runs outside this transaction)
+      // no event is appended.
+      let outputsJson: string | null | undefined; // undefined = untouched, keep the row's existing value
+      if (state.status === "completed" && plan.outputs) {
+        const resolved = resolveWorkflowRunOutputs(plan, refreshedSteps);
+        if (!resolved.ok) {
+          throw new UsageError(
+            `Workflow run ${run.id} completed its final step but its declared outputs could not be resolved:\n` +
+              resolved.errors.map((e) => `  - ${e}`).join("\n"),
+            "WORKFLOW_OUTPUT_INVALID",
+          );
+        }
+        outputsJson = JSON.stringify(resolved.outputs);
+        repo.setRunOutputs(run.id, outputsJson);
+      }
+
       // Re-arm the check-in on every state change: a healthy, progressing run
       // keeps pushing the stall window forward so the directive never fires.
       repo.updateRunState({
@@ -854,10 +921,11 @@ export async function completeWorkflowStep(
         updated_at: completedAt,
         completed_at: state.completedAt,
         checkin_armed_at: completedAt,
+        ...(outputsJson !== undefined ? { outputs_json: outputsJson } : {}),
       };
     });
 
-    const detail = buildWorkflowRunDetail(updatedRun as WorkflowRunRow, refreshedSteps);
+    const detail = buildWorkflowRunDetail(repo, updatedRun as WorkflowRunRow, refreshedSteps);
     // #11: emit `workflow_step_completed` ONLY for a genuine `completed`
     // transition; every other non-pending status (failed/skipped/blocked)
     // carries the honest `workflow_step_updated` name. The status is ALWAYS
@@ -968,7 +1036,11 @@ function readWorkflowRunSteps(repo: WorkflowRunsRepository, runId: string): Work
   return repo.getStepsForRun(runId);
 }
 
-function buildWorkflowRunDetail(run: WorkflowRunRow, steps: WorkflowRunStepRow[]): WorkflowRunDetail {
+function buildWorkflowRunDetail(
+  repo: WorkflowRunsRepository,
+  run: WorkflowRunRow,
+  steps: WorkflowRunStepRow[],
+): WorkflowRunDetail {
   // Review M1: `workflow status` (and every other detail-shaped response) now
   // evaluates the check-in, not just `workflow run`. Pure timestamp check —
   // no background thread (see checkin.ts).
@@ -979,6 +1051,7 @@ function buildWorkflowRunDetail(run: WorkflowRunRow, steps: WorkflowRunStepRow[]
     agentHarness: run.agent_harness,
     agentSessionId: run.agent_session_id,
   });
+  const children = childRunTree(repo, run.id, run.id);
   return {
     run: toWorkflowRunSummary(run),
     workflow: {
@@ -987,6 +1060,79 @@ function buildWorkflowRunDetail(run: WorkflowRunRow, steps: WorkflowRunStepRow[]
       steps: steps.map(toWorkflowRunStepState),
     },
     ...(checkin ? { checkin } : {}),
+    ...(children ? { children } : {}),
+  };
+}
+
+/**
+ * Build the parent-child status tree rooted at `rootRunId`, recursively, for
+ * whatever run's children are being listed (`forRunId`) — P3b, spec §4.5.
+ * `rootRunId` is threaded unchanged through the recursion, so every blocked
+ * node's `resume.then` names the SAME top-of-query run regardless of nesting
+ * depth: `akm workflow resume <rootRunId> && akm workflow run <rootRunId>` —
+ * never each node's own immediate parent, which the tree's caller has no
+ * command for.
+ *
+ * That command is sufficient to clear a block exactly ONE level deep (the
+ * root's own composing step blocked directly on this node) but NOT deeper
+ * (code-review round 4, finding 6 / Review log R6 — corrects a false claim
+ * this comment used to make here). Re-driving the root does **not** cascade
+ * back down through every intermediate composing step: `driveChildWorkflowUnit`
+ * (child-workflow.ts) never re-drives a child whose OWN status is `blocked`
+ * (row A-22) — no lease is even taken — so a re-drive just RE-OBSERVES the
+ * still-blocked status and re-propagates the block upward (an intermediate
+ * run is always blocked when a descendant is, row A-21, applied
+ * recursively), never reaching the deepest blocked node. Clearing a
+ * depth-2-or-deeper block requires resuming EVERY blocked run in the chain,
+ * deepest first, then re-running only the root — see "Recovering a blocked
+ * child" in docs/guides/run-workflows.md and "Blocked-child recovery" in
+ * docs/reference/workflow-schema.md for the worked multi-level sequence.
+ * `resume.then` is deliberately not widened to enumerate that chain (no
+ * envelope change, no new field) — the docs carry the multi-level sequence
+ * instead.
+ *
+ * Absent, never `[]`, when `forRunId` has no children (P3a's `childRunsOf`
+ * order: `created_at, id`).
+ */
+function childRunTree(
+  repo: WorkflowRunsRepository,
+  rootRunId: string,
+  forRunId: string,
+): WorkflowChildRunNode[] | undefined {
+  const rows = repo.childRunsOf(forRunId);
+  if (rows.length === 0) return undefined;
+  return rows.map((row) => toChildRunNode(repo, rootRunId, row));
+}
+
+function toChildRunNode(repo: WorkflowRunsRepository, rootRunId: string, row: WorkflowRunRow): WorkflowChildRunNode {
+  const spawnedByUnitId = row.parent_unit_id ?? "";
+  // B-36: the parent STEP that spawned it, resolved via the real journaled
+  // unit row — null when that unit row is gone.
+  const stepId =
+    row.parent_run_id && row.parent_unit_id
+      ? (repo.getUnit(row.parent_run_id, row.parent_unit_id)?.step_id ?? null)
+      : null;
+  const children = childRunTree(repo, rootRunId, row.id);
+  return {
+    runId: row.id,
+    workflowRef: row.workflow_ref,
+    workflowTitle: row.workflow_title,
+    status: row.status,
+    spawnedByUnitId,
+    stepId,
+    currentStepId: row.current_step_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...(row.status === "blocked"
+      ? {
+          resume: {
+            command: `akm workflow resume ${row.id}`,
+            // biome-ignore lint/suspicious/noThenProperty: mirrors spec §4.5's real WorkflowChildRunNode.resume.then field name
+            then: `akm workflow resume ${rootRunId} && akm workflow run ${rootRunId}`,
+          },
+        }
+      : {}),
+    ...(children ? { children } : {}),
   };
 }
 
@@ -1014,6 +1160,12 @@ function toWorkflowRunSummary(run: WorkflowRunRow): WorkflowRunSummary {
     ...(run.engine_lease_holder && run.engine_lease_until
       ? { engineLease: { holder: run.engine_lease_holder, until: run.engine_lease_until } }
       : {}),
+    // P3b (spec §4.5): all three optional and conditionally spread, so every
+    // pre-existing (non-child, no-outputs-declared) run's envelope is
+    // byte-identical (Stable tier, rows B-27, B-45).
+    ...(run.outputs_json ? { outputs: parseJsonObject(run.outputs_json) ?? {} } : {}),
+    ...(run.parent_run_id ? { parentRunId: run.parent_run_id } : {}),
+    ...(run.parent_unit_id ? { spawnedByUnitId: run.parent_unit_id } : {}),
   };
 }
 

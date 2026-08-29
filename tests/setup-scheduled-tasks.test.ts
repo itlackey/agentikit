@@ -297,14 +297,13 @@ describe("task definition preparation", () => {
       const taskDir = path.join(storage.stashDir, "tasks");
       const filePath = path.join(taskDir, "improve.yml");
       const original = [
-        "version: 3",
+        "version: 4",
         "run: akm improve",
-        "on:",
-        "  schedule:",
-        "    - cron: '0 1 * * *'",
-        "    - cron: '30 13 * * 1,2,3,4,5'",
-        "akm:",
-        "  enabled: false",
+        "schedule:",
+        "  - cron: '0 1 * * *'",
+        "    enabled: false",
+        "  - cron: '30 13 * * 1,2,3,4,5'",
+        "    enabled: false",
         "",
       ].join("\n");
       fs.mkdirSync(taskDir, { recursive: true });
@@ -392,7 +391,7 @@ describe("task definition preparation", () => {
       const taskDir = path.join(storage.stashDir, "tasks");
       const improvePath = path.join(taskDir, "improve.yml");
       const syncPath = path.join(taskDir, "sync.yml");
-      const original = 'version: 3\nrun: akm improve\nakm:\n  schedule: "0 1 * * *"\n  enabled: false\n';
+      const original = "version: 4\nrun: akm improve\nschedule:\n  - cron: '0 1 * * *'\n    enabled: false\n";
       fs.mkdirSync(taskDir, { recursive: true });
       fs.writeFileSync(improvePath, original, "utf8");
       let commits = 0;

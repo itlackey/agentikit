@@ -9,8 +9,9 @@
  * CLI spawn wrapper so non-agent subprocess callers (task commands, setup
  * probes/installers) get the same guarantees the agent path already had:
  *
- *   • Process-GROUP spawn (`detached: true` when capturing) so a negative-pid
- *     kill reaps the whole descendant tree — no orphaned children.
+ *   • Process-GROUP spawn (`detached: true` when capturing ON POSIX) so a
+ *     negative-pid kill reaps the whole descendant tree — no orphaned children.
+ *     See {@link spawnsOwnProcessGroup} for why Windows is excluded.
  *   • A SIGTERM→SIGKILL kill ladder on timeout/abort — a child that ignores
  *     SIGTERM is force-killed after a grace period instead of wedging forever.
  *   • Time-bounded output capture ({@link readStream}) that cannot block past
@@ -53,6 +54,7 @@ export type SpawnFn = (
     env?: Record<string, string>;
     cwd?: string;
     detached?: boolean;
+    windowsVerbatimArguments?: boolean;
   },
 ) => SpawnedSubprocess;
 
@@ -65,6 +67,54 @@ export type SpawnFn = (
  * reaped alongside the node wrapper. The fallback keeps test fakes working
  * without modification.
  */
+/**
+ * Whether a captured spawn should ask for its own process group.
+ *
+ * POSIX: yes. `detached` is `setsid()`, which is what makes {@link killGroup}'s
+ * `process.kill(-pid, …)` reap the whole descendant tree. It does not touch the
+ * child's stdio.
+ *
+ * Windows: no — the same flag means something unrelated and actively harmful.
+ * There it maps to `DETACHED_PROCESS`, so the child is created WITHOUT A
+ * CONSOLE; a console host started that way (powershell.exe, cmd.exe) allocates
+ * its own console during startup, which REPLACES the std handles it was handed,
+ * and everything it writes goes to that phantom console instead of our pipe.
+ * The command still runs and its exit code still propagates — the output just
+ * vanishes, which is exactly how it failed: a scheduled `akm --version` logged
+ * `exit_code=0` with both captured streams empty. Windows gains nothing in
+ * return, because `process.kill(-pid, …)` is a POSIX process-group call that
+ * throws there; {@link killGroup} already falls back to `proc.kill(signal)`.
+ *
+ * Exported for direct unit testing with an explicit platform.
+ */
+export function spawnsOwnProcessGroup(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "win32";
+}
+
+/**
+ * The exact options one managed run hands its spawn — pure, so the platform
+ * dependency above is testable on any host rather than only on the platform
+ * that would break.
+ */
+export function buildSpawnOptions(
+  opts: Pick<RunManagedSubprocessOptions, "capture" | "stdin" | "env" | "cwd" | "windowsVerbatimArguments">,
+  platform: NodeJS.Platform = process.platform,
+): Parameters<SpawnFn>[1] {
+  const capture = opts.capture;
+  return {
+    stdin: capture ? (opts.stdin !== undefined ? "pipe" : "ignore") : "inherit",
+    stdout: capture ? "pipe" : "inherit",
+    stderr: capture ? "pipe" : "inherit",
+    ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    // Only in captured mode — interactive mode inherits the parent terminal's
+    // process group intentionally — and only where the flag means a process
+    // group at all (see spawnsOwnProcessGroup).
+    ...(capture && spawnsOwnProcessGroup(platform) ? { detached: true } : {}),
+    ...(opts.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  };
+}
+
 export function killGroup(proc: SpawnedSubprocess, signal: "SIGTERM" | "SIGKILL"): void {
   if (typeof proc.pid === "number") {
     try {
@@ -343,6 +393,12 @@ export interface RunManagedSubprocessOptions {
   signal?: AbortSignal;
   /** SIGTERM→SIGKILL grace period (ms). Defaults to 5000. */
   graceMs?: number;
+  /**
+   * Windows only: forwarded to the spawn call. Set when `cmd` is itself a
+   * shell invocation (e.g. `cmd /S /C "<hand-quoted command line>"`) whose
+   * tail argument must reach the child exactly as built. No-op elsewhere.
+   */
+  windowsVerbatimArguments?: boolean;
   /** Spawn function. Defaults to the runtime spawn. Tests inject a fake. */
   spawnFn?: SpawnFn;
   /** `setTimeout` shim. Defaults to the global. Tests pass a synchronous driver. */
@@ -429,17 +485,7 @@ export async function runManagedSubprocess(
 
   let proc: SpawnedSubprocess;
   try {
-    proc = spawnFn(cmd, {
-      stdin: capture ? (opts.stdin !== undefined ? "pipe" : "ignore") : "inherit",
-      stdout: capture ? "pipe" : "inherit",
-      stderr: capture ? "pipe" : "inherit",
-      ...(opts.env ? { env: opts.env } : {}),
-      ...(opts.cwd ? { cwd: opts.cwd } : {}),
-      // Spawn in its own process group so killGroup(-pid, signal) reaches all
-      // descendants. Only in captured mode — interactive mode inherits the
-      // parent terminal's process group intentionally.
-      ...(capture ? { detached: true } : {}),
-    });
+    proc = spawnFn(cmd, buildSpawnOptions(opts));
   } catch (err) {
     return {
       exitCode: null,

@@ -44,7 +44,7 @@ describe("akm workflow refs — unknown bundles fail consistently", () => {
     for (const command of commands) {
       const result = await runCliCapture([...command]);
       expect(result.code, `${command.join(" ")}: ${result.stderr}`).toBe(2);
-      expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
+      expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "WORKFLOW_SOURCE_INVALID" });
     }
   });
 });

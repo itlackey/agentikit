@@ -53,8 +53,14 @@ import { ensureIndex } from "../ensure-index";
 import { collectGraphRelatedHit, type GraphBoostContext, loadGraphBoostContext } from "../graph/graph-boost";
 import { type IndexDocument, isProposedQuality, type StashEntryScope } from "../passes/metadata";
 import { resolveProjectContext } from "../walk/project-context";
-import { parseRefPrefixQuery, parseRetiredTypePrefixQuery, sanitizeFtsQuery } from "./fts-query";
-import { applyRankingRules, combineSearchScores, normalizeFtsScores } from "./ranking";
+import {
+  buildLexicalQueryPlan,
+  type LexicalQueryExecution,
+  parseRefPrefixQuery,
+  parseRetiredTypePrefixQuery,
+} from "./fts-query";
+import { applyRankingRules, combineSearchScores, lexicalNameMatchTier, normalizeFtsScores } from "./ranking";
+import { typeBoostFor } from "./ranking-contributors";
 import type { RankedEntryInput } from "./ranking-types";
 import { attachSearchHitAttribution, copySearchHitAttribution, getSearchHitAttribution } from "./search-attribution";
 import { enrichSearchHit } from "./search-hit-enrichers";
@@ -346,6 +352,34 @@ export async function searchLocal(input: {
 
 // ── Database search ─────────────────────────────────────────────────────────
 
+/**
+ * Keep one deterministic ranking order before stable path deduplication. Exact
+ * names survive the public score ceiling, while raw contributor differences
+ * are quantized so utility-recency epsilon cannot reorder visible ties.
+ */
+function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: RankedEntryInput) => number {
+  const queryTokens = buildLexicalQueryPlan(query).tokens.map((token) => token.toLowerCase());
+  const displayScore = (score: number): number => Math.round(Math.min(1, Math.max(0, score)) * 10000) / 10000;
+  const stableRankScore = (score: number): number => Math.round(score * 10000) / 10000;
+
+  return (a, b) => {
+    const aNameTier = lexicalNameMatchTier(a.entry, queryTokens);
+    const bNameTier = lexicalNameMatchTier(b.entry, queryTokens);
+    if (aNameTier === 3 || bNameTier === 3) {
+      const nameDiff = bNameTier - aNameTier;
+      if (nameDiff !== 0) return nameDiff;
+    }
+    const scoreDiff = displayScore(b.score) - displayScore(a.score);
+    if (scoreDiff !== 0) return scoreDiff;
+    const rawScoreDiff = stableRankScore(b.score) - stableRankScore(a.score);
+    if (rawScoreDiff !== 0) return rawScoreDiff;
+    const nameDiff = bNameTier - aNameTier;
+    if (nameDiff !== 0) return nameDiff;
+    const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);
+    return typeDiff || a.filePath.localeCompare(b.filePath);
+  };
+}
+
 async function searchDatabase(
   db: Database,
   query: string,
@@ -370,7 +404,7 @@ async function searchDatabase(
   mode: SearchExecutionMode;
   semanticWarning?: string;
 }> {
-  const hasSearchableTokens = query.length > 0 && sanitizeFtsQuery(query).length > 0;
+  const hasSearchableTokens = query.length > 0 && buildLexicalQueryPlan(query).tokens.length > 0;
 
   // #627 — resolve the default type-exclusion policy. It applies ONLY on the
   // untyped ('any') path and only when the caller did not opt back in via
@@ -555,21 +589,7 @@ async function searchDatabase(
       ? scored.filter((item) => item.rankingMode !== "semantic" || (item.preCeilingScore ?? item.score) >= minScore)
       : scored;
 
-  // Deterministic tiebreaker on equal scores.
-  //
-  // CRITICAL: sort on the SAME clamped+rounded value the user sees (see the
-  // `finalScore`/round-to-4dp logic below at buildDbHit), NOT the raw pre-clamp
-  // `item.score`. The boost loop can push scores above 1.0 (utility, graph,
-  // project boosts) and carries ~15 significant digits. Two entries that DISPLAY
-  // an identical score (e.g. both clamp to 1.0000) can still differ in their raw
-  // pre-clamp score by a timing-dependent epsilon — utility recency uses
-  // `Date.now()` and `last_used_at`, so the same query run twice in one process
-  // can yield raw scores that diverge at the 6th decimal. Sorting on the raw
-  // value lets that invisible epsilon decide the order, so the visible name
-  // tiebreaker never engages and the order flips run-to-run (Issue #14). Quantize
-  // to the display value first; only then does `localeCompare` break true ties.
-  const displayScore = (s: number): number => Math.round(Math.min(1, Math.max(0, s)) * 10000) / 10000;
-  preFilter.sort((a, b) => displayScore(b.score) - displayScore(a.score) || a.entry.name.localeCompare(b.entry.name));
+  preFilter.sort(buildSearchResultComparator(query));
 
   // Deduplicate by file path — keep only the highest-scored entry per file.
   const deduped = deduplicateByPath(preFilter);
@@ -608,6 +628,7 @@ async function searchDatabase(
         score: Math.round(finalScore * 10000) / 10000,
         query,
         rankingMode,
+        lexicalMatch: ranked.lexicalMatch,
         defaultStashDir: stashDir,
         allSourceDirs,
         sources,
@@ -787,7 +808,7 @@ async function enumerateEntries(opts: {
  * What this does NOT unify — and deliberately leaves divergent — is CANDIDATE-
  * POOL construction, which is inherent search-vs-browse semantics: the scored
  * path's pool is `searchFts`/vector matches for the query's own tokens (FTS
- * indexes description/tags/searchHints/aliases, not raw body prose), while the
+ * includes structured fields and bounded adapter content), while the
  * enumerate path's pool is `getAllEntries` for the type, independent of query
  * text. A derived twin sharing no indexed token with the query is therefore an
  * enumerate-path candidate but never a scored-path candidate — see
@@ -983,6 +1004,7 @@ export async function buildDbHit(input: {
   score: number;
   query: string;
   rankingMode: "hybrid" | "semantic" | "fts";
+  lexicalMatch?: LexicalQueryExecution;
   defaultStashDir: string;
   allSourceDirs: string[];
   sources: SearchSource[];
@@ -1026,6 +1048,7 @@ export async function buildDbHit(input: {
     confidenceBoost,
     input.utilityBoosted,
     graphBoost,
+    input.lexicalMatch,
   );
 
   const graphHit = input.graphContext ? collectGraphRelatedHit(input.graphContext, absolutePath) : null;
@@ -1064,7 +1087,7 @@ export async function buildDbHit(input: {
     ...(graphHit ? { graph: { entities: graphHit.entities, relations: graphHit.relations } } : {}),
   };
 
-  if (input.attributionSource) copySearchHitAttribution(input.attributionSource, hit);
+  attachDbHitAttribution(hit, input);
 
   if (input.entry.derivedFrom) {
     attachSearchHitAttribution(hit, {
@@ -1082,6 +1105,26 @@ export async function buildDbHit(input: {
   return hit;
 }
 
+function attachDbHitAttribution(
+  hit: SourceSearchHit,
+  input: {
+    entry: IndexDocument;
+    query: string;
+    lexicalMatch?: LexicalQueryExecution;
+    attributionSource?: object;
+  },
+): void {
+  if (input.lexicalMatch) {
+    attachSearchHitAttribution(hit, {
+      lexical: {
+        execution: input.lexicalMatch,
+        nameMatchTier: lexicalNameMatchTier(input.entry, buildLexicalQueryPlan(input.query).tokens),
+      },
+    });
+  }
+  if (input.attributionSource) copySearchHitAttribution(input.attributionSource, hit);
+}
+
 export function buildWhyMatched(
   entry: IndexDocument,
   query: string,
@@ -1091,6 +1134,7 @@ export function buildWhyMatched(
   confidenceBoost: number,
   utilityBoosted?: boolean,
   graphBoost?: number,
+  lexicalMatch?: LexicalQueryExecution,
 ): string[] {
   const reasons: string[] = [
     rankingMode === "hybrid"
@@ -1099,6 +1143,7 @@ export function buildWhyMatched(
         ? "semantic similarity"
         : "fts bm25 relevance",
   ];
+  if (lexicalMatch === "relaxed") reasons.push("lexical recovery after strict query returned no hits");
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
 
   const queryLower = query.toLowerCase().trim();
@@ -1153,14 +1198,13 @@ export function deriveSize(bytes?: number): SearchHitSize | undefined {
 }
 
 /**
- * Deduplicate scored results by file path, keeping only the highest-scored
- * entry per unique path. Sorts by score descending internally to ensure the
- * precondition is always met regardless of caller.
+ * Deduplicate the already-ranked result stream by file path. The caller owns
+ * the one ranking order; re-sorting here would silently discard exact-name and
+ * relaxed-recovery ordering in favor of an internal pre-clamp score.
  */
 function deduplicateByPath<T extends { filePath: string; score?: number }>(items: T[]): T[] {
-  const sorted = [...items].sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.filePath.localeCompare(b.filePath));
   const seen = new Set<string>();
-  return sorted.filter((item) => {
+  return items.filter((item) => {
     if (seen.has(item.filePath)) return false;
     seen.add(item.filePath);
     return true;

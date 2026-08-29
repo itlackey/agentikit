@@ -80,7 +80,7 @@ describe("§11.5 bundle-rename startup guard", () => {
     expect(warnCalls).toHaveLength(0);
   });
 
-  test("refuses a stamped v21 index with a hidden generated legacy column before reading bundle ids", () => {
+  test("refuses a stamped v22 index with a hidden generated legacy column before reading bundle ids", () => {
     seedIndexBundles(["oldname"]);
     const raw = openDatabase(getDbPath());
     try {

@@ -32,6 +32,10 @@ import { isVecAvailable, purgeEmbeddings } from "./index-vec-repository";
 // entry_type columns. item_ref is the sole conflict key; document_json is the
 // sole stored document projection; bundle provenance and file_path provide the
 // current identity and materialized read path.
+//
+// v21→v22: entry mutations publish FTS synchronously and no dirty queue exists.
+// Discard the old derived generation so stale FTS rows and caller-managed dirty
+// state cannot cross the mutation-authority boundary.
 export const DB_VERSION = CANONICAL_INDEX_DB_VERSION;
 export const EMBEDDING_DIM = 384;
 // #624-P1: graph_files is keyed to (stash_root, file_path, body_hash).
@@ -335,16 +339,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // child rows are removed when a graph_files row is replaced.
   //
   ensureGraphTables(db);
-
-  // FTS-dirty queue. Created here (not lazily on first upsert) so the
-  // per-entry write path doesn't issue a CREATE TABLE IF NOT EXISTS on
-  // every call — that DDL would fire thousands of times during a full
-  // index. See `markFtsDirty` and `rebuildFts({ incremental: true })`.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS entries_fts_dirty (
-      entry_id INTEGER PRIMARY KEY
-    );
-  `);
 
   // If a generation rebuild could not drop a vec0 table while the extension
   // was unavailable, finish that reset as soon as vec0 can be loaded again.

@@ -9,6 +9,8 @@ import { withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox"
 function completeSchedulerBackend(options: {
   binding: readonly string[];
   contextPath: string;
+  /** #846: resolved path of the "stash" bundle this fixture's entry belongs to. */
+  ownerBundlePath?: string;
   onInstall?: (installOptions: SchedulerInstallOptions | undefined) => void;
 }): SchedulerBackend {
   const invocation = ["task", "run", "ping", "--bundle", "stash", "--scheduled"] as const;
@@ -19,6 +21,7 @@ function completeSchedulerBackend(options: {
     target: "stash",
     binding: [...options.binding],
     contextPath: options.contextPath,
+    ...(options.ownerBundlePath !== undefined ? { ownerBundlePath: options.ownerBundlePath } : {}),
     invocation,
   };
   const artifact = {
@@ -45,10 +48,7 @@ function completeSchedulerBackend(options: {
 
 function writeTask(stashDir: string): void {
   fs.mkdirSync(path.join(stashDir, "tasks"), { recursive: true });
-  fs.writeFileSync(
-    path.join(stashDir, "tasks", "ping.yml"),
-    'version: 3\nrun: echo ping\nakm:\n  schedule: "@daily"\n',
-  );
+  fs.writeFileSync(path.join(stashDir, "tasks", "ping.yml"), 'version: 4\nrun: echo ping\nschedule: "@daily"\n');
 }
 
 function configureStash(stashDir: string): void {
@@ -115,6 +115,7 @@ describe("scheduler runtime binding", () => {
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
         onInstall: (options) => installs.push(options),
       });
 
@@ -149,6 +150,7 @@ describe("scheduler runtime binding", () => {
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
       });
 
       const result = await akmTasksSync(
@@ -183,6 +185,7 @@ describe("scheduler runtime binding", () => {
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
       });
 
       const result = await akmTasksSync(
@@ -214,6 +217,7 @@ describe("scheduler runtime binding", () => {
       const backend = completeSchedulerBackend({
         binding: ["/old/node", "/old/dist/akm"],
         contextPath: "/old/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
         onInstall: (options) => installs.push(options),
       });
 
@@ -243,12 +247,13 @@ describe("scheduler runtime binding", () => {
       // task's `enabled:` field is now a plain file edit, reconciled by sync.
       fs.writeFileSync(
         path.join(storage.stashDir, "tasks", "ping.yml"),
-        'version: 3\nrun: echo ping\nakm:\n  schedule: "@daily"\n  enabled: false\n',
+        'version: 4\nrun: echo ping\nschedule:\n  - cron: "@daily"\n    enabled: false\n',
       );
       const installs: Array<SchedulerInstallOptions | undefined> = [];
       const backend = completeSchedulerBackend({
         binding: ["/current/akm"],
         contextPath: "/current/context.json",
+        ownerBundlePath: path.resolve(storage.stashDir),
         onInstall: (options) => installs.push(options),
       });
 

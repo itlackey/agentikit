@@ -103,7 +103,6 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
   assignString(entry, "whenToUse", dj.whenToUse);
   if (dj.toc !== undefined) entry.toc = dj.toc as IndexDocument["toc"];
   if (dj.parameters !== undefined) entry.parameters = dj.parameters as IndexDocument["parameters"];
-  assignString(entry, "bodyOpening", dj.bodyOpening);
   if (dj.source !== undefined) entry.source = dj.source as IndexDocument["source"];
   assignString(entry, "category", dj.category);
   assignStringList(entry, "supersededBy", dj.supersededBy);
@@ -127,7 +126,7 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
 
 type StringListKey = "examples" | "usage" | "xrefs" | "supersededBy" | "contradictedBy" | "sources" | "evidenceSources";
 
-type StringKey = "pageKind" | "whenToUse" | "bodyOpening" | "category" | "run" | "setup" | "cwd";
+type StringKey = "pageKind" | "whenToUse" | "category" | "run" | "setup" | "cwd";
 
 function assignStringList(entry: IndexDocument, key: StringListKey, value: unknown): void {
   if (Array.isArray(value)) entry[key] = value as string[];

@@ -505,13 +505,10 @@ describe("recognizeMatch", () => {
 // strict-v3 YAML document (no `---` fences) through the canonical source
 // parser, not the frontmatter parser (which would silently return `{}`).
 describe("task-yaml metadata fold", () => {
-  test("populates schedule/workflow searchHints and task/scheduled tags from strict v3 YAML", () => {
+  test("populates schedule/workflow searchHints and task/scheduled tags from strict task source YAML", () => {
     const root = tmpDir();
     const filePath = path.join(root, "tasks", "nightly-report.yml");
-    writeFile(
-      filePath,
-      ["version: 3", "uses: workflows/daily-backup", "akm:", "  schedule: '0 9 * * *'", "  enabled: true"].join("\n"),
-    );
+    writeFile(filePath, ["version: 4", "uses: workflows/daily-backup", "schedule: '0 9 * * *'"].join("\n"));
 
     const ctx = buildFileContext(root, filePath);
     const entry: IndexDocument = { name: "nightly-report", type: "task" };
@@ -529,7 +526,7 @@ describe("task-yaml metadata fold", () => {
     const filePath = path.join(root, "tasks", "review.yml");
     writeFile(
       filePath,
-      ["version: 3", "uses: akm/command", "with:", "  ref: commands/review", "akm:", "  schedule: '@daily'"].join("\n"),
+      ["version: 4", "uses: akm/command", "with:", "  ref: commands/review", "schedule: '@daily'"].join("\n"),
     );
 
     const ctx = buildFileContext(root, filePath);

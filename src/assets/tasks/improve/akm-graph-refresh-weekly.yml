@@ -1,6 +1,4 @@
-version: 3
+version: 4
 run: akm improve --strategy graph-refresh --skip-if-locked
-akm:
-  schedule: "10 3 * * 0"
-  enabled: true
-  description: Full-corpus graph rebuild (weekly Sunday 3:10am)
+description: Full-corpus graph rebuild (weekly Sunday 3:10am)
+schedule: "10 3 * * 0"

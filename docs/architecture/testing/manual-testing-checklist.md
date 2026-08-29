@@ -952,8 +952,8 @@ akm search qa-filesystem-source-marker --from fs-source --no-track-usage
 ```
 
 - [ ] **[LOCAL]** Add indexes in place with kind `filesystem`, writable true.
-- [ ] **[LOCAL]** Single update exits `2`, `TARGET_NOT_UPDATABLE`; update-all
-      reports skipped.
+- [ ] **[LOCAL]** Single update and update-all reconcile current files into the
+      index without provider hydration.
 - [ ] **[LOCAL]** Non-TTY remove requires `--yes`, removes ownership/index, and
       leaves source files.
 - [ ] **[LOCAL]** Real path plus symlink alias does not create ambiguous owner or
@@ -1817,9 +1817,10 @@ Environment scope and context:
       or CI variables present in akm's own environment are **absent** unless
       named. `pass_env:` widens it by name; exact named `env:` bindings provide
       fixed or secret values.
-- [ ] **CORE** A new durable-v4 start containing `inherit_env: true` is rejected
-      before dispatch and directs the author to named env bindings. A pre-v4
-      stored plan is also rejected and directs the user to start a new run.
+- [ ] **CORE** A new durable-v4-family (`irVersion: 5`) start containing
+      `inherit_env: true` is rejected before dispatch and directs the author to
+      named env bindings. A pre-`irVersion`-5 stored plan is also rejected and
+      directs the user to start a new run.
 - [ ] **LOCAL** `env:` bindings inject resolved values, and the `AKM_*` context
       is applied *after* them, so a binding cannot shadow it.
 - [ ] **LOCAL** `AKM_RUN_ID`, `AKM_STEP_ID`, `AKM_UNIT_ID`, `AKM_PARAMS`,
@@ -2417,24 +2418,28 @@ akm config unset embedding --silent
 
 ### 19.1 Task migration boundary
 
-`akm migrate` has exactly one responsibility: explicit task-v2 to task-v3
-source conversion. It never rewrites config or databases.
+`akm migrate` has exactly one responsibility: explicit task migration, run as
+two generations in one pass — task-v2 to task-v3 source conversion, then
+task-v3 to task source v4 conversion against the resulting files. It never
+rewrites config or databases.
 
 | Operation | Classification |
 | --- | --- |
-| `akm migrate status` | Read-only task inventory |
-| `akm migrate apply --dry-run` | Read-only validated conversion plan |
-| `akm migrate apply` | Per-file backup plus atomic task-source replacement |
+| `akm migrate status` | Read-only task inventory, both generations |
+| `akm migrate apply --dry-run` | Read-only validated conversion plan, both generations |
+| `akm migrate apply` | Per-file backup plus atomic task-source replacement, both generations |
 
-- [ ] **[LOCAL]** Status and dry-run report the same generation and change no
-      source, config, database, lock, scheduler, event, or usage row.
+- [ ] **[LOCAL]** Status and dry-run report the same generation for each pass
+      and change no source, config, database, lock, scheduler, event, or usage
+      row.
 - [ ] **[LOCAL]** Apply validates complete v3 bytes before replacement,
-      preserves mode, and creates the backup immediately before the write.
+      preserves mode, and creates the backup immediately before the write; the
+      v3-to-v4 generation then runs the same way against the resulting files.
 - [ ] **[LOCAL]** A changed generation, ambiguous argv array, unwritable source,
       invalid YAML, or unsafe shell translation is blocked with original bytes
       intact.
-- [ ] **[LOCAL]** Normal run/sync/doctor rejects task v2 and never invokes the
-      migrator as a side effect.
+- [ ] **[LOCAL]** Normal run/sync/doctor rejects task v2 and task v3 and never
+      invokes the migrator as a side effect.
 
 ### 19.2 Automatic current database upgrades
 
@@ -2456,7 +2461,8 @@ entries fail closed. There is no external storage migration command.
 `akm upgrade` updates executable code only. A 0.8 installation moves its old
 config/state aside, creates current config/state, and selectively brings
 authored assets forward. The explicit task migrator can then convert task-v2
-sources. No current runtime loads old config/storage layouts.
+sources through to task source v4. No current runtime loads old
+config/storage layouts.
 
 - [ ] **[LIVE DISPOSABLE]** `akm upgrade --check` is nonmutating and the chosen
       npm/Bun/pnpm or standalone path installs the expected version.
@@ -3167,11 +3173,11 @@ remaining gaps carry approved waivers with the expiries recorded below.
     rejecting `akmIndex()` are pinned in the same file.
   - JS fallback after fast-path failure: already covered
     (`tests/integration/db.test.ts`, `tests/integration/vector-search.test.ts`).
-  - Remaining, accepted by design: targeted-write indexing skips embeddings
-    on purpose (`src/indexer/index-written-assets.ts` module doc — the next
-    full run heals them); whether to surface that gap at write time is a 0.10
-    placement-era product decision, not a regression — tracked in
-    [#772](https://github.com/itlackey/akm/issues/772).
+  - Targeted-write readiness: first-class writes use the same embedding
+    materializer as full indexing for the entry IDs they changed. A healthy
+    provider makes the write vector-fresh before return; provider failure keeps
+    the authored file and FTS row while publishing canonical blocked status.
+    Pinned in `tests/integration/indexer/index-written-assets.test.ts`.
 - [x] **Durability:** atomic reader-visible index generations, live-lock age,
       full source lifecycle rollback, safe website/npm refresh, strict lockfile,
       registry stale fallback, and sync/write serialization.

@@ -3,61 +3,71 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Pure FTS5 query-string helpers, extracted from indexer/db/db.ts.
+ * Pure FTS5 query planning and ref-query helpers.
  *
- * These transform a raw user query into an FTS5-safe MATCH expression. They
- * touch no database state, so they are unit-testable with zero DB setup.
+ * The lexical planner transforms a raw user query into bounded FTS5-safe
+ * MATCH expressions. It touches no database state, so it is unit-testable
+ * with zero DB setup.
  * `parseRefPrefixQuery` is the one non-FTS helper: it decides whether a raw
  * query should bypass FTS entirely (SPEC-4 ref-prefix enumeration).
  */
 
-/**
- * Sanitize a raw user query into an FTS5-safe implicit-AND expression.
- *
- * Allows only characters safe in FTS5 queries: letters, digits, underscores,
- * and whitespace. Everything else (hyphens, dots, quotes, parens, asterisks,
- * colons, carets, @, !, etc.) is replaced with a space so that compound
- * identifiers like "code-review" or "k8s.setup" become AND-joined tokens
- * ("code review", "k8s setup") rather than triggering FTS5 syntax errors.
- */
-export function sanitizeFtsQuery(query: string): string {
-  let sanitized = query.replace(/[^a-zA-Z0-9_\s]/g, " ");
+/** Maximum number of distinct lexical terms one query may execute. */
+export const MAX_LEXICAL_QUERY_TOKENS = 16;
 
-  // Neutralize the NEAR operator (FTS5 proximity syntax)
-  sanitized = sanitized.replace(/\bNEAR\b/g, " ");
+export type LexicalQueryExecution = "exact" | "prefix" | "relaxed";
 
-  const tokens = sanitized.split(/\s+/).filter((t) => t.length >= 1);
+export interface LexicalQueryPlan {
+  tokens: string[];
+  /** Quoted implicit-AND query. */
+  exact: string;
+  /** Quoted prefix-AND query, omitted when no token is eligible. */
+  exactPrefix?: string;
+  /** One bounded prefix-OR recovery query, present only for multi-term input. */
+  relaxed?: string;
+}
 
-  if (tokens.length === 0) return "";
+const UNICODE_TOKEN = /[\p{L}\p{N}]+/gu;
 
-  // Use implicit AND (space-separated tokens) for precision. FTS5 treats
-  // space-separated tokens as an implicit AND, matching only rows that
-  // contain ALL terms.
-  return tokens.join(" ");
+function quoteToken(token: string): string {
+  return `"${token}"`;
+}
+
+function prefixToken(token: string): string {
+  return [...token].length >= 3 ? `${quoteToken(token)}*` : quoteToken(token);
 }
 
 /**
- * Build a prefix query from an FTS5 query string by appending `*` to each
- * token that is 3+ characters long. Tokens shorter than 3 characters are
- * kept as-is (no prefix expansion) to avoid overly broad matches.
+ * Build the sole lexical retrieval plan from raw user input.
  *
- * Returns null if no tokens qualify for prefix expansion.
+ * Tokenization follows the useful portion of SQLite FTS5's `unicode61`
+ * tokenizer (Unicode letters and numbers). Quoting every term makes FTS
+ * operators ordinary searchable words. Tokens are normalized, deduplicated
+ * case-insensitively, and capped before any SQL executes.
  */
-export function buildPrefixQuery(ftsQuery: string): string | null {
-  const tokens = ftsQuery.split(/\s+/).filter(Boolean);
-  let hasPrefix = false;
+export function buildLexicalQueryPlan(query: string): LexicalQueryPlan {
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  const normalized = query.normalize("NFKC");
+  for (const match of normalized.matchAll(UNICODE_TOKEN)) {
+    const token = match[0];
+    const key = token.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tokens.push(token);
+    if (tokens.length === MAX_LEXICAL_QUERY_TOKENS) break;
+  }
 
-  const prefixTokens = tokens.map((t) => {
-    if (t.length >= 3) {
-      hasPrefix = true;
-      return `${t}*`;
-    }
-    return t;
-  });
+  const exact = tokens.map(quoteToken).join(" ");
+  const prefixTokens = tokens.map(prefixToken);
+  const exactPrefix = prefixTokens.some((token) => token.endsWith("*")) ? prefixTokens.join(" ") : undefined;
+  // A slash-bearing, whitespace-free input is an identifier/ref lookup, not
+  // sentence prose. Keep it conjunctive so a mistyped/bare ref never fans out
+  // across every path token through OR recovery.
+  const isRefLikeIdentifier = !/\s/u.test(query.trim()) && query.includes("/");
+  const relaxed = tokens.length > 1 && !isRefLikeIdentifier ? prefixTokens.join(" OR ") : undefined;
 
-  if (!hasPrefix) return null;
-
-  return prefixTokens.join(" ");
+  return { tokens, exact, exactPrefix, relaxed };
 }
 
 /**

@@ -451,6 +451,7 @@ export interface ExtractedSessionResult {
   skipReason?:
     | "read_failed"
     | "llm_unavailable"
+    | "malformed_model_output"
     | "exception"
     | "already_extracted"
     | "too_short"

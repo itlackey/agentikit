@@ -22,7 +22,7 @@ import type { ArgsDef } from "citty";
 import { main } from "../src/cli";
 import { findCittyTopLevelCommand } from "../src/cli/parse-args";
 import { listEmbeddedTasks } from "../src/tasks/embedded";
-import { parseTaskV3Yaml } from "../src/tasks/source-v3";
+import { parseTaskSourceV4 } from "../src/tasks/source/task-source-v4";
 
 const EXPECTED = [
   { id: "improve", category: "core", schedule: "0 2 * * *", enabled: true },
@@ -67,11 +67,12 @@ describe("embedded task registry", () => {
     const topLevelCommands = main.subCommands ?? {};
 
     for (const embedded of listEmbeddedTasks()) {
-      const task = parseTaskV3Yaml({
+      const task = parseTaskSourceV4({
         filePath: `embedded:${embedded.id}`,
         yaml: embedded.yaml,
       });
-      if (task.akm?.enabled === false || task.target.kind !== "run") continue;
+      const scheduleDisabled = task.schedule.length > 0 && task.schedule.every((entry) => !entry.enabled);
+      if (scheduleDisabled || task.target.kind !== "run") continue;
 
       const [executable, ...args] = task.target.run.split(" ");
       expect(executable, `${embedded.id} must invoke akm`).toBe("akm");

@@ -15,6 +15,7 @@
 //   - migration 013-extract-sessions-content-hash (content_hash column)
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +25,9 @@ import type { AkmConfig } from "../../src/core/config/config";
 import { tryAcquireLockSync } from "../../src/core/file-lock";
 import { openStateDatabase } from "../../src/core/state-db";
 import type {
+  InlineRefMention,
   SessionData,
+  SessionEvent,
   SessionLogHarness,
   SessionRef,
   SessionSummary,
@@ -234,6 +237,157 @@ describe("hashSessionContent", () => {
       { harness: "claude", text: "second", role: "assistant", sessionId: "ses_forge_b" },
     ];
     expect(hashSessionContent(single)).not.toBe(hashSessionContent(split));
+  });
+});
+
+// ── #840 harvest-without-prompting hybrid — prompt-composition invariants ───
+//
+// docs/plans/subagent-extraction-design.md §6: the LLM prompt is built from
+// parent-origin events only (`data.events.filter(e => e.filePath ===
+// data.ref.filePath)` inside `runPreLlmSessionGates`), while
+// `hashSessionContent` and `data.inlineRefs` keep seeing the FULL folded
+// stream (parent + subagents). These three tests exercise the real
+// `akmExtract` pipeline end-to-end (fake harness, no filesystem, `chat`
+// mocked to capture the built prompt) against one folded fixture that
+// carries all three ingredients at once: a subagent-origin folded event, a
+// subagent-only inline ref, and a parent `<task-notification>` whose
+// `<result>` near-duplicates that same subagent's own text (the #839/#842
+// dedupe's exact trigger shape).
+describe("akmExtract — harvest-without-prompting hybrid prompt composition (#840)", () => {
+  const PARENT_PATH = "/proj/parent.jsonl";
+  const SUBAGENT_PATH = "/proj/parent/subagents/agent-agentXYZ.jsonl";
+  const SUBAGENT_RESULT_TEXT = "Audited every release branch, all clean. SUBAGENT_UNIQUE_MARKER_9f3a";
+  const SUBAGENT_ONLY_REF_TEXT = "release branch audit checklist should include tag verification";
+
+  function buildHybridSession(): SessionData {
+    const t0 = 1_800_000_000_000;
+    const events: SessionEvent[] = [
+      {
+        harness: "claude",
+        role: "user",
+        ts: t0,
+        filePath: PARENT_PATH,
+        sessionId: "ses_hybrid",
+        text: "Please delegate the release-branch audit to a subagent and report back with the finding.",
+      },
+      {
+        harness: "claude",
+        role: "assistant",
+        ts: t0 + 1000,
+        filePath: PARENT_PATH,
+        sessionId: "ses_hybrid",
+        text: "Delegating the release-branch audit now via the Task tool.",
+      },
+      // Subagent's own folded event (#830) — provenance-prefixed, on the
+      // subagent's own `agent-<id>.jsonl` filePath.
+      {
+        harness: "claude",
+        role: "assistant",
+        ts: t0 + 2000,
+        filePath: SUBAGENT_PATH,
+        sessionId: "ses_hybrid",
+        text: `[subagent:general-purpose] Audit release branches\n${SUBAGENT_RESULT_TEXT}`,
+      },
+      // Parent's own <task-notification> record of that same delegated call —
+      // a parent-origin event whose <result> near-duplicates the subagent's
+      // own text above (this is exactly what #839's dedupeTaskNotifications
+      // matches on when BOTH copies reach the same kept set).
+      {
+        harness: "claude",
+        role: "user",
+        ts: t0 + 3000,
+        filePath: PARENT_PATH,
+        sessionId: "ses_hybrid",
+        text:
+          "<task-notification>\n<task-id>agentXYZ</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n" +
+          '<status>completed</status>\n<summary>Agent "Audit release branches" finished</summary>\n' +
+          `<result>${SUBAGENT_RESULT_TEXT}</result>\n</task-notification>`,
+      },
+      {
+        harness: "claude",
+        role: "assistant",
+        ts: t0 + 4000,
+        filePath: PARENT_PATH,
+        sessionId: "ses_hybrid",
+        text: "Great, the audit is done and every release branch is clean. Wrapping up.",
+      },
+    ];
+    // Harvested from the subagent's own transcript (#830) — its only source is
+    // the subagent, never the parent's own text.
+    const inlineRefs: InlineRefMention[] = [{ kind: "remember", text: SUBAGENT_ONLY_REF_TEXT, ts: t0 + 2500 }];
+    return {
+      ref: {
+        harness: "claude",
+        sessionId: "ses_hybrid",
+        filePath: PARENT_PATH,
+        startedAt: t0,
+        endedAt: t0 + 4000,
+        title: "Hybrid prompt filter fixture",
+      },
+      events,
+      inlineRefs,
+    };
+  }
+
+  async function runAndCapturePrompt(session: SessionData): Promise<{ prompt: string; contentHash?: string }> {
+    const stash = makeStashDir();
+    const db = openStateDatabase(":memory:");
+    let prompt = "";
+    const result = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config: configEnabled(stash),
+      harnesses: [makeHarness([session])],
+      stateDb: db,
+      chat: async (_cfg, msgs) => {
+        prompt = msgs[0]?.content ?? "";
+        return JSON.stringify({ candidates: [] });
+      },
+    });
+    db.close();
+    expect(result.sessionsProcessed).toBe(1); // sanity: the model path actually ran, nothing skipped
+    return { prompt, contentHash: result.sessions[0]?.contentHash };
+  }
+
+  // Invariant 1 (hash stability): the recorded contentHash — computed inside
+  // runPreLlmSessionGates via `hashSessionContent(data)` BEFORE the
+  // parent-origin view is built — must equal hashing the same FULL folded
+  // SessionData directly, unaffected by the parent-origin filter applied
+  // later for `preFilterSession`. Reverting the filter (passing the full
+  // `data` straight to `preFilterSession`) does NOT change this: the hash
+  // call site is untouched either way, so this test does not distinguish the
+  // two — see invariants 2/3 for that.
+  test("contentHash equals hashSessionContent of the full folded session", async () => {
+    const session = buildHybridSession();
+    const expectedHash = hashSessionContent(session);
+    const { contentHash } = await runAndCapturePrompt(session);
+    expect(contentHash).toBe(expectedHash);
+  });
+
+  // Invariant 2 (prompt composition): no subagent-provenance text reaches the
+  // transcript section, but the subagent-only inline ref still reaches the
+  // "Already preserved" section (built from `data.inlineRefs`, which keeps
+  // seeing the full folded harvest regardless of the prompt filter).
+  test("prompt has no [subagent:-prefixed transcript text, but Already-preserved includes the subagent-only ref", async () => {
+    const { prompt } = await runAndCapturePrompt(buildHybridSession());
+    expect(prompt).not.toContain("[subagent:");
+    expect(prompt).toContain(SUBAGENT_ONLY_REF_TEXT);
+  });
+
+  // Invariant 3 (#842 composition hazard): under the hybrid filter, the
+  // subagent's own event never reaches `preFilterSession`, so
+  // `dedupeTaskNotifications`'s `byAgentId` map is built from an empty kept
+  // set and the stub never fires (see pre-filter.ts's own "#840 hazard"
+  // unit test for the same mechanism at the preFilterSession layer). The
+  // parent's <task-notification> — the ONLY surviving trace of the delegated
+  // work — must reach the prompt untouched, not stubbed to
+  // `[subagent agentXYZ completed: ...]`.
+  test("keeps the parent's <task-notification> un-stubbed (composes safely with #842's dedupe)", async () => {
+    const { prompt } = await runAndCapturePrompt(buildHybridSession());
+    expect(prompt).toContain("<task-notification>");
+    expect(prompt).toContain("<task-id>agentXYZ</task-id>");
+    expect(prompt).toContain(SUBAGENT_RESULT_TEXT);
+    expect(prompt).not.toContain("[subagent agentXYZ completed:");
   });
 });
 
@@ -595,6 +749,65 @@ describe("akmExtract — skip-already-extracted (content-hash)", () => {
     expect(row?.candidate_count).toBe(0);
     expect(row?.rationale).toBe("nothing durable in session");
     expect(row?.content_hash).toBe(hashSessionContent(session));
+    db.close();
+  });
+
+  test("malformed model output fails visibly and leaves the unchanged session retryable", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("ses_malformed", Date.now());
+    const db = openStateDatabase(":memory:");
+    const config = configEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.supportsJsonSchema = false;
+    const malformed = "PRIVATE_SENTINEL: prose without a JSON object";
+    let chatCalls = 0;
+
+    const first = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config,
+      harnesses: [makeHarness([session])],
+      stateDb: db,
+      chat: async () => {
+        chatCalls += 1;
+        return malformed;
+      },
+    });
+
+    expect(chatCalls).toBe(2);
+    expect(first.sessionsProcessed).toBe(0);
+    expect(first.sessionsSkipped).toBe(1);
+    expect(first.sessions[0]?.skipReason).toBe("malformed_model_output");
+    const diagnostic = first.warnings.join(" ");
+    expect(diagnostic).toContain("malformed_model_output");
+    expect(diagnostic).toContain("no JSON object found");
+    expect(diagnostic).toContain(`responseLength=${malformed.length}`);
+    expect(diagnostic).toContain(createHash("sha256").update(malformed).digest("hex"));
+    expect(diagnostic).not.toContain("PRIVATE_SENTINEL");
+    expect(first.sessions[0]?.warnings).toHaveLength(1);
+    expect(first.warnings[0]).toBe(`session ses_malformed: ${first.sessions[0]?.warnings[0]}`);
+    expect(getExtractedSession(db, "claude", "ses_malformed")).toMatchObject({
+      outcome: "failed",
+      content_hash: null,
+    });
+
+    const second = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config,
+      harnesses: [makeHarness([session])],
+      stateDb: db,
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [], rationale_if_empty: "Nothing durable in the session." });
+      },
+    });
+
+    expect(chatCalls).toBe(3);
+    expect(second.sessionsProcessed).toBe(1);
+    expect(second.sessionsSkipped).toBe(0);
+    expect(getExtractedSession(db, "claude", "ses_malformed")?.content_hash).toBe(hashSessionContent(session));
     db.close();
   });
 

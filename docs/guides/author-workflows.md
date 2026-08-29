@@ -183,9 +183,10 @@ Widen it only by naming what the unit needs:
 Secrets and fixed values belong in exact named `env:` bindings: those values
 are redacted out of everything journaled, and `pass_env:` values are not.
 
-Workflow starts freeze durable v4 plans, and v4 rejects `inherit_env` instead
-of persisting an unbounded ambient environment. Pre-v4 stored plans do not
-execute; start a new run after updating the source.
+Workflow starts freeze the durable plan v4 family's current executable format
+(`irVersion: 5`), which rejects `inherit_env` instead of persisting an
+unbounded ambient environment. Pre-`irVersion`-5 stored plans do not execute;
+start a new run after updating the source.
 
 Named bindings and `pass_env:` are part of the unit's input hash, so changing
 either re-runs the command instead of reusing a row recorded under another
@@ -212,7 +213,8 @@ Full list of allowlisted names:
 - **Don't assume your shell's environment.** The child gets an allowlist, not
   an inheritance. If a command fails with "not found" or reads a missing
   toolchain variable, name it in `pass_env:`; use a named `env:` binding for a
-  fixed or secret value. Durable v4 deliberately has no whole-process fallback.
+  fixed or secret value. The durable v4 family (`irVersion: 5`) deliberately
+  has no whole-process fallback.
 - **A very chatty command still passes; its artifact just says so.** akm retains
   8 MiB of stdout and 8 MiB of stderr. Past that it keeps draining and discards,
   so the command runs to completion and its exit code decides the step. The
@@ -414,6 +416,71 @@ blast radius before running it.
    verdict rejects the gate rather than bypassing it (see
    [Workflow Schema: Gates and verification](../reference/workflow-schema.md#gates-and-verification)),
    so this is worth confirming once per workflow rather than assuming.
+
+## Composing a task with typed inputs
+
+A `uses: tasks/<ref>` step in the GitHub-shaped YAML format can bind a task
+source v4 target's declared `inputs:` through `with:`. Given this task:
+
+```yaml
+# tasks/ticket-review.yml
+version: 4
+name: Ticket review
+inputs:
+  ticket:
+    type: string
+    required: true
+  scope:
+    type: string
+    enum: [changed, all]
+    default: changed
+uses: commands/review
+```
+
+a workflow step can bind `ticket` from an EARLIER step's output, and override
+`scope` with a literal:
+
+```yaml
+# workflows/nightly.yml
+name: Nightly review
+on:
+  workflow_dispatch: {}
+jobs:
+  main:
+    runs-on: [self-hosted]
+    steps:
+      - id: pick
+        run: echo T-42
+      - id: dispatch
+        uses: tasks/ticket-review
+        with:
+          ticket: { from: "steps.pick.output" }
+          scope: all
+```
+
+`{from: "steps.<id>.output(.<segment>)*"}` and `{from: "params.<name>"}` are
+the only two reference roots; anything else, or an object carrying `from`
+plus any other key, is `INPUT_BINDING_INVALID` at freeze — never silently
+reinterpreted as a literal. `pick`'s output is resolved just before the
+`dispatch` unit dispatches, then validated against `ticket`'s declared
+schema; a literal (like `scope: all` here) is validated at freeze instead,
+before the plan is ever published.
+
+The composed target — `commands/review` here — receives the resolved
+bindings on whichever delivery surface matches its kind: an
+`akm/command`/`commands/<ref>` target gets a `## Task inputs` block appended
+to its prompt; a `run:` shell or `scripts/<ref>` target gets one
+`AKM_TASK_INPUTS` environment variable (canonical JSON of the resolved
+bindings). Inspect exactly what each step's `with:` would deliver, without
+running anything, with `akm workflow plan workflows/nightly --format json`
+— its per-step `inputBindings` show `dispatch`'s `scope` as the literal
+`all` and `ticket` as the unresolved reference `steps.pick.output`, the
+same shape freezing a real run would produce. `akm task explain` is not a
+substitute here: it only reflects a task's OWN CLI flags, declared
+defaults, and `schedule[].inputs` — it never reads a workflow step's
+`with:` binding at all, so pointing it at `tasks/ticket-review` prints
+`scope`'s task-level default (`changed`), not the `all` this step actually
+sends.
 
 ## Troubleshooting
 

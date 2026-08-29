@@ -31,6 +31,7 @@ import { getMeta, setMeta } from "../../src/storage/repositories/index-meta-repo
 import { DB_VERSION } from "../../src/storage/repositories/index-schema";
 import {
   isVecAvailable,
+  isVecFastPathComplete,
   isVecFastPathReady,
   searchVec,
   setVecFastPathReady,
@@ -559,8 +560,8 @@ describe("FTS search", () => {
     }
   });
 
-  // ── T5: sanitizeFtsQuery edge cases ──────────────────────────────────────
-  // sanitizeFtsQuery is private, so we test it indirectly through searchFts.
+  // ── T5: lexical query-plan edge cases ────────────────────────────────────
+  // Exercise the shared planner indirectly through searchFts.
 
   test("query that becomes empty after sanitization returns no results", () => {
     const db = openIndexDatabase(tmpDbPath());
@@ -847,6 +848,55 @@ describe("Vector / Embedding integration", () => {
     }
   });
 
+  test("vec fast-path completeness accepts identical BLOB and vec ID sets", () => {
+    const db = openIndexDatabase(tmpDbPath("vec-complete-exact"), { embeddingDim: 4 });
+    try {
+      const firstId = insertTestEntry(db, "vec-complete-first");
+      const secondId = insertTestEntry(db, "vec-complete-second");
+      expect(upsertEmbedding(db, firstId, [1, 0, 0, 0]).vec).toBe("ok");
+      expect(upsertEmbedding(db, secondId, [0, 1, 0, 0]).vec).toBe("ok");
+
+      expect(isVecFastPathComplete(db)).toBe(true);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("vec fast-path completeness rejects a missing vec ID", () => {
+    const db = openIndexDatabase(tmpDbPath("vec-complete-partial"), { embeddingDim: 4 });
+    try {
+      const firstId = insertTestEntry(db, "vec-partial-first");
+      const secondId = insertTestEntry(db, "vec-partial-second");
+      expect(upsertEmbedding(db, firstId, [1, 0, 0, 0]).vec).toBe("ok");
+      expect(upsertEmbedding(db, secondId, [0, 1, 0, 0]).vec).toBe("ok");
+      db.prepare("DELETE FROM entries_vec WHERE id = ?").run(secondId);
+
+      expect(isVecFastPathComplete(db)).toBe(false);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("vec fast-path completeness rejects equal counts with mismatched IDs", () => {
+    const db = openIndexDatabase(tmpDbPath("vec-complete-mismatched"), { embeddingDim: 4 });
+    try {
+      const firstId = insertTestEntry(db, "vec-mismatch-first");
+      const missingId = insertTestEntry(db, "vec-mismatch-second");
+      expect(upsertEmbedding(db, firstId, [1, 0, 0, 0]).vec).toBe("ok");
+      expect(upsertEmbedding(db, missingId, [0, 1, 0, 0]).vec).toBe("ok");
+      db.prepare("DELETE FROM entries_vec WHERE id = ?").run(missingId);
+      const orphanId = missingId + 100_000;
+      const orphanVector = Buffer.from(new Float32Array([0, 0, 1, 0]).buffer);
+      db.prepare("INSERT INTO entries_vec (id, embedding) VALUES (?, ?)").run(orphanId, orphanVector);
+
+      expect(db.prepare("SELECT COUNT(*) AS count FROM embeddings").get()).toEqual({ count: 2 });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM entries_vec").get()).toEqual({ count: 2 });
+      expect(isVecFastPathComplete(db)).toBe(false);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   test("deleteEntriesByDir also removes vec rows", () => {
     const dbPath = tmpDbPath();
     const db = openIndexDatabase(dbPath, { embeddingDim: 4 });
@@ -927,7 +977,7 @@ describe("Vector / Embedding integration", () => {
 
 // ── Incremental rebuildFts (#177 perf finding) ──────────────────────────────
 
-describe("rebuildFts incremental", () => {
+describe("entry-owned FTS projection", () => {
   function makeEntry(name: string, description = ""): IndexDocument {
     return {
       name,
@@ -942,15 +992,6 @@ describe("rebuildFts incremental", () => {
     return row?.cnt ?? 0;
   }
 
-  function dirtyCount(db: Database): number {
-    try {
-      const row = db.prepare("SELECT COUNT(*) AS cnt FROM entries_fts_dirty").get() as { cnt: number } | undefined;
-      return row?.cnt ?? 0;
-    } catch {
-      return 0;
-    }
-  }
-
   function upsertFtsEntry(db: Database, key: string, entry: IndexDocument, searchText: string): number {
     const provenance = deriveEntryProvenance(
       { bundleId: "stash", componentId: "stash", adapterId: "akm" },
@@ -960,76 +1001,51 @@ describe("rebuildFts incremental", () => {
     return upsertEntry(db, `/d/${key}.md`, entry, searchText, provenance);
   }
 
-  test("upsertEntry marks rows dirty; incremental rebuild only re-indexes them", () => {
-    const db = openIndexDatabase(tmpDbPath("inc-fts"));
+  test("upsertEntry immediately inserts and replaces its FTS row", () => {
+    const db = openIndexDatabase(tmpDbPath("entry-fts"));
     try {
       upsertFtsEntry(db, "k1", makeEntry("alpha", "first"), "alpha first");
-      upsertFtsEntry(db, "k2", makeEntry("bravo", "second"), "bravo second");
+      upsertFtsEntry(db, "k2", makeEntry("bravo", "legacyuniquemarker"), "bravo legacyuniquemarker");
       upsertFtsEntry(db, "k3", makeEntry("charlie", "third"), "charlie third");
-      rebuildFts(db, { incremental: false });
       expect(ftsCount(db)).toBe(3);
-      expect(dirtyCount(db)).toBe(0);
 
-      // Touch only one entry — its row should be the only dirty one.
-      upsertFtsEntry(db, "k2", makeEntry("bravo", "second-updated"), "bravo second-updated");
-      expect(dirtyCount(db)).toBe(1);
-
-      rebuildFts(db, { incremental: true });
+      upsertFtsEntry(db, "k2", makeEntry("bravo", "currentuniquemarker"), "bravo currentuniquemarker");
       expect(ftsCount(db)).toBe(3);
-      expect(dirtyCount(db)).toBe(0);
 
-      const hits = db
+      const updatedHits = db
         .prepare("SELECT entry_id FROM entries_fts WHERE entries_fts MATCH ?")
-        .all(`"second-updated"`) as Array<{ entry_id: number }>;
-      expect(hits.length).toBe(1);
+        .all(`"currentuniquemarker"`) as Array<{ entry_id: number }>;
+      const staleHits = db
+        .prepare("SELECT entry_id FROM entries_fts WHERE entries_fts MATCH ?")
+        .all(`"legacyuniquemarker"`) as Array<{ entry_id: number }>;
+      expect(updatedHits).toHaveLength(1);
+      expect(staleHits).toHaveLength(0);
     } finally {
       closeDatabase(db);
     }
   });
 
-  test("incremental rebuild with empty dirty queue is a no-op", () => {
-    const db = openIndexDatabase(tmpDbPath("inc-fts-empty"));
+  test("rebuildFts remains an explicit full recovery operation", () => {
+    const db = openIndexDatabase(tmpDbPath("entry-fts-recovery"));
     try {
       upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
-      rebuildFts(db, { incremental: false });
-      expect(ftsCount(db)).toBe(1);
-      expect(dirtyCount(db)).toBe(0);
-      rebuildFts(db, { incremental: true });
+      db.exec("DELETE FROM entries_fts");
+      expect(ftsCount(db)).toBe(0);
+      rebuildFts(db);
       expect(ftsCount(db)).toBe(1);
     } finally {
       closeDatabase(db);
     }
   });
 
-  test("full rebuild also drains the dirty queue", () => {
-    const db = openIndexDatabase(tmpDbPath("inc-fts-full"));
-    try {
-      upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
-      expect(dirtyCount(db)).toBe(1);
-      rebuildFts(db, { incremental: false });
-      expect(ftsCount(db)).toBe(1);
-      expect(dirtyCount(db)).toBe(0);
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("deleteEntriesByDir purges FTS rows + dirty markers immediately", () => {
-    const db = openIndexDatabase(tmpDbPath("inc-fts-del"));
+  test("deleteEntriesByDir purges FTS rows immediately", () => {
+    const db = openIndexDatabase(tmpDbPath("entry-fts-delete"));
     try {
       upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
       upsertFtsEntry(db, "k2", makeEntry("bravo"), "bravo");
-      rebuildFts(db, { incremental: false });
       expect(ftsCount(db)).toBe(2);
 
-      upsertFtsEntry(db, "k1", makeEntry("alpha", "updated"), "alpha updated");
-      expect(dirtyCount(db)).toBe(1);
-
       deleteEntriesByDir(db, "/d");
-      expect(ftsCount(db)).toBe(0);
-      expect(dirtyCount(db)).toBe(0);
-
-      rebuildFts(db, { incremental: true });
       expect(ftsCount(db)).toBe(0);
     } finally {
       closeDatabase(db);

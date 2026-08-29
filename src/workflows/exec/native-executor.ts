@@ -9,31 +9,12 @@
  * persistence through the serialized writer queue, and `workflow_unit_*`
  * events for observability.
  *
- * Data flow (workflow-format-unification, spec §2.3): there is NO
- * interpolation language. A unit's instructions are the step's body prose
- * BYTE-EXACT — prose is never scanned for reference syntax, so a literal `${{`
- * in a body is content, not grammar. Data reaches the unit as ATTACHED
- * STRUCTURED CONTEXT rather than string splices: `buildUnitPrompt`
- * (`exec/step-work.ts`) wraps the verbatim instructions with JSON blocks for
- * the run params, a map unit's item + index, and the artifacts named by the
- * step's `inputs:`. Because nothing is ever substituted INTO the prose, the P1
- * `{{item}}` re-scan injection class is structurally impossible.
- *
- * References survive only in the three whole-value FRONTMATTER positions the
- * closed two-root grammar occupies (`program/expressions.ts`): `map.over`,
- * `route.input`, and each `inputs[]` entry. They resolve ONCE per step against
- * `{ params, stepOutputs }`. There is NO ambient key search: a
- * `steps.<id>.output.<path>` reference addresses INTO that step's recorded
- * output explicitly.
- *
- * Step outputs (`steps.<id>.output…`): every engine-executed step journals a
- * promoted ARTIFACT under `evidence.output` — the solo unit's result/text, the
- * collect reducer's per-item array, or the vote reducer's winner — and that
- * artifact is what the reference scope exposes ({@link projectStepOutput}).
- * The documented addressing (`steps.discover.output.files`) therefore resolves
- * against real step results, never the raw evidence envelope (peer review R1).
- * Steps completed manually (no `output` key in their evidence) expose their
- * recorded evidence object as-is.
+ * Data flow: there is no interpolation language — a unit's instructions are
+ * the step's body prose byte-exact, and data reaches it as attached
+ * structured context instead. References resolve once per step, only in the
+ * closed frontmatter positions, against the promoted step-output artifact.
+ * See docs/architecture/decisions/0001-no-interpolation-attached-structured-context.md
+ * for the full design history (peer review R1, the P1 injection class it closes).
  *
  * Empty free-text outputs (peer review): a SUCCESSFUL schemaless unit that
  * returns the empty string is normalized to "no output" — {@link dispatchUnit}
@@ -145,10 +126,15 @@ import {
   withWorkflowRunsConnection,
   withWorkflowRunsRepo,
 } from "../../storage/repositories/workflow-runs-repository";
+import type { TaskV3ScriptInterpreter } from "../../tasks/prepare/prepared-execution";
 import { materializeFrozenWorkflowEnvironment } from "../ir/environment-v4";
 import type { IrBudget } from "../ir/schema";
 import type { FrozenWorkflowTarget, IrStepPlanV4, IrUnitNodeV4 } from "../ir/schema-v4";
 import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
+// The ONE child-workflow drive (P3b §3.2) — publishes and drives a
+// `child-workflow`-targeted unit; this module's dispatch seam is its only
+// production caller.
+import { driveChildWorkflowUnit } from "./child-workflow";
 // The ONE dispatch redaction contract, shared with the gate-judge path
 // (exec/frozen-judge.ts). Consumers import the leaf directly — this module is
 // not a second front door onto the seam.
@@ -205,6 +191,17 @@ export interface StepExecutionContext {
   signal?: AbortSignal;
   /** Test seam / backend override; defaults to the runner-substrate dispatcher. */
   dispatcher?: UnitDispatcher;
+  /**
+   * F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 2): the
+   * task runner's resolved provenance event source, threaded from
+   * RunWorkflowOptions.eventSource. Undefined for every non-task caller.
+   * Forwarded to an exec unit's child env via UnitDispatchRequest.eventSource
+   * -> exec-unit.ts's childEnv (applied to the allowlisted base only, so an
+   * ambient value and an authored env: binding both still win). Typed as a
+   * bare `string` (not `UsageEventSource`) — see run-workflow.ts's
+   * RunWorkflowOptions.eventSource for why.
+   */
+  eventSource?: string;
   /**
    * Dispatch attempts already journaled for this run (lifetime-cap
    * accounting). Only ACTUAL dispatches consume the cap — durable-row reuses
@@ -275,6 +272,17 @@ export interface StepExecutionResult {
    * failure (dispatch errors, replay divergence, cap) stays a hard stop.
    */
   artifactSchemaFailure?: true;
+  /**
+   * Set when `ok` is false BECAUSE a composed child workflow is `blocked`
+   * (P3b, spec docs/plans/specs/p3b-child-executor.md §3.4). Threaded through
+   * from {@link reduceStepOutcomes}'s `ExecutedStepOutcome.childBlocked` via
+   * the `...reduced` spread below — never set independently here.
+   */
+  childBlocked?: {
+    childRunId: string;
+    childRef: string;
+    childStepId: string | null;
+  };
 }
 
 /**
@@ -813,6 +821,11 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
     ...(env ? { env } : {}),
     ...(sensitiveValues ? { sensitiveValues } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
+    // F-1 (spec §5.2 point 2): forwarded to exec-unit.ts's childEnv for a
+    // "script"/"shell" unit, and to dispatchWorkflowExecution's
+    // dispatchLoweredExecutionRequest eventSource option (unit-dispatch.ts)
+    // for a "command" unit — both arms observe it.
+    ...(ctx.eventSource !== undefined ? { eventSource: ctx.eventSource } : {}),
   };
 
   // One content-derived unit id is retained across every retry; the append-only
@@ -979,7 +992,16 @@ async function prepareAttemptWorktree(input: JournaledAttemptInput): Promise<Pre
     input.worktreeBase,
     input.ctx.runId,
     input.attemptId,
-    input.workUnit.frozenTarget.gitCommitOid,
+    // A child-workflow target (P3a, schema-v4.ts) carries no gitCommitOid of
+    // its own — it is a composition target, never a worktree-isolated exec
+    // one. This arm IS reachable — a step that composes a child workflow and
+    // also declares `isolation: worktree` gets a worktree prepared here
+    // (worktree prep runs ahead of dispatch), but the child executor
+    // (child-workflow.ts, P3b §3.2) never dispatches through it: driving a
+    // child publishes and drives a RUN, not a command/exec unit, so the
+    // prepared worktree is simply unused by the drive. This ternary keeps the
+    // field access total over the frozen-target union either way.
+    input.workUnit.frozenTarget.kind === "child-workflow" ? undefined : input.workUnit.frozenTarget.gitCommitOid,
   );
   if (created.preservedLeftover !== undefined) {
     warn(
@@ -1139,7 +1161,28 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
     dispatchId: durableAttempt.dispatch_id,
   };
 
-  const dispatched = await dispatchUnit(request, dispatcher);
+  // P3b §3.2: the ONE dispatch-seam branch. A `child-workflow`-targeted unit
+  // never reaches `UnitDispatcher` — it is routed to the child executor
+  // instead (src/workflows/exec/child-workflow.ts), which publishes the
+  // child idempotently and drives it with the SAME engine
+  // (`runWorkflowSteps`) the top-level path uses. Placed HERE — after
+  // `reserveJournaledDispatch` claims this attempt row, before
+  // `finishJournaledDispatch`/the worktree epilogue below — so a
+  // child-workflow unit is journaled exactly like any other unit, and a
+  // crash between reservation and child publication leaves a `running`
+  // parent row with no child, recovered by resume (which re-dispatches the
+  // parent unit and republishes the child idempotently).
+  const dispatched =
+    request.frozenTarget.kind === "child-workflow"
+      ? await driveChildWorkflowUnit({
+          request,
+          target: request.frozenTarget,
+          ctx,
+          childParams: workUnit.childParams ?? {},
+          inputHash: input.inputHash,
+          dispatcher,
+        })
+      : await dispatchUnit(request, dispatcher);
   // Credential and passthrough values are intentionally sampled only AFTER
   // the default dispatcher has authorized/lowered the frozen request and
   // materialized credentials at its terminal dispatch boundary. Custom test
@@ -1356,7 +1399,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
     }
     const materialized = materializeFrozenScript({
       sourceRef: frozenTarget.ref,
-      interpreter: frozenTarget.interpreter as import("../../tasks/runtime-v3").TaskV3ScriptInterpreter,
+      interpreter: frozenTarget.interpreter as TaskV3ScriptInterpreter,
       extension: frozenTarget.extension,
       bytesBase64: frozenTarget.bytesBase64,
       byteLength: frozenTarget.byteLength,
@@ -1366,7 +1409,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
       const command = frozenScriptCommand(
         {
           sourceRef: frozenTarget.ref,
-          interpreter: frozenTarget.interpreter as import("../../tasks/runtime-v3").TaskV3ScriptInterpreter,
+          interpreter: frozenTarget.interpreter as TaskV3ScriptInterpreter,
           extension: frozenTarget.extension,
           bytesBase64: frozenTarget.bytesBase64,
           byteLength: frozenTarget.byteLength,
@@ -1387,6 +1430,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
         ...(request.schema ? { hasOutputSchema: true } : {}),
         timeoutMs: request.timeoutMs,
         ...(request.signal ? { signal: request.signal } : {}),
+        ...(request.eventSource !== undefined ? { eventSource: request.eventSource } : {}),
       });
     } finally {
       cleanupFrozenScript(materialized);
@@ -1408,6 +1452,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
       ...(request.schema ? { hasOutputSchema: true } : {}),
       timeoutMs: request.timeoutMs,
       ...(request.signal ? { signal: request.signal } : {}),
+      ...(request.eventSource !== undefined ? { eventSource: request.eventSource } : {}),
     });
   }
   return dispatchWorkflowExecution(request, feedback);

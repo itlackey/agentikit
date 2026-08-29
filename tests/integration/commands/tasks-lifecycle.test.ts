@@ -14,7 +14,20 @@ import {
   type SchedulerBinding,
   type SchedulerNativeArtifact,
 } from "../../../src/tasks/scheduler-binding";
+import { parseTaskSource } from "../../../src/tasks/source/parse-task-source";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
+
+/**
+ * Round-trip a `setEnabledInYaml` result through the real task source v4
+ * parser and return each `schedule[]` entry's resolved `enabled` state (an
+ * absent `enabled:` key defaults to `true` at parse — B-21) so tests can
+ * assert per-entry state instead of substring-matching the whole document.
+ */
+function scheduleEnabledFlags(yaml: string): boolean[] {
+  const parsed = parseTaskSource({ yaml, filePath: "/bundle/tasks/x.yml" });
+  if (parsed.version !== 4) throw new Error("unreachable: asserted above");
+  return parsed.v4.schedule.map((entry) => entry.enabled);
+}
 
 let storage: IsolatedAkmStorage;
 let backendName: ScheduleBackend;
@@ -129,12 +142,12 @@ function writeTask(id: string, yaml: string): string {
 
 function taskYaml(run: string, schedule: string, enabled = true, name?: string): string {
   return [
-    "version: 3",
+    "version: 4",
     `run: ${run}`,
     ...(name ? [`name: ${name}`] : []),
-    "akm:",
-    `  schedule: "${schedule}"`,
-    `  enabled: ${enabled}`,
+    "schedule:",
+    `  - cron: "${schedule}"`,
+    `    enabled: ${enabled}`,
   ].join("\n");
 }
 
@@ -163,13 +176,74 @@ afterEach(() => {
 });
 
 describe("task lifecycle failure handling", () => {
-  test("setup-style enable edits stay inside the v3 akm mapping", () => {
-    const yaml = "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n  enabled: true # keep\n";
-    expect(setEnabledInYaml(yaml, false)).toBe(
-      "version: 3\nrun: echo yes\nakm:\n  schedule: '@daily'\n  enabled: false # keep\n",
+  test("enable edits toggle every schedule[] entry's enabled flag (row B-21)", () => {
+    const listYaml = "version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n    enabled: true # keep\n";
+    expect(setEnabledInYaml(listYaml, false)).toBe(
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n    enabled: false # keep\n",
     );
-    expect(setEnabledInYaml("version: 3\nrun: echo yes\n", false)).toBe(
-      "version: 3\nrun: echo yes\nakm:\n  enabled: false\n",
+
+    // A bare string-shorthand schedule has nowhere for `enabled:` to live —
+    // it is rewritten to the one-entry list form.
+    expect(setEnabledInYaml("version: 4\nrun: echo yes\nschedule: '@daily'\n", false)).toBe(
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n    enabled: false\n",
+    );
+
+    // A list entry with no explicit `enabled:` key defaults to true at parse
+    // — toggling inserts one rather than silently leaving it unaffected.
+    expect(setEnabledInYaml("version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n", false)).toBe(
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '@daily'\n    enabled: false\n",
+    );
+
+    // No schedule: at all — nothing to toggle.
+    expect(() => setEnabledInYaml("version: 4\nrun: echo yes\n", false)).toThrow(/must declare a schedule/);
+  });
+
+  // A multi-entry schedule is broadcast per-entry, not short-circuited the
+  // moment ANY entry's existing `enabled:` key is found (the bug row B-21's
+  // doc comment promises against: one entry toggled, a sibling entry left
+  // stale — silently keeping a "disabled" task live). Every case below is
+  // asserted by parsing the rewritten YAML with the real task source v4
+  // parser and reading each entry's resolved `enabled` (an absent key
+  // defaults to `true` at parse), not by substring-matching the document.
+  test("multi-entry schedules broadcast enabled to every entry independently (row B-21)", () => {
+    // Both entries already carry `enabled:` — both must toggle.
+    const bothPresent =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n    enabled: true\n  - cron: '30 13 * * 1,2,3,4,5'\n    enabled: true\n";
+    expect(scheduleEnabledFlags(setEnabledInYaml(bothPresent, false))).toEqual([false, false]);
+    expect(scheduleEnabledFlags(setEnabledInYaml(bothPresent, true))).toEqual([true, true]);
+
+    // Mixed: only the FIRST entry carries `enabled:`; the second has no key
+    // at all. This is the exact defect case — before the fix, the loop
+    // toggled entry 1, set `toggledAny = true`, and never inserted a key
+    // into entry 2, silently leaving it defaulted to `true` regardless of
+    // the requested disable.
+    const mixed =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n    enabled: true\n  - cron: '30 13 * * 1,2,3,4,5'\n";
+    expect(scheduleEnabledFlags(setEnabledInYaml(mixed, false))).toEqual([false, false]);
+    // And the reverse key order — no key first, key second — must not
+    // let the second entry's key short-circuit the first entry's insertion.
+    const mixedReversed =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n  - cron: '30 13 * * 1,2,3,4,5'\n    enabled: true\n";
+    expect(scheduleEnabledFlags(setEnabledInYaml(mixedReversed, false))).toEqual([false, false]);
+
+    // Neither entry carries `enabled:` — both must get one inserted, not
+    // just the first.
+    const neitherPresent =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n  - cron: '30 13 * * 1,2,3,4,5'\n";
+    expect(scheduleEnabledFlags(setEnabledInYaml(neitherPresent, false))).toEqual([false, false]);
+    expect(scheduleEnabledFlags(setEnabledInYaml(neitherPresent, true))).toEqual([true, true]);
+
+    // A nested `inputs:` mapping inside an entry must not be mistaken for
+    // that entry's own key level — an `enabled:` name nested under `inputs:`
+    // is a coincidentally-named input, not the entry's trigger flag, and
+    // must be left untouched while the entry's own (missing) `enabled:` is
+    // still inserted at the entry's own indent. (Left unparsed by the real
+    // v4 parser here since an undeclared `inputs.enabled` would fail input
+    // contract validation unrelated to what this asserts.)
+    const withInputs =
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n    inputs:\n      enabled: keep-me\n  - cron: '30 13 * * 1,2,3,4,5'\n    enabled: true\n";
+    expect(setEnabledInYaml(withInputs, false)).toBe(
+      "version: 4\nrun: echo yes\nschedule:\n  - cron: '0 1 * * *'\n    enabled: false\n    inputs:\n      enabled: keep-me\n  - cron: '30 13 * * 1,2,3,4,5'\n    enabled: false\n",
     );
   });
 
@@ -217,10 +291,17 @@ describe("task lifecycle failure handling", () => {
     ).rejects.toMatchObject({ code: "INVALID_FLAG_VALUE" });
   });
 
-  test("add rejects a recognized remote action before source or scheduler mutation", async () => {
+  // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.2.6, row B-20;
+  // implementer addition to §7.2, recorded in the commit body and the Review
+  // log): `renderTaskYaml` now authors `version: 4` (sub-step (b)), so a
+  // github-action-shaped --workflow value hits task source v4's OWN
+  // `classifyTaskSourceV4Uses` shape check first (row B-11, unchanged by
+  // §3.1's deletion of the v3 locator grammar) rather than v3's generic
+  // trailing classification throw this test previously pinned.
+  test("add rejects a remote-action-shaped workflow before source or scheduler mutation", async () => {
     await expect(
       akmTasksAdd({ id: "remote", schedule: "@daily", workflow: "owner/repository/action@v1" }, { backend }),
-    ).rejects.toThrow(/GitHub action.*unsupported|remote GitHub actions/i);
+    ).rejects.toThrow(/GitHub Action targets were removed/i);
     expect(fs.existsSync(path.join(storage.stashDir, "tasks", "remote.yml"))).toBe(false);
     expect(installCalls).toEqual([]);
   });
@@ -254,6 +335,11 @@ describe("task lifecycle failure handling", () => {
 
   test("sync validates the entire desired set before runtime preparation or native mutation", async () => {
     writeTask("a-valid", taskYaml("echo yes", "@daily"));
+    // A version: 2 document is now rejected by the version router itself
+    // (TASK_SCHEMA_VERSION_UNSUPPORTED, row B-15) before it ever reaches a
+    // field-level parser — the old v3 parser's own "must be exactly 3"
+    // wording this test used to assert is unreachable for a version: 2
+    // document under any routing this phase produces.
     writeTask("b-invalid", 'version: 2\nschedule: "@daily"\ncommand: echo no\n');
     const prior = nativeBinding("old-installed", "0 2 * * *");
     installed.set(prior.id, prior);
@@ -267,7 +353,7 @@ describe("task lifecycle failure handling", () => {
           return { binding: ["/test/akm"], contextPath: "/test/context.json" };
         },
       }),
-    ).rejects.toThrow(/version must be exactly 3|version 2/i);
+    ).rejects.toThrow(/task schema version 2/i);
 
     expect(runtimeCalls).toBe(0);
     expect(installCalls).toEqual([]);
@@ -278,12 +364,12 @@ describe("task lifecycle failure handling", () => {
 
   test("add --force quiesces prior scheduler state and restores its exact snapshot after install rejection", async () => {
     const priorYaml = [
-      "version: 3",
+      "version: 4",
       "run: echo prior",
       "name: Prior task",
-      "akm:",
-      '  schedule: "0 2 * * *"',
-      "  enabled: false",
+      "schedule:",
+      '  - cron: "0 2 * * *"',
+      "    enabled: false",
     ].join("\n");
     const taskPath = writeTask("nightly", priorYaml);
     const priorTask = nativeBinding("nightly", "0 2 * * *", false);
@@ -397,13 +483,12 @@ describe("task lifecycle failure handling", () => {
 
   test("add --force removes every stale higher-ordinal binding from the prior source", async () => {
     const priorYaml = [
-      "version: 3",
+      "version: 4",
       "run: echo prior",
-      "on:",
-      "  schedule:",
-      "    - cron: '0 1 * * *'",
-      "    - cron: '0 2 * * *'",
-      "    - cron: '0 3 * * *'",
+      "schedule:",
+      "  - cron: '0 1 * * *'",
+      "  - cron: '0 2 * * *'",
+      "  - cron: '0 3 * * *'",
       "",
     ].join("\n");
     writeTask("multi", priorYaml);
@@ -429,13 +514,12 @@ describe("task lifecycle failure handling", () => {
 
   test("add --force restores the exact full prior binding set when stale removal fails partway", async () => {
     const priorYaml = [
-      "version: 3",
+      "version: 4",
       "run: echo prior",
-      "on:",
-      "  schedule:",
-      "    - cron: '0 1 * * *'",
-      "    - cron: '0 2 * * *'",
-      "    - cron: '0 3 * * *'",
+      "schedule:",
+      "  - cron: '0 1 * * *'",
+      "  - cron: '0 2 * * *'",
+      "  - cron: '0 3 * * *'",
       "",
     ].join("\n");
     const taskPath = writeTask("multi-rollback", priorYaml);
@@ -467,11 +551,11 @@ describe("task lifecycle failure handling", () => {
 
   test("add --force preserves an unreceipted partial source instead of overwriting a possible racer", async () => {
     const priorYaml = [
-      "version: 3",
+      "version: 4",
       "run: echo prior",
-      "akm:",
-      '  schedule: "0 2 * * *"',
-      "  enabled: true # exact prior bytes",
+      "schedule:",
+      '  - cron: "0 2 * * *"',
+      "    enabled: true # exact prior bytes",
     ].join("\n");
     const taskPath = writeTask("nightly", priorYaml);
     let writeCalls = 0;
@@ -489,7 +573,7 @@ describe("task lifecycle failure handling", () => {
           async writeAsset(_source, _config, ref, content) {
             writeCalls += 1;
             if (writeCalls === 1) {
-              fs.writeFileSync(taskPath, "version: 3\nrun:", "utf8");
+              fs.writeFileSync(taskPath, "version: 4\nrun:", "utf8");
               throw new Error("partial source write failed");
             }
             fs.writeFileSync(taskPath, content, "utf8");
@@ -500,7 +584,7 @@ describe("task lifecycle failure handling", () => {
     ).rejects.toThrow("partial source write failed");
 
     expect(writeCalls).toBe(1);
-    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 3\nrun:");
+    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 4\nrun:");
     expect(installCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
   });
@@ -519,7 +603,7 @@ describe("task lifecycle failure handling", () => {
         {
           backend,
           async writeAsset() {
-            fs.writeFileSync(taskPath, "version: 3\nrun:", "utf8");
+            fs.writeFileSync(taskPath, "version: 4\nrun:", "utf8");
             throw new Error("partial source write failed");
           },
           async deleteAsset(_source, _config, ref) {
@@ -532,7 +616,7 @@ describe("task lifecycle failure handling", () => {
     ).rejects.toThrow("partial source write failed");
 
     expect(deleteCalls).toBe(0);
-    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 3\nrun:");
+    expect(fs.readFileSync(taskPath, "utf8")).toBe("version: 4\nrun:");
     expect(installCalls).toEqual([]);
     expect(uninstallCalls).toEqual([]);
   });
@@ -725,9 +809,7 @@ describe("task lifecycle failure handling", () => {
   });
 
   test("sync installs command arguments without obsolete-command handling", async () => {
-    const yaml = ["version: 3", "run: akm db backups", "akm:", '  schedule: "0 3 * * 0"', "  enabled: true", ""].join(
-      "\n",
-    );
+    const yaml = ["version: 4", "run: akm db backups", 'schedule: "0 3 * * 0"', ""].join("\n");
     writeTask("backup", yaml);
 
     const result = await akmTasksSync({ backend });

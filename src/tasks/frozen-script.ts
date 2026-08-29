@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { assertNever } from "../core/assert";
-import type { TaskV3ScriptInterpreter } from "./runtime-v3";
+import type { TaskV3ScriptInterpreter } from "./prepare/prepared-execution";
 import { STANDALONE_FROZEN_SCRIPT_ARG } from "./standalone-script-entry";
 
 export interface FrozenScriptSnapshot {

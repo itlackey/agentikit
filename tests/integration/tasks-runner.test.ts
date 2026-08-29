@@ -10,7 +10,11 @@ import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
 import type { AgentRunResult } from "../../src/integrations/agent";
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
 import { resolveAkmInvocation } from "../../src/tasks/resolve-akm-bin";
-import { DEFAULT_WORKFLOW_TASK_TIMEOUT_MS, exitCodeForStatus, readTaskHistory, runTask } from "../../src/tasks/runner";
+import { shellCommand, shellExecutable } from "../../src/tasks/run/run-native-task";
+import { runTask } from "../../src/tasks/run/run-task";
+import { DEFAULT_WORKFLOW_TASK_TIMEOUT_MS } from "../../src/tasks/run/run-workflow-task";
+import { readTaskHistory } from "../../src/tasks/run/task-history";
+import { exitCodeForStatus } from "../../src/tasks/run/task-result";
 import { withEnv } from "../_helpers/sandbox";
 
 type FakeWorkflowRunner = (options: { target: string; params?: Record<string, unknown> }) => Promise<{
@@ -32,12 +36,12 @@ type FakeWorkflowRunner = (options: { target: string; params?: Record<string, un
 type FakeRunAgent = (...args: unknown[]) => Promise<AgentRunResult>;
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-tasks-runner-"));
-const stashDir = path.join(tmpRoot, "stash");
+const bundleDir = path.join(tmpRoot, "stash");
 const cacheDir = path.join(tmpRoot, "cache");
 const dataDir = path.join(tmpRoot, "data");
 const stateDir = path.join(tmpRoot, "state");
 const logDir = path.join(cacheDir, "tasks", "logs");
-const tasksDir = path.join(stashDir, "tasks");
+const tasksDir = path.join(bundleDir, "tasks");
 const configDir = path.join(tmpRoot, "cfg");
 
 const TRACKED_ENV_KEYS = ["AKM_CONFIG_DIR", "AKM_CACHE_DIR", "AKM_BUNDLE_DIR", "AKM_DATA_DIR", "AKM_STATE_DIR"];
@@ -45,16 +49,16 @@ const PRESERVED_ENV: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   for (const key of TRACKED_ENV_KEYS) PRESERVED_ENV[key] = process.env[key];
-  fs.rmSync(stashDir, { recursive: true, force: true });
+  fs.rmSync(bundleDir, { recursive: true, force: true });
   fs.rmSync(cacheDir, { recursive: true, force: true });
   fs.rmSync(dataDir, { recursive: true, force: true });
   fs.rmSync(stateDir, { recursive: true, force: true });
   fs.rmSync(configDir, { recursive: true, force: true });
   fs.mkdirSync(tasksDir, { recursive: true });
   // Workflows directory needs to exist so resolveAssetPath can stat the type root.
-  fs.mkdirSync(path.join(stashDir, "workflows"), { recursive: true });
+  fs.mkdirSync(path.join(bundleDir, "workflows"), { recursive: true });
   fs.writeFileSync(
-    path.join(stashDir, "workflows", "noop.md"),
+    path.join(bundleDir, "workflows", "noop.md"),
     "---\ntype: workflow\nsteps:\n  - id: work\n---\n\n## work\n\nDo it.\n",
     "utf8",
   );
@@ -91,24 +95,24 @@ function writeTask(id: string, body: string): void {
 
 function workflowTask(overrides: Record<string, unknown> = {}, params?: Record<string, unknown>): string {
   return stringifyYaml({
-    version: 3,
+    version: 4,
     uses: "workflows/noop",
     ...(params ? { with: params } : {}),
-    akm: { schedule: "@daily", enabled: true, ...overrides },
+    ...overrides,
   });
 }
 
 function shellTask(command: string | readonly string[], overrides: Record<string, unknown> = {}): string {
   const run = Array.isArray(command) ? command.map((value) => shellWord(value)).join(" ") : command;
-  return stringifyYaml({ version: 3, run, akm: { schedule: "@daily", enabled: true, ...overrides } });
+  return stringifyYaml({ version: 4, run, ...overrides });
 }
 
 function promptTask(content: string, overrides: Record<string, unknown> = {}): string {
   return stringifyYaml({
-    version: 3,
+    version: 4,
     uses: "akm/command",
     with: { content },
-    akm: { schedule: "@daily", enabled: true, ...overrides },
+    ...overrides,
   });
 }
 
@@ -217,7 +221,7 @@ describe("runTask — workflow target", () => {
     };
 
     const result = await runTask("wf", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: fakeWf as never,
       now: () => new Date("2025-01-01T00:00:00Z"),
@@ -266,7 +270,7 @@ describe("runTask — workflow target", () => {
       });
 
       const result = await runTask("map", {
-        stashDir,
+        bundleDir,
         logDir,
         runWorkflowStepsImpl: fakeWf as never,
         now: () => new Date("2025-01-01T00:00:00Z"),
@@ -386,7 +390,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const promise = runTask("wf-timeout", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: wedgedWorkflowRunner(captured) as never,
       setTimeoutFn,
@@ -418,7 +422,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const promise = runTask("wf-raced", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: completesDespiteAbortRunner(captured) as never,
       setTimeoutFn,
@@ -444,7 +448,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const promise = runTask("wf-gated", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: gateRejectedRunner(captured) as never,
       setTimeoutFn,
@@ -474,7 +478,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-explicit", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
       setTimeoutFn,
@@ -493,7 +497,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-default", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
       setTimeoutFn,
@@ -513,7 +517,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-unbounded", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
       setTimeoutFn,
@@ -527,11 +531,20 @@ describe("runTask — workflow target", () => {
   });
 
   test("threads declared maxSteps / maxRetries into the orchestrator", async () => {
-    writeTask("wf-bounds", workflowTask({ maxSteps: 4, maxRetries: 2 }, { region: "us-east-1" }));
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2, row B-28) retired
+    // this test's v3 fixture along with task source v3 acceptance itself —
+    // the `with:` -> child-run-params path it exercised on a
+    // `uses: workflows/<ref>` target is now UNREACHABLE (task source v4
+    // rejects `with:` on any target but `uses: akm/command`; R-R2 is
+    // resolved by deletion, spec §8). Converted to task source v4:
+    // maxSteps/maxRetries are top-level fields there, and `params` is now
+    // the task's defaulted declared inputs — `{}` here, since this fixture
+    // declares none (row B-28's new answer).
+    writeTask("wf-bounds", workflowTask({ maxSteps: 4, maxRetries: 2 }));
     const captured: CapturedRunOptions[] = [];
 
     const result = await runTask("wf-bounds", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
     });
@@ -539,7 +552,7 @@ describe("runTask — workflow target", () => {
     expect(result.status).toBe("completed");
     expect(captured[0]!.maxSteps).toBe(4);
     expect(captured[0]!.maxRetries).toBe(2);
-    expect(captured[0]!.params).toEqual({ region: "us-east-1" });
+    expect(captured[0]!.params).toEqual({});
   });
 
   test("omits maxSteps / maxRetries when the task declares none", async () => {
@@ -547,7 +560,7 @@ describe("runTask — workflow target", () => {
     const captured: CapturedRunOptions[] = [];
 
     await runTask("wf-nobounds", {
-      stashDir,
+      bundleDir,
       logDir,
       runWorkflowStepsImpl: instantWorkflowRunner(captured) as never,
     });
@@ -576,7 +589,7 @@ describe("runTask — command target", () => {
       };
     };
 
-    const result = await withEnv({ PATH: "" }, () => runTask("literal-command", { stashDir, logDir, spawnFn }));
+    const result = await withEnv({ PATH: "" }, () => runTask("literal-command", { bundleDir, logDir, spawnFn }));
 
     expect(result.status).toBe("completed");
     expect(spawned?.slice(0, 2)).toEqual(["sh", "-c"]);
@@ -585,16 +598,125 @@ describe("runTask — command target", () => {
     expect(shellText).toContain(command.slice(1).map(shellWord).join(" "));
   });
 
+  test("spawns a cmd-shell task with windowsVerbatimArguments so its hand-quoted command line survives", async () => {
+    // cmd.exe's `/S /C` reads its tail as one hand-quoted command line, not
+    // standard argv — shellCommand() already builds and quotes it for that.
+    // Default per-argument escaping would add an incompatible second layer of
+    // quoting on top and break any resolved path containing a space (#844
+    // gated-CI: the native scheduler suite's first real Windows run).
+    writeTask("cmd-shell-task", shellTask("akm --version", { shell: "cmd" }));
+    let capturedOptions: { windowsVerbatimArguments?: boolean } | undefined;
+    const spawnFn: SpawnFn = (_cmd, options) => {
+      capturedOptions = options;
+      return {
+        exitCode: 0,
+        exited: Promise.resolve(0),
+        stdout: emptyReadableStream(),
+        stderr: emptyReadableStream(),
+        stdin: null,
+        kill() {},
+      };
+    };
+
+    const result = await runTask("cmd-shell-task", { bundleDir, logDir, spawnFn });
+
+    expect(result.status).toBe("completed");
+    expect(capturedOptions?.windowsVerbatimArguments).toBe(true);
+  });
+
+  test("a bare akm run task under a PowerShell shell gets the call operator", async () => {
+    // PowerShell parses `'C:\akm.exe' --version` as a string expression
+    // followed by a parse error, not an invocation — the gated Windows
+    // native-scheduler suite failed exactly there, since powershell is the
+    // Windows default task shell. The rebound command must start with `&`.
+    writeTask("pwsh-bare-akm", shellTask("akm --version", { shell: "pwsh" }));
+    let spawned: string[] | undefined;
+    const spawnFn: SpawnFn = (cmd) => {
+      spawned = cmd;
+      return {
+        exitCode: 0,
+        exited: Promise.resolve(0),
+        stdout: emptyReadableStream(),
+        stderr: emptyReadableStream(),
+        stdin: null,
+        kill() {},
+      };
+    };
+
+    const result = await withEnv({ PATH: "" }, () => runTask("pwsh-bare-akm", { bundleDir, logDir, spawnFn }));
+
+    expect(result.status).toBe("completed");
+    expect(spawned?.slice(1, 4)).toEqual(["-NoProfile", "-NonInteractive", "-Command"]);
+    const command = spawned?.[4];
+    expect(command?.startsWith("& '")).toBe(true);
+    expect(command).toContain("--version");
+    // The invocation parts are PowerShell single-quoted; none may be bare.
+    expect(command).toBe(
+      `& ${resolveAkmInvocation()
+        .argv.map((p) => `'${p.replaceAll("'", "''")}'`)
+        .join(" ")} --version`,
+    );
+  });
+
+  test("shellCommand resolves powershell and cmd to absolute Windows paths", () => {
+    // A scheduler-fired run restores the PATH captured at install time,
+    // which can be minimal (the CI gate: System32 + SystemRoot). Bare
+    // "powershell" is NOT resolvable on that PATH — powershell.exe lives in
+    // the WindowsPowerShell\v1.0 subdirectory — so the spawn must use the
+    // canonical absolute path. Same for cmd via ComSpec.
+    const env = { SystemRoot: "C:\\Windows" };
+    expect(shellExecutable("powershell", "win32", env)).toBe(
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    );
+    expect(shellExecutable("cmd", "win32", { ...env, ComSpec: "C:\\Windows\\System32\\cmd.exe" })).toBe(
+      "C:\\Windows\\System32\\cmd.exe",
+    );
+    expect(shellExecutable("cmd", "win32", env)).toBe("C:\\Windows\\System32\\cmd.exe");
+    // pwsh has no canonical install path; POSIX shells stay bare everywhere.
+    expect(shellExecutable("pwsh", "win32", env)).toBe("pwsh");
+    expect(shellExecutable("powershell", "linux", {})).toBe("powershell");
+    expect(shellExecutable("sh", "darwin", {})).toBe("sh");
+
+    const psCommand = shellCommand({ command: "echo hi", shell: "powershell" }, "win32", env);
+    expect(psCommand).toEqual([
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "echo hi",
+    ]);
+    const cmdCommand = shellCommand({ command: "echo hi", shell: "cmd" }, "win32", env);
+    expect(cmdCommand).toEqual(["C:\\Windows\\System32\\cmd.exe", "/d", "/s", "/c", "echo hi"]);
+  });
+
+  test("does not set windowsVerbatimArguments for a posix-shell task", async () => {
+    writeTask("sh-shell-task", shellTask("akm --version", { shell: "sh" }));
+    let capturedOptions: { windowsVerbatimArguments?: boolean } | undefined;
+    const spawnFn: SpawnFn = (_cmd, options) => {
+      capturedOptions = options;
+      return {
+        exitCode: 0,
+        exited: Promise.resolve(0),
+        stdout: emptyReadableStream(),
+        stderr: emptyReadableStream(),
+        stdin: null,
+        kill() {},
+      };
+    };
+
+    const result = await runTask("sh-shell-task", { bundleDir, logDir, spawnFn });
+
+    expect(result.status).toBe("completed");
+    expect(capturedOptions?.windowsVerbatimArguments).toBeFalsy();
+  });
+
   test.skipIf(process.platform === "win32")(
     "executes a bare akm run task when the scheduler PATH omits the installation",
     async () => {
-      writeTask(
-        "bare-current-install",
-        ["version: 3", "run: akm --version", "akm:", '  schedule: "@daily"', ""].join("\n"),
-      );
+      writeTask("bare-current-install", ["version: 4", "run: akm --version", ""].join("\n"));
 
       const result = await withEnv({ PATH: "/usr/bin:/bin" }, () =>
-        runTask("bare-current-install", { stashDir, logDir, scheduled: true }),
+        runTask("bare-current-install", { bundleDir, logDir, scheduled: true }),
       );
 
       expect(result.status).toBe("completed");
@@ -614,7 +736,7 @@ describe("runTask — command target", () => {
     if (process.platform !== "win32") fs.chmodSync(executable, 0o755);
     writeTask("explicit-akm", shellTask([executable, "-e", 'console.log("explicit vendor akm")']));
 
-    const result = await runTask("explicit-akm", { stashDir, logDir });
+    const result = await runTask("explicit-akm", { bundleDir, logDir });
 
     expect(result.status).toBe("completed");
     expect(fs.readFileSync(result.log, "utf8")).toContain("explicit vendor akm");
@@ -626,11 +748,11 @@ describe("runTask — command target", () => {
     writeTask("portable-cwd", shellTask([process.execPath, "-e", "console.log('cwd=' + process.cwd())"]));
 
     const result = await withEnv({ HOME: undefined, TMPDIR: fallbackDir, TEMP: fallbackDir, TMP: fallbackDir }, () =>
-      runTask("portable-cwd", { stashDir, logDir }),
+      runTask("portable-cwd", { bundleDir, logDir }),
     );
 
     expect(result.status).toBe("completed");
-    expect(fs.readFileSync(result.log, "utf8")).toContain(`cwd=${stashDir}`);
+    expect(fs.readFileSync(result.log, "utf8")).toContain(`cwd=${bundleDir}`);
   });
 
   test("a command that ignores SIGTERM is SIGKILLed on timeout, logging timed_out + exit 143", async () => {
@@ -661,7 +783,7 @@ describe("runTask — command target", () => {
       return proc;
     };
 
-    const promise = runTask("stubborn", { stashDir, logDir, spawnFn, setTimeoutFn, clearTimeoutFn });
+    const promise = runTask("stubborn", { bundleDir, logDir, spawnFn, setTimeoutFn, clearTimeoutFn });
     await fireWhenRegistered(timers, 100); // deadline → SIGTERM (ignored)
     await fireWhenRegistered(timers, 5000); // grace → SIGKILL → child exits 143
     const result = await promise;
@@ -681,7 +803,7 @@ describe("runTask — command target", () => {
       shellTask([process.execPath, "-e", `console.log(${JSON.stringify(`posting to ${webhookUrl}`)})`]),
     );
 
-    const result = await runTask("leaky-webhook", { stashDir, logDir });
+    const result = await runTask("leaky-webhook", { bundleDir, logDir });
 
     expect(result.status).toBe("completed");
     const log = fs.readFileSync(result.log, "utf8");
@@ -734,7 +856,7 @@ describe("runTask — command target", () => {
     );
     echoTask("leaky-config-secret", `calling out with ${secret}`);
 
-    const result = await withEnv({ ACME_LLM_KEY: secret }, () => runTask("leaky-config-secret", { stashDir, logDir }));
+    const result = await withEnv({ ACME_LLM_KEY: secret }, () => runTask("leaky-config-secret", { bundleDir, logDir }));
 
     expect(result.status).toBe("completed");
     assertAbsentFromBothSinks("leaky-config-secret", result.log, secret);
@@ -746,7 +868,7 @@ describe("runTask — command target", () => {
     echoTask("leaky-ambient-secret", `deploying with ${secret}`);
 
     const result = await withEnv({ ACME_DEPLOY_TOKEN: secret }, () =>
-      runTask("leaky-ambient-secret", { stashDir, logDir }),
+      runTask("leaky-ambient-secret", { bundleDir, logDir }),
     );
 
     expect(result.status).toBe("completed");
@@ -760,7 +882,7 @@ describe("runTask — command target", () => {
     echoTask("leaky-declared-secret", `token is ${secret}`, ["ACME_UNGUESSABLE"]);
 
     const result = await withEnv({ ACME_UNGUESSABLE: secret }, () =>
-      runTask("leaky-declared-secret", { stashDir, logDir }),
+      runTask("leaky-declared-secret", { bundleDir, logDir }),
     );
 
     expect(result.status).toBe("completed");
@@ -770,7 +892,7 @@ describe("runTask — command target", () => {
     // this test proves nothing about `redact:`.
     echoTask("leaky-undeclared-secret", `token is ${secret}`);
     const leaked = await withEnv({ ACME_UNGUESSABLE: secret }, () =>
-      runTask("leaky-undeclared-secret", { stashDir, logDir }),
+      runTask("leaky-undeclared-secret", { bundleDir, logDir }),
     );
     expect(fs.readFileSync(leaked.log, "utf8")).toContain(secret);
   });
@@ -779,7 +901,7 @@ describe("runTask — command target", () => {
     const secret = "cinnabar-thicket-verso";
     writeTask("leaky-spawn-error", shellTask([`/nonexistent/${secret}/bin`]));
 
-    const result = await withEnv({ ACME_API_TOKEN: secret }, () => runTask("leaky-spawn-error", { stashDir, logDir }));
+    const result = await withEnv({ ACME_API_TOKEN: secret }, () => runTask("leaky-spawn-error", { bundleDir, logDir }));
 
     expect(result.status).toBe("failed");
     assertAbsentFromBothSinks("leaky-spawn-error", result.log, secret);
@@ -792,7 +914,7 @@ describe("runTask — command target", () => {
     echoTask("clean-output", "Build finished in 12.4s | 3 tests passed, 0 failed | wrote dist/index.js (48 KB)");
 
     const result = await withEnv({ ACME_DEPLOY_TOKEN: "opalescent-badger-parade" }, () =>
-      runTask("clean-output", { stashDir, logDir }),
+      runTask("clean-output", { bundleDir, logDir }),
     );
 
     const log = fs.readFileSync(result.log, "utf8");
@@ -817,7 +939,7 @@ describe("runTask — command target", () => {
     );
 
     const result = await withEnv({ ACME_SECONDARY_VALUE: secret }, () =>
-      runTask("secondary-leak", { stashDir: secondaryStash, logDir }),
+      runTask("secondary-leak", { bundleDir: secondaryStash, logDir }),
     );
 
     expect(result.status).toBe("completed");
@@ -830,16 +952,14 @@ describe("runTask — prompt target", () => {
     writeTask(
       "scheduled-agent-context",
       [
-        "version: 3",
+        "version: 4",
         "uses: akm/command",
         "with:",
         "  content: keep nested akm calls in this scheduled installation",
         "env:",
         "  AKM_BUNDLE_DIR: /authored-override",
         "  TASK_FLAG: retained",
-        "akm:",
-        '  schedule: "@daily"',
-        "  engine: opencode",
+        "engine: opencode",
         "",
       ].join("\n"),
     );
@@ -864,7 +984,7 @@ describe("runTask — prompt target", () => {
 
     const result = await withEnv(schedulerContext, () =>
       runTask("scheduled-agent-context", {
-        stashDir,
+        bundleDir,
         logDir,
         scheduled: true,
         // Operational overrides must not be able to replace frozen request
@@ -904,7 +1024,7 @@ describe("runTask — prompt target", () => {
     const seen: { model?: string; prompt?: string } = {};
 
     const result = await runTask("llm", {
-      stashDir,
+      bundleDir,
       logDir,
       chatCompletionImpl: async (connection, messages) => {
         seen.model = connection.model;
@@ -915,7 +1035,10 @@ describe("runTask — prompt target", () => {
     });
 
     expect(result.status).toBe("completed");
-    expect(result.target).toEqual({ kind: "prompt", engine: "fast" });
+    // D8 (spec docs/plans/specs/p1b-model-extraction.md §5.3, §6 F-2)
+    // corollary: a prepared command (agent/LLM) run now reports "command",
+    // not the former inverted "prompt" string.
+    expect(result.target).toEqual({ kind: "command", engine: "fast" });
     expect(seen).toEqual({ model: "qwen3-small", prompt: "answer briefly" });
     expect(result.notices?.map((notice) => [notice.code, notice.field])).toEqual([
       ["untranslated-field", "runtime.workspace"],
@@ -952,19 +1075,22 @@ describe("runTask — prompt target", () => {
     );
 
     const result = await runTask("prompt", {
-      stashDir,
+      bundleDir,
       logDir,
       runAgentImpl: fakeRunAgent,
       now: () => new Date("2025-01-01T00:00:00Z"),
     });
 
     expect(result.status).toBe("completed");
-    expect(result.target).toEqual({ kind: "prompt", engine: "opencode" });
+    // D8 (spec §5.3, §6 F-2) corollary: same flip as above, both for the
+    // freshly-returned result and the history round trip (this run's own row
+    // carries the new targetVocab: 2 marker, so it reads back unmapped).
+    expect(result.target).toEqual({ kind: "command", engine: "opencode" });
     expect(fs.readFileSync(result.log, "utf8")).toContain("agent received: say hello");
 
     const rows = readTaskHistory({ id: "prompt" });
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.target).toEqual({ kind: "prompt", engine: "opencode" });
+    expect(rows[0]!.target).toEqual({ kind: "command", engine: "opencode" });
 
     // #579: the same run is queryable from logs.db by task_id AND run_id,
     // with the captured agent stdout stored as stream='stdout' rows.
@@ -1004,7 +1130,7 @@ describe("runTask — prompt target", () => {
     let captured: { model?: string } = {};
 
     const result = await runTask("agent-model", {
-      stashDir,
+      bundleDir,
       logDir,
       runAgentImpl: async (profile) => {
         captured = { model: profile.model };
@@ -1032,7 +1158,7 @@ describe("runTask — prompt target", () => {
 
     const result = await withEnv({ AKM_CONFIG_DIR: configDir, OPENCODE_API_KEY: sentinel }, () =>
       runTask("redacted", {
-        stashDir,
+        bundleDir,
         logDir,
         runAgentImpl: async () => ({
           ok: true,
@@ -1077,7 +1203,7 @@ describe("runTask — prompt target", () => {
     };
 
     const result = await runTask("fail", {
-      stashDir,
+      bundleDir,
       logDir,
       runAgentImpl: fakeRunAgent,
       now: () => new Date("2025-01-01T00:00:00Z"),
@@ -1095,65 +1221,19 @@ describe("runTask — prompt target", () => {
   });
 });
 
-describe("runTask — disabled tasks", () => {
-  test("manual invocation dispatches an intentionally disabled task", async () => {
-    writeTask("off", workflowTask({ enabled: false }));
-    let called = false;
-    const fakeWf: FakeWorkflowRunner = async ({ target, params = {} }) => {
-      called = true;
-      return {
-        run: {
-          id: "manual-disabled",
-          workflowRef: target,
-          workflowTitle: "Manual disabled run",
-          status: "completed",
-          params,
-          createdAt: "2025-01-01T00:00:00Z",
-          updatedAt: "2025-01-01T00:00:00Z",
-          completedAt: "2025-01-01T00:00:00Z",
-          currentStepId: null,
-        },
-        executed: [],
-        done: true,
-      };
-    };
-
-    const result = await runTask("off", {
-      stashDir,
-      logDir,
-      runWorkflowStepsImpl: fakeWf as never,
-      now: () => new Date("2025-01-01T00:00:00Z"),
-    });
-
-    expect(called).toBe(true);
-    expect(result.status).toBe("completed");
-  });
-
-  test("scheduler-generated invocation is recorded but not dispatched", async () => {
-    writeTask("off", workflowTask({ enabled: false }));
-    let called = false;
-    const fakeWf = async () => {
-      called = true;
-      throw new Error("should not be called");
-    };
-    const result = await runTask("off", {
-      stashDir,
-      logDir,
-      runWorkflowStepsImpl: fakeWf as never,
-      now: () => new Date("2025-01-01T00:00:00Z"),
-      scheduled: true,
-    });
-    expect(called).toBe(false);
-    expect(result.status).toBe("disabled");
-    expect(exitCodeForStatus(result.status)).toBe(0);
-
-    // #579: even a skipped run leaves a queryable trace in logs.db.
-    const logRows = readRunLogRows("off");
-    expect(logRows).toHaveLength(1);
-    expect(logRows[0]!.line).toContain("disabled");
-    expect(logRows[0]!.run_id).toBe(buildTaskRunId("off", result.startedAt));
-  });
-});
+// P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, row B-22, F-A2.17)
+// DELETED src/tasks/run/run-task.ts's shouldSkipUnactivatedTask call and the
+// helper itself, along with prepare-support.ts's `enabled:
+// document.akm?.enabled !== false` derivation — task source v4 has no
+// document-level `enabled` at all (P4-N6: `enabled` is per-schedule-binding,
+// enforced once at sync time by scheduler-sync.ts, never re-checked at fire
+// time). The "runTask — disabled tasks" describe block this comment used to
+// introduce (manual dispatch of an intentionally disabled task; a
+// scheduler-generated invocation recorded but not dispatched, asserting
+// `result.status === "disabled"`) tested exactly that now-deleted runtime
+// skip — its two version: 3 fixtures are gone with it, not merely
+// unreachable: a version: 3 document now fails TASK_SCHEMA_VERSION_UNSUPPORTED
+// before runTask ever sees it (row B-14).
 
 describe("resolveAkmInvocation", () => {
   function packageLauncher(packageRoot: string): string {

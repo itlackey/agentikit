@@ -44,14 +44,15 @@ changed. Run interactive `akm setup` to review, prepare, and activate tasks.
 
 ## Task definitions vs. scheduler state
 
-Task definitions live under `<bundle>/tasks/` as strict task v3 `.yml` sources;
+Task definitions live under `<bundle>/tasks/` as task source v4 `.yml` sources;
 the [task source reference](../reference/tasks.md) defines their executable and
-trigger grammar. Scheduler entries are separate OS state. Activation captures the installed akm runtime so scheduled
+scheduling grammar. Scheduler entries are separate OS state. Activation captures the installed akm runtime so scheduled
 execution does not silently switch to a different checkout or package.
 Editing definitions and running ordinary `akm task sync` preserves that
 captured runtime.
 
-A scheduled fire re-reads the guarded current source and creates a fresh durable-v4 freeze.
+A scheduled fire re-reads the guarded current source and creates a fresh
+durable-v4-family freeze at executable `irVersion: 5`.
 Scheduler sync/validation evidence is not an executable snapshot and is never reused as the later run plan.
 
 ## Rerunning setup preserves scheduler bindings

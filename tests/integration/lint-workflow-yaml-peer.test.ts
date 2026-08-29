@@ -105,7 +105,11 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
       fixed: false,
       line: 11,
     });
-    expect(result.flagged[0]?.detail.toLowerCase()).toContain("remote action acquisition");
+    // P4 FLIP (docs/plans/specs/p4-deletions-closeout.md §3.1, row B-05,
+    // F-A1.19): the locator grammar is deleted — this now rejects as an
+    // unrecognized ref shape ("target ref ... must be a canonical ...
+    // asset ref"), not the old "remote action acquisition" wording.
+    expect(result.flagged[0]?.detail.toLowerCase()).toContain("target ref");
     expect(JSON.stringify(result)).not.toContain("AKM_SECRET_BYTES_MUST_NOT_LEAK");
     expect(result.summary).toEqual({ fixed: 0, flagged: 1, warnings: 0 });
   });

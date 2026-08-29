@@ -15,7 +15,7 @@
  * the I/O, operator-facing messages, and the interactive add-time confirm /
  * rollback UX stay at their original call sites.
  *
- * The four rules, and where each is applied:
+ * The rules, and where each is applied:
  *
  *   1. **Dangerous env-key injection** (`env-binding.ts`). Injecting an env
  *      whose keys include a process-hijacking variable (LD_PRELOAD, PATH, …) is
@@ -28,16 +28,19 @@
  *      is GATED (blocked unless the operator confirms interactively or passed
  *      `--allow-insecure`). → {@link decideDangerousKeyInstall}
  *
- *   3. **Task activation** (`tasks/runner.ts`). Installing a task registers it
- *      DISABLED; the scheduler must skip it at fire time until the operator sets
- *      `enabled: true` in the task file and runs `akm task sync`. Manual runs
- *      are exempt (catch-up / testing).
- *      → {@link shouldSkipUnactivatedTask}
- *
- *   4. **Write activation** (`search/search-source.ts`, `installations.ts`). A
+ *   3. **Write activation** (`search/search-source.ts`, `installations.ts`). A
  *      registry-cached (installed, read-only) source is never written in place —
  *      only the primary stash and sources explicitly marked `writable: true`
  *      are write-activated. → {@link isSourceWriteActivated}
+ *
+ * A fourth rule — task activation (installing a task registered it disabled;
+ * the scheduler skipped it at fire time until the operator set `enabled:
+ * true`) — was retired in P4 (spec docs/plans/specs/p4-deletions-closeout.md
+ * §3.2.7, P4-N6): task source v4 has no document-level `enabled` to gate at
+ * fire time — enablement is per schedule binding, decided once at
+ * `scheduler-sync.ts` sync time (a disabled binding is simply never
+ * installed with the OS scheduler), not re-checked when the scheduler fires
+ * it.
  *
  * These are behavior-preserving PORTS of the pre-0.9.0 rules. This module ships
  * **no new trust / approval / security machinery** (2026-07-14 decision, §1.3):
@@ -103,25 +106,13 @@ export function decideDangerousKeyInstall(input: {
   return input.allowInsecure ? "warn-allow" : "gate";
 }
 
-// ── Rule 3: task activation (tasks/runner.ts) ────────────────────────────────
-
-/**
- * Whether a scheduler-generated task invocation must be skipped because the
- * task is not activated (its `enabled:` is false). Manual (non-scheduled) runs
- * are always dispatched — installing a task grants nothing until enabled, but
- * the operator may still run it by hand for catch-up / testing. See rule 3.
- */
-export function shouldSkipUnactivatedTask(input: { enabled: boolean; scheduled: boolean }): boolean {
-  return !input.enabled && input.scheduled;
-}
-
-// ── Rule 4: write activation (search-source.ts, installations.ts) ────────────
+// ── Rule 3: write activation (search-source.ts, installations.ts) ────────────
 
 /**
  * Whether a resolved source is write-activated. Only the primary stash and
  * sources explicitly marked `writable: true` are writable; registry-cached
  * (installed, read-only) sources are never written in place because
- * `akm update` overwrites them. See rule 4 above.
+ * `akm update` overwrites them. See rule 3 above.
  */
 export function isSourceWriteActivated(source: { writable?: boolean }): boolean {
   return source.writable === true;

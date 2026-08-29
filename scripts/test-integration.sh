@@ -41,7 +41,16 @@ total="${#files[@]}"
 # `--shard` incident where shards 2-4 ran ZERO tests at exit 0 — this is the
 # same hole reached through skips instead of sharding (#795). Set below the
 # current integration count with room for churn; raise it as the suite grows.
-MIN_TESTS="${AKM_MIN_INTEGRATION_TESTS:-5000}"
+#
+# P4 (docs/plans/specs/p4-deletions-closeout.md §5.3/P4-N5, row B-62):
+# RAISED 5000 -> 5500. Measured at Lane C's commit: 5825 pass / 57 skip
+# (executed 5882), after the deletion families (§3) removed
+# tests/integration/tasks-scheduler-sync-v3.test.ts (23 tests) and
+# tests/integration/tasks-scheduling-characterization.test.ts (3 tests) — see
+# the commit body for the per-suite deleted-test table. P4-N5's formula:
+# floor(executed * 0.95 / 100) * 100 = floor(5882 * 0.95 / 100) * 100 =
+# floor(55.879) * 100 = 5500.
+MIN_TESTS="${AKM_MIN_INTEGRATION_TESTS:-5500}"
 if [ "$total" -eq 0 ]; then
   echo "── integration: no test files found under tests/integration" >&2
   exit 1

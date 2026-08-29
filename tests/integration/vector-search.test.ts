@@ -26,7 +26,11 @@ import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 import { rebuildFts, searchFts } from "../../src/storage/repositories/index-fts-repository";
 import { setMeta } from "../../src/storage/repositories/index-meta-repository";
-import { searchVec, upsertEmbedding } from "../../src/storage/repositories/index-vec-repository";
+import {
+  getAllEntriesForEmbedding,
+  searchVec,
+  upsertEmbedding,
+} from "../../src/storage/repositories/index-vec-repository";
 import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
 
 // ── Temp directory management ───────────────────────────────────────────────
@@ -653,6 +657,24 @@ describe("Dimension mismatch produces zero similarity", () => {
       }
       // Either we get the result with max distance or empty (both acceptable)
       expect(results.length).toBeLessThanOrEqual(1);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+});
+
+// ── Targeted embedding selection ────────────────────────────────────────────
+
+describe("targeted embedding selection", () => {
+  test("queries only requested missing entry IDs", () => {
+    const db = openIndexDatabase(tmpDbPath("targeted-selection"));
+    try {
+      const unrelatedId = insertTestEntry(db, "unrelated-missing");
+      const targetId = insertTestEntry(db, "target-missing");
+
+      expect(getAllEntriesForEmbedding(db, [targetId, targetId]).map((entry) => entry.id)).toEqual([targetId]);
+      expect(getAllEntriesForEmbedding(db, [unrelatedId]).map((entry) => entry.id)).toEqual([unrelatedId]);
+      expect(getAllEntriesForEmbedding(db, [])).toEqual([]);
     } finally {
       closeDatabase(db);
     }

@@ -13,11 +13,13 @@ import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { akmSearch } from "../../src/commands/read/search";
 import { akmListSources, akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { akmAdd } from "../../src/commands/sources/source-add";
 import { addStash } from "../../src/commands/sources/source-manage";
 import { loadConfig, saveConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
+import { akmIndex } from "../../src/indexer/indexer";
 import { readLockfile } from "../../src/integrations/lockfile";
 import * as gitProvider from "../../src/sources/providers/git";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
@@ -627,6 +629,95 @@ describe("update preserves entry.source for writable installed entries", () => {
 // ── Regression: R-015 — `akm bundle update --all` must account for plain sources ───
 
 describe("R-015: akm bundle update --all with mixed plain and managed sources", () => {
+  async function removeIndexedSecondaryFilesystemBundle(marker: string): Promise<string> {
+    const secondaryRoot = createTmpDir(`akm-r015-fs-incomplete-${marker}-`);
+    makeStashDir(secondaryRoot);
+    fs.writeFileSync(
+      path.join(secondaryRoot, "knowledge", `${marker}.md`),
+      `---\ndescription: ${marker}\n---\n\n# Preserved note\n`,
+      "utf8",
+    );
+    saveConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "primary",
+      bundles: {
+        primary: { path: stashDir, components: { main: { root: ".", adapter: "akm", writable: true } } },
+        secondary: {
+          path: secondaryRoot,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+      },
+    });
+    await akmIndex({ stashDir, full: true });
+    expect((await akmSearch({ query: marker, skipLogging: true })).hits).toHaveLength(1);
+    fs.rmSync(secondaryRoot, { recursive: true, force: true });
+    return secondaryRoot;
+  }
+
+  test("targeted filesystem update reconciles changed and removed assets without a manual index", async () => {
+    const fsDir = createTmpDir("akm-r015-fs-reconcile-");
+    makeStashDir(fsDir);
+    const oldFile = path.join(fsDir, "knowledge", "old-note.md");
+    fs.writeFileSync(oldFile, "---\ndescription: obsoletewalrusmarker\n---\n\n# Old note\n", "utf8");
+    saveConfig({
+      semanticSearchMode: "off",
+      defaultBundle: "local-fs",
+      bundles: {
+        "local-fs": { path: fsDir, components: { main: { root: ".", adapter: "akm", writable: true } } },
+      },
+    });
+    await akmIndex({ stashDir: fsDir, full: true });
+
+    fs.unlinkSync(oldFile);
+    fs.writeFileSync(
+      path.join(fsDir, "knowledge", "new-note.md"),
+      "---\ndescription: currentnarwhalmarker\n---\n\n# New note\n",
+      "utf8",
+    );
+    const result = await akmUpdate({ target: "local-fs", stashDir: fsDir });
+
+    expect(result.index.mode).toBe("incremental");
+    expect(result.plainSynced).toContainEqual({ id: "local-fs", kind: "filesystem", ref: fsDir });
+    expect((await akmSearch({ query: "currentnarwhalmarker", skipLogging: true })).hits).toHaveLength(1);
+    expect((await akmSearch({ query: "obsoletewalrusmarker", skipLogging: true })).hits).toHaveLength(0);
+  });
+
+  test("targeted filesystem update reports an incomplete scan without claiming reconciliation", async () => {
+    const marker = "preservedtargetedplatypusmarker";
+    const secondaryRoot = await removeIndexedSecondaryFilesystemBundle(marker);
+
+    const result = await akmUpdate({ target: "secondary", stashDir });
+
+    expect((result.index as typeof result.index & { scanComplete?: boolean }).scanComplete).toBe(false);
+    expect(result.plainSynced ?? []).not.toContainEqual({ id: "secondary", kind: "filesystem", ref: secondaryRoot });
+    expect(result.skipped).toContainEqual({
+      id: "secondary",
+      kind: "filesystem",
+      status: "skipped",
+      code: "SOURCE_SCAN_INCOMPLETE",
+      reason: expect.stringContaining("not scanned completely"),
+    });
+    expect((await akmSearch({ query: marker, skipLogging: true })).hits).toHaveLength(1);
+  });
+
+  test("filesystem update --all reports an incomplete scan without claiming reconciliation", async () => {
+    const marker = "preservedallcapybaramarker";
+    const secondaryRoot = await removeIndexedSecondaryFilesystemBundle(marker);
+
+    const result = await akmUpdate({ all: true, stashDir });
+
+    expect((result.index as typeof result.index & { scanComplete?: boolean }).scanComplete).toBe(false);
+    expect(result.plainSynced ?? []).not.toContainEqual({ id: "secondary", kind: "filesystem", ref: secondaryRoot });
+    expect(result.skipped).toContainEqual({
+      id: "secondary",
+      kind: "filesystem",
+      status: "skipped",
+      code: "SOURCE_SCAN_INCOMPLETE",
+      reason: expect.stringContaining("not scanned completely"),
+    });
+    expect((await akmSearch({ query: marker, skipLogging: true })).hits).toHaveLength(1);
+  });
+
   test("filters disabled managed and plain sources from --all without changing explicit targeting", async () => {
     const disabledManagedRoot = createTmpDir("akm-disabled-managed-");
     makeStashDir(disabledManagedRoot);
@@ -645,8 +736,8 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     try {
       const result = await akmUpdate({ all: true, stashDir });
       expect(result.processed).toEqual([]);
-      expect(result.plainSynced ?? []).toEqual([]);
-      expect(result.skipped?.map((item) => item.id)).toEqual(["local"]);
+      expect(result.plainSynced).toEqual([{ id: "local", kind: "filesystem", ref: stashDir }]);
+      expect(result.skipped ?? []).toEqual([]);
       expect(managedSync).not.toHaveBeenCalled();
       expect(plainSync).not.toHaveBeenCalled();
     } finally {
@@ -680,7 +771,7 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     }
   });
 
-  test("accounts for every configured source: syncs git+website+npm and reports filesystem as skipped", async () => {
+  test("accounts for every configured source when remote fixtures leave the final scan incomplete", async () => {
     const fsDir = createTmpDir("akm-r015-fs-");
     makeStashDir(fsDir);
 
@@ -752,14 +843,18 @@ describe("R-015: akm bundle update --all with mixed plain and managed sources", 
     expect(result.processed).toHaveLength(1);
     expect(result.processed[0]?.id).toBe("left-pad");
     expect(result.processed[0]?.installed.resolvedVersion).toBe("1.3.0");
-    // Filesystem is the only intentional skip: it reflects local bytes in
-    // place. Website now uses the same staged/audited transaction as an
-    // explicit website update.
-    const skippedIds = (result.skipped ?? []).map((s) => s.id).sort();
-    expect(skippedIds).toEqual(["local-fs"]);
-    const fsSkip = result.skipped?.find((s) => s.id === "local-fs");
-    expect(fsSkip?.kind).toBe("filesystem");
-    expect(fsSkip?.reason).toContain("akm index");
+    // These minimal remote fixtures do not materialize a complete final source
+    // generation. The filesystem bundle must still be accounted for, but must
+    // not be described as reconciled while the global scan is incomplete.
+    expect(result.index.scanComplete).toBe(false);
+    expect(result.plainSynced ?? []).not.toContainEqual({ id: "local-fs", kind: "filesystem", ref: fsDir });
+    expect(result.skipped).toContainEqual({
+      id: "local-fs",
+      kind: "filesystem",
+      status: "skipped",
+      code: "SOURCE_SCAN_INCOMPLETE",
+      reason: expect.stringContaining("not scanned completely"),
+    });
 
     // The npm source must now be a genuine managed install (lock-backed).
     const npmLock = readLockfile().find((entry) => entry.id === "left-pad");

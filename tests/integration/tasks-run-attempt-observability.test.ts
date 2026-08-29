@@ -15,7 +15,8 @@ import {
   getTaskHistoryRuns,
   reserveTaskHistoryAttempt,
 } from "../../src/storage/repositories/task-history-repository";
-import { readTaskHistory, runTask } from "../../src/tasks/runner";
+import { runTask } from "../../src/tasks/run/run-task";
+import { readTaskHistory } from "../../src/tasks/run/task-history";
 import { runCliCapture } from "../_helpers/cli";
 import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -136,7 +137,7 @@ describe("tasks run attempt observability", () => {
   ] as const) {
     test(`${label} config fails before task-history or log mutation`, async () => {
       writeRawConfig(config);
-      writeTask("config-preflight", "version: 3\nrun: echo safe\nakm:\n  schedule: '@daily'\n");
+      writeTask("config-preflight", "version: 4\nrun: echo safe\n");
 
       const result = await withEnv(capturedSchedulerContext(), () =>
         runCliCapture(["task", "run", "config-preflight", "--scheduled"]),
@@ -150,9 +151,9 @@ describe("tasks run attempt observability", () => {
 
   test("v2, malformed, future, unresolved, and missing sources create no attempts", async () => {
     writeTask("legacy", "version: 2\nschedule: '@daily'\ncommand: echo legacy\n");
-    writeTask("malformed", "version: 3\nrun: [unterminated\n");
+    writeTask("malformed", "version: 4\nrun: [unterminated\n");
     writeTask("future", "version: 99\nrun: echo future\n");
-    writeTask("unresolved", "version: 3\nuses: scripts/does-not-exist\n");
+    writeTask("unresolved", "version: 4\nuses: scripts/does-not-exist\n");
 
     for (const taskId of ["legacy", "malformed", "future", "unresolved", "missing"] as const) {
       const result = await runCliCapture(["task", "run", taskId]);
@@ -168,7 +169,7 @@ describe("tasks run attempt observability", () => {
     expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "INVALID_FLAG_VALUE" });
     assertNoAttempt(INVALID_TASK_ID);
 
-    const thrown = await captureThrown(() => runTask("../DIRECT-RUNNER-HOSTILE-ID", { stashDir: storage.stashDir }));
+    const thrown = await captureThrown(() => runTask("../DIRECT-RUNNER-HOSTILE-ID", { bundleDir: storage.stashDir }));
     expect(thrown).toMatchObject({ code: "INVALID_FLAG_VALUE" });
     assertNoAttempt(INVALID_TASK_ID);
   });
@@ -234,14 +235,14 @@ describe("tasks run attempt observability", () => {
   test("post-dispatch failures reserve distinct same-millisecond attempts", async () => {
     const instant = new Date("2026-07-13T12:00:00.123Z");
     const dispatchError = new Error("native dispatch failed");
-    writeTask("same-millisecond", "version: 3\nrun: echo dispatch\nakm:\n  schedule: '@daily'\n");
+    writeTask("same-millisecond", "version: 4\nrun: echo dispatch\n");
     const spawnFn: SpawnFn = () => {
       throw dispatchError;
     };
 
     const attempts = await Promise.allSettled([
-      runTask("same-millisecond", { stashDir: storage.stashDir, logDir, now: () => instant, spawnFn }),
-      runTask("same-millisecond", { stashDir: storage.stashDir, logDir, now: () => instant, spawnFn }),
+      runTask("same-millisecond", { bundleDir: storage.stashDir, logDir, now: () => instant, spawnFn }),
+      runTask("same-millisecond", { bundleDir: storage.stashDir, logDir, now: () => instant, spawnFn }),
     ]);
 
     expect(attempts.map(({ status }) => status)).toEqual(["fulfilled", "fulfilled"]);
@@ -279,15 +280,7 @@ describe("tasks run attempt observability", () => {
     const errorSecret = "DISPATCH-ERROR-SECRET-SENTINEL";
     writeTask(
       "dispatch-throws",
-      [
-        "version: 3",
-        "uses: akm/command",
-        "with:",
-        `  content: ${promptSecret}`,
-        "akm:",
-        "  engine: opencode",
-        "  schedule: '@daily'",
-      ].join("\n"),
+      ["version: 4", "uses: akm/command", "with:", `  content: ${promptSecret}`, "engine: opencode"].join("\n"),
     );
     writeRawConfig(
       JSON.stringify({
@@ -300,7 +293,7 @@ describe("tasks run attempt observability", () => {
 
     const thrown = await captureThrown(() =>
       runTask("dispatch-throws", {
-        stashDir: storage.stashDir,
+        bundleDir: storage.stashDir,
         logDir,
         runAgentImpl: async () => {
           throw dispatchError;
@@ -313,12 +306,12 @@ describe("tasks run attempt observability", () => {
   });
 
   test("successful dispatch stays successful when the transitional log path is unwritable", async () => {
-    writeTask("best-effort-log", "version: 3\nrun: echo success\nakm:\n  schedule: '@daily'\n");
+    writeTask("best-effort-log", "version: 4\nrun: echo success\n");
     const blockedLogDir = path.join(storage.root, "blocked-log-dir");
     fs.writeFileSync(blockedLogDir, "not a directory");
 
     const result = await runTask("best-effort-log", {
-      stashDir: storage.stashDir,
+      bundleDir: storage.stashDir,
       logDir: blockedLogDir,
       spawnFn: successfulSpawn,
     });

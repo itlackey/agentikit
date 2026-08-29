@@ -21,7 +21,7 @@ import {
   type UnresolvedExecutionDefaults,
 } from "../../execution/source";
 import { recordIndexedShowUsage } from "../../indexer/usage/show-usage";
-import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
+import { resolveUsageEventSource, type UsageEventSource } from "../../indexer/usage/usage-events";
 import {
   fallbackAnnouncement,
   NO_ENGINE_MESSAGE_SUFFIX,
@@ -126,6 +126,35 @@ export interface DispatchPreparedCommandOptions {
   readonly runAgent?: DispatchLoweredExecutionOptions["runAgent"];
   readonly runOptions?: DispatchLoweredExecutionOptions["runOptions"];
   readonly chat?: typeof chatCompletion;
+  /**
+   * F-1 (spec docs/plans/specs/p1b-model-extraction.md §5.2 point 3, R-07
+   * fix): task-runner provenance. When present, it (a) becomes the FALLBACK
+   * for `resolveUsageEventSource` — an ambient `AKM_EVENT_SOURCE` still wins
+   * — used for the usage events recorded against any consumed command/persona
+   * ref, and (b) stamps `AKM_EVENT_SOURCE: process.env.AKM_EVENT_SOURCE ??
+   * eventSource` into the child env handed to the dispatched engine (the
+   * `env` bag `runAgent`/`runSdk` receive), matching the native arm. Absent
+   * (every non-task caller: `akm command run`, `akm agent`, …) this function
+   * is byte-identical to before P1b.
+   */
+  readonly eventSource?: UsageEventSource;
+}
+
+/**
+ * F-1 (spec §5.2 point 3): resolve the ambient-first provenance stamp
+ * (matching the native arm's own `process.env.AKM_EVENT_SOURCE ?? …`) and
+ * hand it to `dispatchLoweredExecutionRequest`'s dedicated, single-purpose
+ * `eventSource` field — never through `runOptions`/`agentOptions`, which
+ * stays exactly as untrusted for overriding resolved content as it was
+ * before P1b (a caller-supplied `runOptions.env` still cannot replace frozen
+ * request data, including a scheduler-restored directory value — see
+ * `tests/integration/tasks-runner.test.ts`'s "forwards scheduled AKM
+ * directory context … without trusting task or caller overrides").
+ */
+function loweredDispatchOptions(options: DispatchPreparedCommandOptions): DispatchLoweredExecutionOptions {
+  const { eventSource, ...rest } = options;
+  if (eventSource === undefined) return rest;
+  return { ...rest, eventSource: process.env.AKM_EVENT_SOURCE ?? eventSource };
 }
 
 function own(value: object, key: PropertyKey): boolean {
@@ -436,11 +465,15 @@ export async function dispatchPreparedCommandInvocation(
   if (!selectedEngine) {
     throw new ConfigError(`command ${NO_ENGINE_MESSAGE_SUFFIX} ${NO_ENGINE_REMEDY}`, "INVALID_CONFIG_FILE");
   }
-  const result = await dispatchLoweredExecutionRequest(lowered, options);
+  const result = await dispatchLoweredExecutionRequest(lowered, loweredDispatchOptions(options));
   const consumedRefs = new Set<string>();
   if (request.command.source) consumedRefs.add(request.command.source.ref);
   if (request.persona) consumedRefs.add(request.persona.source.ref);
-  const eventSource = resolveUsageEventSource();
+  // F-1 (spec §5.2 point 3): options.eventSource is only a FALLBACK — an
+  // ambient AKM_EVENT_SOURCE still wins (D5 clause d). Absent, this is
+  // byte-identical to the pre-P1b bare resolveUsageEventSource() call (P-07's
+  // own default is "user").
+  const eventSource = resolveUsageEventSource(process.env, options.eventSource ?? "user");
   for (const ref of consumedRefs) recordIndexedShowUsage(ref, eventSource);
   const announcement = fallbackAnnouncement(prepared.fallbackEngineName, selectedEngine);
   return resultEnvelope(result, selectedEngine, announcement ? [announcement] : [], lowered.notices);

@@ -1,0 +1,15 @@
+version: 4
+name: task source v4 fixture - schedule list
+uses: commands/review
+inputs:
+  scope:
+    type: string
+    enum: [changed, all]
+    default: changed
+schedule:
+  - cron: "0 6 * * *"
+  - cron: "30 18 * * 1-5"
+    enabled: false
+  - cron: "0 9 * * 1"
+    inputs:
+      scope: all

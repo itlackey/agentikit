@@ -11,7 +11,8 @@ The short version: they are not competitors. An akm workflow is a durable
 workflow asset authored in either of two peer source formats, Markdown `.md`
 or GitHub-shaped YAML `.yml`, and executed by the Stable
 `akm workflow run` command. Both adapters compile through source IR version 1.
-Every new start freezes durable plan IR v4 before execution. The native engine
+Every new start freezes the durable plan v4 family's executable `irVersion: 5`
+before execution. The native engine
 fans work out to concurrent runner units, retries, gates on typed artifacts,
 and enforces budget ceilings. Execution is native: akm dispatches each unit to
 a configured agent harness (ten are supported) rather than asking the calling
@@ -253,8 +254,9 @@ run lease), `008`/`009` (unit attempts / claim columns).
 
 `akm workflow run` is the one stable native execution surface. Peer source formats use the same source IR v1 before durable freezing: Markdown `.md` and YAML `.yml`.
 A new start by ref compiles source
-IR v1 and freezes the resulting durable plan IR v4 on the run row
-(`plan_json`/`plan_hash`); edits to the source file need a new run. Pre-v4
+IR v1 and freezes the resulting durable-v4-family `irVersion: 5` plan on the
+run row (`plan_json`/`plan_hash`); edits to the source file need a new run.
+Pre-`irVersion`-5
 stored plans are rejected rather than keeping a parallel runtime. The
 command dispatches each step's units to the configured runner (`llm`, `agent`,
 or `sdk`), with:
@@ -375,7 +377,7 @@ orchestration surface.
 
 | Dimension | Claude Code workflow | akm workflow |
 |---|---|---|
-| **Artifact** | Imperative JS program (`script`) | Declarative workflow asset (`.md` or `.yml`), compiled through source IR v1 to durable plan IR v4 |
+| **Artifact** | Imperative JS program (`script`) | Declarative workflow asset (`.md` or `.yml`), compiled through source IR v1 to durable-v4-family `irVersion: 5` |
 | **Authored by** | The agent, inline, per-task, ephemeral | Human or agent, saved as a reusable bundle asset |
 | **Who executes work** | The harness runs the script; subagents do the work | The native engine, dispatching to a configured harness |
 | **Unit of work** | `agent()` — a fresh LLM subagent context | One dispatch or one `map` item under the engine |

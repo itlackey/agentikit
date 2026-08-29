@@ -723,7 +723,7 @@ path. Sensitivity suppression (env/secret redaction — existing behavior,
 ported) is keyed on the **adapter**, never on `type`, so content metadata cannot
 opt out of it.
 
-The folding rules that map richer native metadata (examples, usage, intent, xrefs, when-to-use, outline, parameters, body opening) into the FTS `hints`/`content` columns are a **core-shared helper that adapters call** — one fold, not one per adapter — because the embedding-input hashes and frozen retrieval canaries are pinned to that exact surface.
+The folding rules that map richer native metadata (examples, usage, intent, xrefs, when-to-use, outline, parameters, bounded content) into the FTS `hints`/`content` columns are a **core-shared helper that adapters call** — one fold, not one per adapter — because the embedding-input hashes and frozen retrieval canaries are pinned to that exact surface.
 
 ### 14.2 Scan flow and diff persistence
 
@@ -746,7 +746,7 @@ Persistence is a **diff, not truncate-and-rewrite**:
 - durable behavioral state (utility, usage, feedback) keys on `ref`, not the row id, so even id churn cannot destroy it;
 - a scan that yields zero documents is only a legitimate mass-delete when the component root exists and is readable (a mandatory core preflight); a missing or unreadable root preserves last-known-good rows with a warning.
 
-**Incrementality is item-scoped, not file-scoped.** The mount manifest records `{scanGeneration, adapterVersion, items: {conceptId → fileSet+hashes}}`. A changed file re-recognizes every file belonging to the affected item(s); adapters MAY implement `affectedItems(component, changedPaths)` (default: identity for single-file items) and MAY declare coupling files (e.g. a wiki `schema.md`) whose change escalates to a component rescan. Directory-scoped items (a skill directory) are one item: sibling adds/edits/deletes invalidate the item, and deleting the primary file deletes the item. The incremental FTS dirty-queue and the zero-row dir-state classification carry forward into this manifest design.
+**Incrementality is item-scoped, not file-scoped.** The mount manifest records `{scanGeneration, adapterVersion, items: {conceptId → fileSet+hashes}}`. A changed file re-recognizes every file belonging to the affected item(s); adapters MAY implement `affectedItems(component, changedPaths)` (default: identity for single-file items) and MAY declare coupling files (e.g. a wiki `schema.md`) whose change escalates to a component rescan. Directory-scoped items (a skill directory) are one item: sibling adds/edits/deletes invalidate the item, and deleting the primary file deletes the item. The canonical entry/FTS mutation boundary and the zero-row dir-state classification carry forward into this manifest design.
 
 ### 14.3 Query isolation
 

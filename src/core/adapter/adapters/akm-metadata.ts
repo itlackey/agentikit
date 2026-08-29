@@ -59,7 +59,7 @@
 import { scanEnvKeyNames } from "../../../commands/env/env";
 import type { IndexDocument } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
-import { parseTaskV3Yaml } from "../../../tasks/source-v3";
+import { parseTaskSource } from "../../../tasks/source/parse-task-source";
 import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import { sourceStepInstructions } from "../../../workflows/source-ir/program";
 import { parseFrontmatter } from "../../asset/frontmatter";
@@ -239,18 +239,29 @@ export function foldRecognizedMetadata(rendererName: string, file: FileContext):
     case "task-yaml": {
       out.tags = Array.from(new Set([...(out.tags ?? []), "task", "scheduled"]));
       try {
-        const task = parseTaskV3Yaml({ yaml: file.content(), filePath: file.absPath, workspaceRoot: file.stashRoot });
+        const parsed = parseTaskSource({ yaml: file.content(), filePath: file.absPath, workspaceRoot: file.stashRoot });
+        const v4 = parsed.v4;
+        const target = v4.target;
         const hints = new Set<string>();
-        for (const binding of task.triggers.schedules) hints.add(`schedule:${binding.cron}`);
-        if (task.target.kind === "uses") {
-          if (task.target.uses.kind === "workflow") hints.add(`workflow:${task.target.uses.ref}`);
-          else if (task.target.uses.kind === "command") hints.add(`prompt:${task.target.uses.ref}`);
-          else if (task.target.command?.kind === "inline") hints.add(`prompt:${task.target.command.content}`);
-          else if (task.target.command?.kind === "stored") hints.add(`prompt:${task.target.command.ref}`);
-          else hints.add(`uses:${task.target.uses.ref}`);
+        for (const binding of v4.schedule) hints.add(`schedule:${binding.cron}`);
+        if (target.kind === "uses") {
+          if (target.uses.kind === "workflow") hints.add(`workflow:${target.uses.ref}`);
+          else if (target.uses.kind === "command") hints.add(`prompt:${target.uses.ref}`);
+          else if (target.command?.kind === "inline") hints.add(`prompt:${target.command.content}`);
+          else if (target.command?.kind === "stored") hints.add(`prompt:${target.command.ref}`);
+          else hints.add(`uses:${target.uses.ref}`);
         } else {
-          hints.add(`run:${task.target.run}`);
+          hints.add(`run:${target.run}`);
         }
+        if (v4.description && !out.description) {
+          out.description = v4.description;
+          out.source = "task-source";
+          out.confidence = 0.9;
+        }
+        if (v4.tags && v4.tags.length > 0) {
+          out.tags = Array.from(new Set([...(out.tags ?? []), ...v4.tags]));
+        }
+        if (v4.when_to_use) hints.add(`when_to_use:${v4.when_to_use}`);
         finalizeHints(out, hints);
       } catch {
         // Non-fatal: skip metadata extraction on parse error

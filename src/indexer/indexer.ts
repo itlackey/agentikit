@@ -64,6 +64,7 @@ import {
   openReadonlyExistingDatabase,
 } from "../storage/repositories/index-connection";
 import {
+  deleteAllEntries,
   deleteEntriesByBundle,
   deleteEntriesByDirAndBundle,
   deleteEntriesByDirExceptRefs,
@@ -79,7 +80,6 @@ import {
   upsertEntry,
 } from "../storage/repositories/index-entries-repository";
 import type { EntryProvenance } from "../storage/repositories/index-entry-types";
-import { rebuildFts } from "../storage/repositories/index-fts-repository";
 import {
   clearStaleCacheEntries,
   computeBodyHash,
@@ -87,20 +87,15 @@ import {
 } from "../storage/repositories/index-llm-cache-repository";
 import {
   deleteIndexDirState,
-  deleteMeta,
   getMeta,
   setMeta,
   upsertIndexDirState,
 } from "../storage/repositories/index-meta-repository";
 import { upsertUtilityScore } from "../storage/repositories/index-utility-repository";
 import {
-  getAllEntriesForEmbedding,
   getEmbeddingCount,
   isVecAvailable,
   isVecFastPathReady,
-  purgeEmbeddings,
-  setVecFastPathReady,
-  upsertEmbedding,
   warnIfVecMissing,
 } from "../storage/repositories/index-vec-repository";
 import { assertIndexedWorkflowSourceIdentity, WorkflowSourceIdentityError } from "../workflows/source-files";
@@ -112,6 +107,7 @@ import {
   indexedPathMatchesOwner,
   resolveAdapterConceptOwner,
 } from "./lookup/adapter-concept-owner";
+import { type EmbeddingGenerationResult, generateEmbeddingsForDb } from "./materialize-embeddings";
 import {
   canUseIncrementalSkip,
   computeDirFingerprint,
@@ -123,12 +119,7 @@ import { type IndexDocument, isEnrichmentComplete, isWorkflowSkipWarning, type S
 import { drainDirDocuments } from "./scan/drain-dir";
 import { buildSearchText } from "./search/search-fields";
 import type { SearchSource } from "./search/search-source";
-import {
-  classifySemanticFailure,
-  clearSemanticStatus,
-  deriveSemanticProviderFingerprint,
-  writeSemanticStatus,
-} from "./search/semantic-status";
+import { clearSemanticStatus, deriveSemanticProviderFingerprint, writeSemanticStatus } from "./search/semantic-status";
 import { purgeOldUsageEvents } from "./usage/usage-events";
 import type { FileContext } from "./walk/file-context";
 import type { IndexRunContext, IndexVerification } from "./walk/index-context";
@@ -155,6 +146,8 @@ export interface IndexResponse {
   mode: "full" | "incremental";
   directoriesScanned: number;
   directoriesSkipped: number;
+  /** False when any configured source could not be scanned and LKG rows were preserved. */
+  scanComplete: boolean;
   warnings?: string[];
   /** Stable, secret-free execution-lowering diagnostics. */
   notices?: readonly Readonly<LoweringNotice>[];
@@ -223,8 +216,8 @@ interface IndexOptions {
   stashDir: string;
   full?: boolean;
   /**
-   * When true, run a post-pass after indexing that removes entries whose source
-   * file no longer exists on disk. Remote entries (empty file_path) are skipped.
+   * When true, reconcile entries whose source file no longer exists before
+   * embeddings and final verification. Remote entries (empty file_path) are skipped.
    */
   clean?: boolean;
   /**
@@ -481,8 +474,9 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
 }
 
 /**
- * Finalize phase: rebuild FTS, re-link usage events, recompute utility scores,
- * regenerate wiki indexes, update index metadata, and emit the verify event.
+ * Finalize phase: confirm transactionally materialized FTS state, re-link
+ * usage events, recompute utility scores, update index metadata, and emit the
+ * verify event.
  */
 async function runFinalizePhase(
   ctx: IndexRunContext,
@@ -491,13 +485,11 @@ async function runFinalizePhase(
   const { db, config, sources, sourceDirs, isIncremental, stashDir, signal, onProgress } = ctx;
   ctx.timing.tFinalizeStart = Date.now();
 
-  // Rebuild FTS after all inserts. Use incremental mode when this whole
-  // index run is incremental — only entries touched by `upsertEntry`
-  // since the last rebuild are re-indexed.
-  rebuildFts(db, { incremental: isIncremental });
+  // `upsertEntry` and every canonical delete own their FTS projection. This is
+  // an observation point, not a second materialization pass.
   onProgress({
     phase: "fts",
-    message: isIncremental ? "Rebuilt full-text search index (dirty rows only)." : "Rebuilt full-text search index.",
+    message: "Full-text search index is current.",
   });
   ctx.timing.tFtsEnd = Date.now();
 
@@ -544,15 +536,6 @@ async function runFinalizePhase(
   }
   setMeta(db, "hasEmbeddings", embeddingResult.success ? "1" : "0");
 
-  // Stash-organization conventions (SPEC-8): track which `index.indexBodyOpening`
-  // state the index was built with, and warn while the flag diverges from it.
-  const bodyOpeningWarning = reconcileBodyOpeningIndexState(
-    db,
-    config.index?.indexBodyOpening === true,
-    (ctx.full || !isIncremental) && ctx.scanComplete,
-  );
-  if (bodyOpeningWarning) warn(bodyOpeningWarning);
-
   warnIfVecMissing(db);
 
   const totalEntries = getEntryCount(db);
@@ -591,52 +574,11 @@ async function runFinalizePhase(
   void sources;
 }
 
-/**
- * Stash-organization conventions (SPEC-8): reconcile the `index.indexBodyOpening`
- * flag with the state the index was last FULLY built with (index_meta key
- * `indexBodyOpening`), returning a warning message while they diverge.
- *
- * Incremental runs re-extract only changed files (and embeddings are only
- * generated for rows lacking one), so a flag toggle leaves the index MIXED
- * until a full rebuild — `akm index --full` re-extracts every entry and wipes
- * embeddings so they regenerate from the new text. The warning therefore
- * repeats on every incremental run until a full walk records the flag state
- * as applied.
- *
- * A missing meta key on an incremental run means the index predates this
- * feature, i.e. it was necessarily built with the flag OFF — so the absent
- * key reads (and is seeded) as "0", never as the current flag value. This
- * keeps the most likely real toggle scenario — upgrade, enable the flag, run
- * a plain `akm index` — warning until `--full` runs (review finding).
- *
- * Exported for tests; production's only caller is the finalize phase above.
- */
-export function reconcileBodyOpeningIndexState(
-  db: Database,
-  flagEnabled: boolean,
-  isFullWalk: boolean,
-): string | undefined {
-  const bodyOpeningFlag = flagEnabled ? "1" : "0";
-  const prevBodyOpeningFlag = getMeta(db, "indexBodyOpening") ?? "0";
-  // Only a full walk (which includes the first build ever) may record the
-  // current flag as the applied state; incremental runs preserve — or, for a
-  // pre-feature index, seed — the state of the last full build.
-  setMeta(db, "indexBodyOpening", isFullWalk ? bodyOpeningFlag : prevBodyOpeningFlag);
-  if (isFullWalk || prevBodyOpeningFlag === bodyOpeningFlag) return undefined;
-  return (
-    `index.indexBodyOpening is ${flagEnabled ? "enabled" : "disabled"} but the index was built with it ` +
-    `${flagEnabled ? "disabled" : "enabled"}. Incremental runs only re-extract changed files, so ` +
-    "indexed text and embeddings are stale for unchanged entries. Run `akm index --full` to apply the new " +
-    "setting everywhere (embeddings regenerate), and re-mint collapse-detector canary baselines via " +
-    "`bun scripts/refresh-canary-set.ts --refresh` if you use them."
-  );
-}
-
 // ── Clean pass ───────────────────────────────────────────────────────────────
 
 /**
- * Post-index clean pass: scan the `entries` table for rows whose source file
- * no longer exists on disk and remove them (unless `dryRun` is true).
+ * Missing-file reconciliation: scan the `entries` table for rows whose source
+ * file no longer exists on disk and remove them (unless `dryRun` is true).
  *
  * Only rows with a non-empty `file_path` are checked — remote/virtual entries
  * that have no local path are always skipped.
@@ -991,24 +933,19 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           }),
         });
 
+        let cleanResult: IndexCleanResult | undefined;
+        let cleanStart = Date.now();
+        let cleanEnd = cleanStart;
+
         // ── Phase sequence ───────────────────────────────────────────────────────
         await runSourceCachePhase(ctx);
         await runWalkPhase(ctx);
         applyRemovedSources(ctx);
-        await runEmbeddingPhase(ctx);
-        await runFinalizePhase(ctx, options.deferredUpdateTransaction);
-        // ────────────────────────────────────────────────────────────────────────
 
-        // runFinalizePhase always populates these before returning.
-        const verification = ctx.verification as IndexVerification;
-        const totalEntries = ctx.totalEntries as number;
-        const { timing } = ctx;
-
-        // ── Clean pass ───────────────────────────────────────────────────────────
-        // After the normal index completes, remove entries whose source files no
-        // longer exist on disk. Remote entries (empty file_path) are skipped.
-        let cleanResult: IndexCleanResult | undefined;
-        const cleanStart = Date.now();
+        // Reconcile explicit missing-file cleanup before embeddings, totals, or
+        // verification describe this generation. Dry-run intentionally leaves
+        // the generation unchanged while still returning the previewed refs.
+        cleanStart = Date.now();
         if (clean) {
           onProgress({
             phase: "finalize",
@@ -1021,8 +958,16 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
             cleanResult = { checked: 0, removed: 0, removedRefs: [], dryRun };
           }
         }
-        const cleanEnd = Date.now();
+        cleanEnd = Date.now();
+
+        await runEmbeddingPhase(ctx);
+        await runFinalizePhase(ctx, options.deferredUpdateTransaction);
         // ────────────────────────────────────────────────────────────────────────
+
+        // runFinalizePhase always populates these before returning.
+        const verification = ctx.verification as IndexVerification;
+        const totalEntries = ctx.totalEntries as number;
+        const { timing } = ctx;
 
         return {
           stashDir,
@@ -1032,6 +977,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
           mode: ctx.isIncremental ? "incremental" : "full",
           directoriesScanned: ctx.scannedDirs,
           directoriesSkipped: ctx.skippedDirs,
+          scanComplete: ctx.scanComplete,
           ...(ctx.walkWarnings.length > 0 ? { warnings: ctx.walkWarnings } : {}),
           ...(ctx.loweringNotices.length > 0 ? { notices: Object.freeze([...ctx.loweringNotices]) } : {}),
           ...(Object.keys(persistedAdapters).length > 0
@@ -1692,26 +1638,15 @@ function persistDirRecords(
     // transaction so delete and re-insert are atomic — a concurrent reader
     // never observes an empty database between the two operations.
     if (fullDelete) {
-      try {
-        db.exec("DELETE FROM embeddings");
-      } catch {
-        /* ignore */
-      }
-      if (isVecAvailable(db)) {
-        try {
-          db.exec("DELETE FROM entries_vec");
-        } catch {
-          /* ignore */
-        }
-      }
-      db.exec("DELETE FROM entries_fts");
-      db.exec("DELETE FROM utility_scores");
+      // Entries and every child materialization share one deletion authority.
+      // Usage events live in state.db and survive so finalize can relink them
+      // to the replacement generation's row ids.
+      deleteAllEntries(db, { cleanupUsageEvents: false });
       db.exec("DELETE FROM index_dir_state");
       // Chunk-8 WI-8.3: usage_events lives in state.db now (not index.db), so the
       // wipe no longer detaches it here. The finalize pass's relinkUsageEvents
       // (cross-DB) nulls entry_ids that no longer resolve to a rebuilt entry and
       // re-resolves the rest by entry_ref — subsuming the old detach.
-      db.exec("DELETE FROM entries");
       // Atomicity observation point: inside the transaction the tables are now
       // empty, but no other connection may observe that. See
       // tests/integration/indexer/reindex-generation-atomicity.test.ts.
@@ -2163,159 +2098,6 @@ export function createEnrichmentDeadline(
 ): AbortSignal | undefined {
   const perEntryTimeoutMs = timeoutMs === undefined ? 10 * 60 * 1000 : timeoutMs;
   return perEntryTimeoutMs === null ? undefined : AbortSignal.timeout(perEntryTimeoutMs * Math.max(totalEntries, 1));
-}
-
-async function generateEmbeddingsForDb(
-  db: Database,
-  config: AkmConfig,
-  onProgress: (event: IndexProgressEvent) => void,
-  signal?: AbortSignal,
-): Promise<EmbeddingGenerationResult> {
-  throwIfAborted(signal);
-
-  if (config.semanticSearchMode === "off") {
-    onProgress({ phase: "embeddings", message: "Semantic search disabled; skipping embeddings." });
-    return { success: false, reason: "index-missing", message: "Semantic search is disabled." };
-  }
-
-  // Detect embedding model/provider changes and purge stale embeddings
-  // so that incremental reindex regenerates all vectors with the new model.
-  const currentFingerprint = deriveSemanticProviderFingerprint(config.embedding);
-  const storedFingerprint = getMeta(db, "embeddingFingerprint");
-  if (storedFingerprint && storedFingerprint !== currentFingerprint) {
-    // Model/provider changed → stored vectors are incompatible. Clear them;
-    // re-embedded by this index run.
-    //
-    // The vec table goes too. "Same dimension, so keep the vec table" only held
-    // for a same-width model swap: entries_vec is a vec0 virtual table declared
-    // at a FIXED width, so after a dimension-changing model change every insert
-    // failed against the old width, and ensureSchema's dim-change rebuild never
-    // fired because it only runs for callers that pass an explicit
-    // embeddingDim. The stale table survived `--full` — the exact remedy the
-    // warning recommended. Clearing the stored dim lets the next ensureSchema
-    // materialize it at the new width; until then the fast-path flag reads
-    // false (no table) and search uses the complete BLOB table.
-    purgeEmbeddings(db, { dropVecTable: true });
-    deleteMeta(db, "embeddingDim");
-  }
-
-  try {
-    const { embedBatch } = await import("../llm/embedder.js");
-    const { estimateTokenCount } = await import("../llm/embedders/remote.js");
-    throwIfAborted(signal);
-    const allEntries = getAllEntriesForEmbedding(db);
-    if (allEntries.length === 0) {
-      onProgress({ phase: "embeddings", message: "Embeddings already up to date." });
-      setMeta(db, "embeddingFingerprint", currentFingerprint);
-      return { success: true };
-    }
-    onProgress({
-      phase: "embeddings",
-      message: `Generating embeddings for ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"}.`,
-    });
-    const texts = allEntries.map((e) => e.searchText);
-
-    // Verbose: log each document before it is sent to the embedding API so
-    // operators can see exactly where embedding fails without waiting for an error.
-    if (isVerbose()) {
-      const EMBED_BATCH_SIZE = 100; // mirrors REMOTE_BATCH_SIZE in remote.ts
-      const totalBatches = Math.ceil(texts.length / EMBED_BATCH_SIZE);
-      for (let i = 0; i < texts.length; i++) {
-        const batchNum = Math.floor(i / EMBED_BATCH_SIZE) + 1;
-        const chars = texts[i]!.length;
-        const tokens = estimateTokenCount(texts[i]!);
-        const ref = allEntries[i]!.itemRef;
-        warnVerbose(`[embed] ${ref} (${chars} chars, est. ${tokens} tokens) → batch ${batchNum}/${totalBatches}`);
-      }
-    }
-
-    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-    try {
-      heartbeatTimer = setInterval(() => {
-        onProgress({
-          phase: "embeddings",
-          message: `Still generating embeddings for ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"}; waiting on embedding provider.`,
-        });
-      }, 15000);
-
-      const embeddings = await embedBatch(texts, config.embedding, signal);
-      throwIfAborted(signal);
-      // Wrap all embedding upserts in a single transaction so partial
-      // state is rolled back on failure rather than leaving the table half-filled.
-      let storedCount = 0;
-      let skippedCount = 0;
-      let vecFailedCount = 0;
-      let vecUnavailableCount = 0;
-      db.transaction(() => {
-        for (let i = 0; i < allEntries.length; i++) {
-          const res = upsertEmbedding(db, allEntries[i]!.id, embeddings[i]!);
-          if (res.stored) {
-            storedCount++;
-          } else {
-            skippedCount++;
-          }
-          if (res.vec === "failed") vecFailedCount++;
-          if (res.vec === "unavailable") vecUnavailableCount++;
-        }
-      })();
-      if (skippedCount > 0) {
-        warn(
-          `[embed] ${skippedCount} embedding${skippedCount === 1 ? "" : "s"} skipped (entry deleted between queue and write)`,
-        );
-      }
-      // Record the ACTUAL vec-insert outcome so semantic search reflects it
-      // instead of inferring readiness from stored-BLOB counts. Any failure
-      // marks the fast path degraded, routing search to the JS-cosine fallback
-      // over the (complete) BLOB table — honest degradation, not a hard failure.
-      //
-      // 'unavailable' has to degrade the flag too. It means no vec row was
-      // written at all, so marking the fast path ready left a later open (a
-      // different runtime, or sqlite-vec installed afterwards) trusting an
-      // empty entries_vec and returning zero semantic hits against a fully
-      // populated BLOB table.
-      setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0);
-      if (vecFailedCount > 0) {
-        warn(
-          `[embed] ${vecFailedCount} sqlite-vec fast-path insert${vecFailedCount === 1 ? "" : "s"} failed — ` +
-            "semantic search will use the slower JS-cosine fallback over stored embeddings. " +
-            "Rebuild with 'akm index --full' after resolving the vec table (often a vector-dimension mismatch).",
-        );
-      }
-      onProgress({
-        phase: "embeddings",
-        message: `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"}.`,
-      });
-      setMeta(db, "embeddingFingerprint", currentFingerprint);
-      return { success: true, vecInsertFailures: vecFailedCount };
-    } finally {
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    warn("Embedding generation failed, continuing without:", message);
-    onProgress({
-      phase: "embeddings",
-      message: `Embedding generation failed: ${message}`,
-    });
-    return {
-      success: false,
-      reason: classifySemanticFailure(message),
-      message: `Semantic search verification failed: ${message}`,
-    };
-  }
-}
-
-interface EmbeddingGenerationResult {
-  success: boolean;
-  reason?: import("./search/semantic-status").SemanticSearchReason;
-  message?: string;
-  /**
-   * Count of sqlite-vec fast-path inserts that failed while their BLOB rows
-   * still wrote. > 0 means the index is degraded-but-working: semantic search
-   * falls back to JS-cosine over the BLOB table. Absent on paths with no vec
-   * writes (already up to date, disabled, or the error path).
-   */
-  vecInsertFailures?: number;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

@@ -1,6 +1,4 @@
-version: 3
+version: 4
 run: akm sync
-akm:
-  schedule: "*/15 * * * *"
-  enabled: true
-  description: Sync stash changes to git remote every 15 min
+description: Sync stash changes to git remote every 15 min
+schedule: "*/15 * * * *"

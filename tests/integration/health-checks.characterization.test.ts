@@ -341,3 +341,109 @@ describe("semantic-search-runtime embedding-endpoint advisory", () => {
     expect(advisory.message).toBe("Semantic search status: blocked");
   });
 });
+
+// Regression (P1b Lane C code review, spec §5.3 D8): agentFailureRate's row
+// filter was left on the pre-F-2 vocabulary ("prompt") after the D8 re-code
+// moved the agent/LLM arm's stored target_kind to "command" + a metadata
+// targetVocab:2 marker. Unfixed, the metric silently read 0 for every new
+// agent/LLM task run — see src/commands/health/improve-metrics.ts's
+// isAgentTaskHistoryRow, which src/commands/health.ts and
+// src/commands/health/windows.ts both now use.
+describe("agentFailureRate — D8 vocabulary-aware (marker-based) row filter", () => {
+  test("a NEW marked agent/LLM ('command' + targetVocab:2) failure is counted; a legacy unmarked 'command' (shell/script) failure is not", () => {
+    const db = openStateDatabase();
+    try {
+      // Completed NEW-vocabulary agent/LLM row: denominator only.
+      upsertTaskHistory(db, {
+        task_id: "agent-ok",
+        status: "completed",
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        failed_at: null,
+        log_path: null,
+        target_kind: "command",
+        target_ref: null,
+        metadata_json: JSON.stringify({
+          metadataVersion: 2,
+          durationMs: 10,
+          detail: { exitCode: 0 },
+          engine: "opencode",
+          targetVocab: 2,
+        }),
+      });
+      // Failed NEW-vocabulary agent/LLM row: numerator + denominator. This is
+      // the row the pre-fix "prompt"-only filter silently dropped to 0.
+      upsertTaskHistory(db, {
+        task_id: "agent-failed",
+        status: "failed",
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        failed_at: new Date().toISOString(),
+        log_path: null,
+        target_kind: "command",
+        target_ref: null,
+        metadata_json: JSON.stringify({
+          metadataVersion: 2,
+          durationMs: 10,
+          detail: { exitCode: 1, reason: "non_zero_exit", error: "boom" },
+          engine: "opencode",
+          targetVocab: 2,
+        }),
+      });
+      // Failed LEGACY row: unmarked "command" is the pre-P1b native
+      // shell/script arm, not agent/LLM — must be excluded entirely (neither
+      // numerator nor denominator), or it would silently pollute the rate.
+      upsertTaskHistory(db, {
+        task_id: "legacy-shell-failed",
+        status: "failed",
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        failed_at: new Date().toISOString(),
+        log_path: null,
+        target_kind: "command",
+        target_ref: null,
+        metadata_json: JSON.stringify({
+          metadataVersion: 2,
+          durationMs: 10,
+          detail: { exitCode: 2, reason: "non_zero_exit", error: "boom" },
+        }),
+      });
+    } finally {
+      db.close();
+    }
+
+    const result = akmHealth({ since: "7d" });
+
+    // 1 failure / 2 agent/LLM rows — the legacy shell row is excluded from
+    // both the numerator and the denominator, not just the numerator.
+    expect(result.metrics.agentFailureRate).toBe(0.5);
+  });
+
+  test("a legacy unmarked 'prompt' failure (pre-P1b agent/LLM row) is still counted", () => {
+    const db = openStateDatabase();
+    try {
+      upsertTaskHistory(db, {
+        task_id: "legacy-prompt-failed",
+        status: "failed",
+        started_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        failed_at: new Date().toISOString(),
+        log_path: null,
+        target_kind: "prompt",
+        target_ref: null,
+        metadata_json: JSON.stringify({
+          metadataVersion: 2,
+          durationMs: 10,
+          detail: { exitCode: 1, reason: "non_zero_exit", error: "boom" },
+          engine: "opencode",
+        }),
+      });
+    } finally {
+      db.close();
+    }
+
+    const result = akmHealth({ since: "7d" });
+
+    expect(result.metrics.agentFailureRate).toBe(1);
+  });
+});

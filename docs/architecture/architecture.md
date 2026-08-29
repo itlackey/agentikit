@@ -143,9 +143,12 @@ Indexed field weighting:
 
 Notes:
 
+- lexical queries are tokenized once with Unicode letter/number semantics and
+  execute strict AND, then prefix-AND, then one OR/prefix-OR recovery only when
+  both strict forms return no candidates; there are no caller stopword lists
 - `hints` includes `searchHints`, `examples`, `usage`, intent fields, wiki
   cross-references, and page-kind hints
-- `content` is primarily TOC headings plus parameter names/descriptions
+- `content` is bounded low-weight body prose plus TOC headings and parameter metadata; secret/env/session material is excluded at the adapter boundary
 - registry results live in `registryHits`, never in `hits`
 - `--from all` keeps registry results in `registryHits` — they are not
   rank-merged with source hits
@@ -435,7 +438,8 @@ never falls through to another configured engine.
 
 Task-v3 execution and durable workflow-v4 dispatch use this runtime boundary.
 Markdown and GitHub-shaped YAML compile through source IR v1; new starts freeze
-v4, and only v4 plans execute. Pre-v4 stored plans are rejected; start a new
+v4-family `irVersion: 5`, and only `irVersion: 5` plans execute.
+Pre-`irVersion`-5 stored plans are rejected; start a new
 run from current source. AKM does not support full GitHub Actions semantics or
 arbitrary remote action execution.
 
@@ -492,10 +496,10 @@ External coding agents are reachable via two execution paths:
   startup against its own deadline (including `null`); no caller's timeout is
   stored in the shared lifecycle.
 
-New tasks are strict task-v3 `.yml` assets. Normal execution rejects v2 and
-directs operators to the explicit preview/apply migrator. Task-v3 command,
-workflow, script, and shell targets use the common resolved/lowered execution
-boundary. Historical task-run metadata remains readable.
+New tasks are task source v4 `.yml` assets. Normal execution rejects v2 and v3
+and directs operators to the explicit preview/apply migrator. Task source v4
+command, workflow, script, and shell targets use the common resolved/lowered
+execution boundary. Historical task-run metadata remains readable.
 
 Long-lived mutable operations coordinate start ownership through one maintenance
 barrier. Index writers, improve/extract process locks, lockfile writers, and

@@ -6,7 +6,7 @@ import { parseFrontmatter } from "../../../core/asset/frontmatter";
 import { parseRefInput } from "../../../core/asset/resolve-ref";
 import { proposalContent } from "../../../core/file-change";
 import { lintLessonContent } from "../../../core/lesson-lint";
-import { parseTaskV3Yaml } from "../../../tasks/source-v3";
+import { parseTaskSource } from "../../../tasks/source/parse-task-source";
 import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import type {
   Proposal,
@@ -73,7 +73,12 @@ const canonicalProposalValidators: Readonly<Record<string, CanonicalProposalVali
   task(proposal, ctx) {
     const name = ctx.parsedRef?.name;
     if (!name) return [];
-    parseTaskV3Yaml({
+    // Version-routing seam (spec docs/plans/specs/p2a-task-source-v4.md
+    // §3.6): a proposal body is validated by parsing alone — neither arm's
+    // parsed document is inspected further, so routing through the union is
+    // a pure swap; any parse failure (either version) is turned into an
+    // `invalid-task-structure` finding by the try/catch this call sits in.
+    parseTaskSource({
       yaml: proposalContent(proposal),
       filePath: proposal.changes[0]?.path || proposal.ref,
     });

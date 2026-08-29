@@ -1,6 +1,8 @@
 # The External Driver Protocol: Keep, Cut, or Cheapen
 
-Status: PROPOSAL — decision requested. Three options, evidence for each.
+Status: RESOLVED (2026-08-27) — Option B, cut. Executed ahead of this
+record by the 0.9.2 reconstruction. See §10 for the decision and its
+verification evidence.
 Date: 2026-08-02
 Baseline: `origin/main` @ `17a0dca`
 Subject: `akm workflow brief` / `akm workflow report` (+ `report --settle`)
@@ -217,3 +219,57 @@ migration; doing it with one consumer of `workflow_run_units` and no R4
 parity obligation is materially cheaper than doing it with two. If A or C
 is chosen, the unification spec's existing accounting already covers the
 second consumer and needs no revision.
+
+This condition is satisfied: B landed before the task/workflow unification
+work. `workflow_run_units` had exactly one consumer (the native executor)
+throughout P1–P3, and P3a's `irVersion` 5 + `hashVersion` 6 bump (the
+"schema migration" this note anticipated) was done against that
+single-consumer reality — there was never a second R4 parity obligation to
+carry through it.
+
+## 10. Decision and evidence (2026-08-27)
+
+**Decision: Option B — cut both verbs.** `brief`, `report`, `--settle`, and
+the `experimental.workflowEngine` gate are gone. This was not reached by
+this document's own §8 process (evaluate C, fall back to A/B) — the 0.9.2
+task/workflow reconstruction deleted the subject before this record was
+ever flipped from PROPOSAL. §9's sequencing note turned out to hold
+anyway, by construction rather than by decision: the reconstruction was
+never built with a driver-protocol consumer in the first place, so there
+was nothing to sequence around. This record is therefore ratified **after
+the fact** — ticking a box the code had already made true — not evaluated
+in the forward-looking sense §7/§8 describe. A future reader should not
+infer that Option C was tried and found wanting; it was never evaluated,
+because the code was gone before the question was revisited.
+
+**Verification.** All three greps return zero results against the current
+tree, confirming no trace of the protocol, its experimental gate, or its
+CLI verbs survives:
+
+```
+$ rg -n 'brief\.ts|report\.ts' src/workflows/exec/
+(no output)
+
+$ rg -n 'experimental\.workflowEngine|workflowEngine' src/
+(no output)
+
+$ rg -n 'workflow (brief|report)|--settle' src/commands/
+(no output)
+```
+
+**Cross-references.**
+
+- [`workflow-engine-buy-vs-build.md`](./workflow-engine-buy-vs-build.md) §7
+  (Recommendation) — the build verdict this decision completes. That
+  document recommended building AKM's own native engine rather than
+  adopting a third-party one; this record settles the one piece of the
+  native engine's own surface (the external driver protocol) that was
+  still an open question at PROPOSAL status.
+- `docs/plans/0.9.2-architecture-deletion-audit.md`'s "Deleted
+  architecture" table carries the corresponding row: *External driver
+  protocol (`workflow brief` / `workflow report` / `--settle`) — Removed;
+  decision record RESOLVED (Option B).*
+
+**§9's sequencing condition:** satisfied, as recorded in §9 above — B
+landed before the task/workflow unification work, so `workflow_run_units`
+had one consumer throughout P3a's `irVersion` 5 + `hashVersion` 6 bump.

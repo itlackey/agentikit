@@ -92,7 +92,7 @@ export class WorkflowSourceDomainError extends WorkflowSourceRejectionError {
     const sortedCollisions = [...collidingSourcePaths].sort(comparePaths);
     const code: UsageErrorCode = issues.some((issue) => issue.code === "PATH_ESCAPE_VIOLATION")
       ? "PATH_ESCAPE_VIOLATION"
-      : "INVALID_FLAG_VALUE";
+      : "WORKFLOW_SOURCE_INVALID";
     const collisionDetail =
       sortedCollisions.length > 1 ? ` Valid owners also collide: ${sortedCollisions.join(", ")}.` : "";
     super(
@@ -113,7 +113,7 @@ export class WorkflowSourceIdentityError extends UsageError {
     super(
       `Indexed workflow source identity for "${ref}" points to ${indexedPath}, but the authoritative source is ${authoritativePath}. ` +
         "Refusing the stale index/cache identity; run `akm index --full` to reconcile it.",
-      "INVALID_FLAG_VALUE",
+      "WORKFLOW_SOURCE_INVALID",
     );
     this.name = "WorkflowSourceIdentityError";
     Object.setPrototypeOf(this, new.target.prototype);
@@ -125,7 +125,7 @@ export class WorkflowSourceNameError extends WorkflowSourceRejectionError {
     super(
       `Workflow source filename ${sourcePath} has an extensionless stem ending in recognized workflow suffix "${nestedSuffix}". ` +
         "Nested workflow suffixes are invalid; remove the inner .md or .yml suffix instead of relying on repeated stripping.",
-      "INVALID_FLAG_VALUE",
+      "WORKFLOW_SOURCE_INVALID",
       [sourcePath],
     );
     this.name = "WorkflowSourceNameError";
@@ -138,7 +138,7 @@ export class WorkflowSourceLinkIdentityError extends WorkflowSourceRejectionErro
     super(
       `Workflow source ${sourcePath} resolves through a symlink to ${targetPath} with a different source format. ` +
         "The authored workflow path and resolved source must use the same .md or .yml format.",
-      "INVALID_FLAG_VALUE",
+      "WORKFLOW_SOURCE_INVALID",
       [sourcePath],
     );
     this.name = "WorkflowSourceLinkIdentityError";
@@ -148,7 +148,7 @@ export class WorkflowSourceLinkIdentityError extends WorkflowSourceRejectionErro
 
 export class WorkflowSourceLinkResolutionError extends WorkflowSourceRejectionError {
   constructor(sourcePath: string) {
-    super(`Workflow source symlink ${sourcePath} cannot be resolved to a regular file.`, "INVALID_FLAG_VALUE", [
+    super(`Workflow source symlink ${sourcePath} cannot be resolved to a regular file.`, "WORKFLOW_SOURCE_INVALID", [
       sourcePath,
     ]);
     this.name = "WorkflowSourceLinkResolutionError";

@@ -15,14 +15,10 @@ import {
   WORKFLOW_MAX_RETRIES,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../../../src/workflows/resource-limits";
-import {
-  assertBoundedTaskYamlDocument,
-  classifyTaskV3Uses,
-  parseTaskV3Yaml,
-  TASK_V3_MAX_SOURCE_BYTES,
-  type TaskV3UsesTarget,
-} from "../../../src/tasks/source-v3";
+import { assertBoundedTaskYamlDocument, TASK_V3_MAX_SOURCE_BYTES } from "../../../src/tasks/source/bounded-document";
+import { parseTaskSourceV4 } from "../../../src/tasks/source/task-source-v4";
 import { validateTaskId } from "../../../src/tasks/task-id";
+import { classifyTaskV3Uses, parseTaskV3Yaml, type TaskV3UsesTarget } from "./task-source-v3-frozen";
 
 export interface TaskToV3FileInput {
   readonly filePath: string;
@@ -76,7 +72,15 @@ export interface TaskToV3Changed extends TaskToV3OutcomeBase {
 
 export interface TaskToV3Skipped extends TaskToV3OutcomeBase {
   readonly status: "skipped";
-  readonly reason: "already-v3";
+  /**
+   * `already-v4` (spec docs/plans/specs/p4-deletions-closeout.md §3.2.5):
+   * generation 1 (v2 -> v3) has nothing to do to a file that has already
+   * moved past v3 into task source v4 — that is generation 2's domain, not
+   * a "this file is malformed" signal. Reported as skipped, not blocked, so
+   * a combined `akm migrate status`/`apply` run does not misreport a
+   * perfectly healthy v4-only tree as needing manual review.
+   */
+  readonly reason: "already-v3" | "already-v4";
 }
 
 export interface TaskToV3Blocked extends TaskToV3OutcomeBase {
@@ -501,8 +505,20 @@ export function planTaskToV3File(input: TaskToV3FileInput): TaskToV3FileOutcome 
       return blocked(input, "invalid-v3-task", cause instanceof Error ? cause.message : String(cause));
     }
   }
+  if (data.version === 4) {
+    try {
+      parseTaskSourceV4({
+        yaml: source,
+        filePath: input.filePath,
+        ...(input.containmentRoot ? { workspaceRoot: input.containmentRoot } : {}),
+      });
+      return Object.freeze({ status: "skipped" as const, ...base(input), reason: "already-v4" as const });
+    } catch (cause) {
+      return blocked(input, "invalid-v4-task", cause instanceof Error ? cause.message : String(cause));
+    }
+  }
   if (data.version !== 2) {
-    return blocked(input, "unsupported-task-version", `expected version 2 or 3, got ${String(data.version)}`);
+    return blocked(input, "unsupported-task-version", `expected version 2, 3, or 4, got ${String(data.version)}`);
   }
   return planLegacyTaskDataToV3(input, data);
 }

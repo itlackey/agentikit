@@ -3,19 +3,57 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `index.db` FTS5 search + rebuild repository.
+ * `index.db` FTS5 search + materialization repository.
  *
- * Owns the `entries_fts` full-text query path and the incremental/full FTS
- * rebuild.
+ * Owns the `entries_fts` full-text query path, per-entry projections, and the
+ * explicit full recovery rebuild.
  */
 
 import { warn } from "../../core/warn";
 import type { IndexDocument } from "../../indexer/passes/metadata";
-import { buildPrefixQuery, sanitizeFtsQuery } from "../../indexer/search/fts-query";
+import { buildLexicalQueryPlan, type LexicalQueryExecution } from "../../indexer/search/fts-query";
 import { buildSearchFields } from "../../indexer/search/search-fields";
 import type { Database, SqlValue } from "../database";
 import type { DbSearchResult } from "./index-entry-types";
 import { SQLITE_CHUNK_SIZE } from "./index-sql";
+
+const INSERT_FTS_SQL =
+  "INSERT INTO entries_fts (entry_id, name, description, tags, hints, content) VALUES (?, ?, ?, ?, ?, ?)";
+
+interface FtsMutationStatements {
+  deleteOne: ReturnType<Database["prepare"]>;
+  insert: ReturnType<Database["prepare"]>;
+}
+
+const ftsMutationStatementsByDb = new WeakMap<Database, FtsMutationStatements>();
+
+function getFtsMutationStatements(db: Database): FtsMutationStatements {
+  const existing = ftsMutationStatementsByDb.get(db);
+  if (existing) return existing;
+  const statements = {
+    deleteOne: db.prepare("DELETE FROM entries_fts WHERE entry_id = ?"),
+    insert: db.prepare(INSERT_FTS_SQL),
+  };
+  ftsMutationStatementsByDb.set(db, statements);
+  return statements;
+}
+
+/** Replace one entry's derived FTS projection inside the caller's transaction. */
+export function replaceFtsEntry(db: Database, entryId: number, entry: IndexDocument): void {
+  const fields = buildSearchFields(entry);
+  const statements = getFtsMutationStatements(db);
+  statements.deleteOne.run(entryId);
+  statements.insert.run(entryId, fields.name, fields.description, fields.tags, fields.hints, fields.content);
+}
+
+/** Delete derived FTS projections for canonical entries that are being removed. */
+export function deleteFtsEntries(db: Database, entryIds: readonly number[]): void {
+  for (let i = 0; i < entryIds.length; i += SQLITE_CHUNK_SIZE) {
+    const chunk = entryIds.slice(i, i + SQLITE_CHUNK_SIZE);
+    const placeholders = chunk.map(() => "?").join(",");
+    db.prepare(`DELETE FROM entries_fts WHERE entry_id IN (${placeholders})`).run(...chunk);
+  }
+}
 
 export function searchFts(
   db: Database,
@@ -24,26 +62,29 @@ export function searchFts(
   entryType?: string,
   excludeTypes?: string[],
 ): DbSearchResult[] {
-  const ftsQuery = sanitizeFtsQuery(query);
-  if (!ftsQuery) return [];
+  const plan = buildLexicalQueryPlan(query);
+  if (!plan.exact) return [];
 
   // Try the exact AND query first
-  const exactResults = runFtsQuery(db, ftsQuery, limit, entryType, excludeTypes);
+  const exactResults = runFtsQuery(db, plan.exact, "exact", limit, entryType, excludeTypes);
   if (exactResults.length > 0) return exactResults;
 
-  // Exact match returned zero results — try prefix fallback.
-  // Append FTS5 `*` suffix to each token that is >= 3 characters long.
-  // Short tokens (1-2 chars) are excluded from prefix expansion because
-  // they produce too many false positives.
-  const prefixQuery = buildPrefixQuery(ftsQuery);
-  if (!prefixQuery) return [];
+  if (plan.exactPrefix) {
+    const prefixResults = runFtsQuery(db, plan.exactPrefix, "prefix", limit, entryType, excludeTypes);
+    if (prefixResults.length > 0) return prefixResults;
+  }
 
-  return runFtsQuery(db, prefixQuery, limit, entryType, excludeTypes);
+  // One measured relaxation only after both conjunctive forms miss. This is
+  // still the same FTS table, BM25 weights, candidate collection, and
+  // downstream ranker — merely an OR candidate query for sentence-shaped
+  // input whose filler terms prevented a strict hit.
+  return plan.relaxed ? runFtsQuery(db, plan.relaxed, "relaxed", limit, entryType, excludeTypes) : [];
 }
 
 function runFtsQuery(
   db: Database,
   ftsQuery: string,
+  lexicalMatch: LexicalQueryExecution,
   limit: number,
   entryType?: string,
   excludeTypes?: string[],
@@ -115,6 +156,7 @@ function runFtsQuery(
         bundleId: row.bundleId,
         conceptId: row.conceptId,
         adapterId: row.adapterId,
+        lexicalMatch,
       });
     }
     return results;
@@ -125,53 +167,23 @@ function runFtsQuery(
 }
 
 /**
- * Rebuild the FTS5 search index.
- *
- * `incremental` (default `false`): when true, only rebuild rows that
- * `upsertEntry` marked dirty since the last `rebuildFts` call. The full path
- * (default) wipes `entries_fts` and re-inserts every row from `entries` —
- * appropriate for `akm index --full` and version-upgrade rebuilds.
- *
- * Both paths are wrapped in a single transaction so the FTS table is never
- * left in a half-rebuilt state.
+ * Explicitly rebuild the complete FTS5 projection from canonical entries.
+ * Ordinary entry mutations do not call this: `upsertEntry` and the delete
+ * operations publish their FTS state in the same transaction as `entries`.
+ * This remains a recovery/schema-verification primitive for regenerable
+ * `index.db` state.
  *
  * Skipped corrupt-JSON rows are aggregated into one warning instead of
  * spamming stderr per-entry.
  */
-export function rebuildFts(db: Database, options?: { incremental?: boolean }): void {
-  const incremental = options?.incremental === true;
-
+export function rebuildFts(db: Database): void {
   db.transaction(() => {
-    let rows: Array<{ id: number; document_json: string }>;
-    if (incremental) {
-      // Read the dirty queue and join against entries to get the JSON.
-      // Then drop the matching rows from entries_fts so the INSERT below
-      // doesn't double-up. The dirty list is drained at the end.
-      rows = db
-        .prepare(
-          `SELECT e.id AS id, e.document_json AS document_json
-             FROM entries_fts_dirty d
-             JOIN entries e ON e.id = d.entry_id`,
-        )
-        .all() as typeof rows;
-      if (rows.length === 0) return;
-      const ids = rows.map((r) => r.id);
-      // Delete only the dirty FTS rows — chunk to stay under
-      // SQLITE_MAX_VARIABLE_NUMBER on large dirty queues.
-      for (let i = 0; i < ids.length; i += SQLITE_CHUNK_SIZE) {
-        const chunk = ids.slice(i, i + SQLITE_CHUNK_SIZE);
-        const placeholders = chunk.map(() => "?").join(",");
-        db.prepare(`DELETE FROM entries_fts WHERE entry_id IN (${placeholders})`).run(...chunk);
-      }
-    } else {
-      // Full path: wipe and re-read every row.
-      db.exec("DELETE FROM entries_fts");
-      rows = db.prepare("SELECT id, document_json FROM entries").all() as typeof rows;
-    }
-
-    const insertStmt = db.prepare(
-      "INSERT INTO entries_fts (entry_id, name, description, tags, hints, content) VALUES (?, ?, ?, ?, ?, ?)",
-    );
+    db.exec("DELETE FROM entries_fts");
+    const rows = db.prepare("SELECT id, document_json FROM entries").all() as Array<{
+      id: number;
+      document_json: string;
+    }>;
+    const insertStmt = db.prepare(INSERT_FTS_SQL);
 
     let skipped = 0;
     for (const row of rows) {
@@ -190,15 +202,5 @@ export function rebuildFts(db: Database, options?: { incremental?: boolean }): v
     if (skipped > 0) {
       warn(`[db] rebuildFts: skipped ${skipped} entr${skipped === 1 ? "y" : "ies"} with invalid document_json`);
     }
-
-    // Always drain the dirty queue — both paths converge here. The
-    // incremental path drains it because we just consumed every dirty row;
-    // the full path drains it because a full rebuild covers everything the
-    // dirty list tracks. The table is guaranteed to exist (created by
-    // ensureSchema()).
-    //
-    // BUG-L1: previously the if/else arms ran identical statements — the
-    // duplication has been collapsed.
-    db.exec("DELETE FROM entries_fts_dirty");
   })();
 }

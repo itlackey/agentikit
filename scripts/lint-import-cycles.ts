@@ -276,6 +276,15 @@ export const DYNAMIC_IMPORT_BASELINE: Readonly<Record<string, number>> = {
   "src/sources/providers/sync-from-ref.ts": 2,
   "src/sources/snapshot-fetchers/registry.ts": 1,
   "src/storage/repositories/events-repository.ts": 1,
+  // P3b (docs/plans/specs/p3b-child-executor.md §3, §7): a genuine lazy-load,
+  // not a cycle dodge dressed up as one — the vast majority of workflow runs
+  // compose no child at all, so `run-workflow.ts`'s full engine (lease
+  // heartbeat, retry loop) is loaded only once a `child-workflow` unit is
+  // actually dispatched. It ALSO happens to be the only viable seam: a static
+  // import here would close native-executor.ts -> child-workflow.ts ->
+  // run-workflow.ts -> native-executor.ts, which this ratchet's empty
+  // baseline forbids outright (see child-workflow.ts's module doc).
+  "src/workflows/exec/child-workflow.ts": 1,
   "src/workflows/exec/frozen-judge.ts": 1,
   "src/workflows/exec/native-executor.ts": 4,
   "src/workflows/exec/report.ts": 1,

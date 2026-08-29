@@ -95,9 +95,12 @@ export const PROGRAM_STEP_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 
 /**
  * Param names must be `params.<ident>`-addressable, so they are plain
- * identifiers (no dots/dashes).
+ * identifiers (no dots/dashes). Re-exported from the shared input contract
+ * (`src/execution/input-contract.ts`'s `INPUT_NAME_PATTERN`) so task source
+ * v4's `inputs:` declarations share the exact same name pattern rather than a
+ * second, hand-maintained copy (P2a, D3-N1).
  */
-export const PROGRAM_PARAM_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export { INPUT_NAME_PATTERN as PROGRAM_PARAM_NAME_PATTERN } from "../../execution/input-contract";
 
 /** Bounded retry on transient failures, keyed on the persisted taxonomy. */
 export interface ProgramRetry {

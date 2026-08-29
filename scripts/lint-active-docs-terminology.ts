@@ -26,6 +26,10 @@
  *   - docs/architecture/**\/*.md (except the file below)
  *   - docs/agents/**\/*.md
  *   - docs/maintainers/**\/*.md
+ *   - src/assets/hints/**\/*.md (the in-binary CLI hint text, not
+ *     src/assets/** at large — src/assets/stash-skeleton/** ships the
+ *     literal word "stash" as scaffolded bundle content, a proper name this
+ *     ratchet must not flag)
  *
  * Explicitly skipped even though it lives under a scanned root — each is a
  * dated, point-in-time engineering artifact (a review, a close-out record, a
@@ -97,7 +101,14 @@ const REPO_ROOT = path.resolve(import.meta.dir, "..");
 const SCAN_FILES = ["README.md", ".github/README.npm.md", "docs/README.md"];
 
 /** Directories walked recursively for *.md, relative to REPO_ROOT. */
-const SCAN_DIRS = ["docs/guides", "docs/reference", "docs/architecture", "docs/agents", "docs/maintainers"];
+const SCAN_DIRS = [
+  "docs/guides",
+  "docs/reference",
+  "docs/architecture",
+  "docs/agents",
+  "docs/maintainers",
+  "src/assets/hints",
+];
 
 /** Individually-justified file exclusions within an otherwise-scanned dir — see module doc. */
 const SKIP_FILES = new Set([

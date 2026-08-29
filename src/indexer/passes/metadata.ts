@@ -14,7 +14,6 @@ import { parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import type { TocHeading } from "../../core/asset/markdown";
 import { asNonEmptyString } from "../../core/common";
-import { loadUserConfig } from "../../core/config/config";
 import { isVerbose, warn } from "../../core/warn";
 import type { buildFileContext } from "../walk/file-context";
 
@@ -194,10 +193,8 @@ export function validateStashEntry(entry: unknown): IndexDocument | null {
   if (typeof e.derivedFrom === "string" && e.derivedFrom.trim().length > 0) {
     result.derivedFrom = e.derivedFrom.trim();
   }
-  // SPEC-8: `bodyOpening` must survive the projection. The extractor already
-  // trimmed and capped it at capture time.
-  if (typeof e.bodyOpening === "string" && e.bodyOpening.trim().length > 0) {
-    result.bodyOpening = e.bodyOpening;
+  if (typeof e.content === "string" && e.content.trim().length > 0) {
+    result.content = e.content;
   }
   if (typeof e.scope === "object" && e.scope !== null && !Array.isArray(e.scope)) {
     const scope = normalizeScopeObject(e.scope as Record<string, unknown>);
@@ -879,38 +876,14 @@ export function isEnrichmentComplete(entry: IndexDocument): boolean {
   return hasDescription && hasTags && hasSearchHints;
 }
 
-// ── Body-opening extraction (stash-conventions SPEC-8) ──────────────────────
+// ── Native Markdown search projection ──────────────────────────────────────
 
 /**
- * Maximum length of a captured self-situating body opening. Bounds index-size
- * growth and keeps a single verbose opening from dominating the low-weight
- * `content` FTS column.
+ * Maximum native Markdown prose carried by the low-weight `content` field.
+ * Structured fields remain separate and higher-weighted; this bound prevents
+ * large documents from dominating index size or embedding inputs.
  */
-export const BODY_OPENING_MAX_CHARS = 280;
-
-/**
- * Minimum characters retained when the cap truncates at a word boundary. A
- * boundary cut that would retain less than this falls back to a hard cut, so
- * one pathological long token cannot gut the capture.
- */
-const BODY_OPENING_MIN_RETAINED_CHARS = 250;
-
-/**
- * True when `index.indexBodyOpening` is enabled in the user config.
- *
- * The gate is the GLOBAL user config, read directly by the metadata pass so
- * every indexing entry point (stash walk, flat walk, write-path indexing)
- * honors the flag without parameter plumbing. Fail-open: an unreadable or
- * invalid config must never break indexing (CLI entry points surface config
- * errors loudly on their own), so any load failure reads as "off".
- */
-function isBodyOpeningIndexingEnabled(): boolean {
-  try {
-    return loadUserConfig().index?.indexBodyOpening === true;
-  } catch {
-    return false;
-  }
-}
+export const MARKDOWN_CONTENT_MAX_CHARS = 16_384;
 
 /**
  * Locate a leading nested frontmatter block in a body: up to three blank
@@ -937,7 +910,7 @@ function findInnerFrontmatterBlock(lines: string[]): { open: number; close: numb
  * marker — in the outer frontmatter data OR in a nested inner block at the
  * top of the body (both producer layouts exist; see base-linter's
  * `extractFrontmatterRefs`). Session bodies are raw transcripts, never a
- * self-situating opening.
+ * searchable content projection.
  */
 function hasSessionMemoryMarker(fmData: Record<string, unknown>, body: string): boolean {
   if (typeof fmData.akm_memory_kind === "string") return true;
@@ -971,89 +944,264 @@ function isFrontmatterShaped(lines: string[], block: { open: number; close: numb
   return true;
 }
 
+function truncateUnicodeSafe(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  let cut = text.slice(0, maxChars);
+  const lastCode = cut.charCodeAt(cut.length - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) cut = cut.slice(0, -1);
+  const boundary = cut.lastIndexOf(" ");
+  if (boundary >= Math.floor(maxChars * 0.9)) cut = cut.slice(0, boundary);
+  return cut.trimEnd();
+}
+
+type MarkdownFence = { marker: "`" | "~"; length: number };
+
+function parseMarkdownFenceOpening(line: string): MarkdownFence | undefined {
+  const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  const run = match?.[1];
+  if (!run) return undefined;
+  const marker = run[0] as "`" | "~";
+  // CommonMark forbids backticks in the info string of a backtick fence.
+  if (marker === "`" && match?.[2]?.includes("`")) return undefined;
+  return { marker, length: run.length };
+}
+
+function isMarkdownFenceClosing(line: string, fence: MarkdownFence): boolean {
+  let cursor = 0;
+  while (cursor < line.length && cursor < 3 && line[cursor] === " ") cursor += 1;
+  const runStart = cursor;
+  while (cursor < line.length && line[cursor] === fence.marker) cursor += 1;
+  if (cursor - runStart < fence.length) return false;
+  return /^[\t ]*$/.test(line.slice(cursor));
+}
+
+function stripMarkdownHtmlComments(line: string, state: { inComment: boolean }): string {
+  let cursor = 0;
+  let visible = "";
+  while (cursor < line.length) {
+    if (state.inComment) {
+      const close = line.indexOf("-->", cursor);
+      if (close < 0) return visible;
+      state.inComment = false;
+      cursor = close + 3;
+      continue;
+    }
+    const open = line.indexOf("<!--", cursor);
+    if (open < 0) return `${visible}${line.slice(cursor)}`;
+    visible += line.slice(cursor, open);
+    state.inComment = true;
+    cursor = open + 4;
+  }
+  return visible;
+}
+
+function findBalancedMarkdownClose(text: string, openAt: number, open: string, close: string): number | undefined {
+  let depth = 1;
+  for (let cursor = openAt + 1; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+    if (char === "\\") {
+      cursor += 1;
+      continue;
+    }
+    if (char === open) depth += 1;
+    if (char !== close) continue;
+    depth -= 1;
+    if (depth === 0) return cursor;
+  }
+  return undefined;
+}
+
 /**
- * Extract the first prose paragraph of a markdown body (frontmatter already
- * stripped by the caller): skip blank lines, ATX headings, setext `=`
- * underlines (discarding the heading text above them), thematic breaks,
- * fenced code blocks (``` or ~~~, including their contents), and a leading
- * nested frontmatter block — skipped only when its interior is actually
- * frontmatter-shaped, so prose wrapped in decorative `---` lines is still
- * captured; then collect consecutive non-blank lines until the paragraph
- * ends. Deliberate asymmetry: a `---` row after captured prose ENDS the
- * paragraph and keeps it (favoring the callout/thematic-break reading over
- * CommonMark's setext-H2), while a `=+` row can only be a setext underline
- * and so discards the pending lines as heading text. The result is capped at
- * {@link BODY_OPENING_MAX_CHARS} chars — truncated at the last word boundary
- * that still retains a substantial prefix, with a trailing ellipsis. Returns
- * `undefined` when the body has no prose (frontmatter-only files,
- * headings/fences-only bodies).
+ * Find the closing parenthesis of an inline link destination. Parentheses in
+ * angle-delimited destinations and quoted titles are data, while unquoted
+ * parentheses remain balanced. Backslash escapes suppress delimiter meaning.
  */
-export function extractBodyOpening(body: string): string | undefined {
+function findMarkdownDestinationClose(text: string, openAt: number): number | undefined {
+  let depth = 1;
+  let phase: "before-destination" | "angle-destination" | "bare-destination" | "after-destination" | "title" =
+    "before-destination";
+  let quote: '"' | "'" | undefined;
+  let parenthesizedTitle = false;
+  let titleSeparator = false;
+  for (let cursor = openAt + 1; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+    if (char === "\\") {
+      cursor += 1;
+      continue;
+    }
+
+    if (phase === "before-destination") {
+      if (/\s/u.test(char ?? "")) continue;
+      if (char === "<") {
+        phase = "angle-destination";
+        continue;
+      }
+      if (char === ")") return cursor;
+      phase = "bare-destination";
+    }
+
+    if (phase === "angle-destination") {
+      if (char === ">") phase = "after-destination";
+      continue;
+    }
+
+    if (phase === "title") {
+      if (quote) {
+        if (char === quote) {
+          quote = undefined;
+          phase = "after-destination";
+          titleSeparator = false;
+        }
+        continue;
+      }
+      if (parenthesizedTitle) {
+        if (char === "(") depth += 1;
+        if (char !== ")") continue;
+        depth -= 1;
+        if (depth === 1) {
+          parenthesizedTitle = false;
+          phase = "after-destination";
+          titleSeparator = false;
+        }
+      }
+      continue;
+    }
+
+    if (phase === "after-destination") {
+      if (/\s/u.test(char ?? "")) {
+        titleSeparator = true;
+        continue;
+      }
+      if (char === ")") return cursor;
+      if (titleSeparator && (char === '"' || char === "'")) {
+        quote = char;
+        phase = "title";
+        continue;
+      }
+      if (titleSeparator && char === "(") {
+        depth += 1;
+        parenthesizedTitle = true;
+        phase = "title";
+        continue;
+      }
+      // Invalid trailing bytes are still consumed conservatively until the
+      // balanced outer close. Quotes here are ordinary bytes, never titles.
+      phase = "bare-destination";
+    }
+
+    if (phase !== "bare-destination") continue;
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) return cursor;
+      continue;
+    }
+    if (/\s/u.test(char ?? "") && depth === 1) {
+      phase = "after-destination";
+      titleSeparator = true;
+    }
+  }
+  return undefined;
+}
+
+const MAX_MARKDOWN_LINK_NESTING = 32;
+
+/** Retain recursively projected link labels while dropping complete destinations. */
+function stripMarkdownLinkDestinations(text: string, nesting = 0): string {
+  let visible = "";
+  let cursor = 0;
+  while (cursor < text.length) {
+    const isImage = text[cursor] === "!" && text[cursor + 1] === "[";
+    const labelOpen = isImage ? cursor + 1 : cursor;
+    if (text[labelOpen] !== "[") {
+      visible += text[cursor];
+      cursor += 1;
+      continue;
+    }
+    const labelClose = findBalancedMarkdownClose(text, labelOpen, "[", "]");
+    const destinationOpen = labelClose === undefined ? undefined : labelClose + 1;
+    if (destinationOpen === undefined || text[destinationOpen] !== "(") {
+      visible += text[cursor];
+      cursor += 1;
+      continue;
+    }
+    const destinationClose = findMarkdownDestinationClose(text, destinationOpen);
+    if (destinationClose === undefined) {
+      visible += text[cursor];
+      cursor += 1;
+      continue;
+    }
+    // Labels may themselves contain images/links. Recursively project them so
+    // an inner destination cannot become visible when its outer link is
+    // removed. At an adversarial nesting depth, omit the label rather than
+    // leaking its unparsed bytes into the search projection.
+    if (nesting < MAX_MARKDOWN_LINK_NESTING) {
+      visible += stripMarkdownLinkDestinations(text.slice(labelOpen + 1, labelClose), nesting + 1);
+    }
+    cursor = destinationClose + 1;
+  }
+  return visible;
+}
+
+/**
+ * Derive the one low-weight search projection for an AKM-native Markdown body.
+ * Frontmatter is removed by the caller. This projection drops comments,
+ * fenced code, raw link targets, and structural punctuation while retaining
+ * prose, headings, link labels, and inline identifiers. It never receives
+ * secret/env/session bytes; that policy is enforced at the adapter metadata
+ * boundary below.
+ */
+export function projectMarkdownContent(body: string): string | undefined {
   const lines = body.split(/\r?\n/);
   const innerBlock = findInnerFrontmatterBlock(lines);
   const start = innerBlock && isFrontmatterShaped(lines, innerBlock) ? innerBlock.close + 1 : 0;
-
-  const paragraph: string[] = [];
-  let inFence = false;
-  let fenceChar = "";
-  let inHtmlComment = false;
+  const projected: string[] = [];
+  let fence: MarkdownFence | undefined;
+  const htmlComment = { inComment: false };
   for (let i = start; i < lines.length; i += 1) {
-    const trimmed = lines[i]!.trim();
-    const fenceMatch = trimmed.match(/^(`{3,}|~{3,})/);
-    if (inFence) {
-      // Fence interiors are never prose (and may be secrets-adjacent command
-      // text); skip until the matching closing marker.
-      if (fenceMatch && fenceMatch[1]!.charAt(0) === fenceChar) inFence = false;
+    const rawLine = lines[i]!;
+    if (fence) {
+      if (isMarkdownFenceClosing(rawLine, fence)) fence = undefined;
       continue;
     }
-    if (inHtmlComment) {
-      // Comment interiors are machinery (the skeleton convention facts open
-      // with a <!-- SOFT guidance --> block), never orientation prose.
-      if (trimmed.includes("-->")) inHtmlComment = false;
+
+    // A leading fence owns the whole line, including any info string that
+    // resembles HTML. Comment state therefore cannot begin inside a fence.
+    if (!htmlComment.inComment) {
+      const openingFence = parseMarkdownFenceOpening(rawLine);
+      if (openingFence) {
+        fence = openingFence;
+        continue;
+      }
+    }
+
+    let trimmed = stripMarkdownHtmlComments(rawLine, htmlComment).trim();
+    const openingFence = parseMarkdownFenceOpening(trimmed);
+    if (openingFence) {
+      fence = openingFence;
       continue;
     }
-    if (fenceMatch) {
-      if (paragraph.length > 0) break; // a fence ends an open paragraph
-      inFence = true;
-      fenceChar = fenceMatch[1]!.charAt(0);
-      continue;
-    }
-    if (trimmed.startsWith("<!--")) {
-      if (paragraph.length > 0) break; // a comment ends an open paragraph
-      if (!trimmed.includes("-->")) inHtmlComment = true;
-      continue;
-    }
-    if (/^=+$/.test(trimmed)) {
-      // A row of `=` is a setext H1 underline: the pending lines are heading
-      // text, not prose — discard them and keep searching. (A bare `=` row
-      // with nothing pending is skipped like any other non-prose divider.)
-      paragraph.length = 0;
-      continue;
-    }
-    const isBlank = trimmed === "";
-    const isHeading = /^#{1,6}(\s|$)/.test(trimmed);
-    const isThematicBreak = /^(-{3,}|\*{3,}|_{3,})$/.test(trimmed);
-    if (isBlank || isHeading || isThematicBreak) {
-      if (paragraph.length > 0) break; // paragraph complete
-      continue; // still searching for the first prose line
-    }
-    paragraph.push(trimmed);
+    if (!trimmed || /^(-{3,}|\*{3,}|_{3,}|=+)$/.test(trimmed)) continue;
+    if (/^\s*\[[^\]]+\]:\s*\S+/.test(trimmed)) continue;
+    if (/^<[^>]+>$/.test(trimmed)) continue;
+
+    // Preserve human-facing labels and inline identifiers, never destinations.
+    trimmed = stripMarkdownLinkDestinations(trimmed);
+    trimmed = trimmed.replace(/`{1,2}([^`]+)`{1,2}/g, "$1");
+    trimmed = trimmed.replace(/^#{1,6}\s+/, "");
+    trimmed = trimmed.replace(/^(?:>|[-+*]|\d+[.)])\s+/, "");
+    trimmed = trimmed.replace(/<[^>]+>/g, " ");
+    trimmed = trimmed.replace(/[|]+/g, " ");
+    trimmed = trimmed.replace(/\s+/g, " ").trim();
+    if (trimmed) projected.push(trimmed);
   }
 
-  const text = paragraph.join("\n");
+  const text = projected.join(" ").replace(/\s+/g, " ").trim();
   if (!text) return undefined;
-  if (text.length <= BODY_OPENING_MAX_CHARS) return text;
-  // Cap: prefer a word-boundary cut (never mid-token), but only when it keeps
-  // a substantial prefix; append a one-char ellipsis inside the budget.
-  const slice = text.slice(0, BODY_OPENING_MAX_CHARS - 1);
-  const lastBoundary = Math.max(slice.lastIndexOf(" "), slice.lastIndexOf("\n"), slice.lastIndexOf("\t"));
-  let cut = lastBoundary >= BODY_OPENING_MIN_RETAINED_CHARS ? slice.slice(0, lastBoundary) : slice;
-  // slice() counts UTF-16 code units, so the no-boundary fallback can end on
-  // the high half of a surrogate pair — a lone surrogate that corrupts the
-  // FTS/embedding text. Drop it rather than emit invalid UTF-16.
-  const lastCode = cut.charCodeAt(cut.length - 1);
-  if (lastCode >= 0xd800 && lastCode <= 0xdbff) cut = cut.slice(0, -1);
-  return `${cut.trimEnd()}…`;
+  return truncateUnicodeSafe(text, MARKDOWN_CONTENT_MAX_CHARS);
 }
 
 // ── Metadata Generation ─────────────────────────────────────────────────────
@@ -1101,15 +1249,11 @@ export function applyPreContributorFields(
     applyWikiFrontmatter(entry, parsed.data);
     // D2 (#730): reread the namespaced `provenance:` block promoteProposal stamps.
     applyProvenanceFrontmatter(entry, parsed.data);
-    // Stash-organization conventions (SPEC-8): config-gated capture of the
-    // self-situating body opening. Default off — enabling it changes indexed
-    // text (collapse-detector canary baselines shift, and embeddings for
-    // already-embedded entries are NOT regenerated; see docs/reference/configuration.md).
-    // Session-kind memories are raw transcripts and are never captured;
-    // secrets never reach this branch (guard above) and env files are not .md.
-    if (isBodyOpeningIndexingEnabled() && !hasSessionMemoryMarker(parsed.data, parsed.content)) {
-      const bodyOpening = extractBodyOpening(parsed.content);
-      if (bodyOpening) entry.bodyOpening = bodyOpening;
+    // Native Markdown has one bounded low-weight body projection. Sensitive
+    // types and raw session/checkpoint material never cross this boundary.
+    if (entry.type !== "env" && entry.type !== "session" && !hasSessionMemoryMarker(parsed.data, parsed.content)) {
+      const contentProjection = projectMarkdownContent(parsed.content);
+      if (contentProjection) entry.content = contentProjection;
     }
     // Extract parameters from template placeholders ($1, $ARGUMENTS, {{named}})
     if (entry.type === "command") {

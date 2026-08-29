@@ -1,7 +1,5 @@
-version: 3
+version: 4
 uses: akm/command
 with:
   content: "Say hello from the all-types fixture task."
-akm:
-  schedule: "@daily"
-  enabled: false
+schedule: "@daily"

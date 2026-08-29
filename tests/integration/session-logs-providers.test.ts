@@ -131,6 +131,26 @@ describe("ClaudeCodeProvider.listSessions", () => {
     expect(sessions.map((s) => s.sessionId)).toEqual(["new"]);
   });
 
+  test("excludes subagent transcripts, which are not sessions (#829)", () => {
+    const root = makeTempDir("akm-claude-subagents-list-");
+    const project = path.join(root, "-home-user-project-a");
+    writeClaudeSessionJsonl(path.join(project, "session-aaa.jsonl"), [
+      { type: "user", timestamp: "2026-05-26T10:00:00.000Z", message: { role: "user", content: "parent work" } },
+    ]);
+    writeClaudeSessionJsonl(path.join(project, "session-aaa", "subagents", "agent-abc123.jsonl"), [
+      { type: "user", timestamp: "2026-05-26T10:01:00.000Z", message: { role: "user", content: "delegated work" } },
+    ]);
+    // Workflow-spawned subagents nest one level deeper under `subagents/`.
+    writeClaudeSessionJsonl(
+      path.join(project, "session-aaa", "subagents", "workflows", "wf_123", "agent-def456.jsonl"),
+      [{ type: "user", timestamp: "2026-05-26T10:02:00.000Z", message: { role: "user", content: "nested work" } }],
+    );
+
+    const provider = new ClaudeCodeProvider();
+    const sessions = provider.listSessions({ location: root });
+    expect(sessions.map((s) => s.sessionId)).toEqual(["session-aaa"]);
+  });
+
   test("returns sessions sorted by endedAt descending", () => {
     const root = makeTempDir("akm-claude-sort-");
     writeClaudeSessionJsonl(path.join(root, "p", "older.jsonl"), [
@@ -190,6 +210,60 @@ describe("ClaudeCodeProvider.readSession", () => {
     // Inline-ref extraction sees the tool_use input flattened as `[tool:Bash] {...}`
     expect(data.inlineRefs).toHaveLength(1);
     expect(data.inlineRefs[0]).toMatchObject({ kind: "remember", text: "deploy needs VPN" });
+  });
+
+  test("folds subagent transcripts into the parent session (#829)", () => {
+    const root = makeTempDir("akm-claude-subagents-read-");
+    const project = path.join(root, "proj");
+    writeClaudeSessionJsonl(path.join(project, "session-1.jsonl"), [
+      {
+        type: "user",
+        timestamp: "2026-05-26T10:00:00.000Z",
+        message: { role: "user", content: "Delegate the audit." },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-05-26T10:30:00.000Z",
+        message: { role: "assistant", content: "The audit is done." },
+      },
+    ]);
+    const subagentPath = path.join(project, "session-1", "subagents", "agent-abc123.jsonl");
+    writeClaudeSessionJsonl(subagentPath, [
+      {
+        type: "assistant",
+        timestamp: "2026-05-26T10:10:00.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool_use", name: "Bash", input: { command: `akm remember "audits need a clean tree"` } }],
+        },
+      },
+    ]);
+    fs.writeFileSync(
+      path.join(project, "session-1", "subagents", "agent-abc123.meta.json"),
+      JSON.stringify({ agentType: "general-purpose", description: "Audit the release branches", spawnDepth: 1 }),
+    );
+
+    const provider = new ClaudeCodeProvider();
+    const summary = provider.listSessions({ location: root })[0];
+    if (!summary) throw new Error("test fixture missing session summary");
+    const data = provider.readSession(summary);
+
+    // Subagent work lands under the parent's identity, merged in timestamp order.
+    expect(data.events).toHaveLength(3);
+    expect(data.events.map((e) => e.ts)).toEqual([
+      Date.parse("2026-05-26T10:00:00.000Z"),
+      Date.parse("2026-05-26T10:10:00.000Z"),
+      Date.parse("2026-05-26T10:30:00.000Z"),
+    ]);
+    expect(data.events.every((e) => e.sessionId === "session-1")).toBe(true);
+    // Sidecar `agentType`/`description` ride along as provenance on the text,
+    // and the event still points at the subagent transcript it came from.
+    expect(data.events[1]?.text).toStartWith("[subagent:general-purpose] Audit the release branches\n");
+    expect(data.events[1]?.filePath).toBe(subagentPath);
+    expect(data.events[0]?.text).toBe("Delegate the audit.");
+    // Inline invocations made by the subagent are harvested too.
+    expect(data.inlineRefs).toHaveLength(1);
+    expect(data.inlineRefs[0]).toMatchObject({ kind: "remember", text: "audits need a clean tree" });
   });
 
   test("skips events without text content", () => {

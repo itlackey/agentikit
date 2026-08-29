@@ -11,8 +11,15 @@
  * across four spots that each re-derived the rule; they now delegate to one
  * `core/activation-policy` module. These tests pin each ported decision at the
  * policy point and, together, prove the install-grants-nothing-until-enable
- * property the four call sites enforce. No new trust/approval machinery ships
+ * property the call sites enforce. No new trust/approval machinery ships
  * (§1.3).
+ *
+ * The former rule 3 (task activation gates scheduler fire-time,
+ * `shouldSkipUnactivatedTask`) was retired in P4 (spec
+ * docs/plans/specs/p4-deletions-closeout.md §3.2.7, P4-N6): task source v4
+ * has no document-level `enabled` to gate at fire time — see
+ * `src/core/activation-policy.ts`'s own header for where that enforcement
+ * moved.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -20,7 +27,6 @@ import {
   decideDangerousEnvInjection,
   decideDangerousKeyInstall,
   isSourceWriteActivated,
-  shouldSkipUnactivatedTask,
 } from "../../src/core/activation-policy";
 
 describe("activation-policy — rule 1: dangerous env-key injection", () => {
@@ -53,22 +59,7 @@ describe("activation-policy — rule 2: freshly-installed stash dangerous-key sc
   });
 });
 
-describe("activation-policy — rule 3: task activation gates scheduler fire-time", () => {
-  test("a disabled task installed by a bundle is skipped when the scheduler fires it", () => {
-    expect(shouldSkipUnactivatedTask({ enabled: false, scheduled: true })).toBe(true);
-  });
-
-  test("an enabled task fires", () => {
-    expect(shouldSkipUnactivatedTask({ enabled: true, scheduled: true })).toBe(false);
-  });
-
-  test("a manual (non-scheduled) run dispatches even a disabled task (catch-up/testing)", () => {
-    expect(shouldSkipUnactivatedTask({ enabled: false, scheduled: false })).toBe(false);
-    expect(shouldSkipUnactivatedTask({ enabled: true, scheduled: false })).toBe(false);
-  });
-});
-
-describe("activation-policy — rule 4: write activation (registry-cached is read-only)", () => {
+describe("activation-policy — rule 3: write activation (registry-cached is read-only)", () => {
   test("a source explicitly marked writable is write-activated", () => {
     expect(isSourceWriteActivated({ writable: true })).toBe(true);
   });
@@ -80,16 +71,12 @@ describe("activation-policy — rule 4: write activation (registry-cached is rea
 });
 
 describe("activation-policy — install grants nothing until an explicit enable", () => {
-  test("a bundle carrying tasks/env/writes is inert on install across all four rules", () => {
+  test("a bundle carrying dangerous env keys and writes is inert on install across every remaining rule", () => {
     // A freshly-installed third-party bundle: env injection of a hijack key is
-    // blocked, its dangerous-key install is gated, its bundled task will not
-    // fire on schedule, and its cache is not writable — nothing is granted.
+    // blocked, its dangerous-key install is gated, and its cache is not
+    // writable — nothing is granted.
     expect(decideDangerousEnvInjection({ dangerousKeys: ["PATH"], thirdParty: true })).toBe("block");
     expect(decideDangerousKeyInstall({ findingsPresent: true, allowInsecure: false })).toBe("gate");
-    expect(shouldSkipUnactivatedTask({ enabled: false, scheduled: true })).toBe(true);
     expect(isSourceWriteActivated({ writable: false })).toBe(false);
-
-    // Only after an explicit enable does the task fire.
-    expect(shouldSkipUnactivatedTask({ enabled: true, scheduled: true })).toBe(false);
   });
 });

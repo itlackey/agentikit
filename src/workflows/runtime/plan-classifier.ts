@@ -6,7 +6,7 @@ import { UsageError } from "../../core/errors";
 import type { WorkflowRunRow, WorkflowRunStepRow } from "../../storage/repositories/workflow-runs-repository";
 import { decodeCanonicalPlan } from "../ir/plan-hash";
 import type { IrRouteSpec } from "../ir/schema";
-import { WORKFLOW_IR_V4_VERSION, type WorkflowPlanGraphV4 } from "../ir/schema-v4";
+import { WORKFLOW_IR_V5_VERSION, type WorkflowPlanGraphV4 } from "../ir/schema-v4";
 
 export type WorkflowExecutionSupport = "supported" | "unsupported-version" | "missing-plan" | "corrupt-plan";
 
@@ -14,7 +14,7 @@ export type ClassifiedWorkflowPlan =
   | {
       support: "supported";
       plan: WorkflowPlanGraphV4;
-      irVersion: typeof WORKFLOW_IR_V4_VERSION;
+      irVersion: typeof WORKFLOW_IR_V5_VERSION;
     }
   | { support: "unsupported-version"; irVersion: number; error: string }
   | { support: "missing-plan"; irVersion: number | null; error: string }
@@ -38,15 +38,21 @@ export function classifyWorkflowRunPlan(row: {
   if (
     row.plan_ir_version !== null &&
     row.plan_ir_version !== undefined &&
-    row.plan_ir_version !== WORKFLOW_IR_V4_VERSION
+    row.plan_ir_version !== WORKFLOW_IR_V5_VERSION
   ) {
     return {
       support: "unsupported-version",
       irVersion: row.plan_ir_version,
-      error: `Workflow run ${runId} uses unsupported workflow IR version ${row.plan_ir_version}; this runtime supports only workflow IR version 4. Start a new run from the authored workflow.`,
+      // §3.2's exact complete-or-abandon policy string (A-N2): pre-irVersion-5
+      // plans keep status/list/abandon working but can no longer execute.
+      error:
+        `Workflow run ${runId} was frozen as workflow plan irVersion ${row.plan_ir_version}; pre-irVersion-5 ` +
+        `plans cannot execute after the 0.9.2 upgrade. Complete them before upgrading, or run ` +
+        `'akm workflow abandon ${runId}' and start a new run from the authored workflow. ` +
+        `'akm workflow status' and 'akm workflow list' still work on this run.`,
     };
   }
-  if (row.plan_ir_version !== WORKFLOW_IR_V4_VERSION) {
+  if (row.plan_ir_version !== WORKFLOW_IR_V5_VERSION) {
     return {
       support: "corrupt-plan",
       irVersion: null,
@@ -68,10 +74,19 @@ export function classifyWorkflowRunPlan(row: {
   }
 }
 
-/** Reject any operation that requires a valid current frozen plan. */
+/**
+ * Reject any operation that requires a valid current frozen plan. A
+ * non-current stored `plan_ir_version` (`unsupported-version`) fails closed
+ * under `WORKFLOW_IR_VERSION_UNSUPPORTED` (A-N2) — distinct from the
+ * `missing-plan` / `corrupt-plan` decode-corruption family, which keeps
+ * `INVALID_JSON_ARGUMENT`.
+ */
 export function requireExecutableWorkflowPlan(row: Parameters<typeof classifyWorkflowRunPlan>[0]): WorkflowPlanGraphV4 {
   const classified = classifyWorkflowRunPlan(row);
   if (classified.support === "supported") return classified.plan;
+  if (classified.support === "unsupported-version") {
+    throw new UsageError(classified.error, "WORKFLOW_IR_VERSION_UNSUPPORTED");
+  }
   throw new UsageError(classified.error, "INVALID_JSON_ARGUMENT");
 }
 
@@ -144,8 +159,11 @@ export function assertWorkflowSpineMatchesPlan(
       corruptSpine(run.id, `${run.status} status does not match the current plan step`);
   } else if (run.status === "failed") {
     // `workflow abandon` marks the run failed while intentionally leaving its
-    // current step pending so `resume` can reopen the same work.
-    if (!current || (current.status !== "failed" && current.status !== "pending"))
+    // current step unchanged so `resume` can reopen the same work. An active
+    // run leaves a pending step; a blocked run leaves a blocked step; and an
+    // execution failure already carries a failed step. All three are honest
+    // failed-run spines that `resumeWorkflowRun` normalizes back to pending.
+    if (!current || (current.status !== "failed" && current.status !== "pending" && current.status !== "blocked"))
       corruptSpine(run.id, `${run.status} status does not match the current plan step`);
   } else if (run.status === "completed") {
     if (

@@ -87,7 +87,7 @@
     },
     "tasks/all-types-task.yml": {
       "action": "Scheduled task — `akm show tasks/<id>` for parsed details, `akm task run <id>` to invoke now.",
-      "content": "version: 3\nuses: akm/command\nwith:\n  content: \"Say hello from the all-types fixture task.\"\nakm:\n  schedule: \"@daily\"\n  enabled: false\n",
+      "content": "version: 4\nuses: akm/command\nwith:\n  content: \"Say hello from the all-types fixture task.\"\nschedule: \"@daily\"\n",
       "name": "all-types-task",
       "path": "<STASH>/tasks/all-types-task.yml",
       "type": "task"

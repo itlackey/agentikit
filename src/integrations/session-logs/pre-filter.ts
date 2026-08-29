@@ -8,6 +8,13 @@
  * testable — keeps the LLM call cheap and focused on content that might
  * actually carry durable signal.
  *
+ * Post-pass (after the per-event rules AND the total-budget cap, on the
+ * final kept set):
+ *   0. stub a parent's `<task-notification>` event when its `<result>` is a
+ *      near-duplicate of a subagent transcript's own event that ALSO
+ *      survived into that same kept set (#839) — see
+ *      {@link dedupeTaskNotifications}.
+ *
  * Drop rules (in priority order):
  *   1. read-only `akm` meta-ops (show/search/curate/history/info/hints/...)
  *   2. tool-event aggregate patterns (`akm_search unknown` enumerations)
@@ -169,12 +176,150 @@ function classifyEvent(
   return { keep: true, event, truncated: false };
 }
 
+/**
+ * A parent-side `<task-notification>` event, as Claude Code writes it into a
+ * session's own transcript: a `role: "user"` event whose text is (or wraps)
+ * `<task-notification>...<task-id>ID</task-id>...<result>TEXT</result>...</task-notification>`.
+ * Matched on the tags themselves (not a dedicated field) because
+ * {@link SessionEvent} carries no structural provenance beyond `text`/`role`/
+ * `filePath` — the same constraint #830 (subagent provenance) worked within.
+ */
+const TASK_NOTIFICATION_RE = /<task-notification>[\s\S]*<\/task-notification>/;
+const TASK_ID_RE = /<task-id>([^<]+)<\/task-id>/;
+const RESULT_RE = /<result>([\s\S]*)<\/result>/;
+const SUMMARY_RE = /<summary>([^<]*)<\/summary>/;
+/** Claude Code's own `<summary>` phrasing for a finished agent: `Agent "<description>" finished`. */
+const AGENT_SUMMARY_DESCRIPTION_RE = /^Agent "(.*)" finished$/;
+/** Provenance {@link subagentProvenance} stamps on every folded subagent event; stripped before comparison. */
+const PROVENANCE_PREFIX_RE = /^\[subagent:[^\]]*\][^\n]*\n/;
+/** Claude Code's own agentId file naming: `<...>/subagents/<...>agent-<agentId>.jsonl`. */
+const SUBAGENT_FILEPATH_RE = /agent-([^/\\]+?)\.jsonl$/;
+/** Dice (bigram) similarity at/above this counts as "the same content" (#839). */
+const DEDUPE_SIMILARITY_THRESHOLD = 0.9;
+
+/** A handful of named-entity decodes — enough for what Claude Code escapes when it wraps `<result>` text in XML. */
+function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/** Sørensen–Dice coefficient over character bigrams — a cheap, symmetric textual-overlap measure. */
+function diceSimilarity(a: string, b: string): number {
+  if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
+  const bigrams = (s: string): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const bg = s.slice(i, i + 2);
+      counts.set(bg, (counts.get(bg) ?? 0) + 1);
+    }
+    return counts;
+  };
+  const bigramsA = bigrams(a);
+  const bigramsB = bigrams(b);
+  let intersection = 0;
+  let totalA = 0;
+  let totalB = 0;
+  for (const count of bigramsA.values()) totalA += count;
+  for (const count of bigramsB.values()) totalB += count;
+  for (const [bg, count] of bigramsA) {
+    const other = bigramsB.get(bg);
+    if (other) intersection += Math.min(count, other);
+  }
+  return totalA + totalB === 0 ? 1 : (2 * intersection) / (totalA + totalB);
+}
+
+/**
+ * Stub out a parent's `<task-notification>` event when its `<result>` is a
+ * near-duplicate of a subagent transcript's own event that ALSO survived
+ * into this same kept set (#839).
+ *
+ * After #830 folds a session's subagent transcripts into its event stream,
+ * a completed subagent's report can appear twice: once as the subagent's own
+ * folded final event, once as the parent's `<task-notification>` record of
+ * that same call — the notification wraps the subagent's own text almost
+ * verbatim (Claude Code XML-escapes `<`/`>`/`&`/quotes in the `<result>`
+ * body, which {@link decodeXmlEntities} reverses before comparing). Direction
+ * is owner-decided (#839): drop the parent's copy, keep the subagent's
+ * original — the inverse was evaluated and rejected in #836 because some
+ * subagent transcripts consist ONLY of their terminal event, so dropping it
+ * would destroy the harvesting #830 added.
+ *
+ * **Runs on `kept` — the FINAL post-budget list — not the raw stream**, and
+ * only stubs a notification when a matching subagent event is ALSO present
+ * in that same `kept` list. This is required, not incidental: the recency-
+ * biased budget already evicts one side of most raw duplicate pairs before
+ * dedupe would matter (#840's design doc measured zero pairs where both
+ * copies reached the pre-dedupe prompt across four real sessions), and any
+ * future prompt-composition design that stops including subagent-origin
+ * events in the prompt at all (#840's recommended "harvest-without-
+ * prompting hybrid") makes the parent's `<task-notification>` the ONLY
+ * surviving trace of that delegated work. An unconditional raw-stream stub
+ * would delete that sole copy the moment the subagent's own event is absent
+ * for ANY reason — evicted by budget today, or never present by design
+ * tomorrow. Scoping to "both sides survived into the same kept set" makes
+ * this dedupe a no-op whenever there is only one copy left to dedupe
+ * against, which is exactly the case where deleting it would be a bug, not
+ * a fix.
+ *
+ * Matching is scoped by `<task-id>` (which is the subagent's agentId) to the
+ * SPECIFIC subagent transcript it names, via the `agent-<agentId>.jsonl`
+ * filename #830's folding already stamps onto every folded event's
+ * `filePath` — then requires the decoded `<result>` to be a near-duplicate
+ * (Dice similarity ≥ {@link DEDUPE_SIMILARITY_THRESHOLD}) of that subagent's
+ * text, not merely a same-agent match. This matters because a task-notification
+ * fires every time an agent stops (Claude Code's own note in the event: "the
+ * same task-id may notify more than once") — an EARLIER notification for a
+ * resumed agent can carry a genuinely different (intermediate) result that
+ * must NOT be stubbed just because the ids line up.
+ *
+ * The event is kept (not dropped) so event counts/timestamps stay stable and
+ * the parent's narrative — *why* it delegated — survives as a short stub:
+ * `[subagent <agentId> completed: <description>]`.
+ */
+function dedupeTaskNotifications(kept: readonly SessionEvent[]): SessionEvent[] {
+  // Index the KEPT subagent events by the agentId embedded in their
+  // transcript's filename, so a notification's <task-id> narrows the
+  // comparison to the ONE subagent it reports on — and so an agentId with no
+  // surviving event here means "nothing to dedupe against", not "assume it
+  // exists upstream".
+  const byAgentId = new Map<string, SessionEvent[]>();
+  for (const event of kept) {
+    const agentId = event.filePath?.match(SUBAGENT_FILEPATH_RE)?.[1];
+    if (!agentId) continue;
+    const list = byAgentId.get(agentId);
+    if (list) list.push(event);
+    else byAgentId.set(agentId, [event]);
+  }
+  if (byAgentId.size === 0) return kept as SessionEvent[]; // no folded subagent survived the budget — nothing to dedupe
+
+  return kept.map((event) => {
+    if (event.role !== "user" || !TASK_NOTIFICATION_RE.test(event.text)) return event;
+    const taskId = event.text.match(TASK_ID_RE)?.[1];
+    const resultRaw = event.text.match(RESULT_RE)?.[1];
+    if (!taskId || !resultRaw) return event; // no <result> (e.g. a background-command notification) — nothing to compare
+    const candidates = byAgentId.get(taskId);
+    if (!candidates || candidates.length === 0) return event; // that subagent's own event didn't survive into this kept set
+    const decodedResult = decodeXmlEntities(resultRaw);
+    const isDuplicate = candidates.some(
+      (c) => diceSimilarity(decodedResult, c.text.replace(PROVENANCE_PREFIX_RE, "")) >= DEDUPE_SIMILARITY_THRESHOLD,
+    );
+    if (!isDuplicate) return event;
+    const summary = event.text.match(SUMMARY_RE)?.[1]?.trim();
+    const description = (summary && (summary.match(AGENT_SUMMARY_DESCRIPTION_RE)?.[1] ?? summary)) || "completed";
+    return { ...event, text: `[subagent ${taskId} completed: ${description}]` };
+  });
+}
+
 export function preFilterSession(data: SessionData, options: PreFilterOptions = {}): PreFilterResult {
   const akmReadOnlyOps = options.akmReadOnlyOps ?? DEFAULT_AKM_READONLY_OPS;
   const maxLen = options.maxEventTextLength ?? DEFAULT_MAX_EVENT_LENGTH;
   const maxTotalChars = options.maxTotalChars ?? DEFAULT_MAX_TOTAL_CHARS;
   const droppedByRule: Record<string, number> = {};
-  const kept: SessionEvent[] = [];
+  let kept: SessionEvent[] = [];
   let truncatedCount = 0;
 
   // First pass: apply per-event rules. Track running char total so the budget
@@ -220,6 +365,14 @@ export function preFilterSession(data: SessionData, options: PreFilterOptions = 
     if (c.truncated) truncatedCount += 1;
   }
 
+  // Post-pass (#839): dedupe a task-notification against a subagent event
+  // ONLY when both survived into this exact kept set — see
+  // dedupeTaskNotifications's doc for why that scoping is required. Recompute
+  // totalChars afterward since stubbing can only shrink kept text, never move
+  // anything across the budget boundary already decided above.
+  kept = dedupeTaskNotifications(kept);
+  const finalTotalChars = kept.reduce((sum, e) => sum + e.text.length, 0);
+
   return {
     events: kept,
     stats: {
@@ -227,7 +380,7 @@ export function preFilterSession(data: SessionData, options: PreFilterOptions = 
       outputCount: kept.length,
       droppedByRule,
       truncatedCount,
-      totalChars,
+      totalChars: finalTotalChars,
       budgetDroppedCount,
     },
   };

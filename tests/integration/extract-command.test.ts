@@ -24,6 +24,7 @@ import { readEvents } from "../../src/core/events";
 import { createLockPayload } from "../../src/core/file-lock";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { detectTruncatedDescription } from "../../src/core/text-truncation";
+import { ClaudeCodeProvider } from "../../src/integrations/harnesses/claude/session-log";
 import type {
   SessionData,
   SessionLogHarness,
@@ -368,6 +369,109 @@ describe("akmExtract — single-session mode", () => {
   });
 });
 
+describe("akmExtract — subagent transcripts are never extracted as their own session (#839)", () => {
+  // Real ClaudeCodeProvider (not the fake harness) driven against
+  // `withIsolatedAkmStorage()`'s isolated `AKM_CLAUDE_PROJECTS_DIR`, so
+  // `listSessions()`'s subagents-exclusion (#830) and the folding in
+  // `readSession()` both run for real. `chat` is still injected so no LLM
+  // call happens.
+  function writeClaudeSessionJsonl(filePath: string, lines: object[]): void {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+  }
+
+  function seedParentAndSubagent(root: string): { parentId: string; subagentId: string } {
+    const project = path.join(root, "-home-user-akm");
+    const parentId = "session-1";
+    writeClaudeSessionJsonl(path.join(project, `${parentId}.jsonl`), [
+      {
+        type: "user",
+        timestamp: "2026-08-01T10:00:00.000Z",
+        message: { role: "user", content: "Please delegate the release-branch audit to a subagent." },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-08-01T10:30:00.000Z",
+        message: { role: "assistant", content: "Delegated it; the subagent reported back and the audit is done." },
+      },
+    ]);
+    const subagentId = "abc123";
+    writeClaudeSessionJsonl(path.join(project, parentId, "subagents", `agent-${subagentId}.jsonl`), [
+      {
+        type: "assistant",
+        timestamp: "2026-08-01T10:15:00.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "SUBAGENT_MARKER: audited every release branch, all clean." }],
+        },
+      },
+    ]);
+    fs.writeFileSync(
+      path.join(project, parentId, "subagents", `agent-${subagentId}.meta.json`),
+      JSON.stringify({ agentType: "general-purpose", description: "Audit release branches" }),
+    );
+    return { parentId, subagentId };
+  }
+
+  test("discovery mode processes exactly one session, subagent transcript never surfaced as its own", async () => {
+    const stash = makeStashDir();
+    const { parentId } = seedParentAndSubagent(storage.sessionLogsDir);
+
+    let chatCalls = 0;
+    let capturedPrompt = "";
+    const result = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config: configEnabled(stash),
+      harnesses: [new ClaudeCodeProvider()],
+      since: "24h",
+      chat: async (_cfg, msgs) => {
+        chatCalls += 1;
+        capturedPrompt = msgs[0]?.content ?? "";
+        return JSON.stringify({ candidates: [] });
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    // Exactly one session — the subagent transcript never surfaces as its own.
+    expect(chatCalls).toBe(1);
+    expect(result.sessionsProcessed).toBe(1);
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0]?.sessionId).toBe(parentId);
+    expect(result.sessions[0]?.contentHash).toBeDefined();
+    // #840 — harvest-without-prompting hybrid: the folded subagent transcript
+    // is still read and hashed under the parent's identity (no double
+    // extraction), but its raw text is never sent to the LLM — only
+    // parent-origin events reach the prompt. The subagent's provenance-
+    // prefixed text ("[subagent:...]") must NOT appear here.
+    expect(capturedPrompt).not.toContain("SUBAGENT_MARKER");
+    expect(capturedPrompt).not.toContain("[subagent:");
+  });
+
+  test("--session-id agent-<hash> returns the not-found result, not an extraction", async () => {
+    const stash = makeStashDir();
+    const { subagentId } = seedParentAndSubagent(storage.sessionLogsDir);
+
+    let chatCalls = 0;
+    const result = await akmExtract({
+      type: "claude",
+      sessionId: `agent-${subagentId}`,
+      stashDir: stash,
+      config: configEnabled(stash),
+      harnesses: [new ClaudeCodeProvider()],
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [] });
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.sessionsProcessed).toBe(0);
+    expect(result.warnings.join(" ")).toMatch(/not found/);
+    expect(chatCalls).toBe(0);
+  });
+});
+
 describe("akmExtract — candidate → proposal routing", () => {
   test("creates one proposal per valid candidate, with merged body frontmatter", async () => {
     const stash = makeStashDir();
@@ -602,6 +706,40 @@ describe("akmExtract — candidate → proposal routing", () => {
 });
 
 describe("akmExtract — LLM call wiring", () => {
+  test("repairs malformed output once when the engine lacks JSON Schema support", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("ses_repair", Date.now() - 60_000);
+    const config = configEnabled(stash);
+    const engine = config.engines?.default;
+    if (!engine || engine.kind !== "llm") throw new Error("test fixture requires the default LLM engine");
+    engine.supportsJsonSchema = false;
+    const responses = [
+      "I found nothing worth keeping.",
+      JSON.stringify({ candidates: [], rationale_if_empty: "No durable candidates were identified." }),
+    ];
+    const prompts: string[] = [];
+
+    const result = await akmExtract({
+      type: "claude",
+      sessionId: session.ref.sessionId,
+      stashDir: stash,
+      config,
+      harnesses: [makeFakeHarness([session])],
+      chat: async (_config, messages) => {
+        prompts.push(messages.at(-1)?.content ?? "");
+        return responses.shift() ?? "";
+      },
+    });
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).not.toBe(prompts[0]);
+    expect(prompts[1]).toContain("ONLY a JSON object");
+    expect(result.sessionsProcessed).toBe(1);
+    expect(result.sessionsSkipped).toBe(0);
+    expect(result.sessions[0]?.rationaleIfEmpty).toContain("No durable candidates");
+    expect(result.warnings).toEqual([]);
+  });
+
   test("injects only conventions for candidate output types", async () => {
     const stash = makeStashDir();
     const session = fakeSession("ses_standards", Date.now() - 60_000);

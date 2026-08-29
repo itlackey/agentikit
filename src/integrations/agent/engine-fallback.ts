@@ -40,9 +40,9 @@
  * fail closed, so an engine-less install is usable everywhere or nowhere —
  * never a confusing mix:
  *
- *   • `workflow run`   — `workflows/ir/source-freeze-v4.ts` (the freeze boundary)
- *   • `task run`       — `tasks/runner.ts` (prompt targets)
- *   • `task add|sync`  — the same task-v3 runtime projector used by `task run`
+ *   • `workflow run`   — `workflows/ir/freeze-v4.ts` (the freeze boundary)
+ *   • `task run`       — `tasks/run/run-task.ts` (prompt targets)
+ *   • `task add|sync`  — the same task source v4 runtime projector used by `task run`
  *   • `akm agent`      — `commands/agent/agent-dispatch.ts`
  *   • `propose`        — `commands/proposal/propose.ts`
  *   • `improve` reflect — `commands/improve/reflect.ts` (agent arm)

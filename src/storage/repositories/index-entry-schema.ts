@@ -12,7 +12,7 @@
  * separate definitions of "current".
  */
 
-export const CANONICAL_INDEX_DB_VERSION = 21;
+export const CANONICAL_INDEX_DB_VERSION = 22;
 
 export const CANONICAL_ENTRY_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS entries (

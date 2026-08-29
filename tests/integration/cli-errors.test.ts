@@ -166,6 +166,153 @@ describe("CLI error handling", () => {
   });
 });
 
+// P1a carried advisory, wired here per docs/plans/specs/p1b-model-extraction.md
+// §1.5 (binding choice: "the envelope tests extend
+// tests/integration/cli-errors.test.ts. No tasks-cli-envelope family exists
+// at head … and minting one for two cases would fragment the CLI-envelope
+// surface.") and §5.5. Both codes were declared and WIRED by P1a (D7,
+// src/core/errors.ts) — this is new CLI-envelope-level coverage of an
+// already-correct throw, not a behavior flip: one test per code asserting
+// the {ok:false,error,code} JSON envelope on stderr and exit 2.
+describe("CLI envelope coverage for P1a's diagnostic codes (COMPOSITION_INVALID, TASK_SOURCE_INVALID)", () => {
+  test("akm task run of a malformed task source emits {ok:false,code:TASK_SOURCE_INVALID} on stderr, exit 2", async () => {
+    const stash = makeStashDir();
+    disposers.push(stash);
+    fs.mkdirSync(path.join(stash.dir, "tasks"), { recursive: true });
+    // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.2, row B-18/B-19,
+    // F-A2.35) retired the R-06 shape this fixture used to pin — task source
+    // v4 makes scheduling OPTIONAL, so "neither akm.schedule nor on:
+    // declared" is no longer an error at all (D2-N6). `run:` and `uses:`
+    // both present is task source v4's own "exactly one executable selector"
+    // TASK_SOURCE_INVALID instead — the same code, a different malformation.
+    fs.writeFileSync(
+      path.join(stash.dir, "tasks", "bad-source.yml"),
+      "version: 4\nrun: echo hi\nuses: commands/x\n",
+      "utf8",
+    );
+
+    const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () => runCli("task", "run", "bad-source"));
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("TASK_SOURCE_INVALID");
+    expect(typeof parsed.error).toBe("string");
+    expect(parsed.hint).toBe(new UsageError("x", "TASK_SOURCE_INVALID").hint());
+  });
+
+  // P4 (spec §3.2.2, rows B-14/B-15, F-A2.35): task source v3 AND v2 are
+  // both retired from `src` now, with the SAME TASK_SCHEMA_VERSION_UNSUPPORTED
+  // code and migrate hint (the migrator runs both generations in sequence).
+  test.each([
+    ["v3", "version: 3\nrun: echo hi\nschedule: '@daily'\n"],
+    ["v2", "version: 2\nschedule: '@daily'\ncommand: echo hi\n"],
+  ] as const)("akm task run of a %s task source emits {ok:false,code:TASK_SCHEMA_VERSION_UNSUPPORTED} on stderr, exit 2, naming the migrate command", async (_label, yaml) => {
+    const stash = makeStashDir();
+    disposers.push(stash);
+    fs.mkdirSync(path.join(stash.dir, "tasks"), { recursive: true });
+    fs.writeFileSync(path.join(stash.dir, "tasks", "legacy-source.yml"), yaml, "utf8");
+
+    const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () =>
+      runCli("task", "run", "legacy-source"),
+    );
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
+    expect(typeof parsed.error).toBe("string");
+    expect(parsed.hint).toContain("akm migrate apply --dry-run");
+    expect(parsed.hint).toContain("akm migrate apply");
+  });
+
+  test("akm workflow run of a step passing with: to a task target emits {ok:false,code:COMPOSITION_INVALID} on stderr, exit 2", async () => {
+    const stash = makeStashDir();
+    disposers.push(stash);
+    fs.mkdirSync(path.join(stash.dir, "tasks"), { recursive: true });
+    fs.mkdirSync(path.join(stash.dir, "workflows"), { recursive: true });
+    fs.writeFileSync(
+      path.join(stash.dir, "commands", "review.md"),
+      "Review the workflow-composed task target.\n",
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(stash.dir, "tasks", "nightly.yml"),
+      ["version: 4", "uses: commands/review", ""].join("\n"),
+    );
+    // Lane A's with-rejection (P1a, taskDispatch's head guard): a workflow
+    // step composing a task target with a with: block.
+    fs.writeFileSync(
+      path.join(stash.dir, "workflows", "with-on-task.yml"),
+      [
+        "name: With on task",
+        "on:",
+        "  workflow_dispatch:",
+        "jobs:",
+        "  main:",
+        "    runs-on: [self-hosted]",
+        "    steps:",
+        "      - id: dispatch",
+        "        uses: tasks/nightly",
+        "        with:",
+        "          scope: all",
+        "",
+      ].join("\n"),
+    );
+
+    await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () => runCli("index", "--full"));
+    const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () =>
+      runCli("workflow", "run", "workflows/with-on-task"),
+    );
+
+    expect(status).toBe(2);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("COMPOSITION_INVALID");
+    expect(parsed.error).toBe(
+      "Workflow step dispatch cannot pass with: to task target tasks/nightly; tasks/nightly declares no inputs.",
+    );
+    expect(parsed.hint).toBe(new UsageError("x", "COMPOSITION_INVALID").hint());
+  });
+});
+
+// P4 (docs/plans/specs/p4-deletions-closeout.md §5.2, carried advisory R-R7):
+// investigated adding CLI-envelope + exit-2 coverage for TARGET_REF_INVALID
+// and TASK_TARGET_UNSUPPORTED — the two D7 codes with no test at this level
+// before P4's INVALID_FLAG_VALUE re-coding sweep — and found BOTH
+// unreachable through any real `akm` invocation, so no test is added for
+// either (a fabricated assertion of an unreachable code would be worse than
+// no coverage). Recorded per the phase's own rule ("a defect discovered …
+// is recorded … and left unfixed") rather than silently absorbed:
+//
+//   - TARGET_REF_INVALID: `classifyTargetRef`'s only two callers each
+//     immediately re-code its thrown UsageError before it can reach a CLI
+//     boundary. `src/tasks/source/task-source-v4.ts`'s `parseTarget` wraps
+//     it through `sourceError(ctx, ["uses"], cause.message)`, which always
+//     re-throws as TASK_SOURCE_INVALID (verified empirically: a v4 task with
+//     `uses: nonsense/target` surfaces `{code:"TASK_SOURCE_INVALID"}`, not
+//     TARGET_REF_INVALID). `src/workflows/source-ir/uses.ts`'s
+//     `classifyWorkflowSourceUses` similarly feeds a compile-time
+//     `WorkflowSourceSemanticError` (its own `unsupported-uses-target` family
+//     of codes), which the freeze wrapper's P4-N2 mapping (§3.3.4) recodes
+//     onto WORKFLOW_SOURCE_INVALID or COMPOSITION_INVALID at the CLI
+//     boundary. TARGET_REF_INVALID's `.code` is exercised only at the unit
+//     level (`tests/execution/target-ref.test.ts`).
+//   - TASK_TARGET_UNSUPPORTED: script-capture.ts's two live throw sites are
+//     both structurally unreachable in THIS runtime — `SCRIPT_EXTENSIONS`
+//     (src/core/recognition-util.ts) and `SCRIPT_INTERPRETERS`'s key set
+//     (script-capture.ts) are the identical 16 extensions, so no script
+//     asset can ever resolve (a prerequisite reached before
+//     `scriptInterpreter` runs) with an extension `scriptInterpreter` then
+//     rejects; and the Bun-required arm's guard (`!process.versions.bun`) is
+//     always false under `bun test`.
+//
+// WORKFLOW_SOURCE_INVALID, TASK_SOURCE_INVALID, COMPOSITION_INVALID, and
+// INPUT_BINDING_INVALID all already have CLI-level coverage: the describe
+// block above; tests/integration/commands/tasks-input-flags.test.ts;
+// tests/integration/workflows/workflow-source-collision.test.ts;
+// tests/integration/commands/workflow-cli-contract.test.ts.
+
 describe("error class hints", () => {
   test("ConfigError derives hint from code by default", () => {
     expect(new ConfigError("missing stash", "STASH_DIR_NOT_FOUND").hint()).toContain("akm setup");

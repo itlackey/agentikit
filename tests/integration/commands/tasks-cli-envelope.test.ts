@@ -19,12 +19,6 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { saveConfig } from "../../../src/core/config/config";
-import {
-  buildScheduledBindingInvocation,
-  consumeSchedulerContextArg,
-  schedulerContextDescriptor,
-  writeSchedulerContextDescriptor,
-} from "../../../src/tasks/scheduler-invocation";
 import { runCliCapture } from "../../_helpers/cli";
 import { makeSandboxDir, type SandboxedDir, withEnv, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
@@ -42,9 +36,16 @@ function makeStashDir(): string {
 }
 
 function writeDisabledCommandTask(stashDir: string): void {
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, row B-22, F-A2.18)
+  // DELETED run-task.ts's shouldSkipUnactivatedTask entirely — task source v4
+  // has no document-level enabled/disabled concept, and manual dispatch was
+  // never gated by schedule[i].enabled either way (that flag only decides
+  // whether scheduler-sync installs a binding, row B-21). Converted to task
+  // source v4: a schedule-disabled task still runs fine on a manual `akm task
+  // run` (no --scheduled).
   fs.writeFileSync(
     path.join(stashDir, "tasks", "disabled-command.yml"),
-    ["version: 3", "run: exit 0", "akm:", '  schedule: "@daily"', "  enabled: false", ""].join("\n"),
+    ["version: 4", "run: exit 0", "schedule:", "  - cron: '@daily'", "    enabled: false", ""].join("\n"),
   );
 }
 
@@ -87,7 +88,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     expect(env.code).toBe("ASSET_NOT_FOUND");
   });
 
-  test("tasks run manually executes an intentionally disabled task", async () => {
+  test("tasks run manually executes a schedule-disabled task", async () => {
     const stash = makeStashDir();
     writeDisabledCommandTask(stash);
 
@@ -101,7 +102,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     const stash = makeStashDir();
     fs.writeFileSync(
       path.join(stash, "tasks", "nightly.yml"),
-      ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+      ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
     );
 
     const canonical = await runCli(["task", "run", "tasks/nightly"], stash);
@@ -139,24 +140,6 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
     }
   });
 
-  test("a backend-generated invocation uses its captured stash and skips the disabled task", async () => {
-    const capturedStash = makeStashDir();
-    const ambientStash = makeStashDir();
-    writeDisabledCommandTask(capturedStash);
-    const generated = await withEnv({ AKM_BUNDLE_DIR: capturedStash }, () => {
-      const contextPath = writeSchedulerContextDescriptor(schedulerContextDescriptor());
-      return buildScheduledBindingInvocation(["akm"], contextPath, ["task", "run", "disabled-command", "--scheduled"]);
-    });
-
-    const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: ambientStash }, () => {
-      const consumed = consumeSchedulerContextArg(generated.argv);
-      return runCliCapture([...consumed.slice(1)]);
-    });
-
-    expect(code, stderr).toBe(0);
-    expect(JSON.parse(stdout).result.status).toBe("disabled");
-  });
-
   test.each([
     ["flat component", "."],
     ["nested component", "components/scheduled"],
@@ -169,7 +152,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
       fs.mkdirSync(taskRoot, { recursive: true });
       fs.writeFileSync(
         path.join(taskRoot, "standalone.yml"),
-        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+        ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
       );
       saveConfig({
         configVersion: "0.9.0",
@@ -211,7 +194,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
       fs.mkdirSync(path.join(taskRoot, "sub", "deep"), { recursive: true });
       fs.writeFileSync(
         path.join(taskRoot, `${taskId}.yml`),
-        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+        ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
       );
       saveConfig({
         configVersion: "0.9.0",
@@ -247,7 +230,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
       fs.mkdirSync(path.join(bundle.dir, "tasks"), { recursive: true });
       fs.writeFileSync(
         path.join(bundle.dir, `${taskId}.yml`),
-        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+        ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
       );
       saveConfig({
         configVersion: "0.9.0",
@@ -287,7 +270,7 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
       fs.mkdirSync(path.dirname(path.join(bundle.dir, `${taskId}.yml`)), { recursive: true });
       fs.writeFileSync(
         path.join(bundle.dir, `${taskId}.yml`),
-        ["version: 3", 'run: "exit 0"', "akm:", '  schedule: "@daily"', ""].join("\n"),
+        ["version: 4", 'run: "exit 0"', 'schedule: "@daily"', ""].join("\n"),
       );
       saveConfig({
         configVersion: "0.9.0",

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { loadConfig } from "../../core/config/config";
-import { NotFoundError, UsageError } from "../../core/errors";
+import { COMPOSITION_INVALID_MULTI_JOB_HINT, NotFoundError, UsageError } from "../../core/errors";
 import { getDbPath } from "../../core/paths";
 import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import { deriveInstallations } from "../../indexer/installations";
@@ -52,13 +52,13 @@ export function parseWorkflowRefInput(ref: string): BundleRef {
   if (parsed.fragment !== undefined) {
     throw new UsageError(
       `Export fragment "#${parsed.fragment}" is not accepted in a workflow ref.`,
-      "INVALID_FLAG_VALUE",
+      "TARGET_REF_INVALID",
     );
   }
   if (parsed.conceptId.startsWith("workflow:")) {
     throw new UsageError(
       `Invalid workflow ref "${ref.trim()}". Use [bundle//]conceptId, such as workflows/release.`,
-      "INVALID_FLAG_VALUE",
+      "TARGET_REF_INVALID",
     );
   }
   return parsed;
@@ -84,7 +84,10 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
     return [{ source, bundleId }];
   });
   if (bundleRef.bundle && searchSources.length === 0) {
-    throw new UsageError(`Bundle "${bundleRef.bundle}" was not found among configured sources.`, "INVALID_FLAG_VALUE");
+    throw new UsageError(
+      `Bundle "${bundleRef.bundle}" was not found among configured sources.`,
+      "WORKFLOW_SOURCE_INVALID",
+    );
   }
   let assetPath: string | undefined;
   let sourcePath: string | undefined;
@@ -117,7 +120,7 @@ export async function loadWorkflowAsset(ref: string): Promise<WorkflowAsset> {
       const adapterId = rejectedSource.source.adapterId ?? "unassigned";
       throw new UsageError(
         `Bundle "${sourceName}" uses adapter "${adapterId}", which does not support native workflow execution.`,
-        "INVALID_FLAG_VALUE",
+        "WORKFLOW_SOURCE_INVALID",
       );
     }
     throw new NotFoundError(`Workflow not found for ref: ${ref}`);
@@ -169,8 +172,20 @@ function compileWorkflowSourceFromDisk(assetPath: string, workspaceRoot: string)
   const content = fs.readFileSync(assetPath, "utf8");
   const result = compileWorkflowSource(content, { path: assetPath, workspaceRoot });
   if (!result.ok) {
+    // P4-N2's mapping (docs/plans/specs/p4-deletions-closeout.md §3.3.4): this
+    // is the FIRST compile of a workflow's own source that a ref resolves
+    // through (loadWorkflowAsset runs before compileResolveFreezeWorkflowV4),
+    // so it must apply the same code split as the freeze wrapper — otherwise
+    // row B-44's COMPOSITION_INVALID promise never reaches `startWorkflowRun`
+    // callers, which never get past this point on a multi-job source.
     const details = result.errors.map((error) => `  ${error.path}:${error.line} — ${error.message}`).join("\n");
-    throw new UsageError(`Workflow source has ${result.errors.length} error(s):\n${details}`);
+    const isMultiJob = result.errors.length === 1 && result.errors[0]?.code === "multi-job-unsupported";
+    const code = isMultiJob ? "COMPOSITION_INVALID" : "WORKFLOW_SOURCE_INVALID";
+    throw new UsageError(
+      `Workflow source has ${result.errors.length} error(s):\n${details}`,
+      code,
+      isMultiJob ? COMPOSITION_INVALID_MULTI_JOB_HINT : undefined,
+    );
   }
   return result.ir;
 }

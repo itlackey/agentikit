@@ -16,6 +16,7 @@ import { cosineSimilarity, type EmbeddingVector } from "../../llm/embedders/type
 import type { Database } from "../database";
 import type { DbVecResult } from "./index-entry-types";
 import { getMeta, setMeta } from "./index-meta-repository";
+import { SQLITE_CHUNK_SIZE } from "./index-sql";
 
 // ── sqlite-vec extension ────────────────────────────────────────────────────
 
@@ -76,6 +77,42 @@ export function isVecFastPathReady(db: Database): boolean {
   // every embedding. Indexes written by earlier versions still carry that stale
   // flag, so the read path has to verify the table really exists.
   return hasVecTable(db);
+}
+
+/**
+ * Verify that the vec fast-path table mirrors the complete durable BLOB set.
+ *
+ * A targeted embedding write preserves the prior readiness decision because
+ * its subset cannot prove an older degraded generation is healed. Global
+ * materialization uses this aggregate check before promoting the persisted
+ * flag; search itself still reads the cheap flag and does not repeat the check
+ * per query.
+ */
+export function isVecFastPathComplete(db: Database): boolean {
+  if (!isVecAvailable(db) || !hasVecTable(db)) return false;
+  try {
+    const missingVecRows = db
+      .prepare(`
+        SELECT id FROM embeddings
+        EXCEPT
+        SELECT id FROM entries_vec
+        LIMIT 1
+      `)
+      .all();
+    if (missingVecRows.length > 0) return false;
+
+    const orphanVecRows = db
+      .prepare(`
+        SELECT id FROM entries_vec
+        EXCEPT
+        SELECT id FROM embeddings
+        LIMIT 1
+      `)
+      .all();
+    return orphanVecRows.length === 0;
+  } catch {
+    return false;
+  }
 }
 
 const vecTablePresent = new WeakMap<Database, boolean>();
@@ -323,13 +360,37 @@ function searchBlobVec(db: Database, queryEmbedding: EmbeddingVector, k: number)
  */
 export function getAllEntriesForEmbedding(
   db: Database,
+  entryIds?: readonly number[],
 ): Array<{ id: number; searchText: string; itemRef: string; filePath: string }> {
-  return db
-    .prepare(`
+  const select = `
       SELECT e.id, e.search_text AS searchText, e.item_ref AS itemRef, e.file_path AS filePath FROM entries e
-      WHERE NOT EXISTS (SELECT 1 FROM embeddings b WHERE b.id = e.id)
-    `)
-    .all() as Array<{ id: number; searchText: string; itemRef: string; filePath: string }>;
+    `;
+  const missing = "NOT EXISTS (SELECT 1 FROM embeddings b WHERE b.id = e.id)";
+  if (entryIds === undefined) {
+    return db.prepare(`${select} WHERE ${missing} ORDER BY e.id`).all() as Array<{
+      id: number;
+      searchText: string;
+      itemRef: string;
+      filePath: string;
+    }>;
+  }
+
+  const targets = [...new Set(entryIds)].sort((left, right) => left - right);
+  const rows: Array<{ id: number; searchText: string; itemRef: string; filePath: string }> = [];
+  for (let offset = 0; offset < targets.length; offset += SQLITE_CHUNK_SIZE) {
+    const chunk = targets.slice(offset, offset + SQLITE_CHUNK_SIZE);
+    if (chunk.length === 0) continue;
+    const placeholders = chunk.map(() => "?").join(",");
+    rows.push(
+      ...(db.prepare(`${select} WHERE e.id IN (${placeholders}) AND ${missing} ORDER BY e.id`).all(...chunk) as Array<{
+        id: number;
+        searchText: string;
+        itemRef: string;
+        filePath: string;
+      }>),
+    );
+  }
+  return rows;
 }
 
 export function getEmbeddingCount(db: Database): number {

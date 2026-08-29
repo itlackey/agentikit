@@ -14,25 +14,26 @@
  * the 2026-07 read-path reindex-contention findings §7).
  *
  * This is NOT a general reindex. It upserts exactly the files the caller just
- * wrote: frontmatter/metadata via the shared matcher pipeline, the `entries`
- * row, and an incremental FTS refresh. Embeddings, index-time LLM passes,
- * graph extraction, `builtAt`, and the per-dir walk cache are all deliberately
- * untouched — the next full run heals them (the opportunistic-recovery
- * strategy of the index-consistency ADR).
+ * wrote: frontmatter/metadata via the shared matcher pipeline, the canonical
+ * row with its transactionally owned FTS projection, and vectors for changed
+ * entry IDs when semantic search is enabled. Index-time LLM passes, graph
+ * extraction, `builtAt`, and the per-dir walk cache remain full-index
+ * responsibilities.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { akmAdapter } from "../core/adapter/adapters/akm-adapter";
+import { loadConfig } from "../core/config/config";
 import { isDataDirUnreadableError } from "../core/errors";
 import { isPathAbsent } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { warn, warnVerbose } from "../core/warn";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { deleteEntriesByIds, getEntryCount, upsertEntry } from "../storage/repositories/index-entries-repository";
-import { rebuildFts } from "../storage/repositories/index-fts-repository";
 import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
+import { generateEmbeddingsForDb, publishTargetedSemanticStatus } from "./materialize-embeddings";
 import type { IndexDocument } from "./passes/metadata";
 import { drainDirDocuments } from "./scan/drain-dir";
 import { buildSearchText } from "./search/search-fields";
@@ -134,6 +135,8 @@ export async function indexWrittenAssets(
       try {
         db.exec(`PRAGMA busy_timeout = ${WRITE_PATH_INDEX_BUSY_TIMEOUT_MS}`);
         if (getEntryCount(db) === 0) return true;
+        const targetEntryIds = new Set<number>();
+        let mutated = false;
         db.transaction(() => {
           const unindexableEntryIds = new Set<number>();
           for (const file of unindexable) {
@@ -160,6 +163,7 @@ export async function indexWrittenAssets(
             for (const row of rows) unindexableEntryIds.add(row.id);
           }
           deleteEntriesByIds(db, [...unindexableEntryIds]);
+          mutated ||= unindexableEntryIds.size > 0;
           for (const { file, entry, conceptId, contentHash } of pairs) {
             let entryWithSize = entry;
             try {
@@ -187,10 +191,15 @@ export async function indexWrittenAssets(
               db,
               supersededIds.map((row) => row.id),
             );
-            upsertEntry(db, file, entryWithSize, buildSearchText(entry), provenance, contentHash);
+            targetEntryIds.add(upsertEntry(db, file, entryWithSize, buildSearchText(entry), provenance, contentHash));
+            mutated = true;
           }
-          if (pairs.length > 0 || unindexable.size > 0) rebuildFts(db, { incremental: true });
         })();
+        if (mutated) {
+          const config = loadConfig();
+          const embeddingResult = await generateEmbeddingsForDb(db, config, () => {}, undefined, [...targetEntryIds]);
+          publishTargetedSemanticStatus(db, config, embeddingResult);
+        }
       } finally {
         closeDatabase(db);
       }

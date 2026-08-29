@@ -275,16 +275,6 @@ export interface IndexDocument {
    * child by parent ref without a full table scan.
    */
   derivedFrom?: string;
-  /**
-   * First prose paragraph of the asset body — the conventions' self-situating
-   * opening (stash-conventions SPEC-8). Captured by the metadata pass only when
-   * `index.indexBodyOpening` is enabled (default off), capped at
-   * `BODY_OPENING_MAX_CHARS`. `buildSearchFields` folds it into the lowest-weight
-   * `content` FTS column whenever present. Never captured for secret/env files or
-   * session-kind memories.
-   */
-  bodyOpening?: string;
-
   // ── IndexDocument-native extras (no IndexDocument equivalent) ──
   pinned?: boolean;
   /** ← OKF `timestamp` (v0.1) — v0.2 prefers `generated.at` when present; see `updated`'s derivation note below. */

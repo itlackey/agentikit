@@ -156,56 +156,72 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
     expect(issues(diags)).not.toContain("missing-skill-md");
   });
 
-  test("invalid-task-yaml — task missing the v3 version (canonical source parser)", async () => {
+  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2, F-A2.21) FLIPs every
+  // "v3 parsing" case below to its task source v4 equivalent, and adds one
+  // new case pinning row B-14 (a genuine version: 3 document now fails the
+  // SAME TASK_SCHEMA_VERSION_UNSUPPORTED way version: 2 already did, row
+  // B-15).
+  test("invalid-task-yaml — a task missing the version field (canonical source parser)", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
-      [change("tasks/bad.yml", "uses: commands/review\nakm:\n  schedule: '@daily'\n")],
+      [change("tasks/bad.yml", "uses: commands/review\nschedule: '@daily'\n")],
       ctx,
     );
     const hit = diags.find((d) => d.issue === "invalid-task-yaml");
     expect(hit).toBeDefined();
-    expect(hit?.detail).toMatch(/version.*required.*3/i);
+    expect(hit?.detail).toMatch(/version.*required.*4/i);
   });
 
-  test("a valid v3 task omitting optional `akm.enabled` is not flagged", async () => {
+  test("a valid task source v4 document is not flagged", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
-      [change("tasks/ok.yml", "version: 3\nuses: akm/command\nwith:\n  content: hi\nakm:\n  schedule: '@daily'\n")],
+      [change("tasks/ok.yml", "version: 4\nuses: akm/command\nwith:\n  content: hi\nschedule: '@daily'\n")],
       ctx,
     );
     expect(diags.find((d) => d.issue === "invalid-task-yaml")).toBeUndefined();
   });
 
-  test("a task with a non-boolean `akm.enabled` is flagged", async () => {
+  test("a task with a non-boolean schedule[].enabled is flagged", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
       [
         change(
           "tasks/bad-enabled.yml",
-          "version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\n  enabled: yesplease\n",
+          "version: 4\nuses: commands/review\nschedule:\n  - cron: '@daily'\n    enabled: yesplease\n",
         ),
       ],
       ctx,
     );
     const hit = diags.find((d) => d.issue === "invalid-task-yaml");
-    expect(hit?.detail).toMatch(/akm\.enabled.*boolean/i);
+    expect(hit?.detail).toMatch(/schedule.*enabled.*boolean/i);
   });
 
   test("a task omitting `version` is flagged", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
-      [change("tasks/no-version.yml", "uses: commands/review\nakm:\n  schedule: '@daily'\n")],
+      [change("tasks/no-version.yml", "uses: commands/review\nschedule: '@daily'\n")],
       ctx,
     );
     const hit = diags.find((d) => d.issue === "invalid-task-yaml");
-    expect(hit?.detail).toMatch(/version.*required.*3/i);
+    expect(hit?.detail).toMatch(/version.*required.*4/i);
   });
 
-  test("a v2 task is flagged with the canonical migration preview hint", async () => {
+  test("a v3 task is flagged with the canonical migration preview hint (row B-14)", async () => {
+    const ctx = overlayCtx(ROOT, {});
+    const diags = await akmAdapter.validate(
+      component({ root: ROOT }),
+      [change("tasks/legacy-v3.yml", "version: 3\nrun: echo hi\nschedule: '@daily'\n")],
+      ctx,
+    );
+    const hit = diags.find((d) => d.issue === "invalid-task-yaml");
+    expect(hit?.detail).toContain("akm migrate apply --dry-run");
+  });
+
+  test("a v2 task is flagged with the canonical migration preview hint (row B-15)", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),

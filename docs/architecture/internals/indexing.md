@@ -20,15 +20,15 @@ Generate metadata from the asset
         ↓
 Build weighted search fields
         ↓
-Upsert entries
+Atomically apply entries + FTS projections + vector invalidation
         ↓
-Rebuild FTS
+Reconcile removed sources and explicit --clean deletions
         ↓
-Re-link preserved usage events
+Generate missing/stale embeddings when enabled
         ↓
-Recompute utility scores
+Re-link preserved usage events and recompute utility scores
         ↓
-Refresh semantic status / embeddings when enabled
+Verify and report the final generation
 ```
 
 Cache materialisation runs through each source's `sync()` method
@@ -44,10 +44,18 @@ Cache materialisation runs through each source's `sync()` method
 | `description` | description text |
 | `tags` | tags + aliases |
 | `hints` | `searchHints`, `examples`, `usage`, intent text, wiki xrefs, wiki page kind |
-| `content` | TOC headings plus parameter names/descriptions |
+| `content` | bounded native/adapter body projection, TOC headings, and parameter names/descriptions |
 
-The `content` column is intentionally sparse. Longer freeform guidance such as
-`usage` and `intent` primarily feed `hints`, not `content`.
+The `content` column is intentionally lowest-weight. AKM-native Markdown body
+prose is normalized and bounded at the adapter boundary; secrets, env values,
+raw sessions, and session checkpoints never enter it. Longer structured
+guidance such as `usage` and `intent` continues to feed `hints`.
+
+Lexical retrieval uses one central progressive plan: Unicode letter/number
+tokens are deduplicated and capped, then FTS executes strict AND, prefix-AND,
+and—only if both miss—one OR/prefix-OR recovery query. Every stage feeds the
+same BM25 normalization and downstream ranker; callers do not strip stopwords
+or maintain alternate result collections.
 
 ## Modes
 
@@ -57,6 +65,21 @@ The `content` column is intentionally sparse. Longer freeform guidance such as
 Full rebuilds preserve usage history and then re-link it to rebuilt entries by
 ref.
 
+## Mutation and finalization boundary
+
+The canonical entry repository owns each complete synchronous mutation of
+`index.db`: the `entries` row, its weighted `entries_fts` projection, and stale
+vector invalidation are committed in one SQLite transaction. Entry deletion
+removes FTS, vector, and utility children before the parent row. Callers do not
+maintain a dirty queue or request an incremental FTS rebuild. The full
+`rebuildFts()` operation remains only as an explicit recovery verifier for this
+regenerable database.
+
+An explicit `akm index --clean` reconciles missing files after the filesystem
+walk and before embedding, utility recomputation, totals, and verification.
+Consequently `totalEntries`, FTS state, semantic verification, and
+`clean.removed` all describe the same committed generation.
+
 ## Indexed Identity and Location
 
 Every current `entries` row carries a canonical fully qualified
@@ -64,14 +87,15 @@ Every current `entries` row carries a canonical fully qualified
 and the absolute `file_path` of the materialized local asset. Search and show
 use those required columns for identity and access rather than reconstructing
 refs from a name or source path. `item_ref` is the sole upsert conflict key;
-`document_json` is the sole stored document projection. The v21 schema does not
+`document_json` is the sole stored document projection. The v22 schema does not
 admit incomplete identity rows or retain an entry-key/path lookup fallback.
 This preserves bundle identity when multiple sources contain the same concept.
 
 ## LLM Enrichment Pass
 
-When metadata enhancement is enabled, the enrichment pass runs after all
-entries are upserted and FTS is rebuilt. Key properties:
+When metadata enhancement is enabled, the enrichment pass runs after the
+filesystem-derived entries are upserted. Enhanced entries are written back
+through the same canonical entry/FTS mutation. Key properties:
 
 **Concurrency** — directories are enriched in parallel using a bounded
 concurrency pool (`concurrentMap` from `src/core/concurrent.ts`). The pool
@@ -110,7 +134,7 @@ skipped unless the caller explicitly requests re-enrichment.
 ## Database Tables
 
 `index.db`'s schema (`ensureSchema()`,
-`src/storage/repositories/index-schema.ts`) creates 16 tables (2 of them
+`src/storage/repositories/index-schema.ts`) creates 15 tables (2 of them
 virtual). Full column-level detail lives in
 [Storage Locations](storage-locations.md#dataindexdb--main-search-index);
 this is a purpose summary:
@@ -119,7 +143,6 @@ this is a purpose summary:
 | --- | --- |
 | `entries` | normalized asset records |
 | `entries_fts` (virtual, FTS5) | multi-column full-text index |
-| `entries_fts_dirty` | queue of entries needing an FTS rebuild |
 | `embeddings` | stored embedding vectors (JS cosine-similarity fallback) |
 | `entries_vec` (virtual, conditional) | `sqlite-vec` ANN index, created only when the extension loads |
 | `utility_scores` | recomputed utility boost state (global) |
@@ -141,14 +164,16 @@ separate from durable runtime state.
 ## Schema Versioning
 
 `index.db` is ephemeral — fully rebuildable from sources by `akm index`. The
-current generation is exactly v21. `ensureSchema()`
+current generation is exactly v22. `ensureSchema()`
 (`src/storage/repositories/index-schema.ts`) accepts an existing generation
 only when both `index_meta.version` and the complete `entries` fingerprint
 match the canonical contract, including `AUTOINCREMENT`, required columns,
 constraints, indexes, collation, and hidden-column absence. An incompatible
 generation is discarded: AKM drops the entry-dependent derived tables and
-caches, creates the canonical v21 schema, and rebuilds it from current sources
-and durable usage state. Current read-only and existing-database openers reject
+caches, creates the canonical v22 schema, and rebuilds it from current sources
+and durable usage state. In particular, v21 is discarded because it predates
+entry-owned synchronous FTS publication and may contain stale dirty-queue
+state. Current read-only and existing-database openers reject
 an incompatible generation instead of serving it. Durable workflow, task,
 proposal, event, and usage state in `state.db` is never touched by this path.
 

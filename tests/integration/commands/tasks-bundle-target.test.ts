@@ -23,9 +23,11 @@ import { resetConfigCache, saveConfig } from "../../../src/core/config/config";
 import { buildCronLine, CRON_BACKEND, type CronExec, type CronExecResult } from "../../../src/tasks/backends/cron";
 import type { SchedulerBinding } from "../../../src/tasks/scheduler-binding";
 import {
+  resolveScheduledTaskContext,
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
+  writeSchedulerContextDescriptor,
 } from "../../../src/tasks/scheduler-invocation";
 import {
   type IsolatedAkmStorage,
@@ -72,13 +74,31 @@ function cron() {
   });
 }
 
+/**
+ * #846: `SCHEDULED_CONTEXT` above is an intentionally unwritable fake path
+ * (exercising special-character handling in the default cron line), so
+ * belongsToBundle's owning-path check could never resolve it. Tests that
+ * need a primary-bundle entry to actually be recognized as this stash's
+ * own across more than one sync use this real, writable context instead.
+ */
+function cronRealContext() {
+  return CRON_BACKEND({
+    exec,
+    fs: { ensureDir() {} },
+    logDir: "/var/log/akm",
+    akmArgv: ["/usr/local/bin/akm"],
+    envPath: false,
+    scheduledContext: resolveScheduledTaskContext(),
+  });
+}
+
 function writeTaskFile(dir: string, id: string, yaml: string): void {
   fs.mkdirSync(path.join(dir, "tasks"), { recursive: true });
   fs.writeFileSync(path.join(dir, "tasks", `${id}.yml`), yaml, "utf8");
 }
 
 function taskYaml(enabled = true): string {
-  return ["version: 3", 'run: "true"', "akm:", '  schedule: "@daily"', `  enabled: ${enabled}`, ""].join("\n");
+  return ["version: 4", 'run: "true"', "schedule:", '  - cron: "@daily"', `    enabled: ${enabled}`, ""].join("\n");
 }
 
 /** Extract the crontab body line (between BEGIN/END markers) for a task id. */
@@ -159,13 +179,18 @@ describe("bundle-targeted tasks via --bundle", () => {
   });
 
   test("plain sync never removes a --bundle entry; sync --bundle reconciles only that bundle", async () => {
+    // #846: the primary ("bar") entry needs to be recognized as this
+    // stash's own across the two primary syncs below — use the real,
+    // writable context for it (see cronRealContext).
+    writeSchedulerContextDescriptor(schedulerContextDescriptor(resolveScheduledTaskContext(), ""));
+
     // A primary task and a work-bundle task, both scheduled.
-    await akmTasksAdd({ id: "bar", schedule: "@daily", command: "true" }, { backend: cron() });
+    await akmTasksAdd({ id: "bar", schedule: "@daily", command: "true" }, { backend: cronRealContext() });
     writeTaskFile(work.dir, "foo", taskYaml());
     await akmTasksSync({ backend: cron() }, "work");
 
     // Plain (primary) sync: reconciles only `bar`; `foo` (target work) is untouched.
-    const primarySync = await akmTasksSync({ backend: cron() });
+    const primarySync = await akmTasksSync({ backend: cronRealContext() });
     expect(primarySync.removed).toEqual([]);
     expect(cronBody(exec.current(), "foo")).toContain("--bundle work");
     expect(cronBody(exec.current(), "bar")).toBeDefined();

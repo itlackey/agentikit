@@ -43,6 +43,34 @@ export type WorkflowRunRow = {
   engine_lease_until: string | null;
   /** Random holder id of the engine invocation driving the run. NULL when unleased. */
   engine_lease_holder: string | null;
+  /** The parent run this run was spawned under (migration 023). NULL on a top-level run. */
+  parent_run_id: string | null;
+  /**
+   * The PARENT RUN's unit that spawned this CHILD run (migration 023). NULL
+   * on a top-level run. NOT the same concept as
+   * `workflow_run_units.parent_unit_id` (map fan-out template parentage
+   * within one run) — see migration 023's comment in
+   * `src/core/state/migrations.ts`. The repository's own input/accessor API
+   * spells this `spawnedByUnitId`, never `parentUnitId`.
+   */
+  parent_unit_id: string | null;
+  /** This run's deterministic spawn identity (migration 023), unique per `parent_run_id`. NULL on a top-level run. */
+  invocation_key: string | null;
+  /**
+   * Resolved declared `outputs:` (migration 024, P3b §4.3): the run plan's
+   * canonical JSON export map, persisted once at run completion in the SAME
+   * transaction as the final step's completion. NULL for every run whose
+   * plan declares no `outputs:` and for every run that fails or blocks
+   * before completing — never `{}`. `WorkflowRunsRepository.setRunOutputs`
+   * is the only writer.
+   *
+   * Optional (rather than required, unlike `parent_run_id` et al.) so a
+   * pre-existing hand-constructed `WorkflowRunRow` literal in a test this
+   * phase does not own stays type-valid without adding a key it never
+   * asserted on; every real row read via `SELECT *` still carries it
+   * (`null` until a completion sets it).
+   */
+  outputs_json?: string | null;
 };
 
 export type WorkflowRunStepRow = {
@@ -247,6 +275,29 @@ export interface PublishWorkflowRunV4Input {
   readonly revalidateSources: () => void;
 }
 
+/**
+ * Publication envelope for a child workflow run (migration 023, P3a §5.2).
+ *
+ * Unlike {@link PublishWorkflowRunV4Input}, this carries no `revalidateSources`
+ * and no `workflowRefs`/`force` scope-conflict inputs: the child plan was
+ * already compiled, validated, frozen, and CAS'd into the PARENT's read set
+ * at parent freeze time (docs/plans/specs/p3a-plan-v5-child-freeze.md §4.4),
+ * so {@link WorkflowRunsRepository.publishChildWorkflowRun} performs no
+ * source access and applies no top-level scope-conflict rule of its own.
+ */
+export interface PublishChildWorkflowRunInput {
+  readonly parentRunId: string;
+  /** The parent run's unit that spawned this child — stored in workflow_runs.parent_unit_id (A-N12). */
+  readonly spawnedByUnitId: string;
+  /** This spawn's deterministic identity — {@link WorkflowRunsRepository.publishChildWorkflowRun} is idempotent on (parentRunId, invocationKey). */
+  readonly invocationKey: string;
+  readonly run: InsertRunInput;
+  readonly steps: InsertStepInput[];
+  /** Canonical JSON of the EMBEDDED frozen child plan. Never re-derived from source. */
+  readonly planJson: string;
+  readonly planHash: string;
+}
+
 /** Filter object for {@link WorkflowRunsRepository.listRuns}. */
 export interface ListRunsFilter {
   scopeKey: string;
@@ -261,6 +312,14 @@ export interface ListRunsFilter {
    * (the `akm show` guard) use {@link WorkflowRunsRepository.findActiveOrBlockedRunForScope}.
    */
   activeOnly?: boolean;
+  /**
+   * Include child workflow runs (P3b, B-N10). Default `false`: a child run
+   * is invisible to this query unless explicitly opted in — surfaced as
+   * `akm workflow list --children`. For any database with no child rows —
+   * every pre-P3b database and every non-composing workflow — the result set
+   * is byte-identical regardless of this flag.
+   */
+  includeChildren?: boolean;
 }
 
 /**
@@ -293,6 +352,21 @@ export class WorkflowRunsRepository {
 
   // ── reads (fully materialised) ─────────────────────────────────────────────
 
+  /**
+   * The top-level start guard `publishWorkflowRunV4` uses to refuse starting
+   * a SECOND active run of the same ref in the same scope. `AND
+   * parent_run_id IS NULL` (B-N10's FOURTH site, code-review round 4 finding
+   * 2 / Review log R2): a child run carries the PARENT's `scope_key` (P3a
+   * §5.2), so once a parent publishes a child of some ref, starting a
+   * TOP-LEVEL run of that same ref in that scope must never resolve to the
+   * child — the child is not "already an active run in this scope" from a
+   * fresh top-level invocation's point of view; the PARENT, if anything, is.
+   * Before this filter, `publishWorkflowRunV4` refused with
+   * `RESOURCE_ALREADY_EXISTS` naming the CHILD's own run id, instructing the
+   * operator to `akm workflow abandon` a child a parent is actively driving.
+   * For any database with no child rows the result is byte-identical, same
+   * as the other three B-N10 sites below.
+   */
   findActiveRunForScope(
     workflowRefs: string | readonly string[],
     scopeKey: string | null,
@@ -301,7 +375,7 @@ export class WorkflowRunsRepository {
     if (refs.length === 0) return undefined;
     return this.db
       .prepare(
-        `SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+        `SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
       )
       .get(...refs, scopeKey) as { id: string; current_step_id: string | null } | undefined;
   }
@@ -313,17 +387,27 @@ export class WorkflowRunsRepository {
     );
   }
 
+  /**
+   * The scope-attach lookup `akm workflow run <ref>` uses to find an
+   * in-progress top-level run to resume instead of starting a new one.
+   * `AND parent_run_id IS NULL` (B-N10): a child run must never be attached
+   * to directly through this path — a parent-driven child would then have
+   * TWO drivers. For any database with no child rows the result is
+   * byte-identical.
+   */
   getActiveRunRowForScope(
     workflowRefs: string | readonly string[],
     scopeKey: string | null,
   ): WorkflowRunRow | undefined {
     const refs = typeof workflowRefs === "string" ? [workflowRefs] : [...workflowRefs];
     if (refs.length === 0) return undefined;
-    return this.db
-      .prepare(
-        `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
-      )
-      .get(...refs, scopeKey) as WorkflowRunRow | undefined;
+    return (
+      (this.db
+        .prepare(
+          `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+        )
+        .get(...refs, scopeKey) as WorkflowRunRow | undefined) ?? undefined
+    );
   }
 
   hasRun(runId: string): boolean {
@@ -358,6 +442,12 @@ export class WorkflowRunsRepository {
       // into this shared list filter.
       filters.push("status = 'active'");
     }
+    // B-N10: a child run is invisible to this scope query unless the caller
+    // explicitly opts in (`akm workflow list --children`). For any database
+    // with no child rows the result set is byte-identical either way.
+    if (!filter.includeChildren) {
+      filters.push("parent_run_id IS NULL");
+    }
     const where = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
     return this.db
       .prepare(`SELECT * FROM workflow_runs ${where} ORDER BY updated_at DESC, created_at DESC`)
@@ -376,13 +466,19 @@ export class WorkflowRunsRepository {
       | undefined;
   }
 
+  /**
+   * The `akm show` active-run guard: which run (if any) currently occupies
+   * this scope. `AND parent_run_id IS NULL` (B-N10) — a child a parent is
+   * driving must never be reported as "the" active run; the PARENT is. For
+   * any database with no child rows the result is byte-identical.
+   */
   findActiveOrBlockedRunForScope(
     scopeKey: string,
   ): { id: string; current_step_id: string | null; workflow_ref: string } | null {
     return (
       this.db
         .prepare<{ id: string; current_step_id: string | null; workflow_ref: string }>(
-          "SELECT id, current_step_id, workflow_ref FROM workflow_runs WHERE scope_key = ? AND status IN ('active', 'blocked') ORDER BY updated_at DESC LIMIT 1",
+          "SELECT id, current_step_id, workflow_ref FROM workflow_runs WHERE scope_key = ? AND status IN ('active', 'blocked') AND parent_run_id IS NULL ORDER BY updated_at DESC LIMIT 1",
         )
         .get(scopeKey) ?? null
     );
@@ -391,6 +487,13 @@ export class WorkflowRunsRepository {
   // ── writes ─────────────────────────────────────────────────────────────────
 
   insertRun(input: InsertRunInput): void {
+    // R-R3 (P3a Review log; docs/plans/specs/p4-deletions-closeout.md §8):
+    // this 13-column list is hand-duplicated by publishChildWorkflowRun's own
+    // INSERT below, which extends it with parent_run_id/parent_unit_id/
+    // invocation_key. A signature refactor to share one INSERT builder was
+    // considered and deliberately deferred — see
+    // docs/architecture/decisions/0009-child-run-publication-column-parity.md.
+    // Keep both column lists in sync by hand.
     this.db
       .prepare(
         `INSERT INTO workflow_runs (
@@ -522,7 +625,7 @@ export class WorkflowRunsRepository {
       }
       this.insertRun(input.run);
       this.insertSteps(input.steps);
-      db.prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = 4 WHERE id = ?").run(
+      db.prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = 5 WHERE id = ?").run(
         input.planJson,
         input.planHash,
         input.run.id,
@@ -536,6 +639,132 @@ export class WorkflowRunsRepository {
         idempotencyMetadataKey: "runId",
       });
     });
+  }
+
+  // ── child workflow run publication (migration 023, P3a §5.2-§5.3) ─────────
+  //
+  // No production caller exists in P3a (§5.5) — dispatch is P3b's. These
+  // three methods are reachable only from tests until then.
+
+  /**
+   * Idempotently publish a child workflow run underneath the parent unit
+   * that spawned it. ONE `immediateTransaction`: SELECT by
+   * `(parent_run_id, invocation_key)` and return the existing child if
+   * present; otherwise INSERT the child run row (parentage columns +
+   * `invocation_key`), its step rows, attach the embedded frozen child plan
+   * (`plan_ir_version = 5`), and append its `workflow_started` event — then
+   * return the freshly-inserted row.
+   *
+   * Deliberately does NOT: call {@link findActiveRunForScope} or raise
+   * `RESOURCE_ALREADY_EXISTS` (top-level scope-conflict rules do not apply to
+   * a child, C-10); call `revalidateSources` or read the filesystem in any
+   * way (the child plan was frozen and CAS'd into the PARENT's read set at
+   * parent freeze, C-11); or touch {@link publishWorkflowRunV4} /
+   * `startWorkflowRun` (untouched, C-12).
+   *
+   * This method's serialization guarantee holds only when it is the
+   * OUTERMOST transaction on the connection (spec Review log R10,
+   * docs/plans/specs/p3a-plan-v5-child-freeze.md). `withImmediateTransaction`
+   * (src/core/state-db.ts) has a re-entrancy guard: if a transaction is
+   * already open on the connection, it SILENTLY JOINS that transaction
+   * instead of issuing its own `BEGIN IMMEDIATE`.
+   * `WorkflowRunsRepository.transaction()` is DEFERRED (`db.transaction(fn)()`)
+   * and is already used in production at `resumeWorkflowRun`
+   * (src/workflows/runtime/runs.ts:506) and `completeWorkflowStep` (:782) —
+   * a caller that wires this call inside one of those outer transactions
+   * loses the guarantee below: the SELECT can read a stale snapshot, both
+   * publishers can miss the existing row, and the loser's INSERT hits
+   * `idx_workflow_runs_invocation_key` with a raw `SQLiteError` instead of
+   * returning the winner's row.
+   *
+   * As the outermost transaction, the whole SELECT-else-INSERT sequence runs
+   * inside one `BEGIN IMMEDIATE`, so two concurrent callers racing on the
+   * same `(parentRunId, invocationKey)` serialize on SQLite's write lock: the
+   * first to acquire it inserts and commits, and the second's own SELECT —
+   * which can only run once it has acquired the lock in turn — finds and
+   * returns the first's row rather than inserting a duplicate or throwing
+   * (C-09). Calling this twice with the same key, including across a crash
+   * between publish and parent-side recording, is therefore safe and returns
+   * the same child both times, with exactly one event and one step set
+   * (C-08).
+   */
+  publishChildWorkflowRun(input: PublishChildWorkflowRunInput): WorkflowRunRow {
+    return this.immediateTransaction((db) => {
+      const existing = db
+        .prepare("SELECT * FROM workflow_runs WHERE parent_run_id = ? AND invocation_key = ?")
+        .get(input.parentRunId, input.invocationKey) as WorkflowRunRow | undefined;
+      if (existing) return existing;
+
+      // R-R3 (P3a Review log; docs/plans/specs/p4-deletions-closeout.md §8):
+      // the first 13 columns here must stay byte-identical to insertRun's own
+      // column list above (hand-duplicated, not shared, by deliberate choice
+      // — see docs/architecture/decisions/0009-child-run-publication-column-parity.md).
+      // Keep both column lists in sync by hand.
+      db.prepare(
+        `INSERT INTO workflow_runs (
+          id, workflow_ref, scope_key, workflow_entry_id, workflow_title, status, params_json, current_step_id, created_at, updated_at,
+          agent_harness, agent_session_id, checkin_armed_at, parent_run_id, parent_unit_id, invocation_key
+        ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        input.run.id,
+        input.run.workflowRef,
+        input.run.scopeKey,
+        input.run.workflowEntryId,
+        input.run.workflowTitle,
+        input.run.paramsJson,
+        input.run.currentStepId,
+        input.run.createdAt,
+        input.run.updatedAt,
+        input.run.agentHarness,
+        input.run.agentSessionId,
+        input.run.checkinArmedAt,
+        input.parentRunId,
+        input.spawnedByUnitId,
+        input.invocationKey,
+      );
+      this.insertSteps(input.steps);
+      db.prepare("UPDATE workflow_runs SET plan_json = ?, plan_hash = ?, plan_ir_version = 5 WHERE id = ?").run(
+        input.planJson,
+        input.planHash,
+        input.run.id,
+      );
+      insertEventOnce(db, {
+        eventType: "workflow_started",
+        ts: input.run.createdAt,
+        ref: input.run.workflowRef,
+        metadata: { runId: input.run.id, status: "active" },
+        idempotencyKey: input.run.id,
+        idempotencyMetadataKey: "runId",
+      });
+
+      return db.prepare("SELECT * FROM workflow_runs WHERE id = ?").get(input.run.id) as WorkflowRunRow;
+    });
+  }
+
+  /**
+   * Persist a run's resolved declared `outputs:` (migration 024, P3b §4.3).
+   * Called from INSIDE `completeWorkflowStep`'s own write transaction — this
+   * method opens none of its own, matching `updateStepCompletion` /
+   * `updateRunState` immediately above.
+   */
+  setRunOutputs(runId: string, outputsJson: string): void {
+    this.db.prepare("UPDATE workflow_runs SET outputs_json = ? WHERE id = ?").run(outputsJson, runId);
+  }
+
+  /** Every child run published under `parentRunId`, oldest first. `[]` when none. */
+  childRunsOf(parentRunId: string): WorkflowRunRow[] {
+    return this.db
+      .prepare("SELECT * FROM workflow_runs WHERE parent_run_id = ? ORDER BY created_at ASC, id ASC")
+      .all(parentRunId) as WorkflowRunRow[];
+  }
+
+  /** The child run published under `(parentRunId, key)`, or undefined if none has been published yet. */
+  getRunByInvocationKey(parentRunId: string, key: string): WorkflowRunRow | undefined {
+    return (
+      (this.db
+        .prepare("SELECT * FROM workflow_runs WHERE parent_run_id = ? AND invocation_key = ?")
+        .get(parentRunId, key) as WorkflowRunRow | undefined) ?? undefined
+    );
   }
 
   // ── engine run lease (migration 006 columns, R2 enforcement) ──────────────

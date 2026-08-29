@@ -17,6 +17,8 @@ export const WORKFLOW_MAX_JSON_DEPTH = 64;
 export const WORKFLOW_MAX_MAP_EXPANSION = 10_000;
 /** Max declared `inputs:` reference strings on one unit/map step. */
 export const WORKFLOW_MAX_INPUTS = 64;
+/** Max declared `outputs:` entries on one workflow document (P3b, spec §4.1). */
+export const WORKFLOW_MAX_OUTPUTS = 64;
 
 // ── Dispatch-significant bounds shared across validation layers ──────────────
 //
@@ -141,6 +143,15 @@ export const WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER = "__akm_exec_output_truncate
 // would fail spawns Linux and macOS would have accepted — a tripwire, not a
 // guard.
 
+// The roster of `AKM_*` variables this ceiling governs is closed and
+// enumerable: `AKM_PARAMS`, `AKM_INPUTS` (declared `inputs:` references),
+// `AKM_ITEM` / `AKM_ITEM_INDEX` (fan-out), and `AKM_TASK_INPUTS` (P2b — the
+// canonical-JSON effective inputs of a composed `tasks/<ref>` target's `with:`
+// bindings, `src/workflows/exec/step-work.ts`'s `buildExecContextEnv`). Adding
+// a roster member never changes the two numbers below or `checkExecContextSize`'s
+// generic per-entry loop (`src/workflows/exec/exec-unit.ts`) — this comment is
+// documentation, not a bound.
+
 /** The spawn ceilings that apply to one platform's `AKM_*` context environment. */
 export interface ExecContextLimits {
   /** Max UTF-8 bytes of one `AKM_*` variable. */
@@ -239,3 +250,24 @@ export function utf8Bytes(value: string): number {
 export function jsonBytes(value: unknown): number {
   return utf8Bytes(JSON.stringify(value));
 }
+
+// ── Recursive child-workflow composition bounds (spec docs/plans/specs/
+// ── p3a-plan-v5-child-freeze.md §4.5, A-N6) ──────────────────────────────────
+//
+// Enforced ONCE, at freeze, before publication, in
+// `src/workflows/freeze/targets/child-workflow.ts` — the ONE resolver both the
+// direct `uses: workflows/<ref>` form and the task-wrapped form route through
+// — and re-enforced as a corruption gate whenever a parent plan is DECODED
+// (`src/workflows/ir/schema-v4.ts`'s recursive `decodeChildWorkflowTarget`).
+// Full design history, including the rejected alternative for the byte cap:
+// docs/architecture/decisions/0007-workflow-composition-bounds.md.
+
+/** Max workflow composition depth (root = depth 0; a 9th descendant level fails). */
+export const WORKFLOW_MAX_COMPOSITION_DEPTH = 8;
+
+/**
+ * Max AGGREGATE canonical-JSON bytes of every embedded child plan in ONE root
+ * freeze (the sum across the whole composition tree, not per child).
+ * Deliberately HALF of {@link WORKFLOW_MAX_PLAN_BYTES} — see ADR 0007.
+ */
+export const WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES = 1024 * 1024;

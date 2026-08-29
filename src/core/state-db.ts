@@ -192,13 +192,17 @@ function descriptorAlias(handle: FileIdentityHandle): string | undefined {
   return undefined;
 }
 
-function sqliteBoundFilePath(handle: FileIdentityHandle, label: string): string {
-  const alias = descriptorAlias(handle);
-  if (alias) return alias;
-  // SQLite's Windows VFS keeps an open database pathname from being replaced;
-  // the caller still performs identity checks immediately around every open.
-  if (process.platform === "win32") return handle.path;
-  throw new Error(`${label} cannot be bound to its held inode: this platform has no descriptor-backed path.`);
+function sqliteBoundFilePath(handle: FileIdentityHandle): string {
+  // A descriptor-backed alias (/proc/self/fd, /dev/fd) lets SQLite open the
+  // exact held inode even if its path gets swapped out from under it. It is
+  // an optimization, not the actual protection: every caller re-verifies the
+  // held identity (dev/ino/uid) immediately before and after every open that
+  // uses this path, so a plain path is safe whenever no alias is available —
+  // Windows never has one, and macOS's /dev/fd is a small fixed-size devfs
+  // table that a process holding higher fd numbers (as a bundled standalone
+  // binary routinely does) can miss entirely. Either way, a swap in that
+  // window is still caught by the surrounding identity checks.
+  return descriptorAlias(handle) ?? handle.path;
 }
 
 function closeFileIdentity(handle: FileIdentityHandle): void {
@@ -335,9 +339,9 @@ function createHistoricalStateSafetyCopy(source: StateDatabaseSource, migrationI
     // The migration connection already holds BEGIN IMMEDIATE. A distinct
     // read-only connection bound to the held source inode can snapshot the
     // committed WAL view without trying to VACUUM from inside that transaction.
-    reader = openDatabase(sqliteBoundFilePath(source, "state.db snapshot source"), { readonly: true });
+    reader = openDatabase(sqliteBoundFilePath(source), { readonly: true });
     assertStateDatabaseSource(source);
-    reader.prepare("VACUUM INTO ?").run(sqliteBoundFilePath(reservation, "Reserved state.db safety-copy target"));
+    reader.prepare("VACUUM INTO ?").run(sqliteBoundFilePath(reservation));
     assertStateDatabaseSource(source);
     reader.close();
     reader = undefined;
@@ -346,7 +350,7 @@ function createHistoricalStateSafetyCopy(source: StateDatabaseSource, migrationI
     fs.fsyncSync(reservation.fd);
     assertOwnedFileReservation(reservation, "Reserved state.db safety copy");
 
-    const verified = openDatabase(sqliteBoundFilePath(reservation, "Reserved state.db safety-copy target"), {
+    const verified = openDatabase(sqliteBoundFilePath(reservation), {
       readonly: true,
     });
     try {
@@ -441,7 +445,7 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
     if (!freshReservation) {
       existingSource = openExistingStateDatabaseSource(resolvedPath);
       assertStateDatabaseSource(existingSource);
-      const preflight = openDatabase(sqliteBoundFilePath(existingSource, "Existing state.db preflight"), {
+      const preflight = openDatabase(sqliteBoundFilePath(existingSource), {
         readonly: true,
       });
       try {
@@ -463,7 +467,7 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
     const boundSource = existingSource;
     if (boundSource) assertStateDatabaseSource(boundSource);
     openedDb = openManagedDatabase({
-      path: boundSource ? sqliteBoundFilePath(boundSource, "Managed state.db writer") : resolvedPath,
+      path: boundSource ? sqliteBoundFilePath(boundSource) : resolvedPath,
       pragmas: { dataDir: path.dirname(resolvedPath) },
       init: (db) => {
         if (boundSource) assertStateDatabaseSource(boundSource);

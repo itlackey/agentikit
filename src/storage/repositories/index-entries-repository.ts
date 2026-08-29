@@ -29,17 +29,19 @@ import type {
   RekeyEntryOptions,
   RelinkUsageEventsOptions,
 } from "./index-entry-types";
+import { deleteFtsEntries, replaceFtsEntry } from "./index-fts-repository";
 import { SQLITE_CHUNK_SIZE } from "./index-sql";
 import { deleteEntryVectors, isVecAvailable } from "./index-vec-repository";
 
 // ── Entry operations ────────────────────────────────────────────────────────
 
 /**
- * Insert or update an entry in the `entries` table. Returns the row id.
+ * Insert or update one canonical entry and all synchronously derived search
+ * state. Returns the stable row id.
  *
- * **Important:** This does not update the FTS index. Callers must call
- * `rebuildFts()` after all upserts are complete for full-text search to
- * reflect the changes.
+ * The entries row, FTS projection, and stale-vector invalidation commit as one
+ * SQLite transaction. Callers therefore cannot publish an entry and forget a
+ * second FTS maintenance step.
  */
 export function upsertEntry(
   db: Database,
@@ -52,7 +54,6 @@ export function upsertEntry(
   // Hot path during indexing — cache prepared statements per database
   // connection so we don't pay the SQL parse/compile cost on every call.
   const stmts = getUpsertStmts(db);
-  const previous = stmts.findByItemRef.get(provenance.itemRef) as ExistingUpsertRow | undefined;
   // Phase 5A / Advantage D5: surface derived memory parent ref into the
   // dedicated `derived_from` column so retrieval-time lookup (parent→child)
   // does not have to scan + JSON-decode every memory row.
@@ -61,6 +62,7 @@ export function upsertEntry(
   // `content_hash` is optional on the LLM-enrichment re-upsert; a missing hash
   // preserves the scan writer's current value.
   const apply = (): number => {
+    const previous = stmts.findByItemRef.get(provenance.itemRef) as ExistingUpsertRow | undefined;
     const result = stmts.upsert.get(
       provenance.itemRef,
       provenance.bundleId,
@@ -77,19 +79,18 @@ export function upsertEntry(
     if (!result) throw new Error("upsertEntry: item_ref not found after upsert");
 
     if (previous?.id === result.id && previous.search_text !== searchText) deleteEntryVectors(db, result.id);
-
-    // Mark this entry as FTS-dirty so `rebuildFts({ incremental: true })`
-    // only revisits entries that actually changed. INSERT OR IGNORE is
-    // idempotent across multiple upserts of the same row.
-    stmts.markDirty.run(result.id);
+    replaceFtsEntry(db, result.id, entry);
     return result.id;
   };
-  return previous && previous.search_text !== searchText ? db.transaction(apply)() : apply();
+  // Always enter the driver's transaction wrapper. Both supported SQLite
+  // drivers lower a transaction opened inside another transaction to a
+  // savepoint, so a caller that catches this mutation's error cannot commit a
+  // partial entries row through its outer transaction.
+  return db.transaction(apply)();
 }
 
 interface UpsertStmts {
   upsert: ReturnType<Database["prepare"]>;
-  markDirty: ReturnType<Database["prepare"]>;
   findByItemRef: ReturnType<Database["prepare"]>;
 }
 
@@ -130,7 +131,6 @@ function getUpsertStmts(db: Database): UpsertStmts {
       ON CONFLICT(item_ref) DO UPDATE ${UPSERT_SET_CLAUSE}
       RETURNING id
     `),
-    markDirty: db.prepare("INSERT OR IGNORE INTO entries_fts_dirty (entry_id) VALUES (?)"),
     findByItemRef: db.prepare("SELECT id, search_text FROM entries WHERE item_ref = ?"),
   };
   upsertStmtsByDb.set(db, stmts);
@@ -218,8 +218,8 @@ export function getBaseBeliefStatesForDerivedTwins(db: Database, twinIds: number
  * `asset_ref` TEXT and are re-keyed separately by `akm mv` — see
  * the state rekey helper.) `document_json.name` (and `filename`, when
  * present) is patched and `search_text` rebuilt so search reflects the new
- * name; the row is marked FTS-dirty for the caller's
- * `rebuildFts({incremental: true})`.
+ * name. Its FTS projection and stale vector are updated in the same
+ * transaction as the canonical identity.
  *
  * Bundle-qualified `usage_events.entry_ref` rows for the old conceptId are
  * rewritten to the new item ref. Without this, events keep the old
@@ -267,6 +267,7 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
   // the utility history survives; the next full index heals the JSON.
   let documentJson = row.document_json;
   let searchText = row.search_text;
+  let document: IndexDocument | undefined;
   try {
     const entry = JSON.parse(row.document_json) as IndexDocument;
     entry.name = opts.newName;
@@ -274,6 +275,7 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
     if (opts.newDerivedFrom !== undefined) entry.derivedFrom = opts.newDerivedFrom;
     documentJson = JSON.stringify(entry);
     searchText = buildSearchText(entry);
+    document = entry;
   } catch {
     /* corrupt document_json — identity/path-only re-key */
   }
@@ -304,7 +306,9 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
     if (opts.newDerivedFrom !== undefined) {
       db.prepare("UPDATE entries SET derived_from = ? WHERE id = ?").run(opts.newDerivedFrom, row.id);
     }
-    db.prepare("INSERT OR IGNORE INTO entries_fts_dirty (entry_id) VALUES (?)").run(row.id);
+    if (row.search_text !== searchText) deleteEntryVectors(db, row.id);
+    if (document) replaceFtsEntry(db, row.id, document);
+    else deleteFtsEntries(db, [row.id]);
   })();
 
   // Re-point usage history at the new ref. Chunk-8 WI-8.3: usage_events lives in
@@ -438,6 +442,18 @@ export function deleteEntriesByBundle(db: Database, bundleId: string): void {
 }
 
 /**
+ * Delete the complete regenerable entry generation through the same child-row
+ * authority used by targeted deletes. The caller may retain cross-database
+ * usage events so the finalize pass can relink them to the new row ids.
+ */
+export function deleteAllEntries(db: Database, options: { cleanupUsageEvents?: boolean } = {}): number[] {
+  return db.transaction(() => {
+    const rows = db.prepare("SELECT id FROM entries").all() as Array<{ id: number }>;
+    return deleteEntryRows(db, rows, options);
+  })();
+}
+
+/**
  * Diff-persist orphan delete: remove every entry under `dirPath` whose durable
  * `item_ref` is not in `keepRefs`.
  *
@@ -472,21 +488,9 @@ function deleteRelatedRows(
   const numericIds = ids.map((r) => r.id);
   const vecAvail = isVecAvailable(db);
 
-  // Drop matching FTS rows + dirty markers immediately so an incremental
-  // rebuild after a deletion doesn't try to re-index entries that no longer
-  // exist (and so a full scan after deletion sees a consistent FTS).
-  for (let i = 0; i < numericIds.length; i += SQLITE_CHUNK_SIZE) {
-    const chunk = numericIds.slice(i, i + SQLITE_CHUNK_SIZE);
-    const placeholders = chunk.map(() => "?").join(",");
-    bestEffort(
-      () => db.prepare(`DELETE FROM entries_fts WHERE entry_id IN (${placeholders})`).run(...chunk),
-      "fts table may not exist on a brand-new db",
-    );
-    bestEffort(
-      () => db.prepare(`DELETE FROM entries_fts_dirty WHERE entry_id IN (${placeholders})`).run(...chunk),
-      "fts dirty table is created lazily by upsertEntry",
-    );
-  }
+  // FTS is part of the canonical mutation boundary, not a caller-maintained
+  // dirty queue. Delete it before the parent row inside this transaction.
+  deleteFtsEntries(db, numericIds);
 
   // Process in chunks to stay within SQLITE_MAX_VARIABLE_NUMBER
   for (let i = 0; i < numericIds.length; i += SQLITE_CHUNK_SIZE) {
@@ -572,10 +576,10 @@ export function deleteUsageEventsByEntryIds(entryIds: number[]): void {
 
 /**
  * Delete entries by their primary key IDs, along with all related rows
- * (embeddings, entries_vec, entries_fts, utility_scores, usage_events).
+ * (embeddings, entries_vec, entries_fts, utility scores, usage_events).
  *
- * Used by the `--clean` post-pass to remove stale entries whose source files
- * no longer exist on disk.
+ * Used by explicit `--clean` reconciliation before embeddings and final
+ * verification to remove stale entries whose source files no longer exist.
  */
 export function deleteEntriesByIds(db: Database, ids: number[]): void {
   if (ids.length === 0) return;

@@ -16,7 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { utf8Bytes, WORKFLOW_MAX_JSON_DEPTH, WORKFLOW_MAX_PLAN_BYTES } from "../resource-limits";
-import { decodeWorkflowPlanV4, WORKFLOW_IR_V4_VERSION, type WorkflowPlanGraphV4 } from "./schema-v4";
+import { decodeWorkflowPlanV4, WORKFLOW_IR_V5_VERSION, type WorkflowPlanGraphV4 } from "./schema-v4";
 
 /** sha256 hex of the canonical (recursively sorted-keys) JSON of the plan. */
 export function computePlanHash(plan: WorkflowPlanGraphV4 | unknown): string {
@@ -53,9 +53,9 @@ export function decodeCanonicalPlan(
   const actual = createHash("sha256").update(planJson).digest("hex");
   if (!planHash || !/^[0-9a-f]{64}$/.test(planHash) || actual !== planHash)
     throw new Error(`Workflow run ${runId} frozen plan integrity check failed.`);
-  if (expectedVersion !== undefined && expectedVersion !== null && expectedVersion !== WORKFLOW_IR_V4_VERSION) {
+  if (expectedVersion !== undefined && expectedVersion !== null && expectedVersion !== WORKFLOW_IR_V5_VERSION) {
     throw new Error(
-      `Workflow run ${runId} uses unsupported workflow IR version ${expectedVersion}; this runtime supports only workflow IR version 4.`,
+      `Workflow run ${runId} uses unsupported workflow IR version ${expectedVersion}; this runtime supports only workflow IR version 5.`,
     );
   }
   const plan = decodeWorkflowPlanV4(parsed);

@@ -6,6 +6,748 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-08-29
+
+### Fixed
+
+- **A blocked workflow run became permanently unresumable after `akm
+  workflow abandon` (#847).** Abandon correctly moved the run to `failed`
+  but left its current step `blocked`; the durable-spine validator then
+  rejected that honest abandoned shape as corruption before `resume` could
+  reopen the step. Failed-run validation now accepts the three legitimate
+  current-step states — `pending` for an abandoned active run, `blocked` for
+  an abandoned blocked run, and `failed` for an execution failure — and
+  `resume` normalizes each back to `pending` as promised by the CLI help.
+
+- **`akm task sync` could compute another bundle's real scheduler entries as
+  drift and try to remove them (#846).** Removal was scoped by a bundle
+  *display name* (`bundleName`/`--bundle` target) — a value derived from a
+  directory basename that two unrelated bundles can legitimately share (an
+  unconfigured bundle's name is deduped only against its own config's
+  bundles, never against other bundles actually installed on the machine).
+  A primary/unconfigured-bundle sync now additionally confirms a
+  name-matching installed entry's *resolved bundle path*, recovered from
+  that entry's own scheduler-context descriptor, before treating it as
+  eligible for reconcile — and refuses (rather than assumes) when that path
+  can't be established. **Backward compatibility:** every entry installed by
+  this codebase already carries a scheduler-context descriptor (the
+  `--scheduler-context` file used to restore the scheduled process's
+  environment), so existing installations resolve correctly with no user
+  action required. An entry whose descriptor is missing, unreadable, or
+  owned by a different OS user is never assumed to belong to the invoking
+  bundle; such an entry is simply left untouched by sync (it will not be
+  auto-repaired or removed) until it is reinstalled or removed by hand.
+
+- **Scheduled tasks on Windows ran but recorded no output.** A task fired by
+  Task Scheduler logged `exit_code=0` with an empty log: the command really
+  ran, but nothing it printed was captured. Captured runs asked for their own
+  process group, which is what lets a timeout reap the whole descendant tree
+  on macOS/Linux; on Windows that same flag instead means "start with no
+  console", and a console host started that way (`powershell.exe`, `cmd.exe`)
+  allocates its own console and thereby replaces the pipes it was handed, so
+  its output went nowhere. Windows got no reaping benefit in exchange — the
+  group kill it enables is a POSIX-only call — so captured Windows runs no
+  longer ask for it. A run whose output capture is incomplete for any other
+  reason now says so in the task log instead of leaving a silent gap.
+- **A scheduled shell task could fail instantly with exit code 1 on Windows.**
+  Two defects on the default Windows task shell (`powershell`): a
+  scheduler-fired run restores the PATH captured at install time, which can be
+  minimal, and `powershell.exe` is not on it (it lives in a `WindowsPowerShell`
+  subdirectory, not `System32`), so the spawn failed outright; and rebinding a
+  bare leading `akm` produced a quoted path, which PowerShell parses as a
+  string rather than a command to run. Both shells are now resolved to
+  absolute paths on Windows, and a rebound invocation carries PowerShell's
+  call operator. `cmd`-shell tasks additionally pass their hand-quoted command
+  line through verbatim, since `cmd /s /c` does not read a standard argv.
+- **`state.db` could fail to open on macOS** with "this platform has no
+  descriptor-backed path." The descriptor-alias optimization used to bind a
+  SQLite open to its exact held inode isn't reliably available everywhere —
+  Windows never has one, and macOS's `/dev/fd` is a small fixed-size table
+  that a process holding higher file-descriptor numbers (as a bundled
+  standalone binary routinely does) can miss. The surrounding identity checks
+  (dev/ino/uid, re-verified immediately before and after every open) are the
+  real protection; a missing alias now falls back to the plain path on any
+  platform instead of throwing, matching the fallback Windows already used.
+- The Windows build shipped no embedded template assets, because the
+  build-time asset copy anchored its rewrites on forward slashes while the
+  glob yields platform-native separators.
+
+## [0.9.2-alpha.5] - 2026-08-28
+
+### Breaking changes & migration
+
+- **Durable workflow plans bump to `irVersion` 5.** A stored run frozen
+  before this release (`irVersion` 4 or earlier) can no longer `resume`,
+  `next`, `complete`, or `run` — those fail closed with `UsageError` code
+  `WORKFLOW_IR_VERSION_UNSUPPORTED`, naming the run and pointing at
+  `akm workflow abandon`. `akm workflow status`, `akm workflow list`, and
+  `akm workflow abandon` keep working on those runs — no data is lost, and
+  their step spine is untouched by abandoning. **Before upgrading**, run
+  `akm workflow list --active` and either let in-flight runs finish or
+  abandon them; after upgrading, recover a blocked run with
+  `akm workflow abandon <id>` followed by `akm workflow run <ref>` to start
+  fresh from the current authored source. There is no second executor and no
+  compatibility replay layer for a pre-`irVersion`-5 plan. The unit and gate
+  input-hash prefixes bump alongside it, from `hashVersion` 5 to
+  `hashVersion` 7, so that a freshly frozen plan's units are never
+  content-addressed the same way an old, no-longer-executable plan's were.
+  (`hashVersion` 6 existed only inside this release's own development and
+  never shipped in any version — the durable step a released install sees is
+  5 → 7.) The unit preimage also gains one **conditional** field,
+  `taskInputs`: the *resolved* values of a task-composing step's input
+  bindings, present only for a unit whose frozen target carries
+  `inputBindings` — a binding-free unit's preimage keeps exactly the shape it
+  had. Hashing the resolved values, not just the frozen binding expression,
+  is what makes a resumed run whose upstream step output changed under a
+  `{from: "steps.<id>.output"}` binding fail loudly as a replay divergence
+  instead of silently reusing the completed unit's stale result.
+  See [Migrating from akm 0.9.1 to 0.9.2](docs/migration/v0.9.1-to-v0.9.2.md#workflow-cutover).
+- A workflow step that passes `with:` to a `tasks/<ref>` target whose task
+  declares **no** `inputs:` (a `version: 4` task with no `inputs:` key at
+  all) is now **rejected** (`UsageError` code
+  `COMPOSITION_INVALID`, exit 2) instead of having the authored mapping
+  silently dropped at freeze — for any authored shape, including `with: {}`.
+  When the target's task source **does** declare `inputs:`, `with:` now
+  **binds** them instead: a literal value, or a `{from: "steps.<id>.output…"}`
+  reference resolved just before the unit dispatches (the reference grammar
+  also accepts `{from: "params.<name>"}`, but a composing step's own
+  document can never declare `params:`, so that form is not reachable in
+  this release). See [Task input bindings](docs/reference/tasks.md#typed-inputs-and-output)
+  for the full grammar. `with:` on `uses: akm/command` is unaffected — it is
+  still that builtin's own action-argument bag, never an input binding.
+- **New rejection:** `with:` on a workflow step targeting `uses:
+  commands/<ref>` or `uses: scripts/<ref>` is now **rejected**
+  (`COMPOSITION_INVALID`, exit 2) instead of being silently discarded at
+  freeze — neither target is a binding surface. Remove the `with:` block from
+  any such step; a command/script-composing step never accepted its values
+  in the first place, so this closes a defect rather than a feature.
+- Composing a task source v4 document from a workflow step's `uses:
+  tasks/<ref>`, where the task's own target is a workflow, is no longer
+  deferred: it now **freezes and dispatches** normally, the same as a
+  direct `uses: workflows/<ref>` step. The prior release's
+  `TASK_SOURCE_INVALID` "arrives in a later 0.9.x release" rejection for this
+  case is gone.
+- Task-source validation errors raised through the shared `sourceError`
+  funnel (field- and semantic-level checks: missing/invalid fields, schedule
+  conflicts, and similar) now report code **`TASK_SOURCE_INVALID`** instead of
+  `INVALID_FLAG_VALUE`. YAML syntax, size, structure, and expansion failures
+  (malformed YAML, oversized source, unsupported YAML constructs, and
+  alias/tag/depth/node-count limits) are raised earlier, before that funnel is
+  reached — early in this release these still reported `INVALID_FLAG_VALUE`,
+  but by 0.9.2's release they report `TASK_SOURCE_INVALID` too (the terminal
+  diagnostics ratchet, see the Changed entry below): task-source failures no
+  longer split across two codes, so **scripts that were branching on both
+  `TASK_SOURCE_INVALID` and `INVALID_FLAG_VALUE` for a task-source error can
+  drop the `INVALID_FLAG_VALUE` arm**. Every such error's message prefix is
+  `Invalid task source at <path>[:<line>]: …` — not `Invalid task v3 source`,
+  since the label no longer names a specific schema generation (task source
+  v4 is the only version `src/` accepts by release; see the "Task v3 sources
+  no longer parse" entry below). The envelope's `error` message text and exit
+  code 2 are unchanged for every task-source error. The envelope's `hint`
+  field and the `detail` text `akm lint` and the akm-task adapter report for
+  the same failure change from `… Run \`akm <command> --help\` to see
+  accepted values.` to `… Fix the task source at the reported path and line,
+  then re-run.`
+- **Task-history / JSON-output `target.kind` vocabulary changed.** A prepared
+  command (agent/LLM) run now reports `"command"` (formerly the confusingly
+  inverted `"prompt"`); the former shared `"command"` string for the native
+  arm splits into `"shell"` and `"script"`, now distinguishable in history;
+  `"workflow"` and `"unknown"` are unchanged. **Consumers branching on
+  `"prompt"` must handle `"command"`** — this affects `akm task run`'s and
+  `akm task history`'s JSON output (`result.target.kind` /
+  `rows[].target.kind`) and any code reading `task_history.target_kind`
+  directly. Rows written by earlier akm versions are read back **mapped** to
+  the new vocabulary (legacy `"prompt"` → `{kind:"command", engine}`, legacy
+  `"command"` → `{kind:"shell"}`), so `akm task history` output stays uniform
+  across vintages. New rows carry a `targetVocab: 2` marker inside their
+  `metadata_json`, which akm versions before this one reject as an unknown
+  metadata field — a mixed-version fleet must upgrade every `akm` that writes
+  task history before an older one reads it.
+- **Task source v4 (`version: 4`) is the task source grammar.** By 0.9.2's
+  release, `version: 4` is the *only* version `src/` accepts — see the
+  "Task v3 sources no longer parse" entry below for the cutover, the
+  `TASK_SCHEMA_VERSION_UNSUPPORTED` rejection, and the migration path. What
+  follows describes the v4 grammar itself. Scheduling is **optional**: a
+  task source v4 document with no `schedule:` parses, is runnable with
+  `akm task run`, and is **skipped** by `akm task sync` (zero bindings, zero
+  failures) instead of being rejected for missing a trigger — this is now
+  the *only* scheduling grammar; the second syntax task v3 offered
+  (`akm.schedule` / a document's top-level `on:`) is retired along with v3
+  itself. Task source v4 removes the `akm:` options bag and the `on:`
+  trigger block outright;
+  every field they carried is a top-level key instead: `akm.description` →
+  `description`, `akm.when_to_use` → `when_to_use`, `akm.tags` → `tags`,
+  `akm.agent` → `agent`, `akm.engine` → `engine`, `akm.model` → `model`,
+  `akm.inference` → `inference`, `akm.outputSchema` → `output`,
+  `akm.tools` → `tools`, `akm.timeout` → `timeout`, `akm.redact` →
+  `redact`, `akm.maxSteps` → `maxSteps`, `akm.maxRetries` → `maxRetries`,
+  `akm.schedule` → top-level `schedule:`, and `akm.enabled` → each
+  `schedule:` entry's own `enabled` (v3's single document-level flag
+  becomes per-binding in task source v4, defaulting to `true`; the
+  document-level `enabled` skip that read it is gone with v3, since a v4
+  document has no document-level `enabled` key to read). The GitHub-action
+  `uses:` target (`owner/repo@ref`) is removed outright — see the "GitHub
+  Action locators are no longer recognized anywhere" entry below.
+  `with:` is legal in task source v4 only alongside
+  `uses: akm/command`; every other target uses the new typed `inputs:`
+  declarations instead of `with:`. A declared `inputs:` name may not collide
+  with a flag `akm task run` already declares for itself (`bundle`, `format`,
+  `detail`, `shape`, `output`, `scheduled`, `quiet`, `verbose`, `help`,
+  `no-quiet`, `no-verbose`) or with `target`, the spelling `akm task`
+  retired in 0.9 and still answers with a rename hint in every spelling —
+  such a document now fails `TASK_SOURCE_INVALID` at parse time, since the
+  colliding name would otherwise route a caller's value into `akm task run`'s
+  own flag, or into that rename hint, instead of the declared input. `akm
+  task run <id>` now accepts exact-name input flags for a task source v4
+  document's declared `inputs:` (an undeclared flag name fails
+  `UNKNOWN_FLAG`; a bad value or an unsatisfied `required: true` declaration
+  fails `INPUT_BINDING_INVALID`; both exit 2 with the usual JSON error
+  envelope).
+  Where those materialized values go depends on the task's own target: for
+  `uses: workflows/<ref>` they become the child run's params (the existing
+  `with:` → params path); for a `run:`, `scripts/<ref>`, or `commands/<ref>`
+  target they are validated and then **discarded** — `akm task run`'s own
+  flags never populate an `AKM_TASK_INPUTS` environment variable or a
+  `## Task inputs` prompt block. Those two surfaces are a separate delivery
+  path: they carry a **workflow step's** `with:` binding into a task it
+  composes via `uses: tasks/<ref>` (see the `with:`-binding bullet above),
+  not `akm task run`'s own CLI flags. `schedule[].inputs` on a `version: 4`
+  task source are compiled the same way `akm task run`'s flags are: `akm
+  task sync` builds them into the scheduler binding's own invocation tail
+  instead of only validating and discarding them, so a scheduled run is
+  subject to the identical workflow-target-only delivery rule. `akm task
+  add` now authors task source v4 (see the "Task v3 sources no longer
+  parse" entry below for the `--params` → typed `inputs:` change). A
+  `version: 4` task source is now a valid workflow-step target (see above).
+  The published [task schema](schemas/akm-task.json) now publishes only the
+  single `version: 4` shape — the `version: 3` arm and its `githubActionRef`
+  definition are removed; a `version: 2` or `version: 3` document validates
+  against nothing in this schema and is converted by `akm migrate apply`
+  instead. **Binding a task's inputs adds nothing to the hash preimage of a
+  step that binds none**: a unit whose frozen target carries no
+  `inputBindings` has exactly the preimage *shape* it had before this
+  feature — no `taskInputs` key at all. Its hash *value* still moves, because
+  every unit and gate hash in this release re-versions once (`hashVersion`
+  5 → 7, see the `irVersion` 5 entry above), and no pre-`irVersion`-5 plan can
+  execute here to be compared against.
+- **A task's `output:` is legal only with a command target.** `output:`
+  alongside `run:`, `uses: scripts/<ref>`, or `uses: workflows/<ref>` now
+  fails `TASK_SOURCE_INVALID` (exit 2) at parse instead of being accepted and
+  never enforced: those runtimes decide success from the process exit code or
+  from a child run's own status and consume no task-level response schema, so
+  an authored contract there was silently unenforced. `uses: commands/<ref>`
+  and `uses: akm/command` — the targets that forward it as the model's
+  response schema — are unchanged. The published
+  [task schema](schemas/akm-task.json) enforces the same rule, so an editor
+  validating against it no longer green-lights a document `akm task run`
+  refuses to load. Migration handles this for you: `akm migrate apply` drops
+  an `akm.outputSchema` that sat on one of those three targets (it was inert
+  in v3 as well — nothing ever read it there) and reports the drop as a
+  notice on that file's plan entry rather than blocking the file.
+- **A `schedule:` entry must be able to satisfy the task's declared
+  `inputs:`.** A scheduled firing supplies no input flags, so a task
+  declaring a `required: true` input — which may not also carry a
+  `default:` — and a `schedule:` entry that names no value for it could only
+  ever install a binding that fails at every firing. Such a document now
+  fails `TASK_SOURCE_INVALID` (exit 2) at parse, naming the unsatisfied
+  input, instead of syncing cleanly and failing once per fire. This covers
+  every entry shape: the `schedule: "<cron>"` string shorthand and a list
+  entry with no `inputs:` key are held to the same contract as one that
+  authors `inputs:`. Give the entry an `inputs:` value for each named input,
+  or declare a `default:` on the input instead. Manual-only tasks are
+  unaffected — a `required: true` input with no `schedule:` is still valid
+  and is supplied per run with `akm task run <id> --<name> <value>`.
+- **`akm workflow create --json` renames its `stashDir` envelope field to
+  `bundleDir`.** The success envelope now reads
+  `{ok, ref, path, bundleDir}`; the value (the owning bundle's directory) is
+  unchanged. Scripts reading `stashDir` off `akm workflow create --json`
+  must read `bundleDir`. This was the last `stash`-vocabulary field on a
+  0.9.2 command envelope; the indexer's internal `IndexOptions.stashDir` is
+  not a CLI surface and is unchanged.
+- **Task v3 sources no longer parse.** A task document with `version: 3`
+  (or `version: 2`) fails with `UsageError` code
+  `TASK_SCHEMA_VERSION_UNSUPPORTED` (exit 2) instead of executing — the v3
+  parser is gone from `src/`; it survives only vendored inside the
+  `akm-migrate` executable, which is how the migrator still reads what it
+  converts. Run `akm migrate apply --dry-run`, review every `changed` /
+  `skipped` / `blocked` result, then `akm migrate apply` — the command now
+  runs **both** generations in one pass: task-v2 → task-v3, then
+  task-v3 → task source v4, against the same tree. `akm task add` authors
+  task source v4 directly; a task's `--params` becomes typed `inputs:` with
+  defaults instead of a `with:` bag. A task's enabled state is now per
+  schedule binding (`schedule[].enabled`) rather than a document-level
+  `akm.enabled` flag — `akm task add --disabled` writes
+  `schedule: [{cron: …, enabled: false}]` instead of a document-level
+  `akm.enabled: false`. See
+  [Migrating task v3 to task source v4](docs/migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4).
+- **GitHub Action locators are no longer recognized anywhere.** A task's
+  `uses: owner/repo[/path]@rev` is now a source error at parse
+  (`TASK_SOURCE_INVALID`); a workflow step's `uses: owner/repo[/path]@rev`
+  now fails with reason `unsupported-uses-target` instead of
+  `remote-action-acquisition-out-of-scope`. Nothing acquired or executed a
+  remote action in any akm release — this deletes the *recognition* of the
+  shape, not a capability that ever worked. The migrator still names the
+  target explicitly when it blocks a file
+  (`github-action-target-removed`).
+- **Multi-job YAML is rejected at the adapter boundary.** A GitHub-shaped
+  workflow document whose `jobs:` map does not contain exactly one job now
+  fails at the source adapter with reason `multi-job-unsupported`, surfaced
+  from `akm workflow run` (and `akm workflow plan`) as `UsageError` code
+  `COMPOSITION_INVALID` (exit 2). Previously such a document parsed and
+  ordered its jobs cleanly and was refused only later, in two different
+  places, with two different shapes (one thrown error, one `ok: false`
+  compile result). Split a multi-job document into separate single-job
+  workflows and compose them with a child-workflow step
+  (`uses: workflows/<ref>`). Every other workflow-source compile failure now
+  reports `UsageError` code `WORKFLOW_SOURCE_INVALID` rather than
+  `INVALID_FLAG_VALUE`.
+- **The second task scheduling syntax is removed.** `akm.schedule` and a
+  task document's top-level `on:` are gone along with task v3 (see "Task v3
+  sources no longer parse" above); task source v4's optional top-level
+  `schedule:` is the one canonical scheduling form, and a task with no
+  `schedule:` is manual-only and fully composable as a workflow-step
+  target.
+
+### Changed
+
+- **`INVALID_FLAG_VALUE` is now rare in task or workflow domain failures,
+  with two named exceptions.** Every task-source, workflow-source,
+  target-classification, and composition failure now reports a
+  phase-specific code — `TASK_SOURCE_INVALID`, `TARGET_REF_INVALID`,
+  `COMPOSITION_INVALID`, `WORKFLOW_SOURCE_INVALID`, `INPUT_BINDING_INVALID`,
+  `TASK_SCHEMA_VERSION_UNSUPPORTED`, or `TASK_TARGET_UNSUPPORTED` — **except**
+  a task's workflow-target `env:` composition rejection (a `uses:
+  workflows/<ref>` task that also authors `env:`) and a workflow child-ref
+  asset-resolution failure (`Workflow source target <ref> was not found.`),
+  both deliberately preserved as `INVALID_FLAG_VALUE` so an existing pinned
+  test's code and message stay byte-unchanged. The remaining
+  `INVALID_FLAG_VALUE` sites in the task/workflow domains (38 total, across
+  `src/tasks/**` and `src/workflows/**`) are these two preserved exceptions
+  plus scalar CLI-argument parsing (a cron expression, a task id, a workflow
+  parameter flag) and one code-allowlist membership entry — genuine
+  flag-value validation or a pinned exception, not a re-codable
+  task/workflow source or composition failure. **Scripts branching on
+  `code` for a task/workflow domain error should switch on the specific
+  code above rather than assuming `INVALID_FLAG_VALUE` — except for the two
+  named exceptions, which still report `INVALID_FLAG_VALUE`.** Exit codes
+  are unchanged (2 for every one of these).
+- **A typed task-input or workflow-param flag no longer echoes the supplied
+  value in a validation error.** `akm task run <ref> --<input> <value>`
+  against a `type:`-declared input used to report
+  `must be <types>; received "<value>"` on a coercion failure, and a value
+  that failed its declared `enum:`/`minimum:`/`maximum:` constraint reported
+  the value in that message too — both are closed now, since a typed flag
+  can carry a credential and this detail lands in stderr envelopes that get
+  pasted into CI logs and issue reports. The declared constraint (the
+  allowed list or the bound) is still named, since it comes from the
+  author's own schema rather than the caller's data. Error and exit codes
+  are unchanged.
+
+### Added
+
+- **Child workflows.** A workflow step can now compose another workflow —
+  directly (`uses: workflows/<ref>`) or through a task source v4 document
+  whose own target is a workflow (`uses: tasks/<ref>`) — instead of
+  failing to freeze. `with:` on the composing step binds the child's
+  declared `params:`. Composition is bounded: depth (8 levels), a
+  composition cycle, and aggregate embedded plan bytes (1 MiB total across
+  one root freeze) are all checked at **freeze**, before the parent run is
+  published, and fail with `UsageError` code `COMPOSITION_INVALID`. The
+  child workflow is compiled, validated, and frozen **completely** — its own
+  complete plan embedded inside the parent's — before the parent run exists,
+  so editing the child's source afterward cannot affect an already-frozen
+  parent, and the child's transitive sources join the parent's guarded
+  source read set. A composing step's own `env:` is rejected at freeze
+  (`UsageError` code `COMPOSITION_INVALID`) rather than silently dropped —
+  a child run carries its own frozen environment inside its own plan, so a
+  parent-level `env:` on the composing step has nothing to apply to.
+  Running a step that composes a child workflow now drives
+  the child to completion — see **Child workflows now execute** and
+  **Workflow `outputs:`** below. (Correction: an earlier development
+  increment of this same 0.9.2 release briefly made an unexecuted composing
+  step fail closed with `UsageError` code
+  `WORKFLOW_CHILD_EXECUTION_UNSUPPORTED`. That code never reached a release
+  and is gone from the shipped 0.9.2 — it is listed here only because a
+  0.9.2 pre-release snapshot may otherwise be the sole place it was seen.)
+  See
+  [Workflow Schema: Child workflows](docs/reference/workflow-schema.md#child-workflows).
+- **Child workflows now execute.** Running a step whose target is a child
+  workflow drives that child inline, in the parent's own process, with the
+  same engine `akm workflow run` uses — publication is idempotent, so a
+  retried or resumed composing step reuses the same child rather than
+  starting a new one. The child's final status maps onto the composing
+  step and the parent run: `completed` promotes the child's exported result
+  as the step's output and the parent continues; `failed` fails the step
+  and the run; `blocked` blocks the step and the run, with recovery notes
+  naming the exact sequence — `akm workflow resume <childRunId>`, then
+  `akm workflow resume <parentRunId>` and `akm workflow run <parentRunId>`.
+  `akm workflow status` on a run that composes children now renders a
+  `children:` tree; `akm workflow list` excludes child runs by default
+  (`--children` includes them), and a child run id always works directly
+  with `status`/`resume`/`abandon`/`run`. See
+  [Workflow Schema: Child execution](docs/reference/workflow-schema.md#child-execution)
+  and [Running Workflows: Child runs](https://github.com/itlackey/akm/blob/main/docs/guides/run-workflows.md#child-runs).
+- **Workflow `outputs:`.** A workflow may declare a run-level export in its
+  Markdown frontmatter — `outputs: {<name>: {from: steps.<id>.output(.<seg>)*,
+  schema?}}`, up to 64 entries — resolved once, from persisted step
+  evidence, at run completion. An unresolvable reference, a truncated
+  step artifact, or a schema violation rolls the completion back
+  (`UsageError` code `WORKFLOW_OUTPUT_INVALID`): the run stays `active` and
+  its final step stays `pending` rather than completing with missing
+  exports. A run with no `outputs:` declaration exports `{runId, status}`
+  instead. This is a Markdown-frontmatter-only key — a GitHub-shaped
+  workflow's closed root key set has no extension surface for it, the same
+  reason it cannot declare `params:` either. See
+  [Workflow Schema: Workflow outputs](docs/reference/workflow-schema.md#workflow-outputs).
+- **`akm workflow plan <ref>`** (Evolving) — compiles, resolves, and freezes
+  a workflow exactly as starting a run would, then stops: zero durable
+  writes, no published run, no event, no lease. Prints the canonical step
+  graph, per-step frozen target kinds, task/child expansion, input
+  bindings, the source read set, and freeze-time lowering notices —
+  secret-free by construction (no resolved reference value, request
+  content, script bytes, or credential is ever printed). Defaults to a
+  human-readable summary; `--format json` returns the full envelope. See
+  [CLI reference: workflow plan](docs/reference/cli.md#workflow-plan).
+- **`akm task explain <ref> [input flags]`** — read-only task introspection.
+  Prints the task's source path and version, its declared `inputs:` (with
+  defaults — a secret-shaped default prints as `<redacted>`), the supplied
+  values with provenance (`default` | `flag` | `schedule-binding`, likewise
+  redacted when secret-shaped), the resolved target kind/ref, effective
+  execution settings with field-level provenance, and schedule bindings.
+  Never spawns anything, writes history, or touches the scheduler; never
+  prints an `env:` value, a credential, a prompt body, a `run:` string, or
+  `with.content`. It accepts the task's own declared input flags and nothing
+  else: `--scheduled` — which `explain` neither declares nor implements —
+  fails `UNKNOWN_FLAG` (exit 2) rather than being silently discarded, in
+  every spelling (`--scheduled`, `--scheduled=false`, …). See
+  [CLI reference: task](docs/reference/cli.md#task).
+- **`AKM_TASK_INPUTS`** — the exec-context environment variable a
+  task-composed step's shell/script target receives: canonical JSON of its
+  resolved, schema-validated `inputs:` bindings. Present only when the
+  bindings are non-empty; subject to the same per-platform size ceiling as
+  `AKM_INPUTS` / `AKM_PARAMS`. See
+  [Context reaching the command](docs/reference/workflow-schema.md#context-reaching-the-command).
+- **A v3 → task source v4 migrator**: the separate `akm-migrate` executable
+  (installed alongside `akm`) gains `task-v4-status` / `task-v4-apply
+  [--dry-run]`, a second, independent generation of the same dry-run-first,
+  `changed | skipped | blocked` migration planner — options bag flattened to
+  top-level keys. A `with:` authored on any target other than
+  `uses: akm/command` is `blocked` for manual review, alongside a
+  github-action-targeted `uses:` (blocked reason
+  `github-action-target-removed`) and anything else ambiguous: the migrator
+  translates structure, never intent, so `inputs:` is never invented on a
+  file's behalf — declaring it is an authoring decision left to the person
+  editing the migrated file. Nothing is overwritten without a backup. A
+  `changed` file can carry an informational **notice** for a translation that
+  is faithful but not one-to-one — a manual-dispatch-only trigger that v4
+  expresses as "no `schedule:`", and an `akm.outputSchema` dropped because v4
+  accepts `output:` only with a command target — so read the notices on a
+  dry-run plan, not just the outcomes. A v3 document that was never valid in
+  the first place (an empty `on:`, or a `workflow_dispatch:` carrying
+  `inputs:`) is `blocked` as `invalid-v3-task` rather than being converted
+  into runnable v4 bytes. By
+  0.9.2's release this generation runs automatically as the second half of
+  `akm migrate status` / `akm migrate apply [--dry-run]` (see "Task v3
+  sources no longer parse" above) — `task-v4-status`/`task-v4-apply` remain
+  as the standalone, single-generation entry points the frozen migrator
+  always exposes. See the
+  [0.9.1 to 0.9.2 migration guide](docs/migration/v0.9.1-to-v0.9.2.md#migrating-task-v3-to-task-source-v4).
+
+### Fixed
+
+- **A flag value for a parameter or input declaring both `array` and a
+  scalar type is no longer forced into an array.** `akm workflow run <ref>
+  --<param> <value>` (and, new in this release, `akm task run <id>
+  --<input> <value>`) unconditionally grouped a supplied value into an array
+  whenever the declaration mentioned `array` at all, so
+  `type: ["array", "string"]` with `--x hello` delivered `["hello"]` instead
+  of the permitted string, and `type: ["array", "null"]` could never produce
+  `null` — silently, since the altered value still satisfied the array
+  branch. A single, non-bracketed value now tries the union's scalar
+  alternatives first. An `array`-only declaration, the JSON-array shorthand
+  (`--x '["a","b"]'`), and grouping a repeated flag are all unchanged.
+- **`akm task <subcommand> --target=<value>` now answers with the 0.9 rename
+  hint instead of ignoring the flag.** The retired-spelling check compared
+  whole argv tokens, so it caught a bare `--target` but not `--target=team`;
+  because `target` is exempt from the generic unknown-flag gate on `task`
+  subcommands precisely so that check can answer, the `=`-spelling was
+  rejected by nothing at all and the bundle the caller named was silently
+  dropped. It now fails with `UsageError` code `INVALID_FLAG_VALUE` (exit 2)
+  naming `--bundle`, in every spelling.
+- **The embedded `akm` hint sheet no longer teaches a task format this
+  release rejects.** Its "Scheduled Tasks" section still told readers to
+  author `version: 3` with `akm.enabled` and `akm.timeout`; it now describes
+  task source v4 (`version: 4`, per-entry `schedule[].enabled`, top-level
+  `timeout`, typed `inputs:`/`output:`) and points at `akm migrate apply`.
+  The `stash`-terminology doc lint now scans the shipped hint assets too, so
+  the embedded help cannot drift out of the active-docs vocabulary again.
+- **The macOS native scheduler backend no longer refuses a real
+  `launchctl` inventory.** Its loaded-service reader enforced a narrow,
+  hand-written grammar over `launchctl print`'s full output and rejected
+  the entire read — surfacing as `INVALID_CONFIG_FILE` from every akm
+  scheduler command — the moment any line fell outside it, which real
+  `launchctl` output on a real Mac routinely does. It now scans for akm's
+  own `com.akm.task.*` labels and ignores everything else, which is what
+  every caller actually needed. Caught by the gated native-scheduler
+  suite's first run against macOS.
+- **The Windows-built package no longer ships without its embedded
+  template assets.** The build's asset-copy step matched paths against a
+  forward-slash pattern, but path separators on Windows are backslashes,
+  so the match silently failed and `dist/assets/` was never populated —
+  the packaged npm tarball built on Windows carried no templates at all,
+  and any command rendering one (for example `akm health --format html`)
+  crashed with `ERR_MODULE_NOT_FOUND`. Also caught by the gated
+  native-scheduler suite's first run, this time against Windows.
+
+## [0.9.2-alpha.4] - 2026-08-26
+
+### Added
+
+- **`akm health`: flag assets whose resolved type disagrees with their
+  directory** (#837). Adds a `type-directory-disagreement` advisory that
+  compares every indexed asset's resolved type against the type its
+  `DIR_TYPE_MAP` directory declares (`memories/`, `knowledge/`, `commands/`,
+  `agents/`, `workflows/`, `facts/`, `lessons/`, `sessions/`,
+  `instructions/`, `scripts/`, `env/`, `secrets/`, `tasks/`). This is the
+  diagnostic that would have caught #824 (three `memories/` files silently
+  indexed as commands) the day it was introduced. Since `knowledge/` +
+  `$ARGUMENTS` and `agents/` + `agent:` frontmatter are deliberate command
+  overrides, the check never hard-fails: every disagreement is reported as a
+  warning naming the winning classifier signal, with a `knownGoodOverride`
+  flag so a sanctioned override reads differently from an unexplained one.
+- **`akm health`: report the Claude harness plugin's version and warn when
+  it's stale or out of range** (#838). Adds a `plugin-version` advisory that
+  reports each installed Claude Code `akm` plugin's version, warns when a
+  newer tag is published upstream (naming the update command), and warns
+  when the plugin's own declared `AKM_VERSION_RANGE` no longer admits the
+  running CLI — meaning the plugin has silently disabled itself. Makes an
+  outbound `git ls-remote` when network is available to check for a newer
+  tag; per owner decision, this is read-only and degrades to a benign pass
+  (no plugin, no marketplace clone, unreadable manifest, malformed range, or
+  a failed remote lookup) rather than crashing or blocking offline use.
+
+### Changed
+
+- **Extract: LLM prompt is now built from parent-origin events only —
+  "harvest-without-prompting hybrid" (#840).** #830 folds a session's
+  subagent transcripts into its event stream for hashing and inline-ref
+  harvesting; the prompt sent to the extraction LLM previously included that
+  folded subagent content too, competing with the parent's own transcript
+  for the 80,000-char pre-filter budget. #840's design-determination doc
+  (`docs/plans/subagent-extraction-design.md`) measured that this "fold"
+  approach evicts up to 28.6% of parent-origin content on real sessions to
+  make room for subagent noise that mostly gets evicted anyway, while a
+  "harvest-without-prompting hybrid" — keep folding for hashing/inline-ref
+  purposes, but filter the prompt down to `data.events` whose `filePath`
+  matches the session's own (`data.ref.filePath`) — matches or beats the
+  folded prompt's size with zero eviction on every session measured, and
+  recovers the exact same inline refs (`akm remember`/`akm feedback` calls
+  the agent made inside a subagent), because that harvesting already runs on
+  the raw stream independent of what reaches the prompt. Only
+  `runPreLlmSessionGates`'s call into `preFilterSession` changed; folding
+  (`session-log.ts`) and `buildExtractPrompt` are untouched.
+  - **No forced re-extraction wave.** `hashSessionContent` still hashes the
+    full folded `data` (parent + subagents), computed before the
+    parent-origin view is built — no previously-computed session hash
+    changes, so no session already extracted under the fold prompt shape is
+    automatically re-processed. Use `--force` to re-process a specific
+    session under the new, parent-only prompt shape.
+  - **`processes.extract.maxTotalChars` is unchanged in meaning and default**
+    — it still caps the single-call prompt built from parent-origin events;
+    it simply no longer has to compete against subagent-origin noise for
+    that budget.
+  - **`minContentChars`** (the raw-size skip gate, #595/#596) is still
+    measured on the FULL folded `data.events` (parent + subagents),
+    deliberately left unchanged: narrowing it to parent-origin chars would
+    newly skip delegation-heavy sessions with a thin parent transcript
+    before extraction runs at all, even though their subagent-origin work is
+    still fully harvested via inline refs. The full-stream measurement is
+    today's existing behavior; the worst case it preserves is an LLM call
+    over a small parent-only prompt, not a missed extraction.
+  - #839's task-notification dedupe (which stubs a parent's
+    `<task-notification>` only when the matching subagent's own event ALSO
+    survives into the same kept prompt set) composes safely with this
+    change without modification: subagent-origin events never reach
+    `preFilterSession` on this path, so the dedupe's own scoping check
+    naturally makes it a no-op — the parent's notification (the only
+    remaining trace of delegated work in the prompt) survives untouched.
+
+### Fixed
+
+- **`akm remember` synthesizes a description when the caller doesn't supply
+  one** (#835). Both the zero-flag hot path and the structured-args path
+  (e.g. `--tag`-only, with no `--description`/`--enrich`) previously wrote
+  memories with no `description:` and no `tags:`. akm's indexer covers only
+  synthesized frontmatter/headings, never body prose, so those memories were
+  retrievable only by whatever words survived into the auto-generated
+  filename — effectively write-only. Verified on a real stash: 272/3169
+  memories lacked a description, 100% of those written via `akm remember`.
+  The new `synthesizeMemoryDescription` (ported from akm-eval's
+  `firstSentencesCapped` rule, which independently arrived at the same fix)
+  is deterministic and makes no LLM call: it accumulates whole sentences
+  from the body up to `DESCRIPTION_MAX_CHARS`, skipping a leading markdown
+  heading so the description doesn't just repeat the title. Wired into both
+  write paths as a fallback only — a caller-supplied `--description` (or one
+  derived by `--enrich`) is never overwritten. Closes the write-only-memories
+  gap on 0.9.1 indexes.
+- **Extract: deduped the doubled subagent conclusion in the extraction prompt**
+  (#839). After #830 folded a session's subagent transcripts into its event
+  stream, a completed subagent's final report could appear twice in the same
+  extraction prompt: once as the subagent's own folded final message, once as
+  the parent's `<task-notification>` record of that same call (#836 measured
+  ~92-99% textual overlap on a real pair; reproduced here as a byte-identical
+  match after decoding the XML entities Claude Code escapes into `<result>`).
+  The parent's notification copy is now stubbed to `[subagent <agentId>
+  completed: <description>]` when its `<result>` is a near-duplicate
+  (Dice-bigram similarity ≥ 0.9) of a folded subagent transcript's own text;
+  the subagent's original is untouched, per #839's owner-decided direction
+  (the inverse — dropping the subagent's own terminal event — was evaluated
+  and rejected in #836 because some subagent transcripts consist only of
+  that one event). Matching is scoped by `<task-id>` to the one subagent
+  transcript it names and still requires content similarity, so an earlier
+  notification for a *resumed* agent (Claude Code re-notifies the same
+  task-id on each stop) that carries a genuinely different, intermediate
+  result is left alone.
+  **Scoped to the final, post-budget kept set — not the raw stream** (#840's
+  design-determination doc flagged this as a hazard while this PR was in
+  flight): the dedupe only fires when the subagent's own event ALSO survives
+  into the same kept set as the notification. #840 measured that today's
+  recency-biased 80k budget already evicts one side of nearly every raw
+  duplicate pair before dedupe would matter (0 of 89 raw pairs across four
+  real sessions had both sides survive); an unconditional raw-stream stub
+  would, under that same eviction pattern, sometimes delete a parent's
+  notification whose subagent copy never made the cut in the first place —
+  and would unconditionally delete the *only* surviving trace of delegated
+  work under #840's recommended future design (prompting from parent-origin
+  events only). Verified against the real session #836 and #839 both cite
+  (`4a0d9e9b…`): under the actual 80,000-char budget, 0 notifications are
+  stubbed today (consistent with #840's finding) because the cited pair's
+  subagent copy doesn't survive the budget; with the budget cap lifted,
+  1 of 10 raw duplicate pairs in that session both survive AND still exceed
+  the 0.9 similarity bar after the pre-filter's independent per-event
+  2000-char truncation (the other 9 exceed that per-event cap and truncate
+  down far enough to fall below the bar — a conservative miss, never a wrong
+  stub). The fix is real and correct for sessions/pairs small enough to avoid
+  both eviction and truncation, and is structurally inert wherever it would
+  be unsafe to fire.
+  Implemented in the pre-filter (`preFilterSession`), which runs AFTER
+  `hashSessionContent` — so **no `contentHash` moves and no re-extraction
+  wave is triggered** (unlike #830's own folding change, which changed the
+  raw event stream #602's hash covers).
+- **Extract: regression-tested the no-double-extraction guarantee** (#839).
+  Discovery-mode extraction over a project with a parent + subagent
+  transcripts now has an explicit end-to-end test proving exactly one
+  session is processed, that `--session-id agent-<hash>` resolves to the
+  not-found result rather than an extraction, and that folded subagent
+  content is attributed only to the parent's session/contentHash. Pins
+  behavior already true since #830 (`listSessions()` excludes `subagents/`
+  dirs for both discovery and `--session-id` lookup); nothing tested it
+  end-to-end before.
+
+### Documentation
+
+- **Measured whether subagent-transcript folding (#830) duplicates the
+  parent's own summary, and disclosed the one-time re-extraction cost
+  (#833).** Using the actual reader/pre-filter/prompt-builder code against 3
+  real sessions on this machine — no LLM calls; `contentHash`,
+  `preFilterSession`, and `buildExtractPrompt` are deterministic:
+  - Raw event counts grow 2x-12x once subagent transcripts are folded in
+    (measured: 1209 -> 14224; 1583 -> 6738, the exact session cited in
+    #829/#833's "1583 -> 6738" figure; 155 -> 2408). `contentHash` is
+    computed over that stream, so every previously-extracted session's hash
+    changes and the next `--since` run re-extracts all of them once, each
+    with a larger prompt (+1.2% to +5.2% prompt chars across the 3 sessions,
+    since the 80,000-char pre-filter budget caps how much of the growth
+    actually reaches the LLM).
+  - The result is a genuine tradeoff, not a clean win or loss. **Benefit:**
+    inline `akm remember`/`akm feedback` calls made *by subagents* are
+    recovered regardless of the budget cap (inline-ref extraction runs on
+    the raw event stream, not the pre-filtered one) — up to 162 refs
+    recovered on the largest session measured (was 2 without folding),
+    fixing #829's "delegated work is never harvested" defect. **Cost:** on
+    sessions whose raw content is near or under the pre-filter's character
+    budget, folding evicts a large share of the parent's own kept content to
+    make room for subagent tool-call trace — parent-origin kept events
+    dropped 27% and 71% respectively on the two smaller sessions measured.
+    On the largest session the budget was already saturated by the parent's
+    own tail, so folding changed nothing there. Duplication is real, not
+    hypothetical: on the smallest session, one subagent's conclusion appears
+    twice in the same prompt sent to the extraction LLM — once via its own
+    folded final message, once via the parent's own record of that
+    delegated call's result, which independently already captured ~92% of
+    the same text verbatim.
+  - A narrowing that drops a subagent transcript's terminal event (its
+    apparent "final report") to avoid this specific duplication was
+    considered and rejected: the existing #830 regression fixture has a
+    subagent transcript whose *only* event is that terminal turn (a single
+    delegated `akm remember` call) — the same rule would drop the only
+    content in short single-step delegations, undoing the harvesting #830
+    added.
+  - **Decision: keep folding as shipped.** The data does not cleanly favor
+    removing or narrowing it, and the one narrowing considered would cost
+    more than it fixes. #829's phantom-session exclusion is unaffected
+    either way.
+- Recorded the fold-vs-link subagent-extraction design determination in
+  `docs/plans/subagent-extraction-design.md` (#840). Measured four candidates
+  (fold+dedupe as shipped, link-only, a harvest-without-prompting hybrid, and
+  chunked map-reduce extraction) on the same real sessions #836 used plus one
+  added for scale. Headline: the hybrid recovers 100% of #830's inline-ref
+  harvesting (162/162, 38/38, 1/1, 8/8 across the four sessions) with zero
+  parent-content eviction (vs 27.5%/28.6% evicted under fold on two of the
+  four), and #839's dedupe was measured to have zero effect on the actual
+  LLM prompt on all four sessions (the flagged duplicate content is already
+  evicted by the recency-biased budget before dedupe would matter). Chunked
+  extraction was measured at 9x-229x more LLM calls per session on real
+  data and is not recommended. No behavior changes shipped in this PR.
+
+## [0.9.2-alpha.3] - 2026-08-26
+
+### Fixed
+
+- **Currency in prose no longer retypes an asset as a command** (#824). The
+  smart-Markdown classifier matched `$1`/`$2`/`$3` with a trailing word
+  boundary, and that boundary sits between the `2` and the comma in `$2,000` —
+  so any note quoting a price was indexed as a `command`, its ref moved to
+  `commands/<dir>/<slug>`, and it left its own namespace. Measured on a real
+  corpus, 3 of 51 memory documents were affected, and those 3 were exactly the
+  3 whose bodies matched. `$ARGUMENTS` is unambiguous and keeps its existing
+  precedence over a directory hint; the numeric placeholders now exclude a
+  following digit (or a `.`/`,` followed by one), and where they still
+  disagree with a directory that declares a type, the declaration wins. The
+  defect is present identically in 0.9.1 — it only became visible once the
+  0.9.2-alpha.2 retrieval work let mistyped assets surface in results.
+
+### Documentation
+
+- Recorded the 0.9.2 retrieval measurement in
+  `docs/plans/benchmark-tuning-findings.md` §2e (#825). Retrieval-only probes
+  with no model in the loop, identical corpora, only the CLI version differing:
+  LoCoMo zero-hit 75.0% -> 0.0% and evidence recall@5 0.154 -> 0.590;
+  LongMemEval zero-hit 100% -> 0.0% and recall@5 0.000 -> 1.000.
+
+## [0.9.2-alpha.2] - 2026-08-25
+
+### Fixed
+
+- **Retrieval:** relaxed zero-hit lexical queries centrally, stabilized
+  relaxed-retrieval quality, and preserved name quality through relaxed
+  ranking. This is the change measured in §2e above — it is what lifted the
+  retrieval ceiling that had floored memory-backed evaluation.
+- **Indexing:** verify vec completeness before promotion; compare vec IDs as
+  exact sets; materialize vectors for targeted writes; make nested entry
+  mutation atomic; reconcile clean before final verification; restore static
+  embedding imports.
+- **Markdown projection:** parse nested links safely, parse destination
+  phases, and project with stateful delimiters.
+- **Sources:** reconcile local bundle updates and report incomplete filesystem
+  reconciliation.
+- **Extract:** keep malformed model output retryable.
+
+### Performance
+
+- Keep targeted embedding selection narrow and preserve targeted vec
+  degradation.
+
 ## [0.9.2-alpha.1] - 2026-08-24
 
 ### Breaking changes & migration
@@ -1213,34 +1955,17 @@ See `docs/migration/v0.8-to-v0.9.md` and
   and a real domain asset always outranks the facts. That invariant is pinned
   by `tests/search-convention-fact-demotion.test.ts`, which becomes the
   regression guard if a demotion contributor is ever revisited.
-- **Config-gated indexing of the self-situating body opening —
-  `index.indexBodyOpening` (default `false`).** Body prose is not indexed
-  (the FTS `content` column carries only TOC headings and parameters), which
-  is why the stash conventions route orientation into
-  `description:`/`when_to_use:`. With the new flag enabled, the metadata pass
-  captures the first prose paragraph of each markdown asset body — skipping
-  headings (ATX and setext), fenced code blocks, thematic breaks, and a
-  leading nested frontmatter block (only when its content is actually
-  frontmatter-shaped: prose wrapped in decorative `---` lines is captured,
-  not discarded); capped at 280 chars with word-boundary truncation and a
-  trailing ellipsis — into `entry.bodyOpening`, which folds into the
-  lowest-weight `content` FTS column (bm25 weight 1.0, so a name match always
-  outranks a body-opening-only match) and into the search/embedding text.
-  Secret and env files are never read for it, and session-kind memories
-  (`akm_memory_kind` in outer or nested inner frontmatter) are excluded —
-  their bodies are raw transcripts. Both indexing walks and write-path
-  indexing honor the flag (the metadata pass reads the user config directly).
-  With the flag absent or `false`, entries and search fields stay
-  byte-identical to before. **Costs of toggling (either direction):** indexed
-  text changes, so collapse-detector canary recall baselines shift — re-mint
-  via `akm improve canary --refresh` — and embeddings are NOT regenerated for
-  entries that already have one, while incremental runs re-extract only
-  changed files. Run `akm index --full` after toggling: it re-extracts every
-  entry and wipes embeddings so they rebuild from the new text; until then
-  `akm index` warns that the flag differs from the state the index was built
-  with. The conventions' `description:`/`when_to_use:` orientation routing
-  remains primary — this flag makes body openings additionally pay retrieval
-  rent, it does not replace structured metadata. See `docs/configuration.md`.
+- **One progressive lexical retrieval path and searchable Markdown prose.**
+  FTS now tokenizes Unicode letters/numbers, deduplicates and caps the query,
+  then runs strict AND, prefix-AND, and a single OR/prefix-OR recovery only
+  after both conjunctive forms miss. Every stage keeps the existing BM25 field
+  weights and downstream ranker; callers do not maintain stopword lists or
+  parallel result collections. AKM-native Markdown contributes a normalized,
+  16,384-character body projection through the existing lowest-weight
+  `content` field. Frontmatter, comments, fenced code, and link destinations
+  are removed; secret/env values and raw session/checkpoint bodies never enter
+  the projection. Structured fields remain first in the bounded embedding
+  input, so exact names and metadata continue to dominate body-only matches.
 - **`akm mv <ref> <new-name>` — rename with inbound-xref rewrite and
   utility-history preservation (Experimental).** The stash conventions'
   forced-rename procedure ("grep and fix inbound xrefs in the same pass") was

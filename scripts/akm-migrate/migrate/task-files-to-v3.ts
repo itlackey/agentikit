@@ -8,8 +8,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "../../../src/core/errors";
-import { parseTaskV3Yaml } from "../../../src/tasks/source-v3";
 import { fsyncDirectoryPortable } from "./durable-fs";
+import { parseTaskV3Yaml } from "./task-source-v3-frozen";
 import {
   type TaskToV3Changed,
   type TaskToV3FileInput,

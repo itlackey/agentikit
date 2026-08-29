@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "sourceSchemaVersion": 4,
+  "description": "Representative task-source-v4 documents (docs/plans/specs/p2a-task-source-v4.md, task SOURCE v4 — never bare 'v4', see D1). Each fixture is valid per the future parseTaskSourceV4Document (src/tasks/source/task-source-v4.ts) and isolates one authoring dimension: the optional-schedule shapes, one target kind, or the inputs/output/execution-controls surface. `expected` mirrors TaskSourceV4Document's own field names and nesting (spec §3.2: schedule/manualOnly at the document root; target.kind 'uses' nests the classified ref under target.uses.{kind,ref} — NOT v3's flat triggers.schedules/triggers.manual/target.uses-as-string) so both tests/tasks/source-v4.test.ts (grammar) and tests/tasks/source-v4-adapter.test.ts (projection) can drive off one fixture set, mirroring the tasks/v3-migration family's manifest convention.",
+  "fixtures": [
+    {
+      "id": "schedule-absent-manual-only",
+      "file": "schedule-absent-manual-only.yml",
+      "represents": ["schedule:absent"],
+      "expected": {
+        "manualOnly": true,
+        "schedule": [],
+        "target": { "kind": "uses", "uses": { "kind": "command", "ref": "commands/review" } }
+      }
+    },
+    {
+      "id": "schedule-string-shorthand",
+      "file": "schedule-string-shorthand.yml",
+      "represents": ["schedule:string-shorthand"],
+      "expected": {
+        "manualOnly": false,
+        "schedule": [{ "cron": "0 8 * * 1", "enabled": true, "inputs": {}, "source": "schedule", "ordinal": 0 }],
+        "target": { "kind": "uses", "uses": { "kind": "command", "ref": "commands/review" } }
+      }
+    },
+    {
+      "id": "schedule-list-multiple",
+      "file": "schedule-list-multiple.yml",
+      "represents": ["schedule:list", "schedule:per-binding-enabled", "schedule:per-binding-inputs"],
+      "expected": {
+        "manualOnly": false,
+        "schedule": [
+          { "cron": "0 6 * * *", "enabled": true, "inputs": {}, "source": "schedule[0].cron", "ordinal": 0 },
+          { "cron": "30 18 * * 1-5", "enabled": false, "inputs": {}, "source": "schedule[1].cron", "ordinal": 1 },
+          {
+            "cron": "0 9 * * 1",
+            "enabled": true,
+            "inputs": { "scope": "all" },
+            "source": "schedule[2].cron",
+            "ordinal": 2
+          }
+        ],
+        "target": { "kind": "uses", "uses": { "kind": "command", "ref": "commands/review" } },
+        "inputs": {
+          "scope": {
+            "schema": { "type": "string", "enum": ["changed", "all"] },
+            "default": "changed",
+            "required": false
+          }
+        }
+      }
+    },
+    {
+      "id": "target-command",
+      "file": "target-command.yml",
+      "represents": ["target:command"],
+      "expected": {
+        "manualOnly": false,
+        "schedule": [{ "cron": "15 4 * * 1", "enabled": true, "inputs": {}, "source": "schedule", "ordinal": 0 }],
+        "target": { "kind": "uses", "uses": { "kind": "command", "ref": "commands/publish-changelog" } }
+      }
+    },
+    {
+      "id": "target-script",
+      "file": "target-script.yml",
+      "represents": ["target:script"],
+      "expected": {
+        "manualOnly": false,
+        "schedule": [{ "cron": "15 4 * * 1", "enabled": true, "inputs": {}, "source": "schedule", "ordinal": 0 }],
+        "target": { "kind": "uses", "uses": { "kind": "script", "ref": "scripts/nightly-cleanup.sh" } }
+      }
+    },
+    {
+      "id": "target-workflow",
+      "file": "target-workflow.yml",
+      "represents": ["target:workflow"],
+      "expected": {
+        "manualOnly": false,
+        "schedule": [{ "cron": "15 4 * * 1", "enabled": true, "inputs": {}, "source": "schedule", "ordinal": 0 }],
+        "target": { "kind": "uses", "uses": { "kind": "workflow", "ref": "workflows/nightly-report" } }
+      }
+    },
+    {
+      "id": "target-builtin-command",
+      "file": "target-builtin-command.yml",
+      "represents": ["target:builtin-command", "with:legal-on-akm-command"],
+      "expected": {
+        "manualOnly": false,
+        "schedule": [{ "cron": "15 4 * * 1", "enabled": true, "inputs": {}, "source": "schedule", "ordinal": 0 }],
+        "target": {
+          "kind": "uses",
+          "uses": { "kind": "builtin-command", "ref": "akm/command" },
+          "with": { "content": "Say hello", "arguments": "--flag" },
+          "command": { "kind": "inline", "content": "Say hello", "arguments": "--flag" }
+        }
+      }
+    },
+    {
+      "id": "target-run-shell",
+      "file": "target-run-shell.yml",
+      "represents": ["target:run-shell"],
+      "expected": {
+        "manualOnly": false,
+        "schedule": [{ "cron": "15 4 * * 1", "enabled": true, "inputs": {}, "source": "schedule", "ordinal": 0 }],
+        "target": { "kind": "run", "run": "akm index --full", "shell": "bash" }
+      }
+    },
+    {
+      "id": "inputs-and-output",
+      "file": "inputs-and-output.yml",
+      "represents": ["inputs:typed-declarations", "output:bounded-schema"],
+      "expected": {
+        "manualOnly": true,
+        "schedule": [],
+        "target": { "kind": "uses", "uses": { "kind": "command", "ref": "commands/review" } },
+        "inputs": {
+          "scope": {
+            "schema": { "type": "string", "enum": ["changed", "all"] },
+            "default": "changed",
+            "required": false
+          },
+          "strict": { "schema": { "type": "boolean" }, "default": true, "required": false },
+          "ticket": { "schema": { "type": "string" }, "required": true }
+        },
+        "output": { "type": "object", "properties": { "summary": { "type": "string" } }, "required": ["summary"] }
+      }
+    },
+    {
+      "id": "execution-controls",
+      "file": "execution-controls.yml",
+      "represents": ["options:top-level-execution-controls", "options:d2-n7-survivors"],
+      "expected": {
+        "manualOnly": false,
+        "schedule": [{ "cron": "15 4 * * 1", "enabled": true, "inputs": {}, "source": "schedule", "ordinal": 0 }],
+        "target": { "kind": "run", "run": "akm index --full" },
+        "env": { "MODE": "safe", "RETRIES": 3, "DRY_RUN": true },
+        "execution": {
+          "agent": "reviewer-agent",
+          "engine": "fixture-llm",
+          "model": "fixture-exact-model",
+          "inference": { "seed": 7 },
+          "tools": ["read", "grep"],
+          "timeout": 45000,
+          "redact": ["CONTRACT_FIXTURE_TOKEN"],
+          "maxSteps": 8,
+          "maxRetries": 2
+        }
+      }
+    }
+  ]
+}

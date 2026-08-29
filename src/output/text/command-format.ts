@@ -584,7 +584,11 @@ export function formatUpdatePlain(r: Record<string, unknown>): string {
     }
   }
   for (const item of plainSynced ?? []) {
-    lines.push(`update: ${item.id} synced (${item.kind})`);
+    lines.push(
+      item.kind === "filesystem"
+        ? `update: ${item.id} reconciled (filesystem)`
+        : `update: ${item.id} synced (${item.kind})`,
+    );
   }
   for (const item of skipped ?? []) {
     lines.push(`update: ${item.id} skipped — ${item.reason}`);

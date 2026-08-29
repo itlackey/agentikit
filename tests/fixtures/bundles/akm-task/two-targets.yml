@@ -1,9 +1,6 @@
 # INVALID (fixture, intentional): declares BOTH `uses` and `run`.
-# A task-v3 source must declare exactly one executable selector. Everything
-# else is valid so this exercises only the selector-XOR rule.
-version: 3
+# A task source v4 document must declare exactly one executable selector.
+# Everything else is valid so this exercises only the selector-XOR rule.
+version: 4
 uses: commands/summarize-yesterday
 run: "echo hello"
-akm:
-  schedule: "@daily"
-  enabled: true

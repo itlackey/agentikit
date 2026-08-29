@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { UsageError } from "../../core/errors";
 import { decodeFrozenExecutableIdentity, type FrozenExecutableIdentity } from "../../execution/executable-identity";
+import { INPUT_NAME_PATTERN, type TaskInputBinding } from "../../execution/input-contract";
 import {
   canonicalResolvedExecutionRequest,
   decodeResolvedExecutionRequest,
@@ -22,6 +23,9 @@ import {
 import { decodeExecutionSourceIdentity, type ExecutionSourceIdentity } from "../../execution/source";
 import { decodeFrozenRunnerSpec } from "../../integrations/agent/execution-lowering";
 import type { RunnerSpec } from "../../integrations/agent/runner";
+import { parseReference } from "../program/expressions";
+import { PROGRAM_PARAM_NAME_PATTERN } from "../program/schema";
+import { utf8Bytes, WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../resource-limits";
 import {
   decodeWorkflowExecSpec,
   type IrMapNode,
@@ -31,7 +35,7 @@ import {
   type WorkflowPlanValidationHooks,
 } from "./schema";
 
-export const WORKFLOW_IR_V4_VERSION = 4 as const;
+export const WORKFLOW_IR_V5_VERSION = 5 as const;
 
 export interface DurableWorkflowSourceSnapshot {
   readonly identity: Readonly<ExecutionSourceIdentity>;
@@ -85,6 +89,8 @@ export interface FrozenWorkflowCommandTarget {
   readonly cwdIdentity?: FrozenWorkflowDirectoryIdentity;
   readonly executable?: FrozenExecutableIdentity;
   readonly gitCommitOid?: string;
+  /** A composing step's frozen with: bindings against this task's declared inputs (P2b §3, A-N7). Absent, never [], when empty. */
+  readonly inputBindings?: readonly TaskInputBinding[];
 }
 
 export interface FrozenWorkflowShellTarget {
@@ -94,6 +100,8 @@ export interface FrozenWorkflowShellTarget {
   readonly cwdIdentity: FrozenWorkflowDirectoryIdentity;
   readonly executable?: FrozenExecutableIdentity;
   readonly gitCommitOid?: string;
+  /** A composing step's frozen with: bindings against this task's declared inputs (P2b §3, A-N7). Absent, never [], when empty. */
+  readonly inputBindings?: readonly TaskInputBinding[];
 }
 
 export interface FrozenWorkflowScriptTarget {
@@ -109,9 +117,40 @@ export interface FrozenWorkflowScriptTarget {
   readonly materialization: "ephemeral-0700-delete";
   readonly executable?: FrozenExecutableIdentity;
   readonly gitCommitOid?: string;
+  /** A composing step's frozen with: bindings against this task's declared inputs (P2b §3, A-N7). Absent, never [], when empty. */
+  readonly inputBindings?: readonly TaskInputBinding[];
 }
 
-export type FrozenWorkflowTarget = FrozenWorkflowCommandTarget | FrozenWorkflowShellTarget | FrozenWorkflowScriptTarget;
+/**
+ * A `uses: workflows/<ref>` step (direct) or a `tasks/<ref>`-whose-task-
+ * targets-a-workflow step (task-wrapped), frozen with the COMPLETE child
+ * plan embedded (spec docs/plans/specs/p3a-plan-v5-child-freeze.md §3.5).
+ * The ONE producer is `src/workflows/freeze/targets/child-workflow.ts`
+ * (Lane B); this module owns the type and its decode/integrity chain only.
+ */
+export interface FrozenChildWorkflowTarget {
+  readonly kind: "child-workflow";
+  /** The child workflow's fully-qualified ref, as resolved at parent freeze. */
+  readonly ref: string;
+  /** sha256 (hex) of canonicalPlanJson(frozenPlan). Re-verified on every parent decode. */
+  readonly planHash: string;
+  /** The COMPLETE frozen child plan, embedded. irVersion 5, recursively. */
+  readonly frozenPlan: WorkflowPlanGraphV4;
+  /** This target's own content identity — see decodeChildWorkflowTarget's childWorkflowContentHash. */
+  readonly contentHash: string;
+  /** How the child was reached. */
+  readonly via: "direct" | "task";
+  /** Present only when via === "task": the composing task's qualified ref. */
+  readonly taskRef?: string;
+  /** A composing step's frozen with: bindings against the child's declared params: (A-N8). Absent, never [], when empty. */
+  readonly inputBindings?: readonly TaskInputBinding[];
+}
+
+export type FrozenWorkflowTarget =
+  | FrozenWorkflowCommandTarget
+  | FrozenWorkflowShellTarget
+  | FrozenWorkflowScriptTarget
+  | FrozenChildWorkflowTarget;
 
 export interface IrUnitNodeV4 extends IrUnitNodeCore {
   readonly frozenTarget: FrozenWorkflowTarget;
@@ -143,8 +182,20 @@ export interface IrStepPlanV4 {
   readonly gate: IrGateNodeV4;
 }
 
+/**
+ * One frozen `outputs:` entry (P3b, spec §4.2): a validated
+ * `steps.<id>.output(.<seg>)*` reference into a step artifact, plus an
+ * optional bounded JSON Schema. Absent, never `{}`, when undeclared.
+ */
+export interface FrozenWorkflowOutput {
+  /** A validated `steps.<id>.output(.<seg>)*` reference into a step artifact. */
+  readonly from: string;
+  /** Bounded JSON Schema (the `validateJsonSchemaSubset` subset). Absent when undeclared. */
+  readonly schema?: Record<string, unknown>;
+}
+
 export interface WorkflowPlanGraphV4 {
-  readonly irVersion: typeof WORKFLOW_IR_V4_VERSION;
+  readonly irVersion: typeof WORKFLOW_IR_V5_VERSION;
   readonly title: string;
   readonly params?: string[];
   readonly paramSchemas?: Record<string, Record<string, unknown>>;
@@ -152,15 +203,44 @@ export interface WorkflowPlanGraphV4 {
   readonly execution: { readonly maxConcurrency: number };
   readonly sourceReadSet: DurableWorkflowSourceSnapshot[];
   readonly steps: IrStepPlanV4[];
+  /**
+   * Named, optionally schema-validated projections of step artifacts,
+   * exported when the run completes (P3b, spec §4.2). ADDITIVE within
+   * `irVersion` 5 (B-N1) — `irVersion` does NOT bump. Absent, never `{}`,
+   * when the source declares none, so `canonicalPlanJson`/`computePlanHash`
+   * stay byte-identical for every workflow that does not use the feature.
+   */
+  readonly outputs?: Readonly<Record<string, FrozenWorkflowOutput>>;
 }
 
-/** Strict v4 corruption gate. No authored source or config is consulted here. */
-export function decodeWorkflowPlanV4(input: unknown, hooks: WorkflowPlanValidationHooks = {}): WorkflowPlanGraphV4 {
+/**
+ * Strict v4 corruption gate. No authored source or config is consulted here.
+ *
+ * `depth` is the composition-depth recursion counter (0 at the root
+ * workflow plan; +1 for every embedded child-workflow plan), and `budget` is
+ * a MUTABLE, tree-wide running total of embedded child-plan bytes charged so
+ * far. Both are internal to the recursive child-workflow decode path below
+ * (`decodeChildWorkflowTarget` calls this function again on an embedded
+ * `frozenPlan`, sharing the SAME `budget` object across the whole recursion —
+ * mirroring `ChildCompositionContext.budget` on the freeze side) — every
+ * external caller decodes a plan at the top level and relies on the
+ * defaults. Re-enforces the composition depth bound AND the aggregate
+ * embedded-bytes bound at decode as corruption gates (spec docs/plans/specs/
+ * p3a-plan-v5-child-freeze.md §3.6 step 6, rows A-23, A-N6); the actionable
+ * freeze-time `COMPOSITION_INVALID` gates live in
+ * `src/workflows/freeze/targets/child-workflow.ts` (Lane B).
+ */
+export function decodeWorkflowPlanV4(
+  input: unknown,
+  hooks: WorkflowPlanValidationHooks = {},
+  depth = 0,
+  budget: { embeddedBytes: number } = { embeddedBytes: 0 },
+): WorkflowPlanGraphV4 {
   const raw = record(input, "plan");
-  if (raw.irVersion !== WORKFLOW_IR_V4_VERSION) fail("irVersion must be 4");
+  if (raw.irVersion !== WORKFLOW_IR_V5_VERSION) fail("irVersion must be 5");
   assertKeys(
     raw,
-    ["irVersion", "title", "params", "paramSchemas", "budget", "execution", "steps", "sourceReadSet"],
+    ["irVersion", "title", "params", "paramSchemas", "budget", "execution", "steps", "sourceReadSet", "outputs"],
     "plan",
   );
   if (!Object.hasOwn(raw, "sourceReadSet")) fail("sourceReadSet is required");
@@ -168,14 +248,15 @@ export function decodeWorkflowPlanV4(input: unknown, hooks: WorkflowPlanValidati
   validateWorkflowPlanStructure(
     raw,
     {
-      expectedVersion: WORKFLOW_IR_V4_VERSION,
-      planExtraKeys: ["sourceReadSet"],
+      expectedVersion: WORKFLOW_IR_V5_VERSION,
+      planExtraKeys: ["sourceReadSet", "outputs"],
       unitExtraKeys: ["frozenTarget", "environment"],
       gateExtraKeys: ["frozenJudge"],
     },
     hooks,
   );
   const rawSteps = raw.steps as unknown[];
+  const stepIds = new Set(rawSteps.map((rawStep) => (rawStep as { stepId: string }).stepId));
   const requiredSources: ExecutionSourceIdentity[] = [];
   const steps = rawSteps.map((rawStep, index) => {
     const step = rawStep as Omit<IrStepPlanV4, "root" | "gate"> & { root?: unknown; gate: unknown };
@@ -189,22 +270,73 @@ export function decodeWorkflowPlanV4(input: unknown, hooks: WorkflowPlanValidati
             const { template: _template, ...map } = rawRoot;
             return {
               ...(map as unknown as Omit<IrMapNodeV4, "template">),
-              template: decodeUnitV4(record(rawRoot.template, `map ${String(rawRoot.id)} template`), requiredSources),
+              template: decodeUnitV4(
+                record(rawRoot.template, `map ${String(rawRoot.id)} template`),
+                requiredSources,
+                depth,
+                budget,
+              ),
             } satisfies IrMapNodeV4;
           })()
-        : decodeUnitV4(rawRoot, requiredSources);
+        : decodeUnitV4(rawRoot, requiredSources, depth, budget);
     return Object.freeze({ ...step, root, gate }) satisfies IrStepPlanV4;
   });
   assertRequiredSources(sourceReadSet, requiredSources);
+  const outputs = Object.hasOwn(raw, "outputs") ? decodeWorkflowOutputs(raw.outputs, stepIds) : undefined;
+  const { outputs: _rawOutputs, ...restRaw } = raw;
   return Object.freeze({
-    ...(raw as unknown as Omit<WorkflowPlanGraphV4, "steps" | "sourceReadSet">),
-    irVersion: WORKFLOW_IR_V4_VERSION,
+    ...(restRaw as unknown as Omit<WorkflowPlanGraphV4, "steps" | "sourceReadSet" | "outputs">),
+    irVersion: WORKFLOW_IR_V5_VERSION,
     sourceReadSet,
     steps,
+    ...(outputs ? { outputs } : {}),
   });
 }
 
-function decodeUnitV4(raw: Record<string, unknown>, requiredSources: ExecutionSourceIdentity[]): IrUnitNodeV4 {
+/**
+ * Decode a plan's `outputs` (P3b, spec §4.2): a corruption gate mirroring
+ * {@link decodeInputBindings} — non-empty, sorted-unique keys (canonical wire
+ * order, same rule `inputBindings` enforces), each name matching the
+ * `params:` name pattern, each entry's closed key set, `from` re-parsing as a
+ * `stepOutput` reference whose step id is declared in `plan.steps`.
+ */
+function decodeWorkflowOutputs(
+  value: unknown,
+  stepIds: ReadonlySet<string>,
+): Readonly<Record<string, FrozenWorkflowOutput>> {
+  const raw = record(value, "plan outputs");
+  const names = Object.keys(raw);
+  if (names.length === 0) fail("plan outputs must be a non-empty object");
+  let prior: string | undefined;
+  const outputs: Record<string, FrozenWorkflowOutput> = {};
+  for (const name of names) {
+    if (!PROGRAM_PARAM_NAME_PATTERN.test(name)) fail(`plan outputs has invalid name ${name}`);
+    if (prior !== undefined && compareCodePoints(prior, name) >= 0) {
+      fail("plan outputs must be sorted by unique name");
+    }
+    prior = name;
+    const entry = record(raw[name], `plan outputs.${name}`);
+    assertKeys(entry, ["from", "schema"], `plan outputs.${name}`);
+    if (typeof entry.from !== "string" || !entry.from) fail(`plan outputs.${name} from is invalid`);
+    const parsed = parseReference(entry.from);
+    if (!parsed.ok || parsed.expr.kind !== "stepOutput") {
+      fail(`plan outputs.${name} from must be a steps.<id>.output reference`);
+    }
+    if (!stepIds.has(parsed.expr.stepId)) {
+      fail(`plan outputs.${name} from names step ${parsed.expr.stepId}, which is not in plan.steps`);
+    }
+    const schema = Object.hasOwn(entry, "schema") ? record(entry.schema, `plan outputs.${name} schema`) : undefined;
+    outputs[name] = Object.freeze({ from: entry.from, ...(schema ? { schema: Object.freeze(schema) } : {}) });
+  }
+  return Object.freeze(outputs);
+}
+
+function decodeUnitV4(
+  raw: Record<string, unknown>,
+  requiredSources: ExecutionSourceIdentity[],
+  depth: number,
+  budget: { embeddedBytes: number },
+): IrUnitNodeV4 {
   const id = raw.id as string;
   if (!Object.hasOwn(raw, "frozenTarget")) fail(`unit ${id} frozenTarget is required`);
   if (!Object.hasOwn(raw, "environment")) fail(`unit ${id} environment is required`);
@@ -214,6 +346,8 @@ function decodeUnitV4(raw: Record<string, unknown>, requiredSources: ExecutionSo
     raw as unknown as IrUnitNodeCore,
     environment,
     requiredSources,
+    depth,
+    budget,
   );
   const { frozenTarget: _target, environment: _environment, ...core } = raw;
   return Object.freeze({
@@ -262,12 +396,134 @@ function decodeFrozenTarget(
   unit: IrUnitNodeCore,
   environment: readonly FrozenWorkflowEnvironmentBinding[],
   requiredSources: ExecutionSourceIdentity[],
+  depth: number,
+  budget: { embeddedBytes: number },
 ): FrozenWorkflowTarget {
   const target = record(value, `unit ${unit.id} frozenTarget`);
   if (target.kind === "command") return decodeCommandTarget(target, unit, requiredSources);
   if (target.kind === "shell") return decodeShellTarget(target, unit, environment);
   if (target.kind === "script") return decodeScriptTarget(target, unit, requiredSources);
+  if (target.kind === "child-workflow") return decodeChildWorkflowTarget(target, unit, depth, budget);
   fail(`unit ${unit.id} frozenTarget has unsupported kind ${String(target.kind)}`);
+}
+
+/**
+ * Composition-depth corruption bound (spec §3.6 step 6, §4.5, row A-23).
+ * Mirrors `WORKFLOW_MAX_COMPOSITION_DEPTH` (= 8), which Lane B adds to
+ * `src/workflows/resource-limits.ts` in a later commit as the freeze-time
+ * `COMPOSITION_INVALID` gate. Reproduced here — the decode-time corruption
+ * gate — rather than imported across the lane boundary, matching
+ * `tests/workflows/plan-v5-schema.test.ts`'s own header comment.
+ */
+const CHILD_WORKFLOW_DECODE_MAX_DEPTH = 8;
+
+/**
+ * Decode a `kind: "child-workflow"` frozen target (§3.5): the embedded
+ * COMPLETE child plan, re-verified against its own `planHash` and this
+ * target's own `contentHash` on every decode (rows A-20, A-21), recursively
+ * enforcing `irVersion` 5 (row A-22, via the recursive
+ * {@link decodeWorkflowPlanV4} call), the composition depth bound (row A-23),
+ * and the AGGREGATE embedded-plan-bytes bound (§3.6 step 6, A-N6) as the
+ * decoder recurses. `WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES` — unlike the
+ * depth bound above — is imported directly from
+ * `src/workflows/resource-limits.ts` rather than reproduced: that constant
+ * was already Lane B's when this decode-time re-enforcement was added (no
+ * lane-ordering constraint left to honor), and re-deriving a byte cap by
+ * hand invites drift a depth integer does not. `budget` is charged with
+ * THIS child's own full canonical byte length AFTER it decodes (so any
+ * further-nested grandchildren it embeds have already charged themselves,
+ * mirroring the freeze-side `chargeEmbeddedBudget`'s post-recursion charge
+ * order in `src/workflows/freeze/targets/child-workflow.ts`) — a rejected
+ * plan therefore never partially charges the budget. `frozenPlan` is
+ * covered wholesale through `planHash`, so it is deliberately NOT
+ * re-serialized into `contentHash` (§3.5). No `requiredSources`
+ * contribution: unlike a command/script target's own referenced source, the
+ * child's transitive sources live in the child's OWN `sourceReadSet`,
+ * verified by the recursive decode call itself; the PARENT's
+ * `sourceReadSet` absorbing the child's files (row B-05) is a freeze-time
+ * concern (Lane B), not a decode-time structural one.
+ */
+function decodeChildWorkflowTarget(
+  target: Record<string, unknown>,
+  unit: IrUnitNodeCore,
+  depth: number,
+  budget: { embeddedBytes: number },
+): FrozenChildWorkflowTarget {
+  assertKeys(
+    target,
+    ["kind", "ref", "planHash", "frozenPlan", "contentHash", "via", "taskRef", "inputBindings"],
+    `unit ${unit.id} child workflow target`,
+  );
+  if (typeof target.ref !== "string" || !target.ref) fail(`unit ${unit.id} child workflow ref is invalid`);
+  const planHash = digest(target.planHash, `unit ${unit.id} child workflow planHash`);
+  if (target.via !== "direct" && target.via !== "task") fail(`unit ${unit.id} child workflow via is invalid`);
+  const via = target.via;
+  if (via === "task") {
+    if (typeof target.taskRef !== "string" || !target.taskRef) {
+      fail(`unit ${unit.id} child workflow via "task" requires a taskRef`);
+    }
+  } else if (target.taskRef !== undefined) {
+    fail(`unit ${unit.id} child workflow via "direct" cannot carry a taskRef`);
+  }
+  const taskRef = target.taskRef as string | undefined;
+  const inputBindings = decodeInputBindings(target.inputBindings, `unit ${unit.id} child workflow target`);
+  const contentHash = digest(target.contentHash, `unit ${unit.id} child workflow contentHash`);
+  const expectedContentHash = childWorkflowContentHash({ ref: target.ref, planHash, via, taskRef, inputBindings });
+  if (contentHash !== expectedContentHash) {
+    fail(`unit ${unit.id} child workflow contentHash does not match its frozen dispatch`);
+  }
+  const childDepth = depth + 1;
+  if (childDepth > CHILD_WORKFLOW_DECODE_MAX_DEPTH) {
+    fail(
+      `unit ${unit.id} child workflow ${target.ref} exceeds the max composition depth of ${CHILD_WORKFLOW_DECODE_MAX_DEPTH}`,
+    );
+  }
+  const frozenPlan = decodeWorkflowPlanV4(target.frozenPlan, {}, childDepth, budget);
+  const embeddedPlanJson = canonicalJsonLocal(frozenPlan);
+  const actualPlanHash = sha256(embeddedPlanJson);
+  if (actualPlanHash !== planHash) {
+    fail(`unit ${unit.id} child workflow embedded plan does not match its frozen planHash`);
+  }
+  const projectedBytes = budget.embeddedBytes + utf8Bytes(embeddedPlanJson);
+  if (projectedBytes > WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES) {
+    fail(
+      `unit ${unit.id} child workflow ${target.ref} embedded plans total ${projectedBytes} bytes, over the ` +
+        `${WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES}-byte limit`,
+    );
+  }
+  budget.embeddedBytes = projectedBytes;
+  return Object.freeze({
+    kind: "child-workflow",
+    ref: target.ref,
+    planHash,
+    frozenPlan,
+    contentHash,
+    via,
+    ...(taskRef !== undefined ? { taskRef } : {}),
+    ...(inputBindings ? { inputBindings } : {}),
+  });
+}
+
+/** §3.5's exact `contentHash` formula. */
+function childWorkflowContentHash(fields: {
+  ref: string;
+  planHash: string;
+  via: "direct" | "task";
+  taskRef?: string;
+  inputBindings?: readonly TaskInputBinding[];
+}): string {
+  return createHash("sha256")
+    .update("akm.workflow.child-workflow\0v1\0")
+    .update(
+      canonicalJsonLocal({
+        ref: fields.ref,
+        planHash: fields.planHash,
+        via: fields.via,
+        taskRef: fields.taskRef ?? null,
+        inputBindings: fields.inputBindings ?? null,
+      }),
+    )
+    .digest("hex");
 }
 
 function decodeCommandTarget(
@@ -277,7 +533,18 @@ function decodeCommandTarget(
 ): FrozenWorkflowCommandTarget {
   assertKeys(
     target,
-    ["kind", "ref", "contentHash", "request", "runner", "concurrency", "cwdIdentity", "executable", "gitCommitOid"],
+    [
+      "kind",
+      "ref",
+      "contentHash",
+      "request",
+      "runner",
+      "concurrency",
+      "cwdIdentity",
+      "executable",
+      "gitCommitOid",
+      "inputBindings",
+    ],
     `unit ${unit.id} command target`,
   );
   if (target.ref !== null && typeof target.ref !== "string") fail(`unit ${unit.id} command target ref is invalid`);
@@ -324,6 +591,7 @@ function decodeCommandTarget(
     fail(`unit ${unit.id} non-CLI target cannot carry a host executable`);
   }
   const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
+  const inputBindings = decodeInputBindings(target.inputBindings, `unit ${unit.id} command target`);
   // Force the shared request canonicalizer across every accepted wire request.
   canonicalResolvedExecutionRequest(request);
   return Object.freeze({
@@ -336,6 +604,7 @@ function decodeCommandTarget(
     ...(cwdIdentity ? { cwdIdentity } : {}),
     ...(executable ? { executable } : {}),
     ...(gitCommitOid ? { gitCommitOid } : {}),
+    ...(inputBindings ? { inputBindings } : {}),
   });
 }
 
@@ -346,7 +615,7 @@ function decodeShellTarget(
 ): FrozenWorkflowShellTarget {
   assertKeys(
     target,
-    ["kind", "contentHash", "exec", "cwdIdentity", "executable", "gitCommitOid"],
+    ["kind", "contentHash", "exec", "cwdIdentity", "executable", "gitCommitOid", "inputBindings"],
     `unit ${unit.id} shell target`,
   );
   const exec = decodeWorkflowExecSpec(target.exec, `unit ${unit.id} shell target exec`);
@@ -359,11 +628,15 @@ function decodeShellTarget(
   }
   const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
   const contentHash = digest(target.contentHash, `unit ${unit.id} shell contentHash`);
+  // inputBindings deliberately sits OUTSIDE this preimage (P2b A-N7): identity
+  // coverage for a task-composed unit comes from computeUnitInputHash's own
+  // frozenTarget field (step-work.ts), which hashes this whole target anyway.
   const expected = createHash("sha256")
     .update("akm.workflow.shell.v1\0")
     .update(canonicalJsonLocal({ exec, environment, cwdIdentity }))
     .digest("hex");
   if (contentHash !== expected) fail(`unit ${unit.id} shell contentHash does not match its frozen dispatch`);
+  const inputBindings = decodeInputBindings(target.inputBindings, `unit ${unit.id} shell target`);
   return Object.freeze({
     kind: "shell",
     contentHash,
@@ -371,6 +644,7 @@ function decodeShellTarget(
     cwdIdentity,
     ...(executable ? { executable } : {}),
     ...(gitCommitOid ? { gitCommitOid } : {}),
+    ...(inputBindings ? { inputBindings } : {}),
   });
 }
 
@@ -394,6 +668,7 @@ function decodeScriptTarget(
       "materialization",
       "executable",
       "gitCommitOid",
+      "inputBindings",
     ],
     `unit ${unit.id} script target`,
   );
@@ -418,6 +693,7 @@ function decodeScriptTarget(
     ? decodeFrozenExecutableIdentity(target.executable, `unit ${unit.id} executable`)
     : undefined;
   const gitCommitOid = decodeGitCommitOid(target.gitCommitOid, unit);
+  const inputBindings = decodeInputBindings(target.inputBindings, `unit ${unit.id} script target`);
   requiredSources.push({ ref: target.ref, bundle: "", adapter: "", file: "", hash: contentHash });
   return Object.freeze({
     kind: "script",
@@ -432,7 +708,53 @@ function decodeScriptTarget(
     materialization: "ephemeral-0700-delete",
     ...(executable ? { executable } : {}),
     ...(gitCommitOid ? { gitCommitOid } : {}),
+    ...(inputBindings ? { inputBindings } : {}),
   });
+}
+
+/**
+ * Decode a frozen target's `inputBindings` (P2b §3.2 A-N7): a composing
+ * step's `with:` normalized against the composed task's declared inputs.
+ * Closed `kind`, `INPUT_NAME_PATTERN` name, unique and sorted by name (never
+ * `[]` — absence is the identity-preserving default). A `literal` entry
+ * requires `value`; a `reference` entry requires a `parseReference`-valid
+ * `from` plus the declaration's bounded `schema` (§3.6's widened reference
+ * arm, `src/execution/input-contract.ts`).
+ */
+function decodeInputBindings(value: unknown, label: string): readonly TaskInputBinding[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) fail(`${label} inputBindings must be a non-empty array`);
+  let prior: string | undefined;
+  const bindings = value.map((raw, index) => {
+    const binding = record(raw, `${label} inputBindings[${index}]`);
+    if (typeof binding.name !== "string" || !INPUT_NAME_PATTERN.test(binding.name)) {
+      fail(`${label} inputBindings[${index}] name is invalid`);
+    }
+    if (prior !== undefined && compareCodePoints(prior, binding.name) >= 0) {
+      fail(`${label} inputBindings must be sorted by unique name`);
+    }
+    prior = binding.name;
+    if (binding.kind === "literal") {
+      assertKeys(binding, ["kind", "name", "value"], `${label} inputBindings[${index}]`);
+      if (!Object.hasOwn(binding, "value")) fail(`${label} inputBindings[${index}] literal binding requires value`);
+      return Object.freeze({ kind: "literal", name: binding.name, value: binding.value }) as TaskInputBinding;
+    }
+    if (binding.kind === "reference") {
+      assertKeys(binding, ["kind", "name", "from", "schema"], `${label} inputBindings[${index}]`);
+      if (typeof binding.from !== "string" || !parseReference(binding.from).ok) {
+        fail(`${label} inputBindings[${index}] from is not a valid reference`);
+      }
+      const schema = record(binding.schema, `${label} inputBindings[${index}] schema`);
+      return Object.freeze({
+        kind: "reference",
+        name: binding.name,
+        from: binding.from,
+        schema: Object.freeze(schema),
+      }) as TaskInputBinding;
+    }
+    return fail(`${label} inputBindings[${index}] has unsupported kind ${String(binding.kind)}`);
+  });
+  return Object.freeze(bindings);
 }
 
 function decodeGitCommitOid(value: unknown, unit: IrUnitNodeCore): string | undefined {

@@ -154,7 +154,7 @@ describe("workflow source canonical-ref collisions", () => {
     fs.writeFileSync(path.join(fixture.ownedDir, "collision.md.yml"), yamlWorkflow("nested-suffix"));
 
     await expect(loadWorkflowAsset(`${fixture.canonicalRef}.md.yml`)).rejects.toMatchObject({
-      code: "INVALID_FLAG_VALUE",
+      code: "WORKFLOW_SOURCE_INVALID",
       message: expect.stringMatching(/extensionless stem ending in recognized workflow suffix.*\.md/is),
     });
     expect(fs.existsSync(getDbPath())).toBe(false);
@@ -253,12 +253,12 @@ describe("workflow source canonical-ref collisions", () => {
     fs.unlinkSync(authoredPath);
     fs.symlinkSync(path.basename(yamlTarget), authoredPath);
     await expect(loadWorkflowAsset(fixture.canonicalRef)).rejects.toMatchObject({
-      code: "INVALID_FLAG_VALUE",
+      code: "WORKFLOW_SOURCE_INVALID",
       message: expect.stringMatching(/collision\.md.*target\.yml.*different source format/is),
     });
     expect(fs.existsSync(getDbPath())).toBe(false);
     await expect(akmShowUnified({ ref: fixture.canonicalRef, skipLogging: true })).rejects.toMatchObject({
-      code: "INVALID_FLAG_VALUE",
+      code: "WORKFLOW_SOURCE_INVALID",
       message: expect.stringMatching(/collision\.md.*target\.yml.*different source format/is),
     });
     expect(indexSnapshot()).toBe(0);

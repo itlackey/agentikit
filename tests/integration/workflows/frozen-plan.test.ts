@@ -85,8 +85,8 @@ describe("plan freezing at workflow start (migration 006)", () => {
 
     const plan = JSON.parse(row?.plan_json ?? "") as WorkflowPlanGraphV4;
     expect(plan.steps.map((s) => s.stepId)).toEqual(["only-step"]);
-    expect(plan.irVersion).toBe(4);
-    if (plan.irVersion !== 4) throw new Error("fresh starts must persist v4");
+    expect(plan.irVersion).toBe(5);
+    if (plan.irVersion !== 5) throw new Error("fresh starts must persist plan irVersion 5");
     expect(plan.steps[0]!.root?.kind).toBe("unit");
     expect(Object.hasOwn(plan.execution, "engines")).toBe(false);
     const root = plan.steps[0]!.root;
@@ -251,6 +251,30 @@ describe("plan freezing at workflow start (migration 006)", () => {
     expect(await withWorkflowRunsRepo((repo) => repo.getUnitsForRun(started.run.id))).toEqual(unitsBefore);
   });
 
+  test("a blocked run can be abandoned and resumed without corrupting its durable spine (#847)", async () => {
+    writeWorkflow("blocked-abandon-resume", "Do recoverable work.");
+    const started = await startWorkflowRun("workflows/blocked-abandon-resume", {});
+
+    const blocked = await completeWorkflowStep({
+      runId: started.run.id,
+      stepId: "only-step",
+      status: "blocked",
+    });
+    if (!("run" in blocked)) {
+      throw new Error("blocking a step unexpectedly returned a summary validation failure");
+    }
+    expect(blocked.run.status).toBe("blocked");
+    expect(blocked.workflow.steps[0]?.status).toBe("blocked");
+
+    const abandoned = await abandonWorkflowRun(started.run.id);
+    expect(abandoned.run.status).toBe("failed");
+    expect(abandoned.workflow.steps[0]?.status).toBe("blocked");
+
+    const resumed = await resumeWorkflowRun(started.run.id);
+    expect(resumed.run.status).toBe("active");
+    expect(resumed.workflow.steps[0]?.status).toBe("pending");
+  });
+
   test("non-current workflow IR is unsupported on every live plan surface", async () => {
     writeWorkflow("noncurrent-plan", "Do work.");
     const started = await startWorkflowRun("workflows/noncurrent-plan", {});
@@ -273,7 +297,7 @@ describe("plan freezing at workflow start (migration 006)", () => {
         throw new Error("expected current workflow IR rejection");
       } catch (error) {
         expect(error).toBeInstanceOf(UsageError);
-        expect((error as UsageError).code).toBe("INVALID_JSON_ARGUMENT");
+        expect((error as UsageError).code).toBe("WORKFLOW_IR_VERSION_UNSUPPORTED");
       }
     };
     await expectCorrupt(getNextWorkflowStep(started.run.id));
@@ -287,7 +311,7 @@ describe("plan freezing at workflow start (migration 006)", () => {
     const cases = [
       { name: "malformed-null", version: null, status: "blocked" },
       { name: "malformed-v2", version: 2, status: "active" },
-      { name: "malformed-future", version: 4, status: "active" },
+      { name: "malformed-current", version: 5, status: "active" },
       { name: "malformed-v3", version: 3, status: "active" },
     ];
     for (const item of cases) {

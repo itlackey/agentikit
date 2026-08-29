@@ -31,6 +31,37 @@ export function formatWorkflowListPlain(result: Record<string, unknown>): string
     .join("\n");
 }
 
+/** §4.5's glyph table (P3b) — drawn from the repo's existing vocabulary (status-list.ts's ✗/✓, proposal-format.ts's →). */
+const CHILD_STATUS_GLYPHS: Readonly<Record<string, string>> = {
+  completed: "✓",
+  active: "→",
+  blocked: "⚠",
+  failed: "✗",
+};
+
+/**
+ * Render one `children:` tree node (P3b, spec §4.5) plus its own children,
+ * recursively, indenting two spaces per level. Order is SPAWN order (the
+ * envelope's own array order) — the tree is structural, never severity-sorted.
+ */
+function renderChildNode(child: Record<string, unknown>, depth: number, lines: string[]): void {
+  const indent = "  ".repeat(depth + 1);
+  const runId = typeof child.runId === "string" ? child.runId : "unknown";
+  const ref = typeof child.workflowRef === "string" ? child.workflowRef : "unknown";
+  const status = typeof child.status === "string" ? child.status : "unknown";
+  const glyph = CHILD_STATUS_GLYPHS[status] ?? "?";
+  const stepId = typeof child.stepId === "string" ? ` (step "${child.stepId}")` : "";
+  lines.push(`${indent}- ${glyph} ${runId} ${ref} [${status}]${stepId}`);
+  const resume =
+    typeof child.resume === "object" && child.resume !== null ? (child.resume as Record<string, unknown>) : undefined;
+  if (resume) {
+    lines.push(`${indent}    resume: ${typeof resume.command === "string" ? resume.command : ""}`);
+    lines.push(`${indent}    then:   ${typeof resume.then === "string" ? resume.then : ""}`);
+  }
+  const nested = Array.isArray(child.children) ? (child.children as Array<Record<string, unknown>>) : [];
+  for (const grandchild of nested) renderChildNode(grandchild, depth + 1, lines);
+}
+
 export function formatWorkflowStatusPlain(result: Record<string, unknown>): string | null {
   const run =
     typeof result.run === "object" && result.run !== null ? (result.run as Record<string, unknown>) : undefined;
@@ -60,6 +91,16 @@ export function formatWorkflowStatusPlain(result: Record<string, unknown>): stri
         lines.push(`    notes: ${step.notes}`);
       }
     }
+  }
+
+  // The parent-child status tree (P3b, spec §4.5): renders ONLY when
+  // `children` is a non-empty array, immediately after `steps:` and before
+  // `units:`. Absent for a childless run — byte-identical to pre-P3b text
+  // (row B-33, PRESERVE).
+  const children = Array.isArray(result.children) ? (result.children as Array<Record<string, unknown>>) : undefined;
+  if (children && children.length > 0) {
+    lines.push("children:");
+    for (const child of children) renderChildNode(child, 0, lines);
   }
 
   // `workflow status --units` (#22): the honest per-unit diagnostic surface —
@@ -118,6 +159,29 @@ function formatWorkflowCheckinLine(result: Record<string, unknown>): string | nu
   return checkin.directive.trim();
 }
 
+/**
+ * One `! lowering[<severity>] <code> (<adapter>[; <field>]): <message>` line
+ * from a `{code, severity, adapter, field?, message}` lowering notice, or
+ * `null` when `value` does not carry that shape. Shared by
+ * `formatWorkflowRunPlain` (dispatch-time notices) and `formatWorkflowPlanPlain`
+ * (freeze-time notices, P3b §4.6, B-57) — ONE projection, rendered the same
+ * way regardless of which invocation computed the notice.
+ */
+function renderLoweringNoticeLine(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const notice = value as Record<string, unknown>;
+  if (
+    typeof notice.code !== "string" ||
+    typeof notice.severity !== "string" ||
+    typeof notice.adapter !== "string" ||
+    typeof notice.message !== "string"
+  ) {
+    return null;
+  }
+  const field = typeof notice.field === "string" && notice.field ? `; ${notice.field}` : "";
+  return `! lowering[${notice.severity}] ${notice.code} (${notice.adapter}${field}): ${notice.message}`;
+}
+
 export function formatWorkflowRunPlain(result: Record<string, unknown>): string | null {
   const run =
     typeof result.run === "object" && result.run !== null ? (result.run as Record<string, unknown>) : undefined;
@@ -133,17 +197,8 @@ export function formatWorkflowRunPlain(result: Record<string, unknown>): string 
   // default text output has the same observability as JSON without widening a
   // durable workflow schema.
   for (const value of Array.isArray(result.notices) ? result.notices : []) {
-    if (typeof value !== "object" || value === null) continue;
-    const notice = value as Record<string, unknown>;
-    if (
-      typeof notice.code !== "string" ||
-      typeof notice.severity !== "string" ||
-      typeof notice.adapter !== "string" ||
-      typeof notice.message !== "string"
-    )
-      continue;
-    const field = typeof notice.field === "string" && notice.field ? `; ${notice.field}` : "";
-    lines.push(`! lowering[${notice.severity}] ${notice.code} (${notice.adapter}${field}): ${notice.message}`);
+    const line = renderLoweringNoticeLine(value);
+    if (line) lines.push(line);
   }
   const executed = Array.isArray(result.executed) ? (result.executed as Array<Record<string, unknown>>) : [];
   if (executed.length === 0) {
@@ -193,4 +248,145 @@ export function formatWorkflowCreatePlain(r: Record<string, unknown>): string | 
 
 export function formatWorkflowResumePlain(r: Record<string, unknown>): string {
   return formatWorkflowStatusPlain(r) ?? `Resumed workflow run ${String(r.id ?? r.runId ?? "?")}`;
+}
+
+/**
+ * A step's `inputBindings[]` (P3b §4.6's `with:` line) — a literal shows its
+ * value, a reference shows only its unresolved `from` (never a resolved
+ * value; B-52/B-53's closed print list explicitly allows a literal *task/
+ * child* input binding's `.value`, unlike a literal **environment** binding's).
+ */
+function formatInputBindingsList(bindings: readonly Record<string, unknown>[]): string {
+  return bindings
+    .map((binding) => {
+      const name = String(binding.name ?? "");
+      return binding.kind === "literal"
+        ? `${name}=${JSON.stringify(binding.value)} (literal)`
+        : `${name} <- ${String(binding.from ?? "")} (reference)`;
+    })
+    .join(", ");
+}
+
+/**
+ * One `akm workflow plan` step line (P3b, spec §4.6), plus its child-workflow
+ * expansion's own steps, recursively, indented one level per composition
+ * boundary. A child step also carries the child's `planHash` on the step
+ * line itself, and (when present) a `with:` line for the step's own
+ * `inputBindings[]` and an `exports:` line for the child's declared output
+ * names — §4.6's worked example.
+ */
+function renderPlanStepLines(step: Record<string, unknown>, ordinal: number, lines: string[], prefix = "  "): void {
+  const stepId = typeof step.stepId === "string" ? step.stepId : "unknown";
+  const targetKind = typeof step.targetKind === "string" ? `[${step.targetKind}]` : "";
+  const expansion =
+    typeof step.expansion === "object" && step.expansion !== null ? (step.expansion as Record<string, unknown>) : {};
+  const via = typeof expansion.via === "string" ? expansion.via : "direct";
+  const childPlanHash = typeof expansion.childPlanHash === "string" ? expansion.childPlanHash : undefined;
+  const viaText =
+    via === "task"
+      ? `via ${String(expansion.taskRef ?? "")}`
+      : via === "child"
+        ? `-> ${String(expansion.childRef ?? "")}${childPlanHash ? ` (plan ${childPlanHash})` : ""}`
+        : "direct";
+  lines.push(`${prefix}${ordinal}. ${stepId} ${targetKind} ${viaText}`.replace(/ +/g, " ").trimEnd());
+
+  const detailPrefix = `${prefix}  `;
+  const inputBindings = Array.isArray(step.inputBindings) ? (step.inputBindings as Record<string, unknown>[]) : [];
+  if (inputBindings.length > 0) {
+    lines.push(`${detailPrefix}with: ${formatInputBindingsList(inputBindings)}`);
+  }
+  if (via === "child") {
+    const childOutputs = Array.isArray(expansion.childOutputs) ? expansion.childOutputs : [];
+    if (childOutputs.length > 0) {
+      lines.push(`${detailPrefix}exports: ${childOutputs.map(String).join(", ")}`);
+    }
+    const childSteps = Array.isArray(expansion.steps) ? (expansion.steps as Array<Record<string, unknown>>) : [];
+    for (const [index, childStep] of childSteps.entries()) {
+      renderPlanStepLines(childStep, index + 1, lines, `${prefix}  ${ordinal}.`);
+    }
+  }
+}
+
+/**
+ * `akm workflow plan <ref>` text mode (P3b, spec §4.6): a human summary of
+ * the same compile+freeze data `--format json` returns — never a resolved
+ * env/secret value (B-52, B-53).
+ */
+export function formatWorkflowPlanPlain(result: Record<string, unknown>): string | null {
+  if (typeof result.ref !== "string") return null;
+
+  const sourceFormat = typeof result.sourceFormat === "string" ? result.sourceFormat : "unknown";
+  const irVersion = typeof result.irVersion === "number" ? result.irVersion : "unknown";
+  const planHash = typeof result.planHash === "string" ? result.planHash : "unknown";
+  const execution =
+    typeof result.execution === "object" && result.execution !== null
+      ? (result.execution as Record<string, unknown>)
+      : {};
+  const budget =
+    typeof result.budget === "object" && result.budget !== null
+      ? (result.budget as Record<string, unknown>)
+      : undefined;
+
+  const lines = [
+    `workflow: ${result.ref} (${sourceFormat})`,
+    `source:   ${typeof result.sourcePath === "string" ? result.sourcePath : "unknown"}`,
+    `plan:     irVersion ${irVersion}, hash ${planHash} (not published)`,
+  ];
+
+  const limitsParts = [
+    `maxConcurrency ${typeof execution.maxConcurrency === "number" ? execution.maxConcurrency : "?"}`,
+  ];
+  if (budget) {
+    const budgetParts: string[] = [];
+    if (typeof budget.maxUnits === "number") budgetParts.push(`max_units ${budget.maxUnits}`);
+    if (typeof budget.maxTokens === "number") budgetParts.push(`max_tokens ${budget.maxTokens}`);
+    if (budgetParts.length > 0) limitsParts.push(`budget ${budgetParts.join(", ")}`);
+  }
+  lines.push(`limits:   ${limitsParts.join("; ")}`);
+
+  const params = Array.isArray(result.params) ? (result.params as unknown[]) : undefined;
+  if (params && params.length > 0) lines.push(`params:   ${params.join(", ")}`);
+
+  const outputs =
+    typeof result.outputs === "object" && result.outputs !== null
+      ? (result.outputs as Record<string, unknown>)
+      : undefined;
+  if (outputs) {
+    for (const [name, declaration] of Object.entries(outputs)) {
+      const from =
+        typeof declaration === "object" && declaration !== null
+          ? String((declaration as Record<string, unknown>).from ?? "")
+          : "";
+      lines.push(`outputs:  ${name} <- ${from}`);
+    }
+  }
+
+  const steps = Array.isArray(result.steps) ? (result.steps as Array<Record<string, unknown>>) : [];
+  lines.push("steps:");
+  for (const [index, step] of steps.entries()) {
+    renderPlanStepLines(step, index + 1, lines);
+  }
+
+  const sourceReadSet = Array.isArray(result.sourceReadSet) ? result.sourceReadSet : [];
+  if (sourceReadSet.length > 0) {
+    lines.push("read set:");
+    for (const entry of sourceReadSet) lines.push(`  ${String(entry)}`);
+  }
+
+  const notices = Array.isArray(result.notices) ? result.notices : [];
+  if (notices.length > 0) {
+    lines.push("notices:");
+    for (const value of notices) {
+      const line = renderLoweringNoticeLine(value);
+      if (line) lines.push(`  ${line}`);
+    }
+  }
+
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  if (warnings.length > 0) {
+    lines.push("warnings:");
+    for (const warning of warnings) lines.push(`  ! ${String(warning)}`);
+  }
+
+  return lines.join("\n");
 }

@@ -91,7 +91,10 @@ describe("zero-flag remember", () => {
     // write — without it, `akm lint` flagged its own `remember` output as
     // `missing-updated`.
     expect(parsed.data.updated).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode", "type", "updated"]);
+    // #834: the zero-flag hot path now also synthesizes `description` from
+    // the body — previously this memory would index only on filename words.
+    expect(parsed.data.description).toBe("Deployment needs VPN access");
+    expect(Object.keys(parsed.data).sort()).toEqual(["beliefState", "captureMode", "description", "type", "updated"]);
     expect(parsed.content).toContain("Deployment needs VPN access");
     expect(stashDir).toBeTruthy();
   });
@@ -532,5 +535,51 @@ describe("remember writes captureMode: hot + beliefState: asserted (Phase 1B)", 
     const parsed = parseFrontmatter(content);
     expect(parsed.data.captureMode).toBe("hot");
     expect(parsed.data.beliefState).toBe("asserted");
+  });
+});
+
+// ── #834: description is synthesized whenever the caller doesn't supply one ─
+//
+// Before this fix, `akm remember` wrote memories with no `description:` and
+// no `tags:` on both the zero-flag hot path AND the structured-args path
+// (e.g. `--tag`-only, with no `--description`/`--enrich`). akm's indexer
+// covers only synthesized frontmatter/headings, never body prose, so those
+// memories were retrievable only by whatever words survived into the
+// auto-generated filename. This section proves both write paths now populate
+// `description` deterministically, without clobbering a caller-supplied one.
+
+describe("remember synthesizes description when missing (#834)", () => {
+  test("--tag-only path (no --description, no --enrich) synthesizes description from the body", async () => {
+    const { result } = await runCli([
+      "remember",
+      "Harbor A/B benchmark showed a real engagement lift when the trigger wording changed.",
+      "--tag",
+      "ops",
+    ]);
+    expect(result.status).toBe(0);
+
+    const json = JSON.parse(result.stdout) as { path: string };
+    const content = fs.readFileSync(json.path, "utf8");
+    const parsed = parseFrontmatter(content);
+    expect(parsed.data.description).toBe(
+      "Harbor A/B benchmark showed a real engagement lift when the trigger wording changed.",
+    );
+  });
+
+  test("explicit --description is preserved, not overwritten by synthesis", async () => {
+    const { result } = await runCli([
+      "remember",
+      "Harbor A/B benchmark showed a real engagement lift.",
+      "--tag",
+      "ops",
+      "--description",
+      "Caller-supplied description",
+    ]);
+    expect(result.status).toBe(0);
+
+    const json = JSON.parse(result.stdout) as { path: string };
+    const content = fs.readFileSync(json.path, "utf8");
+    const parsed = parseFrontmatter(content);
+    expect(parsed.data.description).toBe("Caller-supplied description");
   });
 });

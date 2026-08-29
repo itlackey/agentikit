@@ -1,0 +1,4 @@
+version: 4
+name: task source v4 fixture - command target
+uses: commands/publish-changelog
+schedule: "15 4 * * 1"

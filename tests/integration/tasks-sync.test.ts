@@ -17,6 +17,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmTasksSync } from "../../src/commands/tasks/tasks";
 import { CRON_BACKEND, type CronExec, type CronExecResult } from "../../src/tasks/backends/cron";
+import {
+  resolveScheduledTaskContext,
+  schedulerContextDescriptor,
+  writeSchedulerContextDescriptor,
+} from "../../src/tasks/scheduler-invocation";
 import type { Cleanup } from "../_helpers/sandbox";
 import { sandboxStashDir, sandboxXdgConfigHome, sandboxXdgStateHome } from "../_helpers/sandbox";
 
@@ -39,7 +44,7 @@ function memoryExec(initial = ""): CronExec & { current: () => string } {
 function writeTask(id: string, schedule: string, enabled = true): void {
   fs.writeFileSync(
     path.join(tasksDir, `${id}.yml`),
-    `version: 3\nrun: echo ${id}\nname: ${id}\nakm:\n  schedule: "${schedule}"\n  enabled: ${enabled}\n`,
+    `version: 4\nrun: echo ${id}\nname: ${id}\nschedule:\n  - cron: "${schedule}"\n    enabled: ${enabled}\n`,
     "utf8",
   );
 }
@@ -63,14 +68,22 @@ afterEach(() => {
 });
 
 describe("akmTasksSync — schedule drift", () => {
-  const backendFor = (exec: CronExec) =>
-    CRON_BACKEND({
+  const backendFor = (exec: CronExec) => {
+    // #846: belongsToBundle now confirms a primary-bundle entry's owning
+    // path from its own scheduler-context descriptor. This backend never
+    // routes through the real launcher-eligibility path (no
+    // `schedulerRuntime` deps injected), so install operations fall back to
+    // CRON_BACKEND's own default context — write that descriptor for real,
+    // matching it exactly, so it resolves on the next sync.
+    writeSchedulerContextDescriptor(schedulerContextDescriptor(resolveScheduledTaskContext(), ""));
+    return CRON_BACKEND({
       exec,
       fs: { ensureDir() {} },
       logDir: "/var/log/akm",
       akmArgv: ["/usr/local/bin/akm"],
       envPath: false,
     });
+  };
 
   test("installs missing, then reports unchanged on a no-op re-sync", async () => {
     const exec = memoryExec();
@@ -148,7 +161,7 @@ describe("akmTasksSync — schedule drift", () => {
       "utf8",
     );
 
-    await expect(akmTasksSync({ backend })).rejects.toThrow(/version is required and must be 3/);
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/version is required and must be 4/);
     expect(exec.current()).toBe("");
   });
 

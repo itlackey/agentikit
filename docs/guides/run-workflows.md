@@ -19,9 +19,9 @@ current project directory (nearest `.akm/config.json`, git root, bundle root,
 or current directory), so the same workflow can run independently in separate
 projects.
 
-Every new run/start compiles source IR v1 and freezes durable plan v4 before
-publishing the run. Markdown `.md` and GitHub-shaped `.yml` refs use the same
-freeze path.
+Every new run/start compiles source IR v1 and freezes the durable plan v4
+family's current executable format (`irVersion: 5`) before publishing the run.
+Markdown `.md` and GitHub-shaped `.yml` refs use the same freeze path.
 
 ```sh
 akm workflow run workflows/ship-release --version 1.2.3
@@ -80,6 +80,77 @@ resumes. When you need the human-facing *why* behind a failure, `--units`
 reads the unit journal directly and shows it without ever feeding that text
 back into an artifact or input hash.
 
+## Child runs
+
+A step that composes another workflow (see [Workflow Schema: Child
+workflows](../reference/workflow-schema.md#child-workflows)) drives that
+child inline when the composing step runs. `akm workflow status` on a run
+that composes children renders a `children:` tree after its `steps:` block:
+
+```sh
+akm workflow status <run-id>
+```
+
+```
+steps:
+  - build [work] (completed)
+  - dispatch [dispatch] (completed)
+children:
+  - ✓ 4f2b1a9c workflows/leaf [completed] (step "dispatch")
+```
+
+Each row shows the child's run id, its workflow ref, its status, and which
+of the parent's steps spawned it; a blocked child also shows its resume
+command. Nesting reflects composition depth — a child that itself composes
+a grandchild shows its own indented `children:` rows.
+
+**Recovering a blocked child.** A blocked child blocks the composing step
+(and the parent run) too — `akm` will not resume a child for you. Resume the
+**child** first, then resume and re-run the **parent**; re-driving the
+parent is what advances it, because that re-enters the composing step and
+drives the now-resumed child:
+
+```sh
+akm workflow resume <childRunId>
+akm workflow resume <parentRunId>
+akm workflow run <parentRunId>
+```
+
+**Nested blocks (composition depth 2+).** The three-command sequence above
+clears a block exactly one level deep. When a grandchild blocks — a root
+workflow composes a child, and that child composes the grandchild that
+actually blocks — re-driving the root does **not** cascade down into
+re-driving the still-blocked grandchild: a composing step never re-drives a
+child whose own status is already `blocked`, so re-running the root just
+re-observes the child's block and re-blocks the root the same way, without
+ever reaching the grandchild. Resume **every** blocked run in the chain,
+deepest first, then re-run only the root:
+
+```sh
+akm workflow resume <grandchildRunId>
+akm workflow resume <childRunId>
+akm workflow resume <rootRunId>
+akm workflow run <rootRunId>
+```
+
+The status tree prints `resume`/`then` commands on each blocked node, but
+those two commands alone only ever name that node and the root — they do not
+enumerate an intermediate chain. Read the tree top to bottom and resume every
+`blocked` row you see (deepest first) before re-running the root.
+
+**Child runs are hidden by default.** `akm workflow list` excludes child
+runs so the list stays a view of the runs you started; pass `--children` to
+include them:
+
+```sh
+akm workflow list              # child runs excluded
+akm workflow list --children   # child runs included
+```
+
+A child run id always works directly, listed or not — `akm workflow status
+<childRunId>`, `resume`, `abandon`, and `run` all operate on it exactly like
+any other run.
+
 ## List runs in scope
 
 `akm workflow list` shows workflow runs in the current scope.
@@ -116,9 +187,10 @@ resumed. Use `akm workflow list` to find runs by status. Once resumed,
 rather than replayed (see
 [Architecture: Resume is journaled replay](../architecture/workflow-engine.md#resume-is-journaled-replay)).
 
-Only durable v4 plans resume. Pre-v4 stored plans are rejected; start a new run
-from current source. A v4 resume consumes the journaled plan and attempts; it
-does not re-read the authored workflow, configuration, or current index.
+Only plan `irVersion: 5` resumes. Pre-`irVersion`-5 stored plans are rejected;
+start a new run from current source. A resume consumes the journaled plan and
+attempts; it does not re-read the authored workflow, configuration, or current
+index.
 
 ## Abandon a run
 
@@ -176,8 +248,9 @@ treat package dependencies**:
 - **Audit before run** for any workflow that touches secrets, deploys to
   production, or writes outside the project tree. Read the `env:` bindings a
   workflow declares, and read its `exec.pass_env` lines.
-  Durable v4 rejects `inherit_env`, and pre-v4 stored plans do not execute.
-  Authors must use exact named bindings and `pass_env` names.
+  The durable v4 family (`irVersion: 5`) rejects `inherit_env`, and
+  pre-`irVersion`-5 stored plans do not execute. Authors must use exact named
+  bindings and `pass_env` names.
 - **Pin known-good versions** when adding workflow sources from a registry
   or git remote (`akm bundle add github:owner/repo#v1.2.3`), and update
   deliberately rather than via `akm bundle update --all`. A trusted workflow

@@ -60,19 +60,28 @@ export function assertWorkflowMarkdownName(name: string): void {
   );
 }
 
+// 0.9.2 review round 2 (P4 sweep criterion-21 caveat, spec
+// docs/plans/specs/p4-deletions-closeout.md §4.1 row B-49): this return's
+// third member was `stashDir` through 0.9.1 and leaked verbatim into the
+// `akm workflow create` JSON envelope (Stable per STABILITY.md) via
+// `output("workflow-create", { ok: true, ...result })`
+// (src/commands/workflow-cli.ts). Renamed to `bundleDir` here — the same
+// value-preserving field rename `RunTaskOptions.stashDir` got in P1b (see
+// src/tasks/run/task-result.ts's header, F-3) — so the shipped envelope now
+// matches current bundle vocabulary. BREAKING vs 0.9.1's envelope shape.
 export function createWorkflowAsset(input: { name: string; content?: string; from?: string; force?: boolean }): {
   ref: string;
   path: string;
-  stashDir: string;
+  bundleDir: string;
 } {
   assertWorkflowMarkdownName(input.name);
 
   const config = loadConfig();
   const resolvedTarget = resolveWriteTarget(config);
   const target = prepareWriteTargetForMutation(resolvedTarget, { allowedAdapters: ["akm", "akm-workflow"] });
-  const stashDir = target.source.path;
+  const bundleDir = target.source.path;
   const standaloneWorkflowBundle = target.source.adapterId === "akm-workflow";
-  const typeRoot = standaloneWorkflowBundle ? stashDir : path.join(stashDir, "workflows");
+  const typeRoot = standaloneWorkflowBundle ? bundleDir : path.join(bundleDir, "workflows");
 
   const normalizedName = normalizeWorkflowName(input.name);
   const conceptId = standaloneWorkflowBundle ? normalizedName : `workflows/${normalizedName}`;
@@ -92,7 +101,7 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   const shadowing = findExistingWorkflowPaths(typeRoot, normalizedName).find((p) => p !== assetPath);
   if (shadowing !== undefined) {
     throw new UsageError(
-      `Workflow "${normalizedName}" already exists as ${path.relative(stashDir, shadowing)} — the ` +
+      `Workflow "${normalizedName}" already exists as ${path.relative(bundleDir, shadowing)} — the ` +
         `\`${conceptId}\` ref resolves to that file, so creating this one would shadow it. ` +
         `Remove or rename the existing file first, or create the workflow under a different name.`,
       "RESOURCE_ALREADY_EXISTS",
@@ -106,7 +115,7 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   }
 
   const content = input.from
-    ? readWorkflowSource(input.from, stashDir)
+    ? readWorkflowSource(input.from, bundleDir)
     : (input.content ?? buildWorkflowTemplate(normalizedName));
   const sourcePath = input.from ?? `workflows/${normalizedName}.md`;
 
@@ -130,11 +139,11 @@ export function createWorkflowAsset(input: { name: string; content?: string; fro
   return {
     ref,
     path: assetPath,
-    stashDir,
+    bundleDir,
   };
 }
 
-function readWorkflowSource(source: string, stashDir: string): string {
+function readWorkflowSource(source: string, bundleDir: string): string {
   const resolved = path.resolve(source);
   let stat: fs.Stats;
   try {
@@ -148,10 +157,10 @@ function readWorkflowSource(source: string, stashDir: string): string {
   // The user is allowed to import any readable file as a workflow body, but
   // an import from outside the stash is unusual enough to warn about. Anyone
   // running `akm workflow create --from /etc/passwd` deserves a heads-up.
-  if (!isWithin(resolved, stashDir)) {
+  if (!isWithin(resolved, bundleDir)) {
     warn(
       `Importing workflow content from outside the stash: ${resolved}\n  ` +
-        `If this was unintentional, abort and re-run with a --from path inside ${stashDir}.`,
+        `If this was unintentional, abort and re-run with a --from path inside ${bundleDir}.`,
     );
   }
   return fs.readFileSync(resolved, "utf8");

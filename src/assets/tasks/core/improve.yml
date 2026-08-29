@@ -1,6 +1,4 @@
-version: 3
+version: 4
 run: akm improve
-akm:
-  schedule: "0 2 * * *"
-  enabled: true
-  description: Run improve pipeline nightly
+description: Run improve pipeline nightly
+schedule: "0 2 * * *"

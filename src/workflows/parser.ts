@@ -74,6 +74,7 @@ import {
   WORKFLOW_MAX_GATE_LOOPS,
   WORKFLOW_MAX_INPUTS,
   WORKFLOW_MAX_MAP_EXPANSION,
+  WORKFLOW_MAX_OUTPUTS,
   WORKFLOW_MAX_PARAMS,
   WORKFLOW_MAX_RETRIES,
   WORKFLOW_MAX_ROUTE_BRANCHES,
@@ -88,6 +89,7 @@ import {
   type WorkflowDocument,
   type WorkflowError,
   type WorkflowInstructionBlock,
+  type WorkflowOutputDeclaration,
   type WorkflowParseResult,
   type WorkflowStep,
 } from "./schema";
@@ -113,7 +115,7 @@ const ENVELOPE_KEYS = [
   "status",
   "stale_after",
 ];
-const WORKFLOW_KEYS = ["params", "defaults", "budget", "steps"];
+const WORKFLOW_KEYS = ["params", "outputs", "defaults", "budget", "steps"];
 const TOP_LEVEL_KEYS = [...ENVELOPE_KEYS, ...WORKFLOW_KEYS];
 const DEFAULTS_KEYS = ["engine", "model", "timeout", "on_error", "llm"];
 const BUDGET_KEYS = ["max_tokens", "max_units"];
@@ -127,6 +129,8 @@ const ROUTE_KEYS = ["input", "when", "default"];
 const RETRY_KEYS = ["max", "on"];
 const GATE_KEYS = ["max_loops"];
 const ROUTE_BRANCH_KEYS = ["match", "step"];
+/** Closed key set of one `outputs:` entry — mirrors `params:`'s bare-schema shape, plus `from`. */
+const OUTPUT_ENTRY_KEYS = ["from", "schema"];
 const ACTOR_STAMP_KEYS = ["by", "at"];
 
 const TIMEOUT_VALUE = /^(\d+)(ms|s|m)?$/;
@@ -276,6 +280,7 @@ export function parseWorkflow(markdown: string, source: WorkflowParseOptions): W
   const description = typeof root.description === "string" ? root.description : undefined;
   const tags = readTags(ctx, root.tags, frontmatterEndLine);
   const params = parseParams(ctx, root.params);
+  const outputs = parseOutputs(ctx, root.outputs);
   const defaults = parseDefaults(ctx, root.defaults);
   const budget = parseBudget(ctx, root.budget);
   const parsedSteps = parseSteps(ctx, root.steps);
@@ -334,6 +339,7 @@ export function parseWorkflow(markdown: string, source: WorkflowParseOptions): W
     ...(description ? { description } : {}),
     ...(tags ? { tags } : {}),
     ...(params ? { params } : {}),
+    ...(outputs ? { outputs } : {}),
     ...(defaults ? { defaults } : {}),
     ...(budget ? { budget } : {}),
     steps,
@@ -577,6 +583,82 @@ function parseParams(ctx: Ctx, raw: unknown): Record<string, Record<string, unkn
     params[paramName] = value;
   }
   return Object.keys(params).length > 0 ? params : undefined;
+}
+
+/**
+ * `outputs:` (P3b, spec §4.2): named, optionally schema-validated projections
+ * of step artifacts, exported when the run completes. Symmetrical with
+ * `parseParams` above (B-N4) — same authoring surface, same name grammar,
+ * same schema-subset validator, same per-schema byte bound — but each entry
+ * is a STRUCTURED `{from, schema?}` mapping rather than a bare JSON Schema.
+ *
+ * `from` is validated for GRAMMAR only here: it must parse and it must be a
+ * `steps.<id>.output(.<seg>)*` reference (never `params.<name>` — an output
+ * projects a step artifact, never a param, B-07). Whether the named step is
+ * actually DECLARED in this document is a semantic, cross-step check left to
+ * `ir/compile.ts`'s reference validation (B-06), mirroring how `inputs[]` /
+ * `map.over` / `route.input` already split "syntax here, semantics there".
+ */
+function parseOutputs(ctx: Ctx, raw: unknown): Record<string, WorkflowOutputDeclaration> | undefined {
+  if (raw === undefined) return undefined;
+  if (!isPlainRecord(raw)) {
+    ctx.err(
+      ["outputs"],
+      `"outputs" must be a mapping of output name to { from, schema? } (e.g. report: { from: steps.summarize.output }).`,
+    );
+    return undefined;
+  }
+  if (Object.keys(raw).length > WORKFLOW_MAX_OUTPUTS) {
+    ctx.err(["outputs"], `"outputs" must contain at most ${WORKFLOW_MAX_OUTPUTS} entries.`);
+  }
+  const outputs: Record<string, WorkflowOutputDeclaration> = {};
+  for (const [outputName, value] of Object.entries(raw)) {
+    const path: Path = ["outputs", outputName];
+    if (!PROGRAM_PARAM_NAME_PATTERN.test(outputName)) {
+      ctx.err(
+        path,
+        `Output name "${outputName}" is invalid. Use letters, digits, and underscores, starting with a letter or ` +
+          `underscore, so "steps.<child>.output.${outputName}" can address it.`,
+      );
+      continue;
+    }
+    if (!isPlainRecord(value)) {
+      ctx.err(path, `Output "${outputName}" must be a mapping with "from" (and optional "schema").`);
+      continue;
+    }
+    checkUnknownKeys(ctx, value, path, OUTPUT_ENTRY_KEYS, `output "${outputName}"`);
+    if (typeof value.from !== "string" || value.from.trim() === "") {
+      ctx.err([...path, "from"], `Output "${outputName}" must declare "from": a steps.<id>.output(.<seg>)* reference.`);
+      continue;
+    }
+    const parsedFrom = parseReference(value.from);
+    if (!parsedFrom.ok) {
+      ctx.err([...path, "from"], `Output "${outputName}" "from": ${parsedFrom.message}`);
+      continue;
+    }
+    if (parsedFrom.expr.kind !== "stepOutput") {
+      ctx.err(
+        [...path, "from"],
+        `Output "${outputName}" "from" must reference a step output (steps.<id>.output...), not a param — an ` +
+          `output projects a step artifact, never a param (got "${value.from}").`,
+      );
+      continue;
+    }
+    const entry: WorkflowOutputDeclaration = { from: value.from };
+    if (value.schema !== undefined) {
+      if (!isPlainRecord(value.schema)) {
+        ctx.err([...path, "schema"], `Output "${outputName}" "schema" must be a JSON Schema object.`);
+      } else {
+        if (jsonBytes(value.schema) > WORKFLOW_MAX_SCHEMA_BYTES) {
+          ctx.err([...path, "schema"], `Output "${outputName}" schema exceeds the 256 KiB resource limit.`);
+        }
+        checkSchemaDefinition(ctx, value.schema, [...path, "schema"], `Output "${outputName}" schema`);
+        entry.schema = value.schema;
+      }
+    }
+    outputs[outputName] = entry;
+  }
+  return Object.keys(outputs).length > 0 ? outputs : undefined;
 }
 
 function parseDefaults(ctx: Ctx, raw: unknown): ProgramDefaults | undefined {

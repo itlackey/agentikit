@@ -218,10 +218,9 @@ export function refreshCanarySet(
  * Name-free content fingerprint text for entropy metrics. The indexed
  * search_text EMBEDS the (unique) entry name, which would pin the
  * distinct-content ratio at 1.0 forever; convergence shows up in the
- * description/tags/heading fields, so those are what get hashed. (The raw body
- * is not in the index at all — search_text covers metadata + TOC headings —
- * so v1 entropy is measured over the searchable surface, which is also what
- * generic merged assets converge on.)
+ * description/tags/heading fields, so those are what get hashed. Bounded body
+ * content is searchable but deliberately excluded from this fingerprint: the
+ * detector measures the structured surface generic merged assets converge on.
  */
 function contentFingerprint(entry: DbIndexedEntry["entry"]): string {
   const parts = [entry.description ?? "", (entry.tags ?? []).join(" "), (entry.toc ?? []).map((h) => h.text).join(" ")];

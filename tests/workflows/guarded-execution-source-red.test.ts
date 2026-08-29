@@ -326,7 +326,7 @@ describe("guarded touched-directory manifests and final source CAS", () => {
     write(root, "commands/nested/alpha.md", "alpha\n");
     write(root, "agents/persona.md", "persona\n");
     write(root, "scripts/run.sh", "#!/bin/sh\n");
-    write(root, "tasks/build.yml", "version: 3\nrun: true\n");
+    write(root, "tasks/build.yml", "version: 4\nrun: true\n");
     write(root, "workflows/nightly.yml", "name: nightly\n");
     const collector = new GuardedExecutionSourceCollector();
 
@@ -425,7 +425,7 @@ describe("guarded touched-directory manifests and final source CAS", () => {
     },
     {
       name: "byte-identical inode-replaced task",
-      initial: [["tasks/build.yml", "version: 3\nrun: echo build\n"]] as const,
+      initial: [["tasks/build.yml", "version: 4\nrun: echo build\n"]] as const,
       mutate(root: string) {
         const file = path.join(root, "tasks", "build.yml");
         const replacement = path.join(root, "tasks", ".replacement.yml");

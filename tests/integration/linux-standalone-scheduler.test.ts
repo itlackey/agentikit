@@ -206,7 +206,7 @@ test.skipIf(!ENABLED)(
         fs.writeFileSync(path.join(stashDir, "scripts", `${scriptId}.${extension}`), source);
         fs.writeFileSync(
           path.join(stashDir, "tasks", `${scriptId}.yml`),
-          `version: 3\nuses: scripts/${scriptId}.${extension}\nakm:\n  schedule: "@daily"\n`,
+          `version: 4\nuses: scripts/${scriptId}.${extension}\n`,
         );
         const scriptRun = run([binary, "task", "run", scriptId, "--bundle", "stash"], env);
         expectSuccess(scriptRun, `compiled standalone ${extension} task`);

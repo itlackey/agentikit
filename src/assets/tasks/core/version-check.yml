@@ -1,6 +1,4 @@
-version: 3
+version: 4
 run: akm upgrade --check
-akm:
-  schedule: "0 9 * * 1"
-  enabled: true
-  description: Weekly check for new akm releases
+description: Weekly check for new akm releases
+schedule: "0 9 * * 1"

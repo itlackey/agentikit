@@ -56,9 +56,8 @@ function configWith(features: Partial<Record<FeatureKey, boolean>>): AkmConfig {
         };
         break;
       case "metadata_enhance":
-        // Cast: IndexConfig mixes reserved scalar keys (indexBodyOpening,
-        // SPEC-8) with a per-pass object catchall; TS cannot re-verify a
-        // spread-rebuilt literal against that intersection.
+        // Cast: IndexConfig's per-pass object catchall means TS cannot
+        // re-verify a spread-rebuilt reserved-section literal.
         cfg.index = { ...(cfg.index ?? {}), metadataEnhance: { enabled: val } } as AkmConfig["index"];
         break;
       case "lesson_quality_gate":
