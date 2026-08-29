@@ -116,9 +116,11 @@ jobs:
         run: |
           set -euo pipefail
           emit_all() {
-            echo "native_scheduler=true" >> "$GITHUB_OUTPUT"
-            echo "docker=true" >> "$GITHUB_OUTPUT"
-            echo "semantic=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "native_scheduler=true"
+              echo "docker=true"
+              echo "semantic=true"
+            } >> "$GITHUB_OUTPUT"
           }
           # Weekly drift check and release-candidate tag pushes always run
           # every suite; workflow_dispatch with gated_suite=all is the same
