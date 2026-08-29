@@ -61,6 +61,14 @@ export interface SchedulerSyncPlanInput {
   readonly bundleName: string;
   /** CLI selector embedded only in task invocations for a non-primary bundle. */
   readonly bundleTarget?: string;
+  /**
+   * Resolved filesystem path of the invoking bundle (#846). When present,
+   * `belongsToBundle` scopes strictly by this path instead of the legacy
+   * name-based comparison — a display name derived from a directory
+   * basename is not an identity two bundles can't collide on, but a
+   * resolved path is.
+   */
+  readonly bundlePath?: string;
   readonly backend: ScheduleBackend;
   readonly installed: readonly InstalledSchedulerBinding[];
   /** Complete read-only backend inventory, including malformed artifacts. */
@@ -713,6 +721,21 @@ function installOptionsFor(
 }
 
 function belongsToBundle(entry: InstalledSchedulerBinding, input: SchedulerSyncPlanInput): boolean {
+  if (input.bundlePath !== undefined && entry.target === input.bundleName) {
+    // Path-scoped (#846), primary/unconfigured-bundle sync only: the name
+    // already matches, but a display name derived from a directory
+    // basename is not an identity — two unrelated bundles can legitimately
+    // share one. Require the entry's own scheduler-context descriptor to
+    // additionally confirm the resolved path. An entry whose owning path
+    // cannot be established is never assumed to be ours — that silent
+    // assumption is exactly what let an isolated/foreign bundle's sync
+    // reach for another bundle's real scheduler entries. (`bundlePath` is
+    // only set for a primary sync — a `--bundle <target>` entry's
+    // descriptor reflects the invoking process's OWN primary directory,
+    // not the targeted bundle's, so it is not a meaningful signal there;
+    // that case keeps relying on config-name uniqueness below.)
+    return entry.ownerBundlePath !== undefined && entry.ownerBundlePath === input.bundlePath;
+  }
   if (entry.target === input.bundleName || entry.target === input.bundleTarget) return true;
   return false;
 }
@@ -721,9 +744,14 @@ function assertNoForeignIds(desired: readonly SchedulerBinding[], input: Schedul
   const wanted = new Set(desired.map(({ id }) => id));
   const foreign = input.installed.find((entry) => wanted.has(entry.id) && !belongsToBundle(entry, input));
   if (!foreign) return;
-  const where = foreign.target ? `bundle ${JSON.stringify(foreign.target)}` : "the default bundle";
+  const where = foreign.ownerBundlePath
+    ? `the bundle at ${JSON.stringify(foreign.ownerBundlePath)}`
+    : foreign.target
+      ? `bundle ${JSON.stringify(foreign.target)}`
+      : "the default bundle";
+  const mine = input.bundlePath ? ` (this sync is scoped to ${JSON.stringify(input.bundlePath)})` : "";
   throw new UsageError(
-    `Scheduler id ${JSON.stringify(foreign.id)} is already scheduled from ${where}; desired source ids must not collide across bundles.`,
+    `Scheduler id ${JSON.stringify(foreign.id)} is already scheduled from ${where}${mine}; desired source ids must not collide across bundles.`,
     "RESOURCE_ALREADY_EXISTS",
   );
 }

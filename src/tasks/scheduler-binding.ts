@@ -88,6 +88,14 @@ export interface InstalledSchedulerBinding {
   readonly target?: string;
   /** Parsed public CLI tail, used to attribute higher-ordinal task bindings. */
   readonly invocation?: readonly string[];
+  /**
+   * Resolved `AKM_BUNDLE_DIR` recovered from this entry's scheduler-context
+   * descriptor (#846), when the descriptor exists and can be validated.
+   * Absent whenever ownership cannot be established — a missing value must
+   * never be treated as "belongs to the invoking bundle" (see
+   * `belongsToBundle` in scheduler-sync.ts).
+   */
+  readonly ownerBundlePath?: string;
 }
 
 /** Existing native ownership visible during an explicit destructive rebind. */

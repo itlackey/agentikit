@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`akm task sync` could compute another bundle's real scheduler entries as
+  drift and try to remove them (#846).** Removal was scoped by a bundle
+  *display name* (`bundleName`/`--bundle` target) — a value derived from a
+  directory basename that two unrelated bundles can legitimately share (an
+  unconfigured bundle's name is deduped only against its own config's
+  bundles, never against other bundles actually installed on the machine).
+  A primary/unconfigured-bundle sync now additionally confirms a
+  name-matching installed entry's *resolved bundle path*, recovered from
+  that entry's own scheduler-context descriptor, before treating it as
+  eligible for reconcile — and refuses (rather than assumes) when that path
+  can't be established. **Backward compatibility:** every entry installed by
+  this codebase already carries a scheduler-context descriptor (the
+  `--scheduler-context` file used to restore the scheduled process's
+  environment), so existing installations resolve correctly with no user
+  action required. An entry whose descriptor is missing, unreadable, or
+  owned by a different OS user is never assumed to belong to the invoking
+  bundle; such an entry is simply left untouched by sync (it will not be
+  auto-repaired or removed) until it is reinstalled or removed by hand.
+
 - **Scheduled tasks on Windows ran but recorded no output.** A task fired by
   Task Scheduler logged `exit_code=0` with an empty log: the command really
   ran, but nothing it printed was captured. Captured runs asked for their own
