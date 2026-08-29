@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-08-29
+
+### Fixed
+
+- **A failing Windows `shell: powershell`/`pwsh` task could lose its exit
+  code's fidelity through `-Command` (#845).** `-Command` derives its own
+  process exit code from `$?`, so a genuinely failing command already
+  produced a nonzero exit and `status: "failed"` — but any native exit code
+  outside `{0, 1}` was collapsed to `1`, discarding the real value reported
+  in task history. The inner shell invocation built by `shellCommand()` now
+  appends a guard that reads `$?` first (reproducing `-Command`'s own
+  completed/failed determination, immune to a stale `$LASTEXITCODE` from an
+  earlier native call in the same command) and only then upgrades to the
+  precise native exit code when the failing last statement actually set
+  one — a bare `exit $LASTEXITCODE` was rejected because `$LASTEXITCODE`
+  stays `$null` for a pure-PowerShell command, and `exit $null` is exit
+  code `0`, which would have turned a failed cmdlet into a false
+  `"completed"`. Verified via unit tests asserting the exact argv `-Command`
+  string on `platform: "win32"`; the runtime exit-code behavior itself is
+  unverified on a real Windows host pending the owner's manual run (see the
+  PR body for the procedure) — Windows scheduler paths still have no
+  automated coverage (#770).
+- **A valid 0.9.1 config hard-failed to load after upgrading to 0.9.2
+  (#852).** `reasoningEffort` became a first-class `engines.<name>` field in
+  0.9.2 (#815), so `extraParams.reasoning_effort` — the documented 0.9.1
+  workaround for LM Studio, where `enableThinking` is a no-op — started
+  tripping the extraParams protected-key check and hard-failing every
+  command that loads config, with no migration. Config load now lifts
+  `extraParams.{reasoning_effort,temperature,maxtokens,enablethinking}`
+  onto their first-class field automatically (in-memory only; the file is
+  not rewritten, and a warning names each lifted key) unless the
+  extraParams value and the first-class field disagree, in which case
+  config load still fails, now naming both values and the field to keep.
+  Any other protected `extraParams` key without a first-class equivalent
+  still hard-fails, but the error now names the fix instead of only the
+  rule.
+
 ## [0.9.2] - 2026-08-29
 
 ### Fixed
