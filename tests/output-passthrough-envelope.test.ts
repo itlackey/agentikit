@@ -55,6 +55,35 @@ describe("passthrough envelope stamping (#484)", () => {
     expect(shaped.schemaVersion).toBe(7);
   });
 
+  // Regression for the `akm task sync --dry-run` crash: `renderSchedulerPlanPreview`
+  // (src/tasks/scheduler-sync-preview.ts) deliberately `Object.freeze`s the
+  // preview it returns as an immutability guarantee. Before the fix, the
+  // passthrough stamp handler mutated its argument in place (`obj.shape =
+  // command`), which throws "Attempting to define property on object that is
+  // not extensible" the moment it hits a frozen result. This never showed up
+  // in `akmTasksSyncPlan`-level tests because they inspect the preview
+  // directly and never route it through `output()`/`shapeForCommand`.
+  it("stamps a frozen result (task-sync-dry-run) without throwing", () => {
+    const preview = Object.freeze({
+      backend: "cron",
+      dryRun: true,
+      adds: Object.freeze([]),
+      updates: Object.freeze([{ id: "task-a", kind: "update" }]),
+      removes: Object.freeze([]),
+      unchanged: Object.freeze([]),
+      hasRemovals: false,
+      failures: Object.freeze([]),
+    });
+    expect(() => shapeForCommand("task-sync-dry-run", preview, "normal")).not.toThrow();
+    const shaped = shapeForCommand("task-sync-dry-run", preview, "normal") as Record<string, unknown>;
+    expect(shaped.shape).toBe("task-sync-dry-run");
+    expect(shaped.schemaVersion).toBe(1);
+    expect(shaped.backend).toBe("cron");
+    // The original object must stay untouched — the fix copies rather than mutates.
+    expect(Object.isFrozen(preview)).toBe(true);
+    expect((preview as Record<string, unknown>).shape).toBeUndefined();
+  });
+
   it("does not stamp non-object passthrough results", () => {
     // Some passthrough commands might return arrays or primitives — leave them
     // alone so callers that return naked arrays still work.

@@ -25,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmTasksSync, akmTasksSyncPlan } from "../../src/commands/tasks/tasks";
 import { taskSyncDryRunExitCode } from "../../src/commands/tasks/tasks-cli";
+import { shapeForCommand } from "../../src/output/shapes";
 import { CRON_BACKEND, type CronExec, type CronExecResult } from "../../src/tasks/backends/cron";
 import {
   resolveScheduledTaskContext,
@@ -199,6 +200,41 @@ describe("akmTasksSyncPlan — dry-run", () => {
 
     expect(exec.writeCalls).toBe(1);
     expect(exec.current()).toContain("task run alpha");
+  });
+
+  // Real-world crash regression: an installed cron entry whose invocation
+  // lacks `--bundle` (the pre-`--bundle` shape written by older akm
+  // releases, mirroring tests/integration/tasks-sync.test.ts's "reconciles a
+  // pre-`--bundle` native entry instead of refusing it as an unproven owner")
+  // is now correctly recognized as akm-owned, so `akmTasksSyncPlan` computes
+  // a real preview for it instead of throwing "unproven owner" — and that
+  // preview is `Object.freeze`d by `renderSchedulerPlanPreview`. Routing it
+  // through `shapeForCommand`, exactly as `akm task sync --dry-run`'s CLI
+  // leaf does via `output()`, must not crash on the frozen result.
+  test("previews a pre-`--bundle` native entry through the CLI output path without crashing", async () => {
+    const exec = spyingMemoryExec();
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    await akmTasksSync({ backend });
+    const stripped = exec.current().replace(/--bundle\s+\S+\s+/, "");
+    expect(stripped).not.toBe(exec.current());
+    exec.write(stripped);
+    const beforePreview = exec.current();
+
+    const preview = await akmTasksSyncPlan({ backend }, undefined, {});
+
+    expect(preview.updates.map((op) => op.id)).toEqual(["alpha"]);
+    expect(Object.isFrozen(preview)).toBe(true);
+
+    let shaped: Record<string, unknown> | undefined;
+    expect(() => {
+      shaped = shapeForCommand("task-sync-dry-run", preview, "normal") as Record<string, unknown>;
+    }).not.toThrow();
+    expect(shaped?.shape).toBe("task-sync-dry-run");
+    expect(shaped?.schemaVersion).toBe(1);
+
+    // Still zero durable writes.
+    expect(exec.current()).toBe(beforePreview);
   });
 });
 
