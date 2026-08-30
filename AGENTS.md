@@ -54,6 +54,33 @@ LLM defaults follow a "works correctly for the lowest common denominator" philos
 ## Code Style
 - Prefer external `.md` (or `.xml`) files over long inline strings in TypeScript. Multi-line template literals containing markdown, XML, or prose belong in a standalone file in the same directory as the module that uses them. Import them with `import x from "./x.md" with { type: "text" }` and use `.replace`/`.replaceAll` with `{{PLACEHOLDER}}` tokens at call time. This keeps templates editable without touching TS source and avoids escaping noise inside template literals. See `src/tasks/backends/schtasks.ts` (which imports `src/assets/backends/schtasks-template.xml`), `src/output/cli-hints.ts`, and `scripts/copy-assets.ts` for the established pattern.
 
+## Defensive Code
+
+A guard, cap, version gate, or fencing check survives only if it passes **all three**:
+
+1. **It has demonstrably helped a real user.** Check telemetry before defending it — the `events` table in `state.db`, task logs, issue history. A guard that has never fired in production is a candidate for deletion, not preservation.
+2. **Its failure mode costs less than the hazard it prevents.** A cap whose trip makes the CLI unusable is worse than the slowness it was guarding against.
+3. **The operation is not already gated behind a deliberate human command.** Anything a person explicitly typed does not get a second machine-level gate. The operator is not racing themselves.
+
+"This hazard is conceivable" is not a justification — that always answers yes, and it is how this codebase accumulated footguns. When in doubt, delete.
+
+Preference order when something must change: **remove the limit** > degrade with a warning > abort. Aborting is the last resort, not the default.
+
+### What this does not apply to
+
+Machinery that prevents **data loss or corruption** passes test 2 on its own merits and stays: backups, atomic writes, write-path validation that keeps malformed data out of the database, and path-containment checks that stop writes outside the bundle. The target is machinery that makes the tool refuse to do its job.
+
+### Reading persisted data
+
+A reader must tolerate data that older releases wrote. Deterministic transforms are the tool's job, not the user's — convert in memory, warn once, and keep the migrator as the on-disk rewrite path rather than a precondition for reading. See `src/tasks/source/parse-task-source.ts` (task v2/v3 → v4) and `src/core/config/config-version-shim.ts` for the established pattern. Every schema bump must add its old shape to `tests/integration/previous-release-corpus.test.ts` *before* shipping; that suite failing means an upgrade break was about to go out.
+
+### Worked examples
+
+- **#857** — single-ref lookup walked the entire bundle tree, capped at 16,384 files, and aborted when tripped. Zero useful firings in months of telemetry; its only production behavior was making the CLI unusable on a large bundle. Walk and cap deleted, replaced with closed-form candidate enumeration. Net −13 lines of source, every collision guarantee intact.
+- **`extra-params` (#815/#816)** — hard-rejected legacy keys. Degraded to warn-and-auto-lift; only genuinely conflicting keys still reject. This is the template for a guard that had to stay but had the wrong failure mode.
+- **`guarded-source` 1MiB cap** — kept once on the argument that the bytes are hashed, so a truncated read would be silently wrong. That argument rejects *truncation*; it never justified a *cap*. Correct answer was no truncation and no cap.
+- **Migrator TOCTOU fencing** — inode/device/ctime identity checks defending a window inside a human-typed `akm migrate apply` that already holds a cross-process lock and writes backups. A multi-tenant-daemon threat model applied to a single-user CLI.
+
 ## Gotchas
 - `prepublishOnly` copies `.github/README.npm.md` over `README.md` before building, and `postpublish` restores `README.md` with `git checkout -- README.md`. Do not treat that README churn as a normal source edit.
 - `.github/workflows/ci.yml` ignores docs-only changes (`docs/**`, `README.md`, `CHANGELOG.md`, `schemas/**`, `CLAUDE.md`, `LICENSE`), so docs-only edits will not get normal CI coverage.
