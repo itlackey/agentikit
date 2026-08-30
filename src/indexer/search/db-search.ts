@@ -1085,6 +1085,10 @@ export async function buildDbHit(input: {
     ...(input.entry.beliefState ? { beliefState: input.entry.beliefState } : {}),
     ...(input.entry.currentBeliefRefs ? { currentBeliefRefs: input.entry.currentBeliefRefs } : {}),
     ...(graphHit ? { graph: { entities: graphHit.entities, relations: graphHit.relations } } : {}),
+    // Which stage of the progressive AND->OR lexical ladder produced this
+    // hit. Omitted when the hit has no FTS component (pure-semantic hybrid
+    // contribution).
+    ...(input.lexicalMatch ? { matchStage: input.lexicalMatch } : {}),
   };
 
   attachDbHitAttribution(hit, input);
@@ -1144,6 +1148,7 @@ export function buildWhyMatched(
         : "fts bm25 relevance",
   ];
   if (lexicalMatch === "relaxed") reasons.push("lexical recovery after strict query returned no hits");
+  if (lexicalMatch === "prefix") reasons.push("prefix match after strict query returned no hits");
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
 
   const queryLower = query.toLowerCase().trim();

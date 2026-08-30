@@ -324,8 +324,21 @@ export function shapeSearchHit(hit: Record<string, unknown>, detail: DetailLevel
     // visible without forcing callers up to `--detail full`. Optional
     // `quality` (v1 spec §4.2) is also surfaced when present so callers
     // can see why a `proposed` entry showed up under `--include-proposed`.
+    // `matchStage` (issue #856) surfaces which stage of the progressive
+    // AND->OR lexical ladder produced the hit; cheap compact enum, worth
+    // showing without requiring `--detail full`.
     const shaped = capDescription(
-      pickFields(hit, ["type", "name", "description", "action", "score", "estimatedTokens", "warnings", "quality"]),
+      pickFields(hit, [
+        "type",
+        "name",
+        "description",
+        "action",
+        "score",
+        "estimatedTokens",
+        "warnings",
+        "quality",
+        "matchStage",
+      ]),
       NORMAL_DESCRIPTION_LIMIT,
     );
     if (Array.isArray(hit.keys) && hit.keys.length > 0) shaped.keys = hit.keys;
@@ -348,6 +361,11 @@ export function shapeSearchHitForAgent(hit: Record<string, unknown>): Record<str
     "score",
     "estimatedTokens",
     "keys",
+    // Issue #856: which stage of the progressive AND->OR lexical ladder
+    // produced this hit. Agents need this to gauge how much to trust a
+    // hit (a strict-AND match is stronger signal than an OR-fallback
+    // recovery match) without going to `--detail full`.
+    "matchStage",
   ]);
   if (picked.editable !== false) delete picked.editHint;
   return capDescription(picked, NORMAL_DESCRIPTION_LIMIT);

@@ -183,6 +183,56 @@ describe("Issue #1: Two-phase boost — score/rank consistency", () => {
     // The score should be rounded to 4 decimals from the input score directly.
     expect(hit.score).toBe(0.0234);
   });
+
+  // Issue #856: the lexical ladder stage computed during FTS search must
+  // survive into the serializable hit as `matchStage`, not just live on the
+  // internal Symbol-keyed attribution.
+  describe("matchStage (#856)", () => {
+    const baseHitInput = (lexicalMatch: "exact" | "prefix" | "relaxed" | undefined) => {
+      const stashDir = tmpStash();
+      writeFile(path.join(stashDir, "scripts", "ladder", "ladder.sh"), "#!/bin/bash\n");
+      return {
+        entry: {
+          name: "ladder",
+          type: "script",
+          description: "Test ladder stage propagation",
+        },
+        path: path.join(stashDir, "scripts", "ladder", "ladder.sh"),
+        itemRef: "stash//scripts/ladder",
+        bundleId: "stash",
+        conceptId: "scripts/ladder",
+        score: 0.5,
+        query: "ladder",
+        rankingMode: "fts" as const,
+        lexicalMatch,
+        defaultStashDir: stashDir,
+        allSourceDirs: [stashDir],
+        sources: [{ path: stashDir }],
+        config: { semanticSearchMode: "off" as const },
+      };
+    };
+
+    test.each([
+      ["exact"],
+      ["prefix"],
+      ["relaxed"],
+    ] as const)("carries lexicalMatch=%s through to hit.matchStage", async (stage) => {
+      const hit = await buildDbHit(baseHitInput(stage));
+      expect(hit.matchStage).toBe(stage);
+    });
+
+    test("omits matchStage when lexicalMatch is undefined (e.g. pure-semantic hybrid hit)", async () => {
+      const hit = await buildDbHit(baseHitInput(undefined));
+      expect(hit.matchStage).toBeUndefined();
+      expect("matchStage" in hit).toBe(false);
+    });
+
+    test("survives JSON serialization", async () => {
+      const hit = await buildDbHit(baseHitInput("relaxed"));
+      const roundTripped = JSON.parse(JSON.stringify(hit)) as SourceSearchHit;
+      expect(roundTripped.matchStage).toBe("relaxed");
+    });
+  });
 });
 
 // ── Issue #3: NaN from vec distance corrupts sort ───────────────────────────
@@ -590,6 +640,28 @@ describe("Issue #15: Hybrid ranking mode label", () => {
 
     expect(hit.whyMatched).toBeDefined();
     expect(hit.whyMatched?.[0]).toContain("hybrid");
+  });
+});
+
+// ── Issue #856: buildWhyMatched flags the "prefix" ladder stage too ─────────
+
+describe("Issue #856: buildWhyMatched reports every lexical ladder stage", () => {
+  const entry = { name: "ladder-test", type: "script", description: "A ladder test entry", tags: [] };
+
+  test("flags the 'relaxed' (OR-fallback) stage", () => {
+    const reasons = buildWhyMatched(entry, "ladder", "fts", 0, 0, undefined, undefined, "relaxed");
+    expect(reasons).toContain("lexical recovery after strict query returned no hits");
+  });
+
+  test("flags the 'prefix' (prefix-AND) stage", () => {
+    const reasons = buildWhyMatched(entry, "ladder", "fts", 0, 0, undefined, undefined, "prefix");
+    expect(reasons).toContain("prefix match after strict query returned no hits");
+  });
+
+  test("adds no ladder-recovery marker for the strict 'exact' stage", () => {
+    const reasons = buildWhyMatched(entry, "ladder", "fts", 0, 0, undefined, undefined, "exact");
+    expect(reasons).not.toContain("lexical recovery after strict query returned no hits");
+    expect(reasons).not.toContain("prefix match after strict query returned no hits");
   });
 });
 

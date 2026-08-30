@@ -393,6 +393,11 @@ availability:
 - **`origin`** -- The source bundle (e.g. `npm:@scope/pkg`), present only for
   managed source assets; surfaced at `full` only
 - **`id`** -- Registry-level identifier (registry hits only)
+- **`matchStage`** -- Which stage of the progressive AND->OR lexical search
+  ladder produced the hit: `exact` (strict AND), `prefix` (prefix AND), or
+  `relaxed` (OR/prefix-OR recovery). Omitted for hits with no FTS component
+  (e.g. a pure-semantic hybrid match) and for registry hits; surfaced at
+  `normal`, `full`, and `--shape agent`
 
 The default brief shape is intentionally small. The exact field set per
 detail level (and per `--shape`) is authoritative in
@@ -402,9 +407,9 @@ assembled into the shape registry by the `src/output/shapes.ts` barrel:
 | Level | Local bundle hits | Registry hits |
 | --- | --- | --- |
 | `brief` (default) | `type`, `name`, `ref`, `action`, `estimatedTokens` | `name`, `installRef`, `score` |
-| `normal` | `type`, `name`, `description`, `action`, `score`, `estimatedTokens`, optional `warnings`/`quality`/`keys` | `name`, `description`, `action`, `installRef`, `score`, optional `warnings` |
-| `full` | full hit object (includes `ref`, `origin`, `tags`, `whyMatched`, optional `warnings`, optional `quality`, timings, bundle metadata) | full hit object |
-| `--shape agent` | `name`, `ref`, `type`, `path`, `editable`, conditional `editHint`, `description`, `action`, `score`, optional `estimatedTokens`/`keys` | no local access fields |
+| `normal` | `type`, `name`, `description`, `action`, `score`, `estimatedTokens`, optional `warnings`/`quality`/`keys`/`matchStage` | `name`, `description`, `action`, `installRef`, `score`, optional `warnings` |
+| `full` | full hit object (includes `ref`, `origin`, `tags`, `whyMatched`, optional `warnings`, optional `quality`, optional `matchStage`, timings, bundle metadata) | full hit object |
+| `--shape agent` | `name`, `ref`, `type`, `path`, `editable`, conditional `editHint`, `description`, `action`, `score`, optional `estimatedTokens`/`keys`/`matchStage` | no local access fields |
 
 `--shape summary` is **not valid on `search`** — see
 [`--shape summary`](#--shape-summary) above; it is a usage error (exit 2)
