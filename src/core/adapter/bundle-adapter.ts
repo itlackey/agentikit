@@ -35,13 +35,17 @@
  *   index .............................. optional
  *   affectedItems ....................... optional
  *   validate .......................... REQUIRED
- *   readCandidates / recognizePathCandidates / placeNew / directoryList / looksLikeRoot ... optional
+ *   readCandidates / placeNew / directoryList / looksLikeRoot ... optional
  *
  * 0.9.2 adds two independent optional read/runtime facets:
  * `renderExecutionSource`, for the approved agent/command design, and
- * `readCandidates` / `recognizePathCandidates`, which make native read aliases
- * and non-invertible path identities explicit without changing write placement.
- * They do not change the 0.9.0 indexing or validation contract.
+ * `readCandidates`, which makes an adapter's closed-form set of physical
+ * spellings for one concept id explicit without changing write placement
+ * (#857: this is now the ONLY read-candidate surface — the walking
+ * `recognizePathCandidates` sibling this comment used to describe was
+ * removed with the full-tree owner scan it existed for; `readCandidates`
+ * alone is inverted from the concept id, so it needs no bundle walk).
+ * This does not change the 0.9.0 indexing or validation contract.
  *
  * The spec's optional authoring (§12.2) / export (§12.3) / memory (§12.4)
  * facet methods are Tier-B ("no 0.9.0 adapter implements these") and their
@@ -78,9 +82,6 @@ export interface AdapterReadCandidate {
   /** Canonical concept identity this authored path may own. */
   conceptId: string;
 }
-
-/** Path-derived FileContext fields available to byte-free owner discovery. */
-export type AdapterPathContext = Omit<FileContext, "content" | "frontmatter" | "stat">;
 
 export interface BundleAdapter {
   readonly id: string;
@@ -128,13 +129,6 @@ export interface BundleAdapter {
   // candidate carries that canonical identity, so core can arbitrate without
   // reading authored bytes or inferring identity from the query.
   readCandidates?(c: BundleComponent, conceptId: string): AdapterReadCandidate[];
-
-  // OPTIONAL — bounded physical-scan identity. Used when recognition permits
-  // authored placements that cannot be inverted from a concept id. This hook
-  // receives path fields only and MUST return every canonical identity the
-  // path may recognize as without reading authored bytes. Content-dependent
-  // formats may conservatively return more than one possible identity.
-  recognizePathCandidates?(c: BundleComponent, file: AdapterPathContext): readonly string[];
 
   // OPTIONAL — placement / discovery
   /** Replaces the per-type stash-subdir + name-to-path placement primitives. */

@@ -161,10 +161,10 @@ const BUILTIN_PLACEMENT_SPECS = {
     isRelevantFile: (fileName: string) => path.extname(fileName).toLowerCase() === ".yml",
     toCanonicalName: (typeRoot: string, filePath: string) => {
       const rel = toPosix(path.relative(typeRoot, filePath));
-      return rel.endsWith(".yml") ? rel.slice(0, -4) : rel;
+      return rel.toLowerCase().endsWith(".yml") ? rel.slice(0, -4) : rel;
     },
     toAssetPath: (typeRoot: string, name: string) => {
-      const withExt = name.endsWith(".yml") ? name : `${name}.yml`;
+      const withExt = name.toLowerCase().endsWith(".yml") ? name : `${name}.yml`;
       return path.join(typeRoot, withExt);
     },
   },
@@ -283,4 +283,22 @@ export function assetPathForName(assetType: string, typeRoot: string, name: stri
   const spec = PLACEMENT_SPECS[assetType];
   if (!spec) throw new Error(`Unknown asset type: "${assetType}"`);
   return spec.toAssetPath(typeRoot, name);
+}
+
+/**
+ * Every physical path spelling that could own `name`, closed-form (#857).
+ * `toAssetPath` is a function, so it can only pick ONE spelling — but `env`'s
+ * "default" alias is genuinely dual-owned: both `<dir>/.env` and
+ * `<dir>/default.env` derive the same canonical name (`toCanonicalName`
+ * above), so a physical-owner lookup must consider both without reading
+ * either file. Every other placement type has exactly one inverse spelling.
+ */
+export function assetPathCandidatesForName(assetType: string, typeRoot: string, name: string): string[] {
+  const primary = assetPathForName(assetType, typeRoot, name);
+  if (assetType !== "env") return [primary];
+  const base = name === "default" ? "" : name.endsWith("/default") ? name.slice(0, -"default".length) : undefined;
+  if (base === undefined) return [primary];
+  const dotForm = path.join(typeRoot, base, ".env");
+  const namedForm = path.join(typeRoot, base, "default.env");
+  return [...new Set([primary, dotForm, namedForm])];
 }

@@ -91,6 +91,7 @@ import {
 } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import {
+  assetPathCandidatesForName,
   assetPathForName,
   deriveCanonicalAssetNameFromStashRoot,
   placementTypes,
@@ -99,9 +100,9 @@ import {
 } from "../../asset/asset-placement";
 import { parseFrontmatter } from "../../asset/frontmatter";
 import type { FileChange } from "../../file-change";
-import type { AdapterPathContext, BundleAdapter } from "../bundle-adapter";
+import type { BundleAdapter } from "../bundle-adapter";
 import { executionDefaultsFromFrontmatter, renderMarkdownExecutionSource } from "../execution-source";
-import { recognizeMatch, recognizePathCandidateMatches } from "../recognize-match";
+import { recognizeMatch } from "../recognize-match";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
 import { perTypeValidateChecks, skillDirectoryDiagnostics, workflowYamlSourceDiagnostics } from "./akm-lint";
 import { applyFoldedMetadata, foldRecognizedMetadata } from "./akm-metadata";
@@ -264,14 +265,6 @@ function conceptIdForRecognizedType(root: string, filePath: string, type: string
   if (canonicalName === undefined) return undefined;
   const stashDir = stashDirFor(type);
   return stashDir !== undefined ? `${stashDir}/${canonicalName}` : canonicalName;
-}
-
-function recognizePathCandidates(c: BundleComponent, file: AdapterPathContext): readonly string[] {
-  if (isReservedFileName(file.fileName) || akmStashAbstains(c.root, file.absPath)) return [];
-  return recognizePathCandidateMatches(file).flatMap((match) => {
-    const conceptId = conceptIdForRecognizedType(c.root, file.absPath, match.type);
-    return conceptId === undefined ? [] : [conceptId];
-  });
 }
 
 function recognize(c: BundleComponent, file: FileContext): IndexDocument | null {
@@ -508,10 +501,20 @@ export const akmAdapter: BundleAdapter = {
   ],
 
   recognize,
-  recognizePathCandidates,
   renderExecutionSource,
   validate,
 
+  /**
+   * Closed-form owner candidates (#857): every physical path spelling that
+   * could claim `conceptId` without walking the bundle. `deriveCanonicalAssetNameFromStashRoot`
+   * (recognize's own conceptId derivation) is a pure function of (type,
+   * filePath); this is its inverse, enumerated for the two placements that
+   * function can produce for one conceptId — CANONICAL (authored under the
+   * type's own stash subdir) and the LOOSE FALLBACK (authored anywhere else
+   * in the bundle, so the canonical name is the file's full path relative to
+   * the bundle root instead of the stash subdir). `assetPathCandidatesForName`
+   * additionally expands `env`'s `.env`/`<name>.env` duality on each.
+   */
   readCandidates(c: BundleComponent, conceptId: string) {
     const posix = conceptId.replace(/\\/g, "/");
     const slash = posix.indexOf("/");
@@ -519,9 +522,13 @@ export const akmAdapter: BundleAdapter = {
     const head = posix.slice(0, slash);
     const rest = posix.slice(slash + 1);
     const type = stashDirToType(head);
-    return type === undefined || rest.length === 0
-      ? []
-      : [{ path: assetPathForName(type, path.join(c.root, head), rest), conceptId: posix }];
+    if (type === undefined || rest.length === 0) return [];
+    const canonical = assetPathCandidatesForName(type, path.join(c.root, head), rest);
+    const loose = assetPathCandidatesForName(type, c.root, rest);
+    return [...new Set([...canonical, ...loose])].map((candidatePath) => ({
+      path: candidatePath,
+      conceptId: posix,
+    }));
   },
 
   /**
