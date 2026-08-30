@@ -81,6 +81,55 @@ describe("raw recovery startup", () => {
     expect(fs.readFileSync(task, "utf8")).toBe(taskV2);
   });
 
+  test("migrate apply skips a blocked file and still migrates the rest of the batch, exiting non-zero", async () => {
+    const stash = path.join(process.env.HOME as string, "task-migrate-source");
+    const goodTask = path.join(stash, "tasks", "legacy.yml");
+    const badTask = path.join(stash, "tasks", "bad.yml");
+    fs.mkdirSync(path.dirname(goodTask), { recursive: true });
+    const taskV2 = "version: 2\nschedule: '@daily'\ncommand: /bin/echo ok\n";
+    fs.writeFileSync(goodTask, taskV2);
+    // Array-form `command` is rejected by the v2 -> v3 converter, so this file plans as "blocked".
+    fs.writeFileSync(badTask, "version: 2\nschedule: '@daily'\ncommand: [echo, unsafe]\n");
+    fs.writeFileSync(
+      getConfigPath(),
+      `${JSON.stringify({
+        configVersion: "0.9.0",
+        bundles: { primary: { path: stash, writable: true } },
+        defaultBundle: "primary",
+      })}\n`,
+    );
+
+    // Call the standalone generation-1 migrator directly (not the top-level
+    // `akm migrate apply`, which unconditionally chains into generation 2 as
+    // well) so this test stays focused on the v2 -> v3 skip-and-report fix.
+    const child = Bun.spawn(["bun", "scripts/akm-migrate.ts", "apply"], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      env: { ...process.env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    // A blocked file remains after apply, so the process must exit non-zero.
+    expect(exitCode, stderr).not.toBe(0);
+    const result = JSON.parse(stdout);
+    // The reported plan is re-inspected AFTER apply: the good file already
+    // converged to v3 ("skipped"/"already-v3"), and `applied: 1` confirms it
+    // was actually written this run.
+    expect(result).toMatchObject({
+      status: "blocked",
+      applied: 1,
+      taskV3Migration: { changed: 0, skipped: 1, blocked: 1 },
+    });
+    // The good file was migrated despite the blocked sibling.
+    expect(fs.readFileSync(goodTask, "utf8")).toContain("version: 3");
+    // The blocked file was left untouched, not corrupted or written.
+    expect(fs.readFileSync(badTask, "utf8")).toContain("command: [echo, unsafe]");
+  });
+
   test("setup rejects legacy config before creating the stash or backup", async () => {
     fs.writeFileSync(getConfigPath(), '{"configVersion":"0.8.0","profiles":{}}\n');
     const stash = path.join(process.env.HOME as string, "akm");
