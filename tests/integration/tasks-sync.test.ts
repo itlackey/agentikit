@@ -152,7 +152,9 @@ describe("akmTasksSync — schedule drift", () => {
     expect(exec.current()).toContain("task run alpha");
   });
 
-  test("rejects an unversioned task without installing it", async () => {
+  // #867: degrades — the unversioned task is reported and excluded rather
+  // than installed, and never poisons a sync where it's the only source.
+  test("reports an unversioned task instead of installing it", async () => {
     const exec = memoryExec();
     const backend = backendFor(exec);
     fs.writeFileSync(
@@ -161,7 +163,10 @@ describe("akmTasksSync — schedule drift", () => {
       "utf8",
     );
 
-    await expect(akmTasksSync({ backend })).rejects.toThrow(/version is required and must be 4/);
+    const result = await akmTasksSync({ backend });
+    expect(result.installed).toEqual([]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]?.reason).toMatch(/version is required and must be 4/);
     expect(exec.current()).toBe("");
   });
 

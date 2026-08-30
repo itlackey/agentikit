@@ -210,4 +210,63 @@ describe("taskSyncDryRunExitCode — CLI exit-code contract", () => {
   test("is undefined (leaves the default success exit code) when the plan has no removals", () => {
     expect(taskSyncDryRunExitCode({ hasRemovals: false })).toBeUndefined();
   });
+
+  // #867: task sync degrades — a source that fails to parse/prepare no
+  // longer rejects the whole desired set, but its presence must still fail
+  // the CLI's exit code so the breakage stays visible.
+  test("is EXIT_CODES.GENERAL (non-zero) when the plan has failures, even with no removals", () => {
+    expect(taskSyncDryRunExitCode({ hasRemovals: false, failures: [{ path: "tasks/bad.yml", reason: "boom" }] })).toBe(
+      1,
+    );
+  });
+
+  test("is undefined when the plan has no removals and no failures", () => {
+    expect(taskSyncDryRunExitCode({ hasRemovals: false, failures: [] })).toBeUndefined();
+  });
+});
+
+// #867: `akm task sync` degrades — a task/workflow that fails to
+// parse/prepare is excluded and reported, never poisons the whole set.
+describe("akmTasksSync / akmTasksSyncPlan — degrade on a bad source (#867)", () => {
+  function writeUnconvertibleV2Task(id: string): void {
+    // A genuinely unmigratable v2 shape (a bare, non-`akm` executable with
+    // no path and no `env` wrapper) — still blocked after #867's fix, and
+    // used here to prove the OTHER good tasks still sync.
+    fs.writeFileSync(
+      path.join(tasksDir, `${id}.yml`),
+      `version: 2\nschedule: '*/15 * * * *'\ncommand: echo unconvertible\n`,
+      "utf8",
+    );
+  }
+
+  test("akmTasksSyncPlan --dry-run reconciles the tasks that parse and reports the one that doesn't", async () => {
+    const exec = spyingMemoryExec();
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    writeUnconvertibleV2Task("broken");
+
+    const preview = await akmTasksSyncPlan({ backend }, undefined, {});
+
+    expect(preview.adds.map((op) => op.id)).toEqual(["alpha"]);
+    expect(preview.failures).toHaveLength(1);
+    expect(preview.failures[0]?.path).toContain("broken.yml");
+    expect(taskSyncDryRunExitCode(preview)).toBe(1);
+    // ABSOLUTE SAFETY REQUIREMENT still holds even when the plan has failures.
+    expect(exec.writeCalls).toBe(0);
+  });
+
+  test("akmTasksSync reconciles the tasks that parse and reports the one that doesn't", async () => {
+    const exec = spyingMemoryExec();
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    writeUnconvertibleV2Task("broken");
+
+    const result = await akmTasksSync({ backend });
+
+    expect(result.installed).toEqual(["alpha"]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]?.path).toContain("broken.yml");
+    expect(exec.writeCalls).toBe(1);
+    expect(exec.current()).toContain("task run alpha");
+  });
 });

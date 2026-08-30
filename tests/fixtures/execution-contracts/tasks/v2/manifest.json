@@ -110,6 +110,23 @@
       }
     },
     {
+      "id": "command-env-prefix",
+      "file": "deterministic/command-env-prefix.yml",
+      "sourceKind": "command-string-env-prefixed",
+      "targetKind": "shell-run",
+      "preserves": ["schedule", "enabled", "timeoutMs", "redact"],
+      "expectedParsed": {
+        "schedule": "@hourly",
+        "enabled": true,
+        "target": {
+          "kind": "command",
+          "cmd": ["env", "AKM_BIN=/opt/akm/bin/akm", "bash", "/opt/akm/scripts/wiki-articles-ingest.sh"]
+        },
+        "timeoutMs": 45000,
+        "redact": ["CONTRACT_FIXTURE_TOKEN"]
+      }
+    },
+    {
       "id": "workflow-ref-full",
       "file": "deterministic/workflow-ref-full.yml",
       "sourceKind": "workflow-ref",

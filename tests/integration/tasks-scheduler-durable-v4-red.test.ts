@@ -157,30 +157,26 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
       workflow("invalid", ["      - id: remote", "        uses: actions/checkout@v4"]),
       /unsupported-uses-target/,
     ],
-  ] as const)("invalid %s causes zero descriptor or native mutation", async (_label, invalidSource, message) => {
+  ] as const)("#867: invalid %s degrades — reported and excluded — while the valid peer is still installed", async (_label, invalidSource, message) => {
     write(storage.stashDir, "workflows/a-valid.yml", workflow("valid", ["      - id: ok", "        run: echo ok"]));
     write(storage.stashDir, "workflows/z-invalid.yml", invalidSource);
     const { backend, calls } = recordingBackend();
-    let caught: unknown;
 
-    try {
-      await akmTasksSync(
-        {
-          backend,
-          schedulerRuntime() {
-            calls.runtime += 1;
-            return { binding: ["/test/akm"], contextPath: "/test/context.json" };
-          },
+    const result = await akmTasksSync(
+      {
+        backend,
+        schedulerRuntime() {
+          calls.runtime += 1;
+          return { binding: ["/test/akm"], contextPath: "/test/context.json" };
         },
-        "team",
-      );
-    } catch (error) {
-      caught = error;
-    }
+      },
+      "team",
+    );
 
-    expect(caught).toBeInstanceOf(Error);
-    expect(String(caught)).toMatch(message);
-    expect(calls).toEqual({ runtime: 0, signatures: 0, snapshots: 0, installs: 0, removes: 0 });
+    expect(result.installed).toHaveLength(1);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]?.reason).toMatch(message);
+    expect(calls.installs).toBe(1);
   });
 
   test("source changed after sync is fresh-frozen by the scheduled start, not reused from sync evidence", async () => {

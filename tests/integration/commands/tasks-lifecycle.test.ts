@@ -318,7 +318,13 @@ describe("task lifecycle failure handling", () => {
     writeTask("manual task", taskYaml("echo unsafe", "@daily"));
     installed.set("manual task", undefined);
 
-    await expect(akmTasksSync({ backend })).rejects.toThrow('Task id "manual task" is invalid');
+    // #867: the invalid-id source itself now degrades (reported, excluded
+    // from `desired`) instead of poisoning the whole sync — but that makes
+    // its still-installed, malformed (no proven invocation) native entry
+    // look orphaned, and removing an unproven-owner entry is a separate,
+    // still-hard, safety refusal (`finalizeSchedulerSyncPlan`'s removal
+    // ownership check, unchanged by #867). Either way, nothing mutates.
+    await expect(akmTasksSync({ backend })).rejects.toThrow(/native scheduler artifact|unproven owner/i);
     expect(enabledCalls).toEqual([]);
     expect(installCalls).toEqual([]);
   });
@@ -333,7 +339,9 @@ describe("task lifecycle failure handling", () => {
     expect(installCalls).toEqual([]);
   });
 
-  test("sync validates the entire desired set before runtime preparation or native mutation", async () => {
+  // #867: degrades — `b-invalid` is reported and excluded from the desired
+  // set rather than poisoning the whole sync, so `a-valid` still installs.
+  test("sync reconciles the rest of the desired set and reports a source that fails to parse", async () => {
     writeTask("a-valid", taskYaml("echo yes", "@daily"));
     // A version: 2 document is now rejected by the version router itself
     // (TASK_SCHEMA_VERSION_UNSUPPORTED, row B-15) before it ever reaches a
@@ -341,25 +349,21 @@ describe("task lifecycle failure handling", () => {
     // wording this test used to assert is unreachable for a version: 2
     // document under any routing this phase produces.
     writeTask("b-invalid", 'version: 2\nschedule: "@daily"\ncommand: echo no\n');
-    const prior = nativeBinding("old-installed", "0 2 * * *");
-    installed.set(prior.id, prior);
     let runtimeCalls = 0;
 
-    await expect(
-      akmTasksSync({
-        backend,
-        schedulerRuntime() {
-          runtimeCalls += 1;
-          return { binding: ["/test/akm"], contextPath: "/test/context.json" };
-        },
-      }),
-    ).rejects.toThrow(/task schema version 2/i);
+    const result = await akmTasksSync({
+      backend,
+      schedulerRuntime() {
+        runtimeCalls += 1;
+        return { binding: ["/test/akm"], contextPath: "/test/context.json" };
+      },
+    });
 
-    expect(runtimeCalls).toBe(0);
-    expect(installCalls).toEqual([]);
-    expect(uninstallCalls).toEqual([]);
-    expect(enabledCalls).toEqual([]);
-    expect(installed).toEqual(new Map([[prior.id, prior]]));
+    expect(result.installed).toEqual(["a-valid"]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]?.reason).toMatch(/task schema version 2/i);
+    expect(runtimeCalls).toBe(1);
+    expect(installed.has("a-valid")).toBe(true);
   });
 
   test("add --force quiesces prior scheduler state and restores its exact snapshot after install rejection", async () => {

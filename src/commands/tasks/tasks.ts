@@ -454,6 +454,13 @@ export interface TasksSyncResult {
   unchanged: string[];
   skipped: { id: string; reason: string }[];
   backend: string;
+  /**
+   * Sources that failed to parse/prepare (#867) — excluded from
+   * install/update/remove/unchanged above, never silently dropped. Every
+   * OTHER task/workflow still reconciles; the CLI exits non-zero whenever
+   * this is non-empty so the failure stays visible.
+   */
+  failed: { path: string; ref?: string; reason: string }[];
   /** Present only when a rebind bound an ineligible (e.g. mutable checkout) runtime. */
   warnings?: string[];
 }
@@ -602,6 +609,7 @@ export async function akmTasksSync(
     unchanged: [...plan.unchanged],
     skipped: [],
     backend: sched.name,
+    failed: plan.failures.map((failure) => ({ ...failure })),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

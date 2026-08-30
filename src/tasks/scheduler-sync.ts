@@ -110,6 +110,15 @@ export interface SchedulerSyncPlan {
   readonly unchanged: readonly string[];
   readonly operations: readonly SchedulerSyncOperation[];
   readonly sourceSnapshot: SchedulerSourceSnapshot;
+  /** Sources that failed to parse/prepare (#867) — excluded from `desired`, never silently dropped. */
+  readonly failures: readonly SchedulerSourceFailure[];
+}
+
+/** One task/workflow source that could not be parsed/prepared into a scheduler binding. */
+export interface SchedulerSourceFailure {
+  readonly path: string;
+  readonly ref?: string;
+  readonly reason: string;
 }
 
 export interface SchedulerSourceSnapshot {
@@ -127,6 +136,8 @@ export interface PreparedSchedulerSourceSet {
   readonly sourceSnapshot: SchedulerSourceSnapshot;
   /** Validation/reconciliation evidence only; scheduled fire always freezes a fresh guarded v4 plan. */
   readonly executableWorkflows: readonly SchedulerExecutableWorkflowEvidence[];
+  /** Sources that failed to parse/prepare (#867) — excluded from `desired`, never silently dropped. */
+  readonly failures: readonly SchedulerSourceFailure[];
 }
 
 export interface SchedulerExecutableWorkflowEvidence {
@@ -170,6 +181,7 @@ export async function prepareSchedulerSyncSourceSet(
     desired: compiled.desired,
     sourceSnapshot,
     executableWorkflows: compiled.executableWorkflows,
+    failures: compiled.failures,
   });
 }
 
@@ -297,6 +309,7 @@ export function finalizeSchedulerSyncPlan(
     unchanged: Object.freeze(unchanged),
     operations: Object.freeze(operations),
     sourceSnapshot: prepared.sourceSnapshot,
+    failures: prepared.failures,
   });
 }
 
@@ -453,23 +466,26 @@ async function compileDesiredSourceSet(
 ): Promise<{
   readonly desired: readonly SchedulerBinding[];
   readonly executableWorkflows: readonly SchedulerExecutableWorkflowEvidence[];
+  readonly failures: readonly SchedulerSourceFailure[];
 }> {
   const bindings: SchedulerBinding[] = [];
   const executableWorkflows: SchedulerExecutableWorkflowEvidence[] = [];
-  const failures: string[] = [];
+  const failures: SchedulerSourceFailure[] = [];
   await compileTaskSources(input, collector, bindings, failures);
   await compileWorkflowSources(input, collector, bindings, executableWorkflows, failures);
-  if (failures.length > 0) {
-    throw new UsageError(
-      `Scheduler sync rejected the desired source set before mutation:\n${failures.map((failure) => `- ${failure}`).join("\n")}`,
-      "TASK_SOURCE_INVALID",
-    );
-  }
+  // Degrade, don't reject (#867): one source that fails to parse/prepare no
+  // longer poisons the whole desired set — it is dropped from `desired` and
+  // reported here instead, so every OTHER task/workflow still reconciles.
+  // Genuinely cross-cutting integrity violations (duplicate ids, native
+  // artifact ownership conflicts, an incoherent backend inspection) are
+  // asserted separately in `finalizeSchedulerSyncPlan` and still hard-fail
+  // the whole sync — this only relaxes the per-source parse/prepare gate.
   return Object.freeze({
     desired: Object.freeze(bindings),
     executableWorkflows: Object.freeze(
       executableWorkflows.sort((left, right) => compareCodePoints(left.ref, right.ref)),
     ),
+    failures: Object.freeze(failures.sort((left, right) => compareCodePoints(left.path, right.path))),
   });
 }
 
@@ -477,7 +493,7 @@ async function compileTaskSources(
   input: SchedulerSyncPlanInput,
   collector: SchedulerSourceCollector,
   out: SchedulerBinding[],
-  failures: string[],
+  failures: SchedulerSourceFailure[],
 ): Promise<void> {
   if (input.adapterId !== "akm" && input.adapterId !== "akm-task") return;
   const physicalOwners = new Map<string, string>();
@@ -486,6 +502,7 @@ async function compileTaskSources(
     const relative = guarded.relativePath;
     const conceptId = relative.slice(0, -4);
     const id = input.adapterId === "akm-task" ? conceptId : path.basename(sourcePath, ".yml");
+    const qualifiedRefForFailure = makeBundleRef(input.bundleName, conceptId);
     try {
       const physicalIdentity = guarded.physicalIdentity;
       const priorOwner = physicalOwners.get(physicalIdentity);
@@ -578,7 +595,7 @@ async function compileTaskSources(
         out.push(binding);
       }
     } catch (cause) {
-      failures.push(taskFailure(sourcePath, cause));
+      failures.push(taskFailure(sourcePath, qualifiedRefForFailure, cause));
     }
   }
 }
@@ -588,11 +605,16 @@ async function compileWorkflowSources(
   collector: SchedulerSourceCollector,
   out: SchedulerBinding[],
   evidence: SchedulerExecutableWorkflowEvidence[],
-  failures: string[],
+  failures: SchedulerSourceFailure[],
 ): Promise<void> {
   if (input.adapterId !== "akm" && input.adapterId !== "akm-workflow") return;
   const lookups = enumerateWorkflowLookups(input, collector, failures);
   for (const [canonicalName, sources] of lookups) {
+    const failurePath = sources[0]?.sourcePath ?? canonicalName;
+    const failureRef = makeBundleRef(
+      input.bundleName,
+      input.adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName,
+    );
     try {
       if (sources.length > 1) {
         throw new WorkflowSourceCollisionError(
@@ -666,7 +688,7 @@ async function compileWorkflowSources(
         out.push(binding);
       }
     } catch (cause) {
-      failures.push(errorMessage(cause));
+      failures.push(workflowFailure(failurePath, failureRef, cause));
     }
   }
 }
@@ -687,7 +709,7 @@ function schedulerProjectionConfig(input: SchedulerSyncPlanInput): AkmConfig {
 function enumerateWorkflowLookups(
   input: SchedulerSyncPlanInput,
   collector: SchedulerSourceCollector,
-  failures: string[],
+  failures: SchedulerSourceFailure[],
 ): ReadonlyMap<string, readonly GuardedSchedulerSource[]> {
   const lookups = new Map<string, GuardedSchedulerSource[]>();
   for (const guarded of collector.authoredWorkflowSources(input.adapterId)) {
@@ -699,7 +721,9 @@ function enumerateWorkflowLookups(
     const stem = authoredName.slice(0, -extension.length).toLowerCase();
     const nestedSuffix = (WORKFLOW_EXTENSIONS as readonly string[]).find((suffix) => stem.endsWith(suffix));
     if (nestedSuffix) {
-      failures.push(errorMessage(new WorkflowSourceNameError(guarded.relativePath, nestedSuffix)));
+      failures.push(
+        workflowFailure(sourcePath, undefined, new WorkflowSourceNameError(guarded.relativePath, nestedSuffix)),
+      );
       continue;
     }
     const canonicalName = canonicalizeWorkflowName(authoredName);
@@ -790,9 +814,14 @@ function assertUniqueInstalledIds(installed: readonly InstalledSchedulerBinding[
   }
 }
 
-function taskFailure(file: string, cause: unknown): string {
+function taskFailure(file: string, ref: string, cause: unknown): SchedulerSourceFailure {
   const detail = taskSourceErrorDetail(cause);
-  return detail === errorMessage(cause) ? `${file}: ${detail}` : detail;
+  const reason = detail === errorMessage(cause) ? `${file}: ${detail}` : detail;
+  return Object.freeze({ path: file, ref, reason });
+}
+
+function workflowFailure(file: string, ref: string | undefined, cause: unknown): SchedulerSourceFailure {
+  return Object.freeze({ path: file, ...(ref ? { ref } : {}), reason: errorMessage(cause) });
 }
 
 function errorMessage(cause: unknown): string {
