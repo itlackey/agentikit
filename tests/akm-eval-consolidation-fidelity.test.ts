@@ -15,7 +15,6 @@ import {
   normalizeDirectProvenance,
   parseConsolidationFidelityManifest,
 } from "../scripts/akm-eval/src/consolidation-fidelity";
-import { checkMergeInformationFloor } from "../src/commands/improve/anti-collapse";
 import { bundleRefToString, parseBundleRef } from "../src/core/asset/asset-ref";
 
 const manifest = loadConsolidationFidelityManifest();
@@ -211,14 +210,5 @@ describe("deterministic fixture-authored consolidation candidate oracle", () => 
     expect(result.tokenOverlap.sourceRetention).toBe(0);
     expect(result.requiredClaims.retention).toBe(0);
     expect(result.oraclePassed).toBe(false);
-
-    const countOnlyGuard = checkMergeInformationFloor(
-      fixture.calibrationCandidate.body,
-      fixture.calibrationCandidate.directProvenance,
-      fixture.sources.map((source) => ({ ...source, xrefs: [] })),
-      {},
-    );
-    expect(countOnlyGuard.specificityRetention).toBe(1);
-    expect(countOnlyGuard.passed).toBe(true);
   });
 });

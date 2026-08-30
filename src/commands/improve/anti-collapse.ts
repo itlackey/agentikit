@@ -5,11 +5,11 @@
 /**
  * WS-3b Step 8 — Anti-collapse merge guards.
  *
- *   (a) Generation counter: merged.generation = max(sources)+1; refuse merge
- *       of two assets both above generation N (default 2); merges cite sources.
+ *   (a) Generation counter: merged.generation = max(sources)+1; merges cite
+ *       sources. `over_generation_count` (collapse-detector.ts) tracks assets
+ *       above the generation threshold as an advisory metric only — there is
+ *       no merge-refusal path wired in.
  *   (b) Lexical-diversity check: low n-gram diversity ⇒ raise merge threshold.
- *   (c) Merge-information floor (R5 §4.2): provenance union must not shrink and
- *       the merged body must retain a minimum fraction of the source tokens.
  *   (d) Occasional random non-similar cluster in the pool.
  *
  * @module anti-collapse
@@ -24,25 +24,21 @@ export const DEFAULT_RANDOM_CLUSTER_FRACTION = 0.05;
 export interface AntiCollapseConfig {
   /**
    * DEFAULT ON since R5 (docs/architecture/specs/improve-collapse-churn-detector-design.md
-   * §4.1, owner-approved): the generation guard, lexical-diversity check, and
-   * random-cluster injection are deterministic, cheap, and (except the narrow
-   * two-participants-both-over-generation refusal) advisory. Set `false` to
-   * opt out and restore the pre-R5 unguarded behavior.
+   * §4.1, owner-approved): the lexical-diversity check and random-cluster
+   * injection are deterministic, cheap, and advisory. Set `false` to opt out
+   * and restore the pre-R5 unguarded behavior.
    */
   enabled?: boolean;
   maxGeneration?: number;
   lexicalDiversityCheck?: boolean;
   randomClusterFraction?: number;
   /**
-   * R5 §4.2 — measure the merge-information floor (provenance union must not
-   * shrink; merged body must retain ≥ minSpecificityRetention of the distinct
-   * tokens of its sources). Default true. ADVISORY in v1: a failing merge
-   * proceeds but is counted (`merge_floor_violations`) and surfaced via the
-   * collapse-detector advisory; the documented promotion path turns it into a
-   * refusal once live data confirms the threshold's false-positive rate.
+   * R5 §4.2 — merge-information floor config. Currently unused: no caller
+   * measures it (see collapse-detector.ts `merge_floor_violations`, which is
+   * populated by its own caller-supplied count, not by this module).
    */
   mergeInformationFloor?: boolean;
-  /** Distinct-token retention floor for merges (default 0.6). */
+  /** Distinct-token retention floor for merges (default 0.6). Currently unused. */
   minSpecificityRetention?: number;
 }
 
@@ -65,125 +61,6 @@ export function readAssetGeneration(frontmatterData: Record<string, unknown>): n
 export function computeMergedGeneration(sourceGenerations: number[]): number {
   if (sourceGenerations.length === 0) return 1;
   return Math.max(...sourceGenerations) + 1;
-}
-
-/**
- * Check whether a merge of the given assets should be refused due to the
- * anti-collapse generation guard.
- *
- * Returns `{ refused: true, reason }` when BOTH assets have generation > maxGeneration.
- * Returns `{ refused: false }` when the merge is allowed.
- *
- * @param sourceGenerations - Generation values for all merge participants.
- * @param config - Anti-collapse config.
- */
-export function checkGenerationGuard(
-  sourceGenerations: number[],
-  config: AntiCollapseConfig,
-): { refused: boolean; reason?: string } {
-  // R5: default ON — only an explicit opt-out disables the guard.
-  if (config.enabled === false) return { refused: false };
-
-  const maxGen = config.maxGeneration ?? DEFAULT_MAX_GENERATION;
-  const highGenCount = sourceGenerations.filter((g) => g > maxGen).length;
-
-  if (highGenCount >= 2) {
-    return {
-      refused: true,
-      reason: `Anti-collapse: ${highGenCount} merge participants have generation > ${maxGen} (${sourceGenerations.join(", ")}); refusing to merge over-consolidated assets.`,
-    };
-  }
-  return { refused: false };
-}
-
-// ── Merge-information floor (R5 §4.2) ────────────────────────────────────────
-
-export interface MergeInformationFloorResult {
-  passed: boolean;
-  /** Provenance: |required union| before vs. |merged xrefs| after. */
-  provenanceBefore: number;
-  provenanceAfter: number;
-  /** Specificity proxy: distinct-token retention of merged body vs. union of sources. */
-  specificityRetention: number; // 0..1
-  reason?: string;
-}
-
-/** Distinct-token retention floor default (R5 §4.2). */
-export const DEFAULT_MIN_SPECIFICITY_RETENTION = 0.6;
-
-function distinctTokens(text: string): Set<string> {
-  // Same lowercase whitespace tokenization computeBigramDiversity uses.
-  return new Set(
-    text
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 0),
-  );
-}
-
-/**
- * A merge must strictly increase information (R5 §4.2):
- *  1. Provenance: the merged asset's `xrefs` must be a superset of the union of
- *     all participants' `xrefs` plus the participant refs
- *     themselves — provenance never shrinks through a merge.
- *  2. Specificity: distinctTokens(mergedBody) ≥ minSpecificityRetention ×
- *     |union(distinctTokens(participant bodies))| — a merge that only
- *     shortens/genericizes fails.
- *
- * Pure and deterministic; ADVISORY in v1 (the caller counts violations, it
- * does not refuse the merge). Returns `passed: true` immediately when the
- * anti-collapse suite or the floor itself is opted out.
- */
-export function checkMergeInformationFloor(
-  mergedBody: string,
-  mergedSourceRefs: string[],
-  participants: Array<{ ref: string; body: string; xrefs: string[] }>,
-  config: AntiCollapseConfig,
-): MergeInformationFloorResult {
-  if (config.enabled === false || config.mergeInformationFloor === false || participants.length === 0) {
-    return { passed: true, provenanceBefore: 0, provenanceAfter: 0, specificityRetention: 1 };
-  }
-
-  // 1. Provenance union: participants + everything they already cited.
-  const required = new Set<string>();
-  for (const p of participants) {
-    required.add(p.ref);
-    for (const xref of p.xrefs) required.add(xref);
-  }
-  const after = new Set(mergedSourceRefs);
-  const missing = [...required].filter((r) => !after.has(r));
-
-  // 2. Specificity retention over the union of source tokens.
-  const sourceTokens = new Set<string>();
-  for (const p of participants) {
-    for (const t of distinctTokens(p.body)) sourceTokens.add(t);
-  }
-  const mergedTokens = distinctTokens(mergedBody);
-  // Clamped at computation so the pass/fail decision, the reason string, and
-  // the reported field all describe the same value.
-  const specificityRetention = Math.min(1, sourceTokens.size === 0 ? 1 : mergedTokens.size / sourceTokens.size);
-
-  const minRetention = config.minSpecificityRetention ?? DEFAULT_MIN_SPECIFICITY_RETENTION;
-  const provenanceOk = missing.length === 0;
-  const specificityOk = specificityRetention >= minRetention;
-
-  const reasons: string[] = [];
-  if (!provenanceOk) {
-    reasons.push(`provenance shrank: merged xrefs missing ${missing.length} ref(s) (e.g. ${missing[0]})`);
-  }
-  if (!specificityOk) {
-    reasons.push(
-      `specificity retention ${specificityRetention.toFixed(2)} < ${minRetention} (merge genericized/shortened)`,
-    );
-  }
-
-  return {
-    passed: provenanceOk && specificityOk,
-    provenanceBefore: required.size,
-    provenanceAfter: after.size,
-    specificityRetention,
-    ...(reasons.length > 0 ? { reason: reasons.join("; ") } : {}),
-  };
 }
 
 /**
