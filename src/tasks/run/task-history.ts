@@ -99,15 +99,37 @@ export function readTaskHistory(options: ReadHistoryOptions = {}): TaskRunResult
       // discarded and `akm task history --id X --limit 20` always returned one
       // run. The CLI documents --limit as "Maximum rows to return"; honour it.
       if (options.limit !== undefined && options.limit > 0) {
-        return getTaskHistoryRuns(db, options.id, options.limit).map(taskHistoryRowToResult);
+        return decodeTaskHistoryRows(getTaskHistoryRuns(db, options.id, options.limit));
       }
       const row = getTaskHistory(db, options.id);
-      return row ? [taskHistoryRowToResult(row)] : [];
+      return row ? decodeTaskHistoryRows([row]) : [];
     }
-    return queryTaskHistory(db, options.limit !== undefined && options.limit > 0 ? { limit: options.limit } : {}).map(
-      taskHistoryRowToResult,
+    return decodeTaskHistoryRows(
+      queryTaskHistory(db, options.limit !== undefined && options.limit > 0 ? { limit: options.limit } : {}),
     );
   });
+}
+
+/**
+ * Per-row skip-and-warn (mirrors `listStateProposals` in
+ * proposals-repository.ts): a single genuinely-corrupt `metadata_json` row
+ * must not abort the entire history read. `decodeTaskHistoryMetadata` (via
+ * `taskHistoryRowToResult`) already tolerates legacy/additive shapes; only
+ * real corruption reaches this catch.
+ */
+function decodeTaskHistoryRows(rows: TaskHistoryRow[]): TaskRunResult[] {
+  const results: TaskRunResult[] = [];
+  for (const row of rows) {
+    try {
+      results.push(taskHistoryRowToResult(row));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[akm] Skipping unparseable task_history row (task_id=${row.task_id}, started_at=${row.started_at}): ${message}`,
+      );
+    }
+  }
+  return results;
 }
 
 /**

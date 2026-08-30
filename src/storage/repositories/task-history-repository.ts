@@ -59,7 +59,23 @@ function validateDetail(value: unknown): asserts value is TaskHistoryDetail | nu
   }
 }
 
-/** Decode the current task-history metadata shape. */
+/**
+ * Decode the task-history metadata shape.
+ *
+ * Read-time compatibility shim (mirrors proposals-repository's
+ * `storedToChanges`): `metadataVersion` was added in a later release. 58% of
+ * a real install's `task_history` rows (8,596/14,801) predate the field
+ * entirely, and 88 more carry additive fields (`profile`, `repairReason`)
+ * written by prior releases. An absent `metadataVersion` is a LEGACY row, not
+ * corruption — decode what's present (defaulting the absent `detail` key to
+ * `null`) instead of throwing. Unknown keys are ignored rather than
+ * hard-rejected, so the next additive field never regresses this again;
+ * neither `profile` nor `repairReason` is read anywhere downstream, so they
+ * are dropped harmlessly rather than round-tripped. A `metadataVersion` that
+ * IS present but not `2` is a genuinely unknown/future shape and still
+ * rejected, as is a non-number `durationMs` or a `detail` that fails
+ * {@link validateDetail} — real corruption, not version skew.
+ */
 export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryMetadata {
   let parsed: unknown = input;
   if (typeof input === "string") {
@@ -71,23 +87,22 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
   }
   if (!isRecord(parsed)) metadataError("root must be an object");
 
-  if (parsed.metadataVersion !== 2) metadataError(`unsupported metadataVersion: ${String(parsed.metadataVersion)}`);
-  const allowed = new Set(["metadataVersion", "durationMs", "detail", "engine", "targetVocab"]);
-  const unknown = Object.keys(parsed).filter((key) => !allowed.has(key));
-  if (unknown.length > 0) metadataError(`unknown fields: ${unknown.sort().join(", ")}`);
+  if (parsed.metadataVersion !== undefined && parsed.metadataVersion !== 2) {
+    metadataError(`unsupported metadataVersion: ${String(parsed.metadataVersion)}`);
+  }
   if (typeof parsed.durationMs !== "number") metadataError("durationMs must be a number");
-  if (!("detail" in parsed)) metadataError("detail is required");
+  const detail = "detail" in parsed ? parsed.detail : null;
   if (parsed.engine !== undefined && parsed.engine !== null && typeof parsed.engine !== "string") {
     metadataError("engine must be a string or null");
   }
   if (parsed.targetVocab !== undefined && parsed.targetVocab !== 2) {
     metadataError("targetVocab must be 2 when present");
   }
-  validateDetail(parsed.detail);
+  validateDetail(detail);
   return {
     metadataVersion: 2,
     durationMs: parsed.durationMs,
-    detail: parsed.detail ?? null,
+    detail: detail ?? null,
     ...(parsed.engine !== undefined ? { engine: parsed.engine as string | null } : {}),
     ...(parsed.targetVocab === 2 ? { targetVocab: 2 as const } : {}),
   };

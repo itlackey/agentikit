@@ -32,16 +32,27 @@
  *     `listStateProposals`, which skips an unreadable legacy row (with a
  *     stderr warning) instead of failing the whole list
  *     (`src/storage/repositories/proposals-repository.ts`).
+ *   - pre-`metadataVersion` `task_history` rows (no `metadataVersion` at all,
+ *     58% of a real install's rows; and rows carrying the additive
+ *     `profile`/`repairReason` fields two prior releases wrote, 88 more real
+ *     rows) — read via `readTaskHistory()` (the `akm task history` path) and
+ *     `akmHealth()` (the `akm health --report` path), which decode the
+ *     legacy/additive shapes instead of throwing
+ *     (`src/storage/repositories/task-history-repository.ts`'s
+ *     `decodeTaskHistoryMetadata`).
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { akmHealth } from "../../src/commands/health";
 import { createProposal as createProposalImpl, isProposalSkipped } from "../../src/commands/proposal/repository";
 import { openStateDatabase } from "../../src/core/state-db";
 import { resetQuiet, setQuiet } from "../../src/core/warn";
 import { listStateProposals } from "../../src/storage/repositories/proposals-repository";
+import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
+import { readTaskHistory } from "../../src/tasks/run/task-history";
 import { parseTaskSource } from "../../src/tasks/source/parse-task-source";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
@@ -183,6 +194,74 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       } finally {
         fs.rmSync(stash, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe("task_history state.db — legacy metadata_json (no metadataVersion / additive fields)", () => {
+    let storage: IsolatedAkmStorage;
+
+    beforeEach(() => {
+      storage = withIsolatedAkmStorage();
+    });
+
+    afterEach(() => {
+      storage.cleanup();
+    });
+
+    const baseRow = {
+      status: "completed",
+      started_at: "2025-01-01T00:00:00.000Z",
+      completed_at: "2025-01-01T00:00:00.000Z",
+      failed_at: null,
+      log_path: null,
+      target_kind: "shell",
+      target_ref: null,
+    };
+
+    test("a real-shaped row with no metadataVersion (the 8,508-row live shape) reads via `akm task history` and `akm health --report` without throwing", () => {
+      const db = openStateDatabase();
+      try {
+        upsertTaskHistory(db, {
+          ...baseRow,
+          task_id: "corpus-legacy-no-version",
+          metadata_json: JSON.stringify({ durationMs: 48557, detail: { exitCode: 0 } }),
+        });
+      } finally {
+        db.close();
+      }
+
+      const rows = readTaskHistory({ id: "corpus-legacy-no-version" });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.durationMs).toBe(48557);
+
+      expect(() => akmHealth({ since: "7d" })).not.toThrow();
+    });
+
+    test("real-shaped rows carrying the additive `profile`/`repairReason` fields (88 live rows) read without throwing", () => {
+      const db = openStateDatabase();
+      try {
+        upsertTaskHistory(db, {
+          ...baseRow,
+          task_id: "corpus-legacy-profile",
+          metadata_json: JSON.stringify({ durationMs: 1, detail: { exitCode: 0 }, profile: "opencode" }),
+        });
+        upsertTaskHistory(db, {
+          ...baseRow,
+          task_id: "corpus-legacy-repair-reason",
+          metadata_json: JSON.stringify({
+            metadataVersion: 2,
+            durationMs: 1,
+            detail: { exitCode: 1 },
+            repairReason: "manual",
+          }),
+        });
+      } finally {
+        db.close();
+      }
+
+      expect(readTaskHistory({ id: "corpus-legacy-profile" })).toHaveLength(1);
+      expect(readTaskHistory({ id: "corpus-legacy-repair-reason" })).toHaveLength(1);
+      expect(() => akmHealth({ since: "7d" })).not.toThrow();
     });
   });
 });
