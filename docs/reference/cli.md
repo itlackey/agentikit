@@ -2423,9 +2423,10 @@ shell commands. It manages on-disk task definitions under
 (cron / launchd / schtasks). Task source v4 YAML (`version: 4`) is the only
 executable source contract this release accepts; `akm task add` writes v4 —
 see the canonical [Tasks reference](tasks.md). The
-group is `add | run | explain | sync | doctor | history` — there is no `list`
-or `remove`; use `akm search --type task` / `akm show tasks/<id>` to inspect,
-and edit the file + `akm task sync` to change or remove a schedule.
+group is `add | run | explain | sync | doctor | history | prune` — there is
+no `list` or `remove`; use `akm search --type task` / `akm show tasks/<id>`
+to inspect, and edit the file + `akm task sync` to change or remove a
+schedule.
 
 ```sh
 akm search --type task                      # List tasks (cross-bundle)
@@ -2439,8 +2440,12 @@ akm task run <id>                           # Execute now (what the scheduler ca
 akm task explain <ref>                      # Read-only: declared inputs, target, schedule — spawns nothing
 akm task history [--id <id>] [--limit <n>]  # Recent runs from state.db
 akm task sync                               # Reconcile on-disk YAML with scheduler
+akm task sync --dry-run                     # Preview the reconcile — zero scheduler writes
 akm task sync --rebind                      # Also capture the current installed runtime
 akm task doctor                             # Report scheduler backend + paths
+akm task prune                              # Preview orphaned scheduler entries — zero writes
+akm task prune --yes                        # Remove every currently-computed orphan
+akm task prune --id ghost,stale --yes       # Remove only the named orphan ids
 ```
 
 `task add` also accepts `--disabled` (register but leave off in the OS
@@ -2465,6 +2470,23 @@ To disable a scheduled task, set `enabled: false` on its `schedule:` entry
 schedule-binding) and run `akm task sync`. To remove one, delete its file
 (`<bundle>/tasks/<id>.yml`) and run `akm task sync` — sync uninstalls the
 orphaned scheduler entry.
+
+`akm task sync --dry-run` prints the planned adds/updates/removes (removals
+carry their owning bundle) without touching the scheduler — zero writes.
+Exits non-zero when removals are pending, so it can gate a CI/health check
+on "sync would change something."
+
+`akm task prune` reclaims installed scheduler entries that `sync` can never
+clean up on its own: entries whose own `--scheduler-context` descriptor no
+longer resolves to a live bundle (a corrupt/missing descriptor, or the
+bundle directory it pointed at is gone). It never touches an entry that
+still resolves to a live bundle — that's `sync`'s job. Like `sync
+--dry-run`, the default is a dry-run preview (zero scheduler writes) that
+exits non-zero when there are candidates to remove; `--yes` executes the
+printed plan, and `--id <id1,id2,...>` narrows a `--yes` run (or a preview)
+to specific binding ids — naming an id that isn't a current orphan
+candidate (not installed, or it still resolves to a live bundle) is
+refused with a usage error and removes nothing.
 
 Scheduler activation captures the installed akm runtime. Ordinary `task sync`
 reconciles definitions, schedules, and enabled state while preserving that
