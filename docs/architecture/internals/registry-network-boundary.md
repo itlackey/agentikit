@@ -87,7 +87,7 @@ seconds.
 Node executes that request directly with the built-in `node:http` and
 `node:https` clients. Bun's native TLS client cannot currently retain SNI when
 the connection is pinned to a numeric address, so Bun starts one fresh Node >=
-24 helper per attempt. The parent sends the credential-bearing request and
+22 helper per attempt. The parent sends the credential-bearing request and
 validated numeric address over private stdin, never argv or environment, and
 receives bounded status/header frames plus a backpressured streaming body over
 stdout. The helper is materialized from an embedded self-contained function in
@@ -101,9 +101,9 @@ leave a helper or socket alive. Request bodies are capped at 16 MiB. JSON and
 archive consumers apply their own total byte and body-time limits while
 retaining streaming backpressure.
 
-The npm package already requires Node >= 24, so both its Bun launcher and Node
+The npm package already requires Node >= 22, so both its Bun launcher and Node
 fallback can provide the pinned transport. A runtime-free compiled standalone
-can also use a Node >= 24 executable found on `PATH`. If none exists, registry
+can also use a Node >= 22 executable found on `PATH`. If none exists, registry
 networking fails closed with an actionable `REGISTRY_PINNED_TRANSPORT` error;
 it never falls back to an independently resolved Bun connection. Local-only
 commands in the standalone remain runtime-free.

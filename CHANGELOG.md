@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.9.4] - 2026-08-30
 
+### Changed
+
+- **Node.js 22 support is restored for the npm package.** 0.9.3 raised the
+  npm bootstrap floor to Node >= 24 as a policy simplification; no code in
+  the package actually requires a Node-24-only API, and the pinned
+  better-sqlite3 12.11.1 ships a prebuilt binary for Node 22 (ABI 127), so
+  nothing compiles from source. The floor returns to Node >= 22 across the
+  preinstall check, the CLI bootstrap guard, and the pinned-registry
+  helper, and the CI node-smoke matrix again runs BOTH Node 22 and 24 so
+  the supported floor is tested on every run, not merely declared.
+
 ### Added
 
 - **`akm task sync --dry-run` previews the reconcile without touching the

@@ -489,27 +489,9 @@ describe("registry pinned production transport", () => {
     ).rejects.toEqual(
       expect.objectContaining({
         code: "REGISTRY_PINNED_TRANSPORT",
-        message: expect.stringContaining("requires Node.js >= 24"),
+        message: expect.stringContaining("requires Node.js >= 22"),
       }),
     );
-  });
-
-  test("does not select a Node 22 executable as a Bun registry helper", async () => {
-    const fake = writeFakeExecutable('if [ "$1" = "--version" ]; then printf "v22.0.0\\n"; exit 0; fi\nexit 99');
-    try {
-      await withEnv({ PATH: path.dirname(fake.executable) }, async () => {
-        await expect(
-          requestRegistryAddressPinned(new URL("https://registry.test/never-connect"), "203.0.113.8", undefined, 100),
-        ).rejects.toEqual(
-          expect.objectContaining({
-            code: "REGISTRY_PINNED_TRANSPORT",
-            message: expect.stringContaining("requires Node.js >= 24 on PATH"),
-          }),
-        );
-      });
-    } finally {
-      fake.cleanup();
-    }
   });
 
   test.skipIf(process.platform === "win32")(
@@ -709,7 +691,7 @@ describe("registry pinned production transport", () => {
       expect(failure).toMatchObject({
         ok: false,
         code: "REGISTRY_PINNED_TRANSPORT",
-        message: expect.stringContaining("requires Node.js >= 24 on PATH"),
+        message: expect.stringContaining("requires Node.js >= 22 on PATH"),
         resolverCalled: false,
       });
     } finally {
