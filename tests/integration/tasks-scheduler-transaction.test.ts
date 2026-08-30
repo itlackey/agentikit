@@ -610,9 +610,16 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
   test("scheduler source CAS includes a workflow consumed during dry projection", async () => {
     const workflow = path.join(storage.stashDir, "workflows", "owned.yml");
     fs.mkdirSync(path.dirname(workflow), { recursive: true });
+    // #867: steps require an `id` to compile at all — the fixture omitted
+    // it, so pre-#867 this test's rejection was (accidentally) the task's
+    // own "missing required key \"id\"" failure, not the CAS/race check the
+    // test is actually about. Degrading no longer treats that per-source
+    // parse failure as a whole-set rejection, which surfaced the gap: the
+    // fixture must compile successfully so the race genuinely reaches the
+    // CAS assertion.
     fs.writeFileSync(
       workflow,
-      "name: owned\non: { workflow_dispatch: null }\njobs: { main: { runs-on: [self-hosted], steps: [{ run: echo original }] } }\n",
+      "name: owned\non: { workflow_dispatch: null }\njobs: { main: { runs-on: [self-hosted], steps: [{ id: run, run: echo original }] } }\n",
     );
     fs.writeFileSync(
       path.join(storage.stashDir, "tasks", "alpha.yml"),
@@ -626,7 +633,7 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
         schedulerRuntime() {
           fs.writeFileSync(
             workflow,
-            "name: owned\non: { workflow_dispatch: null }\njobs: { main: { runs-on: [self-hosted], steps: [{ run: echo raced }] } }\n",
+            "name: owned\non: { workflow_dispatch: null }\njobs: { main: { runs-on: [self-hosted], steps: [{ id: run, run: echo raced }] } }\n",
           );
           return { binding: ["/test/akm"], contextPath: "/test/context.json" };
         },

@@ -86,6 +86,7 @@ const EMPTY_SYNC_RESULT: TasksSyncResult = {
   unchanged: [],
   skipped: [],
   backend: "cron",
+  failed: [],
 };
 
 function makeDeps(

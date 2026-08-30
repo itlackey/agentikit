@@ -317,6 +317,38 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       expect(() => akmHealth({ since: "7d" })).not.toThrow();
     });
   });
+
+  // #867: the existing "task source v2/v3" describe above only covers the
+  // plain `command: /path/to/akm ...` shape. On a real 0.9.4 install, every
+  // v2 task whose `command:` started with `env NAME=value... cmd args...`
+  // (a common, ordinary way to write a cron command) hit
+  // TASK_SCHEMA_VERSION_UNSUPPORTED instead of being auto-shimmed — this is
+  // exactly the gap that shipped in 0.9.4. Kept as its own block per #867's
+  // instructions (other agents may be editing the describes above).
+  describe("task source v2 — env-prefixed command (#867)", () => {
+    let warnSpy: ReturnType<typeof spyOn>;
+
+    beforeEach(() => {
+      setQuiet(false);
+      warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+      resetQuiet();
+    });
+
+    test("a real-shaped task v2 file whose command starts with `env NAME=value...` reads without error", () => {
+      const filePath = path.join(FIXTURES_DIR, "task-v2-env-prefixed.yml");
+      const yaml = readFixture("task-v2-env-prefixed.yml");
+      const result = parseTaskSource({ yaml, filePath });
+      expect(result.version).toBe(4);
+      expect(result.v4.schedule.length).toBeGreaterThan(0);
+      expect(result.v4.target.kind).toBe("run");
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]?.[0])).toContain("schema v2");
+    });
+  });
 });
 
 // ── configVersion (#863) ─────────────────────────────────────────────────

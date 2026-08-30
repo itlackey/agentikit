@@ -1,0 +1,7 @@
+version: 2
+name: dogfood-daily-status
+description: Send a concise Discord status for collection freshness and drift
+schedule: '0 9 * * *'
+enabled: true
+timeoutMs: 120000
+command: env AKM_BIN=/home/user/.nvm/versions/node/v24.18.0/bin/akm /home/user/.nvm/versions/node/v24.18.0/bin/akm env run env/fwdslsh -- /home/user/.bun/bin/bun /home/user/akm/scripts/akm-dogfood-0.9.1.ts status-discord

@@ -144,6 +144,24 @@ const SHELL_ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
 function shellStableV2Executable(executable: string): boolean {
   return executable === "akm" || executable.includes("/");
 }
+/**
+ * `env NAME=value... cmd args...` is env(1) itself resolving and exec'ing
+ * `cmd` via its own PATH search — that lookup happens inside env's execvp()
+ * regardless of whether env was launched by direct execve (v2) or by a host
+ * shell (v3 `run:`). The shell-vs-argv divergence `shellStableV2Executable`
+ * guards against (bare names shadowed by shell aliases/builtins/functions)
+ * therefore does not apply to whatever env ultimately invokes, so skip past
+ * a leading `env` and its `NAME=value` assignments to find the real target.
+ * Returns the original tokens, unchanged, when there is no such target
+ * (e.g. `env` with nothing after its assignments).
+ */
+function skipEnvAssignmentPrefix(tokens: readonly string[]): { tokens: readonly string[]; envWrapped: boolean } {
+  if (tokens[0] !== "env") return { tokens, envWrapped: false };
+  let index = 1;
+  while (index < tokens.length && SHELL_ASSIGNMENT_WORD.test(tokens[index] as string)) index += 1;
+  if (index >= tokens.length) return { tokens, envWrapped: false };
+  return { tokens: tokens.slice(index), envWrapped: true };
+}
 const KNOWN_PROMPT_REF_FAMILIES = new Set([
   "agents",
   "commands",
@@ -423,8 +441,9 @@ function migratedObject(data: Record<string, unknown>): Record<string, unknown> 
     if (tokens.length === 0 || tokens.some((token) => !SAFE_V2_COMMAND_TOKEN.test(token))) {
       return "shell-operators-change-v2-literal-argv-semantics";
     }
-    const executable = tokens[0] as string;
-    if (SHELL_ASSIGNMENT_WORD.test(executable) || !shellStableV2Executable(executable)) {
+    const { tokens: targetTokens, envWrapped } = skipEnvAssignmentPrefix(tokens);
+    const executable = targetTokens[0] as string;
+    if (SHELL_ASSIGNMENT_WORD.test(executable) || (!envWrapped && !shellStableV2Executable(executable))) {
       return "shell-command-resolution-changes-v2-literal-argv-semantics";
     }
     output.run = tokens.join(" ");

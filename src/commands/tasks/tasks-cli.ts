@@ -332,10 +332,16 @@ const tasksHistoryCommand = defineJsonCommand({
  * #849: `task sync --dry-run`'s exit-code contract, "non-zero when the plan
  * contains removals" — factored out as a pure function (rather than left
  * inline in the command's `run()`) so it's directly unit-testable without
- * driving the whole CLI through a real scheduler backend.
+ * driving the whole CLI through a real scheduler backend. #867: also
+ * non-zero when any source failed to parse/prepare — sync degrades (still
+ * reconciles the tasks/workflows that DID parse) rather than rejecting the
+ * whole set, but a dropped source must still surface as a failing exit.
  */
-export function taskSyncDryRunExitCode(preview: { hasRemovals: boolean }): number | undefined {
-  return preview.hasRemovals ? EXIT_CODES.GENERAL : undefined;
+export function taskSyncDryRunExitCode(preview: {
+  hasRemovals: boolean;
+  failures?: readonly unknown[];
+}): number | undefined {
+  return preview.hasRemovals || (preview.failures?.length ?? 0) > 0 ? EXIT_CODES.GENERAL : undefined;
 }
 
 const tasksSyncCommand = defineJsonCommand({
@@ -371,6 +377,11 @@ const tasksSyncCommand = defineJsonCommand({
     }
     const result = await akmTasksSync({}, args.bundle, { rebind });
     output("task-sync", result);
+    // #867: sync degrades — sources that failed to parse/prepare are
+    // excluded from reconciliation and reported in `result.failed` rather
+    // than poisoning the whole sync, but their presence must still fail
+    // the command's exit code so the breakage stays visible.
+    if (result.failed.length > 0) process.exitCode = EXIT_CODES.GENERAL;
   },
 });
 
