@@ -29,12 +29,19 @@
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../../cli/invocation";
 import { parsePositiveIntFlag } from "../../cli/parse-args";
-import { defineGroupCommand, defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
+import {
+  defineGroupCommand,
+  defineJsonCommand,
+  EXIT_CODES,
+  GLOBAL_OUTPUT_ARGS,
+  output,
+  runWithJsonErrors,
+} from "../../cli/shared";
 import { UsageError } from "../../core/errors";
 import type { InputFlag } from "../../execution/input-contract";
 import { TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS } from "../../tasks/task-run-reserved-flags";
 import { akmTaskExplain } from "./explain";
-import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync } from "./tasks";
+import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync, akmTasksSyncPlan } from "./tasks";
 
 /** Shared `--bundle <bundle>` arg wired onto every task subcommand. */
 const bundleArg = {
@@ -313,6 +320,16 @@ const tasksHistoryCommand = defineJsonCommand({
   },
 });
 
+/**
+ * #849: `task sync --dry-run`'s exit-code contract, "non-zero when the plan
+ * contains removals" — factored out as a pure function (rather than left
+ * inline in the command's `run()`) so it's directly unit-testable without
+ * driving the whole CLI through a real scheduler backend.
+ */
+export function taskSyncDryRunExitCode(preview: { hasRemovals: boolean }): number | undefined {
+  return preview.hasRemovals ? EXIT_CODES.GENERAL : undefined;
+}
+
 const tasksSyncCommand = defineJsonCommand({
   meta: {
     name: "sync",
@@ -325,10 +342,26 @@ const tasksSyncCommand = defineJsonCommand({
       description: "Replace installed bindings with the current invocation",
       default: false,
     },
+    "dry-run": {
+      type: "boolean",
+      description:
+        "Compute and print the full reconcile plan (adds/updates/removes, with owning bundle on every " +
+        "removal) without touching the OS scheduler. Zero durable writes. Exits non-zero when the plan " +
+        "contains removals.",
+      default: false,
+    },
   },
   async run({ args }) {
     rejectRetiredTaskTargetFlag();
-    const result = await akmTasksSync({}, args.bundle, { rebind: args.rebind === true });
+    const rebind = args.rebind === true;
+    if (args["dry-run"] === true) {
+      const preview = await akmTasksSyncPlan({}, args.bundle, { rebind });
+      output("task-sync-dry-run", preview);
+      const exitCode = taskSyncDryRunExitCode(preview);
+      if (exitCode !== undefined) process.exitCode = exitCode;
+      return;
+    }
+    const result = await akmTasksSync({}, args.bundle, { rebind });
     output("task-sync", result);
   },
 });

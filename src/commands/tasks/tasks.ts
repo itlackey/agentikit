@@ -75,6 +75,7 @@ import {
   prepareSchedulerSyncSourceSet,
   type SchedulerSyncPlan,
 } from "../../tasks/scheduler-sync";
+import { renderSchedulerSyncPlanPreview, type SchedulerPlanPreview } from "../../tasks/scheduler-sync-preview";
 import { parseTaskSource } from "../../tasks/source/parse-task-source";
 import { projectTaskSourceV4 } from "../../tasks/source/project-v4";
 import { TASK_V3_MAX_SOURCE_BYTES, type TaskV3SourceDocument } from "../../tasks/source-v3";
@@ -476,11 +477,25 @@ export interface TasksSyncResult {
  * scans all bundles. Activation happens only through explicit `add --bundle`
  * (or `sync --bundle` on a bundle whose task files are already present).
  */
-export async function akmTasksSync(
-  deps: { backend?: SchedulerBackend; schedulerRuntime?: () => PreparedSchedulerRuntime } = {},
-  bundleTarget?: string,
-  options: { rebind?: boolean } = {},
-): Promise<TasksSyncResult> {
+/**
+ * Compute (but never apply) a scheduler sync plan: everything through
+ * `finalizeSchedulerSyncPlan`'s final call, stopping strictly before
+ * `applySchedulerSyncPlan`. Shared by `akmTasksSync` (applies the plan) and
+ * `akmTasksSyncPlan` (#849 `--dry-run`, never applies it) so the two paths
+ * can never drift on what "the plan" means. `prepared?.publish`, the one
+ * deferred write-producing closure in this pipeline, is returned but never
+ * invoked here — only `applySchedulerSyncPlan` may call it.
+ */
+async function buildSchedulerSyncPlan(
+  deps: { backend?: SchedulerBackend; schedulerRuntime?: () => PreparedSchedulerRuntime },
+  bundleTarget: string | undefined,
+  options: { rebind?: boolean },
+): Promise<{
+  sched: SchedulerBackend;
+  plan: SchedulerSyncPlan;
+  prepared: ReturnType<typeof prepareSchedulerSyncRuntime> | undefined;
+  warnings: string[];
+}> {
   const resolved = resolveTaskReadBundle(undefined, bundleTarget);
   const config = loadConfig();
   const stashDir = resolved.source.path;
@@ -564,6 +579,15 @@ export async function akmTasksSync(
     preparedSources,
   );
 
+  return { sched, plan, prepared, warnings };
+}
+
+export async function akmTasksSync(
+  deps: { backend?: SchedulerBackend; schedulerRuntime?: () => PreparedSchedulerRuntime } = {},
+  bundleTarget?: string,
+  options: { rebind?: boolean } = {},
+): Promise<TasksSyncResult> {
+  const { sched, plan, prepared, warnings } = await buildSchedulerSyncPlan(deps, bundleTarget, options);
   await applySchedulerSyncPlan(
     sched,
     plan,
@@ -580,6 +604,25 @@ export async function akmTasksSync(
     backend: sched.name,
     ...(warnings.length > 0 ? { warnings } : {}),
   };
+}
+
+/**
+ * `akm task sync --dry-run` (#849): compute the exact same plan
+ * `akmTasksSync` would apply, then return a non-mutating preview instead of
+ * calling `applySchedulerSyncPlan`. `buildSchedulerSyncPlan` is shared with
+ * the real sync path specifically so this can never see a different plan
+ * than the one a real sync would apply — and specifically so this function
+ * never even holds a reference to a callable `publish` closure past this
+ * point: `prepared.publish`, if any, is dropped on the floor here, never
+ * invoked. Zero durable writes, mirroring `akm workflow plan`.
+ */
+export async function akmTasksSyncPlan(
+  deps: { backend?: SchedulerBackend; schedulerRuntime?: () => PreparedSchedulerRuntime } = {},
+  bundleTarget?: string,
+  options: { rebind?: boolean } = {},
+): Promise<SchedulerPlanPreview> {
+  const { sched, plan } = await buildSchedulerSyncPlan(deps, bundleTarget, options);
+  return renderSchedulerSyncPlanPreview(sched.name, plan);
 }
 
 export interface TasksDoctorResult {
