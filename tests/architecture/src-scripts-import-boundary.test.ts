@@ -10,14 +10,17 @@
  * `tsconfig.build.json`'s `rootDir` is `src`; a static `import`/`export …
  * from` reaching outside it would make `bun run build` try to emit
  * `dist/scripts` (AGENTS.md pins the identical invariant for the sibling
- * directory: "`dist/tests` should never appear"). The v3 -> task source v4
- * migrator (`scripts/akm-migrate/migrate/task-to-v4.ts`) is legally imported
- * in the OTHER direction only — `tests/migrate/task-v3-to-v4.test.ts` (Lane
- * C) and the migrator itself import the real
- * `src/tasks/source/task-source-v4.ts` parser (C-N1) — so this boundary is
- * directional. That suite proves the legal direction; nothing in it fails if
- * `src/` grows an import of `scripts/`, which is the direction this test
- * exists to forbid.
+ * directory: "`dist/tests` should never appear"). The pure v2 -> v3 and v3 ->
+ * task source v4 migration planners (`src/tasks/source/task-to-v3.ts`,
+ * `src/tasks/source/task-to-v4.ts`, `src/tasks/source/task-source-v3-frozen.ts`)
+ * live IN `src/` — moved there so the version-gate read shim in
+ * `parse-task-source.ts` can call them without crossing this very boundary —
+ * and `scripts/akm-migrate/migrate/task-files-to-v3.ts` /
+ * `task-files-to-v4.ts` (the filesystem/apply side) import them in the legal
+ * direction, scripts -> src. `tests/migrate/task-v3-to-v4.test.ts` (Lane C)
+ * exercises the same planner directly from `src/`. Nothing in that suite
+ * fails if `src/` grows an import of `scripts/`, which is the direction this
+ * test exists to forbid.
  *
  * §1.7 C-N1 names a reviewer-run spot-check —
  * `rg -n 'from "\.\./\.\./scripts|from "\.\./scripts|scripts/akm-migrate'

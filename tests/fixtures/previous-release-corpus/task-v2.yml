@@ -1,0 +1,11 @@
+version: 2
+name: nightly-backup
+description: Nightly backup and integrity check
+when_to_use: Runs automatically every night; do not invoke manually.
+tags:
+  - ops
+  - backup
+schedule: '0 2 * * *'
+enabled: true
+timeoutMs: 300000
+command: /usr/local/bin/akm-backup.sh

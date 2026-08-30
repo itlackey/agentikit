@@ -16,6 +16,7 @@ import type { Proposal, ProposalGateDecisionOutcome } from "../../commands/propo
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { bundleRefToString, isBundleSlug, parseBundleRef } from "../../core/asset/asset-ref";
 import type { FileChange } from "../../core/file-change";
+import { warn } from "../../core/warn";
 import type { Database, SqlValue } from "../database";
 
 /**
@@ -354,6 +355,15 @@ export function upsertProposal(db: Database, proposal: Proposal, stashDir: strin
  * Results are ordered by `created_at ASC` (matching the historical
  * `listProposals()` sort), with `rowid` as a deterministic tiebreak so two
  * proposals created in the same millisecond list in insertion order.
+ *
+ * A row that predates the current envelope (e.g. `metadata_json` missing
+ * `changes` — issue #858's legacy shape) is skipped with a one-line stderr
+ * warning rather than crashing the whole list: an upgrade must not turn a
+ * background scan (health metrics, `improve` preparation) across an
+ * otherwise-healthy table into a hard failure just because one ancient row
+ * predates a schema change. `getStateProposal` (single-id lookup) keeps the
+ * hard failure — an operator asking for THAT row by id should see exactly
+ * why it cannot be read.
  */
 export function listStateProposals(
   db: Database,
@@ -381,7 +391,16 @@ export function listStateProposals(
        FROM proposals ${where} ORDER BY created_at ASC, rowid ASC`,
     )
     .all(...(params as SqlValue[])) as ProposalRow[];
-  return rows.map(proposalRowToProposal);
+  return rows.flatMap((row) => {
+    try {
+      return [proposalRowToProposal(row)];
+    } catch (error) {
+      warn(
+        `akm: proposal ${row.id} has an unreadable metadata_json (${error instanceof Error ? error.message : String(error)}) — skipped from the list`,
+      );
+      return [];
+    }
+  });
 }
 
 /**

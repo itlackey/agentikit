@@ -274,6 +274,20 @@ const ALLOWED_EXACT_FILES = [
   // sourced from the default rather than an authored `with:`. Neither file
   // carries a "version: 3" occurrence any more, so both entries are trimmed
   // here.
+
+  // 2026-08-30, task-version read shim (upgrade-smoothness fix): a NEW
+  // §6.2(b)-catch-all case — this fixture's SUBJECT is proving `src`
+  // correctly AUTO-READS a genuine version: 3 document (the mirror image of
+  // akm-validate.test.ts's entry above, which proves a genuine version: 3
+  // document that the migration planner CANNOT convert still fails closed).
+  // `tests/integration/previous-release-corpus.test.ts` feeds this exact
+  // file through `parseTaskSource` and asserts it reads through the
+  // in-memory v3->v4 migration shim without error; converting it to task
+  // source v4 would make the fixture stop exercising the shim at all. Its
+  // sibling `task-v2.yml` in the same directory carries `version: 2`, not
+  // `version: 3` + `schedule:`, so it does not match this ratchet's needle
+  // pair and needs no entry here.
+  "tests/fixtures/previous-release-corpus/task-v3.yml",
 ] as const;
 
 function isAllowed(relPath: string): boolean {

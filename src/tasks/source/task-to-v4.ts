@@ -20,9 +20,9 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { LineCounter, parseDocument, stringify as stringifyYaml } from "yaml";
-import { assertBoundedTaskYamlDocument, TASK_V3_MAX_SOURCE_BYTES } from "../../../src/tasks/source/bounded-document";
-import { parseTaskSourceV4 } from "../../../src/tasks/source/task-source-v4";
+import { assertBoundedTaskYamlDocument, TASK_V3_MAX_SOURCE_BYTES } from "./bounded-document";
 import { classifyTaskV3Uses, type TaskV3UsesTarget } from "./task-source-v3-frozen";
+import { parseTaskSourceV4 } from "./task-source-v4";
 
 export interface TaskToV4FileInput {
   readonly filePath: string;
@@ -377,8 +377,7 @@ function planV3DataToV4(input: TaskToV4FileInput, data: Record<string, unknown>)
     const cron = (akm as Record<string, unknown>).schedule as string;
     scheduleField = enabledFalse ? [{ cron, enabled: false as const }] : cron;
   } else {
-    const rawSchedule =
-      onRecord !== undefined && Object.hasOwn(onRecord, "schedule") ? onRecord.schedule : undefined;
+    const rawSchedule = onRecord !== undefined && Object.hasOwn(onRecord, "schedule") ? onRecord.schedule : undefined;
     if (rawSchedule !== undefined) {
       if (!Array.isArray(rawSchedule) || rawSchedule.length === 0) {
         return blocked(input, "invalid-v3-task", "on.schedule must be a non-empty list of {cron} records");
