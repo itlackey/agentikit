@@ -33,6 +33,25 @@ export function parseTaskMetadata(row: TaskHistoryRow): {
 }
 
 /**
+ * `parseTaskMetadata`, but per-row skip-and-warn instead of throwing (mirrors
+ * `listStateProposals`). `decodeTaskHistoryMetadata` already tolerates
+ * legacy/additive shapes; only genuine corruption reaches this catch, and a
+ * corrupt row must degrade the metric (excluded, not fatal) rather than abort
+ * the whole `akm health` computation.
+ */
+export function taskFailureDetail(row: TaskHistoryRow): Record<string, unknown> | undefined {
+  try {
+    return parseTaskMetadata(row).detail;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[akm] Skipping unparseable task_history row in agent-failure-rate (task_id=${row.task_id}, started_at=${row.started_at}): ${message}`,
+    );
+    return undefined;
+  }
+}
+
+/**
  * D8 read-boundary predicate (spec docs/plans/specs/p1b-model-extraction.md
  * §5.3) for `akm health`'s `agentFailureRate`: true for a `task_history` row
  * that represents a prepared command (agent/LLM) result, across both
