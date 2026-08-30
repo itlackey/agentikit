@@ -12,11 +12,19 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
 import { akmSearch } from "../../src/commands/read/search";
 import { saveConfig } from "../../src/core/config/config";
 import { akmIndex } from "../../src/indexer/indexer";
 import type { SourceSearchHit } from "../../src/sources/types";
-import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome, sandboxXdgDataHome } from "../_helpers/sandbox";
+import {
+  type Cleanup,
+  sandboxXdgCacheHome,
+  sandboxXdgConfigHome,
+  sandboxXdgDataHome,
+  withIsolatedAkmStorage,
+} from "../_helpers/sandbox";
 import { loadFixtureStash } from "../fixtures/stashes/load";
 
 // Local test helper — mirrors the pre-v1 mergeStashHits logic that was removed
@@ -243,17 +251,87 @@ describe("Exact/near-exact name matching", () => {
 });
 
 describe("Type ranking", () => {
-  test('for "deploy", skills/commands/scripts rank above knowledge docs', async () => {
-    const hits = await search("deploy");
-    expect(hits.length).toBeGreaterThanOrEqual(2);
+  // #862 follow-up: this test used to run the "deploy" query against the
+  // shared ranking-baseline fixture and assert the actionable hit
+  // (k8s-deploy, a skill) outranked the knowledge hit (deploy-check). That
+  // assertion only held because of the impression-inflation bug #862 fixed —
+  // every earlier search in this file that happened to return k8s-deploy
+  // nudged its live utility score up, which was enough to overcome a real,
+  // deterministic gap in raw (pre-clamp) FTS+boost score between the two
+  // fixture docs (deploy-check's bm25 relevance genuinely edges out
+  // k8s-deploy's on that query — confirmed by instrumenting
+  // buildSearchResultComparator: k8s-deploy=3.2226 vs deploy-check=3.235,
+  // BEFORE any utility contribution). Once the live bump was removed the
+  // test failed deterministically, in isolation, with no other tests run
+  // first — proving the fixture never guaranteed the invariant on its own;
+  // only accumulated impression drift did.
+  //
+  // TYPE_BOOST (ranking-contributors.ts) is still a real, intentional
+  // design: actionable types (skill/command/agent/script) get a materially
+  // higher multiplicative boost than knowledge. The property worth pinning
+  // is that boost, isolated from base-relevance noise: given two entries
+  // with equal FTS-relevant content, the actionable one ranks above the
+  // knowledge one. Built with its own isolated stash/index (not the shared
+  // ranking-baseline fixture) so base relevance is controlled, not
+  // incidental.
+  test("actionable types outrank knowledge docs when base relevance is equal (TYPE_BOOST)", async () => {
+    const storage = withIsolatedAkmStorage();
+    try {
+      saveConfig({
+        semanticSearchMode: "off",
+        bundles: { stash: { path: storage.stashDir } },
+        defaultBundle: "stash",
+        registries: [],
+      });
 
-    const actionableTypes = new Set(["skill", "command", "agent", "script"]);
-    const topActionable = hits.find((h) => actionableTypes.has(h.type));
-    const topKnowledge = hits.find((h) => h.type === "knowledge");
+      const description = "Coordinate widget rollout tasks across services and environments.";
+      const body =
+        "Coordinate widget rollout tasks across services and environments. " +
+        "This covers widget rollout planning, execution, and verification steps for rollout tasks.";
 
-    expect(topActionable).toBeDefined();
-    if (topKnowledge && topActionable) {
-      expect(rankOf(hits, topActionable.name)).toBeLessThan(rankOf(hits, topKnowledge.name));
+      const skillDir = path.join(storage.stashDir, "skills", "widget-rollout-flow");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(skillDir, "SKILL.md"),
+        `---
+description: ${description}
+---
+
+# Widget Rollout Flow
+
+${body}
+`,
+      );
+
+      const knowledgeFile = path.join(storage.stashDir, "knowledge", "widget-rollout-notes.md");
+      fs.writeFileSync(
+        knowledgeFile,
+        `---
+type: knowledge
+description: ${description}
+---
+
+# Widget Rollout Notes
+
+${body}
+`,
+      );
+
+      await akmIndex({ stashDir: storage.stashDir, full: true });
+
+      const result = await akmSearch({ query: "widget rollout tasks", source: "local", limit: 20 });
+      const hits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+
+      const topActionable = hits.find((h) => h.type === "skill");
+      const topKnowledge = hits.find((h) => h.type === "knowledge");
+
+      expect(topActionable).toBeDefined();
+      expect(topKnowledge).toBeDefined();
+      if (topActionable && topKnowledge) {
+        expect(rankOf(hits, topActionable.name)).toBeLessThan(rankOf(hits, topKnowledge.name));
+      }
+    } finally {
+      storage.cleanup();
     }
   });
 

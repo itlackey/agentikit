@@ -343,6 +343,11 @@ function resetUtilityScores(): void {
   const db = openExistingDatabase(getDbPath());
   try {
     db.exec("DELETE FROM utility_scores");
+    // #862: utility_scores_scoped is a second, newer table that also feeds
+    // ranking (see getUtilityScoresByIds' `scoped` map / applyUtilityContributors'
+    // scoped-over-global preference). Clearing only utility_scores left scoped
+    // rows leaking state between the two runs a test compares.
+    db.exec("DELETE FROM utility_scores_scoped");
   } finally {
     closeDatabase(db);
   }
