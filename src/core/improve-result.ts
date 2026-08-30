@@ -448,19 +448,24 @@ function validateCommon(value: Record<string, unknown>): void {
   }
 }
 
-/** Decode the persisted public result contract. */
-export function decodeImproveResult(input: string | unknown): DecodedImproveResult {
-  let parsed: unknown = input;
-  if (typeof input === "string") {
-    try {
-      parsed = JSON.parse(input);
-    } catch {
-      fail("not valid JSON");
-    }
-  }
-  if (!isRecord(parsed)) fail("root must be an object");
-
-  if (parsed.schemaVersion === 2) {
+/**
+ * Per-`schemaVersion` decoders for the persisted `improve_runs.result_json`
+ * contract, keyed by the literal `schemaVersion` value each accepts.
+ *
+ * #866 item 5 / read-shim policy (same shape as the version router in
+ * src/tasks/source/parse-task-source.ts, which this mirrors): every
+ * `schemaVersion` this build understands gets its own entry here, so
+ * decoding never regresses to "reject every row" the day the version bumps
+ * — it only stops accepting the ONE version that changed shape. All 1,539
+ * live rows today are v2; when a v3 shape is introduced, add a `3` entry
+ * (and, if v2 rows must keep reading under the newer runtime, keep this `2`
+ * entry as-is — every caller already skip-and-counts a decode failure, so a
+ * genuinely unreadable old row degrades to "excluded from metrics", never a
+ * crash). Do not remove the `2` entry when adding `3` unless the schema
+ * bump is known to be a strict superset callers can validate with it.
+ */
+const SCHEMA_DECODERS: Record<number, (parsed: Record<string, unknown>) => DecodedImproveResult> = {
+  2: (parsed) => {
     requireExactFields(parsed, V2_FIELDS);
     validateCommon(parsed);
     if (typeof parsed.strategy !== "string" || parsed.strategy.length === 0) {
@@ -473,7 +478,23 @@ export function decodeImproveResult(input: string | unknown): DecodedImproveResu
       envelope: parsed as unknown as AkmImproveResult,
       strategy: parsed.strategy,
     };
+  },
+};
+
+/** Decode the persisted public result contract. */
+export function decodeImproveResult(input: string | unknown): DecodedImproveResult {
+  let parsed: unknown = input;
+  if (typeof input === "string") {
+    try {
+      parsed = JSON.parse(input);
+    } catch {
+      fail("not valid JSON");
+    }
   }
+  if (!isRecord(parsed)) fail("root must be an object");
+
+  const decoder = typeof parsed.schemaVersion === "number" ? SCHEMA_DECODERS[parsed.schemaVersion] : undefined;
+  if (decoder) return decoder(parsed);
 
   fail(`unsupported schemaVersion: ${String(parsed.schemaVersion)}`);
 }
