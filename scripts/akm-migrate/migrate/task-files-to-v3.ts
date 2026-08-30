@@ -9,13 +9,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "../../../src/core/errors";
 import { fsyncDirectoryPortable } from "./durable-fs";
-import { parseTaskV3Yaml } from "./task-source-v3-frozen";
+import { parseTaskV3Yaml } from "../../../src/tasks/source/task-source-v3-frozen";
 import {
   type TaskToV3Changed,
   type TaskToV3FileInput,
   type TaskToV3FilesystemIdentity,
   type TaskToV3MigrationPlan,
-} from "./task-to-v3";
+} from "../../../src/tasks/source/task-to-v3";
 
 export interface TaskToV3Root {
   readonly bundleId: string;

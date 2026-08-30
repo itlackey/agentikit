@@ -22,7 +22,7 @@
  *     mode-preserving atomic replace, rollback on failure, and convergence on
  *     re-inspect.
  *
- * RED TODAY: scripts/akm-migrate/migrate/task-to-v4.ts and
+ * RED TODAY: src/tasks/source/task-to-v4.ts and
  * task-files-to-v4.ts (spec §5.1) do not exist yet — every import below is a
  * genuine "Cannot find module" until Lane C's Implement step lands both
  * files, at which point this whole file goes GREEN or fails on its actual
@@ -72,8 +72,8 @@ import {
   inspectTaskToV4Files,
   taskMigrationBackupPathV4,
 } from "../../scripts/akm-migrate/migrate/task-files-to-v4";
-import { planTaskToV4File, planTaskToV4Migration } from "../../scripts/akm-migrate/migrate/task-to-v4";
 import { parseTaskSourceV4 } from "../../src/tasks/source/task-source-v4";
+import { planTaskToV4File, planTaskToV4Migration } from "../../src/tasks/source/task-to-v4";
 import {
   assertFixtureBytesUnchanged,
   captureFixtureBytes,

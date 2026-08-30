@@ -7,18 +7,18 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { LineCounter, parseDocument, stringify as stringifyYaml } from "yaml";
-import { bundleRefToString, parseBundleRef } from "../../../src/core/asset/asset-ref";
-import { formatExtraParamsIssue, validateExtraParams } from "../../../src/core/extra-params";
+import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
+import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-params";
 import {
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_EXEC_PASS_ENV,
   WORKFLOW_MAX_RETRIES,
   WORKFLOW_MAX_TIMEOUT_MS,
-} from "../../../src/workflows/resource-limits";
-import { assertBoundedTaskYamlDocument, TASK_V3_MAX_SOURCE_BYTES } from "../../../src/tasks/source/bounded-document";
-import { parseTaskSourceV4 } from "../../../src/tasks/source/task-source-v4";
-import { validateTaskId } from "../../../src/tasks/task-id";
+} from "../../workflows/resource-limits";
+import { validateTaskId } from "../task-id";
+import { assertBoundedTaskYamlDocument, TASK_V3_MAX_SOURCE_BYTES } from "./bounded-document";
 import { classifyTaskV3Uses, parseTaskV3Yaml, type TaskV3UsesTarget } from "./task-source-v3-frozen";
+import { parseTaskSourceV4 } from "./task-source-v4";
 
 export interface TaskToV3FileInput {
   readonly filePath: string;
@@ -439,12 +439,13 @@ function isReason(value: Record<string, unknown> | string): value is string {
 }
 
 /** Convert one already-normalized legacy record directly to final task v3. */
-export function planLegacyTaskDataToV3(
-  input: TaskToV3FileInput,
-  data: Record<string, unknown>,
-): TaskToV3FileOutcome {
+export function planLegacyTaskDataToV3(input: TaskToV3FileInput, data: Record<string, unknown>): TaskToV3FileOutcome {
   if (data.version !== 2) {
-    return blocked(input, "unsupported-task-version", `expected normalized legacy version 2, got ${String(data.version)}`);
+    return blocked(
+      input,
+      "unsupported-task-version",
+      `expected normalized legacy version 2, got ${String(data.version)}`,
+    );
   }
   if (!input.writable || input.onDiskWritable === false) {
     return blocked(

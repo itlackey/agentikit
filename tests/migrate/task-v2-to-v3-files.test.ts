@@ -7,7 +7,7 @@ import {
   inspectTaskToV3Files,
   taskMigrationBackupPath,
 } from "../../scripts/akm-migrate/migrate/task-files-to-v3";
-import { planTaskToV3Migration } from "../../scripts/akm-migrate/migrate/task-to-v3";
+import { planTaskToV3Migration } from "../../src/tasks/source/task-to-v3";
 
 const roots: string[] = [];
 

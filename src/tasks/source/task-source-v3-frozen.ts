@@ -14,7 +14,7 @@
  * commit 2 (`refactor(p4): remove github-action locator grammar from
  * native classification`) — i.e. INCLUDING the GitHub Action locator
  * grammar that commit deleted from native classification.
- * `scripts/akm-migrate/migrate/task-to-v4.ts`'s `github-action-target-removed`
+ * `src/tasks/source/task-to-v4.ts`'s `github-action-target-removed`
  * blocked reason needs this migrator to still be able to CLASSIFY a
  * locator (not merely detect its shape) so it can name the target
  * explicitly rather than guess (`tests/migrate/task-v3-to-v4.test.ts`'s
@@ -34,25 +34,22 @@
  * needs them: the bounded-document re-export block (D2-N4's own comment
  * explained that block existed only so OTHER `src/` consumers did not need
  * to import `./source/bounded-document` directly — every consumer here
- * already imports what it needs from `../../../src/tasks/source/bounded-document`
+ * already imports what it needs from `../../tasks/source/bounded-document`
  * on its own), and `taskExtensionDetail`/`TASK_EXTENSION`/
  * `TASK_NEAR_MISS_EXTENSION`/`taskV3SourceErrorDetail` (presentation
  * helpers for `src/`-side consumers, not part of reading a document).
  */
 
-import {
-  type ParsedBuiltinCommandAction,
-  parseBuiltinCommandAction,
-} from "../../../src/commands/command/builtin-action";
-import { bundleRefToString, parseBundleRef } from "../../../src/core/asset/asset-ref";
-import { UsageError } from "../../../src/core/errors";
-import { checkJsonSchemaDefinition } from "../../../src/core/json-schema";
-import type { ExecutionJsonObject, ExecutionJsonValue } from "../../../src/execution/json";
+import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../../commands/command/builtin-action";
+import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
+import { UsageError } from "../../core/errors";
+import { checkJsonSchemaDefinition } from "../../core/json-schema";
+import type { ExecutionJsonObject, ExecutionJsonValue } from "../../execution/json";
 import {
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_EXEC_PASS_ENV,
   WORKFLOW_MAX_RETRIES,
-} from "../../../src/workflows/resource-limits";
+} from "../../workflows/resource-limits";
 import {
   asRecord,
   type BoundedDocumentContext,
@@ -70,7 +67,7 @@ import {
   stringField,
   TASK_V3_MAX_SCHEDULES,
   validateWorkingDirectory,
-} from "../../../src/tasks/source/bounded-document";
+} from "./bounded-document";
 
 export const TASK_V3_SCHEMA_VERSION = 3 as const;
 

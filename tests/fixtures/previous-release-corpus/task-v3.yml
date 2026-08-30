@@ -1,0 +1,12 @@
+version: 3
+name: weekly-report
+uses: akm/command
+with:
+  content: "Generate and email the weekly ops report."
+akm:
+  schedule: '0 6 * * 1'
+  description: Generate the weekly ops report
+  enabled: true
+  tags:
+    - ops
+    - reporting

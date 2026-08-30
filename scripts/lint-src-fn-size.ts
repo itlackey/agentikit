@@ -64,6 +64,13 @@ export const SRC_FN_SIZE_BASELINE: readonly SrcFnOffender[] = [
   { id: "src/integrations/harnesses/opencode-sdk/sdk-runner.ts :: runOpencodeSdk", lines: 245 },
   { id: "src/llm/graph-extract.ts :: extractGraphFromBodies", lines: 236 },
   { id: "src/commands/sources/self-update.ts :: performUpgrade", lines: 232 },
+  // `planV3DataToV4` is PRE-EXISTING code, unchanged by the move — it lived
+  // in `scripts/akm-migrate/migrate/task-to-v4.ts` (outside this ratchet's
+  // `src/**` scope) until the task-version read shim moved the pure v3->v4
+  // migration planner into `src/tasks/source/task-to-v4.ts` so
+  // `parse-task-source.ts` could call it without crossing the src->scripts
+  // import boundary. Surfacing here for the first time, not growing.
+  { id: "src/tasks/source/task-to-v4.ts :: planV3DataToV4", lines: 232 },
   { id: "src/commands/proposal/propose.ts :: akmPropose", lines: 231 },
   { id: "src/commands/read/search.ts :: akmSearch", lines: 228 },
 ];

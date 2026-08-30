@@ -221,11 +221,17 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
     expect(hit?.detail).toContain("akm migrate apply --dry-run");
   });
 
-  test("a v2 task is flagged with the canonical migration preview hint (row B-15)", async () => {
+  // A migratable v2 document (unlike the v3 case above) is auto-read through
+  // the in-memory v2->v3->v4 shim now, so it no longer surfaces as
+  // `invalid-task-yaml` here — this fixture uses an argv-array `command:`
+  // (task-to-v3.ts's `argv-array-has-no-portable-shell-string`), which the
+  // shim's deterministic planner genuinely cannot convert, so the migrate
+  // hint still fires.
+  test("a v2 task the migration planner cannot convert is flagged with the canonical migration preview hint (row B-15)", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
-      [change("tasks/legacy.yml", "version: 2\nschedule: '@daily'\nprompt: hi\n")],
+      [change("tasks/legacy.yml", "version: 2\nschedule: '@daily'\ncommand: [echo, hi]\n")],
       ctx,
     );
     const hit = diags.find((d) => d.issue === "invalid-task-yaml");

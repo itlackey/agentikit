@@ -640,13 +640,44 @@ describe("task source v4 — version router (spec §3.4, D2-N2's exact routing t
     expect(result.v4.manualOnly).toBe(true);
   });
 
-  // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.2, row B-14, F-A2.12):
-  // task source v3 acceptance is retired from `src` — `version: 3` now fails
-  // the SAME way `version: 2` does (row B-15's SAME migrate hint, since the
-  // migrator runs both generations), not a route to a v3 parser this file no
-  // longer imports.
-  test("version: 3 raises TASK_SCHEMA_VERSION_UNSUPPORTED with the migrate hint (row B-14)", () => {
+  // Upgrade-smoothness shim (spec docs/plans/specs/p4-deletions-closeout.md
+  // §3.2.2 as amended): `version: 3` and `version: 2` no longer fail closed
+  // by themselves — `parseTaskSource` first runs the SAME pure planners
+  // `akm migrate apply` uses on the bytes already in hand, entirely in
+  // memory, and only falls back to `TASK_SCHEMA_VERSION_UNSUPPORTED` when
+  // that deterministic conversion itself cannot proceed. A migratable v3
+  // document reads straight through.
+  test("version: 3 is auto-read as v4 through the in-memory migration shim (row B-14)", () => {
     const yaml = "version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\n";
+    const filePath = "/bundle/tasks/x.yml";
+    const result = parseTaskSource({ yaml, filePath });
+    expect(result.version).toBe(4);
+    if (result.version !== 4) throw new Error("unreachable: asserted above");
+    expect(result.v4.target).toEqual({ kind: "uses", uses: { kind: "command", ref: "commands/review" } });
+  });
+
+  // Row B-15: a migratable v2 document is chained through the SAME shim
+  // (v2->v3->v4, both pure planners) and reads straight through too.
+  test("version: 2 is auto-read as v4 through the chained v2->v3->v4 migration shim (row B-15)", () => {
+    const yaml = "version: 2\nschedule: '@daily'\nprompt: hi\n";
+    const filePath = "/bundle/tasks/legacy.yml";
+    const result = parseTaskSource({ yaml, filePath });
+    expect(result.version).toBe(4);
+    if (result.version !== 4) throw new Error("unreachable: asserted above");
+    expect(result.v4.target).toEqual({
+      kind: "uses",
+      uses: { kind: "builtin-command", ref: "akm/command" },
+      with: { content: "hi" },
+      command: { kind: "inline", content: "hi" },
+    });
+  });
+
+  // When the deterministic conversion itself cannot proceed (an unknown v3
+  // field, here), the shim yields no bytes and the gate falls back to the
+  // SAME hard failure it always had — the shim removes friction for the
+  // deterministic case, it never launders a genuinely invalid document.
+  test("version: 3 that the migration planner cannot convert still raises TASK_SCHEMA_VERSION_UNSUPPORTED", () => {
+    const yaml = "version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\nbogus: true\n";
     const filePath = "/bundle/tasks/x.yml";
     let error: unknown;
     try {
@@ -664,11 +695,13 @@ describe("task source v4 — version router (spec §3.4, D2-N2's exact routing t
     );
   });
 
-  // Row B-15: version: 2 gets the SAME migrate hint as version: 3 now — the
-  // migrator runs both the v2->v3 and v3->v4 generations in sequence (spec
-  // §3.2.5), so one hint covers both starting points.
-  test("version: 2 raises TASK_SCHEMA_VERSION_UNSUPPORTED with the SAME migrate hint as version: 3 (row B-15)", () => {
-    const yaml = "version: 2\nschedule: '@daily'\nprompt: hi\n";
+  // Same fallback for v2: an argv-array `command:` has no portable shell
+  // string (task-to-v3.ts's `argv-array-has-no-portable-shell-string`), so
+  // the chained shim yields no bytes and the same hard failure surfaces —
+  // with the SAME migrate hint version: 3 gets (one hint covers both
+  // starting points, since the migrator runs both generations).
+  test("version: 2 that the migration planner cannot convert still raises TASK_SCHEMA_VERSION_UNSUPPORTED", () => {
+    const yaml = "version: 2\nschedule: '@daily'\ncommand: [echo, hi]\n";
     const filePath = "/bundle/tasks/legacy.yml";
     let error: unknown;
     try {
