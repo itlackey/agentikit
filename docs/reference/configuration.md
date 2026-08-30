@@ -7,12 +7,33 @@ directory. Project `.akm/config.json` files are not merged.
 
 ## Version 0.9
 
-A present configuration file must set `configVersion` to exactly `"0.9.0"`.
-Missing, older, newer, numeric, and malformed versions are rejected by ordinary
-commands without rewriting the file. Pre-0.9 config and database layouts are
-not runtime inputs and are not migrated by `akm upgrade`. Configure the current
-schema directly. The standalone migrator exists only for explicit task
-migration: task v2 to task v3, then task v3 to task source v4, in one pass.
+A present configuration file must set `configVersion` to a version this
+binary knows: the current `"0.9.0"`, or a known older version it can
+auto-upgrade in memory (see "Version read shim" below). Missing, newer,
+numeric, and any other unrecognized version are rejected by ordinary
+commands without rewriting the file — an older binary never guesses at a
+newer, unknown shape. Pre-0.9 config and database layouts are not runtime
+inputs and are not migrated by `akm upgrade`. Configure the current schema
+directly. The standalone migrator exists only for explicit task migration:
+task v2 to task v3, then task v3 to task source v4, in one pass.
+
+### Version read shim
+
+Like the task-source v2/v3 auto-shim (`akm migrate apply`'s in-memory
+counterpart, documented under Migration below), a known older `configVersion`
+is converted to the current shape in memory on load — with a one-line stderr
+deprecation warning — rather than hard-failing every command. Nothing is
+written back to disk by the shim itself; the very next config-mutating
+command (`akm config set`, etc.) persists the upgrade for free, since every
+config write already forces `configVersion` to the current value, which
+silences the warning. A `configVersion` this binary does not recognize at
+all — including anything newer than current — still fails closed with
+`UNSUPPORTED_CONFIG_VERSION`.
+
+As of this writing `"0.9.0"` is the only `configVersion` akm has ever
+shipped, so there is no real older shape for the shim to convert yet; the
+mechanism (`src/core/config/config-version-shim.ts`) is established ahead of
+the first bump that will need it, per #863.
 
 ```jsonc
 {
