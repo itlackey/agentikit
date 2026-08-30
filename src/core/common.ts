@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "./errors";
-import { getConfigPath, getDefaultStashDir } from "./paths";
+import { getConfigPath, getDefaultStashDir, getRegistryCacheDir, getRegistryIndexCacheDir } from "./paths";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -389,6 +389,27 @@ export function isContainedRelativePath(value: string): boolean {
 
 export function isWithin(candidate: string, root: string): boolean {
   return isContainedResolvedPath(safeRealpath(candidate), safeRealpath(root));
+}
+
+/**
+ * True when `filePath` sits inside akm's OWN resolved registry-cache
+ * directories (`<cache>/registry`, `<cache>/registry-index` —
+ * {@link getRegistryCacheDir}/{@link getRegistryIndexCacheDir}), the
+ * read-only installed-source/registry-index copies that lint (and `--fix`)
+ * must never touch.
+ *
+ * This is the single source of truth for that exclusion — it replaces what
+ * used to be three independent unanchored substring checks
+ * (`posixPath.includes("/.cache/") || posixPath.includes("/registry/")`).
+ * That check matched ANY path merely containing the literal text `.cache` or
+ * `registry` anywhere in it — a normal XDG `~/.cache/...` user bundle, or a
+ * CI workspace checked out under a `.cache`-named directory, tripped it and
+ * silently got zero lint findings. Using {@link isWithin} (realpath +
+ * containment, not a string search) fixes that while still excluding the
+ * real cache content the check was meant to skip.
+ */
+export function isAkmRegistryCachePath(filePath: string): boolean {
+  return isWithin(filePath, getRegistryCacheDir()) || isWithin(filePath, getRegistryIndexCacheDir());
 }
 
 /**
