@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Search hits now report which stage of the progressive AND->OR lexical
+  ladder produced them (#856).** `akm search` already ran strict AND, then
+  prefix AND, then an OR/prefix-OR recovery, stopping at the first stage
+  that returned candidates — but callers had no way to tell a strict match
+  from a heavily relaxed one. Local bundle hits now carry an optional
+  `matchStage: "exact" | "prefix" | "relaxed"` field (omitted for hits with
+  no FTS component, e.g. a pure-semantic hybrid contribution), surfaced at
+  `--detail normal`, `--detail full`, and `--shape agent` across all output
+  formats. Purely additive; no `schemaVersion` bump.
+
 ## [0.9.3] - 2026-08-29
 
 ### Fixed
