@@ -10,12 +10,9 @@ import { UsageError } from "../core/errors";
 import type { FileContext } from "../indexer/walk/file-context";
 import { createExecutionSourceIdentity, type ExecutionSourceIdentity } from "./source";
 
-export const DEFAULT_GUARDED_SOURCE_MAX_BYTES = 1024 * 1024;
-
 export interface GuardedExecutionSourceCaptureOptions {
   readonly identity?: ExecutionSourceIdentity;
   readonly authored?: boolean;
-  readonly maxBytes?: number;
 }
 
 export interface GuardedExecutionSource {
@@ -63,7 +60,6 @@ export interface GuardedExecutionSourceSnapshot {
 interface CapturedSourceRecord {
   source: GuardedExecutionSource;
   readonly stat: fs.Stats;
-  readonly maxBytes: number;
 }
 
 function errorMessage(cause: unknown): string {
@@ -153,10 +149,6 @@ function captureRecord(
   const sourcePath = path.resolve(sourcePathInput);
   const { containmentRoot, containmentRealPath, containmentStat } = requireContainmentRoot(containmentRootInput);
   const lexicalRelative = containedRelative(containmentRoot, sourcePath, false);
-  const maxBytes = options.maxBytes ?? DEFAULT_GUARDED_SOURCE_MAX_BYTES;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
-    throw new UsageError("Guarded source byte limit must be a non-negative safe integer.", "INVALID_FLAG_VALUE");
-  }
 
   const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
   let descriptor: number | undefined;
@@ -165,26 +157,6 @@ function captureRecord(
     const before = fs.fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) {
       throw new UsageError(`${sourcePath} is not a regular guarded source file.`, "INVALID_FLAG_VALUE");
-    }
-    if (before.size > BigInt(maxBytes)) {
-      // #866 item 4: unlike WORKFLOW_MAX_EXEC_OUTPUT_BYTES
-      // (workflows/resource-limits.ts), which drains-and-discards past its
-      // cap and lets the command finish, this stays a hard abort with no
-      // degrade path. That is deliberate, not an oversight: every caller of
-      // this module (readFrozenEnvironmentSource/readFrozenSecret in
-      // workflows/ir/environment-v4.ts; assertSchedulerSourceSnapshot in
-      // tasks/scheduler-sync.ts) treats the returned bytes as
-      // integrity-sensitive — they are hashed against a caller-supplied
-      // `identity.hash` and/or byte-for-byte diffed against a frozen
-      // snapshot, then injected verbatim as workflow/task secrets and env
-      // vars. A truncated read would silently produce a WRONG secret or env
-      // value (or a spurious hash/identity mismatch) rather than a visibly
-      // truncated one — worse than refusing outright. So the abort is
-      // correct here; do not add a truncate-with-marker degrade path.
-      throw new UsageError(
-        `${sourcePath} exceeds the guarded source size limit (1 MiB; ${maxBytes} bytes).`,
-        "INVALID_FLAG_VALUE",
-      );
     }
     const bytes = fs.readFileSync(descriptor);
     const after = fs.fstatSync(descriptor, { bigint: true });
@@ -240,7 +212,6 @@ function captureRecord(
         ...(options.identity ? { identity: options.identity } : {}),
       }),
       stat: numberStat(before),
-      maxBytes,
     };
   } catch (cause) {
     if (cause instanceof UsageError) throw cause;
@@ -579,7 +550,6 @@ export class GuardedExecutionSourceCollector {
       try {
         current = captureRecord(record.source.sourcePath, record.source.containmentRoot, {
           authored: record.source.authored,
-          maxBytes: record.maxBytes,
           ...(record.source.identity ? { identity: record.source.identity } : {}),
         }).source;
       } catch (cause) {
