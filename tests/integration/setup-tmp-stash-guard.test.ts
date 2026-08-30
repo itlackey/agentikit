@@ -12,6 +12,12 @@
 // Both layers are intentionally redundant: layer 1 fails fast for the
 // common case; layer 2 ensures that even when the user opts in to the
 // escape hatch, the host config is still preserved.
+//
+// Requires TMPDIR (if set) to be a /tmp-family path: fixtures are built
+// under os.tmpdir(), and isTransientStashPath() deliberately hardcodes
+// /tmp, /var/tmp, and their macOS /private equivalents rather than reading
+// TMPDIR. A relocated TMPDIR makes these fixtures fail for reasons
+// unrelated to the guard under test. See AGENTS.md's Tests section.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
