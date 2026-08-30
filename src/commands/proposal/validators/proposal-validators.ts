@@ -87,6 +87,18 @@ const canonicalProposalValidators: Readonly<Record<string, CanonicalProposalVali
   workflow(proposal) {
     const content = proposalContent(proposal);
     if (!content.trim()) return [];
+    // #859: proposedTarget is absent on legacy archived rows, but this
+    // validator only ever runs on a proposal about to be minted or promoted
+    // (both always carry proposedTarget — see the Proposal.proposedTarget
+    // doc comment) — so hitting this is a genuine defect, not a legacy gap.
+    if (!proposal.proposedTarget) {
+      return [
+        {
+          kind: "invalid-workflow-structure",
+          message: `Workflow proposal ${proposal.id} (${proposal.ref}) is missing proposedTarget and cannot be validated.`,
+        },
+      ];
+    }
 
     const sourcePath = proposal.changes[0]?.path || proposal.ref;
     const result = compileWorkflowSource(content, {

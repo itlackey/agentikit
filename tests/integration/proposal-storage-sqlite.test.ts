@@ -477,10 +477,13 @@ describe("listProposals resilience to malformed archive rows (#858/#859)", () =>
   // archive) crashed outright the moment a single row failed to parse —
   // originally hit by pre-feature rows with no persisted `changes`, but the
   // same bare `.map()` would abort on any other row-level corruption too.
-  // `storedToChanges` now tolerates the specific "no changes key at all"
-  // legacy shape (see proposals-repository.ts), so this test corrupts a
-  // *different* field (`proposedTarget`) to prove listProposals is resilient
-  // to malformed rows in general, not just the one legacy case.
+  // `storedToChanges` tolerates the "no changes key at all" legacy shape,
+  // and (#859 reopening) so does an absent `proposedTarget` — both are
+  // envelope metadata real archived rows predate, not corruption (see
+  // proposals-repository.ts). This test corrupts a field with a malformed
+  // *present* value instead (`proposedTarget` of the wrong shape) to prove
+  // listProposals is still resilient to genuine row-level corruption, not
+  // just the tolerated legacy-absence cases.
   test("a row with genuinely corrupt metadata is skipped, not thrown, and other rows still list", () => {
     const stash = makeStashDir();
     const good = mustCreate(stash, "lessons/archive-good", "reflect");
@@ -494,7 +497,9 @@ describe("listProposals resilience to malformed archive rows (#858/#859)", () =>
         metadata_json: string;
       };
       const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-      delete metadata.proposedTarget;
+      // Present but malformed (missing `root`) — genuine corruption, distinct
+      // from the field being absent entirely.
+      metadata.proposedTarget = { source: "team" };
       db.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), corrupt.id);
     } finally {
       db.close();
