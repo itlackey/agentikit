@@ -74,16 +74,22 @@ describe("proposal queue target binding", () => {
     insertHistorical(primary, "historical-qualified", "team//lessons/historical-qualified");
     insertHistorical(primary, "historical-short", "lessons/historical-short");
 
-    // metadata_json is entirely empty here, so `changes` is missing too — but
-    // that alone is now tolerated as a legacy read-time gap (#858/#859, see
-    // storedToChanges in proposals-repository.ts). `proposedTarget` is still
-    // required on every row and is what actually fails closed below.
+    // metadata_json is entirely empty here, so both `changes` and
+    // `proposedTarget` are missing — #859 (reopened) established that
+    // neither field alone should abort decode/accept for a legacy row: an
+    // already-decided proposal is counted/displayed, never re-applied, and
+    // `resolveProposalWriteTarget` already falls back to resolving the write
+    // target from the proposal's ref (bundle-qualified ref, or an explicit
+    // --target for a short ref) when proposedTarget is absent. What DOES
+    // still fail closed is that this row has no captured content to apply
+    // (`changes` is also empty) — accept correctly refuses to publish empty
+    // content rather than silently promoting nothing.
     await expect(akmProposalAccept({ stashDir: primary, id: "historical-qualified", config: cfg })).rejects.toThrow(
-      /missing proposedTarget/i,
+      /has no content/i,
     );
     await expect(
       akmProposalAccept({ stashDir: primary, id: "historical-short", target: "team", config: cfg }),
-    ).rejects.toThrow(/missing proposedTarget/i);
+    ).rejects.toThrow(/has no content/i);
     expect(fs.existsSync(path.join(team, "lessons", "historical-qualified.md"))).toBe(false);
     expect(fs.existsSync(path.join(team, "lessons", "historical-short.md"))).toBe(false);
   });

@@ -28,10 +28,15 @@
  *     v2->v3->v4 migration shim in `src/tasks/source/parse-task-source.ts`.
  *   - task source v3 (`fixtures/task-v3.yml`) — read via the in-memory v3->v4
  *     migration shim, same file.
- *   - a pre-#858 proposal row (`metadata_json` missing `changes`) — read via
- *     `listStateProposals`, which skips an unreadable legacy row (with a
- *     stderr warning) instead of failing the whole list
- *     (`src/storage/repositories/proposals-repository.ts`).
+ *   - pre-envelope proposal rows (`metadata_json` missing `changes`,
+ *     `proposedTarget`, `beforeHash`, `eligibilitySource`, `backupContent` —
+ *     the REAL shape pulled from a live 24,358-row archive during the #859
+ *     reopening, not a single deleted key) — read via `listStateProposals`,
+ *     which decodes each absent field as omitted rather than failing the row
+ *     or the whole list (`src/storage/repositories/proposals-repository.ts`).
+ *     #859 was reopened because the 0.9.4 fix, verified only against a
+ *     synthetic single-field fixture, still broke on the real archive's next
+ *     missing field — this fixture is the guard rail against that recurring.
  *   - pre-`metadataVersion` `task_history` rows (no `metadataVersion` at all,
  *     58% of a real install's rows; and rows carrying the additive
  *     `profile`/`repairReason` fields two prior releases wrote, 88 more real
@@ -113,7 +118,22 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       storage.cleanup();
     });
 
-    test("a row whose metadata_json predates the changes/proposedTarget envelope is read with an empty change list, not fatal", () => {
+    // Real `metadata_json` blobs pulled read-only from a 24,358-row live
+    // archive during the #859 reopening investigation (content/refs
+    // redacted to generic placeholders; shape and key set are verbatim).
+    // These are the ACTUAL pre-envelope shape prior releases wrote — not a
+    // single deleted key. #859 was reopened specifically because a synthetic
+    // fixture missing only `changes` shipped a fix that still broke on the
+    // real archive's next missing field (`proposedTarget`, 93% of rows), so
+    // this fixture exists to catch exactly that class of gap.
+    const REAL_ACCEPTED_NO_ENVELOPE =
+      '{"sourceRun":"consolidate-1780479673158","review":{"outcome":"accepted","decidedAt":"2026-06-03T10:07:02.238Z"},"confidence":0.92}';
+    const REAL_REJECTED_NO_ENVELOPE =
+      '{"sourceRun":"reflect-1778513697852","review":{"outcome":"rejected","reason":"clearing prior improve run proposals before test run","decidedAt":"2026-05-11T20:34:12.500Z"}}';
+    const REAL_ACCEPTED_WITH_GATE_NO_TARGET =
+      '{"sourceRun":"consolidate-1781322542465","review":{"outcome":"accepted","decidedAt":"2026-06-13T04:04:01.412Z"},"confidence":0.92,"gateDecision":{"outcome":"auto-accepted","reason":"policy-accept","gate":"triage:personal-stash","decidedAt":"2026-06-13T04:04:01.373Z"}}';
+
+    test("real-shaped legacy rows (no changes, proposedTarget, beforeHash, eligibilitySource, or backupContent) are read, not fatal", () => {
       const stash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-corpus-proposal-"));
       for (const dir of ["lessons"]) fs.mkdirSync(path.join(stash, dir), { recursive: true });
       try {
@@ -133,35 +153,54 @@ describe("previous-release corpus — upgrade must not break reads", () => {
         );
         if (isProposalSkipped(healthy)) throw new Error("unexpected skip for the healthy fixture");
 
-        const legacy = createProposalImpl(
-          stash,
-          {
-            ref: "lessons/corpus-legacy",
-            source: "reflect",
-            force: true,
-            payload: {
-              content:
-                "---\ndescription: Prefer absolute paths\nwhen_to_use: Writing scripts\n---\n\nAlways use absolute paths.\n",
-            },
-            target: { source: "stash", root: path.resolve(stash) },
-          },
-          undefined,
-        );
-        if (isProposalSkipped(legacy)) throw new Error("unexpected skip for the legacy fixture");
-
-        // Simulate a proposal row a prior release wrote before the current
-        // envelope existed: metadata_json with no `changes` (issue #858's
-        // shape) — see tests/integration/proposals.test.ts's "a row without
-        // persisted changes is rejected" for the harness this reuses.
+        // Insert real-shaped legacy rows directly (createProposal always
+        // mints the full current envelope — it cannot produce these shapes;
+        // they only exist on rows a PRIOR release wrote).
         const db = openStateDatabase();
+        const legacyIds = {
+          accepted: "corpus-legacy-accepted-real-shape",
+          rejected: "corpus-legacy-rejected-real-shape",
+          acceptedGated: "corpus-legacy-accepted-gated-real-shape",
+        };
         try {
-          const row = db.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(legacy.id) as {
-            metadata_json: string;
-          };
-          const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
-          delete metadata.changes;
-          delete metadata.beforeHash;
-          db.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), legacy.id);
+          const insert = db.prepare(
+            `INSERT INTO proposals
+             (id, stash_dir, ref, status, source, created_at, updated_at, content, frontmatter_json, metadata_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+          );
+          insert.run(
+            legacyIds.accepted,
+            path.resolve(stash),
+            "akm//knowledge/corpus-legacy-accepted",
+            "accepted",
+            "consolidate",
+            "2026-06-03T10:07:02.000Z",
+            "2026-06-03T10:07:02.238Z",
+            "legacy accepted content",
+            REAL_ACCEPTED_NO_ENVELOPE,
+          );
+          insert.run(
+            legacyIds.rejected,
+            path.resolve(stash),
+            "akm//commands/corpus-legacy-rejected",
+            "rejected",
+            "reflect",
+            "2026-05-11T20:34:12.000Z",
+            "2026-05-11T20:34:12.500Z",
+            "legacy rejected content",
+            REAL_REJECTED_NO_ENVELOPE,
+          );
+          insert.run(
+            legacyIds.acceptedGated,
+            path.resolve(stash),
+            "akm//knowledge/corpus-legacy-gated",
+            "accepted",
+            "consolidate",
+            "2026-06-13T04:04:01.000Z",
+            "2026-06-13T04:04:01.412Z",
+            "legacy gated content",
+            REAL_ACCEPTED_WITH_GATE_NO_TARGET,
+          );
         } finally {
           db.close();
         }
@@ -181,16 +220,28 @@ describe("previous-release corpus — upgrade must not break reads", () => {
           warnSpy.mockRestore();
         }
 
-        const ids = listed.map((p) => p.id);
-        expect(ids).toContain(healthy.id);
-        // #858/#859 decision: a legacy row (missing `changes`) is a REAL
-        // accepted/rejected proposal whose per-file detail was never captured.
-        // It must still be listed — with an empty change list — because
-        // dropping it silently under-counts history (the exact defect #859
-        // documented in improve's outcome-score salience).
-        expect(ids).toContain(legacy.id);
-        const legacyListed = listed.find((p) => p.id === legacy.id);
-        expect(legacyListed?.changes).toEqual([]);
+        const byId = new Map(listed.map((p) => [p.id, p]));
+        expect(byId.has(healthy.id)).toBe(true);
+        // #858/#859 decision: a legacy row (missing the whole pre-envelope
+        // shape — changes, proposedTarget, beforeHash, eligibilitySource,
+        // backupContent all absent) is a REAL accepted/rejected proposal
+        // whose per-file detail was never captured. It must still be
+        // listed — because dropping it silently under-counts history (the
+        // exact defect #859 documented in improve's outcome-score
+        // salience) — with those fields simply omitted, not defaulted to
+        // fabricated values.
+        for (const id of Object.values(legacyIds)) {
+          expect(byId.has(id)).toBe(true);
+          const p = byId.get(id);
+          expect(p?.changes).toEqual([]);
+          expect(p?.proposedTarget).toBeUndefined();
+          expect(p?.beforeHash).toBeUndefined();
+          expect(p?.eligibilitySource).toBeUndefined();
+          expect(p?.backupContent).toBeUndefined();
+        }
+        // The gated row's gateDecision (present in real data even without
+        // proposedTarget) still round-trips.
+        expect(byId.get(legacyIds.acceptedGated)?.gateDecision?.outcome).toBe("auto-accepted");
       } finally {
         fs.rmSync(stash, { recursive: true, force: true });
       }
