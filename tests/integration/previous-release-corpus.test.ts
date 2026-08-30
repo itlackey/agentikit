@@ -102,7 +102,7 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       storage.cleanup();
     });
 
-    test("a row whose metadata_json predates the changes/proposedTarget envelope is skipped, not fatal", () => {
+    test("a row whose metadata_json predates the changes/proposedTarget envelope is read with an empty change list, not fatal", () => {
       const stash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-corpus-proposal-"));
       for (const dir of ["lessons"]) fs.mkdirSync(path.join(stash, dir), { recursive: true });
       try {
@@ -172,7 +172,14 @@ describe("previous-release corpus — upgrade must not break reads", () => {
 
         const ids = listed.map((p) => p.id);
         expect(ids).toContain(healthy.id);
-        expect(ids).not.toContain(legacy.id);
+        // #858/#859 decision: a legacy row (missing `changes`) is a REAL
+        // accepted/rejected proposal whose per-file detail was never captured.
+        // It must still be listed — with an empty change list — because
+        // dropping it silently under-counts history (the exact defect #859
+        // documented in improve's outcome-score salience).
+        expect(ids).toContain(legacy.id);
+        const legacyListed = listed.find((p) => p.id === legacy.id);
+        expect(legacyListed?.changes).toEqual([]);
       } finally {
         fs.rmSync(stash, { recursive: true, force: true });
       }
