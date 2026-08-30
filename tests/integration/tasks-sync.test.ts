@@ -201,6 +201,27 @@ describe("akmTasksSync — schedule drift", () => {
     expect(exec.current()).toBe(prior);
   });
 
+  // A pre-#867 crontab entry (written by an older akm, before `--bundle` was
+  // added to the installed invocation) is still akm's own proven owner: it
+  // sits inside the `# akm:task alpha BEGIN/END` markers and carries a valid
+  // `--scheduler-context` descriptor for task "alpha". Sync must reconcile
+  // it to the current invocation shape, not refuse the whole run.
+  test("reconciles a pre-`--bundle` native entry instead of refusing it as an unproven owner", async () => {
+    const exec = memoryExec();
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    await akmTasksSync({ backend });
+    const before = exec.current();
+    const stripped = before.replace(/--bundle\s+\S+\s+/, "");
+    expect(stripped).not.toBe(before);
+    exec.write(stripped);
+
+    const result = await akmTasksSync({ backend });
+
+    expect(result.updated).toEqual(["alpha"]);
+    expect(exec.current()).toContain("task run alpha --bundle");
+  });
+
   test("a failed replacement leaves the prior native definition active", async () => {
     let store = "";
     let failNextWrite = false;

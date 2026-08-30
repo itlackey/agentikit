@@ -49,6 +49,7 @@ import {
   schedulerBindingNativeId,
   schedulerBindingOrdinal,
   schedulerNativeArtifactKey,
+  schedulerNativeArtifactOwner,
   schedulerNativeBindingId,
 } from "./scheduler-binding";
 import { parseTaskSource } from "./source/parse-task-source";
@@ -385,12 +386,18 @@ export function assertSchedulerNativeArtifactOwnership(
     installedByKey.set(key, artifact);
     const wanted = desiredByKey.get(key);
     if (!wanted) continue;
-    if (
-      artifact.nativeId !== schedulerBindingNativeId(wanted) ||
-      artifact.bindingId !== wanted.id ||
-      artifact.invocation === undefined ||
-      !sameInvocation(artifact.invocation, wanted.invocation)
-    ) {
+    // Re-derive ownership from the artifact's own invocation content (not the
+    // caller-supplied `bindingId` label) so a proven owner whose invocation
+    // no longer matches the desired shape is an UPDATE, not a refusal — that
+    // reconciliation happens below in finalizeSchedulerSyncPlan. An artifact
+    // whose invocation content does not actually prove it belongs to
+    // `wanted` (unproven, malformed, or a different logical owner) is still
+    // a genuine collision.
+    const provenBindingId =
+      artifact.invocation !== undefined
+        ? schedulerNativeArtifactOwner(artifact.nativeId, artifact.invocation)?.logicalId
+        : undefined;
+    if (artifact.nativeId !== schedulerBindingNativeId(wanted) || provenBindingId !== wanted.id) {
       throw nativeArtifactCollision(desiredArtifact(wanted), artifact);
     }
   }
