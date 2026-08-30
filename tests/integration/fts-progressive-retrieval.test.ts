@@ -3,11 +3,12 @@ import { afterAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { MARKDOWN_CONTENT_MAX_CHARS, projectMarkdownContent } from "../../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../../src/indexer/scan/drain-dir";
 import { buildLexicalQueryPlan } from "../../src/indexer/search/fts-query";
-import { buildSearchFields, buildSearchText } from "../../src/indexer/search/search-fields";
+import { buildSearchFields, buildSearchText, SEARCH_TEXT_MAX_CHARS } from "../../src/indexer/search/search-fields";
 import type { Database as AkmDatabase } from "../../src/storage/database";
 import { searchFts } from "../../src/storage/repositories/index-fts-repository";
 
@@ -264,6 +265,16 @@ The spectral quokka calibration nonce rotates every Thursday.
     expect(new TextDecoder().decode(new TextEncoder().encode(projection))).toBe(projection);
   });
 
+  test("reports truncation via the optional out-param instead of staying silent (#866)", () => {
+    const long = { truncated: false };
+    projectMarkdownContent(`${"word ".repeat(MARKDOWN_CONTENT_MAX_CHARS)}😀tail`, long);
+    expect(long.truncated).toBe(true);
+
+    const short = { truncated: false };
+    projectMarkdownContent("a short body that never approaches the cap", short);
+    expect(short.truncated).toBe(false);
+  });
+
   test("native Markdown uses content for safe assets and excludes secret/env/session material", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-fts-body-"));
     createdDirs.push(root);
@@ -326,5 +337,49 @@ The spectral quokka calibration nonce rotates every Thursday.
     expect(buildSearchText(secretEntry)).not.toContain("secret_private_sentinel");
     expect(envEntry?.content).toBeUndefined();
     expect(buildSearchText(envEntry)).not.toContain("env_private_sentinel");
+  });
+
+  test("marks entry.contentTruncated when the indexed body is cut, and leaves it unset otherwise (#866)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-fts-truncation-"));
+    createdDirs.push(root);
+    const long = path.join(root, "knowledge", "long.md");
+    const short = path.join(root, "knowledge", "short.md");
+    fs.mkdirSync(path.dirname(long), { recursive: true });
+    fs.writeFileSync(long, `${"word ".repeat(MARKDOWN_CONTENT_MAX_CHARS)}tail\n`);
+    fs.writeFileSync(short, "A short paragraph that never approaches the cap.\n");
+
+    const recognized = recognizeStashEntries(root, [long, short]).entries;
+    const longEntry = recognized.find((entry) => entry.name === "long");
+    const shortEntry = recognized.find((entry) => entry.name === "short");
+    if (!longEntry || !shortEntry) throw new Error("expected both fixture entries");
+
+    expect(longEntry.contentTruncated).toBe(true);
+    expect(longEntry.content?.length).toBeLessThanOrEqual(MARKDOWN_CONTENT_MAX_CHARS);
+    expect(shortEntry.contentTruncated).toBeUndefined();
+  });
+
+  test("logs when buildSearchText truncates to SEARCH_TEXT_MAX_CHARS, and stays silent otherwise (#866)", () => {
+    const messages: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warnVerbose") messages.push(args.map(String).join(" "));
+    });
+    try {
+      const bigEntry: IndexDocument = {
+        type: "knowledge",
+        name: "big-entry",
+        content: "word ".repeat(SEARCH_TEXT_MAX_CHARS),
+      };
+      buildSearchText(bigEntry);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toContain("truncated");
+      expect(messages[0]).toContain("big-entry");
+
+      messages.length = 0;
+      const smallEntry: IndexDocument = { type: "knowledge", name: "small-entry", content: "short body" };
+      buildSearchText(smallEntry);
+      expect(messages).toHaveLength(0);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
   });
 });

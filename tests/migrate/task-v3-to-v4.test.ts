@@ -238,9 +238,9 @@ describe("pure task v3 to v4 migration planner", () => {
   // (task-source-v3-frozen.ts:256-263) — and on run:/scripts//workflows/ it
   // was equally inert there. Hoisting it unconditionally emitted bytes the
   // real parseTaskSourceV4 prevalidation rejects, so a valid, previously-
-  // runnable v3 file blocked with `generated-v4-validation-failed` — and one
-  // blocked file aborts the entire plan (`applyTaskToV4MigrationPlan`), taking
-  // every other task in the bundle with it. Spec rows B-66 / §5.3 make the
+  // runnable v3 file blocked with `generated-v4-validation-failed` (a blocked
+  // file is skipped rather than aborting the rest of the plan, but it would
+  // still never migrate on its own). Spec rows B-66 / §5.3 make the
   // outcome `changed` unconditionally: drop the already-inert field and say so
   // in a notice.
   test("drops akm.outputSchema on a non-command target with a notice instead of blocking the file", () => {
@@ -479,16 +479,26 @@ describe("task v3 to v4 filesystem boundary", () => {
     expect(reInspected.files.map((file: { status: string }) => file.status)).toEqual(["skipped"]);
   });
 
-  test("one blocked file prevents every backup and source write", () => {
+  test("one blocked file is skipped, not fatal: the rest of the batch still migrates", () => {
     const { root, task, backup } = fixture();
     const bad = path.join(root, "tasks", "bad.yml");
     fs.writeFileSync(bad, "version: 3\nuses: evilcorp/tool@v1\nakm:\n  schedule: '@daily'\n");
-    const before = fs.readFileSync(task);
     const preview = plan(root);
     expect(preview.files.some((file: { status: string }) => file.status === "blocked")).toBe(true);
-    expect(() => applyTaskToV4MigrationPlan(preview, { backupRoot: backup })).toThrow(/plan is blocked/);
-    expect(fs.readFileSync(task)).toEqual(before);
-    expect(fs.existsSync(backup)).toBe(false);
+    expect(
+      preview.files.some(
+        (file: { filePath: string; status: string }) => file.filePath === task && file.status === "changed",
+      ),
+    ).toBe(true);
+
+    const applied = applyTaskToV4MigrationPlan(preview, { backupRoot: backup });
+
+    // The good file was migrated and backed up...
+    expect(applied.changed).toEqual([task]);
+    expect(fs.readFileSync(task, "utf8")).toContain("version: 4");
+    expect(fs.readFileSync(taskMigrationBackupPathV4(backup, task))).toBeInstanceOf(Buffer);
+    // ...while the blocked file was left untouched.
+    expect(fs.readFileSync(bad, "utf8")).toContain("uses: evilcorp/tool@v1");
   });
 
   test("source drift after preview aborts before creating any backups", () => {

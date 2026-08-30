@@ -202,12 +202,9 @@ export function applyTaskToV4MigrationPlan(
   plan: TaskToV4MigrationPlan,
   options: ApplyTaskToV4Options,
 ): AppliedTaskToV4Plan {
-  const blocked = plan.files.filter((file) => file.status === "blocked");
-  if (blocked.length > 0) {
-    throw migrationError(
-      `plan is blocked: ${blocked.map((file) => `${file.filePath} (${file.reason})`).join(", ")}. No files were written.`,
-    );
-  }
+  // Blocked files are skipped, not fatal: one malformed file must not stop
+  // the rest of the batch from migrating. Callers report `plan.files` with
+  // status "blocked" to the user (see task-migrate.ts) and exit non-zero.
   const changes = plan.files.filter((file): file is TaskToV4Changed => file.status === "changed");
   for (const change of changes) {
     assertUnchanged(change);

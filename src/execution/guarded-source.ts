@@ -167,6 +167,20 @@ function captureRecord(
       throw new UsageError(`${sourcePath} is not a regular guarded source file.`, "INVALID_FLAG_VALUE");
     }
     if (before.size > BigInt(maxBytes)) {
+      // #866 item 4: unlike WORKFLOW_MAX_EXEC_OUTPUT_BYTES
+      // (workflows/resource-limits.ts), which drains-and-discards past its
+      // cap and lets the command finish, this stays a hard abort with no
+      // degrade path. That is deliberate, not an oversight: every caller of
+      // this module (readFrozenEnvironmentSource/readFrozenSecret in
+      // workflows/ir/environment-v4.ts; assertSchedulerSourceSnapshot in
+      // tasks/scheduler-sync.ts) treats the returned bytes as
+      // integrity-sensitive — they are hashed against a caller-supplied
+      // `identity.hash` and/or byte-for-byte diffed against a frozen
+      // snapshot, then injected verbatim as workflow/task secrets and env
+      // vars. A truncated read would silently produce a WRONG secret or env
+      // value (or a spurious hash/identity mismatch) rather than a visibly
+      // truncated one — worse than refusing outright. So the abort is
+      // correct here; do not add a truncate-with-marker degrade path.
       throw new UsageError(
         `${sourcePath} exceeds the guarded source size limit (1 MiB; ${maxBytes} bytes).`,
         "INVALID_FLAG_VALUE",
