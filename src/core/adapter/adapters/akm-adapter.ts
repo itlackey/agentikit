@@ -247,6 +247,7 @@ function indexDocumentFromEntry(
   if (entry.description !== undefined) doc.description = entry.description;
   if (entry.tags !== undefined) doc.tags = entry.tags;
   if (entry.content !== undefined) doc.content = entry.content;
+  if (entry.contentTruncated !== undefined) doc.contentTruncated = entry.contentTruncated;
   if (entry.aliases !== undefined) doc.aliases = entry.aliases;
   if (entry.searchHints !== undefined) doc.searchHints = entry.searchHints;
   if (entry.quality !== undefined) doc.quality = entry.quality;

@@ -171,6 +171,14 @@ export interface IndexDocument {
   hints?: string[];
   /** FTS 1 (bounded) — IndexDocument-native. */
   content?: string;
+  /**
+   * True when `content` was cut to fit `MARKDOWN_CONTENT_MAX_CHARS`
+   * (src/indexer/passes/metadata.ts) — the projection was longer than the
+   * bound before truncation. Omitted (not `false`) when no truncation
+   * occurred. Surfaces the otherwise-silent cut so a caller can tell indexed
+   * content was cut short.
+   */
+  contentTruncated?: boolean;
 
   // ── IndexDocument durable fields (the M1 decision's durable truth) ──
   examples?: string[];
