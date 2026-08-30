@@ -49,7 +49,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ConfigError, UsageError } from "../../src/core/errors";
+import { ConfigError } from "../../src/core/errors";
 import { buildScheduledBindingInvocation, parseScheduledBindingArgv } from "../../src/tasks/scheduler-invocation";
 import {
   finalizeSchedulerSyncPlan,
@@ -220,16 +220,20 @@ describe("schedule[].inputs is validated against the declared contract, never si
       ].join("\n"),
     );
 
-    await expect(
-      prepareSchedulerSyncSourceSet({
-        sourceRoot: bundleRoot,
-        adapterId: "akm",
-        bundleName: "team",
-        bundleTarget: "team",
-        backend: "cron",
-        installed: emptyInstalled,
-      }),
-    ).rejects.toThrow(UsageError);
+    // #867: a per-source parse failure degrades — reported in `failures`,
+    // excluded from `desired` — rather than rejecting the (here, empty)
+    // whole set.
+    const prepared = await prepareSchedulerSyncSourceSet({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+    });
+    expect(prepared.desired).toEqual([]);
+    expect(prepared.failures).toHaveLength(1);
+    expect(prepared.failures[0]?.path).toContain("unknown-input-nightly.yml");
   });
 });
 

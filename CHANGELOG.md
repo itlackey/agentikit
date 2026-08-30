@@ -4,6 +4,166 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.5] - 2026-08-30
+
+### Action required after upgrading
+
+- **Run `akm index --full` once (#862).** Search ranking previously counted
+  every search *hit* as a small win for that entry's utility score, whether
+  or not you ever opened it — a plain impression, not a selection. Over
+  enough repeat searches this compounded into a real feedback loop: appear
+  in results -> score goes up -> rank higher next time -> appear again. On
+  the install this was diagnosed against, one entry had been searched 19
+  times, opened 0 times, and still carried a utility score of 0.83 — on par
+  with entries a user had actually picked every time; the single
+  highest-utility entry in the whole table had an 8% select rate. That bias
+  is baked into every existing install's stored scores and does not go away
+  on its own — the live bump has been removed (search impressions no longer
+  write utility scores at all; only an actual `akm show`/select or explicit
+  `akm feedback` feeds the offline recompute now), but the already-inflated
+  numbers stay in `utility_scores`/`utility_scores_scoped` until you
+  recompute them. Run `akm index --full` once after upgrading to rebuild
+  scores purely from selection rate and feedback. **Search result order will
+  change after that rebuild — that is intended**, not a regression.
+- **The first `akm task sync` after upgrading may report a large number of
+  updates.** This is a backlog of reconciles that were being silently
+  refused, not new changes to your tasks. Two independent bugs combined to
+  make `sync` refuse work it should have done: (1) an installed scheduler
+  entry written by a pre-`--bundle` akm release couldn't prove ownership
+  under the newer, stricter check and was reported `(unproven owner)`,
+  which made `sync` refuse the *entire* run rather than reconcile everything
+  else; (2) separately, one task or workflow source that failed to compile
+  (e.g. a task still on schema v2 in a shape the shim can't convert) also
+  blocked every other, unrelated task from reconciling. Both are fixed —
+  ownership is now re-derived from the entry's own akm markers instead of
+  requiring a literal `--bundle` token, and a source that fails to compile
+  is now excluded and reported in `failed`/`failures` while every source
+  that DID compile still reconciles. On the install this was diagnosed
+  against, all 18 scheduled tasks showed up as updates on the first `sync`
+  after the fix — that is the backlog, not a sign your tasks changed.
+
+### Added
+
+- **`akm task prune` reclaims orphaned scheduler entries `sync` cannot reach
+  (#851).** `akm task sync` only ever reconciles entries that resolve to a
+  desired task/workflow definition in a live bundle; an entry whose own
+  `--scheduler-context` descriptor is corrupt/missing, or whose owning
+  bundle directory has since been deleted, was permanently invisible to it
+  and had to be removed by hand-editing the crontab/launchd plist/Task
+  Scheduler. `akm task prune` finds those and nothing else: it never
+  touches an entry that still resolves to a live bundle, and there is no
+  `--force`/"remove everything silently" mode. Defaults to a dry-run
+  preview that makes zero scheduler writes and exits non-zero when it finds
+  removal candidates (usable as a CI/health-check guard, mirroring `task
+  sync --dry-run`'s exit-code convention); `--yes` executes the printed
+  plan; `--id a,b` narrows a run to specific binding ids and refuses (with
+  no writes) any id that isn't a current orphan candidate — including a
+  live entry, which cannot be pruned even if you name it explicitly.
+- **`configVersion` read shim (#863).** Config loading now tolerates a
+  known older `configVersion` by upgrading the parsed document in memory
+  (never rewriting the file), with a one-line stderr warning naming the old
+  and new versions. The upgrade is silenced the next time any command
+  writes the config (`akm config set`, etc.), since every config write
+  already stamps the current version. Anything else — unknown, newer, or
+  malformed `configVersion` — still fails closed with the same actionable
+  error as before. No current release needed this shim yet (akm has only
+  ever shipped `configVersion: "0.9.0"`); it's in place now so the next
+  real bump doesn't break every existing config on upgrade.
+- **Truncated indexed content is no longer silent.** The two indexer caps
+  that truncate an entry's content before it's written to the search index
+  (a markdown-body cap and a search-text cap) previously truncated without
+  any signal. Indexed entries now carry a `contentTruncated: true` flag
+  when either cap fired, and truncation logs a `--verbose` diagnostic
+  naming the entry, so an unexpectedly-worse search match on a very large
+  file has a visible cause instead of a silent one. The cap sizes
+  themselves are unchanged.
+
+### Fixed
+
+- **`akm health --report` and `akm proposal list --status accepted` no
+  longer crash, and `improve`'s accepted-proposal counts are no longer
+  silently zero, on proposals written before every optional envelope field
+  existed (#859).** A prior fix already tolerated a missing `changes` key;
+  this closes the same gap for `proposedTarget`, which was still hard-required
+  at decode and — on the real archive this was checked against — absent
+  from 93% of accepted rows. Decoding a proposal now tolerates a genuinely
+  *absent* `proposedTarget` (accept-time resolution already had a
+  ref-derived fallback for this case, previously unreachable because decode
+  threw first); a *present but malformed* value still throws, so real
+  corruption is never silently accepted. Writing a new (`pending`) proposal
+  still requires the full envelope — this only widens what can be *read*,
+  not what akm will *write*.
+- **`akm task sync` no longer refuses to reconcile an entry it can't fully
+  re-prove ownership of, and no longer lets one broken task/workflow source
+  block every other source (#867, plus the scheduler-ownership fix
+  described above).** The v2 task-source shim also no longer hard-fails a
+  command wrapped in `env NAME=value... cmd`, a shape that's common for
+  cron entries (e.g. `env AKM_BIN=/path/akm bash script.sh`) — the shim now
+  looks past a leading `env` and its assignments to the real command before
+  deciding whether the conversion to v3/v4 is safe, instead of checking
+  `env` itself.
+- **`akm task sync --dry-run` no longer crashes on a real install with a
+  pre-`--bundle` cron entry.** The reconcile fix above made those entries
+  reachable for the first time, and the dry-run preview's frozen result
+  object was then mutated in place while stamping output metadata, throwing
+  "Attempting to define property on object that is not extensible" (exit
+  70). Output stamping now copies instead of mutating, so it tolerates a
+  frozen (or any) result uniformly.
+- **`akm migrate apply` no longer aborts an entire batch because one file in
+  it is blocked (#866).** The task v2->v3 and v3->v4 migrators refused to
+  write *any* file — including files with no problem at all — the moment a
+  single file in the batch was classified `blocked`. Both migrators now
+  skip and report the blocked file(s) and still migrate everything else;
+  the run still exits non-zero whenever anything was skipped.
+- Two flaky integration/unit tests fixed at the root cause rather than
+  quarantined (#864): a `state.db` byte-identity assertion that raced
+  SQLite's own WAL checkpoint timing (now forces a checkpoint before
+  comparing, so the assertion reflects real durable mutations only), and a
+  "resolveProjectContext when cwd is the home directory" test that did
+  real, un-mocked filesystem walks against the actual `$HOME` (now isolates
+  `os.homedir()` and the stash/XDG dirs like the rest of the suite).
+
+### Changed
+
+- **`test:integration` is green-by-default (#861).** Verified there is no
+  CI mechanism silently swallowing a failing test (no `continue-on-error`,
+  no lost exit codes, no allowlist of "expected" failures) — the fixes in
+  this release were the actual cause of the prior red baseline. Raised the
+  integration suite's minimum-test-count floor (`AKM_MIN_INTEGRATION_TESTS`,
+  5500 -> 5700) so a large silent test loss is still caught with headroom
+  for ordinary future deletions, and documented in `AGENTS.md` that `TMPDIR`
+  must be a real `/tmp`-family path for the suite to pass — some guards
+  (stash-path safety, `akm-eval`'s Docker twin) intentionally hardcode that
+  assumption rather than reading `TMPDIR`.
+- Simplified several areas flagged in the #866 complexity review without
+  behavior changes: `improve_runs.result_json`'s `schemaVersion` decoding is
+  now an explicit, extensible table instead of one large inline
+  conditional, ready for a future schema bump to add a case rather than
+  restructure the function.
+
+### Removed
+
+- **Three defensive checks that only ever refused work a human explicitly
+  asked for, with no evidence (via telemetry) they ever caught a real
+  problem, were removed:**
+  - The 1 MiB hard cap on reading a bundle file (command/agent/script/task/
+    workflow source, or a frozen workflow secret/env source) into memory.
+    Reads remain exact and integrity-checked (hashed, CAS-verified, fail-
+    closed on read-time mutation) — there is simply no longer a size ceiling
+    that refuses to read a file you put in your own bundle.
+  - The task migrator's inode/hard-link-count/change-time identity
+    fencing on top of its existing lockfile + backup-before-write +
+    byte-for-byte drift check. The extra fencing modeled a multi-tenant
+    race that doesn't apply to a single-user CLI holding an exclusive lock,
+    and its failure mode (refusing to migrate a file that's byte-identical
+    to what was already previewed, or refusing to touch a file merely
+    because it has a hard link elsewhere) was worse than the risk it
+    guarded against. Symlink/path-escape rejection — a real hazard — is
+    unchanged.
+  - Dead anti-collapse "hard refusal" guard functions
+    (`checkGenerationGuard`, `checkMergeInformationFloor`) that had zero
+    production callers.
+
 ## [0.9.4] - 2026-08-30
 
 ### Changed

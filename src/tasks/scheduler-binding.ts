@@ -360,12 +360,15 @@ export function schedulerNativeArtifactOwner(
   nativeId: string,
   invocation: readonly string[],
 ): { logicalId: string; logicalKind: SchedulerLogicalSource["kind"] } | undefined {
-  if (invocation[0] === "workflow" && invocation[1] === "run") {
-    return { logicalId: nativeId, logicalKind: "workflow" };
+  if (invocation[0] === "workflow" && invocation[1] === "run" && invocation.length === 3) {
+    const ref = invocation[2];
+    if (ref && workflowRefDigestsToNativeId(ref, nativeId)) {
+      return { logicalId: nativeId, logicalKind: "workflow" };
+    }
+    return undefined;
   }
   const taskId = invocation[0] === "task" && invocation[1] === "run" ? invocation[2] : undefined;
-  const bundleIndex = invocation.indexOf("--bundle", 3);
-  if (!taskId || bundleIndex === -1 || !invocation[bundleIndex + 1]) return undefined;
+  if (!taskId) return undefined;
   return {
     logicalId: schedulerNativeBindingId(taskId) === nativeId ? taskId : nativeId,
     logicalKind: "task",
@@ -457,7 +460,6 @@ export function assertSchedulerMutationArtifact(
     artifact.nativeId === expected.nativeId &&
     artifact.bindingId === expected.bindingId &&
     artifact.invocation !== undefined &&
-    sameInvocation(artifact.invocation, expected.invocation) &&
     expected.fingerprint !== undefined &&
     artifact.fingerprint === expected.fingerprint
   ) {
@@ -565,6 +567,14 @@ export function schedulerBindingOrdinal(
     if (digestBindingId(logicalSource.kind, logicalSource.ref, ordinal) === bindingId) return ordinal;
   }
   return undefined;
+}
+
+/** Whether some schedule ordinal on `ref` would digest to `nativeId` (mirrors schedulerBindingOrdinal). */
+function workflowRefDigestsToNativeId(ref: string, nativeId: string): boolean {
+  for (let ordinal = 0; ordinal < 4096; ordinal += 1) {
+    if (digestBindingId("workflow", ref, ordinal) === nativeId) return true;
+  }
+  return false;
 }
 
 function digestBindingId(kind: "task" | "workflow", ref: string, ordinal: number): string {

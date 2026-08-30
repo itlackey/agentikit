@@ -25,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmTasksSync, akmTasksSyncPlan } from "../../src/commands/tasks/tasks";
 import { taskSyncDryRunExitCode } from "../../src/commands/tasks/tasks-cli";
+import { shapeForCommand } from "../../src/output/shapes";
 import { CRON_BACKEND, type CronExec, type CronExecResult } from "../../src/tasks/backends/cron";
 import {
   resolveScheduledTaskContext,
@@ -200,6 +201,41 @@ describe("akmTasksSyncPlan — dry-run", () => {
     expect(exec.writeCalls).toBe(1);
     expect(exec.current()).toContain("task run alpha");
   });
+
+  // Real-world crash regression: an installed cron entry whose invocation
+  // lacks `--bundle` (the pre-`--bundle` shape written by older akm
+  // releases, mirroring tests/integration/tasks-sync.test.ts's "reconciles a
+  // pre-`--bundle` native entry instead of refusing it as an unproven owner")
+  // is now correctly recognized as akm-owned, so `akmTasksSyncPlan` computes
+  // a real preview for it instead of throwing "unproven owner" — and that
+  // preview is `Object.freeze`d by `renderSchedulerPlanPreview`. Routing it
+  // through `shapeForCommand`, exactly as `akm task sync --dry-run`'s CLI
+  // leaf does via `output()`, must not crash on the frozen result.
+  test("previews a pre-`--bundle` native entry through the CLI output path without crashing", async () => {
+    const exec = spyingMemoryExec();
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    await akmTasksSync({ backend });
+    const stripped = exec.current().replace(/--bundle\s+\S+\s+/, "");
+    expect(stripped).not.toBe(exec.current());
+    exec.write(stripped);
+    const beforePreview = exec.current();
+
+    const preview = await akmTasksSyncPlan({ backend }, undefined, {});
+
+    expect(preview.updates.map((op) => op.id)).toEqual(["alpha"]);
+    expect(Object.isFrozen(preview)).toBe(true);
+
+    let shaped: Record<string, unknown> | undefined;
+    expect(() => {
+      shaped = shapeForCommand("task-sync-dry-run", preview, "normal") as Record<string, unknown>;
+    }).not.toThrow();
+    expect(shaped?.shape).toBe("task-sync-dry-run");
+    expect(shaped?.schemaVersion).toBe(1);
+
+    // Still zero durable writes.
+    expect(exec.current()).toBe(beforePreview);
+  });
 });
 
 describe("taskSyncDryRunExitCode — CLI exit-code contract", () => {
@@ -209,5 +245,64 @@ describe("taskSyncDryRunExitCode — CLI exit-code contract", () => {
 
   test("is undefined (leaves the default success exit code) when the plan has no removals", () => {
     expect(taskSyncDryRunExitCode({ hasRemovals: false })).toBeUndefined();
+  });
+
+  // #867: task sync degrades — a source that fails to parse/prepare no
+  // longer rejects the whole desired set, but its presence must still fail
+  // the CLI's exit code so the breakage stays visible.
+  test("is EXIT_CODES.GENERAL (non-zero) when the plan has failures, even with no removals", () => {
+    expect(taskSyncDryRunExitCode({ hasRemovals: false, failures: [{ path: "tasks/bad.yml", reason: "boom" }] })).toBe(
+      1,
+    );
+  });
+
+  test("is undefined when the plan has no removals and no failures", () => {
+    expect(taskSyncDryRunExitCode({ hasRemovals: false, failures: [] })).toBeUndefined();
+  });
+});
+
+// #867: `akm task sync` degrades — a task/workflow that fails to
+// parse/prepare is excluded and reported, never poisons the whole set.
+describe("akmTasksSync / akmTasksSyncPlan — degrade on a bad source (#867)", () => {
+  function writeUnconvertibleV2Task(id: string): void {
+    // A genuinely unmigratable v2 shape (a bare, non-`akm` executable with
+    // no path and no `env` wrapper) — still blocked after #867's fix, and
+    // used here to prove the OTHER good tasks still sync.
+    fs.writeFileSync(
+      path.join(tasksDir, `${id}.yml`),
+      `version: 2\nschedule: '*/15 * * * *'\ncommand: echo unconvertible\n`,
+      "utf8",
+    );
+  }
+
+  test("akmTasksSyncPlan --dry-run reconciles the tasks that parse and reports the one that doesn't", async () => {
+    const exec = spyingMemoryExec();
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    writeUnconvertibleV2Task("broken");
+
+    const preview = await akmTasksSyncPlan({ backend }, undefined, {});
+
+    expect(preview.adds.map((op) => op.id)).toEqual(["alpha"]);
+    expect(preview.failures).toHaveLength(1);
+    expect(preview.failures[0]?.path).toContain("broken.yml");
+    expect(taskSyncDryRunExitCode(preview)).toBe(1);
+    // ABSOLUTE SAFETY REQUIREMENT still holds even when the plan has failures.
+    expect(exec.writeCalls).toBe(0);
+  });
+
+  test("akmTasksSync reconciles the tasks that parse and reports the one that doesn't", async () => {
+    const exec = spyingMemoryExec();
+    const backend = backendFor(exec);
+    writeTask("alpha", "*/15 * * * *");
+    writeUnconvertibleV2Task("broken");
+
+    const result = await akmTasksSync({ backend });
+
+    expect(result.installed).toEqual(["alpha"]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]?.path).toContain("broken.yml");
+    expect(exec.writeCalls).toBe(1);
+    expect(exec.current()).toContain("task run alpha");
   });
 });

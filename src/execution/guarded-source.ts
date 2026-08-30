@@ -10,12 +10,9 @@ import { UsageError } from "../core/errors";
 import type { FileContext } from "../indexer/walk/file-context";
 import { createExecutionSourceIdentity, type ExecutionSourceIdentity } from "./source";
 
-export const DEFAULT_GUARDED_SOURCE_MAX_BYTES = 1024 * 1024;
-
 export interface GuardedExecutionSourceCaptureOptions {
   readonly identity?: ExecutionSourceIdentity;
   readonly authored?: boolean;
-  readonly maxBytes?: number;
 }
 
 export interface GuardedExecutionSource {
@@ -63,7 +60,6 @@ export interface GuardedExecutionSourceSnapshot {
 interface CapturedSourceRecord {
   source: GuardedExecutionSource;
   readonly stat: fs.Stats;
-  readonly maxBytes: number;
 }
 
 function errorMessage(cause: unknown): string {
@@ -153,10 +149,6 @@ function captureRecord(
   const sourcePath = path.resolve(sourcePathInput);
   const { containmentRoot, containmentRealPath, containmentStat } = requireContainmentRoot(containmentRootInput);
   const lexicalRelative = containedRelative(containmentRoot, sourcePath, false);
-  const maxBytes = options.maxBytes ?? DEFAULT_GUARDED_SOURCE_MAX_BYTES;
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
-    throw new UsageError("Guarded source byte limit must be a non-negative safe integer.", "INVALID_FLAG_VALUE");
-  }
 
   const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
   let descriptor: number | undefined;
@@ -165,12 +157,6 @@ function captureRecord(
     const before = fs.fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) {
       throw new UsageError(`${sourcePath} is not a regular guarded source file.`, "INVALID_FLAG_VALUE");
-    }
-    if (before.size > BigInt(maxBytes)) {
-      throw new UsageError(
-        `${sourcePath} exceeds the guarded source size limit (1 MiB; ${maxBytes} bytes).`,
-        "INVALID_FLAG_VALUE",
-      );
     }
     const bytes = fs.readFileSync(descriptor);
     const after = fs.fstatSync(descriptor, { bigint: true });
@@ -226,7 +212,6 @@ function captureRecord(
         ...(options.identity ? { identity: options.identity } : {}),
       }),
       stat: numberStat(before),
-      maxBytes,
     };
   } catch (cause) {
     if (cause instanceof UsageError) throw cause;
@@ -565,7 +550,6 @@ export class GuardedExecutionSourceCollector {
       try {
         current = captureRecord(record.source.sourcePath, record.source.containmentRoot, {
           authored: record.source.authored,
-          maxBytes: record.maxBytes,
           ...(record.source.identity ? { identity: record.source.identity } : {}),
         }).source;
       } catch (cause) {

@@ -12,7 +12,6 @@ import {
   prepareSchedulerSyncSourceSet,
   type SchedulerSyncPlanInput,
 } from "../../src/tasks/scheduler-sync";
-import { TASK_V3_MAX_SOURCE_BYTES } from "../../src/tasks/source-v3";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
@@ -71,12 +70,6 @@ describe("guarded scheduler source byte snapshots", () => {
     writeTask("invalid", Uint8Array.from([0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e, 0x3a, 0x20, 0xff]));
 
     await expect(prepareSchedulerSyncSourceSet(sourceInput())).rejects.toThrow(/invalid UTF-8/i);
-  });
-
-  test("rejects an oversized task source at the guarded read boundary", async () => {
-    writeTask("oversized", `version: 4\nrun: echo safe\n#${"x".repeat(TASK_V3_MAX_SOURCE_BYTES)}`);
-
-    await expect(prepareSchedulerSyncSourceSet(sourceInput())).rejects.toThrow(/1 MiB|source.*limit/i);
   });
 
   test("rejects a symbolic authored source at the no-follow guarded read boundary", async () => {

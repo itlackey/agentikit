@@ -424,9 +424,15 @@ describe("shapeForCommand", () => {
   });
 
   test("non-search/show commands pass through unmodified", () => {
+    // "info" and "health" are passthrough commands (#484: see
+    // tests/output-passthrough-envelope.test.ts), so they get a
+    // shape/schemaVersion stamp — this test's job is only to confirm they
+    // are NOT routed through the search/show shapers (whose field-dropping
+    // behavior is asserted by the two tests above), so the original fields
+    // besides the stamp survive untouched.
     const result = { something: "untouched" };
-    expect(shapeForCommand("info", result, "full", "human")).toEqual(result);
-    expect(shapeForCommand("health", result, "full", "human")).toEqual(result);
+    expect(shapeForCommand("info", result, "full", "human")).toMatchObject(result);
+    expect(shapeForCommand("health", result, "full", "human")).toMatchObject(result);
   });
 
   test("--shape summary on a non-show command throws INVALID_SHAPE_VALUE", () => {

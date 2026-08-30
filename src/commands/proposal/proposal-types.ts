@@ -274,9 +274,15 @@ export interface Proposal {
    * materialized root so a later accept cannot follow a changed default write
    * target.
    *
-   * Present on every persisted proposal created by the current runtime.
+   * Always set by {@link createProposal} for proposals minted by the current
+   * runtime — accept/revert re-resolve the write target from `ref` when this
+   * is absent (see `resolveProposalWriteTarget`). Absent on archived rows
+   * from before this field existed (~93% of the accepted/rejected archive on
+   * real installs, #859) — an already-accepted/archived proposal is counted
+   * and displayed, never re-applied, so its absence there is envelope
+   * metadata loss, not corruption.
    */
-  proposedTarget: {
+  proposedTarget?: {
     source: string;
     root: string;
   };

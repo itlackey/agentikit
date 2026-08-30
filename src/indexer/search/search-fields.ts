@@ -12,6 +12,7 @@
  * so it can be safely imported by both db.ts and indexer.ts.
  */
 
+import { warnVerbose } from "../../core/warn";
 import type { IndexDocument } from "../passes/metadata";
 
 /** Structured metadata plus bounded body text supplied to embedding providers. */
@@ -92,10 +93,18 @@ export function buildSearchText(entry: IndexDocument): string {
   const structured = [fields.name, fields.description, fields.tags, fields.hints]
     .filter((field) => field.length > 0)
     .join(" ");
-  if (structured.length >= SEARCH_TEXT_MAX_CHARS) return truncateUnicodeSafe(structured, SEARCH_TEXT_MAX_CHARS);
+  if (structured.length >= SEARCH_TEXT_MAX_CHARS) {
+    warnVerbose(
+      `${entry.ref ?? entry.name}: search text truncated to ${SEARCH_TEXT_MAX_CHARS} chars (content dropped entirely)`,
+    );
+    return truncateUnicodeSafe(structured, SEARCH_TEXT_MAX_CHARS);
+  }
   if (!fields.content) return structured;
   const separator = structured ? " " : "";
   const remaining = SEARCH_TEXT_MAX_CHARS - structured.length - separator.length;
+  if (fields.content.length > remaining) {
+    warnVerbose(`${entry.ref ?? entry.name}: search text truncated to ${SEARCH_TEXT_MAX_CHARS} chars`);
+  }
   return `${structured}${separator}${truncateUnicodeSafe(fields.content, remaining)}`;
 }
 

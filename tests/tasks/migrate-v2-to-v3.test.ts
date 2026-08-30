@@ -144,6 +144,46 @@ describe("pure task v2 to v3 migration planner", () => {
     expect(outcome.reason).toMatch(/shell|argv|assignment|builtin|reserved/i);
   });
 
+  // #867 (real-data regression): a `command:` string starting with `env
+  // NAME=value... cmd args...` was blocked as
+  // "shell-command-resolution-changes-v2-literal-argv-semantics" because
+  // `env` itself, not the command env wraps, was checked against
+  // `shellStableV2Executable`. env(1) does its own PATH-search exec of its
+  // target regardless of whether env itself was launched by direct execve
+  // (v2) or a host shell (v3 `run:`), so that check does not apply to
+  // whatever follows a leading `env` + assignments. These are the exact
+  // failing command shapes from a real 0.9.4 install (GH #867).
+  test.each([
+    "env AKM_BIN=/home/user/.nvm/versions/node/v24.18.0/bin/akm /home/user/.bun/bin/bun /home/user/akm/scripts/akm-dogfood-0.9.1.ts collect",
+    "env AKM_BIN=/home/user/.nvm/versions/node/v24.18.0/bin/akm /home/user/.nvm/versions/node/v24.18.0/bin/akm env run env/fwdslsh -- bun /home/user/akm/scripts/akm-health-discord.ts",
+    "env LLM_API_KEY=local /home/user/.nvm/versions/node/v24.18.0/bin/akm env run env/marketing-seo-social -- /home/user/.nvm/versions/node/v24.18.0/bin/akm env run env/dimm-city -- bash /home/user/akm/skills/social-media/social-complaint-listener/scripts/dc-leads-pipeline.sh",
+    "env AKM_BIN=/home/user/.nvm/versions/node/v24.18.0/bin/akm bash /home/user/akm/scripts/discord/wiki-articles-ingest.sh",
+  ])("converts a real-world env-prefixed v2 command like any other command string: %s", (command) => {
+    const outcome = planTaskToV3File(
+      memoryInput(`version: 2\nschedule: '@daily'\ncommand: ${JSON.stringify(command)}\n`),
+    );
+    expect(outcome.status).toBe("changed");
+    if (outcome.status !== "changed") throw new Error(outcome.detail ?? outcome.reason);
+    expect(parseYaml(outcome.after.toString("utf8"))).toMatchObject({ run: command });
+  });
+
+  test("blocks `env` with nothing left to exec after its assignments", () => {
+    const outcome = planTaskToV3File(memoryInput("version: 2\nschedule: '@daily'\ncommand: env FOO=bar\n"));
+    expect(outcome.status).toBe("blocked");
+    expect(outcome.reason).toMatch(/shell|argv|assignment|builtin|reserved/i);
+  });
+
+  test("converts the command-env-prefix fixture to the exact expected run: spelling", () => {
+    const outcome = planTaskToV3File(input("deterministic/command-env-prefix.yml"));
+    expect(outcome.status).toBe("changed");
+    if (outcome.status !== "changed") throw new Error(outcome.detail ?? outcome.reason);
+    expect(parseYaml(outcome.after.toString("utf8"))).toEqual({
+      version: 3,
+      run: "env AKM_BIN=/opt/akm/bin/akm bash /opt/akm/scripts/wiki-articles-ingest.sh",
+      akm: { schedule: "@hourly", enabled: true, timeout: 45000, redact: ["CONTRACT_FIXTURE_TOKEN"] },
+    });
+  });
+
   test("keeps explicit executable paths in the provable argv-compatible command subset", () => {
     const outcome = planTaskToV3File(memoryInput("version: 2\nschedule: '@daily'\ncommand: ./tools/check --exact\n"));
     expect(outcome.status).toBe("changed");

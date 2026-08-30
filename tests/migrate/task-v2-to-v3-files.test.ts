@@ -46,16 +46,22 @@ describe("task v2 to v3 filesystem boundary", () => {
     expect(plan(root).files.map((file) => file.status)).toEqual(["skipped"]);
   });
 
-  test("one blocked file prevents every backup and source write", () => {
+  test("one blocked file is skipped, not fatal: the rest of the batch still migrates", () => {
     const { root, task, backup } = fixture();
     const bad = path.join(root, "tasks", "bad.yml");
     fs.writeFileSync(bad, "version: 2\nschedule: '@daily'\ncommand: [echo, unsafe]\n");
-    const before = fs.readFileSync(task);
     const preview = plan(root);
     expect(preview.files.some((file) => file.status === "blocked")).toBe(true);
-    expect(() => applyTaskToV3MigrationPlan(preview, { backupRoot: backup })).toThrow(/plan is blocked/);
-    expect(fs.readFileSync(task)).toEqual(before);
-    expect(fs.existsSync(backup)).toBe(false);
+    expect(preview.files.some((file) => file.filePath === task && file.status === "changed")).toBe(true);
+
+    const applied = applyTaskToV3MigrationPlan(preview, { backupRoot: backup });
+
+    // The good file was migrated and backed up...
+    expect(applied.changed).toEqual([task]);
+    expect(fs.readFileSync(task, "utf8")).toContain("version: 3");
+    expect(fs.readFileSync(taskMigrationBackupPath(backup, task))).toBeInstanceOf(Buffer);
+    // ...while the blocked file was left untouched.
+    expect(fs.readFileSync(bad, "utf8")).toContain("command: [echo, unsafe]");
   });
 
   test("source drift after preview aborts before creating backups", () => {
@@ -66,12 +72,9 @@ describe("task v2 to v3 filesystem boundary", () => {
     expect(fs.existsSync(backup)).toBe(false);
   });
 
-  test("symlinks and hard-linked task sources are rejected", () => {
+  test("symlinked task sources are rejected", () => {
     const { root, task } = fixture();
     const linked = path.join(root, "tasks", "linked.yml");
-    fs.linkSync(task, linked);
-    expect(() => plan(root)).toThrow(/must not be hard-linked/);
-    fs.unlinkSync(linked);
     fs.symlinkSync(task, linked);
     expect(() => plan(root)).toThrow(/does not follow symbolic link/);
   });

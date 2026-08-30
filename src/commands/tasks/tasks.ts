@@ -71,11 +71,17 @@ import {
 import {
   assertSchedulerNativeArtifactOwnership,
   assertSchedulerSourceSnapshot,
+  buildSchedulerRemoveOperation,
   finalizeSchedulerSyncPlan,
   prepareSchedulerSyncSourceSet,
+  type SchedulerSyncOperation,
   type SchedulerSyncPlan,
 } from "../../tasks/scheduler-sync";
-import { renderSchedulerSyncPlanPreview, type SchedulerPlanPreview } from "../../tasks/scheduler-sync-preview";
+import {
+  renderSchedulerPlanPreview,
+  renderSchedulerSyncPlanPreview,
+  type SchedulerPlanPreview,
+} from "../../tasks/scheduler-sync-preview";
 import { parseTaskSource } from "../../tasks/source/parse-task-source";
 import { projectTaskSourceV4 } from "../../tasks/source/project-v4";
 import { TASK_V3_MAX_SOURCE_BYTES, type TaskV3SourceDocument } from "../../tasks/source-v3";
@@ -454,6 +460,13 @@ export interface TasksSyncResult {
   unchanged: string[];
   skipped: { id: string; reason: string }[];
   backend: string;
+  /**
+   * Sources that failed to parse/prepare (#867) — excluded from
+   * install/update/remove/unchanged above, never silently dropped. Every
+   * OTHER task/workflow still reconciles; the CLI exits non-zero whenever
+   * this is non-empty so the failure stays visible.
+   */
+  failed: { path: string; ref?: string; reason: string }[];
   /** Present only when a rebind bound an ineligible (e.g. mutable checkout) runtime. */
   warnings?: string[];
 }
@@ -602,6 +615,7 @@ export async function akmTasksSync(
     unchanged: [...plan.unchanged],
     skipped: [],
     backend: sched.name,
+    failed: plan.failures.map((failure) => ({ ...failure })),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
@@ -623,6 +637,124 @@ export async function akmTasksSyncPlan(
 ): Promise<SchedulerPlanPreview> {
   const { sched, plan } = await buildSchedulerSyncPlan(deps, bundleTarget, options);
   return renderSchedulerSyncPlanPreview(sched.name, plan);
+}
+
+export type TasksPruneReason = "invalid-context" | "dead-bundle-path";
+
+export interface TasksPruneResult {
+  readonly backend: string;
+  readonly dryRun: boolean;
+  readonly preview: SchedulerPlanPreview;
+  readonly removed: readonly string[];
+}
+
+/**
+ * Classify one installed scheduler binding as a prune candidate (#851), using
+ * the same two signals `doctor`'s `inspectInstalledBinding` already computes
+ * — deliberately narrower than that function's full `status` set. Only an
+ * entry whose ownership can NEVER be resolved (`invalid-context`) or whose
+ * resolved owner no longer exists on disk (`dead-bundle-path`) is a
+ * candidate; `missing-path` (e.g. the akm binary itself moved) is a
+ * different failure mode and is intentionally NOT folded in here, per the
+ * scoping in #851 — an entry that still resolves to a live bundle is never a
+ * candidate, full stop.
+ */
+function classifyPruneCandidate(entry: InstalledSchedulerBinding): TasksPruneReason | undefined {
+  let ownerBundlePath: string | undefined;
+  try {
+    ownerBundlePath = validateSchedulerContextDescriptor(entry.contextPath).environment.AKM_BUNDLE_DIR;
+  } catch {
+    return "invalid-context";
+  }
+  if (ownerBundlePath !== undefined && !fs.existsSync(ownerBundlePath)) return "dead-bundle-path";
+  return undefined;
+}
+
+/**
+ * Compute (never apply) the exact set of remove operations `akm task prune`
+ * would perform: scan every installed scheduler binding across ALL bundles
+ * (orphans by definition don't resolve to a current bundle, so this is
+ * deliberately not scoped the way `sync` is), keep only entries
+ * `classifyPruneCandidate` flags, and build each removal through the same
+ * exact-fingerprint/ordinal-attribution machinery `sync`'s own removal path
+ * uses (`buildSchedulerRemoveOperation`). `belongsToBundle` and
+ * `finalizeSchedulerSyncPlan` are never touched — this is a parallel,
+ * narrower path so #846's guard stays exactly as conservative as it was.
+ */
+type SchedulerRemoveOperation = Extract<SchedulerSyncOperation, { kind: "remove" }>;
+
+async function buildTaskPrunePlan(
+  deps: { backend?: SchedulerBackend } = {},
+  options: { id?: readonly string[] } = {},
+): Promise<{ sched: SchedulerBackend; operations: readonly SchedulerRemoveOperation[] }> {
+  const sched = deps.backend ?? selectBackend();
+  if (!sched.inspectBindings) {
+    throw new ConfigError(
+      `Scheduler backend "${sched.name}" cannot provide one coherent inspection for prune.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const inspection = await sched.inspectBindings({});
+  const candidates = new Map<string, TasksPruneReason>();
+  for (const entry of inspection.installed) {
+    const reason = classifyPruneCandidate(entry);
+    if (reason) candidates.set(entry.id, reason);
+  }
+  const requestedIds = options.id?.filter((id) => id.length > 0) ?? [];
+  for (const id of requestedIds) {
+    if (!candidates.has(id)) {
+      throw new UsageError(
+        `Scheduler binding ${JSON.stringify(id)} is not an orphaned prune candidate ` +
+          "(either not installed, or it still resolves to a live bundle) — refusing to prune it.",
+        "INVALID_FLAG_VALUE",
+      );
+    }
+  }
+  const idFilter = requestedIds.length > 0 ? new Set(requestedIds) : undefined;
+  const resolved = resolveTaskReadBundle(undefined, undefined);
+  const bundleContext = {
+    adapterId: resolved.source.adapterId ?? detectAdapterId(resolved.source.path),
+    bundleName: resolved.source.name,
+  };
+  const operations: SchedulerRemoveOperation[] = [];
+  for (const entry of inspection.installed) {
+    const reason = candidates.get(entry.id);
+    if (!reason) continue;
+    if (idFilter && !idFilter.has(entry.id)) continue;
+    const operation = buildSchedulerRemoveOperation(entry.id, entry, inspection.artifacts, bundleContext);
+    operations.push(Object.freeze({ ...operation, reason }));
+  }
+  return { sched, operations: Object.freeze(operations) };
+}
+
+/**
+ * `akm task prune` (#851): remove installed scheduler bindings `sync` can
+ * never reclaim because their own `--scheduler-context` descriptor doesn't
+ * resolve to a live bundle. Defaults to dry-run — no `--yes` and no `--id`
+ * means zero backend calls that could mutate anything, matching
+ * `akmTasksSyncPlan`'s zero-write guarantee. `--id` (one or more) narrows
+ * execution to exactly those bindings; `--yes` alone executes every
+ * currently-computed candidate. Both still return the full preview so the
+ * plan is never silent about what it did.
+ */
+export async function akmTasksPrune(
+  deps: { backend?: SchedulerBackend } = {},
+  options: { yes?: boolean; id?: readonly string[] } = {},
+): Promise<TasksPruneResult> {
+  const { sched, operations } = await buildTaskPrunePlan(deps, options);
+  const preview = renderSchedulerPlanPreview(sched.name, operations);
+  if (!options.yes) {
+    return { backend: sched.name, dryRun: true, preview, removed: [] };
+  }
+  await applySchedulerTransaction(sched, operations, {
+    initialExpectations: operations.map((operation) => operation.expected as SchedulerMutationExpectation),
+  });
+  return {
+    backend: sched.name,
+    dryRun: false,
+    preview,
+    removed: operations.map((operation) => operation.id),
+  };
 }
 
 export interface TasksDoctorResult {

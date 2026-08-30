@@ -22,6 +22,7 @@
  * single call to the returned callback undoes all sandboxed env vars.
  */
 
+import { spyOn } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -275,6 +276,38 @@ export function sandboxStashDir(chain?: Cleanup): { dir: string; cleanup: Cleanu
  */
 export function sandboxHome(chain?: Cleanup): { dir: string; cleanup: Cleanup } {
   return sandboxEnvDir("akm-sb-home-", "HOME", chain);
+}
+
+/**
+ * Mock `os.homedir()` to return an isolated, freshly created temp directory.
+ *
+ * Unlike `sandboxHome()` (which sets `process.env.HOME`), this covers code
+ * paths where `os.homedir()` must actually change value: Bun's native
+ * `os.homedir()` is resolved once at process start and does NOT track later
+ * writes to `process.env.HOME`, so overriding the env var alone is a no-op
+ * against it. `spyOn(os, "homedir")` intercepts the call directly, which
+ * works for every importer of `node:os` since they all share the same
+ * module-level function reference.
+ *
+ * Returns `{ dir, cleanup }` where `dir` is the realpath-resolved fake home
+ * directory (so callers comparing against `os.homedir()`'s return value don't
+ * hit a symlink mismatch, e.g. `/tmp` -> `/private/tmp` on macOS). `cleanup`
+ * restores the spy and removes the temp directory — this is the file that
+ * owns the `node:fs` removal call paired with a real `os.homedir()` read, so
+ * call sites of this helper don't have to (see
+ * `scripts/lint-tests-isolation.ts`'s `real-home-delete` rule, which flags a
+ * test file that combines the two directly).
+ */
+export function mockHomedir(): { dir: string; cleanup: Cleanup } {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "akm-mock-home-")));
+  const spy = spyOn(os, "homedir").mockReturnValue(dir);
+  return {
+    dir,
+    cleanup: () => {
+      spy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 /**

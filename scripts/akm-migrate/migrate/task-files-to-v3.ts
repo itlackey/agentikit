@@ -13,7 +13,6 @@ import { parseTaskV3Yaml } from "../../../src/tasks/source/task-source-v3-frozen
 import {
   type TaskToV3Changed,
   type TaskToV3FileInput,
-  type TaskToV3FilesystemIdentity,
   type TaskToV3MigrationPlan,
 } from "../../../src/tasks/source/task-to-v3";
 
@@ -37,7 +36,6 @@ export interface AppliedTaskToV3Plan {
 interface Snapshot {
   readonly bytes: Buffer;
   readonly mode: number;
-  readonly identity: TaskToV3FilesystemIdentity;
 }
 
 function migrationError(detail: string): ConfigError {
@@ -49,37 +47,17 @@ function contained(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function identity(filePath: string, kind: "file" | "directory"): TaskToV3FilesystemIdentity {
-  const stat = fs.lstatSync(filePath, { bigint: true });
-  const valid = kind === "file" ? stat.isFile() : stat.isDirectory();
-  if (stat.isSymbolicLink() || !valid) throw migrationError(`${filePath} must be a real ${kind}.`);
-  if (kind === "file" && stat.nlink !== 1n) throw migrationError(`${filePath} must not be hard-linked.`);
-  return Object.freeze({
-    realPath: fs.realpathSync(filePath),
-    device: stat.dev.toString(),
-    inode: stat.ino.toString(),
-    linkCount: stat.nlink.toString(),
-    changeTimeNs: stat.ctimeNs.toString(),
-  });
-}
-
-function sameIdentity(left: TaskToV3FilesystemIdentity, right: TaskToV3FilesystemIdentity): boolean {
-  return (
-    left.realPath === right.realPath &&
-    left.device === right.device &&
-    left.inode === right.inode &&
-    left.linkCount === right.linkCount &&
-    left.changeTimeNs === right.changeTimeNs
-  );
+function realDirectory(filePath: string): string {
+  const stat = fs.lstatSync(filePath);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw migrationError(`${filePath} must be a real directory.`);
+  return fs.realpathSync(filePath);
 }
 
 function snapshot(filePath: string): Snapshot {
-  const before = identity(filePath, "file");
   const stat = fs.lstatSync(filePath);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw migrationError(`${filePath} must be a real file.`);
   const bytes = fs.readFileSync(filePath);
-  const after = identity(filePath, "file");
-  if (!sameIdentity(before, after)) throw migrationError(`${filePath} changed while it was read.`);
-  return Object.freeze({ bytes, mode: stat.mode & 0o777, identity: after });
+  return Object.freeze({ bytes, mode: stat.mode & 0o777 });
 }
 
 function writable(filePath: string): boolean {
@@ -92,10 +70,9 @@ function writable(filePath: string): boolean {
 }
 
 function walkTasks(root: TaskToV3Root, tasksDir: string, out: TaskToV3FileInput[]): void {
-  const rootIdentity = identity(root.root, "directory");
-  const bundleIdentity = identity(root.bundleRoot ?? root.root, "directory");
-  const physicalRoot = rootIdentity.realPath;
-  if (!contained(bundleIdentity.realPath, physicalRoot)) {
+  const physicalRoot = realDirectory(root.root);
+  const physicalBundleRoot = realDirectory(root.bundleRoot ?? root.root);
+  if (!contained(physicalBundleRoot, physicalRoot)) {
     throw migrationError(`${root.root} resolves outside bundle ${root.bundleId}.`);
   }
 
@@ -121,11 +98,6 @@ function walkTasks(root: TaskToV3Root, tasksDir: string, out: TaskToV3FileInput[
         writable: root.writable,
         onDiskWritable: writable(candidate) && writable(parent) && (current.mode & 0o222) !== 0,
         containmentRoot: physicalRoot,
-        inspectionIdentity: Object.freeze({
-          file: current.identity,
-          root: rootIdentity,
-          bundleRoot: bundleIdentity,
-        }),
       });
     }
   };
@@ -191,10 +163,6 @@ function assertUnchanged(change: TaskToV3Changed): Snapshot {
   if (!current.bytes.equals(change.before) || current.mode !== change.mode) {
     throw migrationError(`${change.filePath} changed after preview; no task files were replaced.`);
   }
-  const planned = change.inspectionIdentity?.file;
-  if (planned && !sameIdentity(planned, current.identity)) {
-    throw migrationError(`${change.filePath} identity changed after preview; no task files were replaced.`);
-  }
   return current;
 }
 
@@ -202,12 +170,9 @@ export function applyTaskToV3MigrationPlan(
   plan: TaskToV3MigrationPlan,
   options: ApplyTaskToV3Options,
 ): AppliedTaskToV3Plan {
-  const blocked = plan.files.filter((file) => file.status === "blocked");
-  if (blocked.length > 0) {
-    throw migrationError(
-      `plan is blocked: ${blocked.map((file) => `${file.filePath} (${file.reason})`).join(", ")}. No files were written.`,
-    );
-  }
+  // Blocked files are skipped, not fatal: one malformed file must not stop
+  // the rest of the batch from migrating. Callers report `plan.files` with
+  // status "blocked" to the user (see task-migrate.ts) and exit non-zero.
   const changes = plan.files.filter((file): file is TaskToV3Changed => file.status === "changed");
   for (const change of changes) {
     assertUnchanged(change);

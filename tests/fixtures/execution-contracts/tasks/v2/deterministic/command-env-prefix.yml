@@ -1,0 +1,6 @@
+version: 2
+schedule: "@hourly"
+enabled: true
+command: env AKM_BIN=/opt/akm/bin/akm bash /opt/akm/scripts/wiki-articles-ingest.sh
+timeoutMs: 45000
+redact: [CONTRACT_FIXTURE_TOKEN]

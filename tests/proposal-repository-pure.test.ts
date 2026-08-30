@@ -60,13 +60,15 @@ describe("proposal repository — pure helpers (post-split)", () => {
     expect(out).toContain("+TWO");
   });
 
-  test("rejects rows without the current proposal envelope", () => {
+  test("tolerates a row without the current proposal envelope (#859)", () => {
     // historicalRow has an entirely empty metadata_json — missing both
-    // `changes` and `proposedTarget`. `changes` alone is tolerated as a
-    // legacy read-time compatibility gap (#858/#859, see storedToChanges),
-    // but `proposedTarget` is required on every row (legacy or not), so the
-    // row is still rejected — just for that reason now.
-    expect(() => proposalRowToProposal(historicalRow)).toThrow(/missing proposedTarget/i);
+    // `changes` and `proposedTarget`. Per the #859 reopening, both are
+    // envelope metadata absent from real archived rows (~89% and ~93%
+    // respectively) and neither blocks decode on its own: an already-
+    // decided proposal is counted/displayed, never re-applied.
+    const proposal = proposalRowToProposal(historicalRow);
+    expect(proposal.changes).toEqual([]);
+    expect(proposal.proposedTarget).toBeUndefined();
   });
 
   test("tolerates a legacy row missing only `changes` (#858/#859)", () => {
@@ -75,6 +77,14 @@ describe("proposal repository — pure helpers (post-split)", () => {
       metadata_json: JSON.stringify({ proposedTarget: { source: "team", root: "/tmp/stash" } }),
     });
     expect(proposal.changes).toEqual([]);
+  });
+
+  test("tolerates a legacy row missing only `proposedTarget` (#859)", () => {
+    const proposal = proposalRowToProposal({
+      ...historicalRow,
+      metadata_json: JSON.stringify({ changes: [{ path: "lessons/history.md", op: "update" }] }),
+    });
+    expect(proposal.proposedTarget).toBeUndefined();
   });
 
   test("rejects malformed JSON and malformed present envelope fields", () => {
@@ -106,5 +116,127 @@ describe("proposal repository — pure helpers (post-split)", () => {
       }),
     });
     expect(proposalToRowValues(proposal, historicalRow.stash_dir).metadata_json).toContain("proposedTarget");
+  });
+
+  // #859: field-by-field real-archive absence combinations (see the
+  // reopening comment's evidence table — beforeHash, proposedTarget,
+  // changes, eligibilitySource, backupContent, confidence, sourceRun all
+  // absent on real rows at meaningful rates). Each combination below is a
+  // terminal-status row (archived rows are never re-applied) and must decode
+  // without throwing, with the absent fields simply omitted.
+  const terminalRow = { ...historicalRow, status: "accepted" };
+
+  test("tolerates a fully envelope-less terminal row (every optional field absent)", () => {
+    const proposal = proposalRowToProposal({
+      ...terminalRow,
+      metadata_json: JSON.stringify({
+        sourceRun: "reflect-1",
+        review: { outcome: "accepted", decidedAt: "2026-01-01T00:00:00.000Z" },
+      }),
+    });
+    expect(proposal.changes).toEqual([]);
+    expect(proposal.proposedTarget).toBeUndefined();
+    expect(proposal.beforeHash).toBeUndefined();
+    expect(proposal.eligibilitySource).toBeUndefined();
+    expect(proposal.backupContent).toBeUndefined();
+    expect(proposal.confidence).toBeUndefined();
+    expect(proposal.sourceRun).toBe("reflect-1");
+  });
+
+  test("tolerates changes + proposedTarget + beforeHash all absent together, gateDecision present", () => {
+    const proposal = proposalRowToProposal({
+      ...terminalRow,
+      metadata_json: JSON.stringify({
+        sourceRun: "consolidate-1",
+        review: { outcome: "accepted", decidedAt: "2026-01-01T00:00:00.000Z" },
+        confidence: 0.92,
+        gateDecision: {
+          outcome: "auto-accepted",
+          reason: "policy-accept",
+          gate: "triage:personal-stash",
+          decidedAt: "2026-01-01T00:00:00.000Z",
+        },
+      }),
+    });
+    expect(proposal.changes).toEqual([]);
+    expect(proposal.proposedTarget).toBeUndefined();
+    expect(proposal.beforeHash).toBeUndefined();
+    expect(proposal.confidence).toBe(0.92);
+    expect(proposal.gateDecision?.outcome).toBe("auto-accepted");
+  });
+
+  test("a fully-populated modern row round-trips every field", () => {
+    const metadata = {
+      sourceRun: "reflect-modern",
+      changes: [{ path: "lessons/history.md", op: "update" }],
+      proposedTarget: { source: "team", root: "/tmp/stash" },
+      beforeHash: "a".repeat(64),
+      review: { outcome: "accepted", decidedAt: "2026-01-01T00:00:00.000Z" },
+      confidence: 0.5,
+      gateDecision: { outcome: "deferred", reason: "mid-band", decidedAt: "2026-01-01T00:00:00.000Z" },
+      backupContent: "prior content",
+      acceptedTarget: {
+        source: "team",
+        root: "/tmp/stash",
+        path: "/tmp/stash/lessons/history.md",
+        contentHash: "b".repeat(64),
+      },
+      eligibilitySource: "signal-delta",
+    };
+    const proposal = proposalRowToProposal({ ...terminalRow, metadata_json: JSON.stringify(metadata) });
+    expect(proposal.changes).toEqual([{ path: "lessons/history.md", op: "update", after: "historical body" }]);
+    expect(proposal.proposedTarget).toEqual({ source: "team", root: "/tmp/stash" });
+    expect(proposal.beforeHash).toBe(metadata.beforeHash);
+    expect(proposal.confidence).toBe(0.5);
+    expect(proposal.gateDecision?.outcome).toBe("deferred");
+    expect(proposal.backupContent).toBe("prior content");
+    expect(proposal.acceptedTarget?.contentHash).toBe(metadata.acceptedTarget.contentHash);
+    expect(proposal.eligibilitySource).toBe("signal-delta");
+  });
+
+  test("a genuinely corrupt row (present-but-malformed field) is still rejected, not tolerated", () => {
+    // Wrong type for a present field is corruption, distinct from the
+    // field being absent entirely — absence is tolerated, malformed
+    // presence is not.
+    expect(() =>
+      proposalRowToProposal({ ...terminalRow, metadata_json: JSON.stringify({ confidence: "high" }) }),
+    ).toThrow(/confidence/i);
+    expect(() =>
+      proposalRowToProposal({ ...terminalRow, metadata_json: JSON.stringify({ beforeHash: 12345 }) }),
+    ).toThrow(/beforeHash/i);
+    expect(() =>
+      proposalRowToProposal({ ...terminalRow, metadata_json: JSON.stringify({ eligibilitySource: 7 }) }),
+    ).toThrow(/eligibilitySource/i);
+  });
+
+  test("write path: pending status still requires the full envelope (write path not weakened)", () => {
+    const pendingNoTarget = proposalRowToProposal({
+      ...historicalRow,
+      metadata_json: JSON.stringify({ changes: [{ path: "lessons/history.md", op: "update" }] }),
+    });
+    expect(pendingNoTarget.status).toBe("pending");
+    expect(() => proposalToRowValues(pendingNoTarget, historicalRow.stash_dir)).toThrow(/proposedTarget/i);
+
+    const pendingNoChanges = proposalRowToProposal({
+      ...historicalRow,
+      metadata_json: JSON.stringify({ proposedTarget: { source: "team", root: "/tmp/stash" } }),
+    });
+    expect(() => proposalToRowValues(pendingNoChanges, historicalRow.stash_dir)).toThrow(/no file changes/i);
+  });
+
+  test("write path: a terminal-status row carrying forward legacy gaps re-persists without error", () => {
+    // Mirrors `proposal revert` re-persisting an already-decoded legacy
+    // accepted row: the write path must not block a status transition that
+    // does not add new data, only carry forward what the row already had.
+    const legacyAccepted = proposalRowToProposal({
+      ...terminalRow,
+      metadata_json: JSON.stringify({ review: { outcome: "accepted", decidedAt: "2026-01-01T00:00:00.000Z" } }),
+    });
+    expect(legacyAccepted.changes).toEqual([]);
+    expect(legacyAccepted.proposedTarget).toBeUndefined();
+    const reverted = { ...legacyAccepted, status: "reverted" as const };
+    const row = proposalToRowValues(reverted, historicalRow.stash_dir);
+    expect(row.metadata_json).not.toContain("proposedTarget");
+    expect(JSON.parse(row.metadata_json).changes).toEqual([]);
   });
 });

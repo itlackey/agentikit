@@ -39,7 +39,6 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { UsageError } from "../../src/core/errors";
 import { _setWarnSinkForTests } from "../../src/core/warn";
 import { compileTaskSchedulerBindings, schedulerNativeBindingId } from "../../src/tasks/scheduler-binding";
 import {
@@ -288,19 +287,22 @@ describe("whole-set task source v4 scheduler sync planning — B-45/F-B2 (schedu
       ].join("\n"),
     );
 
-    // compileTaskSources' per-source try/catch turns a per-file parse
-    // failure into one `failures` entry, which prepareSchedulerSyncSourceSet
-    // then rejects with — the sync path never silently drops it.
-    await expect(
-      prepareSchedulerSyncSourceSet({
-        sourceRoot: bundleRoot,
-        adapterId: "akm",
-        bundleName: "team",
-        bundleTarget: "team",
-        backend: "cron",
-        installed: emptyInstalled,
-      }),
-    ).rejects.toThrow(UsageError);
+    // #867: compileTaskSources' per-source try/catch turns a per-file parse
+    // failure into one `failures` entry. prepareSchedulerSyncSourceSet no
+    // longer rejects the whole set over it — it degrades, reporting the
+    // failure and reconciling every other source (none, here).
+    const prepared = await prepareSchedulerSyncSourceSet({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+    });
+    expect(prepared.desired).toEqual([]);
+    expect(prepared.failures).toHaveLength(1);
+    expect(prepared.failures[0]?.path).toContain("bad-schedule-inputs.yml");
+    expect(prepared.failures[0]?.reason).toMatch(/schedule\[0\] inputs\.scope: value is not one of/);
   });
 
   test("a required, default-less input paired with the schedule: shorthand is rejected at PARSE time, before any scheduler mutation (0.9.2 review)", async () => {
@@ -328,7 +330,9 @@ describe("whole-set task source v4 scheduler sync planning — B-45/F-B2 (schedu
     // is that the contradiction is now caught by `parseTaskSource` itself, so
     // the failure names the offending `schedule` FIELD PATH rather than only
     // the task ref, and an author sees it without running `akm task sync`.
-    const rejection = prepareSchedulerSyncSourceSet({
+    // #867: this is still a per-source parse failure — it degrades rather
+    // than rejecting the whole (empty, here) desired set.
+    const prepared = await prepareSchedulerSyncSourceSet({
       sourceRoot: bundleRoot,
       adapterId: "akm",
       bundleName: "team",
@@ -336,9 +340,9 @@ describe("whole-set task source v4 scheduler sync planning — B-45/F-B2 (schedu
       backend: "cron",
       installed: emptyInstalled,
     });
-    await expect(rejection).rejects.toThrow(UsageError);
-    await expect(rejection).rejects.toThrow(/schedule does not satisfy the task's declared inputs/);
-    await expect(rejection).rejects.toThrow(/inputs\.ticket: is required/);
+    expect(prepared.desired).toEqual([]);
+    expect(prepared.failures).toHaveLength(1);
+    expect(prepared.failures[0]?.reason).toMatch(/inputs\.ticket: is required/);
   });
 });
 
@@ -748,20 +752,24 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
     );
     let signatures = 0;
 
-    await expect(
-      planSchedulerSync({
-        sourceRoot: bundleRoot,
-        adapterId: "akm",
-        bundleName: "team",
-        bundleTarget: "team",
-        backend: "cron",
-        installed: emptyInstalled,
-        expectedSignature: () => {
-          signatures += 1;
-          return "sig";
-        },
-      }),
-    ).rejects.toThrow(/must be a canonical/);
+    // #867: an unsupported workflow-step target is a per-source failure —
+    // it degrades (no bindings desired for this lone source, no signature
+    // call) rather than rejecting the whole sync.
+    const plan = await planSchedulerSync({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+      expectedSignature: () => {
+        signatures += 1;
+        return "sig";
+      },
+    });
+    expect(plan.desired).toEqual([]);
+    expect(plan.failures).toHaveLength(1);
+    expect(plan.failures[0]?.reason).toMatch(/must be a canonical/);
     expect(signatures).toBe(0);
   });
 
@@ -893,20 +901,24 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
     write(path.join(componentRoot, "nightly..yml"), "version: 4\nrun: echo unsafe\nshell: sh\nschedule: '@daily'\n");
     let signatures = 0;
 
-    await expect(
-      planSchedulerSync({
-        sourceRoot: componentRoot,
-        adapterId: "akm-task",
-        bundleName: "team",
-        bundleTarget: "team",
-        backend: "schtasks",
-        installed: emptyInstalled,
-        expectedSignature: () => {
-          signatures += 1;
-          return "signature";
-        },
-      }),
-    ).rejects.toThrow(/period|portable|native scheduler artifact/i);
+    // #867: an unportable id is a per-source failure — it degrades (no
+    // bindings desired for this lone source, no signature call) rather
+    // than rejecting the whole sync.
+    const plan = await planSchedulerSync({
+      sourceRoot: componentRoot,
+      adapterId: "akm-task",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "schtasks",
+      installed: emptyInstalled,
+      expectedSignature: () => {
+        signatures += 1;
+        return "signature";
+      },
+    });
+    expect(plan.desired).toEqual([]);
+    expect(plan.failures).toHaveLength(1);
+    expect(plan.failures[0]?.reason).toMatch(/period|portable|native scheduler artifact/i);
     expect(signatures).toBe(0);
   });
 
@@ -1063,34 +1075,37 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
     expect(signatures).toBe(0);
   });
 
-  test("one invalid desired task poisons the whole plan without signature or mutation preparation", async () => {
+  test("#867: one invalid desired task degrades (reported, excluded) instead of poisoning the whole plan; a valid peer still reconciles", async () => {
     const bundleRoot = root();
-    write(path.join(bundleRoot, "tasks", "a-valid.yml"), "version: 4\nuses: commands/a\nschedule: '@daily'\n");
+    write(path.join(bundleRoot, "tasks", "a-valid.yml"), "version: 4\nrun: echo yes\nshell: sh\nschedule: '@daily'\n");
     // B-15 (spec docs/plans/specs/p4-deletions-closeout.md §2.2): a
-    // still-version-2 sibling now fails TASK_SCHEMA_VERSION_UNSUPPORTED with
-    // the same migrate hint as a version-3 document (row B-14) — this test's
-    // poisoning assertion is exactly that hint.
+    // still-version-2 sibling fails TASK_SCHEMA_VERSION_UNSUPPORTED with the
+    // migrate hint (row B-14) — before #867, this ONE bad sibling rejected
+    // the whole desired set (`akm migrate apply --dry-run` in the error);
+    // now it is dropped and reported, and `a-valid` still reconciles.
     write(path.join(bundleRoot, "tasks", "b-invalid.yml"), "version: 2\nschedule: '@daily'\ncommand: echo no\n");
     let signatures = 0;
 
-    await expect(
-      planSchedulerSync({
-        sourceRoot: bundleRoot,
-        adapterId: "akm",
-        bundleName: "team",
-        bundleTarget: "team",
-        backend: "cron",
-        installed: emptyInstalled,
-        expectedSignature: () => {
-          signatures += 1;
-          return "sig";
-        },
-      }),
-    ).rejects.toThrow("akm migrate apply --dry-run");
-    expect(signatures).toBe(0);
+    const plan = await planSchedulerSync({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+      expectedSignature: () => {
+        signatures += 1;
+        return "sig";
+      },
+    });
+    expect(plan.desired.map((binding) => binding.id)).toEqual(["a-valid"]);
+    expect(plan.failures).toHaveLength(1);
+    expect(plan.failures[0]?.path).toContain("b-invalid.yml");
+    expect(plan.failures[0]?.reason).toContain("akm migrate apply --dry-run");
+    expect(signatures).toBe(1);
   });
 
-  test("an unresolved desired task target poisons the whole read-only plan", async () => {
+  test("#867: an unresolved desired task target degrades (reported, excluded); a valid peer still reconciles", async () => {
     const bundleRoot = root();
     write(path.join(bundleRoot, "tasks", "a-valid.yml"), "version: 4\nrun: echo yes\nshell: sh\nschedule: '@daily'\n");
     write(
@@ -1099,26 +1114,26 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
     );
     let signatures = 0;
 
-    await expect(
-      Promise.resolve(
-        planSchedulerSync({
-          sourceRoot: bundleRoot,
-          adapterId: "akm",
-          bundleName: "team",
-          bundleTarget: "team",
-          backend: "cron",
-          installed: emptyInstalled,
-          expectedSignature: () => {
-            signatures += 1;
-            return "sig";
-          },
-        }),
-      ),
-    ).rejects.toThrow(/not found|not present|no script assets/i);
-    expect(signatures).toBe(0);
+    const plan = await planSchedulerSync({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+      expectedSignature: () => {
+        signatures += 1;
+        return "sig";
+      },
+    });
+    expect(plan.desired.map((binding) => binding.id)).toEqual(["a-valid"]);
+    expect(plan.failures).toHaveLength(1);
+    expect(plan.failures[0]?.path).toContain("b-unresolved.yml");
+    expect(plan.failures[0]?.reason).toMatch(/not found|not present|no script assets/i);
+    expect(signatures).toBe(1);
   });
 
-  test("a nonprojectable workflow poisons the whole read-only plan", async () => {
+  test("#867: a nonprojectable workflow degrades (reported, excluded) rather than poisoning the whole plan", async () => {
     const bundleRoot = root();
     write(
       path.join(bundleRoot, "workflows", "multi.yml"),
@@ -1141,21 +1156,20 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
       ].join("\n"),
     );
 
-    await expect(
-      Promise.resolve(
-        planSchedulerSync({
-          sourceRoot: bundleRoot,
-          adapterId: "akm",
-          bundleName: "team",
-          bundleTarget: "team",
-          backend: "cron",
-          installed: emptyInstalled,
-        }),
-      ),
-    ).rejects.toThrow(/exactly one (?:source-IR )?job|single-job|multi-job|cannot project/i);
+    const plan = await planSchedulerSync({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+    });
+    expect(plan.desired).toEqual([]);
+    expect(plan.failures).toHaveLength(1);
+    expect(plan.failures[0]?.reason).toMatch(/exactly one (?:source-IR )?job|single-job|multi-job|cannot project/i);
   });
 
-  test("an unsupported workflow trigger and a valid peer fail as one read-only source set", async () => {
+  test("#867: an unsupported workflow trigger degrades (reported, excluded); a valid task peer still reconciles", async () => {
     const bundleRoot = root();
     write(path.join(bundleRoot, "tasks", "valid.yml"), "version: 4\nrun: echo yes\nshell: sh\nschedule: '@daily'\n");
     write(
@@ -1163,19 +1177,20 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
       "name: bad\non: { push: {} }\njobs: { main: { runs-on: [self-hosted], steps: [{ run: echo no }] } }\n",
     );
 
-    await expect(
-      planSchedulerSync({
-        sourceRoot: bundleRoot,
-        adapterId: "akm",
-        bundleName: "team",
-        bundleTarget: "team",
-        backend: "cron",
-        installed: emptyInstalled,
-      }),
-    ).rejects.toThrow(/unsupported|trigger/i);
+    const plan = await planSchedulerSync({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      bundleTarget: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+    });
+    expect(plan.desired.map((binding) => binding.id)).toEqual(["valid"]);
+    expect(plan.failures).toHaveLength(1);
+    expect(plan.failures[0]?.reason).toMatch(/unsupported|trigger/i);
   });
 
-  test("workflow collision domains fail before reading or fingerprinting either candidate", async () => {
+  test("#867: workflow collision domains degrade (reported, excluded) without reading or fingerprinting either candidate", async () => {
     const bundleRoot = root();
     const workflows = path.join(bundleRoot, "workflows");
     write(path.join(workflows, "same.md"), "---\ntype: workflow\n---\n# Same\n\n## Steps\n\n### one\nDo it.\n");
@@ -1185,19 +1200,20 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
     );
     let signatures = 0;
 
-    await expect(
-      planSchedulerSync({
-        sourceRoot: bundleRoot,
-        adapterId: "akm",
-        bundleName: "team",
-        backend: "cron",
-        installed: emptyInstalled,
-        expectedSignature: () => {
-          signatures += 1;
-          return "sig";
-        },
-      }),
-    ).rejects.toThrow(/multiple workflow source files/i);
+    const plan = await planSchedulerSync({
+      sourceRoot: bundleRoot,
+      adapterId: "akm",
+      bundleName: "team",
+      backend: "cron",
+      installed: emptyInstalled,
+      expectedSignature: () => {
+        signatures += 1;
+        return "sig";
+      },
+    });
+    expect(plan.desired).toEqual([]);
+    expect(plan.failures).toHaveLength(1);
+    expect(plan.failures[0]?.reason).toMatch(/multiple workflow source files/i);
     expect(signatures).toBe(0);
   });
 

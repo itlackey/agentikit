@@ -1847,7 +1847,11 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     expect(() => getProposal(stash, created.id)).toThrow(/missing changes/i);
   });
 
-  test("a row without proposedTarget is rejected", () => {
+  test("a row without proposedTarget decodes with the field omitted (#859)", () => {
+    // #859 reopening: proposedTarget is envelope metadata absent from ~93% of
+    // the real archive's accepted/rejected rows. An already-decided proposal
+    // is counted and displayed, never re-applied, so its absence must not
+    // block read (list/get) the way a genuinely corrupt row does.
     const stash = makeStashDir();
     const created = createProposal(stash, {
       ref: "lessons/missing-target",
@@ -1866,7 +1870,30 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
     state.close();
 
-    expect(() => getProposal(stash, created.id)).toThrow(/missing proposedTarget/i);
+    const reread = getProposal(stash, created.id);
+    expect(reread.proposedTarget).toBeUndefined();
+  });
+
+  test("a present but malformed proposedTarget is still rejected", () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/malformed-target",
+      source: "reflect",
+      sourceRun: "run-envelope",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    const state = openStateDatabase();
+    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
+      metadata_json: string;
+    };
+    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+    metadata.proposedTarget = { source: "primary" }; // missing `root`
+    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
+    state.close();
+
+    expect(() => getProposal(stash, created.id)).toThrow(/invalid proposedTarget/i);
   });
 
   test("a row with a retired ref grammar is rejected", () => {

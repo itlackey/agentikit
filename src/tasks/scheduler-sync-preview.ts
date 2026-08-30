@@ -14,7 +14,7 @@
  * This module only ever reads a {@link SchedulerSyncOperation} array and
  * returns a frozen plain object; it never touches a scheduler backend.
  */
-import type { SchedulerSyncOperation, SchedulerSyncPlan } from "./scheduler-sync";
+import type { SchedulerSourceFailure, SchedulerSyncOperation, SchedulerSyncPlan } from "./scheduler-sync";
 
 export interface SchedulerPlanPreviewOperation {
   readonly id: string;
@@ -23,6 +23,8 @@ export interface SchedulerPlanPreviewOperation {
   readonly nativeId?: string;
   /** Resolved bundle path the installed binding was attributed to (#846). Removals only, when known. */
   readonly ownerBundlePath?: string;
+  /** Why `akm task prune` (#851) selected this entry. Absent for `sync`'s own removals. */
+  readonly reason?: "invalid-context" | "dead-bundle-path";
 }
 
 export interface SchedulerPlanPreview {
@@ -34,6 +36,8 @@ export interface SchedulerPlanPreview {
   readonly unchanged: readonly string[];
   /** Drives dry-run's non-zero exit: true whenever the plan would remove any scheduler binding. */
   readonly hasRemovals: boolean;
+  /** Sources that failed to parse/prepare (#867) — excluded from the plan, reported here instead of poisoning it. */
+  readonly failures: readonly SchedulerSourceFailure[];
 }
 
 /**
@@ -46,6 +50,7 @@ export function renderSchedulerPlanPreview(
   backend: string,
   operations: readonly SchedulerSyncOperation[],
   unchanged: readonly string[] = [],
+  failures: readonly SchedulerSourceFailure[] = [],
 ): SchedulerPlanPreview {
   const adds: SchedulerPlanPreviewOperation[] = [];
   const updates: SchedulerPlanPreviewOperation[] = [];
@@ -57,6 +62,7 @@ export function renderSchedulerPlanPreview(
         kind: "remove",
         nativeId: operation.nativeId,
         ...(operation.ownerBundlePath !== undefined ? { ownerBundlePath: operation.ownerBundlePath } : {}),
+        ...(operation.reason !== undefined ? { reason: operation.reason } : {}),
       });
     } else if (operation.kind === "install") {
       adds.push({ id: operation.binding.id, kind: "install" });
@@ -72,10 +78,11 @@ export function renderSchedulerPlanPreview(
     removes: Object.freeze(removes),
     unchanged: Object.freeze([...unchanged]),
     hasRemovals: removes.length > 0,
+    failures: Object.freeze([...failures]),
   });
 }
 
 /** Convenience wrapper for the common case: previewing a whole {@link SchedulerSyncPlan}. */
 export function renderSchedulerSyncPlanPreview(backend: string, plan: SchedulerSyncPlan): SchedulerPlanPreview {
-  return renderSchedulerPlanPreview(backend, plan.operations, plan.unchanged);
+  return renderSchedulerPlanPreview(backend, plan.operations, plan.unchanged, plan.failures);
 }

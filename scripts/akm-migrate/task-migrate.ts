@@ -185,11 +185,14 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
   const result = withConfigLock(() =>
     withMaintenanceStartBarrier(() => {
       const before = inspectCurrentTaskPlan();
-      if (before.result.status !== "ready") return before.result;
+      // Blocked files are skipped, not fatal: migrate whatever in the batch
+      // can be migrated and report the rest as blocked (printPlan below
+      // exits non-zero whenever any file is still blocked afterward).
+      if (before.result.taskV3Migration.changed === 0) return before.result;
       const backupPath = path.join(getDataDir(), "backups", "task-v3", `${Date.now()}-${randomUUID()}`);
       const applied = applyTaskToV3MigrationPlan(before.plan, { backupRoot: backupPath });
       const after = inspectCurrentTaskPlan().result;
-      if (after.status !== "current") {
+      if (after.taskV3Migration.changed > 0) {
         throw new ConfigError("Task migration did not converge to task v3.", "INVALID_CONFIG_FILE");
       }
       return { ...after, backupPath, applied: applied.changed.length };
@@ -294,11 +297,14 @@ export async function runTaskV4MigrationApply(options: MigrationCommandOptions =
   const result = withConfigLock(() =>
     withMaintenanceStartBarrier(() => {
       const before = inspectCurrentTaskV4Plan();
-      if (before.result.status !== "ready") return before.result;
+      // Blocked files are skipped, not fatal: migrate whatever in the batch
+      // can be migrated and report the rest as blocked (printPlan below
+      // exits non-zero whenever any file is still blocked afterward).
+      if (before.result.taskV4Migration.changed === 0) return before.result;
       const backupPath = path.join(getDataDir(), "backups", "task-v4", `${Date.now()}-${randomUUID()}`);
       const applied = applyTaskToV4MigrationPlan(before.plan, { backupRoot: backupPath });
       const after = inspectCurrentTaskV4Plan().result;
-      if (after.status !== "current") {
+      if (after.taskV4Migration.changed > 0) {
         throw new ConfigError("Task migration did not converge to task source v4.", "INVALID_CONFIG_FILE");
       }
       return { ...after, backupPath, applied: applied.changed.length };

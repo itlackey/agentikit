@@ -14,7 +14,7 @@ import { parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import type { TocHeading } from "../../core/asset/markdown";
 import { asNonEmptyString } from "../../core/common";
-import { isVerbose, warn } from "../../core/warn";
+import { isVerbose, warn, warnVerbose } from "../../core/warn";
 import type { buildFileContext } from "../walk/file-context";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
@@ -1154,7 +1154,7 @@ function stripMarkdownLinkDestinations(text: string, nesting = 0): string {
  * secret/env/session bytes; that policy is enforced at the adapter metadata
  * boundary below.
  */
-export function projectMarkdownContent(body: string): string | undefined {
+export function projectMarkdownContent(body: string, truncationInfo?: { truncated: boolean }): string | undefined {
   const lines = body.split(/\r?\n/);
   const innerBlock = findInnerFrontmatterBlock(lines);
   const start = innerBlock && isFrontmatterShaped(lines, innerBlock) ? innerBlock.close + 1 : 0;
@@ -1201,6 +1201,7 @@ export function projectMarkdownContent(body: string): string | undefined {
 
   const text = projected.join(" ").replace(/\s+/g, " ").trim();
   if (!text) return undefined;
+  if (truncationInfo) truncationInfo.truncated = text.length > MARKDOWN_CONTENT_MAX_CHARS;
   return truncateUnicodeSafe(text, MARKDOWN_CONTENT_MAX_CHARS);
 }
 
@@ -1252,8 +1253,15 @@ export function applyPreContributorFields(
     // Native Markdown has one bounded low-weight body projection. Sensitive
     // types and raw session/checkpoint material never cross this boundary.
     if (entry.type !== "env" && entry.type !== "session" && !hasSessionMemoryMarker(parsed.data, parsed.content)) {
-      const contentProjection = projectMarkdownContent(parsed.content);
-      if (contentProjection) entry.content = contentProjection;
+      const truncationInfo = { truncated: false };
+      const contentProjection = projectMarkdownContent(parsed.content, truncationInfo);
+      if (contentProjection) {
+        entry.content = contentProjection;
+        if (truncationInfo.truncated) {
+          entry.contentTruncated = true;
+          warnVerbose(`${file}: indexed content truncated to ${MARKDOWN_CONTENT_MAX_CHARS} chars`);
+        }
+      }
     }
     // Extract parameters from template placeholders ($1, $ARGUMENTS, {{named}})
     if (entry.type === "command") {

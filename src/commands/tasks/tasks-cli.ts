@@ -41,7 +41,15 @@ import { UsageError } from "../../core/errors";
 import type { InputFlag } from "../../execution/input-contract";
 import { TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS } from "../../tasks/task-run-reserved-flags";
 import { akmTaskExplain } from "./explain";
-import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync, akmTasksSyncPlan } from "./tasks";
+import {
+  akmTasksAdd,
+  akmTasksDoctor,
+  akmTasksHistory,
+  akmTasksPrune,
+  akmTasksRun,
+  akmTasksSync,
+  akmTasksSyncPlan,
+} from "./tasks";
 
 /** Shared `--bundle <bundle>` arg wired onto every task subcommand. */
 const bundleArg = {
@@ -324,10 +332,16 @@ const tasksHistoryCommand = defineJsonCommand({
  * #849: `task sync --dry-run`'s exit-code contract, "non-zero when the plan
  * contains removals" — factored out as a pure function (rather than left
  * inline in the command's `run()`) so it's directly unit-testable without
- * driving the whole CLI through a real scheduler backend.
+ * driving the whole CLI through a real scheduler backend. #867: also
+ * non-zero when any source failed to parse/prepare — sync degrades (still
+ * reconciles the tasks/workflows that DID parse) rather than rejecting the
+ * whole set, but a dropped source must still surface as a failing exit.
  */
-export function taskSyncDryRunExitCode(preview: { hasRemovals: boolean }): number | undefined {
-  return preview.hasRemovals ? EXIT_CODES.GENERAL : undefined;
+export function taskSyncDryRunExitCode(preview: {
+  hasRemovals: boolean;
+  failures?: readonly unknown[];
+}): number | undefined {
+  return preview.hasRemovals || (preview.failures?.length ?? 0) > 0 ? EXIT_CODES.GENERAL : undefined;
 }
 
 const tasksSyncCommand = defineJsonCommand({
@@ -363,6 +377,11 @@ const tasksSyncCommand = defineJsonCommand({
     }
     const result = await akmTasksSync({}, args.bundle, { rebind });
     output("task-sync", result);
+    // #867: sync degrades — sources that failed to parse/prepare are
+    // excluded from reconciliation and reported in `result.failed` rather
+    // than poisoning the whole sync, but their presence must still fail
+    // the command's exit code so the breakage stays visible.
+    if (result.failed.length > 0) process.exitCode = EXIT_CODES.GENERAL;
   },
 });
 
@@ -412,6 +431,51 @@ const tasksDoctorCommand = defineJsonCommand({
   },
 });
 
+/**
+ * #851: `akm task prune`'s exit-code contract mirrors `task sync --dry-run`'s
+ * (`taskSyncDryRunExitCode` above) — non-zero whenever the preview lists
+ * removals the invocation didn't (or couldn't, without `--yes`) execute, so
+ * `akm task prune` is usable as a CI/health check the same way `sync
+ * --dry-run` is.
+ */
+export function taskPruneExitCode(result: { dryRun: boolean; preview: { hasRemovals: boolean } }): number | undefined {
+  return result.dryRun && result.preview.hasRemovals ? EXIT_CODES.GENERAL : undefined;
+}
+
+const tasksPruneCommand = defineJsonCommand({
+  meta: {
+    name: "prune",
+    description:
+      "Remove installed scheduler entries `sync` can never reclaim because their own descriptor no longer " +
+      "resolves to a live bundle (corrupt/missing --scheduler-context, or the owning bundle directory is " +
+      "gone). Defaults to a dry-run preview — zero scheduler writes. Requires --yes to remove anything; " +
+      "--id narrows removal to specific binding ids (comma-separated).",
+  },
+  args: {
+    yes: {
+      type: "boolean",
+      description: "Execute removal of every currently-computed orphan (the plan is still printed first)",
+      default: false,
+    },
+    id: {
+      type: "string",
+      description: "Comma-separated scheduler binding id(s) to limit pruning to (must already be orphan candidates)",
+    },
+  },
+  async run({ args }) {
+    const id = args.id
+      ? args.id
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : undefined;
+    const result = await akmTasksPrune({}, { yes: args.yes === true, id });
+    output("task-prune", result);
+    const exitCode = taskPruneExitCode(result);
+    if (exitCode !== undefined) process.exitCode = exitCode;
+  },
+});
+
 export const taskCommand = defineGroupCommand({
   meta: {
     name: "task",
@@ -424,6 +488,7 @@ export const taskCommand = defineGroupCommand({
     explain: tasksExplainCommand,
     history: tasksHistoryCommand,
     sync: tasksSyncCommand,
+    prune: tasksPruneCommand,
     doctor: tasksDoctorCommand,
   },
   // Bare `akm task` reports scheduler diagnostics. Inspection of individual

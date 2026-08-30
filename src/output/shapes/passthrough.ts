@@ -11,14 +11,26 @@ import type { OutputShapeEntry } from "./registry";
 // #484: stamp schemaVersion + shape discriminator on passthrough envelopes so
 // third-party consumers can pin a schema version and dispatch on shape uniformly.
 // Idempotent — never overwrites an existing schemaVersion or shape field.
+//
+// Builds a shallow copy rather than mutating `result` in place: several
+// command results (e.g. `akm task sync --dry-run`'s `SchedulerPlanPreview`,
+// see src/tasks/scheduler-sync-preview.ts) are deliberately `Object.freeze`d
+// by their producer as an immutability guarantee, and an in-place `obj.shape
+// = …` assignment throws ("Attempting to define property on object that is
+// not extensible") the moment it hits one. Copying tolerates both frozen and
+// mutable inputs uniformly, and `output()` never uses the result's identity
+// past this call, so a copy is safe here.
 function makeStampHandler(command: string) {
   return (result: unknown): unknown => {
     if (result === null || result === undefined) return result;
     if (typeof result !== "object" || Array.isArray(result)) return result;
     const obj = result as Record<string, unknown>;
-    if (obj.shape === undefined) obj.shape = command;
-    if (obj.schemaVersion === undefined) obj.schemaVersion = 1;
-    return obj;
+    if (obj.shape !== undefined && obj.schemaVersion !== undefined) return obj;
+    return {
+      ...obj,
+      shape: obj.shape ?? command,
+      schemaVersion: obj.schemaVersion ?? 1,
+    };
   };
 }
 
@@ -59,6 +71,7 @@ const PASSTHROUGH_COMMANDS = [
   "task-doctor",
   "task-explain",
   "task-history",
+  "task-prune",
   "task-run",
   "task-sync",
   "task-sync-dry-run",

@@ -29,25 +29,6 @@ export interface TaskToV3FileInput {
   readonly onDiskWritable?: boolean;
   /** Physical bundle/component root recorded by the filesystem inspector. */
   readonly containmentRoot?: string;
-  /** Physical identities captured by the filesystem inspector for drift fencing. */
-  readonly inspectionIdentity?: TaskToV3InspectionIdentity;
-}
-
-export interface TaskToV3FilesystemIdentity {
-  readonly realPath: string;
-  readonly device: string;
-  readonly inode: string;
-  /** Decimal hard-link count captured with the physical inode identity. */
-  readonly linkCount: string;
-  /** Decimal nanosecond inode change time; catches transient link/unlink drift. */
-  readonly changeTimeNs: string;
-}
-
-export interface TaskToV3InspectionIdentity {
-  readonly file: TaskToV3FilesystemIdentity;
-  readonly root: TaskToV3FilesystemIdentity;
-  /** Stable owning bundle identity when `root` is a nested component. */
-  readonly bundleRoot?: TaskToV3FilesystemIdentity;
 }
 
 interface TaskToV3OutcomeBase {
@@ -58,7 +39,6 @@ interface TaskToV3OutcomeBase {
   readonly writable: boolean;
   readonly onDiskWritable?: boolean;
   readonly containmentRoot?: string;
-  readonly inspectionIdentity?: TaskToV3InspectionIdentity;
   readonly reason: string;
   readonly detail?: string;
 }
@@ -144,6 +124,24 @@ const SHELL_ASSIGNMENT_WORD = /^[A-Za-z_][A-Za-z0-9_]*=/;
 function shellStableV2Executable(executable: string): boolean {
   return executable === "akm" || executable.includes("/");
 }
+/**
+ * `env NAME=value... cmd args...` is env(1) itself resolving and exec'ing
+ * `cmd` via its own PATH search — that lookup happens inside env's execvp()
+ * regardless of whether env was launched by direct execve (v2) or by a host
+ * shell (v3 `run:`). The shell-vs-argv divergence `shellStableV2Executable`
+ * guards against (bare names shadowed by shell aliases/builtins/functions)
+ * therefore does not apply to whatever env ultimately invokes, so skip past
+ * a leading `env` and its `NAME=value` assignments to find the real target.
+ * Returns the original tokens, unchanged, when there is no such target
+ * (e.g. `env` with nothing after its assignments).
+ */
+function skipEnvAssignmentPrefix(tokens: readonly string[]): { tokens: readonly string[]; envWrapped: boolean } {
+  if (tokens[0] !== "env") return { tokens, envWrapped: false };
+  let index = 1;
+  while (index < tokens.length && SHELL_ASSIGNMENT_WORD.test(tokens[index] as string)) index += 1;
+  if (index >= tokens.length) return { tokens, envWrapped: false };
+  return { tokens: tokens.slice(index), envWrapped: true };
+}
 const KNOWN_PROMPT_REF_FAMILIES = new Set([
   "agents",
   "commands",
@@ -166,15 +164,6 @@ function hash(bytes: Uint8Array): string {
 }
 
 function base(input: TaskToV3FileInput): Omit<TaskToV3OutcomeBase, "reason"> {
-  const inspectionIdentity = input.inspectionIdentity
-    ? Object.freeze({
-        file: Object.freeze({ ...input.inspectionIdentity.file }),
-        root: Object.freeze({ ...input.inspectionIdentity.root }),
-        ...(input.inspectionIdentity.bundleRoot
-          ? { bundleRoot: Object.freeze({ ...input.inspectionIdentity.bundleRoot }) }
-          : {}),
-      })
-    : undefined;
   return {
     filePath: input.filePath,
     before: Buffer.from(input.bytes),
@@ -183,7 +172,6 @@ function base(input: TaskToV3FileInput): Omit<TaskToV3OutcomeBase, "reason"> {
     writable: input.writable,
     ...(input.onDiskWritable !== undefined ? { onDiskWritable: input.onDiskWritable } : {}),
     ...(input.containmentRoot ? { containmentRoot: input.containmentRoot } : {}),
-    ...(inspectionIdentity ? { inspectionIdentity } : {}),
   };
 }
 
@@ -423,8 +411,9 @@ function migratedObject(data: Record<string, unknown>): Record<string, unknown> 
     if (tokens.length === 0 || tokens.some((token) => !SAFE_V2_COMMAND_TOKEN.test(token))) {
       return "shell-operators-change-v2-literal-argv-semantics";
     }
-    const executable = tokens[0] as string;
-    if (SHELL_ASSIGNMENT_WORD.test(executable) || !shellStableV2Executable(executable)) {
+    const { tokens: targetTokens, envWrapped } = skipEnvAssignmentPrefix(tokens);
+    const executable = targetTokens[0] as string;
+    if (SHELL_ASSIGNMENT_WORD.test(executable) || (!envWrapped && !shellStableV2Executable(executable))) {
       return "shell-command-resolution-changes-v2-literal-argv-semantics";
     }
     output.run = tokens.join(" ");

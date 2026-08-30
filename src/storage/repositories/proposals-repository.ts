@@ -104,7 +104,7 @@ function currentProposalRef(ref: string, requireQualified = false): string {
 }
 
 function currentProposalTarget(value: unknown): NonNullable<Proposal["proposedTarget"]> {
-  if (typeof value !== "object" || value === null) throw new Error("Proposal metadata is missing proposedTarget.");
+  if (typeof value !== "object" || value === null) throw new Error("Proposal metadata has an invalid proposedTarget.");
   const target = value as { source?: unknown; root?: unknown };
   if (
     typeof target.source !== "string" ||
@@ -257,7 +257,13 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
   validatePresentMetadata(meta);
 
   const changes = storedToChanges(meta.changes, row.content);
-  const proposedTarget = currentProposalTarget(meta.proposedTarget);
+  // #859: absent proposedTarget (~93% of the real archive's accepted/rejected
+  // rows) is envelope metadata that predates this field, not corruption — an
+  // already-decided proposal is counted/displayed, never re-applied, so
+  // decode tolerates its absence the same way it already tolerates absent
+  // `changes`. A *present but malformed* value is still corruption and
+  // throws via currentProposalTarget, same as before.
+  const proposedTarget = meta.proposedTarget !== undefined ? currentProposalTarget(meta.proposedTarget) : undefined;
   return {
     id: row.id,
     ref: currentProposalRef(row.ref),
@@ -271,7 +277,7 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
       ...(frontmatter !== undefined ? { frontmatter } : {}),
     },
     changes,
-    proposedTarget,
+    ...(proposedTarget !== undefined ? { proposedTarget } : {}),
     ...(typeof meta.beforeHash === "string" ? { beforeHash: meta.beforeHash } : {}),
     ...(meta.review !== undefined ? { review: meta.review as Proposal["review"] } : {}),
     ...(typeof meta.confidence === "number" ? { confidence: meta.confidence } : {}),
@@ -291,8 +297,27 @@ export function proposalRowToProposal(row: ProposalRow): Proposal {
 export function proposalToRowValues(proposal: Proposal, stashDir: string): Omit<ProposalRow, "id"> & { id: string } {
   // Fields that have no dedicated column live in metadata_json.
   const metaObj: Record<string, unknown> = {};
-  if (!Array.isArray(proposal.changes) || proposal.changes.length === 0) {
-    throw new Error(`Proposal ${proposal.id} has no file changes.`);
+  // #859: `changes` and `proposedTarget` are only enforced as REQUIRED when
+  // minting/updating a `pending` proposal — the one status createProposal
+  // ever writes, and the one status every real accept/reject transition
+  // writes FROM (a pending row always carries the full envelope; see
+  // storedToChanges / currentProposalTarget doc comments). Writing a
+  // non-pending status (accepted/rejected/reverted) is always a status
+  // TRANSITION of an already-persisted proposal, spread-copied from the row
+  // this same repository just decoded — for a legacy archived row that
+  // never had `changes`/`proposedTarget` to begin with (the pre-envelope
+  // shape), re-persisting it unchanged (e.g. `proposal revert` on an old
+  // accepted row) must not be blocked by a requirement the row never met.
+  // This does NOT weaken validation of a genuinely new proposal: every
+  // pending-status write still requires the full envelope, exactly as
+  // before.
+  if (proposal.status === "pending") {
+    if (!Array.isArray(proposal.changes) || proposal.changes.length === 0) {
+      throw new Error(`Proposal ${proposal.id} has no file changes.`);
+    }
+    if (proposal.proposedTarget === undefined) {
+      throw new Error(`Proposal ${proposal.id} is missing proposedTarget.`);
+    }
   }
   if (
     proposal.changes.some(
@@ -306,7 +331,7 @@ export function proposalToRowValues(proposal: Proposal, stashDir: string): Omit<
     throw new Error(`Proposal ${proposal.id} has invalid file changes.`);
   }
   metaObj.changes = changesToStored(proposal.changes);
-  metaObj.proposedTarget = currentProposalTarget(proposal.proposedTarget);
+  if (proposal.proposedTarget !== undefined) metaObj.proposedTarget = currentProposalTarget(proposal.proposedTarget);
   if (proposal.beforeHash !== undefined) metaObj.beforeHash = proposal.beforeHash;
   if (proposal.sourceRun !== undefined) metaObj.sourceRun = proposal.sourceRun;
   if (proposal.review !== undefined) metaObj.review = proposal.review;

@@ -1,3 +1,10 @@
+// Requires TMPDIR (if set) to be a /tmp-family path: fixtures are built
+// under os.tmpdir() (via makeSandboxDir), and the "rejects temporary bind
+// sources" case below relies on that fixture path actually falling under
+// the literal /tmp / /var/tmp check in scripts/akm-eval/bin/akm-eval-twin-docker
+// (deliberately hardcoded there, not read from TMPDIR, to guard against
+// systemd PrivateTmp). A relocated TMPDIR makes that case fail for reasons
+// unrelated to the launcher under test. See AGENTS.md's Tests section.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
