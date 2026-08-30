@@ -50,7 +50,14 @@ total="${#files[@]}"
 # the commit body for the per-suite deleted-test table. P4-N5's formula:
 # floor(executed * 0.95 / 100) * 100 = floor(5882 * 0.95 / 100) * 100 =
 # floor(55.879) * 100 = 5500.
-MIN_TESTS="${AKM_MIN_INTEGRATION_TESTS:-5500}"
+#
+# #861: RAISED 5500 -> 5700. release/0.9.5 measured a clean-TMPDIR run at
+# 5950 pass / 53 skip (executed 6003) across two consecutive full runs.
+# Same formula: floor(6003 * 0.95 / 100) * 100 = floor(57.0285) * 100 =
+# 5700. Headroom below the measured 6003 is intentional (#866 already
+# showed the suite legitimately loses tests to dead-code removal); raise
+# again as the suite grows, argue about lowering it in review.
+MIN_TESTS="${AKM_MIN_INTEGRATION_TESTS:-5700}"
 if [ "$total" -eq 0 ]; then
   echo "── integration: no test files found under tests/integration" >&2
   exit 1
