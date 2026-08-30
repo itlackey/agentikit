@@ -16,7 +16,6 @@
 import { type AkmConfig, getSources, loadConfig } from "../../core/config/config";
 import { rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
-import { isTransientStashPath } from "../../core/paths";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
 import { resolveReadSources } from "../../indexer/read-preflight";
 import { searchLocal } from "../../indexer/search/db-search";
@@ -26,8 +25,6 @@ import {
   usageEventAttributionMetadata,
 } from "../../indexer/search/search-attribution";
 import { getEntryIdByFilePath, getItemRefById } from "../../storage/repositories/index-entries-repository";
-import { bumpUtilityScoresBatch } from "../../storage/repositories/index-utility-repository";
-import { getCurrentWorkflowScopeKey } from "../../workflows/authoring/scope-key";
 // Eagerly import source providers to trigger self-registration before the
 // indexer or path-resolution code runs.
 import "../../sources/providers/index";
@@ -50,7 +47,6 @@ const DEFAULT_LIMIT = 20;
 interface SearchEventLoggingInput {
   skipLogging?: boolean;
   eventSource?: UsageEventSource;
-  disableScopedUtility?: boolean;
   attributionProjection?: AttributionProjection;
 }
 
@@ -90,7 +86,7 @@ export async function akmSearch(input: {
   includeSessions?: boolean;
   /** Disable the automatic project-context ranking boost for this search only. */
   disableProjectContext?: boolean;
-  /** Disable scoped-utility ranking and usage-score bumps for this search only. */
+  /** Disable scoped-utility ranking for this search only. */
   disableScopedUtility?: boolean;
   /**
    * When true, skip logging usage events. Used by internal callers
@@ -289,14 +285,7 @@ function maybeLogSearchEvent(
   mode?: "semantic" | "keyword",
 ): void {
   if (input.skipLogging) return;
-  logSearchEvent(
-    query,
-    response,
-    mode,
-    input.eventSource,
-    input.disableScopedUtility === true,
-    input.attributionProjection,
-  );
+  logSearchEvent(query, response, mode, input.eventSource, input.attributionProjection);
 }
 
 /**
@@ -346,7 +335,6 @@ function logSearchEvent(
   response: SearchResponse,
   mode: "semantic" | "keyword" = "keyword",
   eventSource: UsageEventSource = "user",
-  disableScopedUtility = false,
   attributionProjection: AttributionProjection = "full",
 ): void {
   // Emit a structured event to events.jsonl so workflow-trace consumers
@@ -397,25 +385,18 @@ function logSearchEvent(
             source: eventSource,
           });
         }, TELEMETRY_BUSY_TIMEOUT_MS);
-        // Bump utility scores for all resolved entries (MemRL retrieval signal).
-        // The indexer overwrites these at next reindex; bumps are temporary hints.
-        // Gated to user-sourced events: pipeline searches (improve probes, task
-        // runner) must not feed the utility signal (meta-review 05 DRIFT-6 —
-        // the bump previously fired unconditionally, so even correctly-tagged
-        // machine traffic inflated utility). utility_scores stays in index.db.
-        const resolvedIds =
-          eventSource === "user" ? resolved.map((r) => r.entryId).filter((id): id is number => id !== undefined) : [];
-        if (resolvedIds.length > 0) {
-          let scopeKey: string | undefined;
-          try {
-            const stashPath = response.bundleDir;
-            const disabled = disableScopedUtility || (stashPath && isTransientStashPath(stashPath));
-            scopeKey = disabled ? undefined : getCurrentWorkflowScopeKey();
-          } catch {
-            // Non-fatal — fall back to global-only bumps on any error.
-          }
-          bumpUtilityScoresBatch(db, resolvedIds, 1.0, 0.1, scopeKey);
-        }
+        // No live utility_scores/utility_scores_scoped write here (#862): a
+        // search result is an impression, not a signal that the asset was
+        // useful. Rewarding every returned hit created a feedback loop where
+        // merely appearing in results inflated future ranking — assets
+        // surfaced because they'd surfaced before, not because a user acted
+        // on them. Retrieval counts are still recorded above via
+        // insertUsageEvent (search_count) and rolled into utility_scores by
+        // the offline `recomputeUtilityScores` pass (`akm index`), which uses
+        // the show/search *select rate* — a ratio that requires an actual
+        // `show`/select event, not raw impressions. Explicit signal comes
+        // from `akm feedback` (applyFeedbackToUtilityScore) and from
+        // selection (recordShowUsage / the `select` event derived from it).
       },
       { busyTimeoutMs: TELEMETRY_BUSY_TIMEOUT_MS },
     );
