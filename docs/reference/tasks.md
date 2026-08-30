@@ -389,6 +389,16 @@ for full before/after examples and recovery guidance.
 - Disable a binding by editing the source and syncing: set that schedule
   entry's own `enabled: false`.
 - Delete the `.yml` source and sync to remove its derived binding(s).
+- `akm task sync --dry-run` previews the reconcile (adds/updates/removes,
+  removals annotated with their owning bundle) without writing to the
+  scheduler; exits non-zero when removals are pending.
+- `akm task prune` removes installed scheduler entries `sync` cannot reach
+  because their own descriptor no longer resolves to a live bundle
+  (corrupt/missing `--scheduler-context`, or the owning bundle directory is
+  gone). It never touches an entry that still resolves to a live bundle.
+  Defaults to a dry-run preview (zero writes); `--yes` executes it; `--id
+  <id1,id2,...>` scopes to specific ids and refuses any id that isn't a
+  current orphan candidate.
 - Use `akm task sync --rebind` only when deliberately changing the captured
   AKM runtime, then verify with `akm task doctor`.
 
