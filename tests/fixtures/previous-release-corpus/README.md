@@ -17,3 +17,12 @@ Files:
 The proposals-state.db fixture (a pre-#858 legacy `metadata_json` row) is
 built programmatically inside the test — it is DB state, not a file, so
 there is nothing to check in here for it.
+
+- `config-0.0.1.json` — SYNTHETIC (#863): unlike the fixtures above, `"0.9.0"`
+  is the only `configVersion` akm has ever shipped, so there is no real prior
+  release to take a shape from. This fixture stands in for one, establishing
+  the `configVersion` read-shim mechanism (`src/core/config/config-version-shim.ts`)
+  before a real bump ever needs it. Read via the in-memory `0.0.1`->`0.9.0`
+  upgrade in that shim (root-level `defaultEngine` -> `defaults.llmEngine`).
+  Delete this fixture and its shim entry once a real old `configVersion`
+  fixture replaces it.

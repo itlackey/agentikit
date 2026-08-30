@@ -25,6 +25,7 @@ import type {
   RegistryConfigEntry,
   SourceConfigEntry,
 } from "./config-types";
+import { upgradeConfigVersion } from "./config-version-shim";
 import { deepMergeConfig } from "./deep-merge";
 
 export { stripJsonComments } from "./config-io";
@@ -200,18 +201,13 @@ export function acquireConfigReadFence(): { config: AkmConfig; release: () => vo
  * Parse raw config text and validate via Zod.
  * ({@link AkmConfigSchema}). Returns the merged-with-defaults AkmConfig.
  *
- * The schema accepts only the current config version and validates the
- * canonical shape before defaults are merged.
+ * The schema accepts only the current config version. A known older version
+ * is auto-upgraded in memory first (see `./config-version-shim`); anything
+ * else — including anything newer — is rejected before the canonical shape
+ * is validated.
  */
 export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
-  const parsedRaw = parseConfigText(text, sourcePath);
-  if (parsedRaw.configVersion !== CURRENT_CONFIG_VERSION) {
-    throw new ConfigError(
-      `Unsupported configVersion${sourcePath ? ` at ${sourcePath}` : ""}: expected "${CURRENT_CONFIG_VERSION}".`,
-      "UNSUPPORTED_CONFIG_VERSION",
-      "Recreate engines and improve.strategies manually for AKM 0.9.0; profile-based configuration is not translated automatically.",
-    );
-  }
+  const parsedRaw = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
 
   // #852 (following #815): lift legacy `extraParams` keys — e.g.
   // `reasoning_effort`, a documented 0.9.1 workaround — onto the first-class

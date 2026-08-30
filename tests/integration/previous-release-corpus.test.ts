@@ -53,6 +53,8 @@ import os from "node:os";
 import path from "node:path";
 import { akmHealth } from "../../src/commands/health";
 import { createProposal as createProposalImpl, isProposalSkipped } from "../../src/commands/proposal/repository";
+import { loadUserConfig, resetConfigCache } from "../../src/core/config/config";
+import { getConfigPath } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { resetQuiet, setQuiet } from "../../src/core/warn";
 import { listStateProposals } from "../../src/storage/repositories/proposals-repository";
@@ -314,5 +316,42 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       expect(readTaskHistory({ id: "corpus-legacy-repair-reason" })).toHaveLength(1);
       expect(() => akmHealth({ since: "7d" })).not.toThrow();
     });
+  });
+});
+
+// ── configVersion (#863) ─────────────────────────────────────────────────
+//
+// SYNTHETIC entry, appended as its own top-level block per the merge note in
+// #863: `"0.9.0"` is the only `configVersion` akm has ever shipped, so there
+// is no REAL prior-release shape to add here yet (unlike every fixture
+// above). `config-0.0.1.json` stands in for one to prove out the
+// `configVersion` read-shim mechanism (`src/core/config/config-version-shim.ts`)
+// BEFORE a real bump ever needs it — see that file's module doc and
+// `tests/fixtures/previous-release-corpus/README.md`. Replace this fixture
+// with a real one, and this comment, the day a real `configVersion` bump ships.
+describe("previous-release corpus — configVersion (#863, synthetic placeholder)", () => {
+  beforeEach(() => resetConfigCache());
+  afterEach(() => resetConfigCache());
+
+  test("a synthetic pre-0.9.0 config.json (root-level defaultEngine) reads via `loadUserConfig()` without throwing", () => {
+    const fixture = readFixture("config-0.0.1.json");
+    const configPath = getConfigPath();
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, fixture);
+
+    setQuiet(false);
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      let config: ReturnType<typeof loadUserConfig> | undefined;
+      expect(() => {
+        config = loadUserConfig();
+      }).not.toThrow();
+      expect(config?.configVersion).toBe("0.9.0");
+      expect(config?.defaults?.llmEngine).toBe("fast");
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      resetQuiet();
+    }
   });
 });
