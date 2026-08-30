@@ -74,12 +74,16 @@ describe("proposal queue target binding", () => {
     insertHistorical(primary, "historical-qualified", "team//lessons/historical-qualified");
     insertHistorical(primary, "historical-short", "lessons/historical-short");
 
+    // metadata_json is entirely empty here, so `changes` is missing too — but
+    // that alone is now tolerated as a legacy read-time gap (#858/#859, see
+    // storedToChanges in proposals-repository.ts). `proposedTarget` is still
+    // required on every row and is what actually fails closed below.
     await expect(akmProposalAccept({ stashDir: primary, id: "historical-qualified", config: cfg })).rejects.toThrow(
-      /metadata is missing changes/i,
+      /missing proposedTarget/i,
     );
     await expect(
       akmProposalAccept({ stashDir: primary, id: "historical-short", target: "team", config: cfg }),
-    ).rejects.toThrow(/metadata is missing changes/i);
+    ).rejects.toThrow(/missing proposedTarget/i);
     expect(fs.existsSync(path.join(team, "lessons", "historical-qualified.md"))).toBe(false);
     expect(fs.existsSync(path.join(team, "lessons", "historical-short.md"))).toBe(false);
   });
