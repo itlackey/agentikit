@@ -1,15 +1,21 @@
 /**
  * Unit tests for resolveProjectContext.
  *
- * All tests use the `fsOverride` parameter to avoid touching the real
+ * Most tests use the `fsOverride` parameter to avoid touching the real
  * filesystem. The `cwd` parameter is used to control which directory
  * is being "tested" without actually changing the process working directory.
+ *
+ * Exception: the "resolveProjectContext — noise roots" describe block below
+ * exercises the `resolveWorkflowScopeAnchor` fallback path, which does real
+ * filesystem/env lookups that `fsOverride` does not cover — see that block's
+ * own comment for how it isolates itself instead.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import os from "node:os";
 import path from "node:path";
 import { resolveProjectContext } from "../src/indexer/walk/project-context";
+import { type Cleanup, type IsolatedAkmStorage, mockHomedir, withIsolatedAkmStorage } from "./_helpers/sandbox";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -143,11 +149,37 @@ describe("resolveProjectContext — package.json", () => {
 // ── Noise root guard ─────────────────────────────────────────────────────────
 
 describe("resolveProjectContext — noise roots", () => {
+  // The "home directory" case below falls through to `resolveWorkflowScopeAnchor`,
+  // which — unlike the git-config/package.json attempts — does REAL, un-mocked
+  // filesystem and env lookups (it walks upward from `cwd` for a `.git` or
+  // project-config file, and consults `AKM_BUNDLE_DIR`/config-derived stash
+  // dirs), so `fsOverride` does not cover it. Left pointed at the process's
+  // real home directory, this test is sensitive to whatever every other test
+  // in the shard leaves lying around under that shared directory — it passes
+  // in isolation but can fail under sharding. Give it its own isolated fake
+  // home directory (via `spyOn(os, "homedir")` — reassigning `process.env.HOME`
+  // does not affect Bun's native `os.homedir()`, which is read once at
+  // process start) plus a clean stash/XDG sandbox so the real environment is
+  // never consulted.
+  let storage: IsolatedAkmStorage;
+  let home: { dir: string; cleanup: Cleanup };
+
+  beforeEach(() => {
+    storage = withIsolatedAkmStorage();
+    home = mockHomedir();
+  });
+
+  afterEach(() => {
+    home.cleanup();
+    storage.cleanup();
+  });
+
   test("returns null when cwd is the home directory", () => {
     // Home dir has neither .git/config nor package.json in our fake FS,
     // so it falls through to the scope-anchor path which returns homedir —
     // the noise-root guard then returns null.
     const homedir = os.homedir();
+    expect(homedir).toBe(home.dir);
     const ctx = resolveProjectContext(homedir, buildFs({}));
     expect(ctx).toBeNull();
   });

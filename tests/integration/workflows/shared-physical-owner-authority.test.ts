@@ -10,7 +10,7 @@ import { opencodeAdapter } from "../../../src/core/adapter/adapters";
 import { parseBundleRef } from "../../../src/core/asset/asset-ref";
 import { resetConfigCache } from "../../../src/core/config/config";
 import { getDbPath } from "../../../src/core/paths";
-import { getStateDbPath } from "../../../src/core/state-db";
+import { getStateDbPath, withStateDb } from "../../../src/core/state-db";
 import { akmIndex, lookupBundleRef } from "../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../src/storage/repositories/index-connection";
 import { getWorkflowTemplate } from "../../../src/workflows/authoring/authoring";
@@ -81,6 +81,23 @@ function mutateEntry(itemRef: string, state: "complete" | "missing" | "stale", s
   } finally {
     closeDatabase(db);
   }
+}
+
+/**
+ * Snapshot state.db for a durable-no-mutation assertion.
+ *
+ * A plain `fs.readFileSync(getStateDbPath())` is racy under WAL mode: SQLite
+ * may rewrite the file's raw bytes (checkpoint timing, change-counter bumps)
+ * with no logical row change, so two byte-identical-looking no-op operations
+ * can produce different file contents depending on when a checkpoint lands.
+ * Forcing a `TRUNCATE` checkpoint before every snapshot collapses the WAL
+ * back into the main file deterministically, so the byte comparison reflects
+ * only genuine durable mutations — the thing this assertion is meant to
+ * catch — not checkpoint scheduling.
+ */
+function stateDbSnapshot(): Buffer {
+  withStateDb((db) => db.exec("PRAGMA wal_checkpoint(TRUNCATE)"));
+  return fs.readFileSync(getStateDbPath());
 }
 
 function denyAssetRead(assetPath: string): ReturnType<typeof spyOn> {
@@ -193,7 +210,7 @@ describe("shared adapter physical-owner authority", () => {
     await akmIndex({ stashDir: early.root, full: true });
     mutateEntry("early//commands/same", state, path.join(early.root, "stale", "same.md"));
     await listWorkflowRuns();
-    const stateBefore = fs.readFileSync(getStateDbPath());
+    const stateBefore = stateDbSnapshot();
     let dispatches = 0;
 
     const readSpy = denyAssetRead(earlyPath);
@@ -216,7 +233,7 @@ describe("shared adapter physical-owner authority", () => {
       readSpy.mockRestore();
     }
     expect(dispatches).toBe(0);
-    expect(fs.readFileSync(getStateDbPath())).toEqual(stateBefore);
+    expect(stateDbSnapshot()).toEqual(stateBefore);
     expect((await listWorkflowRuns()).runs).toHaveLength(0);
     expect((await loadWorkflowAsset("later//commands/same")).path).toBe(laterPath);
   });
@@ -312,7 +329,7 @@ describe("shared adapter physical-owner authority", () => {
     await akmIndex({ stashDir: early.root, full: true });
     expect((await loadWorkflowAsset("later//collision")).path).toBe(laterPath);
     await listWorkflowRuns();
-    const stateBefore = fs.readFileSync(getStateDbPath());
+    const stateBefore = stateDbSnapshot();
     let dispatches = 0;
 
     const markdownSpy = denyAssetRead(markdown);
@@ -335,7 +352,7 @@ describe("shared adapter physical-owner authority", () => {
       textSpy.mockRestore();
     }
     expect(dispatches).toBe(0);
-    expect(fs.readFileSync(getStateDbPath())).toEqual(stateBefore);
+    expect(stateDbSnapshot()).toEqual(stateBefore);
     expect((await listWorkflowRuns()).runs).toHaveLength(0);
   });
 
@@ -432,7 +449,7 @@ describe("shared adapter physical-owner authority", () => {
     await akmIndex({ stashDir: early.root, full: true });
     mutateEntry("early//skills/runtime-owner", state, path.join(early.root, "stale", "SKILL.md"));
     await listWorkflowRuns();
-    const stateBefore = fs.readFileSync(getStateDbPath());
+    const stateBefore = stateDbSnapshot();
     let dispatches = 0;
 
     const readSpy = denyAssetRead(earlyPath);
@@ -455,7 +472,7 @@ describe("shared adapter physical-owner authority", () => {
       readSpy.mockRestore();
     }
     expect(dispatches).toBe(0);
-    expect(fs.readFileSync(getStateDbPath())).toEqual(stateBefore);
+    expect(stateDbSnapshot()).toEqual(stateBefore);
     expect((await listWorkflowRuns()).runs).toHaveLength(0);
     expect((await loadWorkflowAsset("later//skills/runtime-owner")).path).toBe(laterPath);
   });
