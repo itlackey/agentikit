@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
+import { computeAcceptRateBySource } from "../../src/commands/health/accept-rate";
 import {
   akmProposalAccept,
   akmProposalDiff,
@@ -23,6 +24,7 @@ import {
   akmProposalShow,
 } from "../../src/commands/proposal/proposal";
 import {
+  archiveProposal,
   createProposal as createProposalImpl,
   getProposal,
   isProposalSkipped,
@@ -468,4 +470,72 @@ describe("concurrent create + list safety (WAL)", () => {
     },
     { timeout: 30_000 },
   );
+});
+
+describe("listProposals resilience to malformed archive rows (#858/#859)", () => {
+  // #858: `health --report` (and any other reader of the accepted/rejected
+  // archive) crashed outright the moment a single row failed to parse —
+  // originally hit by pre-feature rows with no persisted `changes`, but the
+  // same bare `.map()` would abort on any other row-level corruption too.
+  // `storedToChanges` now tolerates the specific "no changes key at all"
+  // legacy shape (see proposals-repository.ts), so this test corrupts a
+  // *different* field (`proposedTarget`) to prove listProposals is resilient
+  // to malformed rows in general, not just the one legacy case.
+  test("a row with genuinely corrupt metadata is skipped, not thrown, and other rows still list", () => {
+    const stash = makeStashDir();
+    const good = mustCreate(stash, "lessons/archive-good", "reflect");
+    const corrupt = mustCreate(stash, "lessons/archive-corrupt", "reflect");
+    archiveProposal(stash, good.id, "accepted", undefined);
+    archiveProposal(stash, corrupt.id, "accepted", undefined);
+
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      const row = db.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(corrupt.id) as {
+        metadata_json: string;
+      };
+      const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+      delete metadata.proposedTarget;
+      db.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), corrupt.id);
+    } finally {
+      db.close();
+    }
+
+    const results = listProposals(stash, { status: "accepted", includeArchive: true });
+    expect(results.map((p) => p.id)).toEqual([good.id]);
+  });
+
+  // #859: two of the three real callers of the accepted/rejected archive
+  // (accept-rate.ts, proposal/repository.ts's listProposals) had no
+  // try/catch and crashed outright; the third (improve/preparation.ts) had a
+  // try/catch around the whole query and silently fell back to zero
+  // accepted-counts for every ref. Legacy rows represent real, genuinely
+  // accepted proposals, so undercounting them (by skipping or zeroing them
+  // out) corrupts outcome-score salience and accept-rate reporting. Decision
+  // (documented in storedToChanges): a row missing `changes` entirely is
+  // treated as a legacy proposal with an empty change list, not dropped —
+  // so it counts here.
+  test("accepted-counts include legacy rows that have no persisted changes", () => {
+    const stash = makeStashDir();
+    const normal = mustCreate(stash, "lessons/legacy-normal", "reflect");
+    const legacy = mustCreate(stash, "lessons/legacy-gap", "reflect");
+    archiveProposal(stash, normal.id, "accepted", undefined);
+    archiveProposal(stash, legacy.id, "accepted", undefined);
+
+    const db = openStateDatabase(getStateDbPath());
+    try {
+      const row = db.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(legacy.id) as {
+        metadata_json: string;
+      };
+      const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+      delete metadata.changes;
+      delete metadata.beforeHash;
+      db.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), legacy.id);
+    } finally {
+      db.close();
+    }
+
+    const result = computeAcceptRateBySource(stash);
+    const reflect = result.find((r) => r.source === "reflect");
+    expect(reflect?.accepted).toBe(2);
+  });
 });

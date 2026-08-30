@@ -2317,6 +2317,13 @@ function updateOutcomeScores(args: {
         // inflate counts with proposals from other stashes.
         const acceptedCountByRef = new Map<string, number>();
         try {
+          // #858/#859: listStateProposals() now skips-and-warns on individual
+          // unparseable rows (including legacy pre-#578 rows with no
+          // persisted `changes`, which it tolerates directly) instead of
+          // throwing, so this no longer silently zeroes out every ref's
+          // count on a single bad row. The outer try/catch stays as a
+          // defense-in-depth fallback for unexpected failures (e.g. a query
+          // error), not the primary safeguard it used to be.
           const acceptedProposals = listStateProposals(outcomeDb, {
             status: "accepted",
             ...(primaryStashDir ? { stashDir: primaryStashDir } : {}),
@@ -2325,7 +2332,7 @@ function updateOutcomeScores(args: {
             acceptedCountByRef.set(p.ref, (acceptedCountByRef.get(p.ref) ?? 0) + 1);
           }
         } catch {
-          // best-effort: if proposals query fails, accepted counts stay at 0
+          // best-effort: if the query itself fails, accepted counts stay at 0
         }
 
         // Update each ref's outcome row and collect the resulting outcome scores.

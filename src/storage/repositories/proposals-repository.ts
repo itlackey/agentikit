@@ -44,8 +44,24 @@ function changesToStored(changes: FileChange[]): StoredFileChange[] {
 /**
  * Reconstruct `Proposal.changes` from `metadata_json.changes` + the `content`
  * column.
+ *
+ * Read-time compatibility shim (#858/#859): proposals created before this
+ * field existed have no `changes` key in `metadata_json` at all (~89% of the
+ * archived accepted/rejected rows on real installs) and that history cannot
+ * be reconstructed from `content` alone. Treat a completely absent `changes`
+ * key as a known legacy gap — return an empty change list rather than
+ * throwing — so these rows still round-trip as real proposals (and count
+ * toward accepted/rejected totals) instead of being dropped or crashing
+ * every reader. A `changes` value that *is* present but malformed (wrong
+ * type, invalid entries) is still corruption and throws, same as before; the
+ * write path (`proposalToRowValues`) still refuses to persist an empty or
+ * missing change list for new proposals, so this leniency only ever applies
+ * to pre-existing rows.
  */
 function storedToChanges(stored: unknown, content: string): FileChange[] {
+  if (stored === undefined) {
+    return [];
+  }
   if (!Array.isArray(stored) || stored.length === 0) {
     throw new Error("Proposal metadata is missing changes.");
   }
@@ -381,7 +397,22 @@ export function listStateProposals(
        FROM proposals ${where} ORDER BY created_at ASC, rowid ASC`,
     )
     .all(...(params as SqlValue[])) as ProposalRow[];
-  return rows.map(proposalRowToProposal);
+  // Per-row skip-and-warn (#858/#859): a single row that fails to parse
+  // (invalid ref/status/metadata shape — genuine corruption, distinct from
+  // the tolerated legacy-missing-`changes` case in `storedToChanges` above)
+  // must not abort the entire list. Every caller of this function reads a
+  // multi-row archive; one bad row hiding the rest behind a thrown error is
+  // strictly worse than surfacing the well-formed rows plus a warning.
+  const proposals: Proposal[] = [];
+  for (const row of rows) {
+    try {
+      proposals.push(proposalRowToProposal(row));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[akm] Skipping unparseable proposal row (id=${row.id}, ref=${row.ref}): ${message}`);
+    }
+  }
+  return proposals;
 }
 
 /**
