@@ -22,7 +22,7 @@ import { stashDirFor } from "../../core/asset/asset-placement";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { conceptIdForStashFile, displayRefForConceptId } from "../../core/asset/resolve-ref";
 import { deriveBundleIds } from "../../core/bundle-id";
-import { resolveStashDir } from "../../core/common";
+import { isAkmRegistryCachePath, resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
@@ -118,11 +118,6 @@ function collectMarkdownFiles(dir: string, caseInsensitive = false): string[] {
     }
   }
   return results;
-}
-
-function isCachedLintPath(filePath: string): boolean {
-  const posixPath = filePath.replace(/\\/g, "/");
-  return posixPath.includes("/.cache/") || posixPath.includes("/registry/");
 }
 
 /** Peer workflow sources accepted by the source-IR compiler; `.yaml` remains unsupported. */
@@ -620,7 +615,7 @@ function lintAkmSweep(
     let assetFiles =
       subdir === "workflows" ? files.filter((file) => path.basename(file).toLowerCase() !== "readme.md") : files;
     if (subdir === "workflows") {
-      assetFiles = assetFiles.filter((file) => !isCachedLintPath(file));
+      assetFiles = assetFiles.filter((file) => !isAkmRegistryCachePath(file));
       const ownership = resolveWorkflowLintOwnership(stashRoot, assetFiles);
       assetFiles = ownership.files;
       flagged.push(...ownership.issues);
@@ -649,7 +644,7 @@ function lintAkmSweep(
       // Compare on a separator-normalized copy: on Windows these paths carry
       // backslashes, so the forward-slash substring never matched and --fix
       // rewrote files inside the registry cache.
-      if (isCachedLintPath(filePath)) continue;
+      if (isAkmRegistryCachePath(filePath)) continue;
       const relPath = path.relative(stashRoot, filePath);
       let raw: string;
       try {
