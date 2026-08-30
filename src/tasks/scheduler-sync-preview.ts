@@ -23,6 +23,8 @@ export interface SchedulerPlanPreviewOperation {
   readonly nativeId?: string;
   /** Resolved bundle path the installed binding was attributed to (#846). Removals only, when known. */
   readonly ownerBundlePath?: string;
+  /** Why `akm task prune` (#851) selected this entry. Absent for `sync`'s own removals. */
+  readonly reason?: "invalid-context" | "dead-bundle-path";
 }
 
 export interface SchedulerPlanPreview {
@@ -57,6 +59,7 @@ export function renderSchedulerPlanPreview(
         kind: "remove",
         nativeId: operation.nativeId,
         ...(operation.ownerBundlePath !== undefined ? { ownerBundlePath: operation.ownerBundlePath } : {}),
+        ...(operation.reason !== undefined ? { reason: operation.reason } : {}),
       });
     } else if (operation.kind === "install") {
       adds.push({ id: operation.binding.id, kind: "install" });

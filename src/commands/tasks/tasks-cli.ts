@@ -41,7 +41,15 @@ import { UsageError } from "../../core/errors";
 import type { InputFlag } from "../../execution/input-contract";
 import { TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS } from "../../tasks/task-run-reserved-flags";
 import { akmTaskExplain } from "./explain";
-import { akmTasksAdd, akmTasksDoctor, akmTasksHistory, akmTasksRun, akmTasksSync, akmTasksSyncPlan } from "./tasks";
+import {
+  akmTasksAdd,
+  akmTasksDoctor,
+  akmTasksHistory,
+  akmTasksPrune,
+  akmTasksRun,
+  akmTasksSync,
+  akmTasksSyncPlan,
+} from "./tasks";
 
 /** Shared `--bundle <bundle>` arg wired onto every task subcommand. */
 const bundleArg = {
@@ -412,6 +420,51 @@ const tasksDoctorCommand = defineJsonCommand({
   },
 });
 
+/**
+ * #851: `akm task prune`'s exit-code contract mirrors `task sync --dry-run`'s
+ * (`taskSyncDryRunExitCode` above) — non-zero whenever the preview lists
+ * removals the invocation didn't (or couldn't, without `--yes`) execute, so
+ * `akm task prune` is usable as a CI/health check the same way `sync
+ * --dry-run` is.
+ */
+export function taskPruneExitCode(result: { dryRun: boolean; preview: { hasRemovals: boolean } }): number | undefined {
+  return result.dryRun && result.preview.hasRemovals ? EXIT_CODES.GENERAL : undefined;
+}
+
+const tasksPruneCommand = defineJsonCommand({
+  meta: {
+    name: "prune",
+    description:
+      "Remove installed scheduler entries `sync` can never reclaim because their own descriptor no longer " +
+      "resolves to a live bundle (corrupt/missing --scheduler-context, or the owning bundle directory is " +
+      "gone). Defaults to a dry-run preview — zero scheduler writes. Requires --yes to remove anything; " +
+      "--id narrows removal to specific binding ids (comma-separated).",
+  },
+  args: {
+    yes: {
+      type: "boolean",
+      description: "Execute removal of every currently-computed orphan (the plan is still printed first)",
+      default: false,
+    },
+    id: {
+      type: "string",
+      description: "Comma-separated scheduler binding id(s) to limit pruning to (must already be orphan candidates)",
+    },
+  },
+  async run({ args }) {
+    const id = args.id
+      ? args.id
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : undefined;
+    const result = await akmTasksPrune({}, { yes: args.yes === true, id });
+    output("task-prune", result);
+    const exitCode = taskPruneExitCode(result);
+    if (exitCode !== undefined) process.exitCode = exitCode;
+  },
+});
+
 export const taskCommand = defineGroupCommand({
   meta: {
     name: "task",
@@ -424,6 +477,7 @@ export const taskCommand = defineGroupCommand({
     explain: tasksExplainCommand,
     history: tasksHistoryCommand,
     sync: tasksSyncCommand,
+    prune: tasksPruneCommand,
     doctor: tasksDoctorCommand,
   },
   // Bare `akm task` reports scheduler diagnostics. Inspection of individual

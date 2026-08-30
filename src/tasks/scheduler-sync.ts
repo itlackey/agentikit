@@ -100,6 +100,13 @@ export type SchedulerSyncOperation =
       expected: SchedulerRemovalExpectation;
       /** Resolved bundle path this installed binding was attributed to (#846), when known. */
       ownerBundlePath?: string;
+      /**
+       * Why `akm task prune` (#851) selected this entry for removal — never
+       * set by `finalizeSchedulerSyncPlan`'s own removal path, which removes
+       * only attributable orphans (a backing file that's gone) and has no
+       * notion of "unresolvable ownership" to report.
+       */
+      reason?: "invalid-context" | "dead-bundle-path";
     }>;
 
 export interface SchedulerSyncPlan {
@@ -245,48 +252,7 @@ export function finalizeSchedulerSyncPlan(
     .sort(compareCodePoints);
   for (const id of removed) {
     const current = present.get(id);
-    if (!current?.invocation) {
-      throw nativeArtifactCollision(
-        { nativeId: current?.nativeId ?? schedulerNativeBindingId(id), bindingId: id },
-        { nativeId: current?.nativeId ?? schedulerNativeBindingId(id) },
-      );
-    }
-    const nativeId = exactInstalledNativeId(id, current, inspection.artifacts);
-    const artifact = inspection.artifacts.find(
-      (candidate) => candidate.nativeId === nativeId && candidate.bindingId === id,
-    );
-    const priorFingerprint = current.signature ?? artifact?.fingerprint;
-    if (!artifact || priorFingerprint === undefined) {
-      throw new UsageError(
-        `Installed scheduler binding ${JSON.stringify(id)} has no exact native fingerprint; refusing removal.`,
-        "RESOURCE_ALREADY_EXISTS",
-      );
-    }
-    const logicalSource = installedLogicalSource(current.invocation, coherentInput);
-    const ordinal = schedulerBindingOrdinal(id, logicalSource, current.invocation);
-    if (ordinal === undefined) {
-      throw new UsageError(
-        `Installed scheduler binding ${JSON.stringify(id)} cannot be attributed to an exact schedule ordinal; refusing removal.`,
-        "RESOURCE_ALREADY_EXISTS",
-      );
-    }
-    operations.push(
-      Object.freeze({
-        kind: "remove" as const,
-        id,
-        nativeId,
-        expected: freezeRemovalExpectation({
-          state: "present",
-          bindingId: id,
-          nativeId,
-          logicalSource,
-          ordinal,
-          invocation: current.invocation,
-          fingerprint: priorFingerprint,
-        }),
-        ...(current.ownerBundlePath !== undefined ? { ownerBundlePath: current.ownerBundlePath } : {}),
-      }),
-    );
+    operations.push(buildSchedulerRemoveOperation(id, current, inspection.artifacts, coherentInput));
   }
 
   return Object.freeze({
@@ -297,6 +263,63 @@ export function finalizeSchedulerSyncPlan(
     unchanged: Object.freeze(unchanged),
     operations: Object.freeze(operations),
     sourceSnapshot: prepared.sourceSnapshot,
+  });
+}
+
+/**
+ * Build the exact removal operation for one installed binding: same
+ * exact-native-fingerprint / ordinal-attribution safety checks
+ * `finalizeSchedulerSyncPlan`'s remove loop always applied, factored out so
+ * `akm task prune` (#851) can build removal operations for entries
+ * `belongsToBundle` structurally can't see (unresolvable ownership) without
+ * re-deriving — or weakening — this logic. Throws the same `UsageError`s a
+ * sync removal would on an inexact match; callers computing prune candidates
+ * should only pass entries they've already independently confirmed are safe
+ * to remove.
+ */
+export function buildSchedulerRemoveOperation(
+  id: string,
+  current: InstalledSchedulerBinding | undefined,
+  artifacts: readonly SchedulerNativeArtifact[],
+  input: Pick<SchedulerSyncPlanInput, "adapterId" | "bundleName">,
+): Extract<SchedulerSyncOperation, { kind: "remove" }> {
+  if (!current?.invocation) {
+    throw nativeArtifactCollision(
+      { nativeId: current?.nativeId ?? schedulerNativeBindingId(id), bindingId: id },
+      { nativeId: current?.nativeId ?? schedulerNativeBindingId(id) },
+    );
+  }
+  const nativeId = exactInstalledNativeId(id, current, artifacts);
+  const artifact = artifacts.find((candidate) => candidate.nativeId === nativeId && candidate.bindingId === id);
+  const priorFingerprint = current.signature ?? artifact?.fingerprint;
+  if (!artifact || priorFingerprint === undefined) {
+    throw new UsageError(
+      `Installed scheduler binding ${JSON.stringify(id)} has no exact native fingerprint; refusing removal.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  const logicalSource = installedLogicalSource(current.invocation, input);
+  const ordinal = schedulerBindingOrdinal(id, logicalSource, current.invocation);
+  if (ordinal === undefined) {
+    throw new UsageError(
+      `Installed scheduler binding ${JSON.stringify(id)} cannot be attributed to an exact schedule ordinal; refusing removal.`,
+      "RESOURCE_ALREADY_EXISTS",
+    );
+  }
+  return Object.freeze({
+    kind: "remove" as const,
+    id,
+    nativeId,
+    expected: freezeRemovalExpectation({
+      state: "present",
+      bindingId: id,
+      nativeId,
+      logicalSource,
+      ordinal,
+      invocation: current.invocation,
+      fingerprint: priorFingerprint,
+    }),
+    ...(current.ownerBundlePath !== undefined ? { ownerBundlePath: current.ownerBundlePath } : {}),
   });
 }
 
