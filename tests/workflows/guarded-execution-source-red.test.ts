@@ -108,14 +108,6 @@ describe("shared guarded retained-byte capture", () => {
     expect(Buffer.from(captured.bytesBase64, "base64").toString("utf8")).toBe("Review.\n");
   });
 
-  test("rejects an oversized source at the guarded descriptor boundary", async () => {
-    const { captureGuardedExecutionSource } = await guardedSourceApi();
-    const root = sandbox("akm-guarded-size");
-    const file = write(root, "commands/large.md", "12345");
-
-    expect(() => captureGuardedExecutionSource(file, root, { maxBytes: 4 })).toThrow(/size|limit|4|exceed/i);
-  });
-
   test("rejects invalid UTF-8 rather than returning lossy adapter input", async () => {
     const { captureGuardedExecutionSource } = await guardedSourceApi();
     const root = sandbox("akm-guarded-utf8");

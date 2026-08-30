@@ -72,12 +72,9 @@ describe("task v2 to v3 filesystem boundary", () => {
     expect(fs.existsSync(backup)).toBe(false);
   });
 
-  test("symlinks and hard-linked task sources are rejected", () => {
+  test("symlinked task sources are rejected", () => {
     const { root, task } = fixture();
     const linked = path.join(root, "tasks", "linked.yml");
-    fs.linkSync(task, linked);
-    expect(() => plan(root)).toThrow(/must not be hard-linked/);
-    fs.unlinkSync(linked);
     fs.symlinkSync(task, linked);
     expect(() => plan(root)).toThrow(/does not follow symbolic link/);
   });

@@ -29,25 +29,6 @@ export interface TaskToV3FileInput {
   readonly onDiskWritable?: boolean;
   /** Physical bundle/component root recorded by the filesystem inspector. */
   readonly containmentRoot?: string;
-  /** Physical identities captured by the filesystem inspector for drift fencing. */
-  readonly inspectionIdentity?: TaskToV3InspectionIdentity;
-}
-
-export interface TaskToV3FilesystemIdentity {
-  readonly realPath: string;
-  readonly device: string;
-  readonly inode: string;
-  /** Decimal hard-link count captured with the physical inode identity. */
-  readonly linkCount: string;
-  /** Decimal nanosecond inode change time; catches transient link/unlink drift. */
-  readonly changeTimeNs: string;
-}
-
-export interface TaskToV3InspectionIdentity {
-  readonly file: TaskToV3FilesystemIdentity;
-  readonly root: TaskToV3FilesystemIdentity;
-  /** Stable owning bundle identity when `root` is a nested component. */
-  readonly bundleRoot?: TaskToV3FilesystemIdentity;
 }
 
 interface TaskToV3OutcomeBase {
@@ -58,7 +39,6 @@ interface TaskToV3OutcomeBase {
   readonly writable: boolean;
   readonly onDiskWritable?: boolean;
   readonly containmentRoot?: string;
-  readonly inspectionIdentity?: TaskToV3InspectionIdentity;
   readonly reason: string;
   readonly detail?: string;
 }
@@ -184,15 +164,6 @@ function hash(bytes: Uint8Array): string {
 }
 
 function base(input: TaskToV3FileInput): Omit<TaskToV3OutcomeBase, "reason"> {
-  const inspectionIdentity = input.inspectionIdentity
-    ? Object.freeze({
-        file: Object.freeze({ ...input.inspectionIdentity.file }),
-        root: Object.freeze({ ...input.inspectionIdentity.root }),
-        ...(input.inspectionIdentity.bundleRoot
-          ? { bundleRoot: Object.freeze({ ...input.inspectionIdentity.bundleRoot }) }
-          : {}),
-      })
-    : undefined;
   return {
     filePath: input.filePath,
     before: Buffer.from(input.bytes),
@@ -201,7 +172,6 @@ function base(input: TaskToV3FileInput): Omit<TaskToV3OutcomeBase, "reason"> {
     writable: input.writable,
     ...(input.onDiskWritable !== undefined ? { onDiskWritable: input.onDiskWritable } : {}),
     ...(input.containmentRoot ? { containmentRoot: input.containmentRoot } : {}),
-    ...(inspectionIdentity ? { inspectionIdentity } : {}),
   };
 }
 
