@@ -19,9 +19,9 @@ import { getDataDir } from "../../src/core/paths";
 import { resolveWritable } from "../../src/core/write-source";
 import { lockContentRootFor } from "../../src/integrations/lockfile";
 import { applyTaskToV3MigrationPlan, inspectTaskToV3Files, type TaskToV3Root } from "./migrate/task-files-to-v3";
-import { planTaskToV3Migration, type TaskToV3MigrationPlan } from "./migrate/task-to-v3";
+import { planTaskToV3Migration, type TaskToV3MigrationPlan } from "../../src/tasks/source/task-to-v3";
 import { applyTaskToV4MigrationPlan, inspectTaskToV4Files } from "./migrate/task-files-to-v4";
-import { planTaskToV4Migration, type TaskToV4MigrationPlan } from "./migrate/task-to-v4";
+import { planTaskToV4Migration, type TaskToV4MigrationPlan } from "../../src/tasks/source/task-to-v4";
 
 export interface MigrationCommandOptions {
   dryRun?: boolean;

@@ -96,13 +96,10 @@ interface BundleAdapter {
   // resolveRef for link/xref existence.
   validate(c: BundleComponent, changes: FileChange[], ctx: ValidateContext): Promise<Diagnostic[]>;
 
-  // OPTIONAL — authoritative existing-file placements/read aliases used for
-  // first-owner arbitration without reading authored bytes.
+  // OPTIONAL — the CLOSED-FORM set of existing-file placements/read aliases
+  // that could own `conceptId`, used for first-owner arbitration without
+  // reading authored bytes or walking the bundle.
   readCandidates?(c: BundleComponent, conceptId: string): Array<{ path: string; conceptId: string }>;
-
-  // OPTIONAL — path-only identities for placements that cannot be inverted
-  // from a concept id. The context exposes no byte-reading methods.
-  recognizePathCandidates?(c: BundleComponent, file: AdapterPathContext): readonly string[];
 
   // OPTIONAL — placement / discovery.
   placeNew?(c: BundleComponent, conceptId: string): string;   // where a new item would live
@@ -112,7 +109,7 @@ interface BundleAdapter {
 ```
 
 `recognize` and `validate` are required on every adapter; `index`,
-`affectedItems`, `readCandidates`, `recognizePathCandidates`, `placeNew`, `directoryList`, and
+`affectedItems`, `readCandidates`, `placeNew`, `directoryList`, and
 `looksLikeRoot` are optional capability methods. An adapter overriding `index()` must keep
 `recognize()` coherent with it (conformance: `index()` == fold of
 `recognize()` over the core walk) or declare component-level
@@ -124,14 +121,20 @@ write-normalization policy. Read candidates preserve canonical directory
 manifests (for example `skills/<name>/SKILL.md`) so lookup, index-backed show, and workflow runtime share one
 physical-owner decision. Each candidate carries its canonical concept identity,
 so a byte-denying ownership probe never has to infer identity from the query.
-When an adapter accepts noncanonical authored placements that cannot be
-inverted from the concept id, `recognizePathCandidates` supplies the possible
-canonical identities from path fields alone. The shared authority performs one
-contained, deterministic regular-file scan with hard file/directory ceilings,
-never follows directory symlinks, and matches those identities to the query.
-Content-dependent recognition may conservatively report multiple possible
-identities; authored bytes are still denied until the selected show/runtime
-consumer intentionally reads its resolved file.
+Path-derived recognition (`toCanonicalName`/`toAssetPath`, `src/core/asset/asset-placement.ts`)
+is a deterministic function of a file's path, so its inverse — every physical
+spelling that could own one conceptId — is computable in CLOSED FORM (#857):
+the canonical placement under the type's own bundle subdir, the loose
+off-canonical placement (an authored path elsewhere in the bundle, keyed off
+its full path relative to the bundle root instead of the type subdir — this
+is what `readCandidates` returns for it), and any type-specific duality (for
+example `env`'s `.env`/`<name>.env` spellings for the "default" alias).
+`readCandidates` enumerates the complete closed-form set directly from the
+conceptId; no bundle walk is needed, so no scan bound applies. The shared
+authority (`src/indexer/lookup/adapter-concept-owner.ts`) still probes every
+candidate with a byte-denying `FileContext` before trusting it, so an
+adapter returning a candidate the file does not actually own is harmless —
+it is simply filtered out.
 
 The core walk — the live indexer's per-dir walk, drained by
 `drainDirDocuments` — is one implementation carrying the security policy

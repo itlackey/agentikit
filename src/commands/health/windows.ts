@@ -18,10 +18,10 @@ import {
   buildImproveSkipSummary,
   computeWallTimeStats,
   isAgentTaskHistoryRow,
-  parseTaskMetadata,
   roundRate,
   summarizeImproveCompleted,
   summarizeImproveRuns,
+  taskFailureDetail,
 } from "./improve-metrics";
 import { readLlmUsageAggregate } from "./llm-usage";
 import { computeDegradationMetrics, computeDenominatorFixedCoverage } from "./metrics";
@@ -203,7 +203,7 @@ export function buildWindowMetrics(
   // isAgentTaskHistoryRow's header comment for the full mapping).
   const agentRows = taskRows.filter((row) => isAgentTaskHistoryRow(row));
   const agentFailures = agentRows.filter((row) => {
-    const detail = parseTaskMetadata(row).detail;
+    const detail = taskFailureDetail(row);
     return typeof detail?.reason === "string" && detail.reason.length > 0;
   });
   const logBackingRate = taskRowsWithLogs.length === 0 ? 1 : existingLogRows.length / taskRowsWithLogs.length;

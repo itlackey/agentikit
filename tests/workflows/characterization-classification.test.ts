@@ -61,7 +61,7 @@ function write(root: string, relative: string, content: string): string {
 // v3 acceptance itself (P4 docs/plans/specs/p4-deletions-closeout.md §3.2.3,
 // F-A2.1: "the parser" including its uses: classifier is vendored into the
 // migrator, never re-accepted by `src`). The vendored copy
-// (scripts/akm-migrate/migrate/task-source-v3-frozen.ts) is deliberately
+// (src/tasks/source/task-source-v3-frozen.ts) is deliberately
 // FROZEN at its pre-A1 shape — it still accepts a locator-shaped ref, since
 // a real migration source may still contain one — so it cannot stand in for
 // this block's post-A1-flip expectations, and task source v4's own

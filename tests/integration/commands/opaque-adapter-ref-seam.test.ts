@@ -25,12 +25,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { planTaskToV3File } from "../../../scripts/akm-migrate/migrate/task-to-v3";
 import { resolveImproveScope } from "../../../src/commands/improve/eligibility";
 import { resetConfigCache } from "../../../src/core/config/config";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { resolveAssetPath } from "../../../src/indexer/walk/path-resolver";
 import { type ProposalRow, proposalRowToProposal } from "../../../src/storage/repositories/proposals-repository";
+import { planTaskToV3File } from "../../../src/tasks/source/task-to-v3";
 // Trigger source-provider self-registration.
 import "../../../src/sources/providers/index";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";

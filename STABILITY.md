@@ -220,7 +220,7 @@ enumeration of the whole `proposal` noun group.
   | `78` | Configuration error |
 - **Install scripts** — `install.sh` and `install.ps1` URLs; the `--prefix`
   / `AKM_INSTALL_DIR` environment override.
-- **Runtime** — the npm package requires Node.js >= 24 as its bootstrap and
+- **Runtime** — the npm package requires Node.js >= 22 as its bootstrap and
   prefers a working Bun >= 1.0 for execution when both are available; old,
   unusable, or absent Bun installations fall back to Node.js. Standalone
   binaries are runtime-free.

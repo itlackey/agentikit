@@ -125,8 +125,9 @@ spawnSync(['git', 'ls-files', ...])
 - Add `better-sqlite3` as `optionalDependency` (prebuilt binaries, no compile step on common platforms)
 - Add `@types/better-sqlite3` to `devDependencies`
 - Add `semver` to `dependencies` (tiny, zero-deps)
-- Require `node: ">=24"` in `engines` and the npm `preinstall` guard. Node 22
-  is no longer a supported npm bootstrap runtime.
+- Add `node: ">=22"` to `engines` (raised from 20.12 when Node 20 support was dropped, 2026-07) (`@clack/core` uses `node:util.styleText`,
+  which was added in Node 20.12)
+- Require Node >= 22 in the npm `preinstall` guard
 
 ---
 

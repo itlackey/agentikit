@@ -51,16 +51,19 @@ function runsBunInstall(run: string | undefined): boolean {
   });
 }
 
-describe("Node 24 runtime minimum contract", () => {
-  test("keeps every CI Node execution on Node 24 without a Node 22 matrix", () => {
+describe("Node 22 runtime minimum contract", () => {
+  test("node-smoke exercises BOTH the Node 22 floor and Node 24 on every run", () => {
+    // The floor is only real if CI runs it. 0.9.3 dropped Node 22 by
+    // declaration and deleted this matrix in the same commit — the exact
+    // "permitted but untested" gap that lets upgrade breaks ship. Restored
+    // in 0.9.4: the smoke matrix pins both the minimum and current majors.
     const workflow = read(".github/workflows/ci.yml");
     const nodeSmoke = workflow.slice(workflow.indexOf("\n  node-smoke:"));
 
-    expect(workflow).toContain("node-version: 24");
-    expect(workflow).not.toContain("node-version: 22");
-    expect(nodeSmoke).toContain("node-version: 24");
-    expect(nodeSmoke).not.toContain("matrix:");
-    expect(nodeSmoke).not.toContain('"22"');
+    expect(nodeSmoke).toContain("matrix:");
+    expect(nodeSmoke).toContain('"22"');
+    expect(nodeSmoke).toContain('"24"');
+    expect(nodeSmoke).toContain("node-version: ${{ matrix.node-version }}");
   });
 
   test("selects Node 24 with setup-node v5 before every workflow Bun install", () => {
@@ -86,7 +89,11 @@ describe("Node 24 runtime minimum contract", () => {
 
           expect(nodeSetup, `${label} must select Node before bun install`).toBeDefined();
           expect(nodeSetup?.uses, `${label} must use setup-node v5`).toBe("actions/setup-node@v5");
-          expect(String(nodeSetup?.with?.["node-version"]), `${label} must use Node 24`).toBe("24");
+          const selected = String(nodeSetup?.with?.["node-version"]);
+          expect(
+            ["22", "24", "${{ matrix.node-version }}"],
+            `${label} must select a supported Node (22 floor, 24 current, or the smoke matrix)`,
+          ).toContain(selected);
           expect(nodeSetup?.if, `${label} must not conditionally select Node`).toBeUndefined();
         }
       }
@@ -103,38 +110,39 @@ describe("Node 24 runtime minimum contract", () => {
     ]);
   });
 
-  test("uses Node 24 in every Bun-install Docker builder while retaining the Ubuntu 22 OS image", () => {
+  test("uses the Node 22 floor in every Bun-install Docker builder while retaining the Ubuntu 22 OS image", () => {
+    // The Docker smoke images deliberately run the MINIMUM supported Node so
+    // the floor is exercised, not merely declared.
     for (const relativePath of BUN_DOCKERFILES) {
       const dockerfile = read(relativePath);
-      expect(dockerfile, relativePath).toMatch(/^FROM node:24(?:-alpine)? AS node-runtime$/m);
-      expect(dockerfile, relativePath).toContain("major < 24");
-      expect(dockerfile, relativePath).not.toContain("FROM node:22");
+      expect(dockerfile, relativePath).toMatch(/^FROM node:22(?:-alpine)? AS node-runtime$/m);
+      expect(dockerfile, relativePath).toContain("major < 22");
+      expect(dockerfile, relativePath).not.toContain("FROM node:24");
     }
 
     expect(read("tests/docker/Dockerfile.ubuntu-bun")).toContain("FROM ubuntu:22.04");
   });
 
-  test("keeps registry helpers and release verification on the Node 24 floor", () => {
+  test("keeps registry helpers and release verification on the Node 22 floor", () => {
     for (const relativePath of [
       "src/registry/pinned-request-helper.ts",
       "src/registry/pinned-transport.ts",
       "tests/release-check.sh",
     ]) {
       const source = read(relativePath);
-      expect(source, relativePath).toMatch(/>=\s*24/);
-      expect(source, relativePath).not.toMatch(/>=\s*22/);
+      expect(source, relativePath).toMatch(/>=\s*22/);
+      expect(source, relativePath).not.toMatch(/>=\s*24/);
     }
   });
 
-  test("states the current Node 24 floor in maintained runtime documentation", () => {
+  test("states the current Node 22 floor in maintained runtime documentation", () => {
     for (const relativePath of CURRENT_RUNTIME_DOCS) {
       const document = read(relativePath);
-      expect(document, relativePath).toMatch(/(?:Node(?:\.js)?|node:)[^\n]{0,80}(?:>=|≥)\s*24|Node\.js\s+24\+/i);
-      expect(document, relativePath).not.toMatch(/(?:Node(?:\.js)?|node:)[^\n]{0,80}(?:>=|≥)\s*22/i);
+      expect(document, relativePath).toMatch(/(?:Node(?:\.js)?|node:)[^\n]{0,80}(?:>=|≥)\s*22|Node\.js\s+22\+/i);
+      expect(document, relativePath).not.toMatch(/(?:Node(?:\.js)?|node:)[^\n]{0,80}(?:>=|≥)\s*24/i);
     }
 
-    const changelog = read("CHANGELOG.md");
-    expect(changelog).toContain("Node.js >= 24");
-    expect(changelog).toContain("Node.js 22");
+    const current = read("CHANGELOG.md").split("## [0.9.3]", 1)[0] ?? "";
+    expect(current).toContain("Node.js 22 support is restored");
   });
 });

@@ -46,6 +46,14 @@ export interface SourceSearchHit {
    * `quality` field.
    */
   quality?: string;
+  /**
+   * Which stage of the progressive AND→OR lexical search ladder produced
+   * this hit: `"exact"` (strict AND), `"prefix"` (prefix AND), or
+   * `"relaxed"` (OR fallback). Absent when the hit has no FTS component
+   * (e.g. a pure-semantic hybrid contribution, or a registry/browse hit
+   * that never goes through the lexical ladder).
+   */
+  matchStage?: "exact" | "prefix" | "relaxed";
   beliefState?: string;
   currentBeliefRefs?: string[];
   /**

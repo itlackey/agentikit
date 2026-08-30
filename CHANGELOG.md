@@ -4,7 +4,79 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.9.4] - 2026-08-30
+
+### Changed
+
+- **Node.js 22 support is restored for the npm package.** 0.9.3 raised the
+  npm bootstrap floor to Node >= 24 as a policy simplification; no code in
+  the package actually requires a Node-24-only API, and the pinned
+  better-sqlite3 12.11.1 ships a prebuilt binary for Node 22 (ABI 127), so
+  nothing compiles from source. The floor returns to Node >= 22 across the
+  preinstall check, the CLI bootstrap guard, and the pinned-registry
+  helper, and the CI node-smoke matrix again runs BOTH Node 22 and 24 so
+  the supported floor is tested on every run, not merely declared.
+
+### Added
+
+- **`akm task sync --dry-run` previews the reconcile without touching the
+  scheduler (#849).** Prints the planned adds/updates/removes — removals
+  now carry their owning bundle — makes zero scheduler writes, and exits
+  non-zero when removals are pending so scripts can gate on it. The plan
+  renderer is shared, ready for the planned `task prune` (#851) to reuse.
+- **Search hits now report which stage of the progressive AND->OR lexical
+  ladder produced them (#856).** `akm search` already ran strict AND, then
+  prefix AND, then an OR/prefix-OR recovery, stopping at the first stage
+  that returned candidates — but callers had no way to tell a strict match
+  from a heavily relaxed one. Local bundle hits now carry an optional
+  `matchStage: "exact" | "prefix" | "relaxed"` field (omitted for hits with
+  no FTS component, e.g. a pure-semantic hybrid contribution), surfaced at
+  `--detail normal`, `--detail full`, and `--shape agent` across all output
+  formats. Purely additive; no `schemaVersion` bump.
+- **Previous-release corpus test.** New
+  `tests/integration/previous-release-corpus.test.ts` holds fixtures of
+  data shapes prior releases actually wrote (task v2/v3 sources, pre-#858
+  proposal rows) and asserts the current CLI reads or auto-handles every
+  one. Policy: every schema bump must add the old shape here — this suite
+  failing means an upgrade break was about to ship.
+
+### Fixed
+
+- **`akm show`, `task run`/`explain`, `workflow run`/`plan`, and
+  `command run` no longer fail on bundles past 16,384 files (#857).**
+  Single-ref owner resolution walked the entire bundle tree on every
+  lookup, aborting with `file limit 16384 exceeded` once a bundle grew past
+  the cap — normal `improve` output accumulation was enough to get there.
+  Path-to-conceptId derivation is deterministic, so its inverse is now
+  computed in closed form: each adapter's `readCandidates` enumerates every
+  physical spelling that could own a conceptId (canonical placement, loose
+  off-canonical fallback, env `.env` duality) and the existing
+  verification/collision pipeline runs over that fixed set. The tree walk,
+  both scan caps, and `AdapterConceptScanError` are gone — no cap is needed
+  when nothing walks. Collision guarantees are unchanged (the pinned
+  loose-vs-canonical conformance case still throws), and symlinked
+  off-canonical files are now reachable where the old scan skipped them.
+- **`akm health --report` and `akm proposal list --status accepted` no
+  longer crash on proposal rows written before the `changes` metadata
+  envelope existed (#858), and `improve` outcome-score salience no longer
+  silently computes from zero accepted-counts (#859).** ~89% of real
+  archived accepted/rejected rows predate the field and can never recover
+  it; `storedToChanges` now treats a fully-absent `changes` key as a
+  documented legacy gap (empty change list — the rows still count toward
+  accepted/rejected history), `listStateProposals` skips-and-warns on
+  genuinely corrupt rows instead of aborting the whole list, and the write
+  path still refuses to persist a new proposal without changes.
+- **Task v2/v3 sources are auto-read as v4 instead of hard-failing with
+  `TASK_SCHEMA_VERSION_UNSUPPORTED`.** The v4 source gate would have broken
+  every pre-0.9.4 scheduled task headlessly on upgrade until the operator
+  manually ran `akm migrate apply`. `parseTaskSource` now runs the same
+  pure, deterministic migration planners the migrator uses (chained
+  v2->v3->v4) entirely in memory, emits a one-line stderr deprecation
+  warning, and never writes the file; the hard error survives only for
+  sources the deterministic conversion genuinely cannot translate.
+  `akm migrate apply` remains the way to rewrite files on disk and silence
+  the warning. The planner core moved from `scripts/akm-migrate/` into
+  `src/tasks/source/` so there is exactly one copy.
 
 ## [0.9.3] - 2026-08-29
 

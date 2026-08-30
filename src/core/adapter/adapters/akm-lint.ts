@@ -59,6 +59,7 @@ import { taskSourceErrorDetail } from "../../../tasks/source-v3";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
+import { isAkmRegistryCachePath } from "../../common";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../types";
 
 /** Recommended `category` values for facts — `commands/lint/fact-linter.ts:9`. */
@@ -400,7 +401,7 @@ export function workflowYamlSourceDiagnostics(
   parsePath: string,
   workspaceRoot: string,
 ): WorkflowFrontendDiagnostics {
-  if (parsePath.includes("/.cache/") || parsePath.includes("/registry/")) return { errors: [], warnings: [] };
+  if (isAkmRegistryCachePath(parsePath)) return { errors: [], warnings: [] };
   const compiled = compileWorkflowSource(raw, { path: parsePath, workspaceRoot });
   if (compiled.ok) return { errors: [], warnings: [] };
   return {
@@ -436,7 +437,7 @@ export function workflowFrontendDiagnostics(
   parsePath: string,
 ): WorkflowFrontendDiagnostics {
   const none: WorkflowFrontendDiagnostics = { errors: [], warnings: [] };
-  if (parsePath.includes("/.cache/") || parsePath.includes("/registry/")) return none;
+  if (isAkmRegistryCachePath(parsePath)) return none;
   const errors: WorkflowFrontendDiagnostic[] = [];
   const warnings: WorkflowFrontendDiagnostic[] = [];
   try {

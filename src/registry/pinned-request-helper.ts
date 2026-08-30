@@ -150,8 +150,8 @@ export async function nodePinnedRequestHelperMain(
 
   try {
     const nodeMajor = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
-    if (!Number.isInteger(nodeMajor) || nodeMajor < 24) {
-      throw new Error(`The pinned registry helper requires Node.js >= 24; found ${process.versions.node}`);
+    if (!Number.isInteger(nodeMajor) || nodeMajor < 22) {
+      throw new Error(`The pinned registry helper requires Node.js >= 22; found ${process.versions.node}`);
     }
 
     const { addressFamily, bodyPresent, headers, initialBody, iterator, method, pinnedAddress, timeoutMs, url } =

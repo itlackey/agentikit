@@ -18,12 +18,15 @@
  * ── validate (spec §6 task validation column) ──
  *
  * Validation enters the canonical task source parser (`parseTaskSource`,
- * task source v4 only as of P4 — a `version: 3` or `version: 2` document now
- * fails closed with `TASK_SCHEMA_VERSION_UNSUPPORTED`). That parser owns the
- * closed key sets, the executable-selector XOR, hostile YAML policy, the
- * `akm/command` builtin, bounds, and physical `working-directory`
- * containment. The adapter only translates a parser failure into the
- * format-family diagnostic shape.
+ * task source v4 native as of P4 — a `version: 3` or `version: 2` document
+ * is auto-read through the in-memory migration shim in
+ * `parse-task-source.ts`; only a version the shim's deterministic planners
+ * cannot convert, or any other unsupported number, fails closed with
+ * `TASK_SCHEMA_VERSION_UNSUPPORTED`). That parser owns the closed key sets,
+ * the executable-selector XOR, hostile YAML policy, the `akm/command`
+ * builtin, bounds, and physical `working-directory` containment. The
+ * adapter only translates a parser failure into the format-family
+ * diagnostic shape.
  *
  * Conformance oracle (authored, DO NOT modify): fixture
  * `tests/fixtures/bundles/akm-task/` + goldens

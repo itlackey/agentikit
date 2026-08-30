@@ -137,7 +137,19 @@ function countLinesContaining(files: readonly string[], needle: string): number 
 // genuine rule-(a)/(b) survivor) extend the per-file breakdown above in the
 // same commit that raises this number, with the same individually-recorded
 // justification standard the three deviations above set.
-const INVALID_FLAG_VALUE_BASELINE = 38; // TERMINAL (spec §5.2, row B-59) — see the breakdown above. An increase is a defect, not a number to re-measure and accept.
+//
+// +4 src/tasks/source/task-source-v3-frozen.ts — the FROZEN, vendored v3
+//    reader (four `INVALID_FLAG_VALUE` throws inside `classifyTaskV3Uses`,
+//    unmodified). It previously lived in
+//    `scripts/akm-migrate/migrate/task-source-v3-frozen.ts`, outside this
+//    assertion's `src/tasks/**`+`src/workflows/**` scan scope; the
+//    task-version read shim (upgrade-smoothness fix) moved it — body-intact,
+//    mechanically — into `src/tasks/source/` alongside the pure v2->v3/v3->v4
+//    migration planners so `parse-task-source.ts` could call them without
+//    crossing the src->scripts import boundary (`tests/architecture/src-scripts-import-boundary.test.ts`).
+//    Same already-frozen code, four throw sites newly IN SCOPE, not four new
+//    mints. 38 + 4 = 42.
+const INVALID_FLAG_VALUE_BASELINE = 42; // TERMINAL (spec §5.2, row B-59), +4 for the frozen v3 reader's src/ relocation — see the breakdown above. An increase beyond 42 is a defect, not a number to re-measure and accept.
 
 // ── Assertion 2: the classification import seam (spec §9 / §4.2 / §4.4 / §5.2 row B-60) ────
 

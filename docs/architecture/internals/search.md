@@ -53,6 +53,15 @@ OR/prefix-OR recovery only if both strict forms return no candidates. Unicode
 letter/number tokens are deduplicated and capped; callers do not strip
 stopwords or maintain separate result collections.
 
+**`matchStage`:** Each hit that has an FTS component reports which rung of
+the ladder produced it via `matchStage`: `"exact"` (strict AND), `"prefix"`
+(prefix AND), or `"relaxed"` (OR/prefix-OR recovery). The field is omitted
+for hits with no FTS contribution (e.g. a pure-semantic hybrid match) and for
+hits that never go through the lexical ladder (registry/browse hits). Because
+the ladder stops at the first non-empty stage, all FTS-only hits in a single
+response share one stage; in `hybrid` ranking mode a response can legitimately
+mix hits that carry `matchStage` with hits that omit it.
+
 ### 2. Semantic (vector)
 
 Cosine similarity between query embedding and stored entry embeddings.

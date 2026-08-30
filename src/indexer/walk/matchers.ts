@@ -318,28 +318,6 @@ function matchResultForFact(fact: MatchFact): MatchResult | null {
   };
 }
 
-/**
- * Every smart-Markdown result possible from path fields alone. The actual
- * classifier above returns only facts from this shared table, so owner
- * discovery can conservatively model a byte request without reading bytes.
- */
-export function smartMdPathCandidates(ctx: PathFileContext): MatchResult[] {
-  if (ctx.ext !== ".md" || ctx.ancestorDirs.includes("secrets")) return [];
-  const facts = isTypedDirDocFile(ctx.fileName)
-    ? [SMART_MD_FACTS.knowledge]
-    : [
-        SMART_MD_FACTS.workflow,
-        SMART_MD_FACTS.toolsAgent,
-        SMART_MD_FACTS.command,
-        SMART_MD_FACTS.modelAgent,
-        SMART_MD_FACTS.knowledge,
-      ];
-  return facts.flatMap((fact) => {
-    const result = matchResultForFact(fact);
-    return result ? [result] : [];
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Public matchers (API unchanged)
 // ---------------------------------------------------------------------------

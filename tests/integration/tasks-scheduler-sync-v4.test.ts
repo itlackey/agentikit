@@ -1380,6 +1380,11 @@ describe("#846: belongsToBundle scopes by resolved bundle path, not display name
           invocation: installed.invocation,
           fingerprint: "installed-fingerprint",
         },
+        // #849: the remove operation now carries the removed binding's
+        // owning bundle path (already known from #846's ownerBundlePath),
+        // so a dry-run preview can attribute every removal without a
+        // separate lookup.
+        ownerBundlePath: bundlePath,
       },
     ]);
   });

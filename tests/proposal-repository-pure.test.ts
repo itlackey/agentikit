@@ -61,7 +61,20 @@ describe("proposal repository — pure helpers (post-split)", () => {
   });
 
   test("rejects rows without the current proposal envelope", () => {
-    expect(() => proposalRowToProposal(historicalRow)).toThrow(/missing changes/i);
+    // historicalRow has an entirely empty metadata_json — missing both
+    // `changes` and `proposedTarget`. `changes` alone is tolerated as a
+    // legacy read-time compatibility gap (#858/#859, see storedToChanges),
+    // but `proposedTarget` is required on every row (legacy or not), so the
+    // row is still rejected — just for that reason now.
+    expect(() => proposalRowToProposal(historicalRow)).toThrow(/missing proposedTarget/i);
+  });
+
+  test("tolerates a legacy row missing only `changes` (#858/#859)", () => {
+    const proposal = proposalRowToProposal({
+      ...historicalRow,
+      metadata_json: JSON.stringify({ proposedTarget: { source: "team", root: "/tmp/stash" } }),
+    });
+    expect(proposal.changes).toEqual([]);
   });
 
   test("rejects malformed JSON and malformed present envelope fields", () => {

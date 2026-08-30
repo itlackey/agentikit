@@ -15,7 +15,7 @@ import {
   type TaskToV4FileInput,
   type TaskToV4FilesystemIdentity,
   type TaskToV4MigrationPlan,
-} from "./task-to-v4";
+} from "../../../src/tasks/source/task-to-v4";
 
 export interface TaskToV4Root {
   readonly bundleId: string;

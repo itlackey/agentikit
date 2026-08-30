@@ -24,14 +24,7 @@
  */
 
 import type { AssetMatcher, FileContext, MatchResult } from "../../indexer/walk/file-context";
-import {
-  directoryMatcher,
-  extensionMatcher,
-  parentDirHintMatcher,
-  smartMdMatcher,
-  smartMdPathCandidates,
-} from "../../indexer/walk/matchers";
-import type { AdapterPathContext } from "./bundle-adapter";
+import { directoryMatcher, extensionMatcher, parentDirHintMatcher, smartMdMatcher } from "../../indexer/walk/matchers";
 
 /**
  * The four builtin matchers, in registration order. The array index IS the
@@ -75,24 +68,4 @@ export function recognizeMatch(file: FileContext): MatchResult | null {
     if (result !== null) hits.push({ result, index: i });
   }
   return winningMatch(hits);
-}
-
-/**
- * Every AKM matcher winner possible from path fields alone. The three
- * path-only matchers run exactly as production does; each possible result of
- * the shared smart-Markdown fact table is then arbitrated at its real index.
- */
-export function recognizePathCandidateMatches(file: AdapterPathContext): MatchResult[] {
-  const fileContext = file as FileContext;
-  const pathHits = [extensionMatcher, directoryMatcher, parentDirHintMatcher].flatMap((matcher, index) => {
-    const result = matcher(fileContext);
-    return result ? [{ result, index }] : [];
-  });
-  const smartCandidates = smartMdPathCandidates(file);
-  const variants = smartCandidates.length > 0 ? smartCandidates : [undefined];
-  const winners = variants.flatMap((smart) => {
-    const winner = winningMatch(smart ? [...pathHits, { result: smart, index: 3 }] : [...pathHits]);
-    return winner ? [winner] : [];
-  });
-  return [...new Map(winners.map((winner) => [`${winner.type}\0${winner.renderer}`, winner])).values()];
 }

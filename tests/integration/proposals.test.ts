@@ -1795,7 +1795,7 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     expect(meta.changes?.[0]?.after).toBeUndefined();
   });
 
-  test("a row without persisted changes is rejected", () => {
+  test("a row without persisted changes (pre-#858/#859 legacy row) reads back with an empty change list", () => {
     const stash = makeStashDir();
     const created = createProposal(stash, {
       ref: "lessons/envelope-legacy",
@@ -1805,7 +1805,8 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
       payload: { content: VALID_LESSON },
     });
     if (isProposalSkipped(created)) throw new Error("unexpected skip");
-    // Strip the required current envelope.
+    // Strip the required current envelope to simulate a pre-feature row that
+    // never captured `changes` (see #858/#859: ~89% of real archived rows).
     const state = openStateDatabase();
     const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
       metadata_json: string;
@@ -1813,6 +1814,33 @@ describe("createProposal derives the FileChange[] envelope (WI-6.2)", () => {
     const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
     delete metadata.changes;
     delete metadata.beforeHash;
+    state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
+    state.close();
+
+    const reread = getProposal(stash, created.id);
+    expect(reread.changes).toEqual([]);
+    expect(reread.beforeHash).toBeUndefined();
+  });
+
+  test("a row with an explicit empty/invalid changes array is still rejected", () => {
+    const stash = makeStashDir();
+    const created = createProposal(stash, {
+      ref: "lessons/envelope-corrupt",
+      source: "reflect",
+      sourceRun: "run-envelope",
+      force: true,
+      payload: { content: VALID_LESSON },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    // Distinct from the legacy case above: `changes` is present but empty,
+    // which never happens on real (pre- or post-feature) data — this is
+    // genuine corruption, not a tolerated legacy gap.
+    const state = openStateDatabase();
+    const row = state.prepare("SELECT metadata_json FROM proposals WHERE id = ?").get(created.id) as {
+      metadata_json: string;
+    };
+    const metadata = JSON.parse(row.metadata_json) as Record<string, unknown>;
+    metadata.changes = [];
     state.prepare("UPDATE proposals SET metadata_json = ? WHERE id = ?").run(JSON.stringify(metadata), created.id);
     state.close();
 

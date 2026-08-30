@@ -61,6 +61,7 @@ const PASSTHROUGH_COMMANDS = [
   "task-history",
   "task-run",
   "task-sync",
+  "task-sync-dry-run",
   "update",
   "upgrade",
   "workflow-abandon",

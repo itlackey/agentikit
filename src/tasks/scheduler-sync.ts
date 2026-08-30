@@ -93,7 +93,14 @@ export type SchedulerSyncOperation =
       resultFingerprint?: string;
       options?: SchedulerInstallOptions;
     }>
-  | Readonly<{ kind: "remove"; id: string; nativeId: string; expected: SchedulerRemovalExpectation }>;
+  | Readonly<{
+      kind: "remove";
+      id: string;
+      nativeId: string;
+      expected: SchedulerRemovalExpectation;
+      /** Resolved bundle path this installed binding was attributed to (#846), when known. */
+      ownerBundlePath?: string;
+    }>;
 
 export interface SchedulerSyncPlan {
   readonly desired: readonly SchedulerBinding[];
@@ -277,6 +284,7 @@ export function finalizeSchedulerSyncPlan(
           invocation: current.invocation,
           fingerprint: priorFingerprint,
         }),
+        ...(current.ownerBundlePath !== undefined ? { ownerBundlePath: current.ownerBundlePath } : {}),
       }),
     );
   }
