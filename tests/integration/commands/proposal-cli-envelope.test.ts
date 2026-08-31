@@ -17,9 +17,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { createProposal, isProposalSkipped } from "../../../src/commands/proposal/repository";
 import { slugForPath } from "../../../src/indexer/installations";
-import { runCliCapture } from "../../_helpers/cli";
+import { runCliStatusWithBundleDir as runCli } from "../../_helpers/cli";
 import { durableItemRef } from "../../_helpers/durable-ref";
-import { makeSandboxDir, type SandboxedDir, withEnv, writeSandboxConfig } from "../../_helpers/sandbox";
+import { makeSandboxDir, type SandboxedDir, writeSandboxConfig } from "../../_helpers/sandbox";
 
 const disposers: SandboxedDir[] = [];
 
@@ -53,11 +53,6 @@ function seedProposal(stash: string, ref = "lessons/rg-over-grep"): string {
   });
   if (isProposalSkipped(result)) throw new Error("unexpected skip in seedProposal");
   return result.id;
-}
-
-async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
-  const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: stashDir }, () => runCliCapture(args));
-  return { stdout, stderr, status: code };
 }
 
 describe("akm proposal — JSON envelope snapshot (WS6)", () => {

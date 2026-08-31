@@ -173,32 +173,14 @@ describe("filterProactiveDue — post-lock re-filter", () => {
 // ---------------------------------------------------------------------------
 
 describe("cooldown-select-fix — selector purity regression guards (already GREEN)", () => {
-  test("never-reflected assets are always due", () => {
-    const r = "skills/never";
-    const res = selectProactiveMaintenanceRefs({
-      candidates: [makeRef(r)],
-      lastReflectTs: new Map(),
-      lastDistillTs: new Map(),
-      retrievalCounts: new Map([[r, 10]]),
-      now: NOW,
-    });
-    expect(res.dueTotal).toBe(1);
-    expect(res.neverReflected).toBe(1);
-    expect(res.selected.map((s) => s.ref)).toEqual([r]);
-  });
-
-  test("assets reflected within dueDays are NOT due (selector-level gate is correct)", () => {
-    const r = "skills/fresh";
-    const res = selectProactiveMaintenanceRefs({
-      candidates: [makeRef(r)],
-      lastReflectTs: new Map([[r, isoDaysAgo(5)]]),
-      lastDistillTs: new Map(),
-      retrievalCounts: new Map([[r, 50]]),
-      now: NOW,
-    });
-    expect(res.dueTotal).toBe(0);
-    expect(res.selected).toEqual([]);
-  });
+  // REMOVED (DUP-07, 0.9.8 stabilization): "never-reflected assets are
+  // always due" and "assets reflected within dueDays are NOT due" duplicated
+  // tests/commands/improve/proactive-maintenance.test.ts:33 and :47 —
+  // identical selectProactiveMaintenanceRefs scenarios (same candidates,
+  // same maps, same assertions). That suite still covers the selector's
+  // due-gating behavior; this file's unique value is filterProactiveDue
+  // (the post-lock re-filter, above) and the stale-pre-lock-map regression
+  // test below, which proactive-maintenance.test.ts does not cover.
 
   test("selector with stale pre-lock map DOES select ref (documents the bug the fix closes)", () => {
     // This documents the broken-path behavior that the orchestrator currently

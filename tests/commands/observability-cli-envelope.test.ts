@@ -27,15 +27,10 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import { runCliCapture } from "../_helpers/cli";
+import { runCliStatus as runCli } from "../_helpers/cli";
 import { type Cleanup, sandboxStashDir, sandboxXdgDataHome, writeSandboxConfig } from "../_helpers/sandbox";
 
 let stashCleanup: Cleanup = () => {};
-
-async function runCli(args: string[]): Promise<{ status: number; stdout: string; stderr: string }> {
-  const { code, stdout, stderr } = await runCliCapture(args);
-  return { status: code, stdout, stderr };
-}
 
 beforeEach(() => {
   // Chain sandboxXdgDataHome onto sandboxStashDir so `index.db` (which lives

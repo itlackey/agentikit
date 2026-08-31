@@ -21,18 +21,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 
-import { runCliCapture } from "../../_helpers/cli";
+import { runCliStatus as runCli } from "../../_helpers/cli";
 import { type Cleanup, sandboxStashDir, writeSandboxConfig } from "../../_helpers/sandbox";
 
 const SECRET_VALUE = "super-secret-token-value";
 
 let stashCleanup: Cleanup = () => {};
 let stashDir = "";
-
-async function runCli(args: string[]): Promise<{ status: number; stdout: string; stderr: string }> {
-  const { code, stdout, stderr } = await runCliCapture(args);
-  return { status: code, stdout, stderr };
-}
 
 function seedSecret(name: string): string {
   const dir = path.join(stashDir, "secrets");

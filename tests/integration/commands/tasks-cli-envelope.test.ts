@@ -19,8 +19,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { saveConfig } from "../../../src/core/config/config";
-import { runCliCapture } from "../../_helpers/cli";
-import { makeSandboxDir, type SandboxedDir, withEnv, withIsolatedAkmStorage } from "../../_helpers/sandbox";
+import { runCliStatusWithBundleDir as runCli, runCliCapture } from "../../_helpers/cli";
+import { makeSandboxDir, type SandboxedDir, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 const disposers: SandboxedDir[] = [];
 
@@ -47,11 +47,6 @@ function writeDisabledCommandTask(stashDir: string): void {
     path.join(stashDir, "tasks", "disabled-command.yml"),
     ["version: 4", "run: exit 0", "schedule:", "  - cron: '@daily'", "    enabled: false", ""].join("\n"),
   );
-}
-
-async function runCli(args: string[], stashDir: string): Promise<{ stdout: string; stderr: string; status: number }> {
-  const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: stashDir }, () => runCliCapture(args));
-  return { stdout, stderr, status: code };
 }
 
 describe("akm task — JSON envelope snapshot (WS6)", () => {
