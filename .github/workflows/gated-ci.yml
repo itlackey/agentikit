@@ -54,7 +54,7 @@ jobs:
     outputs:
       sha: ${{ steps.candidate.outputs.sha }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
           ref: ${{ inputs.candidate_sha || github.sha }}
           fetch-depth: 1
@@ -100,7 +100,7 @@ jobs:
       docker: ${{ steps.decide.outputs.docker }}
       semantic: ${{ steps.decide.outputs.semantic }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         if: github.event_name == 'pull_request'
         with:
           ref: ${{ needs.resolve-candidate.outputs.sha }}
@@ -173,20 +173,20 @@ jobs:
       # across runs without weakening the test-isolation harness.
       HF_HOME: ${{ github.workspace }}/.ci-cache/huggingface
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
           ref: ${{ needs.resolve-candidate.outputs.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
         with:
           node-version: 24
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
         with:
           bun-version: 1.3.14
       - run: bun install --frozen-lockfile
       - name: Restore HuggingFace model cache
         id: hf-cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25  # v5.1.0
         with:
           path: ${{ github.workspace }}/.ci-cache/huggingface
           key: akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'scripts/copy-assets.ts', 'package.json', 'bun.lock') }}-v3
@@ -202,7 +202,7 @@ jobs:
           steps.hf-cache.outputs.cache-hit != 'true' &&
           github.event_name == 'schedule' &&
           github.ref_name == github.event.repository.default_branch
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25  # v5.1.0
         with:
           path: ${{ github.workspace }}/.ci-cache/huggingface
           key: akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'scripts/copy-assets.ts', 'package.json', 'bun.lock') }}-v3
@@ -217,16 +217,16 @@ jobs:
       AKM_DOCKER_TESTS: "1"
       DOCKER_BUILDKIT: "1"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
           ref: ${{ needs.resolve-candidate.outputs.sha }}
           persist-credentials: false
       - name: Verify Docker daemon
         run: docker info
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
         with:
           bun-version: 1.3.14
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
         with:
           node-version: 24
       - run: bun install --frozen-lockfile
@@ -256,14 +256,14 @@ jobs:
       AKM_NATIVE_TASK_ID: akm-ci-${{ matrix.runtime_platform }}-${{ github.run_id }}-${{ github.run_attempt }}
       AKM_NATIVE_NODE_TASK_ID: akm-ci-node-${{ matrix.runtime_platform }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
           ref: ${{ needs.resolve-candidate.outputs.sha }}
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
         with:
           bun-version: 1.3.14
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
         with:
           node-version: 24
       - run: bun install --frozen-lockfile
