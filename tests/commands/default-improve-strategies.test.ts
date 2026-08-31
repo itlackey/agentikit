@@ -3,8 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Issue #552: the three new default improve profiles (`frequent`,
- * `consolidate`, `catchup`) must load through the real profile resolver AND
+ * Issue #552 (amended by #878, which removed `frequent` and `memory-focus`):
+ * shipped improve profiles must load through the real profile resolver AND
  * validate against the live `ImproveProfileConfigSchema` (the same zod schema
  * that parses user config), so they are guaranteed to be accepted in the wild.
  */
@@ -12,7 +12,6 @@
 import { describe, expect, test } from "bun:test";
 import profileCatchup from "../../src/assets/improve-strategies/catchup.json";
 import profileConsolidate from "../../src/assets/improve-strategies/consolidate.json";
-import profileFrequent from "../../src/assets/improve-strategies/frequent.json";
 import profileProactiveMaintenance from "../../src/assets/improve-strategies/proactive-maintenance.json";
 import profileReflectDistill from "../../src/assets/improve-strategies/reflect-distill.json";
 import { resolveImproveStrategy } from "../../src/commands/improve/improve-strategies";
@@ -24,9 +23,7 @@ const BUILTIN_STRATEGIES = [
   "default",
   "quick",
   "thorough",
-  "memory-focus",
   "graph-refresh",
-  "frequent",
   "consolidate",
   "catchup",
   "reflect-distill",
@@ -56,10 +53,6 @@ describe("default improve strategies (#552)", () => {
     expect(profileProactiveMaintenance.processes.triage.judgment).toBe(true);
   });
 
-  test("frequent: validates against the live schema", () => {
-    expect(() => ImproveProfileConfigSchema.parse(profileFrequent)).not.toThrow();
-  });
-
   test("consolidate: validates against the live schema", () => {
     expect(() => ImproveProfileConfigSchema.parse(profileConsolidate)).not.toThrow();
   });
@@ -68,17 +61,28 @@ describe("default improve strategies (#552)", () => {
     expect(() => ImproveProfileConfigSchema.parse(profileCatchup)).not.toThrow();
   });
 
-  test("frequent resolves with inference on and improve-stage extract/consolidate/distill off", () => {
-    const p = resolveImproveStrategy("frequent", MINIMAL_CONFIG).config;
-    expect(p.description).toContain("Frequent");
-    expect(p.processes?.reflect?.enabled).toBe(true);
-    expect(p.processes?.distill?.enabled).toBe(false);
-    expect(p.processes?.consolidate?.enabled).toBe(false);
-    expect(p.processes?.memoryInference?.enabled).toBe(true);
-    expect(p.processes?.graphExtraction?.enabled).toBe(true);
-    expect(p.processes?.extract?.enabled).toBe(false);
-    expect(p.processes?.triage?.enabled).toBe(false);
-    expect(p.sync?.push).toBe(true);
+  test("thorough is exactly default plus a judged triage drain (#878)", () => {
+    // The 0.9.6-era thorough.json omitted `validation`, `extract`, and
+    // `proactiveMaintenance`; absent keys resolve to DISABLED, so "like
+    // default, plus triage" was silently default-minus-validation. Pin the
+    // real contract: every process default enables, thorough enables (with
+    // identical tuning), plus triage promoting judged proposals.
+    const def = resolveImproveStrategy("default", MINIMAL_CONFIG).config;
+    const thor = resolveImproveStrategy("thorough", MINIMAL_CONFIG).config;
+    const enabledOf = (p: unknown): boolean | undefined =>
+      typeof p === "object" && p !== null && "enabled" in p ? (p as { enabled?: boolean }).enabled : undefined;
+    for (const [name, defProcess] of Object.entries(def.processes ?? {})) {
+      if (name === "triage") continue;
+      const thorProcess = (thor.processes as Record<string, unknown> | undefined)?.[name];
+      expect(enabledOf(thorProcess), name).toBe(enabledOf(defProcess));
+    }
+    expect(thor.processes?.validation?.enabled).toBe(true);
+    expect(thor.processes?.triage?.enabled).toBe(true);
+    expect(thor.processes?.triage?.applyMode).toBe("promote");
+    // The resolver normalizes `judgment: true` to `{ enabled: true }`.
+    const judgment = thor.processes?.triage?.judgment;
+    expect(typeof judgment === "object" ? judgment?.enabled : judgment).toBe(true);
+    expect(def.processes?.triage?.enabled).toBe(false);
   });
 
   test("default resolves with improve-stage extract off", () => {
@@ -107,14 +111,17 @@ describe("default improve strategies (#552)", () => {
     expect(p.sync?.push).toBe(true);
   });
 
-  test("catchup resolves to consolidate (chunk 50) + triage queue/personal-stash/100", () => {
+  test("catchup resolves to consolidate (chunk 50) + judged triage promote/personal-stash/100 (#878)", () => {
     const p = resolveImproveStrategy("catchup", MINIMAL_CONFIG).config;
     expect(p.processes?.consolidate?.enabled).toBe(true);
     expect(p.processes?.consolidate?.maxChunkSize).toBe(50);
     // #553: catchup disables the pool-size guard (drain regardless of pool size).
     expect(p.processes?.consolidate?.minPoolSize).toBe(0);
     expect(p.processes?.triage?.enabled).toBe(true);
-    expect(p.processes?.triage?.applyMode).toBe("queue");
+    // #878: queue mode never reaches the promote loop, so the old
+    // queue+maxAcceptsPerRun combination was inert. Promote is demoted back
+    // to queue by the autonomy gate unless improve autonomy is enabled.
+    expect(p.processes?.triage?.applyMode).toBe("promote");
     expect(p.processes?.triage?.policy).toBe("personal-stash");
     expect(p.processes?.triage?.maxAcceptsPerRun).toBe(100);
     expect(p.processes?.reflect?.enabled).toBe(false);
@@ -125,21 +132,9 @@ describe("default improve strategies (#552)", () => {
     expect(p.sync?.push).toBe(true);
   });
 
-  test("minPoolSize (#553) lives only on the consolidate-bearing profiles, not frequent", () => {
+  test("minPoolSize (#553) lives on the consolidate-bearing profiles", () => {
     // #553 added `minPoolSize` to consolidate.json (500) and catchup.json (0).
-    // It must NOT leak into `frequent` (which disables consolidate entirely).
-    expect(JSON.stringify(profileFrequent)).not.toContain("minPoolSize");
     expect(JSON.stringify(profileConsolidate)).toContain("minPoolSize");
     expect(JSON.stringify(profileCatchup)).toContain("minPoolSize");
-  });
-
-  test("minNewSessions (#554) lives only on the frequent profile's extract process", () => {
-    // `frequent` keeps its tuned candidate-pool gate for users who explicitly
-    // enable its extract stage. The shipped stage is off; the in-code
-    // minNewSessions default remains 0 (disabled) everywhere else.
-    expect(profileFrequent.processes?.extract?.minNewSessions).toBe(3);
-    for (const raw of [profileConsolidate, profileCatchup]) {
-      expect(JSON.stringify(raw)).not.toContain("minNewSessions");
-    }
   });
 });

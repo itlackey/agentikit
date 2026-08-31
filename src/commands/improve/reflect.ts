@@ -1044,7 +1044,7 @@ function parseDirectReflectOutput(raw: string, mode: ReflectLlmOutputMode, targe
 export async function runReflectViaLlm(opts: RunReflectViaLlmOptions): Promise<AgentRunResult> {
   const start = Date.now();
   let repairAttempts = 0;
-  const connection = opts.runner.connection;
+  const _connection = opts.runner.connection;
   const messages: ChatMessage[] = [{ role: "user", content: opts.prompt ?? "" }];
   const configuredTimeout = Object.hasOwn(opts, "timeoutMs")
     ? (opts.timeoutMs ?? null)

@@ -1,4 +1,4 @@
 version: 4
-run: akm improve --strategy frequent --skip-if-locked
-description: Frequent inference pass (hourly at :40; improve-stage extract off)
+run: akm improve --strategy reflect-distill --skip-if-locked
+description: Frequent learning pass (hourly at :40) — reflect, distill, memory inference, judged triage
 schedule: "40 * * * *"
