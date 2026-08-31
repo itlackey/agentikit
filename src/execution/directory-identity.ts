@@ -41,26 +41,9 @@ export function captureFrozenDirectoryIdentity(rootInput: string, relativeCwd?: 
   });
 }
 
-export function assertFrozenDirectoryIdentity(identity: FrozenDirectoryIdentity): void {
-  let actual: FrozenDirectoryIdentity;
-  try {
-    const relative = path.relative(identity.requestedRoot, identity.requestedCwd);
-    actual = captureFrozenDirectoryIdentity(identity.requestedRoot, relative);
-  } catch {
-    throw changed(identity.requestedCwd);
-  }
-  for (const key of ["realRoot", "rootDevice", "rootInode", "realCwd", "cwdDevice", "cwdInode"] as const) {
-    if (actual[key] !== identity[key]) throw changed(identity.requestedCwd);
-  }
-}
-
 function requireContained(root: string, candidate: string): void {
   const relative = path.relative(root, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new UsageError(`${candidate} escapes its execution root.`, "PATH_ESCAPE_VIOLATION");
   }
-}
-
-function changed(cwd: string): UsageError {
-  return new UsageError(`Frozen execution cwd ${cwd} changed after publication.`, "RESOURCE_ALREADY_EXISTS");
 }

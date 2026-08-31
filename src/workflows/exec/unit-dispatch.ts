@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { ConfigError } from "../../core/errors";
-import { assertFrozenDirectoryIdentity } from "../../execution/directory-identity";
 import { assertFrozenExecutableIdentity } from "../../execution/executable-identity";
 import {
   canonicalResolvedExecutionRequest,
@@ -96,7 +95,6 @@ export function prepareWorkflowExecution(
   prompt = request.prompt,
 ): LoweredExecutionRequest {
   const target = request.frozenTarget;
-  if (target.cwdIdentity) assertFrozenDirectoryIdentity(target.cwdIdentity);
   if (target.executable) assertFrozenExecutableIdentity(target.executable, `unit ${request.unitId} executable`);
   const wire = JSON.parse(canonicalResolvedExecutionRequest(target.request)) as Record<string, unknown>;
   const command = { ...(wire.command as Record<string, unknown>), content: prompt };

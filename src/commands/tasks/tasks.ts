@@ -1380,22 +1380,13 @@ type TaskSourceExpectation =
       state: "absent";
       filePath: string;
       rootRealPath: string;
-      rootPhysicalIdentity: string;
-      rootMtimeNs: string;
-      rootCtimeNs: string;
     }>
   | Readonly<{
       state: "present";
       filePath: string;
       rootRealPath: string;
-      rootPhysicalIdentity: string;
-      rootMtimeNs: string;
-      rootCtimeNs: string;
       realPath: string;
-      physicalIdentity: string;
       size: number;
-      mtimeNs: string;
-      ctimeNs: string;
       sha256: string;
       bytesBase64: string;
       content: string;
@@ -1413,13 +1404,7 @@ function captureTaskSourceExpectation(filePathInput: string, rootInput: string):
   if (!rootStat.isDirectory()) {
     throw new UsageError(`${root} is not a task source directory.`, "INVALID_FLAG_VALUE");
   }
-  const common = {
-    filePath,
-    rootRealPath,
-    rootPhysicalIdentity: rootStat.ino === 0n ? `path:${rootRealPath}` : `inode:${rootStat.dev}:${rootStat.ino}`,
-    rootMtimeNs: String(rootStat.mtimeNs),
-    rootCtimeNs: String(rootStat.ctimeNs),
-  };
+  const common = { filePath, rootRealPath };
   let descriptor: number | undefined;
   try {
     const noFollow = "O_NOFOLLOW" in fs.constants ? fs.constants.O_NOFOLLOW : 0;
@@ -1448,10 +1433,7 @@ function captureTaskSourceExpectation(filePathInput: string, rootInput: string):
       state: "present" as const,
       ...common,
       realPath,
-      physicalIdentity: before.ino === 0n ? `path:${realPath}` : `inode:${before.dev}:${before.ino}`,
       size: bytes.byteLength,
-      mtimeNs: String(before.mtimeNs),
-      ctimeNs: String(before.ctimeNs),
       sha256: createHash("sha256").update(bytes).digest("hex"),
       bytesBase64: bytes.toString("base64"),
       content,
@@ -1473,6 +1455,11 @@ function captureTaskSourceExpectation(filePathInput: string, rootInput: string):
   }
 }
 
+// TOCTOU note: this compares CONTENT (state + sha256), not filesystem
+// identity (inode/mtime/ctime/directory timestamps) — the same split already
+// applied to the task migrator in 0.9.5. An unrelated touch to the file or
+// its containing directory must not trip a "changed after planning" refusal;
+// only a real content change should.
 function assertTaskSourceExpectation(expected: TaskSourceExpectation): void {
   const actual = captureTaskSourceExpectation(expected.filePath, expected.rootRealPath);
   if (!sameTaskSourceExpectation(actual, expected)) {
@@ -1484,14 +1471,17 @@ function assertTaskSourceExpectation(expected: TaskSourceExpectation): void {
 }
 
 function sameTaskSourceExpectation(left: TaskSourceExpectation, right: TaskSourceExpectation): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  if (left.state !== right.state || left.filePath !== right.filePath || left.rootRealPath !== right.rootRealPath) {
+    return false;
+  }
+  if (left.state === "absent") return true;
+  return left.sha256 === (right as Extract<TaskSourceExpectation, { state: "present" }>).sha256;
 }
 
 function assertTaskSourceRestored(expected: TaskSourceExpectation): void {
   const actual = captureTaskSourceExpectation(expected.filePath, expected.rootRealPath);
   const restored =
     actual.state === expected.state &&
-    actual.rootPhysicalIdentity === expected.rootPhysicalIdentity &&
     (actual.state === "absent" ||
       (expected.state === "present" && actual.sha256 === expected.sha256 && actual.content === expected.content));
   if (!restored) {
