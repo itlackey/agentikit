@@ -4,6 +4,134 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.7] - 2026-08-31
+
+### Added
+
+- **`akm curate --pack <tokens>` (#746).** Packs the ranked stash hits' full
+  content into a single token-budgeted blob instead of returning refs the
+  caller has to follow up on with N separate `akm show` calls. Content is
+  resolved through the same path `akm show` uses, so a `ref#fragment` hit
+  packs just that section. Drops whole assets from the tail of the ranked
+  list first; only a single highest-rank hit that alone exceeds the budget
+  is truncated. Registry hits are never packed — that separation stays
+  opt-in and there is no flag to override it. Named `--pack` rather than
+  `--budget` because the workflow asset schema already uses `budget` for
+  run-cost caps.
+
+- **`llms.txt`-aware website ingestion (#749).** `akm bundle add` against an
+  origin root now probes `<origin>/llms.txt` first and, when present, uses
+  that author-curated link list as the crawl frontier instead of discovering
+  links by parsing HTML. Each linked page still flows through the same
+  robots-compliant, host-guarded, content-extracting fetch as before, so
+  ingested pages stay individually addressable. Off-origin manifest entries
+  are dropped. The probe is restricted to origin-root URLs, so adding a
+  specific page still fetches that page. Sites without the file fall through
+  to the existing crawler unchanged. `llms-full.txt` is deliberately not
+  read: its `## <path>` separators are ambiguous against real page content.
+
+### Changed
+
+- **The improve-strategy presets were reviewed as a set (#878).** The
+  investigation first believed `thorough` silently ran without validation;
+  that was wrong — every strategy deep-merges onto `default` before
+  resolving, so the old asset behaved correctly. What was real: `thorough`
+  was the only preset of ten relying on that invisible inheritance instead
+  of an explicit process matrix, and its triage used `applyMode: "queue"`
+  while its description promised to "drain the backlog" — queue mode never
+  promotes, so nothing drained. `catchup` had the same inertness:
+  `maxAcceptsPerRun: 100` under queue mode, a key the promote loop never
+  reads.
+
+  Both now use the same judged-promotion pattern as `reflect-distill` and
+  `proactive-maintenance`: `applyMode: "promote"`, `judgment: true`, a
+  per-run accept cap (`thorough` 25, `catchup` 100), and `maxDiffLines:
+  200`. The autonomy gate demotes promote back to queue unless
+  `experimental.improveAutonomy` is enabled, so by default both still
+  review-only; with autonomy on, they actually drain. `thorough` now
+  carries default's full explicit matrix, and a regression test pins
+  "everything default enables, thorough enables identically, plus triage."
+
+### Fixed
+
+- **A corrupt `index.db` now rebuilds instead of failing the command
+  (#865).** `src/core/state-db.ts` documented that "a corrupt index is
+  recovered by deleting it and re-running `akm index`" — that recovery was
+  never implemented. Real on-disk corruption surfaced a raw `SQLITE_CORRUPT`
+  and exited 70, and the existing inline-reindex fallback could not help
+  because it reopened the same corrupt file. `openIndexDatabase` now detects
+  corruption, removes the file and its `-wal`/`-shm` sidecars, and retries
+  the open once. Scoped to `index.db`, which is fully regenerable from the
+  stash; `state.db` is never touched.
+
+- **`akm task sync` accepts an immutable package-local install (#868).** An
+  image-baked akm pinned at a path outside the npm global root was refused
+  outright, and `--rebind` then warned on every sync that the pinned binary
+  was "mutable, unproven" — the opposite of true, training operators to
+  ignore a recurring warning. The npm-global check was only ever a proxy for
+  "this binary won't change out from under the scheduler"; that property is
+  now tested directly, so a launcher this process cannot write to (a
+  read-only mount) is eligible without `--rebind` and without the warning.
+  Writable `npx`/project-`node_modules` installs remain ineligible, which is
+  the case the original check existed for. No new config knob.
+
+- **`TASK_SCHEMA_VERSION_UNSUPPORTED` names the actual blocker (#869).** For
+  a v2/v3 file the message is only reached after the read-time shim has
+  already tried and failed to convert it — meaning a human decision is
+  required — yet it pointed at `akm migrate apply`, which would report the
+  identical block for that same file. The blocked `reason`/`detail` were
+  already computed and then discarded; they are now surfaced, so the error
+  names the specific reason (e.g.
+  `shell-command-resolution-changes-v2-literal-argv-semantics`) and says a
+  decision is needed rather than sending the operator to a command that
+  cannot help.
+
+  Also verified as already fixed and left alone: cross-bundle scoping (a
+  blocked file in one bundle does not prevent conversion in another —
+  resolved by #866) and `env`-prefixed command conversion (resolved by
+  #867).
+
+### Removed
+
+- **The `frequent` and `memory-focus` improve strategies.** Zero recorded
+  invocations, and both were mid-points of other presets (`frequent` ≈
+  `reflect-distill` without distill or triage; `memory-focus` a subset of
+  `frequent`). The shipped hourly task template now uses `reflect-distill`
+  — matching what real deployments had already switched to by hand. Any
+  removed combination remains expressible via `improve.strategies` in
+  config. One caveat: a user-config strategy *named* `frequent` or
+  `memory-focus` previously merged over the built-in of the same name; it
+  now merges over `default` only, so a partial override that relied on the
+  built-in's values will resolve differently and should be made explicit.
+
+### Testing
+
+- **The previous-release corpus covers more than task sources (#880).**
+  Added fixtures for the synthesized `AKM_BUNDLE_DIR` duplicate-`stash`
+  bundle shape that caused #870, the retired 0.8 `stashDir`/`sources[]`/
+  `installed[]` config keys, and a downstream consumer's `config.json` plus
+  four task-source-v4 files. The 0.8 fixture deliberately asserts the
+  opposite of the others: those keys are hard-rejected by design, so it
+  guards that the rejection stays loud and actionable rather than silently
+  loading. Every fixture was proven to catch a regression by breaking the
+  guarantee, observing the failure, and reverting.
+
+- Pinned current handling of truncated LLM responses (`finishReason:
+  "length"`) as a regression test (#865). No distinct classification or
+  retry was added: the underlying truncation was already resolved by
+  `reasoningEffort`, and threading the finish reason through four layers to
+  earn one diagnostic label was not justified.
+
+### Not shipped
+
+- **Orphan-asset detection for `akm health` (#750)** was implemented and
+  then backed out after measurement. Against a live 23,859-entry index it
+  flagged 16,609 of 16,615 in-scope assets (99.96%) and took 135 s. The
+  corpus is not densely cross-linked — 1,591 distinct xref tokens exist in
+  total — so the check has no signal to give. The broken-ref half of #750
+  had already shipped previously. Moved to Backlog; see #882 for the
+  resolver defect the investigation exposed.
+
 ## [0.9.6] - 2026-08-31
 
 The deletion release: **net −2,100 lines**, almost all of it machinery that

@@ -52,6 +52,10 @@ const QUEUE_EXPANSION_FACTOR = 5;
 const MAX_PAGES_DEFAULT = 50;
 const MAX_DEPTH_DEFAULT = 3;
 
+/** Byte cap for the `llms.txt` manifest itself — a curated link list, never a large file. */
+const LLMS_TXT_BYTE_CAP = 512 * 1024;
+const LLMS_TXT_BODY_TIMEOUT_MS = 15_000;
+
 /**
  * Per-page body cap for website scraping. HTML pages this large are
  * almost never useful as agent knowledge sources and a runaway server
@@ -781,6 +785,37 @@ async function crawlWebsite(
 
   await assertStartUrlAllowedByRobots(robots, start, options.rawStartUrl);
 
+  // llms.txt fast path: an increasing number of doc sites publish a curated,
+  // deduplicated link list at `/llms.txt` specifically for tools like this
+  // one. When present, use it as the crawl frontier instead of discovering
+  // links by parsing HTML — each linked page still goes through the exact
+  // same robots-compliant, host-guarded `fetchWebsitePage` call below, so
+  // ingested pages stay individually addressable. Gated to origin-root start
+  // URLs only (mirrors `extractGithubRepository`'s repo-root restriction):
+  // adding a specific page must fetch that page, not silently pull in the
+  // whole site's manifest.
+  if (isOriginRootUrl(start)) {
+    const manifest = await fetchLlmsManifest(start, robots, {
+      allowPrivateHosts: options.allowPrivateHosts,
+      signal: crawlSignal,
+    });
+    if (manifest) {
+      warn("[akm] Using llms.txt manifest from %s", manifest.manifestUrl);
+      queue.length = 0;
+      for (const link of manifest.links) {
+        // A manifest can name arbitrary hosts; only same-origin links are
+        // honored by default, same as links discovered mid-crawl below.
+        if (link.origin !== allowedOrigin) continue;
+        const candidate = normalizeCrawlUrl(link.toString());
+        if (!candidate) continue;
+        // depth = maxDepth: fetch each manifest page individually, but don't
+        // treat it as a fresh BFS seed — the manifest is already the
+        // author-curated set of pages worth ingesting.
+        queue.push({ url: candidate, rawUrl: link.toString(), depth: options.maxDepth, deferrals: 0 });
+      }
+    }
+  }
+
   // Counts actual `fetchWebsitePage` invocations (regardless of outcome) so
   // Crawl-delay pacing skips the first fetch and never charges a delay slot
   // to a URL that robots.txt skipped without ever being fetched (C-11).
@@ -1174,6 +1209,99 @@ function buildMarkdownSnapshot(page: WebsitePage, slug: string, tags?: string[])
     content,
     "",
   ].join("\n");
+}
+
+/**
+ * True for a start URL that names an origin's root (no path, no query).
+ * Matches how `extractGithubRepository` restricts its own special-case match
+ * to repository-root URLs — the llms.txt probe must not fire for a
+ * user-supplied deep link, or `akm bundle add <site>/guides/foo` would
+ * silently ingest the whole site's manifest instead of the page requested.
+ */
+export function isOriginRootUrl(url: URL): boolean {
+  return url.pathname === "/" && !url.search;
+}
+
+/**
+ * Parses the `llms.txt` link-list format: list items shaped like
+ * `- [title](path) - description` (the description, and its separator, are
+ * ignored — only the link target is needed). Any line that isn't a markdown
+ * link list item — headings, the leading `# Title`/`> summary` lines, prose —
+ * is simply not a link line and is skipped.
+ */
+export function parseLlmsTxtLinks(text: string, baseUrl: string): URL[] {
+  const links: URL[] = [];
+  const seen = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.trim().match(/^-\s*\[[^\]]*\]\(([^)\s]+)\)/);
+    const href = match?.[1];
+    if (!href) continue;
+    let resolved: URL;
+    try {
+      resolved = new URL(href, baseUrl);
+    } catch {
+      continue;
+    }
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") continue;
+    const key = resolved.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    links.push(resolved);
+  }
+  return links;
+}
+
+/**
+ * Probes `<origin>/llms.txt` and, if present, returns its parsed link list.
+ * Reuses `fetchWebsiteResponse` so the manifest fetch itself gets the exact
+ * same SSRF host guard, redirect handling, and (via `robots`) robots.txt
+ * compliance as any other page fetch — this is still a fetch against a
+ * user-supplied host, no different from the rest of the crawl.
+ *
+ * `llms-full.txt` (the single-file concatenation of every page) is
+ * deliberately NOT read here. Its `## <path>` separators are ambiguous — page
+ * content legitimately contains `##` headings too — so recovered page
+ * boundaries can't be trusted, whereas per-page fetches through the existing
+ * pipeline are cheap, bounded by this author-curated list, and produce
+ * cleanly addressable assets. See the issue's "alternatives considered".
+ */
+async function fetchLlmsManifest(
+  start: URL,
+  robots: RobotsPolicy,
+  options: { allowPrivateHosts?: boolean; signal?: AbortSignal },
+): Promise<{ manifestUrl: string; links: URL[] } | null> {
+  const manifestUrl = new URL("/llms.txt", start.origin).toString();
+  const decision = await resolveCrawlRobotsDecision(robots, manifestUrl);
+  if (!decision.allowed) return null;
+
+  let fetched: WebsiteResponse;
+  try {
+    fetched = await fetchWebsiteResponse(decision.fetchUrl, 0, {
+      allowPrivateHosts: options.allowPrivateHosts,
+      signal: options.signal,
+      robots,
+    });
+  } catch {
+    return null;
+  }
+  if (!fetched.response.ok) {
+    await fetched.response.body?.cancel().catch(() => undefined);
+    return null;
+  }
+
+  let text: string;
+  try {
+    text = await readBodyWithByteCap(fetched.response, LLMS_TXT_BYTE_CAP, {
+      bodyTimeoutMs: LLMS_TXT_BODY_TIMEOUT_MS,
+      signal: options.signal,
+    });
+  } catch {
+    return null;
+  }
+
+  const links = parseLlmsTxtLinks(text, fetched.finalUrl);
+  if (links.length === 0) return null;
+  return { manifestUrl: fetched.finalUrl, links };
 }
 
 function normalizeCrawlUrl(rawUrl: string): string | null {

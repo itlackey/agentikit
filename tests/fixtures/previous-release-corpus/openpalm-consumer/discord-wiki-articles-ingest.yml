@@ -1,0 +1,9 @@
+version: 4
+name: openpalm-discord-wiki-articles-ingest
+description: Pull new wiki articles referenced in Discord into the stash
+run: bun /opt/openpalm/scripts/wiki-ingest.ts --source discord
+shell: bash
+env:
+  OPENPALM_HOME: /srv/openpalm
+schedule: "0 */6 * * *"
+timeout: 300000

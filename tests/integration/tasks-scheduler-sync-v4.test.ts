@@ -1079,10 +1079,10 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
     const bundleRoot = root();
     write(path.join(bundleRoot, "tasks", "a-valid.yml"), "version: 4\nrun: echo yes\nshell: sh\nschedule: '@daily'\n");
     // B-15 (spec docs/plans/specs/p4-deletions-closeout.md §2.2): a
-    // still-version-2 sibling fails TASK_SCHEMA_VERSION_UNSUPPORTED with the
-    // migrate hint (row B-14) — before #867, this ONE bad sibling rejected
-    // the whole desired set (`akm migrate apply --dry-run` in the error);
-    // now it is dropped and reported, and `a-valid` still reconciles.
+    // still-version-2 sibling that the deterministic migrator cannot convert
+    // fails TASK_SCHEMA_VERSION_UNSUPPORTED (row B-14) — before #867, this
+    // ONE bad sibling rejected the whole desired set; now it is dropped and
+    // reported, and `a-valid` still reconciles.
     write(path.join(bundleRoot, "tasks", "b-invalid.yml"), "version: 2\nschedule: '@daily'\ncommand: echo no\n");
     let signatures = 0;
 
@@ -1101,7 +1101,7 @@ describe("whole-set scheduler sync planning — task+workflow composition and CA
     expect(plan.desired.map((binding) => binding.id)).toEqual(["a-valid"]);
     expect(plan.failures).toHaveLength(1);
     expect(plan.failures[0]?.path).toContain("b-invalid.yml");
-    expect(plan.failures[0]?.reason).toContain("akm migrate apply --dry-run");
+    expect(plan.failures[0]?.reason).toContain("needs a human decision");
     expect(signatures).toBe(1);
   });
 

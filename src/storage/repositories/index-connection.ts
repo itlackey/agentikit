@@ -12,10 +12,12 @@
  * indexer — inverting the old storage→indexer arrow.
  */
 
+import fs from "node:fs";
 import { createRequire } from "node:module";
 import { ConfigError } from "../../core/errors";
 import { classifyPathAccess, describeInaccessiblePath } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
+import { warn } from "../../core/warn";
 import type { Database } from "../database";
 import { openDatabase } from "../database";
 import { openManagedDatabase } from "../managed-db";
@@ -25,13 +27,27 @@ import { isCanonicalIndexGeneration } from "./index-entry-schema";
 import { ensureSchema } from "./index-schema";
 import { loadVecExtension, warnIfVecMissing } from "./index-vec-repository";
 
+/**
+ * Whether `error` is SQLite reporting on-disk corruption (`SQLITE_CORRUPT`,
+ * "database disk image is malformed") rather than a permission, lock, or
+ * schema problem. Matched on both `code` (bun:sqlite, better-sqlite3) and
+ * message text, since driver error shapes are not perfectly uniform.
+ */
+function isCorruptionError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  if (code === "SQLITE_CORRUPT") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("database disk image is malformed") || message.includes("SQLITE_CORRUPT");
+}
+
 export function openIndexDatabase(
   dbPath?: string,
   options?: { embeddingDim?: number; beforeSchema?: (db: Database) => void },
 ): Database {
-  return openManagedDatabase({
-    path: dbPath ?? getDbPath(),
-    init: (db) => {
+  const resolvedPath = dbPath ?? getDbPath();
+  const spec = {
+    path: resolvedPath,
+    init: (db: Database) => {
       // Try to load sqlite-vec extension
       loadVecExtension(db);
 
@@ -51,7 +67,30 @@ export function openIndexDatabase(
       // Warn once at init if using JS fallback with many entries
       warnIfVecMissing(db, { once: true });
     },
-  });
+  };
+  try {
+    return openManagedDatabase(spec);
+  } catch (error) {
+    // index.db is a derived cache, fully regenerable from the stash on disk
+    // (see src/core/state-db.ts's "Why a separate database from index.db"
+    // note) — so real on-disk corruption is recovered by deleting the file
+    // and rebuilding, not by surfacing a raw SQLITE_CORRUPT to the caller or
+    // quietly falling through to an unreadable index. This mirrors the
+    // existing stale-version-marker rebuild below, one layer further down
+    // (that path opens fine and rewrites tables in place; corruption prevents
+    // even opening, so the file itself has to go first).
+    if (!isCorruptionError(error)) throw error;
+    warn(`Index database is corrupt at ${resolvedPath} — rebuilding.`);
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        fs.rmSync(`${resolvedPath}${suffix}`, { force: true });
+      } catch {
+        // Best-effort cleanup; the retried open below still fails loudly if
+        // the file could not actually be removed.
+      }
+    }
+    return openManagedDatabase(spec);
+  }
 }
 
 /**

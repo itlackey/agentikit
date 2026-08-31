@@ -1071,7 +1071,6 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
   const {
     scope,
     options,
-    plannedRefs,
     primaryStashDir,
     eventsCtx,
     initialCleanupWarnings,

@@ -41,7 +41,6 @@ import {
   resolveWritableOverride,
   saveGitStash,
 } from "../../sources/providers/git";
-import { openDatabase } from "../../storage/database";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
 import { getEntryCount } from "../../storage/repositories/index-entries-repository";
 import { openSqliteReadSnapshot, SqliteReadSnapshotUnavailableError } from "../../storage/sqlite-read-snapshot";

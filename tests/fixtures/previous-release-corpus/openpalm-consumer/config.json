@@ -1,0 +1,14 @@
+{
+  "configVersion": "0.9.0",
+  "defaultBundle": "openpalm",
+  "semanticSearchMode": "off",
+  "bundles": {
+    "openpalm": {
+      "path": "/srv/openpalm/stash",
+      "writable": true,
+      "components": {
+        "main": { "root": ".", "adapter": "akm", "writable": true }
+      }
+    }
+  }
+}

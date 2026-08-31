@@ -1,0 +1,6 @@
+version: 4
+name: openpalm-manual-reindex
+description: Rebuild the search index on demand; not on a schedule
+run: akm index --full
+shell: bash
+timeout: 600000

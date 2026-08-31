@@ -1,0 +1,10 @@
+version: 4
+name: openpalm-reddit-leads-ingest
+description: Ingest new lead threads from tracked subreddits
+when_to_use: Scheduled — do not run manually mid-ingest
+tags: [openpalm, leads]
+uses: akm/command
+with:
+  content: "Summarize new lead threads and file proposals for review."
+schedule: "*/30 * * * *"
+timeout: 120000

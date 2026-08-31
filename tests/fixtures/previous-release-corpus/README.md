@@ -26,3 +26,16 @@ there is nothing to check in here for it.
   upgrade in that shim (root-level `defaultEngine` -> `defaults.llmEngine`).
   Delete this fixture and its shim entry once a real old `configVersion`
   fixture replaces it.
+
+The `AKM_BUNDLE_DIR` duplicate-`stash`-bundle fixture (#870) and the
+retired-0.8-source-keys fixture (#863) are both built programmatically
+inside the test (a `config.json` with a specific `bundles` shape, and a raw
+JSON config, respectively) — there is nothing to check in here for them.
+
+- `openpalm-consumer/` — downstream-consumer fixtures (#880) standing in for
+  the shapes OpenPalm (a real, if unofficial, integration point) writes and
+  schedules against: `config.json` (a `bundles` entry as its `akm-sources.ts`
+  would write) and four task source v4 files exercising the grammar it uses
+  (`run:`/`shell:`, `uses:`/`with:`, `timeout:` not `timeoutMs:`, no
+  top-level `enabled:`, and the optional-`schedule:` manual-only shape).
+  Static files only — nothing here wires up live to another repo.

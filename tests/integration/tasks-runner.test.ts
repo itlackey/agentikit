@@ -1328,6 +1328,20 @@ describe("resolveAkmInvocation", () => {
     ).toMatchObject({ argv: [nodePath, launcher], via: "package-local", kind: "package-local", eligible: false });
   });
 
+  test("accepts a package-local install this process cannot write to (image-baked, read-only mount)", () => {
+    const launcher = packageLauncher(path.join(tmpRoot, "opt", "openpalm", "tools", "akm-cli"));
+    const nodePath = path.join(tmpRoot, "node-without-npm", "bin", "node");
+    expect(
+      resolveAkmInvocation({
+        env: {},
+        runtime: "node",
+        launcherPath: launcher,
+        nodePath,
+        isPathWritable: () => false,
+      }),
+    ).toEqual({ argv: [nodePath, launcher], via: "package-local", kind: "package-local", eligible: true });
+  });
+
   test("accepts an npm global package under an NVM-style prefix", () => {
     const prefix = path.join(tmpRoot, ".nvm", "versions", "node", "v22.14.0");
     const nodePath = path.join(prefix, "bin", "node");
