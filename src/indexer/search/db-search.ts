@@ -65,12 +65,7 @@ import type { RankedEntryInput } from "./ranking-types";
 import { attachSearchHitAttribution, copySearchHitAttribution, getSearchHitAttribution } from "./search-attribution";
 import { enrichSearchHit } from "./search-hit-enrichers";
 import { buildEditHint, findSourceForPath, isEditable, type SearchSource } from "./search-source";
-import {
-  deriveSemanticProviderFingerprint,
-  getEffectiveSemanticStatus,
-  isSemanticRuntimeReady,
-  readSemanticStatus,
-} from "./semantic-status";
+import { deriveSemanticProviderFingerprint, getEffectiveSemanticStatus, readSemanticStatus } from "./semantic-status";
 
 /**
  * Age past which search surfaces a "run akm index" hint. Reads serve the
@@ -917,8 +912,10 @@ async function tryVecScores(
   k: number,
   config: AkmConfig,
 ): Promise<{ scores: Map<number, number> | null; warning?: string }> {
-  const semanticStatus = getEffectiveSemanticStatus(config, readSemanticStatus());
-  if (!isSemanticRuntimeReady(semanticStatus)) return { scores: null };
+  // semanticSearchMode: "off" is a deliberate user setting, not a failure
+  // cache — it must never call the embedding endpoint, even if a prior
+  // index run (under a different mode) left `hasEmbeddings` set.
+  if (config.semanticSearchMode === "off") return { scores: null };
   const hasEmbeddings = getMeta(db, "hasEmbeddings");
   if (hasEmbeddings !== "1") return { scores: null };
 
