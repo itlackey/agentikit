@@ -5,9 +5,7 @@
 import catchup from "../../assets/improve-strategies/catchup.json" with { type: "json" };
 import consolidate from "../../assets/improve-strategies/consolidate.json" with { type: "json" };
 import defaultStrategy from "../../assets/improve-strategies/default.json" with { type: "json" };
-import frequent from "../../assets/improve-strategies/frequent.json" with { type: "json" };
 import graphRefresh from "../../assets/improve-strategies/graph-refresh.json" with { type: "json" };
-import memoryFocus from "../../assets/improve-strategies/memory-focus.json" with { type: "json" };
 import proactiveMaintenance from "../../assets/improve-strategies/proactive-maintenance.json" with { type: "json" };
 import quick from "../../assets/improve-strategies/quick.json" with { type: "json" };
 import reflectDistill from "../../assets/improve-strategies/reflect-distill.json" with { type: "json" };
@@ -71,9 +69,7 @@ const BUILTIN_STRATEGIES: Record<string, Record<string, unknown>> = {
   default: defaultStrategy,
   quick,
   thorough,
-  "memory-focus": memoryFocus,
   "graph-refresh": graphRefresh,
-  frequent,
   consolidate,
   catchup,
   "reflect-distill": reflectDistill,
