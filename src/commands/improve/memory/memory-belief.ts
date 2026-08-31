@@ -65,10 +65,17 @@ function readEdgeList(value: unknown): string[] {
  * Write `contradictedBy` and `beliefState: contradicted` edges to a memory
  * file's frontmatter (C-3 / #382).
  *
- * This is the shared primitive used by:
- *   - `akmConsolidate` when its LLM plan includes a `contradict` op
- *   - `memory-contradiction-detect.ts` for the M-1 automated contradiction pass
- *   - `resolveFamilyContradictions` in `memory-improve.ts` for SCC resolution
+ * The shared primitive for APPENDING one contradiction edge. Used by
+ * `memory-contradiction-detect.ts`'s automated contradiction pass.
+ *
+ * NOT used by `persistBeliefStateTransition` in `memory-improve.ts`, and that
+ * is deliberate (#885): the SCC resolver is a state-TRANSITION writer, not an
+ * edge appender. It replaces `contradictedBy` wholesale from recomputed
+ * `currentBeliefRefs`, deletes the key when a memory transitions away from
+ * `contradicted`, and moves a memory to any target state including back to
+ * active. An append-only primitive that never weakens a demotion cannot
+ * express those, and routing it through this would break the resolver's
+ * ability to clear an edge.
  *
  * Idempotent: if the `contradictedByRef` is already in `contradictedBy` AND
  * the file already carries the demotion state, the file is not rewritten. The
@@ -85,9 +92,12 @@ function readEdgeList(value: unknown): string[] {
  *
  * @param filePath          - Absolute path to the memory markdown file.
  * @param contradictedByRef - The ref that contradicts this memory.
+ * @returns `true` when the file was rewritten, `false` when the edge and the
+ *          demotion were already present (the idempotent no-op). Callers count
+ *          edges written from this.
  */
-export function writeContradictEdge(filePath: string, contradictedByRef: string): void {
-  mutateFrontmatter(filePath, (parsed) => {
+export function writeContradictEdge(filePath: string, contradictedByRef: string): boolean {
+  return mutateFrontmatter(filePath, (parsed) => {
     const existing = readEdgeList(parsed.data.contradictedBy);
     const currentState = parsed.data.beliefState;
     const nextState = currentState === "archived" ? currentState : "contradicted";

@@ -18,8 +18,19 @@
  *   2. For each family, enumerate candidate pairs.
  *   3. For each pair, call the LLM to judge whether the two memories are in
  *      direct factual conflict.
- *   4. For confirmed contradictions, write `contradictedBy` edges directly to
- *      the losing memory's frontmatter (same mechanism as `persistBeliefStateTransition`).
+ *   4. For confirmed contradictions, append a `contradictedBy` edge to the
+ *      losing memory's frontmatter via `writeContradictEdge`
+ *      (`./memory-belief.ts`).
+ *
+ * That last step used to call a private near-copy of `writeContradictEdge`
+ * living in this file. The copy had drifted (#885): it read `contradictedBy`
+ * with `Array.isArray` only, so a SCALAR edge — live data the indexer accepts
+ * and lint never flags — read as "no edges" and was overwritten out of
+ * existence; and it set `beliefState: "contradicted"` unconditionally,
+ * promoting an `archived` memory back up (archived ranks BELOW contradicted).
+ * Both behaviors had tests, but the tests exercised the shared primitive,
+ * which nothing called — so they guarded dead code while the live path
+ * carried the bugs.
  *
  * # LLM Feature Gate
  *
@@ -38,7 +49,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import contradictionJudgeTemplate from "../../../assets/prompts/contradiction-judge.md" with { type: "text" };
-import { mutateFrontmatter, parseFrontmatter } from "../../../core/asset/frontmatter";
+import { parseFrontmatter } from "../../../core/asset/frontmatter";
 import type { AkmConfig, ImproveProfileConfig } from "../../../core/config/config";
 import { parseEmbeddedJsonResponse } from "../../../core/parse";
 import type { LoweringNotice } from "../../../execution/resolved-request";
@@ -48,6 +59,7 @@ import type { chatCompletion } from "../../../llm/client";
 import { callStructured, preflightStructuredLlmRunner } from "../../../llm/structured-call";
 import { resolveImproveLlmExecution } from "../execution";
 import { isDerivedMemory, memoryIdentityRef, resolveParentRef } from "./derived-ref";
+import { writeContradictEdge } from "./memory-belief";
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -123,28 +135,6 @@ function toMemoryRef(memoriesDir: string, filePath: string): string | undefined 
 }
 
 // ── Edge writing ─────────────────────────────────────────────────────────────
-
-/**
- * Write a `contradictedBy` edge to the losing memory's frontmatter file.
- * Preserves all existing frontmatter keys; only adds/updates `contradictedBy`
- * and `beliefState: contradicted`.
- */
-/** Returns true if the edge was newly written, false if it already existed. */
-function writeContradictedByEdge(filePath: string, contradictedByRef: string): boolean {
-  return mutateFrontmatter(filePath, (parsed) => {
-    const existing: string[] = Array.isArray(parsed.data.contradictedBy)
-      ? (parsed.data.contradictedBy as string[])
-      : [];
-    if (existing.includes(contradictedByRef)) return null; // Edge already written.
-
-    const updatedContradictedBy = [...new Set([...existing, contradictedByRef])].sort();
-    return {
-      ...parsed.data,
-      contradictedBy: updatedContradictedBy,
-      beliefState: "contradicted",
-    };
-  });
-}
 
 /**
  * Deterministically pick, for a confirmed-contradiction pair, the LOSER memory
@@ -344,7 +334,7 @@ export async function detectAndWriteContradictions(
       // a 2-cycle that the SCC resolver refreshes back to active, erasing the
       // contradiction every run (see pickContradictionLoser).
       try {
-        const wrote = writeContradictedByEdge(loser.filePath, winnerRef);
+        const wrote = writeContradictEdge(loser.filePath, winnerRef);
         result.edgesWritten += wrote ? 1 : 0;
       } catch (err) {
         result.warnings.push(
