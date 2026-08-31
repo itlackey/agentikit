@@ -77,7 +77,7 @@ export function describeGatedLanes(lanes: readonly AutonomyLane[]): GatedLane[] 
 
 /** Configured capabilities that tasks doctor reports behind the autonomy gate. */
 export function configuredDirectAutonomyLanes(): AutonomyLane[] {
-  return ["memoryCleanup"];
+  return [...DIRECT_AUTONOMY_LANES];
 }
 
 /**

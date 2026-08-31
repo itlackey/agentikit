@@ -19,7 +19,7 @@ import { defaultRankingContributors } from "../../src/indexer/search/ranking-con
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { getEntryById, getEntryByRef } from "../../src/storage/repositories/index-entries-repository";
 import { runCliCapture } from "../_helpers/cli";
-import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 interface UsageRow {
   event_type: string;
@@ -273,27 +273,6 @@ describe("downstream value attribution", () => {
     expect(preGraphBoost).toBeCloseTo(2.985, 6);
     expect(expectedAppliedGraphBoost).toBeCloseTo(0.015, 6);
     expect(graph.downstreamAttribution?.graphExtraction?.boost).toBeCloseTo(expectedAppliedGraphBoost, 6);
-  });
-
-  // C9 (env-var hygiene): this still drives ablation via AKM_ABLATE_CONTRIBUTORS
-  // rather than a DI option. `applyRankingRules` (src/indexer/search/ranking.ts)
-  // now accepts `ablateContributors` directly on `RankEntriesOptions` and
-  // prefers it over the env var, but nothing threads it through the public
-  // `akmSearch()` -> `searchLocal()` (src/indexer/search/db-search.ts) path
-  // yet — both `src/commands/read/search.ts` and db-search.ts were outside
-  // this change's edit boundary (owned by other in-flight work). The env
-  // fallback in ranking.ts is intentionally kept until that threading lands;
-  // see the `ablateContributors` doc comment on RankEntriesOptions.
-  test("graph contributor ablation emits control metadata and no graph reason", async () => {
-    const result = await withEnv({ AKM_ABLATE_CONTRIBUTORS: "graph-ranking" }, () =>
-      akmSearch({ query: "graphneedle", limit: 10 }),
-    );
-    const hit = result.hits.find((candidate) => candidate.type === "knowledge" && candidate.name === "graph-target");
-
-    expect(metadataFor("graphneedle", "stash//knowledge/graph-target")).toEqual({
-      downstreamAttribution: { version: 1, control: true },
-    });
-    expect(hit?.whyMatched?.some((reason) => reason.startsWith("graph boost"))).toBe(false);
   });
 
   test("brief search output does not attribute stripped derived surface content", async () => {

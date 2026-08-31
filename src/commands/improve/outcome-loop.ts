@@ -83,13 +83,6 @@ import {
 export const OUTCOME_EMA_ALPHA = 0.3;
 
 /**
- * Maximum K improve cycles for the eligibility-trace window. Retrievals older
- * than K cycles contribute via the EMA decay naturally (they are already baked
- * into `expected_retrieval_rate`).
- */
-export const OUTCOME_TRACE_CYCLES = 5;
-
-/**
  * Warm-start cap: the maximum `outcome_score` a brand-new row can be seeded with
  * (from the utility EMA). Prevents a `[0,1]`-range utility value from generating
  * a score that the first negative delta could catastrophically invert. Clipped to

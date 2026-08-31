@@ -95,6 +95,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { LlmConnectionConfig } from "../../../core/config/config";
+import { COMMON_SPAWN_ENV_PASSTHROUGH, spawnEnvNamesFor } from "../../../core/spawn-env";
 import type { ShowResponse } from "../../../sources/types";
 import { DEFAULT_AGENT_TIMEOUT_MS } from "../../agent/config";
 import type { AgentProfile } from "../../agent/profiles";
@@ -337,25 +338,9 @@ function serverRegistryKey(profile: AgentProfile, env: Record<string, string>): 
     .digest("hex");
 }
 
-const OPENCODE_SDK_SERVER_ENV_NAMES = [
-  "HOME",
-  "PATH",
-  "USER",
-  "LANG",
-  "LC_ALL",
-  "TERM",
-  "TMPDIR",
-  "SYSTEMROOT",
-  "COMSPEC",
-  "PATHEXT",
-  "WINDIR",
-  "TEMP",
-  "TMP",
-] as const;
-
 /** @internal Exact environment allowlist used to start the OpenCode SDK server. */
 export function opencodeSdkServerEnvironmentNames(profile: AgentProfile): string[] {
-  return [...new Set([...OPENCODE_SDK_SERVER_ENV_NAMES, ...(profile.envPassthrough ?? [])])];
+  return [...new Set([...spawnEnvNamesFor(COMMON_SPAWN_ENV_PASSTHROUGH), ...(profile.envPassthrough ?? [])])];
 }
 
 function buildServerEnv(

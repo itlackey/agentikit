@@ -46,7 +46,7 @@ import {
   proposalContent,
 } from "../proposal/repository";
 import { hasSupersededStatus, validateProposalFrontmatter } from "../proposal/validators/proposal-quality-validators";
-import type { AntiCollapseConfig } from "./anti-collapse";
+import { type AntiCollapseConfig, DEFAULT_RANDOM_CLUSTER_FRACTION } from "./anti-collapse";
 import { cacheHash } from "./content-hash";
 import { resolveImproveLlmExecution } from "./execution";
 import { resolveImproveStrategy, resolveProcessEnabled } from "./improve-strategies";
@@ -1089,27 +1089,24 @@ async function judgeConsolidationChunks(args: {
       });
     };
 
-    let raw = await callChunkLlm(`chunk ${chunkIdx + 1} failed`);
+    // callChunkLlm already retries once internally (llm/client.ts's
+    // chatCompletion, jittered 200-800ms backoff) — a second, outer retry
+    // here stacked an uncoordinated fixed 2s backoff on top of it. Removed;
+    // only mark the chunk failed once the single retry the client already
+    // performs has been exhausted.
+    const raw = await callChunkLlm(`chunk ${chunkIdx + 1} failed`);
 
     if (!raw.ok) {
-      // Single retry with 2s backoff before recording chunk as lost.
-      // Recovers transient Shredder LM Studio timeouts without significantly
-      // extending run time. Only marks failed if both attempts fail.
-      await new Promise<void>((r) => setTimeout(r, 2_000));
-      const retry = await callChunkLlm(`chunk ${chunkIdx + 1} retry failed`);
-      if (!retry.ok) {
-        warn(retry.error ?? `chunk ${chunkIdx + 1} failed after retry`);
-        warnings.push(retry.error ?? `chunk ${chunkIdx + 1} failed after retry`);
-        totalChunksProcessed++;
-        accounting.totalChunksFailed++;
-        // Account for the chunk's memories under the failed-chunk bucket.
-        // judgedNoAction does NOT run on this path (it's after the success
-        // guards) so without this the accounting invariant breaks on every
-        // chunk-level transport/parse failure.
-        accounting.failedChunkMemories += chunk.length;
-        continue;
-      }
-      raw = retry;
+      warn(raw.error ?? `chunk ${chunkIdx + 1} failed`);
+      warnings.push(raw.error ?? `chunk ${chunkIdx + 1} failed`);
+      totalChunksProcessed++;
+      accounting.totalChunksFailed++;
+      // Account for the chunk's memories under the failed-chunk bucket.
+      // judgedNoAction does NOT run on this path (it's after the success
+      // guards) so without this the accounting invariant breaks on every
+      // chunk-level transport/parse failure.
+      accounting.failedChunkMemories += chunk.length;
+      continue;
     }
 
     // C9 action 1: AKM_DEBUG_LLM was a separate, undocumented env var for this
@@ -1264,7 +1261,7 @@ async function planConsolidation(
         (getImproveProcessConfig("consolidate", opts.improveProfile)?.antiCollapse as AntiCollapseConfig | undefined) ??
         {};
       if (antiCollapseForCluster.enabled !== false && clusteredMemories.length > 2) {
-        const fraction = antiCollapseForCluster.randomClusterFraction ?? 0.05;
+        const fraction = antiCollapseForCluster.randomClusterFraction ?? DEFAULT_RANDOM_CLUSTER_FRACTION;
         const randomCount = Math.max(1, Math.floor(clusteredMemories.length * fraction));
         // Pick `randomCount` positions to inject random (un-clustered) members.
         // Use a seeded-ish shuffle: sort by hash of the name so it's deterministic

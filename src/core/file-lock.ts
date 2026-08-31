@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { sleepSync } from "../runtime";
 import { openDatabase } from "../storage/database";
 import { isProcessAlive, MAX_LOCK_METADATA_BYTES, readTextFileDescriptorWithLimit } from "./common";
 
@@ -119,7 +120,7 @@ function withLockOperationMutex<T>(lockPath: string, run: () => T): T {
     for (let attempt = 0; attempt < 5 && !began; attempt += 1) {
       db.exec("BEGIN IMMEDIATE");
       began = db.inTransaction;
-      if (!began) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2 ** attempt);
+      if (!began) sleepSync(2 ** attempt);
     }
     if (!began) throw new Error(`Could not acquire lock operation mutex for ${lockPath}.`);
     const result = run();

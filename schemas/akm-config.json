@@ -572,9 +572,7 @@
             "confidenceMode": {
               "type": "string",
               "enum": [
-                "off",
-                "blend",
-                "multiply"
+                "blend"
               ],
               "default": "blend"
             },
@@ -2262,9 +2260,7 @@
                 "confidenceMode": {
                   "type": "string",
                   "enum": [
-                    "off",
-                    "blend",
-                    "multiply"
+                    "blend"
                   ],
                   "default": "blend"
                 },

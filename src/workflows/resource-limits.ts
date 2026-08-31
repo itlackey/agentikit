@@ -7,7 +7,6 @@ import { EXECUTION_MAX_TIMEOUT_MS } from "../execution/limits";
 export const WORKFLOW_MAX_PLAN_BYTES = 2 * 1024 * 1024;
 export const WORKFLOW_MAX_SOURCE_BYTES = 1024 * 1024;
 export const WORKFLOW_MAX_STEPS = 256;
-export const WORKFLOW_MAX_ENGINES = 64;
 export const WORKFLOW_MAX_PARAMS = 128;
 export const WORKFLOW_MAX_ROUTE_BRANCHES = 256;
 export const WORKFLOW_MAX_INSTRUCTION_BYTES = 256 * 1024;

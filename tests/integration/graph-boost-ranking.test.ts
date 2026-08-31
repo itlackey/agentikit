@@ -326,7 +326,7 @@ function saveTestConfig(search?: {
     hopBoostPerEntity?: number;
     hopBoostCap?: number;
     maxHops?: number;
-    confidenceMode?: "off" | "blend" | "multiply";
+    confidenceMode?: "blend";
     confidenceWeight?: number;
   };
 }): void {
@@ -521,11 +521,7 @@ describe("graph boost — search-time integration (#207)", () => {
     const runbookPath = path.join(stashDir, "knowledge", "database-runbook.md");
 
     installGraph();
-    const baselineContext = loadGraphBoostContext(
-      stashDir,
-      query,
-      configWithGraphBoost({ confidenceMode: "multiply" }),
-    );
+    const baselineContext = loadGraphBoostContext(stashDir, query, configWithGraphBoost({ confidenceMode: "blend" }));
     expect(baselineContext).not.toBeNull();
     if (!baselineContext) throw new Error("expected baseline graph boost context");
     const baselineBoost = computeGraphBoost(baselineContext, runbookPath);
@@ -543,11 +539,7 @@ describe("graph boost — search-time integration (#207)", () => {
         return file;
       }),
     }));
-    const confidenceContext = loadGraphBoostContext(
-      stashDir,
-      query,
-      configWithGraphBoost({ confidenceMode: "multiply" }),
-    );
+    const confidenceContext = loadGraphBoostContext(stashDir, query, configWithGraphBoost({ confidenceMode: "blend" }));
     expect(confidenceContext).not.toBeNull();
     if (!confidenceContext) throw new Error("expected confidence graph boost context");
     const confidenceBoost = computeGraphBoost(confidenceContext, runbookPath);
@@ -559,7 +551,7 @@ describe("graph boost — search-time integration (#207)", () => {
     const query = "database outage recovery";
 
     resetUtilityScores();
-    saveTestConfig({ graphBoost: { confidenceMode: "multiply" } });
+    saveTestConfig({ graphBoost: { confidenceMode: "blend" } });
     installGraph();
     const withoutConfidence = await searchHits(query);
 
@@ -581,47 +573,6 @@ describe("graph boost — search-time integration (#207)", () => {
 
     expect(explicitNeutralConfidence.map((h) => h.name)).toEqual(withoutConfidence.map((h) => h.name));
     expect(explicitNeutralConfidence.map((h) => h.score)).toEqual(withoutConfidence.map((h) => h.score));
-  });
-
-  test("confidence mode matrix orders boosts deterministically (off > blend > multiply)", () => {
-    const query = "database outage recovery";
-    const runbookPath = path.join(stashDir, "knowledge", "database-runbook.md");
-
-    installGraphWithMutator((graph) => ({
-      ...graph,
-      files: graph.files.map((file) => {
-        if (!file.path.endsWith("database-runbook.md")) return file;
-        return {
-          ...file,
-          confidence: 0.25,
-          relations: file.relations.map((rel) => ({ ...rel, confidence: 0.25 })),
-        };
-      }),
-    }));
-
-    const offContext = loadGraphBoostContext(stashDir, query, configWithGraphBoost({ confidenceMode: "off" }));
-    const blendContext = loadGraphBoostContext(
-      stashDir,
-      query,
-      configWithGraphBoost({ confidenceMode: "blend", confidenceWeight: 0.2 }),
-    );
-    const multiplyContext = loadGraphBoostContext(
-      stashDir,
-      query,
-      configWithGraphBoost({ confidenceMode: "multiply" }),
-    );
-
-    expect(offContext).not.toBeNull();
-    expect(blendContext).not.toBeNull();
-    expect(multiplyContext).not.toBeNull();
-    if (!offContext || !blendContext || !multiplyContext) throw new Error("expected graph boost contexts");
-
-    const offBoost = computeGraphBoost(offContext, runbookPath);
-    const blendBoost = computeGraphBoost(blendContext, runbookPath);
-    const multiplyBoost = computeGraphBoost(multiplyContext, runbookPath);
-
-    expect(offBoost).toBeGreaterThan(blendBoost);
-    expect(blendBoost).toBeGreaterThan(multiplyBoost);
   });
 });
 

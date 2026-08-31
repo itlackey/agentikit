@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { isIP } from "node:net";
+import { backoffDelay, computeRetryDelay, abortableDelay as sharedAbortableDelay, shouldRetry } from "../core/common";
 import {
   bareHostname,
   classifyNetworkAddress,
@@ -129,7 +130,7 @@ async function requestRegistryHop(
       }
       const response = await transport(url, address, init, remainingMs);
       if (attempt < maxRetries && shouldRetry(response.status)) {
-        const delay = retryDelay(response, attempt);
+        const delay = computeRetryDelay(response, attempt, { maxDelayMs: MAX_REGISTRY_RETRY_DELAY_MS });
         await cancelRegistryResponse(response);
         await abortableDelay(delay, init?.signal);
         continue;
@@ -137,7 +138,7 @@ async function requestRegistryHop(
       return response;
     } catch (error) {
       if (attempt >= maxRetries || init?.signal?.aborted) throw error;
-      await abortableDelay(backoffDelay(attempt), init?.signal);
+      await abortableDelay(backoffDelay(attempt, undefined, MAX_REGISTRY_RETRY_DELAY_MS), init?.signal);
     }
   }
   throw new Error("Registry retry loop is unreachable");
@@ -310,46 +311,13 @@ export async function cancelRegistryResponse(response: Response): Promise<void> 
   await response.body?.cancel().catch(() => undefined);
 }
 
-function shouldRetry(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
-function retryDelay(response: Response, attempt: number): number {
-  const retryAfter = response.headers.get("retry-after");
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-    if (Number.isFinite(seconds)) {
-      return seconds >= 0 ? Math.min(MAX_REGISTRY_RETRY_DELAY_MS, seconds * 1_000) : backoffDelay(attempt);
-    }
-    const date = Date.parse(retryAfter);
-    if (Number.isFinite(date)) return Math.min(MAX_REGISTRY_RETRY_DELAY_MS, Math.max(0, date - Date.now()));
-  }
-  return backoffDelay(attempt);
-}
-
-function backoffDelay(attempt: number): number {
-  return Math.min(MAX_REGISTRY_RETRY_DELAY_MS, 500 * 2 ** attempt * (0.5 + Math.random() * 0.5));
-}
-
 /** Test-only visibility for the server-controlled Retry-After clamp. */
 export function _registryRetryDelayForTests(response: Response, attempt: number): number {
-  return retryDelay(response, attempt);
+  return computeRetryDelay(response, attempt, { maxDelayMs: MAX_REGISTRY_RETRY_DELAY_MS });
 }
 
 function abortableDelay(ms: number, signal?: AbortSignal | null): Promise<void> {
-  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
-  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Registry request aborted"));
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(signal.reason ?? new Error("Registry request aborted"));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
+  return sharedAbortableDelay(ms, signal, "Registry request aborted");
 }
 
 /** Existing local HTTP fixtures remain available only inside the test process. */

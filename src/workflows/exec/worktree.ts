@@ -70,7 +70,7 @@ import type { Dirent } from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { isWithinAsync, safeRealpathAsync } from "../../core/common";
+import { isProcessAlive, isWithinAsync, safeRealpathAsync } from "../../core/common";
 import { serializeByKey } from "../../core/concurrent";
 import { runManagedSubprocess } from "../../core/subprocess";
 import { warn } from "../../core/warn";
@@ -489,17 +489,6 @@ async function isWorktreeLeaseLive(candidate: string): Promise<boolean> {
   if (lease.host !== os.hostname()) return false;
   if (lease.path !== (await safeRealpathAsync(candidate))) return false;
   return isProcessAlive(lease.pid);
-}
-
-/** `kill(pid, 0)` liveness probe. EPERM proves the process exists but is not ours. */
-function isProcessAlive(pid: unknown): boolean {
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 // ── Garbage collection ──────────────────────────────────────────────────────

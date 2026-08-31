@@ -6,6 +6,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { sleepSync } from "../runtime";
 import { ConfigError } from "./errors";
 import { createLockPayload, probeLock, reclaimStaleLock, releaseLock, tryAcquireLockSync } from "./file-lock";
 import { getMaintenanceBarrierPath } from "./paths";
@@ -93,7 +94,7 @@ function withMaintenanceStartBarrierSyncWait<T>(run: () => T): T {
   const deadline = Date.now() + 5_000;
   let release = tryAcquireMaintenanceBarrier();
   while (!release && Date.now() < deadline) {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    sleepSync(5);
     release = tryAcquireMaintenanceBarrier();
   }
   if (!release) release = acquireMaintenanceBarrier();

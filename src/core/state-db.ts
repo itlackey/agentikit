@@ -67,6 +67,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { sleepSync } from "../runtime";
 import { type Database, openDatabase, type SqlValue } from "../storage/database";
 import { assertMigrationLedger } from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase, withManagedDb } from "../storage/managed-db";
@@ -645,10 +646,10 @@ function isRetryableBeginError(err: unknown): boolean {
 
 const WITH_IMMEDIATE_TX_MAX_ATTEMPTS = 5;
 
-/** Portable synchronous sleep (works under both Bun and Node). */
+/** Portable synchronous sleep (works under both Bun and Node). Delegates to the runtime boundary's `sleepSync`. */
 function sleepSyncMs(ms: number): void {
   if (ms <= 0) return;
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  sleepSync(ms);
 }
 
 /**

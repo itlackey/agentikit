@@ -15,6 +15,7 @@ import {
 } from "../core/file-lock";
 import { tryAcquireMaintenanceBarrier } from "../core/maintenance-barrier";
 import { getDbPath, getIndexWriterLockPath } from "../core/paths";
+import { sleepSync } from "../runtime";
 
 const INDEX_WRITER_LOCK_STALE_AFTER_MS = 12 * 60 * 60 * 1000;
 const INDEX_WRITER_WAIT_MS = 100;
@@ -165,7 +166,7 @@ export function withAssetMutationLeaseSync<T>(purpose: string, run: () => T): T 
         if (Date.now() - startedAt >= DEFAULT_INDEX_WRITER_MAX_WAIT_MS) {
           throw new Error(`timed out waiting for index writer lease for ${purpose}`);
         }
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, INDEX_WRITER_WAIT_MS);
+        sleepSync(INDEX_WRITER_WAIT_MS);
       }
     }
     context.add(lockPath);

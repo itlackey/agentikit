@@ -148,7 +148,7 @@ export interface GraphBoostWeights {
   hopBoostPerEntity: number;
   hopBoostCap: number;
   maxHops: number;
-  confidenceMode: "off" | "blend" | "multiply";
+  confidenceMode: "blend";
   confidenceWeight: number;
 }
 
@@ -168,9 +168,7 @@ function combineConfidence(...parts: Array<number | undefined>): number | undefi
 }
 
 function toConfidenceMultiplier(rawConfidence: number | undefined, weights: GraphBoostWeights): number {
-  if (weights.confidenceMode === "off") return 1;
   const confidence = normalizeConfidence(rawConfidence) ?? 1;
-  if (weights.confidenceMode === "multiply") return confidence;
   const blendWeight = Math.max(0, Math.min(1, weights.confidenceWeight));
   return 1 - blendWeight + blendWeight * confidence;
 }

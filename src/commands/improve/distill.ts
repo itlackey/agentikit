@@ -107,7 +107,7 @@ import {
   runLessonQualityJudge,
   writeQualityRejection,
 } from "./distill/quality-gate";
-import { buildClsContext, checkDistillFidelity } from "./distill-guards";
+import { buildClsContext, checkDistillFidelity, DEFAULT_CLS_ADJACENT_COUNT } from "./distill-guards";
 import { deriveKnowledgeRef } from "./distill-promotion-policy";
 import { buildRefVocabulary, scoreEncodingSalience } from "./encoding-salience";
 import { resolveImproveLlmExecution } from "./execution";
@@ -1732,7 +1732,7 @@ async function buildDistillMessages(args: {
   let clsContext = "";
   if (clsConfig.enabled) {
     try {
-      const adjacentCount = clsConfig.adjacentCount ?? 3;
+      const adjacentCount = clsConfig.adjacentCount ?? DEFAULT_CLS_ADJACENT_COUNT;
       // Use the asset content or input ref as the query for adjacent retrieval.
       const clsQuery = assetContent ? assetContent.slice(0, 500) : inputRef;
       const adjacentItems = await fetchSimilarLessonsFn(clsQuery, adjacentCount);
