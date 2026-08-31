@@ -759,6 +759,19 @@ function assertUnrestorableLaunchdSnapshotUnchanged(
   }
 }
 
+/**
+ * Enumerate the current launchd AKM service namespace (loaded domain members,
+ * print-disabled labels, and on-disk plists) in one pass.
+ *
+ * This used to run the enumeration twice and fail closed if the two passes
+ * disagreed, guarding against launchd state mutating between the two
+ * `launchctl` shell-outs (milliseconds apart, in-process). The only actor
+ * that could cause that is another concurrent akm process or the user
+ * running launchctl by hand at that exact instant; a subsequent `task sync`
+ * (idempotent by design) reconciles any such drift on its own, so the
+ * two-pass fencing added a TOCTOU-shaped guard around a race with a working
+ * self-heal already in place, not a way to avoid one.
+ */
 function inspectStableLaunchdNamespace(
   seedIds: readonly string[],
   context: {
@@ -770,28 +783,6 @@ function inspectStableLaunchdNamespace(
     label: (id: string) => string;
   },
 ): StableLaunchdNamespace {
-  const first = captureLaunchdNamespacePass(seedIds, context);
-  const second = captureLaunchdNamespacePass(seedIds, context);
-  if (first.stabilityKey !== second.stabilityKey) {
-    throw new ConfigError(
-      "The launchd AKM service namespace changed while scheduler state was being stabilized.",
-      "INVALID_CONFIG_FILE",
-    );
-  }
-  return second.namespace;
-}
-
-function captureLaunchdNamespacePass(
-  seedIds: readonly string[],
-  context: {
-    exec: LaunchdExec;
-    fsLike: LaunchdFs;
-    agentsDir: string;
-    plistPath: (id: string) => string;
-    target: (id: string) => string;
-    label: (id: string) => string;
-  },
-): Readonly<{ namespace: StableLaunchdNamespace; stabilityKey: string }> {
   const domain = context.exec.run(["launchctl", "print", `gui/${context.exec.uid()}`]);
   if (domain.status !== 0) {
     throw new ConfigError(
@@ -858,15 +849,8 @@ function captureLaunchdNamespacePass(
     );
   }
   return Object.freeze({
-    namespace: Object.freeze({
-      inspection: Object.freeze({ installed: Object.freeze(installed), artifacts: Object.freeze(artifacts) }),
-      entries: Object.freeze(entries),
-    }),
-    stabilityKey: JSON.stringify({
-      loadedLabels: [...loadedLabels].sort(),
-      disabledLabels: akmDisabledLabels,
-      plistEntries,
-    }),
+    inspection: Object.freeze({ installed: Object.freeze(installed), artifacts: Object.freeze(artifacts) }),
+    entries: Object.freeze(entries),
   });
 }
 
