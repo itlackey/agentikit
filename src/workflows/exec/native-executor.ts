@@ -143,7 +143,7 @@ import { collectWorkflowDispatchSensitiveValues, redactUnitOutcome } from "./dis
 // and the process-outcome → failure-reason mapping.
 import { runExecUnit } from "./exec-unit";
 import { mergeLoweringNotices } from "./lowering-notices";
-import { LIFETIME_UNIT_CAP, scheduleUnits, UnitCapExceededError } from "./scheduler";
+import { scheduleUnits } from "./scheduler";
 // Shared step semantics — the ONE implementation consumed by the engine
 // (this module + run-workflow.ts) on both the fresh-execution and the resume
 // path. This module dispatches; step-work.ts owns the pure decisions.
@@ -286,13 +286,13 @@ export interface StepExecutionResult {
 }
 
 /**
- * Mutable per-step dispatch budget: the lifetime unit cap PLUS the declared
- * run-level budget ceilings (`budget.max_units` / `budget.max_tokens`,
- * addendum R2). Consumed once per journaled dispatch attempt (including
- * retries); durable-row reuses never touch it — the peer-review fix that
- * keeps large partially-completed fan-outs resumable instead of tripping the
- * cap on `journaled + items`. Token usage accumulates per actual dispatch on
- * top of the journal-seeded run total (reused rows' tokens are already in the
+ * Mutable per-step dispatch budget: the declared run-level budget ceilings
+ * (`budget.max_units` / `budget.max_tokens`, addendum R2). Consumed once per
+ * journaled dispatch attempt (including retries); durable-row reuses never
+ * touch it — the peer-review fix that keeps large partially-completed
+ * fan-outs resumable instead of tripping a pre-batch check on
+ * `journaled + items`. Token usage accumulates per actual dispatch on top of
+ * the journal-seeded run total (reused rows' tokens are already in the
  * seed). Check-and-increment is synchronous, so concurrent units cannot race
  * it; crossing a declared ceiling fires `onExceeded` ONCE (the executor's
  * chained AbortController), aborting pending and in-flight dispatches.
@@ -301,8 +301,6 @@ class DispatchBudget {
   used: number;
   /** Run-total tokens: journal-seeded input + this step's dispatch usage. */
   tokens: number;
-  /** Set (once) when a dispatch was refused; the step fails with this message. */
-  capMessage: string | undefined;
   /** Set (once) when a declared budget ceiling was hit; the step fails hard with it. */
   budgetMessage: string | undefined;
   private readonly maxUnits: number | undefined;
@@ -332,10 +330,6 @@ class DispatchBudget {
         `budget exceeded (max_tokens ceiling): ${this.tokens} token(s) already spent for this run ` +
           `against the workflow's declared budget.max_tokens of ${this.maxTokens} — refusing further dispatch.`,
       );
-      return false;
-    }
-    if (this.used >= LIFETIME_UNIT_CAP) {
-      this.capMessage ??= new UnitCapExceededError(LIFETIME_UNIT_CAP).message;
       return false;
     }
     this.used++;
@@ -689,14 +683,11 @@ async function executeStepPlanInConnection(
   // dispatches; durable row reuses naturally contribute none.
   const notices = mergeLoweringNotices(...outcomes.map((outcome) => outcome?.notices));
 
-  // Declared budget ceilings and the lifetime cap are hard backstops: a step
-  // that hit one FAILS regardless of on_error policy (a capped run must never
-  // quietly pass its gate). The budget message names WHICH ceiling tripped.
+  // A declared budget ceiling is a hard backstop: a step that hit one FAILS
+  // regardless of on_error policy (a capped run must never quietly pass its
+  // gate). The budget message names WHICH ceiling tripped.
   if (budget.budgetMessage) {
     return { ...failedStep(budget.used, budget.budgetMessage, notices), tokensUsed: budget.tokens };
-  }
-  if (budget.capMessage) {
-    return { ...failedStep(budget.used, budget.capMessage, notices), tokensUsed: budget.tokens };
   }
 
   const units = outcomes.map(
@@ -876,18 +867,17 @@ async function runUnit(input: RunUnitInput): Promise<UnitOutcome> {
       );
     }
     const attemptId = attemptIdFor(attempt);
-    // Lifetime cap + declared budget ceilings, consumed per ACTUAL dispatch
-    // (reuses above returned before reaching here). Refusal fails this unit
-    // without journaling a row — nothing was dispatched — and the sticky
-    // capMessage/budgetMessage fails the step.
+    // Declared budget ceilings, consumed per ACTUAL dispatch (reuses above
+    // returned before reaching here). Refusal fails this unit without
+    // journaling a row — nothing was dispatched — and the sticky
+    // budgetMessage fails the step.
     if (!input.budget.tryConsume()) {
-      const budgetHit = input.budget.budgetMessage !== undefined;
       return (
         outcome ?? {
           unitId,
           ok: false,
-          failureReason: budgetHit ? "budget_exceeded" : "unit_cap_exceeded",
-          error: input.budget.budgetMessage ?? input.budget.capMessage ?? "lifetime unit cap exceeded",
+          failureReason: "budget_exceeded",
+          error: input.budget.budgetMessage ?? "budget exceeded",
         }
       );
     }

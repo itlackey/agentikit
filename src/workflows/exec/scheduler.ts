@@ -16,18 +16,10 @@
  *   - Cooperative cancellation via AbortSignal (workers stop claiming items;
  *     the same signal is passed into each dispatch so in-flight units can be
  *     preempted too).
- *
- * The lifetime unit cap ({@link LIFETIME_UNIT_CAP}) is DECLARED here but
- * enforced per actual dispatch by the native executor: a pre-batch check
- * (`journaled + items.length`) counted durable-row REUSES as new dispatches,
- * which made any partially-completed fan-out with more than ~cap/2 journaled
- * units impossible to resume (peer review R1). Only work that really
- * dispatches consumes the cap.
  */
 
 import { concurrentMap } from "../../core/concurrent";
 import { cpuDerivedUnitConcurrency, workflowMaxConcurrency } from "../concurrency-policy";
-import { WORKFLOW_MAX_MAP_EXPANSION } from "../resource-limits";
 
 export {
   clampMaxConcurrency,
@@ -56,16 +48,6 @@ export {
  */
 export function maxUnitConcurrency(cpuCount?: number, configured?: number): number {
   return workflowMaxConcurrency(configured, cpuCount);
-}
-
-/** Lifetime unit cap per run — a runaway-loop backstop, far above real use. */
-export const LIFETIME_UNIT_CAP = WORKFLOW_MAX_MAP_EXPANSION;
-
-export class UnitCapExceededError extends Error {
-  constructor(cap: number) {
-    super(`workflow run exceeded the lifetime unit cap (${cap}). Aborting dispatch — check for a runaway fan-out.`);
-    this.name = "UnitCapExceededError";
-  }
 }
 
 export interface ScheduleOptions {
@@ -104,9 +86,9 @@ export interface ScheduleOptions {
  * Run `dispatch` over `items` under the engine concurrency caps. Individual
  * failures do not cancel siblings (allSettled semantics from `concurrentMap`);
  * a slot whose dispatch threw or that was never claimed after an abort stays
- * `undefined` in the result array. The lifetime unit cap is NOT checked here
- * — the executor consumes it per actual dispatch, so durable-row reuses on
- * resume stay free.
+ * `undefined` in the result array. A declared `budget.max_units` ceiling is
+ * NOT checked here — the executor consumes it per actual dispatch, so
+ * durable-row reuses on resume stay free.
  */
 export async function scheduleUnits<T, R>(
   items: T[],

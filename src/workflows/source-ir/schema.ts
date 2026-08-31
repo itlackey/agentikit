@@ -23,7 +23,6 @@ import {
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_ENGINE_NAME_LENGTH,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
-  WORKFLOW_MAX_MAP_EXPANSION,
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../resource-limits";
@@ -659,9 +658,6 @@ function validateBudget(value: unknown): void {
     if (budget[key] !== undefined && (!Number.isSafeInteger(budget[key]) || (budget[key] as number) < 1)) {
       fail(`budget.${key} must be a positive integer`);
     }
-  }
-  if (typeof budget.maxUnits === "number" && budget.maxUnits > WORKFLOW_MAX_MAP_EXPANSION) {
-    fail(`budget.maxUnits must be at most ${WORKFLOW_MAX_MAP_EXPANSION}`);
   }
 }
 

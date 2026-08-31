@@ -209,7 +209,6 @@
         "max_units": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 10000,
           "description": "Ceiling on total dispatched units across the run (seeded from journaled unit rows)."
         }
       }

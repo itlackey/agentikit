@@ -667,10 +667,9 @@ export function isTruncatedEvidence(value: unknown): value is TruncatedEvidenceV
  * `buildEvidence` (exec/step-work.ts) promotes `evidence.output` UNCLIPPED by
  * design: gates judge the full promoted artifact and the in-memory
  * {@link StepExecutionResult} carries it to the caller intact. Nothing bounded
- * the PERSISTED form, though — a `collect` reducer over a fan-out capped only by
- * `WORKFLOW_MAX_MAP_EXPANSION` (10 000 units) can serialize to hundreds of
- * megabytes. This is the write boundary, so the bound lives here rather than in
- * the shared step-semantics module.
+ * the PERSISTED form, though — a `collect` reducer over an unbounded fan-out
+ * can serialize to hundreds of megabytes. This is the write boundary, so the
+ * bound lives here rather than in the shared step-semantics module.
  *
  * Over-cap values are REPLACED (largest top-level entry BY UTF-8 BYTES first —
  * the unit the cap is measured in — until the row fits) with a

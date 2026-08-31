@@ -9,7 +9,6 @@ export const WORKFLOW_MAX_SOURCE_BYTES = 1024 * 1024;
 export const WORKFLOW_MAX_INSTRUCTION_BYTES = 256 * 1024;
 export const WORKFLOW_MAX_SCHEMA_BYTES = 256 * 1024;
 export const WORKFLOW_MAX_EXTRA_PARAMS_BYTES = 64 * 1024;
-export const WORKFLOW_MAX_MAP_EXPANSION = 10_000;
 
 // ── Dispatch-significant bounds shared across validation layers ──────────────
 //
@@ -63,8 +62,7 @@ export const DEFAULT_EXEC_TIMEOUT_MS = 600_000;
  * ten minutes to do so. What the cap buys is a BOUND where there was none: the
  * retained prefix is promoted into the unit's outcome text and every outcome is
  * held until the step reduces, so the worst case is (units in the STEP × this
- * cap) rather than unbounded — the step's width, not the in-flight width, is
- * what sizes it, up to {@link WORKFLOW_MAX_MAP_EXPANSION}.
+ * cap) — the step's width, not the in-flight width, is what sizes it.
  *
  * On reaching the cap the reader switches to DRAIN-AND-DISCARD: it keeps
  * pulling from the pipe (so the child never blocks on backpressure) and stops
@@ -194,11 +192,10 @@ export function clip(text: string, max: number): string {
  *
  * The promoted step artifact (`evidence.output`) is deliberately NOT clipped
  * when it is built — gates judge the full artifact and downstream
- * `steps.<id>.output` references need it intact — but a `collect`
- * reducer over a fan-out bounded only by {@link WORKFLOW_MAX_MAP_EXPANSION}
- * (10 000 units, each contributing up to a full unit result) would otherwise
- * write an unbounded blob into a single SQLite row. Persistence is therefore
- * bounded here, at the write boundary, by
+ * `steps.<id>.output` references need it intact — but a `collect` reducer
+ * over an unbounded fan-out (each unit contributing up to a full unit
+ * result) would otherwise write an unbounded blob into a single SQLite row.
+ * Persistence is therefore bounded here, at the write boundary, by
  * `clipStepEvidenceForPersistence` (`runtime/runs.ts`), which replaces
  * oversized values with an explicitly-marked truncation envelope rather than
  * silently shortening them.

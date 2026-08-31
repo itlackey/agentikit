@@ -67,7 +67,6 @@ import {
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_ENGINE_NAME_LENGTH,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
-  WORKFLOW_MAX_MAP_EXPANSION,
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_SOURCE_BYTES,
   WORKFLOW_MAX_TIMEOUT_MS,
@@ -687,18 +686,10 @@ function parseBudget(ctx: Ctx, raw: unknown): ProgramBudget | undefined {
     }
   }
   if (raw.max_units !== undefined) {
-    if (
-      typeof raw.max_units === "number" &&
-      Number.isInteger(raw.max_units) &&
-      raw.max_units >= 1 &&
-      raw.max_units <= WORKFLOW_MAX_MAP_EXPANSION
-    ) {
+    if (typeof raw.max_units === "number" && Number.isInteger(raw.max_units) && raw.max_units >= 1) {
       budget.maxUnits = raw.max_units;
     } else {
-      ctx.err(
-        [...path, "max_units"],
-        `"budget.max_units" must be an integer from 1 through ${WORKFLOW_MAX_MAP_EXPANSION}.`,
-      );
+      ctx.err([...path, "max_units"], `"budget.max_units" must be an integer >= 1.`);
     }
   }
   return Object.keys(budget).length > 0 ? budget : undefined;

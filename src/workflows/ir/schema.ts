@@ -12,7 +12,6 @@ import {
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_INSTRUCTION_BYTES,
-  WORKFLOW_MAX_MAP_EXPANSION,
   WORKFLOW_MAX_PLAN_BYTES,
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_TIMEOUT_MS,
@@ -125,7 +124,7 @@ export interface WorkflowPlanStructure {
 // parser, the published JSON Schema, and this decoder enforce identical
 // values. Re-exported here for existing importers (e.g. `commands/workflow-cli.ts`).
 export { WORKFLOW_MAX_CONCURRENCY, WORKFLOW_MAX_TIMEOUT_MS };
-export const WORKFLOW_MAX_UNITS = WORKFLOW_MAX_MAP_EXPANSION;
+
 const MAX_LIST_ITEMS = 1024;
 const MAX_STRING_LENGTH = 1_000_000;
 
@@ -422,11 +421,8 @@ function validateBudget(budget: IrBudget | undefined): void {
   if (budget.maxTokens === undefined && budget.maxUnits === undefined) fail("budget must declare a ceiling");
   validateOptionalPositiveInteger(budget.maxTokens, "budget.maxTokens");
   const maxUnits = budget.maxUnits;
-  if (
-    maxUnits !== undefined &&
-    (!Number.isSafeInteger(maxUnits) || (maxUnits as number) < 1 || (maxUnits as number) > WORKFLOW_MAX_UNITS)
-  )
-    fail(`budget.maxUnits must be an integer from 1 through ${WORKFLOW_MAX_UNITS}`);
+  if (maxUnits !== undefined && (!Number.isSafeInteger(maxUnits) || (maxUnits as number) < 1))
+    fail("budget.maxUnits must be a positive integer");
 }
 
 function validateRetry(retry: unknown, nodeId: string): void {
