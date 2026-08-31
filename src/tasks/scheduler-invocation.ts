@@ -218,7 +218,14 @@ export function parseScheduledBindingArgv(argv: readonly string[]): ParsedSchedu
   };
 }
 
-function parsePublicSchedulerInvocation(
+/**
+ * Parse just the public `task run …` / `workflow run …` tail, with no
+ * `--scheduler-context` wrapper. Exported so a backend can recognize a
+ * pre-`--scheduler-context` invocation still sitting inside akm's own
+ * ownership-marked block (see `extractCronInvocation` in
+ * `src/tasks/backends/cron.ts`) without re-implementing this grammar.
+ */
+export function parsePublicSchedulerInvocation(
   invocation: readonly string[],
 ): { invocation: string[]; target?: string } | undefined {
   if (invocation[0] === "task" && invocation[1] === "run" && invocation[2]) {
