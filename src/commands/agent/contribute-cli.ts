@@ -157,6 +157,17 @@ export const lintCommand = defineCommand({
       description: "Exit non-zero when summary.flagged > 0 (CI-friendly). Default: exit 0 regardless of findings.",
       default: false,
     },
+    // #884: NOT folded into `--fix`. Every other auto-fix repairs a structural
+    // defect in the file it edits; this one DELETES an assertion the user (or
+    // the improve pipeline) made about the belief graph, and it does so in
+    // files that are themselves perfectly well-formed. That is a data decision,
+    // so it stays opt-in behind its own flag even when `--fix` is present.
+    "prune-dangling-edges": {
+      type: "boolean",
+      description:
+        "Opt-in repair: drop supersededBy/contradictedBy entries whose target has neither a file nor a prune tombstone. Modifies memories — review the plain `akm lint` report first.",
+      default: false,
+    },
     type: {
       type: "string",
       description:
@@ -170,6 +181,7 @@ export const lintCommand = defineCommand({
         fix: args.fix === true || getHyphenatedBoolean(args, "auto-fix"),
         dir: getStringArg(args, "dir"),
         typeFilter: getStringArg(args, "type"),
+        pruneDanglingEdges: getHyphenatedBoolean(args, "prune-dangling-edges"),
       });
       output("lint", result);
       if (args["fail-on-flagged"] && result.summary.flagged > 0) {

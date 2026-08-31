@@ -54,6 +54,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Pruning a memory no longer leaves dangling belief edges (#884).**
+  `analyzeMemoryCleanup` archives a pruned memory rather than deleting it —
+  the file moves under `.akm/memory-cleanup/archive/` beside a `cleanup.md`
+  audit record naming its `ref` and `originalPath`. Ref resolution only ever
+  looked at the memory's original location, so once #882 made
+  `contradictedBy`/`supersededBy` validatable, every memory pointing at a
+  pruned one began reporting `missing-ref`. `refExistsInAnyStash` now resolves
+  the archive tombstone, so a belief edge to an archived memory is satisfied
+  instead of dangling. Existence only: `resolveRefPathInStash` still ignores
+  the archive, because it returns a path callers mutate (`--supersedes`
+  demotion) and an archived file must never be written to. The contradiction
+  an edge records is preserved rather than erased, which a bare edge-scrub
+  would have destroyed.
+
+  A ref whose target has neither a file nor a tombstone was removed by
+  something other than prune — a hand `git rm`, or a pre-fix release — and is
+  genuinely dangling. Clearing those deletes user assertions, so it is opt-in
+  behind `akm lint --prune-dangling-edges` and is deliberately NOT folded into
+  `--fix`: every other auto-fix repairs a malformed file, whereas this one
+  edits well-formed files to drop a claim about the belief graph. The repair
+  is scoped to the `supersededBy`/`contradictedBy` channels — a stale `xrefs`
+  entry is an ordinary broken link that the author may want to re-target, not
+  delete — and preserves comments, key order, and surviving list entries. It
+  clears the same `writable: false` gate `--fix` does.
+
+  Known limitation: if a memory's only edge on a channel is dropped, a
+  `beliefState:` naming that channel is left without a supporting edge.
+  Choosing a demotion target is a belief-semantics decision this fix does not
+  make. No occurrences existed in the stash that surfaced #884.
+
 - **A corrupt `index.db` now rebuilds instead of failing the command
   (#865).** `src/core/state-db.ts` documented that "a corrupt index is
   recovered by deleting it and re-running `akm index`" — that recovery was

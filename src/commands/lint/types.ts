@@ -106,6 +106,8 @@ export interface LintContext {
   body: string;
   frontmatter: string | null;
   fix: boolean;
+  /** #884: opt-in dangling belief-edge repair. Independent of `fix`. */
+  pruneDanglingEdges?: boolean;
   stashRoot: string;
   /** Additional stash roots (secondary sources) for cross-stash ref resolution. */
   extraStashRoots?: string[];
