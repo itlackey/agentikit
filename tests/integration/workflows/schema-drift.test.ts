@@ -18,8 +18,6 @@ import {
   WORKFLOW_ENGINE_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_ENGINE_NAME_LENGTH,
-  WORKFLOW_MAX_GATE_LOOPS,
-  WORKFLOW_MAX_RETRIES,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../../../src/workflows/resource-limits";
 
@@ -57,14 +55,8 @@ describe("schemas/akm-workflow.json stays in sync with the TS vocabulary", () =>
     // The parser, the frozen-plan decoder, and this published schema all read
     // the SAME constants (src/workflows/resource-limits.ts) — this pin keeps
     // the hand-maintained JSON mirror from drifting.
-    const gate = schema.definitions.gate as { properties?: Record<string, { maximum?: number }> };
-    expect(gate.properties?.max_loops?.maximum).toBe(WORKFLOW_MAX_GATE_LOOPS);
-
     const map = schema.definitions.map as { properties?: Record<string, { maximum?: number }> };
     expect(map.properties?.concurrency?.maximum).toBe(WORKFLOW_MAX_CONCURRENCY);
-
-    const retry = schema.definitions.retry as { properties?: Record<string, { maximum?: number }> };
-    expect(retry.properties?.max?.maximum).toBe(WORKFLOW_MAX_RETRIES);
 
     const timeout = schema.definitions.timeout as unknown as { oneOf: Array<{ type?: string; maximum?: number }> };
     const integerForm = timeout.oneOf.find((branch) => branch.type === "integer");

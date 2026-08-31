@@ -6,23 +6,14 @@ import { EXECUTION_MAX_TIMEOUT_MS } from "../execution/limits";
 
 export const WORKFLOW_MAX_PLAN_BYTES = 2 * 1024 * 1024;
 export const WORKFLOW_MAX_SOURCE_BYTES = 1024 * 1024;
-export const WORKFLOW_MAX_STEPS = 256;
-export const WORKFLOW_MAX_ENGINES = 64;
-export const WORKFLOW_MAX_PARAMS = 128;
-export const WORKFLOW_MAX_ROUTE_BRANCHES = 256;
 export const WORKFLOW_MAX_INSTRUCTION_BYTES = 256 * 1024;
 export const WORKFLOW_MAX_SCHEMA_BYTES = 256 * 1024;
 export const WORKFLOW_MAX_EXTRA_PARAMS_BYTES = 64 * 1024;
-export const WORKFLOW_MAX_JSON_DEPTH = 64;
 export const WORKFLOW_MAX_MAP_EXPANSION = 10_000;
-/** Max declared `inputs:` reference strings on one unit/map step. */
-export const WORKFLOW_MAX_INPUTS = 64;
-/** Max declared `outputs:` entries on one workflow document (P3b, spec §4.1). */
-export const WORKFLOW_MAX_OUTPUTS = 64;
 
 // ── Dispatch-significant bounds shared across validation layers ──────────────
 //
-// Defined ONCE here so the three enforcement layers cannot drift:
+// Defined ONCE here so the enforcement layers cannot drift:
 //   1. the parser (`../parser.ts`) — line-anchored authoring-time errors,
 //   2. the published JSON Schema (`schemas/akm-workflow.json`) — mirrored
 //      `maximum`/`pattern`/`maxLength` values, pinned against these constants
@@ -35,10 +26,6 @@ export const WORKFLOW_MAX_OUTPUTS = 64;
 
 /** Max per-step map fan-out concurrency (also the run-level concurrency ceiling). */
 export const WORKFLOW_MAX_CONCURRENCY = 64;
-/** Max evaluator-optimizer gate loops per step. */
-export const WORKFLOW_MAX_GATE_LOOPS = 100;
-/** Max retry attempts per unit. */
-export const WORKFLOW_MAX_RETRIES = 100;
 /** Max timeout in milliseconds (setTimeout's 32-bit signed ceiling: 2^31-1, ~24.8 days). */
 export const WORKFLOW_MAX_TIMEOUT_MS = EXECUTION_MAX_TIMEOUT_MS;
 /** Engine names: lowercase dash-separated runs of letters/digits, starting with a letter. */
@@ -47,23 +34,6 @@ export const WORKFLOW_MAX_ENGINE_NAME_LENGTH = 63;
 
 // ── exec (shell) unit bounds ─────────────────────────────────────────────────
 
-/**
- * Max entries in an exec unit's `command:` argv array. Generous for a real
- * command line, small enough that a corrupted plan cannot ask the OS to spawn
- * a megabyte of arguments.
- */
-export const WORKFLOW_MAX_EXEC_ARGV = 64;
-/** Max UTF-8 bytes of ONE argv entry (well under every platform's ARG_MAX per-arg limit). */
-export const WORKFLOW_MAX_EXEC_ARG_BYTES = 4096;
-/** Max characters of an exec unit's relative `cwd:`. */
-export const WORKFLOW_MAX_EXEC_CWD_LENGTH = 1024;
-/**
- * Max entries in an exec unit's `pass_env:` list.
- *
- * `pass_env` is bounded; use explicit named `env:` bindings for a larger set.
- * New v4 starts do not offer whole-process inheritance.
- */
-export const WORKFLOW_MAX_EXEC_PASS_ENV = 32;
 /**
  * Grammar for an env var NAME in `pass_env:`. Matches the frozen-plan
  * `envPassthrough` grammar in `ir/schema.ts` so both allowlist surfaces accept
@@ -261,9 +231,11 @@ export function jsonBytes(value: unknown): number {
 // (`src/workflows/ir/schema-v4.ts`'s recursive `decodeChildWorkflowTarget`).
 // Full design history, including the rejected alternative for the byte cap:
 // docs/architecture/decisions/0007-workflow-composition-bounds.md.
-
-/** Max workflow composition depth (root = depth 0; a 9th descendant level fails). */
-export const WORKFLOW_MAX_COMPOSITION_DEPTH = 8;
+//
+// Composition DEPTH is unbounded — `assertNoCompositionCycle` (freeze/targets/
+// child-workflow.ts) already makes infinite composition mathematically
+// impossible, so a depth ceiling on top of it only bounded how many
+// legitimately distinct workflows an author could nest.
 
 /**
  * Max AGGREGATE canonical-JSON bytes of every embedded child plan in ONE root

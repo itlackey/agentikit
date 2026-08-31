@@ -489,27 +489,12 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
     }
   }
 
-  test("B-19: a composition chain exactly 8 levels deep (9 workflows: chain-0 .. chain-8) freezes", async () => {
-    writeChain(9);
+  test("B-19: a composition chain 10 levels deep freezes — depth is unbounded, only the cycle check (B-20/B-21) bounds composition", async () => {
+    writeChain(11);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
     const started = await startWorkflowRun("workflows/chain-0");
     expect(started.run.id).toBeTruthy();
-  });
-
-  test("B-18: a composition chain 9 levels deep (10 workflows: chain-0 .. chain-9, one past the bound) fails COMPOSITION_INVALID naming the depth limit and the ref path", async () => {
-    writeChain(10);
-    await akmIndex({ stashDir: storage.stashDir, full: true });
-
-    const error = await expectCompositionInvalid("workflows/chain-0");
-    expect(error.message).toContain("8");
-    expect(error.message.toLowerCase()).toContain("level");
-    // The title also promises the ref path — the full composition chain from
-    // the root down to the descendant that crossed the bound — is named, not
-    // just the depth number.
-    expect(error.message).toContain("workflows/chain-0");
-    expect(error.message).toContain("workflows/chain-9");
-    await expectNoRunRowWritten();
   });
 
   test("B-20: a direct self-reference (A -> A) fails COMPOSITION_INVALID naming the cycle path", async () => {

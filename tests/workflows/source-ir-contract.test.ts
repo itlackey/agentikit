@@ -1133,22 +1133,6 @@ describe("strict source IR decoder", () => {
   });
 
   test("enforces authoritative dispatch bounds on hostile decoded objects", () => {
-    const oversizedArgv = structuredClone(valid);
-    replaceOnlyDecodedStep(oversizedArgv, {
-      id: "ok",
-      exec: { command: Array.from({ length: 65 }, () => "x") },
-      source: oversizedArgv.source,
-    });
-    expect(() => decodeWorkflowSourceIrV1(oversizedArgv)).toThrow(/at most 64|argv/i);
-
-    const oversizedArg = structuredClone(valid);
-    replaceOnlyDecodedStep(oversizedArg, {
-      id: "ok",
-      exec: { command: ["x".repeat(4097)] },
-      source: oversizedArg.source,
-    });
-    expect(() => decodeWorkflowSourceIrV1(oversizedArg)).toThrow(/4096 bytes/i);
-
     const emptyPassEnv = structuredClone(valid);
     replaceOnlyDecodedStep(emptyPassEnv, {
       id: "ok",

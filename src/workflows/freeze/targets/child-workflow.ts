@@ -36,11 +36,7 @@ import { workflowParamContract } from "../../ir/params";
 import { canonicalJson, canonicalPlanJson } from "../../ir/plan-hash";
 import type { FrozenChildWorkflowTarget, WorkflowPlanGraphV4 } from "../../ir/schema-v4";
 import type { ProgramUnit } from "../../program/schema";
-import {
-  utf8Bytes,
-  WORKFLOW_MAX_COMPOSITION_DEPTH,
-  WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES,
-} from "../../resource-limits";
+import { utf8Bytes, WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../../resource-limits";
 import { loadWorkflowAsset } from "../../runtime/workflow-asset-loader";
 import type { WorkflowSourceStep } from "../../source-ir/schema";
 import { resolveOwnedAsset } from "../environment";
@@ -165,22 +161,6 @@ function assertNoCompositionCycle(stepId: string, childRef: string, refPath: rea
   );
 }
 
-function assertCompositionDepthAllowed(
-  stepId: string,
-  childRef: string,
-  childDepth: number,
-  refPath: readonly string[],
-): void {
-  if (childDepth <= WORKFLOW_MAX_COMPOSITION_DEPTH) return;
-  throw new UsageError(
-    `Workflow step ${stepId} cannot compose ${childRef}: workflow composition is limited to ` +
-      `${WORKFLOW_MAX_COMPOSITION_DEPTH} levels. Path: ${compositionPath(refPath, childRef)}.`,
-    "COMPOSITION_INVALID",
-    `Flatten the composition chain to ${WORKFLOW_MAX_COMPOSITION_DEPTH} levels or fewer — inline one of the ` +
-      "intermediate workflows, or restructure the chain so fewer child compositions are nested.",
-  );
-}
-
 /**
  * Add the child's embedded plan bytes to the shared, tree-wide budget
  * (A-N6) and fail before publication if the AGGREGATE crosses the cap.
@@ -222,10 +202,9 @@ export async function childWorkflowDispatch(input: ChildWorkflowDispatchInput): 
   // assertNoStepEnvironment's doc comment).
   assertNoStepEnvironment(source.id, childRef, source);
 
-  // §4.2 steps 2-3: the composition bounds, before any child compilation.
+  // §4.2 step 2: the composition cycle check, before any child compilation.
   assertNoCompositionCycle(source.id, childRef, context.composition.refPath);
   const childDepth = context.composition.depth + 1;
-  assertCompositionDepthAllowed(source.id, childRef, childDepth, context.composition.refPath);
 
   // §4.2 step 4: freeze the child COMPLETELY (compile -> validate -> freeze),
   // with its OWN fresh collector (A-N7) so its plan is a pure function of its

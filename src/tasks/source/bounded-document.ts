@@ -65,6 +65,8 @@ export const TASK_V3_MAX_COLLECTION_ITEMS = 1024;
 export const TASK_V3_MAX_OBJECT_KEYS = 256;
 export const TASK_V3_MAX_STRING_BYTES = 256 * 1024;
 export const TASK_V3_MAX_SCHEDULES = 64;
+/** Max entries in a task's `redact:` env-name list. */
+export const TASK_V3_MAX_REDACT_NAMES = 32;
 
 /** Parse context every helper in this module takes. `workspaceRoot` is used only by {@link validateWorkingDirectory}. */
 export interface BoundedDocumentContext {

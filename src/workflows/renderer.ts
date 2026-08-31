@@ -99,9 +99,8 @@ function projectParameters(sourceIr: WorkflowSourceIrV1): WorkflowParameter[] | 
  * visible in the workflow file `show` is rendering, and (b) pointless to clip:
  * the whole finding this projection answers is `show` describing something
  * other than what runs, and a truncated argv is that same bug in miniature.
- * The parser bounds it anyway (`WORKFLOW_MAX_EXEC_ARGV` entries of
- * `WORKFLOW_MAX_EXEC_ARG_BYTES`), and it is far smaller than the step
- * `instructions` this same projection already carries whole.
+ * It is far smaller than the step `instructions` this same projection
+ * already carries whole.
  */
 function summarizeStepOrchestration(
   step: WorkflowSourceStep,

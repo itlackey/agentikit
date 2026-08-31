@@ -66,21 +66,10 @@ import {
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_ENGINE_NAME_LENGTH,
-  WORKFLOW_MAX_EXEC_ARG_BYTES,
-  WORKFLOW_MAX_EXEC_ARGV,
-  WORKFLOW_MAX_EXEC_CWD_LENGTH,
-  WORKFLOW_MAX_EXEC_PASS_ENV,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
-  WORKFLOW_MAX_GATE_LOOPS,
-  WORKFLOW_MAX_INPUTS,
   WORKFLOW_MAX_MAP_EXPANSION,
-  WORKFLOW_MAX_OUTPUTS,
-  WORKFLOW_MAX_PARAMS,
-  WORKFLOW_MAX_RETRIES,
-  WORKFLOW_MAX_ROUTE_BRANCHES,
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_SOURCE_BYTES,
-  WORKFLOW_MAX_STEPS,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "./resource-limits";
 import {
@@ -560,9 +549,6 @@ function parseParams(ctx: Ctx, raw: unknown): Record<string, Record<string, unkn
     );
     return undefined;
   }
-  if (Object.keys(raw).length > WORKFLOW_MAX_PARAMS) {
-    ctx.err(["params"], `"params" must contain at most ${WORKFLOW_MAX_PARAMS} entries.`);
-  }
   const params: Record<string, Record<string, unknown>> = {};
   for (const [paramName, value] of Object.entries(raw)) {
     if (!PROGRAM_PARAM_NAME_PATTERN.test(paramName)) {
@@ -607,9 +593,6 @@ function parseOutputs(ctx: Ctx, raw: unknown): Record<string, WorkflowOutputDecl
       `"outputs" must be a mapping of output name to { from, schema? } (e.g. report: { from: steps.summarize.output }).`,
     );
     return undefined;
-  }
-  if (Object.keys(raw).length > WORKFLOW_MAX_OUTPUTS) {
-    ctx.err(["outputs"], `"outputs" must contain at most ${WORKFLOW_MAX_OUTPUTS} entries.`);
   }
   const outputs: Record<string, WorkflowOutputDeclaration> = {};
   for (const [outputName, value] of Object.entries(raw)) {
@@ -725,9 +708,6 @@ function parseSteps(ctx: Ctx, raw: unknown): ProgramStep[] {
   if (!Array.isArray(raw) || raw.length === 0) {
     ctx.err(["steps"], `"steps" is required and must be a list with at least one step.`);
     return [];
-  }
-  if (raw.length > WORKFLOW_MAX_STEPS) {
-    ctx.err(["steps"], `"steps" must contain at most ${WORKFLOW_MAX_STEPS} entries.`);
   }
 
   // First pass: collect ids so route targets can be checked against ALL steps
@@ -963,14 +943,6 @@ function parseExecPassEnv(ctx: Ctx, raw: unknown, path: Path, stepLabel: string)
     );
     return undefined;
   }
-  if (raw.length > WORKFLOW_MAX_EXEC_PASS_ENV) {
-    ctx.err(
-      path,
-      `${stepLabel} "exec.pass_env" must have at most ${WORKFLOW_MAX_EXEC_PASS_ENV} entries. A command needing ` +
-        `more than that should use explicit named "env:" bindings instead.`,
-    );
-    return undefined;
-  }
   const names: string[] = [];
   for (const [index, entry] of raw.entries()) {
     if (typeof entry !== "string" || !WORKFLOW_ENV_VAR_NAME_PATTERN.test(entry)) {
@@ -990,7 +962,7 @@ function parseExecPassEnv(ctx: Ctx, raw: unknown, path: Path, stepLabel: string)
   return names;
 }
 
-/** The argv array itself: 1..WORKFLOW_MAX_EXEC_ARGV bounded non-empty strings. */
+/** The argv array itself: a non-empty list of non-empty strings. */
 function parseExecCommand(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): string[] | undefined {
   if (!Array.isArray(raw) || raw.length === 0) {
     ctx.err(
@@ -998,10 +970,6 @@ function parseExecCommand(ctx: Ctx, raw: unknown, path: Path, stepLabel: string)
       `${stepLabel} "exec" requires "command": a non-empty argv list, e.g. command: ["bun", "run", "test:unit"]. ` +
         `A single shell string is not accepted — the command is spawned directly, never through a shell.`,
     );
-    return undefined;
-  }
-  if (raw.length > WORKFLOW_MAX_EXEC_ARGV) {
-    ctx.err(path, `${stepLabel} "exec.command" must have at most ${WORKFLOW_MAX_EXEC_ARGV} entries.`);
     return undefined;
   }
   const argv: string[] = [];
@@ -1012,10 +980,6 @@ function parseExecCommand(ctx: Ctx, raw: unknown, path: Path, stepLabel: string)
     }
     if (entry.includes("\0")) {
       ctx.err([...path, index], `${stepLabel} "exec.command[${index}]" may not contain NUL bytes.`);
-      return undefined;
-    }
-    if (utf8Bytes(entry) > WORKFLOW_MAX_EXEC_ARG_BYTES) {
-      ctx.err(path, `${stepLabel} "exec.command[${index}]" exceeds ${WORKFLOW_MAX_EXEC_ARG_BYTES} bytes.`);
       return undefined;
     }
     argv.push(entry);
@@ -1035,10 +999,6 @@ function parseExecCwd(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): st
     return undefined;
   }
   const value = raw.trim();
-  if (value.length > WORKFLOW_MAX_EXEC_CWD_LENGTH) {
-    ctx.err(path, `${stepLabel} "exec.cwd" exceeds ${WORKFLOW_MAX_EXEC_CWD_LENGTH} characters.`);
-    return undefined;
-  }
   if (!isContainedRelativePath(value)) {
     ctx.err(
       path,
@@ -1082,18 +1042,10 @@ function parseMap(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progra
 
   let concurrency: number | undefined;
   if (raw.concurrency !== undefined) {
-    if (
-      typeof raw.concurrency === "number" &&
-      Number.isInteger(raw.concurrency) &&
-      raw.concurrency > 0 &&
-      raw.concurrency <= WORKFLOW_MAX_CONCURRENCY
-    ) {
-      concurrency = raw.concurrency;
+    if (typeof raw.concurrency === "number" && Number.isInteger(raw.concurrency) && raw.concurrency > 0) {
+      concurrency = Math.min(raw.concurrency, WORKFLOW_MAX_CONCURRENCY);
     } else {
-      ctx.err(
-        [...path, "concurrency"],
-        `${stepLabel} "concurrency" must be an integer from 1 through ${WORKFLOW_MAX_CONCURRENCY}.`,
-      );
+      ctx.err([...path, "concurrency"], `${stepLabel} "concurrency" must be a positive integer.`);
     }
   }
 
@@ -1138,9 +1090,6 @@ function parseRoute(
       `${stepLabel} "route" requires "when": a non-empty list of { match, step } branches (e.g. when: [{ match: pass, step: ship }]).`,
     );
   } else {
-    if (raw.when.length > WORKFLOW_MAX_ROUTE_BRANCHES) {
-      ctx.err(whenPath, `${stepLabel} "when" must contain at most ${WORKFLOW_MAX_ROUTE_BRANCHES} branches.`);
-    }
     const seenMatches = new Map<string, number>();
     raw.when.forEach((branch: unknown, i: number) => {
       const branchPath: Path = [...whenPath, i];
@@ -1207,9 +1156,6 @@ function parseInputs(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): str
     ctx.err(path, `${stepLabel} "inputs" must be a non-empty list of reference strings.`);
     return undefined;
   }
-  if (raw.length > WORKFLOW_MAX_INPUTS) {
-    ctx.err(path, `${stepLabel} "inputs" must contain at most ${WORKFLOW_MAX_INPUTS} entries.`);
-  }
   const out: string[] = [];
   // The frozen-plan decoder requires uniqueness (validateStringArray(..., true)),
   // so duplicates parsed and linted clean and then failed the run with an
@@ -1241,18 +1187,10 @@ function parseGate(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
 
   const gate: ProgramGate = {};
   if (raw.max_loops !== undefined) {
-    if (
-      typeof raw.max_loops === "number" &&
-      Number.isInteger(raw.max_loops) &&
-      raw.max_loops >= 1 &&
-      raw.max_loops <= WORKFLOW_MAX_GATE_LOOPS
-    ) {
+    if (typeof raw.max_loops === "number" && Number.isInteger(raw.max_loops) && raw.max_loops >= 1) {
       gate.maxLoops = raw.max_loops;
     } else {
-      ctx.err(
-        [...path, "max_loops"],
-        `${stepLabel} "gate.max_loops" must be an integer from 1 through ${WORKFLOW_MAX_GATE_LOOPS}.`,
-      );
+      ctx.err([...path, "max_loops"], `${stepLabel} "gate.max_loops" must be an integer of at least 1.`);
     }
   }
   return gate;
@@ -1295,11 +1233,8 @@ function parseRetry(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Prog
   checkUnknownKeys(ctx, raw, path, RETRY_KEYS, `${stepLabel} "retry"`);
 
   let ok = true;
-  if (!(typeof raw.max === "number" && Number.isInteger(raw.max) && raw.max >= 0 && raw.max <= WORKFLOW_MAX_RETRIES)) {
-    ctx.err(
-      [...path, "max"],
-      `${stepLabel} "retry.max" is required and must be an integer from 0 through ${WORKFLOW_MAX_RETRIES}.`,
-    );
+  if (!(typeof raw.max === "number" && Number.isInteger(raw.max) && raw.max >= 0)) {
+    ctx.err([...path, "max"], `${stepLabel} "retry.max" is required and must be a non-negative integer.`);
     ok = false;
   }
   const on: ProgramRetry["on"] = [];
