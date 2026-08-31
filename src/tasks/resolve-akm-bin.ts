@@ -11,7 +11,11 @@
  * Resolution order:
  *
  *   1. `process.execPath` alone for a Bun standalone executable.
- *   2. Absolute Node plus the public `dist/akm` package launcher.
+ *   2. Absolute Node plus the public `dist/akm` package launcher — eligible
+ *      when it is the active npm global install, or when this process
+ *      cannot write to the directory containing it (a read-only mount, e.g.
+ *      an image-baked install, gives the same "won't change out from under
+ *      the scheduler" guarantee npm-global ownership does).
  *   3. Absolute runtime plus the source/build CLI entry, classified as a
  *      checkout that requires explicit `--rebind` for scheduler writes.
  *
@@ -53,6 +57,7 @@ export function resolveAkmInvocation(
     launcherPath?: string;
     nodePath?: string;
     resolveNpmGlobalRoot?: (nodePath: string) => string | undefined;
+    isPathWritable?: (dir: string) => boolean;
   } = {},
 ): ResolvedAkmInvocation {
   const env = options.env ?? process.env;
@@ -78,12 +83,14 @@ export function resolveAkmInvocation(
       }
     }
     const npmGlobal = !checkout && packageBelongsToNpmGlobalRoot(launcherPath, npmGlobalRoot);
+    const readOnlyInstall =
+      !checkout && !npmGlobal && !(options.isPathWritable ?? isPathWritable)(path.dirname(launcherPath));
     const kind = checkout ? "checkout" : npmGlobal ? "npm" : "package-local";
     return {
       argv: [absoluteInvocationPath(nodePath), absoluteInvocationPath(launcherPath)],
       via: kind,
       kind,
-      eligible: npmGlobal,
+      eligible: npmGlobal || readOnlyInstall,
     };
   }
 
@@ -153,6 +160,16 @@ function isCheckoutLauncher(file: string): boolean {
   }
   const packageRoot = path.dirname(path.dirname(launcher));
   return fs.existsSync(path.join(packageRoot, ".git"));
+}
+
+/** Whether this process can write to `dir` — false also covers a read-only mount. */
+function isPathWritable(dir: string): boolean {
+  try {
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function packageBelongsToNpmGlobalRoot(launcherPath: string, npmGlobalRoot: string | undefined): boolean {
