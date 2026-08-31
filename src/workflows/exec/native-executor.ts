@@ -117,6 +117,7 @@ import { appendEvent } from "../../core/events";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
 import { runStructured } from "../../core/structured";
 import { warn } from "../../core/warn";
+import { assertFrozenDirectoryContained } from "../../execution/directory-identity";
 import { assertFrozenExecutableIdentity } from "../../execution/executable-identity";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import {
@@ -540,6 +541,7 @@ async function prepareStepDispatchPrerequisites(input: {
     }
     const target = workUnits[0]?.frozenTarget;
     const frozenCwd = target && "cwdIdentity" in target ? target.cwdIdentity : undefined;
+    if (frozenCwd) assertFrozenDirectoryContained(frozenCwd);
     const base = frozenCwd?.realRoot ?? ctx.workDir ?? process.cwd();
     const preflightWorktree = ctx.preflightWorktree ?? assertGitWorkTree;
     const gitError = preflightWorktree(base);
@@ -1381,6 +1383,7 @@ async function dispatchUnit(request: UnitDispatchRequest, dispatcher: UnitDispat
 export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) => {
   const frozenTarget = request.frozenTarget;
   if (frozenTarget.kind === "script") {
+    assertFrozenDirectoryContained(frozenTarget.cwdIdentity);
     if (frozenTarget.executable) {
       assertFrozenExecutableIdentity(frozenTarget.executable, `unit ${request.unitId} executable`);
     }
@@ -1424,6 +1427,7 @@ export const defaultUnitDispatcher: UnitDispatcher = async (request, feedback) =
     }
   }
   if (frozenTarget.kind === "shell") {
+    if (frozenTarget.cwdIdentity) assertFrozenDirectoryContained(frozenTarget.cwdIdentity);
     if (frozenTarget.executable) {
       assertFrozenExecutableIdentity(frozenTarget.executable, `unit ${request.unitId} executable`);
     }
