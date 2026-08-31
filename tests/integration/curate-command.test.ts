@@ -293,4 +293,50 @@ describe("curate command", () => {
 
     expect(json.items.some((item) => String(item.ref).endsWith("//commands/release-manager"))).toBe(false);
   });
+
+  describe("--pack", () => {
+    test("--format=json returns a bare array of {ref, tokens, content}", async () => {
+      const stashDir = makeStash();
+      const output = await runCli(stashDir, ["curate", "release deploy", "--format=json", "--pack", "4000"]);
+      const items = JSON.parse(output) as Array<Record<string, unknown>>;
+
+      expect(Array.isArray(items)).toBe(true);
+      expect(items.length).toBeGreaterThan(0);
+      for (const item of items) {
+        expect(typeof item.ref).toBe("string");
+        expect(typeof item.tokens).toBe("number");
+        expect(typeof item.content).toBe("string");
+        // Only the fields {ref, tokens, content} — no leftover curated-item fields.
+        expect(Object.keys(item).sort()).toEqual(["content", "ref", "tokens"]);
+      }
+    });
+
+    test("default text output concatenates content under ## <ref> headers", async () => {
+      const stashDir = makeStash();
+      const output = await runCli(stashDir, ["curate", "release deploy", "--format=text", "--pack", "4000"]);
+
+      expect(output).toContain("## commands/release");
+      expect(output).toContain("npm version {{version}}");
+    });
+
+    test("small budget drops low-ranked hits rather than truncating them", async () => {
+      const stashDir = makeStash();
+      const full = JSON.parse(
+        await runCli(stashDir, ["curate", "release deploy", "--format=json", "--pack", "100000"]),
+      ) as Array<{ ref: string; tokens: number }>;
+      expect(full.length).toBeGreaterThan(1);
+
+      // A budget smaller than the total but big enough for at least the top
+      // hit keeps a strict prefix of the full-budget ranked list.
+      const totalTokens = full.reduce((sum, item) => sum + item.tokens, 0);
+      const tightBudget = full[0]!.tokens + 1;
+      const tight = JSON.parse(
+        await runCli(stashDir, ["curate", "release deploy", "--format=json", "--pack", String(tightBudget)]),
+      ) as Array<{ ref: string; tokens: number }>;
+
+      expect(tightBudget).toBeLessThan(totalTokens);
+      expect(tight.map((item) => item.ref)).toEqual(full.slice(0, tight.length).map((item) => item.ref));
+      expect(tight.length).toBeLessThan(full.length);
+    });
+  });
 });

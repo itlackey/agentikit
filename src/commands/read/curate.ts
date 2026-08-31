@@ -31,6 +31,7 @@ import {
 } from "../../indexer/search/search-attribution";
 import { findSourceForPath, resolveSourceEntries } from "../../indexer/search/search-source";
 import { insertUsageEvent, type UsageEventSource } from "../../indexer/usage/usage-events";
+import { estimateTokenCount } from "../../llm/embedders/remote";
 import { truncateDescription } from "../../output/shapes/helpers";
 import type {
   RegistrySearchResultHit,
@@ -309,6 +310,69 @@ export async function curateSearchResults(
     ...(result.searchMode ? { searchMode: result.searchMode } : {}),
     ...(result.tip ? { tip: result.tip } : {}),
   };
+}
+
+export interface PackedCurateItem {
+  ref: string;
+  tokens: number;
+  content: string;
+}
+
+export interface CuratePackResult {
+  query: string;
+  budget: number;
+  tokens: number;
+  items: PackedCurateItem[];
+}
+
+/**
+ * Pack a curate result's stash hits into a single token-budgeted blob:
+ * resolve each hit's content via the SAME path `akm show` uses
+ * (`akmShowUnified` — this also means a `ref#fragment` hit packs just the
+ * matched section), then greedily accumulate hits, in the ranking order
+ * `curateSearchResults` already produced, until the next hit would exceed
+ * `budgetTokens`.
+ *
+ * Registry hits are never packed — only `CuratedStashItem`s (locked
+ * contract, AGENTS.md: registry results stay separate/opt-in).
+ *
+ * Truncation policy: drop whole hits from the tail of the ranked list first.
+ * The only exception is a single high-rank hit that alone exceeds the
+ * budget — that one hit is truncated to fit rather than dropping everything.
+ */
+export async function packCuratedHits(result: CurateResponse, budgetTokens: number): Promise<CuratePackResult> {
+  const stashItems = result.items.filter((item): item is CuratedStashItem => item.source === "local");
+  const packed: PackedCurateItem[] = [];
+  let used = 0;
+
+  for (const item of stashItems) {
+    let shown: ShowResponse | undefined;
+    try {
+      shown = await akmShowUnified({ ref: item.ref, skipLogging: true });
+    } catch {
+      continue;
+    }
+    const content = shown.content ?? shown.template ?? shown.prompt ?? "";
+    const tokens = estimateTokenCount(content);
+
+    if (used + tokens <= budgetTokens) {
+      packed.push({ ref: item.ref, tokens, content });
+      used += tokens;
+      continue;
+    }
+
+    if (packed.length === 0) {
+      const remaining = budgetTokens - used;
+      if (remaining > 0) {
+        const truncated = content.slice(0, remaining * 4);
+        packed.push({ ref: item.ref, tokens: estimateTokenCount(truncated), content: truncated });
+        used += estimateTokenCount(truncated);
+      }
+    }
+    break;
+  }
+
+  return { query: result.query, budget: budgetTokens, tokens: used, items: packed };
 }
 
 async function enrichCuratedStashHit(
