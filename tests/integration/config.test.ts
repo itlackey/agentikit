@@ -706,7 +706,7 @@ describe("search config", () => {
           hopBoostPerEntity: 0.08,
           hopBoostCap: 0.24,
           maxHops: 2,
-          confidenceMode: "multiply",
+          confidenceMode: "blend",
           confidenceWeight: 0.4,
         },
       },
@@ -720,7 +720,7 @@ describe("search config", () => {
         hopBoostPerEntity: 0.08,
         hopBoostCap: 0.24,
         maxHops: 2,
-        confidenceMode: "multiply",
+        confidenceMode: "blend",
         confidenceWeight: 0.4,
       },
     });

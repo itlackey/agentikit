@@ -19,7 +19,8 @@ const SearchGraphBoostSchema = z
     hopBoostCap: nonNegativeNumber.optional(),
     /** Hard-capped at 3; values > 3 hard-error so users see the typo. */
     maxHops: positiveInt.max(3).optional(),
-    confidenceMode: z.enum(["off", "blend", "multiply"]).default("blend").optional(),
+    /** Only "blend" is exercised; "off"/"multiply" were never set in practice and were removed. */
+    confidenceMode: z.enum(["blend"]).default("blend").optional(),
     /** Range [0, 1]; values > 1 hard-error (no silent clamp). */
     confidenceWeight: z.number().finite().min(0).max(1).default(0.2).optional(),
   })

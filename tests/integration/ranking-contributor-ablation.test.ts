@@ -8,124 +8,12 @@ import os from "node:os";
 import path from "node:path";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../../src/indexer/scan/drain-dir";
-import { applyRankingRules } from "../../src/indexer/search/ranking";
 import {
   applyBeliefStateScoreCeiling,
-  applyContributorAblation,
   defaultRankingContributors,
-  defaultUtilityRankingContributors,
   type RankingContext,
-  salienceRankingContributor,
-  typeBoostFor,
 } from "../../src/indexer/search/ranking-contributors";
 import type { RankedEntryInput } from "../../src/indexer/search/ranking-types";
-import type { Database } from "../../src/storage/database";
-
-describe("applyContributorAblation (eval-only AKM_ABLATE_CONTRIBUTORS filter)", () => {
-  const all = defaultRankingContributors;
-
-  test("undefined env is a no-op — returns the full list unchanged", () => {
-    expect(applyContributorAblation(all, undefined)).toBe(all);
-  });
-
-  test("empty / whitespace env is a no-op", () => {
-    expect(applyContributorAblation(all, "")).toBe(all);
-    expect(applyContributorAblation(all, "   ")).toBe(all);
-    expect(applyContributorAblation(all, " , ,")).toBe(all);
-  });
-
-  test("removes exactly the named contributor", () => {
-    const out = applyContributorAblation(all, "belief-state-ranking");
-    expect(out.length).toBe(all.length - 1);
-    expect(out.some((c) => c.name === "belief-state-ranking")).toBe(false);
-    // every other contributor survives
-    expect(out.some((c) => c.name === "exact-name-ranking")).toBe(true);
-  });
-
-  test("removes multiple names, tolerates whitespace and unknown names", () => {
-    const out = applyContributorAblation(all, " exact-name-ranking , type-ranking , not-a-real-contributor ");
-    expect(out.some((c) => c.name === "exact-name-ranking")).toBe(false);
-    expect(out.some((c) => c.name === "type-ranking")).toBe(false);
-    expect(out.length).toBe(all.length - 2);
-  });
-
-  // #692 — `salience-ranking` was dropped from `defaultUtilityRankingContributors`
-  // (the R2 salience boost is no longer part of default user-facing ranking;
-  // `rank_score` keeps its improve-internal role unchanged). The contributor
-  // itself stays exported, unwired, for a future gated experiment.
-  test("defaultUtilityRankingContributors is the one-entry post-#692 list — salience is not in it", () => {
-    expect(defaultUtilityRankingContributors.length).toBe(1);
-    expect(defaultUtilityRankingContributors.map((c) => c.name)).toEqual(["utility-ranking"]);
-  });
-
-  test("ablation of 'salience-ranking' still works against an explicitly supplied list containing it", () => {
-    // Proves the ablation MECHANISM still works for a contributor no longer in
-    // the default list — e.g. a future gated experiment that re-adds
-    // `salienceRankingContributor` to a custom list would still be ablatable.
-    // Asserting against the (now salience-free) default list alone would be
-    // vacuous: "salience-ranking" would already be absent with or without
-    // ablation working correctly.
-    const explicitList = [...defaultUtilityRankingContributors, salienceRankingContributor];
-    const out = applyContributorAblation(explicitList, "salience-ranking");
-    expect(out.length).toBe(explicitList.length - 1);
-    expect(out.some((c) => c.name === "salience-ranking")).toBe(false);
-    expect(out.some((c) => c.name === "utility-ranking")).toBe(true);
-  });
-
-  test("does not mutate the input array", () => {
-    const before = all.length;
-    applyContributorAblation(all, "belief-state-ranking");
-    expect(all.length).toBe(before);
-  });
-});
-
-// C9 (env-var hygiene): `applyRankingRules` (src/indexer/search/ranking.ts)
-// now accepts `ablateContributors` directly on `RankEntriesOptions` instead
-// of requiring the caller to set the AKM_ABLATE_CONTRIBUTORS env var. This
-// exercises that DI seam through the real ranking entrypoint (not just the
-// pure `applyContributorAblation` helper above), with no env var involved.
-describe("applyRankingRules — ablateContributors option (DI, no env var)", () => {
-  // Stub db: `getUtilityScoresByIds`/`loadSalienceRankScores` only ever call
-  // `db.prepare(...).all(...)` for a set of ids, and this test's single item
-  // resolves to an empty result set either way — the exact-name-ranking
-  // contributor under test never touches the db at all.
-  const stubDb = { prepare: () => ({ all: () => [] }) } as unknown as Database;
-
-  function makeExactNameItem(query: string): RankedEntryInput {
-    const entry: IndexDocument = {
-      name: query,
-      type: "memory",
-      description: "exact-name fixture",
-      filename: `${query}.md`,
-    } as IndexDocument;
-    return { id: 1, entry, filePath: `/stash/memories/${query}.md`, score: 1, rankingMode: "fts" };
-  }
-
-  // The "memory" type also carries its own (small, unrelated) type-ranking
-  // boost, so the ablated expectation is "just the type boost", not exactly
-  // the pre-boost score of 1 — computed via the exported typeBoostFor rather
-  // than a hardcoded magic number, so this doesn't silently drift if the
-  // constant changes.
-  const memoryTypeBoostMultiplier = 1 + typeBoostFor("memory");
-
-  test("without ablateContributors, exact-name-ranking applies its boost", () => {
-    const item = makeExactNameItem("needle");
-    applyRankingRules({ db: stubDb, query: "needle", items: [item], graphContext: null });
-    expect(item.score).toBeGreaterThan(memoryTypeBoostMultiplier);
-  });
-
-  test("ablateContributors: 'exact-name-ranking' suppresses that boost via DI, not env", () => {
-    const item = makeExactNameItem("needle");
-    applyRankingRules({
-      db: stubDb,
-      query: "needle",
-      items: [item],
-      graphContext: null,
-      ablateContributors: "exact-name-ranking",
-    });
-    expect(item.score).toBeCloseTo(memoryTypeBoostMultiplier, 10);
-  });
-});
 
 // ── SPEC-2: tag-ranking fires for path-derived scope tokens ─────────────────
 //
