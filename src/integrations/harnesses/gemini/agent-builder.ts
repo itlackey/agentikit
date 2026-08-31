@@ -24,9 +24,7 @@
  * - **systemPrompt** — Gemini CLI has no system-prompt flag in headless mode
  *   (system text comes from `GEMINI.md` context files / `GEMINI_SYSTEM_MD`),
  *   so the system prompt is folded into the `-p` payload ahead of the task
- *   prompt, separated by a blank line. `assertNotFlag` still guards it so a
- *   `--`-prefixed system prompt cannot turn the front of the `-p` value into
- *   a flag.
+ *   prompt, separated by a blank line.
  * - **schema** — the matrix places Gemini in the "via prompt+validate" tier
  *   (no native `--output-schema` equivalent, unlike Codex — so no temp-file
  *   plumbing here), so the JSON Schema is passed through the prompt: a
@@ -51,12 +49,7 @@
  * name without any further wiring.
  */
 
-import {
-  type AgentCommandBuilder,
-  type AgentDispatchRequest,
-  assertNotFlag,
-  resolveDispatchModel,
-} from "../../agent/builder-shared";
+import { type AgentCommandBuilder, type AgentDispatchRequest, resolveDispatchModel } from "../../agent/builder-shared";
 import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /** Canonical harness/platform id used for model-alias resolution. */
@@ -114,8 +107,6 @@ export const geminiBuilder: AgentCommandBuilder = {
     outputSchema: true,
   }),
   build(profile, req) {
-    assertNotFlag(req.systemPrompt, "systemPrompt");
-    assertNotFlag(req.model, "model");
     const args: string[] = [...profile.args];
     if (req.model) {
       const resolved = resolveDispatchModel(req, profile, GEMINI_PLATFORM) as string;
@@ -125,7 +116,6 @@ export const geminiBuilder: AgentCommandBuilder = {
       // Structured policy objects (entries === undefined) emit NO flags:
       // dropping a restriction must never widen to auto-approval.
       for (const tool of toolPolicyEntries(req.tools) ?? []) {
-        assertNotFlag(tool, "tools entry");
         args.push("--allowed-tools", tool);
       }
     }

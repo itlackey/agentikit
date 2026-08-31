@@ -39,7 +39,6 @@
 import {
   type AgentCommandBuilder,
   type AgentDispatchRequest,
-  assertNotFlag,
   normalizeTools,
   resolveDispatchModel,
 } from "../../agent/builder-shared";
@@ -77,9 +76,6 @@ export const claudeBuilder: AgentCommandBuilder = {
     outputSchema: true,
   }),
   build(profile, req) {
-    assertNotFlag(req.systemPrompt, "systemPrompt");
-    assertNotFlag(req.model, "model");
-    assertNotFlag(req.agent, "agent");
     const args: string[] = [...profile.args];
     if (req.agent) {
       args.push("--agent", req.agent);

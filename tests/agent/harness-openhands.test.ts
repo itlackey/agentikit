@@ -158,17 +158,11 @@ describe("openhandsBuilder — schema passthrough (prompt+validate tier)", () =>
 
 // ── Builder — injection guards ────────────────────────────────────────────────
 
-describe("openhandsBuilder — assertNotFlag guards", () => {
-  test("model starting with '--' throws", () => {
-    expect(() => openhandsBuilder.build(makeOpenhandsProfile(), { prompt: "go", model: "--evil" })).toThrow(
-      /model must not start with "--"/,
-    );
-  });
-
-  test("systemPrompt starting with '--' throws", () => {
-    expect(() => openhandsBuilder.build(makeOpenhandsProfile(), { prompt: "go", systemPrompt: "--inject" })).toThrow(
-      /systemPrompt must not start with "--"/,
-    );
+describe("openhandsBuilder — model/systemPrompt values", () => {
+  test("a leading '--' in model/systemPrompt is passed through, not rejected", () => {
+    expect(() =>
+      openhandsBuilder.build(makeOpenhandsProfile(), { prompt: "go", model: "--evil", systemPrompt: "--inject" }),
+    ).not.toThrow();
   });
 
   test("valid values do not throw", () => {

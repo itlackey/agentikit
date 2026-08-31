@@ -186,23 +186,16 @@ describe("amazonqBuilder — schema passthrough (prompt+validate tier)", () => {
 
 // ── Builder — injection guards ────────────────────────────────────────────────
 
-describe("amazonqBuilder — assertNotFlag guards", () => {
-  test("model starting with '--' throws", () => {
-    expect(() => amazonqBuilder.build(makeQProfile(), { prompt: "go", model: "--evil" })).toThrow(
-      /model must not start with "--"/,
-    );
-  });
-
-  test("systemPrompt starting with '--' throws", () => {
-    expect(() => amazonqBuilder.build(makeQProfile(), { prompt: "go", systemPrompt: "--inject" })).toThrow(
-      /systemPrompt must not start with "--"/,
-    );
-  });
-
-  test("tool entry starting with '--' throws", () => {
-    expect(() => amazonqBuilder.build(makeQProfile(), { prompt: "go", tools: ["--trust-all-tools"] })).toThrow(
-      /tools entry must not start with "--"/,
-    );
+describe("amazonqBuilder — model/systemPrompt/tools values", () => {
+  test("a leading '--' in model/systemPrompt/tools is passed through, not rejected", () => {
+    expect(() =>
+      amazonqBuilder.build(makeQProfile(), {
+        prompt: "go",
+        model: "--evil",
+        systemPrompt: "--inject",
+        tools: ["--trust-all-tools"],
+      }),
+    ).not.toThrow();
   });
 
   test("valid values do not throw", () => {

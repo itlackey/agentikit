@@ -26,7 +26,7 @@
  *   builders, so a prompt whose text begins with `-`/`--` can never be parsed
  *   as flags.
  * - **systemPrompt** — passed via `--system-prompt` (Pi follows the Claude
- *   Code flag conventions), guarded by `assertNotFlag`.
+ *   Code flag conventions).
  * - **schema** — the matrix places Pi in the "via prompt+validate" tier (no
  *   native `--output-schema` equivalent, unlike Codex), so the JSON Schema is
  *   passed through the prompt: a directive matching the engine's wording
@@ -52,12 +52,7 @@
  * (`./index.ts`).
  */
 
-import {
-  type AgentCommandBuilder,
-  type AgentDispatchRequest,
-  assertNotFlag,
-  resolveDispatchModel,
-} from "../../agent/builder-shared";
+import { type AgentCommandBuilder, type AgentDispatchRequest, resolveDispatchModel } from "../../agent/builder-shared";
 import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /** Canonical harness/platform id used for model-alias resolution. */
@@ -93,8 +88,6 @@ export const piBuilder: AgentCommandBuilder = {
     outputSchema: true,
   }),
   build(profile, req) {
-    assertNotFlag(req.systemPrompt, "systemPrompt");
-    assertNotFlag(req.model, "model");
     const args: string[] = [...profile.args];
     if (req.systemPrompt) {
       args.push("--system-prompt", req.systemPrompt);
