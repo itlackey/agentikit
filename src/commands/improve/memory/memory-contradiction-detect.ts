@@ -15,7 +15,7 @@
  * # Algorithm
  *
  *   1. Collect all derived memories grouped by `parentRef` family.
- *   2. For each family, enumerate candidate pairs (limited to MAX_FAMILY_SIZE).
+ *   2. For each family, enumerate candidate pairs.
  *   3. For each pair, call the LLM to judge whether the two memories are in
  *      direct factual conflict.
  *   4. For confirmed contradictions, write `contradictedBy` edges directly to
@@ -50,18 +50,6 @@ import { resolveImproveLlmExecution } from "../execution";
 import { isDerivedMemory, memoryIdentityRef, resolveParentRef } from "./derived-ref";
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-/**
- * Maximum family size for pairwise contradiction checking. Families larger
- * than this are skipped to bound the LLM call count (O(n²) pairs).
- */
-const MAX_FAMILY_SIZE = 8;
-
-/**
- * Maximum number of contradiction pairs to check per improve run, across all
- * families. Prevents runaway LLM usage on stashes with many memories.
- */
-const MAX_PAIRS_PER_RUN = 20;
 
 /**
  * Minimum confidence required to write a contradiction edge. Below this
@@ -272,19 +260,11 @@ export async function detectAndWriteContradictions(
 
   for (const [, family] of byParent) {
     if (family.length < 2) continue;
-    if (family.length > MAX_FAMILY_SIZE) {
-      result.warnings.push(
-        `Skipping contradiction check for family of ${family.length} members (exceeds MAX_FAMILY_SIZE=${MAX_FAMILY_SIZE})`,
-      );
-      continue;
-    }
 
     result.familiesExamined++;
 
     for (let i = 0; i < family.length - 1; i++) {
       for (let j = i + 1; j < family.length; j++) {
-        if (candidatePairs.length >= MAX_PAIRS_PER_RUN) break;
-
         const a = family[i];
         const b = family[j];
         if (!a || !b) continue;
@@ -303,8 +283,6 @@ export async function detectAndWriteContradictions(
 
         candidatePairs.push({ a, b, loser, winnerRef });
       }
-
-      if (candidatePairs.length >= MAX_PAIRS_PER_RUN) break;
     }
   }
 
