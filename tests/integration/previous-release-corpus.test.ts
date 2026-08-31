@@ -45,15 +45,33 @@
  *     legacy/additive shapes instead of throwing
  *     (`src/storage/repositories/task-history-repository.ts`'s
  *     `decodeTaskHistoryMetadata`).
+ *   - the `AKM_BUNDLE_DIR`-synthesized duplicate `stash` bundle entry
+ *     (#870) — read via `scripts/akm-migrate/task-migrate.ts`'s `taskRoots`,
+ *     which reconciles two bundle ids resolving to the same content root
+ *     instead of double-enumerating and throwing `duplicate task migration
+ *     file path`.
+ *   - a real-shaped 0.8 config carrying the retired `stashDir`/`sources[]`/
+ *     `installed[]` trio together (#863) — deliberately NOT read-shimmed
+ *     (unlike every fixture above); this one instead guards that the break
+ *     stays loud and actionable (`src/core/config/config-schema.ts`) rather
+ *     than degrading into a silent load or an opaque crash.
+ *   - downstream-consumer fixtures for OpenPalm (a real, if unofficial,
+ *     integration point, #880): a `config.json` `bundles` shape and four
+ *     task source v4 files exercising its grammar (`run:`/`shell:`,
+ *     `uses:`/`with:`, `timeout:`, optional `schedule:`) — static files
+ *     proving akm doesn't tighten its schema in a way that breaks a real
+ *     consumer.
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { inspectMigrationPlan } from "../../scripts/akm-migrate/task-migrate";
 import { akmHealth } from "../../src/commands/health";
 import { createProposal as createProposalImpl, isProposalSkipped } from "../../src/commands/proposal/repository";
-import { loadUserConfig, resetConfigCache } from "../../src/core/config/config";
+import { loadConfig, loadUserConfig, parseAndValidateConfigText, resetConfigCache } from "../../src/core/config/config";
+import { ConfigError } from "../../src/core/errors";
 import { getConfigPath } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { resetQuiet, setQuiet } from "../../src/core/warn";
@@ -61,7 +79,7 @@ import { listStateProposals } from "../../src/storage/repositories/proposals-rep
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
 import { readTaskHistory } from "../../src/tasks/run/task-history";
 import { parseTaskSource } from "../../src/tasks/source/parse-task-source";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 const FIXTURES_DIR = path.join(import.meta.dir, "..", "fixtures", "previous-release-corpus");
 
@@ -348,6 +366,165 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(String(warnSpy.mock.calls[0]?.[0])).toContain("schema v2");
     });
+  });
+});
+
+// ── AKM_BUNDLE_DIR synthesized "stash" bundle duplicate (#870) ─────────────
+//
+// #870's root cause: `AKM_BUNDLE_DIR` pointing at a directory already
+// configured under a different bundle id (e.g. `openpalm`) registered a
+// SECOND bundle for it (auto-named `stash`, promoted to `defaultBundle`) —
+// the real shape a broken prior release wrote to a user's `config.json`.
+// Fixed by matching registration on the resolved content root
+// (`bundleContentRoot`/`bundleKeyForContentRoot` in
+// `src/core/config/config-sources.ts`) instead of the bare configured
+// `path`; `scripts/akm-migrate/task-migrate.ts`'s `taskRoots` reconciles the
+// two ids on the read/enumeration side. See
+// `tests/migrate/duplicate-bundle-registration.test.ts` for the mechanism's
+// full unit coverage — this corpus entry proves the exact real-shaped,
+// on-disk `config.json` (both bundle ids literally named `openpalm`/`stash`,
+// `defaultBundle: "stash"`) converges through `akm migrate`'s inspection
+// instead of throwing `duplicate task migration file path`.
+describe("previous-release corpus — AKM_BUNDLE_DIR duplicate 'stash' bundle (#870)", () => {
+  let storage: IsolatedAkmStorage;
+
+  beforeEach(() => {
+    storage = withIsolatedAkmStorage();
+  });
+
+  afterEach(() => {
+    storage.cleanup();
+  });
+
+  test("a home with a pre-#870 duplicate 'stash' bundle entry converges instead of throwing", () => {
+    fs.mkdirSync(path.join(storage.stashDir, "tasks"), { recursive: true });
+    fs.writeFileSync(
+      path.join(storage.stashDir, "tasks", "demo.yml"),
+      "version: 2\nschedule: '@daily'\ncommand: /bin/echo ok\n",
+      { mode: 0o640 },
+    );
+    writeSandboxConfig({
+      defaultBundle: "stash",
+      bundles: {
+        openpalm: { path: storage.stashDir, writable: true },
+        stash: { path: storage.stashDir, writable: true },
+      },
+    });
+
+    let plan: ReturnType<typeof inspectMigrationPlan> | undefined;
+    expect(() => {
+      plan = inspectMigrationPlan();
+    }).not.toThrow();
+    // Reconciled: the shared task file is enumerated once, not once per
+    // duplicate bundle id.
+    expect(plan?.taskV3Migration.files).toHaveLength(1);
+    expect(plan?.taskV3Migration.files[0]?.filePath).toBe(path.join(storage.stashDir, "tasks", "demo.yml"));
+  });
+});
+
+// ── Retired 0.8 source-config keys (`stashDir`/`sources[]`/`installed[]`) ──
+//
+// Unlike every other fixture in this file, the 0.9.0 cutover deliberately
+// does NOT read-shim these — `bundles` + `defaultBundle` fully replaced them
+// (see the module doc in `src/core/config/config-schema.ts` and the
+// dedicated coverage in `tests/integration/config.test.ts`). A real 0.8
+// config carried all three together. The compatibility guarantee here is
+// narrower than "reads cleanly": it's that this real combined shape still
+// fails LOUDLY with actionable per-key guidance (pointing at `bundles`)
+// rather than a generic/opaque parse error or, worse, a silent passthrough
+// that drops the user's source configuration without telling them.
+describe("previous-release corpus — retired 0.8 source-config keys (configVersion shim territory, #863)", () => {
+  beforeEach(() => resetConfigCache());
+  afterEach(() => resetConfigCache());
+
+  test("a real-shaped 0.8 config (stashDir + sources[] + installed[] together) fails with actionable guidance, not a silent load or opaque crash", () => {
+    const configPath = getConfigPath();
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        configVersion: "0.9.0",
+        stashDir: "/home/user/.akm-stash",
+        sources: [{ type: "filesystem", path: "/home/user/.akm-stash", name: "primary" }],
+        installed: [
+          {
+            id: "npm:left-pad",
+            source: "npm",
+            ref: "npm:left-pad",
+            stashRoot: "/home/user/.akm-stash/left-pad",
+            installedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      loadConfig();
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    const message = (caught as ConfigError).message;
+    expect(message).toContain("stashDir is not supported");
+    expect(message).toContain("bundles");
+  });
+});
+
+// ── Downstream consumer: OpenPalm (#880) ────────────────────────────────────
+//
+// OpenPalm is a real, if unofficial, integration point (see #870/#867's
+// issue bodies). These are STATIC fixtures standing in for the shapes its
+// `akm-sources.ts` writes and the task source v4 grammar it schedules
+// against — copied in to prove akm does not tighten its schema in a way
+// that breaks a real downstream consumer. Nothing here wires up live to
+// another repo; these are plain files read the same way any other corpus
+// fixture is.
+describe("previous-release corpus — downstream consumer: OpenPalm (#880)", () => {
+  const OPENPALM_DIR = path.join(FIXTURES_DIR, "openpalm-consumer");
+
+  test("OpenPalm's config.json shape (bundles + one-component-per-bundle) parses without throwing", () => {
+    const text = fs.readFileSync(path.join(OPENPALM_DIR, "config.json"), "utf8");
+    let config: ReturnType<typeof parseAndValidateConfigText> | undefined;
+    expect(() => {
+      config = parseAndValidateConfigText(text);
+    }).not.toThrow();
+    expect(config?.defaultBundle).toBe("openpalm");
+    expect(config?.bundles?.openpalm?.path).toBe("/srv/openpalm/stash");
+  });
+
+  test("OpenPalm's `uses:`/`with:` task source v4 file (builtin command target) parses without throwing", () => {
+    const filePath = path.join(OPENPALM_DIR, "reddit-leads-ingest.yml");
+    const result = parseTaskSource({ yaml: fs.readFileSync(filePath, "utf8"), filePath });
+    expect(result.version).toBe(4);
+    expect(result.v4.target.kind).toBe("uses");
+    expect(result.v4.execution.timeout).toBe(120000);
+    expect(result.v4.manualOnly).toBe(false);
+  });
+
+  test("OpenPalm's `run:`/`shell:` task source v4 file (scheduled) parses without throwing", () => {
+    const filePath = path.join(OPENPALM_DIR, "discord-wiki-articles-ingest.yml");
+    const result = parseTaskSource({ yaml: fs.readFileSync(filePath, "utf8"), filePath });
+    expect(result.version).toBe(4);
+    expect(result.v4.target.kind).toBe("run");
+    expect(result.v4.execution.timeout).toBe(300000);
+  });
+
+  test("OpenPalm's `uses:` task source v4 file with no `timeout:` and no top-level `enabled:` parses without throwing", () => {
+    const filePath = path.join(OPENPALM_DIR, "health-report.yml");
+    const result = parseTaskSource({ yaml: fs.readFileSync(filePath, "utf8"), filePath });
+    expect(result.version).toBe(4);
+    expect(result.v4.target.kind).toBe("uses");
+    expect(result.v4.execution.timeout).toBeUndefined();
+  });
+
+  test("OpenPalm's manual (unscheduled) `run:`/`shell:` task source v4 file parses without throwing", () => {
+    const filePath = path.join(OPENPALM_DIR, "manual-reindex.yml");
+    const result = parseTaskSource({ yaml: fs.readFileSync(filePath, "utf8"), filePath });
+    expect(result.version).toBe(4);
+    expect(result.v4.target.kind).toBe("run");
+    expect(result.v4.manualOnly).toBe(true);
+    expect(result.v4.schedule).toHaveLength(0);
   });
 });
 

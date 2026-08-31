@@ -1,0 +1,5 @@
+version: 4
+name: openpalm-health-report
+description: Post a daily akm health summary to the ops Discord channel
+uses: commands/health-report
+schedule: "0 9 * * *"
