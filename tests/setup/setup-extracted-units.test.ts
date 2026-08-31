@@ -107,16 +107,15 @@ describe("setup LLM engine writer", () => {
     expect(patch.defaults?.llmEngine).toBeUndefined();
   });
 
-  test("cloneLlmConfig deep-copies capabilities + extraParams", () => {
+  test("cloneLlmConfig deep-copies extraParams", () => {
     const llm: LlmConnectionConfig = {
       endpoint: "e",
       model: "m",
-      capabilities: { structuredOutput: true },
-      extraParams: { top_p: 0.9 },
+      supportsJsonSchema: true,
+      extraParams: { top_p: 0.9, nested: { seed: 1 } },
     };
     const clone = cloneLlmConnection(llm);
     expect(clone).toEqual(llm);
-    expect(clone?.capabilities).not.toBe(llm.capabilities);
     expect(clone?.extraParams).not.toBe(llm.extraParams);
     expect(cloneLlmConnection(undefined)).toBeUndefined();
   });

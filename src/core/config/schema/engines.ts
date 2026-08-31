@@ -21,7 +21,6 @@ import {
   ENV_REFERENCE_PATTERN,
   ExtraParamsSchema,
   engineName,
-  LlmCapabilitiesSchema,
   nonEmptyString,
   positiveInt,
 } from "./primitives";
@@ -55,7 +54,13 @@ export const LlmConnectionConfigSchema = z
     maxTokens: positiveInt.optional(),
     timeoutMs: timeoutMsField,
     concurrency: positiveInt.optional(),
-    capabilities: LlmCapabilitiesSchema.optional(),
+    // User-settable override, not a cached probe verdict: attempt-then-
+    // fallback in llm/client.ts tries `response_format: json_schema` whenever
+    // a schema is supplied, degrading to plain text on an unsupported-4xx and
+    // remembering that in-memory for the rest of the process. `false` here
+    // opts a known-incompatible endpoint out of even the first attempt;
+    // `true` is advisory only.
+    supportsJsonSchema: z.boolean().optional(),
     extraParams: ExtraParamsSchema.optional(),
     contextLength: positiveInt.optional(),
     enableThinking: z.boolean().optional(),
@@ -63,9 +68,7 @@ export const LlmConnectionConfigSchema = z
   })
   .passthrough();
 
-export const LlmProfileConfigSchema = LlmConnectionConfigSchema.extend({
-  supportsJsonSchema: z.boolean().optional(),
-}).passthrough();
+export const LlmProfileConfigSchema = LlmConnectionConfigSchema.passthrough();
 
 // ── Agent engines ───────────────────────────────────────────────────────────
 
@@ -84,7 +87,6 @@ const LlmEngineSchema = z
     maxTokens: positiveInt.optional(),
     timeoutMs: timeoutMsField,
     concurrency: positiveInt.optional(),
-    supportsJsonSchema: z.boolean().optional(),
     extraParams: ExtraParamsSchema.optional(),
     contextLength: positiveInt.optional(),
     enableThinking: z.boolean().optional(),
@@ -120,7 +122,6 @@ const AgentEngineSchema = z
       "temperature",
       "maxTokens",
       "concurrency",
-      "supportsJsonSchema",
       "extraParams",
       "contextLength",
       "enableThinking",

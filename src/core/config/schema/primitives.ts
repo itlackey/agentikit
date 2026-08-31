@@ -66,12 +66,6 @@ export const ExtraParamsSchema = z.record(z.unknown()).superRefine((value, ctx) 
 
 // ── Shared connection/invocation building blocks ────────────────────────────
 
-export const LlmCapabilitiesSchema = z
-  .object({
-    structuredOutput: z.boolean().optional(),
-  })
-  .passthrough();
-
 export const LlmInvocationOverridesSchema = z
   .object({
     temperature: z.number().finite().optional(),

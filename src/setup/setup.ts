@@ -50,7 +50,7 @@ import { akmIndex } from "../indexer/indexer";
 import { detectAgentCliProfiles, pickDefaultAgentProfile } from "../integrations/agent";
 import { defaultProfileName } from "../integrations/harnesses";
 import { readLockfile } from "../integrations/lockfile";
-import { probeLlmCapabilities } from "../llm/client";
+import { probeLlmReachable } from "../llm/client";
 import {
   type DetectedEnvironment,
   detectEnvironment,
@@ -1124,19 +1124,16 @@ export async function runSetupFromConfig(opts: {
   // Reject an invalid merged engine graph before probing or touching the stash.
   validateCompleteConfig(finalizedMerged);
 
-  // Optional probe
+  // Optional connectivity probe — informational only, never blocks or
+  // mutates config. `chatCompletion` attempts structured output fresh on
+  // every call that needs it (see `llm/client.ts`), so there is nothing to
+  // probe or persist here beyond "did the endpoint answer".
   const mergedLlm = readCurrentLlmEngine(finalizedMerged);
   if (opts.probe && mergedLlm) {
     try {
-      const caps = await probeLlmCapabilities(mergedLlm);
-      if (caps.reachable) {
-        finalizedMerged = {
-          ...finalizedMerged,
-          ...writeLlmEngine(finalizedMerged, {
-            ...mergedLlm,
-            capabilities: { structuredOutput: caps.structuredOutput ?? false },
-          }),
-        };
+      const reach = await probeLlmReachable(mergedLlm);
+      if (!reach.reachable) {
+        warn(`[akm setup] LLM endpoint not reachable${reach.error ? `: ${reach.error}` : ""}.`);
       }
     } catch {
       // Non-fatal: probe failure is informational only

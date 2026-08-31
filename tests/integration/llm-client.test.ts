@@ -1,8 +1,14 @@
-import { describe, expect, jest, setSystemTime, test } from "bun:test";
+import { beforeEach, describe, expect, jest, setSystemTime, test } from "bun:test";
 import type { LlmConnectionConfig } from "../../src/core/config/config";
 import { parseEmbeddedJsonResponse, parseJsonResponse } from "../../src/core/parse";
 import { _setWarnSinkForTests } from "../../src/core/warn";
-import { chatCompletion, LlmCallError, probeLlmCapabilities, redactErrorBody } from "../../src/llm/client";
+import {
+  _resetJsonSchemaSupportTrackerForTests,
+  chatCompletion,
+  isJsonSchemaKnownUnsupported,
+  LlmCallError,
+  redactErrorBody,
+} from "../../src/llm/client";
 import { overrideSeam } from "../_helpers/seams";
 
 function createRequestServer(respond: (body: Record<string, unknown>) => Response): {
@@ -55,19 +61,114 @@ describe("chatCompletion JSON Schema payload", () => {
     }
   });
 
-  test("preserves prompt-contract mode when schema support is not enabled", async () => {
+  test("attempts the schema by default — no cached verdict gates the first request", async () => {
     let requestBody: Record<string, unknown> | undefined;
     const { url, server } = createRequestServer((body) => {
       requestBody = body;
       return Response.json({ choices: [{ message: { content: '{"result":"ok"}' } }] });
     });
     try {
+      // No `supportsJsonSchema` set at all — the old design required an
+      // explicit `true`, sourced from a persisted setup-time probe. Now the
+      // absence of an opinion means "try it", not "assume unsupported".
       await chatCompletion({ endpoint: url, model: "test-model" }, messages, { responseSchema });
+      expect(requestBody?.response_format).toBeDefined();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("an explicit supportsJsonSchema: false skips the schema attempt entirely", async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const { url, server } = createRequestServer((body) => {
+      requestBody = body;
+      return Response.json({ choices: [{ message: { content: '{"result":"ok"}' } }] });
+    });
+    try {
+      await chatCompletion({ endpoint: url, model: "test-model", supportsJsonSchema: false }, messages, {
+        responseSchema,
+      });
       expect(requestBody).toEqual({
         model: "test-model",
         messages,
         temperature: 0.3,
       });
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe("chatCompletion structured-output attempt-then-fallback", () => {
+  const messages = [{ role: "user" as const, content: "Return a result" }];
+  const responseSchema = {
+    type: "object",
+    properties: { result: { type: "string" } },
+    required: ["result"],
+    additionalProperties: false,
+  };
+
+  beforeEach(() => {
+    _resetJsonSchemaSupportTrackerForTests();
+  });
+
+  test("a 4xx rejection of response_format falls back once, in the same call, without it", async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const { url, server } = createRequestServer((body) => {
+      requestBodies.push(body);
+      if (body.response_format) {
+        return Response.json({ error: "Unrecognized request argument: response_format" }, { status: 400 });
+      }
+      return Response.json({ choices: [{ message: { content: '{"result":"ok"}' } }] });
+    });
+    const config: LlmConnectionConfig = { endpoint: url, model: "test-model" };
+    try {
+      expect(isJsonSchemaKnownUnsupported(config)).toBe(false);
+      const result = await chatCompletion(config, messages, { responseSchema });
+      expect(result).toBe('{"result":"ok"}');
+      expect(requestBodies).toHaveLength(2);
+      expect(requestBodies[0]?.response_format).toBeDefined();
+      expect(requestBodies[1]?.response_format).toBeUndefined();
+      // Remembered in-memory for the rest of this process — never persisted.
+      expect(isJsonSchemaKnownUnsupported(config)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a subsequent call on the same connection skips straight to the no-schema request", async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const { url, server } = createRequestServer((body) => {
+      requestBodies.push(body);
+      if (body.response_format) {
+        return Response.json({ error: "unsupported" }, { status: 400 });
+      }
+      return Response.json({ choices: [{ message: { content: '{"result":"ok"}' } }] });
+    });
+    const config: LlmConnectionConfig = { endpoint: url, model: "test-model" };
+    try {
+      await chatCompletion(config, messages, { responseSchema });
+      requestBodies.length = 0;
+
+      await chatCompletion(config, messages, { responseSchema });
+      expect(requestBodies).toHaveLength(1);
+      expect(requestBodies[0]?.response_format).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a 429 does not trigger the schema fallback (it is a rate limit, not a schema rejection)", async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const { url, server } = createRequestServer((body) => {
+      requestBodies.push(body);
+      return Response.json({ error: "rate limited" }, { status: 429 });
+    });
+    const config: LlmConnectionConfig = { endpoint: url, model: "test-model" };
+    try {
+      await expect(chatCompletion(config, messages, { responseSchema })).rejects.toThrow(LlmCallError);
+      expect(requestBodies).toHaveLength(1);
+      expect(isJsonSchemaKnownUnsupported(config)).toBe(false);
     } finally {
       server.stop(true);
     }
@@ -206,79 +307,6 @@ describe("chatCompletion thinking controls", () => {
     try {
       await chatCompletion({ endpoint: url, model: "test-model", enableThinking: false }, messages);
       expect(warnings).toEqual([expect.stringContaining("returned 17 reasoning tokens despite enableThinking: false")]);
-    } finally {
-      server.stop(true);
-    }
-  });
-});
-
-describe("probeLlmCapabilities JSON Schema response", () => {
-  test("sends the exact schema wrapper required by vLLM and accepts the expected response", async () => {
-    let requestBody: Record<string, unknown> | undefined;
-    const { url, server } = createRequestServer((body) => {
-      requestBody = body;
-      const responseFormat = body.response_format as
-        | { type?: unknown; json_schema?: { name?: unknown; schema?: unknown; strict?: unknown } }
-        | undefined;
-      if (typeof responseFormat?.json_schema?.name !== "string") {
-        return Response.json(
-          { detail: [{ type: "missing", loc: ["body", "response_format", "json_schema", "name"] }] },
-          { status: 400 },
-        );
-      }
-      return Response.json({
-        choices: [{ message: { content: '{"ok":true,"ingest":true,"lint":true}' } }],
-      });
-    });
-    try {
-      const result = await probeLlmCapabilities({ endpoint: url, model: "test-model" });
-      expect(result).toEqual({ reachable: true, structuredOutput: true });
-      expect(requestBody).toEqual({
-        model: "test-model",
-        messages: [
-          {
-            role: "system",
-            content: "You return only valid JSON. No prose, no markdown fences.",
-          },
-          {
-            role: "user",
-            content: 'Return exactly this JSON object and nothing else: {"ok": true, "ingest": true, "lint": true}',
-          },
-        ],
-        temperature: 0,
-        max_tokens: 64,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "akm_response",
-            schema: {
-              type: "object",
-              properties: {
-                ok: { type: "boolean", const: true },
-                ingest: { type: "boolean", const: true },
-                lint: { type: "boolean", const: true },
-              },
-              required: ["ok", "ingest", "lint"],
-              additionalProperties: false,
-            },
-            strict: true,
-          },
-        },
-      });
-    } finally {
-      server.stop(true);
-    }
-  });
-
-  test("does not advertise structured output for a response that violates the probe schema", async () => {
-    const { url, server } = createRequestServer(() =>
-      Response.json({ choices: [{ message: { content: '{"ok":true,"ingest":true,"lint":false}' } }] }),
-    );
-    try {
-      await expect(probeLlmCapabilities({ endpoint: url, model: "test-model" })).resolves.toEqual({
-        reachable: true,
-        structuredOutput: false,
-      });
     } finally {
       server.stop(true);
     }

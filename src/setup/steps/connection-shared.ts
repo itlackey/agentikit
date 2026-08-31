@@ -12,7 +12,7 @@
 
 import * as p from "../../cli/clack";
 import type { LlmConnectionConfig } from "../../core/config/config";
-import { probeLlmCapabilities } from "../../llm/client";
+import { probeLlmReachable } from "../../llm/client";
 import type { LMStudioDetectionResult } from "../detect";
 import { prompt, promptOrBack } from "../prompt";
 
@@ -136,20 +136,18 @@ export async function promptApiKeyEnvVarName(): Promise<string | null> {
 // ── Probe ───────────────────────────────────────────────────────────────────
 
 /**
- * Best-effort structured-output probe — never blocks setup. Annotates
- * `llm.capabilities.structuredOutput` in place when the endpoint answers,
- * and warns (configuration is still saved) when it does not.
+ * Best-effort reachability probe — never blocks setup. Does NOT probe or
+ * cache structured-output support: `chatCompletion` now attempts
+ * `response_format: json_schema` fresh on every call that supplies a schema
+ * and falls back once per call on a 4xx (see `llm/client.ts`), so there is
+ * no verdict for setup to determine or persist here.
  */
 export async function probeLlmConnection(llm: LlmConnectionConfig): Promise<void> {
   const probeSpin = p.spinner();
-  probeSpin.start("Probing LLM (structured-output round-trip)...");
-  const probe = await probeLlmCapabilities(llm);
-  if (probe.reachable && probe.structuredOutput) {
-    probeSpin.stop("LLM reachable; structured output verified.");
-    llm.capabilities = { ...(llm.capabilities ?? {}), structuredOutput: true };
-  } else if (probe.reachable) {
-    probeSpin.stop("LLM reachable but structured-output probe failed.");
-    llm.capabilities = { ...(llm.capabilities ?? {}), structuredOutput: false };
+  probeSpin.start("Probing LLM connectivity...");
+  const probe = await probeLlmReachable(llm);
+  if (probe.reachable) {
+    probeSpin.stop("LLM reachable.");
   } else {
     probeSpin.stop("LLM not reachable.");
     p.log.warn(
