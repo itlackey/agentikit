@@ -47,7 +47,7 @@ import {
 } from "../../storage/repositories/index-entries-repository";
 import { searchFts } from "../../storage/repositories/index-fts-repository";
 import { getMeta } from "../../storage/repositories/index-meta-repository";
-import { searchVec } from "../../storage/repositories/index-vec-repository";
+import { getEmbeddingCount, searchVec } from "../../storage/repositories/index-vec-repository";
 import { getCurrentWorkflowScopeKey } from "../../workflows/authoring/scope-key";
 import { ensureIndex } from "../ensure-index";
 import { collectGraphRelatedHit, type GraphBoostContext, loadGraphBoostContext } from "../graph/graph-boost";
@@ -872,8 +872,12 @@ async function tryVecScores(
   config: AkmConfig,
 ): Promise<{ scores: Map<number, number> | null; warning?: string }> {
   if (config.semanticSearchMode === "off") return { scores: null };
-  const hasEmbeddings = getMeta(db, "hasEmbeddings");
-  if (hasEmbeddings !== "1") return { scores: null };
+  // A real-time completeness fact, not a cached verdict: skip the network
+  // round trip only when the index has never embedded anything. A PARTIAL
+  // failure (some entries embedded, one write degraded) still attempts —
+  // and if the endpoint is genuinely down, the failure surfaces as a live
+  // `semanticWarning` below instead of silently skipping with no signal.
+  if (getEmbeddingCount(db) === 0) return { scores: null };
 
   try {
     const { embed } = await import("../../llm/embedder.js");

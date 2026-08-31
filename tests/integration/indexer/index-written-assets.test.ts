@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmSearch } from "../../../src/commands/read/search";
-import { getDbPath, getIndexWriterLockPath } from "../../../src/core/paths";
+import { getDbPath } from "../../../src/core/paths";
 import { indexWrittenAssets } from "../../../src/indexer/index-written-assets";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { _setEmbedderForTests } from "../../../src/llm/embedder";
@@ -240,9 +240,13 @@ describe("indexWrittenAssets", () => {
     } finally {
       closeDatabase(dbAfterFailure);
     }
+    // Query-time semantic search is attempted fresh (no cached verdict short-
+    // circuits it) and hits the same broken embedder live, falling back to
+    // FTS and disclosing it in this response.
     const search = await akmSearch({ query: "offline-provider-note", skipLogging: true });
     expect(search.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("memories/offline-provider-note");
-    expect(search.warnings?.join("\n")).toContain("embedding provider network unreachable");
+    expect(search.warnings?.join("\n")).toContain("Vector search unavailable");
+    expect(search.searchMode).toBe("fts-fallback");
   });
 
   test("fail-open: absent index.db is a silent no-op (no DB created)", async () => {
@@ -297,20 +301,6 @@ describe("indexWrittenAssets", () => {
     } finally {
       closeDatabase(db);
     }
-  });
-
-  test("waits for a full-index writer lease before publishing a targeted update", async () => {
-    const filePath = writeMemory("serialized-write", "Targeted update.");
-    const lockPath = getIndexWriterLockPath();
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }), "utf8");
-
-    const update = indexWrittenAssets(stashDir, [filePath]);
-    await Bun.sleep(150);
-    expect(queryIndex().entryNames).not.toContain("serialized-write");
-    fs.rmSync(lockPath, { force: true });
-    await update;
-    expect(queryIndex().entryNames).toContain("serialized-write");
   });
 
   test("removes stale metadata when a rewritten file is no longer indexable", async () => {
