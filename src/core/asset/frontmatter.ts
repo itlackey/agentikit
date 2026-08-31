@@ -234,6 +234,122 @@ export function spliceFrontmatterLine(raw: string, line: string): string | null 
 }
 
 /**
+ * Strip one layer of matching quotes — frontmatter list items are often quoted
+ * refs. Written as an explicit char compare rather than a backreference regex
+ * on purpose: `scripts/lint-repository-sql.ts`'s comment/string stripper has no
+ * regex-literal awareness, so a literal holding an ODD number of quote
+ * characters desyncs its state machine and corrupts every match after it.
+ */
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return trimmed;
+  const first = trimmed[0];
+  if ((first === '"' || first === "'") && trimmed[trimmed.length - 1] === first) return trimmed.slice(1, -1);
+  return trimmed;
+}
+
+/**
+ * Remove specific VALUES from one frontmatter list key, preserving every other
+ * byte — the counterpart to {@link spliceFrontmatterLine} for the
+ * `akm lint --prune-dangling-edges` repair (#884).
+ *
+ * Handles the three spellings a belief channel appears in: a block sequence
+ * (`contradictedBy:\n  - a`), an inline flow (`contradictedBy: [a, b]`), and a
+ * bare scalar (`contradictedBy: a`). When every value under the key is removed
+ * the key itself goes too — an empty `contradictedBy: []` is not the same
+ * assertion as no edge at all.
+ *
+ * Returns the rewritten source, or `null` when `raw` has no well-formed
+ * frontmatter block or nothing matched, so the caller can leave the file
+ * untouched and report the finding unfixed. Deliberately source-preserving:
+ * these are user-authored memories, and a repair must not silently reformat
+ * the frontmatter it was not asked to touch.
+ */
+export function removeFrontmatterListValues(raw: string, key: string, values: readonly string[]): string | null {
+  const remove = new Set(values.map((v) => unquote(v)));
+  if (remove.size === 0) return null;
+
+  const lines = raw.split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") return null;
+  const closeIdx = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+  if (closeIdx === -1) return null;
+
+  const out: string[] = [];
+  let changed = false;
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index]!;
+    if (index === 0 || index >= closeIdx) {
+      out.push(line);
+      index += 1;
+      continue;
+    }
+
+    const kv = line.match(/^(\w[\w-]*):\s*(.*)$/);
+    if (kv === null || kv[1] !== key) {
+      out.push(line);
+      index += 1;
+      continue;
+    }
+
+    const rest = kv[2]!.trim();
+
+    // Inline flow: contradictedBy: [a, b]
+    const flow = rest.match(/^\[(.*)\]$/);
+    if (flow !== null) {
+      const kept = flow[1]!
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .filter((item) => !remove.has(unquote(item)));
+      const original = flow[1]!.split(",").filter((s) => s.trim().length > 0).length;
+      if (kept.length !== original) {
+        changed = true;
+        if (kept.length > 0) out.push(`${key}: [${kept.join(", ")}]`);
+      } else {
+        out.push(line);
+      }
+      index += 1;
+      continue;
+    }
+
+    // Bare scalar: contradictedBy: a
+    if (rest !== "") {
+      if (remove.has(unquote(rest))) changed = true;
+      else out.push(line);
+      index += 1;
+      continue;
+    }
+
+    // Block sequence: the key line, then `  - value` items.
+    const header = line;
+    const items: string[] = [];
+    let cursor = index + 1;
+    while (cursor < closeIdx) {
+      const itemMatch = lines[cursor]!.match(/^\s+-\s*(.*)$/);
+      if (itemMatch === null) break;
+      items.push(lines[cursor]!);
+      cursor += 1;
+    }
+    const kept = items.filter((item) => !remove.has(unquote(item.replace(/^\s*-\s*/, ""))));
+    if (kept.length !== items.length) {
+      changed = true;
+      if (kept.length > 0) {
+        out.push(header);
+        out.push(...kept);
+      }
+    } else {
+      out.push(header);
+      out.push(...items);
+    }
+    index = cursor;
+  }
+
+  return changed ? out.join("\n") : null;
+}
+
+/**
  * Parse a YAML scalar value (string, boolean, or number).
  *
  * For quoted strings (single or double), delegates to the `yaml` library so

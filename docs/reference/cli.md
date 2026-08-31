@@ -2032,7 +2032,9 @@ when one exists.
 Scan bundle markdown files for structural issues: unquoted colons, missing
 `updated` field, orphaned stubs, placeholder stubs, missing `name`/`type`,
 stale paths, and broken refs — in body text and in
-`refs`/`xrefs`/`supersededBy`/`contradictedBy` frontmatter. Also reports
+`refs`/`xrefs`/`supersededBy`/`contradictedBy` frontmatter. A belief edge
+pointing at a memory that `akm improve` pruned resolves through the archive
+tombstone under `.akm/memory-cleanup/archive/` and is not reported (#884). Also reports
 `dangerous-env-key` findings for env files (the same key set `akm bundle add`
 enforces — see [Dangerous env key audit](#dangerous-env-key-audit) — but
 non-blocking here; `lint` only warns). `--type workflows` structurally parses
@@ -2046,6 +2048,7 @@ akm lint --fix                  # Auto-fix Tier-1 issues in place
 akm lint --type workflows       # Only lint one asset type
 akm lint --dir ~/other-bundle    # Override the bundle root (default: from config)
 akm lint --fail-on-flagged      # CI-friendly: exit non-zero when summary.flagged > 0
+akm lint --prune-dangling-edges # Opt-in: drop belief edges whose target is gone
 ```
 
 | Flag | Description |
@@ -2054,6 +2057,7 @@ akm lint --fail-on-flagged      # CI-friendly: exit non-zero when summary.flagge
 | `--dir` | Override the bundle root directory (default: from config) |
 | `--type` | Only lint assets of this type (e.g. `workflows`, `tasks`, `memories`). **akm bundles only** — every other adapter validates the whole bundle and warns on stderr that the flag had no effect. |
 | `--fail-on-flagged` | Exit non-zero when `summary.flagged > 0`. Default: exit 0 regardless of findings. |
+| `--prune-dangling-edges` | Opt-in repair (#884): drop `supersededBy`/`contradictedBy` entries whose target has neither a file nor a prune tombstone. **Not** implied by `--fix` — it edits well-formed files to delete a belief-graph claim, so review a plain `akm lint` report first. Clears the same `writable: false` gate `--fix` does. |
 
 Returns `fixed[]` and `flagged[]` arrays plus a `summary: { fixed, flagged }`
 count. Each entry carries `file`, `issue`, `detail`, and whether it was

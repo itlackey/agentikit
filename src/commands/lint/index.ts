@@ -55,6 +55,12 @@ export interface AkmLintResult {
 
 export interface AkmLintOptions {
   fix?: boolean;
+  /**
+   * #884 opt-in repair: drop belief-channel entries whose target resolves to
+   * neither a live file nor a prune tombstone. Independent of `fix` — see the
+   * flag's rationale in `commands/agent/contribute-cli.ts`.
+   */
+  pruneDanglingEdges?: boolean;
   dir?: string;
   config?: AkmConfig;
   typeFilter?: string;
@@ -445,8 +451,8 @@ function assertFixTargetWritable(stashRoot: string, sources: SearchSource[]): vo
   // Same error kind and code `write-source.ts#ensureWritable` raises for the
   // identical refusal, so a scripted caller classifies both the same way.
   throw new UsageError(
-    `lint --fix: bundle "${stashRoot}" is configured \`writable: false\`; refusing to modify it. ` +
-      "Run `akm lint` without --fix to report findings, or set `writable: true` on the bundle.",
+    `lint: bundle "${stashRoot}" is configured \`writable: false\`; refusing to modify it. ` +
+      "Run `akm lint` without --fix / --prune-dangling-edges to report findings, or set `writable: true` on the bundle.",
     "INVALID_FLAG_VALUE",
   );
 }
@@ -593,7 +599,9 @@ function lintAkmSweep(
   options: AkmLintOptions,
 ): AkmLintResult {
   const fix = options.fix === true;
-  if (fix) assertFixTargetWritable(stashRoot, sources);
+  // #884: the dangling-edge repair writes too, so it clears the same
+  // read-only gate `--fix` does.
+  if (fix || options.pruneDanglingEdges === true) assertFixTargetWritable(stashRoot, sources);
   const fixed: LintIssue[] = [];
   const flagged: LintIssue[] = [];
   const warnings: LintIssue[] = [];
@@ -701,7 +709,18 @@ function lintAkmSweep(
         issues = [
           ...fileIssues,
           ...lintAssetFile(
-            { filePath, relPath, raw, data, body, frontmatter, fix, stashRoot, extraStashRoots },
+            {
+              filePath,
+              relPath,
+              raw,
+              data,
+              body,
+              frontmatter,
+              fix,
+              pruneDanglingEdges: options.pruneDanglingEdges === true,
+              stashRoot,
+              extraStashRoots,
+            },
             subdir,
           ),
         ];

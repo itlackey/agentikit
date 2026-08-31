@@ -38,8 +38,9 @@ import path from "node:path";
 import { isScalar, parseDocument } from "yaml";
 import { assetPathCandidatesForName, assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { BUNDLE_REF_RE } from "../../core/asset/asset-ref";
-import { spliceFrontmatterLine } from "../../core/asset/frontmatter";
+import { removeFrontmatterListValues, spliceFrontmatterLine } from "../../core/asset/frontmatter";
 import { checkUnquotedDescriptionColon } from "../../core/asset/frontmatter-lint";
+import { isArchivedRelPath } from "../../core/asset/memory-archive";
 import { typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { localDateStamp } from "../../core/common";
 import { findFenceRegions } from "./markdown-insertion";
@@ -202,6 +203,35 @@ export function refToRelPath(refType: string, refName: string): string | null {
 export function refExistsInAnyStash(relPath: string, refType: string, refName: string, stashRoots: string[]): boolean {
   for (const root of stashRoots) {
     if (resolveRefPathInStash(relPath, refType, refName, root) !== null) return true;
+  }
+  // #884: a memory pruned by `analyzeMemoryCleanup` was ARCHIVED, not deleted —
+  // its bytes and identity live on under `.akm/memory-cleanup/archive`. Inbound
+  // belief edges to it are satisfied, not dangling, so resolve the tombstone
+  // rather than reporting `missing-ref`. Checked only after every live location
+  // misses: a tombstone must never shadow a real file, and the scan then costs
+  // one directory read per root instead of one per ref.
+  //
+  // Existence ONLY. `resolveRefPathInStash` deliberately does NOT consult the
+  // archive: it hands back a path callers MUTATE (SPEC-5 `--supersedes`
+  // demotion), and writing into an archived tombstone would corrupt the audit
+  // record while leaving the live stash untouched.
+  return memoryArchiveHasRef(refType, refName, stashRoots);
+}
+
+/**
+ * True when `(refType, refName)` names a memory that prune archived in any
+ * root. Mirrors `resolveRefPathInStash`'s candidate set so a ref that resolved
+ * through the `.derived.md` twin (#882) still resolves once archived.
+ */
+function memoryArchiveHasRef(refType: string, refName: string, stashRoots: string[]): boolean {
+  if (refType !== "memory") return false; // only memories are ever archived
+  const typeDir = stashDirFor(refType);
+  if (typeDir === undefined) return false;
+  const candidates = assetPathCandidatesForName(refType, typeDir, refName);
+  for (const root of stashRoots) {
+    for (const candidate of candidates) {
+      if (isArchivedRelPath(candidate, root)) return true;
+    }
   }
   return false;
 }
@@ -405,6 +435,13 @@ function dedupeMissing(
  * excluded because it can point at merged-away or pruned assets.
  */
 const XREF_FRONTMATTER_KEYS = ["xrefs", "supersededBy", "contradictedBy"] as const;
+
+/**
+ * The belief-graph subset of {@link XREF_FRONTMATTER_KEYS} — the only channels
+ * `--prune-dangling-edges` will repair (#884). Typed as `readonly string[]` so
+ * `.includes` accepts any xref key without a cast.
+ */
+const BELIEF_EDGE_KEYS: readonly string[] = ["supersededBy", "contradictedBy"];
 
 /**
  * Return the `refs:` array from frontmatter when it is present and is an
@@ -633,12 +670,21 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
     }
   }
 
-  if (modified) {
-    // Mirrors the two stub-delete call sites in `commands/lint/index.ts`
-    // (`appendMemoryStubIssue`/`appendWorkflowStubIssue`), which already report
-    // a failed mutation as `fixed: "failed"` instead of throwing. Without this
-    // the sweep aborted mid-run on the first unwritable file and the caller got
-    // an exception instead of a result naming the fixes that HAD landed.
+  /**
+   * Flush accumulated mutations to disk. Called after the fixable checks above
+   * AND again at the very end, because the `missing-ref` section below can also
+   * mutate (`--prune-dangling-edges`, #884) and used to run PAST this point —
+   * its edits were computed and then silently dropped.
+   *
+   * Mirrors the two stub-delete call sites in `commands/lint/index.ts`
+   * (`appendMemoryStubIssue`/`appendWorkflowStubIssue`), which already report
+   * a failed mutation as `fixed: "failed"` instead of throwing. Without this
+   * the sweep aborted mid-run on the first unwritable file and the caller got
+   * an exception instead of a result naming the fixes that HAD landed.
+   */
+  const flushIfModified = (): void => {
+    if (!modified) return;
+    modified = false;
     try {
       fs.writeFileSync(ctx.filePath, currentRaw, "utf8");
       // Propagate the mutated raw back so subclasses can re-parse if needed
@@ -650,7 +696,9 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
         issue.detail = `${issue.detail} — could not write fix: ${reason}`;
       }
     }
-  }
+  };
+
+  flushIfModified();
 
   // ── 3. stale-path ──────────────────────────────────────────────────────
   // M3: checkStalePath returns all stale matches; push one issue per path.
@@ -673,6 +721,34 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
   }
 
   // ── 4. missing-ref ─────────────────────────────────────────────────────
+  const missingRefPass = runMissingRefChecks(ctx, currentRaw, shouldRun, pendingFixes);
+  issues.push(...missingRefPass.issues);
+  if (missingRefPass.modified) {
+    currentRaw = missingRefPass.raw;
+    modified = true;
+  }
+
+  flushIfModified();
+
+  return issues;
+}
+
+/**
+ * The `missing-ref` pass, extracted from {@link runBaseChecks} so that function
+ * stays under the src fn-size ratchet after #884 gave this pass its own
+ * (opt-in) mutation path. Pure move plus the explicit state hand-off: `raw` in,
+ * `{raw, modified}` out, `issues`/`pendingFixes` appended in place.
+ */
+function runMissingRefChecks(
+  ctx: LintContext,
+  raw: string,
+  shouldRun: (issueType: string) => boolean,
+  pendingFixes: LintIssue[],
+): { issues: LintIssue[]; raw: string; modified: boolean } {
+  const issues: LintIssue[] = [];
+  let currentRaw = raw;
+  let modified = false;
+  // ── 4. missing-ref ─────────────────────────────────────────────────────
   // Carve-out for assets that declare an explicit `refs:` array in
   // frontmatter (e.g. session-checkpoint memories captured by the
   // claude-code hook). The frontmatter array is the *authoritative*
@@ -687,7 +763,8 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
   // still run `checkMissingRefs` against the array itself to catch
   // refs that were valid at capture time but later removed from the
   // stash.
-  if (shouldRun("missing-ref")) {
+  if (!shouldRun("missing-ref")) return { issues, raw, modified };
+  {
     const explicitRefs = extractFrontmatterRefs(ctx.data, ctx.body);
     // An explicit `refs:` array is a REF LIST (each value is a whole ref —
     // short conceptIds included); a bare body is PROSE (anchored refs only).
@@ -729,6 +806,35 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
         const values = readRefStringOrArray(ctx.data?.[key]);
         if (values === null) continue;
         const missingXrefs = checkMissingRefsInList(values, ctx.stashRoot, ctx.extraStashRoots);
+
+        // #884 opt-in repair. Scoped to the BELIEF channels only: an edge whose
+        // target has neither a file nor a prune tombstone asserts a
+        // relationship to a memory that no longer exists in any form, and
+        // carrying it forward corrupts every belief-graph read. `xrefs` is
+        // excluded — a stale xref is an ordinary broken link (the 3 skill refs
+        // in #884), and repairing it by DELETION would throw away a pointer the
+        // author may simply need to re-target.
+        const repairable = ctx.pruneDanglingEdges === true && BELIEF_EDGE_KEYS.includes(key) && missingXrefs.length > 0;
+        if (repairable) {
+          const dropped = missingXrefs.map(({ ref }) => ref);
+          const rewritten = removeFrontmatterListValues(currentRaw, key, dropped);
+          if (rewritten !== null) {
+            currentRaw = rewritten;
+            modified = true;
+            for (const { ref, resolvedRelPath } of missingXrefs) {
+              const issue: LintIssue = {
+                file: ctx.relPath,
+                issue: "missing-ref",
+                detail: `dangling ${key} edge dropped: ${ref} (no file and no prune tombstone at ${resolvedRelPath})`,
+                fixed: true,
+              };
+              issues.push(issue);
+              pendingFixes.push(issue);
+            }
+            continue;
+          }
+        }
+
         for (const { ref, resolvedRelPath } of missingXrefs) {
           issues.push({
             file: ctx.relPath,
@@ -740,6 +846,5 @@ export function runBaseChecks(ctx: LintContext): LintIssue[] {
       }
     }
   }
-
-  return issues;
+  return { issues, raw: currentRaw, modified };
 }

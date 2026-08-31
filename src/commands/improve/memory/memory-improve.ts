@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { assembleAsset } from "../../../core/asset/asset-serialize";
 import { mutateFrontmatter, parseFrontmatter } from "../../../core/asset/frontmatter";
+import { MEMORY_ARCHIVE_REL } from "../../../core/asset/memory-archive";
 import { conceptIdFromTypeName } from "../../../core/asset/resolve-ref";
 import { asNonEmptyString, groupBy, stringArray } from "../../../core/common";
 import { DERIVED_SUFFIX } from "../../../core/recognition-util";
@@ -709,7 +710,7 @@ function priorBeliefStateForArchive(candidate: MemoryPruneCandidate): Exclude<Me
 
 function createArchiveDir(stashDir: string, ref: string, archivedAt: string): string {
   const baseName = `${archivedAt.replace(/[:.]/g, "-")}-${sanitizeRef(ref)}`;
-  const root = path.join(stashDir, ".akm", "memory-cleanup", "archive");
+  const root = path.join(stashDir, MEMORY_ARCHIVE_REL);
   fs.mkdirSync(root, { recursive: true });
   let attempt = 0;
   while (true) {
