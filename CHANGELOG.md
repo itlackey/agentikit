@@ -91,6 +91,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resolved by #866) and `env`-prefixed command conversion (resolved by
   #867).
 
+- **`akm task sync` no longer dead-ends on pre-0.9.2 crontab rows (#881).**
+  Rows written by v0.9.0/v0.9.1 carry no `--scheduler-context` marker, so
+  `extractCronInvocation` could not parse them. Sync therefore saw the task
+  as absent, tried to install it, and collided with the row that was still
+  physically present — permanently blocking sync for every task on any
+  install upgrading past v0.9.2. Such a row is now recognized and
+  reconciled. The fallback fires only when the marker is entirely absent
+  and only inside akm's own `# akm:task … BEGIN/END` sentinels, so a row
+  carrying the marker that fails to parse for any other reason is never
+  reinterpreted, and no ownership or cardinality assertion changed.
+
+- **`akm lint` validates `type:slug` xrefs instead of silently skipping
+  them (#882).** `typeNameFromConceptId` returns `undefined` for the colon
+  grammar, so `classifyConceptRef` treated those refs as "not a local ref"
+  and dropped them before validation — roughly half the xref channel on a
+  real corpus. Zero `missing-ref` findings read as "every reference is
+  healthy" when half had never been examined. akm still writes this
+  grammar today (`memory-contradiction-detect.ts` emits `contradictedBy:`
+  as `memory:<name>`), so it is a live channel, not legacy residue; it is
+  now accepted as a fallback in lint only, leaving the parser and write
+  paths on the single conceptId grammar.
+
+- **Refs to derived memories resolve (#882).** `assetPathCandidatesForName`
+  only ever offered `<name>.md`, so any ref to a memory stored as
+  `<name>.derived.md` failed to resolve — affecting the conceptId grammar
+  equally, and invisible until the above fix made these refs validatable.
+  `.derived` is a provenance marker on the same identity, not part of the
+  name, so `<name>.derived.md` is now a secondary candidate with plain
+  `<name>.md` still taking precedence when both exist. Fixed at the
+  resolution primitive, so write-time `--xref`/`--supersedes` validation
+  benefits as well.
+
 ### Removed
 
 - **The `frequent` and `memory-focus` improve strategies.** Zero recorded
