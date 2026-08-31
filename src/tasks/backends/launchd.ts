@@ -823,12 +823,6 @@ function captureLaunchdNamespacePass(
   for (const [nativeId] of plistEntries) ids.add(nativeId);
   for (const serviceLabel of loadedLabels) ids.add(serviceLabel.slice(LAUNCHD_LABEL_PREFIX.length));
   for (const serviceLabel of akmDisabledLabels) ids.add(serviceLabel.slice(LAUNCHD_LABEL_PREFIX.length));
-  if (ids.size > MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) {
-    throw new ConfigError(
-      `launchd AKM scheduler inventory exceeds ${MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES} namespace entries.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
   const plistByNativeId = new Map(plistEntries);
   const entries: LaunchdNamespaceEntry[] = [];
   for (const nativeId of [...ids].sort()) {
