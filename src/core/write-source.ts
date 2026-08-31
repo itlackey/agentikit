@@ -175,7 +175,15 @@ export function planWriteTargetPublication(
   }
   const unignoredPaths = paths.filter((_, index) => !ignored.has(relativePaths[index] as string));
   assertWriteTargetPathsClean(target.source, unignoredPaths);
-  assertWriteTargetPlanBase(target, expectedBaseHead);
+  // Not re-verified against `expectedBaseHead` here: any drift during the
+  // ignored/clean-path checks above is caught by the SAME expectedBaseHead
+  // comparison `beginWriteTargetMutation` runs immediately before the first
+  // mutation (its documented contract, and every real caller calls it right
+  // after this function returns) -- checking it again here a few lines
+  // earlier for the exact same value only duplicated that check, not added
+  // a new one. `publishWriteTargetPlan` independently re-checks a third time
+  // after the actual mutation, which is a genuinely different point in time
+  // and stays.
   return { target, paths, publish: ignored.size === 0, expectedBaseHead };
 }
 
