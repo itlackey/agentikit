@@ -222,18 +222,16 @@ function reserveFreshStateDatabase(dbPath: string): OwnedFileReservation | undef
     throw error;
   }
   try {
-    const reservation: OwnedFileReservation = {
+    return {
       path: dbPath,
       fd,
       identity: fs.fstatSync(fd, { bigint: true }),
     };
-    assertOwnedFileReservation(reservation, "Fresh state.db");
-    return reservation;
   } catch (error) {
     try {
       fs.closeSync(fd);
     } catch {
-      // Preserve the ownership failure.
+      // Preserve the fstat failure.
     }
     throw error;
   }
@@ -248,18 +246,16 @@ function openExistingStateDatabaseSource(dbPath: string): StateDatabaseSource {
     throw new Error(`Could not bind the existing state.db source inode: ${detail}`);
   }
   try {
-    const source: StateDatabaseSource = {
+    return {
       path: dbPath,
       fd,
       identity: fs.fstatSync(fd, { bigint: true }),
     };
-    assertStateDatabaseSource(source);
-    return source;
   } catch (error) {
     try {
       fs.closeSync(fd);
     } catch {
-      // Preserve the source identity failure.
+      // Preserve the fstat failure.
     }
     throw error;
   }
@@ -425,11 +421,7 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
     return openManagedDatabase({
       path: resolvedPath,
       pragmas: { dataDir: path.dirname(resolvedPath) },
-      init: (db) =>
-        runMigrations(db, {
-          freshDatabase: true,
-          verifyFreshDatabaseOwnership: () => {},
-        }),
+      init: (db) => runMigrations(db, { freshDatabase: true }),
     });
   }
   const isCanonical = path.resolve(resolvedPath) === path.resolve(canonicalPath);
@@ -444,12 +436,10 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
     freshReservation = reserveFreshStateDatabase(resolvedPath);
     if (!freshReservation) {
       existingSource = openExistingStateDatabaseSource(resolvedPath);
-      assertStateDatabaseSource(existingSource);
       const preflight = openDatabase(sqliteBoundFilePath(existingSource), {
         readonly: true,
       });
       try {
-        assertStateDatabaseSource(existingSource);
         preflight.exec("PRAGMA busy_timeout = 30000");
         const ledger = assertMigrationLedger(preflight, STATE_MIGRATIONS);
         existingUnversionedDatabase = ledger.migrationIds.length === 0;
@@ -463,19 +453,13 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
         preflight.close();
       }
     }
-    const ownedFresh = freshReservation;
     const boundSource = existingSource;
-    if (boundSource) assertStateDatabaseSource(boundSource);
     openedDb = openManagedDatabase({
       path: boundSource ? sqliteBoundFilePath(boundSource) : resolvedPath,
       pragmas: { dataDir: path.dirname(resolvedPath) },
       init: (db) => {
-        if (boundSource) assertStateDatabaseSource(boundSource);
         runMigrations(db, {
-          freshDatabase: !!ownedFresh,
-          verifyFreshDatabaseOwnership: ownedFresh
-            ? () => assertOwnedFileReservation(ownedFresh, "Fresh state.db")
-            : undefined,
+          freshDatabase: !!freshReservation,
           existingUnversionedDatabase,
           allowHistoricalDestructiveStateUpgrade: options?.allowHistoricalDestructiveStateUpgrade,
           beforeExistingUnversionedStateMigration: options?.allowHistoricalDestructiveStateUpgrade
@@ -499,12 +483,10 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
       },
     });
     if (existingSource) {
-      assertStateDatabaseSource(existingSource);
       closeFileIdentity(existingSource);
       existingSource = undefined;
     }
     if (freshReservation) {
-      assertOwnedFileReservation(freshReservation, "Fresh state.db");
       closeFileIdentity(freshReservation);
       freshReservation = undefined;
     }

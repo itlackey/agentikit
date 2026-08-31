@@ -1137,8 +1137,6 @@ export function getStateMigrationSafety(migrationId: string): StateMigrationSafe
 export interface RunStateMigrationsOptions {
   /** A file created by this same open; historical cleanup cannot remove operator state. */
   freshDatabase?: boolean;
-  /** Revalidates that the path still names the fresh file atomically reserved by this open. */
-  verifyFreshDatabaseOwnership?: () => void;
   /** An existing file whose preflight found no applied IDs, with the ledger absent or empty. */
   existingUnversionedDatabase?: boolean;
   /** Narrow intent owned by the successful `akm upgrade` post-install step. */
@@ -1187,22 +1185,10 @@ export function runMigrations(db: Database, options?: RunStateMigrationsOptions)
   runSqliteMigrations(db, STATE_MIGRATIONS, {
     lockInitialMigrationPrefixThrough: options?.existingUnversionedDatabase ? "002-task-history-per-run" : undefined,
     beforeLedgerInitializationLocked(lockedDb) {
-      if (options?.freshDatabase) {
-        if (!options.verifyFreshDatabaseOwnership) {
-          throw new Error("A fresh state.db migration requires verified file ownership.");
-        }
-        options.verifyFreshDatabaseOwnership();
-        return;
-      }
+      if (options?.freshDatabase) return;
       prepareExistingUnversionedState(lockedDb);
     },
     beforeMigrationLocked(migration, lockedDb) {
-      if (options?.freshDatabase) {
-        if (!options.verifyFreshDatabaseOwnership) {
-          throw new Error("A fresh state.db migration requires verified file ownership.");
-        }
-        options.verifyFreshDatabaseOwnership();
-      }
       if (options?.existingUnversionedDatabase && !existingUnversionedSnapshotPrepared) {
         prepareExistingUnversionedState(lockedDb);
       }
