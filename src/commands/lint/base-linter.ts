@@ -294,9 +294,28 @@ function scanBundleRefs(scanBody: string, allRoots: string[]): Array<{ ref: stri
  */
 function classifyConceptRef(rawConceptId: string, allRoots: string[]): string | null {
   const conceptId = rawConceptId.split("#", 1)[0]!;
-  const parts = typeNameFromConceptId(conceptId);
+  const parts = typeNameFromConceptId(conceptId) ?? legacyTypeSlugParts(conceptId);
   if (parts === undefined) return null; // foreign type / not a local asset ref
   return localRefMissingRelPath(parts.type, parts.name, allRoots);
+}
+
+/**
+ * Read-only fallback for the retired `type:slug` xref grammar (see
+ * resolve-ref.ts Q-02 — the write boundary no longer emits or accepts it).
+ * Stash content written before that retirement still carries it in frontmatter
+ * `xrefs:` lists, and `typeNameFromConceptId` (conceptId-only) returns
+ * `undefined` for it, so without this it was silently skipped rather than
+ * validated (#882). `refToRelPath`/`refExistsInAnyStash` already key off a bare
+ * `(type, slug)` pair — the same shape `type:slug` already is — so this only
+ * needs to split the token; no new resolution logic.
+ */
+function legacyTypeSlugParts(rawConceptId: string): { type: string; name: string } | undefined {
+  const colon = rawConceptId.indexOf(":");
+  if (colon <= 0) return undefined;
+  const type = rawConceptId.slice(0, colon);
+  const name = rawConceptId.slice(colon + 1);
+  if (!name || name.includes("/") || name.includes(":")) return undefined;
+  return stashDirFor(type) === undefined ? undefined : { type, name };
 }
 
 /**
