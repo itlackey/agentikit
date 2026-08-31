@@ -11,6 +11,9 @@
       "recommended": true,
       "suspicious": {
         "noExplicitAny": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "off"
       }
     }
   },
@@ -25,7 +28,9 @@
       "!tests/fixtures/format-family-goldens/**/*.json",
       "!.claude/**"
     ],
-    "experimentalScannerIgnores": [".claude"]
+    "experimentalScannerIgnores": [
+      ".claude"
+    ]
   },
   "overrides": [
     {
@@ -40,11 +45,25 @@
         "tests/integration/workflows/native-executor.test.ts",
         "tests/integration/workflows/conformance/conformance.test.ts"
       ],
-      "linter": { "rules": { "suspicious": { "noTemplateCurlyInString": "off" } } }
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noTemplateCurlyInString": "off"
+          }
+        }
+      }
     },
     {
-      "includes": ["scripts/lint-devto-posts.ts"],
-      "linter": { "rules": { "suspicious": { "noControlCharactersInRegex": "off" } } }
+      "includes": [
+        "scripts/lint-devto-posts.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noControlCharactersInRegex": "off"
+          }
+        }
+      }
     }
   ]
 }
