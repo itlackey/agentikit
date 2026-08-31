@@ -4,6 +4,111 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.6] - 2026-08-31
+
+The deletion release: **net −2,100 lines**, almost all of it machinery that
+gated, refused, verified, or cached a judgment. Nearly every guard removed
+here had **zero confirmed firings** across 38,341 production telemetry events,
+while several had already broken real installs.
+
+The standard applied is now written down in `AGENTS.md` (`## Defensive Code`):
+a guard survives only if it has demonstrably helped a real user, its failure
+mode costs less than the hazard it prevents, and the operation is not already
+gated behind a deliberate human command. "This hazard is conceivable" is not a
+justification.
+
+### Fixed
+
+- **Embedding no longer discards an entire index because one batch was too
+  big (#874).** Remote embeddings batched by document count (100) against a
+  fixed 30s timeout; a single oversized batch failed the whole phase, leaving
+  `embeddings` at 0 rows on a real 23,857-entry bundle and silently disabling
+  semantic search. Batching is now bounded by a token budget, failures are
+  skipped-and-reported per batch, and an oversized single document is a named
+  skip rather than a phase failure.
+- **`akm lint` no longer silently skips user directories named `.cache` or
+  `registry`.** Two name-based exclusion sites remained after the 0.9.5 fix, so
+  a bundle's own `knowledge/registry/` was never linted and reported clean.
+  Exclusion is now anchored to akm's resolved registry-cache path.
+- **One directory can no longer register as two bundles (#870).** When
+  `AKM_BUNDLE_DIR` pointed at a directory already configured under another id,
+  akm minted a second bundle for it; `akm migrate` then enumerated every task
+  file twice and failed with `duplicate task migration file path` (exit 70) —
+  permanently, while health checks kept passing. Bundle identity is now the
+  resolved content root (`path.resolve(entry.path, component.root ?? ".")`) at
+  both registration sites, existing duplicates reconcile instead of throwing,
+  and a genuinely irreconcilable pair reports both bundle ids and the shared
+  path.
+
+### Removed
+
+- **The index writer lease (#872).** It guarded a *regenerable cache*, had zero
+  lease events in telemetry, and a live-but-wedged holder stranded all indexing
+  for 12 hours — `probeLock` only reclaims a dead PID. It blocked legitimate
+  work twice in a single day of real use. `withAssetMutationLease` is **kept**
+  (it guards authored, git-backed asset writes) but its identical 12h
+  age-based stale reclaim is gone; only a verifiably-dead holder is reclaimed.
+- **`semantic-status.ts` and its cached `blocked` verdict (#873).** A failed
+  probe was persisted with a 24h TTL, and search consulted that verdict
+  *before attempting semantic search at all* — so one failure silently
+  disabled a working feature for a day. Semantic search now attempts per query
+  and falls back to FTS with a live warning. The remaining pre-flight check is
+  a real-time embedding count, not a stored judgment.
+- **The improve-lock 4h stale reclaim.** Same hole: `--skip-if-locked`
+  silently no-oped nightly `improve` for up to four hours and reported success.
+- **The persisted `supportsJsonSchema` capability cache**, which was never
+  invalidated by `akm config set`; a stale `true` sent `response_format:
+  json_schema` to an incompatible endpoint with no fallback (`isRetryable`
+  excludes 4xx). Replaced by attempt-then-fallback held in memory for the
+  process only. The config field survives as an explicit user override.
+- **Workflow authoring resource caps** — steps, params, route branches,
+  inputs, outputs, gate loops, retries, JSON depth/node, composition depth,
+  and exec argv/env caps. None ever fired; several duplicated OS limits.
+- **`LIFETIME_UNIT_CAP` (10,000)**, which hard-aborted workflows mid-run. The
+  maximum ever observed was 14 units.
+- **`state.db` open-path identity re-verification**, which ran on *every*
+  command and threw a bare `Error`.
+- **The task-source 1 MiB cap** at four sites, restating the `guarded-source`
+  cap already deleted in 0.9.5.
+- **TOCTOU identity checks** — `assertGitPublicationIdentity` (git's
+  `--force-with-lease` already covers it), `assertFrozenDirectoryIdentity`
+  (replaced with a path-containment recheck: containment and resolved-path
+  identity stay, device/inode comparison goes, so a remount or container
+  rebuild no longer aborts a dispatch), `assertTaskSourceExpectation`'s stat
+  fields (its content hash stays), and redundant repeat HEAD-generation
+  compares in `write-source`.
+- **`assertNotFlag`** on persona/system-prompt content; **`MAX_ENV_BYTES`**,
+  **`MAX_SECRET_BYTES`**, **`MAX_FEEDBACK_TAGS`**, **`MAX_CONFIG_FILE_BYTES`**,
+  model-map JSON budgets, memory-contradiction family caps, and two launchd /
+  schtasks re-checks that duplicated an existing fallback. `map.concurrency`
+  now clamps instead of rejecting a human-authored value.
+- **17 dead symbols**, including several whose docstrings described behavior
+  nothing implemented. Three "canonical" constants that call sites were
+  ignoring in favour of hardcoded literals were **wired in** rather than
+  deleted, closing the drift instead of removing the evidence of it.
+- **Speculative flexibility** — `AKM_ABLATE_CONTRIBUTORS` ablation plumbing
+  and the unexercised `graphBoost.confidenceMode` branches.
+
+### Changed
+
+- **Drifted duplicate implementations consolidated.** HTTP retry/backoff (the
+  generic copy's `Retry-After` parsing was unbounded and numeric-only; the
+  capped, date-aware one now applies everywhere), the child-process env
+  allowlist (the opencode-sdk copy was missing `AKM_EVENT_SOURCE` and the
+  Windows HOME equivalents), portable synchronous sleep (five call sites had
+  been silently taking the Node fallback instead of the Bun fast path), a
+  stacked LLM chunk retry, and a duplicate `isProcessAlive`.
+
+### Kept, deliberately
+
+Not everything unused is disposable. `isVecFastPathReady` stays: a partial
+`entries_vec` table does not throw, it silently returns wrong neighbours, so
+there is no error for a fallback to catch. `assertSupportedKind` stays: it has
+a proven independent bypass path and is the real last-line check, not a
+duplicate. The maintenance barrier and registry TTL cache stay. The four
+improve strategies with zero recorded invocations stay — that measures one
+install's cron schedule, not their worth.
+
 ## [0.9.5] - 2026-08-30
 
 ### Action required after upgrading
