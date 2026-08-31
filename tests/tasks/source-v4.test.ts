@@ -669,9 +669,12 @@ describe("task source v4 — version router (spec §3.4, D2-N2's exact routing t
   });
 
   // When the deterministic conversion itself cannot proceed (an unknown v3
-  // field, here), the shim yields no bytes and the gate falls back to the
-  // SAME hard failure it always had — the shim removes friction for the
-  // deterministic case, it never launders a genuinely invalid document.
+  // field, here), the shim yields no bytes and the gate falls back to a hard
+  // failure — the shim removes friction for the deterministic case, it never
+  // launders a genuinely invalid document. The message now names the
+  // migrator's own blocked reason (issue #869) rather than a generic
+  // "not accepted", since re-running the migrator would report the same
+  // block: a person has to resolve it, not the tool.
   test("version: 3 that the migration planner cannot convert still raises TASK_SCHEMA_VERSION_UNSUPPORTED", () => {
     const yaml = "version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\nbogus: true\n";
     const filePath = "/bundle/tasks/x.yml";
@@ -684,18 +687,17 @@ describe("task source v4 — version router (spec §3.4, D2-N2's exact routing t
     expect(error).toBeInstanceOf(UsageError);
     expect((error as UsageError).code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
     expect((error as UsageError).message).toBe(
-      `TASK_SCHEMA_VERSION_UNSUPPORTED: Task at ${filePath} uses task schema version 3, which this release does not accept.`,
+      `TASK_SCHEMA_VERSION_UNSUPPORTED: Task at ${filePath} uses task schema version 3 and needs a human decision before it can run — the deterministic migrator cannot convert it automatically (invalid-v3-task: unknown v3 field(s): bogus).`,
     );
     expect((error as UsageError).hint()).toBe(
-      "Run `akm migrate apply --dry-run` to preview the task-v3 to task-source-v4 conversion, then run `akm migrate apply`.",
+      "Review the file and resolve the ambiguity by hand, then it will convert normally; `akm migrate status` reports the same reason.",
     );
   });
 
   // Same fallback for v2: an argv-array `command:` has no portable shell
   // string (task-to-v3.ts's `argv-array-has-no-portable-shell-string`), so
-  // the chained shim yields no bytes and the same hard failure surfaces —
-  // with the SAME migrate hint version: 3 gets (one hint covers both
-  // starting points, since the migrator runs both generations).
+  // the chained shim yields no bytes and the same hard failure surfaces,
+  // naming that reason.
   test("version: 2 that the migration planner cannot convert still raises TASK_SCHEMA_VERSION_UNSUPPORTED", () => {
     const yaml = "version: 2\nschedule: '@daily'\ncommand: [echo, hi]\n";
     const filePath = "/bundle/tasks/legacy.yml";
@@ -708,10 +710,10 @@ describe("task source v4 — version router (spec §3.4, D2-N2's exact routing t
     expect(error).toBeInstanceOf(UsageError);
     expect((error as UsageError).code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
     expect((error as UsageError).message).toBe(
-      `TASK_SCHEMA_VERSION_UNSUPPORTED: Task at ${filePath} uses task schema version 2, which this release does not accept.`,
+      `TASK_SCHEMA_VERSION_UNSUPPORTED: Task at ${filePath} uses task schema version 2 and needs a human decision before it can run — the deterministic migrator cannot convert it automatically (argv-array-has-no-portable-shell-string).`,
     );
     expect((error as UsageError).hint()).toBe(
-      "Run `akm migrate apply --dry-run` to preview the task-v3 to task-source-v4 conversion, then run `akm migrate apply`.",
+      "Review the file and resolve the ambiguity by hand, then it will convert normally; `akm migrate status` reports the same reason.",
     );
   });
 
