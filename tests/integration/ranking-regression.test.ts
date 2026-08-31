@@ -124,7 +124,6 @@ function findHit(hits: SourceSearchHit[], name: string): SourceSearchHit | undef
 function expectHit(hits: SourceSearchHit[], name: string): SourceSearchHit {
   const hit = findHit(hits, name);
   expect(hit).toBeDefined();
-  // biome-ignore lint/style/noNonNullAssertion: guarded by expect above
   return hit!;
 }
 

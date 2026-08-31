@@ -1429,7 +1429,6 @@ async function finalizeProposalTransaction(
       paths: [commitPath],
       snapshots: p.gitSnapshots ?? {},
       onCommitRecorded: (commit) => {
-        // biome-ignore lint/style/noNonNullAssertion: publishWriteTargetTransaction throws when absent
         const publication = p.gitPublication!;
         if (publication.commit !== commit) {
           publication.commit = commit;

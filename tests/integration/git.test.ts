@@ -160,7 +160,6 @@ describe("GitSourceProvider", () => {
   test("provider exposes only the v1 SourceProvider surface (no search/show stubs)", () => {
     const factory = resolveSourceProviderFactory("git");
     expect(factory).toBeTruthy();
-    // biome-ignore lint/style/noNonNullAssertion: factory is guaranteed by the expect above
     const provider = factory!({
       type: "git",
       url: "https://github.com/andrewyng/context-hub",
@@ -180,7 +179,6 @@ describe("GitSourceProvider", () => {
   test("path() returns the same value across calls (lifetime stability)", () => {
     const factory = resolveSourceProviderFactory("git");
     expect(factory).toBeTruthy();
-    // biome-ignore lint/style/noNonNullAssertion: factory is guaranteed by the expect above
     const provider = factory!({
       type: "git",
       url: "https://github.com/andrewyng/context-hub",

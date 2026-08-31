@@ -193,7 +193,6 @@ describe("recordImproveRunResult", () => {
       expect(rows[0]!.started_at).toBe(startedAt);
       // completed_at is set to now() at write time — must be >= started_at
       expect(rows[0]!.completed_at).not.toBeNull();
-      // biome-ignore lint/style/noNonNullAssertion: asserted not-null on the line above
       expect(new Date(rows[0]!.completed_at!).getTime()).toBeGreaterThanOrEqual(
         new Date(rows[0]!.started_at).getTime(),
       );
@@ -218,7 +217,6 @@ describe("recordImproveRunResult", () => {
       const storedStart = new Date(rows[0]!.started_at).getTime();
       expect(Math.abs(storedStart - past.getTime())).toBeLessThan(1000);
       // completed_at must be after started_at
-      // biome-ignore lint/style/noNonNullAssertion: completed_at is always set on successful writes
       expect(new Date(rows[0]!.completed_at!).getTime()).toBeGreaterThan(storedStart);
     } finally {
       dataSb.cleanup();
