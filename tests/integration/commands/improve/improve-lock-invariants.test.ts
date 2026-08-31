@@ -11,10 +11,10 @@
  *      returns to baseline (no accumulation across runs).
  *   3. A stale lock (dead holder pid) is recovered: the run proceeds and an
  *      `improve_lock_recovered` event is emitted.
- *   4. A stale lock whose holder pid is still ALIVE but whose mtime has aged
- *      past the run's derived `lockStaleAfterMs` is recovered too, with
- *      `reason: "age_exceeded"` — and, as the negative control, a fresh lock
- *      with the same live holder is NOT recovered.
+ *   4. A lock whose holder pid is still ALIVE is NEVER recovered, no matter how
+ *      old the sentinel's mtime is (#872-shaped hazard: an age-based
+ *      stale-reclaim window let a live-but-wedged holder's lease be silently
+ *      taken away purely because a clock elapsed — removed, no replacement).
  *
  * Driven entirely in-process through akmImprove.
  */
@@ -23,7 +23,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmImprove } from "../../../../src/commands/improve/improve";
-import { MIN_IMPROVE_LOCK_STALE_MS } from "../../../../src/commands/improve/locks";
 import { isProcessAlive } from "../../../../src/core/common";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { saveConfig } from "../../../../src/core/config/config";
@@ -33,22 +32,11 @@ import { type Cleanup, withIsolatedAkmStorage } from "../../../_helpers/sandbox"
 const TIMEOUT_MS = 20_000;
 
 /**
- * How far to backdate the planted lock for the age-reclaim test.
- *
- * The threshold under test is NOT passed in by the test — `akmImprove` derives
- * it itself at `src/commands/improve/improve.ts:529` as
- * `max(MIN_IMPROVE_LOCK_STALE_MS, budgetMs + 10min)`, and these runs use the
- * default budget, so the 4h floor binds. Three times the real floor constant
- * clears that comfortably while staying expressed in production terms.
- */
-const AGE_EXCEEDED_LOCK_AGE_MS = MIN_IMPROVE_LOCK_STALE_MS * 3;
-
-/**
  * Plant an improve lock owned by a real, foreign, genuinely LIVE pid (our parent
  * process — alive for the whole run and never equal to `process.pid`), aged by
- * `ageMs`. `probeLock` checks liveness before age
- * (`src/core/file-lock.ts:205-210`), so this sentinel can only ever be
- * classified stale through the age branch, never `pid_dead`.
+ * `ageMs`. The improve-lock acquire path calls `probeLock` with no
+ * `staleAfterMs`, so a live holder is always classified `held`, regardless of
+ * `ageMs` — `ageMs` exists only to prove age is irrelevant.
  */
 function plantLiveHolderImproveLock(lockDir: string, ageMs: number): { lockPath: string; holderPid: number } {
   const lockPath = path.join(lockDir, ".akm", "improve.lock");
@@ -152,34 +140,26 @@ describe("akm improve — whole-run lock invariants", () => {
   );
 
   test(
-    "an age-expired lock whose holder is still alive is recovered as age_exceeded",
+    "a very old lock whose holder is still alive is NEVER recovered (#872: no age-based reclaim)",
     async () => {
-      // Regression (#757): the companion to the pid_dead test above. Here the
-      // holder is genuinely alive — an improve run that overran its own budget
-      // — and only the lock's age makes it reclaimable. No staleAfterMs is
-      // supplied by the test: akmImprove derives the real budget-based
-      // threshold internally (improve.ts:529).
-      const { lockPath, holderPid } = plantLiveHolderImproveLock(stashDir, AGE_EXCEEDED_LOCK_AGE_MS);
+      // #872 removed the index-writer lease's 12h age-based stale-reclaim
+      // window because a live-but-wedged holder passed the PID-liveness check
+      // forever, so only the age clock could ever free it. The improve lock
+      // shared the same primitive and the same hazard (#757 previously
+      // exercised the age-reclaim path here) — this pins the opposite,
+      // corrected invariant: however old the sentinel's mtime, a genuinely
+      // live holder's lock is never taken away from it.
+      const { lockPath, holderPid } = plantLiveHolderImproveLock(stashDir, 24 * 60 * 60 * 1000);
       expect(isProcessAlive(holderPid)).toBe(true);
       expect(holderPid).not.toBe(process.pid);
 
-      const result = await akmImprove({ scope: "memory", stashDir, config: quietConfig() });
-      expect(result.ok).toBe(true);
+      await expect(akmImprove({ scope: "memory", stashDir, config: quietConfig() })).rejects.toThrow(
+        /akm improve is already running/,
+      );
 
-      const recovered = readEvents().events.filter((e) => e.eventType === "improve_lock_recovered");
-      expect(recovered.length).toBe(1);
-      const metadata = recovered[0]?.metadata ?? {};
-      expect(metadata.lockName).toBe("improve");
-      expect(metadata.reason).toBe("age_exceeded");
-      expect(metadata.stalePid).toBe(holderPid);
-      // The dispossessed holder was still running when its lock was taken —
-      // exactly the live-writer double-grant this regression pins.
-      expect(isProcessAlive(metadata.stalePid as number)).toBe(true);
-      expect(metadata.lockAgeMs as number).toBeGreaterThanOrEqual(MIN_IMPROVE_LOCK_STALE_MS);
-
-      // The planted sentinel was replaced, then released by the run that took it.
-      expect(fs.existsSync(lockPath)).toBe(false);
-      expect(lockFilesOnDisk()).toEqual([]);
+      expect(readEvents().events.filter((e) => e.eventType === "improve_lock_recovered")).toEqual([]);
+      // The live holder's sentinel survives untouched.
+      expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid).toBe(holderPid);
     },
     TIMEOUT_MS,
   );
@@ -187,9 +167,6 @@ describe("akm improve — whole-run lock invariants", () => {
   test(
     "a fresh lock whose holder is still alive is not recovered",
     async () => {
-      // Negative control for the test above: identical live foreign holder,
-      // identical code path, only the age differs. Without this, an
-      // implementation that reclaimed every contended lock would still pass.
       const { lockPath, holderPid } = plantLiveHolderImproveLock(stashDir, 0);
 
       await expect(akmImprove({ scope: "memory", stashDir, config: quietConfig() })).rejects.toThrow(
