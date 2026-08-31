@@ -107,20 +107,6 @@ function withMaintenanceStartBarrierSyncWait<T>(run: () => T): T {
   }
 }
 
-/** Register a long-lived state operation atomically with other start acquisitions. */
-export async function acquireMaintenanceActivity(name: string): Promise<() => void> {
-  return withMaintenanceStartBarrierAsync(async () => {
-    const directory = path.join(path.dirname(getMaintenanceBarrierPath()), "maintenance-activities");
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-    const lockPath = path.join(directory, `${name}-${process.pid}-${randomUUID()}.lock`);
-    const ownership = tryAcquireLockSync(lockPath, createLockPayload({ purpose: name }));
-    if (!ownership) {
-      throw new ConfigError(`Could not register AKM maintenance activity at ${lockPath}.`, "INVALID_CONFIG_FILE");
-    }
-    return () => releaseLock(ownership);
-  });
-}
-
 /** Synchronous activity registration for synchronous database handle lifetimes. */
 export function acquireMaintenanceActivitySync(name: string): () => void {
   return withMaintenanceStartBarrierSyncWait(() => {
