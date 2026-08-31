@@ -11,7 +11,7 @@ import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
 import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-params";
 import { WORKFLOW_ENV_VAR_NAME_PATTERN, WORKFLOW_MAX_TIMEOUT_MS } from "../../workflows/resource-limits";
 import { validateTaskId } from "../task-id";
-import { assertBoundedTaskYamlDocument, TASK_V3_MAX_REDACT_NAMES, TASK_V3_MAX_SOURCE_BYTES } from "./bounded-document";
+import { assertBoundedTaskYamlDocument, TASK_V3_MAX_REDACT_NAMES } from "./bounded-document";
 import { classifyTaskV3Uses, parseTaskV3Yaml, type TaskV3UsesTarget } from "./task-source-v3-frozen";
 import { parseTaskSourceV4 } from "./task-source-v4";
 
@@ -196,9 +196,6 @@ function optionalString(value: unknown, label: string): string | undefined {
 }
 
 function parseLegacyTaskYaml(input: TaskToV3FileInput): { data: Record<string, unknown>; source: string } {
-  if (input.bytes.byteLength > TASK_V3_MAX_SOURCE_BYTES) {
-    throw new Error(`task YAML exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) source resource limit`);
-  }
   let source: string;
   try {
     source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(input.bytes);

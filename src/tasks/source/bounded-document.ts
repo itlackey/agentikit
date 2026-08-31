@@ -58,7 +58,6 @@ import { WORKFLOW_ENV_VAR_NAME_PATTERN } from "../../workflows/resource-limits";
 
 // ── Resource bounds (D2-N4: owned here, re-exported by source-v3.ts) ───────
 
-export const TASK_V3_MAX_SOURCE_BYTES = 1024 * 1024;
 export const TASK_V3_MAX_JSON_DEPTH = 64;
 export const TASK_V3_MAX_JSON_NODES = 10_000;
 export const TASK_V3_MAX_COLLECTION_ITEMS = 1024;
@@ -530,12 +529,6 @@ export function readBoundedTaskSourceYaml(
   if (typeof input.yaml !== "string") {
     throw new UsageError(
       `Invalid ${sourceLabel} at ${input.filePath}: source must be a string.`,
-      "TASK_SOURCE_INVALID",
-    );
-  }
-  if (utf8Bytes(input.yaml) > TASK_V3_MAX_SOURCE_BYTES) {
-    throw new UsageError(
-      `Invalid ${sourceLabel} at ${input.filePath}: source exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) resource limit.`,
       "TASK_SOURCE_INVALID",
     );
   }

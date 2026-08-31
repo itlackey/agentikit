@@ -20,7 +20,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { LineCounter, parseDocument, stringify as stringifyYaml } from "yaml";
-import { assertBoundedTaskYamlDocument, TASK_V3_MAX_SOURCE_BYTES } from "./bounded-document";
+import { assertBoundedTaskYamlDocument } from "./bounded-document";
 import { classifyTaskV3Uses, type TaskV3UsesTarget } from "./task-source-v3-frozen";
 import { parseTaskSourceV4 } from "./task-source-v4";
 
@@ -182,9 +182,6 @@ function exactString(value: unknown, label: string, nonempty = false): string {
  * away (C-N1).
  */
 function parseV3RawYaml(input: TaskToV4FileInput): { data: Record<string, unknown>; source: string } {
-  if (input.bytes.byteLength > TASK_V3_MAX_SOURCE_BYTES) {
-    throw new Error(`task YAML exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) source resource limit`);
-  }
   let source: string;
   try {
     source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(input.bytes);

@@ -84,7 +84,7 @@ import {
 } from "../../tasks/scheduler-sync-preview";
 import { parseTaskSource } from "../../tasks/source/parse-task-source";
 import { projectTaskSourceV4 } from "../../tasks/source/project-v4";
-import { TASK_V3_MAX_SOURCE_BYTES, type TaskV3SourceDocument } from "../../tasks/source-v3";
+import type { TaskV3SourceDocument } from "../../tasks/source-v3";
 import { normaliseTaskConceptId, normaliseTaskId } from "../../tasks/task-id";
 import { applyAutonomyGate, configuredDirectAutonomyLanes, describeGatedLanes } from "../improve/autonomy-gate";
 import { resolveImproveStrategy } from "../improve/improve-strategies";
@@ -1427,12 +1427,6 @@ function captureTaskSourceExpectation(filePathInput: string, rootInput: string):
     const before = fs.fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) {
       throw new UsageError(`${filePath} is not a regular task source.`, "INVALID_FLAG_VALUE");
-    }
-    if (before.size > BigInt(TASK_V3_MAX_SOURCE_BYTES)) {
-      throw new UsageError(
-        `${filePath} exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) task source limit.`,
-        "INVALID_FLAG_VALUE",
-      );
     }
     const bytes = fs.readFileSync(descriptor);
     const after = fs.fstatSync(descriptor, { bigint: true });

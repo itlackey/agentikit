@@ -52,7 +52,6 @@ import { UsageError } from "../../src/core/errors";
 import {
   assertBoundedTaskYamlDocument,
   sourceError,
-  TASK_V3_MAX_SOURCE_BYTES,
   TASK_V3_MAX_STRING_BYTES,
 } from "../../src/tasks/source/bounded-document";
 import { parseTaskSource } from "../../src/tasks/source/parse-task-source";
@@ -265,11 +264,6 @@ describe("task source v4 hostile input and resource bounds", () => {
     "? [complex, key]\n: value\nversion: 4\nuses: commands/a\n",
   ])("rejects hostile YAML without expanding it", (yaml) => {
     expect(() => parseTaskSourceV4({ yaml, filePath: "/bundle/tasks/hostile.yml" })).toThrow();
-  });
-
-  test("rejects source bytes above the published bound before YAML expansion", () => {
-    const yaml = `version: 4\nuses: commands/a\n#${"x".repeat(TASK_V3_MAX_SOURCE_BYTES)}`;
-    expect(() => parseTaskSourceV4({ yaml, filePath: "/bundle/tasks/large.yml" })).toThrow(/resource|bytes|MiB/i);
   });
 
   test("bounds YAML depth, mapping width, and aggregate AST nodes before toJS", () => {

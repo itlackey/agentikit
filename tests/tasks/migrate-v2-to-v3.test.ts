@@ -9,7 +9,6 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { parseTaskV3Yaml } from "../../src/tasks/source/task-source-v3-frozen";
 import { planTaskToV3File, planTaskToV3Migration, type TaskToV3FileInput } from "../../src/tasks/source/task-to-v3";
-import { TASK_V3_MAX_SOURCE_BYTES } from "../../src/tasks/source-v3";
 import {
   assertFixtureBytesUnchanged,
   captureFixtureBytes,
@@ -243,13 +242,7 @@ describe("pure task v2 to v3 migration planner", () => {
     });
   });
 
-  test("rejects oversized and deeply nested v2 YAML at the source boundary before conversion", () => {
-    const oversized = planTaskToV3File(
-      memoryInput(`version: 2\nschedule: '@daily'\nprompt: hello\n#${"x".repeat(TASK_V3_MAX_SOURCE_BYTES)}`),
-    );
-    expect(oversized).toMatchObject({ status: "blocked", reason: "invalid-task-yaml" });
-    expect(oversized.detail).toMatch(/bytes|MiB|resource/i);
-
+  test("rejects deeply nested v2 YAML at the source boundary before conversion", () => {
     let nested = "leaf: value\n";
     for (let index = 0; index < 70; index += 1) nested = `level${index}:\n${nested.replace(/^/gm, "  ")}`;
     const deep = planTaskToV3File(
