@@ -263,11 +263,7 @@ describe("embedded-plan integrity at decode (A-20…A-23, §2.7)", () => {
     }
   });
 
-  test("a chain nested to exactly the composition depth bound (8 descendant levels) decodes; one level deeper (9) fails decode", () => {
-    // WORKFLOW_MAX_COMPOSITION_DEPTH is 8 (spec §4.5) — the constant itself
-    // lives in src/workflows/resource-limits.ts, added by Lane B in a later
-    // commit; this file owns decode only, so the value is reproduced here
-    // (matching §4.5) rather than imported across the lane boundary.
+  test("a chain nested past the former composition depth bound (10 descendant levels) still decodes — depth is unbounded at decode time", () => {
     function buildNestedRootPlan(descendantLevels: number): unknown {
       let plan: unknown = freshUnitPlan("workflows/nest-leaf.md");
       for (let level = 0; level < descendantLevels; level++) {
@@ -284,11 +280,9 @@ describe("embedded-plan integrity at decode (A-20…A-23, §2.7)", () => {
       return plan;
     }
 
-    const atLimit = buildNestedRootPlan(8);
-    const overLimit = buildNestedRootPlan(9);
+    const deep = buildNestedRootPlan(10);
 
-    expect(() => decodeWorkflowPlanV4(atLimit)).not.toThrow();
-    expect(() => decodeWorkflowPlanV4(overLimit)).toThrow(UsageError);
+    expect(() => decodeWorkflowPlanV4(deep)).not.toThrow();
   });
 
   test("an unknown frozenTarget.kind still fails with the existing closed-kind message shape (A-24, PRESERVE)", () => {

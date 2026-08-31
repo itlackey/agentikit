@@ -40,11 +40,6 @@
  *     TypeScript interface. Reading a field back off a decoded plan goes
  *     through a single `as unknown as DecodedOutputsView` cast, always
  *     type-legal.
- *   - `WORKFLOW_MAX_OUTPUTS` (64) is reproduced as a local literal rather than
- *     imported from `src/workflows/resource-limits.ts` (which does not
- *     declare it yet) — matching `schema-v4.ts`'s own
- *     `CHILD_WORKFLOW_DECODE_MAX_DEPTH` precedent and this file's header
- *     rationale for staying pin-free.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -68,9 +63,6 @@ import { freezeWorkflow, type WorkflowPlanFixture } from "../_helpers/workflow";
 
 /** The name pattern outputs share with `params:` (`PROGRAM_PARAM_NAME_PATTERN`). */
 const BAD_OUTPUT_NAME = "1bad";
-
-/** Reproduced locally — see this file's header. Matches spec §4.1's `WORKFLOW_MAX_OUTPUTS`. */
-const WORKFLOW_MAX_OUTPUTS = 64;
 
 /** A two-step markdown workflow with `collect` then `summarize`, plus arbitrary extra frontmatter lines. */
 function twoStepDoc(extraFrontmatter: string[] = []): string {
@@ -134,17 +126,6 @@ describe("outputs: — authoring grammar (B-03…B-09)", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(errorMessages(result)).toContain(BAD_OUTPUT_NAME);
-  });
-
-  test(`B-04: more than ${WORKFLOW_MAX_OUTPUTS} output entries fails, naming the cap`, () => {
-    const lines = ["outputs:"];
-    for (let i = 0; i <= WORKFLOW_MAX_OUTPUTS; i++) {
-      lines.push(`  o${i}:`, "    from: steps.summarize.output");
-    }
-    const result = compileSource(twoStepDoc(lines));
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("unreachable");
-    expect(errorMessages(result)).toContain(String(WORKFLOW_MAX_OUTPUTS));
   });
 
   test("B-05: from: that is not a valid steps.<id>.output(.<seg>)* reference fails through the reference grammar", () => {

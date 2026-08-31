@@ -330,38 +330,20 @@ describe("builders — argument injection guards", () => {
   // identical call and assertion as the "getCommandBuilder — platform
   // routing" describe block's `getCommandBuilder("unknown")` test at :284-287.
 
-  test("opencodeBuilder: throws UsageError when model starts with '--'", async () => {
+  test("opencodeBuilder: a model/systemPrompt starting with '--' is passed through, not rejected", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const builder = getCommandBuilder("opencode");
     const profile = makeOpencodeProfile();
-    expect(() => builder.build(profile, { prompt: "task", model: "--evil-flag" })).toThrow(
-      /model must not start with "--"/,
-    );
+    expect(() =>
+      builder.build(profile, { prompt: "task", model: "--evil-flag", systemPrompt: "--injected-flag value" }),
+    ).not.toThrow();
   });
 
-  test("claudeBuilder: throws UsageError when model starts with '--'", async () => {
+  test("claudeBuilder: a model/systemPrompt starting with '--' is passed through, not rejected", async () => {
     const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
     const builder = getCommandBuilder("claude");
     const profile = makeClaudeProfile();
-    expect(() => builder.build(profile, { prompt: "task", model: "--evil" })).toThrow(/model must not start with "--"/);
-  });
-
-  test("opencodeBuilder: throws UsageError when systemPrompt starts with '--'", async () => {
-    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
-    const builder = getCommandBuilder("opencode");
-    const profile = makeOpencodeProfile();
-    expect(() => builder.build(profile, { prompt: "task", systemPrompt: "--injected-flag value" })).toThrow(
-      /systemPrompt must not start with "--"/,
-    );
-  });
-
-  test("claudeBuilder: throws UsageError when systemPrompt starts with '--'", async () => {
-    const { getCommandBuilder } = await import("../../src/integrations/agent/builders");
-    const builder = getCommandBuilder("claude");
-    const profile = makeClaudeProfile();
-    expect(() => builder.build(profile, { prompt: "task", systemPrompt: "--injected" })).toThrow(
-      /systemPrompt must not start with "--"/,
-    );
+    expect(() => builder.build(profile, { prompt: "task", model: "--evil", systemPrompt: "--injected" })).not.toThrow();
   });
 
   // "unknown platforms fail before accepting model flags" (D10) removed:

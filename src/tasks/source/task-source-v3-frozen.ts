@@ -45,11 +45,7 @@ import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
 import { UsageError } from "../../core/errors";
 import { checkJsonSchemaDefinition } from "../../core/json-schema";
 import type { ExecutionJsonObject, ExecutionJsonValue } from "../../execution/json";
-import {
-  WORKFLOW_ENV_VAR_NAME_PATTERN,
-  WORKFLOW_MAX_EXEC_PASS_ENV,
-  WORKFLOW_MAX_RETRIES,
-} from "../../workflows/resource-limits";
+import { WORKFLOW_ENV_VAR_NAME_PATTERN } from "../../workflows/resource-limits";
 import {
   asRecord,
   type BoundedDocumentContext,
@@ -65,6 +61,7 @@ import {
   readBoundedTaskSourceYaml,
   sourceError,
   stringField,
+  TASK_V3_MAX_REDACT_NAMES,
   TASK_V3_MAX_SCHEDULES,
   validateWorkingDirectory,
 } from "./bounded-document";
@@ -264,7 +261,7 @@ function parseAkm(value: ExecutionJsonValue, ctx: ParseContext): Readonly<TaskV3
   if (own(input, "timeout")) out.timeout = parseTimeout(input.timeout, ctx);
   if (own(input, "redact")) {
     const names = parseStringArray(input.redact, ctx, ["akm", "redact"], {
-      max: WORKFLOW_MAX_EXEC_PASS_ENV,
+      max: TASK_V3_MAX_REDACT_NAMES,
       pattern: WORKFLOW_ENV_VAR_NAME_PATTERN,
     });
     if (new Set(names).size !== names.length) sourceError(ctx, ["akm", "redact"], "must not contain duplicate names.");
@@ -277,12 +274,8 @@ function parseAkm(value: ExecutionJsonValue, ctx: ParseContext): Readonly<TaskV3
     out.maxSteps = input.maxSteps;
   }
   if (own(input, "maxRetries")) {
-    if (
-      !Number.isSafeInteger(input.maxRetries) ||
-      (input.maxRetries as number) < 0 ||
-      (input.maxRetries as number) > WORKFLOW_MAX_RETRIES
-    ) {
-      sourceError(ctx, ["akm", "maxRetries"], `must be an integer from 0 through ${WORKFLOW_MAX_RETRIES}.`);
+    if (!Number.isSafeInteger(input.maxRetries) || (input.maxRetries as number) < 0) {
+      sourceError(ctx, ["akm", "maxRetries"], "must be a non-negative safe integer.");
     }
     out.maxRetries = input.maxRetries;
   }

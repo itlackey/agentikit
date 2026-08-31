@@ -15,7 +15,6 @@
  * their previous home in `builders.ts`.
  */
 
-import { UsageError } from "../../core/errors";
 import type { ExecutionJsonObject } from "../../execution/json";
 import type { LoweringNotice, ResolvedExecutionRequestV1 } from "../../execution/resolved-request";
 import type { ShowResponse } from "../../sources/types";
@@ -152,22 +151,6 @@ export interface AgentCommandBuilder {
    * the abstract dispatch request. Returns argv + optional env/stdin overrides.
    */
   build(profile: AgentProfile, request: AgentDispatchRequest): BuiltCommand;
-}
-
-/**
- * Guard against values that start with `--`, which would be mis-interpreted as
- * CLI flags by the spawned process when used as flag values (model, systemPrompt).
- * Bun.spawn uses array argv so there is no shell injection, but a `--`-prefixed
- * value passed as the argument to `--model` or `--system-prompt` can still
- * confuse the CLI parser of the target process.
- */
-export function assertNotFlag(value: string | undefined, field: string): void {
-  if (value?.trimStart().startsWith("--")) {
-    throw new UsageError(
-      `${field} must not start with "--": ${JSON.stringify(value.slice(0, 60))}`,
-      "INVALID_FLAG_VALUE",
-    );
-  }
 }
 
 /**

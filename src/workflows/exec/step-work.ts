@@ -37,7 +37,7 @@ import {
   type ResolveReferenceResult,
   resolveReferenceString,
 } from "../program/expressions";
-import { clip, WORKFLOW_MAX_MAP_EXPANSION, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
+import { clip, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 import {
   completeWorkflowStep,
   isTruncatedEvidence,
@@ -212,9 +212,6 @@ export type ComputeWorkListResult = { ok: true; list: StepWorkList } | { ok: fal
  * deterministically, before dispatch.
  */
 function validateFanOutItems(stepId: string, items: unknown[]): string | undefined {
-  if (items.length > WORKFLOW_MAX_MAP_EXPANSION) {
-    return `Step "${stepId}" fan-out expands to ${items.length} units, exceeding the ${WORKFLOW_MAX_MAP_EXPANSION}-unit resource limit.`;
-  }
   const nullIndex = items.findIndex((item) => item === null || item === undefined);
   if (nullIndex !== -1) {
     return (

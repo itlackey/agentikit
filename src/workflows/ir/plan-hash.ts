@@ -15,7 +15,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { utf8Bytes, WORKFLOW_MAX_JSON_DEPTH, WORKFLOW_MAX_PLAN_BYTES } from "../resource-limits";
+import { utf8Bytes, WORKFLOW_MAX_PLAN_BYTES } from "../resource-limits";
 import { decodeWorkflowPlanV4, WORKFLOW_IR_V5_VERSION, type WorkflowPlanGraphV4 } from "./schema-v4";
 
 /** sha256 hex of the canonical (recursively sorted-keys) JSON of the plan. */
@@ -64,19 +64,18 @@ export function decodeCanonicalPlan(
   return plan;
 }
 
-function sortKeys(value: unknown, depth = 0): unknown {
-  if (depth > WORKFLOW_MAX_JSON_DEPTH) throw new TypeError("JSON value exceeds maximum depth");
+function sortKeys(value: unknown): unknown {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new TypeError("JSON values must be finite");
     return value;
   }
-  if (Array.isArray(value)) return value.map((item) => sortKeys(item, depth + 1));
+  if (Array.isArray(value)) return value.map((item) => sortKeys(item));
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([k, v]) => [k, sortKeys(v, depth + 1)]),
+        .map(([k, v]) => [k, sortKeys(v)]),
     );
   }
   throw new TypeError("JSON value contains a non-JSON value");

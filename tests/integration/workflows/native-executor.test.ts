@@ -905,13 +905,12 @@ describe("executeStepPlan — durable-row reuse (peer review)", () => {
   });
 });
 
-describe("executeStepPlan — lifetime unit cap counts actual dispatches only (peer review R1)", () => {
-  test("durable-row reuse is free: a journal-heavy resume near the cap reuses instead of tripping the pre-batch check", async () => {
+describe("executeStepPlan — durable-row reuse never counts against a declared budget", () => {
+  test("durable-row reuse is free: a journal-heavy resume reuses instead of re-dispatching", async () => {
     // Peer-review regression: the old pre-batch check (`journaled +
     // items.length > cap`) plus reuse-counted-as-dispatch made any
-    // partially-completed fan-out with > ~cap/2 journaled units impossible
-    // to resume. Now only real dispatches consume the cap.
-    const { LIFETIME_UNIT_CAP } = await import("../../../src/workflows/exec/scheduler");
+    // partially-completed fan-out with many journaled units impossible to
+    // resume. Only real dispatches ever consume a declared budget.max_units.
     const files = Array.from({ length: 20 }, (_, i) => `f${i}.ts`);
     seedRun({ params: { files }, steps: [{ id: "review", title: "Review files" }] });
     const stepPlan = plan(FAN_OUT_WF).steps[0]!;
@@ -928,12 +927,12 @@ describe("executeStepPlan — lifetime unit cap counts actual dispatches only (p
     expect(first.ok).toBe(false);
     expect(first.unitsDispatched).toBe(20);
 
-    // Resume with the journal seeded close to the cap (journaled + items
-    // would blow past it): 19 reuses are free, exactly ONE unit dispatches.
+    // Resume with a large journal-seeded unitsDispatched count: 19 reuses are
+    // free, exactly ONE unit dispatches.
     let dispatches = 0;
     const second = await executeStepPlan(stepPlan, {
       ...ctx,
-      unitsDispatched: LIFETIME_UNIT_CAP - 10,
+      unitsDispatched: 1_000_000,
       dispatcher: async (req) => {
         dispatches++;
         return { ok: true, text: `retried ${req.unitId}` };
@@ -941,40 +940,7 @@ describe("executeStepPlan — lifetime unit cap counts actual dispatches only (p
     });
     expect(second.ok).toBe(true);
     expect(dispatches).toBe(1);
-    expect(second.unitsDispatched).toBe(LIFETIME_UNIT_CAP - 10 + 1);
-  });
-
-  test("the cap still bites per dispatch: over-cap work fails the step after dispatching only the remaining budget", async () => {
-    const { LIFETIME_UNIT_CAP } = await import("../../../src/workflows/exec/scheduler");
-    const files = ["a", "b", "c", "d", "e"];
-    seedRun({ params: { files }, steps: [{ id: "review", title: "Review files" }] });
-    const stepPlan = plan(FAN_OUT_WF).steps[0]!;
-    const notice = {
-      code: "untranslated-field",
-      severity: "warning" as const,
-      adapter: "codex",
-      field: "tools",
-      message: "tool selection was not translated",
-    };
-    let dispatches = 0;
-    const result = await executeStepPlan(stepPlan, {
-      runId: RUN_ID,
-      workflowRef: "workflows/demo",
-      params: { files },
-      evidence: {},
-      unitsDispatched: LIFETIME_UNIT_CAP - 2,
-      maxConcurrency: 1,
-      dispatcher: async () => {
-        dispatches++;
-        return { ok: true, text: "ok", notices: [notice] };
-      },
-    });
-    expect(dispatches).toBe(2); // only the budget that was left
-    expect(result.ok).toBe(false);
-    expect(result.summary).toContain("lifetime unit cap");
-    expect(result.unitsDispatched).toBe(LIFETIME_UNIT_CAP);
-    expect(result.notices).toEqual([notice]);
-    expect(JSON.stringify(result.evidence)).not.toContain("notices");
+    expect(second.unitsDispatched).toBe(1_000_001);
   });
 });
 
@@ -1248,52 +1214,6 @@ Do second.
     ).rejects.toThrow(/unknown key dependsOn/);
     expect(dispatches).toBe(0);
   });
-
-  test("the lifetime unit cap is seeded from the run's journal (peer review #4)", async () => {
-    seedRun({
-      params: { flavor: "vanilla" },
-      steps: [
-        { id: "first", title: "First" },
-        { id: "second", title: "Second" },
-      ],
-    });
-    const { LIFETIME_UNIT_CAP } = await import("../../../src/workflows/exec/scheduler");
-    const db = openStateDatabase(path.join(tmpDir, "state.db"));
-    try {
-      db.exec("BEGIN IMMEDIATE");
-      const insert = db.prepare(
-        `INSERT INTO workflow_run_unit_attempts (
-           run_id, unit_id, attempt, dispatch_id, step_id, node_id, phase,
-           runner, engine, model, input_hash, status, started_at,
-           claim_holder, claim_expires_at
-         ) VALUES (?, ?, 1, ?, 'warm-up', 'warm-up.unit', 'unit',
-                   NULL, NULL, NULL, ?, 'completed', ?, ?, ?)`,
-      );
-      for (let i = 0; i < LIFETIME_UNIT_CAP; i++) {
-        const unitId = `prior[${i}]`;
-        const now = new Date(1_700_000_000_000 + i).toISOString();
-        insert.run(RUN_ID, unitId, `dispatch-${i}`, `hash-${i}`, now, `direct:${unitId}`, now);
-      }
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    } finally {
-      db.close();
-    }
-    const result = await runWorkflowSteps({
-      target: RUN_ID,
-      dispatcher: async () => ({ ok: true, text: "should be blocked by the cap" }),
-      loadPlan: usePlan(TWO_STEP_WF),
-    });
-    expect(result.executed[0]!.ok).toBe(false);
-    expect(result.executed[0]!.summary).toContain("lifetime unit cap");
-    expect(result.run.status).toBe("failed");
-    // ~10s solo: this case drives the engine loop until it trips the lifetime
-    // unit cap, so it legitimately exceeds bun's 5s default. The sharded gate
-    // runs with --timeout=120000 and never saw it, but anyone running this
-    // file directly got a false red.
-  }, 30_000);
 
   const ROUTED_WF = `---
 type: workflow

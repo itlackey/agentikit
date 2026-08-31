@@ -539,12 +539,11 @@ function workflowSummaryJudge(
 }
 
 /**
- * Seed the lifetime unit cap AND the budget ceilings from the journal so
- * both are truly per-RUN: a resumed or re-invoked run must not restart the
- * runaway backstop — or a declared `budget` — at zero. The append-only attempt
- * journal is authoritative: dispatch attempts count against
- * `budget.max_units`, and their known tokens count against
- * `budget.max_tokens`. Durable result reuse is free.
+ * Seed the declared budget ceilings from the journal so they are truly
+ * per-RUN: a resumed or re-invoked run must not restart a declared `budget`
+ * at zero. The append-only attempt journal is authoritative: dispatch
+ * attempts count against `budget.max_units`, and their known tokens count
+ * against `budget.max_tokens`. Durable result reuse is free.
  *
  * Gate-evaluation rows (`phase = "gate"`, journaled by the completion-gate
  * judge) are EXCLUDED from the seed: the live path never consumes

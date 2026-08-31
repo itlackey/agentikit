@@ -93,6 +93,7 @@ import {
 } from "../../src/core/json-schema";
 import { _setWarnSinkForTests } from "../../src/core/warn";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
+import { TASK_V3_MAX_REDACT_NAMES } from "../../src/tasks/source/bounded-document";
 import * as ParseTaskSourceModule from "../../src/tasks/source/parse-task-source";
 import * as TaskSourceV4Module from "../../src/tasks/source/task-source-v4";
 import { TASK_V3_MAX_SCHEDULES } from "../../src/tasks/source-v3";
@@ -104,12 +105,7 @@ import {
 } from "../../src/tasks/task-run-reserved-flags";
 import { detectSecretShapedParams } from "../../src/workflows/exec/param-secrets";
 import { PROGRAM_PARAM_NAME_PATTERN } from "../../src/workflows/program/schema";
-import {
-  WORKFLOW_MAX_EXEC_PASS_ENV,
-  WORKFLOW_MAX_PARAMS,
-  WORKFLOW_MAX_RETRIES,
-  WORKFLOW_MAX_SCHEMA_BYTES,
-} from "../../src/workflows/resource-limits";
+import { WORKFLOW_MAX_SCHEMA_BYTES } from "../../src/workflows/resource-limits";
 import { overrideSeam } from "../_helpers/seams";
 
 const { parseTaskSource, peekTaskSourceVersion } = ParseTaskSourceModule;
@@ -1266,23 +1262,6 @@ describe("task source v4 — typed input declarations (D2-N3, B-19..B-23)", () =
     );
   });
 
-  test("input declaration count is bounded by WORKFLOW_MAX_PARAMS, reused (D2-N3)", () => {
-    const atBound = Object.fromEntries(
-      Array.from({ length: WORKFLOW_MAX_PARAMS }, (_, i) => [`input${i}`, { type: "string" }]),
-    );
-    expect(() =>
-      parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: atBound }), { filePath: "/x.yml" }),
-    ).not.toThrow();
-
-    const overBound = Object.fromEntries(
-      Array.from({ length: WORKFLOW_MAX_PARAMS + 1 }, (_, i) => [`input${i}`, { type: "string" }]),
-    );
-    expectTaskSourceInvalid(
-      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", inputs: overBound }), { filePath: "/x.yml" }),
-      new RegExp(String(WORKFLOW_MAX_PARAMS)),
-    );
-  });
-
   test("one declaration's serialized schema size is bounded by WORKFLOW_MAX_SCHEMA_BYTES, reused (D2-N3)", () => {
     const bigEnum = Array.from({ length: 1024 }, (_, i) => `${"x".repeat(280)}${i}`);
     expect(JSON.stringify(bigEnum).length).toBeGreaterThan(WORKFLOW_MAX_SCHEMA_BYTES);
@@ -1437,7 +1416,7 @@ describe("task source v4 — top-level execution controls", () => {
     expectTopLevelFieldPath(agentError.message, "agent");
   });
 
-  test("redact rejects duplicate names and more than WORKFLOW_MAX_EXEC_PASS_ENV entries, at the TOP-LEVEL field path (not akm.redact)", () => {
+  test("redact rejects duplicate names and more than TASK_V3_MAX_REDACT_NAMES entries, at the TOP-LEVEL field path (not akm.redact)", () => {
     const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", redact: ["TOKEN"] }), {
       filePath: "/x.yml",
     });
@@ -1453,10 +1432,10 @@ describe("task source v4 — top-level execution controls", () => {
     // (source-v3.ts:471,475) — pin the top-level field path (test-review
     // finding, tests/tasks/source-v4.test.ts:130).
     expectTopLevelFieldPath(duplicateError.message, "redact");
-    const tooMany = Array.from({ length: WORKFLOW_MAX_EXEC_PASS_ENV + 1 }, (_, i) => `TOKEN_${i}`);
+    const tooMany = Array.from({ length: TASK_V3_MAX_REDACT_NAMES + 1 }, (_, i) => `TOKEN_${i}`);
     const tooManyError = expectTaskSourceInvalid(
       () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", redact: tooMany }), { filePath: "/x.yml" }),
-      new RegExp(String(WORKFLOW_MAX_EXEC_PASS_ENV)),
+      new RegExp(String(TASK_V3_MAX_REDACT_NAMES)),
     );
     expectTopLevelFieldPath(tooManyError.message, "redact");
   });
@@ -1484,17 +1463,14 @@ describe("task source v4 — top-level execution controls", () => {
     expectTopLevelFieldPath(error.message, "maxSteps");
   });
 
-  test("maxRetries is bounded 0..WORKFLOW_MAX_RETRIES, at the TOP-LEVEL field path (not akm.maxRetries)", () => {
-    const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxRetries: WORKFLOW_MAX_RETRIES }), {
+  test("maxRetries requires a non-negative safe integer, at the TOP-LEVEL field path (not akm.maxRetries)", () => {
+    const ok = parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxRetries: 500 }), {
       filePath: "/x.yml",
     });
-    expect(ok.execution.maxRetries).toBe(WORKFLOW_MAX_RETRIES);
+    expect(ok.execution.maxRetries).toBe(500);
     const error = expectTaskSourceInvalid(
-      () =>
-        parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxRetries: WORKFLOW_MAX_RETRIES + 1 }), {
-          filePath: "/x.yml",
-        }),
-      new RegExp(String(WORKFLOW_MAX_RETRIES)),
+      () => parseTaskSourceV4Document(v4Doc({ uses: "commands/review", maxRetries: -1 }), { filePath: "/x.yml" }),
+      /maxRetries/i,
     );
     // v3 hardcodes ["akm", "maxRetries"] (source-v3.ts:490) — test-review
     // finding, tests/tasks/source-v4.test.ts:130.

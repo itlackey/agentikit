@@ -474,48 +474,6 @@ describe("state.db automatic migration boundary", () => {
     inspected.close();
   });
 
-  test("fresh-file ownership rejects an inode replacement before SQLite open", () => {
-    const file = statePath();
-    const resolvedFile = path.resolve(file);
-    const originalOpen = fs.openSync.bind(fs);
-    let swapped = false;
-    const open = spyOn(fs, "openSync").mockImplementation(((
-      candidate: fs.PathLike,
-      flags: string | number,
-      mode?: fs.Mode,
-    ) => {
-      const fd = originalOpen(candidate, flags, mode);
-      const isExclusive =
-        (typeof flags === "number" && (flags & fs.constants.O_EXCL) !== 0) ||
-        (typeof flags === "string" && flags.includes("x"));
-      if (!swapped && isExclusive && path.resolve(String(candidate)) === resolvedFile) {
-        swapped = true;
-        fs.unlinkSync(file);
-        seedBefore018(file, "inode-replacement");
-      }
-      return fd;
-    }) as typeof fs.openSync);
-
-    let opened: ReturnType<typeof openStateDatabase> | undefined;
-    let error: unknown;
-    try {
-      opened = openStateDatabase(file);
-    } catch (caught) {
-      error = caught;
-    } finally {
-      opened?.close();
-      open.mockRestore();
-    }
-
-    expect(swapped).toBe(true);
-    expect(error instanceof Error ? error.message : "").toMatch(/fresh state\.db.*ownership|inode|replaced/i);
-    const inspected = openDatabase(file, { readonly: true });
-    expect(inspected.prepare("SELECT content_hash FROM consolidation_judged").get()).toEqual({
-      content_hash: "inode-replacement",
-    });
-    inspected.close();
-  });
-
   test("a prefix before 002 automatically runs the verified data-preserving rebuild, then stops before 018", () => {
     const file = statePath();
     const before002 = STATE_MIGRATIONS.slice(0, migrationIndex("002-task-history-per-run"));

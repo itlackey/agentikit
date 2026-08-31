@@ -9,14 +9,9 @@ import path from "node:path";
 import { LineCounter, parseDocument, stringify as stringifyYaml } from "yaml";
 import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
 import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-params";
-import {
-  WORKFLOW_ENV_VAR_NAME_PATTERN,
-  WORKFLOW_MAX_EXEC_PASS_ENV,
-  WORKFLOW_MAX_RETRIES,
-  WORKFLOW_MAX_TIMEOUT_MS,
-} from "../../workflows/resource-limits";
+import { WORKFLOW_ENV_VAR_NAME_PATTERN, WORKFLOW_MAX_TIMEOUT_MS } from "../../workflows/resource-limits";
 import { validateTaskId } from "../task-id";
-import { assertBoundedTaskYamlDocument, TASK_V3_MAX_SOURCE_BYTES } from "./bounded-document";
+import { assertBoundedTaskYamlDocument, TASK_V3_MAX_REDACT_NAMES } from "./bounded-document";
 import { classifyTaskV3Uses, parseTaskV3Yaml, type TaskV3UsesTarget } from "./task-source-v3-frozen";
 import { parseTaskSourceV4 } from "./task-source-v4";
 
@@ -201,9 +196,6 @@ function optionalString(value: unknown, label: string): string | undefined {
 }
 
 function parseLegacyTaskYaml(input: TaskToV3FileInput): { data: Record<string, unknown>; source: string } {
-  if (input.bytes.byteLength > TASK_V3_MAX_SOURCE_BYTES) {
-    throw new Error(`task YAML exceeds the 1 MiB (${TASK_V3_MAX_SOURCE_BYTES}-byte) source resource limit`);
-  }
   let source: string;
   try {
     source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(input.bytes);
@@ -252,7 +244,7 @@ function validateCommonV2(data: Record<string, unknown>): void {
   if (data.redact !== undefined && data.redact !== null) {
     if (
       !Array.isArray(data.redact) ||
-      data.redact.length > WORKFLOW_MAX_EXEC_PASS_ENV ||
+      data.redact.length > TASK_V3_MAX_REDACT_NAMES ||
       data.redact.some((entry) => typeof entry !== "string" || !WORKFLOW_ENV_VAR_NAME_PATTERN.test(entry))
     ) {
       throw new Error("redact must contain only bounded environment variable names");
@@ -379,12 +371,8 @@ function migratedObject(data: Record<string, unknown>): Record<string, unknown> 
       akm.maxSteps = data.maxSteps;
     }
     if (data.maxRetries !== undefined && data.maxRetries !== null) {
-      if (
-        !Number.isSafeInteger(data.maxRetries) ||
-        (data.maxRetries as number) < 0 ||
-        (data.maxRetries as number) > WORKFLOW_MAX_RETRIES
-      ) {
-        throw new Error(`maxRetries must be from 0 through ${WORKFLOW_MAX_RETRIES}`);
+      if (!Number.isSafeInteger(data.maxRetries) || (data.maxRetries as number) < 0) {
+        throw new Error("maxRetries must be a non-negative integer");
       }
       akm.maxRetries = data.maxRetries;
     }

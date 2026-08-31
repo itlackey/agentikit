@@ -17,9 +17,9 @@ import {
  * Direct scheduler tests (orchestration plan §Trust & limits): the engine
  * caps that guard native fan-out — default concurrency 1 (local-model-safe),
  * clamping to min(16, cores − 2), and cooperative abort semantics inherited
- * from concurrentMap. The lifetime unit cap is enforced per ACTUAL dispatch
- * by the native executor (durable-row reuses are free — peer review R1), so
- * it is tested there, not here.
+ * from concurrentMap. A declared `budget.max_units` ceiling is enforced per
+ * ACTUAL dispatch by the native executor (durable-row reuses are free —
+ * peer review R1), so it is tested there, not here.
  */
 
 /** Track the high-water mark of concurrent in-flight dispatches. */

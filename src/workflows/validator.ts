@@ -18,7 +18,7 @@
  */
 
 import { bundleRefToString, parseBundleRef } from "../core/asset/asset-ref";
-import { utf8Bytes, WORKFLOW_MAX_INSTRUCTION_BYTES, WORKFLOW_MAX_PARAMS, WORKFLOW_MAX_STEPS } from "./resource-limits";
+import { utf8Bytes, WORKFLOW_MAX_INSTRUCTION_BYTES } from "./resource-limits";
 import type { WorkflowDocument, WorkflowError } from "./schema";
 
 export function runSemanticChecks(
@@ -49,12 +49,6 @@ function checkXrefs(value: unknown, line: number, errors: WorkflowError[]): void
 }
 
 function checkResourceLimits(draft: WorkflowDocument, errors: WorkflowError[]): void {
-  if (draft.steps.length > WORKFLOW_MAX_STEPS) {
-    errors.push({ line: 1, message: `Workflow must contain at most ${WORKFLOW_MAX_STEPS} steps.` });
-  }
-  if (Object.keys(draft.params ?? {}).length > WORKFLOW_MAX_PARAMS) {
-    errors.push({ line: 1, message: `Workflow must contain at most ${WORKFLOW_MAX_PARAMS} parameters.` });
-  }
   for (const step of draft.steps) {
     if (step.instructions && utf8Bytes(step.instructions.text) > WORKFLOW_MAX_INSTRUCTION_BYTES) {
       errors.push({

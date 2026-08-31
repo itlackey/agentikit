@@ -219,17 +219,11 @@ describe("codexBuilder — native --output-schema temp file", () => {
 
 // ── codexBuilder — injection guards ───────────────────────────────────────────
 
-describe("codexBuilder — argument injection guards", () => {
-  test('model starting with "--" throws UsageError', () => {
-    expect(() => codexBuilder.build(makeCodexProfile(), { prompt: "task", model: "--evil" })).toThrow(
-      /model must not start with "--"/,
-    );
-  });
-
-  test('systemPrompt starting with "--" throws UsageError', () => {
-    expect(() => codexBuilder.build(makeCodexProfile(), { prompt: "task", systemPrompt: "--injected" })).toThrow(
-      /systemPrompt must not start with "--"/,
-    );
+describe("codexBuilder — model/systemPrompt values", () => {
+  test('a model/systemPrompt starting with "--" is passed through, not rejected', () => {
+    expect(() =>
+      codexBuilder.build(makeCodexProfile(), { prompt: "task", model: "--evil", systemPrompt: "--injected" }),
+    ).not.toThrow();
   });
 
   test("valid model and systemPrompt do not throw", () => {
@@ -250,8 +244,8 @@ describe("codexResumeArgs — resume subcommand prefix", () => {
     expect(codexResumeArgs("0195b2f3-session")).toEqual(["exec", "resume", "0195b2f3-session"]);
   });
 
-  test('session id starting with "--" throws UsageError', () => {
-    expect(() => codexResumeArgs("--evil")).toThrow(/sessionId must not start with "--"/);
+  test('a session id starting with "--" is passed through, not rejected', () => {
+    expect(codexResumeArgs("--evil")).toEqual(["exec", "resume", "--evil"]);
   });
 });
 

@@ -57,7 +57,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type AgentCommandBuilder, assertNotFlag, resolveDispatchModel } from "../../agent/builder-shared";
+import { type AgentCommandBuilder, resolveDispatchModel } from "../../agent/builder-shared";
 import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /**
@@ -81,7 +81,6 @@ export function writeCodexOutputSchemaFile(schema: Record<string, unknown>): str
  * extractor); akm never depends on it (plan §"Session, MCP, and identity").
  */
 export function codexResumeArgs(sessionId: string): readonly string[] {
-  assertNotFlag(sessionId, "sessionId");
   return ["exec", "resume", sessionId];
 }
 
@@ -120,8 +119,6 @@ export const codexBuilder: AgentCommandBuilder = {
     outputSchema: true,
   }),
   build(profile, req) {
-    assertNotFlag(req.systemPrompt, "systemPrompt");
-    assertNotFlag(req.model, "model");
     // Built-in codex profiles ship `args: []`; headless dispatch is the `exec`
     // subcommand. Don't double it when a user profile already pins it.
     const extra = profile.args[0] === "exec" ? profile.args.slice(1) : [...profile.args];

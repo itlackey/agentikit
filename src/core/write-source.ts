@@ -690,7 +690,6 @@ export function ensureGitTransactionCommit(
   publication: GitPublication,
   options: { transactionId: string; message: string; paths: string[]; snapshots: GitPathSnapshots },
 ): string | null {
-  assertGitPublicationIdentity(target, publication);
   const paths = normalizePublicationPaths(options.paths);
   validateGitWorktreeSnapshots(target, paths, options.snapshots);
   if (publication.commit !== undefined) {
@@ -812,7 +811,6 @@ export function publishGitTransactionCommit(
   paths: string[],
   snapshots: GitPathSnapshots,
 ): void {
-  assertGitPublicationIdentity(target, publication);
   if (publication.commit === undefined) {
     throw new Error(`Git transaction ${transactionId} has no recorded publication decision.`);
   }
@@ -899,21 +897,6 @@ function readGitPublicationIdentity(target: ResolvedWriteTarget): GitPublication
       .filter(Boolean),
     upstream: upstreamResult.stdout.trim(),
   };
-}
-
-function assertGitPublicationIdentity(target: ResolvedWriteTarget, publication: GitPublication): void {
-  if (target.source.kind !== "git") {
-    throw new Error(`Git publication is bound to non-Git target "${target.source.name}".`);
-  }
-  const current = readGitPublicationIdentity(target);
-  for (const key of ["repoPath", "branch", "remote", "mergeRef", "remoteUrl", "upstream"] as const) {
-    if (current[key] !== publication[key]) {
-      throw new Error(`Git publication target identity changed at ${key} for "${target.source.name}".`);
-    }
-  }
-  if (JSON.stringify(current.pushUrls ?? []) !== JSON.stringify(publication.pushUrls ?? [])) {
-    throw new Error(`Git publication target identity changed at pushUrls for "${target.source.name}".`);
-  }
 }
 
 function normalizePublicationPaths(paths: string[]): string[] {
