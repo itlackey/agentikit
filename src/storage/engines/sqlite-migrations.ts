@@ -21,6 +21,7 @@
  *     this generic engine intentionally does not infer risk from SQL text.
  */
 
+import { sleepSync } from "../../runtime";
 import type { Database } from "../database";
 
 /**
@@ -219,7 +220,7 @@ function isRetryableImmediateBeginError(error: unknown): boolean {
 
 function sleepImmediateRetry(ms: number): void {
   if (ms <= 0) return;
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  sleepSync(ms);
 }
 
 /**
