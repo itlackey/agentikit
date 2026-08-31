@@ -210,7 +210,7 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
     expect(hit?.detail).toMatch(/version.*required.*4/i);
   });
 
-  test("a v3 task is flagged with the canonical migration preview hint (row B-14)", async () => {
+  test("a v3 task is flagged naming the reason it needs a human decision (row B-14)", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
@@ -218,16 +218,16 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
       ctx,
     );
     const hit = diags.find((d) => d.issue === "invalid-task-yaml");
-    expect(hit?.detail).toContain("akm migrate apply --dry-run");
+    expect(hit?.detail).toContain("needs a human decision");
   });
 
   // A migratable v2 document (unlike the v3 case above) is auto-read through
   // the in-memory v2->v3->v4 shim now, so it no longer surfaces as
   // `invalid-task-yaml` here — this fixture uses an argv-array `command:`
   // (task-to-v3.ts's `argv-array-has-no-portable-shell-string`), which the
-  // shim's deterministic planner genuinely cannot convert, so the migrate
-  // hint still fires.
-  test("a v2 task the migration planner cannot convert is flagged with the canonical migration preview hint (row B-15)", async () => {
+  // shim's deterministic planner genuinely cannot convert, so it still
+  // fires, naming that reason (issue #869).
+  test("a v2 task the migration planner cannot convert is flagged naming the reason it needs a human decision (row B-15)", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
@@ -235,7 +235,7 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
       ctx,
     );
     const hit = diags.find((d) => d.issue === "invalid-task-yaml");
-    expect(hit?.detail).toContain("akm migrate apply --dry-run");
+    expect(hit?.detail).toContain("argv-array-has-no-portable-shell-string");
   });
 
   test("dangerous-env-key — a dangerous key name in an env file (env dangerous-key scan)", async () => {
