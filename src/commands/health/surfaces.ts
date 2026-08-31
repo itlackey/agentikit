@@ -16,7 +16,7 @@
  * (pass-status) entry: it emits whenever any remote endpoint is configured.
  */
 
-import { MAX_CONFIG_FILE_BYTES, readTextFileWithLimit } from "../../core/common";
+import { readTextFile } from "../../core/common";
 import { CURRENT_CONFIG_VERSION } from "../../core/config/config-schema";
 import { compareConfigVersion } from "../../core/config/config-version";
 import { formatRegistryUrl } from "../../core/registry-url";
@@ -32,7 +32,7 @@ import type { HealthCheckResult } from "./types";
 export function collectConfigSkewAdvisory(configPath: string): HealthCheckResult | undefined {
   let raw: Record<string, unknown>;
   try {
-    raw = JSON.parse(readTextFileWithLimit(configPath, MAX_CONFIG_FILE_BYTES, "Config file")) as Record<
+    raw = JSON.parse(readTextFile(configPath, "Config file")) as Record<
       string,
       unknown
     >;
