@@ -18,6 +18,64 @@ akm uses four XDG-compliant directories. Durable data (`index.db`, `state.db`, `
 
 ---
 
+## What May Live in `$STASH/.akm`
+
+`$STASH/.akm` had no stated rule for what belongs there (itlackey/akm#889), and
+accumulated 165 MB / 1,523 files of it — 82% (135 MB) was the pre-0.9.0
+`.akm/proposals/` filesystem layout alone, superseded by the `proposals`
+table in `state.db` back in 0.9.0. Migrations moved the writers; nothing ever
+cleaned up the paths they left behind.
+
+**The rule:** `$STASH/.akm` is for state that MUST travel with the content.
+Everything else belongs in `$STATE`, `$CACHE`, or `$DATA`.
+
+"Must travel with the content" means: a fresh clone of the bundle on another
+machine, or a bundle synced via its own git remote, would lint or resolve
+*differently* without this file present. A cache, a log, or a queue that
+`akm` can rebuild or that only matters on the machine that wrote it does not
+qualify — even if `akm` happens to write it while operating on that bundle.
+
+**Confirmed exceptions (Tier 3 — correctly `$STASH`-local; do not move):**
+
+- **`$STASH/.akm/memory-cleanup/`** (`belief-transitions.jsonl` + `archive/`)
+  — the hard case. As of itlackey/akm#884, `memory-cleanup/archive/` is a
+  **ref-resolution surface**: when a `contradictedBy` edge points at a memory
+  that was later pruned, resolution falls through to that memory's tombstone
+  in `memory-cleanup/archive/`. If the archive is not present, that edge
+  resolves differently (or not at all) — so the same bundle would lint
+  differently depending on which machine ran the check. It must travel with
+  the bundle content itself, not live in a per-machine `$STATE`/`$CACHE` dir.
+  It is also directly recoverable user data (pruned memory bodies). This
+  correctness reason was previously undocumented; it only became load-bearing
+  with #884.
+- **`<cwd>/.akm/config.json`** — project-scoped config overrides, walked up
+  from `cwd` to the filesystem root and merged. Deliberately local to the
+  project tree, the same idea as `.editorconfig`.
+- **`$STASH/.akm/cache`** — used only when `AKM_BUNDLE_DIR` points at a
+  transient path, as an isolation safety net (`src/core/paths.ts`) so a test
+  harness pointed at a scratch bundle root cannot silently clobber the
+  developer's real `~/.cache/akm`. Not used in the normal (non-transient)
+  case.
+
+**Known-dead residue (Tier 1 — cleaned up by #889):** `.akm/proposals/`,
+`.akm/runs.archived-<ts>/`, `.akm/archive/`, `.akm/graph.json`,
+`.akm/consolidate-journal.json`, `.akm/proposals.db`, and `.akm/mv-transactions/`
+are all superseded pre-0.9.0 layouts with no live reader or writer in `src/`.
+`akm health` reports any that still exist (with size) via the
+`stash-dead-residue` advisory; `akm health --clean-dead-residue` deletes them
+on request. Nothing deletes this user data without that explicit opt-in.
+
+**Known misplaced live writers (Tier 2 — tracked separately, itlackey/akm#890,
+0.10.0):** `distill-rejected/`, `eval-cases/`, `measurement/`,
+`unresolved-sources/`, and the `.lock` files are currently written under
+`$STASH/.akm` but do not meet the "must travel with the content" rule above
+— none of them are read to resolve anything about the bundle content itself.
+Moving them changes user-visible paths and needs a migration note, so that
+move is deferred; do not treat their current location as sanctioned by the
+rule above.
+
+---
+
 ## SQLite Databases
 
 Managed SQLite openers apply a `busy_timeout` of 30,000 ms. Journal mode is
@@ -509,7 +567,7 @@ One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromS
 | `$CACHE/semantic-status.json` | Embedding provider health: `status` (pending/ready-js/ready-vec/blocked), `reason`, `providerFingerprint`, `lastCheckedAt`, `entryCount`, `embeddingCount`. Blocked status auto-expires after 24h. | Reset on `akm index --full` |
 | `$CACHE/registry-index/<slug>.json` | Removed in v0.8.0 — data now stored in `registry_index_cache` table in `$DATA/index.db`. Delete these files after running the migration script. | — |
 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | Skills.sh search result cache. Fresh 15min; stale 1d. Key = MD5 of `url + query + limit`. | TTL |
-| `$STASH/.akm/consolidate-journal.json` | Legacy consolidation journal; current advisory consolidation does not read or write it. | Safe to remove |
+| `$STASH/.akm/consolidate-journal.json` | Legacy consolidation journal; current advisory consolidation does not read or write it. | Dead residue (itlackey/akm#889); reported by `akm health`'s `stash-dead-residue` advisory, removed via `akm health --clean-dead-residue` |
 | `$DATA/index.db` (`graph_*` tables) | Knowledge graph index data: per-bundle graph metadata plus per-file entities and relations extracted from assets via LLM. `graph_files` is keyed by `(stash_root, file_path, body_hash)` with `(stash_root, file_path)` unique; it has no `entries.id` foreign key. Every considered file persists `status` and `reason`. `graph_file_entities` and `graph_file_relations` carry the same three-column owner key and cascade from `graph_files`; they store normalized and display-form entity values. `extraction_run_id` (on `graph_files` and `graph_meta`) and `extractor_id` (on `graph_meta`) record extraction provenance. `graph_meta` also stores the latest graph telemetry: model, prompt version, batch size, cache hits/misses, truncation count, and failure count. A companion `graph_extraction_queue` table holds a lazy, priority-ordered backlog of files awaiting extraction. Indexes include `idx_graph_files_path`, `idx_graph_files_stash_order`, `idx_graph_file_entities_entity_norm(stash_root, entity_norm)`, and `idx_entries_file_path` on `entries(file_path)`. | Refreshed by graph extraction; regenerated on the next `akm index`/`akm improve` since `index.db` is a fully rebuildable cache |
 
 ---
@@ -564,7 +622,7 @@ adapter recognizes — `schema.md` + `pages/` is the probe) contains:
 | Path | Contents | Retention |
 |---|---|---|
 | `$DATA/state.db` (`proposals` table) | Proposal queue: `id`, `stash_dir`, `ref`, `status` (`pending`\|`accepted`\|`rejected`\|`reverted`), `source`, `created_at`, `updated_at`, `content`, `frontmatter_json`, `metadata_json`. Replaces the pre-0.9.0 per-uuid `$STASH/.akm/proposals/<uuid>/proposal.json` filesystem layout — archival is a status flip, not a directory move (`src/commands/proposal/repository.ts`). | Durable; `archiveRetentionDays` (default 90d) governs when pending proposals age out |
-| `$STASH/.akm/archive/<ts>-<i>-<name>.md` | Legacy consolidation archive. Current advisory consolidation does not create or manage these files. | Review before manual removal |
+| `$STASH/.akm/archive/<ts>-<i>-<name>.md` | Legacy consolidation archive. Current advisory consolidation does not create or manage these files. | Dead residue (itlackey/akm#889); reported by `akm health`'s `stash-dead-residue` advisory, removed via `akm health --clean-dead-residue` |
 | `$STASH/.akm/consolidate-backup/<ts>/<name>.md` | Legacy pre-0.9 consolidation backups; current advisory consolidation does not create them. | Safe to remove after review |
 | `$STASH/.akm/memory-cleanup/archive/<ts>-<ref>/` | Belief-state archived memory files + `cleanup.md` audit record | No cleanup |
 | `$STASH/.akm/distill-rejected/<ts>-<lessonRef>.md` | Lessons that failed the LLM-as-judge quality gate. Frontmatter: `{ score, reason }`. | No cleanup |

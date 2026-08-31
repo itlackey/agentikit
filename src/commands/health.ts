@@ -21,6 +21,7 @@ import { queryTaskHistory } from "../storage/repositories/task-history-repositor
 import { pkgVersion } from "../version";
 import { collectImproveAdvisories } from "./health/advisories";
 import { HEALTH_CHECKS, type HealthCheckContext, runHealthEngineProbes } from "./health/checks";
+import { collectDeadResidueAdvisory } from "./health/dead-residue";
 import {
   buildImproveSkipSummary,
   computeWallTimeStats,
@@ -397,6 +398,18 @@ function gatherAncillaryAdvisories(
     }
   } catch {
     // Non-fatal — a git/probe failure must not abort the health report.
+  }
+
+  // #889: name any Tier-1 dead pre-0.9.0 residue under $STASH/.akm (superseded
+  // filesystem layouts with no live reader/writer) and its size. Read-only —
+  // actual removal only happens via the separate `--clean-dead-residue` opt-in
+  // (see runAkmHealthCleanDeadResidue below). Best-effort.
+  try {
+    const residueStashDir = options.stashDir ?? resolveStashDir();
+    const deadResidue = collectDeadResidueAdvisory(residueStashDir);
+    if (deadResidue) advisories.push(deadResidue);
+  } catch {
+    // Non-fatal — an unreadable stash dir must not abort the health report.
   }
 
   // 08 surfaces: the remaining read-only advisory group (binary-config-skew,
