@@ -41,10 +41,10 @@
  *    escape hatch for examples that are DELIBERATELY invalid (documenting an
  *    old/removed command, demonstrating an error). It is a marker on the
  *    exact line, never a whole-file or whole-directory carve-out.
- *  - `ALLOWED_VIOLATIONS` below (file:line:token), for the rare case a
- *    doclint:ignore marker can't be added in place (e.g. inside a fenced
- *    block whose exact bytes are pinned by another test). Empty by default —
- *    same convention as `scripts/lint-shipped-assets.ts`'s `ALLOWED_OFFENSES`.
+ *  - A document that describes a PRIOR release is skipped wholesale — see
+ *    `isArchivedDoc` below. That covers `docs/migration/**` and any doc
+ *    carrying the dated-archive banner, whose examples are expected to name
+ *    commands the current CLI no longer has.
  *
  * What this is a STATIC APPROXIMATION of, not a citty re-implementation:
  *  - Allowed flags for a resolved command are the UNION of every level's own
@@ -62,6 +62,7 @@
  *    (see the "prove it can fail" pair in the F1 report for a live check).
  */
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { ArgDef, ArgsDef, CommandMeta } from "citty";
@@ -75,48 +76,35 @@ const DOC_FILES = ["README.md", "AGENTS.md", "STABILITY.md"];
 const SKIP_MARKER = "doclint:ignore";
 
 /**
- * Individually-justified (file, line, token) exceptions — NOT a directory or
- * file carve-out. Keep empty by default; see `scripts/lint-shipped-assets.ts`
- * for the precedent this mirrors.
+ * Documents that describe a PRIOR release, and are therefore expected to
+ * reference commands the current CLI no longer has.
  *
- * docs/migration/v0.7-to-v0.8.md:1155 — the line is inside a literal
- * box-drawing terminal-banner illustration (the exact text 0.8.0's
- * auto-migration notice printed), not a runnable shell line. A trailing
- * `# doclint:ignore` comment would visibly corrupt the banner's right
- * border for readers, so the exception lives here instead. `akm config
- * migrate` was a real, wired-in 0.8.0 subcommand (see the surrounding
- * "Config layer rewrite" section) — historical, not a current-syntax bug.
+ * Replaces a hand-maintained `ALLOWED_VIOLATIONS` set keyed `file:line:token`.
+ * Nine entries across two files pinned a LINE NUMBER, which is not a stable
+ * identifier for a document: any edit above a waived line silently invalidated
+ * the waiver and turned the build red at a spot nobody touched. That happened
+ * at least twice — commit `8adc92b7` re-pinned a waiver after a table-of-
+ * contents row shifted it down one, and another entry carried the standing
+ * note "Line number shifted +3 from this post's original 86".
  *
- * docs/posts/task-assets-persistent-workflows-11.md:76 — the line is inside
- * a YAML `prompt: |` literal block scalar (a dated 0.8.0-era task-assets
- * post's worked example). A trailing `# doclint:ignore` comment would become
- * part of the literal prompt STRING VALUE, not a comment, silently changing
- * the documented prompt text — so the exception lives here instead. `akm
- * wiki ingest`/`akm wiki lint` were real 0.8.0-era commands; the whole
- * `wiki` family was removed in 0.9.0. (Line number shifted +3 from this
- * post's original 73 by the dated-content archive banner every docs/posts/
- * file now carries.)
+ * Both waived files were the same category, so express the category instead:
  *
- * docs/posts/task-assets-persistent-workflows-11.md:89 — the line begins a
- * backslash-continued multi-line `akm tasks add …` invocation (the same
- * dated 0.8.0-era task-assets post). A trailing `# doclint:ignore` comment
- * would break the `\` line continuation, corrupting the copy-pasteable
- * example — so the exception lives here instead. `tasks` (plural) was the
- * command group's spelling at the time; it was renamed to singular `task`
- * in 0.9.0 (S6). (Line number shifted +3 from this post's original 86, same
- * archive-banner cause as above.)
+ *   1. `docs/migration/**` — a migration guide's whole purpose is showing the
+ *      commands you are migrating AWAY from.
+ *   2. Any doc carrying the dated-archive banner — a published post is
+ *      immutable history, not documentation to be retrofitted to a rename.
+ *
+ * Scoped deliberately: `docs/posts/**` as a whole is NOT exempt, because a
+ * post without the banner is still presented as current. Only the banner —
+ * the same marker the reader sees — opts a document out. The per-line
+ * `doclint:ignore` marker remains for one-off deliberate invalid examples.
  */
-const ALLOWED_VIOLATIONS: ReadonlySet<string> = new Set([
-  "docs/migration/v0.7-to-v0.8.md:1155:migrate",
-  "docs/migration/v0.7-to-v0.8.md:1155:--dry-run",
-  "docs/migration/v0.7-to-v0.8.md:1155:--print-diff",
-  "docs/posts/task-assets-persistent-workflows-11.md:76:wiki",
-  "docs/posts/task-assets-persistent-workflows-11.md:89:tasks",
-  "docs/posts/task-assets-persistent-workflows-11.md:89:--schedule",
-  "docs/posts/task-assets-persistent-workflows-11.md:89:--command",
-  "docs/posts/task-assets-persistent-workflows-11.md:89:--name",
-  "docs/posts/task-assets-persistent-workflows-11.md:89:--description",
-]);
+const ARCHIVED_DOC_BANNER = "This is a dated article from AKM's publishing archive.";
+
+function isArchivedDoc(relPath: string, raw: string): boolean {
+  if (relPath.startsWith("docs/migration/")) return true;
+  return raw.includes(ARCHIVED_DOC_BANNER);
+}
 
 // ── 1. Build the real command tree from src/cli.ts (single source of truth —
 // no hand-maintained mirror; see the module doc of lint-shipped-assets.ts for
@@ -306,8 +294,7 @@ function checkInvocation(file: string, line: number, tokens: string[], violation
   }
   const { chain, badToken } = resolveChain(words);
   const record = (token: string, message: string) => {
-    const key = `${file}:${line}:${token}`;
-    if (!ALLOWED_VIOLATIONS.has(key)) violations.push({ file, line, token, message });
+    violations.push({ file, line, token, message });
   };
   if (badToken !== undefined) {
     const parentPath = chain[chain.length - 1]!.path;
@@ -370,6 +357,40 @@ function walkMarkdown(dir: string, out: string[]): void {
   }
 }
 
+/**
+ * Drop paths git ignores. The scan walks `docs/` wholesale, so a gitignored
+ * scratch directory (`docs/.pending/`) was held to the same contract as
+ * published docs: `bun run lint` failed locally for anyone drafting in-tree
+ * while CI — which never has those files — stayed green. That is the worst
+ * split, because the failure is unavoidable for the one person seeing it and
+ * invisible to everyone who could fix it.
+ *
+ * "Docs we ship" and "what git tracks" are the same question, so ask git
+ * rather than maintaining a second exclusion list. One `git check-ignore`
+ * call for the whole batch. If git is unavailable (tarball checkout, no repo),
+ * every path is kept — the pre-existing behavior, so the gate never silently
+ * weakens.
+ */
+function dropGitIgnored(absPaths: string[]): string[] {
+  if (absPaths.length === 0) return absPaths;
+  const result = spawnSync("git", ["check-ignore", "--stdin"], {
+    cwd: REPO_ROOT,
+    input: `${absPaths.join("\n")}\n`,
+    encoding: "utf8",
+  });
+  // Exit 0 = some paths ignored, 1 = none ignored, anything else = git could
+  // not answer (not a repo, git missing). Only trust the first two.
+  if (result.error || (result.status !== 0 && result.status !== 1)) return absPaths;
+  const ignored = new Set(
+    result.stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => path.resolve(REPO_ROOT, l)),
+  );
+  return ignored.size === 0 ? absPaths : absPaths.filter((p) => !ignored.has(path.resolve(p)));
+}
+
 function main_(): void {
   const files: string[] = [];
   for (const root of DOC_ROOTS) walkMarkdown(path.join(REPO_ROOT, root), files);
@@ -379,9 +400,10 @@ function main_(): void {
   }
 
   const violations: Violation[] = [];
-  for (const abs of files.sort()) {
+  for (const abs of dropGitIgnored(files).sort()) {
     const rel = path.relative(REPO_ROOT, abs).replace(/\\/g, "/");
     const text = fs.readFileSync(abs, "utf8");
+    if (isArchivedDoc(rel, text)) continue;
     for (const block of extractFences(text)) processBlock(rel, block.startLine, block.lines, violations);
   }
 
