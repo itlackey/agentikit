@@ -1056,7 +1056,9 @@ describe("schtasks backend transactional install", () => {
     transaction.swapOwnerAfterNextTempWrite(prior.replaceAll("sub/deep/nightly", "other-owner"));
     const priorCallCount = transaction.calls.length;
 
-    expect(() => transaction.backend.install({ ...nested, cron: "30 10 * * *" })).toThrow(/changed.*refusing/i);
+    expect(() => transaction.backend.install({ ...nested, cron: "30 10 * * *" })).toThrow(
+      /native scheduler artifact.*not the exact task owner/i,
+    );
     expect(transaction.calls.slice(priorCallCount).some((call) => call[1]?.toLowerCase() === "/create")).toBe(false);
   });
 });
