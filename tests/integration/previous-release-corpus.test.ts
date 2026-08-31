@@ -61,6 +61,14 @@
  *     `uses:`/`with:`, `timeout:`, optional `schedule:`) — static files
  *     proving akm doesn't tighten its schema in a way that breaks a real
  *     consumer.
+ *   - a pre-`--scheduler-context` crontab row (akm < 0.9.2, #881): the
+ *     scheduled invocation still sits inside akm's own `# akm:task …
+ *     BEGIN/END` sentinels but predates the `--scheduler-context` marker
+ *     `extractCronInvocation` otherwise requires — read via
+ *     `CRON_BACKEND().inspectBindings()`/`akmTasksSync`
+ *     (`src/tasks/backends/cron.ts`), which recognizes the row from inside
+ *     its own sentinel and reconciles it instead of treating it as absent
+ *     and colliding with the still-present artifact.
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
@@ -70,6 +78,7 @@ import path from "node:path";
 import { inspectMigrationPlan } from "../../scripts/akm-migrate/task-migrate";
 import { akmHealth } from "../../src/commands/health";
 import { createProposal as createProposalImpl, isProposalSkipped } from "../../src/commands/proposal/repository";
+import { akmTasksSync } from "../../src/commands/tasks/tasks";
 import { loadConfig, loadUserConfig, parseAndValidateConfigText, resetConfigCache } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
 import { getConfigPath } from "../../src/core/paths";
@@ -77,9 +86,22 @@ import { openStateDatabase } from "../../src/core/state-db";
 import { resetQuiet, setQuiet } from "../../src/core/warn";
 import { listStateProposals } from "../../src/storage/repositories/proposals-repository";
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
+import { CRON_BACKEND, type CronExec, type CronExecResult } from "../../src/tasks/backends/cron";
 import { readTaskHistory } from "../../src/tasks/run/task-history";
+import {
+  resolveScheduledTaskContext,
+  schedulerContextDescriptor,
+  writeSchedulerContextDescriptor,
+} from "../../src/tasks/scheduler-invocation";
 import { parseTaskSource } from "../../src/tasks/source/parse-task-source";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+import {
+  type IsolatedAkmStorage,
+  sandboxStashDir,
+  sandboxXdgConfigHome,
+  sandboxXdgStateHome,
+  withIsolatedAkmStorage,
+  writeSandboxConfig,
+} from "../_helpers/sandbox";
 
 const FIXTURES_DIR = path.join(import.meta.dir, "..", "fixtures", "previous-release-corpus");
 
@@ -561,6 +583,89 @@ describe("previous-release corpus — configVersion (#863, synthetic placeholder
     } finally {
       warnSpy.mockRestore();
       resetQuiet();
+    }
+  });
+});
+
+// ── pre-`--scheduler-context` crontab row (akm < 0.9.2, #881) ──────────────
+//
+// The REAL shape a pre-0.9.2 install wrote to the user's crontab: the row is
+// still wrapped in akm's own `# akm:task <id> BEGIN`/`END` sentinels — akm's
+// unambiguous, self-authored proof of ownership — but the scheduled
+// invocation predates `--scheduler-context`, which `extractCronInvocation`
+// otherwise requires to parse a row at all. Before the fix, an unparseable
+// row was invisible to `inspectCronState().installed`, so `akm task sync`
+// treated the task as absent, tried to install it, and collided with the
+// still-physically-present artifact — permanently blocking sync for every
+// task on any install upgrading past v0.9.2. #880 could not add this
+// fixture because writing it requires the fix (`src/tasks/backends/cron.ts`)
+// to exist first.
+describe("previous-release corpus — pre-`--scheduler-context` crontab row (#881)", () => {
+  function memoryExec(initial = ""): CronExec & { current: () => string } {
+    let store = initial;
+    return {
+      read: (): CronExecResult => ({ status: 0, stdout: store, stderr: "" }),
+      write: (content: string): CronExecResult => {
+        store = content;
+        return { status: 0, stdout: "", stderr: "" };
+      },
+      current: () => store,
+    };
+  }
+
+  test("a real-shaped pre-0.9.2 row (no --scheduler-context) is reconciled by sync, not treated as absent", async () => {
+    // Isolated from the real crontab throughout: `CRON_BACKEND` is given an
+    // in-memory `exec` (see `memoryExec` above), never `spawnSync("crontab", …)`.
+    let chain = () => {};
+    chain = sandboxXdgConfigHome(chain).cleanup;
+    chain = sandboxXdgStateHome(chain).cleanup;
+    const stash = sandboxStashDir(chain);
+    try {
+      const tasksDir = path.join(stash.dir, "tasks");
+      fs.mkdirSync(tasksDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(tasksDir, "ping.yml"),
+        'version: 4\nrun: echo ping\nname: ping\nschedule:\n  - cron: "*/15 * * * *"\n    enabled: true\n',
+        "utf8",
+      );
+
+      // Matches the `backendFor` setup in tasks-sync.test.ts: this backend
+      // never routes through the real launcher-eligibility path, so install
+      // operations fall back to CRON_BACKEND's own default context — write
+      // that descriptor for real so it resolves on sync.
+      writeSchedulerContextDescriptor(schedulerContextDescriptor(resolveScheduledTaskContext(), ""));
+
+      // The real pre-0.9.2 shape: akm's own sentinels wrap a scheduled
+      // invocation with no `--scheduler-context <path>` marker at all.
+      const exec = memoryExec(
+        [
+          "# akm:task ping BEGIN",
+          "*/15 * * * * /usr/local/bin/akm task run ping --scheduled >> /home/user/.local/state/akm/tasks/logs/ping.log 2>&1",
+          "# akm:task ping END",
+          "",
+        ].join("\n"),
+      );
+      const backend = CRON_BACKEND({
+        exec,
+        fs: { ensureDir() {} },
+        logDir: "/home/user/.local/state/akm/tasks/logs",
+        akmArgv: ["/usr/local/bin/akm"],
+        envPath: false,
+      });
+
+      const inspected = await backend.inspectBindings?.({});
+      expect(inspected?.installed.map((entry) => entry.id)).toEqual(["ping"]);
+
+      const result = await akmTasksSync({ backend });
+      expect(result.installed).toEqual([]);
+      expect(result.updated).toEqual(["ping"]);
+      expect(result.failed).toEqual([]);
+      // The crontab now carries a current row for the same task, not a
+      // second, colliding one.
+      expect((exec.current().match(/# akm:task ping BEGIN/g) ?? []).length).toBe(1);
+      expect(exec.current()).toContain("--scheduler-context");
+    } finally {
+      stash.cleanup();
     }
   });
 });

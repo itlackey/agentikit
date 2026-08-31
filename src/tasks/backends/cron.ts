@@ -53,8 +53,11 @@ import {
 } from "../scheduler-binding";
 import {
   buildScheduledBindingInvocation,
+  type ParsedScheduledBindingInvocation,
+  parsePublicSchedulerInvocation,
   parseScheduledBindingArgv,
   resolveScheduledTaskContext,
+  SCHEDULER_CONTEXT_ARG,
   type ScheduledTaskContext,
   schedulerContextDescriptor,
   schedulerContextPath,
@@ -182,7 +185,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): SchedulerBackend
       replaceCrontab(exec, existing, next);
     },
     list(): InstalledSchedulerBinding[] {
-      return [...inspectCronState(readCrontab(exec)).installed] as InstalledSchedulerBinding[];
+      return [...inspectCronState(readCrontab(exec), defaultContextPath).installed] as InstalledSchedulerBinding[];
     },
     listForRebind() {
       const existing = readCrontab(exec);
@@ -199,14 +202,14 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): SchedulerBackend
       });
     },
     listNativeArtifacts() {
-      return [...inspectCronState(readCrontab(exec)).artifacts];
+      return [...inspectCronState(readCrontab(exec), defaultContextPath).artifacts];
     },
     inspectBindings() {
-      return inspectCronState(readCrontab(exec));
+      return inspectCronState(readCrontab(exec), defaultContextPath);
     },
     snapshotBindings(ids: readonly string[]): CronBindingSnapshot {
       const crontab = readCrontab(exec);
-      const inspection = inspectCronState(crontab);
+      const inspection = inspectCronState(crontab, defaultContextPath);
       const keys = new Set(ids.map(schedulerNativeArtifactKey));
       return Object.freeze({
         kind: CRON_SNAPSHOT,
@@ -222,7 +225,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): SchedulerBackend
         throw new ConfigError("Invalid cron scheduler snapshot.", "INVALID_CONFIG_FILE");
       }
       const existing = readCrontab(exec);
-      const current = inspectCronState(existing);
+      const current = inspectCronState(existing, defaultContextPath);
       const safeNativeIds: string[] = [];
       const errors: unknown[] = [];
       if (expectedCurrent) {
@@ -277,7 +280,7 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): SchedulerBackend
   };
 }
 
-function inspectCronState(crontab: string): SchedulerBackendInspection {
+function inspectCronState(crontab: string, fallbackContextPath: string): SchedulerBackendInspection {
   const installed: InstalledSchedulerBinding[] = [];
   const artifacts: SchedulerNativeArtifact[] = [];
   for (const { id, body } of listBlocks(crontab)) {
@@ -291,7 +294,14 @@ function inspectCronState(crontab: string): SchedulerBackendInspection {
       signature: fingerprint,
       ...(parsed.target !== undefined ? { target: parsed.target } : {}),
       binding: parsed.binding,
-      contextPath: parsed.contextPath,
+      // A legacy (pre-`--scheduler-context`) row has no real descriptor
+      // path to report — `extractLegacyCronInvocation` leaves it "". Fall
+      // back to the current default so downstream consumers (context
+      // validation in `akm task prune`/`explain`, `sync`'s reuse of an
+      // existing binding's contextPath) see a real, resolvable descriptor
+      // rather than an empty path, since the row is about to be reconciled
+      // to a current one anyway (#881).
+      contextPath: parsed.contextPath || fallbackContextPath,
     };
     Object.defineProperty(ref, "nativeId", { value: id });
     Object.defineProperty(ref, "invocation", { value: Object.freeze([...parsed.invocation]) });
@@ -429,7 +439,38 @@ export function extractCronInvocation(body: string): ReturnType<typeof parseSche
   while (commandStart < fields.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(fields[commandStart]!)) commandStart += 1;
   const redirectIndex = fields.indexOf(">>", commandStart);
   if (redirectIndex === -1) return undefined;
-  return parseScheduledBindingArgv(fields.slice(commandStart, redirectIndex));
+  const tail = fields.slice(commandStart, redirectIndex);
+  const parsed = parseScheduledBindingArgv(tail);
+  if (parsed) return parsed;
+  // Rows written by akm < 0.9.2 (before `--scheduler-context` existed) have
+  // no context argument at all — just the akm argv immediately followed by
+  // the public `task run …` / `workflow run …` tail. `extractCronInvocation`
+  // only ever runs on a body already isolated between this backend's own
+  // `# akm:task … BEGIN/END` sentinels (see `parseBlocks`), so recognizing
+  // this older shape here doesn't extend trust to any unmarked crontab
+  // line — it only lets sync see and reconcile a row akm already owns
+  // instead of treating it as absent and colliding with the still-present
+  // artifact (#881). Guarded on the marker's absence so a row that DOES
+  // carry `--scheduler-context` but fails to parse for some other reason
+  // is never silently reinterpreted as legacy.
+  if (tail.includes(SCHEDULER_CONTEXT_ARG)) return undefined;
+  return extractLegacyCronInvocation(tail);
+}
+
+function extractLegacyCronInvocation(tail: readonly string[]): ParsedScheduledBindingInvocation | undefined {
+  for (let index = 0; index < tail.length - 1; index += 1) {
+    if ((tail[index] === "task" || tail[index] === "workflow") && tail[index + 1] === "run") {
+      const publicInvocation = parsePublicSchedulerInvocation(tail.slice(index));
+      if (!publicInvocation) return undefined;
+      return {
+        binding: tail.slice(0, index),
+        contextPath: "",
+        invocation: publicInvocation.invocation,
+        ...(publicInvocation.target !== undefined ? { target: publicInvocation.target } : {}),
+      };
+    }
+  }
+  return undefined;
 }
 
 /** Reverse {@link quoteForCron} for a single whitespace-free token. */
