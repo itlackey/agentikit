@@ -25,7 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import { _setUpdateTransactionHookForTests, akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { loadConfig, saveConfig } from "../../src/core/config/config";
-import { probeIndexWriterLease } from "../../src/indexer/index-writer-lock";
+import { probeAssetMutationLease } from "../../src/indexer/index-writer-lock";
 import { _setAkmIndexForTests } from "../../src/indexer/indexer";
 import { readLockfile, writeLockfile } from "../../src/integrations/lockfile";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
@@ -230,9 +230,9 @@ describe("akm bundle update — destructive-branch confirmation gate (F1/R-058)"
       syncedAt: new Date().toISOString(),
       writable: false,
     });
-    let leaseState: ReturnType<typeof probeIndexWriterLease>["state"] | undefined;
+    let leaseState: ReturnType<typeof probeAssetMutationLease>["state"] | undefined;
     overrideSeam(_setAkmIndexForTests, async () => {
-      leaseState = probeIndexWriterLease().state;
+      leaseState = probeAssetMutationLease().state;
       return {
         schemaVersion: 1,
         stashDir,
