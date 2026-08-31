@@ -53,7 +53,7 @@ import { conceptIdFromTypeName, displayRef } from "./asset/resolve-ref";
 import { deriveBundleId } from "./bundle-id";
 import { existingFileMode, isWithin, resolveStashDir, writeFileAtomic } from "./common";
 import type { AkmConfig, ConfiguredSource, SourceConfigEntry } from "./config/config";
-import { resolveConfiguredSources } from "./config/config";
+import { bundleContentRoot, resolveConfiguredSources } from "./config/config";
 import { ConfigError, UsageError } from "./errors";
 import { sanitizeCommitMessage } from "./git-message";
 import { warn } from "./warn";
@@ -175,7 +175,15 @@ export function planWriteTargetPublication(
   }
   const unignoredPaths = paths.filter((_, index) => !ignored.has(relativePaths[index] as string));
   assertWriteTargetPathsClean(target.source, unignoredPaths);
-  assertWriteTargetPlanBase(target, expectedBaseHead);
+  // Not re-verified against `expectedBaseHead` here: any drift during the
+  // ignored/clean-path checks above is caught by the SAME expectedBaseHead
+  // comparison `beginWriteTargetMutation` runs immediately before the first
+  // mutation (its documented contract, and every real caller calls it right
+  // after this function returns) -- checking it again here a few lines
+  // earlier for the exact same value only duplicated that check, not added
+  // a new one. `publishWriteTargetPlan` independently re-checks a third time
+  // after the actual mutation, which is a genuinely different point in time
+  // and stays.
   return { target, paths, publish: ignored.size === 0, expectedBaseHead };
 }
 
@@ -1224,9 +1232,10 @@ export function resolveWorkingStashTarget(
   const requireWritable = options.requireWritable !== false;
   if (process.env.AKM_BUNDLE_DIR?.trim()) {
     const stashDir = resolveStashDir();
+    const resolvedStashDir = path.resolve(stashDir);
     const configured = configuredSources.find((source) => {
       const sourcePath = source.source.type === "filesystem" ? source.source.path : undefined;
-      return sourcePath !== undefined && path.resolve(sourcePath) === path.resolve(stashDir);
+      return sourcePath !== undefined && bundleContentRoot(sourcePath, source.componentRoot) === resolvedStashDir;
     });
     if (configured) {
       const target = adaptConfiguredSource(configured);

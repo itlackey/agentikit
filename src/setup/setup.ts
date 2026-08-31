@@ -1119,7 +1119,7 @@ export async function runSetupFromConfig(opts: {
   }
 
   // Convert the private setup draft to the persisted bundle shape.
-  let finalizedMerged: AkmConfig = finalizeSetupDraft(merged);
+  const finalizedMerged: AkmConfig = finalizeSetupDraft(merged);
 
   // Reject an invalid merged engine graph before probing or touching the stash.
   validateCompleteConfig(finalizedMerged);

@@ -239,7 +239,7 @@ async function doSyncGit(parsed: ParsedGitRef, options?: SyncOptions): Promise<S
           syncedAt,
         };
       }
-    } catch (error) {
+    } catch {
       // Cache invalid, re-clone
     }
   }

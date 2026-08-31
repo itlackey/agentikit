@@ -1769,7 +1769,7 @@ async function resolveReflectSource(
 
 /**
  * Run the agent with the optional Self-Refine loop (R-1 / #372): up to
- * MAX_REFINE_ITERS invocations, each injecting the prior draft as self-critique
+ * `maxRefineIters` invocations, each injecting the prior draft as self-critique
  * context and exiting early on a no-op refinement. Synthesizes per-iteration
  * draft paths into `draftPathsToCleanup` (mutated) and returns the final agent
  * result + last draft path. Extracted verbatim from `akmReflect`.
@@ -1804,8 +1804,7 @@ async function runReflectRefineIterations(args: {
     draftPathsToCleanup,
     onNotices,
   } = args;
-  const MAX_REFINE_ITERS = 3;
-  const maxRefineIters = Math.min(Math.max(1, options.maxRefineIters ?? 1), MAX_REFINE_ITERS);
+  const maxRefineIters = Math.max(1, options.maxRefineIters ?? 1);
   // Determine whether this dispatch can honour the file-write contract.
   // Agent CLI + OpenCode SDK runners both have filesystem access; the direct
   // LLM HTTP runner does NOT.

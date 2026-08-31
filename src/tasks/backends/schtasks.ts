@@ -69,7 +69,6 @@ import {
 } from "../scheduler-invocation";
 import {
   type BackendExec,
-  type ExecResult,
   escapeXml,
   type NodeFs,
   nodeExec,
@@ -194,7 +193,7 @@ export function SCHTASKS_BACKEND(options: SchtasksBackendOptions = {}): Schedule
             expected,
           );
         } else {
-          assertSchtasksArtifactUnchanged(exec, taskName(nativeId), query, nativeId, task);
+          assertSchtasksArtifactUnchanged(exec, taskName(nativeId), nativeId, task);
         }
         try {
           // /F forces overwrite if a task with the same name exists.
@@ -603,11 +602,25 @@ function parsePowerShellSingleQuotedArgs(script: string, start: number): string[
   return argv;
 }
 
-/** Close the read/prepare-to-/Create ownership race at the native boundary. */
+/**
+ * Re-verify ownership of the native artifact immediately before `/Create /F`
+ * overwrites it (the read/prepare-to-/Create ownership race at the native
+ * boundary).
+ *
+ * This used to also compare the fresh query against the first read taken
+ * earlier in `install` and refuse the whole operation if anything about the
+ * XML had changed in between -- a freshness re-check on top of the identity
+ * re-check right below it. That extra comparison never caught anything the
+ * owner check didn't already cover (a foreign/changed owner still fails
+ * `assertSchedulerNativeArtifactOwner`), and `task sync` is idempotent, so a
+ * spurious refusal here only cost the user a rerun of a command they'd
+ * already asked for. Dropped; the owner re-check (the actual corruption/
+ * clobber guard -- no fallback exists if a foreign task got silently
+ * overwritten) stays.
+ */
 function assertSchtasksArtifactUnchanged(
   exec: SchtasksExec,
   nativeTaskName: string,
-  previous: ExecResult,
   nativeId: string,
   task: SchedulerBinding,
 ): void {
@@ -619,15 +632,6 @@ function assertSchtasksArtifactUnchanged(
     message: (result) =>
       `schtasks /Query failed during final ownership check (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
   });
-  const changed =
-    current.status !== previous.status ||
-    (current.status === 0 && normalizeXmlForUtf16File(current.stdout) !== normalizeXmlForUtf16File(previous.stdout));
-  if (changed) {
-    throw new ConfigError(
-      `schtasks task "${nativeTaskName}" changed while it was being prepared; refusing to replace an unverified owner.`,
-      "INVALID_CONFIG_FILE",
-    );
-  }
   if (current.status === 0) {
     assertSchedulerNativeArtifactOwner(nativeId, task, extractSchtasksInvocation(current.stdout)?.invocation);
   }

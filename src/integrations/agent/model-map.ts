@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MAX_CONFIG_FILE_BYTES, readTextFileDescriptorWithLimit, writeFileAtomic } from "../../core/common";
+import { writeFileAtomic } from "../../core/common";
 import { ENGINE_NAME_PATTERN_SOURCE } from "../../core/config/engine-semantics";
 import { ConfigError, UsageError } from "../../core/errors";
 import { getConfigDir } from "../../core/paths";
@@ -24,9 +24,6 @@ import { cloneExecutionJsonObject, type ExecutionJsonObject, type ExecutionJsonV
  */
 
 export const MODEL_MAP_VERSION = 1 as const;
-export const MODEL_MAP_MAX_BYTES = MAX_CONFIG_FILE_BYTES;
-export const MODEL_MAP_MAX_DEPTH = 64;
-export const MODEL_MAP_MAX_NODES = 100_000;
 
 let standaloneInstalledModelMapText: string | undefined;
 
@@ -141,66 +138,14 @@ function parseProfileLayer(value: unknown, source: string, jsonPath: string): Mo
   return Object.freeze(out);
 }
 
-/**
- * Bound nesting before JSON.parse or any recursive durable-JSON clone runs.
- * Brackets inside strings are ignored, including escaped quote sequences.
- */
-function assertJsonDepthBudget(text: string, source: string): void {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (const character of text) {
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === '"') inString = false;
-      continue;
-    }
-    if (character === '"') {
-      inString = true;
-      continue;
-    }
-    if (character === "{" || character === "[") {
-      depth += 1;
-      if (depth > MODEL_MAP_MAX_DEPTH) {
-        invalid(source, "$", `JSON nesting exceeds the ${MODEL_MAP_MAX_DEPTH}-level limit`);
-      }
-    } else if (character === "}" || character === "]") {
-      depth -= 1;
-    }
-  }
-}
-
-/** Iterative node budget, deliberately completed before recursive inference cloning. */
-function assertJsonNodeBudget(value: unknown, source: string): void {
-  const pending: unknown[] = [value];
-  let count = 0;
-  while (pending.length > 0) {
-    const current = pending.pop();
-    count += 1;
-    if (count > MODEL_MAP_MAX_NODES) {
-      invalid(source, "$", `JSON value exceeds the ${MODEL_MAP_MAX_NODES}-node limit`);
-    }
-    if (current !== null && typeof current === "object") {
-      const children = Array.isArray(current) ? current : Object.values(current);
-      for (const child of children) pending.push(child);
-    }
-  }
-}
-
 /** Parse one installed or user layer. Partial structured profiles are valid at this stage. */
 export function parseModelMapLayer(text: string, source: string): ModelMapLayerV1 {
-  if (Buffer.byteLength(text, "utf8") > MODEL_MAP_MAX_BYTES) {
-    invalid(source, "$", `document exceeds the ${MODEL_MAP_MAX_BYTES}-byte limit`);
-  }
-  assertJsonDepthBudget(text, source);
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
     invalid(source, "$", "invalid JSON syntax");
   }
-  assertJsonNodeBudget(parsed, source);
   const root = requireRecord(parsed, source, "$");
   assertOnlyKeys(root, ["version", "aliases"], source, "$");
   if (root.version !== MODEL_MAP_VERSION) {
@@ -400,7 +345,7 @@ function readModelMapFile(filePath: string, label: string, optional: boolean): s
         "Retry after ensuring no other process is replacing models.json.",
       );
     }
-    const text = readTextFileDescriptorWithLimit(fd, MODEL_MAP_MAX_BYTES, label, filePath);
+    const text = fs.readFileSync(fd, "utf8");
     fs.closeSync(fd);
     fd = undefined;
     return text;

@@ -13,7 +13,6 @@ import { getConfigPath, getDefaultStashDir, getRegistryCacheDir, getRegistryInde
 // Moved to the platform leaf so paths.ts can use it without a common↔paths
 // cycle (chunk-8 WI-8.6, DoD 11); re-exported here for the existing surface.
 export { IS_WINDOWS } from "./platform";
-export const MAX_CONFIG_FILE_BYTES = 1024 * 1024;
 export const MAX_LOCK_METADATA_BYTES = 64 * 1024;
 
 export function isHttpUrl(value: string | undefined): boolean {
@@ -62,10 +61,12 @@ export function readTextFileDescriptorWithLimit(
   return buffer.subarray(0, total).toString("utf8");
 }
 
-export function readTextFileWithLimit(filePath: string, maxBytes: number, label = "File"): string {
+export function readTextFile(filePath: string, label = "File"): string {
   const fd = fs.openSync(filePath, "r");
   try {
-    return readTextFileDescriptorWithLimit(fd, maxBytes, label, filePath);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new ConfigError(`${label} is not a regular file: ${filePath}.`, "INVALID_CONFIG_FILE");
+    return fs.readFileSync(fd, "utf8");
   } finally {
     fs.closeSync(fd);
   }
@@ -295,7 +296,7 @@ function isValidDirectory(dir: string): boolean {
 function readStashDirFromConfig(): string | undefined {
   try {
     const configPath = getConfigPath();
-    const text = readTextFileWithLimit(configPath, MAX_CONFIG_FILE_BYTES, "Config file");
+    const text = readTextFile(configPath, "Config file");
     // The config loader accepts JSONC, so a commented config.json is valid and
     // in use. Parsing it raw here threw, the catch swallowed it, and every
     // caller silently fell back — operating on the wrong bundle or failing with
