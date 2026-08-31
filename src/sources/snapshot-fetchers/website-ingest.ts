@@ -673,44 +673,35 @@ async function resolveCrawlRobotsDecision(
 }
 
 /**
- * C-02/C-03: warn, before any page fetch, when the start URL itself is
- * off-limits per robots.txt. This is a courtesy notice, not a refusal — the
- * user explicitly chose this site to ingest (`akm sources add website ...`
- * or equivalent config), which is a deliberate human command, not a crawler
- * roaming unattended. Robots.txt disallow on the exact URL the user typed is
- * useful to surface (the site owner may not want automated ingestion) but
- * should not abort a command the user asked for by name; `respectRobots:
- * false` already exists as an explicit bypass for anyone who wants to skip
- * the check entirely, so a hard abort here only adds a second, involuntary
- * gate in front of people who didn't set that.
+ * C-02/C-03: fail fast, before any page fetch, when the start URL itself is
+ * off-limits. A 5xx robots.txt (RobotsPolicy caches `DISALLOW_ALL_RULES` for
+ * that case) gets a distinct message calling out the server error, per spec
+ * §4.6.
  *
  * Checks both `start`'s (normalized) URL and `rawStartUrl` — the URL exactly
  * as the user supplied it in config, before `validateWebsiteUrl` ->
  * `normalizeSiteUrl` stripped any trailing slash — via
  * `decideRobotsAllowance`. Without this, a start URL typed as `.../secret/`
- * under `Disallow: /secret/` would never match that rule; conversely, a
- * start URL typed as `.../docs/` under `Disallow: / \n Allow: /docs/` would
- * be normalized to `.../docs`, fail to match `Allow: /docs/`, and warn even
- * though the site owner explicitly opened `/docs/` to crawlers.
- * `crawlWebsite`'s queue gate applies the same decision to every
- * subsequently discovered link (and, in the Allow case, actually fetches the
- * raw URL this function only checks against) — see its call to
- * `resolveCrawlRobotsDecision`.
+ * under `Disallow: /secret/` would never match that rule and would be
+ * crawled instead of rejected with the spec §4.6 C-02 UsageError; conversely,
+ * a start URL typed as `.../docs/` under `Disallow: / \n Allow: /docs/`
+ * would be normalized to `.../docs`, fail to match `Allow: /docs/`, and be
+ * rejected even though the site owner explicitly opened `/docs/` to
+ * crawlers. `crawlWebsite`'s queue gate applies the same decision (and, in
+ * the Allow case, actually fetches the raw URL this function only validates
+ * against) — see its call to `resolveCrawlRobotsDecision`.
  */
-async function warnIfStartUrlDisallowedByRobots(robots: RobotsPolicy, start: URL, rawStartUrl?: string): Promise<void> {
+async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL, rawStartUrl?: string): Promise<void> {
   const startUrl = start.toString();
   const robotsUrl = new URL("/robots.txt", start.origin).toString();
   const rules = await robots.rulesFor(startUrl);
 
   if (rules.disallowAll) {
-    warn(
-      "[akm] %s returned a server error while crawling %s, which robots.txt conventions treat as a full " +
-        "disallow until it recovers. Proceeding anyway because this site was explicitly configured for " +
-        "ingestion; set respectRobots: false on this website source to silence this warning.",
-      robotsUrl,
-      startUrl,
+    throw new UsageError(
+      `Refusing to crawl ${startUrl}: ${robotsUrl} returned a server error, which robots.txt conventions ` +
+        `treat as a full disallow until it recovers. Set respectRobots: false on this website source to bypass ` +
+        `robots.txt.`,
     );
-    return;
   }
   let rawStartUrlNormalized: string | undefined;
   if (rawStartUrl) {
@@ -722,11 +713,9 @@ async function warnIfStartUrlDisallowedByRobots(robots: RobotsPolicy, start: URL
   }
   const { allowed } = decideRobotsAllowance(rules, startUrl, rawStartUrlNormalized);
   if (!allowed) {
-    warn(
-      "[akm] %s is disallowed by %s. Proceeding anyway because this site was explicitly configured for " +
-        "ingestion; set respectRobots: false on this website source to silence this warning.",
-      startUrl,
-      robotsUrl,
+    throw new UsageError(
+      `Refusing to crawl ${startUrl}: disallowed by ${robotsUrl}. Set respectRobots: false on this website ` +
+        `source to bypass robots.txt.`,
     );
   }
 }
@@ -744,7 +733,7 @@ async function crawlWebsite(
     /**
      * The start URL exactly as the user supplied it in config, before
      * `validateWebsiteUrl` -> `normalizeSiteUrl` stripped any trailing
-     * slash. Passed through to `warnIfStartUrlDisallowedByRobots` only — see
+     * slash. Passed through to `assertStartUrlAllowedByRobots` only — see
      * `decideRobotsAllowance`'s doc comment for why. `startUrl` itself is
      * always already normalized by the time it reaches here (every caller
      * routes it through `validateWebsiteUrl` first), so it cannot stand in
@@ -790,7 +779,7 @@ async function crawlWebsite(
           loadRobotsTxt(robotsUrl, { allowPrivateHosts: options.allowPrivateHosts, signal: crawlSignal }),
         );
 
-  await warnIfStartUrlDisallowedByRobots(robots, start, options.rawStartUrl);
+  await assertStartUrlAllowedByRobots(robots, start, options.rawStartUrl);
 
   // Counts actual `fetchWebsitePage` invocations (regardless of outcome) so
   // Crawl-delay pacing skips the first fetch and never charges a delay slot
@@ -810,13 +799,7 @@ async function crawlWebsite(
     if (!normalized || visited.has(normalized)) continue;
 
     const decision = await resolveCrawlRobotsDecision(robots, normalized, next.rawUrl);
-    // The seed URL (depth 0) is the one the user explicitly configured for
-    // ingestion — a deliberate human command, not the crawler's own
-    // discovery. `warnIfStartUrlDisallowedByRobots` already warned about it
-    // above; it is fetched regardless of the robots verdict. Every
-    // subsequently discovered link (depth >= 1) is the crawler acting on
-    // its own initiative and stays subject to the normal robots.txt gate.
-    if (!decision.allowed && next.depth > 0) {
+    if (!decision.allowed) {
       // Deliberately NOT marked visited. `/docs/` and `/docs` share a
       // normalized key but get different robots verdicts (a `Disallow: /docs/`
       // rule matches only the trailing-slash form). Marking the key visited
@@ -855,11 +838,7 @@ async function crawlWebsite(
 
     const fetched = await fetchWebsitePage(decision.fetchUrl, {
       allowPrivateHosts: options.allowPrivateHosts,
-      // Same seed-vs-discovered distinction as above: the post-redirect
-      // robots re-check below (`websitePageFromResponse`) must not undo the
-      // seed URL's bypass, so it is only handed the robots policy for
-      // crawler-discovered links.
-      ...(next.depth > 0 ? { robots } : {}),
+      robots,
       signal: crawlSignal,
     });
     if (!fetched) continue;

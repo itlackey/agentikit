@@ -20,6 +20,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import type { SourceConfigEntry } from "../../src/core/config/config";
+import { UsageError } from "../../src/core/errors";
 import { _setWarnSinkForTests } from "../../src/core/warn";
 import { ensureWebsiteMirror, getWebsiteCachePaths } from "../../src/sources/snapshot-fetchers/website-ingest";
 import { overrideSeam } from "../_helpers/seams";
@@ -127,17 +128,7 @@ afterEach(() => {
 // ── §4.6 crawlWebsite integration (via ensureWebsiteMirror) ─────────────────
 
 describe("crawlWebsite robots.txt compliance", () => {
-  test("C-02: a disallowed start URL is fetched anyway, with a warning instead of a hard refusal", async () => {
-    // The start URL was explicitly configured for ingestion (a deliberate
-    // human command), so a disallow on the exact URL the user typed is a
-    // courtesy notice, not grounds to abort the command they asked for.
-    // `respectRobots: false` remains the explicit way to silence the notice.
-    const warnCalls: string[] = [];
-    overrideSeam(_setWarnSinkForTests, (level, args) => {
-      if (level !== "warn") return;
-      warnCalls.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
-    });
-
+  test("C-02: a disallowed start URL throws UsageError before fetching any page", async () => {
     const { url, requestLog } = startFixtureServer({
       robots: { body: "User-agent: *\nDisallow: /\n" },
       pages: { "/": "<html><body>Home</body></html>" },
@@ -146,34 +137,33 @@ describe("crawlWebsite robots.txt compliance", () => {
     const normalizedUrl = `${url}/`;
     const robotsUrl = `${url}/robots.txt`;
 
-    const cachePaths = await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+    let caught: unknown;
+    try {
+      await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+    } catch (err) {
+      caught = err;
+    }
 
-    const message = warnCalls.join("\n");
+    expect(caught).toBeInstanceOf(UsageError);
+    const message = (caught as Error).message;
     expect(message).toContain(normalizedUrl);
     expect(message).toContain(robotsUrl);
     expect(message).toMatch(/respectRobots/);
 
-    // The start page was still fetched and made it into the stash.
-    expect(requestLog.some((r) => r.pathname === "/")).toBe(true);
-    expect(stashContainsSourceUrl(cachePaths.stashDir, normalizedUrl)).toBe(true);
+    // No page was fetched — only /robots.txt.
+    expect(requestLog.some((r) => r.pathname === "/")).toBe(false);
   });
 
   test(
-    "C-02: a trailing-slash start URL warns even though normalizeSiteUrl strips the slash before the " +
+    "C-02: a trailing-slash start URL is rejected even though normalizeSiteUrl strips the slash before the " +
       "robots check sees it",
     async () => {
       // Regression: validateWebsiteUrl -> normalizeSiteUrl strips the start
-      // URL's trailing slash before warnIfStartUrlDisallowedByRobots ever
-      // sees it, so a start URL typed as `/secret/` under `Disallow:
-      // /secret/` never matched that rule (the rule requires a literal
-      // trailing `/` in the target) and the disallowed start page's warning
-      // never fired.
-      const warnCalls: string[] = [];
-      overrideSeam(_setWarnSinkForTests, (level, args) => {
-        if (level !== "warn") return;
-        warnCalls.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
-      });
-
+      // URL's trailing slash before assertStartUrlAllowedByRobots ever sees
+      // it, so a start URL typed as `/secret/` under `Disallow: /secret/`
+      // never matched that rule (the rule requires a literal trailing `/` in
+      // the target) and the disallowed start page was fetched instead of
+      // being rejected.
       const { url, requestLog } = startFixtureServer({
         robots: { body: "User-agent: *\nDisallow: /secret/\n" },
         pages: { "/secret": "<html><body>Secret content</body></html>" },
@@ -181,34 +171,39 @@ describe("crawlWebsite robots.txt compliance", () => {
       const startUrl = `${url}/secret/`;
       trackCache(startUrl);
 
-      await ensureWebsiteMirror(websiteEntry(startUrl), { allowPrivateHosts: true });
+      let caught: unknown;
+      try {
+        await ensureWebsiteMirror(websiteEntry(startUrl), { allowPrivateHosts: true });
+      } catch (err) {
+        caught = err;
+      }
 
-      expect(warnCalls.join("\n")).toMatch(/respectRobots/);
-      // The disallowed start page was fetched anyway (proceeding, not
-      // refusing) after /robots.txt was checked.
-      expect(requestLog.map((r) => r.pathname)).toEqual(["/robots.txt", "/secret"]);
+      expect(caught).toBeInstanceOf(UsageError);
+      expect((caught as Error).message).toMatch(/respectRobots/);
+      // The disallowed start page must never have been fetched — only
+      // /robots.txt.
+      expect(requestLog.map((r) => r.pathname)).toEqual(["/robots.txt"]);
     },
   );
 
-  test("C-03: a 5xx robots.txt on the start origin warns, naming the server error, and still crawls", async () => {
-    const warnCalls: string[] = [];
-    overrideSeam(_setWarnSinkForTests, (level, args) => {
-      if (level !== "warn") return;
-      warnCalls.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
-    });
-
-    const { url, requestLog } = startFixtureServer({
+  test("C-03: a 5xx robots.txt on the start origin also throws UsageError, naming the server error", async () => {
+    const { url } = startFixtureServer({
       robots: { status: 500, body: "boom" },
       pages: { "/": "<html><body>Home</body></html>" },
     });
     trackCache(url);
 
-    await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+    let caught: unknown;
+    try {
+      await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
+    } catch (err) {
+      caught = err;
+    }
 
-    const message = warnCalls.join("\n");
+    expect(caught).toBeInstanceOf(UsageError);
+    const message = (caught as Error).message;
     expect(message).toMatch(/respectRobots/);
     expect(message).toMatch(/server error|5\d\d/i);
-    expect(requestLog.some((r) => r.pathname === "/")).toBe(true);
   });
 
   test(
@@ -367,7 +362,7 @@ describe("crawlWebsite robots.txt compliance", () => {
     // before the robots check ever sees it, so the canonical
     // "Disallow: / \n Allow: /docs/" layout — which requires that trailing
     // slash to match the Allow rule — rejected a start URL the site owner
-    // explicitly opened to crawlers, warning and naming a URL
+    // explicitly opened to crawlers, throwing UsageError and naming a URL
     // (".../docs") the user never supplied.
     const { url, requestLog } = startFixtureServer({
       robots: { body: "User-agent: *\nDisallow: /\nAllow: /docs/\n" },
