@@ -22,19 +22,22 @@
  * Plus one tie-through test: the REAL `resolveStashStandards` output (from an
  * on-disk convention fact) reaches a builder's rendered prompt.
  *
- * Pure string assertions + a temp stash for the tie-through. No spawn/serve.
+ * Pure string assertions + a temp stash for the tie-through. No real DB,
+ * network, or spawned process, so this file lives under tests/ (unit
+ * target), not tests/integration/ (ORG-05, 0.9.8 stabilization; see
+ * AGENTS.md's tests/integration/ classification rule).
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildChunkPrompt } from "../../src/commands/improve/consolidate/chunking";
-import { buildDistillPrompt } from "../../src/commands/improve/distill";
-import { buildExtractPrompt } from "../../src/commands/improve/extract-prompt";
-import { resolveStandardsContext } from "../../src/core/standards/resolve-standards-context";
-import { resolveStashStandards } from "../../src/core/standards/resolve-stash-standards";
-import { buildProposePrompt, buildReflectPrompt, buildSchemaRepairPrompt } from "../../src/integrations/agent/prompts";
+import { buildChunkPrompt } from "../src/commands/improve/consolidate/chunking";
+import { buildDistillPrompt } from "../src/commands/improve/distill";
+import { buildExtractPrompt } from "../src/commands/improve/extract-prompt";
+import { resolveStandardsContext } from "../src/core/standards/resolve-standards-context";
+import { resolveStashStandards } from "../src/core/standards/resolve-stash-standards";
+import { buildProposePrompt, buildReflectPrompt, buildSchemaRepairPrompt } from "../src/integrations/agent/prompts";
 
 /** The lead-in line shared by every authoring prompt's standards section. */
 const LEAD_IN = "Standards to follow (the rulebook for this target)";
