@@ -31,9 +31,8 @@ import { getDbPath } from "../core/paths";
 import { warn, warnVerbose } from "../core/warn";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { deleteEntriesByIds, getEntryCount, upsertEntry } from "../storage/repositories/index-entries-repository";
-import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
-import { generateEmbeddingsForDb, publishTargetedSemanticStatus } from "./materialize-embeddings";
+import { generateEmbeddingsForDb, publishTargetedEmbeddingMeta } from "./materialize-embeddings";
 import type { IndexDocument } from "./passes/metadata";
 import { drainDirDocuments } from "./scan/drain-dir";
 import { buildSearchText } from "./search/search-fields";
@@ -69,7 +68,7 @@ export async function indexWrittenAssets(
   } = {},
 ): Promise<boolean> {
   try {
-    return await withIndexWriterLease({ purpose: "index-written-assets" }, async () => {
+    return await (async () => {
       const dbPath = getDbPath();
       // `true` here means "the index is in the state the caller expects" — and
       // `acceptProposal` advances its journal to `index-finalized` on the
@@ -197,14 +196,14 @@ export async function indexWrittenAssets(
         })();
         if (mutated) {
           const config = loadConfig();
-          const embeddingResult = await generateEmbeddingsForDb(db, config, () => {}, undefined, [...targetEntryIds]);
-          publishTargetedSemanticStatus(db, config, embeddingResult);
+          await generateEmbeddingsForDb(db, config, () => {}, undefined, [...targetEntryIds]);
+          publishTargetedEmbeddingMeta(db, config);
         }
       } finally {
         closeDatabase(db);
       }
       return true;
-    });
+    })();
   } catch (error) {
     // A permission fault is the one failure the next full index will NOT heal,
     // so it does not get the verbose-only treatment the other skips do: fail

@@ -382,11 +382,11 @@ const ERROR_BODY_MAX_LEN = 200;
  * Make an HTTP error body safe to put in an error message: pattern-redact
  * credential shapes, then clip. Provider bodies can echo the credential that
  * was sent and can be megabytes of HTML, and these messages travel — into
- * persisted status files, `--json` output, and agent transcripts.
+ * `--json` output and agent transcripts.
  *
  * Lives here rather than beside one transport because every HTTP client in the
  * codebase needs it; the embeddings transport originally lacked it and leaked
- * raw 10 MB bodies into `semantic-status.json`.
+ * raw 10 MB bodies into error messages.
  */
 export function redactErrorBody(input: string): string {
   if (!input) return "";

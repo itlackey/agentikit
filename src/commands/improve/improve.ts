@@ -70,7 +70,7 @@ import type {
   ImproveScope,
 } from "./improve-run-types";
 import { type ResolvedImprovePlan, resolveImprovePlan, resolveImproveStrategy } from "./improve-strategies";
-import { improveLockPath, MIN_IMPROVE_LOCK_STALE_MS, releaseImproveLock, tryAcquireImproveLock } from "./locks";
+import { improveLockPath, releaseImproveLock, tryAcquireImproveLock } from "./locks";
 // The cycle loop / post-loop / maintenance stages live in ./loop-stages.
 import { runImproveLoopStage, runImprovePostLoopStage } from "./loop-stages";
 import { analyzeMemoryCleanup, type MemoryCleanupPlan } from "./memory/memory-improve";
@@ -207,7 +207,6 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
     syncRepoDir,
     resolvedStateDbPath,
     resolvedLockPath,
-    lockStaleAfterMs,
   } = setup;
   let clearBudgetTimer = (): void => {};
   let initialGitPaths = new Set<string>();
@@ -259,7 +258,7 @@ export async function akmImprove(options: AkmImproveOptions = {}): Promise<AkmIm
 
   try {
     if (!options.dryRun) {
-      const acquisition = tryAcquireImproveLock(resolvedLockPath, lockStaleAfterMs, options.skipIfLocked, {
+      const acquisition = tryAcquireImproveLock(resolvedLockPath, options.skipIfLocked, {
         // R25: C2 boundary-pinned path — the long-lived handle doesn't exist yet.
         dbPath: resolvedStateDbPath,
       });
@@ -620,7 +619,6 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
   // triage, indexing, proposal work, maintenance, and final stash sync.
   const lockBaseDir = primaryStashDir ? path.join(primaryStashDir, ".akm") : path.join(options.stashDir ?? ".", ".akm");
   const resolvedLockPath = improveLockPath(lockBaseDir);
-  const lockStaleAfterMs = Math.max(MIN_IMPROVE_LOCK_STALE_MS, budgetMs + 10 * 60 * 1000);
   const effectiveSync = { ...improveProfile.sync, ...options.sync };
 
   return {
@@ -651,7 +649,6 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
     syncRepoDir,
     resolvedStateDbPath,
     resolvedLockPath,
-    lockStaleAfterMs,
     effectiveSync,
   };
 }

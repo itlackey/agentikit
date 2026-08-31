@@ -284,7 +284,6 @@ const ALLOWED_FILES = new Set<string>([
   "tests/integration/proposals-validation.test.ts",
   "tests/integration/registry-index-v2.test.ts",
   "tests/integration/registry-search.test.ts",
-  "tests/integration/semantic-status.test.ts",
   "tests/integration/storage/index-db-loan.characterization.test.ts",
   "tests/integration/storage/workflow-runs-repository.characterization.test.ts",
   "tests/integration/tasks-runner.test.ts",
@@ -346,8 +345,12 @@ const SPAWN_ALLOWED = new Set<string>([]);
  *
  * 65 → 61: four workflow-v3/duplicate-engine suites were deleted during the
  * v4-only runtime convergence, so their isolation exemptions were removed too.
+ *
+ * 61 → 60: `tests/integration/semantic-status.test.ts`'s grandfathered entry
+ * was removed with the file itself (#873 — cached semantic-search verdict
+ * deletion).
  */
-export const ALLOWLIST_RATCHET_BASELINE = 61;
+export const ALLOWLIST_RATCHET_BASELINE = 60;
 
 /** Live size of the combined grandfather allowlist (all rule sets). */
 export function combinedAllowlistSize(): number {

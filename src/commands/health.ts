@@ -14,7 +14,6 @@ import { classifyPathAccess, describeInaccessiblePath } from "../core/path-acces
 import { getConfigPath, getDataDir, getDbPath, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
-import { readSemanticStatus } from "../indexer/search/semantic-status";
 import type { Database } from "../storage/database";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
 import { getAllEntries } from "../storage/repositories/index-entries-repository";
@@ -291,32 +290,24 @@ function gatherStaleTxnJournalsPhase(now: () => number): StaleTxnJournalsPhase {
   }
 }
 
-interface SemanticConfigPhase {
-  semanticStatus: ReturnType<typeof readSemanticStatus>;
-  semanticSearchMode: string | undefined;
-  embeddingEndpoint: string | undefined;
+interface EgressConfigPhase {
   egressConfigView: EgressConfigView | undefined;
 }
 
 /**
- * Semantic-search status + the config fields the embedding-endpoint and
- * surfaces advisories need. Best-effort: an unloadable config leaves the
- * config-derived fields undefined and callers fall back to generic messages.
+ * Config fields the surfaces advisory needs. Best-effort: an unloadable
+ * config leaves the field undefined and the caller falls back to a generic
+ * message.
  */
-function gatherSemanticConfigPhase(): SemanticConfigPhase {
-  const semanticStatus = readSemanticStatus();
-  let semanticSearchMode: string | undefined;
-  let embeddingEndpoint: string | undefined;
+function gatherEgressConfigPhase(): EgressConfigPhase {
   let egressConfigView: EgressConfigView | undefined;
   try {
     const config = loadConfig();
-    semanticSearchMode = config.semanticSearchMode;
-    embeddingEndpoint = config.embedding?.endpoint;
     egressConfigView = config as EgressConfigView;
   } catch {
     // fall through with undefined
   }
-  return { semanticStatus, semanticSearchMode, embeddingEndpoint, egressConfigView };
+  return { egressConfigView };
 }
 
 interface ImproveSummaryPhase {
@@ -682,7 +673,7 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
 
     const staleTxnJournals = gatherStaleTxnJournalsPhase(now);
 
-    const { semanticStatus, semanticSearchMode, embeddingEndpoint, egressConfigView } = gatherSemanticConfigPhase();
+    const { egressConfigView } = gatherEgressConfigPhase();
 
     const { improveSummary } = gatherImproveSummaryPhase(db, stateDbPath, since, now);
 
@@ -709,9 +700,6 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       stuckActiveTasks: taskHistory.stuckActiveTasks,
       worstTaskFailRate: taskHistory.worstTaskFailRate,
       staleTxnJournals,
-      semanticStatus,
-      semanticSearchMode,
-      embeddingEndpoint,
       sessionExtraction: improveSummary.sessionExtraction,
       autoAccept: improveSummary.autoAccept,
       engineProbes,

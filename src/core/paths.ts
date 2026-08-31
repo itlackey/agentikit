@@ -292,10 +292,6 @@ export function getLockfileLockPath(): string {
   return path.join(getDataDir(), "akm.lock.lck");
 }
 
-export function getSemanticStatusPath(): string {
-  return path.join(getCacheDir(), "semantic-status.json");
-}
-
 export function getRegistryCacheDir(): string {
   return path.join(getCacheDir(), "registry");
 }

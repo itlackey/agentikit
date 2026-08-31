@@ -168,13 +168,6 @@ describe("health checks characterization (WS9)", () => {
         message: findCheck(result.advisories, "task-fail-rate").message,
       },
       {
-        name: "semantic-search-runtime",
-        kind: "deterministic",
-        status: "pass",
-        confidence: "medium",
-        message: "No semantic-search runtime status recorded yet.",
-      },
-      {
         name: "session-extraction",
         kind: "heuristic",
         status: "pass",
@@ -278,7 +271,6 @@ describe("health checks characterization (WS9)", () => {
       "collapse-churn-detector",
       "egress-endpoints",
       "task-fail-rate",
-      "semantic-search-runtime",
       "session-extraction",
       "pool-saturation",
       "auto-accept-validation",
@@ -292,53 +284,6 @@ describe("health checks characterization (WS9)", () => {
     expect(result.ok).toBe(false);
     expect(result.status).toBe("fail");
     expect("sessionLogAdvisories" in result).toBe(false);
-  });
-});
-
-describe("semantic-search-runtime embedding-endpoint advisory", () => {
-  test("blocked remote endpoint while semanticSearchMode=auto names the endpoint and the fixes", async () => {
-    const { resetConfigCache, saveConfig } = await import("../../src/core/config/config");
-    const { deriveSemanticProviderFingerprint, writeSemanticStatus } = await import(
-      "../../src/indexer/search/semantic-status"
-    );
-    resetConfigCache();
-    const embedding = { endpoint: "http://localhost:1234/v1/embeddings", model: "test-embed" };
-    saveConfig({ semanticSearchMode: "auto", embedding });
-    writeSemanticStatus({
-      status: "blocked",
-      reason: "remote-network",
-      message: "Unable to connect",
-      providerFingerprint: deriveSemanticProviderFingerprint(embedding),
-      lastCheckedAt: new Date().toISOString(),
-    });
-
-    const result = akmHealth({ since: "7d" });
-    const advisory = findCheck(result.advisories, "semantic-search-runtime");
-    expect(advisory.status).toBe("warn");
-    expect(advisory.message).toContain("http://localhost:1234/v1/embeddings");
-    expect(advisory.message).toContain("remote-network");
-    expect(advisory.message).toContain('semanticSearchMode is "auto"');
-    expect(advisory.message).toContain("keyword-only");
-  });
-
-  test("non-remote blocked reason keeps the generic message", async () => {
-    const { resetConfigCache, saveConfig } = await import("../../src/core/config/config");
-    const { deriveSemanticProviderFingerprint, writeSemanticStatus } = await import(
-      "../../src/indexer/search/semantic-status"
-    );
-    resetConfigCache();
-    saveConfig({ semanticSearchMode: "auto" });
-    writeSemanticStatus({
-      status: "blocked",
-      reason: "missing-package",
-      providerFingerprint: deriveSemanticProviderFingerprint(undefined),
-      lastCheckedAt: new Date().toISOString(),
-    });
-
-    const result = akmHealth({ since: "7d" });
-    const advisory = findCheck(result.advisories, "semantic-search-runtime");
-    expect(advisory.status).toBe("warn");
-    expect(advisory.message).toBe("Semantic search status: blocked");
   });
 });
 

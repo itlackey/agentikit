@@ -5,7 +5,6 @@
 import { spawnSync } from "node:child_process";
 import { type AkmConfig, loadConfig } from "../../core/config/config";
 import { ConfigError } from "../../core/errors";
-import type { SemanticSearchStatus } from "../../indexer/search/semantic-status";
 import type { WhichFn } from "../../integrations/agent/detect";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
@@ -62,11 +61,6 @@ export interface HealthCheckContext {
   worstTaskFailRate: { taskId: string; rate: number; rows: number } | null;
   /** Leftover durable-transaction journals under `$DATA/txn` (item 4). */
   staleTxnJournals: { dir: string; count: number; oldestAgeMs: number | null; unreadable: number };
-  semanticStatus: SemanticSearchStatus | undefined;
-  /** Effective `semanticSearchMode` from config (for the embedding advisory). */
-  semanticSearchMode: string | undefined;
-  /** Configured remote embedding endpoint, when one is set. */
-  embeddingEndpoint: string | undefined;
   sessionExtraction: ImproveHealthMetrics["sessionExtraction"];
   autoAccept: ImproveHealthMetrics["autoAccept"];
   /** Engine availability collected once and shared by its three registry projections. */
@@ -739,40 +733,6 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
           threshold: TASK_FAIL_RATE_WARN,
           worstTaskFailRate: worst,
         },
-      };
-    },
-  },
-  {
-    name: "semantic-search-runtime",
-    channel: "advisory",
-    run: (ctx) => {
-      const blocked = ctx.semanticStatus?.status === "blocked";
-      // The generic "status: blocked" line is not actionable when the real
-      // problem is a configured remote embedding endpoint that is down while
-      // semanticSearchMode leaves semantic search enabled — every index run
-      // burns time failing against it and searches silently degrade to
-      // keyword-only. Name the endpoint and the two ways out.
-      const remoteReason = ctx.semanticStatus?.reason?.startsWith("remote-") === true;
-      const endpointAdvisory =
-        blocked && remoteReason && ctx.embeddingEndpoint
-          ? `Configured embedding endpoint ${ctx.embeddingEndpoint} is failing ` +
-            `(${ctx.semanticStatus?.reason}${ctx.semanticStatus?.message ? `: ${ctx.semanticStatus.message}` : ""}) ` +
-            `while semanticSearchMode is "${ctx.semanticSearchMode ?? "off"}". Searches fall back to keyword-only. ` +
-            `Restore the endpoint, or set semanticSearchMode to "off" (or remove embedding.endpoint to use the local model).`
-          : undefined;
-      return {
-        name: "semantic-search-runtime",
-        kind: "deterministic",
-        status: !ctx.semanticStatus || !blocked ? "pass" : "warn",
-        confidence: "medium",
-        message:
-          endpointAdvisory ??
-          (ctx.semanticStatus
-            ? `Semantic search status: ${ctx.semanticStatus.status}`
-            : "No semantic-search runtime status recorded yet."),
-        evidence: ctx.semanticStatus
-          ? { ...ctx.semanticStatus, ...(ctx.embeddingEndpoint ? { embeddingEndpoint: ctx.embeddingEndpoint } : {}) }
-          : undefined,
       };
     },
   },

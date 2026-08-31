@@ -18,7 +18,26 @@ import type { LoweredExecutionDispatchLease } from "../../integrations/agent/exe
 import type { ResolvedIndexPassExecution } from "../../llm/index-passes";
 import type { Database } from "../../storage/database";
 import type { SearchSource } from "../search/search-source";
-import type { SemanticSearchReason, SemanticSearchRuntimeStatus } from "../search/semantic-status";
+
+/** Live runtime state of semantic search, computed fresh at index-finalize time. */
+export type SemanticSearchRuntimeStatus = "pending" | "ready-js" | "ready-vec" | "blocked";
+
+export type SemanticSearchReason =
+  | "missing-package"
+  | "local-model-download"
+  | "remote-network"
+  | "remote-auth"
+  | "remote-model"
+  | "remote-rate-limit"
+  | "db-open"
+  | "db-locked"
+  | "index-missing"
+  | "dimension-mismatch"
+  | "onnx-runtime-failed"
+  | "native-lib-missing"
+  | "permission-denied"
+  | "index-failed"
+  | "unknown";
 
 /** Timing accumulator written by each phase. All values are in milliseconds. */
 export interface IndexTiming {

@@ -100,7 +100,6 @@ import {
 } from "../storage/repositories/index-vec-repository";
 import { assertIndexedWorkflowSourceIdentity, WorkflowSourceIdentityError } from "../workflows/source-files";
 import { deleteStoredGraph } from "./db/graph-db";
-import { withIndexWriterLease } from "./index-writer-lock";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
 import {
   type AdapterConceptOwner,
@@ -119,7 +118,6 @@ import { type IndexDocument, isEnrichmentComplete, isWorkflowSkipWarning, type S
 import { drainDirDocuments } from "./scan/drain-dir";
 import { buildSearchText } from "./search/search-fields";
 import type { SearchSource } from "./search/search-source";
-import { clearSemanticStatus, deriveSemanticProviderFingerprint, writeSemanticStatus } from "./search/semantic-status";
 import { purgeOldUsageEvents } from "./usage/usage-events";
 import type { FileContext } from "./walk/file-context";
 import type { IndexRunContext, IndexVerification } from "./walk/index-context";
@@ -162,7 +160,6 @@ export interface IndexResponse {
     finalizeMs: number;
     cleanMs: number;
     preflightMs: number;
-    leaseWaitMs: number;
     sourceCacheMs: number;
     endToEndMs: number;
   };
@@ -202,8 +199,6 @@ export interface DeferredUpdateIndexTransaction {
   db: Database;
   /** Attached schema name for the canonical state.db on the same connection. */
   stateSchema: string;
-  /** Filesystem semantic-status publication deferred until the DB commit succeeds. */
-  afterCommit?: () => void;
 }
 
 interface IndexOptions {
@@ -543,26 +538,6 @@ async function runFinalizePhase(
   onProgress({ phase: "finalize", message: "Verifying semantic search state." });
   const verification = verifyIndexState(db, config, semanticEntryCount, embeddingResult);
 
-  const persistSemanticStatus = (): void => {
-    if (config.semanticSearchMode === "off") {
-      clearSemanticStatus();
-      return;
-    }
-    writeSemanticStatus({
-      status: verification.semanticStatus === "disabled" ? "pending" : verification.semanticStatus,
-      ...(embeddingResult.reason ? { reason: embeddingResult.reason } : {}),
-      ...(embeddingResult.message ? { message: embeddingResult.message } : {}),
-      providerFingerprint: deriveSemanticProviderFingerprint(config.embedding),
-      lastCheckedAt: new Date().toISOString(),
-      entryCount: verification.entryCount,
-      embeddingCount: verification.embeddingCount,
-    });
-  };
-  if (deferredUpdateTransaction) {
-    deferredUpdateTransaction.afterCommit = persistSemanticStatus;
-  } else {
-    persistSemanticStatus();
-  }
   onProgress({ phase: "verify", message: verification.message });
 
   // Store verification result and totalEntries on ctx for the caller to use
@@ -828,185 +803,168 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
     );
   }
   const requestedAt = Date.now();
-  let acquiredAt = requestedAt;
-  return withIndexWriterLease(
-    {
-      purpose: "akm-index",
-      signal: options?.signal,
-      onWait: ({ waitedMs }) => {
-        options?.onProgress?.({
-          phase: "preflight",
-          message: `Waiting for index writer lease (${Math.round(waitedMs / 1000)}s elapsed).`,
-        });
-      },
-      onAcquired: ({ waitedMs }) => {
-        acquiredAt = requestedAt + waitedMs;
-      },
-    },
-    async () => {
-      const stashDir = options.stashDir;
-      const onProgress = options?.onProgress ?? (() => {});
-      const signal = options?.signal;
-      const full = options?.full === true;
-      const clean = options?.clean === true;
-      const dryRun = options?.dryRun === true;
+  return (async () => {
+    const stashDir = options.stashDir;
+    const onProgress = options?.onProgress ?? (() => {});
+    const signal = options?.signal;
+    const full = options?.full === true;
+    const clean = options?.clean === true;
+    const dryRun = options?.dryRun === true;
 
-      // Load config and resolve all stash sources
-      const { loadConfig, mutateConfig } = await import("../core/config/config.js");
-      let config = loadConfig();
+    // Load config and resolve all stash sources
+    const { loadConfig, mutateConfig } = await import("../core/config/config.js");
+    let config = loadConfig();
 
-      // Durable state must be runtime-compatible before source hydration,
-      // adapter persistence, or index.db creation can mutate the installation.
-      onProgress({ phase: "preflight", message: "Validating durable state." });
-      if (!options.deferredUpdateTransaction) withStateDb(() => undefined);
+    // Durable state must be runtime-compatible before source hydration,
+    // adapter persistence, or index.db creation can mutate the installation.
+    onProgress({ phase: "preflight", message: "Validating durable state." });
+    if (!options.deferredUpdateTransaction) withStateDb(() => undefined);
 
-      // Ensure git stash caches are extracted before resolving stash dirs,
-      // so their content directories exist on disk for the walker to discover.
-      const sourceCacheStart = Date.now();
-      onProgress({ phase: "preflight", message: "Hydrating source caches." });
-      const { ensureSourceCaches, resolveSourceEntries } = await import("./search/search-source.js");
-      // Inject the store-backed secret resolver from here — a composition root
-      // ABOVE the provider/fetcher import cycle (this module reaches
-      // search-source only via dynamic import). This is what lets a website
-      // source's X fetcher resolve `secrets/x-bearer-token` during
-      // bundle-update / hydrate, not just from the command-layer URL-ingest
-      // path. `secret-seam` is imported here, never from inside the cycle.
-      const { storeSecretResolver } = await import("../sources/snapshot-fetchers/secret-seam.js");
-      await ensureSourceCaches(config, {
-        force: full,
-        materialize: options.hydrateSources !== false,
-        secrets: storeSecretResolver,
+    // Ensure git stash caches are extracted before resolving stash dirs,
+    // so their content directories exist on disk for the walker to discover.
+    const sourceCacheStart = Date.now();
+    onProgress({ phase: "preflight", message: "Hydrating source caches." });
+    const { ensureSourceCaches, resolveSourceEntries } = await import("./search/search-source.js");
+    // Inject the store-backed secret resolver from here — a composition root
+    // ABOVE the provider/fetcher import cycle (this module reaches
+    // search-source only via dynamic import). This is what lets a website
+    // source's X fetcher resolve `secrets/x-bearer-token` during
+    // bundle-update / hydrate, not just from the command-layer URL-ingest
+    // path. `secret-seam` is imported here, never from inside the cycle.
+    const { storeSecretResolver } = await import("../sources/snapshot-fetchers/secret-seam.js");
+    await ensureSourceCaches(config, {
+      force: full,
+      materialize: options.hydrateSources !== false,
+      secrets: storeSecretResolver,
+    });
+    const sourceCacheEnd = Date.now();
+    const allSourceEntries = resolveSourceEntries(stashDir, config);
+    const detected = detectAndPersistBundleAdapters(allSourceEntries, config, mutateConfig, {
+      announce: options.implicit !== true,
+      persist: options.persistDetectedAdapters !== false,
+    });
+    config = detected.config;
+    const persistedAdapters = detected.persistedAdapters;
+    const allSourceDirs = allSourceEntries.map((s) => s.path);
+    onProgress({
+      phase: "preflight",
+      message: `Resolved ${allSourceDirs.length} stash source${allSourceDirs.length === 1 ? "" : "s"}.`,
+    });
+
+    const t0 = Date.now();
+    const enrichmentExecution = resolveIndexPassExecution("enrichment", config);
+
+    // Open database — pass embedding dimension from config if available
+    const dbPath = getDbPath();
+    const embeddingDim = config.embedding?.dimension;
+    const borrowedUpdateDb = options.deferredUpdateTransaction?.db;
+    const db = borrowedUpdateDb ?? openIndexDatabase(dbPath, embeddingDim ? { embeddingDim } : undefined);
+    if (borrowedUpdateDb && !borrowedUpdateDb.inTransaction) {
+      throw new Error("Source update index requires an active borrowed index transaction.");
+    }
+
+    let indexRunContext: IndexRunContext | undefined;
+    try {
+      // Assemble the run context
+      const ctx = createIndexRunContext({
+        db,
+        config,
+        enrichmentExecution,
+        sources: allSourceEntries,
+        sourceDirs: allSourceDirs,
+        full,
+        clean,
+        stashDir,
+        onProgress,
+        signal,
+        t0,
       });
-      const sourceCacheEnd = Date.now();
-      const allSourceEntries = resolveSourceEntries(stashDir, config);
-      const detected = detectAndPersistBundleAdapters(allSourceEntries, config, mutateConfig, {
-        announce: options.implicit !== true,
-        persist: options.persistDetectedAdapters !== false,
-      });
-      config = detected.config;
-      const persistedAdapters = detected.persistedAdapters;
-      const allSourceDirs = allSourceEntries.map((s) => s.path);
+      indexRunContext = ctx;
+
       onProgress({
-        phase: "preflight",
-        message: `Resolved ${allSourceDirs.length} stash source${allSourceDirs.length === 1 ? "" : "s"}.`,
+        phase: "summary",
+        message: buildIndexSummaryMessage({
+          mode: ctx.isIncremental ? "incremental" : "full",
+          sourcesCount: allSourceDirs.length,
+          semanticSearchMode: config.semanticSearchMode,
+          embeddingProvider: getEmbeddingProvider(config.embedding),
+          llmEnabled: !!enrichmentExecution.runner,
+          vecAvailable: isVecAvailable(db),
+        }),
       });
 
-      const t0 = Date.now();
-      const enrichmentExecution = resolveIndexPassExecution("enrichment", config);
+      let cleanResult: IndexCleanResult | undefined;
+      let cleanStart = Date.now();
+      let cleanEnd = cleanStart;
 
-      // Open database — pass embedding dimension from config if available
-      const dbPath = getDbPath();
-      const embeddingDim = config.embedding?.dimension;
-      const borrowedUpdateDb = options.deferredUpdateTransaction?.db;
-      const db = borrowedUpdateDb ?? openIndexDatabase(dbPath, embeddingDim ? { embeddingDim } : undefined);
-      if (borrowedUpdateDb && !borrowedUpdateDb.inTransaction) {
-        throw new Error("Source update index requires an active borrowed index transaction.");
-      }
+      // ── Phase sequence ───────────────────────────────────────────────────────
+      await runSourceCachePhase(ctx);
+      await runWalkPhase(ctx);
+      applyRemovedSources(ctx);
 
-      let indexRunContext: IndexRunContext | undefined;
-      try {
-        // Assemble the run context
-        const ctx = createIndexRunContext({
-          db,
-          config,
-          enrichmentExecution,
-          sources: allSourceEntries,
-          sourceDirs: allSourceDirs,
-          full,
-          clean,
-          stashDir,
-          onProgress,
-          signal,
-          t0,
-        });
-        indexRunContext = ctx;
-
+      // Reconcile explicit missing-file cleanup before embeddings, totals, or
+      // verification describe this generation. Dry-run intentionally leaves
+      // the generation unchanged while still returning the previewed refs.
+      cleanStart = Date.now();
+      if (clean) {
         onProgress({
-          phase: "summary",
-          message: buildIndexSummaryMessage({
-            mode: ctx.isIncremental ? "incremental" : "full",
-            sourcesCount: allSourceDirs.length,
-            semanticSearchMode: config.semanticSearchMode,
-            embeddingProvider: getEmbeddingProvider(config.embedding),
-            llmEnabled: !!enrichmentExecution.runner,
-            vecAvailable: isVecAvailable(db),
-          }),
+          phase: "finalize",
+          message: dryRun ? "Scanning for stale index entries (dry run)." : "Removing stale index entries.",
         });
-
-        let cleanResult: IndexCleanResult | undefined;
-        let cleanStart = Date.now();
-        let cleanEnd = cleanStart;
-
-        // ── Phase sequence ───────────────────────────────────────────────────────
-        await runSourceCachePhase(ctx);
-        await runWalkPhase(ctx);
-        applyRemovedSources(ctx);
-
-        // Reconcile explicit missing-file cleanup before embeddings, totals, or
-        // verification describe this generation. Dry-run intentionally leaves
-        // the generation unchanged while still returning the previewed refs.
-        cleanStart = Date.now();
-        if (clean) {
-          onProgress({
-            phase: "finalize",
-            message: dryRun ? "Scanning for stale index entries (dry run)." : "Removing stale index entries.",
-          });
-          if (ctx.scanComplete) {
-            cleanResult = runCleanPass(db, dryRun);
-          } else {
-            warn("[index] --clean skipped because one or more configured sources were not scanned completely.");
-            cleanResult = { checked: 0, removed: 0, removedRefs: [], dryRun };
-          }
+        if (ctx.scanComplete) {
+          cleanResult = runCleanPass(db, dryRun);
+        } else {
+          warn("[index] --clean skipped because one or more configured sources were not scanned completely.");
+          cleanResult = { checked: 0, removed: 0, removedRefs: [], dryRun };
         }
-        cleanEnd = Date.now();
-
-        await runEmbeddingPhase(ctx);
-        await runFinalizePhase(ctx, options.deferredUpdateTransaction);
-        // ────────────────────────────────────────────────────────────────────────
-
-        // runFinalizePhase always populates these before returning.
-        const verification = ctx.verification as IndexVerification;
-        const totalEntries = ctx.totalEntries as number;
-        const { timing } = ctx;
-
-        return {
-          stashDir,
-          totalEntries,
-          generatedMetadata: ctx.generatedCount,
-          indexPath: dbPath,
-          mode: ctx.isIncremental ? "incremental" : "full",
-          directoriesScanned: ctx.scannedDirs,
-          directoriesSkipped: ctx.skippedDirs,
-          scanComplete: ctx.scanComplete,
-          ...(ctx.walkWarnings.length > 0 ? { warnings: ctx.walkWarnings } : {}),
-          ...(ctx.loweringNotices.length > 0 ? { notices: Object.freeze([...ctx.loweringNotices]) } : {}),
-          ...(Object.keys(persistedAdapters).length > 0
-            ? { configUpdated: { detectedAdapters: persistedAdapters } }
-            : {}),
-          verification,
-          timing: {
-            totalMs: Date.now() - timing.t0,
-            walkMs: timing.tWalkEnd - timing.tWalkStart,
-            llmMs: timing.tLlmEnd - timing.tWalkEnd,
-            embedMs: timing.tEmbedEnd - timing.tLlmEnd,
-            ftsMs: timing.tFtsEnd - timing.tEmbedEnd,
-            finalizeMs: timing.tFinalizeEnd - timing.tFinalizeStart,
-            cleanMs: clean ? cleanEnd - cleanStart : 0,
-            preflightMs: timing.t0 - requestedAt,
-            leaseWaitMs: acquiredAt - requestedAt,
-            sourceCacheMs: sourceCacheEnd - sourceCacheStart,
-            endToEndMs: Date.now() - requestedAt,
-          },
-          ...(cleanResult !== undefined ? { clean: cleanResult } : {}),
-        };
-      } finally {
-        if (indexRunContext?.enrichmentLease) {
-          disposeLoweredExecutionDispatchLease(indexRunContext.enrichmentLease);
-        }
-        if (!borrowedUpdateDb) closeDatabase(db);
       }
-    },
-  );
+      cleanEnd = Date.now();
+
+      await runEmbeddingPhase(ctx);
+      await runFinalizePhase(ctx, options.deferredUpdateTransaction);
+      // ────────────────────────────────────────────────────────────────────────
+
+      // runFinalizePhase always populates these before returning.
+      const verification = ctx.verification as IndexVerification;
+      const totalEntries = ctx.totalEntries as number;
+      const { timing } = ctx;
+
+      return {
+        stashDir,
+        totalEntries,
+        generatedMetadata: ctx.generatedCount,
+        indexPath: dbPath,
+        mode: ctx.isIncremental ? "incremental" : "full",
+        directoriesScanned: ctx.scannedDirs,
+        directoriesSkipped: ctx.skippedDirs,
+        scanComplete: ctx.scanComplete,
+        ...(ctx.walkWarnings.length > 0 ? { warnings: ctx.walkWarnings } : {}),
+        ...(ctx.loweringNotices.length > 0 ? { notices: Object.freeze([...ctx.loweringNotices]) } : {}),
+        ...(Object.keys(persistedAdapters).length > 0
+          ? { configUpdated: { detectedAdapters: persistedAdapters } }
+          : {}),
+        verification,
+        timing: {
+          totalMs: Date.now() - timing.t0,
+          walkMs: timing.tWalkEnd - timing.tWalkStart,
+          llmMs: timing.tLlmEnd - timing.tWalkEnd,
+          embedMs: timing.tEmbedEnd - timing.tLlmEnd,
+          ftsMs: timing.tFtsEnd - timing.tEmbedEnd,
+          finalizeMs: timing.tFinalizeEnd - timing.tFinalizeStart,
+          cleanMs: clean ? cleanEnd - cleanStart : 0,
+          preflightMs: timing.t0 - requestedAt,
+          sourceCacheMs: sourceCacheEnd - sourceCacheStart,
+          endToEndMs: Date.now() - requestedAt,
+        },
+        ...(cleanResult !== undefined ? { clean: cleanResult } : {}),
+      };
+    } finally {
+      if (indexRunContext?.enrichmentLease) {
+        disposeLoweredExecutionDispatchLease(indexRunContext.enrichmentLease);
+      }
+      if (!borrowedUpdateDb) closeDatabase(db);
+    }
+  })();
 }
 
 // ── Extracted helpers for indexing ────────────────────────────────────────────

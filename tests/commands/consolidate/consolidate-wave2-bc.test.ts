@@ -12,7 +12,6 @@ import { getDbPath } from "../../../src/core/paths";
 import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import type { IndexDocument } from "../../../src/indexer/passes/metadata";
 import { searchLocal } from "../../../src/indexer/search/db-search";
-import { deriveSemanticProviderFingerprint, writeSemanticStatus } from "../../../src/indexer/search/semantic-status";
 import { _setEmbedderForTests } from "../../../src/llm/embedder";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
@@ -340,12 +339,6 @@ describe("search.minScore floor in config (#6)", () => {
         // Satisfies ensure-index.ts's indexCanServeStash() so searchLocal serves
         // this hand-built DB instead of triggering a real reindex.
         setMeta(db, "stashDir", storage.stashDir);
-
-        writeSemanticStatus({
-          status: "ready-vec",
-          providerFingerprint: deriveSemanticProviderFingerprint(undefined),
-          lastCheckedAt: new Date().toISOString(),
-        });
 
         // Mock the query embedding only — stored embeddings above are real
         // BLOB rows, so cosine similarity is computed by the real vector

@@ -69,7 +69,7 @@ import {
 } from "../../integrations/agent/prompts";
 import { type RunnerSpec, runnerIsLlm, runnerSupportsFileWrite } from "../../integrations/agent/runner";
 import { collectDispatchSensitiveValues, type RunnerSeams } from "../../integrations/agent/runner-dispatch";
-import { type ChatMessage, type chatCompletion, LlmCallError } from "../../llm/client";
+import { type ChatMessage, type chatCompletion, isJsonSchemaKnownUnsupported, LlmCallError } from "../../llm/client";
 import { callStructured } from "../../llm/structured-call";
 import { baseFailureFields, enoentHintMessage, isEnoentFailure } from "../agent/agent-support";
 import type { EligibilitySource } from "../proposal/proposal-types";
@@ -770,8 +770,9 @@ export function sanitizeReflectPayload(
 
 /**
  * JSON Schema for structured reflect output. Passed to `chatCompletion` when
- * the connection has `supportsJsonSchema: true` so the model returns a strict
- * JSON object containing only the target-scoped fields AKM cannot derive.
+ * {@link wantsJsonSchemaOutput} selects `outputMode: "json_schema"`, so the
+ * model returns a strict JSON object containing only the target-scoped
+ * fields AKM cannot derive.
  */
 const REFLECT_FRONTMATTER_PATCH_JSON_SCHEMA: Record<string, unknown> = {
   type: "object",
@@ -822,6 +823,18 @@ const REFLECT_UNSCOPED_JSON_SCHEMA: Record<string, unknown> = {
   },
 };
 
+/**
+ * Whether to frame the reflect prompt for structured JSON output on this
+ * connection. Optimistic by default — `chatCompletion` attempts
+ * `response_format: json_schema` fresh on every call and falls back once on
+ * a 4xx, so there is no persisted verdict to consult here. `false` only when
+ * a human/workflow explicitly disabled it, or a real call already proved
+ * this connection rejects it earlier in the same process.
+ */
+function wantsJsonSchemaOutput(connection: { endpoint: string; model: string; supportsJsonSchema?: boolean }): boolean {
+  return connection.supportsJsonSchema !== false && !isJsonSchemaKnownUnsupported(connection);
+}
+
 /** Critique prompt injected between prior draft and refinement request (Self-Refine loop). */
 const REFLECT_CRITIQUE_PROMPT =
   "Your previous proposal is shown above. Review it critically and provide an improved version that is more specific, actionable, and avoids any issues with the previous attempt. Return only the improved response using the output contract from the original prompt.";
@@ -867,8 +880,9 @@ export interface RunReflectViaLlmOptions {
   /** Current refinement iteration (0-based). */
   iteration: number;
   /**
-   * JSON Schema for structured output. When provided AND `connection.supportsJsonSchema`
-   * is `true`, passed through to `chatCompletion` so the provider enforces it.
+   * JSON Schema for structured output. When provided, passed through to
+   * `chatCompletion`, which attempts `response_format: json_schema` fresh on
+   * every call and falls back once to plain-text framing on a 4xx.
    */
   responseSchema?: Record<string, unknown>;
   /** Test seam: override the chat function (avoids real LLM calls in tests). */
@@ -1797,7 +1811,7 @@ async function runReflectRefineIterations(args: {
   // LLM HTTP runner does NOT.
   const canRunnerWriteFile = runnerSupportsFileWrite(runnerSpec);
   const outputMode: ReflectLlmOutputMode | undefined = runnerIsLlm(runnerSpec)
-    ? runnerSpec.connection.supportsJsonSchema
+    ? wantsJsonSchemaOutput(runnerSpec.connection)
       ? "json_schema"
       : "framed_markdown"
     : undefined;
@@ -1853,10 +1867,10 @@ async function runReflectRefineIterations(args: {
         ...(options.signal ? { signal: options.signal } : {}),
         priorDraft,
         iteration: iter,
-        ...(runnerSpec.connection.supportsJsonSchema
+        ...(outputMode === "json_schema"
           ? { responseSchema: options.ref ? REFLECT_JSON_SCHEMA : REFLECT_UNSCOPED_JSON_SCHEMA }
           : {}),
-        outputMode: runnerSpec.connection.supportsJsonSchema ? "json_schema" : "framed_markdown",
+        outputMode: outputMode ?? "framed_markdown",
         ...(options.ref ? { targetRef: options.ref } : {}),
         allowRepair: repairAttempts === 0,
         ...(options.chat ? { chat: options.chat } : {}),

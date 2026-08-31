@@ -19,11 +19,10 @@ export function readCurrentLlmEngine(config: AkmConfig): LlmConnectionConfig | u
   const name = config.defaults?.llmEngine;
   const engine = name ? config.engines?.[name] : undefined;
   if (!engine || engine.kind !== "llm") return undefined;
-  const { kind: _kind, supportsJsonSchema, timeoutMs, ...connection } = engine;
+  const { kind: _kind, timeoutMs, ...connection } = engine;
   return {
     ...connection,
     ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-    ...(supportsJsonSchema !== undefined ? { capabilities: { structuredOutput: supportsJsonSchema } } : {}),
   };
 }
 
@@ -58,15 +57,13 @@ export function writeLlmEngine(config: AkmConfig, llm: LlmConnectionConfig | und
   const endpoint = llm.endpoint.endsWith("/chat/completions")
     ? llm.endpoint
     : `${llm.endpoint.replace(/\/$/, "")}/chat/completions`;
-  const { capabilities, ...connection } = llm;
   return {
     engines: {
       ...(config.engines ?? {}),
       [name]: {
-        ...connection,
+        ...llm,
         kind: "llm",
         endpoint,
-        ...(capabilities?.structuredOutput !== undefined ? { supportsJsonSchema: capabilities.structuredOutput } : {}),
       },
     },
     defaults: { ...(config.defaults ?? {}), engine: config.defaults?.engine ?? name, llmEngine: name },

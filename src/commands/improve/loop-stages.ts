@@ -24,7 +24,6 @@ import {
   type GraphExtractionResult,
   runGraphExtractionPass,
 } from "../../indexer/graph/graph-extraction";
-import { withIndexWriterLease } from "../../indexer/index-writer-lock";
 import { deriveWritableBundleIds } from "../../indexer/installations";
 import {
   collectPendingMemories,
@@ -959,15 +958,13 @@ export async function runImproveMaintenancePasses(args: {
     reindexWithIndexDbReleased,
   };
 
-  const collected = await withIndexWriterLease({ purpose: "improve-maintenance", signal: budgetSignal }, () =>
-    runMaintenancePassesUnderLease(ctx, dbCell, {
-      actionableRefs: args.actionableRefs,
-      memoryRefsForInference,
-      consolidationRan: args.consolidationRan,
-      allWarnings,
-      openIndexDb,
-    }),
-  );
+  const collected = await runMaintenancePassesUnderLease(ctx, dbCell, {
+    actionableRefs: args.actionableRefs,
+    memoryRefsForInference,
+    consolidationRan: args.consolidationRan,
+    allWarnings,
+    openIndexDb,
+  });
 
   return {
     ...(collected.memoryInference ? { memoryInference: collected.memoryInference } : {}),
@@ -992,12 +989,12 @@ interface MaintenanceUnderLeaseResult {
 }
 
 /**
- * The maintenance sequence run under the index-writer lease (formerly the
- * ~389-line anonymous `withIndexWriterLease` callback): memory inference →
- * reindex-after-inference → graph extraction → proposal hygiene (orphan purge,
- * expiration) → retention purges. Each pass returns its results and warnings;
- * this orchestrator folds warnings into the caller's `allWarnings` sink at the
- * same points the inline code pushed them.
+ * The maintenance sequence (formerly the ~389-line anonymous
+ * `withIndexWriterLease` callback, before #872 removed the index-rebuild
+ * lease): memory inference → reindex-after-inference → graph extraction →
+ * proposal hygiene (orphan purge, expiration) → retention purges. Each pass
+ * returns its results and warnings; this orchestrator folds warnings into the
+ * caller's `allWarnings` sink at the same points the inline code pushed them.
  */
 async function runMaintenancePassesUnderLease(
   ctx: MaintenanceCtx,
