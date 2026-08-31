@@ -36,7 +36,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isScalar, parseDocument } from "yaml";
-import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
+import { assetPathCandidatesForName, assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { BUNDLE_REF_RE } from "../../core/asset/asset-ref";
 import { spliceFrontmatterLine } from "../../core/asset/frontmatter";
 import { checkUnquotedDescriptionColon } from "../../core/asset/frontmatter-lint";
@@ -211,8 +211,9 @@ export function refExistsInAnyStash(relPath: string, refType: string, refName: s
  * the same reachability rules (in the same order) as
  * {@link refExistsInAnyStash}, which delegates here. Returns the absolute path
  * of the file that makes the ref "exist" — for a multi-file skill directory
- * that is its `SKILL.md` primary — or `null` when the ref does not resolve in
- * this root.
+ * that is its `SKILL.md` primary, for a `memory` ref its `.derived.md` twin
+ * when the plain `.md` is absent (#882, see `assetPathCandidatesForName`) —
+ * or `null` when the ref does not resolve in this root.
  *
  * Extracted for SPEC-5 (`--supersedes` demotion): write commands need the
  * superseded asset's actual file to mutate, and forking a second resolver
@@ -220,14 +221,13 @@ export function refExistsInAnyStash(relPath: string, refType: string, refName: s
  * (the contract pins `refToRelPath` + `refExistsInAnyStash`; this is the
  * shared internal both build on).
  */
-export function resolveRefPathInStash(
-  relPath: string,
-  _refType: string,
-  _refName: string,
-  root: string,
-): string | null {
-  const absPath = path.join(root, relPath);
-  if (fs.existsSync(absPath)) return absPath;
+export function resolveRefPathInStash(relPath: string, refType: string, refName: string, root: string): string | null {
+  const typeDir = stashDirFor(refType);
+  const candidates = typeDir === undefined ? [relPath] : assetPathCandidatesForName(refType, typeDir, refName);
+  for (const candidate of candidates) {
+    const absPath = path.join(root, candidate);
+    if (fs.existsSync(absPath)) return absPath;
+  }
   return null;
 }
 
