@@ -16,7 +16,7 @@
 
 import path from "node:path";
 import type { AkmConfig, BundleConfigEntry } from "../../core/config/config";
-import { primaryBundlePath } from "../../core/config/config";
+import { bundleKeyForContentRoot, primaryBundlePath } from "../../core/config/config";
 import { deriveBundleId } from "../../indexer/installations";
 
 export { primaryBundlePath };
@@ -24,14 +24,19 @@ export { primaryBundlePath };
 /**
  * Upsert the primary filesystem bundle (`{ path, writable: true }`) and point
  * `defaultBundle` at it. Reuses the current default key when it already names a
- * filesystem bundle (so re-pointing the primary keeps a stable id); otherwise
- * derives a fresh slug-legal key from the path.
+ * filesystem bundle (so re-pointing the primary keeps a stable id). Otherwise,
+ * reuses whichever configured bundle ALREADY resolves to `stashDir`'s content
+ * root (issue #870 — `AKM_BUNDLE_DIR`/`--dir` pointed at a directory already
+ * configured under a different id must not mint a second bundle for it); only
+ * when no bundle owns that root yet is a fresh slug-legal key derived.
  */
 export function withPrimaryBundle(config: AkmConfig, stashDir: string): AkmConfig {
   const bundles: Record<string, BundleConfigEntry> = { ...(config.bundles ?? {}) };
   let key = config.defaultBundle;
   if (!key || !(key in bundles) || typeof bundles[key]?.path !== "string") {
-    key = deriveBundleId(undefined, stashDir, new Set(Object.keys(bundles)));
+    key =
+      bundleKeyForContentRoot(config, path.resolve(stashDir)) ??
+      deriveBundleId(undefined, stashDir, new Set(Object.keys(bundles)));
   }
   bundles[key] = {
     ...bundles[key],
