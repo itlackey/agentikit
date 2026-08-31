@@ -157,6 +157,39 @@ function writeBasicWorkflow(): void {
   );
 }
 
+/**
+ * Compiles cleanly but emits exactly one advisory: `map.over` references
+ * `params.chanel`, which the `params:` block does not declare.
+ *
+ * Its own fixture rather than a tweak to `writeBasicWorkflow`, which many
+ * tests here depend on staying warning-free. Previously this suite used the
+ * basic workflow directly, because a step with no `output:` schema warned —
+ * the advisory #886 deleted for firing on every step while guarding nothing.
+ * The behavior under test is that `workflow plan` returns advisories in the
+ * envelope instead of calling warn(), so any one advisory serves.
+ */
+function writeWarningWorkflow(): void {
+  write(
+    "workflows/warns-plan.md",
+    [
+      "---",
+      "type: workflow",
+      "params:",
+      "  channel: { type: string }",
+      "steps:",
+      "  - id: notify",
+      "    output: { type: array }",
+      "    map: { over: params.chanel }",
+      "---",
+      "",
+      "## notify",
+      "",
+      "Notify the channel.",
+      "",
+    ].join("\n"),
+  );
+}
+
 describe("akm workflow plan <ref> — text mode (B-46)", () => {
   test("exits 0 and prints a human summary on stdout", async () => {
     writeBasicWorkflow();
@@ -317,18 +350,17 @@ describe("akm workflow plan <ref> writes NOTHING durable (B-48)", () => {
 });
 
 describe("akm workflow plan <ref> — compile warnings surface in warnings[] (B-56)", () => {
-  test("a step with no declared output: schema produces the existing untyped-artifact advisory in warnings[], not on stderr", async () => {
-    // No step-level `output:` schema: the existing collectWorkflowWarnings
-    // advisory (ir/compile.ts) fires for this document today already — the
-    // NEW behavior under test is that `workflow plan` returns it in the
-    // envelope's warnings[] instead of calling warn() (which would show up
-    // on stderr at `akm workflow run`, breaking this verb's B-48 guarantee).
-    writeBasicWorkflow();
+  test("a compile advisory is returned in warnings[], not written to stderr", async () => {
+    // The document below trips a collectWorkflowWarnings advisory (ir/compile.ts).
+    // The behavior under test is that `workflow plan` returns it in the
+    // envelope's warnings[] instead of calling warn() — which would show up on
+    // stderr at `akm workflow run`, breaking this verb's B-48 guarantee.
+    writeWarningWorkflow();
     await index();
-    const result = await runCliCapture(["workflow", "plan", "workflows/basic-plan", "--format", "json"]);
+    const result = await runCliCapture(["workflow", "plan", "workflows/warns-plan", "--format", "json"]);
     expect(result.code).toBe(0);
     const envelope = JSON.parse(result.stdout) as { warnings: string[] };
-    expect(envelope.warnings.some((w) => w.toLowerCase().includes("output"))).toBe(true);
+    expect(envelope.warnings.some((w) => w.includes("params.chanel"))).toBe(true);
     expect(result.stderr).toBe("");
   });
 });

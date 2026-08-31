@@ -30,8 +30,21 @@ import { workflowDoc } from "../_helpers/workflow";
 const REL = "workflows/advisory.md";
 const PARSE_PATH = "/stash/workflows/advisory.md";
 
-/** Compiles cleanly, but the step declares no `output:` schema — one advisory. */
-const WARNS = workflowDoc([]);
+/**
+ * Compiles cleanly, but declares `gate.max_loops: 2` on an `exec` step — one
+ * advisory.
+ *
+ * Was previously "a step with no `output:` schema", the advisory #886 deleted
+ * for firing on 100% of steps while guarding nothing. This file tests the
+ * ROUTING machinery, not that particular warning, so it needs any document
+ * that compiles clean and emits exactly one advisory. The gate/exec warning
+ * qualifies and is a better fixture besides: it describes a real mistake, so
+ * it will not be deleted out from under this suite the same way.
+ */
+const WARNS = workflowDoc(
+  ['    unit: { exec: { command: ["echo", "hi"] } }', "    gate: { max_loops: 2 }"],
+  "## work\n\nDo it.\n\n### gate\n\nMust be green.\n",
+);
 /** Fails the schema-definition check — errors, and therefore no advisories. */
 const ERRORS = workflowDoc(["    output:", "      type: strig"]);
 

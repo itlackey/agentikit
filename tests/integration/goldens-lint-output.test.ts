@@ -265,6 +265,15 @@ describe("golden fixture: lint output parity (WI-0b.4b)", () => {
           "anywhere in this golden -- normalization is a no-op.",
         "Behavior-parity oracle: the format adapters + the CLI lint sweep must reproduce this lint dispatch " +
           "byte-for-byte. Sibling of WI-0b.4a's renderer/all-types.json.",
+        "RE-BASELINED (#886): the no-`output:`-schema workflow advisory was DELETED, so this fixture's " +
+          "akmLintFullSweep.warnings drops from one entry to zero and summary.warnings from 1 to 0 (reverting the " +
+          "two re-baselines above that added, then line-anchored, that entry). It fired on 100% of steps that did " +
+          "not opt in -- 109 of 109 warnings on a real stash, across 17 workflow files -- and could not be acted " +
+          "on: advisories are deliberately kept out of `flagged`, so --fail-on-flagged never saw it. akm's own " +
+          '`workflow create` template tripped it. And it guarded no defect: the "untyped artifact" shape it ' +
+          "warned about is stable, because buildEvidence and reduceEmptyStep are the only producers of step " +
+          "evidence and both set `evidence.output` on every branch. flagged/fixed and every perType issues array " +
+          "stay empty, as before.",
       ],
       perType,
       akmLintFullSweep,

@@ -572,6 +572,30 @@ that declares an `output` schema is unaffected — an empty response is not
 valid JSON, so it fails as a parse error and can never satisfy a schema as a
 silent `null`.
 
+### When a step declares no `output:` schema
+
+A step-level `output:` schema is **optional**, and omitting it is a supported
+mode, not a deficiency. The step artifact is then exactly the value described
+above — the unit's result for a solo step, the collected array for a `map`
+step — carried untyped and never validated.
+
+The shape is stable either way: it does not depend on whether a schema is
+present, and it does not vary between a live run and a resume. `steps.<id>.output`
+resolves the same in both cases, so downstream references work with or without
+a schema.
+
+What a schema adds is **enforcement**, not shape. With one, the promoted
+artifact is checked against it and the step fails on mismatch; without one, a
+downstream reference to a field the artifact happens not to carry surfaces at
+resolution time instead (`steps.X.output is not an object — cannot resolve
+property "y"`). Declare `output:` when you want that mismatch caught at the
+producing step rather than at the consuming one.
+
+akm does not warn about a missing step `output:` schema. It briefly did, and
+the advisory was removed: it fired on essentially every step, could not be
+enforced (advisories never reach `--fail-on-flagged`), and flagged a state
+that is legitimate.
+
 ## Workflow outputs
 
 A workflow can declare a run-level export: the values a **completed run**

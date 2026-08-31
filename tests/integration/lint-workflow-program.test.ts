@@ -50,6 +50,35 @@ afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
+/**
+ * Compiles cleanly but emits exactly one advisory: `map.over` references
+ * `params.itmes`, a param the `params:` block does not declare.
+ *
+ * Replaces CLEAN_WORKFLOW as the warning fixture. CLEAN_WORKFLOW used to warn
+ * only because its step declared no `output:` schema — the advisory #886
+ * deleted for firing on every step while guarding nothing. These tests are
+ * about the warnings CHANNEL, not that warning, so they need any document
+ * that compiles clean and warns once. This one describes a real typo, so it
+ * will not be deleted out from under the suite the same way.
+ */
+const WARNS_WORKFLOW = [
+  "---",
+  "type: workflow",
+  "updated: 2026-07-30",
+  "params:",
+  "  items: { type: array }",
+  "steps:",
+  "  - id: only",
+  "    output: { type: array }",
+  "    map: { over: params.itmes }",
+  "---",
+  "",
+  "## only",
+  "",
+  "Do it.",
+  "",
+].join("\n");
+
 const CLEAN_WORKFLOW = [
   "---",
   "type: workflow",
@@ -242,28 +271,14 @@ describe("akm lint — decoder-only bounds now fail at lint time", () => {
 
 // ── Bug 9 regression: compile warnings surface through lint output ───────────
 //
-// `compileWorkflowPlan` emits non-fatal warnings (step missing `output:`
-// schema; reference to an undeclared param), and its doc comment claims they
+// `compileWorkflowPlan` emits non-fatal warnings (reference to an undeclared
+// param; gate.max_loops on an exec step), and its doc comment claims they
 // surface in lint output — but the lint path used to drop `compiled.warnings`
 // entirely, so they only ever appeared at run start. They now travel in the
 // result's separate `warnings` channel (issue code `workflow-warning`), which
 // is exactly what `akm lint --format json` serializes (lint is a passthrough
 // output shape) — kept out of `flagged` so `--fail-on-flagged` is unaffected.
 describe("akm lint — workflow compile warnings surface as warnings (non-fatal)", () => {
-  test("a step with no output: schema yields a workflow-warning in the warnings channel, not flagged", async () => {
-    const stashDir = makeTempStash();
-    writeWorkflowFile(stashDir, "untyped.md", CLEAN_WORKFLOW);
-
-    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
-
-    expect(result.flagged).toHaveLength(0);
-    expect(result.warnings).toHaveLength(1);
-    expect(result.warnings[0]).toMatchObject({ issue: "workflow-warning", fixed: false });
-    expect(result.warnings[0]!.file).toContain("untyped.md");
-    expect(result.warnings[0]!.detail).toContain('Step "only" declares no `output:` schema');
-    expect(result.summary).toEqual({ fixed: 0, flagged: 0, warnings: 1 });
-  });
-
   test("a reference to an undeclared param is a workflow-warning too", async () => {
     const stashDir = makeTempStash();
     writeWorkflowFile(
@@ -294,11 +309,17 @@ describe("akm lint — workflow compile warnings surface as warnings (non-fatal)
     const warnings = result.warnings.filter((i) => i.issue === "workflow-warning");
     expect(warnings).toHaveLength(1);
     expect(warnings[0]!.detail).toContain('"params.itmes" references a param not declared in `params:`');
+    // Absorbed from the deleted no-output-schema test (#886): an advisory is
+    // reported as unfixed, names its file, and counts ONLY under
+    // summary.warnings — never flagged, so --fail-on-flagged stays unaffected.
+    expect(warnings[0]).toMatchObject({ issue: "workflow-warning", fixed: false });
+    expect(warnings[0]!.file).toContain("typo-param.md");
+    expect(result.summary).toEqual({ fixed: 0, flagged: 0, warnings: 1 });
   });
 
   test("warnings survive JSON round-tripping of the lint result (the JSON output surface)", async () => {
     const stashDir = makeTempStash();
-    writeWorkflowFile(stashDir, "untyped.md", CLEAN_WORKFLOW);
+    writeWorkflowFile(stashDir, "warns.md", WARNS_WORKFLOW);
 
     const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
     // `lint` is a passthrough output shape (src/output/shapes/passthrough.ts):
@@ -384,15 +405,15 @@ describe("akm lint — workflow findings carry a line number", () => {
 
   test("compile warnings are line-anchored too", async () => {
     const stashDir = makeTempStash();
-    writeWorkflowFile(stashDir, "untyped.md", CLEAN_WORKFLOW);
+    writeWorkflowFile(stashDir, "warns.md", WARNS_WORKFLOW);
 
     const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
 
     expect(result.warnings).toHaveLength(1);
-    // The `- id: only` step declaration is line 6 of CLEAN_WORKFLOW.
-    expect(result.warnings[0]!.line).toBe(6);
+    // The `- id: only` step declaration is line 7 of WARNS_WORKFLOW.
+    expect(result.warnings[0]!.line).toBe(7);
     const text = formatLintPlain(result as unknown as Record<string, unknown>) ?? "";
-    expect(text).toContain(":6  [workflow-warning]");
+    expect(text).toContain(":7  [workflow-warning]");
   });
 
   test("a whole-file finding from a non-workflow source carries NO line (field stays optional)", async () => {

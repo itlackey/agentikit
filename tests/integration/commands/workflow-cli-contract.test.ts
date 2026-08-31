@@ -51,13 +51,15 @@ describe("akm workflow refs — unknown bundles fail consistently", () => {
 
 describe("workflow run start boundary — surfaces program warnings on stderr", () => {
   /**
-   * Write a unified-format workflow that trips both non-fatal warnings
-   * (`collectWorkflowWarnings`, ir/compile.ts): a map step with no `output:`
-   * schema (untyped-artifact warning), whose `map.over` references
-   * `params.changed_file` — a typo of the declared `params.changed_files` —
-   * (undeclared-param warning). Prose is never scanned for references
-   * (spec §2.3), so this warning's only surface now is `map.over`/
-   * `route.input`.
+   * Write a unified-format workflow that trips a non-fatal warning
+   * (`collectWorkflowWarnings`, ir/compile.ts): the map step's `map.over`
+   * references `params.changed_file`, a typo of the declared
+   * `params.changed_files`. Prose is never scanned for references (spec §2.3),
+   * so this warning's only surface is `map.over` / `route.input`.
+   *
+   * It used to trip a second warning as well — the step declares no `output:`
+   * schema — but #886 deleted that advisory for firing on every step while
+   * guarding nothing.
    */
   function writeWarnyProgram(stashDir: string, name: string): string {
     const file = path.join(stashDir, "workflows", `${name}.md`);
@@ -101,7 +103,6 @@ describe("workflow run start boundary — surfaces program warnings on stderr", 
       },
     );
     const joined = captured.join("\n");
-    expect(joined).toMatch(/workflow run:.*no `output:` schema/);
     expect(joined).toMatch(/workflow run:.*params\.changed_file.*not declared/);
   });
 });

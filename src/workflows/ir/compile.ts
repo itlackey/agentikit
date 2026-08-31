@@ -397,14 +397,12 @@ function checkOutputReference(
  * (human + JSON output, via `core/adapter/adapters/akm-lint.ts#
  * workflowCompileWarnings`) and as `warn()` lines at `workflow run`.
  *
- *   A. A unit/map step with NO step-level `output:` schema carries its units'
- *      raw results as an untyped artifact — permitted, but worth flagging.
- *   B. A `params.<name>` reference (in `map.over`/`route.input`) to an
+ *   A. A `params.<name>` reference (in `map.over`/`route.input`) to an
  *      UNDECLARED param, but ONLY when the document declares a `params:`
  *      block — a likely typo. Prose can no longer carry param references at
  *      all (it is never scanned), so this warning's surface shrinks to the
  *      two whole-value fields that can legally contain one.
- *   C. `gate.max_loops` above 1 on an `exec` step. The engine judges such a
+ *   B. `gate.max_loops` above 1 on an `exec` step. The engine judges such a
  *      step but never loops it (`exec/step-work.ts#effectiveGateMaxLoops`):
  *      a frozen argv cannot read the judge's feedback, so a second loop would
  *      only re-run the identical command — and its side effects. The declared
@@ -427,15 +425,6 @@ export function collectWorkflowWarnings(input: WorkflowSourceIrV1): WorkflowErro
             `ONCE. A gate loop re-executes the step so it can address the judge's feedback, and a frozen argv cannot ` +
             `read that feedback; looping would only repeat the command's side effects. The gate still evaluates and ` +
             `can still fail the step.`,
-        });
-      }
-
-      if ((step.map || step.route === undefined) && step.output === undefined) {
-        warnings.push({
-          line: step.source.start,
-          message:
-            `Step "${step.id}" declares no \`output:\` schema — its unit results are carried as an untyped ` +
-            `artifact (permitted). Add an \`output:\` JSON Schema to type and validate the step artifact.`,
         });
       }
 
