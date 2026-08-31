@@ -29,6 +29,17 @@ export function bundleComponentConfig(
  * bundle key. Returns `undefined` when no bundles map is configured.
  */
 /**
+ * A bundle's true identity: its configured `path` plus its component's
+ * `root` (default `"."`), fully resolved. Two bundle entries whose bare
+ * `path` differs (relative vs. absolute, trailing slash, `~` vs. expanded)
+ * can still resolve to this same directory — this is the identity akm
+ * compares before registering or reconciling a bundle (issue #870).
+ */
+export function bundleContentRoot(entryPath: string, componentRoot?: string): string {
+  return path.resolve(entryPath, componentRoot ?? ".");
+}
+
+/**
  * The resolved primary stash path — the `defaultBundle`'s filesystem `path`
  * (spec §10.1) — or `undefined` when no filesystem primary is configured.
  */
@@ -39,14 +50,35 @@ export function primaryBundlePath(config: AkmConfig): string | undefined {
   const entry = bundles[key];
   if (!entry || typeof entry.path !== "string" || entry.path.length === 0) return undefined;
   const componentRoot = bundleComponentConfig(entry)?.root;
-  if (!componentRoot || componentRoot === ".") return entry.path;
   const bundleRoot = path.resolve(entry.path);
+  if (!componentRoot || componentRoot === ".") return bundleRoot;
   const resolved = path.resolve(bundleRoot, componentRoot);
   const relative = path.relative(bundleRoot, resolved);
   if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new ConfigError(`Component root "${componentRoot}" escapes bundle "${key}".`, "INVALID_CONFIG_FILE");
   }
   return resolved;
+}
+
+/**
+ * Every configured filesystem bundle's id paired with its resolved content
+ * root. Used to detect two bundle ids that resolve to the same directory
+ * (issue #870) and to find the id that already owns a given root before a
+ * new one is registered.
+ */
+export function bundleContentRoots(config: AkmConfig): { id: string; contentRoot: string }[] {
+  const bundles = config.bundles ?? {};
+  const out: { id: string; contentRoot: string }[] = [];
+  for (const [id, entry] of Object.entries(bundles)) {
+    if (typeof entry.path !== "string" || entry.path.length === 0) continue;
+    out.push({ id, contentRoot: bundleContentRoot(entry.path, bundleComponentConfig(entry)?.root) });
+  }
+  return out;
+}
+
+/** The bundle id whose resolved content root already matches `resolvedContentRoot`, if any. */
+export function bundleKeyForContentRoot(config: AkmConfig, resolvedContentRoot: string): string | undefined {
+  return bundleContentRoots(config).find((entry) => entry.contentRoot === resolvedContentRoot)?.id;
 }
 
 export function bundlesToSourceEntries(config: AkmConfig): SourceConfigEntry[] | undefined {

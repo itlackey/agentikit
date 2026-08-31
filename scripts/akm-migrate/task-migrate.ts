@@ -69,9 +69,29 @@ function existingDirectory(target: string): boolean {
   }
 }
 
+/**
+ * Reconcile two bundle roots that resolve to the same directory on disk
+ * (issue #870 — e.g. `AKM_BUNDLE_DIR` pointed at a directory already
+ * configured under a different bundle id). When the two roots agree on
+ * everything that matters for migration (writability, layout) the
+ * duplicate is silently dropped so each task file is enumerated once,
+ * rather than surfacing as the opaque `duplicate task migration file path`
+ * error further down the pipeline. When they disagree, name both bundle
+ * ids and the shared path so the operator knows exactly what to fix.
+ */
+function reconcileDuplicateRoot(existing: TaskToV3Root, candidate: TaskToV3Root, sharedPath: string): void {
+  if (existing.writable === candidate.writable && existing.layout === candidate.layout) return;
+  throw new ConfigError(
+    `Bundles "${existing.bundleId}" and "${candidate.bundleId}" both resolve to the same directory ` +
+      `(${sharedPath}) but disagree on writable/adapter settings. Two bundle ids configured for one ` +
+      "directory must have matching settings, or one of them removed — run `akm bundle list` to see both.",
+    "INVALID_CONFIG_FILE",
+  );
+}
+
 function taskRoots(config: AkmConfig, resolutionBase = process.cwd()): TaskToV3Root[] {
   const sources = new Map((bundlesToSourceEntries(config) ?? []).map((source) => [source.name, source]));
-  const roots: TaskToV3Root[] = [];
+  const rootsByPath = new Map<string, TaskToV3Root>();
   for (const [bundleId, bundle] of Object.entries(config.bundles ?? {})) {
     if (bundle.enabled === false) continue;
     const source = sources.get(bundleId);
@@ -109,15 +129,21 @@ function taskRoots(config: AkmConfig, resolutionBase = process.cwd()): TaskToV3R
       }
     }
     if (adapter !== "akm" && adapter !== "akm-task") continue;
-    roots.push({
+    const candidate: TaskToV3Root = {
       bundleId,
       root: componentRoot,
       bundleRoot,
       writable: component?.writable ?? resolveWritable(source),
       layout: adapter === "akm-task" ? "akm-task" : "akm-stash",
-    });
+    };
+    const existing = rootsByPath.get(componentRoot);
+    if (existing) {
+      reconcileDuplicateRoot(existing, candidate, componentRoot);
+      continue;
+    }
+    rootsByPath.set(componentRoot, candidate);
   }
-  return roots;
+  return [...rootsByPath.values()];
 }
 
 function summarize(plan: TaskToV3MigrationPlan): TaskV3MigrationSummary {

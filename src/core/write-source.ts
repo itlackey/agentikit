@@ -53,7 +53,7 @@ import { conceptIdFromTypeName, displayRef } from "./asset/resolve-ref";
 import { deriveBundleId } from "./bundle-id";
 import { existingFileMode, isWithin, resolveStashDir, writeFileAtomic } from "./common";
 import type { AkmConfig, ConfiguredSource, SourceConfigEntry } from "./config/config";
-import { resolveConfiguredSources } from "./config/config";
+import { bundleContentRoot, resolveConfiguredSources } from "./config/config";
 import { ConfigError, UsageError } from "./errors";
 import { sanitizeCommitMessage } from "./git-message";
 import { warn } from "./warn";
@@ -1224,9 +1224,10 @@ export function resolveWorkingStashTarget(
   const requireWritable = options.requireWritable !== false;
   if (process.env.AKM_BUNDLE_DIR?.trim()) {
     const stashDir = resolveStashDir();
+    const resolvedStashDir = path.resolve(stashDir);
     const configured = configuredSources.find((source) => {
       const sourcePath = source.source.type === "filesystem" ? source.source.path : undefined;
-      return sourcePath !== undefined && path.resolve(sourcePath) === path.resolve(stashDir);
+      return sourcePath !== undefined && bundleContentRoot(sourcePath, source.componentRoot) === resolvedStashDir;
     });
     if (configured) {
       const target = adaptConfiguredSource(configured);
