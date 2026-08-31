@@ -19,6 +19,10 @@ export function createProviderRegistry<TFactory>() {
     resolve(type: string): TFactory | null {
       return map.get(type) ?? null;
     },
+    /** Removes a registration. No-op if `type` was never registered. */
+    unregister(type: string): void {
+      map.delete(type);
+    },
     /** Snapshot of all registered keys. Iteration order matches insertion order. */
     list(): string[] {
       return [...map.keys()];

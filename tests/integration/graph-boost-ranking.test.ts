@@ -120,6 +120,17 @@ beforeEach(() => {
   resetConfigCache();
 });
 
+// ISOLATION-05: the DB built in beforeAll is shared and mutated by tests
+// (installGraph/uninstallGraph/installGraphWithMutator, saveTestConfig,
+// resetUtilityScores), so order matters unless every test establishes its
+// own preconditions rather than relying on what a previous test left behind.
+// Every test below does exactly that — it calls installGraph/uninstallGraph
+// (or installGraphWithMutator) and saveTestConfig/resetUtilityScores as
+// needed before asserting — so the suite is order-independent by
+// convention. Verified by running the file with test order reversed.
+// New tests must keep following that convention rather than assuming a
+// prior test's install/uninstall state.
+
 afterAll(() => {
   envCleanup();
   envCleanup = () => {};

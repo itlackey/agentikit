@@ -29,6 +29,25 @@ function delayedServer(content: string, delayMs: number): ReturnType<typeof Bun.
   return server;
 }
 
+// A server whose fetch handler never resolves. Used by the tests that expect
+// the client's timeout to fire: racing a short timeout against a server that
+// merely responds *later* (e.g. after 50ms) depends on a real elapsed-time
+// margin between the client timer and the server's delay, which can narrow
+// or invert under scheduler load on a busy shard. A server that never
+// answers removes that margin entirely — the client timeout is the only way
+// the request can ever settle, so the assertion holds regardless of how
+// slow or fast the scheduler is on the day the test runs.
+function hungServer(): ReturnType<typeof Bun.serve> {
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Promise<Response>(() => {});
+    },
+  });
+  cleanups.push(() => server.stop(true));
+  return server;
+}
+
 function makeStash(): string {
   const stash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-http-timeout-"));
   for (const dir of ["skills", "lessons", "memories", "knowledge"]) {
@@ -51,7 +70,7 @@ function directRunner(
 }
 
 test("reflect forwards a 1ms normalized timeout to the direct HTTP transport", async () => {
-  const server = delayedServer("late", 50);
+  const server = hungServer();
   const result = await runReflectViaLlm({
     prompt: "reflect",
     runner: directRunner({ endpoint: `http://localhost:${server.port}`, model: "test-model" }),
@@ -87,7 +106,7 @@ test("reflect explicit null disables the direct HTTP timer", async () => {
 });
 
 test("propose forwards a 1ms call override instead of the engine timeout", async () => {
-  const server = delayedServer(validSkill, 50);
+  const server = hungServer();
   const stashDir = makeStash();
   const config: AkmConfig = {
     configVersion: "0.9.0",
