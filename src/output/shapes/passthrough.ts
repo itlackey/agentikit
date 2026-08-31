@@ -48,6 +48,7 @@ const PASSTHROUGH_COMMANDS = [
   "feedback",
   "extract",
   "health",
+  "health-clean-dead-residue",
   "improve",
   "import",
   "index",
