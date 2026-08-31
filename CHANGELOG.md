@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **The improve-strategy presets were reviewed as a set (#878).** The
+  investigation first believed `thorough` silently ran without validation;
+  that was wrong — every strategy deep-merges onto `default` before
+  resolving, so the old asset behaved correctly. What was real: `thorough`
+  was the only preset of ten relying on that invisible inheritance instead
+  of an explicit process matrix, and its triage used `applyMode: "queue"`
+  while its description promised to "drain the backlog" — queue mode never
+  promotes, so nothing drained. `catchup` had the same inertness:
+  `maxAcceptsPerRun: 100` under queue mode, a key the promote loop never
+  reads.
+
+  Both now use the same judged-promotion pattern as `reflect-distill` and
+  `proactive-maintenance`: `applyMode: "promote"`, `judgment: true`, a
+  per-run accept cap (`thorough` 25, `catchup` 100), and `maxDiffLines:
+  200`. The autonomy gate demotes promote back to queue unless
+  `experimental.improveAutonomy` is enabled, so by default both still
+  review-only; with autonomy on, they actually drain. `thorough` now
+  carries default's full explicit matrix, and a regression test pins
+  "everything default enables, thorough enables identically, plus triage."
+
+### Removed
+
+- **The `frequent` and `memory-focus` improve strategies.** Zero recorded
+  invocations, and both were mid-points of other presets (`frequent` ≈
+  `reflect-distill` without distill or triage; `memory-focus` a subset of
+  `frequent`). The shipped hourly task template now uses `reflect-distill`
+  — matching what real deployments had already switched to by hand. Any
+  removed combination remains expressible via `improve.strategies` in
+  config. One caveat: a user-config strategy *named* `frequent` or
+  `memory-focus` previously merged over the built-in of the same name; it
+  now merges over `default` only, so a partial override that relied on the
+  built-in's values will resolve differently and should be made explicit.
+
 ## [0.9.6] - 2026-08-31
 
 The deletion release: **net −2,100 lines**, almost all of it machinery that

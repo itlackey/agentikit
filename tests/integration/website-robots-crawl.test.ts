@@ -274,7 +274,9 @@ describe("crawlWebsite robots.txt compliance", () => {
     expect(stashContainsSourceUrl(cachePaths.stashDir, publicUrl)).toBe(true);
     // /secret must never be requested at all.
     expect(requestLog.some((r) => r.pathname === "/secret")).toBe(false);
-    expect(requestLog.map((r) => r.pathname)).toEqual(["/robots.txt", "/", "/public"]);
+    // /llms.txt is probed first (issue #749); this fixture has none (404),
+    // so the crawl falls through to normal BFS unchanged.
+    expect(requestLog.map((r) => r.pathname)).toEqual(["/robots.txt", "/llms.txt", "/", "/public"]);
   });
 
   test("C-04: a redirect that lands on a disallowed URL is skipped, not fetched into the stash", async () => {

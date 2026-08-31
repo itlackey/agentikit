@@ -43,10 +43,10 @@ describe("resolveImproveStrategy", () => {
         },
       },
     });
-    const frequent = resolveImproveStrategy("frequent", {
+    const quick = resolveImproveStrategy("quick", {
       semanticSearchMode: "off",
       improve: {
-        strategies: { frequent: { processes: { extract: { enabled: true } } } },
+        strategies: { quick: { processes: { extract: { enabled: true } } } },
       },
     });
     const reflectDistill = resolveImproveStrategy("reflect-distill", {
@@ -60,7 +60,7 @@ describe("resolveImproveStrategy", () => {
 
     expect(defaultStrategy.config.processes?.extract?.enabled).toBe(true);
     expect(defaultStrategy.config.processes?.proactiveMaintenance?.enabled).toBe(true);
-    expect(frequent.config.processes?.extract?.enabled).toBe(true);
+    expect(quick.config.processes?.extract?.enabled).toBe(true);
     expect(reflectDistill.config.processes?.proactiveMaintenance?.enabled).toBe(true);
   });
 

@@ -245,8 +245,8 @@ akm improve --no-push                         # commit but skip push for this ru
 akm improve --sync                            # force sync even on strategies that disable it
 ```
 
-Strategy sync defaults: `catchup`, `consolidate`, `default`, `frequent`,
-`graph-refresh`, `memory-focus`, `quick`, and `thorough` auto-commit + push;
+Strategy sync defaults: `catchup`, `consolidate`, `default`,
+`graph-refresh`, `quick`, and `thorough` auto-commit + push;
 `proactive-maintenance` and `reflect-distill` skip sync entirely. Override
 with `--sync` / `--no-sync` flags.
 
@@ -355,7 +355,7 @@ scheduler (cron / launchd / schtasks). The file is the source of truth:
 file plus one `sync` is a complete workflow.
 
 ```sh
-akm task add nightly-improve --schedule "@daily" --command "akm improve --strategy frequent"
+akm task add nightly-improve --schedule "@daily" --command "akm improve --strategy default"
 akm task add briefing --schedule "0 9 * * *" --prompt "Draft the morning briefing"  # Inline command task
 akm task sync                                  # Reconcile task files with the OS scheduler
 akm task sync --rebind                         # Also re-pin the scheduler's akm binary/spelling
