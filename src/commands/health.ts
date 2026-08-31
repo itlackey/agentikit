@@ -16,7 +16,7 @@ import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import type { Database } from "../storage/database";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
-import { getAllEntries } from "../storage/repositories/index-entries-repository";
+import { findEntryIdByRef, getAllEntries } from "../storage/repositories/index-entries-repository";
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
 import { pkgVersion } from "../version";
 import { collectImproveAdvisories } from "./health/advisories";
@@ -37,6 +37,7 @@ import {
   computeEnrichmentMintingRollup,
   probeStateDbRoundTrip,
 } from "./health/metrics";
+import { buildOrphanAdvisory, type OrphanCheckEntry } from "./health/orphan-check";
 import { collectPluginStalenessAdvisories } from "./health/plugin-staleness";
 import { collectStashExposureAdvisory, type GitRunner } from "./health/stash-exposure";
 import { collectSurfacesAdvisories, type EgressConfigView } from "./health/surfaces";
@@ -423,6 +424,16 @@ function gatherAncillaryAdvisories(
     // Non-fatal.
   }
 
+  // #750: flag `knowledge`/wiki-page assets with zero inbound references
+  // (see health/orphan-check.ts). Advisory only — best-effort, an unreadable
+  // index must not abort the health report.
+  try {
+    const orphanAssets = detectOrphanAssets(options.stashDir ?? resolveStashDir());
+    if (orphanAssets) advisories.push(orphanAssets);
+  } catch {
+    // Non-fatal.
+  }
+
   // itlackey/akm#832: report installed Claude Code harness plugin version(s)
   // and warn when stale or when the plugin's own akm-cli version range no
   // longer admits this CLI. Best-effort — no plugin installed, an unreadable
@@ -453,6 +464,47 @@ function detectTypeDirectoryDisagreements(stashRoot: string): HealthCheckResult 
     const entries = getAllEntries(indexDb).map((entry) => ({ filePath: entry.filePath, type: entry.type }));
     return buildTypeDirectoryAdvisory(entries, undefined, (absPath) =>
       absPath.startsWith(stashRoot) ? path.relative(stashRoot, absPath) : absPath,
+    );
+  } catch {
+    return undefined;
+  } finally {
+    if (indexDb) {
+      try {
+        closeDatabase(indexDb);
+      } catch {
+        // Best-effort advisory: a close failure must not abort health.
+      }
+    }
+  }
+}
+
+/**
+ * Open index.db read-only, project every entry to the shape `orphan-check.ts`
+ * needs, and build the `orphan-assets` advisory. `stashRoot` is used only to
+ * shorten displayed paths, mirroring {@link detectTypeDirectoryDisagreements}.
+ * Returns `undefined` when the index is absent/unreadable or nothing is
+ * orphaned.
+ */
+function detectOrphanAssets(stashRoot: string): HealthCheckResult | undefined {
+  let indexDb: ReturnType<typeof openReadonlyExistingDatabase>;
+  try {
+    indexDb = openReadonlyExistingDatabase(getDbPath());
+    if (!indexDb) return undefined;
+    const db = indexDb;
+    const entries: OrphanCheckEntry[] = getAllEntries(db).map((entry) => ({
+      id: entry.id,
+      filePath: entry.filePath,
+      itemRef: entry.itemRef,
+      type: entry.type,
+      wikiRole: entry.entry.wikiRole,
+      content: entry.entry.content,
+      xrefs: entry.entry.xrefs,
+      links: entry.entry.links,
+    }));
+    return buildOrphanAdvisory(
+      entries,
+      (ref) => findEntryIdByRef(db, ref),
+      (absPath) => (absPath.startsWith(stashRoot) ? path.relative(stashRoot, absPath) : absPath),
     );
   } catch {
     return undefined;
