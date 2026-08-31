@@ -33,7 +33,7 @@
  * - **systemPrompt** — `q chat` has no system-prompt flag (persona/context
  *   comes from Q's own agent config files), so the system prompt is folded
  *   into the positional payload ahead of the task prompt, separated by a
- *   blank line. `assertNotFlag` still guards it.
+ *   blank line.
  * - **schema** — the matrix places Q in the NO-structured-output tier
  *   ("via prompt+validate": *(none documented)* — there is no `--json` or
  *   `--output-format` to ask for). The JSON Schema is therefore passed
@@ -64,12 +64,7 @@
  * (`./index.ts`).
  */
 
-import {
-  type AgentCommandBuilder,
-  type AgentDispatchRequest,
-  assertNotFlag,
-  resolveDispatchModel,
-} from "../../agent/builder-shared";
+import { type AgentCommandBuilder, type AgentDispatchRequest, resolveDispatchModel } from "../../agent/builder-shared";
 import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /** Canonical harness/platform id used for model-alias resolution. */
@@ -128,8 +123,6 @@ export const amazonqBuilder: AgentCommandBuilder = {
     outputSchema: true,
   }),
   build(profile, req) {
-    assertNotFlag(req.systemPrompt, "systemPrompt");
-    assertNotFlag(req.model, "model");
     // Built-in q profiles would ship `args: []`; headless dispatch is the
     // `chat` subcommand. Don't double it when a user profile already pins it.
     const extra = profile.args[0] === "chat" ? profile.args.slice(1) : [...profile.args];
@@ -141,9 +134,6 @@ export const amazonqBuilder: AgentCommandBuilder = {
       // flags: dropping a restriction must never widen to --trust-all-tools.
       const entries = toolPolicyEntries(req.tools);
       if (entries !== undefined) {
-        for (const tool of entries) {
-          assertNotFlag(tool, "tools entry");
-        }
         // Q's documented allowlist form is equals-joined and comma-separated
         // (`--trust-tools=fs_read,fs_write`); an empty list trusts no tools.
         args.push(`--trust-tools=${entries.join(",")}`);

@@ -40,10 +40,6 @@ function readWorkerResult(resultPath: string): boolean {
   return (JSON.parse(fs.readFileSync(resultPath, "utf8")) as { value: boolean }).value;
 }
 
-function readWorkerPid(resultPath: string): number {
-  return (JSON.parse(fs.readFileSync(resultPath, "utf8")) as { pid: number }).pid;
-}
-
 describe("releaseLock", () => {
   let dir: string;
   let cleanup: Cleanup;
@@ -227,83 +223,6 @@ describe("reclaimStaleLock", () => {
     expect(tryAcquireLockSync(lock, JSON.stringify({ pid: process.pid, owner: "after-crash" }))).toBeDefined();
     expect(fs.readFileSync(lock, "utf8")).toContain("after-crash");
   });
-});
-
-describe("improve lock stale-holder lifecycle", () => {
-  let dir: string;
-  let cleanup: Cleanup;
-  beforeEach(() => {
-    const r = sandboxXdgDataHome();
-    dir = r.dir;
-    cleanup = r.cleanup;
-  });
-  afterEach(() => cleanup());
-
-  test("an old holder's final release cannot delete its reclaimed successor", async () => {
-    const lock = path.join(dir, "improve.lock");
-    const oldReady = path.join(dir, "old.ready");
-    const oldGate = path.join(dir, "old.go");
-    const oldResult = path.join(dir, "old.result");
-    const successorReady = path.join(dir, "successor.ready");
-    const successorGate = path.join(dir, "successor.go");
-    const successorResult = path.join(dir, "successor.result");
-    const thirdReady = path.join(dir, "third.ready");
-    const thirdResult = path.join(dir, "third.result");
-    const children: ChildProcess[] = [];
-
-    try {
-      const oldHolder = spawn(
-        "bun",
-        [INTERLEAVING_WORKER, "process-holder", lock, oldReady, oldGate, oldResult, "1000"],
-        { stdio: "inherit" },
-      );
-      children.push(oldHolder);
-      await waitForFile(oldReady);
-      expect(readWorkerResult(oldResult)).toBe(true);
-
-      const staleTime = new Date(Date.now() - 60_000);
-      fs.utimesSync(lock, staleTime, staleTime);
-
-      const successor = spawn(
-        "bun",
-        [INTERLEAVING_WORKER, "process-holder", lock, successorReady, successorGate, successorResult, "1000"],
-        { stdio: "inherit" },
-      );
-      children.push(successor);
-      await waitForFile(successorReady);
-      expect(readWorkerResult(successorResult)).toBe(true);
-      const successorContent = fs.readFileSync(lock, "utf8");
-
-      fs.writeFileSync(oldGate, "release");
-      await waitForExit(oldHolder);
-      expect(fs.readFileSync(lock, "utf8")).toBe(successorContent);
-      const successorProbe = probeLock(lock, { staleAfterMs: 60_000 });
-      expect(successorProbe.state).toBe("held");
-      if (successorProbe.state === "held") {
-        expect(successorProbe.holderPid).toBe(readWorkerPid(successorResult));
-      }
-
-      const third = spawn(
-        "bun",
-        [INTERLEAVING_WORKER, "process-attempt", lock, thirdReady, path.join(dir, "unused"), thirdResult, "60000"],
-        { stdio: "inherit" },
-      );
-      children.push(third);
-      await waitForFile(thirdReady);
-      await waitForExit(third);
-      expect(readWorkerResult(thirdResult)).toBe(false);
-      expect(fs.readFileSync(lock, "utf8")).toBe(successorContent);
-
-      fs.writeFileSync(successorGate, "release");
-      await waitForExit(successor);
-    } finally {
-      if (!fs.existsSync(oldGate)) fs.writeFileSync(oldGate, "release");
-      if (!fs.existsSync(successorGate)) fs.writeFileSync(successorGate, "release");
-      for (const child of children) {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      }
-    }
-  }, 20_000);
 });
 
 describe("lock release on process.exit (SIGTERM-leak regression, #improve.lock)", () => {

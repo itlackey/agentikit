@@ -1285,7 +1285,9 @@ describe("optimistic lowering safety", () => {
         "contextLength",
         "enableThinking",
       ] as const) {
-        expect(liveLowered.runner.fallbackConnection?.[key]).toEqual(fixture.expectedInference?.[key]);
+        expect(liveLowered.runner.fallbackConnection?.[key] as unknown).toEqual(
+          fixture.expectedInference?.[key] as unknown,
+        );
       }
       expect(liveLowered.runner.timeoutMs).toBe(fixture.expectedTimeout);
       expect(liveLowered.runner.fallbackTimeoutMs).toBe(12_345);
@@ -1475,7 +1477,9 @@ describe("optimistic lowering safety", () => {
         "contextLength",
         "enableThinking",
       ] as const) {
-        expect(liveLowered.runner.fallbackConnection?.[key]).toEqual(fixture.expectedInference?.[key]);
+        expect(liveLowered.runner.fallbackConnection?.[key] as unknown).toEqual(
+          fixture.expectedInference?.[key] as unknown,
+        );
       }
       expect(liveLowered.runner.timeoutMs).toBe(fixture.expectedTimeout);
       expect(liveLowered.runner.fallbackTimeoutMs).toBe(12_345);

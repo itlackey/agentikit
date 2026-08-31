@@ -137,11 +137,7 @@ const envCreateCommand = defineJsonCommand({
         }
         content = fs.readFileSync(fromFile, "utf8");
       } else {
-        const MAX_ENV_BYTES = 1024 * 1024; // 1 MB
-        const buf = await readStdin(
-          MAX_ENV_BYTES,
-          () => new UsageError("Env file exceeds 1 MB limit.", "INVALID_FLAG_VALUE"),
-        );
+        const buf = await readStdin();
         content = buf.toString("utf8");
       }
     }

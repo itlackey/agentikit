@@ -13,12 +13,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmSearch } from "../../../src/commands/read/search";
-import { getDbPath, getIndexWriterLockPath } from "../../../src/core/paths";
+import { getDbPath } from "../../../src/core/paths";
 import { indexWrittenAssets } from "../../../src/indexer/index-written-assets";
 import { akmIndex } from "../../../src/indexer/indexer";
-import { readSemanticStatus } from "../../../src/indexer/search/semantic-status";
 import { _setEmbedderForTests } from "../../../src/llm/embedder";
 import { closeDatabase, openExistingDatabase } from "../../../src/storage/repositories/index-connection";
+import { getMeta } from "../../../src/storage/repositories/index-meta-repository";
 import {
   isVecAvailable,
   isVecFastPathReady,
@@ -150,7 +150,12 @@ describe("indexWrittenAssets", () => {
     expect(await indexWrittenAssets(stashDir, [filePath])).toBe(true);
 
     expect(embeddingCountForFile(filePath)).toBe(1);
-    expect(readSemanticStatus()?.status).toMatch(/^ready-/);
+    const dbAfterWrite = openExistingDatabase(getDbPath());
+    try {
+      expect(getMeta(dbAfterWrite, "hasEmbeddings")).toBe("1");
+    } finally {
+      closeDatabase(dbAfterWrite);
+    }
     const search = await akmSearch({ query: "gasoline", skipLogging: true });
     expect(search.searchMode).toBe("semantic");
     expect(search.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("memories/fuel-delivery-note");
@@ -206,7 +211,7 @@ describe("indexWrittenAssets", () => {
     }
   });
 
-  test("embedding failure preserves the authored file and FTS row while publishing blocked status", async () => {
+  test("embedding failure preserves the authored file and FTS row and reports the failure live", async () => {
     installSemanticTestEmbedder();
     writeSandboxConfig({
       semanticSearchMode: "auto",
@@ -229,13 +234,19 @@ describe("indexWrittenAssets", () => {
     expect(queryIndex("offline").entryNames).toContain("offline-provider-note");
     expect(queryIndex("offline").ftsCount).toBeGreaterThan(0);
     expect(embeddingCountForFile(filePath)).toBe(0);
-    expect(readSemanticStatus()).toMatchObject({
-      status: "blocked",
-      reason: "remote-network",
-    });
+    const dbAfterFailure = openExistingDatabase(getDbPath());
+    try {
+      expect(getMeta(dbAfterFailure, "hasEmbeddings")).toBe("0");
+    } finally {
+      closeDatabase(dbAfterFailure);
+    }
+    // Query-time semantic search is attempted fresh (no cached verdict short-
+    // circuits it) and hits the same broken embedder live, falling back to
+    // FTS and disclosing it in this response.
     const search = await akmSearch({ query: "offline-provider-note", skipLogging: true });
     expect(search.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("memories/offline-provider-note");
-    expect(search.warnings?.join("\n")).toContain("embedding provider network unreachable");
+    expect(search.warnings?.join("\n")).toContain("Vector search unavailable");
+    expect(search.searchMode).toBe("fts-fallback");
   });
 
   test("fail-open: absent index.db is a silent no-op (no DB created)", async () => {
@@ -290,20 +301,6 @@ describe("indexWrittenAssets", () => {
     } finally {
       closeDatabase(db);
     }
-  });
-
-  test("waits for a full-index writer lease before publishing a targeted update", async () => {
-    const filePath = writeMemory("serialized-write", "Targeted update.");
-    const lockPath = getIndexWriterLockPath();
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }), "utf8");
-
-    const update = indexWrittenAssets(stashDir, [filePath]);
-    await Bun.sleep(150);
-    expect(queryIndex().entryNames).not.toContain("serialized-write");
-    fs.rmSync(lockPath, { force: true });
-    await update;
-    expect(queryIndex().entryNames).toContain("serialized-write");
   });
 
   test("removes stale metadata when a rewritten file is no longer indexable", async () => {

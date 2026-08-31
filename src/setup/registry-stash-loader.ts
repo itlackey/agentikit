@@ -25,14 +25,6 @@ import { parseRegistryRef } from "../registry/resolve";
 
 // ── Default selections ──────────────────────────────────────────────────────
 
-/**
- * Registry stash IDs that are pre-selected by default during setup.
- * IDs must match the `id` field in the official registry index and have a
- * matching target in AUTHENTICATED_DEFAULT_TARGETS.
- *
- * The target binding is intentionally separate from display metadata.
- */
-export const DEFAULT_SELECTED_STASH_IDS: readonly string[] = ["itlackey/akm-stash"] as const;
 const AUTHENTICATED_DEFAULT_TARGETS: Readonly<Record<string, Pick<SetupBundleEntry, "installType" | "url">>> = {
   "itlackey/akm-stash": {
     installType: "git",

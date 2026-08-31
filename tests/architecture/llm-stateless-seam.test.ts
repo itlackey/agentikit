@@ -47,7 +47,7 @@ describe("src/llm/* is bounded and stateless (v1 spec §9.7, §14.4)", () => {
   test("`client` exports are pure functions", () => {
     expect(typeof client.chatCompletion).toBe("function");
     expect(typeof client.isLlmAvailable).toBe("function");
-    expect(typeof client.probeLlmCapabilities).toBe("function");
+    expect(typeof client.probeLlmReachable).toBe("function");
   });
 
   test("`client.chatCompletion` accepts the connection config as its first arg", () => {

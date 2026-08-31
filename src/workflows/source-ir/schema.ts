@@ -18,23 +18,11 @@ import { parseReference } from "../program/expressions";
 import { PROGRAM_RETRY_REASONS } from "../program/schema";
 import {
   jsonBytes,
-  utf8Bytes,
   WORKFLOW_ENGINE_NAME_PATTERN,
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_ENGINE_NAME_LENGTH,
-  WORKFLOW_MAX_EXEC_ARG_BYTES,
-  WORKFLOW_MAX_EXEC_ARGV,
-  WORKFLOW_MAX_EXEC_CWD_LENGTH,
-  WORKFLOW_MAX_EXEC_PASS_ENV,
   WORKFLOW_MAX_EXTRA_PARAMS_BYTES,
-  WORKFLOW_MAX_GATE_LOOPS,
-  WORKFLOW_MAX_INPUTS,
-  WORKFLOW_MAX_MAP_EXPANSION,
-  WORKFLOW_MAX_OUTPUTS,
-  WORKFLOW_MAX_PARAMS,
-  WORKFLOW_MAX_RETRIES,
-  WORKFLOW_MAX_ROUTE_BRANCHES,
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../resource-limits";
@@ -451,7 +439,7 @@ function validateStep(
   }
   validateMap(step.map, `step ${id} map`);
   validateRoute(step.route, `step ${id} route`);
-  optionalStringList(step.inputs, `step ${id} inputs`, WORKFLOW_MAX_INPUTS);
+  optionalStringList(step.inputs, `step ${id} inputs`, Infinity);
   if (Array.isArray(step.inputs)) {
     for (const [inputIndex, input] of step.inputs.entries())
       validateReference(input, `step ${id} inputs[${inputIndex}]`);
@@ -474,12 +462,7 @@ function validateExec(value: unknown, location: string, options: WorkflowSourceD
   if (value === undefined) return;
   const exec = record(value, location);
   keys(exec, ["command", "cwd", "passEnv"], location);
-  stringList(exec.command, `${location}.command`, WORKFLOW_MAX_EXEC_ARGV, false);
-  for (const [index, argument] of (exec.command as string[]).entries()) {
-    if (utf8Bytes(argument) > WORKFLOW_MAX_EXEC_ARG_BYTES) {
-      fail(`${location}.command[${index}] exceeds ${WORKFLOW_MAX_EXEC_ARG_BYTES} bytes`);
-    }
-  }
+  stringList(exec.command, `${location}.command`, Infinity, false);
   try {
     rejectNulInArgv(exec.command as string[]);
   } catch (cause) {
@@ -487,9 +470,6 @@ function validateExec(value: unknown, location: string, options: WorkflowSourceD
   }
   optionalString(exec.cwd, `${location}.cwd`);
   if (exec.cwd !== undefined) {
-    if ((exec.cwd as string).length > WORKFLOW_MAX_EXEC_CWD_LENGTH) {
-      fail(`${location}.cwd exceeds ${WORKFLOW_MAX_EXEC_CWD_LENGTH} characters`);
-    }
     try {
       exec.cwd = canonicalizeWorkflowWorkingDirectory(exec.cwd as string, options.workspaceRoot);
     } catch (cause) {
@@ -497,7 +477,7 @@ function validateExec(value: unknown, location: string, options: WorkflowSourceD
     }
   }
   if (exec.passEnv !== undefined) {
-    stringList(exec.passEnv, `${location}.passEnv`, WORKFLOW_MAX_EXEC_PASS_ENV, false);
+    stringList(exec.passEnv, `${location}.passEnv`, Infinity, false);
   }
   if (Array.isArray(exec.passEnv)) {
     for (const name of exec.passEnv) {
@@ -553,8 +533,8 @@ function validateRetry(value: unknown, location: string): void {
   if (value === undefined) return;
   const retry = record(value, location);
   keys(retry, ["max", "on"], location);
-  if (!Number.isSafeInteger(retry.max) || (retry.max as number) < 0 || (retry.max as number) > WORKFLOW_MAX_RETRIES) {
-    fail(`${location}.max must be an integer from 0 through ${WORKFLOW_MAX_RETRIES}`);
+  if (!Number.isSafeInteger(retry.max) || (retry.max as number) < 0) {
+    fail(`${location}.max must be a non-negative integer`);
   }
   stringList(retry.on, `${location}.on`, PROGRAM_RETRY_REASONS.length, false);
   for (const reason of retry.on as string[]) {
@@ -589,12 +569,8 @@ function validateRoute(value: unknown, location: string): void {
   keys(route, ["input", "branches", "defaultStepId"], location);
   nonEmptyString(route.input, `${location}.input`);
   validateReference(route.input as string, `${location}.input`);
-  if (
-    !Array.isArray(route.branches) ||
-    route.branches.length === 0 ||
-    route.branches.length > WORKFLOW_MAX_ROUTE_BRANCHES
-  ) {
-    fail(`${location}.branches must contain 1 through ${WORKFLOW_MAX_ROUTE_BRANCHES} entries`);
+  if (!Array.isArray(route.branches) || route.branches.length === 0) {
+    fail(`${location}.branches must be a non-empty array`);
   }
   const matches = new Set<string>();
   for (const [index, value] of route.branches.entries()) {
@@ -612,13 +588,8 @@ function validateGate(value: unknown, location: string): void {
   if (value === undefined) return;
   const gate = record(value, location);
   keys(gate, ["maxLoops", "rubric"], location);
-  if (
-    gate.maxLoops !== undefined &&
-    (!Number.isSafeInteger(gate.maxLoops) ||
-      (gate.maxLoops as number) < 1 ||
-      (gate.maxLoops as number) > WORKFLOW_MAX_GATE_LOOPS)
-  ) {
-    fail(`${location}.maxLoops must be an integer from 1 through ${WORKFLOW_MAX_GATE_LOOPS}`);
+  if (gate.maxLoops !== undefined && (!Number.isSafeInteger(gate.maxLoops) || (gate.maxLoops as number) < 1)) {
+    fail(`${location}.maxLoops must be an integer of at least 1`);
   }
   optionalString(gate.rubric, `${location}.rubric`);
 }
@@ -648,8 +619,8 @@ function validateReference(value: string, location: string, expectedKind?: "step
 function validateParams(value: unknown): void {
   if (value === undefined) return;
   const params = record(value, "params");
-  if (Object.keys(params).length === 0 || Object.keys(params).length > WORKFLOW_MAX_PARAMS) {
-    fail(`params must contain 1 through ${WORKFLOW_MAX_PARAMS} entries`);
+  if (Object.keys(params).length === 0) {
+    fail(`params must contain at least one entry`);
   }
   for (const [name, schema] of Object.entries(params)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) fail(`params has invalid name ${name}`);
@@ -666,8 +637,8 @@ function validateParams(value: unknown): void {
 function validateOutputs(value: unknown): void {
   if (value === undefined) return;
   const outputs = record(value, "outputs");
-  if (Object.keys(outputs).length === 0 || Object.keys(outputs).length > WORKFLOW_MAX_OUTPUTS) {
-    fail(`outputs must contain 1 through ${WORKFLOW_MAX_OUTPUTS} entries`);
+  if (Object.keys(outputs).length === 0) {
+    fail(`outputs must contain at least one entry`);
   }
   for (const [name, declaration] of Object.entries(outputs)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) fail(`outputs has invalid name ${name}`);
@@ -687,9 +658,6 @@ function validateBudget(value: unknown): void {
     if (budget[key] !== undefined && (!Number.isSafeInteger(budget[key]) || (budget[key] as number) < 1)) {
       fail(`budget.${key} must be a positive integer`);
     }
-  }
-  if (typeof budget.maxUnits === "number" && budget.maxUnits > WORKFLOW_MAX_MAP_EXPANSION) {
-    fail(`budget.maxUnits must be at most ${WORKFLOW_MAX_MAP_EXPANSION}`);
   }
 }
 

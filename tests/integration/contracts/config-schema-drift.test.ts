@@ -156,7 +156,7 @@ describe("config schema drift pins", () => {
       default?: number;
     };
 
-    expect(confidenceMode.enum).toEqual(["off", "blend", "multiply"]);
+    expect(confidenceMode.enum).toEqual(["blend"]);
     expect(confidenceMode.default).toBe("blend");
     expect(confidenceWeight.minimum).toBe(0);
     expect(confidenceWeight.maximum).toBe(1);

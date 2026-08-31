@@ -12,31 +12,45 @@
  * stored vector becomes incompatible at that boundary.
  */
 
-import type { AkmConfig } from "../core/config/config";
+import type { AkmConfig, EmbeddingConnectionConfig } from "../core/config/config";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
 import { embedBatch } from "../llm/embedder";
-import { estimateTokenCount } from "../llm/embedders/remote";
+import { DETERMINISTIC_EMBED_MODEL_ID, isDeterministicEmbedEnabled } from "../llm/embedders/deterministic";
+import { DEFAULT_LOCAL_MODEL } from "../llm/embedders/local";
+import {
+  buildTokenBoundedBatches,
+  DEFAULT_REMOTE_BATCH_SIZE,
+  DEFAULT_TOKEN_BUDGET,
+  type EmbeddingBatchSkip,
+  estimateTokenCount,
+  hasRemoteEndpoint,
+} from "../llm/embedders/remote";
 import type { Database } from "../storage/database";
 import { getEmbeddableEntryCount } from "../storage/repositories/index-entries-repository";
 import { deleteMeta, getMeta, setMeta } from "../storage/repositories/index-meta-repository";
 import {
   getAllEntriesForEmbedding,
   getEmbeddingCount,
-  isVecAvailable,
   isVecFastPathComplete,
   isVecFastPathReady,
   purgeEmbeddings,
   setVecFastPathReady,
   upsertEmbedding,
 } from "../storage/repositories/index-vec-repository";
-import {
-  classifySemanticFailure,
-  clearSemanticStatus,
-  deriveSemanticProviderFingerprint,
-  type SemanticSearchReason,
-  type SemanticSearchRuntimeStatus,
-  writeSemanticStatus,
-} from "./search/semantic-status";
+
+/** Identifies the embedding provider+model+dimension a stored vector was generated with. */
+export function deriveSemanticProviderFingerprint(embedding?: EmbeddingConnectionConfig): string {
+  if (isDeterministicEmbedEnabled()) {
+    return `deterministic:${DETERMINISTIC_EMBED_MODEL_ID}`;
+  }
+  if (embedding?.endpoint) {
+    // Fingerprint keys on vector identity only (model + dimension). The endpoint
+    // is transport/routing and has no bearing on vector compatibility, so moving
+    // the same model+dimension to a different host must not force a full re-embed.
+    return `remote:${embedding.model}|${embedding.dimension ?? "default"}`;
+  }
+  return `local:${embedding?.localModel ?? DEFAULT_LOCAL_MODEL}`;
+}
 
 export interface EmbeddingProgressEvent {
   phase: "embeddings";
@@ -45,7 +59,6 @@ export interface EmbeddingProgressEvent {
 
 export interface EmbeddingGenerationResult {
   success: boolean;
-  reason?: SemanticSearchReason;
   message?: string;
   /** Number of sqlite-vec writes that degraded to the complete BLOB fallback. */
   vecInsertFailures?: number;
@@ -68,7 +81,7 @@ export async function generateEmbeddingsForDb(
 
   if (config.semanticSearchMode === "off") {
     onProgress({ phase: "embeddings", message: "Semantic search disabled; skipping embeddings." });
-    return { success: false, reason: "index-missing", message: "Semantic search is disabled." };
+    return { success: false, message: "Semantic search is disabled." };
   }
 
   // A targeted call starts from an already-published generation. Preserve its
@@ -102,14 +115,35 @@ export async function generateEmbeddingsForDb(
     const texts = allEntries.map((entry) => entry.searchText);
 
     if (isVerbose()) {
-      const EMBED_BATCH_SIZE = 100;
-      const totalBatches = Math.ceil(texts.length / EMBED_BATCH_SIZE);
-      for (const [i, entry] of allEntries.entries()) {
-        const batchNum = Math.floor(i / EMBED_BATCH_SIZE) + 1;
-        const chars = entry.searchText.length;
-        const tokens = estimateTokenCount(entry.searchText);
-        const ref = entry.itemRef;
-        warnVerbose(`[embed] ${ref} (${chars} chars, est. ${tokens} tokens) → batch ${batchNum}/${totalBatches}`);
+      // Mirror RemoteEmbedder's actual token-bounded batching (#874) so this
+      // log reflects the real request grouping rather than a fixed count of
+      // 100 that no longer matches what gets sent over the wire. Local runs
+      // don't batch by size at all (LocalEmbedder chunks by a fixed count
+      // for inference throughput only, never fails/skips), so there's
+      // nothing meaningful to report per-batch for them.
+      if (hasRemoteEndpoint(config.embedding ?? {})) {
+        const tokenBudget = config.embedding?.maxTokens ?? config.embedding?.contextLength ?? DEFAULT_TOKEN_BUDGET;
+        const maxCount = config.embedding?.batchSize ?? DEFAULT_REMOTE_BATCH_SIZE;
+        const batches = buildTokenBoundedBatches(texts, tokenBudget, maxCount);
+        const batchNumberByIndex = new Map<number, number>();
+        batches.forEach((batch, batchIdx) => {
+          for (const i of batch.indices) batchNumberByIndex.set(i, batchIdx + 1);
+        });
+        for (const [i, entry] of allEntries.entries()) {
+          const chars = entry.searchText.length;
+          const tokens = estimateTokenCount(entry.searchText);
+          const batch = batches[batchNumberByIndex.get(i)! - 1];
+          const label = batch?.oversized
+            ? "oversized (skipped)"
+            : `batch ${batchNumberByIndex.get(i)}/${batches.length}`;
+          warnVerbose(`[embed] ${entry.itemRef} (${chars} chars, est. ${tokens} tokens) → ${label}`);
+        }
+      } else {
+        for (const entry of allEntries) {
+          warnVerbose(
+            `[embed] ${entry.itemRef} (${entry.searchText.length} chars, est. ${estimateTokenCount(entry.searchText)} tokens)`,
+          );
+        }
       }
     }
 
@@ -122,16 +156,24 @@ export async function generateEmbeddingsForDb(
         });
       }, 15000);
 
-      const embeddings = await embedBatch(texts, config.embedding, signal);
+      // A failing sub-batch or an oversized document is SKIPPED by embedBatch,
+      // not thrown (#874) — collect what couldn't be embedded and why, so a
+      // few bad documents don't discard every other entry's embedding.
+      const skips: EmbeddingBatchSkip[] = [];
+      const embeddings = await embedBatch(texts, config.embedding, signal, (skip) => skips.push(skip));
       throwIfAborted(signal);
       let storedCount = 0;
       let skippedCount = 0;
+      let embedFailedCount = 0;
       let vecFailedCount = 0;
       let vecUnavailableCount = 0;
       db.transaction(() => {
         for (const [i, entry] of allEntries.entries()) {
           const embedding = embeddings[i];
-          if (!embedding) throw new Error(`Embedding provider returned no vector for ${entry.itemRef}.`);
+          if (!embedding) {
+            embedFailedCount++;
+            continue;
+          }
           const result = upsertEmbedding(db, entry.id, embedding);
           if (result.stored) storedCount++;
           else skippedCount++;
@@ -142,6 +184,16 @@ export async function generateEmbeddingsForDb(
       if (skippedCount > 0) {
         warn(
           `[embed] ${skippedCount} embedding${skippedCount === 1 ? "" : "s"} skipped (entry deleted between queue and write)`,
+        );
+      }
+      if (embedFailedCount > 0) {
+        const detail = skips
+          .slice(0, 20)
+          .map((skip) => `  - ${allEntries[skip.index]?.itemRef ?? skip.index} (${skip.reason}): ${skip.message}`)
+          .join("\n");
+        const more = skips.length > 20 ? `\n  ...and ${skips.length - 20} more` : "";
+        warn(
+          `[embed] ${embedFailedCount} embedding${embedFailedCount === 1 ? "" : "s"} could not be generated and ${embedFailedCount === 1 ? "was" : "were"} skipped:\n${detail}${more}`,
         );
       }
       const vecGenerationComplete = targetEntryIds === undefined ? isVecFastPathComplete(db) : vecFastPathWasReady;
@@ -158,6 +210,19 @@ export async function generateEmbeddingsForDb(
         message: `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"}.`,
       });
       setMeta(db, "embeddingFingerprint", currentFingerprint);
+      // Only a total failure (nothing at all embedded, despite having entries
+      // to embed) turns into a phase failure. Any partial success — the vast
+      // majority of a large bundle embedding fine around a handful of skips —
+      // must not discard what DID get stored (#874).
+      if (storedCount === 0 && embedFailedCount > 0) {
+        const firstMessage = skips[0]?.message ?? "All embeddings failed.";
+        // #873 removed the persisted semantic verdict, so there is no failure
+        // class to record — just report what happened on this run.
+        return {
+          success: false,
+          message: `All ${embedFailedCount} embedding batch(es) failed: ${firstMessage}`,
+        };
+      }
       return { success: true, vecInsertFailures: vecFailedCount };
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
@@ -168,46 +233,23 @@ export async function generateEmbeddingsForDb(
     onProgress({ phase: "embeddings", message: `Embedding generation failed: ${message}` });
     return {
       success: false,
-      reason: classifySemanticFailure(message),
       message: `Semantic search verification failed: ${message}`,
     };
   }
 }
 
-/** Publish the canonical semantic health snapshot after a targeted mutation. */
-export function publishTargetedSemanticStatus(
-  db: Database,
-  config: AkmConfig,
-  result: EmbeddingGenerationResult,
-): void {
+/**
+ * Update the `hasEmbeddings` DB fact after a targeted mutation, from the
+ * index's actual current embedding coverage — read fresh, not cached.
+ */
+export function publishTargetedEmbeddingMeta(db: Database, config: AkmConfig): void {
   if (config.semanticSearchMode === "off") {
-    clearSemanticStatus();
     setMeta(db, "hasEmbeddings", "0");
     return;
   }
 
   const entryCount = getEmbeddableEntryCount(db);
   const embeddingCount = getEmbeddingCount(db);
-  let status: SemanticSearchRuntimeStatus;
-  if (entryCount === 0) status = "pending";
-  else if (embeddingCount >= entryCount)
-    status = isVecAvailable(db) && isVecFastPathReady(db) ? "ready-vec" : "ready-js";
-  else status = "blocked";
-
-  setMeta(db, "hasEmbeddings", status === "ready-js" || status === "ready-vec" ? "1" : "0");
-  writeSemanticStatus({
-    status,
-    ...(status === "blocked" ? { reason: result.reason ?? "index-failed" } : {}),
-    ...(status === "blocked"
-      ? {
-          message:
-            result.message ??
-            `Semantic search verification failed (${embeddingCount}/${entryCount} embeddings available).`,
-        }
-      : {}),
-    providerFingerprint: deriveSemanticProviderFingerprint(config.embedding),
-    lastCheckedAt: new Date().toISOString(),
-    entryCount,
-    embeddingCount,
-  });
+  const ready = entryCount > 0 && embeddingCount >= entryCount;
+  setMeta(db, "hasEmbeddings", ready ? "1" : "0");
 }

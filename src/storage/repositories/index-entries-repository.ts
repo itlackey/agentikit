@@ -420,10 +420,6 @@ function deleteEntryRows(
   return rows.map((row) => row.id);
 }
 
-export function deleteEntriesByDir(db: Database, dirPath: string): void {
-  db.transaction(() => deleteEntryRows(db, rowsInDirectory(db, dirPath)))();
-}
-
 export function deleteEntriesByDirAndBundle(
   db: Database,
   dirPath: string,
@@ -872,19 +868,6 @@ export function getEntryRefRowsForStashRoot(db: Database, stashRoot: string): En
 }
 
 // ── Indexer-phase helpers (moved from indexer.ts) ────────────────────────────
-
-/**
- * Compute a cheap FNV-1a hash of a buffer for source-identity tracking.
- * Not security-sensitive; used as an incremental fast-path skip key.
- */
-export function computeSourceHash(content: Buffer): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < content.length; i++) {
-    hash ^= content[i]!;
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16);
-}
 
 /**
  * Return distinct zero-result search queries from the `usage_events` table

@@ -14,7 +14,6 @@ import { getConfigPath, getDefaultStashDir, getRegistryCacheDir, getRegistryInde
 // cycle (chunk-8 WI-8.6, DoD 11); re-exported here for the existing surface.
 export { IS_WINDOWS } from "./platform";
 export const MAX_CONFIG_FILE_BYTES = 1024 * 1024;
-export const MAX_LOCAL_METADATA_BYTES = 1024 * 1024;
 export const MAX_LOCK_METADATA_BYTES = 64 * 1024;
 
 export function isHttpUrl(value: string | undefined): boolean {
@@ -555,25 +554,70 @@ export async function fetchWithTimeout(
 }
 
 /**
+ * Cap on how long a retry loop will wait between attempts, even when a
+ * server-supplied `Retry-After` claims a longer delay. Prevents an
+ * attacker-controlled or misconfigured server from parking a caller
+ * indefinitely.
+ */
+export const DEFAULT_RETRY_MAX_DELAY_MS = 30_000;
+
+export function shouldRetry(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/** Jittered exponential backoff, capped at `maxDelayMs`. */
+export function backoffDelay(attempt: number, baseDelay = 500, maxDelayMs = DEFAULT_RETRY_MAX_DELAY_MS): number {
+  return Math.min(maxDelayMs, baseDelay * 2 ** attempt * (0.5 + Math.random() * 0.5));
+}
+
+/**
+ * Determine the delay before the next retry attempt.
+ *
+ * Honors a server-supplied `Retry-After` header in both its numeric-seconds
+ * and HTTP-date forms, but always clamps the result to `maxDelayMs` — an
+ * unclamped `Retry-After` lets an attacker/misconfigured server park a
+ * caller for an arbitrarily long time. Falls back to jittered exponential
+ * backoff when the header is absent or unparseable.
+ */
+export function computeRetryDelay(
+  response: Response,
+  attempt: number,
+  options?: { baseDelay?: number; maxDelayMs?: number },
+): number {
+  const maxDelayMs = options?.maxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
+  const baseDelay = options?.baseDelay ?? 500;
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds)) {
+      return seconds >= 0 ? Math.min(maxDelayMs, seconds * 1_000) : backoffDelay(attempt, baseDelay, maxDelayMs);
+    }
+    const date = Date.parse(retryAfter);
+    if (Number.isFinite(date)) return Math.min(maxDelayMs, Math.max(0, date - Date.now()));
+  }
+  return backoffDelay(attempt, baseDelay, maxDelayMs);
+}
+
+/**
  * Fetch with retry and exponential backoff.
  * Retries on network errors, 429, and 5xx responses.
- * Honors Retry-After header for 429 responses.
+ * Honors Retry-After header, capped at `maxDelayMs`.
  */
 export async function fetchWithRetry(
   url: string,
   init?: RequestInit,
-  options?: { timeout?: number; retries?: number; baseDelay?: number },
+  options?: { timeout?: number; retries?: number; baseDelay?: number; maxDelayMs?: number },
 ): Promise<Response> {
   const maxRetries = options?.retries ?? 3;
   const baseDelay = options?.baseDelay ?? 500;
+  const maxDelayMs = options?.maxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
   const timeout = options?.timeout ?? 30_000;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const response = await fetchWithTimeout(url, init, timeout, init?.signal ?? undefined);
       if (attempt < maxRetries && shouldRetry(response.status)) {
-        const retryAfter = parseRetryAfter(response);
-        const delay = retryAfter ?? baseDelay * 2 ** attempt * (0.5 + Math.random() * 0.5);
+        const delay = computeRetryDelay(response, attempt, { baseDelay, maxDelayMs });
         await response.body?.cancel().catch(() => undefined);
         await abortableDelay(delay, init?.signal);
         continue;
@@ -583,8 +627,7 @@ export async function fetchWithRetry(
       if (attempt >= maxRetries) throw err;
       // A caller-supplied abort is terminal: never keep retrying past it.
       if (init?.signal?.aborted) throw err;
-      const delay = baseDelay * 2 ** attempt * (0.5 + Math.random() * 0.5);
-      await abortableDelay(delay, init?.signal);
+      await abortableDelay(backoffDelay(attempt, baseDelay, maxDelayMs), init?.signal);
     }
   }
   throw new Error("fetchWithRetry: unreachable");
@@ -597,15 +640,17 @@ export async function fetchWithRetry(
  * large. Sleeping it out with a bare `setTimeout` ignored the caller's abort
  * signal entirely, so a single `429` could park an operation far past any
  * deadline its caller believed it had imposed — the request timeout bounds
- * only the request, never the wait between attempts.
+ * only the request, never the wait between attempts. Callers using this for
+ * a retry delay should pass a `maxDelayMs`-capped `ms` (see
+ * {@link computeRetryDelay}) to bound the wait itself.
  */
-function abortableDelay(ms: number, signal?: AbortSignal | null): Promise<void> {
+export function abortableDelay(ms: number, signal?: AbortSignal | null, abortMessage = "Aborted"): Promise<void> {
   if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
-  if (signal.aborted) return Promise.reject(signal.reason ?? new Error("Aborted"));
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error(abortMessage));
   return new Promise((resolve, reject) => {
     const onAbort = () => {
       clearTimeout(timer);
-      reject(signal.reason ?? new Error("Aborted"));
+      reject(signal.reason ?? new Error(abortMessage));
     };
     const timer = setTimeout(() => {
       signal.removeEventListener("abort", onAbort);
@@ -613,10 +658,6 @@ function abortableDelay(ms: number, signal?: AbortSignal | null): Promise<void> 
     }, ms);
     signal.addEventListener("abort", onAbort, { once: true });
   });
-}
-
-function shouldRetry(status: number): boolean {
-  return status === 429 || status >= 500;
 }
 
 /**
@@ -830,13 +871,6 @@ export async function jsonWithByteCap<T = unknown>(
   return JSON.parse(text) as T;
 }
 
-function parseRetryAfter(response: Response): number | undefined {
-  const header = response.headers.get("retry-after");
-  if (!header) return undefined;
-  const seconds = parseInt(header, 10);
-  return Number.isNaN(seconds) ? undefined : seconds * 1000;
-}
-
 export function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -918,8 +952,14 @@ export function stringArray(value: unknown): string[] {
  * reported alive. Treating it as dead let a lock held by a live process in a
  * shared data dir (agent sandboxes, containers, service accounts — a
  * configuration managed-db.ts explicitly supports) be reclaimed as stale.
+ *
+ * `pid` is `unknown` because callers reading it out of untrusted on-disk
+ * JSON (e.g. a lease file) cannot guarantee it parsed as a valid PID; a
+ * non-positive-integer value is reported dead without ever reaching
+ * `process.kill`.
  */
-export function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: unknown): boolean {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;

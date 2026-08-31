@@ -18,8 +18,6 @@ import { tryWithMaintenanceStartBarrier, withMaintenanceStartBarrier } from "../
 import { describeInaccessiblePath } from "../../core/path-access";
 import { warn } from "../../core/warn";
 
-export const MIN_IMPROVE_LOCK_STALE_MS = 4 * 60 * 60 * 1000;
-
 export type ImproveLockAcquisition = { state: "acquired"; ownership: LockOwnership } | { state: "skipped" };
 
 export function improveLockPath(lockBaseDir: string): string {
@@ -28,13 +26,12 @@ export function improveLockPath(lockBaseDir: string): string {
 
 export function tryAcquireImproveLock(
   lockPath: string,
-  staleAfterMs: number,
   skipIfLocked: boolean | undefined,
   eventsCtx?: EventsContext,
 ): ImproveLockAcquisition {
   let recoveryEvent: Parameters<typeof appendEvent>[0] | undefined;
   const acquire = () =>
-    tryAcquireImproveLockUnlocked(lockPath, staleAfterMs, skipIfLocked, (event) => {
+    tryAcquireImproveLockUnlocked(lockPath, skipIfLocked, (event) => {
       recoveryEvent = event;
     });
   const result = skipIfLocked ? tryWithMaintenanceStartBarrier(acquire) : withMaintenanceStartBarrier(acquire);
@@ -58,7 +55,6 @@ export function tryAcquireImproveLock(
 
 function tryAcquireImproveLockUnlocked(
   lockPath: string,
-  staleAfterMs: number,
   skipIfLocked: boolean | undefined,
   onRecovered: (event: Parameters<typeof appendEvent>[0]) => void,
 ): ImproveLockAcquisition {
@@ -69,7 +65,16 @@ function tryAcquireImproveLockUnlocked(
     return { state: "acquired", ownership };
   }
 
-  const probe = probeLock(lockPath, { staleAfterMs });
+  // No `staleAfterMs`: only a verifiably dead holder is ever reclaimed. A
+  // wedged-but-alive `akm improve` (SQLite WAL + busy_timeout + BEGIN
+  // IMMEDIATE already serialize concurrent writes to state.db at the
+  // correctness layer, so this lock only avoids duplicate LOGICAL work) must
+  // not have its lease silently taken away purely because a clock elapsed —
+  // that was the #872-shaped hazard here: a live holder passed the
+  // PID-liveness check forever, so only a multi-hour age window could ever
+  // free it, stranding every `akm improve --skip-if-locked` invocation for
+  // up to that long while reporting success.
+  const probe = probeLock(lockPath);
 
   // Race: the holder released the lock between our failed `tryAcquireLockSync`
   // and this probe, so the probe sees no file (`absent`). Retry acquisition once

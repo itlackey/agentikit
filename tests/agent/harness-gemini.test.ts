@@ -165,23 +165,16 @@ describe("geminiBuilder — tool policy", () => {
 
 // ── Builder — injection guards ────────────────────────────────────────────────
 
-describe("geminiBuilder — assertNotFlag guards", () => {
-  test("model starting with '--' throws", () => {
-    expect(() => geminiBuilder.build(makeGeminiProfile(), { prompt: "go", model: "--evil" })).toThrow(
-      /model must not start with "--"/,
-    );
-  });
-
-  test("systemPrompt starting with '--' throws (it heads the -p payload)", () => {
-    expect(() => geminiBuilder.build(makeGeminiProfile(), { prompt: "go", systemPrompt: "--inject" })).toThrow(
-      /systemPrompt must not start with "--"/,
-    );
-  });
-
-  test("tool entry starting with '--' throws", () => {
-    expect(() => geminiBuilder.build(makeGeminiProfile(), { prompt: "go", tools: ["--evil-flag"] })).toThrow(
-      /tools entry must not start with "--"/,
-    );
+describe("geminiBuilder — model/systemPrompt/tools values", () => {
+  test("a leading '--' in model/systemPrompt/tools is passed through, not rejected", () => {
+    expect(() =>
+      geminiBuilder.build(makeGeminiProfile(), {
+        prompt: "go",
+        model: "--evil",
+        systemPrompt: "--inject",
+        tools: ["--evil-flag"],
+      }),
+    ).not.toThrow();
   });
 
   test("valid values do not throw", () => {

@@ -140,17 +140,11 @@ describe("piBuilder — schema passthrough (prompt+validate tier)", () => {
 
 // ── Builder — injection guards ────────────────────────────────────────────────
 
-describe("piBuilder — assertNotFlag guards", () => {
-  test("model starting with '--' throws", () => {
-    expect(() => piBuilder.build(makePiProfile(), { prompt: "go", model: "--evil" })).toThrow(
-      /model must not start with "--"/,
-    );
-  });
-
-  test("systemPrompt starting with '--' throws", () => {
-    expect(() => piBuilder.build(makePiProfile(), { prompt: "go", systemPrompt: "--inject" })).toThrow(
-      /systemPrompt must not start with "--"/,
-    );
+describe("piBuilder — model/systemPrompt values", () => {
+  test("a leading '--' in model/systemPrompt is passed through, not rejected", () => {
+    expect(() =>
+      piBuilder.build(makePiProfile(), { prompt: "go", model: "--evil", systemPrompt: "--inject" }),
+    ).not.toThrow();
   });
 
   test("valid values do not throw", () => {

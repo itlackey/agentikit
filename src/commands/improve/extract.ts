@@ -61,7 +61,7 @@ import type { RunnerSpec } from "../../integrations/agent/runner";
 import { getAvailableHarnesses } from "../../integrations/session-logs";
 import { preFilterSession } from "../../integrations/session-logs/pre-filter";
 import type { SessionData, SessionLogHarness, SessionRef, SessionSummary } from "../../integrations/session-logs/types";
-import type { ChatMessage } from "../../llm/client";
+import { type ChatMessage, isJsonSchemaKnownUnsupported } from "../../llm/client";
 import { callStructured, preflightStructuredLlmRunner } from "../../llm/structured-call";
 import { sha256Hex } from "../../runtime";
 import type { Database } from "../../storage/database";
@@ -856,7 +856,14 @@ async function runSessionExtractionLlmCall(args: {
         return payload.parseFailure ? undefined : payload;
       },
       validate: (payload) => ({ ok: true, value: payload as ExtractPayload }),
-      maxAttempts: llmRunner.connection.supportsJsonSchema === true ? 1 : 2,
+      // One attempt when structured output is expected to work (not explicitly
+      // disabled, and this connection hasn't already proven otherwise this
+      // process — see `isJsonSchemaKnownUnsupported`); two when it's known
+      // unsupported and extraction is relying on looser prompt-contract JSON.
+      maxAttempts:
+        llmRunner.connection.supportsJsonSchema !== false && !isJsonSchemaKnownUnsupported(llmRunner.connection)
+          ? 1
+          : 2,
       buildFeedback: () =>
         "Your previous response did not contain a valid extraction payload. Respond with ONLY a JSON object matching the requested schema, with a candidates array and no prose or code fences.",
     });

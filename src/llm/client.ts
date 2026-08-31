@@ -13,7 +13,6 @@ import { fetchWithTimeout, readBodyWithByteCap } from "../core/common";
 import { type LlmConnectionConfig, resolveSecret } from "../core/config/config";
 import { ENV_REFERENCE_PATTERN } from "../core/config/schema/primitives";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
-import { parseJsonResponse } from "../core/parse";
 import { redactErrorBody, redactSensitiveText } from "../core/redaction";
 import { warn, warnVerbose } from "../core/warn";
 import { DEFAULT_LLM_TIMEOUT_MS } from "../integrations/agent/config";
@@ -114,10 +113,13 @@ export interface ChatCompletionOptions {
   /** Optional external abort signal for caller-driven cancellation. */
   signal?: AbortSignal;
   /**
-   * JSON Schema for structured output. When provided AND the connection has
-   * `supportsJsonSchema: true`, sends `response_format: { type: "json_schema",
-   * json_schema: { name: "akm_response", schema, strict: true } }`. Otherwise
-   * the schema is ignored and callers rely on prompt-contract JSON.
+   * JSON Schema for structured output. When provided (and the connection's
+   * `supportsJsonSchema` is not explicitly `false`), sends
+   * `response_format: { type: "json_schema", json_schema: { name:
+   * "akm_response", schema, strict: true } }` on the first attempt. If the
+   * provider 4xx's, falls back once to the plain request without it, and
+   * remembers that in-memory for the rest of this process — see
+   * {@link isJsonSchemaKnownUnsupported}.
    */
   responseSchema?: Record<string, unknown>;
   /** Override the config's enableThinking for this call. */
@@ -308,16 +310,86 @@ async function chatCompletionReal(
   }
 }
 
+// ── Structured-output attempt-then-fallback ─────────────────────────────────
+
 /**
- * A single chat-completion attempt: one HTTP request/response cycle with no
- * retry. {@link chatCompletion} wraps this with a single bounded retry for
- * transient failures.
+ * Connections that have already demonstrated (via a real 4xx response, not a
+ * probe) that they reject `response_format: json_schema`. In-memory only,
+ * per process, never persisted — the replacement for the old
+ * `capabilities.structuredOutput` config cache that `akm setup` wrote once
+ * and nothing ever invalidated on a later `akm config set`. Populated the
+ * first time a real call proves it, forgotten on the next process start, so
+ * a config/endpoint change can never leave a stale verdict in place.
+ */
+const jsonSchemaUnsupportedConnections = new Set<string>();
+
+function connectionKey(config: LlmConnectionConfig): string {
+  return `${config.endpoint}|${config.model}`;
+}
+
+/** TEST-ONLY. Clear the in-memory json-schema-support tracker between tests. */
+export function _resetJsonSchemaSupportTrackerForTests(): void {
+  jsonSchemaUnsupportedConnections.clear();
+}
+
+/**
+ * Whether this connection has already been proven, this process, not to
+ * support `response_format: json_schema`. Callers choosing a prompt-framing
+ * strategy up front (e.g. `improve/reflect.ts`'s `outputMode`) can consult
+ * this instead of a persisted config flag — it reflects only what a real
+ * call this run actually observed.
+ */
+export function isJsonSchemaKnownUnsupported(config: LlmConnectionConfig): boolean {
+  return jsonSchemaUnsupportedConnections.has(connectionKey(config));
+}
+
+/**
+ * A single chat-completion attempt: one HTTP request/response cycle, with an
+ * inline fallback-once when a schema was requested and the provider 4xx's
+ * (never retried by the transient-failure policy below, by design — 4xx is
+ * a same-request-will-always-fail signal EXCEPT for this one specific,
+ * request-shape-dependent case). No cached verdict gates the first attempt:
+ * `config.supportsJsonSchema === false` is the only thing that skips it,
+ * and that is a value a human (or workflow author) set explicitly, not one
+ * a probe wrote automatically.
  */
 async function chatCompletionAttempt(
   config: ChatCompletionConfig,
   messages: ChatMessage[],
   options: ChatCompletionOptions | undefined,
   timeoutMs: number | null,
+): Promise<string> {
+  const wantsSchema =
+    Boolean(options?.responseSchema) && config.supportsJsonSchema !== false && !isJsonSchemaKnownUnsupported(config);
+  try {
+    return await chatCompletionAttemptOnce(config, messages, options, timeoutMs, wantsSchema);
+  } catch (err) {
+    if (
+      !wantsSchema ||
+      !(err instanceof LlmCallError) ||
+      err.code !== "provider_error" ||
+      typeof err.statusCode !== "number" ||
+      err.statusCode < 400 ||
+      err.statusCode >= 500 ||
+      err.statusCode === 429
+    ) {
+      throw err;
+    }
+    warnVerbose(
+      `[akm] LLM rejected response_format:json_schema (${err.statusCode}); retrying once without it: ${err.message}`,
+    );
+    const fallback = await chatCompletionAttemptOnce(config, messages, options, timeoutMs, false);
+    jsonSchemaUnsupportedConnections.add(connectionKey(config));
+    return fallback;
+  }
+}
+
+async function chatCompletionAttemptOnce(
+  config: ChatCompletionConfig,
+  messages: ChatMessage[],
+  options: ChatCompletionOptions | undefined,
+  timeoutMs: number | null,
+  includeSchema: boolean,
 ): Promise<string> {
   if (config.extraParams !== undefined) {
     const issue = validateExtraParams(config.extraParams)[0];
@@ -340,7 +412,7 @@ async function chatCompletionAttempt(
   // guess is wrong. Users who need a cap can set llm.maxTokens in config.
   const resolvedMaxTokens = options?.maxTokens ?? config.maxTokens;
   const responseFormat =
-    options?.responseSchema && config.supportsJsonSchema
+    includeSchema && options?.responseSchema
       ? {
           response_format: {
             type: "json_schema",
@@ -535,55 +607,27 @@ export async function isLlmAvailable(config: LlmConnectionConfig): Promise<boole
   }
 }
 
-// ── Capability probe ────────────────────────────────────────────────────────
-
-const CAPABILITY_PROBE_JSON_SCHEMA: Record<string, unknown> = {
-  type: "object",
-  properties: {
-    ok: { type: "boolean", const: true },
-    ingest: { type: "boolean", const: true },
-    lint: { type: "boolean", const: true },
-  },
-  required: ["ok", "ingest", "lint"],
-  additionalProperties: false,
-};
+// ── Reachability probe ──────────────────────────────────────────────────────
 
 /**
- * Ask the model to emit a strict JSON object so we know whether the knowledge
- * wiki ingest/lint flows can rely on structured output. Failure is non-fatal —
- * the caller can fall back to assist-only mode.
+ * Best-effort reachability check with an error message, for setup's optional
+ * `--probe` connectivity verification. Deliberately does NOT probe or cache
+ * `response_format: json_schema` support: that used to be persisted as
+ * `capabilities.structuredOutput` and consulted on every later call, so a
+ * config edit that changed the endpoint/model left a stale verdict in place
+ * with no invalidation, and a stale `true` sent an unsupported request that
+ * the retry policy explicitly does not retry (4xx). `chatCompletion` now
+ * attempts the schema request fresh every time and falls back once per call
+ * on a 4xx — see the in-memory tracker below.
  */
-export async function probeLlmCapabilities(
-  config: LlmConnectionConfig,
-): Promise<{ reachable: boolean; structuredOutput: boolean; error?: string }> {
+export async function probeLlmReachable(config: LlmConnectionConfig): Promise<{ reachable: boolean; error?: string }> {
   try {
-    const raw = await chatCompletion(
-      { ...config, supportsJsonSchema: true },
-      [
-        {
-          role: "system",
-          content: "You return only valid JSON. No prose, no markdown fences.",
-        },
-        {
-          role: "user",
-          content: 'Return exactly this JSON object and nothing else: {"ok": true, "ingest": true, "lint": true}',
-        },
-      ],
-      { maxTokens: 64, temperature: 0, responseSchema: CAPABILITY_PROBE_JSON_SCHEMA },
-    );
-    if (!raw) return { reachable: false, structuredOutput: false, error: "empty response" };
-    const parsed = parseJsonResponse<Record<string, unknown>>(raw);
-    return {
-      reachable: true,
-      structuredOutput: Boolean(
-        parsed &&
-          Object.keys(parsed).length === 3 &&
-          parsed.ok === true &&
-          parsed.ingest === true &&
-          parsed.lint === true,
-      ),
-    };
+    const raw = await chatCompletion(config, [{ role: "user", content: "Respond with just the word: ok" }], {
+      maxTokens: 16,
+      temperature: 0,
+    });
+    return raw.length > 0 ? { reachable: true } : { reachable: false, error: "empty response" };
   } catch (err) {
-    return { reachable: false, structuredOutput: false, error: err instanceof Error ? err.message : String(err) };
+    return { reachable: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

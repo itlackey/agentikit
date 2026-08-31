@@ -23,7 +23,7 @@ import { shapeForCommand } from "../output/shapes";
 import { formatPlain } from "../output/text";
 import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
 import type { WorkflowParameterFlag } from "../workflows/ir/params";
-import { WORKFLOW_MAX_RETRIES, WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/ir/schema";
+import { WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/ir/schema";
 import {
   abandonWorkflowRun,
   getWorkflowStatus,
@@ -187,7 +187,7 @@ const workflowRunCommand = defineJsonCommand({
     const { runWorkflowSteps } = await import("../workflows/exec/run-workflow.js");
     const parameterFlags = parseWorkflowParameterFlags(rawArgs, args.target);
     const maxSteps = parseIntegerFlag(getStringArg(args, "max-steps"), "--max-steps", 1);
-    const maxRetries = parseIntegerFlag(getStringArg(args, "max-retries"), "--max-retries", 0, WORKFLOW_MAX_RETRIES);
+    const maxRetries = parseIntegerFlag(getStringArg(args, "max-retries"), "--max-retries", 0);
     const timeoutMs = parseWorkflowTimeout(getStringArg(args, "timeout"));
     const controller = new AbortController();
     let signalExitCode: number | undefined;

@@ -206,17 +206,10 @@ function stdioFor(mode: "inherit" | "pipe" | "ignore" | undefined): "inherit" | 
 
 // ── Stdin ───────────────────────────────────────────────────────────────────
 
-/**
- * Read all of stdin as a single `Buffer`, enforcing a byte limit. When more
- * than `limitBytes` is read, `onLimitExceeded()` is invoked and its return (an
- * Error) is thrown — callers supply their own message so behaviour is exact.
- */
-export async function readStdin(limitBytes: number, onLimitExceeded: () => Error): Promise<Buffer> {
+/** Read all of stdin as a single `Buffer`. */
+export async function readStdin(): Promise<Buffer> {
   const chunks: Uint8Array[] = [];
-  let total = 0;
   for await (const chunk of stdinIterator()) {
-    total += chunk.byteLength;
-    if (total > limitBytes) throw onLimitExceeded();
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);

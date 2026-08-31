@@ -73,12 +73,7 @@
  * (`./index.ts`).
  */
 
-import {
-  type AgentCommandBuilder,
-  type AgentDispatchRequest,
-  assertNotFlag,
-  resolveDispatchModel,
-} from "../../agent/builder-shared";
+import { type AgentCommandBuilder, type AgentDispatchRequest, resolveDispatchModel } from "../../agent/builder-shared";
 import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /** Canonical harness/platform id used for model-alias resolution. */
@@ -127,8 +122,6 @@ export const openhandsBuilder: AgentCommandBuilder = {
     outputSchema: true,
   }),
   build(profile, req) {
-    assertNotFlag(req.systemPrompt, "systemPrompt");
-    assertNotFlag(req.model, "model");
     const args: string[] = [...profile.args];
     // Headless essentials (matrix shape): non-interactive run, JSONL stdout
     // for the extractor.

@@ -575,35 +575,6 @@ export const salienceRankingContributor: UtilityRankingContributor = {
 // curate-golden-bench delta justifying it.
 export const defaultUtilityRankingContributors: UtilityRankingContributor[] = [utilityRankingContributor];
 
-/**
- * EVAL/DEBUG ONLY — remove named ranking contributors from a list.
- *
- * Driven by the `AKM_ABLATE_CONTRIBUTORS` env var (comma-separated contributor
- * `name`s). A no-op — returns the input list unchanged (same reference) — when
- * the env value is unset/empty, so production ranking is never affected unless
- * the operator opts in. Its sole purpose is per-contributor ablation for the
- * curate ablation harness (`scripts/akm-eval/`): run the same fixture with and without a contributor
- * and diff the ranked results to measure whether that contributor is load-bearing.
- *
- * NOTE (from the 2026-06 ablation analysis): a contributor's ablation delta is only observable
- * in the UNSATURATED score regime — once entries saturate at the `displayScore`
- * ceiling their contributor deltas are absorbed and ablation reads Δ=0.
- */
-export function applyContributorAblation<T extends { name: string }>(
-  contributors: T[],
-  ablateEnv: string | undefined,
-): T[] {
-  if (!ablateEnv) return contributors;
-  const ablated = new Set(
-    ablateEnv
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-  if (ablated.size === 0) return contributors;
-  return contributors.filter((c) => !ablated.has(c.name));
-}
-
 export function applyScoreContributors(
   item: RankedEntryInput,
   ctx: RankingContext,

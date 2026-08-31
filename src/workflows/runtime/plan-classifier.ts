@@ -8,8 +8,6 @@ import { decodeCanonicalPlan } from "../ir/plan-hash";
 import type { IrRouteSpec } from "../ir/schema";
 import { WORKFLOW_IR_V5_VERSION, type WorkflowPlanGraphV4 } from "../ir/schema-v4";
 
-export type WorkflowExecutionSupport = "supported" | "unsupported-version" | "missing-plan" | "corrupt-plan";
-
 export type ClassifiedWorkflowPlan =
   | {
       support: "supported";

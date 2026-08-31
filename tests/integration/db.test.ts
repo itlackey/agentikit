@@ -12,7 +12,6 @@ import {
   openIndexDatabase,
 } from "../../src/storage/repositories/index-connection";
 import {
-  deleteEntriesByDir,
   deleteEntriesByDirAndBundle,
   deleteUsageEventsByEntryIds,
   findEntryIdByRef,
@@ -391,24 +390,6 @@ describe("Entry CRUD", () => {
       const skills = getAllEntries(db, "skill");
       expect(skills).toHaveLength(1);
       expect(skills[0]!.entry.type).toBe("skill");
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("deleteEntriesByDir removes entries", () => {
-    const db = openIndexDatabase(tmpDbPath());
-    try {
-      insertTestEntry(db, "del-1", { dirPath: "/to-delete" });
-      insertTestEntry(db, "del-2", { dirPath: "/to-delete" });
-      insertTestEntry(db, "keep-1", { dirPath: "/to-keep" });
-      expect(getEntryCount(db)).toBe(3);
-
-      deleteEntriesByDir(db, "/to-delete");
-      expect(getEntryCount(db)).toBe(1);
-
-      const remaining = getAllEntries(db);
-      expect(remaining[0]!.entry.name).toBe("keep-1");
     } finally {
       closeDatabase(db);
     }
@@ -897,30 +878,6 @@ describe("Vector / Embedding integration", () => {
     }
   });
 
-  test("deleteEntriesByDir also removes vec rows", () => {
-    const dbPath = tmpDbPath();
-    const db = openIndexDatabase(dbPath, { embeddingDim: 4 });
-    try {
-      const id1 = insertTestEntry(db, "vec-del-1", { dirPath: "/del-dir", searchText: "delete me" });
-      const id2 = insertTestEntry(db, "vec-del-2", { dirPath: "/keep-dir", searchText: "keep me" });
-      upsertEmbedding(db, id1, [1, 0, 0, 0]);
-      upsertEmbedding(db, id2, [0, 1, 0, 0]);
-
-      // Before delete, both should be searchable
-      let results = searchVec(db, [0.5, 0.5, 0, 0], 10);
-      expect(results.length).toBe(2);
-
-      deleteEntriesByDir(db, "/del-dir");
-
-      // After delete, only the kept entry should remain
-      results = searchVec(db, [0.5, 0.5, 0, 0], 10);
-      expect(results.length).toBe(1);
-      expect(results[0]!.id).toBe(id2);
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
   test("an out-of-range embeddingDim is rejected at open with a clear guard error", () => {
     // The vec-table guard (index-schema.ts): dims must be integers in 1–4096.
     // The config schema enforces the same bound at set-time; this pins the
@@ -1033,20 +990,6 @@ describe("entry-owned FTS projection", () => {
       expect(ftsCount(db)).toBe(0);
       rebuildFts(db);
       expect(ftsCount(db)).toBe(1);
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("deleteEntriesByDir purges FTS rows immediately", () => {
-    const db = openIndexDatabase(tmpDbPath("entry-fts-delete"));
-    try {
-      upsertFtsEntry(db, "k1", makeEntry("alpha"), "alpha");
-      upsertFtsEntry(db, "k2", makeEntry("bravo"), "bravo");
-      expect(ftsCount(db)).toBe(2);
-
-      deleteEntriesByDir(db, "/d");
-      expect(ftsCount(db)).toBe(0);
     } finally {
       closeDatabase(db);
     }

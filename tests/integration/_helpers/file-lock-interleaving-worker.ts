@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import fs from "node:fs";
-import { releaseImproveLock, tryAcquireImproveLock } from "../../../src/commands/improve/locks";
 import { probeLock, reclaimStaleLock, tryAcquireLockSync } from "../../../src/core/file-lock";
 
 const args = process.argv.slice(2);
@@ -24,23 +23,7 @@ function writeResult(value: boolean): void {
   fs.writeFileSync(resultPath, JSON.stringify({ value, pid: process.pid }));
 }
 
-if (mode === "process-holder") {
-  const acquisition = tryAcquireImproveLock(lockPath, Number(payload), true);
-  writeResult(acquisition.state === "acquired");
-  fs.writeFileSync(readyPath, "ready");
-  if (acquisition.state === "acquired") {
-    try {
-      waitForGate();
-    } finally {
-      releaseImproveLock(acquisition.ownership);
-    }
-  }
-} else if (mode === "process-attempt") {
-  const acquisition = tryAcquireImproveLock(lockPath, Number(payload), true);
-  writeResult(acquisition.state === "acquired");
-  fs.writeFileSync(readyPath, "ready");
-  if (acquisition.state === "acquired") releaseImproveLock(acquisition.ownership);
-} else if (mode === "acquire") {
+if (mode === "acquire") {
   fs.writeFileSync(readyPath, "ready");
   writeResult(Boolean(tryAcquireLockSync(lockPath, payload)));
 } else {

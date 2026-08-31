@@ -408,16 +408,6 @@ function decodeFrozenTarget(
 }
 
 /**
- * Composition-depth corruption bound (spec §3.6 step 6, §4.5, row A-23).
- * Mirrors `WORKFLOW_MAX_COMPOSITION_DEPTH` (= 8), which Lane B adds to
- * `src/workflows/resource-limits.ts` in a later commit as the freeze-time
- * `COMPOSITION_INVALID` gate. Reproduced here — the decode-time corruption
- * gate — rather than imported across the lane boundary, matching
- * `tests/workflows/plan-v5-schema.test.ts`'s own header comment.
- */
-const CHILD_WORKFLOW_DECODE_MAX_DEPTH = 8;
-
-/**
  * Decode a `kind: "child-workflow"` frozen target (§3.5): the embedded
  * COMPLETE child plan, re-verified against its own `planHash` and this
  * target's own `contentHash` on every decode (rows A-20, A-21), recursively
@@ -473,11 +463,6 @@ function decodeChildWorkflowTarget(
     fail(`unit ${unit.id} child workflow contentHash does not match its frozen dispatch`);
   }
   const childDepth = depth + 1;
-  if (childDepth > CHILD_WORKFLOW_DECODE_MAX_DEPTH) {
-    fail(
-      `unit ${unit.id} child workflow ${target.ref} exceeds the max composition depth of ${CHILD_WORKFLOW_DECODE_MAX_DEPTH}`,
-    );
-  }
   const frozenPlan = decodeWorkflowPlanV4(target.frozenPlan, {}, childDepth, budget);
   const embeddedPlanJson = canonicalJsonLocal(frozenPlan);
   const actualPlanHash = sha256(embeddedPlanJson);

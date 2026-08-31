@@ -80,6 +80,17 @@ import { initOutputMode, resetOutputMode } from "../../src/output/context";
  * state. Every call is to a verified-exported, no-argument, idempotent reset, so
  * invoking them here (and possibly again in `tests/_preload.ts`) is safe and makes
  * isolation order-independent.
+ *
+ * Also resets `process.exitCode` to `0`. A fresh subprocess always starts at
+ * 0; a leftover non-zero value from an EARLIER test that mutates
+ * `process.exitCode` directly (e.g. a unit test exercising a deferred-exit
+ * code path without a matching `afterEach` restore) survives across test
+ * FILES in the same `bun test` process. `runCliCapture` below only picks up
+ * a command's own deferred exit code when it *differs* from the value
+ * captured at the start of the run — so a leaked value that happens to equal
+ * what this run legitimately sets is invisible to that check, and the
+ * captured `code` silently stays 0. Resetting to a known-clean `0` here
+ * closes that hole at the source.
  */
 export function resetAllProcessState(): void {
   resetConfigCache();
@@ -90,6 +101,7 @@ export function resetAllProcessState(): void {
   resetQuiet();
   resetVerbose();
   clearLogFile();
+  process.exitCode = 0;
 }
 
 export interface CliResult {

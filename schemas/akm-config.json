@@ -57,9 +57,6 @@
                 "type": "integer",
                 "exclusiveMinimum": 0
               },
-              "supportsJsonSchema": {
-                "type": "boolean"
-              },
               "extraParams": {
                 "type": "object",
                 "additionalProperties": {}
@@ -572,9 +569,7 @@
             "confidenceMode": {
               "type": "string",
               "enum": [
-                "off",
-                "blend",
-                "multiply"
+                "blend"
               ],
               "default": "blend"
             },
@@ -1747,9 +1742,6 @@
                     "type": "integer",
                     "exclusiveMinimum": 0
                   },
-                  "supportsJsonSchema": {
-                    "type": "boolean"
-                  },
                   "extraParams": {
                     "type": "object",
                     "additionalProperties": {}
@@ -2262,9 +2254,7 @@
                 "confidenceMode": {
                   "type": "string",
                   "enum": [
-                    "off",
-                    "blend",
-                    "multiply"
+                    "blend"
                   ],
                   "default": "blend"
                 },
@@ -3420,14 +3410,8 @@
           "type": "integer",
           "exclusiveMinimum": 0
         },
-        "capabilities": {
-          "type": "object",
-          "properties": {
-            "structuredOutput": {
-              "type": "boolean"
-            }
-          },
-          "additionalProperties": true
+        "supportsJsonSchema": {
+          "type": "boolean"
         },
         "extraParams": {
           "type": "object",
@@ -3443,9 +3427,6 @@
         "reasoningEffort": {
           "type": "string",
           "minLength": 1
-        },
-        "supportsJsonSchema": {
-          "type": "boolean"
         }
       },
       "required": [

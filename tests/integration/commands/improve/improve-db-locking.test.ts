@@ -29,7 +29,6 @@ import { loadConfig, saveConfig } from "../../../../src/core/config/config";
 import { readEvents } from "../../../../src/core/events";
 import { openStateDatabase } from "../../../../src/core/state-db";
 import type { GraphExtractionResult } from "../../../../src/indexer/graph/graph-extraction";
-import { probeIndexWriterLease } from "../../../../src/indexer/index-writer-lock";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import type { MemoryInferenceResult } from "../../../../src/indexer/passes/memory-inference";
 import type { Database } from "../../../../src/storage/database";
@@ -122,8 +121,6 @@ describe("#584: index.db handle is closed before reindexFn runs", () => {
     let reindexCalls = 0;
     let handleOpenDuringReindex: boolean | undefined;
     let handleOpenDuringGraphExtraction: boolean | undefined;
-    let leaseHeldDuringInference: boolean | undefined;
-    let leaseHeldDuringGraphExtraction: boolean | undefined;
     let graphDb: Database | undefined;
 
     const result = await akmImprove({
@@ -158,8 +155,6 @@ describe("#584: index.db handle is closed before reindexFn runs", () => {
       // post-inference reindex (#584 call site 1).
       memoryInferenceFn: async (ctx) => {
         capturedInferenceDb = ctx.db;
-        const probe = probeIndexWriterLease();
-        leaseHeldDuringInference = probe.state === "held" && probe.holderPid === process.pid;
         return stubMemoryInferenceResult({ considered: 1, splitParents: 1, writtenFacts: 1 });
       },
       reindexFn: async () => {
@@ -174,8 +169,6 @@ describe("#584: index.db handle is closed before reindexFn runs", () => {
       graphExtractionFn: async (ctx) => {
         graphDb = ctx.db;
         handleOpenDuringGraphExtraction = isHandleOpen(ctx.db);
-        const probe = probeIndexWriterLease();
-        leaseHeldDuringGraphExtraction = probe.state === "held" && probe.holderPid === process.pid;
         return stubGraphExtractionResult;
       },
     });
@@ -184,8 +177,6 @@ describe("#584: index.db handle is closed before reindexFn runs", () => {
     expect(reindexCalls).toBeGreaterThanOrEqual(1);
     expect(handleOpenDuringReindex).toBe(false);
     expect(handleOpenDuringGraphExtraction).toBe(true);
-    expect(leaseHeldDuringInference).toBe(true);
-    expect(leaseHeldDuringGraphExtraction).toBe(true);
     // The post-reindex handle is a NEW connection, not the closed original.
     expect(graphDb).toBeDefined();
     expect(graphDb).not.toBe(capturedInferenceDb);

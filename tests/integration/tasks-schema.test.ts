@@ -32,7 +32,7 @@
  * Every v4 assertion is derived from task source v4's exported constants
  * (`TASK_SOURCE_V4_VERSION`, `TASK_SOURCE_V4_TOP_LEVEL_KEYS`,
  * `TASK_SOURCE_V4_SCHEDULE_KEYS`, `TASK_INPUT_DECLARATION_KEYS`) or from
- * existing shared bounds (`TASK_V3_MAX_SCHEDULES`, `WORKFLOW_MAX_PARAMS`) —
+ * existing shared bounds (`TASK_V3_MAX_SCHEDULES`) —
  * never restated as literals — per the task brief's binding instruction. The
  * `TASK_V3_MAX_*` bound constants keep that name (they are shared,
  * version-agnostic bounded-document primitives task source v4 itself still
@@ -47,6 +47,7 @@ import Ajv from "ajv";
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../src/execution/limits";
 import {
   TASK_V3_MAX_COLLECTION_ITEMS,
+  TASK_V3_MAX_REDACT_NAMES,
   TASK_V3_MAX_SCHEDULES,
   TASK_V3_MAX_STRING_BYTES,
 } from "../../src/tasks/source/bounded-document";
@@ -59,12 +60,6 @@ import {
   TASK_SOURCE_V4_VERSION,
 } from "../../src/tasks/source/task-source-v4";
 import { TASK_RUN_RESERVED_FLAG_NAMES } from "../../src/tasks/task-run-reserved-flags";
-import { PROGRAM_PARAM_NAME_PATTERN } from "../../src/workflows/program/schema";
-import {
-  WORKFLOW_MAX_EXEC_PASS_ENV,
-  WORKFLOW_MAX_PARAMS,
-  WORKFLOW_MAX_RETRIES,
-} from "../../src/workflows/resource-limits";
 
 const root = path.resolve(import.meta.dir, "..", "..");
 
@@ -439,31 +434,6 @@ test("published task schema's schedule[].inputs is closed to the input name patt
   expect(inputsSchema.$ref).not.toBe("#/definitions/jsonObject");
 });
 
-test("published task schema's inputs: bounds at WORKFLOW_MAX_PARAMS declared inputs (D2-N3)", () => {
-  const schema = readTaskSchema();
-  const validate = new Ajv({ allErrors: true, strict: false }).compile(schema);
-  const base = { version: TASK_SOURCE_V4_VERSION, run: "echo hi" };
-
-  const declarations = (count: number): Record<string, unknown> => {
-    const out: Record<string, unknown> = {};
-    for (let i = 0; i < count; i += 1) {
-      const name = `p${i}`;
-      expect(PROGRAM_PARAM_NAME_PATTERN.test(name), name).toBe(true);
-      out[name] = { type: "string" };
-    }
-    return out;
-  };
-
-  expect(
-    validate({ ...base, inputs: declarations(WORKFLOW_MAX_PARAMS) }),
-    `exactly ${WORKFLOW_MAX_PARAMS} inputs`,
-  ).toBe(true);
-  expect(
-    validate({ ...base, inputs: declarations(WORKFLOW_MAX_PARAMS + 1) }),
-    `one input over ${WORKFLOW_MAX_PARAMS}`,
-  ).toBe(false);
-});
-
 test("published task schema's definitions.jsonArray/jsonValue stay bounded at the shared collection/string limits", () => {
   const schema = readTaskSchema();
   expect(schema.definitions.jsonArray?.maxItems).toBe(TASK_V3_MAX_COLLECTION_ITEMS);
@@ -475,8 +445,7 @@ test("published task schema's definitions.jsonArray/jsonValue stay bounded at th
 
 test("published task schema's akm: options bag equivalents (timeout/redact) stay bounded at their parser limits", () => {
   const schema = readTaskSchema();
-  expect(schema.properties.maxRetries?.maximum).toBe(WORKFLOW_MAX_RETRIES);
-  expect(schema.properties.redact?.maxItems).toBe(WORKFLOW_MAX_EXEC_PASS_ENV);
+  expect(schema.properties.redact?.maxItems).toBe(TASK_V3_MAX_REDACT_NAMES);
   expect((schema.properties.timeout?.oneOf as JsonSchema[])[0]?.maximum).toBe(EXECUTION_MAX_TIMEOUT_MS);
 });
 

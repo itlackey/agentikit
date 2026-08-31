@@ -11,21 +11,9 @@ import {
   utf8Bytes,
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
-  WORKFLOW_MAX_EXEC_ARG_BYTES,
-  WORKFLOW_MAX_EXEC_ARGV,
-  WORKFLOW_MAX_EXEC_CWD_LENGTH,
-  WORKFLOW_MAX_EXEC_PASS_ENV,
-  WORKFLOW_MAX_GATE_LOOPS,
-  WORKFLOW_MAX_INPUTS,
   WORKFLOW_MAX_INSTRUCTION_BYTES,
-  WORKFLOW_MAX_JSON_DEPTH,
-  WORKFLOW_MAX_MAP_EXPANSION,
-  WORKFLOW_MAX_PARAMS,
   WORKFLOW_MAX_PLAN_BYTES,
-  WORKFLOW_MAX_RETRIES,
-  WORKFLOW_MAX_ROUTE_BRANCHES,
   WORKFLOW_MAX_SCHEMA_BYTES,
-  WORKFLOW_MAX_STEPS,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../resource-limits";
 import type { SourceRef } from "../schema";
@@ -135,8 +123,8 @@ export interface WorkflowPlanStructure {
 // Shared dispatch-significant bounds now live in `../resource-limits` so the
 // parser, the published JSON Schema, and this decoder enforce identical
 // values. Re-exported here for existing importers (e.g. `commands/workflow-cli.ts`).
-export { WORKFLOW_MAX_CONCURRENCY, WORKFLOW_MAX_GATE_LOOPS, WORKFLOW_MAX_RETRIES, WORKFLOW_MAX_TIMEOUT_MS };
-export const WORKFLOW_MAX_UNITS = WORKFLOW_MAX_MAP_EXPANSION;
+export { WORKFLOW_MAX_CONCURRENCY, WORKFLOW_MAX_TIMEOUT_MS };
+
 const MAX_LIST_ITEMS = 1024;
 const MAX_STRING_LENGTH = 1_000_000;
 
@@ -177,8 +165,7 @@ export function validateWorkflowPlanStructure(
     fail(`execution.maxConcurrency must be an integer from 1 through ${WORKFLOW_MAX_CONCURRENCY}`);
   }
   assertKeys(plan.execution, ["maxConcurrency"], "execution");
-  if (!Array.isArray(plan.steps) || plan.steps.length === 0 || plan.steps.length > WORKFLOW_MAX_STEPS)
-    fail("steps must contain 1 through 256 entries");
+  if (!Array.isArray(plan.steps) || plan.steps.length === 0) fail("steps must be a non-empty array");
   const stepIds = new Set<string>();
   const nodeIds = new Set<string>();
   for (let index = 0; index < plan.steps.length; index++) {
@@ -275,7 +262,7 @@ function validateNode(node: unknown, stepId: string, nodeIds: Set<string>, unitE
   if (node.schema !== undefined) validateSchema(node.schema, `unit ${node.id} schema`);
   validateRetry(node.retry, node.id);
   validateStringArray(node.env, `unit ${node.id} env`, MAX_LIST_ITEMS, true);
-  validateStringArray(node.inputs, `unit ${node.id} inputs`, WORKFLOW_MAX_INPUTS, true);
+  validateStringArray(node.inputs, `unit ${node.id} inputs`, Infinity, true);
   validateSource(node.source, `unit ${node.id} source`);
 }
 
@@ -293,18 +280,12 @@ function validateExecSpec(value: unknown, label: string): void {
   if (
     !Array.isArray(command) ||
     command.length === 0 ||
-    command.length > WORKFLOW_MAX_EXEC_ARGV ||
-    !command.every((arg) => typeof arg === "string" && arg.length > 0 && utf8Bytes(arg) <= WORKFLOW_MAX_EXEC_ARG_BYTES)
+    !command.every((arg) => typeof arg === "string" && arg.length > 0)
   ) {
-    fail(`${label}.command must be an argv array of 1 through ${WORKFLOW_MAX_EXEC_ARGV} bounded non-empty strings`);
+    fail(`${label}.command must be an argv array of non-empty strings`);
   }
   if (value.cwd !== undefined) {
-    if (
-      typeof value.cwd !== "string" ||
-      value.cwd.length === 0 ||
-      value.cwd.length > WORKFLOW_MAX_EXEC_CWD_LENGTH ||
-      !isContainedRelativePath(value.cwd)
-    ) {
+    if (typeof value.cwd !== "string" || value.cwd.length === 0 || !isContainedRelativePath(value.cwd)) {
       fail(`${label}.cwd must be a relative path contained in the unit working directory`);
     }
   }
@@ -342,13 +323,12 @@ function validateExecEnvScope(value: Record<string, unknown>, label: string): vo
   if (
     !Array.isArray(passEnv) ||
     passEnv.length === 0 ||
-    passEnv.length > WORKFLOW_MAX_EXEC_PASS_ENV ||
     !passEnv.every((name) => typeof name === "string" && WORKFLOW_ENV_VAR_NAME_PATTERN.test(name)) ||
     new Set(passEnv).size !== passEnv.length
   ) {
     fail(
-      `${label}.passEnv must be 1 through ${WORKFLOW_MAX_EXEC_PASS_ENV} distinct environment variable names ` +
-        `matching ${WORKFLOW_ENV_VAR_NAME_PATTERN.source}`,
+      `${label}.passEnv must be a non-empty list of distinct environment variable names matching ` +
+        `${WORKFLOW_ENV_VAR_NAME_PATTERN.source}`,
     );
   }
 }
@@ -363,8 +343,7 @@ function validateGate(gate: unknown, stepId: string, nodeIds: Set<string>, gateE
     gate.criteria.length > MAX_LIST_ITEMS ||
     !gate.criteria.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_STRING_LENGTH) ||
     !Number.isInteger(gate.maxLoops) ||
-    (gate.maxLoops as number) < 1 ||
-    (gate.maxLoops as number) > WORKFLOW_MAX_GATE_LOOPS
+    (gate.maxLoops as number) < 1
   )
     fail(`gate for step ${stepId} is invalid`);
   if (nodeIds.has(gate.id)) fail(`gate id ${gate.id} collides with a node`);
@@ -379,7 +358,6 @@ function validateRoute(route: unknown, stepId: string): void {
     !route.input ||
     !isRecord(route.when) ||
     Object.keys(route.when).length === 0 ||
-    Object.keys(route.when).length > WORKFLOW_MAX_ROUTE_BRANCHES ||
     !Object.keys(route.when).every((match) => match.length > 0 && match.length <= MAX_STRING_LENGTH) ||
     !Object.values(route.when).every((target) => typeof target === "string" && target)
   )
@@ -393,8 +371,7 @@ function assertKeys(value: Record<string, unknown>, allowed: readonly string[], 
   for (const key of Object.keys(value)) if (!allowed.includes(key)) fail(`${label} contains unknown key ${key}`);
 }
 
-function assertJson(value: unknown, depth = 0): void {
-  if (depth > WORKFLOW_MAX_JSON_DEPTH) fail("plan exceeds JSON depth limit of 64");
+function assertJson(value: unknown): void {
   if (value === null || typeof value === "boolean") return;
   if (typeof value === "string") {
     if (value.length > MAX_STRING_LENGTH) fail("plan contains an oversized string");
@@ -405,11 +382,11 @@ function assertJson(value: unknown, depth = 0): void {
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) assertJson(item, depth + 1);
+    for (const item of value) assertJson(item);
     return;
   }
   if (isRecord(value)) {
-    for (const item of Object.values(value)) assertJson(item, depth + 1);
+    for (const item of Object.values(value)) assertJson(item);
     return;
   }
   fail("plan contains a non-JSON value");
@@ -419,11 +396,10 @@ function validateParams(
   params: string[] | undefined,
   schemas: Record<string, Record<string, unknown>> | undefined,
 ): void {
-  validateStringArray(params, "params", WORKFLOW_MAX_PARAMS, true);
+  validateStringArray(params, "params", Infinity, true);
   if (params?.some((name) => !PROGRAM_PARAM_NAME_PATTERN.test(name))) fail("params contains an invalid name");
   if (schemas !== undefined) {
-    if (!isRecord(schemas) || Object.keys(schemas).length > WORKFLOW_MAX_PARAMS)
-      fail("paramSchemas must be a bounded object");
+    if (!isRecord(schemas)) fail("paramSchemas must be an object");
     for (const [name, schema] of Object.entries(schemas)) {
       if (!PROGRAM_PARAM_NAME_PATTERN.test(name)) fail(`paramSchemas.${name} is invalid`);
       validateSchema(schema, `paramSchemas.${name}`);
@@ -445,19 +421,15 @@ function validateBudget(budget: IrBudget | undefined): void {
   if (budget.maxTokens === undefined && budget.maxUnits === undefined) fail("budget must declare a ceiling");
   validateOptionalPositiveInteger(budget.maxTokens, "budget.maxTokens");
   const maxUnits = budget.maxUnits;
-  if (
-    maxUnits !== undefined &&
-    (!Number.isSafeInteger(maxUnits) || (maxUnits as number) < 1 || (maxUnits as number) > WORKFLOW_MAX_UNITS)
-  )
-    fail(`budget.maxUnits must be an integer from 1 through ${WORKFLOW_MAX_UNITS}`);
+  if (maxUnits !== undefined && (!Number.isSafeInteger(maxUnits) || (maxUnits as number) < 1))
+    fail("budget.maxUnits must be a positive integer");
 }
 
 function validateRetry(retry: unknown, nodeId: string): void {
   if (retry === undefined) return;
   if (!isRecord(retry)) fail(`unit ${nodeId} retry must be an object`);
   assertKeys(retry, ["max", "on"], `unit ${nodeId} retry`);
-  if (!Number.isSafeInteger(retry.max) || (retry.max as number) < 0 || (retry.max as number) > WORKFLOW_MAX_RETRIES)
-    fail(`unit ${nodeId} retry.max is invalid`);
+  if (!Number.isSafeInteger(retry.max) || (retry.max as number) < 0) fail(`unit ${nodeId} retry.max is invalid`);
   validateStringArray(retry.on, `unit ${nodeId} retry.on`, PROGRAM_RETRY_REASONS.length, true);
   if (
     retry.on === undefined ||

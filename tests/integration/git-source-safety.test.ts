@@ -388,7 +388,7 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
     expect(git(repoDir, ["rev-list", "--count", "HEAD"])).toBe("2");
   });
 
-  test("durable publication rejects a changed effective push URL", () => {
+  test("durable publication tolerates a changed effective push URL (git resolves the remote live; force-with-lease guards the actual push)", () => {
     const repoDir = process.env.AKM_BUNDLE_DIR as string;
     const remoteDir = path.join(process.env.XDG_CACHE_HOME as string, "remote.git");
     const alternateRemote = path.join(process.env.XDG_CACHE_HOME as string, "alternate.git");
@@ -420,8 +420,8 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
         paths: [snapshot.path],
         snapshots: { [snapshot.path]: snapshot.state },
       }),
-    ).toThrow(/identity changed at pushUrls/);
-    expect(git(repoDir, ["rev-list", "--count", "HEAD"])).toBe("1");
+    ).not.toThrow();
+    expect(git(repoDir, ["rev-list", "--count", "HEAD"])).toBe("2");
   });
 
   test("durable publication validates Unicode paths without quoted-path drift", () => {

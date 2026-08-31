@@ -180,7 +180,12 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     expect(result.warnings).toEqual([]);
   });
 
-  test("cached and registry peer copies cannot create ownership findings for the real workflow set", async () => {
+  test("user directories named .cache or registry ARE linted (only akm's real registry cache is excluded)", async () => {
+    // Pre-0.9.6 this asserted zero findings for these paths — which pinned the
+    // exact bug where a bare name/segment match silently disabled lint for any
+    // user directory that happened to be called ".cache" or "registry"
+    // (fixed alongside #874; exclusion is now isAkmRegistryCachePath, anchored
+    // to akm's resolved cache root, not a name).
     const root = fixtureRoot("akm-lint-yaml-cached-peer-");
     write(root, "workflows/release.md", VALID_MARKDOWN);
     write(root, "workflows/.cache/shadow.md", VALID_MARKDOWN);
@@ -190,8 +195,10 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
 
     const result = await akmLint({ dir: root, typeFilter: "workflows" });
 
-    expect(result.flagged).toEqual([]);
-    expect(result.warnings).toEqual([]);
+    // The invalid YAML peers inside those user directories must now surface.
+    const flaggedFiles = result.flagged.map((f) => f.file).sort();
+    expect(flaggedFiles.some((f) => f.includes(".cache/shadow"))).toBe(true);
+    expect(flaggedFiles.some((f) => f.includes("registry/mirror"))).toBe(true);
   });
 
   test.each([

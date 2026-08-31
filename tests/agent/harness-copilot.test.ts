@@ -142,23 +142,16 @@ describe("copilotBuilder — tool policy", () => {
 
 // ── Builder — injection guards ────────────────────────────────────────────────
 
-describe("copilotBuilder — assertNotFlag guards", () => {
-  test("model starting with '--' throws", () => {
-    expect(() => copilotBuilder.build(makeCopilotProfile(), { prompt: "go", model: "--evil" })).toThrow(
-      /model must not start with "--"/,
-    );
-  });
-
-  test("systemPrompt starting with '--' throws (it heads the -p payload)", () => {
-    expect(() => copilotBuilder.build(makeCopilotProfile(), { prompt: "go", systemPrompt: "--inject" })).toThrow(
-      /systemPrompt must not start with "--"/,
-    );
-  });
-
-  test("tool entry starting with '--' throws", () => {
-    expect(() => copilotBuilder.build(makeCopilotProfile(), { prompt: "go", tools: ["--evil-flag"] })).toThrow(
-      /tools entry must not start with "--"/,
-    );
+describe("copilotBuilder — model/systemPrompt/tools values", () => {
+  test("a leading '--' in model/systemPrompt/tools is passed through, not rejected", () => {
+    expect(() =>
+      copilotBuilder.build(makeCopilotProfile(), {
+        prompt: "go",
+        model: "--evil",
+        systemPrompt: "--inject",
+        tools: ["--evil-flag"],
+      }),
+    ).not.toThrow();
   });
 
   test("valid values do not throw", () => {

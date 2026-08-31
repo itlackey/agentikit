@@ -392,7 +392,6 @@ describe("agent and output setup steps", () => {
       provider: "lmstudio",
       endpoint: "http://localhost:7200/v1/chat/completions",
       model: "qwen/qwen3.5-9b",
-      capabilities: { structuredOutput: true },
     };
     const current = {
       configVersion: "0.9.0",

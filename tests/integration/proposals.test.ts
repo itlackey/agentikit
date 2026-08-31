@@ -1030,7 +1030,7 @@ describe("Phase 6C: promoteProposal captures backup; revertProposal restores it"
   // mutation and asserting it hasn't completed yet. That sleep was not
   // needed for correctness and was a source of narrow-margin timing risk on
   // a loaded runner. `withAssetMutationLease` (src/indexer/index-writer-lock.ts,
-  // `acquireIndexWriterLease`) makes its FIRST lock-acquisition attempt
+  // `acquireAssetMutationLease`) makes its FIRST lock-acquisition attempt
   // (`tryAcquireMaintenanceBarrier` + `tryAcquireLockSync` + `probeLock`,
   // src/core/file-lock.ts) entirely synchronously — none of those calls
   // `await` anything. Per JS async-function semantics, that means by the

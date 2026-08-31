@@ -9,7 +9,6 @@ import { classifyPathAccess, describeInaccessiblePath } from "../../core/path-ac
 import { getDbPath } from "../../core/paths";
 import { formatRegistryUrl } from "../../core/registry-url";
 import { error } from "../../core/warn";
-import { getEffectiveSemanticStatus, readSemanticStatus } from "../../indexer/search/semantic-status";
 import type { InfoResponse } from "../../sources/types";
 import type { Database } from "../../storage/database";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
@@ -36,15 +35,6 @@ export function assembleInfo(options?: { dbPath?: string }): InfoResponse {
   // Asset types (copy into a mutable array — `placementTypes()` returns readonly)
   const assetTypes = [...placementTypes()];
 
-  const semanticRuntime = readSemanticStatus();
-  const semanticStatus = getEffectiveSemanticStatus(config, semanticRuntime);
-
-  // Search modes
-  const searchModes: string[] = ["fts"];
-  if (semanticStatus === "ready-js" || semanticStatus === "ready-vec") {
-    searchModes.push("semantic", "hybrid");
-  }
-
   // Registries (strip sensitive fields like apiKey from options)
   const registries = (config.registries ?? []).map((r) => ({
     url: formatRegistryUrl(r.url),
@@ -70,6 +60,22 @@ export function assembleInfo(options?: { dbPath?: string }): InfoResponse {
   const resolvedDbPath = options?.dbPath ?? getDbPath();
   const indexStats = readIndexStats(resolvedDbPath);
 
+  // Semantic status is read live from the index's own state, not a cached
+  // verdict — a failed embed attempt at search time falls back to FTS and
+  // reports that in the search response, it never disables the mode here.
+  const semanticStatus: InfoResponse["semanticSearch"]["status"] =
+    config.semanticSearchMode === "off"
+      ? "disabled"
+      : !indexStats.hasEmbeddings
+        ? "pending"
+        : indexStats.vecAvailable
+          ? "ready-vec"
+          : "ready-js";
+  const searchModes: string[] = ["fts"];
+  if (semanticStatus === "ready-js" || semanticStatus === "ready-vec") {
+    searchModes.push("semantic", "hybrid");
+  }
+
   return {
     schemaVersion: 1,
     version: pkgVersion,
@@ -80,8 +86,6 @@ export function assembleInfo(options?: { dbPath?: string }): InfoResponse {
     semanticSearch: {
       mode: config.semanticSearchMode,
       status: semanticStatus,
-      ...(semanticRuntime?.reason ? { reason: semanticRuntime.reason } : {}),
-      ...(semanticRuntime?.message ? { message: semanticRuntime.message } : {}),
     },
     registries,
     sourceProviders,

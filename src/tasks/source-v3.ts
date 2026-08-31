@@ -36,14 +36,14 @@
 
 import type { ParsedBuiltinCommandAction } from "../commands/command/builtin-action";
 import type { ExecutionJsonObject } from "../execution/json";
-import { TASK_V3_MAX_SCHEDULES, TASK_V3_MAX_SOURCE_BYTES } from "./source/bounded-document";
+import { TASK_V3_MAX_SCHEDULES } from "./source/bounded-document";
 
 // D2-N4 (spec docs/plans/specs/p2a-task-source-v4.md §3.1, §9): re-exported
-// at their EXISTING names so no importer changes. Only the two names a
-// surviving `src` consumer still imports (task-source-v4.ts,
-// commands/tasks/tasks.ts) — every other bounded-document re-export this
-// file used to carry was dropped in P4 §3.2.3.
-export { TASK_V3_MAX_SCHEDULES, TASK_V3_MAX_SOURCE_BYTES };
+// at its EXISTING name so no importer changes. The one name a surviving
+// `src` consumer still imports (task-source-v4.ts) — every other
+// bounded-document re-export this file used to carry was dropped in P4
+// §3.2.3.
+export { TASK_V3_MAX_SCHEDULES };
 
 export const TASK_EXTENSION = ".yml";
 export const TASK_NEAR_MISS_EXTENSION = ".yaml";

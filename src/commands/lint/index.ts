@@ -130,7 +130,7 @@ function collectWorkflowFiles(dir: string): string[] {
     if (entry.name === ".git") continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name === ".cache" || entry.name === "registry") continue;
+      if (isAkmRegistryCachePath(full)) continue;
       results.push(...collectWorkflowFiles(full));
       continue;
     }
@@ -223,11 +223,9 @@ function collectAdapterFiles(root: string, extensions: readonly string[]): strin
       if (entry.isDirectory()) {
         walk(full);
       } else if (entry.isFile() && matchesAdapterExtension(entry.name, extensions)) {
-        // Compare PATH SEGMENTS, not raw substrings: `path.join` yields `\` on
-        // Windows so a `"/.cache/"` substring test never matches there, and a
-        // substring test would also skip a legitimately-named `registry` file.
-        const segments = path.relative(root, full).split(/[\\/]/);
-        if (segments.includes(".cache") || segments.includes("registry")) continue;
+        // Skip akm's OWN resolved registry-cache copies, not any user
+        // directory that happens to be named ".cache" or "registry".
+        if (isAkmRegistryCachePath(full)) continue;
         results.push(full);
       }
     }

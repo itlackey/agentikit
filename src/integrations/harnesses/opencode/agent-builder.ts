@@ -16,7 +16,7 @@
  * (the canonical harness id).
  */
 
-import { type AgentCommandBuilder, assertNotFlag, resolveDispatchModel } from "../../agent/builder-shared";
+import { type AgentCommandBuilder, resolveDispatchModel } from "../../agent/builder-shared";
 import { createAgentRequestLowerer } from "../../agent/request-lowering";
 
 /**
@@ -37,9 +37,6 @@ export const opencodeBuilder: AgentCommandBuilder = {
     outputSchema: false,
   }),
   build(profile, req) {
-    assertNotFlag(req.systemPrompt, "systemPrompt");
-    assertNotFlag(req.model, "model");
-    assertNotFlag(req.agent, "agent");
     const args: string[] = req.model ? [] : [...profile.args];
     if (req.model) {
       for (let index = 0; index < profile.args.length; index += 1) {

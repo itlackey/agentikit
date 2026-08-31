@@ -55,13 +55,7 @@ import type { ExecutionJsonObject, ExecutionJsonValue } from "../../execution/js
 import { EXECUTION_MAX_TIMEOUT_MS } from "../../execution/limits";
 import { classifyTargetRef } from "../../execution/target-ref";
 import { detectSecretShapedParams } from "../../workflows/exec/param-secrets";
-import {
-  WORKFLOW_ENV_VAR_NAME_PATTERN,
-  WORKFLOW_MAX_EXEC_PASS_ENV,
-  WORKFLOW_MAX_PARAMS,
-  WORKFLOW_MAX_RETRIES,
-  WORKFLOW_MAX_SCHEMA_BYTES,
-} from "../../workflows/resource-limits";
+import { WORKFLOW_ENV_VAR_NAME_PATTERN, WORKFLOW_MAX_SCHEMA_BYTES } from "../../workflows/resource-limits";
 import { TASK_V3_HOST_SHELLS, TASK_V3_MAX_SCHEDULES, type TaskV3Environment, type TaskV3HostShell } from "../source-v3";
 import { TASK_RUN_RESERVED_FLAG_NAMES, TASK_RUN_SELF_DIAGNOSED_FLAGS } from "../task-run-reserved-flags";
 import {
@@ -77,6 +71,7 @@ import {
   readBoundedTaskSourceYaml,
   sourceError,
   stringField,
+  TASK_V3_MAX_REDACT_NAMES,
   utf8Bytes,
   validateWorkingDirectory,
 } from "./bounded-document";
@@ -415,7 +410,7 @@ function parseExecutionControls(input: ExecutionJsonObject, ctx: BoundedDocument
   if (own(input, "timeout")) out.timeout = parseTimeoutTopLevel(input.timeout, ctx);
   if (own(input, "redact")) {
     const names = parseStringArray(input.redact, ctx, ["redact"], {
-      max: WORKFLOW_MAX_EXEC_PASS_ENV,
+      max: TASK_V3_MAX_REDACT_NAMES,
       pattern: WORKFLOW_ENV_VAR_NAME_PATTERN,
     });
     if (new Set(names).size !== names.length) sourceError(ctx, ["redact"], "must not contain duplicate names.");
@@ -428,12 +423,8 @@ function parseExecutionControls(input: ExecutionJsonObject, ctx: BoundedDocument
     out.maxSteps = input.maxSteps;
   }
   if (own(input, "maxRetries")) {
-    if (
-      !Number.isSafeInteger(input.maxRetries) ||
-      (input.maxRetries as number) < 0 ||
-      (input.maxRetries as number) > WORKFLOW_MAX_RETRIES
-    ) {
-      sourceError(ctx, ["maxRetries"], `must be an integer from 0 through ${WORKFLOW_MAX_RETRIES}.`);
+    if (!Number.isSafeInteger(input.maxRetries) || (input.maxRetries as number) < 0) {
+      sourceError(ctx, ["maxRetries"], "must be a non-negative safe integer.");
     }
     out.maxRetries = input.maxRetries;
   }
@@ -511,9 +502,6 @@ function parseInputDeclaration(name: string, raw: ExecutionJsonValue, ctx: Bound
 function parseInputDeclarations(value: ExecutionJsonValue, ctx: BoundedDocumentContext): InputContract {
   const input = asRecord(value, ctx, ["inputs"]);
   const names = Object.keys(input);
-  if (names.length > WORKFLOW_MAX_PARAMS) {
-    sourceError(ctx, ["inputs"], `accepts at most ${WORKFLOW_MAX_PARAMS} declared inputs.`);
-  }
   const result: Record<string, InputDeclaration> = {};
   for (const name of names) {
     if (!INPUT_NAME_PATTERN.test(name)) {

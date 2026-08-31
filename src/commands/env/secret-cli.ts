@@ -132,16 +132,12 @@ const secretSetCommand = defineJsonCommand({
       throw new UsageError("Pass only one of --from-file or --from-env (or use stdin).", "INVALID_FLAG_VALUE");
     }
 
-    const MAX_SECRET_BYTES = 5 * 1024 * 1024; // 5 MB
     let value: Buffer;
     if (fromFile !== undefined) {
       if (!fs.existsSync(fromFile)) {
         throw new NotFoundError(`File not found: ${fromFile}`, "FILE_NOT_FOUND");
       }
       value = fs.readFileSync(fromFile);
-      if (value.byteLength > MAX_SECRET_BYTES) {
-        throw new UsageError("Secret exceeds the 5 MB limit.");
-      }
     } else if (fromEnv !== undefined) {
       const envVal = process.env[fromEnv];
       if (envVal === undefined) {
@@ -152,7 +148,7 @@ const secretSetCommand = defineJsonCommand({
       if (process.stdin.isTTY) {
         process.stderr.write(`Enter value for secret "${name}" (Ctrl-D when done):\n`);
       }
-      const stdinBuf = await readStdin(MAX_SECRET_BYTES, () => new UsageError("Secret exceeds the 5 MB limit."));
+      const stdinBuf = await readStdin();
       // Strip a single trailing newline so `echo "$TOKEN" | akm secret set`
       // stores the token without the shell-added newline. Use --from-file for
       // byte-exact storage of multi-line material (PEM keys, certs).
