@@ -319,7 +319,7 @@ async function clusterMemoriesBySimilarity(
     }
   }
 
-  let missVecs: number[][] = [];
+  let missVecs: (number[] | undefined)[] = [];
   if (missTexts.length > 0) {
     const embedStart = Date.now();
     try {
@@ -330,14 +330,15 @@ async function clusterMemoriesBySimilarity(
     } finally {
       embedMs += Date.now() - embedStart;
     }
-    // Upsert newly computed vectors into the cache.
+    // Upsert newly computed vectors into the cache. A skipped document
+    // (embedBatch reports it via `undefined` rather than throwing, #874) has
+    // no vector to cache — omit it rather than writing a bogus embedding.
     if (stateDb && missVecs.length === missTexts.length) {
       try {
-        const toUpsert = missIndices.map((idx, pos) => ({
-          contentHash: contentHashes[idx] as string,
-          embedding: missVecs[pos] as number[],
-          modelId,
-        }));
+        const toUpsert = missIndices.flatMap((idx, pos) => {
+          const embedding = missVecs[pos];
+          return embedding ? [{ contentHash: contentHashes[idx] as string, embedding, modelId }] : [];
+        });
         upsertBodyEmbeddings(stateDb, toUpsert);
       } catch {
         // Fail open: cache write errors are non-fatal.
