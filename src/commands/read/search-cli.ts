@@ -22,8 +22,9 @@ import { parseMetaRef } from "../../core/asset/stash-meta";
 import { UsageError } from "../../core/errors";
 import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
 import { getOutputMode } from "../../output/context";
+import { deliverRendered } from "../../output/html-render";
 import type { ShowDetailLevel } from "../../sources/types";
-import { akmCurate } from "./curate";
+import { akmCurate, type CuratePackResult, packCuratedHits } from "./curate";
 import { akmSearch, parseBeliefFilterMode, parseScopeFilterFlags, parseSearchSource } from "./search";
 import { akmShowUnified } from "./show";
 
@@ -170,6 +171,16 @@ export const curateCommand = defineJsonCommand({
     },
     limit: { type: "string", description: "Maximum number of curated results", default: "4" },
     from: { type: "string", description: "Search source (local|registry|all)", default: "local" },
+    pack: {
+      type: "string",
+      description:
+        "Pack the ranked stash hits' full content into a single token-budgeted blob instead of returning refs " +
+        "to follow up on individually — value is the max token budget, e.g. --pack 4000 (~4 chars/token, same " +
+        "estimator as embedding). Content is resolved the same way `akm show` resolves it, so a ref#fragment " +
+        "hit packs just that section. Registry hits (--from registry|all) are never packed. Not to be confused " +
+        "with a workflow asset's own `budget` field (a run-cost cap) — this is a context-size target for this " +
+        "one curate call.",
+    },
     // Declared as the POSITIVE name with `default: true` — see the
     // `project-context` comment on `searchCommand` above for why a flag NAME
     // must never start with `no-`.
@@ -197,6 +208,7 @@ export const curateCommand = defineJsonCommand({
     const source = parseSearchSource(args.from ?? "local");
     const skipLogging = args["track-usage"] === false;
     const outputMode = getOutputMode();
+    const packBudget = parsePositiveIntFlag(args.pack ?? undefined, "--pack");
     const curated = await akmCurate({
       query: args.query,
       type,
@@ -206,9 +218,25 @@ export const curateCommand = defineJsonCommand({
       eventSource: resolveUsageEventSource(),
       attributionProjection: outputMode.shape === "agent" ? "agent" : outputMode.detail,
     });
+    if (packBudget !== undefined) {
+      const packed = await packCuratedHits(curated, packBudget);
+      deliverRendered(
+        outputMode.format === "text" ? formatCuratePackText(packed) : JSON.stringify(packed.items, null, 2),
+        outputMode.outputPath,
+      );
+      return;
+    }
     output("curate", curated);
   },
 });
+
+/** Human-readable rendering for `akm curate --pack`: concatenated content per hit under a `## <ref>` header. */
+function formatCuratePackText(packed: CuratePackResult): string {
+  if (packed.items.length === 0) {
+    return `No packed content for "${packed.query}" (budget ${packed.budget} tokens).`;
+  }
+  return packed.items.map((item) => `## ${item.ref}\n\n${item.content}`).join("\n\n");
+}
 
 /**
  * Reject `--scope` (either spelling) on `akm show` (E-3). `--scope` was
