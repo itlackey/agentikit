@@ -18,10 +18,15 @@ export type EmbeddingVector = number[];
  *
  * Both methods are required: query paths use `embed()`, indexer paths use
  * `embedBatch()` for throughput.
+ *
+ * `embedBatch`'s result array is the same length as `texts`, but an entry
+ * may be `undefined` — a per-document or per-sub-batch failure that
+ * `RemoteEmbedder` skips rather than letting abort the whole call (#874).
+ * Callers must check each slot rather than assuming every text embedded.
  */
 export interface Embedder {
   embed(text: string, signal?: AbortSignal): Promise<EmbeddingVector>;
-  embedBatch(texts: string[], signal?: AbortSignal): Promise<EmbeddingVector[]>;
+  embedBatch(texts: string[], signal?: AbortSignal): Promise<(EmbeddingVector | undefined)[]>;
 }
 
 export type EmbeddingCheckResult =

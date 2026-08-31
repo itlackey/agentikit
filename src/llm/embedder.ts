@@ -32,6 +32,7 @@ import {
   isTransformersAvailable as isTransformersAvailableReal,
   LocalEmbedder,
 } from "./embedders/local";
+import type { EmbeddingBatchSkip } from "./embedders/remote";
 import { hasRemoteEndpoint, RemoteEmbedder } from "./embedders/remote";
 import type { EmbeddingCheckResult, EmbeddingVector } from "./embedders/types";
 
@@ -39,6 +40,7 @@ import type { EmbeddingCheckResult, EmbeddingVector } from "./embedders/types";
 
 export { clearEmbeddingCache } from "./embedders/cache";
 export { _setTransformersLoaderForTests, DEFAULT_LOCAL_MODEL } from "./embedders/local";
+export type { EmbeddingBatchSkip } from "./embedders/remote";
 export type { EmbeddingCheckResult, EmbeddingVector } from "./embedders/types";
 
 // ── Test seam ────────────────────────────────────────────────────────────────
@@ -159,7 +161,11 @@ async function embedOnce(
 
 /**
  * Generate embeddings for multiple texts in batch.
- * Uses the OpenAI-compatible batch API for remote endpoints (batches of 100).
+ * Uses the OpenAI-compatible batch API for remote endpoints, batched by an
+ * estimated token budget (not a fixed document count, #874). A remote
+ * sub-batch or oversized document that fails is skipped rather than
+ * aborting the whole call — pass `onSkip` to learn which indices were
+ * skipped and why; the result array holds `undefined` at those indices.
  * Uses the LocalEmbedder.embedBatch path for the local transformer pipeline,
  * which processes texts in chunks of 32 for genuine batched inference.
  */
@@ -167,7 +173,8 @@ export async function embedBatch(
   texts: string[],
   embeddingConfig?: EmbeddingConnectionConfig,
   signal?: AbortSignal,
-): Promise<EmbeddingVector[]> {
+  onSkip?: (skip: EmbeddingBatchSkip) => void,
+): Promise<(EmbeddingVector | undefined)[]> {
   if (embedderOverrides?.embedBatch) return embedderOverrides.embedBatch(texts, embeddingConfig, signal);
 
   if (texts.length === 0) return [];
@@ -178,7 +185,7 @@ export async function embedBatch(
   }
 
   if (embeddingConfig && hasRemoteEndpoint(embeddingConfig)) {
-    return new RemoteEmbedder(embeddingConfig).embedBatch(texts, signal);
+    return new RemoteEmbedder(embeddingConfig).embedBatch(texts, signal, onSkip);
   }
 
   // Local transformer: use the batched path (chunks of 32 via LocalEmbedder).

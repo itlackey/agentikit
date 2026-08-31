@@ -11,6 +11,7 @@ import {
   resetLocalEmbedder,
 } from "../../src/llm/embedder";
 import { LocalEmbedder } from "../../src/llm/embedders/local";
+import { buildTokenBoundedBatches, estimateTokenCount, RemoteEmbedder } from "../../src/llm/embedders/remote";
 import { withEnv } from "../_helpers/sandbox";
 import { overrideSeam } from "../_helpers/seams";
 
@@ -231,7 +232,8 @@ describe("remote embed", () => {
       const results = await embedBatch(["hello", "world"], config);
       expect(results).toHaveLength(2);
       for (const vec of results) {
-        const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
+        expect(vec).toBeDefined();
+        const norm = Math.sqrt((vec as number[]).reduce((sum, v) => sum + v * v, 0));
         expect(norm).toBeCloseTo(1.0, 5);
       }
     } finally {
@@ -303,7 +305,11 @@ describe("remote embed", () => {
     }
   });
 
-  test("remote embedBatch error mentions the full embeddings endpoint path when response is empty", async () => {
+  test("remote embedBatch SKIPS (does not throw) a batch whose response is empty, and reports why (#874)", async () => {
+    // #874: a malformed/failing batch response used to reject the entire
+    // embedBatch call, discarding every OTHER batch's embeddings. It must
+    // now be reported as a skip for just this batch's documents, with the
+    // same diagnostic message the old thrown error carried.
     const server = Bun.serve({
       port: 0,
       fetch() {
@@ -318,9 +324,124 @@ describe("remote embed", () => {
         endpoint: `http://localhost:${port}/v1`,
         model: "test-model",
       };
-      await expect(embedBatch(["hello"], config)).rejects.toThrow(
+      const skips: Array<{ index: number; reason: string; message: string }> = [];
+      const results = await embedBatch(["hello"], config, undefined, (skip) => skips.push(skip));
+      expect(results).toEqual([undefined]);
+      expect(skips).toHaveLength(1);
+      expect(skips[0]?.index).toBe(0);
+      expect(skips[0]?.reason).toBe("batch-request-failed");
+      expect(skips[0]?.message).toContain(
         `Unexpected embedding batch response: expected 1 embeddings, got 0. Check that your endpoint includes the full embeddings path (for example "http://localhost:${port}/v1/embeddings", not just "http://localhost:${port}/v1").`,
       );
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe("buildTokenBoundedBatches (#874 — batch by tokens, not document count)", () => {
+  test("groups documents by an estimated token budget, not a fixed count", () => {
+    // 10 docs, each ~25 tokens (100 chars). A 60-token budget fits 2 per batch.
+    const texts = Array.from({ length: 10 }, (_, i) => "x".repeat(100) + i);
+    const batches = buildTokenBoundedBatches(texts, 60, 100);
+    expect(batches.every((b) => !b.oversized)).toBe(true);
+    for (const batch of batches) {
+      const tokens = batch.indices.reduce((sum, i) => sum + estimateTokenCount(texts[i] as string), 0);
+      expect(tokens).toBeLessThanOrEqual(60);
+    }
+    // Every index appears exactly once, in order.
+    expect(batches.flatMap((b) => b.indices)).toEqual(texts.map((_, i) => i));
+  });
+
+  test("a document-count cap still applies even when the token budget has room", () => {
+    const texts = Array.from({ length: 5 }, () => "tiny");
+    const batches = buildTokenBoundedBatches(texts, 100_000, 2);
+    expect(batches.map((b) => b.indices.length)).toEqual([2, 2, 1]);
+  });
+
+  test("a single document whose own estimate exceeds the budget is flagged oversized and isolated", () => {
+    const small = "short";
+    const huge = "x".repeat(4000); // ~1000 estimated tokens
+    const texts = [small, huge, small];
+    const batches = buildTokenBoundedBatches(texts, 100, 100);
+    const oversizedBatch = batches.find((b) => b.oversized);
+    expect(oversizedBatch?.indices).toEqual([1]);
+    // The two small docs are still batched together, not discarded.
+    const normalBatches = batches.filter((b) => !b.oversized);
+    expect(normalBatches.flatMap((b) => b.indices).sort()).toEqual([0, 2]);
+  });
+});
+
+describe("RemoteEmbedder.embedBatch skip-and-report (#874)", () => {
+  test("an oversized document is skipped with a named reason and never sent over HTTP", async () => {
+    let requestCount = 0;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        requestCount++;
+        const body = (await request.json()) as { input: string[] };
+        const data = body.input.map(() => ({ embedding: [1, 0] }));
+        return new Response(JSON.stringify({ data, model: "test", usage: { prompt_tokens: 1, total_tokens: 1 } }), {
+          headers: { "Content-Type": "application/json", Connection: "close" },
+        });
+      },
+    });
+    try {
+      const embedder = new RemoteEmbedder({
+        endpoint: `http://localhost:${server.port}`,
+        model: "test-model",
+        maxTokens: 10,
+      });
+      const skips: Array<{ index: number; reason: string; message: string }> = [];
+      const results = await embedder.embedBatch(["small", "x".repeat(200)], undefined, (skip) => skips.push(skip));
+
+      expect(results[0]).toBeDefined();
+      expect(results[1]).toBeUndefined();
+      expect(skips).toHaveLength(1);
+      expect(skips[0]?.index).toBe(1);
+      expect(skips[0]?.reason).toBe("context-window-exceeded");
+      expect(skips[0]?.message).toContain("exceeds the 10-token embedding budget");
+      // Only the small document's batch went over HTTP — the oversized one never did.
+      expect(requestCount).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a mix of small and oversized docs: the failing/oversized ones are skipped, the rest still embed", async () => {
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const body = (await request.json()) as { input: string[] };
+        if (body.input.some((t) => t.includes("FAIL"))) {
+          return new Response("boom", { status: 500 });
+        }
+        const data = body.input.map(() => ({ embedding: [1, 0] }));
+        return new Response(JSON.stringify({ data, model: "test", usage: { prompt_tokens: 1, total_tokens: 1 } }), {
+          headers: { "Content-Type": "application/json", Connection: "close" },
+        });
+      },
+    });
+    try {
+      const embedder = new RemoteEmbedder({
+        endpoint: `http://localhost:${server.port}`,
+        model: "test-model",
+        maxTokens: 20,
+        batchSize: 1,
+      });
+      const texts = ["ok-1", "FAIL-this-one", "ok-2", "x".repeat(400) /* oversized */, "ok-3"];
+      const skips: Array<{ index: number; reason: string }> = [];
+      const results = await embedder.embedBatch(texts, undefined, (skip) => skips.push(skip));
+
+      expect(results[0]).toBeDefined();
+      expect(results[1]).toBeUndefined();
+      expect(results[2]).toBeDefined();
+      expect(results[3]).toBeUndefined();
+      expect(results[4]).toBeDefined();
+
+      const reasonsByIndex = new Map(skips.map((s) => [s.index, s.reason]));
+      expect(reasonsByIndex.get(1)).toBe("batch-request-failed");
+      expect(reasonsByIndex.get(3)).toBe("context-window-exceeded");
     } finally {
       server.stop(true);
     }

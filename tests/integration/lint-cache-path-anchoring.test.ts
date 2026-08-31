@@ -29,6 +29,7 @@ import os from "node:os";
 import path from "node:path";
 import { akmLint } from "../../src/commands/lint/index";
 import { workflowFrontendDiagnostics } from "../../src/core/adapter/adapters/akm-lint";
+import { detectAdapterId } from "../../src/core/adapter/detect-adapter";
 import { makeSandboxDir, sandboxEnvDir } from "../_helpers/sandbox";
 
 const cleanups: Array<() => void> = [];
@@ -40,9 +41,8 @@ afterEach(() => {
 const BROKEN_WORKFLOW = ["---", "type: workflow", "description: Broken", "---", ""].join("\n");
 
 function writeWorkflowFile(stashDir: string, name: string, content: string): string {
-  const workflowsDir = path.join(stashDir, "workflows");
-  fs.mkdirSync(workflowsDir, { recursive: true });
-  const filePath = path.join(workflowsDir, name);
+  const filePath = path.join(stashDir, "workflows", name);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content, "utf8");
   return filePath;
 }
@@ -124,5 +124,53 @@ describe("lint cache-path anchoring (issue: unanchored /.cache/ /registry/ subst
 
     const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
     expect(structural).toHaveLength(1);
+  });
+
+  test("a USER workflow subdirectory literally named '.cache' still gets lint findings (collectWorkflowFiles name-based exclusion)", async () => {
+    // Regression for the two remaining name-based exclusions
+    // (`entry.name === ".cache" || entry.name === "registry"`) in
+    // `collectWorkflowFiles` — distinct from the substring bug above.
+    // These skipped ANY directory named `.cache`/`registry` ANYWHERE in a
+    // bundle, including ordinary user content nested under such a name, not
+    // just akm's own resolved cache. `workflows/.cache/` here is user
+    // content, never akm's real cache dir.
+    const { dir: stashDir, cleanup } = makeSandboxDir("akm-lint-user-dotcache-dir");
+    cleanups.push(cleanup);
+    writeWorkflowFile(stashDir, path.join(".cache", "broken.md"), BROKEN_WORKFLOW);
+
+    const result = await akmLint({ dir: stashDir, typeFilter: "workflows" });
+
+    const structural = result.flagged.filter((i) => i.issue === "invalid-workflow-structure");
+    expect(structural).toHaveLength(1);
+    expect(structural[0]?.file).toContain(path.join(".cache", "broken.md"));
+  });
+
+  test("a USER 'raw/' source nested under a directory literally named 'registry' still trips uncited-raw (collectAdapterFiles name-based exclusion)", async () => {
+    // Regression for the `segments.includes(".cache") || segments.includes("registry")`
+    // exclusion in `collectAdapterFiles`, used for every non-akm adapter's
+    // whole-bundle walk (llm-wiki here). A user directory literally named
+    // `registry` anywhere under the bundle root — not akm's own resolved
+    // registry cache — must still be linted.
+    const { dir: base, cleanup } = makeSandboxDir("akm-lint-user-registry-dir");
+    cleanups.push(cleanup);
+    const wikiRoot = path.join(base, "my-wiki");
+    fs.mkdirSync(path.join(wikiRoot, "raw", "registry"), { recursive: true });
+    fs.mkdirSync(path.join(wikiRoot, "pages"), { recursive: true });
+    fs.writeFileSync(path.join(wikiRoot, "schema.md"), "# Wiki schema\n\nConventions live here.\n", "utf8");
+    fs.writeFileSync(path.join(wikiRoot, "index.md"), "# Index\n", "utf8");
+    fs.writeFileSync(path.join(wikiRoot, "log.md"), "# Log\n", "utf8");
+    // Never cited by any page's `sources:` — should trip `uncited-raw`, but
+    // only if the file was actually visited despite the `registry` segment.
+    fs.writeFileSync(
+      path.join(wikiRoot, "raw", "registry", "orphan.md"),
+      "# Orphan source\n\nSome ingested material nobody cites.\n",
+      "utf8",
+    );
+
+    expect(detectAdapterId(wikiRoot)).toBe("llm-wiki");
+
+    const result = await akmLint({ dir: wikiRoot });
+    const uncitedRaw = result.flagged.filter((f) => f.issue === "uncited-raw");
+    expect(uncitedRaw.some((f) => f.file.includes(path.join("raw", "registry", "orphan.md")))).toBe(true);
   });
 });
