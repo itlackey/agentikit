@@ -3335,15 +3335,28 @@ remaining gaps carry approved waivers with the expiries recorded below.
     the migration bundle under both the Bun and Node entry points, and the
     packed-artifact install are all checked by CI instead of depending on the
     operator remembering `bun run release:check` locally.
-  - Partial: installer coverage (install.sh harness-tested;
-    install.ps1 manual-only), native scheduler (Linux standalone covered via
-    release-check; macOS/Windows suites unreachable — no such CI runner).
-  - Open: Actions SHA-pinning (third-party actions pinned by tag, not
-    commit), post-publish artifact parity (nothing compares npm tarball to
+  - **Fixed** ([#768](https://github.com/itlackey/akm/issues/768)): every
+    third-party `uses:` in `.github/workflows/*.yml` is now pinned to a full
+    commit SHA (with the tag preserved as a trailing comment) instead of a
+    mutable tag.
+  - Partial ([#770](https://github.com/itlackey/akm/issues/770)): native
+    scheduler macOS/Windows coverage is no longer unreachable —
+    `.github/workflows/gated-ci.yml`'s `native-scheduler` job now runs
+    `tests/integration/native-scheduler.test.ts` with
+    `AKM_NATIVE_SCHEDULER_TESTS=1` on real `macos-15`/`windows-2022` runners
+    (path-gated on PRs, full on the weekly schedule and release-candidate
+    tags). `install.ps1` still has no execution harness — its PATH-mutation
+    step (`[Environment]::SetEnvironmentVariable(..., "User")`) throws off
+    Windows, so a fake-harness approach like `install-script.test.ts` cannot
+    deterministically drive it outside a real Windows runner — but
+    `tests/integration/install-ps1-syntax.test.ts` now statically parses it
+    with PowerShell's own parser (runs on any host with `pwsh`, including
+    GitHub's `ubuntu-latest`), catching syntax regressions though not
+    semantic ones.
+  - Open: post-publish artifact parity (nothing compares npm tarball to
     release assets).
-  - Tracking: [#768](https://github.com/itlackey/akm/issues/768) (SHA-pin actions),
-    [#769](https://github.com/itlackey/akm/issues/769) (post-publish artifact parity),
-    [#770](https://github.com/itlackey/akm/issues/770) (install.ps1 + macOS/Windows scheduler coverage).
+  - Tracking: [#769](https://github.com/itlackey/akm/issues/769) (post-publish artifact parity),
+    [#770](https://github.com/itlackey/akm/issues/770) (install.ps1 execution harness, if ever pursued on a real Windows runner).
   - issue: release-infrastructure hardening. impact: a clobbered release
     asset ships silently; tag-hijack of a third-party action could
     compromise the release job. owner: itlackey. verification test: per-item
