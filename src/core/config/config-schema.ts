@@ -339,7 +339,6 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
 });
 
 /** Canonical inferred type. Mirrors the runtime `AkmConfig` shape. */
-export type AkmConfigInput = z.input<typeof AkmConfigSchema>;
 export type AkmConfigParsed = z.output<typeof AkmConfigSchema>;
 
 // ── Validation helpers ──────────────────────────────────────────────────────

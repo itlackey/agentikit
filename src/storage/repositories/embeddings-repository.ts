@@ -15,18 +15,6 @@
 import type { Database } from "../database";
 
 /**
- * Raw SQLite row shape for the `body_embeddings` table.
- * `embedding` is stored as a BLOB (raw Float32 bytes); callers convert to/from
- * `number[]` via `embeddingToBlob` / `blobToEmbedding`.
- */
-export interface BodyEmbeddingRow {
-  content_hash: string;
-  embedding: Uint8Array; // raw Float32 bytes from SQLite BLOB
-  model_id: string;
-  created_at: number;
-}
-
-/**
  * Convert a `number[]` embedding vector to the `Float32Array` byte
  * representation stored in the `body_embeddings.embedding` BLOB column.
  */

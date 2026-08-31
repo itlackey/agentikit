@@ -10,8 +10,6 @@ import {
 } from "./engine-resolution";
 import type { AgentProfile } from "./profiles";
 
-export type ProcessSection = "improve" | "index" | "search" | string;
-
 export type RunnerSpec =
   | {
       kind: "llm";

@@ -165,13 +165,3 @@ export function collectSessionEvents(
   }
   return events;
 }
-
-/**
- * Scan recent session logs from all available harnesses and return
- * repeated failure patterns that might warrant new AKM assets.
- */
-export function getExecutionLogCandidates(sinceDays = 7): SessionLogEntry[] {
-  const sinceMs = Date.now() - sinceDays * 24 * 60 * 60 * 1000;
-  const events = collectSessionEvents(getAvailableHarnesses(), sinceMs);
-  return aggregateSessionEvents(events);
-}

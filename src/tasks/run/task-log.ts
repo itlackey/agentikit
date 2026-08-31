@@ -34,17 +34,6 @@ import { redactCredentialPatterns, redactSensitiveText } from "../../core/redact
 import { collectTaskLogSensitiveValues } from "../log-redaction";
 import type { PreparedTaskV3Execution } from "../prepare/prepared-execution";
 
-/**
- * A finished run's log in both shapes: the flat text written to the per-run
- * log file (transitional human tail) and the structured per-line rows written
- * to logs.db (the queryable record — see src/core/logs-db.ts and
- * the #579 logs audit).
- */
-export interface RunLogContent {
-  fileText: string;
-  dbLines: readonly TaskLogLineInput[];
-}
-
 function taskLogPath(logDir: string, taskId: string, startedAtIso: string): string {
   const tsSlug = startedAtIso.replace(/[:.]/g, "-");
   return path.join(logDir, taskId, `${tsSlug}.log`);
