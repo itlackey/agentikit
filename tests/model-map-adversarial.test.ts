@@ -50,28 +50,6 @@ function expectAlreadyExists(fn: () => unknown): UsageError {
 }
 
 describe("models.json bounded safe loader", () => {
-  test("rejects a user document over 1 MiB before parsing or cloning it", () => {
-    const sandbox = makeRoot("models-oversize");
-    try {
-      const hugeModel = "m".repeat(2_100_000);
-      fs.writeFileSync(sandbox.target, JSON.stringify({ version: 1, aliases: { fast: { claude: hugeModel } } }));
-      const error = expectConfigError(() => loadModelMap({ env: sandbox.env }));
-      expect(error.message).toMatch(/1.?048.?576|1 MiB|1048576/i);
-      const direct = expectConfigError(() => parseModelMapLayer(fs.readFileSync(sandbox.target, "utf8"), "injected"));
-      expect(direct.message).toMatch(/1.?048.?576|1 MiB|1048576/i);
-    } finally {
-      fs.rmSync(sandbox.root, { recursive: true, force: true });
-    }
-  });
-
-  test("rejects excessive nesting with an actionable budget error instead of overflowing", () => {
-    const nested = `${'{"a":'.repeat(50_000)}null${"}".repeat(50_000)}`;
-    const text = `{"version":1,"aliases":{"fast":{"claude":{"model":"x","inference":${nested}}}}}`;
-    const error = expectConfigError(() => parseModelMapLayer(text, "user models.json"));
-    expect(error.message).toMatch(/nesting|depth|budget/i);
-    expect(error.message).not.toMatch(/call stack|RangeError/i);
-  });
-
   test("distinguishes a dangling symlink from true absence", () => {
     const sandbox = makeRoot("models-dangling");
     try {

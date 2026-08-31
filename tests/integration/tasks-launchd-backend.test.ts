@@ -205,12 +205,7 @@ function launchdMutationCalls(calls: readonly string[][]): readonly string[][] {
   return calls.filter((call) => call[1] !== "print" && call[1] !== "print-disabled");
 }
 
-const STABILIZED_LAUNCHD_INSPECTION_EVENTS = [
-  "exec:print",
-  "exec:print-disabled",
-  "exec:print",
-  "exec:print-disabled",
-] as const;
+const LAUNCHD_INSPECTION_EVENTS = ["exec:print", "exec:print-disabled"] as const;
 
 type FakeLaunchdFs = LaunchdFs & {
   written: Map<string, string>;
@@ -999,11 +994,14 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     const run = exec.run.bind(exec);
     let domainPasses = 0;
     exec.run = (args) => {
-      const result = run(args);
-      if (args[1] === "print" && args[2] === "gui/501" && ++domainPasses === 2) {
+      // Inject the drift right after the preflight scan's own domain print
+      // (pass 1), so the SEPARATE immediate recheck right before mutating
+      // "ping" (pass 2) observes it and its cardinality check against the
+      // preflight-derived expectation fails.
+      if (args[1] === "print" && args[2] === "gui/501" && ++domainPasses === 1) {
         exec.loadedLabels.add("com.akm.task.PING");
       }
-      return result;
+      return run(args);
     };
     exec.calls.length = 0;
 
@@ -1254,7 +1252,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
-  test("rollback fails closed when loaded launchd domain membership changes between stabilization passes", () => {
+  test("rollback fails closed when loaded launchd domain membership changes between the preflight and immediate scans", () => {
     const { backend, exec, fs } = makeBackend();
     const prior = qualifiedTask("0 9 * * *");
     backend.install(prior);
@@ -1296,7 +1294,7 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
-  test("rollback fails closed when launchd plist state changes between stabilization passes", () => {
+  test("rollback fails closed when launchd plist state changes between the preflight and immediate scans", () => {
     const { backend, exec, fs } = makeBackend();
     const owned = qualifiedTask("0 9 * * *");
     const snapshot = backend.snapshotBindings?.(["ping"]);
@@ -1487,8 +1485,8 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.loadedLabels.has("com.akm.task.ping")).toBe(priorLoaded);
     expect(exec.disabledLabels.has("com.akm.task.ping")).toBe(!priorEnabled);
     expect(events).toEqual([
-      ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
-      ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
+      ...LAUNCHD_INSPECTION_EVENTS,
+      ...LAUNCHD_INSPECTION_EVENTS,
       "exec:bootout",
       `write:${file}`,
       ...(priorLoaded ? ["exec:enable", "exec:bootstrap"] : []),
@@ -1511,8 +1509,8 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     expect(exec.loadedLabels.has("com.akm.task.absent")).toBe(false);
     expect(exec.disabledLabels.has("com.akm.task.absent")).toBe(false);
     expect(events).toEqual([
-      ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
-      ...STABILIZED_LAUNCHD_INSPECTION_EVENTS,
+      ...LAUNCHD_INSPECTION_EVENTS,
+      ...LAUNCHD_INSPECTION_EVENTS,
       "exec:bootout",
       "remove:/tmp/agents/com.akm.task.absent.plist",
       "exec:enable",
@@ -1701,8 +1699,6 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     expect(exec.calls).toEqual([
       ["launchctl", "print", "gui/501"],
       ["launchctl", "print-disabled", "gui/501"],
-      ["launchctl", "print", "gui/501"],
-      ["launchctl", "print-disabled", "gui/501"],
     ]);
   });
 
@@ -1714,8 +1710,6 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
 
     expect(backend.list()).toEqual([{ id: "ping", binding: ["/abs/akm"], contextPath: expect.any(String) }]);
     expect(exec.calls).toEqual([
-      ["launchctl", "print", "gui/501"],
-      ["launchctl", "print-disabled", "gui/501"],
       ["launchctl", "print", "gui/501"],
       ["launchctl", "print-disabled", "gui/501"],
     ]);
