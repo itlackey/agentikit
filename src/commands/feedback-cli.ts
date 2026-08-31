@@ -33,7 +33,6 @@ import { applyFeedbackToUtilityScore } from "../storage/repositories/index-utili
 // ── Tag validation ────────────────────────────────────────────────────────────
 
 const TAG_KEY_RE = /^[a-z_][a-z0-9_]*$/;
-const MAX_FEEDBACK_TAGS = 10;
 
 function validateFeedbackTags(raw: string[]): string[] {
   const seen = new Set<string>();
@@ -56,9 +55,6 @@ function validateFeedbackTags(raw: string[]): string[] {
     if (seen.has(tag)) continue;
     seen.add(tag);
     out.push(tag);
-  }
-  if (out.length > MAX_FEEDBACK_TAGS) {
-    throw new UsageError(`Too many tags: ${out.length}. Maximum is ${MAX_FEEDBACK_TAGS}.`, "INVALID_FLAG_VALUE");
   }
   return out;
 }
