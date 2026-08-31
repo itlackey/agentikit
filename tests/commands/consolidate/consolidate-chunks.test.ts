@@ -8,7 +8,9 @@
  * - Empty LLM response is caught and produces the expected warning (not a crash)
  * - Body truncation is applied at 500 chars
  *
- * These are pure unit tests — no LLM endpoints are called.
+ * Pure unit tests — no real DB, network, or spawned process — so this file
+ * lives under tests/commands/ (unit target), not tests/integration/ (ORG-05,
+ * 0.9.8 stabilization; see AGENTS.md's tests/integration/ classification rule).
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "node:fs";
@@ -18,11 +20,11 @@ import {
   buildChunkPrompt,
   computeSafeChunkSize,
   DEFAULT_CONTEXT_LENGTH_TOKENS,
-} from "../../../../src/commands/improve/consolidate/chunking";
-import { isConsolidationEligibleMemoryName } from "../../../../src/commands/improve/consolidate/eligibility";
-import type { MemoryEntry } from "../../../../src/commands/improve/consolidate/types";
-import { writeContradictEdge } from "../../../../src/commands/improve/memory/memory-belief";
-import { parseFrontmatter } from "../../../../src/core/asset/frontmatter";
+} from "../../../src/commands/improve/consolidate/chunking";
+import { isConsolidationEligibleMemoryName } from "../../../src/commands/improve/consolidate/eligibility";
+import type { MemoryEntry } from "../../../src/commands/improve/consolidate/types";
+import { writeContradictEdge } from "../../../src/commands/improve/memory/memory-belief";
+import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

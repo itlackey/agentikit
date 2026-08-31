@@ -1,5 +1,8 @@
 /**
- * Unit test for {@link resetGraphBoostCache} (#harness-redesign-rec-1).
+ * Test for {@link resetGraphBoostCache} (#harness-redesign-rec-1). Despite
+ * the historical name below, this opens a real SQLite graph snapshot via
+ * `loadGraphBoostContext`, which is why it lives in tests/integration/
+ * (ORG-05, 0.9.8 stabilization; see AGENTS.md's classification rule).
  *
  * `src/indexer/graph-boost.ts` maintains a module-level `cachedParsedGraph`
  * slot to avoid re-parsing the SQLite graph snapshot on back-to-back

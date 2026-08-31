@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * WS-1 salience vector — unit tests.
+ * WS-1 salience vector.
  *
  * Covers:
  *   - computeSalience: pure-function correctness, recency decay, size penalty,
@@ -12,6 +12,10 @@
  *   - Plasticity helpers: recordNoOp, resetConsecutiveNoOps, getConsecutiveNoOps.
  *   - buildRankChangeReport: forgetting-candidate detection.
  *   - W_ENCODING + W_OUTCOME + W_RETRIEVAL == 1.0.
+ *
+ * The state.db cases open a real SQLite database (openStateDatabase), which
+ * is why this file lives in tests/integration/ despite covering mostly pure
+ * functions (ORG-05, 0.9.8 stabilization; see AGENTS.md's classification rule).
  */
 
 import { describe, expect, test } from "bun:test";

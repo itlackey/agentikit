@@ -52,6 +52,26 @@ afterEach(() => {
   resetGraphBoostCache();
 });
 
+/**
+ * VALUE-17: pin the exact classified failure (exit code + machine-readable
+ * `code` from the JSON error envelope), not merely "some failure". A bare
+ * `expect(status).not.toBe(0)` passes just as happily on an unrelated crash
+ * as on the intended traversal rejection — see
+ * tests/config-cli-silent-layer.test.ts:131-139 for the established pattern.
+ * All traversal rejections here are USAGE (exit 2); the `code` distinguishes
+ * "asset name has relative-path segments" (MISSING_REQUIRED_ARGUMENT, thrown
+ * by validateName in src/core/asset/asset-ref.ts) from the retired `vault:`
+ * prefix rejection (INVALID_FLAG_VALUE).
+ */
+function expectRejection(
+  result: { status: number; stderr: string },
+  code: "MISSING_REQUIRED_ARGUMENT" | "INVALID_FLAG_VALUE",
+): void {
+  expect(result.status).toBe(2);
+  const envelope = JSON.parse(result.stderr) as { code?: string };
+  expect(envelope.code).toBe(code);
+}
+
 function freshStash(): string {
   const stash = makeStashDir();
   disposers.push(stash);
@@ -65,10 +85,9 @@ describe("env: directory traversal rejection", () => {
   test("rejects ../../evil as env name in env create", async () => {
     const stashDir = freshStash();
 
-    const { status, stderr } = await runCli(["env", "create", "../../evil"], stashDir);
+    const result = await runCli(["env", "create", "../../evil"], stashDir);
 
-    expect(status).not.toBe(0);
-    expect(stderr).toMatch(/traversal|escapes|relative path|invalid/i);
+    expectRejection(result, "MISSING_REQUIRED_ARGUMENT");
 
     // The file must NOT have been created at the traversal destination
     const escapedPath = path.join(stashDir, "evil.env");
@@ -79,44 +98,36 @@ describe("env: directory traversal rejection", () => {
 
   test("rejects env/../../evil (conceptId form) in env create", async () => {
     const stashDir = freshStash();
-    const { status, stderr } = await runCli(["env", "create", "env/../../evil"], stashDir);
-    expect(status).not.toBe(0);
+    const result = await runCli(["env", "create", "env/../../evil"], stashDir);
     // F5 new grammar: the traversal normalizes back inside the bundle (no escape)
     // and is then rejected as an unrecognized conceptId — still a hard rejection.
-    expect(stderr).toMatch(/traversal|escapes|relative path|invalid|Unrecognized|not found/i);
+    expectRejection(result, "MISSING_REQUIRED_ARGUMENT");
   });
 
   test("rejects nested traversal foo/../../evil in env create", async () => {
     const stashDir = freshStash();
-    const { status, stderr } = await runCli(["env", "create", "foo/../../evil"], stashDir);
-    expect(status).not.toBe(0);
+    const result = await runCli(["env", "create", "foo/../../evil"], stashDir);
     // F5 new grammar: the traversal normalizes back inside the bundle (no escape)
     // and is then rejected as an unrecognized conceptId — still a hard rejection.
-    expect(stderr).toMatch(/traversal|escapes|relative path|invalid|Unrecognized|not found/i);
+    expectRejection(result, "MISSING_REQUIRED_ARGUMENT");
   });
 
   test("rejects ../../evil in env path", async () => {
     const stashDir = freshStash();
-    const { status, stderr } = await runCli(["env", "path", "../../evil"], stashDir);
-    expect(status).not.toBe(0);
-    expect(stderr).toMatch(/traversal|escapes|relative path|invalid/i);
+    const result = await runCli(["env", "path", "../../evil"], stashDir);
+    expectRejection(result, "MISSING_REQUIRED_ARGUMENT");
   });
 
   test("rejects ../../evil in env export", async () => {
     const stashDir = freshStash();
-    const { status, stderr } = await runCli(
-      ["env", "export", "../../evil", "--out", path.join(stashDir, "o.sh")],
-      stashDir,
-    );
-    expect(status).not.toBe(0);
-    expect(stderr).toMatch(/traversal|escapes|relative path|invalid/i);
+    const result = await runCli(["env", "export", "../../evil", "--out", path.join(stashDir, "o.sh")], stashDir);
+    expectRejection(result, "MISSING_REQUIRED_ARGUMENT");
   });
 
   test("rejects ../../evil in env run", async () => {
     const stashDir = freshStash();
-    const { status, stderr } = await runCli(["env", "run", "../../evil", "--", "echo", "hi"], stashDir);
-    expect(status).not.toBe(0);
-    expect(stderr).toMatch(/traversal|escapes|relative path|invalid/i);
+    const result = await runCli(["env", "run", "../../evil", "--", "echo", "hi"], stashDir);
+    expectRejection(result, "MISSING_REQUIRED_ARGUMENT");
   });
 
   test("rejects the removed vault: prefix (retired to the legacy stored-ref parser)", async () => {
@@ -124,9 +135,8 @@ describe("env: directory traversal rejection", () => {
     // F5: `vault:` is not a new-grammar conceptId leading segment, so the env
     // input path rejects it (the vault-removal signpost now lives only in the
     // legacy stored-ref parser, which the new-grammar CLI input path never hits).
-    const { status, stderr } = await runCli(["env", "path", "vault:../../evil"], stashDir);
-    expect(status).not.toBe(0);
-    expect(stderr).toMatch(/was removed|env:|not found|Unrecognized/i);
+    const result = await runCli(["env", "path", "vault:../../evil"], stashDir);
+    expectRejection(result, "INVALID_FLAG_VALUE");
   });
 
   test("legitimate env name succeeds", async () => {

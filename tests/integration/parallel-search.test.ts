@@ -6,6 +6,7 @@ import { akmSearch } from "../../src/commands/read/search";
 import { saveConfig } from "../../src/core/config/config";
 import { akmIndex } from "../../src/indexer/indexer";
 import { clearEmbeddingCache } from "../../src/llm/embedder";
+import { getCachedEmbedding, setCachedEmbedding } from "../../src/llm/embedders/cache";
 import type { SourceSearchHit } from "../../src/sources/types";
 import {
   type Cleanup,
@@ -142,6 +143,19 @@ describe("Embedding cache", () => {
     clearEmbeddingCache();
     // Verify idempotence: calling clear multiple times should never throw
     expect(() => clearEmbeddingCache()).not.toThrow();
+  });
+
+  // VALUE-17: `not.toThrow()` alone can't fail if clearing became a no-op —
+  // it would still not throw. Pin the observable effect instead: a cached
+  // embedding is gone after clearing, so the next lookup is a real miss.
+  test("clearEmbeddingCache actually discards cached entries, not just avoids throwing", () => {
+    const key = "value-17-cache-probe";
+    setCachedEmbedding(key, [0.1, 0.2, 0.3]);
+    expect(getCachedEmbedding(key)).toEqual([0.1, 0.2, 0.3]);
+
+    clearEmbeddingCache();
+
+    expect(getCachedEmbedding(key)).toBeUndefined();
   });
 });
 

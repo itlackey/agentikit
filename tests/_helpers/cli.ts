@@ -70,6 +70,7 @@ import { disposeDispatchResources } from "../../src/integrations/agent/runner-di
 import { resetLocalEmbedder } from "../../src/llm/embedder";
 import { clearEmbeddingCache } from "../../src/llm/embedders/cache";
 import { initOutputMode, resetOutputMode } from "../../src/output/context";
+import { withEnv } from "./sandbox";
 
 /**
  * Reset every module-level process singleton the CLI caches, so an in-process
@@ -321,4 +322,28 @@ export async function runCliCapture(args: string[]): Promise<CliResult> {
   }
 
   return { code, stdout, stderr };
+}
+
+/**
+ * Shared `*-cli-envelope.test.ts` harness (DUP-12): identical `runCli`
+ * wrapper — call {@link runCliCapture} and rename `code` to `status` — was
+ * copy-pasted across 7 envelope-snapshot suites. Import this instead of
+ * redefining it locally.
+ */
+export async function runCliStatus(args: string[]): Promise<{ status: number; stdout: string; stderr: string }> {
+  const { code, stdout, stderr } = await runCliCapture(args);
+  return { status: code, stdout, stderr };
+}
+
+/**
+ * Same DUP-12 dedup as {@link runCliStatus}, for the variant that scopes the
+ * run to a specific stash via `AKM_BUNDLE_DIR` (identical `runCli` body was
+ * copy-pasted across the tasks and proposal envelope suites).
+ */
+export async function runCliStatusWithBundleDir(
+  args: string[],
+  stashDir: string,
+): Promise<{ stdout: string; stderr: string; status: number }> {
+  const { code, stdout, stderr } = await withEnv({ AKM_BUNDLE_DIR: stashDir }, () => runCliCapture(args));
+  return { stdout, stderr, status: code };
 }

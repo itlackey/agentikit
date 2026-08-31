@@ -26,7 +26,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { runCliCapture } from "../../_helpers/cli";
+import { runCliStatus as runCli } from "../../_helpers/cli";
 import {
   type Cleanup,
   sandboxStashDir,
@@ -38,11 +38,6 @@ import {
 
 let envCleanup: Cleanup = () => {};
 const createdTmpDirs: string[] = [];
-
-async function runCli(args: string[]): Promise<{ status: number; stdout: string; stderr: string }> {
-  const { code, stdout, stderr } = await runCliCapture(args);
-  return { status: code, stdout, stderr };
-}
 
 beforeEach(() => {
   process.env.AKM_FORCE_INIT_TMP_STASH = "1";

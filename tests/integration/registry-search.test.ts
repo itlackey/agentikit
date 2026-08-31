@@ -562,13 +562,11 @@ describe("AKM_REGISTRY_URL env var", () => {
     }
   });
 
-  test("unknown provider type in env var produces warning, not crash", async () => {
-    process.env.AKM_REGISTRY_URL = `no-such-provider::http://127.0.0.1:1/index.json`;
-    const result = await searchRegistry("anything");
-    expect(result.hits).toEqual([]);
-    expect(result.warnings.length).toBe(1);
-    expect(result.warnings[0]).toContain("no-such-provider");
-  });
+  // "unknown provider type in env var produces warning, not crash" moved into
+  // the parameterized "unknown provider type via %s" test in the "provider
+  // routing" describe below (DUP-10): it asserted the same three things
+  // (empty hits, exactly one warning, warning names the bad provider) as the
+  // options.registries path, just reached through AKM_REGISTRY_URL instead.
 
   test("mixed provider types in comma-separated env var", async () => {
     const staticSrv = serveIndex({
@@ -767,13 +765,31 @@ describe("provenance tagging", () => {
 // ── Provider-based routing ──────────────────────────────────────────────────
 
 describe("provider routing", () => {
-  test("unknown provider type produces warning, not crash", async () => {
-    const result = await searchRegistry("test", {
-      registries: [{ url: "http://example.com", provider: "nonexistent-type" }],
-    });
+  // DUP-10: one behavior (an unrecognized provider type produces exactly one
+  // warning naming it, never a crash, and yields no hits), reached through
+  // the two ways a provider type is configured.
+  test.each([
+    [
+      "options.registries",
+      async () =>
+        searchRegistry("test", {
+          registries: [{ url: "http://example.com", provider: "nonexistent-type" }],
+        }),
+      "nonexistent-type",
+    ],
+    [
+      "AKM_REGISTRY_URL env var",
+      async () => {
+        process.env.AKM_REGISTRY_URL = `no-such-provider::http://127.0.0.1:1/index.json`;
+        return searchRegistry("anything");
+      },
+      "no-such-provider",
+    ],
+  ] as const)("unknown provider type via %s produces warning, not crash", async (_label, run, needle) => {
+    const result = await run();
     expect(result.hits).toEqual([]);
     expect(result.warnings.length).toBe(1);
-    expect(result.warnings[0]).toContain("nonexistent-type");
+    expect(result.warnings[0]).toContain(needle);
   });
 
   test("mixed static-index and skills-sh registries return merged results", async () => {
@@ -879,18 +895,12 @@ describe("provider routing", () => {
 
 describe("incomplete hits filter (#159)", () => {
   // ISOLATION-04: createProviderRegistry (src/registry/create-provider-registry.ts)
-  // is a module-level singleton Map with register/resolve/list only — no
-  // unregister/delete — so a registration made here would otherwise outlive
-  // the test for the rest of the process. Each test below now mirrors the
-  // save-and-restore pattern used at
-  // tests/integration/indexer/index-bundle-identity.test.ts:106,130,170,200 in
-  // a try/finally. These keys are synthetic (never registered before the
-  // test), so there is no prior factory to restore; instead we re-register
-  // `undefined` in `finally`, which makes `resolve()`'s `?? null` fallback
-  // (src/registry/create-provider-registry.ts:20) report the key as
-  // unregistered again — restoring the pre-test observable state exactly.
+  // is a module-level singleton Map, so a registration made here would
+  // otherwise outlive the test for the rest of the process. Each test below
+  // unregisters its synthetic key in a try/finally using the real unregister
+  // seam.
   test("hits missing required fields are dropped from response", async () => {
-    const { registerRegistryProvider } = await import("../../src/registry/factory");
+    const { registerRegistryProvider, unregisterRegistryProvider } = await import("../../src/registry/factory");
     const goodHit = {
       source: "github" as const,
       id: "github:owner/good",
@@ -917,15 +927,12 @@ describe("incomplete hits filter (#159)", () => {
       expect(result.hits.every((h) => h && typeof h === "object" && Object.keys(h).length > 0)).toBe(true);
       expect(result.warnings.some((w) => /incomplete hit/i.test(w))).toBe(true);
     } finally {
-      registerRegistryProvider(
-        "incomplete-hits-test",
-        undefined as unknown as Parameters<typeof registerRegistryProvider>[1],
-      );
+      unregisterRegistryProvider("incomplete-hits-test");
     }
   });
 
   test("incomplete asset hits are dropped from assetHits", async () => {
-    const { registerRegistryProvider } = await import("../../src/registry/factory");
+    const { registerRegistryProvider, unregisterRegistryProvider } = await import("../../src/registry/factory");
     registerRegistryProvider("incomplete-assets-test", (() => ({
       type: "incomplete-assets-test",
       async search() {
@@ -955,17 +962,14 @@ describe("incomplete hits filter (#159)", () => {
       expect(result.assetHits?.length).toBe(1);
       expect(result.assetHits![0]!.assetName).toBe("deploy");
     } finally {
-      registerRegistryProvider(
-        "incomplete-assets-test",
-        undefined as unknown as Parameters<typeof registerRegistryProvider>[1],
-      );
+      unregisterRegistryProvider("incomplete-assets-test");
     }
   });
 
   // PR #168 review #9: asset hits with missing/empty `stash.id` or `stash.name`
   // are also incomplete and must not propagate to JSON output.
   test("asset hits with missing or empty stash fields are dropped", async () => {
-    const { registerRegistryProvider } = await import("../../src/registry/factory");
+    const { registerRegistryProvider, unregisterRegistryProvider } = await import("../../src/registry/factory");
     registerRegistryProvider("incomplete-stash-test", (() => ({
       type: "incomplete-stash-test",
       async search() {
@@ -1016,10 +1020,7 @@ describe("incomplete hits filter (#159)", () => {
       expect(result.assetHits?.length).toBe(1);
       expect(result.assetHits![0]!.assetName).toBe("good");
     } finally {
-      registerRegistryProvider(
-        "incomplete-stash-test",
-        undefined as unknown as Parameters<typeof registerRegistryProvider>[1],
-      );
+      unregisterRegistryProvider("incomplete-stash-test");
     }
   });
 });

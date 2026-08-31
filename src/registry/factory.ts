@@ -31,3 +31,8 @@ export function registerRegistryProvider(type: string, factory: RegistryProvider
 export function resolveRegistryProviderFactory(type: string): RegistryProviderFactory | null {
   return registry.resolve(type);
 }
+
+/** Test-only seam: removes a registration made with {@link registerRegistryProvider}. */
+export function unregisterRegistryProvider(type: string): void {
+  registry.unregister(type);
+}
