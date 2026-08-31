@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
+import { expectPinnedAction, expectPinnedVersion } from "../_helpers/pinned-action";
 
 interface WorkflowStep {
   env?: Record<string, string>;
@@ -116,7 +117,10 @@ describe("gated CI workflow", () => {
     // The PR comparison is against the merge base, not the branch tip.
     expect(run).toContain('git diff --name-only "$BASE_SHA"...HEAD');
     expect(decide.env).toMatchObject({ BASE_SHA: "${{ github.event.pull_request.base.sha }}" });
-    expect(getJob("detect-changes").steps?.some((step) => step.uses === "actions/checkout@v5")).toBe(true);
+    // #768: pinned to a SHA, so match the action and require the pin.
+    const checkoutStep = getJob("detect-changes").steps?.find((step) => step.uses?.startsWith("actions/checkout@"));
+    expectPinnedAction(checkoutStep?.uses, "actions/checkout", "gated-ci#detect-changes");
+    expectPinnedVersion("gated-ci.yml", "actions/checkout", "v5");
   });
 
   test("keeps stable visible names for the three gated surfaces", () => {
@@ -132,24 +136,30 @@ describe("gated CI workflow", () => {
       HF_HOME: "${{ github.workspace }}/.ci-cache/huggingface",
       NODE_USE_ENV_PROXY: "1",
     });
-    const setupNode = job.steps?.find((step) => step.uses === "actions/setup-node@v5");
+    const setupNode = job.steps?.find((step) => step.uses?.startsWith("actions/setup-node@"));
+    expectPinnedAction(setupNode?.uses, "actions/setup-node", "gated-ci#semantic-search");
+    expectPinnedVersion("gated-ci.yml", "actions/setup-node", "v5");
     expect(setupNode?.with).toMatchObject({ "node-version": 24 });
     const restore = getStep(job, "Restore HuggingFace model cache");
-    expect(restore.uses).toBe("actions/cache/restore@v5");
+    expectPinnedAction(restore.uses, "actions/cache/restore", "gated-ci#semantic-search restore");
+    expectPinnedVersion("gated-ci.yml", "actions/cache/restore", "v5");
     expect(restore.with).toMatchObject({
       path: "${{ github.workspace }}/.ci-cache/huggingface",
       key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'scripts/copy-assets.ts', 'package.json', 'bun.lock') }}-v3",
     });
 
     const save = getStep(job, "Save HuggingFace model cache from trusted schedule");
-    expect(save.uses).toBe("actions/cache/save@v5");
+    expectPinnedAction(save.uses, "actions/cache/save", "gated-ci#semantic-search save");
+    expectPinnedVersion("gated-ci.yml", "actions/cache/save", "v5");
     expect(save.if).toContain("github.event_name == 'schedule'");
     expect(save.if).toContain("github.ref_name == github.event.repository.default_branch");
     expect(save.with).toMatchObject({
       path: "${{ github.workspace }}/.ci-cache/huggingface",
       key: "akm-huggingface-${{ runner.os }}-Xenova-bge-small-en-v1.5-${{ hashFiles('src/llm/embedders/local.ts', 'scripts/copy-assets.ts', 'package.json', 'bun.lock') }}-v3",
     });
-    expect(JSON.stringify(job)).not.toContain('"uses":"actions/cache@v5"');
+    // Must use the split restore/save actions, never the combined one — now
+    // matched by action path since the ref is a SHA (#768).
+    expect(job.steps?.some((step) => /^actions\/cache@/.test(step.uses ?? ""))).toBe(false);
     expect(JSON.stringify(job)).toContain("tests/integration/semantic-search-e2e.test.ts");
     expect(JSON.stringify(job)).toContain("--timeout=900000");
 

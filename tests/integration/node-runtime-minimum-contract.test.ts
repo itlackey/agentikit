@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
+import { expectPinnedAction, expectPinnedVersion } from "../_helpers/pinned-action";
 
 const ROOT = path.resolve(import.meta.dir, "../..");
 const CURRENT_RUNTIME_DOCS = [
@@ -88,7 +89,11 @@ describe("Node 22 runtime minimum contract", () => {
             .find((candidate) => candidate.uses?.startsWith("actions/setup-node@"));
 
           expect(nodeSetup, `${label} must select Node before bun install`).toBeDefined();
-          expect(nodeSetup?.uses, `${label} must use setup-node v5`).toBe("actions/setup-node@v5");
+          // #768 pinned actions to commit SHAs, so the major version now lives
+          // in the trailing comment. Assert BOTH halves of the original
+          // contract — the right action, pinned; and still v5.
+          expectPinnedAction(nodeSetup?.uses, "actions/setup-node", label);
+          expectPinnedVersion(filename, "actions/setup-node", "v5");
           const selected = String(nodeSetup?.with?.["node-version"]);
           expect(
             ["22", "24", "${{ matrix.node-version }}"],
