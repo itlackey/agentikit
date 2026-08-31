@@ -16,9 +16,9 @@ import { akmSearch } from "../../../src/commands/read/search";
 import { getDbPath, getIndexWriterLockPath } from "../../../src/core/paths";
 import { indexWrittenAssets } from "../../../src/indexer/index-written-assets";
 import { akmIndex } from "../../../src/indexer/indexer";
-import { readSemanticStatus } from "../../../src/indexer/search/semantic-status";
 import { _setEmbedderForTests } from "../../../src/llm/embedder";
 import { closeDatabase, openExistingDatabase } from "../../../src/storage/repositories/index-connection";
+import { getMeta } from "../../../src/storage/repositories/index-meta-repository";
 import {
   isVecAvailable,
   isVecFastPathReady,
@@ -150,7 +150,12 @@ describe("indexWrittenAssets", () => {
     expect(await indexWrittenAssets(stashDir, [filePath])).toBe(true);
 
     expect(embeddingCountForFile(filePath)).toBe(1);
-    expect(readSemanticStatus()?.status).toMatch(/^ready-/);
+    const dbAfterWrite = openExistingDatabase(getDbPath());
+    try {
+      expect(getMeta(dbAfterWrite, "hasEmbeddings")).toBe("1");
+    } finally {
+      closeDatabase(dbAfterWrite);
+    }
     const search = await akmSearch({ query: "gasoline", skipLogging: true });
     expect(search.searchMode).toBe("semantic");
     expect(search.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("memories/fuel-delivery-note");
@@ -206,7 +211,7 @@ describe("indexWrittenAssets", () => {
     }
   });
 
-  test("embedding failure preserves the authored file and FTS row while publishing blocked status", async () => {
+  test("embedding failure preserves the authored file and FTS row and reports the failure live", async () => {
     installSemanticTestEmbedder();
     writeSandboxConfig({
       semanticSearchMode: "auto",
@@ -229,10 +234,12 @@ describe("indexWrittenAssets", () => {
     expect(queryIndex("offline").entryNames).toContain("offline-provider-note");
     expect(queryIndex("offline").ftsCount).toBeGreaterThan(0);
     expect(embeddingCountForFile(filePath)).toBe(0);
-    expect(readSemanticStatus()).toMatchObject({
-      status: "blocked",
-      reason: "remote-network",
-    });
+    const dbAfterFailure = openExistingDatabase(getDbPath());
+    try {
+      expect(getMeta(dbAfterFailure, "hasEmbeddings")).toBe("0");
+    } finally {
+      closeDatabase(dbAfterFailure);
+    }
     const search = await akmSearch({ query: "offline-provider-note", skipLogging: true });
     expect(search.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("memories/offline-provider-note");
     expect(search.warnings?.join("\n")).toContain("embedding provider network unreachable");

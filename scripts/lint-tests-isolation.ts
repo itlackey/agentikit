@@ -284,7 +284,6 @@ const ALLOWED_FILES = new Set<string>([
   "tests/integration/proposals-validation.test.ts",
   "tests/integration/registry-index-v2.test.ts",
   "tests/integration/registry-search.test.ts",
-  "tests/integration/semantic-status.test.ts",
   "tests/integration/storage/index-db-loan.characterization.test.ts",
   "tests/integration/storage/workflow-runs-repository.characterization.test.ts",
   "tests/integration/tasks-runner.test.ts",

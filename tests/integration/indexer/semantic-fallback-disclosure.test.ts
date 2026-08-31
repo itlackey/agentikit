@@ -18,7 +18,6 @@ import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import type { IndexDocument } from "../../../src/indexer/passes/metadata";
 import { searchLocal } from "../../../src/indexer/search/db-search";
-import { deriveSemanticProviderFingerprint, writeSemanticStatus } from "../../../src/indexer/search/semantic-status";
 import { _setEmbedderForTests } from "../../../src/llm/embedder";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
@@ -64,11 +63,6 @@ test("query-embedding failure preserves FTS results and returns one sanitized ft
       closeDatabase(db);
     }
 
-    writeSemanticStatus({
-      status: "ready-vec",
-      providerFingerprint: deriveSemanticProviderFingerprint(config.embedding),
-      lastCheckedAt: new Date().toISOString(),
-    });
     overrideSeam(_setEmbedderForTests, {
       embed: async () => {
         throw Object.assign(

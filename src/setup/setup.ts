@@ -47,11 +47,6 @@ import { ConfigError, UsageError } from "../core/errors";
 import { getConfigPath, getDefaultStashDir, isTransientStashPath } from "../core/paths";
 import { warn } from "../core/warn";
 import { akmIndex } from "../indexer/indexer";
-import {
-  clearSemanticStatus,
-  deriveSemanticProviderFingerprint,
-  writeSemanticStatus,
-} from "../indexer/search/semantic-status";
 import { detectAgentCliProfiles, pickDefaultAgentProfile } from "../integrations/agent";
 import { defaultProfileName } from "../integrations/harnesses";
 import { readLockfile } from "../integrations/lockfile";
@@ -706,39 +701,15 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
   p.log.step("Scheduled Tasks");
   await stepScheduledTasks();
 
-  if (semanticSearchMode.mode === "off") {
-    clearSemanticStatus();
-  }
-
   if (semanticSearchMode.mode === "auto") {
     if (semanticSearchMode.prepareAssets) {
       const ready = await prepareSemanticSearchAssets(savedConfig);
       if (!ready.ok) {
-        writeSemanticStatus({
-          status: "blocked",
-          reason: ready.reason as never,
-          message: ready.message,
-          providerFingerprint: deriveSemanticProviderFingerprint(savedConfig.embedding),
-          lastCheckedAt: new Date().toISOString(),
-        });
         p.log.warn(
           "Semantic search remains set to auto, but is currently blocked. Re-run `akm index --full --verbose` once the issue is resolved.",
         );
-      } else {
-        writeSemanticStatus({
-          status: "pending",
-          message: "Semantic prerequisites verified. Building the index to finish activation.",
-          providerFingerprint: deriveSemanticProviderFingerprint(savedConfig.embedding),
-          lastCheckedAt: new Date().toISOString(),
-        });
       }
     } else {
-      writeSemanticStatus({
-        status: "pending",
-        message: "Semantic search is enabled, but asset preparation was skipped.",
-        providerFingerprint: deriveSemanticProviderFingerprint(savedConfig.embedding),
-        lastCheckedAt: new Date().toISOString(),
-      });
       p.log.info(
         "Semantic search is set to auto, but asset preparation was skipped. Run `akm index --full --verbose` later to verify it.",
       );
@@ -765,15 +736,6 @@ export async function runSetupWizard(opts?: { dir?: string; noInit?: boolean }):
   } catch (err) {
     spin.stop("Indexing failed — you can run `akm index` manually later.");
     p.log.warn(String(err));
-    if (savedConfig.semanticSearchMode === "auto") {
-      writeSemanticStatus({
-        status: "blocked",
-        reason: "index-failed",
-        message: String(err),
-        providerFingerprint: deriveSemanticProviderFingerprint(savedConfig.embedding),
-        lastCheckedAt: new Date().toISOString(),
-      });
-    }
   }
 
   // API key reminder

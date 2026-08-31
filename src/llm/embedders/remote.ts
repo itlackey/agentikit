@@ -164,10 +164,8 @@ export class RemoteEmbedder implements Embedder {
    * hardening llm/client.ts applies on the identical path: pattern-redact
    * credential shapes, exact-scrub this connection's own key, and clip.
    *
-   * These messages are durable — generateEmbeddingsForDb surfaces them as
-   * `embeddingResult.message`, which is written to semantic-status.json and
-   * replayed by `akm info` (including `--json`) until the next successful
-   * index, and printed on every vector-search attempt. Raw bodies reached that
+   * These messages surface via generateEmbeddingsForDb's `EmbeddingGenerationResult.message`
+   * and are printed on every vector-search attempt. Raw bodies reached that
    * far unredacted and uncapped, at readBodyWithByteCap's 10 MB default.
    */
   private safeErrorBody(body: string): string {

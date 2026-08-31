@@ -65,12 +65,6 @@ import type { RankedEntryInput } from "./ranking-types";
 import { attachSearchHitAttribution, copySearchHitAttribution, getSearchHitAttribution } from "./search-attribution";
 import { enrichSearchHit } from "./search-hit-enrichers";
 import { buildEditHint, findSourceForPath, isEditable, type SearchSource } from "./search-source";
-import {
-  deriveSemanticProviderFingerprint,
-  getEffectiveSemanticStatus,
-  isSemanticRuntimeReady,
-  readSemanticStatus,
-} from "./semantic-status";
 
 /**
  * Age past which search surfaces a "run akm index" hint. Reads serve the
@@ -229,56 +223,16 @@ export async function searchLocal(input: {
   const disableScopedUtility = input.disableScopedUtility === true;
   const rendererRegistry = input.rendererRegistry ?? defaultRendererRegistry;
   const allSourceDirs = sources.map((s) => s.path);
-  const rawStatus = readSemanticStatus();
-  const semanticStatus = getEffectiveSemanticStatus(config, rawStatus);
   const warnings: string[] = [];
-  if (config.semanticSearchMode === "auto" && semanticStatus === "pending") {
-    const currentFingerprint = deriveSemanticProviderFingerprint(config.embedding);
-    if (rawStatus && rawStatus.providerFingerprint !== currentFingerprint) {
-      warnings.push(
-        "Embedding config changed. Run 'akm index --full' to rebuild the semantic index with the new provider.",
-      );
-    } else if (!hasConfiguredEmbeddingProvider(config)) {
-      // #480: when semantic mode is `auto` but no embedding provider is
-      // configured (e.g. `akm setup --yes` ran without picking one), telling
-      // the user to "run akm setup" is misleading — they just did. Surface
-      // the actual remediation: configure an embedding endpoint OR switch
-      // semanticSearchMode to `off` to silence the warning.
-      warnings.push(
-        "Semantic search is enabled (semanticSearchMode='auto') but no embedding provider is configured. " +
-          'Either: (a) `akm config set embedding \'{"endpoint":"...","model":"..."}\'`, or ' +
-          "(b) `akm config set semanticSearchMode off` to use keyword-only search.",
-      );
-    } else {
-      warnings.push(
-        "Semantic search is pending verification. Run 'akm index --full' to build the semantic index now, or wait for the next background index pass.",
-      );
-    }
-  }
-  if (config.semanticSearchMode === "auto" && semanticStatus === "blocked") {
-    if (!hasConfiguredEmbeddingProvider(config)) {
-      // F7/A2: same predicate as the `pending` branch above (#480) — a
-      // `blocked` status can outlive the provider config that produced it
-      // (e.g. the embedding config was later unset). This is not a fault;
-      // there is simply nothing configured to use.
-      warnings.push(
-        "Semantic search is enabled (semanticSearchMode='auto') but no embedding provider is configured. " +
-          'Either: (a) `akm config set embedding \'{"endpoint":"...","model":"..."}\'`, or ' +
-          "(b) `akm config set semanticSearchMode off` to use keyword-only search.",
-      );
-    } else {
-      // F7/A2: surface the ACTUAL diagnostic instead of one fixed generic
-      // string. `rawStatus.reason`/`rawStatus.message` record why the
-      // semantic backend failed (auth, network, a stuck local-model
-      // download, …) — read at `readSemanticStatus()` above and, before
-      // this fix, discarded here in favor of a message that never varied.
-      const detail = rawStatus?.message ?? (rawStatus?.reason ? `reason: ${rawStatus.reason}` : undefined);
-      warnings.push(
-        `Semantic search is blocked${detail ? ` (${detail})` : ""}. Using keyword search until the semantic ` +
-          "backend is healthy again. Run 'akm index --full' to retry, or " +
-          "`akm config set semanticSearchMode off` to silence this warning.",
-      );
-    }
+  // Semantic search is attempted fresh on every query (see `tryVecScores`);
+  // there is no cached readiness verdict to consult here. The only thing
+  // worth flagging ahead of the attempt is a config that can never succeed.
+  if (config.semanticSearchMode === "auto" && !hasConfiguredEmbeddingProvider(config)) {
+    warnings.push(
+      "Semantic search is enabled (semanticSearchMode='auto') but no embedding provider is configured. " +
+        'Either: (a) `akm config set embedding \'{"endpoint":"...","model":"..."}\'`, or ' +
+        "(b) `akm config set semanticSearchMode off` to use keyword-only search.",
+    );
   }
 
   // Bootstrap-only: builds the index inline when it cannot serve this stash.
@@ -917,8 +871,7 @@ async function tryVecScores(
   k: number,
   config: AkmConfig,
 ): Promise<{ scores: Map<number, number> | null; warning?: string }> {
-  const semanticStatus = getEffectiveSemanticStatus(config, readSemanticStatus());
-  if (!isSemanticRuntimeReady(semanticStatus)) return { scores: null };
+  if (config.semanticSearchMode === "off") return { scores: null };
   const hasEmbeddings = getMeta(db, "hasEmbeddings");
   if (hasEmbeddings !== "1") return { scores: null };
 

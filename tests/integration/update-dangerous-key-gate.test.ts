@@ -15,7 +15,6 @@ import { getConfigLockPath } from "../../src/core/config/config-io";
 import { getConfigPath, getDbPath, getLockfilePath, getRegistryCacheDir } from "../../src/core/paths";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { akmIndex } from "../../src/indexer/indexer";
-import { _setSemanticStatusMutationForTests } from "../../src/indexer/search/semantic-status";
 import { readLockfile } from "../../src/integrations/lockfile";
 import * as gitProvider from "../../src/sources/providers/git";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
@@ -698,37 +697,6 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
     expectState(before);
     expect(countUsageEvents(expiredRef)).toBe(1);
     for (const [filePath, inode] of inodesBefore) expect(fs.statSync(filePath).ino).toBe(inode);
-  });
-
-  test("semantic-status publication is advisory and cannot roll back an already committed update", async () => {
-    const live = await configureCanonicalManagedBundle({
-      id: "semantic-status-advisory",
-      env: "API_TOKEN=old\n",
-      marker: "semantic-status-old",
-    });
-    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) =>
-      stageManagedCandidate(requiredStagingRoot(options), {
-        id: "semantic-status-advisory",
-        env: "API_TOKEN=new\n",
-        marker: "semantic-status-new",
-      }),
-    );
-    let attempted = false;
-    overrideSeam(_setSemanticStatusMutationForTests, () => {
-      attempted = true;
-      throw new Error("semantic status disk fault");
-    });
-
-    try {
-      await akmUpdate({ target: "semantic-status-advisory", stashDir: storage.stashDir });
-    } finally {
-      syncSpy.mockRestore();
-    }
-
-    expect(attempted).toBe(true);
-    expect(fs.readFileSync(path.join(live.contentDir, "env", "default.env"), "utf8")).toBe("API_TOKEN=new\n");
-    expect(indexedSearchText()).toContain("semantic-status-new");
-    expect(indexedSearchText()).not.toContain("semantic-status-old");
   });
 
   test("health detects a durable split generation after restart and full index repairs it", async () => {

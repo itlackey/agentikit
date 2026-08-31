@@ -501,9 +501,8 @@ export interface InfoResponse {
   searchModes: string[];
   semanticSearch: {
     mode: "off" | "auto";
-    status: "disabled" | "pending" | "ready-js" | "ready-vec" | "blocked";
-    reason?: string;
-    message?: string;
+    /** Read live from the index at call time — never a cached verdict. */
+    status: "disabled" | "pending" | "ready-js" | "ready-vec";
   };
   registries: Array<{ url: string; name?: string; provider?: string; enabled?: boolean }>;
   sourceProviders: Array<{ type: string; name?: string; path?: string; url?: string; enabled?: boolean }>;

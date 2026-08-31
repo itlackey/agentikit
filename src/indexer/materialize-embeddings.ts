@@ -12,9 +12,11 @@
  * stored vector becomes incompatible at that boundary.
  */
 
-import type { AkmConfig } from "../core/config/config";
+import type { AkmConfig, EmbeddingConnectionConfig } from "../core/config/config";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
 import { embedBatch } from "../llm/embedder";
+import { DETERMINISTIC_EMBED_MODEL_ID, isDeterministicEmbedEnabled } from "../llm/embedders/deterministic";
+import { DEFAULT_LOCAL_MODEL } from "../llm/embedders/local";
 import { estimateTokenCount } from "../llm/embedders/remote";
 import type { Database } from "../storage/database";
 import { getEmbeddableEntryCount } from "../storage/repositories/index-entries-repository";
@@ -22,21 +24,26 @@ import { deleteMeta, getMeta, setMeta } from "../storage/repositories/index-meta
 import {
   getAllEntriesForEmbedding,
   getEmbeddingCount,
-  isVecAvailable,
   isVecFastPathComplete,
   isVecFastPathReady,
   purgeEmbeddings,
   setVecFastPathReady,
   upsertEmbedding,
 } from "../storage/repositories/index-vec-repository";
-import {
-  classifySemanticFailure,
-  clearSemanticStatus,
-  deriveSemanticProviderFingerprint,
-  type SemanticSearchReason,
-  type SemanticSearchRuntimeStatus,
-  writeSemanticStatus,
-} from "./search/semantic-status";
+
+/** Identifies the embedding provider+model+dimension a stored vector was generated with. */
+export function deriveSemanticProviderFingerprint(embedding?: EmbeddingConnectionConfig): string {
+  if (isDeterministicEmbedEnabled()) {
+    return `deterministic:${DETERMINISTIC_EMBED_MODEL_ID}`;
+  }
+  if (embedding?.endpoint) {
+    // Fingerprint keys on vector identity only (model + dimension). The endpoint
+    // is transport/routing and has no bearing on vector compatibility, so moving
+    // the same model+dimension to a different host must not force a full re-embed.
+    return `remote:${embedding.model}|${embedding.dimension ?? "default"}`;
+  }
+  return `local:${embedding?.localModel ?? DEFAULT_LOCAL_MODEL}`;
+}
 
 export interface EmbeddingProgressEvent {
   phase: "embeddings";
@@ -45,7 +52,6 @@ export interface EmbeddingProgressEvent {
 
 export interface EmbeddingGenerationResult {
   success: boolean;
-  reason?: SemanticSearchReason;
   message?: string;
   /** Number of sqlite-vec writes that degraded to the complete BLOB fallback. */
   vecInsertFailures?: number;
@@ -68,7 +74,7 @@ export async function generateEmbeddingsForDb(
 
   if (config.semanticSearchMode === "off") {
     onProgress({ phase: "embeddings", message: "Semantic search disabled; skipping embeddings." });
-    return { success: false, reason: "index-missing", message: "Semantic search is disabled." };
+    return { success: false, message: "Semantic search is disabled." };
   }
 
   // A targeted call starts from an already-published generation. Preserve its
@@ -168,46 +174,23 @@ export async function generateEmbeddingsForDb(
     onProgress({ phase: "embeddings", message: `Embedding generation failed: ${message}` });
     return {
       success: false,
-      reason: classifySemanticFailure(message),
       message: `Semantic search verification failed: ${message}`,
     };
   }
 }
 
-/** Publish the canonical semantic health snapshot after a targeted mutation. */
-export function publishTargetedSemanticStatus(
-  db: Database,
-  config: AkmConfig,
-  result: EmbeddingGenerationResult,
-): void {
+/**
+ * Update the `hasEmbeddings` DB fact after a targeted mutation, from the
+ * index's actual current embedding coverage — read fresh, not cached.
+ */
+export function publishTargetedEmbeddingMeta(db: Database, config: AkmConfig): void {
   if (config.semanticSearchMode === "off") {
-    clearSemanticStatus();
     setMeta(db, "hasEmbeddings", "0");
     return;
   }
 
   const entryCount = getEmbeddableEntryCount(db);
   const embeddingCount = getEmbeddingCount(db);
-  let status: SemanticSearchRuntimeStatus;
-  if (entryCount === 0) status = "pending";
-  else if (embeddingCount >= entryCount)
-    status = isVecAvailable(db) && isVecFastPathReady(db) ? "ready-vec" : "ready-js";
-  else status = "blocked";
-
-  setMeta(db, "hasEmbeddings", status === "ready-js" || status === "ready-vec" ? "1" : "0");
-  writeSemanticStatus({
-    status,
-    ...(status === "blocked" ? { reason: result.reason ?? "index-failed" } : {}),
-    ...(status === "blocked"
-      ? {
-          message:
-            result.message ??
-            `Semantic search verification failed (${embeddingCount}/${entryCount} embeddings available).`,
-        }
-      : {}),
-    providerFingerprint: deriveSemanticProviderFingerprint(config.embedding),
-    lastCheckedAt: new Date().toISOString(),
-    entryCount,
-    embeddingCount,
-  });
+  const ready = entryCount > 0 && embeddingCount >= entryCount;
+  setMeta(db, "hasEmbeddings", ready ? "1" : "0");
 }
