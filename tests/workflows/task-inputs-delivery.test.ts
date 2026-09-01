@@ -461,7 +461,7 @@ describe("shell/script task target — empty effective inputs emit NO AKM_TASK_I
 
 // ── B-37 — the spawn-boundary size guard covers AKM_TASK_INPUTS too ────────
 
-describe("oversized effective inputs fail exec_context_too_large at the spawn boundary, before spawn (B-37, B-N1)", () => {
+describe("oversized effective inputs fail exec_context_too_large at the pre-spawn boundary check (B-37, B-N1)", () => {
   test("a literal input whose canonical JSON exceeds THIS platform's per-variable ceiling fails naming AKM_TASK_INPUTS, its size, and the platform limit", async () => {
     const LIMITS = execContextLimits();
     // Same idiom as tests/integration/workflows/exec-unit.test.ts's own
