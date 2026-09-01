@@ -9,6 +9,7 @@
  *   id, event_type, query, entry_id (nullable), entry_ref, signal, metadata, source, created_at
  */
 
+import { rethrowIfTestIsolationError } from "../../core/errors";
 import type { Database } from "../../storage/database";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -110,7 +111,8 @@ export function insertUsageEvent(db: Database, event: UsageEvent): void {
       event.metadata ?? null,
       event.source ?? "unknown",
     );
-  } catch {
+  } catch (error) {
+    rethrowIfTestIsolationError(error);
     /* fire-and-forget: silently ignore errors */
   }
 }

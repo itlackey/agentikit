@@ -32,6 +32,7 @@
 import fs from "node:fs";
 import type { AkmConfig } from "../core/config/config";
 import { loadConfig } from "../core/config/config";
+import { rethrowIfTestIsolationError } from "../core/errors";
 import { getDbPath } from "../core/paths";
 import { warn } from "../core/warn";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
@@ -55,7 +56,11 @@ function indexBundlePrefixes(dbPath: string): string[] | undefined {
         .prepare("SELECT DISTINCT bundle_id AS b FROM entries WHERE bundle_id IS NOT NULL AND bundle_id != ''")
         .all() as Array<{ b: string }>
     ).map((row) => row.b);
-  } catch {
+  } catch (error) {
+    rethrowIfTestIsolationError(error);
+    // Best-effort startup diagnostic: a locked/corrupted index just means this
+    // pass skips the drift check (retried on the next command) rather than
+    // blocking every command on a heuristic warning.
     return undefined;
   } finally {
     if (db) closeDatabase(db);

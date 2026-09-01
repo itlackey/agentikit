@@ -34,6 +34,7 @@
 
 import { rethrowIfTestIsolationError } from "../../core/errors";
 import { withStateDb } from "../../core/state-db";
+import { warn } from "../../core/warn";
 import {
   decodeTaskHistoryMetadata,
   finalizeTaskHistoryAttempt,
@@ -72,7 +73,13 @@ export function appendHistory(result: TaskRunResult, historyReserved = false): v
     });
   } catch (error) {
     rethrowIfTestIsolationError(error);
-    // History recording is fully best-effort and must not alter CLI output.
+    // History recording must not alter the task's own result/exit status —
+    // the task already ran and its outcome is independent of whether we can
+    // persist a history row. But silence would make a failed write
+    // indistinguishable from the task never having run, so warn.
+    warn(
+      `task history: failed to record history for task ${result.id}: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 

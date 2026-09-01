@@ -1261,6 +1261,13 @@ async function extractGraphForSingleFileRevision(
   } catch (err) {
     if (err instanceof ConfigError) throw err;
     rethrowIfTestIsolationError(err);
+    // A genuine extraction/write failure, distinct from the deliberate
+    // "nothing to do" skips above (missing file, empty body, no model). Warn
+    // so it is visible instead of looking identical to a no-op skip; the
+    // entry stays queued and is retried on the next pass.
+    warn(
+      `graph extraction: failed to extract graph for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return { written: false };
   } finally {
     if (ownedLease) disposeLoweredExecutionDispatchLease(ownedLease);
@@ -1363,11 +1370,18 @@ export function collectEligibleFiles(
     if (!stashDir) continue;
     const dir = path.join(stashRoot, stashDir);
     if (!fs.existsSync(dir)) continue;
-    for (const filePath of walkMarkdownFiles(dir)) {
+    const walked = walkMarkdownFiles(dir);
+    if (!walked.complete) {
+      warn(`graph extraction: directory scan under ${dir} is incomplete — some files may be missing`);
+    }
+    for (const filePath of walked.files) {
       let raw: string;
       try {
         raw = fs.readFileSync(filePath, "utf8");
-      } catch {
+      } catch (err) {
+        warn(
+          `graph extraction: failed to read candidate file ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
         continue;
       }
       const parsed = parseFrontmatter(raw);
