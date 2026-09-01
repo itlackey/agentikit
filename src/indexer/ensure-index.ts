@@ -26,7 +26,6 @@ import path from "node:path";
 import { type AssetSpec, placementSpecList } from "../core/asset/asset-placement";
 import { classifyPathAccess } from "../core/path-access";
 import { getDbPath } from "../core/paths";
-import { warn } from "../core/warn";
 import { assertIndexPathReadable, closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { getEntryCount, getIndexedFilePaths } from "../storage/repositories/index-entries-repository";
 import { getMeta } from "../storage/repositories/index-meta-repository";
@@ -187,20 +186,14 @@ async function runInlineReindex(
   stashDir: string,
   options: { signal?: AbortSignal; hydrateSources?: boolean } = {},
 ): Promise<boolean> {
-  try {
-    const { akmIndex } = await import("./indexer.js");
-    await akmIndex({
-      stashDir,
-      implicit: true,
-      ...(options.signal ? { signal: options.signal } : {}),
-      ...(options.hydrateSources === false ? { hydrateSources: false } : {}),
-    });
-    return true;
-  } catch (error) {
-    if (options.signal?.aborted) throw error;
-    warn("Auto-index failed, proceeding with existing index:", error instanceof Error ? error.message : String(error));
-    return false;
-  }
+  const { akmIndex } = await import("./indexer.js");
+  await akmIndex({
+    stashDir,
+    implicit: true,
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.hydrateSources === false ? { hydrateSources: false } : {}),
+  });
+  return true;
 }
 
 /**
@@ -215,8 +208,9 @@ async function runInlineReindex(
  * trigger and waits for it. Use this for callers like `improve` whose
  * planning logic depends on a current `entries` table in the same process.
  *
- * Returns `true` only when an inline index run succeeds.
- * A rebuild attempt that fails (throws) resolves to `false`.
+ * Returns `true` only when an inline index run succeeds; `false` when no
+ * rebuild was needed. A rebuild attempt that fails propagates its error to
+ * the caller rather than silently proceeding with a stale/missing index.
  */
 export async function ensureIndex(stashDir: string, options: EnsureIndexOptions = {}): Promise<boolean> {
   // §11.5: warn (once) if the configured bundle ids drifted from the persisted
