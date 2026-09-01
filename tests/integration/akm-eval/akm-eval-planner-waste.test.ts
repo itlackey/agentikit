@@ -31,9 +31,9 @@ import {
   collectPlannerActions,
   type PlannerActionInput,
   runPlannerWasteCase,
-} from "../../scripts/akm-eval/src/runners/planner-waste";
-import type { EvalCase, EvalContext } from "../../scripts/akm-eval/src/types";
-import { type Cleanup, sandboxEnvDir } from "../_helpers/sandbox";
+} from "../../../scripts/akm-eval/src/runners/planner-waste";
+import type { EvalCase, EvalContext } from "../../../scripts/akm-eval/src/types";
+import { type Cleanup, sandboxEnvDir } from "../../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
 let dataDirCleanup: Cleanup = () => {};

@@ -26,9 +26,9 @@ import {
   collectReflectActions,
   type ReflectActionInput,
   runReflectQualityCase,
-} from "../../scripts/akm-eval/src/runners/reflect-quality";
-import type { EvalCase, EvalContext } from "../../scripts/akm-eval/src/types";
-import { type Cleanup, sandboxEnvDir } from "../_helpers/sandbox";
+} from "../../../scripts/akm-eval/src/runners/reflect-quality";
+import type { EvalCase, EvalContext } from "../../../scripts/akm-eval/src/types";
+import { type Cleanup, sandboxEnvDir } from "../../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
 let dataDirCleanup: Cleanup = () => {};

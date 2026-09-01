@@ -6,17 +6,17 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { runRetrievalCase } from "../../scripts/akm-eval/src/runners/retrieval";
-import { aggregateScores } from "../../scripts/akm-eval/src/scoring";
+import { runRetrievalCase } from "../../../scripts/akm-eval/src/runners/retrieval";
+import { aggregateScores } from "../../../scripts/akm-eval/src/scoring";
 import {
   captureInstallationSnapshot,
   materializeInstallationSnapshot,
-} from "../../scripts/akm-eval/src/sources/installation-snapshot";
-import { compareTwinCaseResults } from "../../scripts/akm-eval/src/twin-run";
-import { loadSuite } from "../../scripts/akm-eval/src/twin-run-private";
-import type { EvalCase, EvalContext } from "../../scripts/akm-eval/src/types";
-import { analyzeMemoryCleanup, applyMemoryCleanup } from "../../src/commands/improve/memory/memory-improve";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+} from "../../../scripts/akm-eval/src/sources/installation-snapshot";
+import { compareTwinCaseResults } from "../../../scripts/akm-eval/src/twin-run";
+import { loadSuite } from "../../../scripts/akm-eval/src/twin-run-private";
+import type { EvalCase, EvalContext } from "../../../scripts/akm-eval/src/types";
+import { analyzeMemoryCleanup, applyMemoryCleanup } from "../../../src/commands/improve/memory/memory-improve";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 const SUITE = "improve-effectiveness";
 const SUITE_DIR = path.resolve("scripts", "akm-eval", "cases", SUITE);

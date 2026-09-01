@@ -10,12 +10,12 @@ import {
   isRecombineJunkTag,
   type RecombineAnalyzerEntry,
   readCurrentRecombineEntries,
-} from "../../scripts/akm-eval/src/recombine-analyzer";
-import { resolveDataDir } from "../../scripts/akm-eval/src/sources/paths";
-import { DB_VERSION } from "../../src/storage/repositories/index-schema";
-import fixture from "../fixtures/akm-eval/recombine-analyzer.json";
+} from "../../../scripts/akm-eval/src/recombine-analyzer";
+import { resolveDataDir } from "../../../scripts/akm-eval/src/sources/paths";
+import { DB_VERSION } from "../../../src/storage/repositories/index-schema";
+import fixture from "../../fixtures/akm-eval/recombine-analyzer.json";
 
-const REPO_ROOT = path.resolve(import.meta.dir, "../..");
+const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 const WRAPPER = path.join(REPO_ROOT, "scripts", "akm-eval", "bin", "akm-eval-recombine-analyze");
 const cleanups: string[] = [];
 

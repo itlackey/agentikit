@@ -9,9 +9,9 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { makeSandboxDir } from "../_helpers/sandbox";
+import { makeSandboxDir } from "../../_helpers/sandbox";
 
-const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..");
+const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
 const LAUNCHER = path.join(PROJECT_ROOT, "scripts", "akm-eval", "bin", "akm-eval-twin-docker");
 const DOCKERFILE = path.join(PROJECT_ROOT, "scripts", "akm-eval", "Dockerfile.twin");
 

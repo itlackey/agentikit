@@ -11,9 +11,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 
-import { runWorkflowComplianceCase } from "../../scripts/akm-eval/src/runners/workflow-compliance";
-import type { EvalCase, EvalContext } from "../../scripts/akm-eval/src/types";
-import { makeSandboxDir, type SandboxedDir } from "../_helpers/sandbox";
+import { runWorkflowComplianceCase } from "../../../scripts/akm-eval/src/runners/workflow-compliance";
+import type { EvalCase, EvalContext } from "../../../scripts/akm-eval/src/types";
+import { makeSandboxDir, type SandboxedDir } from "../../_helpers/sandbox";
 
 interface Fixture {
   root: SandboxedDir;

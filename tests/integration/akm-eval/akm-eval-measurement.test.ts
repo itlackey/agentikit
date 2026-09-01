@@ -8,10 +8,10 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseRef } from "../../scripts/akm-eval/src/lib/ref-normalize";
-import { openStateDatabase } from "../../src/core/state-db";
-import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
-import { CANONICAL_INDEX_DB_VERSION } from "../../src/storage/repositories/index-entry-schema";
+import { parseRef } from "../../../scripts/akm-eval/src/lib/ref-normalize";
+import { openStateDatabase } from "../../../src/core/state-db";
+import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { CANONICAL_INDEX_DB_VERSION } from "../../../src/storage/repositories/index-entry-schema";
 
 const VERDICT_SCRIPT = path.resolve("scripts/akm-eval/src/proactive-verdict.ts");
 const REAL_QUERY_SCRIPT = path.resolve("scripts/akm-eval/src/gen-real-query-suite.ts");

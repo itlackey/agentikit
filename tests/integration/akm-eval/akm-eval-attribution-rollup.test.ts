@@ -7,10 +7,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { rollupAttributionRows } from "../../scripts/akm-eval/src/attribution-rollup";
-import { makeSandboxDir } from "../_helpers/sandbox";
+import { rollupAttributionRows } from "../../../scripts/akm-eval/src/attribution-rollup";
+import { makeSandboxDir } from "../../_helpers/sandbox";
 
-const REPO_ROOT = path.resolve(import.meta.dir, "../..");
+const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 const WRAPPER = path.join(REPO_ROOT, "scripts", "akm-eval", "bin", "akm-eval-attribution-rollup");
 const cleanups: Array<() => void> = [];
 

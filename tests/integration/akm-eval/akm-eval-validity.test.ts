@@ -11,9 +11,9 @@ import {
   listRecentImproveRunIds,
   loadImproveResult,
   withImproveResultDataDir,
-} from "../../scripts/akm-eval/src/sources/improve-result";
-import { buildEvalChildEnv, createSandbox } from "../../scripts/akm-eval/src/sources/sandbox";
-import { makeSandboxDir, withEnvSync } from "../_helpers/sandbox";
+} from "../../../scripts/akm-eval/src/sources/improve-result";
+import { buildEvalChildEnv, createSandbox } from "../../../scripts/akm-eval/src/sources/sandbox";
+import { makeSandboxDir, withEnvSync } from "../../_helpers/sandbox";
 
 const RUN_SCRIPT = path.resolve("scripts/akm-eval/src/run.ts");
 const storageKeys = [

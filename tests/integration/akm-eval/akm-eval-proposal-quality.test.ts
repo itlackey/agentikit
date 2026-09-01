@@ -17,8 +17,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resolveSinceWindow, runProposalQualityCase } from "../../scripts/akm-eval/src/runners/proposal-quality";
-import type { EvalCase, EvalContext } from "../../scripts/akm-eval/src/types";
+import { resolveSinceWindow, runProposalQualityCase } from "../../../scripts/akm-eval/src/runners/proposal-quality";
+import type { EvalCase, EvalContext } from "../../../scripts/akm-eval/src/types";
 
 // ── Fixture helpers ─────────────────────────────────────────────────────────
 

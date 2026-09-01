@@ -5,11 +5,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { openDatabase } from "../../src/storage/database";
-import { ensureSchema } from "../../src/storage/repositories/index-schema";
-import { makeSandboxDir } from "../_helpers/sandbox";
+import { openDatabase } from "../../../src/storage/database";
+import { ensureSchema } from "../../../src/storage/repositories/index-schema";
+import { makeSandboxDir } from "../../_helpers/sandbox";
 
-const REPO_ROOT = path.resolve(import.meta.dir, "../..");
+const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 const WRAPPER = path.join(REPO_ROOT, "scripts", "akm-eval", "bin", "akm-eval-snapshot");
 const cleanups: Array<() => void> = [];
 

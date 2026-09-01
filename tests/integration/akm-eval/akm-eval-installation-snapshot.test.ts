@@ -12,11 +12,11 @@ import {
   materializeInstallationSnapshot,
   normalizedMaterializedDatabaseFingerprint,
   verifyInstallationSnapshot,
-} from "../../scripts/akm-eval/src/sources/installation-snapshot";
-import { openStateDatabase } from "../../src/core/state-db";
-import type { Database as StorageDatabase } from "../../src/storage/database";
-import { openIndexDatabase } from "../../src/storage/repositories/index-connection";
-import { makeSandboxDir } from "../_helpers/sandbox";
+} from "../../../scripts/akm-eval/src/sources/installation-snapshot";
+import { openStateDatabase } from "../../../src/core/state-db";
+import type { Database as StorageDatabase } from "../../../src/storage/database";
+import { openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { makeSandboxDir } from "../../_helpers/sandbox";
 
 interface Fixture {
   bundleRoots: Record<string, string>;

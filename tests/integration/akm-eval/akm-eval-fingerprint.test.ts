@@ -7,8 +7,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fingerprintEvalCases } from "../../scripts/akm-eval/src/sources/eval-runs";
-import type { EvalCase, EvalCaseResult } from "../../scripts/akm-eval/src/types";
+import { fingerprintEvalCases } from "../../../scripts/akm-eval/src/sources/eval-runs";
+import type { EvalCase, EvalCaseResult } from "../../../scripts/akm-eval/src/types";
 
 const RUN_SCRIPT = path.resolve("scripts/akm-eval/src/run.ts");
 const COMPARE_SCRIPT = path.resolve("scripts/akm-eval/src/compare.ts");

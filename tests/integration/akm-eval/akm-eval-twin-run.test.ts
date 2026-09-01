@@ -21,8 +21,8 @@ import {
   type TwinArmExecutionInput,
   tokenizeCommandVector,
   validateEndpointFingerprint,
-} from "../../scripts/akm-eval/src/twin-run";
-import { readImproveResourceMetrics } from "../../scripts/akm-eval/src/twin-run-private";
+} from "../../../scripts/akm-eval/src/twin-run";
+import { readImproveResourceMetrics } from "../../../scripts/akm-eval/src/twin-run-private";
 import type {
   EndpointFingerprint,
   InstallationSnapshotManifest,
@@ -30,9 +30,9 @@ import type {
   Sha256,
   TwinDecisionCriteria,
   TwinResourceMetrics,
-} from "../../scripts/akm-eval/src/twin-types";
-import type { EvalCaseResult, EvalRunResult } from "../../scripts/akm-eval/src/types";
-import { withEnv } from "../_helpers/sandbox";
+} from "../../../scripts/akm-eval/src/twin-types";
+import type { EvalCaseResult, EvalRunResult } from "../../../scripts/akm-eval/src/types";
+import { withEnv } from "../../_helpers/sandbox";
 
 const digest = "a".repeat(64) as Sha256;
 const protectedCaseId = "retrieval-search-returns-hits";
