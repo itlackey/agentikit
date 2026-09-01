@@ -38,10 +38,14 @@ import path from "node:path";
 import { isScalar, parseDocument } from "yaml";
 import { assetPathCandidatesForName, assetPathForName, stashDirFor } from "../../core/asset/asset-placement";
 import { BUNDLE_REF_RE } from "../../core/asset/asset-ref";
-import { removeFrontmatterListValues, spliceFrontmatterLine } from "../../core/asset/frontmatter";
+import {
+  removeFrontmatterListValues,
+  rewriteFrontmatterListValue,
+  spliceFrontmatterLine,
+} from "../../core/asset/frontmatter";
 import { checkUnquotedDescriptionColon } from "../../core/asset/frontmatter-lint";
 import { isArchivedRelPath } from "../../core/asset/memory-archive";
-import { typeNameFromConceptId } from "../../core/asset/resolve-ref";
+import { conceptIdFromTypeName, typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { localDateStamp } from "../../core/common";
 import { findFenceRegions } from "./markdown-insertion";
 import type { LintContext, LintIssue } from "./types";
@@ -805,6 +809,46 @@ function runMissingRefChecks(
       for (const key of XREF_FRONTMATTER_KEYS) {
         const values = readRefStringOrArray(ctx.data?.[key]);
         if (values === null) continue;
+
+        // `lint --fix` migration for the retired `type:slug` xref grammar
+        // (see legacyTypeSlugParts): rewrite a value to its conceptId form
+        // ONLY when the rewritten spelling still resolves to a real asset —
+        // a dangling legacy ref must stay reported as `missing-ref` in its
+        // original spelling, never rewritten into a differently-spelled
+        // dangling ref. Runs before the missing-ref scan below so a value
+        // this loop rewrites is checked (and reported, if still dangling)
+        // under its ORIGINAL spelling by that scan, and never double-fixed.
+        if (ctx.fix) {
+          const legacyRewrites = new Map<string, string>();
+          for (const raw of values) {
+            const value = raw.trim();
+            const parts = legacyTypeSlugParts(value);
+            if (parts === undefined) continue;
+            const relPath = refToRelPath(parts.type, parts.name);
+            if (relPath === null) continue;
+            if (!refExistsInAnyStash(relPath, parts.type, parts.name, [ctx.stashRoot, ...(ctx.extraStashRoots ?? [])]))
+              continue; // dangling — leave reported as missing-ref, unrewritten
+            legacyRewrites.set(value, conceptIdFromTypeName(parts.type, parts.name));
+          }
+          if (legacyRewrites.size > 0) {
+            const rewritten = rewriteFrontmatterListValue(currentRaw, key, legacyRewrites);
+            if (rewritten !== null) {
+              currentRaw = rewritten;
+              modified = true;
+              for (const [oldValue, newValue] of legacyRewrites) {
+                const issue: LintIssue = {
+                  file: ctx.relPath,
+                  issue: "missing-ref",
+                  detail: `legacy xref grammar migrated: ${key} ${oldValue} -> ${newValue}`,
+                  fixed: true,
+                };
+                issues.push(issue);
+                pendingFixes.push(issue);
+              }
+            }
+          }
+        }
+
         const missingXrefs = checkMissingRefsInList(values, ctx.stashRoot, ctx.extraStashRoots);
 
         // #884 opt-in repair. Scoped to the BELIEF channels only: an edge whose

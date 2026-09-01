@@ -350,6 +350,108 @@ export function removeFrontmatterListValues(raw: string, key: string, values: re
 }
 
 /**
+ * Rewrite specific VALUES in one frontmatter list key to new spellings,
+ * preserving every other byte — the rename counterpart to
+ * {@link removeFrontmatterListValues}, used by `akm lint --fix` to migrate
+ * retired `type:slug` xref values (`xrefs:`/`supersededBy:`/`contradictedBy:`)
+ * to their conceptId form once resolution confirms the rewritten spelling
+ * still points at a real asset.
+ *
+ * Handles the same three spellings a belief channel appears in: a block
+ * sequence, an inline flow, and a bare scalar. `replacements` maps an
+ * unquoted OLD value to its NEW value; a value not present in the map is left
+ * untouched byte-for-byte (including any quoting it had).
+ *
+ * Returns the rewritten source, or `null` when `raw` has no well-formed
+ * frontmatter block or nothing matched, so the caller can leave the file
+ * untouched. Deliberately source-preserving, like its sibling.
+ */
+export function rewriteFrontmatterListValue(
+  raw: string,
+  key: string,
+  replacements: ReadonlyMap<string, string>,
+): string | null {
+  if (replacements.size === 0) return null;
+
+  const lines = raw.split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") return null;
+  const closeIdx = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+  if (closeIdx === -1) return null;
+
+  const out: string[] = [];
+  let changed = false;
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index]!;
+    if (index === 0 || index >= closeIdx) {
+      out.push(line);
+      index += 1;
+      continue;
+    }
+
+    const kv = line.match(/^(\w[\w-]*):\s*(.*)$/);
+    if (kv === null || kv[1] !== key) {
+      out.push(line);
+      index += 1;
+      continue;
+    }
+
+    const rest = kv[2]!.trim();
+
+    // Inline flow: xrefs: [a, b]
+    const flow = rest.match(/^\[(.*)\]$/);
+    if (flow !== null) {
+      const items = flow[1]!.split(",").map((item) => item.trim());
+      const nextItems = items.map((item) => {
+        if (!item) return item;
+        const replacement = replacements.get(unquote(item));
+        if (replacement === undefined) return item;
+        changed = true;
+        return replacement;
+      });
+      out.push(items.length > 0 && items[0] !== "" ? `${kv[1]}: [${nextItems.join(", ")}]` : line);
+      index += 1;
+      continue;
+    }
+
+    // Bare scalar: xrefs: a
+    if (rest !== "") {
+      const replacement = replacements.get(unquote(rest));
+      if (replacement === undefined) {
+        out.push(line);
+      } else {
+        changed = true;
+        out.push(`${kv[1]}: ${replacement}`);
+      }
+      index += 1;
+      continue;
+    }
+
+    // Block sequence: the key line, then `  - value` items.
+    out.push(line);
+    let cursor = index + 1;
+    while (cursor < closeIdx) {
+      const itemLine = lines[cursor]!;
+      const itemMatch = itemLine.match(/^(\s*-\s*)(.*)$/);
+      if (itemMatch === null) break;
+      const [, prefix, value] = itemMatch;
+      const replacement = replacements.get(unquote(value!));
+      if (replacement === undefined) {
+        out.push(itemLine);
+      } else {
+        changed = true;
+        out.push(`${prefix}${replacement}`);
+      }
+      cursor += 1;
+    }
+    index = cursor;
+  }
+
+  return changed ? out.join("\n") : null;
+}
+
+/**
  * Parse a YAML scalar value (string, boolean, or number).
  *
  * For quoted strings (single or double), delegates to the `yaml` library so

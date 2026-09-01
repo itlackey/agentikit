@@ -154,7 +154,7 @@ The verifier contract is permissive — `tests/test.sh` need only write `/logs/v
 
 **The non-mechanical part:** no `task.yaml` carries an instruction or prompt beyond a one-line `title` — the actual prompt is synthesized today by the driver. An `instruction.md` must be authored for all 46, and **the derivation rule materially changes task difficulty**. Budget real time here; it is the least mechanical part of a "mechanical" conversion.
 
-Also required: flatten to one directory level (or ship `registry.json`); rewrite 43 `gold_ref` values from the pre-0.9 `type:name` grammar to `[bundle//]conceptId[#fragment]` (a migrator exists at `akm/scripts/akm-migrate/migrate/legacy-ref-grammar.ts`); map `budget.tokens` and `slice` into `[metadata]` (Harbor has neither concept) knowing they will need the corpus join to be usable.
+Also required: flatten to one directory level (or ship `registry.json`); rewrite 43 `gold_ref` values from the pre-0.9 `type:name` grammar to `[bundle//]conceptId[#fragment]` (`akm lint --fix` migrates a `type:name` xref to `[bundle//]conceptId[#fragment]` when the rewritten ref still resolves); map `budget.tokens` and `slice` into `[metadata]` (Harbor has neither concept) knowing they will need the corpus join to be usable.
 
 Good news: the 7 fixture bundles are already akm-retrievable (frontmatter `description:` + headings), so §5.4's indexing ceiling does **not** bite here.
 
