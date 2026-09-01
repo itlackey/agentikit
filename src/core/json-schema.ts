@@ -55,6 +55,8 @@
  * change {@link validateJsonSchemaSubset}'s permissive evaluation semantics.
  */
 
+import { isRecord } from "./common";
+
 /**
  * Deepest schema nesting either walk descends into — {@link
  * validateJsonSchemaSubset} evaluating a value, and {@link
@@ -211,10 +213,6 @@ function pushIssue(
   issues.push({ path: [...path], pointer: pointerFor(path), keyword, kind, message });
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Values the runtime's reference-equality `enum` check can enforce correctly. */
 function isSupportedEnumValue(value: unknown): value is string | number | boolean | null {
   return (
@@ -310,7 +308,7 @@ function checkDefinitionNode(
       continue;
     }
     branches.forEach((branch, index) => {
-      if (isPlainObject(branch)) {
+      if (isRecord(branch)) {
         checkDefinitionNode(branch, [...path, keyword, index], issues, depth + 1);
       } else {
         pushIssue(
@@ -325,7 +323,7 @@ function checkDefinitionNode(
   }
 
   if (schema.not !== undefined) {
-    if (isPlainObject(schema.not)) {
+    if (isRecord(schema.not)) {
       checkDefinitionNode(schema.not, [...path, "not"], issues, depth + 1);
     } else {
       pushIssue(issues, [...path, "not"], "not", "malformed", `"not" must be a schema object`);
@@ -345,7 +343,7 @@ function checkDefinitionNode(
   }
 
   if (schema.properties !== undefined) {
-    if (!isPlainObject(schema.properties)) {
+    if (!isRecord(schema.properties)) {
       pushIssue(
         issues,
         [...path, "properties"],
@@ -355,7 +353,7 @@ function checkDefinitionNode(
       );
     } else {
       for (const [key, propSchema] of Object.entries(schema.properties)) {
-        if (isPlainObject(propSchema)) {
+        if (isRecord(propSchema)) {
           checkDefinitionNode(propSchema, [...path, "properties", key], issues, depth + 1);
         } else {
           pushIssue(
@@ -371,7 +369,7 @@ function checkDefinitionNode(
   }
 
   if (schema.items !== undefined) {
-    if (isPlainObject(schema.items)) {
+    if (isRecord(schema.items)) {
       checkDefinitionNode(schema.items, [...path, "items"], issues, depth + 1);
     } else if (Array.isArray(schema.items)) {
       pushIssue(
@@ -387,7 +385,7 @@ function checkDefinitionNode(
   }
 
   if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== "boolean") {
-    if (isPlainObject(schema.additionalProperties)) {
+    if (isRecord(schema.additionalProperties)) {
       pushIssue(
         issues,
         [...path, "additionalProperties"],
@@ -473,7 +471,7 @@ function branchErrors(value: unknown, schema: Record<string, unknown>, path: str
 function combinatorBranches(schema: Record<string, unknown>, keyword: string): Record<string, unknown>[] {
   const raw = schema[keyword];
   if (!Array.isArray(raw)) return [];
-  return raw.filter(isPlainObject);
+  return raw.filter(isRecord);
 }
 
 /** First error of each failing branch, truncated — enough to act on without dumping every branch. */
@@ -511,7 +509,7 @@ function validateCombinators(value: unknown, schema: Record<string, unknown>, pa
   }
 
   const not = schema.not;
-  if (isPlainObject(not) && branchErrors(value, not, path, ctx).length === 0) {
+  if (isRecord(not) && branchErrors(value, not, path, ctx).length === 0) {
     ctx.errors.push(`${path}: value must not match the "not" schema`);
   }
 }

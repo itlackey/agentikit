@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { cloneExecutionJsonObject } from "../execution/json";
+import { isRecord } from "./common";
 import type { AkmImproveResult } from "./improve-types";
 
 export type ImproveResultEnvelope = AkmImproveResult;
@@ -61,10 +62,6 @@ const V2_FIELDS = new Set<string>([...COMMON_FIELDS, "strategy", "strategyFilter
 
 function fail(message: string): never {
   throw new Error(`invalid improve-result envelope: ${message}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requireExactFields(value: Record<string, unknown>, allowed: Set<string>): void {

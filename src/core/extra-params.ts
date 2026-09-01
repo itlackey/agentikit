@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { isRecord } from "./common";
+
 export const EXTRA_PARAMS_PROTECTED_TOP_LEVEL_KEYS = [
   "model",
   "messages",
@@ -155,10 +157,6 @@ export interface LiftLegacyExtraParamsResult {
   conflicts: ExtraParamsLiftConflict[];
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * Compute the legacy `extraParams` -> first-class-field lift for a raw
  * parsed config object: a 0.9.1-shaped config using (e.g.)
@@ -180,7 +178,7 @@ export function liftLegacyEngineExtraParams(raw: Record<string, unknown>): LiftL
   const lifted: string[] = [];
   const conflicts: ExtraParamsLiftConflict[] = [];
   const rawEngines = raw.engines;
-  if (!isPlainObject(rawEngines)) {
+  if (!isRecord(rawEngines)) {
     return { config: raw, lifted, conflicts };
   }
 
@@ -188,7 +186,7 @@ export function liftLegacyEngineExtraParams(raw: Record<string, unknown>): LiftL
   let anyEngineChanged = false;
 
   for (const [name, engineValue] of Object.entries(rawEngines)) {
-    if (!isPlainObject(engineValue) || !isPlainObject(engineValue.extraParams)) {
+    if (!isRecord(engineValue) || !isRecord(engineValue.extraParams)) {
       engines[name] = engineValue;
       continue;
     }

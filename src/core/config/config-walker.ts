@@ -22,6 +22,7 @@
  *   - z.record(...)        → JSON-parse value, validate
  */
 import { z } from "zod";
+import { isRecord } from "../common";
 import { UsageError } from "../errors";
 import { AkmConfigBaseSchema, type AkmConfigShape, EngineConfigSchema, listTopLevelConfigKeys } from "./config-schema";
 import { deepMergeConfig } from "./deep-merge";
@@ -113,7 +114,7 @@ function resolveSchemaAt(path: Path, config?: Record<string, unknown>, raw?: str
       // Cannot descend into a non-object schema.
       return undefined;
     }
-    existing = isPlainObject(existing) ? existing[segment] : undefined;
+    existing = isRecord(existing) ? existing[segment] : undefined;
   }
   // Preserve leaf refinements/transforms for validation. Traversal unwraps at
   // the start of each loop iteration, while coercion unwraps independently.
@@ -139,7 +140,7 @@ function selectUnionObjectOption(
     if (requested) return requested;
   }
 
-  if (isPlainObject(existing)) {
+  if (isRecord(existing)) {
     const selected = options.find((option) =>
       Object.entries(option.shape).some(
         ([key, field]) =>
@@ -217,9 +218,7 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
   // schema transform,
   // otherwise the synthesized default can overwrite an explicit false.
   const candidate =
-    judgmentObjectPath && isPlainObject(value)
-      ? deepMergeConfig(isPlainObject(existing) ? existing : {}, value)
-      : value;
+    judgmentObjectPath && isRecord(value) ? deepMergeConfig(isRecord(existing) ? existing : {}, value) : value;
 
   // Validate the coerced value against the leaf schema. This catches enum
   // mismatches, out-of-range numbers, schema-level shape errors (writable
@@ -246,7 +245,7 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
   const next = setPath(
     config,
     path,
-    isPlainObject(existing) && isPlainObject(parsed.data) ? deepMergeConfig(existing, parsed.data) : parsed.data,
+    isRecord(existing) && isRecord(parsed.data) ? deepMergeConfig(existing, parsed.data) : parsed.data,
   );
 
   // Targeted invariant: defaultWriteTarget must point at a configured bundle
@@ -317,7 +316,7 @@ function rejectApiKeyPath(path: Path, dotted: string): void {
 function parseObjectPatch(raw: string, key: string): Record<string, unknown> {
   try {
     const value = JSON.parse(raw);
-    if (!isPlainObject(value)) throw new Error("expected an object");
+    if (!isRecord(value)) throw new Error("expected an object");
     return value;
   } catch (err) {
     throw new UsageError(
@@ -325,10 +324,6 @@ function parseObjectPatch(raw: string, key: string): Record<string, unknown> {
       "INVALID_JSON_CONFIG_VALUE",
     );
   }
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function recipeForApiKey(path: Path, _dotted: string): string {

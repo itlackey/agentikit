@@ -35,7 +35,7 @@
 import { LineCounter, parseDocument } from "yaml";
 import { parseFrontmatterBlock } from "../core/asset/frontmatter";
 import { parseMarkdownToc } from "../core/asset/markdown";
-import { isContainedRelativePath } from "../core/common";
+import { isContainedRelativePath, isRecord } from "../core/common";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
 import { checkJsonSchemaDefinition, JSON_SCHEMA_SUBSET_SUPPORTED_KEYWORDS } from "../core/json-schema";
 import { parseReference } from "./program/expressions";
@@ -255,7 +255,7 @@ export function parseWorkflow(markdown: string, source: WorkflowParseOptions): W
   };
 
   if (root === null || root === undefined) root = {};
-  if (!isPlainRecord(root)) {
+  if (!isRecord(root)) {
     return {
       ok: false,
       errors: [{ line: 2, message: `Workflow frontmatter must be a YAML mapping (key: value pairs).` }],
@@ -493,7 +493,7 @@ function checkEnvelopeFields(ctx: Ctx, root: Record<string, unknown>, fmEndLine:
       checkActorStamp(ctx, root.verified, ["verified"], `"verified"`);
     }
   }
-  if (root.provenance !== undefined && !isPlainRecord(root.provenance)) {
+  if (root.provenance !== undefined && !isRecord(root.provenance)) {
     ctx.err(["provenance"], `Workflow frontmatter "provenance" must be a mapping.`);
   }
   if (root.status !== undefined && (typeof root.status !== "string" || !LIFECYCLE_STATUSES.has(root.status))) {
@@ -506,7 +506,7 @@ function checkEnvelopeFields(ctx: Ctx, root: Record<string, unknown>, fmEndLine:
 
 function checkActorStamp(ctx: Ctx, value: unknown, path: Path, label: string): void {
   if (value === undefined) return;
-  if (!isPlainRecord(value)) {
+  if (!isRecord(value)) {
     ctx.err(path, `Workflow frontmatter ${label} must be a mapping with a non-empty "by".`);
     return;
   }
@@ -541,7 +541,7 @@ function checkXrefs(ctx: Ctx, value: unknown, fmEndLine: number): void {
 
 function parseParams(ctx: Ctx, raw: unknown): Record<string, Record<string, unknown>> | undefined {
   if (raw === undefined) return undefined;
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(
       ["params"],
       `"params" must be a mapping of param name to a JSON Schema object (e.g. changed_files: { type: array }).`,
@@ -557,7 +557,7 @@ function parseParams(ctx: Ctx, raw: unknown): Record<string, Record<string, unkn
       );
       continue;
     }
-    if (!isPlainRecord(value)) {
+    if (!isRecord(value)) {
       ctx.err(["params", paramName], `Param "${paramName}" must be a JSON Schema object (e.g. { type: string }).`);
       continue;
     }
@@ -586,7 +586,7 @@ function parseParams(ctx: Ctx, raw: unknown): Record<string, Record<string, unkn
  */
 function parseOutputs(ctx: Ctx, raw: unknown): Record<string, WorkflowOutputDeclaration> | undefined {
   if (raw === undefined) return undefined;
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(
       ["outputs"],
       `"outputs" must be a mapping of output name to { from, schema? } (e.g. report: { from: steps.summarize.output }).`,
@@ -604,7 +604,7 @@ function parseOutputs(ctx: Ctx, raw: unknown): Record<string, WorkflowOutputDecl
       );
       continue;
     }
-    if (!isPlainRecord(value)) {
+    if (!isRecord(value)) {
       ctx.err(path, `Output "${outputName}" must be a mapping with "from" (and optional "schema").`);
       continue;
     }
@@ -628,7 +628,7 @@ function parseOutputs(ctx: Ctx, raw: unknown): Record<string, WorkflowOutputDecl
     }
     const entry: WorkflowOutputDeclaration = { from: value.from };
     if (value.schema !== undefined) {
-      if (!isPlainRecord(value.schema)) {
+      if (!isRecord(value.schema)) {
         ctx.err([...path, "schema"], `Output "${outputName}" "schema" must be a JSON Schema object.`);
       } else {
         if (jsonBytes(value.schema) > WORKFLOW_MAX_SCHEMA_BYTES) {
@@ -646,7 +646,7 @@ function parseOutputs(ctx: Ctx, raw: unknown): Record<string, WorkflowOutputDecl
 function parseDefaults(ctx: Ctx, raw: unknown): ProgramDefaults | undefined {
   if (raw === undefined) return undefined;
   const path: Path = ["defaults"];
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `"defaults" must be a mapping with any of: ${DEFAULTS_KEYS.join(", ")}.`);
     return undefined;
   }
@@ -672,7 +672,7 @@ function parseDefaults(ctx: Ctx, raw: unknown): ProgramDefaults | undefined {
 function parseBudget(ctx: Ctx, raw: unknown): ProgramBudget | undefined {
   if (raw === undefined) return undefined;
   const path: Path = ["budget"];
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `"budget" must be a mapping with any of: ${BUDGET_KEYS.join(", ")}.`);
     return undefined;
   }
@@ -705,7 +705,7 @@ function parseSteps(ctx: Ctx, raw: unknown): ProgramStep[] {
   // (including ones that fail their own validation).
   const idIndex = new Map<string, number>();
   raw.forEach((rawStep, index) => {
-    if (isPlainRecord(rawStep) && typeof rawStep.id === "string" && !idIndex.has(rawStep.id)) {
+    if (isRecord(rawStep) && typeof rawStep.id === "string" && !idIndex.has(rawStep.id)) {
       idIndex.set(rawStep.id, index);
     }
   });
@@ -716,7 +716,7 @@ function parseSteps(ctx: Ctx, raw: unknown): ProgramStep[] {
 
   raw.forEach((rawStep, index) => {
     const path: Path = ["steps", index];
-    if (!isPlainRecord(rawStep)) {
+    if (!isRecord(rawStep)) {
       ctx.err(path, `Step ${index + 1} must be a mapping with an "id".`);
       return;
     }
@@ -817,7 +817,7 @@ function parseSteps(ctx: Ctx, raw: unknown): ProgramStep[] {
 // ---------------------------------------------------------------------------
 
 function parseUnit(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramUnit | undefined {
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `${stepLabel} "unit" must be a mapping (a dispatch-override bag).`);
     return undefined;
   }
@@ -902,7 +902,7 @@ function parseUnit(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): Progr
  * keeps that decision visible in the frontmatter diff.
  */
 function parseExec(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramExec | undefined {
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `${stepLabel} "exec" must be a mapping with a "command" argv list.`);
     return undefined;
   }
@@ -1014,7 +1014,7 @@ function parseExecCwd(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): st
 }
 
 function parseMap(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramMap | undefined {
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `${stepLabel} "map" must be a mapping with an "over" key.`);
     return undefined;
   }
@@ -1058,7 +1058,7 @@ function parseRoute(
   stepIndex: number,
   routeChecks: RouteCheck[],
 ): ProgramRoute | undefined {
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `${stepLabel} "route" must be a mapping with "input" and "when" keys.`);
     return undefined;
   }
@@ -1084,7 +1084,7 @@ function parseRoute(
     const seenMatches = new Map<string, number>();
     raw.when.forEach((branch: unknown, i: number) => {
       const branchPath: Path = [...whenPath, i];
-      if (!isPlainRecord(branch)) {
+      if (!isRecord(branch)) {
         ctx.err(branchPath, `${stepLabel} "when[${i}]" must be a mapping: { match, step }.`);
         return;
       }
@@ -1170,7 +1170,7 @@ function parseInputs(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): str
 }
 
 function parseGate(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramGate | undefined {
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `${stepLabel} "gate" must be a mapping with any of: ${GATE_KEYS.join(", ")}.`);
     return undefined;
   }
@@ -1217,7 +1217,7 @@ function parseEngineName(ctx: Ctx, raw: unknown, path: Path, label: string): str
 
 function parseRetry(ctx: Ctx, raw: unknown, path: Path, stepLabel: string): ProgramRetry | undefined {
   if (raw === undefined) return undefined;
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `${stepLabel} "retry" must be a mapping: { max: <n>, on: [<failure_reason>, …] }.`);
     return undefined;
   }
@@ -1311,7 +1311,7 @@ function parseEnumField(
 /** Parse only invocation tuning. Connection identity belongs to a named engine. */
 function parseLlmOverrides(ctx: Ctx, raw: unknown, path: Path, label: string): LlmInvocationOverrides | undefined {
   if (raw === undefined) return undefined;
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `${label} must be a mapping of LLM invocation overrides.`);
     return undefined;
   }
@@ -1340,7 +1340,7 @@ function parseLlmOverrides(ctx: Ctx, raw: unknown, path: Path, label: string): L
     else ctx.err([...path, "supports_json_schema"], `${label}.supports_json_schema must be a boolean.`);
   }
   if (raw.extra_params !== undefined) {
-    if (!isPlainRecord(raw.extra_params)) {
+    if (!isRecord(raw.extra_params)) {
       ctx.err([...path, "extra_params"], `${label}.extra_params must be a JSON object.`);
     } else {
       const issues = validateExtraParams(raw.extra_params);
@@ -1374,7 +1374,7 @@ function parseLlmOverrides(ctx: Ctx, raw: unknown, path: Path, label: string): L
 
 function parseSchemaObject(ctx: Ctx, raw: unknown, path: Path, label: string): Record<string, unknown> | undefined {
   if (raw === undefined) return undefined;
-  if (!isPlainRecord(raw)) {
+  if (!isRecord(raw)) {
     ctx.err(path, `${label} must be a JSON Schema object (e.g. { type: object, properties: { … } }).`);
     return undefined;
   }
@@ -1429,10 +1429,6 @@ function checkUnknownKeys(
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function describeError(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);

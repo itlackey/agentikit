@@ -22,6 +22,7 @@
  * shape-driven normalizer (a code-review finding).
  */
 
+import { isRecord } from "../../core/common";
 import { UsageError } from "../../core/errors";
 import { type InputContract, type TaskInputBinding, validateInputs } from "../../execution/input-contract";
 import { parseReference } from "../program/expressions";
@@ -54,10 +55,6 @@ export interface RebindTaskInputBindingsInput {
 
 function inputBindingInvalid(message: string): UsageError {
   return new UsageError(message, "INPUT_BINDING_INVALID");
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function unknownBindingNameError(
@@ -217,7 +214,7 @@ function normalizeOneEntry(
   earlierStepIds: ReadonlySet<string>,
   declaredParamNames: ReadonlySet<string>,
 ): TaskInputBinding {
-  if (!isPlainObject(value) || !Object.hasOwn(value, "from")) {
+  if (!isRecord(value) || !Object.hasOwn(value, "from")) {
     return Object.freeze({ kind: "literal", name, value });
   }
 
