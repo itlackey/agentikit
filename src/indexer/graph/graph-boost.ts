@@ -384,50 +384,41 @@ export function listRelatedPathsForFile(
 
   // Confirm the target file has a graph row; without it there is nothing to
   // relate. (Identity is file_path within the stash — one row per path.)
-  try {
-    const row = db
-      .prepare("SELECT 1 AS present FROM graph_files WHERE stash_root = ? AND file_path = ? LIMIT 1")
-      .get(stashRoot, filePath) as { present: number } | undefined;
-    if (row === undefined) return [];
-  } catch {
-    return [];
-  }
+  const row = db
+    .prepare("SELECT 1 AS present FROM graph_files WHERE stash_root = ? AND file_path = ? LIMIT 1")
+    .get(stashRoot, filePath) as { present: number } | undefined;
+  if (row === undefined) return [];
 
   const effectiveLimit = Math.max(1, limit);
 
   // Shared-entity count per candidate file_path. The target's entities are the
   // rows for `filePath`; candidates are any OTHER file_path in the stash that
   // shares a normalized entity.
-  let candidateRows: Array<{
+  const candidateRows = db
+    .prepare(
+      `SELECT gf.file_path   AS file_path,
+              gf.file_type   AS file_type,
+              COUNT(*)       AS shared
+          FROM graph_file_entities target
+          JOIN graph_file_entities e
+            ON e.stash_root = target.stash_root
+           AND e.entity_norm = target.entity_norm
+           AND e.file_path  != target.file_path
+          JOIN graph_files gf
+            ON gf.stash_root = e.stash_root
+           AND gf.file_path = e.file_path
+           AND gf.body_hash = e.body_hash
+        WHERE target.file_path  = ?
+          AND target.stash_root = ?
+        GROUP BY gf.file_path
+        ORDER BY shared DESC, gf.file_path ASC
+        LIMIT ?`,
+    )
+    .all(filePath, stashRoot, effectiveLimit) as Array<{
     file_path: string;
     file_type: string;
     shared: number;
   }>;
-  try {
-    candidateRows = db
-      .prepare(
-        `SELECT gf.file_path   AS file_path,
-                gf.file_type   AS file_type,
-                COUNT(*)       AS shared
-            FROM graph_file_entities target
-            JOIN graph_file_entities e
-              ON e.stash_root = target.stash_root
-             AND e.entity_norm = target.entity_norm
-             AND e.file_path  != target.file_path
-            JOIN graph_files gf
-              ON gf.stash_root = e.stash_root
-             AND gf.file_path = e.file_path
-             AND gf.body_hash = e.body_hash
-          WHERE target.file_path  = ?
-            AND target.stash_root = ?
-          GROUP BY gf.file_path
-          ORDER BY shared DESC, gf.file_path ASC
-          LIMIT ?`,
-      )
-      .all(filePath, stashRoot, effectiveLimit) as typeof candidateRows;
-  } catch {
-    return [];
-  }
 
   if (candidateRows.length === 0) return [];
 
