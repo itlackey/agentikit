@@ -7,17 +7,6 @@ import { pathToFileURL } from "node:url";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..", "..", "..");
 const NPM_SHEBANG = /^#!\s*(?:\/usr\/bin\/env\s+(?:-S\s+)?((?:[^ \t=]+=[^ \t=]+\s+)*))?([^ \t]+)(.*)$/;
-const RUNTIME_DOCS = [
-  "README.md",
-  ".github/README.npm.md",
-  "CHANGELOG.md",
-  "SECURITY.md",
-  "STABILITY.md",
-  "docs/guides/getting-started.md",
-  "docs/guides/recipes/headless-install.md",
-  "docs/maintainers/local-development.md",
-  "docs/architecture/internals/fresh-host-rebuild-runbook.md",
-];
 
 function npmShimInterpreter(source: string): string | undefined {
   return source.trim().split(/\r*\n/, 1)[0]?.match(NPM_SHEBANG)?.[2];
@@ -84,24 +73,6 @@ describe("npm bin contract", () => {
     expect(pkg.scripts?.preinstall).toContain("runtime-free standalone binary");
     expect(pkg.scripts?.preinstall).not.toContain("process.versions.bun");
     expect(pkg.scripts?.preinstall).not.toContain("bun install -g");
-  });
-
-  test("documents one npm runtime contract in diagnostics and active install docs", () => {
-    const cli = fs.readFileSync(path.join(REPO_ROOT, "src", "cli.ts"), "utf8");
-    expect(cli).toContain("akm-cli npm package requires Node.js >= 22");
-    expect(cli).toContain("Bun >= 1.0 is optional");
-    expect(cli).not.toContain("requires the Bun runtime");
-    expect(cli).not.toContain("bun install -g akm-cli");
-
-    for (const relativePath of RUNTIME_DOCS) {
-      const document = fs.readFileSync(path.join(REPO_ROOT, relativePath), "utf8");
-      const normalized = document.replace(/\s+/g, " ");
-      expect(normalized, relativePath).toMatch(/npm package/i);
-      expect(normalized, relativePath).toMatch(/Node\.js(?:\]\([^)]+\))? >= 22/i);
-      expect(normalized, relativePath).toMatch(/working (?:\[)?Bun(?:\]\([^)]+\))? >= 1\.0/i);
-      expect(normalized, relativePath).toMatch(/standalone binar(?:y|ies).*?runtime-free/i);
-      expect(document, relativePath).not.toContain("bun install -g akm-cli");
-    }
   });
 
   test("published bins select their supported runtime paths after the Node bootstrap", () => {

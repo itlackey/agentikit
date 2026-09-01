@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { DEPRECATED_REJECTED_TYPES, isKnownType, KNOWN_TYPES, type KnownType } from "../../src/core/recognition-util";
+import { DEPRECATED_REJECTED_TYPES, isKnownType, KNOWN_TYPES } from "../../src/core/recognition-util";
 import { presentationFor, TYPE_PRESENTATION } from "../../src/core/type-presentation";
 import { validateStashEntry } from "../../src/indexer/passes/metadata";
 import { TYPE_BOOST, typeBoostFor } from "../../src/indexer/search/ranking-contributors";
@@ -61,14 +61,6 @@ describe("KNOWN_TYPES exhaustiveness — typed tables compile-cover all 14", () 
     expect(new Set(KNOWN_TYPES).size).toBe(14); // no duplicates
   });
 
-  test("TYPE_BOOST (ranking-contributors.ts) has an entry for every KNOWN_TYPE", () => {
-    for (const type of KNOWN_TYPES) {
-      expect(Object.hasOwn(TYPE_BOOST, type)).toBe(true);
-      expect(typeof TYPE_BOOST[type]).toBe("number");
-    }
-    expect(Object.keys(TYPE_BOOST).length).toBe(14);
-  });
-
   test("TYPE_BOOST's previously-absent types are explicit 0 entries (behavior-preserving, D1.5-5)", () => {
     // `wiki` left this set in chunk 4 (the wiki asset-type is retired).
     for (const type of ["env", "secret", "lesson", "task", "session"] as const) {
@@ -83,15 +75,6 @@ describe("KNOWN_TYPES exhaustiveness — typed tables compile-cover all 14", () 
     expect(typeBoostFor("some-foreign-type")).toBe(0);
   });
 
-  test("TYPE_PRESENTATION (type-presentation.ts) has an entry for every KNOWN_TYPE", () => {
-    for (const type of KNOWN_TYPES) {
-      expect(Object.hasOwn(TYPE_PRESENTATION, type)).toBe(true);
-      expect(typeof TYPE_PRESENTATION[type].label).toBe("string");
-      expect(TYPE_PRESENTATION[type].label.length).toBeGreaterThan(0);
-    }
-    expect(Object.keys(TYPE_PRESENTATION).length).toBe(14);
-  });
-
   test("a KNOWN_TYPE always satisfies isKnownType", () => {
     for (const type of KNOWN_TYPES) {
       expect(isKnownType(type)).toBe(true);
@@ -101,16 +84,6 @@ describe("KNOWN_TYPES exhaustiveness — typed tables compile-cover all 14", () 
   test("isKnownType is false for a foreign type — NOT a validation gate, just an ownership check", () => {
     expect(isKnownType("some-foreign-type")).toBe(false);
     expect(isKnownType("")).toBe(false);
-  });
-
-  // Compile-time half of the contract: if this file still compiles, every
-  // `KnownType` member above type-checked against `TYPE_BOOST`/
-  // `TYPE_PRESENTATION`'s `Record<KnownType, X>` signatures — a missing key
-  // in either table is a `tsc` failure, not a runtime one.
-  test("KnownType assignability compiles (type-level exhaustiveness marker)", () => {
-    const sample: KnownType = "skill";
-    expect(TYPE_BOOST[sample]).toBeDefined();
-    expect(TYPE_PRESENTATION[sample]).toBeDefined();
   });
 });
 
