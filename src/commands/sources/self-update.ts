@@ -404,7 +404,7 @@ function runPostUpgradeTasks(
       skipped: opts.skip,
       message:
         `Upgrade completed, but the state schema was not prepared (${detail}). ` +
-        "Preserve state.db and run `akm upgrade --force` before other AKM commands.",
+        "Preserve state.db and run `akm upgrade --state-only` before other AKM commands (the binary is already current).",
     };
   }
   const stateNote = stateUpgrade.safetyCopyPath ? ` Historical state safety copy: ${stateUpgrade.safetyCopyPath}.` : "";
@@ -618,4 +618,45 @@ export function getPackageManagerUpgradeCommand(
   }
 
   return undefined;
+}
+
+/**
+ * Apply pending historical destructive state.db migrations WITHOUT installing a
+ * new akm — the body of `akm upgrade --state-only`.
+ *
+ * Migrations flagged `historical-destructive` are refused during an ordinary
+ * managed open: they need a verified sibling safety copy taken under the
+ * migration writer lock, and that is deliberate, so an unattended `akm index`
+ * can never quietly drop operator state.
+ *
+ * The bug this fixes is not the guard but its reachability (#895). The only
+ * code path that set `allowHistoricalDestructiveStateUpgrade` ran as a
+ * POST-INSTALL step of a real upgrade, so it sat behind an npm install. Where
+ * akm is installed globally by an image and the runtime user is unprivileged,
+ * that install fails EACCES and throws long before the migration is reached —
+ * leaving the documented remedy impossible to run and `akm index --full`
+ * permanently blocked. Nothing about the migration itself needs the network,
+ * root, or a new binary; it is local, offline, and already verified.
+ *
+ * The safety copy is NOT skipped here. This changes only who may ask for the
+ * migration, never what it does.
+ */
+export function upgradeStateOnly(
+  currentVersion: string,
+  dependencies?: { upgradeHistoricalStateDatabase?: () => HistoricalStateUpgradeResult },
+): UpgradeResponse {
+  const upgradeState = dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase;
+  const result = upgradeState();
+  return {
+    currentVersion,
+    newVersion: currentVersion,
+    upgraded: false,
+    installMethod: detectInstallMethod(),
+    message: result.upgraded
+      ? `Applied pending state.db migrations. Safety copy: ${result.safetyCopyPath}`
+      : "state.db is already current; no migration was needed",
+    stateUpgrade: result.safetyCopyPath
+      ? { applied: result.upgraded, safetyCopyPath: result.safetyCopyPath }
+      : { applied: result.upgraded },
+  };
 }

@@ -12,6 +12,7 @@ import {
   type InstallSignals,
   performUpgrade,
   streamResponseToFile,
+  upgradeStateOnly,
 } from "../../src/commands/sources/self-update";
 import { upgradeCommand } from "../../src/commands/sources/sources-cli";
 import { sandboxHome, withEnv } from "../_helpers/sandbox";
@@ -592,6 +593,64 @@ describe("performUpgrade", () => {
     expect(result.postUpgrade?.message).toContain("state.db.pre-018-drop-dead-lane-schema");
     // Package install and version verification only; index is not attempted.
     expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
+  });
+
+  // ── #895: the state migration must be reachable without an install ───────
+  //
+  // Reported from a container that ships akm globally and runs unprivileged.
+  // `akm index --full` was blocked on a historical destructive migration whose
+  // only documented remedy, `akm upgrade --force`, npm-installs FIRST and dies
+  // EACCES on /usr/local/lib/node_modules -- so the remedy could never run and
+  // the install was permanently stuck. These tests pin the decoupling.
+
+  test("state-only upgrade applies the migration without invoking any package manager", () => {
+    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
+      status: 0,
+      stdout: "",
+      stderr: "",
+    } as never);
+    const upgradeHistoricalStateDatabase = mock(() => ({
+      upgraded: true,
+      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260901T010000000Z.bak",
+    }));
+
+    const result = upgradeStateOnly("0.9.6", { upgradeHistoricalStateDatabase });
+
+    expect(upgradeHistoricalStateDatabase).toHaveBeenCalledTimes(1);
+    expect(result.stateUpgrade?.applied).toBe(true);
+    expect(result.stateUpgrade?.safetyCopyPath).toContain("pre-018-drop-dead-lane-schema");
+    // THE regression: the npm/bun install is what failed EACCES for the
+    // reporter. This path must never shell out to a package manager at all.
+    expect(spawnSyncSpy).not.toHaveBeenCalled();
+    // No binary changed, so the reported version must not claim one did.
+    expect(result.upgraded).toBe(false);
+    expect(result.currentVersion).toBe("0.9.6");
+    expect(result.newVersion).toBe("0.9.6");
+  });
+
+  test("state-only upgrade on an already-current database reports no migration", () => {
+    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
+      status: 0,
+      stdout: "",
+      stderr: "",
+    } as never);
+    const upgradeHistoricalStateDatabase = mock(() => ({ upgraded: false }));
+
+    const result = upgradeStateOnly("0.9.6", { upgradeHistoricalStateDatabase });
+
+    expect(result.stateUpgrade).toEqual({ applied: false });
+    expect(result.message).toContain("already current");
+    expect(spawnSyncSpy).not.toHaveBeenCalled();
+  });
+
+  test("state-only upgrade surfaces a migration failure instead of reporting success", () => {
+    const upgradeHistoricalStateDatabase = mock(() => {
+      throw new Error("018 failed. Verified safety copy: /data/state.db.pre-018.bak.");
+    });
+
+    // A failed migration must throw. Reporting a cheerful no-op here would
+    // leave the operator believing state was migrated when it was not.
+    expect(() => upgradeStateOnly("0.9.6", { upgradeHistoricalStateDatabase })).toThrow(/018 failed/);
   });
 
   test("captures post-upgrade failure without failing the upgrade", async () => {

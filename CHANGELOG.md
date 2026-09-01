@@ -17,6 +17,25 @@ with a confident wrong answer instead of an error.
 
 ### Fixed
 
+- **Historical state migrations are reachable where akm cannot reinstall
+  itself** (#895). A migration flagged `historical-destructive` is refused
+  during an ordinary open — it needs a verified safety copy, taken under the
+  migration writer lock, so an unattended `akm index` can never quietly drop
+  operator state. That guard is correct and unchanged. Its *remedy* was not:
+  the only code path that admitted the migration ran as a post-install step of
+  `akm upgrade`, behind an npm install. Where akm is installed globally by a
+  container image and the runtime user is unprivileged, that install fails
+  `EACCES` and throws long before the migration is reached, so `akm index
+  --full` was blocked with no supported way out — and the two obvious
+  workarounds are both wrong (upgrading as root installs a *newer* akm than the
+  image ships, which `config-version-shim` then fails closed against; deleting
+  `state.db` destroys task history, proposals, and lessons metadata, none of
+  which is derived). New `akm upgrade --state-only` applies pending state
+  migrations and installs nothing. Nothing about the migration needed the
+  network, root, or a new binary; coupling it to one was the bug. The safety
+  copy is still taken — this changes who may request the migration, not what it
+  does.
+
 - **Two security holes closed.** A failed `git ls-remote` made
   `verifyClonedRevision` a no-op, silently skipping the R-011 post-clone
   revision-integrity check — the guard against a compromised mirror — so any

@@ -1022,12 +1022,14 @@ computed, with a 256 MiB binary limit. Release/checksum metadata is capped at
 akm upgrade              # Download and replace the running binary
 akm upgrade --check      # Check for updates without installing
 akm upgrade --force      # Force upgrade even if already on latest
+akm upgrade --state-only # Apply pending state.db migrations; install nothing
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--check` | Check for updates without installing |
 | `--force` | Force upgrade even if on latest version |
+| `--state-only` | Apply pending `state.db` migrations without installing a new akm. For installs that cannot rewrite their own binary — a container shipping akm globally, an unprivileged runtime user — where the install step would fail `EACCES` before the migration could run. Takes the same verified safety copy as `--force`; it changes who may request the migration, not what it does. |
 | `--skip-post-upgrade` | Skip the post-upgrade index rebuild |
 
 Checksum verification is not optional and has no flag. If a release's

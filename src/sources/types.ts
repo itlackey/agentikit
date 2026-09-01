@@ -488,6 +488,15 @@ export interface UpgradeResponse {
     exitCode?: number | null;
     message: string;
   };
+  /**
+   * Result of the historical destructive state.db migration. Present for
+   * `upgrade --state-only`, whose whole purpose is this step, so callers can
+   * see whether a migration ran without parsing `message`.
+   */
+  stateUpgrade?: {
+    applied: boolean;
+    safetyCopyPath?: string;
+  };
 }
 
 export interface InfoResponse {

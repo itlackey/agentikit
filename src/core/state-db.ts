@@ -447,7 +447,8 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
         if (existingUnversionedDatabase && !options?.allowHistoricalDestructiveStateUpgrade) {
           throw new Error(
             "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
-              "Run `akm upgrade --force` to create a verified snapshot before migration 001.",
+              "Run `akm upgrade --force` to create a verified snapshot before migration 001, " +
+              "or `akm upgrade --state-only` where akm cannot reinstall itself (container/global install).",
           );
         }
       } finally {

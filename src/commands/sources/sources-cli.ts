@@ -34,7 +34,7 @@ import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { resolveWritableOverride, saveGitStash } from "../../sources/providers/git";
 import { pkgVersion } from "../../version";
-import { checkForUpdate, performUpgrade } from "./self-update";
+import { checkForUpdate, performUpgrade, upgradeStateOnly } from "./self-update";
 import { akmClone } from "./source-clone";
 
 export const upgradeCommand = defineJsonCommand({
@@ -47,8 +47,24 @@ export const upgradeCommand = defineJsonCommand({
       description: "Skip the post-upgrade index rebuild",
       default: false,
     },
+    "state-only": {
+      type: "boolean",
+      description: "Apply pending state.db migrations without installing a new akm",
+      default: false,
+    },
   },
   async run({ args }) {
+    // Applying a historical destructive state migration used to be reachable
+    // ONLY as a post-install step of a real upgrade, so an install akm cannot
+    // rewrite -- a global npm install owned by root, an image that ships the
+    // CLI -- had no route to it at all: the npm step fails EACCES and throws
+    // long before the migration runs (#895). The migration is a local,
+    // offline, already-verified operation; it does not need the network or a
+    // new binary, and coupling it to one was the bug.
+    if (args["state-only"]) {
+      output("upgrade", upgradeStateOnly(pkgVersion));
+      return;
+    }
     const check = await checkForUpdate(pkgVersion);
     if (args.check) {
       output("upgrade", check);
