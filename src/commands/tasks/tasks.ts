@@ -1274,26 +1274,6 @@ function warnIneligibleRebind(runtime: PreparedSchedulerRuntime, explicitRebind:
   );
 }
 
-export function prepareSchedulerRuntime(
-  explicitRebind: boolean,
-  operation: string,
-  deps: {
-    resolveInvocation?: typeof resolveAkmInvocation;
-    writeDescriptor?: typeof writeSchedulerContextDescriptor;
-  } = {},
-): PreparedSchedulerRuntime {
-  const invocation = (deps.resolveInvocation ?? resolveAkmInvocation)();
-  if (!invocation.eligible && !explicitRebind) {
-    throw new UsageError(
-      `Refusing to ${operation} from an ineligible ${invocation.kind ?? "unknown"} invocation (${invocation.argv.join(" ")}).`,
-      "INVALID_FLAG_VALUE",
-      "npm-global ownership could not be verified. Run `npm install --global akm-cli` and use that launcher, use a standalone installation, or explicitly repeat the operation with --rebind.",
-    );
-  }
-  const contextPath = (deps.writeDescriptor ?? writeSchedulerContextDescriptor)(schedulerContextDescriptor());
-  return { binding: invocation.argv, contextPath, eligible: invocation.eligible, kind: invocation.kind };
-}
-
 function groupInstalledBindings(
   entries: readonly InstalledSchedulerBinding[],
   invocation: TasksDoctorResult["akm"],

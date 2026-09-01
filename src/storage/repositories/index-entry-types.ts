@@ -89,12 +89,6 @@ export interface IndexDirState {
   updatedAt: string;
 }
 
-/** A raw `(file_path, document_json)` pair from the `entries` table. */
-export interface EntryRefRow {
-  file_path: string;
-  document_json: string;
-}
-
 /** Parameters for `rekeyEntryInPlace`. */
 export interface RekeyEntryOptions {
   /** New canonical asset name, written into `document_json.name`. */

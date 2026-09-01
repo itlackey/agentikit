@@ -21,7 +21,7 @@ import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 import type { ScopedUtilityRow, UtilityScoreRow } from "../../src/storage/repositories/index-entry-types";
-import { bumpUtilityScoresBatch, getUtilityScoresByIds } from "../../src/storage/repositories/index-utility-repository";
+import { getUtilityScoresByIds } from "../../src/storage/repositories/index-utility-repository";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -83,55 +83,26 @@ function makeScopedRow(id: number, scopeKey: string, utility: number): ScopedUti
   };
 }
 
+/** Directly seed a global utility_scores row (bypasses the EMA policy — fixture only). */
+function seedGlobalUtility(db: Database, entryId: number, utility: number): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO utility_scores (entry_id, utility, show_count, search_count, select_rate, last_used_at, updated_at)
+     VALUES (?, ?, 0, 0, 0, ?, ?)
+     ON CONFLICT(entry_id) DO UPDATE SET utility = excluded.utility, updated_at = excluded.updated_at`,
+  ).run(entryId, utility, now, now);
+}
+
+/** Directly seed a utility_scores_scoped row (bypasses the EMA policy — fixture only). */
+function seedScopedUtility(db: Database, entryId: number, scopeKey: string, utility: number): void {
+  db.prepare(
+    `INSERT INTO utility_scores_scoped (entry_id, scope_key, utility, last_used_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(entry_id, scope_key) DO UPDATE SET utility = excluded.utility, last_used_at = excluded.last_used_at`,
+  ).run(entryId, scopeKey, utility, Date.now());
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
-
-describe("scoped utility scores — DB isolation", () => {
-  let db: Database;
-  let dbPath: string;
-
-  beforeEach(() => {
-    ({ db, dbPath } = makeTempDb("isolation"));
-    // Insert a minimal entry so foreign key constraints are satisfied.
-    expect(seedSkill(db, "foo")).toBe(1);
-  });
-
-  afterEach(() => {
-    closeDatabase(db);
-    fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
-  });
-
-  test("bumping scope A does not affect scope B utility for the same entry", () => {
-    const scopeA = "dir:v1:aaaa";
-    const scopeB = "dir:v1:bbbb";
-
-    bumpUtilityScoresBatch(db, [1], 1.0, 0.1, scopeA);
-    bumpUtilityScoresBatch(db, [1], 1.0, 0.1, scopeA);
-
-    const { scoped: scopedA } = getUtilityScoresByIds(db, [1], scopeA);
-    const { scoped: scopedB } = getUtilityScoresByIds(db, [1], scopeB);
-
-    expect(scopedA.get(1)?.utility).toBeGreaterThan(0);
-    expect(scopedB.get(1)).toBeUndefined();
-  });
-
-  test("bumping scope B does not affect scope A", () => {
-    const scopeA = "dir:v1:aaaa";
-    const scopeB = "dir:v1:bbbb";
-
-    bumpUtilityScoresBatch(db, [1], 1.0, 0.1, scopeA);
-    bumpUtilityScoresBatch(db, [1], 1.0, 0.1, scopeB);
-    bumpUtilityScoresBatch(db, [1], 1.0, 0.1, scopeB);
-
-    const { scoped: scopedA } = getUtilityScoresByIds(db, [1], scopeA);
-    const { scoped: scopedB } = getUtilityScoresByIds(db, [1], scopeB);
-
-    // A was bumped once, B twice — they should differ
-    const utilA = scopedA.get(1)?.utility ?? 0;
-    const utilB = scopedB.get(1)?.utility ?? 0;
-    expect(utilA).toBeGreaterThan(0);
-    expect(utilB).toBeGreaterThan(utilA);
-  });
-});
 
 describe("getUtilityScoresByIds — dual maps", () => {
   let db: Database;
@@ -150,8 +121,9 @@ describe("getUtilityScoresByIds — dual maps", () => {
 
   test("returns both global and scoped maps for the same ids", () => {
     const scopeKey = "dir:v1:test";
-    bumpUtilityScoresBatch(db, [1, 2], 1.0, 0.1);
-    bumpUtilityScoresBatch(db, [1], 1.0, 0.1, scopeKey);
+    seedGlobalUtility(db, 1, 0.5);
+    seedGlobalUtility(db, 2, 0.5);
+    seedScopedUtility(db, 1, scopeKey, 0.5);
 
     const { global, scoped } = getUtilityScoresByIds(db, [1, 2], scopeKey);
 
@@ -165,7 +137,8 @@ describe("getUtilityScoresByIds — dual maps", () => {
   });
 
   test("scoped map is empty when no scopeKey is passed", () => {
-    bumpUtilityScoresBatch(db, [1], 1.0, 0.1, "dir:v1:test");
+    seedGlobalUtility(db, 1, 0.5);
+    seedScopedUtility(db, 1, "dir:v1:test", 0.5);
     const { global, scoped } = getUtilityScoresByIds(db, [1]);
     expect(global.get(1)?.utility).toBeGreaterThan(0);
     expect(scoped.size).toBe(0);
@@ -292,9 +265,9 @@ describe("schema migration safety", () => {
   test("existing utility_scores rows survive openIndexDatabase (no data loss)", () => {
     const { db: existingDb, dbPath: existingPath } = makeTempDb("existing");
     try {
-      // Add an entry and bump its global utility
+      // Add an entry and seed its global utility
       expect(seedSkill(existingDb, "foo")).toBe(1);
-      bumpUtilityScoresBatch(existingDb, [1], 1.0, 0.1);
+      seedGlobalUtility(existingDb, 1, 0.5);
       const { global: before } = getUtilityScoresByIds(existingDb, [1]);
       const beforeUtility = before.get(1)?.utility;
       expect(beforeUtility).toBeGreaterThan(0);

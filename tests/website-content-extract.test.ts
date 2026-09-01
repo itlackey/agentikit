@@ -16,9 +16,9 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
-  extractDocumentLinks,
   extractMainContentHtml,
   htmlToMarkdown,
+  htmlToMarkdownAndLinks,
 } from "../src/sources/snapshot-fetchers/content-extract";
 
 const PAGE_URL = "https://docs.example.com/guide/intro";
@@ -290,7 +290,7 @@ describe("crawl-queue link extraction stays whole-page", () => {
   // Regression trap: narrowing this to the content region would silently
   // shrink every crawl, since nav links are how pages are discovered.
   test("nav and footer links are still discovered even though they are not in the markdown", () => {
-    const hrefs = extractDocumentLinks(DOCS_LAYOUT, PAGE_URL).map((u) => u.pathname);
+    const hrefs = htmlToMarkdownAndLinks(DOCS_LAYOUT, PAGE_URL).links.map((u) => u.pathname);
     expect(hrefs).toContain("/guide/install");
     expect(hrefs).toContain("/guide/api");
 
@@ -305,13 +305,13 @@ describe("crawl-queue link extraction stays whole-page", () => {
       <a href="mailto:a@b.example">mail</a>
       <a href="#section">frag</a>
     </body></html>`;
-    const urls = extractDocumentLinks(html, PAGE_URL);
+    const urls = htmlToMarkdownAndLinks(html, PAGE_URL).links;
     expect(urls.map((u) => u.toString())).toEqual(["https://ok.example/a"]);
   });
 
   test("relative hrefs resolve against the page URL", () => {
     const html = `<html><body><a href="../other">rel</a></body></html>`;
-    expect(extractDocumentLinks(html, PAGE_URL)[0]?.toString()).toBe("https://docs.example.com/other");
+    expect(htmlToMarkdownAndLinks(html, PAGE_URL).links[0]?.toString()).toBe("https://docs.example.com/other");
   });
 });
 

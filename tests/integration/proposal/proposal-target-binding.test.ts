@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { akmProposalAccept, akmProposalCreate } from "../../../src/commands/proposal/proposal";
+import { akmProposalAccept } from "../../../src/commands/proposal/proposal";
 import {
   createProposal,
   isProposalSkipped,
@@ -97,13 +97,14 @@ describe("proposal queue target binding", () => {
     const primary = stash("akm-proposal-primary-");
     const team = stash("akm-proposal-directory-name-is-not-identity-");
     const cfg = config(primary, team);
-    const { proposal: created } = akmProposalCreate({
-      queue: "team",
-      config: cfg,
+    const created = createProposal(team, {
       ref: "lessons/bound-secondary",
       source: "propose",
+      force: true,
+      target: { source: "team", root: team },
       payload: { content: VALID_LESSON },
     });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
 
     expect(created.ref).toBe("team//lessons/bound-secondary");
     expect(created.proposedTarget).toEqual({ source: "team", root: path.resolve(team) });
@@ -117,13 +118,14 @@ describe("proposal queue target binding", () => {
     const primary = stash("akm-proposal-terminal-primary-");
     const team = stash("akm-proposal-terminal-team-");
     const cfg = config(primary, team);
-    const { proposal: created } = akmProposalCreate({
-      queue: "team",
-      config: cfg,
+    const created = createProposal(team, {
       ref: "lessons/terminal-accept",
       source: "propose",
+      force: true,
+      target: { source: "team", root: team },
       payload: { content: VALID_LESSON },
     });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
 
     await akmProposalAccept({
       queue: "team",
@@ -206,14 +208,13 @@ describe("proposal queue target binding", () => {
   test("a qualified proposal cannot bind its bundle identity to another queue root", () => {
     const primary = stash("akm-proposal-qualified-primary-");
     const team = stash("akm-proposal-qualified-team-");
-    const cfg = config(primary, team);
 
     expect(() =>
-      akmProposalCreate({
-        queue: "primary",
-        config: cfg,
+      createProposal(primary, {
         ref: "team//lessons/wrong-root",
         source: "propose",
+        force: true,
+        target: { source: "primary", root: primary },
         payload: { content: VALID_LESSON },
       }),
     ).toThrow(/conflicts with queue target/i);

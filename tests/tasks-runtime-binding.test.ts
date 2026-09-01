@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmTasksAdd, akmTasksDoctor, akmTasksSync, prepareSchedulerRuntime } from "../src/commands/tasks/tasks";
+import { akmTasksAdd, akmTasksDoctor, akmTasksSync } from "../src/commands/tasks/tasks";
 import type { SchedulerBackend, SchedulerInstallOptions } from "../src/tasks/backends/types";
 import { schedulerContextDescriptor, writeSchedulerContextDescriptor } from "../src/tasks/scheduler-invocation";
 import { withIsolatedAkmStorage, writeSandboxConfig } from "./_helpers/sandbox";
@@ -56,56 +56,6 @@ function configureStash(stashDir: string): void {
 }
 
 describe("scheduler runtime binding", () => {
-  test("source creation refuses without explicit rebind", () => {
-    const storage = withIsolatedAkmStorage();
-    const sourceCandidate = () => ({
-      argv: ["/usr/bin/bun", "/repo/src/cli.ts"],
-      via: "checkout" as const,
-      kind: "checkout" as const,
-      eligible: false,
-    });
-
-    try {
-      expect(() =>
-        prepareSchedulerRuntime(false, "create scheduler entry", {
-          resolveInvocation: sourceCandidate,
-          writeDescriptor: () => "/unused/context.json",
-        }),
-      ).toThrow("Refusing to create scheduler entry from an ineligible checkout invocation");
-      const packageLocalError = (() => {
-        try {
-          prepareSchedulerRuntime(false, "create scheduler entry", {
-            resolveInvocation: () => ({
-              argv: ["/usr/bin/node", "/project/node_modules/akm-cli/dist/akm"],
-              via: "package-local",
-              kind: "package-local",
-              eligible: false,
-            }),
-            writeDescriptor: () => "/unused/context.json",
-          });
-        } catch (error) {
-          return error;
-        }
-        throw new Error("expected package-local scheduler binding to be refused");
-      })() as Error & { hint(): string | undefined };
-      expect(packageLocalError.message).toContain("ineligible package-local invocation");
-      expect(packageLocalError.hint()).toContain("npm-global ownership could not be verified");
-      expect(
-        prepareSchedulerRuntime(true, "create scheduler entry", {
-          resolveInvocation: sourceCandidate,
-          writeDescriptor: () => "/data/context.json",
-        }),
-      ).toEqual({
-        binding: ["/usr/bin/bun", "/repo/src/cli.ts"],
-        contextPath: "/data/context.json",
-        eligible: false,
-        kind: "checkout",
-      });
-    } finally {
-      storage.cleanup();
-    }
-  });
-
   test("ordinary sync preserves binding and --rebind replaces it", async () => {
     const storage = withIsolatedAkmStorage();
     try {

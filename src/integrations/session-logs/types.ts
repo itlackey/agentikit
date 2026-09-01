@@ -2,17 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-export interface SessionLogEntry {
-  /** Human-readable topic or error pattern found */
-  topic: string;
-  /** How many times this pattern appeared in recent sessions */
-  frequency: number;
-  /** Source harness that produced this entry */
-  source: string;
-  /** Whether this looks like a repeated failure (vs a normal topic) */
-  isFailurePattern: boolean;
-}
-
 export interface SessionEvent {
   harness: string;
   text: string;

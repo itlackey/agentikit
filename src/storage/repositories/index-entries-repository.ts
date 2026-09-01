@@ -22,13 +22,7 @@ import type { IndexDocument } from "../../indexer/passes/metadata";
 import { buildSearchText } from "../../indexer/search/search-fields";
 import type { Database } from "../database";
 import { ENTRY_COLUMNS, type EntryRow, rowToIndexedEntry } from "./index-entry-mapper";
-import type {
-  DbIndexedEntry,
-  EntryProvenance,
-  EntryRefRow,
-  RekeyEntryOptions,
-  RelinkUsageEventsOptions,
-} from "./index-entry-types";
+import type { DbIndexedEntry, EntryProvenance, RekeyEntryOptions, RelinkUsageEventsOptions } from "./index-entry-types";
 import { deleteFtsEntries, replaceFtsEntry } from "./index-fts-repository";
 import { SQLITE_CHUNK_SIZE } from "./index-sql";
 import { deleteEntryVectors, isVecAvailable } from "./index-vec-repository";
@@ -847,24 +841,6 @@ export function getIndexedFilePaths(db: Database): Set<string> {
 export function getEntryFilePathById(db: Database, id: number): string | undefined {
   const row = db.prepare("SELECT file_path FROM entries WHERE id = ?").get(id) as { file_path: string } | undefined;
   return row?.file_path;
-}
-
-/**
- * Fetch every `(file_path, document_json)` row whose path is under a source
- * root. The path containment filter is applied in JS so SQLite LIKE wildcard
- * characters in filesystem paths cannot widen ownership.
- *
- * Lifted verbatim (WS5) from the inline query in commands/graph.ts'
- * `buildRefByPath`. The full result set is materialised with `.all()` before
- * return so callers can iterate it after the connection closes (WS5
- * connection-lifetime rule). JSON parsing stays with the caller, unchanged.
- */
-export function getEntryRefRowsForStashRoot(db: Database, stashRoot: string): EntryRefRow[] {
-  const root = path.resolve(stashRoot);
-  return (db.prepare("SELECT file_path, document_json FROM entries").all() as EntryRefRow[]).filter((row) => {
-    const file = path.resolve(row.file_path);
-    return file === root || file.startsWith(`${root}${path.sep}`);
-  });
 }
 
 // ── Indexer-phase helpers (moved from indexer.ts) ────────────────────────────

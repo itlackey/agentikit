@@ -17,8 +17,6 @@ import { describe, expect, it } from "bun:test";
 import { VALID_HARNESS_IDS as CONFIG_VALID_HARNESS_IDS } from "../src/core/config/config-types";
 import {
   AGENT_DISPATCH_HARNESSES,
-  CONFIG_IMPORTER_HARNESSES,
-  DETECTION_HARNESSES,
   defaultProfileName,
   getHarness,
   HARNESS_BY_ID,
@@ -78,14 +76,6 @@ describe("capability-derived sublists", () => {
 
   it("AGENT_DISPATCH_HARNESSES = every harness", () => {
     expect(AGENT_DISPATCH_HARNESSES.map((h) => h.id as string)).toEqual(ALL_HARNESS_IDS);
-  });
-
-  it("CONFIG_IMPORTER_HARNESSES = harnesses that import config (claude, opencode)", () => {
-    expect(CONFIG_IMPORTER_HARNESSES.map((h) => h.id)).toEqual(["opencode", "claude"]);
-  });
-
-  it("DETECTION_HARNESSES = every harness", () => {
-    expect(DETECTION_HARNESSES.map((h) => h.id as string)).toEqual(ALL_HARNESS_IDS);
   });
 
   // #567 — only session-log-capable harnesses may be offered as setup stash

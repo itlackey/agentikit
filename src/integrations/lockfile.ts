@@ -278,19 +278,6 @@ export async function writeLockfile(entries: LockfileEntry[]): Promise<void> {
   }
 }
 
-/** Replace one exact parsed lock generation while the lockfile sentinel is held. */
-export async function compareAndSwapLockfile(expected: LockfileEntry[], desired: LockfileEntry[]): Promise<boolean> {
-  const release = await acquireLockSentinel();
-  try {
-    const current = readLockfileOrThrow();
-    if (JSON.stringify(current) !== JSON.stringify(expected)) return false;
-    writeLockfileUnlocked(desired);
-    return true;
-  } finally {
-    release();
-  }
-}
-
 /**
  * Publish an update from one exact raw + parsed lockfile generation and return
  * the exact bytes that were written. Formatting-only concurrent edits are a

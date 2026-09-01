@@ -217,13 +217,6 @@ export function resolveEntryContentDir(entry: SourceConfigEntry): string | undef
 }
 
 /**
- * Convenience: returns just the directory paths, preserving priority order.
- */
-export function resolveAllStashDirs(overrideStashDir?: string): string[] {
-  return resolveSourceEntries(overrideStashDir).map((s) => s.path);
-}
-
-/**
  * Find which source a file path belongs to.
  *
  * Longest-matching-prefix wins: a source nested inside another (e.g. `akm add
@@ -245,14 +238,6 @@ export function findSourceForPath(filePath: string, sources: SearchSource[]): Se
     }
   }
   return best;
-}
-
-/**
- * Return the primary stash source (first entry in the list).
- * This is the user's working stash and the default destination for clone.
- */
-export function getPrimarySource(sources: SearchSource[]): SearchSource | undefined {
-  return sources[0];
 }
 
 // ── Editability ─────────────────────────────────────────────────────────────

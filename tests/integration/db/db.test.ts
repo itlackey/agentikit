@@ -22,7 +22,6 @@ import {
   getEntryCount,
   getEntryFilePathById,
   getEntryIdByFilePath,
-  getEntryRefRowsForStashRoot,
   upsertEntry,
 } from "../../../src/storage/repositories/index-entries-repository";
 import { rebuildFts, searchFts } from "../../../src/storage/repositories/index-fts-repository";
@@ -1008,7 +1007,7 @@ describe("entry-owned FTS projection", () => {
 // commands/feedback-cli.ts, commands/graph.ts) into indexer/db.ts so all SQL
 // touching the `entries` table lives in one module. These assertions capture
 // the pre-move behaviour exactly.
-describe("entries-by-path reads (getEntryIdByFilePath / getEntryFilePathById / getEntryRefRowsForStashRoot)", () => {
+describe("entries-by-path reads (getEntryIdByFilePath / getEntryFilePathById)", () => {
   function seedAt(db: Database, key: string, filePath: string, stashDir: string, type: IndexDocument["type"]): number {
     const entry = { description: `Description for ${key}`, type, name: key } as unknown as IndexDocument;
     const bundleId = path.basename(stashDir) || "root";
@@ -1057,41 +1056,6 @@ describe("entries-by-path reads (getEntryIdByFilePath / getEntryFilePathById / g
     } finally {
       closeDatabase(db);
     }
-  });
-
-  test("getEntryRefRowsForStashRoot matches canonical file-path ownership", () => {
-    const dbPath = tmpDbPath();
-    const db = openIndexDatabase(dbPath);
-    try {
-      // A bundle label alone does not make an unrelated path owned by the root.
-      seedAt(db, "in-stash", "/elsewhere/in-stash.md", "/root", "skill");
-      // Matches by file_path containment even when another bundle owns it.
-      seedAt(db, "by-prefix", "/root/sub/by-prefix.md", "/other", "memory");
-      // Should not match a non-contained path.
-      seedAt(db, "outside", "/somewhere/outside.md", "/other", "lesson");
-
-      const rows = getEntryRefRowsForStashRoot(db, "/root");
-      const paths = rows.map((r) => r.file_path).sort();
-      expect(paths).toEqual(["/root/sub/by-prefix.md"]);
-      // document_json is returned raw (unparsed) for the caller to decode.
-      for (const r of rows) {
-        expect(typeof r.document_json).toBe("string");
-        expect(() => JSON.parse(r.document_json)).not.toThrow();
-      }
-    } finally {
-      closeDatabase(db);
-    }
-  });
-
-  test("ref rows survive db.close() — result set fully materialised (WS5 lifetime rule)", () => {
-    const dbPath = tmpDbPath();
-    const db = openIndexDatabase(dbPath);
-    seedAt(db, "a", "/root/a.md", "/root", "skill");
-    seedAt(db, "b", "/root/b.md", "/root", "memory");
-    const rows = getEntryRefRowsForStashRoot(db, "/root");
-    closeDatabase(db);
-    // Iterating after close must not throw / truncate — proves no live cursor.
-    expect(rows.map((r) => r.file_path).sort()).toEqual(["/root/a.md", "/root/b.md"]);
   });
 });
 

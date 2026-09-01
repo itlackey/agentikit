@@ -20,10 +20,7 @@ import type { ResolvedWriteTarget } from "../../core/write-source";
 import { resolveWriteTarget } from "../../core/write-source";
 import { withAssetMutationLease } from "../../indexer/index-writer-lock";
 import {
-  type CreateProposalInput,
-  createProposal,
   diffProposal,
-  isProposalSkipped,
   listProposals,
   type Proposal,
   type ProposalGateDecision,
@@ -273,47 +270,6 @@ export function akmProposalDiff(options: ProposalDiffOptions): ProposalDiffResul
     unified: diff.unified,
     ...(diff.targetPath ? { targetPath: diff.targetPath } : {}),
   };
-}
-
-// ── create (programmatic helper for upstream commands like reflect/distill) ──
-
-export interface ProposalCreateOptions extends CreateProposalInput {
-  stashDir?: string;
-  queue?: string;
-  config?: AkmConfig;
-  ctx?: ProposalsContext;
-}
-
-export interface ProposalCreateResult {
-  schemaVersion: 1;
-  ok: true;
-  proposal: Proposal;
-}
-
-export function akmProposalCreate(options: ProposalCreateOptions): ProposalCreateResult {
-  const queue = resolveProposalQueue(options.stashDir, options.queue, options.config);
-  const stash = queue.stashDir;
-  const target =
-    options.target ?? (queue.target ? { source: queue.target.source.name, root: queue.target.source.path } : undefined);
-  // Manual proposal creation (via `akm proposal create`) always bypasses
-  // dedup/cooldown guards — the operator is explicitly requesting a proposal.
-  const result = createProposal(
-    stash,
-    {
-      ref: options.ref,
-      source: options.source,
-      ...(target !== undefined ? { target } : {}),
-      ...(options.sourceRun !== undefined ? { sourceRun: options.sourceRun } : {}),
-      payload: options.payload,
-      force: true,
-    },
-    options.ctx,
-  );
-  if (isProposalSkipped(result)) {
-    // Should never happen with force:true — defensive only.
-    throw new Error(`Unexpected proposal skip: ${result.message}`);
-  }
-  return { schemaVersion: 1, ok: true, proposal: result };
 }
 
 // ── revert (Phase 6C / Advantage D6c) ────────────────────────────────────────

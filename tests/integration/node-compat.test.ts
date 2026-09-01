@@ -28,7 +28,6 @@
  *   writeResponseToFile setup (binary download)
  *   getDirname          --version (reads package.json)
  *   semverOrder         --version (compared with package.json semver)
- *   resolveModule       local embedder availability probe (index)
  *   sleepSync / sleep   not directly observable; absence of hang is the test
  *   mainPath            --version uses it to locate the dist root
  */

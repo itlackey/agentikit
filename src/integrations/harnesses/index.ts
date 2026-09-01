@@ -113,10 +113,6 @@ export const VALID_HARNESS_IDS = Object.freeze(HARNESS_REGISTRY.map((h) => h.id)
 export const SESSION_LOG_HARNESSES = HARNESS_REGISTRY.filter(isSessionLogHarness);
 /** Harnesses that can be dispatched as an agent CLI / SDK. */
 export const AGENT_DISPATCH_HARNESSES = HARNESS_REGISTRY.filter((h) => h.capabilities.agentDispatch);
-/** Harnesses that can import an existing harness config into akm. */
-export const CONFIG_IMPORTER_HARNESSES = HARNESS_REGISTRY.filter((h) => h.capabilities.configImport);
-/** Harnesses that participate in `akm setup` detection. */
-export const DETECTION_HARNESSES = HARNESS_REGISTRY.filter((h) => h.capabilities.detection);
 
 /**
  * Resolve an exact harness id to its descriptor, or `undefined` if unknown.

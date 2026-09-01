@@ -622,20 +622,3 @@ export function htmlToMarkdownAndLinks(html: string, pageUrl: string): { markdow
   const markdown = root ? markdownFromRoot(root, html, pageUrl) : plainTextFallback(html);
   return { markdown: finalizeMarkdown(markdown), links };
 }
-
-/**
- * Collect links from the WHOLE document, not the extracted content region.
- *
- * Deliberate and load-bearing: nav/header/footer links are how a crawl
- * discovers pages. Narrowing this to the content region would silently shrink
- * every crawl to whatever the first page happens to link inline.
- */
-export function extractDocumentLinks(html: string, pageUrl: string): URL[] {
-  let root: HTMLElement;
-  try {
-    root = parse(scrubDangerousMarkup(html), { comment: false });
-  } catch {
-    return [];
-  }
-  return collectLinksFromRoot(root, pageUrl);
-}

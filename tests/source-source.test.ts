@@ -9,9 +9,7 @@ import { buildDbHit } from "../src/indexer/search/db-search";
 import {
   ensureSourceCaches,
   findSourceForPath,
-  getPrimarySource,
   isEditable,
-  resolveAllStashDirs,
   resolveSourceEntries,
 } from "../src/indexer/search/search-source";
 import type { InstallKind } from "../src/registry/types";
@@ -302,27 +300,6 @@ describe("resolveSourceEntries", () => {
         fs.rmSync(dir, { recursive: true, force: true });
       }
     }
-  });
-});
-
-describe("resolveAllStashDirs", () => {
-  test("returns just paths in correct order", () => {
-    saveConfig({ semanticSearchMode: "off" });
-    const dirs = resolveAllStashDirs();
-    expect(dirs[0]).toBe(stashDir);
-  });
-});
-
-describe("getPrimarySource", () => {
-  test("returns first source from list", () => {
-    const sources = [{ path: stashDir }, { path: "/other/dir" }];
-    const primary = getPrimarySource(sources);
-    expect(primary).toBeDefined();
-    expect(primary?.path).toBe(stashDir);
-  });
-
-  test("returns undefined for empty list", () => {
-    expect(getPrimarySource([])).toBeUndefined();
   });
 });
 

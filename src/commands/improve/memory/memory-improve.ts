@@ -20,7 +20,9 @@ import type {
   RelativeDateCandidate,
 } from "../../../core/improve-types";
 import { DERIVED_SUFFIX } from "../../../core/recognition-util";
+import { warn } from "../../../core/warn";
 import { recordWrittenPath } from "../../../core/write-provenance";
+import { walkMarkdownFiles } from "../../../indexer/walk/walker";
 import { isDerivedMemory, memoryIdentityRef, parseMemoryName, resolveParentRef } from "./derived-ref";
 
 export interface MemoryCleanupPlan {
@@ -686,7 +688,11 @@ function collectDerivedMemories(stashDir: string, parentRefFilter?: string): Der
   if (!fs.existsSync(memoriesDir)) return [];
 
   const records: DerivedMemoryRecord[] = [];
-  for (const filePath of walkMarkdownFiles(memoriesDir)) {
+  const walked = walkMarkdownFiles(memoriesDir);
+  if (!walked.complete) {
+    warn(`memory improve: directory scan under ${memoriesDir} is incomplete — some derived memories may be missing`);
+  }
+  for (const filePath of walked.files) {
     const name = toMemoryName(memoriesDir, filePath);
     if (!name) continue;
 
@@ -915,23 +921,6 @@ function firstNonEmpty(values: Array<string | undefined>): string | undefined {
     if (value && value.trim().length > 0) return value;
   }
   return undefined;
-}
-
-function* walkMarkdownFiles(root: string): Generator<string> {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    const full = path.join(root, entry.name);
-    if (entry.isDirectory()) {
-      yield* walkMarkdownFiles(full);
-    } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-      yield full;
-    }
-  }
 }
 
 function toMemoryName(memoriesDir: string, filePath: string): string | undefined {

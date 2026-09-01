@@ -335,20 +335,6 @@ export function semverOrder(a: string, b: string): -1 | 0 | 1 {
   return semver.compare(a, b) as -1 | 0 | 1;
 }
 
-// ── Module resolution ───────────────────────────────────────────────────────
-
-/**
- * Resolve a module specifier without loading it, relative to `from`. On Bun
- * uses `Bun.resolveSync`; on Node uses `require.resolve`. Throws when the
- * specifier cannot be resolved (mirroring both underlying APIs).
- */
-export function resolveModule(spec: string, from: string): string {
-  if (isBun) {
-    return bunGlobal().resolveSync(spec, from);
-  }
-  return nodeRequire.resolve(spec, { paths: [from] });
-}
-
 // ── Filesystem paths ────────────────────────────────────────────────────────
 
 /**

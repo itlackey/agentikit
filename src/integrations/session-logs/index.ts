@@ -7,22 +7,13 @@ import type {
   InlineRefMention,
   SessionData,
   SessionEvent,
-  SessionLogEntry,
   SessionLogHarness,
   SessionRef,
   SessionSummary,
 } from "./types";
 
 export { extractInlineRefMentions } from "./inline-refs";
-export type {
-  InlineRefMention,
-  SessionData,
-  SessionEvent,
-  SessionLogEntry,
-  SessionLogHarness,
-  SessionRef,
-  SessionSummary,
-};
+export type { InlineRefMention, SessionData, SessionEvent, SessionLogHarness, SessionRef, SessionSummary };
 
 // #562/P2 (plan §"Kill registry drift"): the provider array is DERIVED from
 // the unified HARNESS_REGISTRY — every harness with `capabilities.sessionLogs`
@@ -64,8 +55,6 @@ for (const provider of HARNESSES) {
   }
 }
 
-const ERROR_PATTERNS = /error|failed|exception|cannot|undefined|null pointer|ENOENT|timeout/i;
-
 /**
  * Returns all available session log harnesses for the current machine.
  * Add new harnesses to HARNESSES to support additional agent runtimes.
@@ -78,90 +67,4 @@ export function normalizeSessionTopic(text: string): string | undefined {
   const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
   if (normalized.length < 10) return undefined;
   return normalized.slice(0, 60);
-}
-
-export function aggregateSessionEvents(events: Iterable<SessionEvent>): SessionLogEntry[] {
-  const counts = new Map<string, { count: number; isFailurePattern: boolean; sources: Set<string>; topic: string }>();
-
-  for (const event of events) {
-    const topic = normalizeSessionTopic(event.text);
-    if (!topic) continue;
-    const isFailurePattern = ERROR_PATTERNS.test(topic);
-    if (!isFailurePattern) continue;
-
-    const existing = counts.get(topic) ?? {
-      count: 0,
-      isFailurePattern,
-      sources: new Set<string>(),
-      topic,
-    };
-    existing.count += 1;
-    existing.isFailurePattern = existing.isFailurePattern || isFailurePattern;
-    existing.sources.add(event.harness);
-    counts.set(topic, existing);
-  }
-
-  return [...counts.values()]
-    .filter((entry) => entry.count >= 2)
-    .sort((a, b) => b.count - a.count || a.topic.localeCompare(b.topic))
-    .slice(0, 15)
-    .map((entry) => ({
-      topic: entry.topic,
-      frequency: entry.count,
-      source: [...entry.sources].sort().join(","),
-      isFailurePattern: entry.isFailurePattern,
-    }));
-}
-
-/**
- * Collect normalized session events from a set of harnesses for the health
- * candidate scan (#568).
- *
- * Pipeline selection per harness:
- *   - Drive the richer `listSessions()` + `readSession()` pipeline. `readSession` flattens
- *     structured content — tool calls, assistant content blocks, thinking,
- *     tool_result — into event text (e.g. ClaudeCodeProvider's `parseClaudeEvent`
- *     surfaces `[tool:*]` / `[tool_result]` blocks that the legacy flat
- *     `readEvents` scan drops entirely). This is what lets health advisories see
- *     repeated tool failures / long runs that the flat scan hid.
- *
- * Extracted as a pure function (harnesses injected) so it is unit-testable
- * without touching the real on-disk session-log locations.
- *
- * `maxSessionsPerHarness` bounds the path: `readSession()` reads each
- * session file in full. On a machine with a
- * deep `~/.claude/projects` history a 30-day window can hold hundreds of
- * multi-MB session files, and reading+parsing every one in full made the
- * health command (`akm health`, which calls this synchronously) blow past its
- * latency budget. `listSessions()` returns summaries sorted newest-first, so
- * capping to the most-recent N sessions per harness keeps the richer signal
- * for what actually matters (recent activity) while bounding cost.
- */
-const DEFAULT_MAX_SESSIONS_PER_HARNESS = 50;
-
-export function collectSessionEvents(
-  harnesses: Iterable<SessionLogHarness>,
-  sinceMs: number,
-  maxSessionsPerHarness = DEFAULT_MAX_SESSIONS_PER_HARNESS,
-): SessionEvent[] {
-  const events: SessionEvent[] = [];
-  for (const harness of harnesses) {
-    try {
-      // Enumerate sessions cheaply, then read each one's full structured event
-      // stream. There is no parallel flat-log parser.
-      const summaries = harness.listSessions({ sinceMs });
-      // summaries are newest-first; bound the full-file reads (see doc above).
-      for (const summary of summaries.slice(0, maxSessionsPerHarness)) {
-        try {
-          const session = harness.readSession(summary);
-          events.push(...session.events);
-        } catch {
-          // a single unreadable session is non-fatal
-        }
-      }
-    } catch {
-      // individual harness failures are non-fatal
-    }
-  }
-  return events;
 }

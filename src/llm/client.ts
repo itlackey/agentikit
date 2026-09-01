@@ -595,18 +595,6 @@ async function chatCompletionAttemptOnce(
 
 // ── Availability check ──────────────────────────────────────────────────────
 
-/**
- * Check if the LLM endpoint is reachable.
- */
-export async function isLlmAvailable(config: LlmConnectionConfig): Promise<boolean> {
-  try {
-    const result = await chatCompletion(config, [{ role: "user", content: "Respond with just the word: ok" }]);
-    return result.length > 0;
-  } catch {
-    return false;
-  }
-}
-
 // ── Reachability probe ──────────────────────────────────────────────────────
 
 /**
