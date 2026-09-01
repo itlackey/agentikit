@@ -12,6 +12,7 @@
 
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { compareCodePoints } from "../../core/common";
 import { UsageError } from "../../core/errors";
 import { decodeFrozenExecutableIdentity, type FrozenExecutableIdentity } from "../../execution/executable-identity";
 import { INPUT_NAME_PATTERN, type TaskInputBinding } from "../../execution/input-contract";
@@ -983,10 +984,6 @@ function digest(value: unknown, label: string): string {
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function compareCodePoints(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function canonicalJsonLocal(value: unknown): string {

@@ -22,7 +22,7 @@ import { stashDirFor } from "../../core/asset/asset-placement";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { conceptIdForStashFile, displayRefForConceptId } from "../../core/asset/resolve-ref";
 import { deriveBundleIds } from "../../core/bundle-id";
-import { isAkmRegistryCachePath, resolveStashDir } from "../../core/common";
+import { compareCodePoints, isAkmRegistryCachePath, resolveStashDir } from "../../core/common";
 import type { AkmConfig } from "../../core/config/config";
 import { loadConfig, primaryBundlePath } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
@@ -31,7 +31,6 @@ import { warn } from "../../core/warn";
 import { resolveSourceEntries, type SearchSource } from "../../indexer/search/search-source";
 import { TASK_EXTENSION, TASK_NEAR_MISS_EXTENSION, taskExtensionDetail } from "../../tasks/source-v3";
 import { resolveWorkflowSourceDomains } from "../../workflows/source-files";
-import { compareWorkflowSourceCodePoints } from "../../workflows/source-ir/compare";
 import { runBaseChecks } from "./base-linter";
 import { checkEnvForDangerousKeys } from "./env-key-rules";
 import { isAdvisoryLintIssue, type LintContext, type LintIssue, type LintIssueType } from "./types";
@@ -132,7 +131,7 @@ function collectWorkflowFiles(dir: string): string[] {
   const results: string[] = [];
   for (const entry of fs
     .readdirSync(dir, { withFileTypes: true })
-    .sort((left, right) => compareWorkflowSourceCodePoints(left.name, right.name))) {
+    .sort((left, right) => compareCodePoints(left.name, right.name))) {
     if (entry.name === ".git") continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
@@ -144,7 +143,7 @@ function collectWorkflowFiles(dir: string): string[] {
     const extension = path.extname(entry.name).toLowerCase();
     if (extension === ".md" || extension === ".yml") results.push(full);
   }
-  return results.sort(compareWorkflowSourceCodePoints);
+  return results.sort(compareCodePoints);
 }
 
 interface WorkflowLintOwnership {
@@ -176,7 +175,7 @@ function resolveWorkflowLintOwnership(stashRoot: string, files: readonly string[
       fixed: false,
     });
   }
-  return { files: ownedFiles.sort(compareWorkflowSourceCodePoints), issues };
+  return { files: ownedFiles.sort(compareCodePoints), issues };
 }
 
 // ── Non-akm adapter dispatch (real `adapter.validate()`, not a re-implementation) ──
