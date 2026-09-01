@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { isProcessAlive } from "../../src/core/common";
-import { getIndexWriterLockPath } from "../../src/core/paths";
+import { isProcessAlive } from "../src/core/common";
+import { getIndexWriterLockPath } from "../src/core/paths";
 import {
   acquireAssetMutationLease,
   probeAssetMutationLease,
   withAssetMutationLease,
-} from "../../src/indexer/index-writer-lock";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+} from "../src/indexer/index-writer-lock";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "./_helpers/sandbox";
 
 /**
  * Plant an asset-mutation sentinel owned by a real, foreign, genuinely LIVE

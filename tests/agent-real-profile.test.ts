@@ -13,10 +13,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { akmReflect } from "../../src/commands/improve/reflect";
-import { akmPropose } from "../../src/commands/proposal/propose";
-import { listProposals } from "../../src/commands/proposal/repository";
-import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
+import { akmReflect } from "../src/commands/improve/reflect";
+import { akmPropose } from "../src/commands/proposal/propose";
+import { listProposals } from "../src/commands/proposal/repository";
+import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "./_helpers/sandbox";
 
 const REAL_AGENT_TESTS = process.env.AKM_REAL_AGENT_TESTS === "1" || process.env.AKM_REAL_AGENT_TESTS === "true";
 

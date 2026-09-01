@@ -21,16 +21,16 @@ import { describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { isHotCapturedMemory } from "../../../../src/commands/improve/consolidate/eligibility";
+import { isHotCapturedMemory } from "../../../src/commands/improve/consolidate/eligibility";
 import {
   normalizeUpdatedField,
   sanitizeMergedContent,
   stripOuterCodeFence,
-} from "../../../../src/commands/improve/consolidate/sanitize";
+} from "../../../src/commands/improve/consolidate/sanitize";
 import {
   hasSupersededStatus,
   validateProposalFrontmatter,
-} from "../../../../src/commands/proposal/validators/proposal-quality-validators";
+} from "../../../src/commands/proposal/validators/proposal-quality-validators";
 
 // ── stripOuterCodeFence ─────────────────────────────────────────────────────
 

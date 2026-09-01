@@ -9,7 +9,7 @@ import path from "node:path";
 import {
   isConsolidationEligibleMemoryName,
   isHotCapturedMemory,
-} from "../../../../src/commands/improve/consolidate/eligibility";
+} from "../../../src/commands/improve/consolidate/eligibility";
 
 let tmp: string;
 

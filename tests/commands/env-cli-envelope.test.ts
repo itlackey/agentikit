@@ -15,9 +15,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 
-import { runCliStatus as runCli } from "../../_helpers/cli";
-import { durableItemRef } from "../../_helpers/durable-ref";
-import { type Cleanup, sandboxStashDir, writeSandboxConfig } from "../../_helpers/sandbox";
+import { runCliStatus as runCli } from "../_helpers/cli";
+import { durableItemRef } from "../_helpers/durable-ref";
+import { type Cleanup, sandboxStashDir, writeSandboxConfig } from "../_helpers/sandbox";
 
 let stashCleanup: Cleanup = () => {};
 let stashDir = "";

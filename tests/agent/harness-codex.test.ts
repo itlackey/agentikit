@@ -14,15 +14,15 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AgentDispatchRequest } from "../../../src/integrations/agent/builder-shared";
-import type { AgentProfile } from "../../../src/integrations/agent/profiles";
-import type { AgentRunResult } from "../../../src/integrations/agent/spawn";
+import type { AgentDispatchRequest } from "../../src/integrations/agent/builder-shared";
+import type { AgentProfile } from "../../src/integrations/agent/profiles";
+import type { AgentRunResult } from "../../src/integrations/agent/spawn";
 import {
   codexBuilder,
   codexResumeArgs,
   writeCodexOutputSchemaFile,
-} from "../../../src/integrations/harnesses/codex/agent-builder";
-import { codexResultExtractor } from "../../../src/integrations/harnesses/codex/result-extractor";
+} from "../../src/integrations/harnesses/codex/agent-builder";
+import { codexResultExtractor } from "../../src/integrations/harnesses/codex/result-extractor";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 

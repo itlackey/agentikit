@@ -41,10 +41,10 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmSearch } from "../../src/commands/read/search";
-import { saveConfig } from "../../src/core/config/config";
-import { akmIndex } from "../../src/indexer/indexer";
-import { withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { akmSearch } from "../src/commands/read/search";
+import { saveConfig } from "../src/core/config/config";
+import { akmIndex } from "../src/indexer/indexer";
+import { withIsolatedAkmStorage } from "./_helpers/sandbox";
 
 // 16 unique filler tokens, deliberately absent from every entry's content so
 // neither the exact (AND) nor relaxed (OR) FTS query can match anything.

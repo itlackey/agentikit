@@ -21,17 +21,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { akmImprove } from "../../src/commands/improve/improve";
-import { akmSearch } from "../../src/commands/read/search";
-import { saveConfig } from "../../src/core/config/config";
-import { akmIndex } from "../../src/indexer/indexer";
-import type { IndexDocument } from "../../src/indexer/passes/metadata";
-import { applyScoreContributors } from "../../src/indexer/search/ranking-contributors";
-import type { RankedEntryInput } from "../../src/indexer/search/ranking-types";
-import type { Database } from "../../src/storage/database";
-import { writeMemory } from "../_helpers/assets";
-import { withImproveAutonomy, withTestImproveLlm } from "../_helpers/improve-config";
-import { type IsolatedAkmStorage, makeSandboxDir, mutateScopedEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { akmImprove } from "../src/commands/improve/improve";
+import { akmSearch } from "../src/commands/read/search";
+import { saveConfig } from "../src/core/config/config";
+import { akmIndex } from "../src/indexer/indexer";
+import type { IndexDocument } from "../src/indexer/passes/metadata";
+import { applyScoreContributors } from "../src/indexer/search/ranking-contributors";
+import type { RankedEntryInput } from "../src/indexer/search/ranking-types";
+import type { Database } from "../src/storage/database";
+import { writeMemory } from "./_helpers/assets";
+import { withImproveAutonomy, withTestImproveLlm } from "./_helpers/improve-config";
+import { type IsolatedAkmStorage, makeSandboxDir, mutateScopedEnv, withIsolatedAkmStorage } from "./_helpers/sandbox";
 
 const dirCleanups: (() => void)[] = [];
 

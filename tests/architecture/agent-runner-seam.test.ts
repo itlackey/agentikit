@@ -6,13 +6,13 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
-import { analyzeExecutionBoundary, type ExecutionBoundaryTarget } from "../../../scripts/lint-execution-boundary";
-import { resolveEngine } from "../../../src/integrations/agent/engine-resolution";
-import type { AgentProfile } from "../../../src/integrations/agent/profiles";
-import type { RunnerSpec } from "../../../src/integrations/agent/runner";
-import * as runnerDispatchModule from "../../../src/integrations/agent/runner-dispatch";
-import { executeRunner } from "../../../src/integrations/agent/runner-dispatch";
-import { makeSandboxDir } from "../../_helpers/sandbox";
+import { analyzeExecutionBoundary, type ExecutionBoundaryTarget } from "../../scripts/lint-execution-boundary";
+import { resolveEngine } from "../../src/integrations/agent/engine-resolution";
+import type { AgentProfile } from "../../src/integrations/agent/profiles";
+import type { RunnerSpec } from "../../src/integrations/agent/runner";
+import * as runnerDispatchModule from "../../src/integrations/agent/runner-dispatch";
+import { executeRunner } from "../../src/integrations/agent/runner-dispatch";
+import { makeSandboxDir } from "../_helpers/sandbox";
 
 const profile: AgentProfile = {
   name: "runner-test-agent",

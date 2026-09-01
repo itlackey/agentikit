@@ -2,12 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { akmEventsList } from "../../../src/commands/log";
-import { saveConfig } from "../../../src/core/config/config";
-import { appendEvent, readEvents } from "../../../src/core/events";
-import { getStateDbPath } from "../../../src/core/state-db";
-import { runCliCapture } from "../../_helpers/cli";
-import { type Cleanup, sandboxStashDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
+import { akmEventsList } from "../../src/commands/log";
+import { saveConfig } from "../../src/core/config/config";
+import { appendEvent, readEvents } from "../../src/core/events";
+import { getStateDbPath } from "../../src/core/state-db";
+import { runCliCapture } from "../_helpers/cli";
+import { type Cleanup, sandboxStashDir, sandboxXdgDataHome } from "../_helpers/sandbox";
 
 // Migrated from per-test spawnSync("bun", [CLI, ...]) to the in-process harness
 // (tests/_helpers/cli.ts) where faithful. The pure appendEvent/readEvents/

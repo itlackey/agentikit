@@ -18,18 +18,18 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 
-import { akmConsolidate } from "../../../../src/commands/improve/consolidate";
-import type { AkmConfig } from "../../../../src/core/config/config";
-import { ConfigError } from "../../../../src/core/errors";
-import { getStateDbPath } from "../../../../src/core/state-db";
-import type { LoweringNotice } from "../../../../src/execution/resolved-request";
+import { akmConsolidate } from "../../../src/commands/improve/consolidate";
+import type { AkmConfig } from "../../../src/core/config/config";
+import { ConfigError } from "../../../src/core/errors";
+import { getStateDbPath } from "../../../src/core/state-db";
+import type { LoweringNotice } from "../../../src/execution/resolved-request";
 import {
   type Cleanup,
   mutateScopedEnv,
   withEnv,
   withIsolatedAkmStorage,
   withMockedFetch,
-} from "../../../_helpers/sandbox";
+} from "../../_helpers/sandbox";
 
 let cleanup: Cleanup;
 let stashDir: string;

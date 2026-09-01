@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
 
@@ -18,8 +18,8 @@ afterEach(() => {
 
 describe("AkmConfig loader — agent engines", () => {
   test("loads agent engines and defaults.engine", async () => {
-    const { loadUserConfig, resetConfigCache } = await import("../../../src/core/config/config");
-    const { getConfigPath } = await import("../../../src/core/paths");
+    const { loadUserConfig, resetConfigCache } = await import("../../src/core/config/config");
+    const { getConfigPath } = await import("../../src/core/paths");
     const cfgPath = getConfigPath();
     fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
     fs.writeFileSync(

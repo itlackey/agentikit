@@ -26,7 +26,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { runCliStatus as runCli } from "../../_helpers/cli";
+import { runCliStatus as runCli } from "../_helpers/cli";
 import {
   type Cleanup,
   sandboxStashDir,
@@ -34,7 +34,7 @@ import {
   sandboxXdgConfigHome,
   sandboxXdgDataHome,
   writeSandboxConfig,
-} from "../../_helpers/sandbox";
+} from "../_helpers/sandbox";
 
 let envCleanup: Cleanup = () => {};
 const createdTmpDirs: string[] = [];
