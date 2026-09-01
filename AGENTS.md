@@ -37,7 +37,7 @@
   - `mock.restore()` is called unconditionally on `afterEach`.
   - A tripwire **throws** if any test leaks an `AKM_*` / `XDG_*` / `HOME` env var that wasn't there at preload time, leaves `process.cwd()` changed, or leaves `globalThis.fetch` replaced.
 - Helpers live in `tests/_helpers/sandbox.ts`: `sandboxStashDir()`, `sandboxHome()`, `sandboxXdgConfigHome()`, `sandboxXdgDataHome()`, `writeSandboxConfig(partial)`, and `withMockedFetch(fn, mock)`. Use them rather than mutating env / fetch by hand.
-- New test files should not mutate `process.env.HOME =`, `process.chdir(...)`, or `globalThis.fetch =` directly. The lint rule `bun scripts/lint-tests-isolation.ts` (wired into `bun run lint`) flags new occurrences; existing offenders are allow-listed. Use `withMockedFetch` for fetch swaps and restore cwd in a `finally` block when chdir is unavoidable.
+- New test files should not mutate `process.env.HOME =`, `process.chdir(...)`, or `globalThis.fetch =` directly. There is no lint gate for this any more (the static checker was deleted in 0.9.8 as redundant): `src/core/paths.ts` throws `TEST_ISOLATION_MISSING` at runtime when isolation is missing, and the preload tripwire above catches leaks. Use `withMockedFetch` for fetch swaps and restore cwd in a `finally` block when chdir is unavoidable.
 
 ## CLI Contract
 - Failures render to `stderr` as `{ok:false, error, code}`. The canonical exit-code table (`EXIT_CODES` in `src/cli/shared.ts`) is: `0` success, `1` general error / not found, `2` usage error, `4` health warn (`akm health` only), `70` internal / unclassified (any thrown value that is not an `AkmError` — sysexits `EX_SOFTWARE`), `78` config error.

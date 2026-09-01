@@ -36,7 +36,7 @@ interface DeadResiduePath {
   reason: string;
 }
 
-export const DEAD_RESIDUE_PATHS: readonly DeadResiduePath[] = [
+const DEAD_RESIDUE_PATHS: readonly DeadResiduePath[] = [
   { name: "proposals", reason: "superseded by the `proposals` table in $DATA/state.db (0.9.0)" },
   { prefix: "runs.archived-", reason: "orphaned archive of a directory that no longer exists" },
   {
@@ -50,7 +50,7 @@ export const DEAD_RESIDUE_PATHS: readonly DeadResiduePath[] = [
 ];
 
 /** One resolved dead-residue path found on disk, with its computed size. */
-export interface DeadResidueEntry {
+interface DeadResidueEntry {
   /** Path relative to the stash root (e.g. `.akm/proposals`). */
   relativePath: string;
   absolutePath: string;
@@ -158,7 +158,7 @@ export function collectDeadResidueAdvisory(stashDir: string): HealthCheckResult 
 }
 
 /** One path removed (or that failed to remove) by {@link removeDeadResidue}. */
-export interface DeadResidueRemoval {
+interface DeadResidueRemoval {
   relativePath: string;
   sizeBytes: number;
   removed: boolean;

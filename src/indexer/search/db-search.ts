@@ -765,9 +765,9 @@ async function enumerateEntries(opts: {
  * includes structured fields and bounded adapter content), while the
  * enumerate path's pool is `getAllEntries` for the type, independent of query
  * text. A derived twin sharing no indexed token with the query is therefore an
- * enumerate-path candidate but never a scored-path candidate — see
- * tests/fixtures/goldens/filter-behavior/scored-vs-enumerate.json, which pins
- * that (retained) divergence.
+ * enumerate-path candidate but never a scored-path candidate. (A golden
+ * fixture used to pin that divergence; the golden suites were deleted in
+ * 0.9.8, so this comment is now the record of it.)
  *
  * `inheritDerivedTwinBeliefStates` is idempotent, so running it here is safe on
  * the scored path, which must ALSO call it before ranking (the belief-state

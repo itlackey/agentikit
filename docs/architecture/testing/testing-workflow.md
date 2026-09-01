@@ -60,7 +60,9 @@ fail on another — the two release/0.8.0 flakes (scoring-pipeline Issue #14
 reading the wrong index DB after a sibling mutated `XDG_DATA_HOME`; the
 llm-client timeout test racing real timers) were both this class.
 
-Rules, enforced by `bun scripts/lint-tests-isolation.ts` (part of `bun run lint`):
+Rules (conventions, not statically enforced — the lint script that policed
+them was deleted in 0.9.8; the runtime guard in `src/core/paths.ts` throws
+`TEST_ISOLATION_MISSING` and the preload tripwire catches leaks):
 
 1. **Never mutate `AKM_*` / `XDG_*` / `HOME` on `process.env` directly.** Use the
    sanctioned helpers in `tests/_helpers/sandbox.ts`:
@@ -275,7 +277,7 @@ test run so first-run, installer, and wizard failures surface early.
 The local script is only one half of release validation. Follow the
 [maintainer release checklist](../../maintainers/release-checklist.md) to
 run **Gated CI** from a `gated-ci/candidate-*` tag targeting the exact candidate
-commit, or manually dispatch it with `gated_suite: all` and the full candidate
+commit, or manually dispatch it with the full candidate
 SHA after the workflow reaches the default branch. Its real-embedding, Docker,
 and Linux/macOS/Windows scheduler jobs must all succeed, and the release PR
 must link the resulting Actions run. The weekly scheduled run detects

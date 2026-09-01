@@ -5,7 +5,7 @@
 export interface DeadUrl {
   ref: string;
   url: string;
-  status: number | "timeout" | "error";
+  status: number | "error";
 }
 
 const URL_RE = /https?:\/\/[^\s"'<>)\]]+/g;
@@ -40,7 +40,7 @@ export async function checkDeadUrls(
         const res = await fetch(url, { method: "HEAD", redirect: "follow" });
         if (res.status >= 400) results.push({ ref, url, status: res.status });
       } catch (e) {
-        results.push({ ref, url, status: (e as Error).name === "AbortError" ? "timeout" : "error" });
+        results.push({ ref, url, status: "error" });
       }
     }),
   );
