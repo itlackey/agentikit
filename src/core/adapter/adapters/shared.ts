@@ -76,6 +76,9 @@ export function readTags(value: unknown): string[] | undefined {
   return tags.length > 0 ? tags : undefined;
 }
 
+/** Reserved files (case-insensitive) every concrete adapter recognizes but never indexes as a concept. */
+export const RESERVED_FILES = new Set(["index.md", "log.md"]);
+
 // ── Base validate checks (port of `BaseLinter.runBaseChecks`) ────────────────
 
 function checkMissingUpdated(data: Record<string, unknown>, frontmatterText: string | null): boolean {

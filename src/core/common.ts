@@ -364,6 +364,11 @@ export function toPosix(input: string): string {
   return input.replace(/\\/g, "/");
 }
 
+/** Locale-independent code-point ordering — a stable `Array.prototype.sort` comparator for strings (paths, names, ids). */
+export function compareCodePoints(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export function hasErrnoCode(error: unknown, code: string): boolean {
   if (typeof error !== "object" || error === null || !("code" in error)) return false;
   return (error as Record<string, unknown>).code === code;
@@ -925,7 +930,60 @@ export function asNonEmptyString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+// ── env-file assignment scanning ─────────────────────────────────────────────
+
+/** Matches a `KEY=value` assignment line, capturing only the key. */
+export const ENV_ASSIGN_LINE_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
+
+/** Scan lines and return KEY names in file order, without duplicates. */
+export function scanEnvKeyNames(text: string): string[] {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(ENV_ASSIGN_LINE_RE);
+    if (!m) continue;
+    const key = m[1];
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
+}
+
+/** True when `value` contains no lone/unpaired UTF-16 surrogate (every surrogate is part of a valid pair). */
+export function wellFormedUnicode(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) return false;
+  }
+  return true;
+}
+
 // ── Generic data utilities ───────────────────────────────────────────────────
+
+/**
+ * Narrow an unknown value to a plain-ish record: an `object` that is neither
+ * `null` nor an `Array`. Does not distinguish a literal `{}` from a `Date`,
+ * `Map`, or class instance — callers that need that distinction use a
+ * stricter predicate instead.
+ */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** `JSON.parse` that returns `undefined` instead of throwing. */
+export function tryParseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Coerce an unknown value to a filtered, trimmed string array.
