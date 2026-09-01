@@ -209,13 +209,16 @@ export function acquireConfigReadFence(): { config: AkmConfig; release: () => vo
 export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
   const parsedRaw = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
 
-  // #852 (following #815): lift legacy `extraParams` keys — e.g.
-  // `reasoning_effort`, a documented 0.9.1 workaround — onto the first-class
-  // engine field they now shadow, before the protected-key check in
-  // `ExtraParamsSchema` gets a chance to hard-reject them. In-memory only;
-  // never written back to the file.
-  const { config: raw, lifted, conflicts } = liftLegacyEngineExtraParams(parsedRaw);
+  // #852 (following #815): a config still using legacy `extraParams` keys —
+  // e.g. `reasoning_effort`, a documented 0.9.1 workaround — needs to be
+  // rewritten onto the first-class engine field they now shadow. This used
+  // to happen silently, in memory, on every load; that ran forever and never
+  // converged. The lift itself is now `akm migrate apply`'s job (see
+  // src/commands/migrate/config-extra-params.ts) and persists to disk, so a
+  // config that has not been migrated yet fails closed here instead of
+  // silently drifting from what's on disk.
   const where = sourcePath ? ` at ${sourcePath}` : "";
+  const { lifted, conflicts } = liftLegacyEngineExtraParams(parsedRaw);
   if (conflicts.length > 0) {
     const lines = conflicts
       .map(
@@ -229,11 +232,12 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
     );
   }
   if (lifted.length > 0) {
-    warn(
-      `Config${where} uses deprecated extraParams keys with first-class equivalents; treating them as the first-class fields for this run (not written back to the file):\n  - ${lifted.join("\n  - ")}`,
+    throw new ConfigError(
+      `Config${where} uses deprecated extraParams keys with first-class equivalents:\n  - ${lifted.join("\n  - ")}\n\nRun \`akm migrate apply\` to rewrite the config file, or move the values onto the first-class fields yourself.`,
+      "INVALID_CONFIG_FILE",
     );
   }
-  const parsed = AkmConfigSchema.safeParse(raw);
+  const parsed = AkmConfigSchema.safeParse(parsedRaw);
   if (!parsed.success) {
     const lines = parsed.error.issues.map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`).join("\n");
     throw new ConfigError(`Invalid config${where}:\n${lines}`, "INVALID_CONFIG_FILE");

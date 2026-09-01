@@ -4,6 +4,8 @@
 
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
 import { resolveStashDir } from "../core/common";
+import { getConfigPath } from "../core/paths";
+import { applyConfigExtraParamsLift, findConfigExtraParamsLift } from "./migrate/config-extra-params";
 import { findDeadResidueEntries, removeDeadResidue } from "./migrate/dead-residue";
 import { findStaleTxnEntries, recoverStaleTxns } from "./migrate/stale-txn";
 import { runMigrationTool } from "./migration-tool";
@@ -111,8 +113,12 @@ export async function runMigrateSubcommand(
 ): Promise<void> {
   // Superseded pre-0.9.0 .akm layouts are a migration concern like any other:
   // status names them, apply removes them. (First shipped as a bolted-on
-  // `health --clean-dead-residue` flag; folded here where it belongs.)
+  // `health --clean-dead-residue` flag; folded here where it belongs.) The
+  // legacy extraParams -> first-class-field config lift (#852) is the same
+  // shape: status names it, apply persists it once instead of the old
+  // permanent silent lift on every config load.
   const stashDir = resolveStashDir();
+  const configPath = getConfigPath();
   const applyResidue = command === "migrate-apply" && !genOneArgs.includes("--dry-run");
   const first = await callMigrateTool(genOneArgs, runTool);
   if (first.status !== EXIT_CODES.SUCCESS && first.status !== EXIT_CODES.GENERAL) {
@@ -132,13 +138,24 @@ export async function runMigrateSubcommand(
   }
 
   const combined = combineMigrationPlans(first, second);
-  const deadResidue = applyResidue
-    ? { removed: removeDeadResidue(stashDir) }
-    : { pending: findDeadResidueEntries(stashDir) };
-  const staleTxns = applyResidue
-    ? { recovered: await recoverStaleTxns(stashDir) }
-    : { pending: findStaleTxnEntries(stashDir) };
-  output(command, { ...combined, deadResidue, staleTxns });
+  // The stash-scoped sections need a bundle to scan; no configured bundle is
+  // an empty domain, not an error, so migrate still works before
+  // `akm bundle create`. The config lift is config-scoped and always runs.
+  const stashSections =
+    stashDir === undefined
+      ? {}
+      : {
+          deadResidue: applyResidue
+            ? { removed: removeDeadResidue(stashDir) }
+            : { pending: findDeadResidueEntries(stashDir) },
+          staleTxns: applyResidue
+            ? { recovered: await recoverStaleTxns(stashDir) }
+            : { pending: findStaleTxnEntries(stashDir) },
+        };
+  const configExtraParams = applyResidue
+    ? applyConfigExtraParamsLift(configPath)
+    : { pending: findConfigExtraParamsLift(configPath) };
+  output(command, { ...combined, ...stashSections, configExtraParams });
 
   if (combined.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
 }

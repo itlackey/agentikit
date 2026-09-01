@@ -197,10 +197,6 @@ export function buildWindowMetrics(
   const stuckActiveRuns = activeRows.filter(
     (row) => now() - new Date(row.started_at).getTime() > ACTIVE_RUN_WARN_MS,
   ).length;
-  // D8 (spec §5.3): a marked "command" row or a legacy (unmarked) "prompt"
-  // row is the agent/LLM arm; an unmarked "command" row is the legacy
-  // native shell/script arm and must not be counted here (see
-  // isAgentTaskHistoryRow's header comment for the full mapping).
   const agentRows = taskRows.filter((row) => isAgentTaskHistoryRow(row));
   const agentFailures = agentRows.filter((row) => {
     const detail = taskFailureDetail(row);

@@ -15,20 +15,15 @@
  *
  * D8 result-vocabulary re-code (why, and the WRITE side's exact shape): see
  * docs/architecture/decisions/0005-task-result-vocabulary-and-legacy-read-mapping.md.
- * The READ side's mapping rule is a PERMANENT invariant kept here, not moved
- * — a maintainer touching `taskHistoryRowToResult` needs it right here, and
- * row B-51 (docs/plans/specs/p4-deletions-closeout.md) makes deleting it a
- * review-blocking violation: it reads rows written by every previous
- * release, forever.
- *
- *   A legacy row (no `targetVocab` marker — written before D8) maps:
- *   `"prompt"` -> `{kind:"command", engine}`, `"command"` -> `{kind:"shell"}`,
- *   `"workflow"` unchanged, anything else (including the new vocabulary's own
- *   "shell"/"script"/"prompt" written WITHOUT a marker, which no production
- *   writer ever does) -> `"unknown"`. The P0-pinned null fallbacks survive:
- *   workflow `ref` falls back to `""`, the command/prompt arm's `engine`
- *   falls back to `null`. A row carrying `targetVocab: 2` reads `target_kind`
- *   directly in the current vocabulary — no mapping needed.
+ * The READ side used to carry a permanent legacy-vocabulary mapping here
+ * (row B-51 of docs/plans/specs/p4-deletions-closeout.md called deleting it
+ * "review-blocking") — SUPERSEDED: `task_history` is DB-owned data, so the
+ * remap is now a one-time schema migration
+ * (`025-task-history-vocabulary-backfill` in src/core/state/migrations.ts)
+ * instead of a read-side shim run forever. Every row this function sees now
+ * carries the current vocabulary's `target_kind` strings; the P0-pinned null
+ * fallbacks still apply (workflow `ref` falls back to `""`, the command
+ * arm's `engine` falls back to `null`).
  *
  * A DAG leaf with respect to the rest of src/tasks/run/**: this module
  * imports TaskRunResult/TaskRunStatus's TYPE from ./task-result but no VALUE
@@ -136,33 +131,23 @@ function decodeTaskHistoryRows(rows: TaskHistoryRow[]): TaskRunResult[] {
  * Convert a `TaskHistoryRow` from state.db back to a `TaskRunResult` shape
  * that callers of `readTaskHistory()` expect.
  *
- * D8 read boundary (spec §5.3): branches on the decoded metadata's
- * `targetVocab` marker — see the module header's table.
+ * Reads `target_kind` directly in the current (post-D8) vocabulary — the
+ * `025-task-history-vocabulary-backfill` state migration rewrites every
+ * legacy-vocabulary row before this ever runs against it.
  */
 function taskHistoryRowToResult(row: TaskHistoryRow): TaskRunResult {
   const meta = decodeTaskHistoryMetadata(row.metadata_json);
-  const marked = meta.targetVocab === 2;
 
   const target: TaskRunResult["target"] = (() => {
     switch (row.target_kind) {
       case "workflow":
-        // PRESERVED for both vintages (incl. the null-ref fallback).
         return { kind: "workflow", ref: row.target_ref ?? "" };
       case "command":
-        // NEW vocabulary: a prepared command (agent/LLM) result.
-        // LEGACY vocabulary: the native shell/script arm's shared string.
-        return marked ? { kind: "command", engine: meta.engine ?? null } : { kind: "shell" };
+        return { kind: "command", engine: meta.engine ?? null };
       case "shell":
-        // Only the NEW vocabulary ever writes this string; an unmarked
-        // "shell" row is unreachable from any production writer.
-        return marked ? { kind: "shell" } : { kind: "unknown" };
+        return { kind: "shell" };
       case "script":
-        // Only the NEW vocabulary ever writes this string; an unmarked
-        // "script" row is unreachable from any production writer.
-        return marked ? { kind: "script" } : { kind: "unknown" };
-      case "prompt":
-        // Only LEGACY rows (pre-P1b) ever wrote this string.
-        return marked ? { kind: "unknown" } : { kind: "command", engine: meta.engine ?? null };
+        return { kind: "script" };
       default:
         return { kind: "unknown" };
     }

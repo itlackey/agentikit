@@ -160,15 +160,21 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Lift legacy `extraParams` keys onto their first-class engine field before
- * schema validation runs, so a 0.9.1-shaped config using (e.g.)
- * `extraParams.reasoning_effort` keeps loading now that `reasoningEffort` is
- * a first-class — and therefore protected — field (#852, following #815).
+ * Compute the legacy `extraParams` -> first-class-field lift for a raw
+ * parsed config object: a 0.9.1-shaped config using (e.g.)
+ * `extraParams.reasoning_effort` now needs `reasoningEffort` set instead,
+ * since that field became first-class — and therefore protected — in 0.9.2
+ * (#852, following #815).
  *
- * In-memory only: this never rewrites the config file. Callers should warn
- * using the returned `lifted` descriptions so the user knows to update the
- * file by hand, and reject using `conflicts` rather than silently preferring
- * either value.
+ * Pure: never touches the filesystem. Two callers use this differently:
+ * `akm migrate apply` (src/commands/migrate/config-extra-params.ts) uses the
+ * returned `config` to persist the rewrite to disk, once; `parseAndValidateConfigText`
+ * (src/core/config/config.ts) calls this only to detect whether a lift is
+ * needed and discards `config` — an unmigrated config fails closed there
+ * with a pointer to `akm migrate apply` rather than silently drifting from
+ * what's on disk. `conflicts` (an extraParams key and its first-class field
+ * set to different values) is a genuine authoring error in both callers and
+ * is never auto-resolved.
  */
 export function liftLegacyEngineExtraParams(raw: Record<string, unknown>): LiftLegacyExtraParamsResult {
   const lifted: string[] = [];
