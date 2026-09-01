@@ -77,14 +77,25 @@ function insert(db: AkmDatabase, name: string, entry: IndexDocument): void {
 }
 
 describe("progressive lexical query planning (#819)", () => {
-  test("normalizes Unicode tokens, deduplicates them, quotes operators, and caps work", () => {
+  test("normalizes Unicode tokens, deduplicates them, and quotes operators", () => {
     const repeated = Array.from({ length: 40 }, (_, index) => `token${index}`).join(" ");
     const plan = buildLexicalQueryPlan(`CAFÉ café NEAR or ${repeated}`);
 
     expect(plan.tokens.slice(0, 4)).toEqual(["CAFÉ", "NEAR", "or", "token0"]);
-    expect(plan.tokens).toHaveLength(16);
+    // 43 input words, minus the case-duplicate "café" = 43 distinct tokens.
+    // This used to assert 16 — the old MAX_LEXICAL_QUERY_TOKENS cap, deleted
+    // for silently truncating queries past 16 unique terms. Every token the
+    // user typed now reaches FTS; the tail is no longer dropped.
+    expect(plan.tokens).toHaveLength(43);
+    expect(plan.tokens.at(-1)).toBe("token39");
     expect(plan.exact).toStartWith('"CAFÉ" "NEAR" "or" "token0"');
     expect(plan.relaxed).toContain('"NEAR"*');
+  });
+
+  test("does not truncate a long query — every distinct token reaches FTS", () => {
+    const plan = buildLexicalQueryPlan(Array.from({ length: 500 }, (_, i) => `tok${i}`).join(" "));
+    expect(plan.tokens).toHaveLength(500);
+    expect(plan.exact).toContain('"tok499"');
   });
 
   test.each([

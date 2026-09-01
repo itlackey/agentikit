@@ -4,38 +4,36 @@
 
 /**
  * VALUE-02 residual (issue #787): a test that deterministically forces
- * `akmSearch` down its vector-only match path (a hit with no FTS match at
- * all, surfaced purely from `embedScoreMap` — `rankingMode: "semantic"` in
+ * `akmSearch` down its vector-only match path — a hit with no FTS match at
+ * all, surfaced purely from `embedScoreMap` (`rankingMode: "semantic"` in
  * src/indexer/search/ranking.ts).
  *
- * The prior pass (8cf96889) deleted a false "vec-only" test that never
- * actually exercised this path, and flagged the gap as unresolved because
- * the deterministic feature-hashing embedder (src/llm/embedders/deterministic.ts)
- * has no real semantic understanding — "vector-only" isn't cheap to force by
- * picking synonyms the way it would be against a real model.
+ * The deterministic feature-hashing embedder
+ * (src/llm/embedders/deterministic.ts) has no semantic understanding, so
+ * "vector-only" cannot be forced by picking synonyms the way it could against
+ * a real model. The mechanism used instead is the one structural difference
+ * that always holds:
  *
- * The reliable trigger is a structural asymmetry in the FTS vs. vector query
- * paths, not a semantic one:
+ *   - FTS only returns rows whose indexed text actually contains a query
+ *     token. A query whose tokens appear in NO entry matches nothing, in every
+ *     variant `searchFts` tries (exact AND, prefix, relaxed OR).
+ *   - The vector path returns nearest NEIGHBOURS. With `search.minScore: 0` it
+ *     is not gated on token overlap at all, so it still ranks the only indexed
+ *     entry.
  *
- *   - `buildLexicalQueryPlan` (src/indexer/search/fts-query.ts) caps a query
- *     at `MAX_LEXICAL_QUERY_TOKENS` (16) UNIQUE tokens before building the
- *     FTS `exact`/`exactPrefix`/`relaxed` MATCH strings — anything past the
- *     16th unique token is silently dropped from every FTS query variant
- *     `searchFts` tries (src/storage/repositories/index-fts-repository.ts).
- *   - `tryVecScores` (src/indexer/search/db-search.ts) embeds the FULL raw
- *     query string with no such cap.
+ * So: index exactly one entry, query tokens that appear nowhere in it, and the
+ * only thing that can produce a hit is the vector path.
  *
- * So: 16 unique filler tokens that appear nowhere in the index, plus a 17th
- * token that is the ONLY word in one entry's content, guarantees FTS finds
- * nothing (exact/prefix/relaxed all miss — none of the searched 16 tokens
- * occur anywhere) while the embedder still hashes the 17th token and finds
- * the entry as a vector neighbor. `search.minScore` is set to 0 so the
- * result isn't sensitive to the feature-hashing embedder's actual cosine
- * magnitude — only that a match exists at all.
+ * This originally worked by a different route — 16 filler tokens plus a 17th,
+ * exploiting `MAX_LEXICAL_QUERY_TOKENS = 16` to push the real token out of the
+ * FTS query. That cap has since been deleted for silently truncating user
+ * queries, and a test should not have depended on an arbitrary constraint in
+ * the first place: it made the constraint harder to remove, which is exactly
+ * backwards. The mechanism above rests on what FTS and vector search
+ * fundamentally are, so nothing about it can be tuned away.
  *
- * Verified for real, not just plausible: this test was run against a
- * deliberately broken vector path (see the commit body / PR description for
- * this change) and observed to fail there, then the break was reverted.
+ * Verified for real: run against a deliberately disabled vector path, the
+ * assertion fails; restored, it passes.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -46,16 +44,13 @@ import { saveConfig } from "../src/core/config/config";
 import { akmIndex } from "../src/indexer/indexer";
 import { withIsolatedAkmStorage } from "./_helpers/sandbox";
 
-// 16 unique filler tokens, deliberately absent from every entry's content so
-// neither the exact (AND) nor relaxed (OR) FTS query can match anything.
-const FILLER_TOKENS = Array.from({ length: 16 }, (_, i) => `qfiller${i}xzq`);
-// The 17th token: past the FTS lexical-plan cap, but embedded in full by the
-// vector path. This is the ONLY word in the target entry's content.
+/** The sole indexed entry's content. Appears in no query this test runs. */
 const TARGET_TOKEN = "qzorbnitkelvin";
-const QUERY = [...FILLER_TOKENS, TARGET_TOKEN].join(" ");
+/** Tokens that appear in NO indexed entry, so every FTS variant misses. */
+const QUERY = ["qfillerazq", "qfillerbzq", "qfillerczq"].join(" ");
 
 describe("akmSearch: vector-only match path (VALUE-02)", () => {
-  test("a query token past the FTS 16-token cap surfaces a vector-only hit", async () => {
+  test("a query matching no indexed token still surfaces a vector-only hit", async () => {
     const storage = withIsolatedAkmStorage({ AKM_EMBED_DETERMINISTIC: "1" });
     try {
       const knowledgeFile = path.join(storage.stashDir, "knowledge", "target.md");
@@ -71,9 +66,9 @@ describe("akmSearch: vector-only match path (VALUE-02)", () => {
       });
       await akmIndex({ stashDir: storage.stashDir, full: true });
 
-      // Control: with semantic search off, the same 17-token query must find
-      // nothing at all — this is what proves the 16-token FTS cap actually
-      // drops the 17th token rather than the entry just being unindexed.
+      // Control: with semantic search off, this query must find nothing —
+      // proving FTS genuinely cannot match it, so any hit in the hybrid run
+      // below came from the vector path and not from lexical retrieval.
       saveConfig({
         semanticSearchMode: "off",
         bundles: { stash: { path: storage.stashDir } },
@@ -84,9 +79,8 @@ describe("akmSearch: vector-only match path (VALUE-02)", () => {
       const ftsOnly = await akmSearch({ query: QUERY, skipLogging: true });
       expect(ftsOnly.hits.some((hit) => "path" in hit && hit.path === knowledgeFile)).toBe(false);
 
-      // With semantic search back on, the vector path (which embeds the full
-      // query, no 16-token cap) must find the entry purely via cosine
-      // similarity — a genuine vector-only hit.
+      // With semantic search back on, the vector path must surface the entry
+      // purely as a nearest neighbour — a genuine vector-only hit.
       saveConfig({
         semanticSearchMode: "auto",
         bundles: { stash: { path: storage.stashDir } },

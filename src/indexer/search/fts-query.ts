@@ -12,9 +12,6 @@
  * query should bypass FTS entirely (SPEC-4 ref-prefix enumeration).
  */
 
-/** Maximum number of distinct lexical terms one query may execute. */
-export const MAX_LEXICAL_QUERY_TOKENS = 16;
-
 export type LexicalQueryExecution = "exact" | "prefix" | "relaxed";
 
 export interface LexicalQueryPlan {
@@ -42,8 +39,16 @@ function prefixToken(token: string): string {
  *
  * Tokenization follows the useful portion of SQLite FTS5's `unicode61`
  * tokenizer (Unicode letters and numbers). Quoting every term makes FTS
- * operators ordinary searchable words. Tokens are normalized, deduplicated
- * case-insensitively, and capped before any SQL executes.
+ * operators ordinary searchable words. Tokens are normalized and deduplicated
+ * case-insensitively.
+ *
+ * There is deliberately NO cap on token count. `MAX_LEXICAL_QUERY_TOKENS = 16`
+ * used to truncate here, silently: a query past 16 unique tokens searched only
+ * its first 16, dropping the tail — which for natural-language input is
+ * usually where the discriminating words are. It was unexplained in both the
+ * code and the commit that introduced it, unreachable from any flag, config
+ * key, or env var, and the user was never told their query had been altered.
+ * A wrong answer delivered silently is worse than a slow one.
  */
 export function buildLexicalQueryPlan(query: string): LexicalQueryPlan {
   const tokens: string[] = [];
@@ -55,7 +60,6 @@ export function buildLexicalQueryPlan(query: string): LexicalQueryPlan {
     if (seen.has(key)) continue;
     seen.add(key);
     tokens.push(token);
-    if (tokens.length === MAX_LEXICAL_QUERY_TOKENS) break;
   }
 
   const exact = tokens.map(quoteToken).join(" ");
