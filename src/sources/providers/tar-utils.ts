@@ -110,12 +110,7 @@ export function extractTarGzSecure(archivePath: string, destinationDir: string):
 }
 
 function scanExtractedFiles(dir: string, root: string): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     // Reject only entries whose name is exactly the parent-traversal segment
