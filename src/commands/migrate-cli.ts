@@ -3,6 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
+import { resolveStashDir } from "../core/common";
+import { findDeadResidueEntries, removeDeadResidue } from "./migrate/dead-residue";
 import { runMigrationTool } from "./migration-tool";
 
 /**
@@ -106,6 +108,11 @@ export async function runMigrateSubcommand(
   genTwoArgs: string[],
   runTool: RunMigrationTool = runMigrationTool,
 ): Promise<void> {
+  // Superseded pre-0.9.0 .akm layouts are a migration concern like any other:
+  // status names them, apply removes them. (First shipped as a bolted-on
+  // `health --clean-dead-residue` flag; folded here where it belongs.)
+  const stashDir = resolveStashDir();
+  const applyResidue = command === "migrate-apply" && !genOneArgs.includes("--dry-run");
   const first = await callMigrateTool(genOneArgs, runTool);
   if (first.status !== EXIT_CODES.SUCCESS && first.status !== EXIT_CODES.GENERAL) {
     process.exitCode = first.status;
@@ -124,7 +131,10 @@ export async function runMigrateSubcommand(
   }
 
   const combined = combineMigrationPlans(first, second);
-  output(command, combined);
+  const deadResidue = applyResidue
+    ? { removed: removeDeadResidue(stashDir) }
+    : { pending: findDeadResidueEntries(stashDir) };
+  output(command, { ...combined, deadResidue });
 
   if (combined.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
 }

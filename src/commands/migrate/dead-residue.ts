@@ -1,28 +1,21 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
 /**
- * `stash-dead-residue` advisory for `akm health` (itlackey/akm#889).
+ * Dead pre-0.9.0 `$STASH/.akm` residue: superseded filesystem layouts with no
+ * live reader or writer anywhere in src/ (each verified by grep before being
+ * listed — see #889 for the audit). The largest, `.akm/proposals/`, was
+ * replaced by the `proposals` table in state.db in 0.9.0 and measured 135 MB
+ * on a real bundle.
  *
- * On a real stash, `$STASH/.akm` had grown to 165 MB / 1,523 files, 82% of
- * which (135 MB) was `.akm/proposals/` alone — a filesystem layout that the
- * `proposals` table in `$DATA/state.db` superseded back in 0.9.0. The
- * migrations that made these paths obsolete happened; nothing ever cleaned
- * up the paths they left behind.
- *
- * Each entry below was independently re-verified (not just taken from the
- * issue) to have zero live writer or reader in `src/` — the only `src/`
- * references are comments describing the legacy layout
- * (`core/state/migrations.ts:107`, `core/fs-txn.ts:16`). This module never
- * deletes anything on its own: {@link collectDeadResidueAdvisory} only
- * reports what exists and how big it is, and {@link removeDeadResidue} is a
- * separate, explicitly-invoked opt-in action (`akm health --clean-dead-residue`).
+ * This lives under `migrate/` because removing a superseded layout IS
+ * migration — the tail end of the moves that created these paths' replacements.
+ * It was first shipped as a bolted-on `akm health --clean-dead-residue` flag
+ * plus a health advisory; that was the wrong shape (a special-purpose switch
+ * apologizing for migrations that did not finish their own job) and was
+ * removed. `akm migrate status` reports what is here; `akm migrate apply`
+ * removes it, exactly as it applies every other pending migration.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import type { HealthCheckResult } from "./types";
 
 /**
  * One dead-residue path, relative to `$STASH/.akm`. `runs.archived-<ts>/` is
@@ -115,46 +108,6 @@ export function findDeadResidueEntries(stashDir: string): DeadResidueEntry[] {
     }
   }
   return found;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB"];
-  let value = bytes / 1024;
-  let unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex++;
-  }
-  return `${value.toFixed(1)} ${units[unitIndex]}`;
-}
-
-/**
- * Build the `stash-dead-residue` advisory, or `undefined` when none of the
- * known-dead paths exist. Read-only: names paths and sizes, and points at
- * the opt-in removal flag rather than deleting anything itself.
- */
-export function collectDeadResidueAdvisory(stashDir: string): HealthCheckResult | undefined {
-  const entries = findDeadResidueEntries(stashDir);
-  if (entries.length === 0) return undefined;
-
-  const totalBytes = entries.reduce((sum, e) => sum + e.sizeBytes, 0);
-  const preview = entries.map((e) => `${e.relativePath} (${formatBytes(e.sizeBytes)})`).join(", ");
-
-  return {
-    name: "stash-dead-residue",
-    kind: "deterministic",
-    status: "warn",
-    confidence: "high",
-    message:
-      `${entries.length} dead pre-0.9.0 path(s) under $STASH/.akm total ${formatBytes(totalBytes)}: ${preview}. ` +
-      "Nothing in akm reads or writes these any more. Run 'akm health --clean-dead-residue' to delete them " +
-      "(this is user data — the advisory alone never deletes anything).",
-    evidence: {
-      totalBytes,
-      entries: entries.map((e) => ({ path: e.relativePath, sizeBytes: e.sizeBytes, reason: e.reason })),
-    },
-  };
 }
 
 /** One path removed (or that failed to remove) by {@link removeDeadResidue}. */

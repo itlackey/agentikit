@@ -62,7 +62,7 @@ qualify — even if `akm` happens to write it while operating on that bundle.
 `.akm/consolidate-journal.json`, `.akm/proposals.db`, and `.akm/mv-transactions/`
 are all superseded pre-0.9.0 layouts with no live reader or writer in `src/`.
 `akm health` reports any that still exist (with size) via the
-`stash-dead-residue` advisory; `akm health --clean-dead-residue` deletes them
+`akm migrate status` report; `akm migrate apply` deletes them
 on request. Nothing deletes this user data without that explicit opt-in.
 
 **Known misplaced live writers (Tier 2 — tracked separately, itlackey/akm#890,
@@ -567,7 +567,7 @@ One line per memory belief-state transition: `{ appliedAt, ref, parentRef, fromS
 | `$CACHE/semantic-status.json` | Embedding provider health: `status` (pending/ready-js/ready-vec/blocked), `reason`, `providerFingerprint`, `lastCheckedAt`, `entryCount`, `embeddingCount`. Blocked status auto-expires after 24h. | Reset on `akm index --full` |
 | `$CACHE/registry-index/<slug>.json` | Removed in v0.8.0 — data now stored in `registry_index_cache` table in `$DATA/index.db`. Delete these files after running the migration script. | — |
 | `$CACHE/registry-index/skills-sh-search-<md5>.json` | Skills.sh search result cache. Fresh 15min; stale 1d. Key = MD5 of `url + query + limit`. | TTL |
-| `$STASH/.akm/consolidate-journal.json` | Legacy consolidation journal; current advisory consolidation does not read or write it. | Dead residue (itlackey/akm#889); reported by `akm health`'s `stash-dead-residue` advisory, removed via `akm health --clean-dead-residue` |
+| `$STASH/.akm/consolidate-journal.json` | Legacy consolidation journal; current advisory consolidation does not read or write it. | Dead residue (itlackey/akm#889); reported by `akm migrate status`, removed by `akm migrate apply` |
 | `$DATA/index.db` (`graph_*` tables) | Knowledge graph index data: per-bundle graph metadata plus per-file entities and relations extracted from assets via LLM. `graph_files` is keyed by `(stash_root, file_path, body_hash)` with `(stash_root, file_path)` unique; it has no `entries.id` foreign key. Every considered file persists `status` and `reason`. `graph_file_entities` and `graph_file_relations` carry the same three-column owner key and cascade from `graph_files`; they store normalized and display-form entity values. `extraction_run_id` (on `graph_files` and `graph_meta`) and `extractor_id` (on `graph_meta`) record extraction provenance. `graph_meta` also stores the latest graph telemetry: model, prompt version, batch size, cache hits/misses, truncation count, and failure count. A companion `graph_extraction_queue` table holds a lazy, priority-ordered backlog of files awaiting extraction. Indexes include `idx_graph_files_path`, `idx_graph_files_stash_order`, `idx_graph_file_entities_entity_norm(stash_root, entity_norm)`, and `idx_entries_file_path` on `entries(file_path)`. | Refreshed by graph extraction; regenerated on the next `akm index`/`akm improve` since `index.db` is a fully rebuildable cache |
 
 ---
@@ -622,7 +622,7 @@ adapter recognizes — `schema.md` + `pages/` is the probe) contains:
 | Path | Contents | Retention |
 |---|---|---|
 | `$DATA/state.db` (`proposals` table) | Proposal queue: `id`, `stash_dir`, `ref`, `status` (`pending`\|`accepted`\|`rejected`\|`reverted`), `source`, `created_at`, `updated_at`, `content`, `frontmatter_json`, `metadata_json`. Replaces the pre-0.9.0 per-uuid `$STASH/.akm/proposals/<uuid>/proposal.json` filesystem layout — archival is a status flip, not a directory move (`src/commands/proposal/repository.ts`). | Durable; `archiveRetentionDays` (default 90d) governs when pending proposals age out |
-| `$STASH/.akm/archive/<ts>-<i>-<name>.md` | Legacy consolidation archive. Current advisory consolidation does not create or manage these files. | Dead residue (itlackey/akm#889); reported by `akm health`'s `stash-dead-residue` advisory, removed via `akm health --clean-dead-residue` |
+| `$STASH/.akm/archive/<ts>-<i>-<name>.md` | Legacy consolidation archive. Current advisory consolidation does not create or manage these files. | Dead residue (itlackey/akm#889); reported by `akm migrate status`, removed by `akm migrate apply` |
 | `$STASH/.akm/consolidate-backup/<ts>/<name>.md` | Legacy pre-0.9 consolidation backups; current advisory consolidation does not create them. | Safe to remove after review |
 | `$STASH/.akm/memory-cleanup/archive/<ts>-<ref>/` | Belief-state archived memory files + `cleanup.md` audit record | No cleanup |
 | `$STASH/.akm/distill-rejected/<ts>-<lessonRef>.md` | Lessons that failed the LLM-as-judge quality gate. Frontmatter: `{ score, reason }`. | No cleanup |

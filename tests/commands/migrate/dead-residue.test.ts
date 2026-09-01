@@ -13,11 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  collectDeadResidueAdvisory,
-  findDeadResidueEntries,
-  removeDeadResidue,
-} from "../../../src/commands/health/dead-residue";
+import { findDeadResidueEntries, removeDeadResidue } from "../../../src/commands/migrate/dead-residue";
 
 let stashDir: string;
 
@@ -29,16 +25,16 @@ afterEach(() => {
   fs.rmSync(stashDir, { recursive: true, force: true });
 });
 
-describe("findDeadResidueEntries / collectDeadResidueAdvisory (#889)", () => {
+describe("migrate dead-residue detection and removal (#889)", () => {
   test("reports nothing when .akm does not exist", () => {
     expect(findDeadResidueEntries(stashDir)).toEqual([]);
-    expect(collectDeadResidueAdvisory(stashDir)).toBeUndefined();
+    expect(findDeadResidueEntries(stashDir)).toEqual([]);
   });
 
   test("reports nothing when .akm exists but has none of the dead paths", () => {
     fs.mkdirSync(path.join(stashDir, ".akm", "memory-cleanup"), { recursive: true });
     expect(findDeadResidueEntries(stashDir)).toEqual([]);
-    expect(collectDeadResidueAdvisory(stashDir)).toBeUndefined();
+    expect(findDeadResidueEntries(stashDir)).toEqual([]);
   });
 
   test("finds each known dead path, including the timestamp-suffixed runs.archived-* directory", () => {
@@ -64,11 +60,6 @@ describe("findDeadResidueEntries / collectDeadResidueAdvisory (#889)", () => {
 
     const proposalsEntry = entries.find((e) => e.relativePath === path.join(".akm", "proposals"));
     expect(proposalsEntry?.sizeBytes).toBe(2); // "{}"
-
-    const advisory = collectDeadResidueAdvisory(stashDir);
-    expect(advisory?.name).toBe("stash-dead-residue");
-    expect(advisory?.status).toBe("warn");
-    expect((advisory?.evidence?.entries as unknown[])?.length).toBe(4);
   });
 });
 

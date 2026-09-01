@@ -99,7 +99,6 @@ import { envCommand } from "./commands/env/env-cli";
 import { secretCommand } from "./commands/env/secret-cli";
 import { feedbackCommand } from "./commands/feedback-cli";
 import { akmHealth } from "./commands/health";
-import { removeDeadResidue } from "./commands/health/dead-residue";
 import "./commands/health/renderers";
 import type { WindowSpec } from "./commands/health/types";
 import { parseWindowSpec } from "./commands/health/windows";
@@ -327,24 +326,10 @@ const healthCommand = defineCommand({
         "Fetch the full report dataset: per-run rows, trend deltas vs the prior window, and the pending proposal queue. Renders as the rich report under --format md/html and as complete data under any other format.",
       default: false,
     },
-    "clean-dead-residue": {
-      type: "boolean",
-      description:
-        "Opt-in (itlackey/akm#889): delete the Tier-1 dead pre-0.9.0 paths under $STASH/.akm named by the " +
-        "stash-dead-residue advisory (e.g. the legacy .akm/proposals/ filesystem layout, superseded by " +
-        "state.db). Does nothing unless that advisory would otherwise fire.",
-      default: false,
-    },
   },
   async run({ args }) {
     let resultStatus: "pass" | "warn" | "fail" | undefined;
     const exitCodeBeforeRun = process.exitCode;
-    if (args["clean-dead-residue"] === true) {
-      const stashDir = resolveStashDir();
-      const removals = removeDeadResidue(stashDir);
-      output("health-clean-dead-residue", { stashDir, removals });
-      return;
-    }
     await runWithJsonErrors(async () => {
       // citty only surfaces the last value of a repeated flag, so read --windows
       // directly from argv to support multi-window comparison.
