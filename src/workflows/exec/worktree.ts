@@ -75,7 +75,22 @@ import { serializeByKey } from "../../core/concurrent";
 import { runManagedSubprocess } from "../../core/subprocess";
 import { warn } from "../../core/warn";
 
-const GIT_TIMEOUT_MS = 30_000;
+/**
+ * Timeout for every `git worktree add|prune|remove|status` call this module
+ * makes. Was 30s; raised to 120s after #891 confirmed a real product gap:
+ * these calls run under {@link withRepoWorktreeLock}, a per-process,
+ * per-repository queue, so a machine also busy with OTHER git-heavy work
+ * (other akm runs, other agents' worktrees, a loaded CI runner) can genuinely
+ * push one `git worktree remove` past 30s without anything being stuck —
+ * plain CPU/fork/IO contention. At 30s that showed up as `{ removed: false,
+ * error: "... timed out after 30000ms" }` on a perfectly healthy op: a clean
+ * worktree left retained, or a create failing a unit outright, purely because
+ * the box was busy. 120s matches the same trade already made for
+ * {@link GIT_PUSH_TIMEOUT_MS} (`core/write-source.ts`,
+ * `sources/providers/git-stash.ts`) for the same class of administrative git
+ * call under load; a call that is truly hung (not just slow) is still caught.
+ */
+const GIT_TIMEOUT_MS = 120_000;
 
 /** Directory under `os.tmpdir()` that owns every run's worktree roots. */
 export const WORKTREES_DIR_NAME = "akm-worktrees";
@@ -102,13 +117,14 @@ function gitExitError(args: string[], code: number | null, stderr: string, stdou
   return `git ${args.join(" ")} exited ${code}${detail ? `: ${detail}` : ""}`;
 }
 
+/** One async git call: `cwd`/`args` in, a {@link GitResult} out. Never throws. */
+type GitExecutor = (cwd: string, args: string[]) => Promise<GitResult>;
+
 /**
- * Run one git command asynchronously; `ok` = exit 0. Never throws (spawn
- * errors and the 30 s timeout → ok: false). Async so a git lock wait parks a
- * promise instead of blocking the event loop; repo-mutating callers must hold
- * {@link withRepoWorktreeLock}.
+ * Run one git command asynchronously via the real `git` binary; `ok` = exit
+ * 0. Never throws (spawn errors and the timeout → ok: false).
  */
-async function git(cwd: string, args: string[]): Promise<GitResult> {
+async function realGitExecutor(cwd: string, args: string[]): Promise<GitResult> {
   const result = await runManagedSubprocess(["git", "-C", cwd, ...args], {
     capture: true,
     timeoutMs: GIT_TIMEOUT_MS,
@@ -127,6 +143,30 @@ async function git(cwd: string, args: string[]): Promise<GitResult> {
     };
   }
   return { ok: true, stdout: result.stdout };
+}
+
+let gitExecutor: GitExecutor = realGitExecutor;
+
+/**
+ * TEST-ONLY seam (#891): swap the executor every repo-mutating git call in
+ * this module goes through. Lets a test prove those calls genuinely
+ * interleave with other event-loop work — the property the old "count
+ * setInterval ticks during real git calls" test asserted before it was
+ * deleted for timing on the real scheduler instead of on behavior — using a
+ * fake, deterministically-timed async git in place of the real subprocess.
+ * Call with `undefined` to restore the real spawn-based executor.
+ */
+export function setGitExecutorForTesting(executor: GitExecutor | undefined): void {
+  gitExecutor = executor ?? realGitExecutor;
+}
+
+/**
+ * Run one git command asynchronously; `ok` = exit 0. Never throws. Async so a
+ * git lock wait parks a promise instead of blocking the event loop;
+ * repo-mutating callers must hold {@link withRepoWorktreeLock}.
+ */
+async function git(cwd: string, args: string[]): Promise<GitResult> {
+  return gitExecutor(cwd, args);
 }
 
 /**

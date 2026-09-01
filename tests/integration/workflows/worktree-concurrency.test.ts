@@ -34,6 +34,7 @@ import {
   isGitAvailable,
   runWorktreeRoot,
   STALE_WORKTREE_MAX_AGE_MS,
+  setGitExecutorForTesting,
   sweepStaleWorktrees,
   WORKTREES_DIR_NAME,
   worktreesRoot,
@@ -129,17 +130,61 @@ describe.skipIf(!GIT)("createUnitWorktree — concurrent units on one base repo"
     for (const p of keptPaths) expect(fs.existsSync(path.join(p, "README.md"))).toBe(true);
   });
 
-  // REMOVED (0.9.8 stabilization): "worktree git calls do not block the
-  // event loop" asserted on SCHEDULING (a 5ms setInterval ticking at least
-  // once while a batch of real git worktree creates/cleanups ran), not on
-  // behavior. Same class as the two flakes deleted in 722117b6: green in
-  // isolation, but under real system contention (other processes competing
-  // for CPU/fork slots) the event loop can go a while between ticks even
-  // though the git calls are still genuinely async and non-blocking. The
-  // non-blocking behavior itself has no cheap deterministic assertion — the
-  // remaining tests in this describe block still cover that the async git
-  // wrapper produces correct, race-free results under concurrency, which is
-  // the property that actually matters.
+  // "worktree git calls do not block the event loop" (this file, pre-0.9.8)
+  // asserted on SCHEDULING (a 5ms setInterval ticking at least once while a
+  // batch of REAL git worktree creates/cleanups ran), not on behavior. Same
+  // class as the two flakes deleted in 722117b6: green in isolation, but
+  // under real system contention (other processes competing for CPU/fork
+  // slots) the event loop can go a while between ticks even though the git
+  // calls are still genuinely async and non-blocking. Deleted for that
+  // reason during the sprint — restored below (#891) with a deterministic
+  // method: a fake async git executor with a known fixed delay, and an
+  // ORDERING assertion (a competing 0ms timer must fire before the fake git
+  // call's much-longer timer does) instead of a tick count over a real-time
+  // window.
+});
+
+describe("createUnitWorktree — git calls do not block the event loop (#891)", () => {
+  afterEach(() => setGitExecutorForTesting(undefined));
+
+  test("other event-loop work interleaves with a pending git call instead of queuing behind it", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-wt-conc-fakegit-"));
+    scratch.push(baseDir);
+
+    const order: string[] = [];
+    // A fake async git: no real subprocess, just a fixed 50ms delay before
+    // resolving. Long enough that any accidental SYNCHRONOUS blocking in the
+    // call path (the lock chain, createUnitWorktree's own awaits) would be
+    // trivially visible against it.
+    setGitExecutorForTesting(async (_cwd, args) => {
+      order.push(`git-start:${args[0]}`);
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      order.push(`git-end:${args[0]}`);
+      return { ok: true, stdout: "" };
+    });
+
+    const createPromise = createUnitWorktree(baseDir, RUN_ID, "fake:0");
+    // Queued with a real 0ms timer immediately after kicking off the create.
+    // A 0ms macrotask fires before a 50ms one on ANY event loop that is still
+    // running — the only way "other-work" could land AFTER a "git-end" is if
+    // something between here and there blocked synchronously for the ~50ms
+    // the fake git call is "in flight".
+    const otherWork = new Promise<void>((resolve) =>
+      setTimeout(() => {
+        order.push("other-work");
+        resolve();
+      }, 0),
+    );
+
+    const [created] = await Promise.all([createPromise, otherWork]);
+    expect(created.ok).toBe(true);
+
+    const otherWorkIndex = order.indexOf("other-work");
+    const firstGitEndIndex = order.findIndex((e) => e.startsWith("git-end:"));
+    expect(otherWorkIndex).toBeGreaterThanOrEqual(0);
+    expect(firstGitEndIndex).toBeGreaterThanOrEqual(0);
+    expect(otherWorkIndex).toBeLessThan(firstGitEndIndex);
+  });
 });
 
 // ── Bug 8: run-root lifecycle ───────────────────────────────────────────────
