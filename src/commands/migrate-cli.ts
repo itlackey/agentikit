@@ -5,6 +5,7 @@
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
 import { resolveStashDir } from "../core/common";
 import { findDeadResidueEntries, removeDeadResidue } from "./migrate/dead-residue";
+import { findStaleTxnEntries, recoverStaleTxns } from "./migrate/stale-txn";
 import { runMigrationTool } from "./migration-tool";
 
 /**
@@ -134,7 +135,10 @@ export async function runMigrateSubcommand(
   const deadResidue = applyResidue
     ? { removed: removeDeadResidue(stashDir) }
     : { pending: findDeadResidueEntries(stashDir) };
-  output(command, { ...combined, deadResidue });
+  const staleTxns = applyResidue
+    ? { recovered: await recoverStaleTxns(stashDir) }
+    : { pending: findStaleTxnEntries(stashDir) };
+  output(command, { ...combined, deadResidue, staleTxns });
 
   if (combined.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
 }

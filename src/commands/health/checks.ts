@@ -59,8 +59,6 @@ export interface HealthCheckContext {
    * task_id meets the row-count floor.
    */
   worstTaskFailRate: { taskId: string; rate: number; rows: number } | null;
-  /** Leftover durable-transaction journals under `$DATA/txn` (item 4). */
-  staleTxnJournals: { dir: string; count: number; oldestAgeMs: number | null; unreadable: number };
   sessionExtraction: ImproveHealthMetrics["sessionExtraction"];
   autoAccept: ImproveHealthMetrics["autoAccept"];
   /** Engine availability collected once and shared by its three registry projections. */
@@ -830,31 +828,6 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
               ? `Auto-accept healthy: ${aa.promoted} proposal(s) promoted, 0 validation failures.`
               : "Auto-accept gate did not run (disabled or no proposals above threshold).",
         evidence: { promoted: aa.promoted, validationFailed: aa.validationFailed },
-      };
-    },
-  },
-  {
-    // Item 4: stale durable-transaction journals under $DATA/txn (stranded
-    // recovery state seen twice in a real 0.9 migration) had zero health
-    // visibility. `count`/`unreadable` already exclude journals younger than
-    // the sweeper's grace period (a currently-running operation), so any
-    // nonzero count here is a real leftover.
-    name: "stale-txn-journals",
-    channel: "advisory",
-    run: (ctx) => {
-      const s = ctx.staleTxnJournals;
-      const warn = s.count > 0;
-      const unreadablePart = s.unreadable > 0 ? `, ${s.unreadable} unreadable` : "";
-      const agePart = s.oldestAgeMs !== null ? `, oldest ${Math.round(s.oldestAgeMs / 60000)}m old` : "";
-      return {
-        name: "stale-txn-journals",
-        kind: "deterministic",
-        status: warn ? "warn" : "pass",
-        confidence: "high",
-        message: warn
-          ? `${s.count} stale transaction journal(s) found under ${s.dir}${unreadablePart}${agePart} — see docs/migration/v0.9.0-troubleshooting.md for journal reconciliation steps.`
-          : "No stale transaction journals found.",
-        evidence: { dir: s.dir, count: s.count, unreadable: s.unreadable, oldestAgeMs: s.oldestAgeMs },
       };
     },
   },

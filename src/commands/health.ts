@@ -8,10 +8,9 @@ import { resolveStashDir } from "../core/common";
 import { loadConfig } from "../core/config/config";
 import { ConfigError, UsageError } from "../core/errors";
 import { readEvents } from "../core/events";
-import { listTxnJournalsTolerant, TXN_SWEEP_GRACE_MS } from "../core/fs-txn";
 import { openLogsDatabase } from "../core/logs-db";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
-import { getConfigPath, getDataDir, getDbPath, getStateDbPathInDataDir } from "../core/paths";
+import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import type { Database } from "../storage/database";
@@ -250,44 +249,6 @@ function gatherTaskHistoryPhase(
     worstTaskFailRate: computeWorstTaskFailRate(taskRows),
     agentFailureRate,
   };
-}
-
-interface StaleTxnJournalsPhase {
-  dir: string;
-  count: number;
-  oldestAgeMs: number | null;
-  unreadable: number;
-}
-
-/**
- * Item 4: leftover durable-transaction journals under `$DATA/txn` (stranded
- * recovery state seen twice in a real 0.9 migration) had zero health
- * visibility. Uses the tolerant scan variant so one corrupt journal.json is
- * counted rather than aborting the whole gather; a journal younger than
- * {@link TXN_SWEEP_GRACE_MS} is presumed to belong to a currently-running
- * operation and is not counted as stale. Best-effort: any unexpected error
- * (e.g. a permissions issue under `$DATA/txn`) degrades to "no signal" rather
- * than aborting the health report.
- */
-function gatherStaleTxnJournalsPhase(now: () => number): StaleTxnJournalsPhase {
-  const dir = path.join(getDataDir(), "txn");
-  try {
-    const { matches, unreadableMtimes } = listTxnJournalsTolerant(() => true);
-    const nowMs = now();
-    const staleAges = [
-      ...matches.map((m) => nowMs - m.mtimeMs),
-      ...unreadableMtimes.map((mtimeMs) => nowMs - mtimeMs),
-    ].filter((ageMs) => ageMs >= TXN_SWEEP_GRACE_MS);
-    const staleUnreadableCount = unreadableMtimes.filter((mtimeMs) => nowMs - mtimeMs >= TXN_SWEEP_GRACE_MS).length;
-    return {
-      dir,
-      count: staleAges.length,
-      oldestAgeMs: staleAges.length > 0 ? Math.max(...staleAges) : null,
-      unreadable: staleUnreadableCount,
-    };
-  } catch {
-    return { dir, count: 0, oldestAgeMs: null, unreadable: 0 };
-  }
 }
 
 interface EgressConfigPhase {
@@ -671,8 +632,6 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
     const taskHistory = gatherTaskHistoryPhase(db, logsDb, since, stateDbPath, now);
     const { tableNames, missingTables, probe } = taskHistory;
 
-    const staleTxnJournals = gatherStaleTxnJournalsPhase(now);
-
     const { egressConfigView } = gatherEgressConfigPhase();
 
     const { improveSummary } = gatherImproveSummaryPhase(db, stateDbPath, since, now);
@@ -699,7 +658,6 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       stuckActiveRuns: taskHistory.stuckActiveRuns,
       stuckActiveTasks: taskHistory.stuckActiveTasks,
       worstTaskFailRate: taskHistory.worstTaskFailRate,
-      staleTxnJournals,
       sessionExtraction: improveSummary.sessionExtraction,
       autoAccept: improveSummary.autoAccept,
       engineProbes,
