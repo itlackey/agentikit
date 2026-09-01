@@ -6,11 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.9.8] - 2026-09-01
 
-A cleanup and stabilization release. 58 commits, **492 files, +4,963 /
--25,798 — net -20,835 lines**. Almost all of it is deletion of machinery that
-policed the codebase's shape rather than its behaviour.
+A cleanup and stabilization release: deletion of machinery that policed the
+codebase's shape rather than its behaviour, and — because auditing for that
+machinery meant reading the code closely — a run of real defects it had been
+sitting on top of.
+
+Two security holes, two search-correctness bugs, a locale-dependent hash, a
+deletion shield that failed open, and sixteen places that answered a failure
+with a confident wrong answer instead of an error.
 
 ### Fixed
+
+- **Two security holes closed.** A failed `git ls-remote` made
+  `verifyClonedRevision` a no-op, silently skipping the R-011 post-clone
+  revision-integrity check — the guard against a compromised mirror — so any
+  network blip disabled it without a word. And `scanExtractedFiles`, the
+  post-extraction TOCTOU path-traversal rescan, returned silently when a
+  directory could not be read: it passed clean in exactly the race it exists
+  to catch. Both now fail loudly.
+
+- **`akm curate --type` ignored the type filter.** A set `--type` bypassed
+  `selectCuratedStashHits` entirely and did a raw slice of the hits as
+  received, which neither filtered by type nor ranked by score — so
+  `--type command` could return a skill, in arbitrary order. It now narrows
+  the candidate pool and runs the full curation pipeline over it. The test
+  that should have caught this passed by accident, because the off-type hit
+  happened to sit past the result limit.
+
+- **Curate silently dropped relevant results.** An undocumented floor excluded
+  any hit scoring below `max(0.35, leader * 0.7)`. Measured against a real
+  3,265-memory bundle, one query went from one result to four once it was
+  removed — the suppressed hits were the ones actually matching. Ordering is
+  unchanged: results were already sorted before the floor ran, so it could
+  only ever hide the tail.
+
+- **A bundle-audit hash depended on the machine's locale.** `canonicalJson`
+  in `installed-stashes.ts` sorted keys with `localeCompare` — ICU-dependent —
+  and fed the result to `sha256Hex`, so the same object could hash differently
+  on two machines. Now codepoint order, matching the other implementations.
+
+- **A deletion shield failed open.** `isHotCapturedMemory` returned false when
+  it could not read or parse a memory, marking exactly the memories it failed
+  to inspect as fair game for consolidate to merge or delete. It now fails
+  closed.
+
+- **Sixteen places returned a confident wrong answer instead of an error.**
+  The pattern (#791) recurred across search, graph, indexing, and scheduling:
+  a corrupt or locked index reported "no matches"; a failed inline rebuild
+  surfaced as "Index is empty. Run 'akm index'" at exit 0; `akm show` reported
+  "0 related files" for an unreadable index; a DB failure in
+  `listProposalsReadOnly` returned `[]`, so dedup could not tell "no prior
+  proposal" from "database unreadable" and could re-mint an already-rejected
+  one; a permission fault on the bundle directory told the user to run
+  `akm bundle create`; and `launchd`'s `list()` returned `[]` when the
+  LaunchAgents directory could not be read, so task reconciliation concluded
+  there was nothing to manage. In each case the failure now surfaces.
+
+- **Drifted copies of shared helpers.** `asNonEmptyString` trimmed in two
+  places and not in four others, so a whitespace-only session id decoded to
+  `" "` in some subsystems and `undefined` in others. `isPlainObject` had two
+  incompatible definitions under one name; the loose form would accept a
+  `Date` or class instance as a plain record. Both consolidated, along with
+  `toPosix` (15 copies, whose "avoid an import cycle" justification was false
+  in every case), `isRecord` (11), `compareCodePoints` (8), and five more
+  families.
 
 - **Pruning a memory no longer leaves dangling belief edges (#885).**
   `writeContradictEdge` — the hardened, test-covered `contradictedBy` writer —
@@ -87,6 +146,24 @@ policed the codebase's shape rather than its behaviour.
   quality signal when run against a real bundle.
 
 ### Removed
+
+- **`akm health --clean-dead-residue` and every other compensating shim.**
+  A special-purpose flag on `health` that deleted files existed because
+  migrations had not finished their own job. Removing a superseded layout IS
+  migration, so `akm migrate status` now reports it and `akm migrate apply`
+  removes it. Four more of the same class went the same way: the D8
+  `task_history` vocabulary is rewritten once by a state migration instead of
+  re-decided at three read sites; the legacy `extraParams` config lift happens
+  once in `migrate apply` instead of silently on every load forever (an
+  unmigrated config now fails closed, naming the command to run); retired
+  `type:slug` xrefs are rewritten by `lint --fix`; and stale transaction
+  journals are recovered by `migrate apply` rather than reported by an
+  advisory that pointed at documentation while the recovery function it needed
+  sat with zero callers.
+
+- **Dead code with no consumers.** An empty `{}` type threaded through two
+  functions as a parameter neither read, with a `{}` placeholder at the call
+  site; unused helpers, imports, and parameters throughout.
 
 - **14 architecture ratchets, 15 golden/snapshot suites, 12 characterization
   suites.** Function-size and import-cycle ratchets that failed on refactors
