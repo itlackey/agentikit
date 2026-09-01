@@ -58,7 +58,14 @@ total="${#files[@]}"
 # v3/multi-job blocks — see the commit body for the per-suite deleted-test
 # table. P4-N5's formula: floor(executed * 0.95 / 100) * 100 =
 # floor(4213 * 0.95 / 100) * 100 = floor(40.0235) * 100 = 4000.
-MIN_TESTS="${AKM_MIN_UNIT_TESTS:-4000}"
+# #786: RAISED 4000 -> 6300. The ORG-03/ORG-06 classification sweep moved ~230
+# files OUT of tests/integration/ and into this suite; integration's floor was
+# lowered 5700 -> 3400 to match, but this one was left at its pre-sweep value.
+# That silently gutted the combined guard: floors totalled 7400 against 10310
+# executed, so ~2900 unit tests could have vanished without tripping anything.
+# Same formula as every other adjustment here: floor(executed * 0.95 / 100) *
+# 100 = floor(6699 * 0.95 / 100) * 100 = floor(63.6405) * 100 = 6300.
+MIN_TESTS="${AKM_MIN_UNIT_TESTS:-6300}"
 if [ "$total" -eq 0 ]; then
   echo "── unit: no test files found under tests/ (excluding integration)" >&2
   exit 1
