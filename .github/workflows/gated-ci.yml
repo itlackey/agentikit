@@ -1,24 +1,23 @@
 name: Gated CI
-run-name: Gated CI / ${{ github.event_name == 'schedule' && 'weekly' || github.event_name == 'push' && 'release-candidate' || github.event_name == 'pull_request' && 'pr-checks' || inputs.gated_suite }} / ${{ inputs.candidate_sha || github.sha }}
+run-name: Gated CI / ${{ github.event_name == 'schedule' && 'weekly' || github.event_name == 'push' && 'release-candidate' || 'dispatch' }} / ${{ inputs.candidate_sha || github.sha }}
 
 # These suites exercise real embeddings, container installs, and host-native
-# schedulers — too expensive to run in full on every push/PR. Each one now
-# also runs automatically on a pull request, but ONLY when that PR's diff
-# touches paths relevant to it (see the `detect-changes` job): a scheduler
-# backend change gets `native-scheduler` for free without also paying for a
-# Docker install matrix or a real-embeddings semantic search run. On top of
-# that: the weekly schedule runs everything to catch drift the PR gate
-# missed, `workflow_dispatch` lets a maintainer validate an exact commit on
-# demand, and the tag trigger validates a release candidate that already
-# contains this workflow before merge.
+# schedulers. All three run on every trigger: the weekly schedule to catch
+# drift, `workflow_dispatch` to validate an exact commit on demand, and the
+# candidate tag.
+#
+# There used to be a `detect-changes` job that ran these on pull requests too,
+# selecting suites by regex-matching the PR diff against path lists. It was 70
+# lines of build-policing that had already gone stale — its patterns still
+# named test files the 0.9.8 reorganisation moved or deleted, so it was
+# silently under-selecting suites and nobody noticed. The release checklist
+# never relied on it either: release evidence comes from an exact-SHA dispatch
+# or a candidate tag, both of which always ran everything. Deleted, along with
+# the pull_request trigger and the `gated_suite` selector.
 on:
   push:
     tags:
       - "gated-ci/candidate-*"
-  pull_request:
-    branches:
-      - main
-      - "release/*"
   schedule:
     # Avoid the top of the hour, when scheduled Actions traffic is highest.
     - cron: "23 5 * * 1"
@@ -28,19 +27,9 @@ on:
         description: "Full 40-character commit SHA to validate"
         required: true
         type: string
-      gated_suite:
-        description: "Gated suite to run (use all for release evidence)"
-        required: true
-        default: all
-        type: choice
-        options:
-          - all
-          - semantic
-          - docker
-          - native-scheduler
 
 concurrency:
-  group: gated-ci-${{ inputs.candidate_sha || github.sha }}-${{ inputs.gated_suite || github.event_name }}
+  group: gated-ci-${{ inputs.candidate_sha || github.sha }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -90,79 +79,9 @@ jobs:
           fi
           echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
 
-  detect-changes:
-    name: Gated / Detect Changed Paths
-    needs: resolve-candidate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      native_scheduler: ${{ steps.decide.outputs.native_scheduler }}
-      docker: ${{ steps.decide.outputs.docker }}
-      semantic: ${{ steps.decide.outputs.semantic }}
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
-        if: github.event_name == 'pull_request'
-        with:
-          ref: ${{ needs.resolve-candidate.outputs.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - id: decide
-        name: Decide which gated suites this run needs
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          GATED_SUITE: ${{ inputs.gated_suite }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          emit_all() {
-            {
-              echo "native_scheduler=true"
-              echo "docker=true"
-              echo "semantic=true"
-            } >> "$GITHUB_OUTPUT"
-          }
-          # Weekly drift check and release-candidate tag pushes always run
-          # every suite; workflow_dispatch with gated_suite=all is the same
-          # "run everything" request via a different trigger.
-          if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "push" ] || [ "$GATED_SUITE" = "all" ]; then
-            emit_all
-            exit 0
-          fi
-          # workflow_dispatch with one named suite: run only that one.
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            for suite in native_scheduler:native-scheduler docker:docker semantic:semantic; do
-              key="${suite%%:*}"; name="${suite##*:}"
-              [ "$GATED_SUITE" = "$name" ] && echo "$key=true" >> "$GITHUB_OUTPUT" || echo "$key=false" >> "$GITHUB_OUTPUT"
-            done
-            exit 0
-          fi
-          # pull_request: run only the suite(s) whose relevant paths changed,
-          # so a scheduler-backend PR doesn't also pay for Docker/semantic.
-          changed="$(git diff --name-only "$BASE_SHA"...HEAD)"
-          echo "Changed files:"
-          echo "$changed"
-          matches() { echo "$changed" | grep -qE "$1"; }
-          if matches '^(src/tasks/|src/core/(subprocess|state-db)\.ts$|src/runtime\.ts$|scripts/(akm-standalone|copy-assets)\.ts$|package\.json$|bun\.lock$|tests/(integration/)?(native-scheduler|linux-standalone-scheduler|tasks-launchd-backend)\.test\.ts$|tests/tasks-(schtasks-backend|launchd-loaded-domain)\.test\.ts$)'; then
-            echo "native_scheduler=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "native_scheduler=false" >> "$GITHUB_OUTPUT"
-          fi
-          if matches '^(src/setup/|src/sources/providers/|scripts/(package-install|akm-standalone)\.ts$|package\.json$|bun\.lock$|tests/integration/docker-install\.test\.ts$)'; then
-            echo "docker=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "docker=false" >> "$GITHUB_OUTPUT"
-          fi
-          if matches '^(src/llm/embed|scripts/copy-assets\.ts$|package\.json$|bun\.lock$|tests/integration/semantic-search-e2e\.test\.ts$)'; then
-            echo "semantic=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "semantic=false" >> "$GITHUB_OUTPUT"
-          fi
-
   semantic-search:
     name: Gated / Semantic Search
-    needs: [resolve-candidate, detect-changes]
-    if: needs.detect-changes.outputs.semantic == 'true'
+    needs: resolve-candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -209,8 +128,7 @@ jobs:
 
   docker-install:
     name: Gated / Docker Install
-    needs: [resolve-candidate, detect-changes]
-    if: needs.detect-changes.outputs.docker == 'true'
+    needs: resolve-candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -235,8 +153,7 @@ jobs:
 
   native-scheduler:
     name: Gated / Native Scheduler / ${{ matrix.platform }}
-    needs: [resolve-candidate, detect-changes]
-    if: needs.detect-changes.outputs.native_scheduler == 'true'
+    needs: resolve-candidate
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     strategy:
@@ -393,7 +310,7 @@ jobs:
     needs: [resolve-candidate, semantic-search, docker-install, native-scheduler]
     if: >-
       always() &&
-      ((github.event_name == 'workflow_dispatch' && inputs.gated_suite == 'all') ||
+      (github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/gated-ci/candidate-')))
     runs-on: ubuntu-24.04
     timeout-minutes: 5

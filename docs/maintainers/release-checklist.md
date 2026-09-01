@@ -43,8 +43,9 @@ equivalent exact-SHA path. From the repository's Actions page, choose **Run
 workflow** and supply:
 
 - `candidate_sha`: the full 40-character SHA recorded above, never a branch or
-  tag name;
-- `gated_suite`: `all`.
+  tag name.
+
+Every suite runs; there is no suite selector.
 
 The manual request rejects abbreviated SHAs and checks out that immutable
 commit for every gate. Wait for all of these stable checks to succeed on either
@@ -74,29 +75,21 @@ SHA into both the release PR and its milestone/parent tracker. Do not publish
 from a candidate whose evidence link names a different SHA, whose final
 evidence job is skipped, or whose run was re-run after the candidate changed.
 
-## 3. The focused gate on a pull request
+## 3. Gated CI does not run on pull requests
 
-Heavy gated suites do not run in full on every push or pull request — but each
-one now runs itself automatically on a PR whose diff touches its surface. The
-`Gated / Detect Changed Paths` job inspects the PR's changed files and turns on
-only the suite(s) that surface actually needs:
+Gated CI runs on three triggers only: the weekly schedule, an exact-SHA
+`workflow_dispatch`, and a `gated-ci/candidate-*` tag. All three run every
+suite.
 
-| Changed surface | Suite that runs automatically |
-| --- | --- |
-| Embedding provider, semantic index/search, Transformers dependency, `package.json`/lockfile | `semantic` |
-| Setup/install providers, packaging scripts, `package.json`/lockfile | `docker` |
-| `src/tasks/**`, `src/runtime.ts`, `src/core/subprocess.ts`/`state-db.ts`, standalone/asset build scripts | `native-scheduler` |
+There used to be a `Gated / Detect Changed Paths` job that also ran these on
+PRs, selecting suites by regex-matching the diff against path lists. It was
+deleted in 0.9.8: the patterns had gone stale — they still named test files a
+reorganisation had moved or deleted, so it was silently under-selecting suites
+and nobody noticed. A build-policing job that quietly stops policing is worse
+than no job, because its green status is read as coverage.
 
-A PR touching none of these paths gets a fast, green `Gated CI` run with every
-suite skipped — nothing else to do. Nothing to dispatch by hand: this closed
-the gap where "remember to dispatch the relevant suite" was an unenforced
-checklist rule. Manual `workflow_dispatch` (`gated_suite: <name>`) is still
-there for re-running one suite in isolation (a transient failure, or checking
-a fix before opening the PR) and `all` for combined evidence, especially for a
-release candidate — see step 2. This keeps heavyweight model downloads,
-container builds, and paid macOS/Windows runner time off routine commit CI
-while making the "did the relevant suite run" question a CI status, not a
-memory test.
+Nothing about release evidence changes. Step 2 was always the requirement, and
+it never went through the PR path.
 
 The candidate-tag trigger is reserved for release evidence and workflow
 rollout: it always runs `all`, because a tag-push workflow is the path available
