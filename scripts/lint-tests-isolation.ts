@@ -126,7 +126,7 @@ const ENV_ASSIGN_ALLOWED = new Set<string>([
   // env precedence — real sandbox temp dirs would defeat the purpose. A
   // module-level saveEnv()/afterEach(restoreEnv) snapshots and restores every
   // env key; tests are synchronous so nothing leaks across a yield point.
-  "tests/integration/paths.test.ts",
+  "tests/paths.test.ts",
 
   // registry-resolve.test.ts: sets AKM_NPM_REGISTRY to literal URLs to test
   // registry URL resolution precedence. beforeEach deletes it, afterEach
