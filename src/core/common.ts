@@ -281,8 +281,13 @@ function validateStashDir(raw: string): string {
 function isValidDirectory(dir: string): boolean {
   try {
     return fs.statSync(dir).isDirectory();
-  } catch {
-    return false;
+  } catch (error) {
+    // Genuinely absent — the caller's "not found" fallback applies. Any other
+    // stat failure (e.g. EACCES) is not "doesn't exist"; treating it as such
+    // produced the wrong message ("Run akm bundle create") for a directory
+    // that exists but cannot be read.
+    if (hasErrnoCode(error, "ENOENT")) return false;
+    throw new ConfigError(`Unable to read bundle directory at "${dir}".`, "STASH_DIR_UNREADABLE");
   }
 }
 
