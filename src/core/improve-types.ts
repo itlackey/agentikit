@@ -2,22 +2,79 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import type { ConsolidateOperation } from "../commands/improve/consolidate/types";
-import type {
-  ArchivedMemoryCleanupRecord,
-  MemoryBeliefStateTransition,
-  MemoryConsolidationCandidate,
-  MemoryContradictionCandidate,
-  MemoryPruneCandidate,
-  RelativeDateCandidate,
-} from "../commands/improve/memory/memory-improve";
 import type { EligibilitySource, Proposal } from "../commands/proposal/proposal-types";
-import type { DeadUrl } from "../commands/url-checker";
 import type { LoweringNotice } from "../execution/resolved-request";
 import type { GraphExtractionResult } from "../indexer/graph/graph-extraction";
 import type { MemoryInferenceResult } from "../indexer/passes/memory-inference";
 import type { AgentFailureReason } from "../integrations/agent/spawn";
 import { assertNever } from "./assert";
+
+// ── Memory-cleanup domain types (moved DOWN from commands/improve/memory,
+// same layering fix as the verb-result types below: this file's own
+// ImproveMemoryCleanupResult needs these shapes, so they live here rather
+// than being imported UP from the command module that consumes this file.
+export type MemoryPruneReason = "duplicate-derived" | "superseded-derived" | "obsolete-derived";
+export type MemoryBeliefState = "active" | "asserted" | "deprecated" | "superseded" | "contradicted" | "archived";
+
+export interface MemoryPruneCandidate {
+  ref: string;
+  parentRef: string;
+  reason: MemoryPruneReason;
+  survivorRef?: string;
+}
+
+export interface MemoryConsolidationCandidate {
+  parentRef: string;
+  signal: string;
+  refs: string[];
+  suggestedSurvivorRef: string;
+}
+
+export interface MemoryContradictionCandidate {
+  ref: string;
+  parentRef: string;
+  reason: "contradicted-derived";
+  contradictedByRef: string;
+  contradictedByRefs: string[];
+  currentBeliefRefs: string[];
+}
+
+export interface MemoryBeliefStateTransition {
+  ref: string;
+  parentRef: string;
+  fromState: Exclude<MemoryBeliefState, "archived">;
+  toState: Exclude<MemoryBeliefState, "archived">;
+  reason: "contradicted-derived" | "belief-refresh";
+  relatedRef?: string;
+  relatedRefs?: string[];
+  currentBeliefRefs?: string[];
+}
+
+export interface RelativeDateCandidate {
+  ref: string;
+  filePath: string;
+  matches: string[];
+}
+
+/** A URL found dead by `checkDeadUrls` (commands/url-checker.ts). Plain data, no dependencies — owned here. */
+export interface DeadUrl {
+  ref: string;
+  url: string;
+  status: number | "error";
+}
+
+export interface ArchivedMemoryCleanupRecord {
+  ref: string;
+  parentRef: string;
+  reason: MemoryPruneReason;
+  beliefState: "archived";
+  previousBeliefState: Exclude<MemoryBeliefState, "archived">;
+  survivorRef?: string;
+  originalPath: string;
+  archivedPath: string;
+  auditPath: string;
+  archivedAt: string;
+}
 
 export interface ImproveEligibleRef {
   ref: string;
@@ -299,7 +356,13 @@ export interface ConsolidateResult {
   failedChunkMemories?: number;
   /** Memories deferred by the pre-embedding budget cap. Deferred runs do not advance the completion watermark. */
   deferredMemories?: number;
-  planned?: ConsolidateOperation[];
+  /**
+   * Planned consolidate ops. Only the op-kind discriminant is used by core
+   * consumers (e.g. the `op !== "promote"` advisory-op check in
+   * `preparation.ts`); the full `ConsolidateOperation` shape lives in
+   * commands/improve/consolidate/types.ts, which core must not import.
+   */
+  planned?: { op: ConsolidateOpKind }[];
   warnings: string[];
   durationMs: number;
   /** Stable, secret-free execution-lowering diagnostics. */

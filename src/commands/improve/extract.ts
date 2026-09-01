@@ -948,6 +948,39 @@ function unavailableExtractionResult(args: {
   };
 }
 
+// #561 — ADDITIVE session indexing. Generate + write the session asset
+// (`sessions/<harness>/<id>.md`). FAIL-OPEN: any failure only returns a
+// warning; it NEVER changes the proposal/skip outcome of extract. Returns the
+// frontmatter fields to merge into the per-session result for state-db
+// correlation. When disabled this makes NO LLM call and writes NOTHING.
+async function maybeWriteSessionAsset(
+  runCtx: ExtractSessionRunCtx,
+  session: ExtractSessionInput,
+): Promise<{ sessionAssetRef?: string; sessionLogPath?: string; warning?: string }> {
+  const { stashDir, lease, sessionIndexing, dryRun } = runCtx;
+  const { data } = session.gate;
+  if (!sessionIndexing.enabled || dryRun) return {};
+  if (!sessionMeetsDurationGate(data, sessionIndexing.minDurationMinutes)) return {};
+  try {
+    const result = await writeSessionAsset(data, stashDir, (summaryData) =>
+      sessionIndexing.generate(summaryData, lease),
+    );
+    if (result.written) {
+      // Write-path indexing (itself fail-open): standalone `akm extract`
+      // (session-end hook) has no post-loop reindex to pick this file up.
+      if (result.filePath) await indexWrittenAssets(stashDir, [result.filePath]);
+      return {
+        ...(result.ref ? { sessionAssetRef: result.ref } : {}),
+        ...(result.logPath ? { sessionLogPath: result.logPath } : {}),
+      };
+    }
+  } catch (err) {
+    if (err instanceof ConfigError) throw err;
+    return { warning: `session asset write failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  return {};
+}
+
 async function processSession(
   runCtx: ExtractSessionRunCtx,
   session: ExtractSessionInput,
@@ -966,7 +999,6 @@ async function processSession(
     sourceRun,
     dryRun,
     timeoutMs,
-    sessionIndexing,
     signal,
     standardsContext,
   } = runCtx;
@@ -981,34 +1013,6 @@ async function processSession(
     inlineRefs: data.inlineRefs,
     ...(standardsContext.trim() ? { standardsContext } : {}),
   });
-
-  // #561 — ADDITIVE session indexing. Generate + write the session asset
-  // (`sessions/<harness>/<id>.md`). FAIL-OPEN: any failure only records a
-  // warning; it NEVER changes the proposal/skip outcome of extract. Returns the
-  // frontmatter fields to merge into the per-session result for state-db
-  // correlation. When disabled this closure makes NO LLM call and writes NOTHING.
-  const maybeWriteSessionAsset = async (): Promise<{ sessionAssetRef?: string; sessionLogPath?: string }> => {
-    if (!sessionIndexing.enabled || dryRun) return {};
-    if (!sessionMeetsDurationGate(data, sessionIndexing.minDurationMinutes)) return {};
-    try {
-      const result = await writeSessionAsset(data, stashDir, (summaryData) =>
-        sessionIndexing.generate(summaryData, lease),
-      );
-      if (result.written) {
-        // Write-path indexing (itself fail-open): standalone `akm extract`
-        // (session-end hook) has no post-loop reindex to pick this file up.
-        if (result.filePath) await indexWrittenAssets(stashDir, [result.filePath]);
-        return {
-          ...(result.ref ? { sessionAssetRef: result.ref } : {}),
-          ...(result.logPath ? { sessionLogPath: result.logPath } : {}),
-        };
-      }
-    } catch (err) {
-      if (err instanceof ConfigError) throw err;
-      warnings.push(`session asset write failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    return {};
-  };
 
   const extraction = await runSessionExtractionLlmCall({
     config,
@@ -1046,7 +1050,8 @@ async function processSession(
   const { payload } = extraction;
   const proposalIds: string[] = [];
   // Provenance refs are added only after the cited session asset exists.
-  const sessionAsset = await maybeWriteSessionAsset();
+  const sessionAsset = await maybeWriteSessionAsset(runCtx, session);
+  if (sessionAsset.warning) warnings.push(sessionAsset.warning);
 
   if (payload.candidates.length === 0) {
     appendEvent(

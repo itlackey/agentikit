@@ -144,7 +144,9 @@ export const CURATE_SEARCH_LIMIT_MULTIPLIER = 4;
 export const MIN_CURATE_SEARCH_LIMIT = 12;
 const DEFAULT_CURATE_LIMIT = 4;
 const CURATE_CLOSE_SCORE_BAND = 0.12;
-const CURATE_TAIL_SCORE_FLOOR = 0.35;
+// Used by `shouldRunCurateFallback` to judge whether the initial search
+// already returned strong results (a different purpose from ranking/keeping
+// hits — see that function for its own rationale).
 const CURATE_RELATIVE_SCORE_FLOOR = 0.7;
 const CURATE_FALLBACK_TOP_SCORE_THRESHOLD = 0.8;
 const CURATE_FALLBACK_STRONG_SCORE_FLOOR = 0.35;
@@ -770,11 +772,6 @@ function compareCurateHits(a: AnnotatedCurateHit, b: AnnotatedCurateHit): number
   return a.originalIndex - b.originalIndex;
 }
 
-function passesCurateScoreFloor(hit: AnnotatedCurateHit, leaderScore: number | undefined): boolean {
-  if (leaderScore === undefined) return true;
-  return hit.rawScore >= Math.max(CURATE_TAIL_SCORE_FLOOR, leaderScore * CURATE_RELATIVE_SCORE_FLOOR);
-}
-
 function isNarrowReferenceFamilyQuery(query: string, family: CurateFamily | undefined): boolean {
   if (!family || family.role !== "reference") return false;
   const lower = query.toLowerCase();
@@ -802,19 +799,9 @@ function selectCuratedStashHits(
   const ranked = collapsed.hits
     .map(({ hit, originalIndex }) => annotateCurateHit(query, hit, originalIndex, intent))
     .sort(compareCurateHits);
-  const selected: AnnotatedCurateHit[] = [];
   const supportRefsByRef = collapsed.supportRefsByRef;
-  let leaderScore: number | undefined;
 
-  for (const candidate of ranked) {
-    if (!passesCurateScoreFloor(candidate, leaderScore)) continue;
-
-    selected.push(candidate);
-    if (leaderScore === undefined) leaderScore = candidate.rawScore;
-    if (selected.length >= limit) break;
-  }
-
-  return { selected: selected.map((entry) => entry.hit), supportRefsByRef };
+  return { selected: ranked.slice(0, limit).map((entry) => entry.hit), supportRefsByRef };
 }
 
 function collapseCurateFamilies(

@@ -131,7 +131,7 @@ describe("mergeCurateSearchResponses", () => {
 });
 
 describe("curateSearchResults", () => {
-  test("keeps stronger same-type hits ahead of weak different-type filler", async () => {
+  test("ranks stronger same-type hits ahead of weaker different-type hits", async () => {
     const result = await curateSearchResults(
       "release review",
       searchResponse({
@@ -169,9 +169,13 @@ describe("curateSearchResults", () => {
       4,
     );
 
+    // No score-floor exclusion: all four hits are returned, in rawScore-descending
+    // order (the property `selectCuratedStashHits` actually guarantees via its sort).
     expect(result.items.map((item) => ("ref" in item ? item.ref : `registry:${item.id}`))).toEqual([
       "skills/release-playbook",
       "knowledge/release-guide",
+      "commands/release-manager",
+      "agents/release-reviewer",
     ]);
   });
 
