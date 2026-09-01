@@ -8,7 +8,6 @@ import {
   shapeProposalDiffOutput,
   shapeProposalEntry,
   shapeProposalListOutput,
-  shapeProposalProducerOutput,
   shapeProposalRejectOutput,
   shapeProposalShowOutput,
   shapeRegistrySearchOutput,
@@ -729,50 +728,6 @@ describe("shapeProposal* — proposal commands", () => {
     expect(brief).not.toHaveProperty("schemaVersion");
     const full = shapeProposalDiffOutput(result, "full");
     expect(full.schemaVersion).toBe(1);
-  });
-
-  test("shapeProposalProducerOutput happy: ok=true with shaped proposal", () => {
-    const result = {
-      schemaVersion: 2,
-      ok: true,
-      ref: "lessons/rg",
-      engine: "claude",
-      durationMs: 12,
-      proposal: fullProposal,
-    };
-    const out = shapeProposalProducerOutput(result, "normal");
-    expect(out.ok).toBe(true);
-    expect(out.ref).toBe("lessons/rg");
-    expect(out.engine).toBe("claude");
-    expect(out.durationMs).toBe(12);
-    expect((out.proposal as Record<string, unknown>).id).toBe("uuid-1");
-  });
-
-  test("shapeProposalProducerOutput failure: surfaces reason/error/exitCode; full adds stdout/stderr", () => {
-    const failure = {
-      schemaVersion: 2,
-      ok: false,
-      reason: "non_zero_exit",
-      error: "agent failed",
-      ref: "lessons/rg",
-      engine: "claude",
-      exitCode: 7,
-      stdout: "captured-out",
-      stderr: "captured-err",
-    };
-    const normal = shapeProposalProducerOutput(failure, "normal");
-    expect(normal.ok).toBe(false);
-    expect(normal.reason).toBe("non_zero_exit");
-    expect(normal.error).toBe("agent failed");
-    expect(normal.ref).toBe("lessons/rg");
-    expect(normal.exitCode).toBe(7);
-    // normal omits stdio (large payload); full retains them
-    expect(normal).not.toHaveProperty("stdout");
-    expect(normal).not.toHaveProperty("stderr");
-    const full = shapeProposalProducerOutput(failure, "full");
-    expect(full.stdout).toBe("captured-out");
-    expect(full.stderr).toBe("captured-err");
-    expect(full.schemaVersion).toBe(2);
   });
 
   test("shapeForCommand routes proposal-* arms through their dedicated shapers", () => {
