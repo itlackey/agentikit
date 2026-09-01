@@ -19,13 +19,21 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { akmImprove } from "../../../../src/commands/improve/improve";
 import { saveConfig } from "../../../../src/core/config/config";
 import { getStateDbPath } from "../../../../src/core/state-db";
 import { akmIndex } from "../../../../src/indexer/indexer";
-import { withMockedFetch } from "../../../_helpers/sandbox";
+import {
+  type Cleanup,
+  makeSandboxDir,
+  type SandboxedDir,
+  sandboxEnvDir,
+  sandboxXdgCacheHome,
+  sandboxXdgConfigHome,
+  withEnv,
+  withMockedFetch,
+} from "../../../_helpers/sandbox";
 
 const TIMEOUT_MS = 15_000;
 const dryRunConfig = {
@@ -37,22 +45,14 @@ const dryRunConfig = {
   defaults: { llmEngine: "test" },
 };
 
-const tempDirs: string[] = [];
+const disposers: SandboxedDir[] = [];
 let sandboxRoots: Record<"cache" | "config" | "data" | "state", string>;
-const savedEnv: Record<string, string | undefined> = {
-  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
-  AKM_DATA_DIR: process.env.AKM_DATA_DIR,
-  AKM_STATE_DIR: process.env.AKM_STATE_DIR,
-  XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-  XDG_STATE_HOME: process.env.XDG_STATE_HOME,
-};
+let envCleanup: Cleanup = () => {};
 
 function makeTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
+  const d = makeSandboxDir(prefix);
+  disposers.push(d);
+  return d.dir;
 }
 
 function writeMemory(stashDir: string, name: string, body: string): void {
@@ -121,26 +121,18 @@ function expectSandboxRootsUnchanged(before: Record<string, Map<string, string>>
 }
 
 beforeEach(() => {
-  sandboxRoots = {
-    cache: makeTempDir("akm-dryrun-cache-"),
-    config: makeTempDir("akm-dryrun-config-"),
-    data: makeTempDir("akm-dryrun-data-"),
-    state: makeTempDir("akm-dryrun-state-"),
-  };
-  process.env.XDG_CACHE_HOME = sandboxRoots.cache;
-  process.env.XDG_CONFIG_HOME = sandboxRoots.config;
-  process.env.AKM_DATA_DIR = sandboxRoots.data;
-  process.env.AKM_STATE_DIR = sandboxRoots.state;
+  const cacheResult = sandboxXdgCacheHome();
+  const configResult = sandboxXdgConfigHome(cacheResult.cleanup);
+  const dataResult = sandboxEnvDir("akm-dryrun-data-", "AKM_DATA_DIR", configResult.cleanup);
+  const stateResult = sandboxEnvDir("akm-dryrun-state-", "AKM_STATE_DIR", dataResult.cleanup);
+  sandboxRoots = { cache: cacheResult.dir, config: configResult.dir, data: dataResult.dir, state: stateResult.dir };
+  envCleanup = stateResult.cleanup;
 });
 
 afterEach(() => {
-  for (const [key, val] of Object.entries(savedEnv)) {
-    if (val === undefined) delete process.env[key];
-    else process.env[key] = val;
-  }
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  envCleanup();
+  envCleanup = () => {};
+  for (const d of disposers.splice(0)) d.cleanup();
 });
 
 describe("akm improve --dry-run writes no AKM artifacts", () => {
@@ -275,26 +267,27 @@ describe("akm improve --dry-run writes no AKM artifacts", () => {
       const stashDir = makeTempDir("akm-dryrun-stash-");
       writeMemory(stashDir, "alpha", "Remember alpha details.");
       writeMemory(stashDir, "beta", "Remember beta details too.");
-      process.env.AKM_BUNDLE_DIR = stashDir;
-      saveConfig(dryRunConfig);
-      await akmIndex({ stashDir, full: true });
+      await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
+        saveConfig(dryRunConfig);
+        await akmIndex({ stashDir, full: true });
 
-      const before = snapshotSandboxRoots(stashDir);
-      expect(before.stash!.size).toBeGreaterThan(0);
+        const before = snapshotSandboxRoots(stashDir);
+        expect(before.stash!.size).toBeGreaterThan(0);
 
-      const result = await akmImprove({
-        scope: "memory",
-        stashDir,
-        dryRun: true,
-        ensureIndexFn: mock(async () => {
-          throw new Error("dry-run invoked ensureIndex");
-        }),
+        const result = await akmImprove({
+          scope: "memory",
+          stashDir,
+          dryRun: true,
+          ensureIndexFn: mock(async () => {
+            throw new Error("dry-run invoked ensureIndex");
+          }),
+        });
+
+        expect(result.ok).toBe(true);
+        expect(result.dryRun).toBe(true);
+
+        expectSandboxRootsUnchanged(before, stashDir);
       });
-
-      expect(result.ok).toBe(true);
-      expect(result.dryRun).toBe(true);
-
-      expectSandboxRootsUnchanged(before, stashDir);
     },
     TIMEOUT_MS,
   );
@@ -304,16 +297,17 @@ describe("akm improve --dry-run writes no AKM artifacts", () => {
     async () => {
       const stashDir = makeTempDir("akm-dryrun-empty-");
       fs.mkdirSync(path.join(stashDir, "memories"), { recursive: true });
-      process.env.AKM_BUNDLE_DIR = stashDir;
-      const before = snapshotSandboxRoots(stashDir);
+      await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
+        const before = snapshotSandboxRoots(stashDir);
 
-      const result = await akmImprove({ stashDir, dryRun: true, config: dryRunConfig });
-      expect(result.ok).toBe(true);
-      expect(result.dryRun).toBe(true);
-      expect(result.plannedRefs).toEqual([]);
+        const result = await akmImprove({ stashDir, dryRun: true, config: dryRunConfig });
+        expect(result.ok).toBe(true);
+        expect(result.dryRun).toBe(true);
+        expect(result.plannedRefs).toEqual([]);
 
-      expect(fs.existsSync(path.join(sandboxRoots.data, "index.db"))).toBe(false);
-      expectSandboxRootsUnchanged(before, stashDir);
+        expect(fs.existsSync(path.join(sandboxRoots.data, "index.db"))).toBe(false);
+        expectSandboxRootsUnchanged(before, stashDir);
+      });
     },
     TIMEOUT_MS,
   );

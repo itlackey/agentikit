@@ -24,7 +24,7 @@ import { readLockfile } from "../../src/integrations/lockfile";
 import * as gitProvider from "../../src/sources/providers/git";
 import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
 import { seedLockEntries } from "../_helpers/lockfile";
-import { withEnv, withMockedFetch } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, withMockedFetch } from "../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
 
@@ -56,65 +56,20 @@ afterAll(() => {
   }
 });
 
-const originalXdgCacheHome = process.env.XDG_CACHE_HOME;
-const originalXdgDataHome = process.env.XDG_DATA_HOME;
-const originalXdgStateHome = process.env.XDG_STATE_HOME;
-const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
-const originalStashDir = process.env.AKM_BUNDLE_DIR;
+let storage: IsolatedAkmStorage;
 let testCacheDir = "";
-let testConfigDir = "";
-let testDataDir = "";
-let testStateDir = "";
 let stashDir = "";
 
 beforeEach(() => {
-  testCacheDir = createTmpDir("akm-qa-cache-");
-  testConfigDir = createTmpDir("akm-qa-config-");
-  testDataDir = createTmpDir("akm-qa-data-");
-  testStateDir = createTmpDir("akm-qa-state-");
-  stashDir = createTmpDir("akm-qa-stash-");
-  makeStashDir(stashDir);
-  process.env.XDG_CACHE_HOME = testCacheDir;
-  process.env.XDG_CONFIG_HOME = testConfigDir;
-  // Pair AKM_BUNDLE_DIR with XDG_DATA_HOME / XDG_STATE_HOME so the
-  // test-isolation guard in src/core/paths.ts stays inert.
-  process.env.XDG_DATA_HOME = testDataDir;
-  process.env.XDG_STATE_HOME = testStateDir;
-  process.env.AKM_BUNDLE_DIR = stashDir;
+  storage = withIsolatedAkmStorage();
+  testCacheDir = storage.cacheDir;
+  stashDir = storage.stashDir;
 });
 
 afterEach(() => {
-  if (originalXdgCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
-  else process.env.XDG_CACHE_HOME = originalXdgCacheHome;
-
-  if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
-  else process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
-
-  if (originalXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = originalXdgDataHome;
-
-  if (originalXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
-  else process.env.XDG_STATE_HOME = originalXdgStateHome;
-
-  if (originalStashDir === undefined) delete process.env.AKM_BUNDLE_DIR;
-  else process.env.AKM_BUNDLE_DIR = originalStashDir;
-
-  if (testCacheDir) {
-    fs.rmSync(testCacheDir, { recursive: true, force: true });
-    testCacheDir = "";
-  }
-  if (testConfigDir) {
-    fs.rmSync(testConfigDir, { recursive: true, force: true });
-    testConfigDir = "";
-  }
-  if (testDataDir) {
-    fs.rmSync(testDataDir, { recursive: true, force: true });
-    testDataDir = "";
-  }
-  if (testStateDir) {
-    fs.rmSync(testStateDir, { recursive: true, force: true });
-    testStateDir = "";
-  }
+  storage.cleanup();
+  testCacheDir = "";
+  stashDir = "";
 });
 
 // ── Issue #9 / #18 / #22: --name persisted for filesystem sources ──────────

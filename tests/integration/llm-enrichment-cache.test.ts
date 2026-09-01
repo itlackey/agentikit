@@ -14,11 +14,11 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { AkmConfig } from "../../src/core/config/config";
 import type { SearchSource } from "../../src/indexer/search/search-source";
 import type { Database } from "../../src/storage/database";
+import { type Cleanup, makeSandboxDir, sandboxXdgDataHome, sandboxXdgStateHome } from "../_helpers/sandbox";
 
 // ── Local LLM server (graph extraction) ──────────────────────────────────────
 // A real HTTP server on a random port stands in for the LLM endpoint.
@@ -91,8 +91,7 @@ let db: Database;
 // calls getDbPath() / getDataDir() under bun test resolves into a temp dir
 // instead of being refused by the TEST_ISOLATION_MISSING write-guard in
 // src/core/paths.ts.
-const originalXdgDataHome = process.env.XDG_DATA_HOME;
-const originalXdgStateHome = process.env.XDG_STATE_HOME;
+let envCleanup: Cleanup = () => {};
 
 function configWithLlm(overrides?: Partial<AkmConfig>): AkmConfig {
   const base: AkmConfig = {
@@ -164,14 +163,14 @@ function sampleDraft(title = "Derived Insight") {
 }
 
 beforeEach(() => {
-  tmpStash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-llm-cache-"));
+  tmpStash = makeSandboxDir("akm-llm-cache-").dir;
   fs.mkdirSync(path.join(tmpStash, "memories"), { recursive: true });
   fs.mkdirSync(path.join(tmpStash, "knowledge"), { recursive: true });
 
   // Redirect $DATA / $STATE into temp dirs so getDbPath() callers downstream
   // do not trip TEST_ISOLATION_MISSING.
-  process.env.XDG_DATA_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "akm-llm-cache-data-"));
-  process.env.XDG_STATE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "akm-llm-cache-state-"));
+  const dataResult = sandboxXdgDataHome();
+  envCleanup = sandboxXdgStateHome(dataResult.cleanup).cleanup;
 
   tmpDbPath = path.join(tmpStash, "test.db");
   db = openIndexDatabase(tmpDbPath);
@@ -188,10 +187,8 @@ afterEach(() => {
     fs.rmSync(tmpStash, { recursive: true, force: true });
     tmpStash = "";
   }
-  if (originalXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = originalXdgDataHome;
-  if (originalXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
-  else process.env.XDG_STATE_HOME = originalXdgStateHome;
+  envCleanup();
+  envCleanup = () => {};
 });
 
 afterAll(() => {

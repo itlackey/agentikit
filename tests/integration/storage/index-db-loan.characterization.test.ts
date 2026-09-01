@@ -4,14 +4,13 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import type { Database as AkmDatabase } from "../../../src/storage/database";
 import { openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 import { withIndexDb } from "../../../src/storage/repositories/index-db";
 import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
+import { type Cleanup, sandboxEnvDir } from "../../_helpers/sandbox";
 
 // Chunk-8 WI-8.3: usage_events moved to state.db, so this index.db loan
 // characterization exercises the loan against an index.db-resident table
@@ -51,12 +50,12 @@ function entryKeys(db: AkmDatabase): string[] {
  */
 describe("withIndexDb loan helper (WS5)", () => {
   let dataDir: string;
-  let prevDataDir: string | undefined;
+  let cleanup: Cleanup;
 
   beforeEach(() => {
-    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-indexdb-loan-"));
-    prevDataDir = process.env.AKM_DATA_DIR;
-    process.env.AKM_DATA_DIR = dataDir;
+    const sandboxed = sandboxEnvDir("akm-indexdb-loan-", "AKM_DATA_DIR");
+    dataDir = sandboxed.dir;
+    cleanup = sandboxed.cleanup;
     // Seed the index.db at exactly the location withIndexDb will open.
     const dbPath = path.join(dataDir, "index.db");
     const seed = openIndexDatabase(dbPath);
@@ -65,9 +64,7 @@ describe("withIndexDb loan helper (WS5)", () => {
   });
 
   afterEach(() => {
-    if (prevDataDir === undefined) delete process.env.AKM_DATA_DIR;
-    else process.env.AKM_DATA_DIR = prevDataDir;
-    fs.rmSync(dataDir, { recursive: true, force: true });
+    cleanup();
   });
 
   test("opens index.db at the resolved StorageLocations.indexDb and runs fn against it", () => {

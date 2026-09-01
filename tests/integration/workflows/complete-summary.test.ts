@@ -4,7 +4,6 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { ConfigError, UsageError } from "../../../src/core/errors";
@@ -17,7 +16,7 @@ import {
   getWorkflowStatus,
   type SummaryValidationFailure,
 } from "../../../src/workflows/runtime/runs";
-import { sandboxXdgConfigHome, withEnv } from "../../_helpers/sandbox";
+import { type Cleanup, sandboxEnvDir, sandboxXdgConfigHome, withEnv } from "../../_helpers/sandbox";
 import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 /**
@@ -28,7 +27,7 @@ import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow
  */
 
 let tmpDir = "";
-let prevDataDir: string | undefined;
+let cleanup: Cleanup;
 
 const RUN_ID = "11111111-1111-4111-8111-111111111111";
 // Unified format: the gate CONTROL fields (none needed here)
@@ -100,21 +99,15 @@ Thing is done, Tests pass
 }
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-complete-summary-"));
-  prevDataDir = process.env.AKM_DATA_DIR;
-  process.env.AKM_DATA_DIR = tmpDir;
+  const sandboxed = sandboxEnvDir("akm-complete-summary-", "AKM_DATA_DIR");
+  tmpDir = sandboxed.dir;
+  cleanup = sandboxed.cleanup;
   seedRun(path.join(tmpDir, "state.db"));
 });
 
 afterEach(() => {
   __setTestServer(null);
-  if (prevDataDir === undefined) delete process.env.AKM_DATA_DIR;
-  else process.env.AKM_DATA_DIR = prevDataDir;
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    /* ignore */
-  }
+  cleanup();
 });
 
 describe("completeWorkflowStep summary + validation gate (#506)", () => {

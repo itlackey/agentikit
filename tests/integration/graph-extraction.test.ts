@@ -26,7 +26,7 @@ import type { SearchSource } from "../../src/indexer/search/search-source";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
 import { computeBodyHash } from "../../src/storage/repositories/index-llm-cache-repository";
-import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
+import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 // ── Local LLM server ────────────────────────────────────────────────────────
 
@@ -111,49 +111,26 @@ const { GRAPH_EXTRACT_PROMPT_VERSION: graphExtractPromptVersion } = await import
 // ── Fixture helpers ─────────────────────────────────────────────────────────
 
 let tmpStash = "";
-let tmpDataHome = "";
-let tmpStateHome = "";
-const savedXdgDataHome = process.env.XDG_DATA_HOME;
-const savedXdgStateHome = process.env.XDG_STATE_HOME;
-const savedAkmStashDir = process.env.AKM_BUNDLE_DIR;
+let storage: IsolatedAkmStorage;
 
 beforeEach(() => {
-  tmpStash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-ext-"));
-  fs.mkdirSync(path.join(tmpStash, "memories"), { recursive: true });
-  fs.mkdirSync(path.join(tmpStash, "knowledge"), { recursive: true });
-  // Pair tmpStash with XDG_DATA_HOME / XDG_STATE_HOME so that any
-  // production helper inside graph-db / graph-extraction that incidentally
-  // calls getDbPath()/getTaskHistoryStateDir() (e.g. populating StoredGraphMeta.graphPath
-  // at src/indexer/graph-db.ts:410) does not fire the test-isolation guard
-  // when a prior leaky test left process.env.AKM_BUNDLE_DIR set.
-  tmpDataHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-ext-data-"));
-  tmpStateHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-graph-ext-state-"));
-  process.env.XDG_DATA_HOME = tmpDataHome;
-  process.env.XDG_STATE_HOME = tmpStateHome;
+  // withIsolatedAkmStorage pairs the stash with XDG_DATA_HOME / XDG_STATE_HOME
+  // so that any production helper inside graph-db / graph-extraction that
+  // incidentally calls getDbPath()/getTaskHistoryStateDir() (e.g. populating
+  // StoredGraphMeta.graphPath at src/indexer/graph-db.ts:410) does not fire
+  // the test-isolation guard when a prior leaky test left
+  // process.env.AKM_BUNDLE_DIR set. The stash scaffold already includes
+  // memories/ and knowledge/.
+  storage = withIsolatedAkmStorage();
+  tmpStash = storage.stashDir;
   extractor = () => ({ entities: [], relations: [] });
   extractorCallCount = 0;
   onLlmRequest = undefined;
 });
 
 afterEach(() => {
-  if (tmpStash) {
-    fs.rmSync(tmpStash, { recursive: true, force: true });
-    tmpStash = "";
-  }
-  if (tmpDataHome) {
-    fs.rmSync(tmpDataHome, { recursive: true, force: true });
-    tmpDataHome = "";
-  }
-  if (tmpStateHome) {
-    fs.rmSync(tmpStateHome, { recursive: true, force: true });
-    tmpStateHome = "";
-  }
-  if (savedXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = savedXdgDataHome;
-  if (savedXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
-  else process.env.XDG_STATE_HOME = savedXdgStateHome;
-  if (savedAkmStashDir === undefined) delete process.env.AKM_BUNDLE_DIR;
-  else process.env.AKM_BUNDLE_DIR = savedAkmStashDir;
+  storage.cleanup();
+  tmpStash = "";
 });
 
 afterAll(() => {

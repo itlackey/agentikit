@@ -32,7 +32,7 @@ import { parseAgentProposalPayload } from "../../../src/integrations/agent/promp
 import type { RunnerSpec } from "../../../src/integrations/agent/runner";
 import { _setChatCompletionForTests } from "../../../src/llm/client";
 import { quietQualityGateConfig } from "../../_helpers/factories";
-import { mutateScopedEnv, withEnv } from "../../_helpers/sandbox";
+import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 import { overrideSeam } from "../../_helpers/seams";
 
 // ── chatCompletion spy (swap-and-restore seam) ──────────────────────────────
@@ -53,12 +53,7 @@ let stubReturn = "";
 // ── Scaffolding ─────────────────────────────────────────────────────────────
 
 const tempDirs: string[] = [];
-const savedEnv = {
-  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
-  XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-};
+let storage: IsolatedAkmStorage;
 
 function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -67,11 +62,7 @@ function makeTempDir(prefix: string): string {
 }
 
 function makeStashDir(): string {
-  const stash = makeTempDir("akm-reflect-rs-stash-");
-  for (const dir of ["lessons", "skills", "memories", "knowledge"]) {
-    fs.mkdirSync(path.join(stash, dir), { recursive: true });
-  }
-  return stash;
+  return storage.stashDir;
 }
 
 function fakeLlmConnection(): LlmProfileConfig {
@@ -120,22 +111,13 @@ beforeEach(() => {
     });
     return stubReturn;
   });
-  process.env.XDG_CACHE_HOME = makeTempDir("akm-reflect-rs-cache-");
-  process.env.XDG_CONFIG_HOME = makeTempDir("akm-reflect-rs-config-");
-  process.env.XDG_DATA_HOME = makeTempDir("akm-reflect-rs-data-");
+  storage = withIsolatedAkmStorage();
   capturedCalls.length = 0;
   stubReturn = "";
 });
 
 afterEach(() => {
-  if (savedEnv.AKM_BUNDLE_DIR === undefined) delete process.env.AKM_BUNDLE_DIR;
-  else process.env.AKM_BUNDLE_DIR = savedEnv.AKM_BUNDLE_DIR;
-  if (savedEnv.XDG_CACHE_HOME === undefined) delete process.env.XDG_CACHE_HOME;
-  else process.env.XDG_CACHE_HOME = savedEnv.XDG_CACHE_HOME;
-  if (savedEnv.XDG_CONFIG_HOME === undefined) delete process.env.XDG_CONFIG_HOME;
-  else process.env.XDG_CONFIG_HOME = savedEnv.XDG_CONFIG_HOME;
-  if (savedEnv.XDG_DATA_HOME === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = savedEnv.XDG_DATA_HOME;
+  storage.cleanup();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -331,7 +331,8 @@ describe("akm CLI mutation events", () => {
 
     // `akm events` is no longer a registered command.
     const removed = await runCli(["events", "--format=json"]);
-    expect(removed.status).not.toBe(0);
+    expect(removed.status).toBe(2);
+    expect(JSON.parse(removed.stderr)).toMatchObject({ ok: false, code: "UNKNOWN_COMMAND" });
   });
 
   test("`akm log --type feedback` filters by event type", async () => {

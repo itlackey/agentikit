@@ -7,8 +7,6 @@
 // test (proving they are never re-parsed), not JS template interpolation.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
@@ -18,6 +16,7 @@ import { computeStepWorkList, type GateFeedback } from "../../../src/workflows/e
 import type { WorkflowPlanGraphV4 as WorkflowPlanGraph } from "../../../src/workflows/ir/schema-v4";
 import { getWorkflowStatus, resumeWorkflowRun } from "../../../src/workflows/runtime/runs";
 import type { SummaryJudge } from "../../../src/workflows/validate-summary";
+import { type Cleanup, sandboxEnvDir } from "../../_helpers/sandbox";
 import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
 /**
@@ -45,7 +44,7 @@ import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow
  */
 
 let tmpDir = "";
-let prevDataDir: string | undefined;
+let cleanup: Cleanup;
 
 const RUN_ID = "66666666-6666-4666-8666-666666666666";
 
@@ -93,19 +92,13 @@ function useFrozenPlan(frozen: WorkflowPlanGraph): () => Promise<WorkflowPlanGra
 }
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-gate-artifacts-"));
-  prevDataDir = process.env.AKM_DATA_DIR;
-  process.env.AKM_DATA_DIR = tmpDir;
+  const sandboxed = sandboxEnvDir("akm-gate-artifacts-", "AKM_DATA_DIR");
+  tmpDir = sandboxed.dir;
+  cleanup = sandboxed.cleanup;
 });
 
 afterEach(() => {
-  if (prevDataDir === undefined) delete process.env.AKM_DATA_DIR;
-  else process.env.AKM_DATA_DIR = prevDataDir;
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    /* ignore */
-  }
+  cleanup();
 });
 
 // ── Typed artifacts: IrStepPlan.outputSchema ─────────────────────────────────

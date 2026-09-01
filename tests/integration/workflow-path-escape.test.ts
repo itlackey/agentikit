@@ -15,35 +15,32 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createWorkflowAsset } from "../../src/workflows/authoring/authoring";
 import { durableItemRef } from "../_helpers/durable-ref";
+import { type IsolatedAkmStorage, makeSandboxDir, withEnvSync, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
-const tempDirs: string[] = [];
+const dirCleanups: (() => void)[] = [];
 
 function makeTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
+  const { dir, cleanup } = makeSandboxDir(prefix);
+  dirCleanups.push(cleanup);
   return dir;
 }
 
+// Each test overrides AKM_BUNDLE_DIR with its own custom stash dir via
+// withEnvSync; the outer storage supplies XDG_DATA_HOME / XDG_STATE_HOME (and
+// the other XDG vars, for the one test below that needs them) so the
+// test-isolation guard in src/core/paths.ts stays inert.
+let storage: IsolatedAkmStorage;
+
 beforeEach(() => {
-  // Pair AKM_BUNDLE_DIR (set inline below by each test) with XDG_DATA_HOME /
-  // XDG_STATE_HOME so the test-isolation guard in src/core/paths.ts stays inert.
-  process.env.XDG_DATA_HOME = makeTempDir("akm-workflow-path-data-");
-  process.env.XDG_STATE_HOME = makeTempDir("akm-workflow-path-state-");
+  storage = withIsolatedAkmStorage();
 });
 
 afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-  delete process.env.AKM_BUNDLE_DIR;
-  delete process.env.XDG_CONFIG_HOME;
-  delete process.env.XDG_CACHE_HOME;
-  delete process.env.XDG_DATA_HOME;
-  delete process.env.XDG_STATE_HOME;
+  for (const cleanup of dirCleanups.splice(0)) cleanup();
+  storage.cleanup();
 });
 
 // ── Happy path: clean stash ─────────────────────────────────────────────────
@@ -53,11 +50,10 @@ describe("createWorkflowAsset — clean stash (issue #157)", () => {
     const stashDir = makeTempDir("akm-issue157-stash-");
     const xdgCache = makeTempDir("akm-issue157-cache-");
     const xdgConfig = makeTempDir("akm-issue157-config-");
-    process.env.AKM_BUNDLE_DIR = stashDir;
-    process.env.XDG_CACHE_HOME = xdgCache;
-    process.env.XDG_CONFIG_HOME = xdgConfig;
 
-    const result = createWorkflowAsset({ name: "agentic-test-workflow" });
+    const result = withEnvSync({ AKM_BUNDLE_DIR: stashDir, XDG_CACHE_HOME: xdgCache, XDG_CONFIG_HOME: xdgConfig }, () =>
+      createWorkflowAsset({ name: "agentic-test-workflow" }),
+    );
 
     expect(result.ref).toBe(durableItemRef(stashDir, "workflow", "agentic-test-workflow"));
     expect(fs.existsSync(result.path)).toBe(true);
@@ -66,9 +62,10 @@ describe("createWorkflowAsset — clean stash (issue #157)", () => {
 
   test("bare name with hyphens resolves correctly", () => {
     const stashDir = makeTempDir("akm-issue157-stash-");
-    process.env.AKM_BUNDLE_DIR = stashDir;
 
-    const result = createWorkflowAsset({ name: "my-multi-step-workflow" });
+    const result = withEnvSync({ AKM_BUNDLE_DIR: stashDir }, () =>
+      createWorkflowAsset({ name: "my-multi-step-workflow" }),
+    );
 
     expect(result.ref).toBe(durableItemRef(stashDir, "workflow", "my-multi-step-workflow"));
     expect(fs.existsSync(result.path)).toBe(true);
@@ -76,9 +73,8 @@ describe("createWorkflowAsset — clean stash (issue #157)", () => {
 
   test("nested name (subdirectory) resolves correctly", () => {
     const stashDir = makeTempDir("akm-issue157-stash-");
-    process.env.AKM_BUNDLE_DIR = stashDir;
 
-    const result = createWorkflowAsset({ name: "team/release-flow" });
+    const result = withEnvSync({ AKM_BUNDLE_DIR: stashDir }, () => createWorkflowAsset({ name: "team/release-flow" }));
 
     expect(result.ref).toBe(durableItemRef(stashDir, "workflow", "team/release-flow"));
     expect(fs.existsSync(result.path)).toBe(true);
@@ -97,10 +93,10 @@ describe("createWorkflowAsset — clean stash (issue #157)", () => {
     const symlinkDir = path.join(linkParent, "stash-link");
     fs.symlinkSync(realDir, symlinkDir);
 
-    process.env.AKM_BUNDLE_DIR = symlinkDir;
-
     // Must not throw "Resolved workflow path escapes the stash"
-    const result = createWorkflowAsset({ name: "agentic-test-workflow" });
+    const result = withEnvSync({ AKM_BUNDLE_DIR: symlinkDir }, () =>
+      createWorkflowAsset({ name: "agentic-test-workflow" }),
+    );
 
     expect(result.ref).toBe(durableItemRef(symlinkDir, "workflow", "agentic-test-workflow"));
     expect(fs.existsSync(result.path)).toBe(true);
@@ -109,7 +105,6 @@ describe("createWorkflowAsset — clean stash (issue #157)", () => {
   test("--from succeeds with valid workflow markdown", () => {
     const stashDir = makeTempDir("akm-issue157-stash-");
     const srcDir = makeTempDir("akm-issue157-src-");
-    process.env.AKM_BUNDLE_DIR = stashDir;
 
     const srcPath = path.join(srcDir, "release.md");
     // Unified-format fixture (frontmatter graph + `## <id>` body — spec §2.2).
@@ -134,7 +129,9 @@ Check all inputs.
 `;
     fs.writeFileSync(srcPath, content, "utf8");
 
-    const result = createWorkflowAsset({ name: "release", from: srcPath });
+    const result = withEnvSync({ AKM_BUNDLE_DIR: stashDir }, () =>
+      createWorkflowAsset({ name: "release", from: srcPath }),
+    );
 
     expect(result.ref).toBe(durableItemRef(stashDir, "workflow", "release"));
     expect(fs.existsSync(result.path)).toBe(true);
@@ -147,16 +144,18 @@ Check all inputs.
 describe("createWorkflowAsset — path escape rejection", () => {
   test("../traversal is rejected", () => {
     const stashDir = makeTempDir("akm-issue157-stash-");
-    process.env.AKM_BUNDLE_DIR = stashDir;
 
-    expect(() => createWorkflowAsset({ name: "../outside" })).toThrow("must be a relative path without");
+    withEnvSync({ AKM_BUNDLE_DIR: stashDir }, () => {
+      expect(() => createWorkflowAsset({ name: "../outside" })).toThrow("must be a relative path without");
+    });
   });
 
   test("deep traversal is rejected", () => {
     const stashDir = makeTempDir("akm-issue157-stash-");
-    process.env.AKM_BUNDLE_DIR = stashDir;
 
-    expect(() => createWorkflowAsset({ name: "a/../../outside" })).toThrow("must be a relative path without");
+    withEnvSync({ AKM_BUNDLE_DIR: stashDir }, () => {
+      expect(() => createWorkflowAsset({ name: "a/../../outside" })).toThrow("must be a relative path without");
+    });
   });
 
   test("absolute path is sanitized into a relative name inside the stash", () => {
@@ -165,9 +164,8 @@ describe("createWorkflowAsset — path escape rejection", () => {
     // This is by design: the function converts absolute-looking user input
     // into a relative name rather than treating it as a filesystem path.
     const stashDir = makeTempDir("akm-issue157-stash-");
-    process.env.AKM_BUNDLE_DIR = stashDir;
 
-    const result = createWorkflowAsset({ name: "/etc/passwd" });
+    const result = withEnvSync({ AKM_BUNDLE_DIR: stashDir }, () => createWorkflowAsset({ name: "/etc/passwd" }));
     // Leading slash is stripped → name becomes "etc/passwd"
     expect(result.ref).toBe(durableItemRef(stashDir, "workflow", "etc/passwd"));
     // The resulting file is inside the stash workflows dir, not at /etc/passwd

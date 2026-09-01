@@ -147,152 +147,17 @@ const ENV_ASSIGN_ALLOWED = new Set<string>([
  * This list must only shrink over time as files are migrated.
  */
 const ALLOWED_FILES = new Set<string>([
-  // e2e.test.ts: extremely complex multi-scenario test; full migration is
-  // deferred — the env vars are set via per-subprocess env objects, not
-  // process.env mutation in the caller process.
-
-  // workflow-path-escape.test.ts: sets AKM_BUNDLE_DIR per-test for symlink
-  // path testing; each test creates a specific stash/symlink pair and the
-  // afterEach correctly deletes all env vars. Per-test pattern, not beforeEach.
-  "tests/integration/workflow-path-escape.test.ts",
-
   // tests/_helpers/sandbox.ts itself: defines the helpers.
   "tests/_helpers/sandbox.ts",
 
-  // source-clone.test.ts: one test overrides AKM_BUNDLE_DIR to a nonexistent
-  // path to verify --dest works without a working stash. The assignment is a
-  // deliberate semantics override inside the test body; beforeEach/afterEach
-  // still use the sandbox helper for all other isolation.
-  "tests/integration/source-clone.test.ts",
-
-  // indexer.test.ts: multi-stash tests set AKM_BUNDLE_DIR = primaryStash
-  // inside test bodies to configure cross-stash scenarios. This is intentional
-  // test-body logic (not isolation boilerplate); the sandbox handles restore
-  // via afterEach. Only the multi-stash describe blocks need per-test overrides.
-
-  // issue-36-repro.test.ts: three tests set AKM_BUNDLE_DIR in test bodies for
-  // cross-source and incremental-index tests. These are deliberate per-test
-  // overrides; beforeEach/afterEach use the sandbox helper for outer isolation.
-  "tests/integration/issue-36-repro.test.ts",
-
-  // source.test.ts: ~50 tests each create a dedicated stash with specific file
-  // content and set AKM_BUNDLE_DIR so akmSearch/akmIndex/akmShow read that stash.
-  // These are per-test content fixtures, not isolation boilerplate; XDG vars are
-  // now properly sandboxed via beforeEach/afterEach.
-  "tests/integration/source.test.ts",
-
-  // search-include-proposed-cli.test.ts: one test creates a custom stash with
-  // specific quality-marked skills and sets AKM_BUNDLE_DIR to that stash so the
-  // spawned CLI subprocess reads it. Deliberate fixture setup; XDG vars are
-  // sandboxed via beforeEach/afterEach.
-  "tests/integration/search-include-proposed-cli.test.ts",
-
-  // common.test.ts: resolveStashDir tests intentionally set/delete AKM_BUNDLE_DIR
-  // to verify the function's env-var lookup precedence (nonexistent path, file vs
-  // dir, config.json fallback, default HOME/akm). These are semantic tests of the
-  // env var behaviour itself; HOME and XDG_CONFIG_HOME are sandboxed.
-  "tests/integration/common.test.ts",
-
-  // semantic-search-e2e.test.ts: two nested describe blocks each use beforeAll +
-  // beforeEach to set up an isolated embedding environment. The outer gated block
-  // uses the sandbox helpers; the inner "graceful degradation" block (always runs)
-  // sets env vars manually in its own beforeAll/beforeEach because it needs a
-  // different stash from the gated block. Full migration would require deep
-  // refactoring of the cross-describe env sharing pattern.
-  "tests/integration/semantic-search-e2e.test.ts",
-
-  // wiki.test.ts: a few tests set XDG_CONFIG_HOME or AKM_BUNDLE_DIR in their bodies
-  // to configure wiki registration (external sources / config-based detection) or
-  // to point searchInWiki at a specific stash. These are deliberate fixture setups;
-  // the module-level beforeEach/afterEach now use the sandbox for outer isolation.
-
-  // scoring-pipeline.test.ts: buildTestIndex sets AKM_BUNDLE_DIR to the per-test
-  // tmpStash() dir so akmIndex and akmSearch read the right fixture stash. Each
-  // test creates its own isolated stash with specific content; XDG vars are
-  // sandboxed via beforeEach/afterEach.
-  "tests/integration/scoring-pipeline.test.ts",
-
-  // commands/search.test.ts: buildTestIndex and several tests set AKM_BUNDLE_DIR
-  // to per-test fixture stash dirs so akmIndex and akmSearch read the right content.
-  // XDG vars are sandboxed via beforeEach/afterEach.
-
-  // parallel-search.test.ts: buildTestIndex sets AKM_BUNDLE_DIR to the per-test
-  // tmpStash() so akmIndex and akmSearch read the right fixture stash.
-  // XDG vars are sandboxed via beforeEach/afterEach.
-  "tests/integration/parallel-search.test.ts",
-
-  // proposed-quality.test.ts: buildTestIndex sets AKM_BUNDLE_DIR to the per-test
-  // tmpStash() dir so akmSearch resolves the indexed content correctly.
-  // XDG vars are sandboxed via beforeEach/afterEach.
-  "tests/integration/proposed-quality.test.ts",
-
-  // The following files were not migrated by QW3 (#493) due to API drift
-  // between the migration base commit and release/0.8.0. They are grandfathered
-  // here; the list is allowed to shrink as follow-up migrations land.
-  "tests/integration/agent/agent-config-loader.test.ts",
-  "tests/integration/belief-state-phase1a.test.ts",
-  "tests/integration/commands/events.test.ts",
-  "tests/integration/commands/improve-distill-planner-skip-lessons.test.ts",
-  "tests/integration/commands/improve-ensure-index-first.test.ts",
-  "tests/integration/commands/improve-memory.test.ts",
-  "tests/integration/commands/improve-path-exists-guard.test.ts",
-  "tests/integration/commands/improve-reflect-unsupported-type-skip.test.ts",
-  "tests/integration/commands/improve-result-to-file.test.ts",
-  "tests/integration/commands/reflect-response-schema.test.ts",
-  "tests/integration/config-sanitize-secrets.test.ts",
-  "tests/integration/config.test.ts",
-  "tests/integration/commands/consolidate/consolidate-promote-dedup.test.ts",
-  "tests/integration/write-source.test.ts",
-  "tests/integration/commands/distill/distill-cli-flag.test.ts",
-  "tests/integration/commands/distill/distill-response-schema.test.ts",
-  "tests/integration/distill.test.ts",
-  "tests/integration/graph-extraction-batch.test.ts",
-  "tests/integration/graph-extraction.test.ts",
-  // tests/health-command.test.ts — migrated to withIsolatedAkmStorage (C2/#499).
-  "tests/integration/commands/improve/improve-dry-run-side-effects.test.ts",
-  "tests/integration/commands/improve/improve-no-hang.test.ts",
-  "tests/integration/index-clean.test.ts",
-  "tests/integration/llm-enrichment-cache.test.ts",
-  "tests/integration/commands/reflect/reflect-completed-on-failure.test.ts",
-  "tests/integration/commands/reflect/reflect-pipeline-fixes.test.ts",
-  "tests/integration/registry-cli.test.ts",
-  "tests/integration/search-source-filter.test.ts",
-  "tests/integration/setup-tmp-stash-guard.test.ts",
-  "tests/integration/source-qa-fixes.test.ts",
-  "tests/integration/source-source.test.ts",
+  // test-isolation-no-swallow.test.ts (#785 ISOLATION-08 drain): this file is
+  // a meta-test of the isolation guard ITSELF — it deliberately sets
+  // AKM_BUNDLE_DIR without pairing XDG_DATA_HOME/XDG_STATE_HOME to prove the
+  // guard throws TEST_ISOLATION_MISSING instead of silently swallowing the
+  // error at several patched call sites. Routing it through
+  // withIsolatedAkmStorage (which pairs all the vars) would make the very
+  // condition under test impossible to reproduce. Kept unmigrated on purpose.
   "tests/integration/test-isolation-no-swallow.test.ts",
-
-  // The following files were not yet migrated (grandfathered alongside the
-  // QW3 batch above). Each uses mkdtempSync + direct process.env assignment;
-  // migration is deferred to a follow-up PR.
-  "tests/integration/commands/improve-memory-misc.test.ts",
-  "tests/integration/commands/improve/improve-eligibility.test.ts",
-
-  // ISOLATION-08 batch: newly caught the moment AKM_ENV_VARS widened from 5
-  // names to the full 15-name tests/_preload.ts HARNESSED contract (the four
-  // AKM_*_DIR overrides + XDG_STATE_HOME + the diagnostic/secret/registry
-  // vars were previously invisible to Rule 1/2). Each file below already uses
-  // the standard mkdtempSync-fixture-dir + per-test env-override-with-restore
-  // idiom used throughout tests/integration/ (same shape as the pre-existing
-  // ALLOWED_FILES entries above) for one of the newly-covered vars; none of
-  // them were flagged before this widening. Mirrors the 2026-07-02 Rule 5
-  // precedent (baseline bumped up, then drained as files migrated) — these
-  // are grandfathered now that the gap is visible; migrating them onto
-  // withIsolatedAkmStorage/withEnv is follow-up work, not blocking here.
-  "tests/integration/akm-eval-planner-waste.test.ts",
-  "tests/integration/akm-eval-reflect-quality.test.ts",
-  "tests/integration/proposals-validation.test.ts",
-  "tests/integration/registry-index-v2.test.ts",
-  "tests/integration/registry-search.test.ts",
-  "tests/integration/storage/index-db-loan.characterization.test.ts",
-  "tests/integration/storage/workflow-runs-repository.characterization.test.ts",
-  "tests/integration/tasks-runner.test.ts",
-  "tests/integration/workflows/checkin-surfacing.test.ts",
-  "tests/integration/workflows/complete-summary.test.ts",
-  "tests/integration/workflows/gate-artifacts.test.ts",
-  "tests/integration/workflows/indexer-rejection.test.ts",
-  "tests/integration/workflows/native-executor.test.ts",
-  "tests/integration/workflows/status-units.test.ts",
 ]);
 
 /**
@@ -349,8 +214,17 @@ const SPAWN_ALLOWED = new Set<string>([]);
  * 61 → 60: `tests/integration/semantic-status.test.ts`'s grandfathered entry
  * was removed with the file itself (#873 — cached semantic-search verdict
  * deletion).
+ *
+ * 60 → 4 (#785 ISOLATION-08 drain): all 57 remaining `ALLOWED_FILES` test-file
+ * entries were migrated onto `withIsolatedAkmStorage`/`withEnv`/`withEnvSync`/
+ * `mutateScopedEnv` — no test was weakened, every assertion preserved. One
+ * entry (`tests/integration/test-isolation-no-swallow.test.ts`) is retained
+ * on purpose: it is a meta-test of the isolation guard itself and migrating
+ * it would make the very condition under test unreproducible. `ALLOWED_FILES`
+ * is now just that file plus `tests/_helpers/sandbox.ts` (2); combined with
+ * the unchanged 2-entry `ENV_ASSIGN_ALLOWED`, the ratchet lands at 4.
  */
-export const ALLOWLIST_RATCHET_BASELINE = 60;
+export const ALLOWLIST_RATCHET_BASELINE = 4;
 
 /** Live size of the combined grandfather allowlist (all rule sets). */
 export function combinedAllowlistSize(): number {

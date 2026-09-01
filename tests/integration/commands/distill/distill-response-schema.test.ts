@@ -18,9 +18,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 import {
   akmDistill,
@@ -31,29 +28,14 @@ import {
 import { listProposals } from "../../../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import type { readEvents } from "../../../../src/core/events";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 // ── Scaffolding ─────────────────────────────────────────────────────────────
 
-const tempDirs: string[] = [];
-const savedEnv = {
-  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
-  XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-};
-
-function makeTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
+let storage: IsolatedAkmStorage;
 
 function makeStashDir(): string {
-  const stash = makeTempDir("akm-distill-rs-stash-");
-  for (const dir of ["lessons", "skills", "memories", "knowledge"]) {
-    fs.mkdirSync(path.join(stash, dir), { recursive: true });
-  }
-  return stash;
+  return storage.stashDir;
 }
 
 function configEnabled(stashDir: string): AkmConfig {
@@ -86,23 +68,11 @@ const noopLookup = async () => null;
 const emptyEvents = (() => ({ events: [], nextOffset: 0 })) as unknown as typeof readEvents;
 
 beforeEach(() => {
-  process.env.XDG_CACHE_HOME = makeTempDir("akm-distill-rs-cache-");
-  process.env.XDG_CONFIG_HOME = makeTempDir("akm-distill-rs-config-");
-  process.env.XDG_DATA_HOME = makeTempDir("akm-distill-rs-data-");
+  storage = withIsolatedAkmStorage();
 });
 
 afterEach(() => {
-  if (savedEnv.AKM_BUNDLE_DIR === undefined) delete process.env.AKM_BUNDLE_DIR;
-  else process.env.AKM_BUNDLE_DIR = savedEnv.AKM_BUNDLE_DIR;
-  if (savedEnv.XDG_CACHE_HOME === undefined) delete process.env.XDG_CACHE_HOME;
-  else process.env.XDG_CACHE_HOME = savedEnv.XDG_CACHE_HOME;
-  if (savedEnv.XDG_CONFIG_HOME === undefined) delete process.env.XDG_CONFIG_HOME;
-  else process.env.XDG_CONFIG_HOME = savedEnv.XDG_CONFIG_HOME;
-  if (savedEnv.XDG_DATA_HOME === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = savedEnv.XDG_DATA_HOME;
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  storage.cleanup();
 });
 
 // ── 1. Schema shape ─────────────────────────────────────────────────────────

@@ -3,8 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { formatWorkflowStatusPlain } from "../../../src/output/text/helpers";
@@ -13,6 +11,7 @@ import {
   withWorkflowRunsRepo,
 } from "../../../src/storage/repositories/workflow-runs-repository";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
+import { type Cleanup, sandboxEnvDir } from "../../_helpers/sandbox";
 
 /**
  * `akm workflow status --units` (#22): the honest per-unit diagnostic surface.
@@ -23,7 +22,7 @@ import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
  */
 
 let tmpDir = "";
-let prevDataDir: string | undefined;
+let cleanup: Cleanup;
 
 const RUN_ID = "44444444-4444-4444-8444-444444444444";
 
@@ -43,20 +42,14 @@ function seedRun(dbPath: string): void {
 }
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-status-units-"));
-  prevDataDir = process.env.AKM_DATA_DIR;
-  process.env.AKM_DATA_DIR = tmpDir;
+  const sandboxed = sandboxEnvDir("akm-status-units-", "AKM_DATA_DIR");
+  tmpDir = sandboxed.dir;
+  cleanup = sandboxed.cleanup;
   seedRun(path.join(tmpDir, "state.db"));
 });
 
 afterEach(() => {
-  if (prevDataDir === undefined) delete process.env.AKM_DATA_DIR;
-  else process.env.AKM_DATA_DIR = prevDataDir;
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    /* ignore */
-  }
+  cleanup();
 });
 
 async function seedTwoUnits(): Promise<void> {

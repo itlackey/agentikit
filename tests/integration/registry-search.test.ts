@@ -1,7 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { searchRegistry } from "../../src/commands/read/registry-search";
 import type { RegistryIndex } from "../../src/registry/providers/static-index";
 import { type Cleanup, sandboxXdgCacheHome, sandboxXdgDataHome } from "../_helpers/sandbox";
@@ -67,14 +64,6 @@ const FIXTURE_INDEX: RegistryIndex = {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const createdTmpDirs: string[] = [];
-
-function _createTmpDir(prefix = "akm-search-"): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  createdTmpDirs.push(dir);
-  return dir;
-}
-
 /** Start a minimal HTTP server that serves the fixture index. */
 function serveIndex(index: RegistryIndex): { url: string; close: () => void } {
   const body = JSON.stringify(index);
@@ -105,12 +94,6 @@ function serveError(status: number): { url: string; close: () => void } {
     close: () => server.stop(true),
   };
 }
-
-afterAll(() => {
-  for (const dir of createdTmpDirs) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
 
 const originalRegistryUrl = process.env.AKM_REGISTRY_URL;
 

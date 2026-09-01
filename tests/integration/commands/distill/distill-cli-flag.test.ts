@@ -28,12 +28,10 @@ afterAll(() => {
  * Drive the CLI in-process with fresh sandboxed HOME/XDG dirs (and
  * AKM_BUNDLE_DIR cleared), mirroring the env the old subprocess runner set.
  *
- * Exit-code note: the real entry point exits 2 on citty's "Unknown command"
- * (R-032, commit 96ff2fe; pinned at tests/integration/cli-errors.test.ts:383-389),
- * but in the in-process harness the escaped error is classified via
- * classifyExitCode → 70 (internal). The tests therefore assert only that the
- * exit code is non-zero; the "Unknown command" message lands on captured
- * stderr either way.
+ * Exit-code note: an unknown command (citty's "Unknown command", R-032,
+ * commit 96ff2fe; pinned at tests/integration/cli-errors.test.ts:383-389)
+ * exits 2 with a machine-readable `{ ok: false, code: "UNKNOWN_COMMAND" }`
+ * envelope on stderr — verified live via the in-process harness.
  */
 async function runCli(
   args: string[],
@@ -57,7 +55,8 @@ async function runCli(
 describe("akm distill CLI removal (0.8.0 hard break)", () => {
   test("legacy distill command is rejected as unknown", async () => {
     const result = await runCli(["distill", "skills/foo"]);
-    expect(result.status).not.toBe(0);
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "UNKNOWN_COMMAND" });
     expect(`${result.stdout}\n${result.stderr}`).toContain("Unknown command");
     expect(`${result.stdout}\n${result.stderr}`).toContain("distill");
   });
@@ -69,7 +68,8 @@ describe("akm distill CLI removal (0.8.0 hard break)", () => {
         env: { AKM_DISTILL_EXCLUDE_FEEDBACK_FROM: "memories/baz" },
       },
     );
-    expect(result.status).not.toBe(0);
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code: "UNKNOWN_COMMAND" });
     expect(`${result.stdout}\n${result.stderr}`).toContain("Unknown command");
     expect(`${result.stdout}\n${result.stderr}`).toContain("distill");
   });
@@ -92,17 +92,10 @@ import {
 import { akmDistill } from "../../../../src/commands/improve/distill";
 import { listProposals } from "../../../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../../../src/core/config/config";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
-const happyTempDirs: string[] = [];
-
-function happyTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  happyTempDirs.push(dir);
-  return dir;
-}
-
-function happyStash(): string {
-  const stash = happyTempDir("akm-distill-happy-stash-");
+function happyStash(storage: IsolatedAkmStorage): string {
+  const stash = storage.stashDir;
   for (const sub of ["lessons", "skills", "memories"]) {
     fs.mkdirSync(path.join(stash, sub), { recursive: true });
   }
@@ -117,22 +110,19 @@ when_to_use: Searching for symbols across a multi-thousand-file repo
 Use rg.
 `;
 
+let happyStorage: IsolatedAkmStorage;
+
 beforeEachHappy(() => {
-  process.env.XDG_CACHE_HOME = happyTempDir("akm-distill-happy-cache-");
-  process.env.XDG_CONFIG_HOME = happyTempDir("akm-distill-happy-config-");
-  process.env.XDG_DATA_HOME = happyTempDir("akm-distill-happy-data-");
-  process.env.XDG_STATE_HOME = happyTempDir("akm-distill-happy-state-");
+  happyStorage = withIsolatedAkmStorage();
 });
 
 afterEachHappy(() => {
-  for (const dir of happyTempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  happyStorage.cleanup();
 });
 
 describeHappy("akm distill happy-path (#284 CRIT 3)", () => {
   testHappy("LLM stub returns valid lesson → outcome=queued, proposal in queue", async () => {
-    const stash = happyStash();
+    const stash = happyStash(happyStorage);
     const config: AkmConfig = {
       configVersion: "0.9.0",
       bundles: { stash: { path: stash, writable: true } },
@@ -164,7 +154,7 @@ describeHappy("akm distill happy-path (#284 CRIT 3)", () => {
   });
 
   testHappy("--source-run sourceRun param threads onto the queued proposal", async () => {
-    const stash = happyStash();
+    const stash = happyStash(happyStorage);
     const config: AkmConfig = {
       configVersion: "0.9.0",
       bundles: { stash: { path: stash, writable: true } },

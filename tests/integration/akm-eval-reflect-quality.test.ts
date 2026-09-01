@@ -28,27 +28,20 @@ import {
   runReflectQualityCase,
 } from "../../scripts/akm-eval/src/runners/reflect-quality";
 import type { EvalCase, EvalContext } from "../../scripts/akm-eval/src/types";
+import { type Cleanup, sandboxEnvDir } from "../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
-const ORIGINAL_AKM_DATA_DIR = process.env.AKM_DATA_DIR;
+let dataDirCleanup: Cleanup = () => {};
 
 afterAll(() => {
   for (const dir of createdTmpDirs) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
-  if (ORIGINAL_AKM_DATA_DIR === undefined) {
-    delete process.env.AKM_DATA_DIR;
-  } else {
-    process.env.AKM_DATA_DIR = ORIGINAL_AKM_DATA_DIR;
-  }
 });
 
 afterEach(() => {
-  if (ORIGINAL_AKM_DATA_DIR === undefined) {
-    delete process.env.AKM_DATA_DIR;
-  } else {
-    process.env.AKM_DATA_DIR = ORIGINAL_AKM_DATA_DIR;
-  }
+  dataDirCleanup();
+  dataDirCleanup = () => {};
 });
 
 /**
@@ -93,9 +86,9 @@ function makeTmpStash(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-eval-reflect-"));
   createdTmpDirs.push(dir);
   fs.mkdirSync(path.join(dir, ".akm", "runs"), { recursive: true });
-  const dataDir = path.join(dir, ".akm", "data");
-  initStateDb(dataDir);
-  process.env.AKM_DATA_DIR = dataDir;
+  const dataResult = sandboxEnvDir("akm-eval-reflect-data-", "AKM_DATA_DIR", dataDirCleanup);
+  dataDirCleanup = dataResult.cleanup;
+  initStateDb(dataResult.dir);
   return dir;
 }
 
@@ -416,11 +409,7 @@ describe("collectReflectActions (end-to-end fixture)", () => {
   });
 
   test("returns empty when stash has no improve runs", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-eval-empty-"));
-    createdTmpDirs.push(dir);
-    const dataDir = path.join(dir, ".akm", "data");
-    initStateDb(dataDir);
-    process.env.AKM_DATA_DIR = dataDir;
+    const dir = makeTmpStash();
     const collected = collectReflectActions(dir, 20);
     expect(collected.actions).toEqual([]);
     expect(collected.runIdsRead).toEqual([]);

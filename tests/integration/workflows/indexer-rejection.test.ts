@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { getDbPath } from "../../../src/core/paths";
 import { resetQuiet, resetVerbose, setVerbose } from "../../../src/core/warn";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
-import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../../_helpers/sandbox";
+import { type Cleanup, makeSandboxDir, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../../_helpers/sandbox";
 
 let envCleanup: Cleanup = () => {};
 
@@ -39,7 +38,7 @@ afterEach(() => {
 });
 
 function tmpStash(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-wf-idx-"));
+  const dir = makeSandboxDir("akm-wf-idx").dir;
   fs.mkdirSync(path.join(dir, "workflows"), { recursive: true });
   return dir;
 }

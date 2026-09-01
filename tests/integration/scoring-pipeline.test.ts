@@ -20,6 +20,7 @@ import {
   sandboxXdgCacheHome,
   sandboxXdgConfigHome,
   sandboxXdgDataHome,
+  withEnv,
 } from "../_helpers/sandbox";
 
 // ── Temp directory tracking ─────────────────────────────────────────────────
@@ -53,15 +54,17 @@ function tmpStash(): string {
   return dir;
 }
 
-async function buildTestIndex(stashDir: string, files: Record<string, string> = {}) {
-  for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = path.join(stashDir, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content);
-  }
-  process.env.AKM_BUNDLE_DIR = stashDir;
-  saveConfig({ semanticSearchMode: "off" });
-  await akmIndex({ stashDir, full: true });
+/**
+ * Index `stashDir` with AKM_BUNDLE_DIR pointed at it, then run `run` while the
+ * env override is still in effect — every akmSearch call a test makes must run
+ * inside `run` so it reads back the stash that was just indexed.
+ */
+async function withTestIndex<T>(stashDir: string, run: () => Promise<T> | T): Promise<T> {
+  return withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
+    saveConfig({ semanticSearchMode: "off" });
+    await akmIndex({ stashDir, full: true });
+    return run();
+  });
 }
 
 function expectDefined<T>(value: T | null | undefined): T {
@@ -115,26 +118,26 @@ describe("Issue #1: Two-phase boost — score/rank consistency", () => {
       "---\ndescription: A special deployment utility for servers\nquality: generated\n---\n",
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "deployment utility", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      const alphaHit = localHits.find((h) => h.name === "alpha-tool");
+      const betaHit = localHits.find((h) => h.name === "beta-tool");
 
-    const result = await akmSearch({ query: "deployment utility", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    const alphaHit = localHits.find((h) => h.name === "alpha-tool");
-    const betaHit = localHits.find((h) => h.name === "beta-tool");
+      const resolvedAlpha = expectDefined(alphaHit);
+      const resolvedBeta = expectDefined(betaHit);
 
-    const resolvedAlpha = expectDefined(alphaHit);
-    const resolvedBeta = expectDefined(betaHit);
-
-    // After fix: rank order and displayed scores must agree.
-    // The curated item (alpha) should rank higher than the generated item.
-    // Per CLAUDE.md / spec §9 displayed scores are clamped to [0,1]; on a
-    // strong-match query both items may clamp to the ceiling, so the
-    // observable score relation is "alpha >= beta" while rank ordering
-    // strictly separates them.
-    const alphaIdx = localHits.indexOf(resolvedAlpha);
-    const betaIdx = localHits.indexOf(resolvedBeta);
-    expect(alphaIdx).toBeLessThan(betaIdx);
-    expect(resolvedAlpha.score ?? 0).toBeGreaterThanOrEqual(expectDefined(resolvedBeta.score));
+      // After fix: rank order and displayed scores must agree.
+      // The curated item (alpha) should rank higher than the generated item.
+      // Per CLAUDE.md / spec §9 displayed scores are clamped to [0,1]; on a
+      // strong-match query both items may clamp to the ceiling, so the
+      // observable score relation is "alpha >= beta" while rank ordering
+      // strictly separates them.
+      const alphaIdx = localHits.indexOf(resolvedAlpha);
+      const betaIdx = localHits.indexOf(resolvedBeta);
+      expect(alphaIdx).toBeLessThan(betaIdx);
+      expect(resolvedAlpha.score ?? 0).toBeGreaterThanOrEqual(expectDefined(resolvedBeta.score));
+    });
   });
 
   test("buildDbHit does not apply quality/confidence boost a second time", async () => {
@@ -259,17 +262,17 @@ describe("Issue #3: NaN guard on vector distance", () => {
       }),
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "testing NaN safety", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
-    const result = await akmSearch({ query: "testing NaN safety", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    for (const hit of localHits) {
-      if (hit.score !== undefined) {
-        expect(Number.isFinite(hit.score)).toBe(true);
-        expect(Number.isNaN(hit.score)).toBe(false);
+      for (const hit of localHits) {
+        if (hit.score !== undefined) {
+          expect(Number.isFinite(hit.score)).toBe(true);
+          expect(Number.isNaN(hit.score)).toBe(false);
+        }
       }
-    }
+    });
   });
 });
 
@@ -305,19 +308,19 @@ describe("Issue #4: deduplicateByPath enforces sort precondition", () => {
       }),
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "deploy infra", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
-    const result = await akmSearch({ query: "deploy infra", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    // Only one hit per file path should appear
-    const pathCounts = new Map<string, number>();
-    for (const hit of localHits) {
-      pathCounts.set(hit.path, (pathCounts.get(hit.path) ?? 0) + 1);
-    }
-    for (const [, count] of pathCounts) {
-      expect(count).toBe(1);
-    }
+      // Only one hit per file path should appear
+      const pathCounts = new Map<string, number>();
+      for (const hit of localHits) {
+        pathCounts.set(hit.path, (pathCounts.get(hit.path) ?? 0) + 1);
+      }
+      for (const [, count] of pathCounts) {
+        expect(count).toBe(1);
+      }
+    });
   });
 });
 
@@ -345,23 +348,23 @@ describe("Issue #7: Boost accumulation caps", () => {
       `---\ndescription: ${sharedDesc}\ntags:\n  - deploy\n  - server\n---\n`,
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      // Use a simple query that both entries match on via FTS (description),
+      // with tokens that also match tags in both entries
+      const result = await akmSearch({ query: "deploy server", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      const manyTagsHit = localHits.find((h) => h.name === "many-tags");
+      const fewTagsHit = localHits.find((h) => h.name === "few-tags");
 
-    // Use a simple query that both entries match on via FTS (description),
-    // with tokens that also match tags in both entries
-    const result = await akmSearch({ query: "deploy server", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    const manyTagsHit = localHits.find((h) => h.name === "many-tags");
-    const fewTagsHit = localHits.find((h) => h.name === "few-tags");
+      const resolvedMany = expectDefined(manyTagsHit);
+      const resolvedFew = expectDefined(fewTagsHit);
 
-    const resolvedMany = expectDefined(manyTagsHit);
-    const resolvedFew = expectDefined(fewTagsHit);
-
-    // With tag cap at 0.30, both entries cap at the same tag boost (2 tags
-    // match "deploy" and "server" in both). The many-tags entry should NOT
-    // have a dramatically higher score. The ratio should be bounded.
-    const ratio = expectDefined(resolvedMany.score) / expectDefined(resolvedFew.score);
-    expect(ratio).toBeLessThan(2.0);
+      // With tag cap at 0.30, both entries cap at the same tag boost (2 tags
+      // match "deploy" and "server" in both). The many-tags entry should NOT
+      // have a dramatically higher score. The ratio should be bounded.
+      const ratio = expectDefined(resolvedMany.score) / expectDefined(resolvedFew.score);
+      expect(ratio).toBeLessThan(2.0);
+    });
   });
 
   test("entry with many matching searchHints has capped boost", async () => {
@@ -381,21 +384,21 @@ describe("Issue #7: Boost accumulation caps", () => {
       "---\ndescription: Testing hint caps for search relevance\nsearchHints:\n  - deploy web apps\n  - deploy mobile apps\n---\n",
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "deploy", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      const manyHintsHit = localHits.find((h) => h.name === "many-hints");
+      const fewHintsHit = localHits.find((h) => h.name === "few-hints");
 
-    const result = await akmSearch({ query: "deploy", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    const manyHintsHit = localHits.find((h) => h.name === "many-hints");
-    const fewHintsHit = localHits.find((h) => h.name === "few-hints");
+      const resolvedMany = expectDefined(manyHintsHit);
+      const resolvedFew = expectDefined(fewHintsHit);
 
-    const resolvedMany = expectDefined(manyHintsHit);
-    const resolvedFew = expectDefined(fewHintsHit);
-
-    // The hint cap (0.24) limits hint boost accumulation, but base FTS scores
-    // may differ because entries with more hint content have more searchable text.
-    // The key invariant: both hits should be found and the ratio should be bounded.
-    const ratio = expectDefined(resolvedMany.score) / expectDefined(resolvedFew.score);
-    expect(ratio).toBeLessThan(3.5); // Reasonable bound; exact ratio depends on FTS normalization
+      // The hint cap (0.24) limits hint boost accumulation, but base FTS scores
+      // may differ because entries with more hint content have more searchable text.
+      // The key invariant: both hits should be found and the ratio should be bounded.
+      const ratio = expectDefined(resolvedMany.score) / expectDefined(resolvedFew.score);
+      expect(ratio).toBeLessThan(3.5); // Reasonable bound; exact ratio depends on FTS normalization
+    });
   });
 });
 
@@ -420,20 +423,20 @@ describe("Issue #8: Score rounding precision", () => {
       "---\ndescription: Widget factory for production deployment of services\n---\n",
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "widget", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      const hitA = localHits.find((h) => h.name === "precise-a");
+      const hitB = localHits.find((h) => h.name === "precise-b");
 
-    const result = await akmSearch({ query: "widget", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    const hitA = localHits.find((h) => h.name === "precise-a");
-    const hitB = localHits.find((h) => h.name === "precise-b");
+      const resolvedA = expectDefined(hitA);
+      const resolvedB = expectDefined(hitB);
 
-    const resolvedA = expectDefined(hitA);
-    const resolvedB = expectDefined(hitB);
-
-    // With 4-decimal rounding, these should have different scores
-    // because precise-a has a tag match boost and precise-b does not.
-    expect(resolvedA.score).toBeGreaterThan(expectDefined(resolvedB.score));
-    expect(resolvedA.score).not.toBe(resolvedB.score);
+      // With 4-decimal rounding, these should have different scores
+      // because precise-a has a tag match boost and precise-b does not.
+      expect(resolvedA.score).toBeGreaterThan(expectDefined(resolvedB.score));
+      expect(resolvedA.score).not.toBe(resolvedB.score);
+    });
   });
 
   test("scores are rounded to at most 4 decimal places", async () => {
@@ -445,17 +448,17 @@ describe("Issue #8: Score rounding precision", () => {
       "---\ndescription: A utility for checking rounding behavior\n---\n",
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "rounding behavior", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      const hit = localHits.find((h) => h.name === "round-check");
+      const resolved = expectDefined(hit);
 
-    const result = await akmSearch({ query: "rounding behavior", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    const hit = localHits.find((h) => h.name === "round-check");
-    const resolved = expectDefined(hit);
-
-    // Verify score has at most 4 decimal places
-    const scoreStr = String(resolved.score);
-    const decimalPart = scoreStr.split(".")[1] ?? "";
-    expect(decimalPart.length).toBeLessThanOrEqual(4);
+      // Verify score has at most 4 decimal places
+      const scoreStr = String(resolved.score);
+      const decimalPart = scoreStr.split(".")[1] ?? "";
+      expect(decimalPart.length).toBeLessThanOrEqual(4);
+    });
   });
 });
 
@@ -471,15 +474,15 @@ describe("Issue #12: buildWhyMatched includes description matches", () => {
       "---\ndescription: Orchestrates Kubernetes pod lifecycle management\n---\n",
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "kubernetes", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      const hit = localHits.find((h) => h.name === "desc-match");
 
-    const result = await akmSearch({ query: "kubernetes", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    const hit = localHits.find((h) => h.name === "desc-match");
-
-    const resolved = expectDefined(hit);
-    expect(resolved.whyMatched).toBeDefined();
-    expect(resolved.whyMatched).toContain("matched description");
+      const resolved = expectDefined(hit);
+      expect(resolved.whyMatched).toBeDefined();
+      expect(resolved.whyMatched).toContain("matched description");
+    });
   });
 
   test("buildWhyMatched unit test: description match is reported", () => {
@@ -536,25 +539,25 @@ describe("Issue #14: Deterministic sort on tied scores", () => {
       );
     }
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      // Run the search multiple times to verify determinism
+      const results: string[][] = [];
+      for (let i = 0; i < 5; i++) {
+        const result = await akmSearch({ query: "widget factory", source: "local", skipLogging: true });
+        const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+        const order = localHits.filter((h) => names.includes(h.name)).map((h) => h.name);
+        results.push(order);
+      }
 
-    // Run the search multiple times to verify determinism
-    const results: string[][] = [];
-    for (let i = 0; i < 5; i++) {
-      const result = await akmSearch({ query: "widget factory", source: "local", skipLogging: true });
-      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-      const order = localHits.filter((h) => names.includes(h.name)).map((h) => h.name);
-      results.push(order);
-    }
+      // All runs should produce the exact same order — this is the key
+      // requirement. Without the tiebreaker, the sort is non-deterministic.
+      for (let i = 1; i < results.length; i++) {
+        expect(results[i]).toEqual(results[0]);
+      }
 
-    // All runs should produce the exact same order — this is the key
-    // requirement. Without the tiebreaker, the sort is non-deterministic.
-    for (let i = 1; i < results.length; i++) {
-      expect(results[i]).toEqual(results[0]);
-    }
-
-    // Also verify all 3 entries are present
-    expect(results[0]!.length).toBe(3);
+      // Also verify all 3 entries are present
+      expect(results[0]!.length).toBe(3);
+    });
   });
 });
 
@@ -679,25 +682,26 @@ describe("Cross-stash identity at index time", () => {
     writeFile(path.join(primaryStash, "knowledge", "github.md"), asset);
     writeFile(path.join(secondStash, "knowledge", "github.md"), asset);
 
-    process.env.AKM_BUNDLE_DIR = primaryStash;
-    saveConfig({
-      semanticSearchMode: "off",
-      bundles: { second: { path: secondStash } },
+    await withEnv({ AKM_BUNDLE_DIR: primaryStash }, async () => {
+      saveConfig({
+        semanticSearchMode: "off",
+        bundles: { second: { path: secondStash } },
+      });
+      await akmIndex({ stashDir: primaryStash, full: true });
+
+      const result = await akmSearch({ query: "github", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+
+      // Filter to just the "github" platform adapter hits
+      const githubHits = localHits.filter(
+        (h) => h.name.includes("github") && h.description?.includes("GitHub Platform Adapter"),
+      );
+
+      expect(githubHits.length).toBe(2);
+      expect(githubHits.map((hit) => hit.path).sort()).toEqual(
+        [path.join(primaryStash, "knowledge", "github.md"), path.join(secondStash, "knowledge", "github.md")].sort(),
+      );
     });
-    await akmIndex({ stashDir: primaryStash, full: true });
-
-    const result = await akmSearch({ query: "github", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    // Filter to just the "github" platform adapter hits
-    const githubHits = localHits.filter(
-      (h) => h.name.includes("github") && h.description?.includes("GitHub Platform Adapter"),
-    );
-
-    expect(githubHits.length).toBe(2);
-    expect(githubHits.map((hit) => hit.path).sort()).toEqual(
-      [path.join(primaryStash, "knowledge", "github.md"), path.join(secondStash, "knowledge", "github.md")].sort(),
-    );
   });
 
   test("different stash directory structures are not deduped when entry names differ", async () => {
@@ -712,21 +716,22 @@ describe("Cross-stash identity at index time", () => {
     writeFile(path.join(primaryStash, "knowledge", "tracker", "platforms", "github.md"), adapterFm);
     writeFile(path.join(secondStash, "knowledge", "platforms", "github.md"), adapterFm);
 
-    process.env.AKM_BUNDLE_DIR = primaryStash;
-    saveConfig({
-      semanticSearchMode: "off",
-      bundles: { second: { path: secondStash } },
+    await withEnv({ AKM_BUNDLE_DIR: primaryStash }, async () => {
+      saveConfig({
+        semanticSearchMode: "off",
+        bundles: { second: { path: secondStash } },
+      });
+      await akmIndex({ stashDir: primaryStash, full: true });
+
+      const result = await akmSearch({ query: "github adapter", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+
+      // Filter to just the adapter hits (same description from different roots)
+      const adapterHits = localHits.filter((h) => h.description?.includes("GitHub Platform Adapter"));
+
+      // Identity uses type + entry.name, so different canonical names remain distinct.
+      expect(adapterHits.length).toBe(2);
     });
-    await akmIndex({ stashDir: primaryStash, full: true });
-
-    const result = await akmSearch({ query: "github adapter", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    // Filter to just the adapter hits (same description from different roots)
-    const adapterHits = localHits.filter((h) => h.description?.includes("GitHub Platform Adapter"));
-
-    // Identity uses type + entry.name, so different canonical names remain distinct.
-    expect(adapterHits.length).toBe(2);
   });
 
   test("same asset name across stashes preserves each bundle's description", async () => {
@@ -738,21 +743,22 @@ describe("Cross-stash identity at index time", () => {
     writeFile(path.join(primaryStash, "knowledge", "helper.md"), "---\ndescription: Build helper for CI\n---\n");
     writeFile(path.join(secondStash, "knowledge", "helper.md"), "---\ndescription: Test helper for local dev\n---\n");
 
-    process.env.AKM_BUNDLE_DIR = primaryStash;
-    saveConfig({
-      semanticSearchMode: "off",
-      bundles: { second: { path: secondStash } },
+    await withEnv({ AKM_BUNDLE_DIR: primaryStash }, async () => {
+      saveConfig({
+        semanticSearchMode: "off",
+        bundles: { second: { path: secondStash } },
+      });
+      await akmIndex({ stashDir: primaryStash, full: true });
+
+      const result = await akmSearch({ query: "helper", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      const helperHits = localHits.filter((h) => h.name.includes("helper"));
+
+      expect(helperHits.length).toBe(2);
+      expect(helperHits.map((hit) => hit.description).sort()).toEqual([
+        "Build helper for CI",
+        "Test helper for local dev",
+      ]);
     });
-    await akmIndex({ stashDir: primaryStash, full: true });
-
-    const result = await akmSearch({ query: "helper", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    const helperHits = localHits.filter((h) => h.name.includes("helper"));
-
-    expect(helperHits.length).toBe(2);
-    expect(helperHits.map((hit) => hit.description).sort()).toEqual([
-      "Build helper for CI",
-      "Test helper for local dev",
-    ]);
   });
 });

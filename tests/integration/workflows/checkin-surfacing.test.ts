@@ -3,13 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { formatWorkflowStatusPlain } from "../../../src/output/text/helpers";
 import { CHECKIN_STALL_MS } from "../../../src/workflows/runtime/checkin";
 import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
+import { type Cleanup, sandboxEnvDir } from "../../_helpers/sandbox";
 
 /**
  * Check-in surfacing gaps from the check-in v2 design review:
@@ -18,7 +17,7 @@ import { getWorkflowStatus } from "../../../src/workflows/runtime/runs";
  */
 
 let tmpDir = "";
-let prevDataDir: string | undefined;
+let cleanup: Cleanup;
 
 const RUN_ID = "22222222-2222-4222-8222-222222222222";
 
@@ -44,20 +43,14 @@ function seedStalledRun(dbPath: string): void {
 }
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-checkin-surfacing-"));
-  prevDataDir = process.env.AKM_DATA_DIR;
-  process.env.AKM_DATA_DIR = tmpDir;
+  const sandboxed = sandboxEnvDir("akm-checkin-surfacing-", "AKM_DATA_DIR");
+  tmpDir = sandboxed.dir;
+  cleanup = sandboxed.cleanup;
   seedStalledRun(path.join(tmpDir, "state.db"));
 });
 
 afterEach(() => {
-  if (prevDataDir === undefined) delete process.env.AKM_DATA_DIR;
-  else process.env.AKM_DATA_DIR = prevDataDir;
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    /* ignore */
-  }
+  cleanup();
 });
 
 describe("workflow status check-in evaluation (review M1)", () => {

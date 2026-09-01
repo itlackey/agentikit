@@ -4,7 +4,6 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { _setWarnSinkForTests, type WarnSinkForTests } from "../../../src/core/warn";
@@ -17,11 +16,10 @@ import {
   type UnitDispatchResult,
 } from "../../../src/workflows/exec/native-executor";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
-import { computeStepWorkList } from "../../../src/workflows/exec/step-work";
 import { computePlanHash } from "../../../src/workflows/ir/plan-hash";
 import type { IrStepPlanV4, WorkflowPlanGraphV4 } from "../../../src/workflows/ir/schema-v4";
 import { completeWorkflowStep, getWorkflowStatus } from "../../../src/workflows/runtime/runs";
-import { makeSandboxDir, withEnv, withMockedFetch, writeSandboxConfig } from "../../_helpers/sandbox";
+import { type Cleanup, sandboxEnvDir, writeSandboxConfig } from "../../_helpers/sandbox";
 import { withSeam } from "../../_helpers/seams";
 import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
@@ -51,7 +49,7 @@ import { freezeWorkflow, storeFrozenWorkflowPlan } from "../../_helpers/workflow
  */
 
 let tmpDir = "";
-let prevDataDir: string | undefined;
+let cleanup: Cleanup;
 
 const RUN_ID = "44444444-4444-4444-8444-444444444444";
 
@@ -100,19 +98,13 @@ function useFrozenPlan(frozen: WorkflowPlanGraphV4): () => Promise<WorkflowPlanG
 }
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-native-exec-"));
-  prevDataDir = process.env.AKM_DATA_DIR;
-  process.env.AKM_DATA_DIR = tmpDir;
+  const sandboxed = sandboxEnvDir("akm-native-exec-", "AKM_DATA_DIR");
+  tmpDir = sandboxed.dir;
+  cleanup = sandboxed.cleanup;
 });
 
 afterEach(() => {
-  if (prevDataDir === undefined) delete process.env.AKM_DATA_DIR;
-  else process.env.AKM_DATA_DIR = prevDataDir;
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    /* ignore */
-  }
+  cleanup();
 });
 
 const SOLO_WF = `---

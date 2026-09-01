@@ -33,27 +33,20 @@ import {
   runPlannerWasteCase,
 } from "../../scripts/akm-eval/src/runners/planner-waste";
 import type { EvalCase, EvalContext } from "../../scripts/akm-eval/src/types";
+import { type Cleanup, sandboxEnvDir } from "../_helpers/sandbox";
 
 const createdTmpDirs: string[] = [];
-const ORIGINAL_AKM_DATA_DIR = process.env.AKM_DATA_DIR;
+let dataDirCleanup: Cleanup = () => {};
 
 afterAll(() => {
   for (const dir of createdTmpDirs) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
-  if (ORIGINAL_AKM_DATA_DIR === undefined) {
-    delete process.env.AKM_DATA_DIR;
-  } else {
-    process.env.AKM_DATA_DIR = ORIGINAL_AKM_DATA_DIR;
-  }
 });
 
 afterEach(() => {
-  if (ORIGINAL_AKM_DATA_DIR === undefined) {
-    delete process.env.AKM_DATA_DIR;
-  } else {
-    process.env.AKM_DATA_DIR = ORIGINAL_AKM_DATA_DIR;
-  }
+  dataDirCleanup();
+  dataDirCleanup = () => {};
 });
 
 /**
@@ -94,9 +87,9 @@ function makeTmpStash(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-eval-planner-waste-"));
   createdTmpDirs.push(dir);
   fs.mkdirSync(path.join(dir, ".akm", "runs"), { recursive: true });
-  const dataDir = path.join(dir, ".akm", "data");
-  initStateDb(dataDir);
-  process.env.AKM_DATA_DIR = dataDir;
+  const dataResult = sandboxEnvDir("akm-eval-planner-waste-data-", "AKM_DATA_DIR", dataDirCleanup);
+  dataDirCleanup = dataResult.cleanup;
+  initStateDb(dataResult.dir);
   return dir;
 }
 
@@ -503,11 +496,7 @@ describe("collectPlannerActions", () => {
   });
 
   test("returns empty when no improve runs exist", () => {
-    const stash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-eval-planner-waste-empty-"));
-    createdTmpDirs.push(stash);
-    const dataDir = path.join(stash, ".akm", "data");
-    initStateDb(dataDir);
-    process.env.AKM_DATA_DIR = dataDir;
+    const stash = makeTmpStash();
     const { actions, runIdsRead } = collectPlannerActions(stash, 20);
     expect(actions).toEqual([]);
     expect(runIdsRead).toEqual([]);
@@ -634,11 +623,7 @@ describe("runPlannerWasteCase", () => {
   });
 
   test("skips with explanatory reason when no improve runs exist", async () => {
-    const stash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-eval-planner-waste-noruns-"));
-    createdTmpDirs.push(stash);
-    const dataDir = path.join(stash, ".akm", "data");
-    initStateDb(dataDir);
-    process.env.AKM_DATA_DIR = dataDir;
+    const stash = makeTmpStash();
     const result = await runPlannerWasteCase(makeCase(), makeCtx(stash));
     expect(result.skipped).toBe(true);
     expect(result.passed).toBe(true);

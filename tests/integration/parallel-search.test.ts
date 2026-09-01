@@ -14,6 +14,7 @@ import {
   sandboxXdgCacheHome,
   sandboxXdgConfigHome,
   sandboxXdgDataHome,
+  withEnv,
 } from "../_helpers/sandbox";
 
 // ── Temp directory management ───────────────────────────────────────────────
@@ -47,15 +48,17 @@ function tmpStash(): string {
   return dir;
 }
 
-async function buildTestIndex(stashDir: string, files: Record<string, string>) {
-  for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = path.join(stashDir, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content);
-  }
-  process.env.AKM_BUNDLE_DIR = stashDir;
-  saveConfig({ semanticSearchMode: "off" });
-  await akmIndex({ stashDir, full: true });
+/**
+ * Index `stashDir` with AKM_BUNDLE_DIR pointed at it, then run `run` while the
+ * env override is still in effect — every akmSearch call a test makes must run
+ * inside `run` so it reads back the stash that was just indexed.
+ */
+async function withTestIndex<T>(stashDir: string, run: () => Promise<T> | T): Promise<T> {
+  return withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
+    saveConfig({ semanticSearchMode: "off" });
+    await akmIndex({ stashDir, full: true });
+    return run();
+  });
 }
 
 // ── Environment isolation ───────────────────────────────────────────────────
@@ -114,24 +117,24 @@ describe("Parallel search: result parity", () => {
       }),
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      // Run the same query twice and verify identical results.
+      // skipLogging prevents utility-score bumps from the first call affecting
+      // the second call's ranking scores.
+      const result1 = await akmSearch({ query: "deploy", source: "local", skipLogging: true });
+      const result2 = await akmSearch({ query: "deploy", source: "local", skipLogging: true });
+      const localHits1 = result1.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      const localHits2 = result2.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
-    // Run the same query twice and verify identical results.
-    // skipLogging prevents utility-score bumps from the first call affecting
-    // the second call's ranking scores.
-    const result1 = await akmSearch({ query: "deploy", source: "local", skipLogging: true });
-    const result2 = await akmSearch({ query: "deploy", source: "local", skipLogging: true });
-    const localHits1 = result1.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    const localHits2 = result2.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      expect(localHits1.length).toBeGreaterThan(0);
+      expect(localHits1.length).toBe(localHits2.length);
 
-    expect(localHits1.length).toBeGreaterThan(0);
-    expect(localHits1.length).toBe(localHits2.length);
-
-    for (let i = 0; i < localHits1.length; i++) {
-      expect(localHits1[i]!.name).toBe(localHits2[i]!.name);
-      expect(localHits1[i]!.score).toBe(localHits2[i]!.score);
-      expect(localHits1[i]!.ref).toBe(localHits2[i]!.ref);
-    }
+      for (let i = 0; i < localHits1.length; i++) {
+        expect(localHits1[i]!.name).toBe(localHits2[i]!.name);
+        expect(localHits1[i]!.score).toBe(localHits2[i]!.score);
+        expect(localHits1[i]!.ref).toBe(localHits2[i]!.ref);
+      }
+    });
   });
 });
 
@@ -172,17 +175,17 @@ describe("Parallel search: vector unavailable", () => {
       "---\ndescription: Lint source code for errors and style violations\n---\n",
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "lint", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
-    const result = await akmSearch({ query: "lint", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
-    const lintHit = localHits.find((h) => h.name === "lint");
-    expect(lintHit).toBeDefined();
-    expect(lintHit?.score).toBeGreaterThan(0);
-    // With semanticSearchMode disabled, should use FTS ranking
-    expect(lintHit?.whyMatched).toContain("fts bm25 relevance");
+      expect(localHits.length).toBeGreaterThanOrEqual(1);
+      const lintHit = localHits.find((h) => h.name === "lint");
+      expect(lintHit).toBeDefined();
+      expect(lintHit?.score).toBeGreaterThan(0);
+      // With semanticSearchMode disabled, should use FTS ranking
+      expect(lintHit?.whyMatched).toContain("fts bm25 relevance");
+    });
   });
 });
 
@@ -207,14 +210,14 @@ describe("Parallel search: FTS empty", () => {
       }),
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      // Query for something that won't match any FTS tokens
+      const result = await akmSearch({ query: "zzzznonexistent", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
-    // Query for something that won't match any FTS tokens
-    const result = await akmSearch({ query: "zzzznonexistent", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    // Should return 0 results without crashing
-    expect(localHits.length).toBe(0);
+      // Should return 0 results without crashing
+      expect(localHits.length).toBe(0);
+    });
   });
 });
 
@@ -239,16 +242,16 @@ describe("Parallel search: FTS result ordering", () => {
       "---\ndescription: Compile source code into binary artifacts\ntags:\n  - compile\n---\n",
     );
 
-    await buildTestIndex(stashDir, {});
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "build compile", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
-    const result = await akmSearch({ query: "build compile", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    // Both entries should be found
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
-    // Results should be sorted by score descending
-    for (let i = 1; i < localHits.length; i++) {
-      expect(localHits[i - 1]!.score ?? 0).toBeGreaterThanOrEqual(localHits[i]!.score ?? 0);
-    }
+      // Both entries should be found
+      expect(localHits.length).toBeGreaterThanOrEqual(1);
+      // Results should be sorted by score descending
+      for (let i = 1; i < localHits.length; i++) {
+        expect(localHits[i - 1]!.score ?? 0).toBeGreaterThanOrEqual(localHits[i]!.score ?? 0);
+      }
+    });
   });
 });
