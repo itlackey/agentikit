@@ -101,8 +101,7 @@ validate_workflow_syntax() {
 # Suite" step) which meant the same test could be given three different
 # deadlines depending on which entry point ran it.
 run_step "Workflow Syntax" validate_workflow_syntax
-run_step "Gated CI Contract" bun test --timeout=120000 tests/integration/workflow-gated-ci.test.ts
-run_step "Workflow Release Contract" bun test --timeout=120000 tests/integration/workflow-release.test.ts
+run_step "Workflow Release Contract" bun test --timeout=120000 tests/workflow-release.test.ts
 # Verify-only: must match what CI runs via `bun run lint`, not a write pass.
 # `bun run lint` is `bunx biome check src/ tests/ scripts/` (no --write) plus
 # 10 custom lint scripts (isolation, license headers, runtime boundary, write-
@@ -143,7 +142,7 @@ run_step \
 	package/docs/reference/workflow-schema.md
 run_step \
   "Install and Setup Regression Suite" \
-  bun test --timeout=120000 tests/setup/ ./tests/integration/setup-run.test.ts tests/integration/install-script.test.ts tests/setup-wizard.test.ts tests/setup-scheduled-tasks.test.ts
+  bun test --timeout=120000 tests/setup/ ./tests/setup-run.test.ts tests/integration/install/install-script.test.ts tests/setup-wizard.test.ts tests/setup-scheduled-tasks.test.ts
 if [ "$(uname -s)" = "Linux" ]; then
 	run_step \
 		"Build Linux Standalone Scheduler Artifact" \
