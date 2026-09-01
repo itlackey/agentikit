@@ -455,7 +455,11 @@ describe("env export / path (read-path safety)", () => {
 
     const result = await runCli(["env", "export", "env/prod"], { AKM_BUNDLE_DIR: stashDir });
 
-    expect(result.status).not.toBe(0);
+    // Usage error (missing --out) -> exit 2 / MISSING_REQUIRED_ARGUMENT.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(result.status).toBe(2);
+    const json = JSON.parse(result.stderr) as { code?: string };
+    expect(json.code).toBe("MISSING_REQUIRED_ARGUMENT");
     expect(result.stderr).toContain("--out");
     expect(result.stderr).toContain("akm env run");
     expect(result.stdout).not.toContain("secret");
@@ -504,7 +508,11 @@ describe("env create --from-file / --from-stdin", () => {
 
     const result = await runCli(["env", "create", "prod", "--from-file", srcFile], { AKM_BUNDLE_DIR: stashDir });
 
-    expect(result.status).not.toBe(0);
+    // Usage error (env already exists) -> exit 2 / RESOURCE_ALREADY_EXISTS.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(result.status).toBe(2);
+    const json = JSON.parse(result.stderr) as { code?: string };
+    expect(json.code).toBe("RESOURCE_ALREADY_EXISTS");
     expect(result.stderr).toContain("already exists");
     // Original preserved.
     expect(fs.readFileSync(path.join(stashDir, "env", "prod.env"), "utf8")).toBe("KEEP=me\n");
@@ -535,7 +543,11 @@ describe("env remove", () => {
     // No env/ copy exists → remove targets env/ and reports not found, leaving vaults/ intact.
     const result = await runCli(["env", "remove", "env/prod", "--yes"], { AKM_BUNDLE_DIR: stashDir });
 
-    expect(result.status).not.toBe(0);
+    // NotFoundError (no env/ copy to remove) -> exit 1 / ASSET_NOT_FOUND.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(result.status).toBe(1);
+    const json = JSON.parse(result.stderr) as { code?: string };
+    expect(json.code).toBe("ASSET_NOT_FOUND");
     expect(fs.existsSync(path.join(stashDir, "vaults", "prod.env"))).toBe(true);
   });
 });
@@ -548,8 +560,11 @@ describe("vault removed in 0.9.0", () => {
 
     const result = await runCli(["vault", "list", "--format", "json"], { AKM_BUNDLE_DIR: stashDir });
 
-    // citty exits non-zero for an unknown top-level command.
-    expect(result.status).not.toBe(0);
+    // Usage error (unknown top-level command) -> exit 2 / UNKNOWN_COMMAND.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(result.status).toBe(2);
+    const json = JSON.parse(result.stderr) as { code?: string };
+    expect(json.code).toBe("UNKNOWN_COMMAND");
   });
 
   test("a `vault:` ref is an unknown-type error pointing at env", async () => {
@@ -560,7 +575,11 @@ describe("vault removed in 0.9.0", () => {
 
     const result = await runCli(["env", "export", "vault:prod", "--out", outFile], { AKM_BUNDLE_DIR: stashDir });
 
-    expect(result.status).not.toBe(0);
+    // Usage error (retired `vault:` prefix) -> exit 2 / INVALID_FLAG_VALUE.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(result.status).toBe(2);
+    const json = JSON.parse(result.stderr) as { code?: string };
+    expect(json.code).toBe("INVALID_FLAG_VALUE");
     expect(result.stderr).toContain("was removed");
     // Q-08: the vault-removal signpost points at the slash spelling, not the
     // retired `env:`/`secret:` colon grammar.

@@ -233,7 +233,12 @@ describe("akm workflow plan <ref> --format json (B-47, B-N9)", () => {
     writeBasicWorkflow();
     await index();
     const result = await runCliCapture(["workflow", "plan", "workflows/basic-plan", "--json"]);
-    expect(result.code).not.toBe(0);
+    // Unknown-flag rejection (src/cli/unknown-flags.ts UNKNOWN_FLAG usage error)
+    // -> exit 2. This path prints a plain-text message, not the JSON error
+    // envelope, so there is no `code` field to assert on here. Ground-truthed
+    // by probing the actual CLI output before pinning.
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('Unknown flag "--json"');
   });
 });
 

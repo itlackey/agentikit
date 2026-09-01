@@ -377,7 +377,10 @@ describe("akm proposal noun group (canonical)", () => {
     // envelope path.
     const stash = makeStashDir();
     const result = await runCli(["proposal", "show", "--format=json"], { stashDir: stash });
-    expect(result.status).not.toBe(0);
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(result.status).toBe(2);
+    const json = JSON.parse(result.stderr) as { code?: string };
+    expect(json.code).toBe("MISSING_REQUIRED_ARGUMENT");
   });
 
   test("proposal diff: shows a unified diff", async () => {

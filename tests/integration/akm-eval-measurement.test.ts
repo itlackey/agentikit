@@ -560,7 +560,12 @@ describe("real-query suite generation", () => {
       encoding: "utf8",
       env: { ...process.env, AKM_TEST_REAL_QUERY_CRASH_AFTER_SUITE_PUBLISH: "1" },
     });
-    expect(interrupted.status).not.toBe(0);
+    // The injected fault (AKM_TEST_REAL_QUERY_CRASH_AFTER_SUITE_PUBLISH) kills
+    // the process with SIGKILL (scripts/akm-eval/src/gen-real-query-suite.ts),
+    // so spawnSync reports status:null / signal:"SIGKILL", not a numeric exit
+    // code. Ground-truthed by probing the actual spawn result before pinning.
+    expect(interrupted.status).toBeNull();
+    expect(interrupted.signal).toBe("SIGKILL");
     expect(fs.existsSync(path.join(casesRoot, "real-query-recovery"))).toBe(true);
     expect(fs.existsSync(path.join(casesRoot, "real-query-recovery.manifest.json"))).toBe(false);
     fs.rmSync(statePath);

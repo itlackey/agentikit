@@ -234,7 +234,11 @@ describe("akm setup --from <file> CLI integration", () => {
         AKM_BUNDLE_DIR: workDir,
       });
 
-      expect(result.status).not.toBe(0);
+      // Usage error (--from and --config both given) -> exit 2 / INVALID_FLAG_VALUE.
+      // Ground-truthed by probing the actual CLI output before pinning.
+      expect(result.status).toBe(2);
+      const parsed = JSON.parse(result.stderr) as { code?: string };
+      expect(parsed.code).toBe("INVALID_FLAG_VALUE");
       const combined = `${result.stdout}\n${result.stderr}`;
       expect(combined).toContain("--from");
       expect(combined).toContain("--config");
@@ -255,7 +259,11 @@ describe("akm setup --from <file> CLI integration", () => {
         XDG_STATE_HOME: xdgState,
         AKM_BUNDLE_DIR: workDir,
       });
-      expect(result.status).not.toBe(0);
+      // ConfigError (--from file does not exist) -> exit 78 / INVALID_CONFIG_FILE.
+      // Ground-truthed by probing the actual CLI output before pinning.
+      expect(result.status).toBe(78);
+      const parsed = JSON.parse(result.stderr) as { code?: string };
+      expect(parsed.code).toBe("INVALID_CONFIG_FILE");
       const combined = `${result.stdout}\n${result.stderr}`;
       expect(combined).toContain("not found");
     } finally {

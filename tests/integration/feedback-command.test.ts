@@ -209,9 +209,12 @@ describe("akm feedback", () => {
     await buildIndex();
 
     const result = await runCli(["feedback", "memories/missing", "--positive", "--format=json"]);
-    expect(result.status).not.toBe(0);
+    // NotFoundError (ref not in index) -> exit 1 / ASSET_NOT_FOUND.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(result.status).toBe(1);
     const output = parseJsonOutput(result);
     expect(output.ok).toBe(false);
+    expect(output.code).toBe("ASSET_NOT_FOUND");
     expect(output.error).toContain("memories/missing");
     expect(output.error).toContain("not in the index");
   });

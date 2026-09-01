@@ -155,9 +155,22 @@ describe("tasks run attempt observability", () => {
     writeTask("future", "version: 99\nrun: echo future\n");
     writeTask("unresolved", "version: 4\nuses: scripts/does-not-exist\n");
 
-    for (const taskId of ["legacy", "malformed", "future", "unresolved", "missing"] as const) {
+    // Exit code + envelope `code` per case, ground-truthed by probing the
+    // actual CLI output before pinning:
+    //   - legacy/future: TASK_SCHEMA_VERSION_UNSUPPORTED (usage, exit 2)
+    //   - malformed: TASK_SOURCE_INVALID (usage, exit 2)
+    //   - unresolved/missing: ASSET_NOT_FOUND (not-found, exit 1)
+    const cases = [
+      { taskId: "legacy", status: 2, code: "TASK_SCHEMA_VERSION_UNSUPPORTED" },
+      { taskId: "malformed", status: 2, code: "TASK_SOURCE_INVALID" },
+      { taskId: "future", status: 2, code: "TASK_SCHEMA_VERSION_UNSUPPORTED" },
+      { taskId: "unresolved", status: 1, code: "ASSET_NOT_FOUND" },
+      { taskId: "missing", status: 1, code: "ASSET_NOT_FOUND" },
+    ] as const;
+    for (const { taskId, status, code } of cases) {
       const result = await runCliCapture(["task", "run", taskId]);
-      expect(result.code).not.toBe(0);
+      expect(result.code).toBe(status);
+      expect(JSON.parse(result.stderr)).toMatchObject({ ok: false, code });
       assertNoAttempt(taskId);
     }
   });

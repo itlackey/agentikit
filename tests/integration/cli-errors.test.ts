@@ -70,7 +70,11 @@ function spawnCli(
 describe("CLI error handling", () => {
   test("search without stash dir prints JSON error with hint", async () => {
     const { stderr, status } = await runCli("search", "test");
-    expect(status).not.toBe(0);
+    // ConfigError (no bundle dir configured) -> exit 78 / STASH_DIR_NOT_FOUND.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(status).toBe(78);
+    const parsed = JSON.parse(stderr.trim());
+    expect(parsed.code).toBe("STASH_DIR_NOT_FOUND");
     expect(stderr).toContain("No bundle directory found");
     expect(stderr).toContain("hint");
   });
@@ -86,9 +90,11 @@ describe("CLI error handling", () => {
 
   test("search --from invalid prints hint about source", async () => {
     const { stderr, status } = await runCli("search", "test", "--from", "invalid");
-    expect(status).not.toBe(0);
     // Named-source validation: unknown source names produce INVALID_SOURCE_VALUE
     // with a message that lists valid source names (or says none are configured).
+    // Usage error -> exit 2. Ground-truthed by probing the actual CLI output
+    // before pinning.
+    expect(status).toBe(2);
     expect(stderr).toContain("Unknown source name");
     expect(stderr).toContain("INVALID_SOURCE_VALUE");
     expect(stderr).toContain("hint");
@@ -100,7 +106,9 @@ describe("CLI error handling", () => {
     const { stderr, status } = await withEnv({ AKM_BUNDLE_DIR: stash.dir }, () =>
       runCli("search", "test", "--detail", "invalid"),
     );
-    expect(status).not.toBe(0);
+    // Usage error (INVALID_DETAIL_VALUE) -> exit 2. Ground-truthed by probing
+    // the actual CLI output before pinning.
+    expect(status).toBe(2);
     expect(stderr).toContain("Invalid value for --detail");
     expect(stderr).toContain("hint");
   });
@@ -146,9 +154,12 @@ describe("CLI error handling", () => {
 
   test("config set with invalid JSON prints hint about quoting", async () => {
     const { stderr, status } = await runCli("config", "set", "embedding", "not-valid-json");
-    expect(status).not.toBe(0);
+    // Usage error (INVALID_JSON_CONFIG_VALUE) -> exit 2. Ground-truthed by
+    // probing the actual CLI output before pinning.
+    expect(status).toBe(2);
     const parsed = JSON.parse(stderr.trim());
     expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("INVALID_JSON_CONFIG_VALUE");
     expect(parsed.hint).toContain("Quote JSON values");
   });
 
@@ -157,7 +168,9 @@ describe("CLI error handling", () => {
     // with code STASH_DIR_NOT_FOUND. The CLI surfaces error.hint(), not a regex
     // against the message string.
     const { stderr, status } = await runCli("search", "test");
-    expect(status).not.toBe(0);
+    // ConfigError (no bundle dir configured) -> exit 78. Ground-truthed by
+    // probing the actual CLI output before pinning.
+    expect(status).toBe(78);
     const parsed = JSON.parse(stderr.trim());
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe("STASH_DIR_NOT_FOUND");
