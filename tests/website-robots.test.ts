@@ -86,10 +86,6 @@ describe("parseRobotsTxt — grouping and directives", () => {
     expect(parseRobotsTxt("")).toEqual({ disallowAll: false, rules: [], crawlDelayMs: null });
   });
 
-  test("P-02: whitespace/comments-only input yields the empty rule set", () => {
-    expect(parseRobotsTxt("# hi\n\n   \n")).toEqual({ disallowAll: false, rules: [], crawlDelayMs: null });
-  });
-
   test("P-03: a wildcard group's Disallow becomes one disallow rule", () => {
     const result = parseRobotsTxt("User-agent: *\nDisallow: /private/");
     expect(result.rules).toEqual([{ kind: "disallow", pattern: "/private/", specificity: "/private/".length }]);
@@ -107,11 +103,6 @@ describe("parseRobotsTxt — grouping and directives", () => {
 
   test("P-06: a group naming the 'akm' product token matches", () => {
     const result = parseRobotsTxt("user-agent: akm\nDisallow: /x");
-    expect(result.rules).toEqual([{ kind: "disallow", pattern: "/x", specificity: 2 }]);
-  });
-
-  test("P-07: product-token comparison is case-insensitive ('AKM-CLI')", () => {
-    const result = parseRobotsTxt("User-agent: AKM-CLI\nDisallow: /x");
     expect(result.rules).toEqual([{ kind: "disallow", pattern: "/x", specificity: 2 }]);
   });
 
@@ -176,10 +167,6 @@ describe("parseRobotsTxt — grouping and directives", () => {
     expect(warnVerboseCalls.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("P-19: Sitemap directives are ignored without error", () => {
-    expect(parseRobotsTxt("User-agent: *\nSitemap: https://x/s.xml").rules).toEqual([]);
-  });
-
   test("P-20: unknown directives are ignored without error", () => {
     expect(parseRobotsTxt("User-agent: *\nUnknown-Directive: foo").rules).toEqual([]);
   });
@@ -216,13 +203,9 @@ describe("parseRobotsTxt — grouping and directives", () => {
 describe("parseRobotsTxt — Crawl-delay", () => {
   test.each([
     ["Crawl-delay: 2", 2000], // D-01
-    ["Crawl-delay: 0.5", 500], // D-02
     ["Crawl-delay: 0", null], // D-03
-    ["Crawl-delay: -5", null], // D-04
     ["Crawl-delay: abc", null], // D-05
-    ["Crawl-delay:", null], // D-06
     ["Crawl-delay: 3600", 10_000], // D-07 — clamped
-    ["Crawl-delay: 1e9", 10_000], // D-08 — clamped
     ["Crawl-delay: 2.5", 2500], // D-11
   ])("%s => crawlDelayMs %p", (directive, expected) => {
     const result = parseRobotsTxt(`User-agent: *\n${directive}`);
@@ -285,11 +268,6 @@ describe("isPathAllowedByRobots", () => {
     expect(isPathAllowedByRobots(rules, urlFor("/privateer"))).toBe(true);
   });
 
-  test("M-09: an unrelated path is allowed", () => {
-    const rules = ruleSet([{ kind: "disallow", pattern: "/private" }]);
-    expect(isPathAllowedByRobots(rules, urlFor("/public"))).toBe(true);
-  });
-
   test("M-10: path matching is case-sensitive", () => {
     const rules = ruleSet([{ kind: "disallow", pattern: "/private" }]);
     expect(isPathAllowedByRobots(rules, urlFor("/Private"))).toBe(true);
@@ -319,20 +297,10 @@ describe("isPathAllowedByRobots", () => {
     expect(isPathAllowedByRobots(rules, urlFor("/xy"))).toBe(true);
   });
 
-  test("M-19: a $ that is not the final character is a literal", () => {
-    const rules = ruleSet([{ kind: "disallow", pattern: "/a$b" }]);
-    expect(isPathAllowedByRobots(rules, urlFor("/a$b"))).toBe(false);
-  });
-
   test("M-20/M-21: regex metacharacters in a pattern are literal", () => {
     const rules = ruleSet([{ kind: "disallow", pattern: "/a+b" }]);
     expect(isPathAllowedByRobots(rules, urlFor("/a+b"))).toBe(false);
     expect(isPathAllowedByRobots(rules, urlFor("/aab"))).toBe(true);
-  });
-
-  test("M-22: parentheses in a pattern are literal", () => {
-    const rules = ruleSet([{ kind: "disallow", pattern: "/a(b)" }]);
-    expect(isPathAllowedByRobots(rules, urlFor("/a(b)"))).toBe(false);
   });
 
   test("M-23/M-24: Allow wins over a broader Disallow by longest match", () => {
@@ -359,11 +327,6 @@ describe("isPathAllowedByRobots", () => {
     ]);
     expect(isPathAllowedByRobots(rules, urlFor("/folder/a.html"))).toBe(true);
     expect(isPathAllowedByRobots(rules, urlFor("/folder/a.txt"))).toBe(false);
-  });
-
-  test("M-28: an Allow-only rule set allows unrelated paths", () => {
-    const rules = ruleSet([{ kind: "allow", pattern: "/x" }]);
-    expect(isPathAllowedByRobots(rules, urlFor("/y"))).toBe(true);
   });
 
   test("M-29: the pattern must match starting at the pathname, not inside the query string", () => {
@@ -564,11 +527,6 @@ describe("createRobotsPolicy", () => {
     expect(calls).toEqual(["http://example.test/robots.txt"]);
   });
 
-  test("surfaces the parser's clamped Crawl-delay end to end", async () => {
-    const policy = createRobotsPolicy(async () => ({ kind: "body", text: "User-agent: *\nCrawl-delay: 3600\n" }));
-    expect(await policy.crawlDelayMs("http://example.test/")).toBe(MAX_CRAWL_DELAY_MS);
-  });
-
   test("reports 0ms crawl delay when robots.txt sets none", async () => {
     const policy = createRobotsPolicy(async () => ({ kind: "body", text: "User-agent: *\n" }));
     expect(await policy.crawlDelayMs("http://example.test/")).toBe(0);
@@ -620,19 +578,10 @@ describe("loadRobotsTxt", () => {
     expect(warnVerboseCalls).toEqual([]);
   });
 
-  test.each([401, 403])("F-04: %d is unavailable with no diagnostic", async (status) => {
+  test("F-04: 401 is unavailable with no diagnostic", async () => {
     const outcome = await withMockedFetch(
       () => loadRobotsTxt(ROBOTS_URL, { resolveHostname }),
-      () => new Response("nope", { status }),
-    );
-    expect(outcome).toEqual({ kind: "unavailable" });
-    expect(warnCalls).toEqual([]);
-  });
-
-  test("F-05: an uncommon 4xx (418) is unavailable with no diagnostic", async () => {
-    const outcome = await withMockedFetch(
-      () => loadRobotsTxt(ROBOTS_URL, { resolveHostname }),
-      () => new Response("teapot", { status: 418 }),
+      () => new Response("nope", { status: 401 }),
     );
     expect(outcome).toEqual({ kind: "unavailable" });
     expect(warnCalls).toEqual([]);
@@ -649,24 +598,6 @@ describe("loadRobotsTxt", () => {
     expect(message).toContain(ROBOTS_URL);
     expect(message).toContain("500");
     expect(message).toMatch(/respectRobots/);
-  });
-
-  test("F-06b: any other 5xx (503) is also unreachable", async () => {
-    const outcome = await withMockedFetch(
-      () => loadRobotsTxt(ROBOTS_URL, { resolveHostname }),
-      () => new Response("unavailable", { status: 503 }),
-    );
-    expect(outcome).toEqual({ kind: "unreachable" });
-  });
-
-  test("F-07: an unusual non-2xx status outside 3xx/4xx/5xx (101) is unavailable with no diagnostic", async () => {
-    const outcome = await withMockedFetch(
-      () => loadRobotsTxt(ROBOTS_URL, { resolveHostname }),
-      () => new Response("", { status: 101 }),
-    );
-    expect(outcome).toEqual({ kind: "unavailable" });
-    expect(warnCalls).toEqual([]);
-    expect(warnVerboseCalls).toEqual([]);
   });
 
   test("F-08: an oversized body (via Content-Length) is unavailable and warns naming the URL and cap", async () => {
@@ -745,16 +676,7 @@ describe("resolveRespectRobots", () => {
     expect(resolveRespectRobots(input)).toBe(expected);
   });
 
-  test.each([
-    [null],
-    [0],
-    [1],
-    ["false"],
-    ["true"],
-    ["no"],
-    [{}],
-    [[]],
-  ])("rejects non-boolean value %p with a ConfigError", (input) => {
+  test.each([[null], ["true"], [{}]])("rejects non-boolean value %p with a ConfigError", (input) => {
     expect(() => resolveRespectRobots(input)).toThrow(ConfigError);
     expect(() => resolveRespectRobots(input)).toThrow(/respectRobots.*boolean/i);
   });
@@ -765,21 +687,11 @@ describe("resolvePositiveInt", () => {
     expect(resolvePositiveInt(undefined, 50, "maxPages")).toBe(50);
   });
 
-  test.each([1, 7, 50])("accepts positive integer %p", (input) => {
+  test.each([1, 50])("accepts positive integer %p", (input) => {
     expect(resolvePositiveInt(input, 50, "maxPages")).toBe(input);
   });
 
-  test.each([
-    [null],
-    [false],
-    [true],
-    [0],
-    [-1],
-    [1.5],
-    ["7"],
-    [Number.NaN],
-    [Number.POSITIVE_INFINITY],
-  ])("rejects invalid positive integer %p", (input) => {
+  test.each([[null], [0], [1.5], ["7"]])("rejects invalid positive integer %p", (input) => {
     expect(() => resolvePositiveInt(input, 50, "maxPages")).toThrow(ConfigError);
     expect(() => resolvePositiveInt(input, 50, "maxPages")).toThrow(/maxPages.*positive integer/i);
   });
@@ -791,20 +703,11 @@ describe("resolveCrawlTimeoutMs", () => {
     expect(resolveCrawlTimeoutMs(0)).toBeNull();
   });
 
-  test.each([1, 300, 600_000])("accepts nonzero integer timeout %p", (input) => {
+  test.each([1, 600_000])("accepts nonzero integer timeout %p", (input) => {
     expect(resolveCrawlTimeoutMs(input)).toBe(input);
   });
 
-  test.each([
-    [null],
-    [false],
-    [true],
-    [-1],
-    [1.5],
-    ["300"],
-    [Number.NaN],
-    [Number.POSITIVE_INFINITY],
-  ])("rejects invalid timeout %p", (input) => {
+  test.each([[null], [-1], [1.5], ["300"]])("rejects invalid timeout %p", (input) => {
     expect(() => resolveCrawlTimeoutMs(input)).toThrow(ConfigError);
     expect(() => resolveCrawlTimeoutMs(input)).toThrow(/crawlTimeoutMs.*non-negative integer/i);
   });

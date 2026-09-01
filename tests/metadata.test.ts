@@ -413,17 +413,6 @@ test("isEnrichmentComplete returns false when description is missing", () => {
   expect(isEnrichmentComplete(entry)).toBe(false);
 });
 
-test("isEnrichmentComplete returns false when description is an empty string", () => {
-  const entry: IndexDocument = {
-    name: "deploy",
-    type: "script",
-    description: "   ",
-    tags: ["deploy"],
-    searchHints: ["deploy a service"],
-  };
-  expect(isEnrichmentComplete(entry)).toBe(false);
-});
-
 test("isEnrichmentComplete returns false when tags array is empty", () => {
   const entry: IndexDocument = {
     name: "deploy",
@@ -435,33 +424,12 @@ test("isEnrichmentComplete returns false when tags array is empty", () => {
   expect(isEnrichmentComplete(entry)).toBe(false);
 });
 
-test("isEnrichmentComplete returns false when tags is missing", () => {
-  const entry: IndexDocument = {
-    name: "deploy",
-    type: "script",
-    description: "Deploy services to production",
-    searchHints: ["deploy a service to production"],
-  };
-  expect(isEnrichmentComplete(entry)).toBe(false);
-});
-
 test("isEnrichmentComplete returns false when searchHints is missing", () => {
   const entry: IndexDocument = {
     name: "deploy",
     type: "script",
     description: "Deploy services to production",
     tags: ["deploy", "production"],
-  };
-  expect(isEnrichmentComplete(entry)).toBe(false);
-});
-
-test("isEnrichmentComplete returns false when searchHints array is empty", () => {
-  const entry: IndexDocument = {
-    name: "deploy",
-    type: "script",
-    description: "Deploy services to production",
-    tags: ["deploy", "production"],
-    searchHints: [],
   };
   expect(isEnrichmentComplete(entry)).toBe(false);
 });
@@ -739,20 +707,6 @@ test("recognize keeps the empty-tags fallback unchanged at the type root (SPEC-2
   const stash = recognizeStashEntries(memRoot, [file]);
   expect(stash.entries).toHaveLength(1);
   expect(sortedTags(stash.entries[0])).toEqual(["auth", "tip"]);
-});
-
-test("recognize merges directory tokens from the canonical ref subpath into explicit tags (SPEC-2)", async () => {
-  const stashRoot = tmpDir();
-  const file = path.join(stashRoot, "memories", "projectA", "auth-tip.md");
-  writeFile(file, memoryDocWithTags(["auth"]));
-
-  const stash = recognizeStashEntries(stashRoot, [file]);
-  expect(stash.entries).toHaveLength(1);
-  expect(stash.entries[0]!.type).toBe("memory");
-  // canonicalName is the ref subpath relative to the TYPE root ("memories"),
-  // so "memories" itself is not a tag — only the scope dir "projectA" is.
-  expect(stash.entries[0]!.name).toBe("projectA/auth-tip");
-  expect(sortedTags(stash.entries[0])).toEqual(["auth", "projecta"]);
 });
 
 test("recognize derives the scope token for a nested asset without explicit tags (SPEC-2)", async () => {

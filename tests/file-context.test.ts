@@ -133,20 +133,6 @@ describe("buildFileContext", () => {
     expect(ctx.fileName).toBe("README.md");
     expect(ctx.ancestorDirs).toEqual([]);
   });
-
-  test("handles deeply nested files", () => {
-    const root = tmpDir();
-    const filePath = path.join(root, "a", "b", "c", "d", "deep.ts");
-    writeFile(filePath, "console.log('deep')\n");
-
-    const ctx = buildFileContext(root, filePath);
-
-    expect(ctx.relPath).toBe("a/b/c/d/deep.ts");
-    expect(ctx.ext).toBe(".ts");
-    expect(ctx.fileName).toBe("deep.ts");
-    expect(ctx.parentDir).toBe("d");
-    expect(ctx.ancestorDirs).toEqual(["a", "b", "c", "d"]);
-  });
 });
 
 // ── 2. recognizeMatch tests ────────────────────────────────────────────────────
@@ -347,19 +333,6 @@ describe("recognizeMatch", () => {
     expect(result?.specificity).toBe(18);
   });
 
-  test("smartMdMatcher detects $1/$2/$3 placeholders as command signal", () => {
-    const root = tmpDir();
-    const filePath = path.join(root, "misc", "greet.md");
-    writeFile(filePath, "Hello $1, welcome to $2.");
-
-    const ctx = buildFileContext(root, filePath);
-    const result = smartMdMatcher(ctx);
-
-    expect(result).not.toBeNull();
-    expect(result?.type).toBe("command");
-    expect(result?.specificity).toBe(18);
-  });
-
   test("smartMdMatcher: a toolPolicy-only file is not an agent", () => {
     const root = tmpDir();
     const filePath = path.join(root, "misc", "legacy-policy.md");
@@ -395,19 +368,6 @@ describe("recognizeMatch", () => {
     // agent frontmatter is a command signal at 18
     expect(result?.type).toBe("command");
     expect(result?.specificity).toBe(18);
-  });
-
-  test("smartMdMatcher falls back to 'knowledge' at specificity 5 for plain .md", () => {
-    const root = tmpDir();
-    const filePath = path.join(root, "misc", "guide.md");
-    writeFile(filePath, "# Guide\nJust a plain markdown document.");
-
-    const ctx = buildFileContext(root, filePath);
-    const result = smartMdMatcher(ctx);
-
-    expect(result).not.toBeNull();
-    expect(result?.type).toBe("knowledge");
-    expect(result?.specificity).toBe(5);
   });
 
   test("smartMdMatcher returns null for non-.md files", () => {

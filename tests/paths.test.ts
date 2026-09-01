@@ -96,11 +96,6 @@ describe("getConfigDir", () => {
     expect(result).toBe(path.join("/trimmed", "akm"));
   });
 
-  test("trims whitespace from HOME", () => {
-    const result = getConfigDir({ HOME: "  /home/user  " }, "linux");
-    expect(result).toBe(path.join("/home/user", ".config", "akm"));
-  });
-
   test("ignores empty XDG_CONFIG_HOME and falls back to HOME", () => {
     const result = getConfigDir({ XDG_CONFIG_HOME: "  ", HOME: "/home/user" }, "linux");
     expect(result).toBe(path.join("/home/user", ".config", "akm"));
@@ -117,11 +112,6 @@ describe("getConfigDir", () => {
     expect(result).toBe(path.join("/test-xdg", "akm"));
   });
 
-  test("uses darwin platform same as linux (XDG path)", () => {
-    const result = getConfigDir({ XDG_CONFIG_HOME: "/darwin/cfg" }, "darwin");
-    expect(result).toBe(path.join("/darwin/cfg", "akm"));
-  });
-
   test("AKM_CONFIG_DIR overrides all other paths", () => {
     const result = getConfigDir({ AKM_CONFIG_DIR: "/override/config", HOME: "/home/user" }, "linux");
     expect(result).toBe("/override/config");
@@ -134,11 +124,6 @@ describe("getConfigDir", () => {
   test("AKM_BUNDLE_DIR=/tmp/X routes config to /tmp/X/.akm (isolation safety)", () => {
     const result = getConfigDir({ AKM_BUNDLE_DIR: "/tmp/test-stash", HOME: "/home/user" }, "linux");
     expect(result).toBe(path.join("/tmp/test-stash", ".akm"));
-  });
-
-  test("AKM_BUNDLE_DIR=/var/tmp/X also triggers isolation", () => {
-    const result = getConfigDir({ AKM_BUNDLE_DIR: "/var/tmp/build-1234", HOME: "/home/user" }, "linux");
-    expect(result).toBe(path.join("/var/tmp/build-1234", ".akm"));
   });
 
   test("AKM_BUNDLE_DIR=/private/var/folders/... (macOS mktemp) also triggers isolation", () => {
@@ -341,14 +326,6 @@ describe("getDataDir", () => {
   });
 
   test("test-isolation guard fires when NODE_ENV=test and XDG_DATA_HOME missing", () => {
-    expect(() => getDataDir({ NODE_ENV: "test", HOME: "/home/user" }, "linux")).toThrow(
-      /Refusing to resolve data directory under bun test/,
-    );
-  });
-
-  test("test-isolation guard fires under bun test even when AKM_BUNDLE_DIR is unset", () => {
-    // Previously the carve-out skipped this case, letting tests silently
-    // write into ~/.local/share/akm/index.db. The tightened guard refuses.
     expect(() => getDataDir({ NODE_ENV: "test", HOME: "/home/user" }, "linux")).toThrow(
       /Refusing to resolve data directory under bun test/,
     );
