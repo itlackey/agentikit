@@ -116,7 +116,6 @@ import { cloneCommand, syncCommand, upgradeCommand } from "./commands/sources/so
 import { importKnowledgeCommand, indexCommand, infoCommand } from "./commands/sources/stash-cli";
 import { taskCommand } from "./commands/tasks/tasks-cli";
 import { workflowCommand } from "./commands/workflow-cli";
-import { resolveStashDir } from "./core/common";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
 import { UsageError, type UsageErrorCode } from "./core/errors";
 import { getConfigPath } from "./core/paths";

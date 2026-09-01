@@ -37,7 +37,7 @@ export async function checkDeadUrls(
       try {
         const res = await fetch(url, { method: "HEAD", redirect: "follow" });
         if (res.status >= 400) results.push({ ref, url, status: res.status });
-      } catch (e) {
+      } catch {
         results.push({ ref, url, status: "error" });
       }
     }),
