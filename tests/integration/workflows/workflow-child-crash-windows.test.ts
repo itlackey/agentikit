@@ -74,23 +74,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
-import { readStateEvents } from "../../src/storage/repositories/events-repository";
+import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
+import { readStateEvents } from "../../../src/storage/repositories/events-repository";
 import {
   type PublishChildWorkflowRunInput,
   type WorkflowRunRow,
   WorkflowRunsRepository,
   withWorkflowRunsRepo,
-} from "../../src/storage/repositories/workflow-runs-repository";
-import { computeChildInvocationKey } from "../../src/workflows/exec/child-invocation";
-import type { UnitDispatchResult } from "../../src/workflows/exec/native-executor";
-import { runWorkflowSteps } from "../../src/workflows/exec/run-workflow";
-import { computeStepWorkList } from "../../src/workflows/exec/step-work";
-import { canonicalPlanJson, computePlanHash } from "../../src/workflows/ir/plan-hash";
-import { decodeWorkflowPlanV4 } from "../../src/workflows/ir/schema-v4";
-import { frozenStepRows } from "../../src/workflows/runtime/plan-classifier";
-import { getWorkflowStatus, resumeWorkflowRun, startWorkflowRun } from "../../src/workflows/runtime/runs";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
+} from "../../../src/storage/repositories/workflow-runs-repository";
+import { computeChildInvocationKey } from "../../../src/workflows/exec/child-invocation";
+import type { UnitDispatchResult } from "../../../src/workflows/exec/native-executor";
+import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
+import { computeStepWorkList } from "../../../src/workflows/exec/step-work";
+import { canonicalPlanJson, computePlanHash } from "../../../src/workflows/ir/plan-hash";
+import { decodeWorkflowPlanV4 } from "../../../src/workflows/ir/schema-v4";
+import { frozenStepRows } from "../../../src/workflows/runtime/plan-classifier";
+import { getWorkflowStatus, resumeWorkflowRun, startWorkflowRun } from "../../../src/workflows/runtime/runs";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
 import {
   bunAvailable,
   dispatchCount,
@@ -101,7 +101,7 @@ import {
   spawnRunner,
   unitIds,
   writeProgram,
-} from "./_helpers/workflow-crossproc";
+} from "../_helpers/workflow-crossproc";
 
 const BUN = bunAvailable();
 
@@ -460,10 +460,10 @@ describe("two-parent-process contention on one child (C-04)", () => {
       fs.writeFileSync(
         workerScript,
         buildConcurrentPublisherWorkerScript({
-          databaseModulePath: path.resolve(import.meta.dir, "../../src/storage/database.ts"),
+          databaseModulePath: path.resolve(import.meta.dir, "../../../src/storage/database.ts"),
           repositoryModulePath: path.resolve(
             import.meta.dir,
-            "../../src/storage/repositories/workflow-runs-repository.ts",
+            "../../../src/storage/repositories/workflow-runs-repository.ts",
           ),
           dbPath,
           readyFile,

@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { getCachePaths, parseGitRepoUrl } from "../../src/sources/providers/git";
-import { buildWorkflowTemplate, createWorkflowAsset } from "../../src/workflows/authoring/authoring";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+import { getCachePaths, parseGitRepoUrl } from "../../../src/sources/providers/git";
+import { buildWorkflowTemplate, createWorkflowAsset } from "../../../src/workflows/authoring/authoring";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
 

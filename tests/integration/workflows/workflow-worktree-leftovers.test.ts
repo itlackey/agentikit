@@ -27,8 +27,8 @@ import {
   createUnitWorktree,
   isGitAvailable,
   runWorktreeRoot,
-} from "../../src/workflows/exec/worktree";
-import { git, makeGitRepo as makeTempGitRepo } from "../_helpers/git";
+} from "../../../src/workflows/exec/worktree";
+import { git, makeGitRepo as makeTempGitRepo } from "../../_helpers/git";
 
 const GIT = isGitAvailable();
 

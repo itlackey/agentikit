@@ -25,11 +25,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
-import { enqueueUnitWrite } from "../../src/workflows/exec/unit-writer";
-import { getWorkflowStatus, startWorkflowRun } from "../../src/workflows/runtime/runs";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
-import { bunAvailable, spawnRunner, unitIds, writeProgram } from "./_helpers/workflow-crossproc";
+import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
+import { enqueueUnitWrite } from "../../../src/workflows/exec/unit-writer";
+import { getWorkflowStatus, startWorkflowRun } from "../../../src/workflows/runtime/runs";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
+import { bunAvailable, spawnRunner, unitIds, writeProgram } from "../_helpers/workflow-crossproc";
 
 const BUN = bunAvailable();
 

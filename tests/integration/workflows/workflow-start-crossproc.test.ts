@@ -6,12 +6,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
-import { getCurrentWorkflowScopeKey } from "../../src/workflows/authoring/scope-key";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
-import { bunAvailable, pollUntil } from "./_helpers/workflow-crossproc";
+import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
+import { getCurrentWorkflowScopeKey } from "../../../src/workflows/authoring/scope-key";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../../_helpers/sandbox";
+import { bunAvailable, pollUntil } from "../_helpers/workflow-crossproc";
 
-const WORKER = path.join(__dirname, "_helpers", "workflow-start-worker.ts");
+const WORKER = path.join(__dirname, "..", "_helpers", "workflow-start-worker.ts");
 const BUN = bunAvailable();
 let storage: IsolatedAkmStorage;
 
