@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isRecord } from "../core/common";
 import { UsageError } from "../core/errors";
 
 export interface FrozenExecutableIdentity {
@@ -109,10 +110,6 @@ function resolveExecutable(requested: string, cwd: string, pathValue: string): s
     }
   }
   throw new UsageError(`Executable ${JSON.stringify(requested)} was not found.`, "INVALID_FLAG_VALUE");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function invalid(label: string): UsageError {

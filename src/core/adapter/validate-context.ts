@@ -50,12 +50,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { assetPathForName, stashDirFor } from "../asset/asset-placement";
 import { typeNameFromConceptId } from "../asset/resolve-ref";
+import { toPosix } from "../common";
 import type { FileChange } from "../file-change";
 import type { ValidateContext } from "./types";
-
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 
 /** `null` = the overlay DELETES this path (never satisfies a read/exists check). */
 type OverlayValue = string | null;

@@ -14,6 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { compareCodePoints, toPosix } from "../core/common";
 import { UsageError, type UsageErrorCode } from "../core/errors";
 import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../core/recognition-util";
 
@@ -57,7 +58,7 @@ export abstract class WorkflowSourceRejectionError extends UsageError {
 
   protected constructor(message: string, code: UsageErrorCode, sourcePaths: readonly string[]) {
     super(message, code);
-    this.sourcePaths = [...sourcePaths].sort(comparePaths);
+    this.sourcePaths = [...sourcePaths].sort(compareCodePoints);
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -66,7 +67,7 @@ export class WorkflowSourceCollisionError extends WorkflowSourceRejectionError {
   readonly canonicalName: string;
 
   constructor(canonicalName: string, sourcePaths: readonly string[]) {
-    const sorted = [...sourcePaths].sort(comparePaths);
+    const sorted = [...sourcePaths].sort(compareCodePoints);
     super(
       `Workflow "${canonicalName}" resolves to multiple workflow source files: ${sorted.join(", ")}. ` +
         "A canonical workflow ref must be owned by exactly one recognized .md or .yml source; remove or rename the duplicate.",
@@ -88,8 +89,8 @@ export class WorkflowSourceDomainError extends WorkflowSourceRejectionError {
     issues: readonly WorkflowSourceRejectionError[],
     collidingSourcePaths: readonly string[],
   ) {
-    const sortedPaths = [...sourcePaths].sort(comparePaths);
-    const sortedCollisions = [...collidingSourcePaths].sort(comparePaths);
+    const sortedPaths = [...sourcePaths].sort(compareCodePoints);
+    const sortedCollisions = [...collidingSourcePaths].sort(compareCodePoints);
     const code: UsageErrorCode = issues.some((issue) => issue.code === "PATH_ESCAPE_VIOLATION")
       ? "PATH_ESCAPE_VIOLATION"
       : "WORKFLOW_SOURCE_INVALID";
@@ -242,7 +243,7 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
     });
   }
 
-  candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+  candidates.sort((left, right) => compareCodePoints(left.relativePath, right.relativePath));
   const { sources, issues } = inspectWorkflowSourceDomain(candidates, canonicalName, realRoot);
 
   if (issues.length > 0) {
@@ -305,9 +306,9 @@ export function resolveWorkflowSourceDomains(
   }
 
   const resolutions: WorkflowSourceDomainResolution[] = [];
-  for (const canonicalName of [...candidatesByName.keys()].sort(comparePaths)) {
+  for (const canonicalName of [...candidatesByName.keys()].sort(compareCodePoints)) {
     const candidates = candidatesByName.get(canonicalName) ?? [];
-    candidates.sort((left, right) => comparePaths(left.relativePath, right.relativePath));
+    candidates.sort((left, right) => compareCodePoints(left.relativePath, right.relativePath));
     const { sources, issues } = inspectWorkflowSourceDomain(candidates, canonicalName, realRoot);
     const sourcePaths = candidates.map((candidate) => candidate.relativePath);
     if (issues.length > 0) {
@@ -482,12 +483,4 @@ function isSafeRelativeName(name: string): boolean {
 function isWithinResolved(candidate: string, root: string): boolean {
   const relative = path.relative(root, path.resolve(candidate));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function toPosix(value: string): string {
-  return value.replaceAll("\\", "/");
-}
-
-function comparePaths(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

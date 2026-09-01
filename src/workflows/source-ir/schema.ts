@@ -12,6 +12,7 @@
 
 import { types as utilTypes } from "node:util";
 import { bundleRefToString, parseBundleRef } from "../../core/asset/asset-ref";
+import { compareCodePoints, wellFormedUnicode } from "../../core/common";
 import { validateExtraParams } from "../../core/extra-params";
 import { checkJsonSchemaDefinition } from "../../core/json-schema";
 import { parseReference } from "../program/expressions";
@@ -26,7 +27,6 @@ import {
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../resource-limits";
-import { compareWorkflowSourceCodePoints } from "./compare";
 import {
   canonicalizeWorkflowCron,
   canonicalizeWorkflowRun,
@@ -454,10 +454,6 @@ function validateStep(
   span(step.source, `step ${id} source`);
 }
 
-function compareCodePoints(left: string, right: string): number {
-  return compareWorkflowSourceCodePoints(left, right);
-}
-
 function validateExec(value: unknown, location: string, options: WorkflowSourceDecodeOptions): void {
   if (value === undefined) return;
   const exec = record(value, location);
@@ -850,20 +846,6 @@ function snapshotObject(value: object, depth: number, location: string, state: S
 function countJsonBytes(state: SnapshotState, token: string): void {
   state.bytes += Buffer.byteLength(token, "utf8");
   if (state.bytes > WORKFLOW_SOURCE_IR_MAX_BYTES) fail("source IR exceeds the byte limit");
-}
-
-function wellFormedUnicode(value: string): boolean {
-  for (let index = 0; index < value.length; index++) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index++;
-    } else if (code >= 0xdc00 && code <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
 }
 
 function record(value: unknown, location: string): Record<string, unknown> {

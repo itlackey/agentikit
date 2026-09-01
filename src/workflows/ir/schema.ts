@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { isContainedRelativePath } from "../../core/common";
+import { isContainedRelativePath, isRecord } from "../../core/common";
 import { UsageError } from "../../core/errors";
 import { parseReference } from "../program/expressions";
 import { PROGRAM_PARAM_NAME_PATTERN, PROGRAM_RETRY_REASONS, PROGRAM_STEP_ID_PATTERN } from "../program/schema";
@@ -495,10 +495,6 @@ function validateOptionalPositiveInteger(value: unknown, label: string): void {
 function assertString(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || value.length === 0 || value.length > MAX_STRING_LENGTH)
     fail(`${label} must be a non-empty bounded string`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function fail(message: string): never {

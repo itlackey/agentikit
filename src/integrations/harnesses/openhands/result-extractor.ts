@@ -50,19 +50,11 @@
  * schema validation.
  */
 
+import { asNonEmptyString, isRecord, tryParseJson } from "../../../core/common";
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** Keys that may carry the harness-native session id, in precedence order. */
 const SESSION_KEYS = ["session_id", "sessionId", "sid", "conversation_id"] as const;
-
-/** Return a non-empty string, else undefined. */
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
 
 /**
  * Extract the agent's answer text from one parsed OpenHands event, if the
@@ -77,10 +69,10 @@ function extractAgentText(event: Record<string, unknown>): string | undefined {
   if (typeof event.action !== "string") return undefined;
   const args = isRecord(event.args) ? event.args : undefined;
   if (event.action === "message") {
-    return nonEmptyString(args?.content) ?? nonEmptyString(event.message);
+    return asNonEmptyString(args?.content) ?? asNonEmptyString(event.message);
   }
   if (event.action === "finish") {
-    return nonEmptyString(args?.final_thought) ?? nonEmptyString(args?.thought) ?? nonEmptyString(event.message);
+    return asNonEmptyString(args?.final_thought) ?? asNonEmptyString(args?.thought) ?? asNonEmptyString(event.message);
   }
   return undefined;
 }
@@ -88,19 +80,10 @@ function extractAgentText(event: Record<string, unknown>): string | undefined {
 /** Extract a harness-native session id from one parsed JSON value, if any. */
 function extractSessionId(event: Record<string, unknown>): string | undefined {
   for (const key of SESSION_KEYS) {
-    const candidate = nonEmptyString(event[key]);
+    const candidate = asNonEmptyString(event[key]);
     if (candidate) return candidate;
   }
   return undefined;
-}
-
-/** JSON.parse that returns undefined instead of throwing. */
-function tryParseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

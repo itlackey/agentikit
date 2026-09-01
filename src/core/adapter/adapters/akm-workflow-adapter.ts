@@ -26,6 +26,7 @@ import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { looksLikeGithubWorkflowSource } from "../../../workflows/source-ir/compile";
 import { parseFrontmatter } from "../../asset/frontmatter";
+import { toPosix } from "../../common";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -36,10 +37,6 @@ import { hashContent, nonEmptyString, type ParsedForValidate, readTags, runBaseV
 const COMPONENT_ID = "main";
 /** The two authoritative workflow source formats. `.yaml` is deliberately not accepted. */
 const WORKFLOW_EXTS = new Set([".md", ".yml"]);
-
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 
 /** Strip the recognized workflow extension from a component-root-relative path → conceptId. */
 function conceptIdOf(relPath: string): string {

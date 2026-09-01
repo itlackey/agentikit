@@ -50,27 +50,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
-import { writeFileAtomic } from "../../core/common";
+import { scanEnvKeyNames, writeFileAtomic } from "../../core/common";
 import { sensitiveMarkerPath } from "./marker-path";
 
-/** Matches a KEY=value assignment line, capturing only the key. */
-const ASSIGN_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
-
-/** Scan lines and return KEY names in file order, without duplicates. */
-export function scanEnvKeyNames(text: string): string[] {
-  const keys: string[] = [];
-  const seen = new Set<string>();
-  for (const line of text.split(/\r?\n/)) {
-    const m = line.match(ASSIGN_RE);
-    if (!m) continue;
-    const key = m[1];
-    if (!key) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    keys.push(key);
-  }
-  return keys;
-}
+export { scanEnvKeyNames };
 
 /**
  * Read and return ONLY non-secret metadata: key names.

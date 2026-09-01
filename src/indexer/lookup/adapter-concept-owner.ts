@@ -7,7 +7,7 @@ import path from "node:path";
 import type { AdapterReadCandidate, BundleAdapter } from "../../core/adapter/bundle-adapter";
 import { adapterForId } from "../../core/adapter/registry";
 import type { BundleComponent } from "../../core/adapter/types";
-import { isWithin } from "../../core/common";
+import { compareCodePoints, isWithin } from "../../core/common";
 import { UsageError } from "../../core/errors";
 import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import {
@@ -33,7 +33,7 @@ export abstract class AdapterConceptOwnershipError extends UsageError {}
 
 export class AdapterConceptCollisionError extends AdapterConceptOwnershipError {
   constructor(adapterId: string, conceptId: string, paths: readonly string[]) {
-    const sorted = [...paths].sort(comparePaths);
+    const sorted = [...paths].sort(compareCodePoints);
     super(
       `Adapter "${adapterId}" has multiple physical owners for "${conceptId}": ${sorted.join(", ")}.`,
       "RESOURCE_ALREADY_EXISTS",
@@ -206,7 +206,7 @@ export function resolveAdapterConceptOwner(
       spellings.map((candidate) => [`${path.resolve(candidate.path)}\0${candidate.conceptId}`, candidate]),
     ).values(),
   ]
-    .sort((left, right) => comparePaths(left.path, right.path))
+    .sort((left, right) => compareCodePoints(left.path, right.path))
     .flatMap((candidate) => {
       const owner = inspectCandidate(sourcePath, realRoot, adapterId, candidate);
       return owner ? [owner] : [];
@@ -235,8 +235,4 @@ export function indexedPathMatchesOwner(indexedPath: string, owner: AdapterConce
   } catch {
     return false;
   }
-}
-
-function comparePaths(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

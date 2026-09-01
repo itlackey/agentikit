@@ -27,11 +27,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { toPosix } from "../common";
 import { DERIVED_SUFFIX, type KnownType, SCRIPT_EXTENSIONS, WORKFLOW_EXTENSIONS } from "../recognition-util";
-
-function toPosix(input: string): string {
-  return input.replace(/\\/g, "/");
-}
 
 export interface AssetSpec {
   stashDir: string;

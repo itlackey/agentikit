@@ -34,6 +34,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter } from "../../asset/frontmatter";
+import { isRecord, toPosix } from "../../common";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type {
@@ -44,7 +45,7 @@ import type {
   OkfVerifiedEntry,
   ValidateContext,
 } from "../types";
-import { hashContent, nonEmptyString, readTags, runBaseValidateChecks } from "./shared";
+import { hashContent, nonEmptyString, RESERVED_FILES, readTags, runBaseValidateChecks } from "./shared";
 
 /** v0.2 frontmatter keys consumed into first-class fields below (§0.1) — excluded from the generic `documentJson` extras fold alongside the v0.1 five, so nothing is duplicated between a first-class field and the opaque extras bag. */
 const CONSUMED_FRONTMATTER_KEYS = [
@@ -61,18 +62,13 @@ const CONSUMED_FRONTMATTER_KEYS = [
   "okf_version",
 ];
 
-/** True for a plain (non-null, non-array) object — the shape every v0.2 mapping (`generated`, one `verified`/`sources` entry) must have. */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 /**
  * Parse one `verified:` actor mapping (`{by, at?}`). Tolerant: a missing/blank
  * `by` yields `undefined` (the entry is dropped, never rejecting the document
  * — OKF conformance leniency); `at` is independently optional.
  */
 function parseActorMapping(value: unknown): OkfVerifiedEntry | undefined {
-  if (!isPlainObject(value)) return undefined;
+  if (!isRecord(value)) return undefined;
   const by = nonEmptyString(value.by);
   if (by === undefined) return undefined;
   const at = nonEmptyString(value.at);
@@ -109,7 +105,7 @@ function parseOkfSources(value: unknown): OkfSourceEntry[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out: OkfSourceEntry[] = [];
   for (const item of value) {
-    if (!isPlainObject(item)) continue;
+    if (!isRecord(item)) continue;
     const resource = nonEmptyString(item.resource);
     if (resource === undefined) continue;
     const entry: OkfSourceEntry = { resource };
@@ -134,15 +130,7 @@ function parseLifecycleStatus(value: unknown): "draft" | "stable" | "deprecated"
   return value === "draft" || value === "stable" || value === "deprecated" ? value : undefined;
 }
 
-/** Reserved OKF files (case-insensitive) — recognized, never indexed as concepts (§5, OKF §1.4). */
-const RESERVED_FILES = new Set(["index.md", "log.md"]);
-
-/** POSIX-normalize separators without importing a cycle-participant helper. */
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
-
-/** True when `name` (a bare file name) is a reserved OKF file, case-insensitively. */
+/** True when `name` (a bare file name) is a reserved OKF file, case-insensitively (§5, OKF §1.4). */
 function isReservedFileName(name: string): boolean {
   return RESERVED_FILES.has(name.toLowerCase());
 }
@@ -239,7 +227,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
   // `generated.at` — v0.2's replacement for `timestamp` — takes precedence;
   // `timestamp` remains a fully valid fallback (the v0.2-permitted legacy
   // reading, not merely tolerated). Both stay fully optional (never rejects).
-  const generatedMapping = isPlainObject(data.generated) ? data.generated : undefined;
+  const generatedMapping = isRecord(data.generated) ? data.generated : undefined;
   const generatedAt = generatedMapping ? nonEmptyString(generatedMapping.at) : undefined;
   const generatedBy = generatedMapping ? nonEmptyString(generatedMapping.by) : undefined;
   const legacyTimestamp = nonEmptyString(data.timestamp);

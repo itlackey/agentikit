@@ -59,7 +59,7 @@ import { taskSourceErrorDetail } from "../../../tasks/source-v3";
 import { compileWorkflowPlan } from "../../../workflows/ir/compile";
 import { compileWorkflowSource } from "../../../workflows/source-ir/compile";
 import { conceptIdForStashFile } from "../../asset/resolve-ref";
-import { isAkmRegistryCachePath } from "../../common";
+import { isAkmRegistryCachePath, scanEnvKeyNames } from "../../common";
 import type { BundleComponent, Diagnostic, ValidateContext } from "../types";
 
 /** Recommended `category` values for facts — `commands/lint/fact-linter.ts:9`. */
@@ -131,24 +131,6 @@ export function nameOrTypeDiagnostics(
 
 // ── env dangerous-key scan (content-based port of env-key-rules.ts) ──────────
 
-/** Matches a KEY=value assignment line, capturing only the key — `commands/env/env.ts:62`. */
-const ASSIGN_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
-
-/** Port of `commands/env/env.ts#scanKeys` (`:65-77`) — content-based (overlay `raw`, not disk). */
-function scanKeys(text: string): string[] {
-  const keys: string[] = [];
-  const seen = new Set<string>();
-  for (const line of text.split(/\r?\n/)) {
-    const m = line.match(ASSIGN_RE);
-    if (!m) continue;
-    const key = m[1]!;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    keys.push(key);
-  }
-  return keys;
-}
-
 /** Port of `env-key-rules.ts#collectSuppressedKeys` (`:144-164`) — content-based. */
 function collectSuppressedKeys(raw: string): Set<string> {
   const suppressed = new Set<string>();
@@ -183,7 +165,7 @@ export function dangerousEnvKeyDiagnostics(type: string | undefined, relPath: st
   // `relPath` is already stash-root-relative, so "." IS the stash root here.
   const ref = conceptIdForStashFile(type, ".", relPath);
 
-  const keys = scanKeys(raw);
+  const keys = scanEnvKeyNames(raw);
   const suppressed = collectSuppressedKeys(raw);
   const diagnostics: Diagnostic[] = [];
   for (const key of keys) {

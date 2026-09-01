@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { loadAdapterExecutionSource } from "../commands/command/execution-source-loader";
 import { makeBundleRef } from "../core/asset/asset-ref";
+import { compareCodePoints, toPosix } from "../core/common";
 import type { AkmConfig } from "../core/config/config-types";
 import { UsageError } from "../core/errors";
 import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../core/recognition-util";
@@ -1055,14 +1056,6 @@ function freezeOperation<T extends SchedulerSyncOperation>(operation: T): T {
 
 function sameInvocation(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function compareCodePoints(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function toPosix(value: string): string {
-  return value.replaceAll("\\", "/");
 }
 
 // Retain the concrete error in this module's public dependency graph so callers

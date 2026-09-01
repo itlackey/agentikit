@@ -76,6 +76,7 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../asset/frontmatter";
+import { toPosix } from "../../common";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -99,10 +100,6 @@ const RAW_SUBDIR = "raw";
 const PAGES_SUBDIR = "pages";
 
 /** POSIX-normalize separators. */
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
-
 /** conceptId = component-root-relative path minus `.md`. */
 function conceptIdOf(relPath: string): string {
   return toPosix(relPath).replace(/\.md$/i, "");

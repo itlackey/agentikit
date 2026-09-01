@@ -11,6 +11,7 @@
  * @module task-history-repository
  */
 
+import { isRecord } from "../../core/common";
 import type { Database, SqlValue } from "../database";
 
 export type TaskHistoryDetail = {
@@ -38,10 +39,6 @@ export interface TaskHistoryMetadata {
 
 function metadataError(message: string): never {
   throw new Error(`invalid task_history metadata_json: ${message}`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function validateDetail(value: unknown): asserts value is TaskHistoryDetail | null | undefined {

@@ -32,6 +32,7 @@ import path from "node:path";
 import { akmAdapter } from "../../core/adapter/adapters/akm-adapter";
 import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
 import type { BundleComponent, IndexDocument } from "../../core/adapter/types";
+import { compareCodePoints } from "../../core/common";
 import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import {
   resolveUniqueWorkflowSource,
@@ -97,7 +98,7 @@ export function drainDirDocuments(
   }
 
   for (const [canonicalName, workflowName] of [...workflowLookups].sort(([left], [right]) =>
-    comparePaths(left, right),
+    compareCodePoints(left, right),
   )) {
     try {
       resolveUniqueWorkflowSource(component.root, adapter.id, workflowName);
@@ -136,10 +137,6 @@ export function drainDirDocuments(
   }
 
   return { entries, warnings, hashByFile, conceptIdByFile, rejectedPaths, rejectedConceptIds };
-}
-
-function comparePaths(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**

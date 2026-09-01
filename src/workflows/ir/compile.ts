@@ -27,6 +27,7 @@
  * deterministic: the same document always compiles to the same plan.
  */
 
+import { compareCodePoints } from "../../core/common";
 import { formatReference, parseReference } from "../program/expressions";
 import { type ProgramExec, type ProgramUnit, projectExecCore } from "../program/schema";
 import type { WorkflowError } from "../schema";
@@ -201,10 +202,6 @@ function sortedOutputs<T>(outputs: Record<string, T>): Record<string, T> {
     sorted[name] = outputs[name] as T;
   }
   return sorted;
-}
-
-function compareCodePoints(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function compileStep(

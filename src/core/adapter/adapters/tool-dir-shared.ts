@@ -56,15 +56,14 @@ import {
 } from "../../../execution/source";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter } from "../../asset/frontmatter";
+import { toPosix } from "../../common";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import { executionDefaultsFromFrontmatter, renderMarkdownExecutionSource } from "../execution-source";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
 import { skillDirectoryDiagnostics } from "./akm-lint";
-import { hashContent, nonEmptyString, readTags, runBaseValidateChecks } from "./shared";
+import { hashContent, nonEmptyString, RESERVED_FILES, readTags, runBaseValidateChecks } from "./shared";
 
-/** OKF reserved structural files (D-R6) — excluded at every depth, case-insensitive. */
-const RESERVED_FILES = new Set(["index.md", "log.md"]);
 /** The canonical (plural) subdir spellings writes normalize to (open-question-6). */
 const CANONICAL_COMMAND_DIR = "commands";
 const CANONICAL_AGENT_DIR = "agents";
@@ -94,10 +93,6 @@ interface ToolDirClassification {
   type: ToolDirType;
   conceptId: string;
   name: string;
-}
-
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
 }
 
 function isReserved(base: string): boolean {

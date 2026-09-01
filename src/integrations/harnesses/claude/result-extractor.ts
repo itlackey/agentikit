@@ -32,24 +32,8 @@
  * parsing still runs downstream for schema units) rather than hard.
  */
 
+import { asNonEmptyString, isRecord, tryParseJson } from "../../../core/common";
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-/** JSON.parse that returns undefined instead of throwing. */
-function tryParseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Is this parsed object Claude Code's `--output-format json` RESULT ENVELOPE

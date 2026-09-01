@@ -43,6 +43,7 @@ import {
   taskExtensionDetail,
   taskSourceErrorDetail,
 } from "../../../tasks/source-v3";
+import { toPosix } from "../../common";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -52,10 +53,6 @@ import { hashContent } from "./shared";
 const COMPONENT_ID = "main";
 /** The task YAML extension (spec §6 task row). */
 const TASK_EXT = TASK_EXTENSION;
-
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 
 function recognize(c: BundleComponent, file: FileContext): IndexDocument | null {
   if (file.ext !== TASK_EXT) return null;

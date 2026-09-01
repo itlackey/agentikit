@@ -42,7 +42,7 @@ import {
 } from "../core/config/config";
 import { readConfigText } from "../core/config/config-io";
 import { listTopLevelConfigKeys } from "../core/config/config-schema";
-import { deepMergeConfig } from "../core/config/deep-merge";
+import { deepMergeConfig, isPlainObject } from "../core/config/deep-merge";
 import { ConfigError, UsageError } from "../core/errors";
 import { getConfigPath, getDefaultStashDir, isTransientStashPath } from "../core/paths";
 import { warn } from "../core/warn";
@@ -176,18 +176,12 @@ export function assertSetupConfigPreflight(): void {
   }
 }
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
 function sameConfigValue(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(left, right);
 }
 
 function configArrayItemKey(value: unknown): string {
-  if (!isPlainRecord(value)) return `value:${JSON.stringify(value)}`;
+  if (!isPlainObject(value)) return `value:${JSON.stringify(value)}`;
   if (typeof value.id === "string") return `id:${value.id}`;
   if (typeof value.type === "string" && typeof value.url === "string") return `source:${value.type}:url:${value.url}`;
   if (typeof value.type === "string" && typeof value.path === "string")
@@ -242,12 +236,12 @@ export function rebaseSetupChanges(
     }
     return result;
   }
-  if (!isPlainRecord(original) || !isPlainRecord(desired)) {
+  if (!isPlainObject(original) || !isPlainObject(desired)) {
     if (!sameConfigValue(latest, original) && !sameConfigValue(latest, desired)) setupConflict(pathParts);
     return desired;
   }
-  if (latest !== undefined && !isPlainRecord(latest)) setupConflict(pathParts);
-  const result: Record<string, unknown> = isPlainRecord(latest) ? { ...latest } : {};
+  if (latest !== undefined && !isPlainObject(latest)) setupConflict(pathParts);
+  const result: Record<string, unknown> = isPlainObject(latest) ? { ...latest } : {};
   for (const key of new Set([...Object.keys(original), ...Object.keys(desired)])) {
     if (!Object.hasOwn(desired, key)) {
       if (Object.hasOwn(result, key) && !sameConfigValue(result[key], original[key]))
@@ -1009,7 +1003,7 @@ export async function runSetupFromConfig(opts: {
   } catch (e) {
     throw new UsageError(`Invalid JSON in --config: ${(e as Error).message}`, "INVALID_FLAG_VALUE");
   }
-  if (!isPlainRecord(parsed)) {
+  if (!isPlainObject(parsed)) {
     throw new ConfigError("Setup config must contain a top-level object.", "INVALID_CONFIG_FILE");
   }
   const incoming = parsed as Partial<AkmConfig>;
