@@ -2,11 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-export interface DeadUrl {
-  ref: string;
-  url: string;
-  status: number | "error";
-}
+import type { DeadUrl } from "../core/improve-types";
+
+export type { DeadUrl };
 
 const URL_RE = /https?:\/\/[^\s"'<>)\]]+/g;
 

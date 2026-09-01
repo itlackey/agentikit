@@ -33,11 +33,8 @@ import { mutateFrontmatter } from "../../../core/asset/frontmatter";
 
 // ── Re-exported belief-state types ───────────────────────────────────────────
 
-export type {
-  MemoryBeliefState,
-  MemoryBeliefStateTransition,
-  MemoryBeliefTransitionLogRecord,
-} from "./memory-improve";
+export type { MemoryBeliefState, MemoryBeliefStateTransition } from "../../../core/improve-types";
+export type { MemoryBeliefTransitionLogRecord } from "./memory-improve";
 
 // ── Shared edge-list reader ───────────────────────────────────────────────────
 

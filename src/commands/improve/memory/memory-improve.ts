@@ -9,52 +9,19 @@ import { mutateFrontmatter, parseFrontmatter } from "../../../core/asset/frontma
 import { MEMORY_ARCHIVE_REL } from "../../../core/asset/memory-archive";
 import { conceptIdFromTypeName } from "../../../core/asset/resolve-ref";
 import { asNonEmptyString, groupBy, stringArray } from "../../../core/common";
+import type {
+  ArchivedMemoryCleanupRecord,
+  MemoryBeliefState,
+  MemoryBeliefStateTransition,
+  MemoryConsolidationCandidate,
+  MemoryContradictionCandidate,
+  MemoryPruneCandidate,
+  MemoryPruneReason,
+  RelativeDateCandidate,
+} from "../../../core/improve-types";
 import { DERIVED_SUFFIX } from "../../../core/recognition-util";
 import { recordWrittenPath } from "../../../core/write-provenance";
 import { isDerivedMemory, memoryIdentityRef, parseMemoryName, resolveParentRef } from "./derived-ref";
-
-export type MemoryPruneReason = "duplicate-derived" | "superseded-derived" | "obsolete-derived";
-export type MemoryBeliefState = "active" | "asserted" | "deprecated" | "superseded" | "contradicted" | "archived";
-
-export interface MemoryPruneCandidate {
-  ref: string;
-  parentRef: string;
-  reason: MemoryPruneReason;
-  survivorRef?: string;
-}
-
-export interface MemoryConsolidationCandidate {
-  parentRef: string;
-  signal: string;
-  refs: string[];
-  suggestedSurvivorRef: string;
-}
-
-export interface MemoryContradictionCandidate {
-  ref: string;
-  parentRef: string;
-  reason: "contradicted-derived";
-  contradictedByRef: string;
-  contradictedByRefs: string[];
-  currentBeliefRefs: string[];
-}
-
-export interface MemoryBeliefStateTransition {
-  ref: string;
-  parentRef: string;
-  fromState: Exclude<MemoryBeliefState, "archived">;
-  toState: Exclude<MemoryBeliefState, "archived">;
-  reason: "contradicted-derived" | "belief-refresh";
-  relatedRef?: string;
-  relatedRefs?: string[];
-  currentBeliefRefs?: string[];
-}
-
-export interface RelativeDateCandidate {
-  ref: string;
-  filePath: string;
-  matches: string[];
-}
 
 export interface MemoryCleanupPlan {
   analyzedDerived: number;
@@ -63,19 +30,6 @@ export interface MemoryCleanupPlan {
   beliefStateTransitions: MemoryBeliefStateTransition[];
   consolidationCandidates: MemoryConsolidationCandidate[];
   relativeDateCandidates: RelativeDateCandidate[];
-}
-
-export interface ArchivedMemoryCleanupRecord {
-  ref: string;
-  parentRef: string;
-  reason: MemoryPruneReason;
-  beliefState: "archived";
-  previousBeliefState: Exclude<MemoryBeliefState, "archived">;
-  survivorRef?: string;
-  originalPath: string;
-  archivedPath: string;
-  auditPath: string;
-  archivedAt: string;
 }
 
 export interface MemoryBeliefTransitionLogRecord extends MemoryBeliefStateTransition {
