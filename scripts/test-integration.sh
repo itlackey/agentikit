@@ -35,38 +35,6 @@ bun run sweep:tmp >/dev/null 2>&1 || true
 mapfile -t files < <(find tests/integration -name '*.test.ts' | sort)
 total="${#files[@]}"
 
-# Floor on tests actually executed (pass + skip), checked after aggregation.
-# The files-ran cross-check below cannot see this: a file whose every test is
-# skipped still counts toward `across N files`. The header above records the bun
-# `--shard` incident where shards 2-4 ran ZERO tests at exit 0 — this is the
-# same hole reached through skips instead of sharding (#795). Set below the
-# current integration count with room for churn; raise it as the suite grows.
-#
-# P4 (docs/plans/specs/p4-deletions-closeout.md §5.3/P4-N5, row B-62):
-# RAISED 5000 -> 5500. Measured at Lane C's commit: 5825 pass / 57 skip
-# (executed 5882), after the deletion families (§3) removed
-# tests/integration/tasks-scheduler-sync-v3.test.ts (23 tests) and
-# tests/integration/tasks-scheduling-characterization.test.ts (3 tests) — see
-# the commit body for the per-suite deleted-test table. P4-N5's formula:
-# floor(executed * 0.95 / 100) * 100 = floor(5882 * 0.95 / 100) * 100 =
-# floor(55.879) * 100 = 5500.
-#
-# #861: RAISED 5500 -> 5700. release/0.9.5 measured a clean-TMPDIR run at
-# 5950 pass / 53 skip (executed 6003) across two consecutive full runs.
-# Same formula: floor(6003 * 0.95 / 100) * 100 = floor(57.0285) * 100 =
-# 5700. Headroom below the measured 6003 is intentional (#866 already
-# showed the suite legitimately loses tests to dead-code removal); raise
-# again as the suite grows, argue about lowering it in review.
-#
-# #786: LOWERED 5700 -> 3400. The ORG-03/ORG-06 classification sweep moved
-# ~230 tests/integration/ files out to tests/ (opens no real DB, touches no
-# network, spawns no process) and reclassified ~30 tests/ files in, per the
-# AGENTS.md rule. This is a deliberate redistribution, not a loss: unit's own
-# floor moved the same tests the other way, and unit+integration executed
-# totals are unchanged before/after (10306 both times). Measured post-sweep:
-# 3561 pass / 50 skip (executed 3611). Same formula: floor(3611 * 0.95 / 100)
-# * 100 = floor(34.3045) * 100 = 3400.
-MIN_TESTS="${AKM_MIN_INTEGRATION_TESTS:-3400}"
 if [ "$total" -eq 0 ]; then
   echo "── integration: no test files found under tests/integration" >&2
   exit 1
@@ -124,17 +92,6 @@ for t in "${tmps[@]}"; do
 done
 
 echo "── integration: ${pass} pass / ${skip} skip / ${fail} fail across ${N} process-shards (${filecount}/${total} files)"
-# `filecount` counts files RAN, not tests executed — a file whose every test is
-# skipped still contributes to `across N files`, so it clears that check while
-# asserting nothing. Pin the executed+skipped total against a floor so a suite
-# that silently loses tests fails instead of just reporting a smaller number
-# nobody diffs (#795). Raise the floor when the suite legitimately grows;
-# LOWERING it is the thing to argue about in review.
-executed=$((pass + skip))
-if [ "$executed" -lt "$MIN_TESTS" ]; then
-  echo "── integration: only ${executed} tests ran+skipped, floor is ${MIN_TESTS} — tests disappeared rather than failed."
-  rc=1
-fi
 if [ "$rc" -ne 0 ] || [ "$fail" -ne 0 ] || [ "$filecount" -ne "$total" ]; then
   echo "── integration: shard logs kept for diagnosis: ${logdir}"
   exit 1

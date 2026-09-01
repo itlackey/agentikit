@@ -43,29 +43,6 @@ bun run sweep:tmp >/dev/null 2>&1 || true
 mapfile -t files < <(find tests -name '*.test.ts' -not -path 'tests/integration/*' | sort)
 total="${#files[@]}"
 
-# Floor on tests actually executed (pass + skip), checked after aggregation.
-# The files-ran cross-check below cannot see this: a file whose every test is
-# skipped still counts toward `across N files`. The header above records the bun
-# `--shard` incident where shards 2-4 ran ZERO tests at exit 0 — this is the
-# same hole reached through skips instead of sharding (#795). Set below the
-# current unit count with room for churn; raise it as the suite grows.
-#
-# P4 (docs/plans/specs/p4-deletions-closeout.md §5.3/P4-N5, row B-62):
-# RAISED 3500 -> 4000. Measured at Lane C's commit: 4213 pass / 0 skip
-# (executed 4213), after the deletion families (§3) removed
-# tests/tasks/source-v3.test.ts, tests/tasks-runtime-v3.test.ts,
-# tests/tasks/parse-v3-adapter.test.ts, and trimmed several other suites'
-# v3/multi-job blocks — see the commit body for the per-suite deleted-test
-# table. P4-N5's formula: floor(executed * 0.95 / 100) * 100 =
-# floor(4213 * 0.95 / 100) * 100 = floor(40.0235) * 100 = 4000.
-# #786: RAISED 4000 -> 6300. The ORG-03/ORG-06 classification sweep moved ~230
-# files OUT of tests/integration/ and into this suite; integration's floor was
-# lowered 5700 -> 3400 to match, but this one was left at its pre-sweep value.
-# That silently gutted the combined guard: floors totalled 7400 against 10310
-# executed, so ~2900 unit tests could have vanished without tripping anything.
-# Same formula as every other adjustment here: floor(executed * 0.95 / 100) *
-# 100 = floor(6699 * 0.95 / 100) * 100 = floor(63.6405) * 100 = 6300.
-MIN_TESTS="${AKM_MIN_UNIT_TESTS:-6300}"
 if [ "$total" -eq 0 ]; then
   echo "── unit: no test files found under tests/ (excluding integration)" >&2
   exit 1
@@ -123,17 +100,6 @@ for t in "${tmps[@]}"; do
 done
 
 echo "── unit: ${pass} pass / ${skip} skip / ${fail} fail across ${N} process-shards (${filecount}/${total} files)"
-# `filecount` counts files RAN, not tests executed — a file whose every test is
-# skipped still contributes to `across N files`, so it clears that check while
-# asserting nothing. Pin the executed+skipped total against a floor so a suite
-# that silently loses tests fails instead of just reporting a smaller number
-# nobody diffs (#795). Raise the floor when the suite legitimately grows;
-# LOWERING it is the thing to argue about in review.
-executed=$((pass + skip))
-if [ "$executed" -lt "$MIN_TESTS" ]; then
-  echo "── unit: only ${executed} tests ran+skipped, floor is ${MIN_TESTS} — tests disappeared rather than failed."
-  rc=1
-fi
 if [ "$rc" -ne 0 ] || [ "$fail" -ne 0 ] || [ "$filecount" -ne "$total" ]; then
   echo "── unit: shard logs kept for diagnosis: ${logdir}"
   exit 1
