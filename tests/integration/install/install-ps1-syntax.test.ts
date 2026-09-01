@@ -25,7 +25,7 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
-const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..");
+const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
 const INSTALL_PS1 = path.join(PROJECT_ROOT, "install.ps1");
 
 function resolvePwsh(): string | undefined {

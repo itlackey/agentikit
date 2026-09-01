@@ -26,12 +26,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { openStateDatabase } from "../../src/core/state-db";
-import type { SpawnFn } from "../../src/core/subprocess";
-import { getTaskHistory, upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
-import { runTask } from "../../src/tasks/run/run-task";
-import { readTaskHistory } from "../../src/tasks/run/task-history";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+import { openStateDatabase } from "../../../src/core/state-db";
+import type { SpawnFn } from "../../../src/core/subprocess";
+import { getTaskHistory, upsertTaskHistory } from "../../../src/storage/repositories/task-history-repository";
+import { runTask } from "../../../src/tasks/run/run-task";
+import { readTaskHistory } from "../../../src/tasks/run/task-history";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
 let tasksDir: string;

@@ -10,24 +10,29 @@ import {
   drainProposals,
   isEmptyDiff,
   type JudgmentSeams,
-} from "../../src/commands/proposal/drain";
-import { CONSERVATIVE, MANUAL, PERSONAL_STASH, resolveDrainPolicy } from "../../src/commands/proposal/drain-policies";
-import type { ProposalAcceptResult, ProposalRejectResult } from "../../src/commands/proposal/proposal";
+} from "../../../src/commands/proposal/drain";
+import {
+  CONSERVATIVE,
+  MANUAL,
+  PERSONAL_STASH,
+  resolveDrainPolicy,
+} from "../../../src/commands/proposal/drain-policies";
+import type { ProposalAcceptResult, ProposalRejectResult } from "../../../src/commands/proposal/proposal";
 import {
   createProposal,
   getProposal,
   isProposalSkipped,
   listProposals,
   type Proposal,
-} from "../../src/commands/proposal/repository";
-import type { AkmConfig } from "../../src/core/config/config";
-import { ConfigError } from "../../src/core/errors";
-import type { EventsContext } from "../../src/core/events";
-import { getStateDbPath } from "../../src/core/state-db";
-import type { AgentRunResult } from "../../src/integrations/agent";
-import type { RunnerSpec } from "../../src/integrations/agent/runner";
-import { makeConfig } from "../_helpers/factories";
-import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
+} from "../../../src/commands/proposal/repository";
+import type { AkmConfig } from "../../../src/core/config/config";
+import { ConfigError } from "../../../src/core/errors";
+import type { EventsContext } from "../../../src/core/events";
+import { getStateDbPath } from "../../../src/core/state-db";
+import type { AgentRunResult } from "../../../src/integrations/agent";
+import type { RunnerSpec } from "../../../src/integrations/agent/runner";
+import { makeConfig } from "../../_helpers/factories";
+import { mutateScopedEnv, withEnv } from "../../_helpers/sandbox";
 
 // ── Test setup ────────────────────────────────────────────────────────────
 //
@@ -802,7 +807,7 @@ describe("drainProposals — terminal transition ordering", () => {
       { runAgentFn: acceptJudge },
     );
 
-    const { openStateDatabase } = await import("../../src/core/state-db");
+    const { openStateDatabase } = await import("../../../src/core/state-db");
     const db = openStateDatabase();
     try {
       db.prepare("UPDATE proposals SET content = content || ? WHERE id = ?").run("\nchanged", deferred.id);
@@ -842,7 +847,7 @@ describe("drainProposals — queue-mode staged accept (FIX 7)", () => {
     expect(result.deferred).toEqual([]);
 
     // No triage_deferred "left unresolved" event should be present.
-    const { readEvents } = await import("../../src/core/events");
+    const { readEvents } = await import("../../../src/core/events");
     const { events } = readEvents({ type: "triage_deferred" }, ctx);
     expect(events).toEqual([]);
   });

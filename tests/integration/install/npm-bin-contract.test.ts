@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-const REPO_ROOT = path.resolve(import.meta.dir, "..", "..");
+const REPO_ROOT = path.resolve(import.meta.dir, "..", "..", "..");
 const NPM_SHEBANG = /^#!\s*(?:\/usr\/bin\/env\s+(?:-S\s+)?((?:[^ \t=]+=[^ \t=]+\s+)*))?([^ \t]+)(.*)$/;
 const RUNTIME_DOCS = [
   "README.md",

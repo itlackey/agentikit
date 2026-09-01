@@ -3,10 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { openStateDatabase } from "../../src/core/state-db";
-import { decodeTaskHistoryMetadata, upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
-import { readTaskHistory } from "../../src/tasks/run/task-history";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { openStateDatabase } from "../../../src/core/state-db";
+import {
+  decodeTaskHistoryMetadata,
+  upsertTaskHistory,
+} from "../../../src/storage/repositories/task-history-repository";
+import { readTaskHistory } from "../../../src/tasks/run/task-history";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 describe("decodeTaskHistoryMetadata", () => {
   test("decodes exact current engine metadata", () => {

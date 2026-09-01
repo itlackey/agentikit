@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { akmProposalAccept, akmProposalRevert } from "../../src/commands/proposal/proposal";
-import { createProposal, isProposalSkipped } from "../../src/commands/proposal/repository";
-import type { AkmConfig } from "../../src/core/config/config";
-import { txnNamespaceDir } from "../../src/core/fs-txn";
-import { getCachePaths, parseGitRepoUrl } from "../../src/sources/providers/git";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { akmProposalAccept, akmProposalRevert } from "../../../src/commands/proposal/proposal";
+import { createProposal, isProposalSkipped } from "../../../src/commands/proposal/repository";
+import type { AkmConfig } from "../../../src/core/config/config";
+import { txnNamespaceDir } from "../../../src/core/fs-txn";
+import { getCachePaths, parseGitRepoUrl } from "../../../src/sources/providers/git";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 const ACCEPTED =
   "---\ndescription: Git accepted proposal content\nwhen_to_use: Testing proposal Git commits\n---\n\nACCEPTED.\n";

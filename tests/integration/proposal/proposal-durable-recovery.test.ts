@@ -2,20 +2,20 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { akmProposalAccept, akmProposalReject, akmProposalRevert } from "../../src/commands/proposal/proposal";
-import { createProposal, getProposal, isProposalSkipped } from "../../src/commands/proposal/repository";
-import { parseFrontmatter } from "../../src/core/asset/frontmatter";
-import type { AkmConfig } from "../../src/core/config/config";
-import { readEvents } from "../../src/core/events";
-import { txnNamespaceDir } from "../../src/core/fs-txn";
+import { akmProposalAccept, akmProposalReject, akmProposalRevert } from "../../../src/commands/proposal/proposal";
+import { createProposal, getProposal, isProposalSkipped } from "../../../src/commands/proposal/repository";
+import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
+import type { AkmConfig } from "../../../src/core/config/config";
+import { readEvents } from "../../../src/core/events";
+import { txnNamespaceDir } from "../../../src/core/fs-txn";
 import {
   type IsolatedAkmStorage,
   makeSandboxDir,
   withIsolatedAkmStorage,
   writeSandboxConfig,
-} from "../_helpers/sandbox";
+} from "../../_helpers/sandbox";
 
-const RUNNER = path.join(import.meta.dir, "_helpers", "proposal-crash-runner.ts");
+const RUNNER = path.join(import.meta.dir, "../_helpers", "proposal-crash-runner.ts");
 const CONTENT =
   "---\ndescription: Durable proposal content\nwhen_to_use: Testing proposal crash recovery\n---\n\nDURABLE ACCEPT.\n";
 let storage: IsolatedAkmStorage;

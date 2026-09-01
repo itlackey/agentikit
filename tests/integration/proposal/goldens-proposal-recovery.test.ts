@@ -35,17 +35,17 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { akmProposalAccept, akmProposalReject, akmProposalRevert } from "../../src/commands/proposal/proposal";
-import { createProposal, getProposal, isProposalSkipped } from "../../src/commands/proposal/repository";
-import { parseFrontmatter } from "../../src/core/asset/frontmatter";
-import { readEvents } from "../../src/core/events";
-import { expectGolden } from "../_helpers/golden";
+import { akmProposalAccept, akmProposalReject, akmProposalRevert } from "../../../src/commands/proposal/proposal";
+import { createProposal, getProposal, isProposalSkipped } from "../../../src/commands/proposal/repository";
+import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
+import { readEvents } from "../../../src/core/events";
+import { expectGolden } from "../../_helpers/golden";
 import {
   type IsolatedAkmStorage,
   makeSandboxDir,
   withIsolatedAkmStorage,
   writeSandboxConfig,
-} from "../_helpers/sandbox";
+} from "../../_helpers/sandbox";
 import {
   lessonContent,
   lessonDurableRef,
@@ -54,11 +54,11 @@ import {
   RECOVERY_REJECT_PREFIX,
   RECOVERY_REJECT_RECOVERS_ACCEPT_NAME,
   RECOVERY_REVERT_PREFIX,
-} from "../fixtures/goldens/journal/fixture-refs";
+} from "../../fixtures/goldens/journal/fixture-refs";
 
 const GOLDEN_PATH = "tests/fixtures/goldens/journal/proposal-recovery.json";
 const HEAD_SHA = "90640d4103ab4024ab0bf8b0705bd54d847c9a4a";
-const RUNNER = path.join(import.meta.dir, "_helpers", "proposal-crash-runner.ts");
+const RUNNER = path.join(import.meta.dir, "../_helpers", "proposal-crash-runner.ts");
 
 let storage: IsolatedAkmStorage;
 let markers: ReturnType<typeof makeSandboxDir>;

@@ -25,12 +25,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { stringify as stringifyYaml } from "yaml";
-import { openStateDatabase } from "../../src/core/state-db";
-import { akmIndex } from "../../src/indexer/indexer";
-import type { AgentRunResult } from "../../src/integrations/agent";
-import { runTask } from "../../src/tasks/run/run-task";
-import { runCliCapture } from "../_helpers/cli";
-import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+import { openStateDatabase } from "../../../src/core/state-db";
+import { akmIndex } from "../../../src/indexer/indexer";
+import type { AgentRunResult } from "../../../src/integrations/agent";
+import { runTask } from "../../../src/tasks/run/run-task";
+import { runCliCapture } from "../../_helpers/cli";
+import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 type FakeRunAgent = (...args: unknown[]) => Promise<AgentRunResult>;
 

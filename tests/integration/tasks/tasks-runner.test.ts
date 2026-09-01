@@ -3,18 +3,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { stringify as stringifyYaml } from "yaml";
-import { buildTaskRunId, openLogsDatabase, queryTaskLogs, type TaskLogRow } from "../../src/core/logs-db";
-import { openStateDatabase } from "../../src/core/state-db";
-import type { SpawnedSubprocess, SpawnFn } from "../../src/core/subprocess";
-import type { AgentRunResult } from "../../src/integrations/agent";
-import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
-import { resolveAkmInvocation } from "../../src/tasks/resolve-akm-bin";
-import { shellCommand, shellExecutable } from "../../src/tasks/run/run-native-task";
-import { runTask } from "../../src/tasks/run/run-task";
-import { DEFAULT_WORKFLOW_TASK_TIMEOUT_MS } from "../../src/tasks/run/run-workflow-task";
-import { readTaskHistory } from "../../src/tasks/run/task-history";
-import { exitCodeForStatus } from "../../src/tasks/run/task-result";
-import { makeSandboxDir, withEnv } from "../_helpers/sandbox";
+import { buildTaskRunId, openLogsDatabase, queryTaskLogs, type TaskLogRow } from "../../../src/core/logs-db";
+import { openStateDatabase } from "../../../src/core/state-db";
+import type { SpawnedSubprocess, SpawnFn } from "../../../src/core/subprocess";
+import type { AgentRunResult } from "../../../src/integrations/agent";
+import { upsertTaskHistory } from "../../../src/storage/repositories/task-history-repository";
+import { resolveAkmInvocation } from "../../../src/tasks/resolve-akm-bin";
+import { shellCommand, shellExecutable } from "../../../src/tasks/run/run-native-task";
+import { runTask } from "../../../src/tasks/run/run-task";
+import { DEFAULT_WORKFLOW_TASK_TIMEOUT_MS } from "../../../src/tasks/run/run-workflow-task";
+import { readTaskHistory } from "../../../src/tasks/run/task-history";
+import { exitCodeForStatus } from "../../../src/tasks/run/task-result";
+import { makeSandboxDir, withEnv } from "../../_helpers/sandbox";
 
 type FakeWorkflowRunner = (options: { target: string; params?: Record<string, unknown> }) => Promise<{
   run: {
@@ -1367,10 +1367,10 @@ describe("resolveAkmInvocation", () => {
       env: {},
       runtime: "bun",
       execPath: "/usr/bin/bun",
-      mainPath: path.resolve(import.meta.dir, "../../src/cli.ts"),
+      mainPath: path.resolve(import.meta.dir, "../../../src/cli.ts"),
     });
     expect(r).toEqual({
-      argv: ["/usr/bin/bun", path.resolve(import.meta.dir, "../../src/cli.ts")],
+      argv: ["/usr/bin/bun", path.resolve(import.meta.dir, "../../../src/cli.ts")],
       via: "checkout",
       kind: "checkout",
       eligible: false,

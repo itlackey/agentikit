@@ -11,13 +11,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { resolveRegistryProviderFactory } from "../../src/registry/factory";
-import type { RegistryProvider } from "../../src/registry/providers/types";
-import { buildInstallRef } from "../../src/registry/resolve";
-import { type Cleanup, sandboxXdgCacheHome } from "../_helpers/sandbox";
+import { resolveRegistryProviderFactory } from "../../../src/registry/factory";
+import type { RegistryProvider } from "../../../src/registry/providers/types";
+import { buildInstallRef } from "../../../src/registry/resolve";
+import { type Cleanup, sandboxXdgCacheHome } from "../../_helpers/sandbox";
 
 // Trigger self-registration of the static-index provider.
-import "../../src/registry/providers/static-index";
+import "../../../src/registry/providers/static-index";
 
 // ── Fixture: one stash per install-source kind ───────────────────────────────
 // Each stash shares the token "pinme" so a single search() returns all four.

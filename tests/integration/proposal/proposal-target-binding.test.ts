@@ -2,16 +2,16 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { akmProposalAccept, akmProposalCreate } from "../../src/commands/proposal/proposal";
+import { akmProposalAccept, akmProposalCreate } from "../../../src/commands/proposal/proposal";
 import {
   createProposal,
   isProposalSkipped,
   listProposals,
   resolveProposalId,
-} from "../../src/commands/proposal/repository";
-import { type AkmConfig, resetConfigCache } from "../../src/core/config/config";
-import { openStateDatabase } from "../../src/core/state-db";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+} from "../../../src/commands/proposal/repository";
+import { type AkmConfig, resetConfigCache } from "../../../src/core/config/config";
+import { openStateDatabase } from "../../../src/core/state-db";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 const VALID_LESSON = `---\ndescription: Proposal with a stable bound destination\nwhen_to_use: Testing proposal destinations\n---\n\nBound content.\n`;
 const tempDirs: string[] = [];

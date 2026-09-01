@@ -27,7 +27,7 @@ import {
   packPackage,
   uninstallGlobalPackage,
   verifyGlobalInstall,
-} from "../../scripts/package-install";
+} from "../../../scripts/package-install";
 
 function tempRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "akm-package-install-integration-"));

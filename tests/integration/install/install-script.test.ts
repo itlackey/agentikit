@@ -10,7 +10,7 @@ import path from "node:path";
 // probe never selects the sudo branch. CI runners are non-root.
 const runningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
 
-const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..");
+const PROJECT_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
 const INSTALL_SCRIPT = path.join(PROJECT_ROOT, "install.sh");
 const BASH_PATH = resolveCommand("bash");
 const CHMOD_PATH = resolveCommand("chmod");

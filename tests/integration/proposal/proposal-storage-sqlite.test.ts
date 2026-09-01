@@ -16,13 +16,13 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import { computeAcceptRateBySource } from "../../src/commands/health/accept-rate";
+import { computeAcceptRateBySource } from "../../../src/commands/health/accept-rate";
 import {
   akmProposalAccept,
   akmProposalDiff,
   akmProposalRevert,
   akmProposalShow,
-} from "../../src/commands/proposal/proposal";
+} from "../../../src/commands/proposal/proposal";
 import {
   archiveProposal,
   createProposal as createProposalImpl,
@@ -31,10 +31,10 @@ import {
   listProposals,
   type Proposal,
   resolveProposalId,
-} from "../../src/commands/proposal/repository";
-import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
-import { makeConfig } from "../_helpers/factories";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+} from "../../../src/commands/proposal/repository";
+import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
+import { makeConfig } from "../../_helpers/factories";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 const tempDirs: string[] = [];
 let storage: IsolatedAkmStorage;
@@ -196,7 +196,7 @@ function startProposalWorker<T>(payload: Record<string, unknown>): WorkerHandle<
 }
 
 function proposalsModuleHref(): string {
-  return pathToFileURL(path.join(import.meta.dir, "../../src/commands/proposal/repository.ts")).href;
+  return pathToFileURL(path.join(import.meta.dir, "../../../src/commands/proposal/repository.ts")).href;
 }
 
 // ── canonical store ──────────────────────────────────────────────────────────
@@ -311,11 +311,11 @@ describe("concurrent create + list safety (WAL)", () => {
           "--timeout=120000",
           "-t",
           "akmSearch includes explainability reasons for indexed hits|concurrent duplicate proposal creation serializes",
-          path.join(import.meta.dir, "source.test.ts"),
+          path.join(import.meta.dir, "../../../tests/source.test.ts"),
           path.join(import.meta.dir, "proposal-storage-sqlite.test.ts"),
         ],
         {
-          cwd: path.resolve(import.meta.dir, "../.."),
+          cwd: path.resolve(import.meta.dir, "../../.."),
           env: { ...process.env },
           stdout: "pipe",
           stderr: "pipe",

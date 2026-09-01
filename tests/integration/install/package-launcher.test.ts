@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 
-const REPO_ROOT = path.resolve(import.meta.dir, "../..");
+const REPO_ROOT = path.resolve(import.meta.dir, "../../..");
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm package launcher "));
 const packageDir = path.join(testRoot, "package with spaces");
 const consumerDir = path.join(testRoot, "consumer with spaces");

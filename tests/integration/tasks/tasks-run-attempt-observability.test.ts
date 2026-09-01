@@ -5,20 +5,20 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { shouldBypassConfigStartup } from "../../src/cli";
-import { buildTaskRunId, openLogsDatabase, queryTaskLogs } from "../../src/core/logs-db";
-import { openStateDatabase } from "../../src/core/state-db";
-import type { SpawnFn } from "../../src/core/subprocess";
+import { shouldBypassConfigStartup } from "../../../src/cli";
+import { buildTaskRunId, openLogsDatabase, queryTaskLogs } from "../../../src/core/logs-db";
+import { openStateDatabase } from "../../../src/core/state-db";
+import type { SpawnFn } from "../../../src/core/subprocess";
 import {
   decodeTaskHistoryMetadata,
   finalizeTaskHistoryAttempt,
   getTaskHistoryRuns,
   reserveTaskHistoryAttempt,
-} from "../../src/storage/repositories/task-history-repository";
-import { runTask } from "../../src/tasks/run/run-task";
-import { readTaskHistory } from "../../src/tasks/run/task-history";
-import { runCliCapture } from "../_helpers/cli";
-import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
+} from "../../../src/storage/repositories/task-history-repository";
+import { runTask } from "../../../src/tasks/run/run-task";
+import { readTaskHistory } from "../../../src/tasks/run/task-history";
+import { runCliCapture } from "../../_helpers/cli";
+import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 const INVALID_TASK_ID = "_invalid-task-id";
 

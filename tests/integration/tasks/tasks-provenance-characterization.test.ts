@@ -27,13 +27,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { stringify as stringifyYaml } from "yaml";
-import { ConfigError } from "../../src/core/errors";
-import { openStateDatabase } from "../../src/core/state-db";
-import { akmIndex } from "../../src/indexer/indexer";
-import { resolveUsageEventSource, type UsageEventSource } from "../../src/indexer/usage/usage-events";
-import type { AgentRunResult } from "../../src/integrations/agent";
-import { runTask } from "../../src/tasks/run/run-task";
-import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+import { ConfigError } from "../../../src/core/errors";
+import { openStateDatabase } from "../../../src/core/state-db";
+import { akmIndex } from "../../../src/indexer/indexer";
+import { resolveUsageEventSource, type UsageEventSource } from "../../../src/indexer/usage/usage-events";
+import type { AgentRunResult } from "../../../src/integrations/agent";
+import { runTask } from "../../../src/tasks/run/run-task";
+import { type IsolatedAkmStorage, withEnv, withIsolatedAkmStorage, writeSandboxConfig } from "../../_helpers/sandbox";
 
 type FakeRunAgent = (...args: unknown[]) => Promise<AgentRunResult>;
 
@@ -395,7 +395,7 @@ describe("B-10 / spec §9 acceptance grep — process.env.AKM_EVENT_SOURCE is wr
   // tests/tasks/parse-v3-adapter.test.ts:423 (recursive src/**/*.ts walk,
   // per-file scan, named offenders on failure) — regex-based rather than
   // AST-based here because the acceptance criterion itself IS a regex grep.
-  const SRC_ROOT = path.resolve(import.meta.dir, "../../src");
+  const SRC_ROOT = path.resolve(import.meta.dir, "../../../src");
 
   function walkTsFiles(dir: string): string[] {
     const results: string[] = [];
