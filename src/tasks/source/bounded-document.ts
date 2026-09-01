@@ -49,6 +49,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { types as utilTypes } from "node:util";
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument } from "yaml";
+import { wellFormedUnicode } from "../../core/common";
 import { UsageError } from "../../core/errors";
 import { DURATION_UNITS, parseDuration } from "../../core/time";
 import type { ExecutionJsonObject, ExecutionJsonValue } from "../../execution/json";
@@ -94,18 +95,6 @@ export function own(value: object, key: string): boolean {
 
 export function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
-}
-
-export function wellFormedUnicode(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-    } else if (code >= 0xdc00 && code <= 0xdfff) return false;
-  }
-  return true;
 }
 
 /** The one per-field error funnel both grammars render through, distinguished only by `ctx.sourceLabel` (D2-N4). */
