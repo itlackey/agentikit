@@ -105,7 +105,7 @@ describe("Node 22 runtime minimum contract", () => {
     }
 
     expect(coveredInstallJobs.sort()).toEqual([
-      "akm-eval-smoke.yml#smoke",
+      "akm-eval-smoke.yml#determinism",
       "ci.yml#check",
       "ci.yml#node-smoke",
       "gated-ci.yml#docker-install",
