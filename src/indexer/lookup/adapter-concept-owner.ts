@@ -7,8 +7,8 @@ import path from "node:path";
 import type { AdapterReadCandidate, BundleAdapter } from "../../core/adapter/bundle-adapter";
 import { adapterForId } from "../../core/adapter/registry";
 import type { BundleComponent } from "../../core/adapter/types";
-import { compareCodePoints, isWithin } from "../../core/common";
-import { UsageError } from "../../core/errors";
+import { compareCodePoints, hasErrnoCode, isWithin } from "../../core/common";
+import { ConfigError, UsageError } from "../../core/errors";
 import { canonicalizeWorkflowName } from "../../core/recognition-util";
 import {
   resolveUniqueWorkflowSource,
@@ -165,8 +165,13 @@ export function resolveAdapterConceptOwner(
   let realRoot: string;
   try {
     realRoot = fs.realpathSync(sourcePath);
-  } catch {
-    return undefined;
+  } catch (error) {
+    // Genuinely absent — "no owner" is correct. Any other failure (e.g.
+    // EACCES) is not "doesn't exist"; treating it as such would report a
+    // legitimate bundle root as owning nothing instead of raising the
+    // unreadable-directory error.
+    if (hasErrnoCode(error, "ENOENT")) return undefined;
+    throw new ConfigError(`Unable to read bundle directory at "${sourcePath}".`, "STASH_DIR_UNREADABLE");
   }
 
   const component = componentFor(sourcePath, adapterId);
