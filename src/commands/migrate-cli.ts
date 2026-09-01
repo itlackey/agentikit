@@ -4,6 +4,8 @@
 
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
 import { resolveStashDir } from "../core/common";
+import { getConfigPath } from "../core/paths";
+import { applyConfigExtraParamsLift, findConfigExtraParamsLift } from "./migrate/config-extra-params";
 import { findDeadResidueEntries, removeDeadResidue } from "./migrate/dead-residue";
 import { runMigrationTool } from "./migration-tool";
 
@@ -110,8 +112,12 @@ export async function runMigrateSubcommand(
 ): Promise<void> {
   // Superseded pre-0.9.0 .akm layouts are a migration concern like any other:
   // status names them, apply removes them. (First shipped as a bolted-on
-  // `health --clean-dead-residue` flag; folded here where it belongs.)
+  // `health --clean-dead-residue` flag; folded here where it belongs.) The
+  // legacy extraParams -> first-class-field config lift (#852) is the same
+  // shape: status names it, apply persists it once instead of the old
+  // permanent silent lift on every config load.
   const stashDir = resolveStashDir();
+  const configPath = getConfigPath();
   const applyResidue = command === "migrate-apply" && !genOneArgs.includes("--dry-run");
   const first = await callMigrateTool(genOneArgs, runTool);
   if (first.status !== EXIT_CODES.SUCCESS && first.status !== EXIT_CODES.GENERAL) {
@@ -134,7 +140,10 @@ export async function runMigrateSubcommand(
   const deadResidue = applyResidue
     ? { removed: removeDeadResidue(stashDir) }
     : { pending: findDeadResidueEntries(stashDir) };
-  output(command, { ...combined, deadResidue });
+  const configExtraParams = applyResidue
+    ? applyConfigExtraParamsLift(configPath)
+    : { pending: findConfigExtraParamsLift(configPath) };
+  output(command, { ...combined, deadResidue, configExtraParams });
 
   if (combined.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
 }

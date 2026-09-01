@@ -174,8 +174,10 @@ describe("0.9 config contract", () => {
   // #852 (following #815): `extraParams.reasoning_effort` was the documented
   // 0.9.1 workaround for LM Studio, where `enableThinking` is a no-op.
   // `reasoningEffort` became a first-class — and therefore protected — field
-  // in 0.9.2, so this now lifts onto it on load instead of hard-failing.
-  test("lifts a legacy reasoning_effort extraParams override onto the first-class field", () => {
+  // in 0.9.2. This used to lift silently onto it on load, forever; the lift
+  // is now `akm migrate apply`'s job, so an unmigrated config fails closed
+  // here instead, naming `akm migrate apply` as the fix.
+  test("rejects a legacy reasoning_effort extraParams override, naming akm migrate apply", () => {
     writeConfig({
       configVersion: "0.9.0",
       engines: {
@@ -187,9 +189,12 @@ describe("0.9 config contract", () => {
         },
       },
     });
-    const config = loadUserConfig();
-    expect(config.engines?.fast?.reasoningEffort).toBe("high");
-    expect((config.engines?.fast as Record<string, unknown>).extraParams).toBeUndefined();
+    expect(() => loadUserConfig()).toThrow(ConfigError);
+    try {
+      loadUserConfig();
+    } catch (err) {
+      expect(String(err)).toContain("akm migrate apply");
+    }
   });
 
   test("rejects a reasoning_effort extraParams override that conflicts with a different first-class reasoningEffort", () => {
