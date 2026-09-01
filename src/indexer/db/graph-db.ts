@@ -401,33 +401,29 @@ export function loadGraphFilesOnly(
 }> {
   try {
     return withReadableGraphDb(db, (readDb) => {
-      try {
-        const rows = readDb
-          .prepare(
-            `SELECT file_path, file_type, body_hash, confidence, status, reason
-                FROM graph_files
-                WHERE stash_root = ?
-                ORDER BY file_order`,
-          )
-          .all(stashPath) as Array<{
-          file_path: string;
-          file_type: string;
-          body_hash: string;
-          confidence: number | null;
-          status: string | null;
-          reason: string | null;
-        }>;
-        return rows.map((row) => ({
-          path: row.file_path,
-          type: row.file_type,
-          bodyHash: row.body_hash,
-          ...(typeof row.confidence === "number" ? { confidence: row.confidence } : {}),
-          ...(row.status ? { status: row.status as GraphFileNode["status"] } : {}),
-          ...(row.reason ? { reason: row.reason as GraphFileNode["reason"] } : {}),
-        }));
-      } catch {
-        return [];
-      }
+      const rows = readDb
+        .prepare(
+          `SELECT file_path, file_type, body_hash, confidence, status, reason
+              FROM graph_files
+              WHERE stash_root = ?
+              ORDER BY file_order`,
+        )
+        .all(stashPath) as Array<{
+        file_path: string;
+        file_type: string;
+        body_hash: string;
+        confidence: number | null;
+        status: string | null;
+        reason: string | null;
+      }>;
+      return rows.map((row) => ({
+        path: row.file_path,
+        type: row.file_type,
+        bodyHash: row.body_hash,
+        ...(typeof row.confidence === "number" ? { confidence: row.confidence } : {}),
+        ...(row.status ? { status: row.status as GraphFileNode["status"] } : {}),
+        ...(row.reason ? { reason: row.reason as GraphFileNode["reason"] } : {}),
+      }));
     });
   } catch (err) {
     // Never mask the bun-test isolation guard as "no stored graph files",
@@ -442,87 +438,83 @@ export function loadGraphFilesOnly(
 export function loadStoredGraphMeta(stashPath: string, db?: Database): StoredGraphMeta | null {
   try {
     return withReadableGraphDb(db, (readDb) => {
-      try {
-        const row = readDb
-          .prepare(
-            `SELECT
-               stash_root,
-               schema_version,
-               generated_at,
-               considered_files,
-               extracted_files,
-               entity_count,
-               relation_count,
-               extraction_coverage,
-               density,
-               extractor_id,
-               extraction_run_id,
-               model,
-               prompt_version,
-               batch_size,
-               cache_hits,
-               cache_misses,
-               truncation_count,
-               failure_count
-              FROM graph_meta
-              WHERE stash_root = ?`,
-          )
-          .get(stashPath) as
-          | {
-              stash_root: string;
-              schema_version: number;
-              generated_at: string;
-              considered_files: number;
-              extracted_files: number;
-              entity_count: number;
-              relation_count: number;
-              extraction_coverage: number;
-              density: number;
-              extractor_id: string | null;
-              extraction_run_id: string | null;
-              model: string | null;
-              prompt_version: string | null;
-              batch_size: number | null;
-              cache_hits: number;
-              cache_misses: number;
-              truncation_count: number;
-              failure_count: number;
-            }
-          | undefined;
-        if (!row) return null;
-        return {
-          stashPath: row.stash_root,
-          graphPath: getDbPath(),
-          schemaVersion: row.schema_version,
-          generatedAt: row.generated_at,
-          quality: {
-            consideredFiles: row.considered_files,
-            extractedFiles: row.extracted_files,
-            entityCount: row.entity_count,
-            relationCount: row.relation_count,
-            extractionCoverage: row.extraction_coverage,
-            density: row.density,
-          },
-          telemetry: {
-            ...(row.extractor_id ? { extractorId: row.extractor_id } : {}),
-            ...(row.extraction_run_id ? { extractionRunId: row.extraction_run_id } : {}),
-            ...(row.model ? { model: row.model } : {}),
-            ...(row.prompt_version ? { promptVersion: row.prompt_version } : {}),
-            ...(typeof row.batch_size === "number" ? { batchSize: row.batch_size } : {}),
-            cacheHits: row.cache_hits,
-            cacheMisses: row.cache_misses,
-            truncationCount: row.truncation_count,
-            failureCount: row.failure_count,
-            // `retry_attempts` is not persisted to the graph-meta table (it is
-            // surfaced from the run's emitted telemetry into `akm health`, not
-            // from the reuse cache). Default to 0 so the loaded shape satisfies
-            // GraphExtractionTelemetry.
-            retryAttempts: 0,
-          },
-        };
-      } catch {
-        return null;
-      }
+      const row = readDb
+        .prepare(
+          `SELECT
+             stash_root,
+             schema_version,
+             generated_at,
+             considered_files,
+             extracted_files,
+             entity_count,
+             relation_count,
+             extraction_coverage,
+             density,
+             extractor_id,
+             extraction_run_id,
+             model,
+             prompt_version,
+             batch_size,
+             cache_hits,
+             cache_misses,
+             truncation_count,
+             failure_count
+            FROM graph_meta
+            WHERE stash_root = ?`,
+        )
+        .get(stashPath) as
+        | {
+            stash_root: string;
+            schema_version: number;
+            generated_at: string;
+            considered_files: number;
+            extracted_files: number;
+            entity_count: number;
+            relation_count: number;
+            extraction_coverage: number;
+            density: number;
+            extractor_id: string | null;
+            extraction_run_id: string | null;
+            model: string | null;
+            prompt_version: string | null;
+            batch_size: number | null;
+            cache_hits: number;
+            cache_misses: number;
+            truncation_count: number;
+            failure_count: number;
+          }
+        | undefined;
+      if (!row) return null;
+      return {
+        stashPath: row.stash_root,
+        graphPath: getDbPath(),
+        schemaVersion: row.schema_version,
+        generatedAt: row.generated_at,
+        quality: {
+          consideredFiles: row.considered_files,
+          extractedFiles: row.extracted_files,
+          entityCount: row.entity_count,
+          relationCount: row.relation_count,
+          extractionCoverage: row.extraction_coverage,
+          density: row.density,
+        },
+        telemetry: {
+          ...(row.extractor_id ? { extractorId: row.extractor_id } : {}),
+          ...(row.extraction_run_id ? { extractionRunId: row.extraction_run_id } : {}),
+          ...(row.model ? { model: row.model } : {}),
+          ...(row.prompt_version ? { promptVersion: row.prompt_version } : {}),
+          ...(typeof row.batch_size === "number" ? { batchSize: row.batch_size } : {}),
+          cacheHits: row.cache_hits,
+          cacheMisses: row.cache_misses,
+          truncationCount: row.truncation_count,
+          failureCount: row.failure_count,
+          // `retry_attempts` is not persisted to the graph-meta table (it is
+          // surfaced from the run's emitted telemetry into `akm health`, not
+          // from the reuse cache). Default to 0 so the loaded shape satisfies
+          // GraphExtractionTelemetry.
+          retryAttempts: 0,
+        },
+      };
     });
   } catch (err) {
     // Never mask the bun-test isolation guard as "no stored graph meta",
@@ -539,104 +531,100 @@ export function loadStoredGraphSnapshot(stashPath: string, db?: Database): Store
       const meta = loadStoredGraphMeta(stashPath, readDb);
       if (!meta) return null;
 
-      try {
-        const fileRows = readDb
-          .prepare(
-            `SELECT file_path, file_type, body_hash, confidence, status, reason, extraction_run_id
-              FROM graph_files
-              WHERE stash_root = ?
-              ORDER BY file_order`,
-          )
-          .all(stashPath) as Array<{
-          file_path: string;
-          file_type: string;
-          body_hash: string | null;
-          confidence: number | null;
-          status: string | null;
-          reason: string | null;
-          extraction_run_id: string | null;
-        }>;
-        const entityRows = readDb
-          .prepare(
-            `SELECT gf.file_path AS file_path, gfe.entity AS entity
-             FROM graph_file_entities gfe
-             JOIN graph_files gf
-               ON gf.stash_root = gfe.stash_root
-              AND gf.file_path = gfe.file_path
-              AND gf.body_hash = gfe.body_hash
-             WHERE gf.stash_root = ?
-             ORDER BY gf.file_order, gfe.entity_order`,
-          )
-          .all(stashPath) as Array<{ file_path: string; entity: string }>;
-        const relationRows = readDb
-          .prepare(
-            `SELECT gf.file_path AS file_path,
-                    gfr.from_entity AS from_entity,
-                    gfr.to_entity AS to_entity,
-                    gfr.relation_type AS relation_type,
-                    gfr.confidence AS confidence
-             FROM graph_file_relations gfr
-             JOIN graph_files gf
-               ON gf.stash_root = gfr.stash_root
-              AND gf.file_path = gfr.file_path
-              AND gf.body_hash = gfr.body_hash
-             WHERE gf.stash_root = ?
-             ORDER BY gf.file_order, gfr.relation_order`,
-          )
-          .all(stashPath) as Array<{
-          file_path: string;
-          from_entity: string;
-          to_entity: string;
-          relation_type: string | null;
-          confidence: number | null;
-        }>;
+      const fileRows = readDb
+        .prepare(
+          `SELECT file_path, file_type, body_hash, confidence, status, reason, extraction_run_id
+            FROM graph_files
+            WHERE stash_root = ?
+            ORDER BY file_order`,
+        )
+        .all(stashPath) as Array<{
+        file_path: string;
+        file_type: string;
+        body_hash: string | null;
+        confidence: number | null;
+        status: string | null;
+        reason: string | null;
+        extraction_run_id: string | null;
+      }>;
+      const entityRows = readDb
+        .prepare(
+          `SELECT gf.file_path AS file_path, gfe.entity AS entity
+           FROM graph_file_entities gfe
+           JOIN graph_files gf
+             ON gf.stash_root = gfe.stash_root
+            AND gf.file_path = gfe.file_path
+            AND gf.body_hash = gfe.body_hash
+           WHERE gf.stash_root = ?
+           ORDER BY gf.file_order, gfe.entity_order`,
+        )
+        .all(stashPath) as Array<{ file_path: string; entity: string }>;
+      const relationRows = readDb
+        .prepare(
+          `SELECT gf.file_path AS file_path,
+                  gfr.from_entity AS from_entity,
+                  gfr.to_entity AS to_entity,
+                  gfr.relation_type AS relation_type,
+                  gfr.confidence AS confidence
+           FROM graph_file_relations gfr
+           JOIN graph_files gf
+             ON gf.stash_root = gfr.stash_root
+            AND gf.file_path = gfr.file_path
+            AND gf.body_hash = gfr.body_hash
+           WHERE gf.stash_root = ?
+           ORDER BY gf.file_order, gfr.relation_order`,
+        )
+        .all(stashPath) as Array<{
+        file_path: string;
+        from_entity: string;
+        to_entity: string;
+        relation_type: string | null;
+        confidence: number | null;
+      }>;
 
-        const entitiesByPath = new Map<string, string[]>();
-        for (const row of entityRows) {
-          const bucket = entitiesByPath.get(row.file_path);
-          if (bucket) bucket.push(row.entity);
-          else entitiesByPath.set(row.file_path, [row.entity]);
-        }
-
-        const relationsByPath = new Map<string, GraphRelation[]>();
-        for (const row of relationRows) {
-          const relation: GraphRelation = {
-            from: row.from_entity,
-            to: row.to_entity,
-            ...(row.relation_type ? { type: row.relation_type } : {}),
-            ...(typeof row.confidence === "number" ? { confidence: row.confidence } : {}),
-          };
-          const bucket = relationsByPath.get(row.file_path);
-          if (bucket) bucket.push(relation);
-          else relationsByPath.set(row.file_path, [relation]);
-        }
-
-        const files: GraphFileNode[] = fileRows.map((row) => ({
-          path: row.file_path,
-          type: row.file_type,
-          ...(row.body_hash ? { bodyHash: row.body_hash } : {}),
-          entities: entitiesByPath.get(row.file_path) ?? [],
-          relations: relationsByPath.get(row.file_path) ?? [],
-          ...(typeof row.confidence === "number" ? { confidence: row.confidence } : {}),
-          ...(row.status ? { status: row.status as GraphFileNode["status"] } : {}),
-          ...(row.reason ? { reason: row.reason as GraphFileNode["reason"] } : {}),
-          ...(row.extraction_run_id ? { extractionRunId: row.extraction_run_id } : {}),
-        }));
-
-        return {
-          stashPath: meta.stashPath,
-          graphPath: meta.graphPath,
-          schemaVersion: meta.schemaVersion,
-          generatedAt: meta.generatedAt,
-          ...(meta.quality ? { quality: meta.quality } : {}),
-          ...(meta.telemetry ? { telemetry: meta.telemetry } : {}),
-          files,
-          entities: uniqueSorted(files.flatMap((file) => file.entities)),
-          relations: files.flatMap((file) => file.relations),
-        };
-      } catch {
-        return null;
+      const entitiesByPath = new Map<string, string[]>();
+      for (const row of entityRows) {
+        const bucket = entitiesByPath.get(row.file_path);
+        if (bucket) bucket.push(row.entity);
+        else entitiesByPath.set(row.file_path, [row.entity]);
       }
+
+      const relationsByPath = new Map<string, GraphRelation[]>();
+      for (const row of relationRows) {
+        const relation: GraphRelation = {
+          from: row.from_entity,
+          to: row.to_entity,
+          ...(row.relation_type ? { type: row.relation_type } : {}),
+          ...(typeof row.confidence === "number" ? { confidence: row.confidence } : {}),
+        };
+        const bucket = relationsByPath.get(row.file_path);
+        if (bucket) bucket.push(relation);
+        else relationsByPath.set(row.file_path, [relation]);
+      }
+
+      const files: GraphFileNode[] = fileRows.map((row) => ({
+        path: row.file_path,
+        type: row.file_type,
+        ...(row.body_hash ? { bodyHash: row.body_hash } : {}),
+        entities: entitiesByPath.get(row.file_path) ?? [],
+        relations: relationsByPath.get(row.file_path) ?? [],
+        ...(typeof row.confidence === "number" ? { confidence: row.confidence } : {}),
+        ...(row.status ? { status: row.status as GraphFileNode["status"] } : {}),
+        ...(row.reason ? { reason: row.reason as GraphFileNode["reason"] } : {}),
+        ...(row.extraction_run_id ? { extractionRunId: row.extraction_run_id } : {}),
+      }));
+
+      return {
+        stashPath: meta.stashPath,
+        graphPath: meta.graphPath,
+        schemaVersion: meta.schemaVersion,
+        generatedAt: meta.generatedAt,
+        ...(meta.quality ? { quality: meta.quality } : {}),
+        ...(meta.telemetry ? { telemetry: meta.telemetry } : {}),
+        files,
+        entities: uniqueSorted(files.flatMap((file) => file.entities)),
+        relations: files.flatMap((file) => file.relations),
+      };
     });
   } catch (err) {
     // Never mask the bun-test isolation guard as "no stored graph snapshot",

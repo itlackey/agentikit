@@ -123,47 +123,42 @@ function runFtsQuery(
     LIMIT ?
   `;
 
-  try {
-    const rows = db.prepare(sql).all(...(params as SqlValue[])) as Array<{
-      id: number;
-      filePath: string;
-      documentJson: string;
-      searchText: string;
-      itemRef: string;
-      bundleId: string;
-      conceptId: string;
-      adapterId: string;
-      bm25Score: number;
-    }>;
+  const rows = db.prepare(sql).all(...(params as SqlValue[])) as Array<{
+    id: number;
+    filePath: string;
+    documentJson: string;
+    searchText: string;
+    itemRef: string;
+    bundleId: string;
+    conceptId: string;
+    adapterId: string;
+    bm25Score: number;
+  }>;
 
-    // Guard against corrupt JSON — skip the row rather than crashing
-    const results: DbSearchResult[] = [];
-    for (const row of rows) {
-      let entry: IndexDocument;
-      try {
-        entry = JSON.parse(row.documentJson) as IndexDocument;
-      } catch {
-        warn(`[db] searchFts: skipping entry id=${row.id} — corrupt document_json`);
-        continue;
-      }
-      results.push({
-        id: row.id,
-        filePath: row.filePath,
-        entry,
-        searchText: row.searchText,
-        bm25Score: row.bm25Score,
-        itemRef: row.itemRef,
-        bundleId: row.bundleId,
-        conceptId: row.conceptId,
-        adapterId: row.adapterId,
-        lexicalMatch,
-      });
+  // Guard against corrupt JSON — skip the row rather than crashing
+  const results: DbSearchResult[] = [];
+  for (const row of rows) {
+    let entry: IndexDocument;
+    try {
+      entry = JSON.parse(row.documentJson) as IndexDocument;
+    } catch {
+      warn(`[db] searchFts: skipping entry id=${row.id} — corrupt document_json`);
+      continue;
     }
-    return results;
-  } catch (err) {
-    warn("[db] runFtsQuery failed:", err instanceof Error ? err.message : String(err));
-    return [];
+    results.push({
+      id: row.id,
+      filePath: row.filePath,
+      entry,
+      searchText: row.searchText,
+      bm25Score: row.bm25Score,
+      itemRef: row.itemRef,
+      bundleId: row.bundleId,
+      conceptId: row.conceptId,
+      adapterId: row.adapterId,
+      lexicalMatch,
+    });
   }
+  return results;
 }
 
 /**

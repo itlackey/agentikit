@@ -352,12 +352,16 @@ export function trustedNpmTarballHosts(): Set<string> {
   const hosts = new Set<string>([DEFAULT_NPM_REGISTRY_HOST]);
   const override = process.env.AKM_NPM_REGISTRY?.trim();
   if (override) {
+    // A malformed override must not be silently ignored (falling back to the
+    // public registry as though nothing was configured) — that would install
+    // from the wrong registry without telling the operator (R-035).
+    let overrideHost: string;
     try {
-      const overrideHost = new URL(override).hostname.toLowerCase();
-      if (overrideHost) hosts.add(overrideHost);
+      overrideHost = new URL(override).hostname.toLowerCase();
     } catch {
-      // Ignore unparseable overrides; the default host still applies.
+      throw new UsageError(`AKM_NPM_REGISTRY is set to an invalid URL: ${override}`);
     }
+    if (overrideHost) hosts.add(overrideHost);
   }
   return hosts;
 }
@@ -418,13 +422,17 @@ export function npmArtifactNetworkPolicy(
 function npmMetadataRegistry(): { baseUrl: string; allowPrivateRegistryOrigin: boolean } {
   const override = process.env.AKM_NPM_REGISTRY?.trim();
   if (override) {
+    // A malformed override must not be silently ignored (falling back to the
+    // public registry as though nothing was configured) — that would install
+    // from the wrong registry without telling the operator (R-035).
+    let url: URL;
     try {
-      const url = new URL(override);
-      const base = `${url.origin}${url.pathname === "/" ? "" : url.pathname}`;
-      return { baseUrl: base.replace(/\/+$/, ""), allowPrivateRegistryOrigin: true };
+      url = new URL(override);
     } catch {
-      // Ignore unparseable overrides; fall back to the public registry.
+      throw new UsageError(`AKM_NPM_REGISTRY is set to an invalid URL: ${override}`);
     }
+    const base = `${url.origin}${url.pathname === "/" ? "" : url.pathname}`;
+    return { baseUrl: base.replace(/\/+$/, ""), allowPrivateRegistryOrigin: true };
   }
   return { baseUrl: `https://${DEFAULT_NPM_REGISTRY_HOST}`, allowPrivateRegistryOrigin: false };
 }
@@ -579,6 +587,15 @@ function resolveGitRevisionFromRemote(url: string, requestedRef?: string): strin
 
 async function resolveGitArtifact(parsed: ParsedGitRef): Promise<ResolvedRegistryArtifact> {
   const resolvedRevision = resolveGitRevisionFromRemote(parsed.url, parsed.requestedRef);
+  if (!resolvedRevision) {
+    // Unlike the GitHub path (which falls back to the REST API on a failed
+    // `git ls-remote`), a plain git source has no fallback resolver — an
+    // unresolved revision here would silently disable the post-clone
+    // revision-integrity check in `verifyClonedRevision` (R-011).
+    throw new Error(
+      `Unable to resolve ${parsed.requestedRef ?? "HEAD"} for ${parsed.url} via 'git ls-remote'; refusing to install without a verifiable revision.`,
+    );
+  }
   return {
     id: parsed.id,
     source: parsed.source,

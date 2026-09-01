@@ -265,9 +265,17 @@ export function searchVec(db: Database, queryEmbedding: EmbeddingVector, k: numb
         .prepare("SELECT id, distance FROM entries_vec WHERE embedding MATCH ? AND k = ?")
         .all(buf, k) as DbVecResult[];
     } catch (err) {
-      // Log the failure so it's visible in diagnostics
-      warn("[db] searchVec (sqlite-vec path) failed:", err instanceof Error ? err.message : String(err));
-      return [];
+      // A dimension mismatch (e.g. the embedding provider/model changed since
+      // the fast-path table was built) is a real, expected reason this query
+      // specifically cannot use the vec table — the complete BLOB table below
+      // is unaffected, so fall back to it rather than either silently
+      // returning [] (masking a genuinely corrupt index) or failing the whole
+      // search over one degraded index.
+      warn(
+        "[db] searchVec (sqlite-vec path) failed, falling back to JS-cosine scan:",
+        err instanceof Error ? err.message : String(err),
+      );
+      return searchBlobVec(db, queryEmbedding, k);
     }
   }
 
@@ -325,33 +333,27 @@ function bufferToFloat32(buf: Buffer, expectedDim: number): number[] | null {
 }
 
 function searchBlobVec(db: Database, queryEmbedding: EmbeddingVector, k: number): DbVecResult[] {
-  try {
-    const rows = db.prepare("SELECT id, embedding FROM embeddings").all() as Array<{ id: number; embedding: Buffer }>;
+  const rows = db.prepare("SELECT id, embedding FROM embeddings").all() as Array<{ id: number; embedding: Buffer }>;
 
-    if (rows.length === 0) return [];
+  if (rows.length === 0) return [];
 
-    const expectedDim = queryEmbedding.length;
-    const scored: Array<{ id: number; similarity: number }> = [];
-    for (const row of rows) {
-      const embedding = bufferToFloat32(row.embedding, expectedDim);
-      if (embedding === null) continue;
-      const similarity = cosineSimilarity(queryEmbedding, embedding);
-      scored.push({ id: row.id, similarity });
-    }
-
-    scored.sort((a, b) => b.similarity - a.similarity);
-
-    // Convert cosine similarity to L2 distance for compatibility with sqlite-vec interface
-    // For normalized vectors: L2² = 2(1 - cos_sim)
-    return scored.slice(0, k).map(({ id, similarity }) => ({
-      id,
-      distance: Math.sqrt(2 * Math.max(0, 1 - similarity)),
-    }));
-  } catch (err) {
-    // MD-5: Log the failure so it's visible in diagnostics
-    warn("[db] searchBlobVec (JS fallback) failed:", err instanceof Error ? err.message : String(err));
-    return [];
+  const expectedDim = queryEmbedding.length;
+  const scored: Array<{ id: number; similarity: number }> = [];
+  for (const row of rows) {
+    const embedding = bufferToFloat32(row.embedding, expectedDim);
+    if (embedding === null) continue;
+    const similarity = cosineSimilarity(queryEmbedding, embedding);
+    scored.push({ id: row.id, similarity });
   }
+
+  scored.sort((a, b) => b.similarity - a.similarity);
+
+  // Convert cosine similarity to L2 distance for compatibility with sqlite-vec interface
+  // For normalized vectors: L2² = 2(1 - cos_sim)
+  return scored.slice(0, k).map(({ id, similarity }) => ({
+    id,
+    distance: Math.sqrt(2 * Math.max(0, 1 - similarity)),
+  }));
 }
 
 /**

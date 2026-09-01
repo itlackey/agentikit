@@ -72,9 +72,11 @@ describe("verifyClonedRevision", () => {
     expect(() => verifyClonedRevision(cloneDir, "https://example.test/repo.git", headSha)).not.toThrow();
   });
 
-  test("is a no-op when no revision was resolved (undefined)", () => {
+  test("throws when no revision was resolved (undefined) instead of silently skipping verification", () => {
     const { cloneDir } = makeClonedFixture();
-    expect(() => verifyClonedRevision(cloneDir, "https://example.test/repo.git", undefined)).not.toThrow();
+    expect(() => verifyClonedRevision(cloneDir, "https://example.test/repo.git", undefined)).toThrow(
+      /No revision was resolved/,
+    );
   });
 
   test("throws when the cloned HEAD does NOT match the resolved revision", () => {

@@ -63,7 +63,13 @@ export function inspectGitUpstream(repoDir: string): GitUpstreamState {
  * commit SHA peels to itself.
  */
 export function verifyClonedRevision(cloneDir: string, url: string, expectedRevision: string | undefined): void {
-  if (!expectedRevision) return;
+  if (!expectedRevision) {
+    // `resolveGitArtifact` (registry/resolve.ts) throws when it cannot resolve
+    // a revision via `git ls-remote`, so a plain git install never reaches
+    // this call with `undefined` — treat it as a bug, not a silently-skipped
+    // check that would defeat the R-011 post-clone integrity verification.
+    throw new UsageError(`No revision was resolved from ${url}; refusing to install without a verifiable checkout.`);
+  }
   const head = runGit(["-C", cloneDir, "rev-parse", "HEAD"]);
   if (head.status !== 0 || !head.stdout.trim()) {
     throw new UsageError(`Failed to read cloned HEAD at ${cloneDir}: ${head.stderr.trim() || "rev-parse failed"}`);

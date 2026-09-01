@@ -118,10 +118,10 @@ describe("ensureIndex read-path (background mode)", () => {
     expect(indexedPaths().size).toBeGreaterThan(0);
   });
 
-  test("failed inline rebuild reports failure", async () => {
+  test("failed inline rebuild propagates the error", async () => {
     fs.rmSync(getDbPath());
     const spy = spyOn(indexerModule, "akmIndex").mockRejectedValueOnce(new Error("boom"));
-    expect(await ensureIndex(stashDir)).toBe(false);
+    await expect(ensureIndex(stashDir)).rejects.toThrow("boom");
     spy.mockRestore();
   });
 

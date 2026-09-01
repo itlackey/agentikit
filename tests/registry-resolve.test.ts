@@ -180,11 +180,9 @@ describe("validateNpmTarballUrl", () => {
     );
   });
 
-  test("ignores unparseable AKM_NPM_REGISTRY override", () => {
+  test("throws on unparseable AKM_NPM_REGISTRY override instead of silently falling back", () => {
     process.env.AKM_NPM_REGISTRY = "this is not a url";
-    const hosts = trustedNpmTarballHosts();
-    expect(hosts.has("registry.npmjs.org")).toBe(true);
-    expect(hosts.size).toBe(1);
+    expect(() => trustedNpmTarballHosts()).toThrow(/AKM_NPM_REGISTRY/);
   });
 });
 
