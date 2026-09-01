@@ -193,14 +193,23 @@ function isInsideGitRepo(dir: string): boolean {
   return false;
 }
 
+export interface WalkMarkdownFilesResult {
+  files: string[];
+  /** False when any directory under `root` could not be read (e.g. permission errors). */
+  complete: boolean;
+}
+
 /**
- * Recursively yield every `.md` file under `root`.
+ * Recursively collect every `.md` file under `root`.
  *
- * Shared by graph-extraction and memory-inference so the generator logic
- * lives in exactly one place. Silently skips directories that cannot be
- * read (e.g. permission errors).
+ * Shared by graph-extraction and memory-inference so the walk logic lives in
+ * exactly one place. Mirrors the `complete` tracking of the other walkers in
+ * this file: a directory that cannot be read makes the result incomplete
+ * instead of silently looking like a clean, empty scan.
  */
-export function* walkMarkdownFiles(root: string): Generator<string> {
+export function walkMarkdownFiles(root: string): WalkMarkdownFilesResult {
+  const files: string[] = [];
+  let complete = true;
   const stack = [root];
   while (stack.length > 0) {
     const current = stack.pop();
@@ -210,6 +219,7 @@ export function* walkMarkdownFiles(root: string): Generator<string> {
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
     } catch {
+      complete = false;
       continue;
     }
 
@@ -219,10 +229,11 @@ export function* walkMarkdownFiles(root: string): Generator<string> {
       if (entry.isDirectory()) {
         stack.push(full);
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
-        yield full;
+        files.push(full);
       }
     }
   }
+  return { files, complete };
 }
 
 /** Manual walk for non-git directories. */

@@ -540,11 +540,18 @@ export function collectPendingMemories(stashRoot: string): MemoryRecord[] {
   if (!fs.existsSync(memoriesDir)) return [];
 
   const out: MemoryRecord[] = [];
-  for (const filePath of walkMarkdownFiles(memoriesDir)) {
+  const walked = walkMarkdownFiles(memoriesDir);
+  if (!walked.complete) {
+    warn(`memory inference: directory scan under ${memoriesDir} is incomplete — some memories may be missing`);
+  }
+  for (const filePath of walked.files) {
     let raw: string;
     try {
       raw = fs.readFileSync(filePath, "utf8");
-    } catch {
+    } catch (err) {
+      warn(
+        `memory inference: failed to read candidate memory ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
       continue;
     }
     const parsed = parseFrontmatter(raw);
