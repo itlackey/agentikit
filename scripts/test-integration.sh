@@ -57,7 +57,16 @@ total="${#files[@]}"
 # 5700. Headroom below the measured 6003 is intentional (#866 already
 # showed the suite legitimately loses tests to dead-code removal); raise
 # again as the suite grows, argue about lowering it in review.
-MIN_TESTS="${AKM_MIN_INTEGRATION_TESTS:-5700}"
+#
+# #786: LOWERED 5700 -> 3400. The ORG-03/ORG-06 classification sweep moved
+# ~230 tests/integration/ files out to tests/ (opens no real DB, touches no
+# network, spawns no process) and reclassified ~30 tests/ files in, per the
+# AGENTS.md rule. This is a deliberate redistribution, not a loss: unit's own
+# floor moved the same tests the other way, and unit+integration executed
+# totals are unchanged before/after (10306 both times). Measured post-sweep:
+# 3561 pass / 50 skip (executed 3611). Same formula: floor(3611 * 0.95 / 100)
+# * 100 = floor(34.3045) * 100 = 3400.
+MIN_TESTS="${AKM_MIN_INTEGRATION_TESTS:-3400}"
 if [ "$total" -eq 0 ]; then
   echo "── integration: no test files found under tests/integration" >&2
   exit 1
