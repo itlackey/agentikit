@@ -489,7 +489,11 @@ describe("saveGitStash — scoped staging (auto-sync incident regression)", () =
     const remoteBranch = spawnSync("git", ["-C", remoteDir, "rev-parse", "--verify", "refs/heads/main"], {
       encoding: "utf8",
     });
-    expect(remoteBranch.status).not.toBe(0);
+    // `git rev-parse --verify` on a ref that does not exist is git's own
+    // fatal error path -> exit 128. Ground-truthed by probing the actual git
+    // output before pinning.
+    expect(remoteBranch.status).toBe(128);
+    expect(remoteBranch.stderr).toContain("fatal:");
   });
 
   test("commits akm-managed files and leaves unrelated non-akm files dirty/untouched", () => {

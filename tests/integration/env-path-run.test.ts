@@ -156,9 +156,12 @@ describe("env run", () => {
       AKM_BUNDLE_DIR: stashDir,
     });
 
-    expect(status).not.toBe(0);
+    // NotFoundError (referenced secret missing) -> exit 1 / FILE_NOT_FOUND.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(status).toBe(1);
     const parsed = JSON.parse(stderr.trim());
     expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe("FILE_NOT_FOUND");
     expect(parsed.error).toContain("secrets/absent");
     expect(parsed.error).toContain("env/prod");
     // No value content leaked to stdout.

@@ -53,7 +53,9 @@ describe("in-process CLI harness", () => {
     // guarantees. Either way the harness must capture a structured error
     // envelope and a non-zero exit.
     const { code, stderr } = await runCliCapture(["show", "invalid-ref-no-colon"]);
-    expect(code).not.toBe(0);
+    // ConfigError (no stash dir configured) -> exit 78. Ground-truthed by
+    // probing the actual CLI output before pinning.
+    expect(code).toBe(78);
     const parsed = JSON.parse(stderr.trim());
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe("STASH_DIR_NOT_FOUND");
@@ -86,7 +88,9 @@ describe("in-process CLI harness", () => {
       { HOME: freshHome.dir, XDG_CONFIG_HOME: path.join(freshHome.dir, "config"), AKM_BUNDLE_DIR: undefined },
       () => runCliCapture(["search", "test"]),
     );
-    expect(noStash.code).not.toBe(0);
+    // ConfigError (no stash dir configured) -> exit 78. Ground-truthed by
+    // probing the actual CLI output before pinning.
+    expect(noStash.code).toBe(78);
     expect(noStash.stderr).toContain("STASH_DIR_NOT_FOUND");
 
     // Second run, same test, with a valid stash dir -> must succeed, proving the

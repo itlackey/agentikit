@@ -249,7 +249,9 @@ describe("akm-eval attribution rollup", () => {
       [WRAPPER, "--state-db", fixture.stateDb, "--format", "json", "--out", fixture.stateDb],
       { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" },
     );
-    expect(collision.exitCode).not.toBe(0);
+    // Uncaught Error in the wrapper's try/catch (scripts/akm-eval/src/attribution-rollup.ts)
+    // always sets exitCode 2 -- ground-truthed by reading that catch block.
+    expect(collision.exitCode).toBe(2);
     expect(collision.stderr.toString()).toContain("collides with the input database");
     expect(sha256(fixture.stateDb)).toBe(beforeHash);
 
@@ -260,7 +262,7 @@ describe("akm-eval attribution rollup", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    expect(noClobber.exitCode).not.toBe(0);
+    expect(noClobber.exitCode).toBe(2);
     expect(noClobber.stderr.toString()).toContain("already exists");
     expect(fs.readFileSync(out, "utf8")).toBe("keep-me");
     expect(sha256(fixture.stateDb)).toBe(beforeHash);

@@ -132,8 +132,11 @@ describe("akm remember — --path", () => {
     expect(fs.existsSync(filePath)).toBe(true);
 
     const dup = await runCli(["remember", "second body", "--path", "team", "--name", "handbook"]);
-    expect(dup.status).not.toBe(0);
-    expect(JSON.stringify(JSON.parse(dup.stderr))).toContain("RESOURCE_ALREADY_EXISTS");
+    // Usage error (duplicate without --force) -> exit 2 / code RESOURCE_ALREADY_EXISTS.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(dup.status).toBe(2);
+    const dupJson = JSON.parse(dup.stderr) as { code?: string };
+    expect(dupJson.code).toBe("RESOURCE_ALREADY_EXISTS");
 
     const forced = await runCli(["remember", "overwritten body", "--path", "team", "--name", "handbook", "--force"]);
     expect(forced.status).toBe(0);

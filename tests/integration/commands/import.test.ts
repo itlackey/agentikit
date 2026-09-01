@@ -140,9 +140,12 @@ describe("import --target", () => {
     const sourcePath = makeKnowledgeFile("notes.md", "# Notes\n\nSomething.\n");
 
     const { result } = await runCli(["import", sourcePath, "--target", "read-only"], { configDir });
-    expect(result.status).not.toBe(0);
+    // Config error (non-writable target) -> exit 78 / code INVALID_CONFIG_FILE.
+    // Ground-truthed by probing the actual CLI output before pinning.
+    expect(result.status).toBe(78);
 
-    const json = JSON.parse(result.stderr) as { error: string };
+    const json = JSON.parse(result.stderr) as { error: string; code?: string };
+    expect(json.code).toBe("INVALID_CONFIG_FILE");
     expect(json.error).toContain("source read-only is not writable");
   });
 

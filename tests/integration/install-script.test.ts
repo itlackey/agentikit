@@ -233,7 +233,9 @@ describe("install.sh", () => {
     const harness = createHarness({ checksumMode: "missing" });
     const result = harness.run();
 
-    expect(result.status).not.toBe(0);
+    // install.sh: explicit `exit 1` on missing checksum entry. Ground-truthed
+    // by probing the actual harness exit status before pinning.
+    expect(result.status).toBe(1);
     expect(result.stderr).toContain(`checksum not found for ${harness.binaryName}`);
   });
 
@@ -241,7 +243,9 @@ describe("install.sh", () => {
     const harness = createHarness({ checksumMode: "mismatch" });
     const result = harness.run();
 
-    expect(result.status).not.toBe(0);
+    // install.sh: explicit `exit 1` on checksum mismatch. Ground-truthed by
+    // probing the actual harness exit status before pinning.
+    expect(result.status).toBe(1);
     expect(result.stderr).toContain(`checksum verification failed for ${harness.binaryName}`);
   });
 
@@ -249,7 +253,9 @@ describe("install.sh", () => {
     const harness = createHarness({ downloader: "none" });
     const result = harness.run();
 
-    expect(result.status).not.toBe(0);
+    // install.sh: explicit `exit 1` when no downloader is found. Ground-truthed
+    // by probing the actual harness exit status before pinning.
+    expect(result.status).toBe(1);
     expect(result.stdout + result.stderr).toContain("curl or wget is required");
   });
 
@@ -275,7 +281,9 @@ describe("install.sh", () => {
     const harness = createHarness({ checksumTool: "none" });
     const result = harness.run();
 
-    expect(result.status).not.toBe(0);
+    // install.sh: explicit `exit 1` when no checksum tool is found. Ground-truthed
+    // by probing the actual harness exit status before pinning.
+    expect(result.status).toBe(1);
     expect(result.stdout + result.stderr).toContain("sha256sum or shasum is required");
   });
 
@@ -283,7 +291,9 @@ describe("install.sh", () => {
     const harness = createHarness({ archName: "riscv64" });
     const result = harness.run();
 
-    expect(result.status).not.toBe(0);
+    // install.sh: explicit `exit 1` on an unsupported architecture. Ground-truthed
+    // by probing the actual harness exit status before pinning.
+    expect(result.status).toBe(1);
     expect(result.stderr).toContain("Unsupported architecture");
   });
 
@@ -299,7 +309,10 @@ describe("install.sh", () => {
     const harness = createHarness({ installDirWritable: false, useSudo: true, sudoSucceeds: false });
     const result = harness.run();
 
-    expect(result.status).not.toBe(0);
+    // `set -euo pipefail` propagates the fake sudo's exit 127 (command not
+    // found convention) straight through as install.sh's own exit status.
+    // Ground-truthed by probing the actual harness exit status before pinning.
+    expect(result.status).toBe(127);
     expect(fs.existsSync(path.join(harness.installDir, "akm"))).toBe(false);
   });
 

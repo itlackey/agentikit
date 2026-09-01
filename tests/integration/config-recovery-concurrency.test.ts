@@ -113,8 +113,10 @@ describe("raw recovery startup", () => {
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
-    // A blocked file remains after apply, so the process must exit non-zero.
-    expect(exitCode, stderr).not.toBe(0);
+    // A blocked file remains after apply -> exit 1 (EXIT_CODES.GENERAL, set by
+    // printPlan in scripts/akm-migrate/task-migrate.ts). Ground-truthed by
+    // probing the actual process exit code before pinning.
+    expect(exitCode, stderr).toBe(1);
     const result = JSON.parse(stdout);
     // The reported plan is re-inspected AFTER apply: the good file already
     // converged to v3 ("skipped"/"already-v3"), and `applied: 1` confirms it
