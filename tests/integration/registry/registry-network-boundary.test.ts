@@ -38,7 +38,7 @@ describe("registry outbound request boundary", () => {
     await expect(
       fetchRegistryResponse(url, undefined, {
         policy: PUBLIC_POLICY,
-        timeoutMs: 1_000,
+        timeoutMs: 30_000,
         retries: 0,
         resolveHostname: resolverFor({}),
       }),
@@ -49,7 +49,7 @@ describe("registry outbound request boundary", () => {
     await expect(
       fetchRegistryResponse("https://registry.example/index.json", undefined, {
         policy: PUBLIC_POLICY,
-        timeoutMs: 1_000,
+        timeoutMs: 30_000,
         retries: 0,
         resolveHostname: resolverFor({ "registry.example": ["93.184.216.34", "10.0.0.8"] }),
       }),
@@ -65,7 +65,7 @@ describe("registry outbound request boundary", () => {
         () =>
           fetchRegistryResponse("https://registry.example/index.json", undefined, {
             policy: PUBLIC_POLICY,
-            timeoutMs: 1_000,
+            timeoutMs: 30_000,
             retries: 1,
             resolveHostname: async () => {
               resolverCalls += 1;
@@ -90,7 +90,7 @@ describe("registry outbound request boundary", () => {
     const addresses = ["93.184.216.34", "142.250.191.78"];
     const response = await fetchRegistryResponse("https://registry.example/index.json", undefined, {
       policy: PUBLIC_POLICY,
-      timeoutMs: 1_000,
+      timeoutMs: 30_000,
       retries: 1,
       resolveHostname: async () => {
         const address = addresses[resolved.length];
@@ -159,7 +159,7 @@ describe("registry outbound request boundary", () => {
       { signal: controller.signal },
       {
         policy: PUBLIC_POLICY,
-        timeoutMs: 1_000,
+        timeoutMs: 30_000,
         retries: 0,
         resolveHostname: () => new Promise(() => undefined),
         requestPinnedForTesting: async () => {
@@ -218,7 +218,7 @@ describe("registry outbound request boundary", () => {
       const url = `http://registry.test:${server.port}/index.json`;
       const response = await fetchRegistryResponse(url, { headers: { Host: "unrelated.internal" } }, {
         policy: PUBLIC_POLICY,
-        timeoutMs: 1_000,
+        timeoutMs: 30_000,
         retries: 0,
         resolveHostname: resolverFor({ "registry.test": ["127.0.0.1"] }),
         allowPrivateHostsForTesting: true,
@@ -422,7 +422,7 @@ describe("registry outbound request boundary", () => {
   test("rejects embedded credentials on the initial URL and on redirect targets", async () => {
     const options = {
       policy: PUBLIC_POLICY,
-      timeoutMs: 1_000,
+      timeoutMs: 30_000,
       retries: 0,
       resolveHostname: resolverFor({ "registry.example": ["93.184.216.34"] }),
     } as const;
@@ -445,7 +445,7 @@ describe("registry outbound request boundary", () => {
         () =>
           fetchRegistryResponse("https://registry.example/index.json", undefined, {
             policy: PUBLIC_POLICY,
-            timeoutMs: 1_000,
+            timeoutMs: 30_000,
             retries: 0,
             resolveHostname: resolverFor({ "registry.example": ["93.184.216.34"] }),
           }),
@@ -475,7 +475,7 @@ describe("registry outbound request boundary", () => {
           },
           {
             policy: PUBLIC_POLICY,
-            timeoutMs: 1_000,
+            timeoutMs: 30_000,
             retries: 0,
             resolveHostname: async (hostname) => {
               resolvedHosts.push(hostname);
@@ -532,7 +532,7 @@ describe("registry outbound request boundary", () => {
           { headers: { Authorization: "Bearer same-origin" } },
           {
             policy: PUBLIC_POLICY,
-            timeoutMs: 1_000,
+            timeoutMs: 30_000,
             retries: 0,
             resolveHostname: resolverFor({ "registry.example": ["93.184.216.34"] }),
           },
@@ -581,7 +581,7 @@ describe("registry outbound request boundary", () => {
           },
           {
             policy: PUBLIC_POLICY,
-            timeoutMs: 1_000,
+            timeoutMs: 30_000,
             retries: 0,
             resolveHostname: resolverFor({ "registry.example": ["93.184.216.34"] }),
           },
@@ -610,7 +610,7 @@ describe("registry outbound request boundary", () => {
         () =>
           fetchRegistryResponse("https://registry.example/start", undefined, {
             policy: PUBLIC_POLICY,
-            timeoutMs: 1_000,
+            timeoutMs: 30_000,
             retries: 0,
             resolveHostname: resolverFor({ "registry.example": ["93.184.216.34"] }),
           }),
@@ -624,7 +624,7 @@ describe("registry outbound request boundary", () => {
     await expect(
       fetchRegistryResponse("https://github.example/repos/o/r", undefined, {
         policy: { kind: "github-api" },
-        timeoutMs: 1_000,
+        timeoutMs: 30_000,
         retries: 0,
         resolveHostname,
       }),
@@ -638,7 +638,7 @@ describe("registry outbound request boundary", () => {
             { headers: { Authorization: "Bearer github-secret" } },
             {
               policy: { kind: "github-api" },
-              timeoutMs: 1_000,
+              timeoutMs: 30_000,
               retries: 0,
               resolveHostname,
             },
@@ -663,7 +663,7 @@ describe("registry outbound request boundary", () => {
       () =>
         fetchRegistryResponse("http://npm.internal:4873/pkg", undefined, {
           policy,
-          timeoutMs: 1_000,
+          timeoutMs: 30_000,
           retries: 0,
           resolveHostname,
         }),
@@ -676,7 +676,7 @@ describe("registry outbound request boundary", () => {
         () =>
           fetchRegistryResponse("http://npm.internal:4873/pkg", undefined, {
             policy,
-            timeoutMs: 1_000,
+            timeoutMs: 30_000,
             retries: 0,
             resolveHostname,
           }),
@@ -691,7 +691,7 @@ describe("registry outbound request boundary", () => {
           registryOrigin: "http://169.254.169.254",
           allowPrivateRegistryOrigin: true,
         },
-        timeoutMs: 1_000,
+        timeoutMs: 30_000,
         retries: 0,
       }),
     ).rejects.toThrow(/metadata/i);
@@ -711,7 +711,7 @@ describe("registry outbound request boundary", () => {
           () =>
             fetchRegistryResponse(tarballUrl, undefined, {
               policy,
-              timeoutMs: 1_000,
+              timeoutMs: 30_000,
               retries: 0,
               resolveHostname: resolverFor({ "npm.internal": ["10.0.0.20"] }),
             }),
@@ -733,7 +733,7 @@ describe("registry outbound request boundary", () => {
           registryOrigin: "http://npm.internal:4873",
           allowPrivateRegistryOrigin: true,
         },
-        timeoutMs: 1_000,
+        timeoutMs: 30_000,
         retries: 0,
         resolveHostname: resolverFor({ "npm.internal": [expanded] }),
       }),

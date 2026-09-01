@@ -78,12 +78,17 @@ export function openManagedDatabase(spec: ManagedDbSpec): Database {
     // Initializers may open a transaction (source update does so before index
     // schema work). Never strand that transaction/handle when later setup
     // fails; closing rolls it back and releases its writer lock.
-    if (db.inTransaction) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        // Closing remains the final rollback backstop.
-      }
+    //
+    // `db.inTransaction` is INSIDE the try: reading it on an already-closed
+    // handle throws "Database has closed", and it used to sit outside, so that
+    // throw escaped and replaced `error` — masking the real initializer failure
+    // this whole block exists to preserve. Every other step here was already
+    // guarded for exactly that reason; this one was not, and a concurrent
+    // close (WAL contention between two writers) reached it.
+    try {
+      if (db.inTransaction) db.exec("ROLLBACK");
+    } catch {
+      // Closing remains the final rollback backstop.
     }
     try {
       db.close();

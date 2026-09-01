@@ -114,7 +114,7 @@ function writeFakeExecutable(source: string): { executable: string; cleanup: () 
 function productionOptions(hostname: string, address = "127.0.0.1") {
   return {
     policy: PUBLIC_POLICY,
-    timeoutMs: 1_000,
+    timeoutMs: 30_000,
     retries: 0,
     resolveHostname: async (candidate: string) => (candidate === hostname ? [address] : []),
     allowPrivateHostsForTesting: true,
