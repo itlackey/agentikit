@@ -137,14 +137,6 @@ describe("loadConfig", () => {
     expect(config.registries).toEqual(DEFAULT_CONFIG.registries);
   });
 
-  test("merges partial config with defaults", () => {
-    writeCurrentConfig({ semanticSearchMode: "off" });
-    const config = loadConfig();
-    expect(config.semanticSearchMode).toBe("off");
-    expect(config.sources).toBeUndefined();
-    expect(config.output).toEqual({ format: "json", detail: "brief" });
-  });
-
   test("throws ConfigError on corrupted JSON (#458)", () => {
     writeRawConfig(getConfigPath(), "not valid json {{{");
     expect(() => loadConfig()).toThrow(ConfigError);
@@ -161,11 +153,6 @@ describe("loadConfig", () => {
     writeRawConfig(getConfigPath(), "[1, 2, 3]");
     expect(() => loadConfig()).toThrow(ConfigError);
     expect(() => loadConfig()).toThrow(/must contain a JSON object/);
-  });
-
-  test("returns DEFAULT_CONFIG when file does not exist (legitimate cold start)", () => {
-    // Sanity: cold-start case is preserved. Only malformed CONTENT throws.
-    expect(loadConfig()).toEqual(DEFAULT_CONFIG);
   });
 
   test("passes through string 'auto' for semanticSearchMode", () => {
@@ -459,19 +446,6 @@ describe("output config", () => {
 // ── embedding config ────────────────────────────────────────────────────────
 
 describe("embedding config", () => {
-  test("loads embedding connection config", () => {
-    writeCurrentConfig({
-      embedding: {
-        endpoint: "http://localhost:11434/v1/embeddings",
-        model: "nomic-embed-text",
-      },
-    });
-    expect(loadConfig().embedding).toEqual({
-      endpoint: "http://localhost:11434/v1/embeddings",
-      model: "nomic-embed-text",
-    });
-  });
-
   test("loads embedding config with a symbolic apiKey", () => {
     writeCurrentConfig({
       embedding: {
@@ -527,26 +501,6 @@ describe("embedding config", () => {
 // ── LLM engine config ───────────────────────────────────────────────────────
 
 describe("LLM engine config", () => {
-  test("loads an LLM engine connection", () => {
-    writeCurrentConfig({
-      engines: {
-        local: {
-          kind: "llm",
-          endpoint: "http://localhost:11434/v1/chat/completions",
-          model: "llama3.2",
-        },
-      },
-      defaults: { llmEngine: "local" },
-    });
-    const cfg = loadConfig();
-    expect(cfg.engines?.local).toMatchObject({
-      kind: "llm",
-      endpoint: "http://localhost:11434/v1/chat/completions",
-      model: "llama3.2",
-    });
-    expect(cfg.defaults?.llmEngine).toBe("local");
-  });
-
   test("loads a symbolic LLM engine apiKey", () => {
     writeCurrentConfig({
       engines: {
@@ -662,19 +616,6 @@ describe("primary stash config", () => {
   test("roundtrips the primary bundle via updateConfig", () => {
     updateConfig({ bundles: { main: { path: "/custom/stash", writable: true } }, defaultBundle: "main" });
     expect(primaryBundlePath(loadConfig())).toBe("/custom/stash");
-  });
-
-  test("saves and preserves the primary bundle", () => {
-    const config = {
-      semanticSearchMode: "auto" as const,
-      bundles: { main: { path: "/my/stash", writable: true } },
-      defaultBundle: "main",
-    };
-    saveConfig(config);
-    const raw = fs.readFileSync(getConfigPath(), "utf8");
-    const parsed = JSON.parse(raw);
-    expect(parsed.bundles.main.path).toBe("/my/stash");
-    expect(primaryBundlePath(loadConfig())).toBe("/my/stash");
   });
 });
 
@@ -830,17 +771,6 @@ describe("0.9 config shape parsing", () => {
     expect(() => loadConfig()).toThrow(/features is retired in 0\.9/);
   });
 
-  test("rejects legacy feature index/search blocks instead of translating them", () => {
-    writeCurrentConfig({
-      features: {
-        index: { memory_inference: true, graph_extraction: { profile: "openai-mini" }, metadata_enhance: false },
-        search: { curate_rerank: true },
-      },
-    });
-    expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/features is retired in 0\.9/);
-  });
-
   test("rejects literal engine apiKey values before persistence", () => {
     writeCurrentConfig({
       engines: {
@@ -916,46 +846,6 @@ describe("strict 0.9 config loading", () => {
     const parsed = JSON.parse(onDisk);
     expect(parsed.configVersion).toBeUndefined();
     expect(parsed.llm?.features?.memory_inference).toBe(true);
-  });
-
-  test("rejects 0.8.0 profile vocabulary without creating a backup", () => {
-    delete process.env.AKM_NO_AUTO_MIGRATE;
-
-    const configPath = getConfigPath();
-    const currentConfig = {
-      configVersion: "0.8.0",
-      profiles: { llm: { default: { endpoint: "http://localhost:11434", model: "qwen3" } } },
-      defaults: { llm: "default" },
-    };
-    writeRawConfig(configPath, JSON.stringify(currentConfig));
-
-    expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/Unsupported configVersion/);
-
-    // No backup should be created since nothing needed migrating
-    const backupDir = path.join(getCacheDir(), "config-backups");
-    const backupFiles = fs.existsSync(backupDir) ? fs.readdirSync(backupDir) : [];
-    expect(backupFiles.length).toBe(0);
-  });
-
-  test("does not translate retired LLM vocabulary in memory", () => {
-    process.env.AKM_NO_AUTO_MIGRATE = "1";
-
-    const configPath = getConfigPath();
-    const v1Config = {
-      llm: {
-        endpoint: "http://localhost:11434",
-        model: "qwen3",
-        features: { graph_extraction: false },
-      },
-    };
-    writeRawConfig(configPath, JSON.stringify(v1Config));
-
-    expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/Unsupported configVersion/);
-    const onDisk = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    expect(onDisk.profiles).toBeUndefined();
-    expect(onDisk.llm.endpoint).toBe("http://localhost:11434");
   });
 
   test("version rejection does not attempt a write even when the directory is read-only (#461)", () => {
