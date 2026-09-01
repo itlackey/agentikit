@@ -126,7 +126,7 @@ const ENV_ASSIGN_ALLOWED = new Set<string>([
   // env precedence — real sandbox temp dirs would defeat the purpose. A
   // module-level saveEnv()/afterEach(restoreEnv) snapshots and restores every
   // env key; tests are synchronous so nothing leaks across a yield point.
-  "tests/integration/paths.test.ts",
+  "tests/paths.test.ts",
 
   // registry-resolve.test.ts: sets AKM_NPM_REGISTRY to literal URLs to test
   // registry URL resolution precedence. beforeEach deletes it, afterEach
@@ -157,7 +157,7 @@ const ALLOWED_FILES = new Set<string>([
   // error at several patched call sites. Routing it through
   // withIsolatedAkmStorage (which pairs all the vars) would make the very
   // condition under test impossible to reproduce. Kept unmigrated on purpose.
-  "tests/integration/test-isolation-no-swallow.test.ts",
+  "tests/test-isolation-no-swallow.test.ts",
 ]);
 
 /**
@@ -218,7 +218,7 @@ const SPAWN_ALLOWED = new Set<string>([]);
  * 60 → 4 (#785 ISOLATION-08 drain): all 57 remaining `ALLOWED_FILES` test-file
  * entries were migrated onto `withIsolatedAkmStorage`/`withEnv`/`withEnvSync`/
  * `mutateScopedEnv` — no test was weakened, every assertion preserved. One
- * entry (`tests/integration/test-isolation-no-swallow.test.ts`) is retained
+ * entry (`tests/test-isolation-no-swallow.test.ts`) is retained
  * on purpose: it is a meta-test of the isolation guard itself and migrating
  * it would make the very condition under test unreproducible. `ALLOWED_FILES`
  * is now just that file plus `tests/_helpers/sandbox.ts` (2); combined with

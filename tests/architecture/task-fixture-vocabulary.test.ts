@@ -125,7 +125,7 @@ const ALLOWED_EXACT_FILES = [
   // source-v4-adapter.test.ts's ROUTING fixtures are what §6.2(b) names; the
   // sweep operates file-by-file, so the whole file is excluded here.
   "tests/tasks/source-v4-adapter.test.ts",
-  "tests/integration/tasks-runtime-v3-runner.test.ts",
+  "tests/tasks-runtime-v3-runner.test.ts",
   // tests/integration/tasks-schema.test.ts's published-schema drift gate lost
   // its v3 arm entirely (P4 §3.2, schemas/akm-task.json flattens to task
   // source v4 only) — the file no longer carries a "version: 3" occurrence
