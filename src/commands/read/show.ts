@@ -29,7 +29,7 @@ import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref"
 import { META_DIR, type MetaRef, parseMetaRef, readMetaFile } from "../../core/asset/stash-meta";
 import { asNonEmptyString, isWithin } from "../../core/common";
 import { getIndexPassConfig, loadConfig } from "../../core/config/config";
-import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
+import { NotFoundError, rethrowIfDataDirUnreadable, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { SCRIPT_EXTENSIONS } from "../../core/recognition-util";
 import { presentationFor } from "../../core/type-presentation";
@@ -371,6 +371,7 @@ export async function showLocal(input: {
         });
       } catch (err) {
         rethrowIfTestIsolationError(err);
+        rethrowIfDataDirUnreadable(err);
         return { total: 0, hits: [] };
       }
     })(),
