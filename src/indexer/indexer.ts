@@ -477,7 +477,7 @@ async function runFinalizePhase(
   ctx: IndexRunContext,
   deferredUpdateTransaction?: DeferredUpdateIndexTransaction,
 ): Promise<void> {
-  const { db, config, sources, sourceDirs, isIncremental, stashDir, signal, onProgress } = ctx;
+  const { db, config, sources, sourceDirs, stashDir, signal, onProgress } = ctx;
   ctx.timing.tFinalizeStart = Date.now();
 
   // `upsertEntry` and every canonical delete own their FTS projection. This is

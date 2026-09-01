@@ -381,7 +381,7 @@ async function driveChildRun(
  * before step 6 (publication) produces `child_workflow_publish_failed`.
  */
 export async function driveChildWorkflowUnit(input: DriveChildWorkflowInput): Promise<UnitOutcome> {
-  const { request, target, ctx } = input;
+  const { request, ctx } = input;
 
   const precheck = precheckAndDeriveInvocationKey(input);
   if (!precheck.ok) {

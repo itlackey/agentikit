@@ -32,7 +32,6 @@ import {
   type IrRouteSpec,
   type IrUnitNodeCore,
   validateWorkflowPlanStructure,
-  type WorkflowPlanValidationHooks,
 } from "./schema";
 
 export const WORKFLOW_IR_V5_VERSION = 5 as const;
@@ -232,7 +231,6 @@ export interface WorkflowPlanGraphV4 {
  */
 export function decodeWorkflowPlanV4(
   input: unknown,
-  hooks: WorkflowPlanValidationHooks = {},
   depth = 0,
   budget: { embeddedBytes: number } = { embeddedBytes: 0 },
 ): WorkflowPlanGraphV4 {
@@ -245,16 +243,12 @@ export function decodeWorkflowPlanV4(
   );
   if (!Object.hasOwn(raw, "sourceReadSet")) fail("sourceReadSet is required");
   const sourceReadSet = decodeSourceReadSet(raw.sourceReadSet);
-  validateWorkflowPlanStructure(
-    raw,
-    {
-      expectedVersion: WORKFLOW_IR_V5_VERSION,
-      planExtraKeys: ["sourceReadSet", "outputs"],
-      unitExtraKeys: ["frozenTarget", "environment"],
-      gateExtraKeys: ["frozenJudge"],
-    },
-    hooks,
-  );
+  validateWorkflowPlanStructure(raw, {
+    expectedVersion: WORKFLOW_IR_V5_VERSION,
+    planExtraKeys: ["sourceReadSet", "outputs"],
+    unitExtraKeys: ["frozenTarget", "environment"],
+    gateExtraKeys: ["frozenJudge"],
+  });
   const rawSteps = raw.steps as unknown[];
   const stepIds = new Set(rawSteps.map((rawStep) => (rawStep as { stepId: string }).stepId));
   const requiredSources: ExecutionSourceIdentity[] = [];
@@ -463,7 +457,7 @@ function decodeChildWorkflowTarget(
     fail(`unit ${unit.id} child workflow contentHash does not match its frozen dispatch`);
   }
   const childDepth = depth + 1;
-  const frozenPlan = decodeWorkflowPlanV4(target.frozenPlan, {}, childDepth, budget);
+  const frozenPlan = decodeWorkflowPlanV4(target.frozenPlan, childDepth, budget);
   const embeddedPlanJson = canonicalJsonLocal(frozenPlan);
   const actualPlanHash = sha256(embeddedPlanJson);
   if (actualPlanHash !== planHash) {

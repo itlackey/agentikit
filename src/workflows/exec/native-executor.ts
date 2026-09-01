@@ -129,7 +129,7 @@ import {
 import type { TaskV3ScriptInterpreter } from "../../tasks/prepare/prepared-execution";
 import { materializeFrozenWorkflowEnvironment } from "../ir/environment-v4";
 import type { IrBudget } from "../ir/schema";
-import type { FrozenWorkflowTarget, IrStepPlanV4, IrUnitNodeV4 } from "../ir/schema-v4";
+import type { IrStepPlanV4, IrUnitNodeV4 } from "../ir/schema-v4";
 import { WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 // The ONE child-workflow drive (P3b §3.2) — publishes and drives a
 // `child-workflow`-targeted unit; this module's dispatch seam is its only
@@ -160,7 +160,6 @@ import {
 } from "./step-work";
 import {
   dispatchWorkflowExecution,
-  prepareWorkflowExecution,
   type UnitDispatcher,
   type UnitDispatchRequest,
   type UnitDispatchResult,
@@ -1015,7 +1014,6 @@ async function prepareAttemptWorktree(input: JournaledAttemptInput): Promise<Pre
 
 async function reserveJournaledDispatch(
   input: JournaledAttemptInput,
-  request: UnitDispatchRequest,
   worktreePath: string | undefined,
   startedAt: string,
 ): Promise<WorkflowRunUnitAttemptRowV4> {
@@ -1129,7 +1127,7 @@ async function dispatchJournaledAttempt(input: JournaledAttemptInput): Promise<U
   const startedAt = new Date().toISOString();
   let durableAttempt: WorkflowRunUnitAttemptRowV4;
   try {
-    durableAttempt = await reserveJournaledDispatch(input, request, worktreePath, startedAt);
+    durableAttempt = await reserveJournaledDispatch(input, worktreePath, startedAt);
   } catch (err) {
     // A failed dispatch-row insert means NOTHING dispatched (the row is the
     // dispatch's precondition) — fail the unit with the real cause instead of

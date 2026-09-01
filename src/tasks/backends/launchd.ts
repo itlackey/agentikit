@@ -1214,22 +1214,6 @@ export function parseLaunchdLoadedLabels(output: string): Set<string> | undefine
   return labels;
 }
 
-function countCharacter(value: string, needle: "{" | "}"): number {
-  let count = 0;
-  for (const character of value) if (character === needle) count += 1;
-  return count;
-}
-
-function hasUnsafeLaunchdControlCharacter(output: string): boolean {
-  for (let index = 0; index < output.length; index += 1) {
-    const code = output.charCodeAt(index);
-    if (code <= 8 || code === 11 || code === 12 || (code >= 14 && code <= 31) || (code >= 127 && code <= 159)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function readDisabledLabels(exec: LaunchdExec): Set<string> | undefined {
   try {
     const result = exec.run(["launchctl", "print-disabled", `gui/${exec.uid()}`]);

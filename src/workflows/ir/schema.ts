@@ -128,8 +128,6 @@ export { WORKFLOW_MAX_CONCURRENCY, WORKFLOW_MAX_TIMEOUT_MS };
 const MAX_LIST_ITEMS = 1024;
 const MAX_STRING_LENGTH = 1_000_000;
 
-export type WorkflowPlanValidationHooks = {};
-
 export interface WorkflowPlanStructureDecodeOptions {
   readonly expectedVersion: number;
   readonly planExtraKeys?: readonly string[];
@@ -137,11 +135,7 @@ export interface WorkflowPlanStructureDecodeOptions {
   readonly gateExtraKeys?: readonly string[];
 }
 /** Validate the current durable execution graph. */
-export function validateWorkflowPlanStructure(
-  input: unknown,
-  options: WorkflowPlanStructureDecodeOptions,
-  hooks: WorkflowPlanValidationHooks = {},
-): void {
+export function validateWorkflowPlanStructure(input: unknown, options: WorkflowPlanStructureDecodeOptions): void {
   if (!isRecord(input) || input.irVersion !== options.expectedVersion) {
     fail(`irVersion must be ${options.expectedVersion}`);
   }
