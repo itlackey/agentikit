@@ -816,8 +816,16 @@ export async function runImprovePostLoopStage(args: {
         });
       if (knowledgeEntries.length > 0) {
         info(`[improve] checking URLs in ${knowledgeEntries.length} knowledge refs`);
-        deadUrls = await checkDeadUrls(primaryStashDir, knowledgeEntries);
-        info(`[improve] URL check complete (${deadUrls.length} dead/timeout URLs)`);
+        const urlReport = await checkDeadUrls(primaryStashDir, knowledgeEntries);
+        deadUrls = urlReport.dead;
+        // Report COVERAGE, not just findings (#892). The old line said
+        // "URL check complete (0 dead)" after examining at most 20 URLs out of
+        // however many the bundle holds, which reads as an all-clear it never
+        // earned.
+        info(
+          `[improve] URL check complete (${urlReport.dead.length} dead/timeout of ${urlReport.checked} checked` +
+            `${urlReport.found > urlReport.checked ? `; ${urlReport.found - urlReport.checked} NOT checked` : ""})`,
+        );
       }
     } catch {
       // best-effort
