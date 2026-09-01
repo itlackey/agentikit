@@ -27,6 +27,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import launchdTemplate from "../../assets/backends/launchd-template.xml" with { type: "text" };
+import { hasErrnoCode } from "../../core/common";
 import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
@@ -1284,8 +1285,12 @@ function defaultLaunchdFs(): LaunchdFs {
     list(dir) {
       try {
         return fs.readdirSync(dir);
-      } catch {
-        return [];
+      } catch (error) {
+        // Genuinely absent is an empty listing; anything else (e.g. EACCES) is
+        // not "no plists" — surfacing it as such could make inspectBindings
+        // think there is nothing to reconcile.
+        if (hasErrnoCode(error, "ENOENT")) return [];
+        throw new ConfigError(`Unable to read LaunchAgents directory at "${dir}".`, "INVALID_CONFIG_FILE");
       }
     },
     exists(file) {
