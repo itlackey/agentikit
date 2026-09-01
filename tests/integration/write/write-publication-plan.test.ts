@@ -8,7 +8,7 @@ import {
   planWriteTargetPublication,
   publishWriteTargetPlan,
   type ResolvedWriteTarget,
-} from "../../src/core/write-source";
+} from "../../../src/core/write-source";
 
 const roots: string[] = [];
 

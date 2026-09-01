@@ -32,23 +32,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { openLogsDatabase } from "../../src/core/logs-db";
-import { openStateDatabase } from "../../src/core/state-db";
-import type { Database } from "../../src/storage/database";
-import { openDatabase as openRawDatabase } from "../../src/storage/database";
+import { openLogsDatabase } from "../../../src/core/logs-db";
+import { openStateDatabase } from "../../../src/core/state-db";
+import type { Database } from "../../../src/storage/database";
+import { openDatabase as openRawDatabase } from "../../../src/storage/database";
 import {
   closeDatabase,
   openExistingDatabase,
   openIndexDatabase,
-} from "../../src/storage/repositories/index-connection";
+} from "../../../src/storage/repositories/index-connection";
 import {
   applyStandardPragmas,
   isNetworkFilesystem,
   type JournalMode,
   resolveConfiguredJournalMode,
   resolveJournalMode,
-} from "../../src/storage/sqlite-pragmas";
-import { withEnv } from "../_helpers/sandbox";
+} from "../../../src/storage/sqlite-pragmas";
+import { withEnv } from "../../_helpers/sandbox";
 
 const EXPECTED_BUSY_TIMEOUT_MS = 30_000;
 
@@ -310,11 +310,11 @@ describe("#628 AC-e: applyStandardPragmas() network-FS fallback wiring", () => {
 describe("#628 AC-f: docs document AKM_SQLITE_JOURNAL_MODE", () => {
   test("data-and-telemetry.md and configuration.md mention the env var", () => {
     const telemetry = fs.readFileSync(
-      path.join(import.meta.dir, "..", "..", "docs", "reference", "data-and-telemetry.md"),
+      path.join(import.meta.dir, "..", "..", "..", "docs", "reference", "data-and-telemetry.md"),
       "utf8",
     );
     const config = fs.readFileSync(
-      path.join(import.meta.dir, "..", "..", "docs", "reference", "configuration.md"),
+      path.join(import.meta.dir, "..", "..", "..", "docs", "reference", "configuration.md"),
       "utf8",
     );
     expect(telemetry).toContain("AKM_SQLITE_JOURNAL_MODE");

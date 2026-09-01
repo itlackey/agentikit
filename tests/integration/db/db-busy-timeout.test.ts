@@ -25,13 +25,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { openStateDatabase } from "../../src/core/state-db";
-import type { Database } from "../../src/storage/database";
+import { openStateDatabase } from "../../../src/core/state-db";
+import type { Database } from "../../../src/storage/database";
 import {
   closeDatabase,
   openExistingDatabase,
   openIndexDatabase,
-} from "../../src/storage/repositories/index-connection";
+} from "../../../src/storage/repositories/index-connection";
 
 const EXPECTED_BUSY_TIMEOUT_MS = 30_000;
 

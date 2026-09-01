@@ -40,10 +40,10 @@ import {
   getStateMigrationSafety,
   STATE_MIGRATION_SAFETY_BY_ID,
   STATE_MIGRATIONS,
-} from "../../src/core/state/migrations";
-import { openStateDatabase } from "../../src/core/state-db";
-import { openDatabase } from "../../src/storage/database";
-import { runMigrations } from "../../src/storage/engines/sqlite-migrations";
+} from "../../../src/core/state/migrations";
+import { openStateDatabase } from "../../../src/core/state-db";
+import { openDatabase } from "../../../src/storage/database";
+import { runMigrations } from "../../../src/storage/engines/sqlite-migrations";
 
 const MIGRATION_ID = "023-child-workflow-runs";
 const PRECEDING_MIGRATION_ID = "022-workflow-unit-attempts";
@@ -130,7 +130,7 @@ describe("migration 023-child-workflow-runs — registry position and safety cla
     // executed SQL. Scanning the migrations.ts source itself (not the `up`
     // string) is the only way to assert on it.
     const migrationsSource = fs.readFileSync(
-      path.resolve(import.meta.dir, "../../src/core/state/migrations.ts"),
+      path.resolve(import.meta.dir, "../../../src/core/state/migrations.ts"),
       "utf8",
     );
     const migrationSiteIndex = migrationsSource.indexOf(`id: "${MIGRATION_ID}"`);

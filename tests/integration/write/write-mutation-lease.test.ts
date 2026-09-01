@@ -3,9 +3,9 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { withAssetMutationLease } from "../../src/indexer/index-writer-lock";
+import { withAssetMutationLease } from "../../../src/indexer/index-writer-lock";
 
-const WORKER = path.resolve(import.meta.dir, "../fixtures/write-mutation-lease-worker.ts");
+const WORKER = path.resolve(import.meta.dir, "../../fixtures/write-mutation-lease-worker.ts");
 const roots: string[] = [];
 
 function tempRoot(prefix: string): string {

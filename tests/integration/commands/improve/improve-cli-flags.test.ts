@@ -17,7 +17,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { makeSandboxDir, type SandboxedDir, makeStashDir as sandboxMakeStashDir } from "../_helpers/sandbox";
+import { makeSandboxDir, type SandboxedDir, makeStashDir as sandboxMakeStashDir } from "../../../_helpers/sandbox";
 
 const disposers: SandboxedDir[] = [];
 
@@ -27,7 +27,7 @@ function makeStashDir(): string {
   return stash.dir;
 }
 
-const repoRoot = path.resolve(import.meta.dir, "..", "..");
+const repoRoot = path.resolve(import.meta.dir, "..", "..", "..", "..");
 const cliPath = path.join(repoRoot, "src", "cli.ts");
 
 /** Subprocess runner for improve-executing tests (see header comment).

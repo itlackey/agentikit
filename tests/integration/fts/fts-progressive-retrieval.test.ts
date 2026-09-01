@@ -3,14 +3,14 @@ import { afterAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { _setWarnSinkForTests } from "../../src/core/warn";
-import type { IndexDocument } from "../../src/indexer/passes/metadata";
-import { MARKDOWN_CONTENT_MAX_CHARS, projectMarkdownContent } from "../../src/indexer/passes/metadata";
-import { recognizeStashEntries } from "../../src/indexer/scan/drain-dir";
-import { buildLexicalQueryPlan } from "../../src/indexer/search/fts-query";
-import { buildSearchFields, buildSearchText, SEARCH_TEXT_MAX_CHARS } from "../../src/indexer/search/search-fields";
-import type { Database as AkmDatabase } from "../../src/storage/database";
-import { searchFts } from "../../src/storage/repositories/index-fts-repository";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
+import type { IndexDocument } from "../../../src/indexer/passes/metadata";
+import { MARKDOWN_CONTENT_MAX_CHARS, projectMarkdownContent } from "../../../src/indexer/passes/metadata";
+import { recognizeStashEntries } from "../../../src/indexer/scan/drain-dir";
+import { buildLexicalQueryPlan } from "../../../src/indexer/search/fts-query";
+import { buildSearchFields, buildSearchText, SEARCH_TEXT_MAX_CHARS } from "../../../src/indexer/search/search-fields";
+import type { Database as AkmDatabase } from "../../../src/storage/database";
+import { searchFts } from "../../../src/storage/repositories/index-fts-repository";
 
 const createdDirs: string[] = [];
 

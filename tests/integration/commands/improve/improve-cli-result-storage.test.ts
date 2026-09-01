@@ -10,11 +10,11 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { type SandboxedDir, makeStashDir as sandboxMakeStashDir } from "../_helpers/sandbox";
+import { type SandboxedDir, makeStashDir as sandboxMakeStashDir } from "../../../_helpers/sandbox";
 
 const disposers: Array<{ cleanup: () => void }> = [];
 
-const repoRoot = path.resolve(import.meta.dir, "..", "..");
+const repoRoot = path.resolve(import.meta.dir, "..", "..", "..", "..");
 const cliPath = path.join(repoRoot, "src", "cli.ts");
 const improveCliPath = path.join(repoRoot, "src", "commands", "improve", "improve-cli.ts");
 const sqliteSnapshotPath = path.join(repoRoot, "src", "storage", "sqlite-read-snapshot.ts");

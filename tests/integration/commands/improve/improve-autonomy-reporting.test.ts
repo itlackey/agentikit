@@ -3,13 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { akmImprove } from "../../src/commands/improve/improve";
-import type { AkmConfig } from "../../src/core/config/config";
-import { IMPROVE_AUTONOMY_CONFIG_KEY } from "../../src/core/config/experimental";
-import { readEvents } from "../../src/core/events";
-import { _setWarnSinkForTests } from "../../src/core/warn";
-import { type Cleanup, type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
-import { overrideSeam } from "../_helpers/seams";
+import { akmImprove } from "../../../../src/commands/improve/improve";
+import type { AkmConfig } from "../../../../src/core/config/config";
+import { IMPROVE_AUTONOMY_CONFIG_KEY } from "../../../../src/core/config/experimental";
+import { readEvents } from "../../../../src/core/events";
+import { _setWarnSinkForTests } from "../../../../src/core/warn";
+import { type Cleanup, type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
+import { overrideSeam } from "../../../_helpers/seams";
 
 const config = {
   configVersion: "0.9.0",

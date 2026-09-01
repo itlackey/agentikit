@@ -21,10 +21,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { parseFrontmatter } from "../../src/core/asset/frontmatter";
-import type { SourceConfigEntry } from "../../src/core/config/config";
-import { ConfigError, UsageError } from "../../src/core/errors";
-import { sanitizeCommitMessage } from "../../src/core/git-message";
+import { parseFrontmatter } from "../../../src/core/asset/frontmatter";
+import type { SourceConfigEntry } from "../../../src/core/config/config";
+import { ConfigError, UsageError } from "../../../src/core/errors";
+import { sanitizeCommitMessage } from "../../../src/core/git-message";
 import {
   assertWritableAllowedForKind,
   commitWriteTargetBoundary,
@@ -35,11 +35,11 @@ import {
   resolveWriteTarget,
   type WriteTargetSource,
   writeAssetToSource,
-} from "../../src/core/write-source";
-import { resolveSourceEntries } from "../../src/indexer/search/search-source";
-import { writeLockfile } from "../../src/integrations/lockfile";
-import { getCachePaths, parseGitRepoUrl } from "../../src/sources/providers/git";
-import { type IsolatedAkmStorage, withEnvSync, withIsolatedAkmStorage } from "../_helpers/sandbox";
+} from "../../../src/core/write-source";
+import { resolveSourceEntries } from "../../../src/indexer/search/search-source";
+import { writeLockfile } from "../../../src/integrations/lockfile";
+import { getCachePaths, parseGitRepoUrl } from "../../../src/sources/providers/git";
+import { type IsolatedAkmStorage, withEnvSync, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 

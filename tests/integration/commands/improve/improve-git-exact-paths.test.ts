@@ -6,10 +6,10 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { akmImprove } from "../../src/commands/improve/improve";
-import type { AkmConfig } from "../../src/core/config/config";
-import { recordWrittenPath } from "../../src/core/write-provenance";
-import { type Cleanup, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { akmImprove } from "../../../../src/commands/improve/improve";
+import type { AkmConfig } from "../../../../src/core/config/config";
+import { recordWrittenPath } from "../../../../src/core/write-provenance";
+import { type Cleanup, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 let cleanup: Cleanup = () => {};
 let stashDir = "";

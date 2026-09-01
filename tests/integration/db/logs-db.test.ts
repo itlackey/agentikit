@@ -25,8 +25,8 @@ import {
   openLogsDatabase,
   purgeOldTaskLogs,
   queryTaskLogs,
-} from "../../src/core/logs-db";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+} from "../../../src/core/logs-db";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 let storage: IsolatedAkmStorage;
 
