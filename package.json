@@ -80,8 +80,6 @@
     "lint:isolation": "bun scripts/lint-tests-isolation.ts",
     "lint:doc-examples": "bun scripts/lint-doc-examples.ts",
     "lint:active-docs-terminology": "bun scripts/lint-active-docs-terminology.ts",
-    "lint:devto-posts": "bun scripts/lint-devto-posts.ts",
-    "lint:devto-posts:fix": "bun scripts/lint-devto-posts.ts --fix",
     "publish:devto": "npx -y @sinedied/devto-cli push \"docs/posts/**/*.md\" --token \"$DEVTO_TOKEN\" --repo \"$GITHUB_REPOSITORY\" --branch \"${GITHUB_REF_NAME:-main}\" --reconcile",
     "release:check": "./tests/release-check.sh",
     "lint": "bunx biome check src/ tests/ scripts/ && bun scripts/lint-secret-resolver-boundary.ts && bun scripts/lint-shipped-assets.ts && bun scripts/lint-doc-examples.ts",

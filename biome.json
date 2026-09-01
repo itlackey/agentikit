@@ -52,18 +52,6 @@
           }
         }
       }
-    },
-    {
-      "includes": [
-        "scripts/lint-devto-posts.ts"
-      ],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noControlCharactersInRegex": "off"
-          }
-        }
-      }
     }
   ]
 }
