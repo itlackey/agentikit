@@ -3,14 +3,16 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Regression: runFtsQuery must surface query errors via warn() rather than
- * swallowing them and returning [] silently (matching sibling searchBlobVec).
+ * Regression: runFtsQuery must propagate a genuine query failure (e.g. a
+ * corrupt/missing `entries_fts` table) instead of swallowing it and returning
+ * `[]` — a silent `[]` here is indistinguishable from "no matches" to
+ * `db-search.ts` and its callers, which is exactly the false "no results"
+ * answer a corrupt or locked index must never produce.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import type { IndexDocument } from "../../../src/indexer/passes/metadata";
 import type { Database } from "../../../src/storage/database";
@@ -18,7 +20,6 @@ import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositor
 import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
 import { rebuildFts, searchFts } from "../../../src/storage/repositories/index-fts-repository";
 import { type Cleanup, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../../_helpers/sandbox";
-import { overrideSeam } from "../../_helpers/seams";
 
 const createdTmpDirs: string[] = [];
 
@@ -35,23 +36,16 @@ afterAll(() => {
 });
 
 let envCleanup: Cleanup = () => {};
-let warnCalls: string[] = [];
 
 beforeEach(() => {
   const cacheResult = sandboxXdgCacheHome();
   const cfgResult = sandboxXdgConfigHome(cacheResult.cleanup);
   envCleanup = cfgResult.cleanup;
-  warnCalls = [];
-  overrideSeam(_setWarnSinkForTests, (level, args) => {
-    if (level !== "warn") return;
-    warnCalls.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
-  });
 });
 
 afterEach(() => {
   envCleanup();
   envCleanup = () => {};
-  warnCalls = [];
 });
 
 function insertEntry(db: Database, key: string, entry: IndexDocument, searchText: string): number {
@@ -64,7 +58,7 @@ function insertEntry(db: Database, key: string, entry: IndexDocument, searchText
 }
 
 describe("runFtsQuery error handling", () => {
-  test("warns instead of silently returning [] when the FTS query errors", () => {
+  test("propagates a query error instead of silently returning []", () => {
     const db = openIndexDatabase(tmpDbPath());
     try {
       insertEntry(db, "deploy", { name: "deploy", type: "script", description: "deploy things" }, "deploy");
@@ -75,14 +69,8 @@ describe("runFtsQuery error handling", () => {
 
       // Break the FTS virtual table so the MATCH query throws inside runFtsQuery.
       db.exec("DROP TABLE entries_fts");
-      warnCalls = [];
 
-      const results = searchFts(db, "deploy", 10);
-
-      // Behavior on error is unchanged: empty result set.
-      expect(results).toEqual([]);
-      // But the error must now be surfaced via warn(), not swallowed.
-      expect(warnCalls.some((m) => m.includes("runFtsQuery"))).toBe(true);
+      expect(() => searchFts(db, "deploy", 10)).toThrow(/entries_fts/);
     } finally {
       closeDatabase(db);
     }
