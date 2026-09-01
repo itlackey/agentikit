@@ -28,7 +28,7 @@ import {
   type WorkflowRunUnitRow,
   withWorkflowRunsRepo,
 } from "../../storage/repositories/workflow-runs-repository";
-import { canonicalJson as canonicalJsonString } from "../ir/plan-hash";
+import { canonicalJson } from "../ir/plan-hash";
 import type { IrIsolation, IrMapReducer, IrOnError, IrRetry, IrRouteSpec, IrRuntimeKind } from "../ir/schema";
 import type { FrozenWorkflowTarget, IrStepPlanV4, IrUnitNodeV4, WorkflowPlanGraphV4 } from "../ir/schema-v4";
 import {
@@ -688,7 +688,7 @@ function computeUnitInputHash(ctx: StepWorkUnitContext, item: unknown): string {
   return createHash("sha256")
     .update("akm.workflow.unit\0v7\0")
     .update(
-      canonicalJsonString({
+      canonicalJson({
         hashVersion: 7,
         role: "unit",
         stepId: ctx.plan.stepId,
@@ -1167,22 +1167,8 @@ export function unitOutcomeFromRow(unitId: string, row: WorkflowRunUnitRow, hasS
   };
 }
 
-/** Stable stringify (sorted object keys, recursively) so equal values vote together. */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortKeys(value));
-}
-
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([k, v]) => [k, sortKeys(v)]),
-    );
-  }
-  return value;
-}
+/** Re-exported so existing importers (`tests/workflows/fuzz/*`) keep resolving; canonical impl lives in `../ir/plan-hash`. */
+export { canonicalJson };
 
 // ── Gate-feedback recovery (PURE) ────────────────────────────────────────────
 //
@@ -1962,7 +1948,7 @@ export async function finalizeExecutedStep(input: FinalizeStepInput): Promise<Fi
             inputHash: createHash("sha256")
               .update("akm.workflow.gate\0v7\0")
               .update(
-                canonicalJsonString({
+                canonicalJson({
                   hashVersion: 7,
                   dispatch: gateTarget,
                   invocation: null,
