@@ -26,24 +26,19 @@
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter } from "../../asset/frontmatter";
+import { toPosix } from "../../common";
 import type { FileChange } from "../../file-change";
 import { SCRIPT_EXTENSIONS } from "../../recognition-util";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
-import { hashContent, nonEmptyString, readTags, runBaseValidateChecks } from "./shared";
+import { hashContent, nonEmptyString, RESERVED_FILES, readTags, runBaseValidateChecks } from "./shared";
 
 /** A generic-files bundle is single-component; its one component is `main`. */
 const COMPONENT_ID = "main";
 /** Markdown / plain-text extensions classified as `document`. */
 const DOCUMENT_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".text"]);
-/** OKF reserved structural files (D-R6) — excluded from the catch-all, case-insensitive. */
-const RESERVED_FILES = new Set(["index.md", "log.md"]);
 
 type GenericType = "script" | "document" | "file";
-
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 
 function isReserved(base: string): boolean {
   return RESERVED_FILES.has(base.toLowerCase());

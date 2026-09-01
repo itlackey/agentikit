@@ -47,6 +47,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter } from "../../asset/frontmatter";
+import { toPosix } from "../../common";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -63,10 +64,6 @@ const DESCRIPTION_MAX = 1024;
 const RESERVED_NAME_WORDS = ["anthropic", "claude"];
 /** name charset/shape rule (spec §4.5). */
 const NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 
 /** conceptId + package-dir name for a `<name>/SKILL.md` file, or null when the file is not a skill manifest. */
 function skillPackage(relPath: string): { conceptId: string; dirName: string } | null {

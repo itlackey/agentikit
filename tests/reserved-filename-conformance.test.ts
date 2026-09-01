@@ -38,6 +38,7 @@ const ALLOWED = new Set([
   "core/adapter/adapters/llm-wiki-adapter.ts", // reserved root-file set
   "core/adapter/adapters/tool-dir-shared.ts", // claude/opencode reserved-file exclusion set (D-R6)
   "core/adapter/adapters/generic-files-adapter.ts", // generic-files reserved-file exclusion set (D-R6)
+  "core/adapter/adapters/shared.ts", // RESERVED_FILES — hoisted canonical exclusion set (D-R6, consolidated 2026-09)
   "core/adapter/adapters/index.ts", // adapter probe doc
   "commands/sources/stash-skeleton.ts", // structural `.meta/index.md` orientation doc
   "commands/sources/init.ts", // doc comment referencing the `.meta/index.md` orientation doc

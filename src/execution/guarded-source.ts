@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { parseFrontmatter } from "../core/asset/frontmatter";
+import { compareCodePoints, toPosix } from "../core/common";
 import { UsageError } from "../core/errors";
 import type { FileContext } from "../indexer/walk/file-context";
 import { createExecutionSourceIdentity, type ExecutionSourceIdentity } from "./source";
@@ -64,14 +65,6 @@ interface CapturedSourceRecord {
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-function toPosix(value: string): string {
-  return value.replaceAll("\\", "/");
-}
-
-function compareCodePoints(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function physicalIdentity(realPath: string, stat: fs.BigIntStats): string {

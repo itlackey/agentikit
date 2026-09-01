@@ -106,7 +106,7 @@ import { recognizeMatch } from "../recognize-match";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
 import { perTypeValidateChecks, skillDirectoryDiagnostics, workflowYamlSourceDiagnostics } from "./akm-lint";
 import { applyFoldedMetadata, foldRecognizedMetadata } from "./akm-metadata";
-import { hashContent, type ParsedForValidate, runBaseValidateChecks } from "./shared";
+import { hashContent, type ParsedForValidate, RESERVED_FILES, runBaseValidateChecks } from "./shared";
 
 // `recognizeMatch` + the builtin matcher list moved to the cycle-free leaf
 // `../recognize-match` (Chunk 5 M-b) so both this adapter AND the indexer
@@ -119,13 +119,11 @@ export { recognizeMatch } from "../recognize-match";
  * OKF reserved structural files (ref-grammar decision D-R6, spec §5.1 /
  * adapter-spec §5.1/§6): `index.md` (directory listing) and `log.md` (update
  * history) are bundle structure at EVERY depth — never a concept document. The
- * `okf` / `llm-wiki` adapters already exclude them (`okf-adapter.ts`
+ * `okf` / `llm-wiki` adapters already exclude them (`shared.ts`'s
  * `RESERVED_FILES`); this brings the `akm` adapter into conformance so a
  * `knowledge/index.md` never classifies as a `knowledge` item. Case-insensitive,
  * matched on the bare filename so the exclusion holds at any depth.
  */
-const RESERVED_FILES = new Set(["index.md", "log.md"]);
-
 /** True when `name` (a bare file name) is an OKF reserved file, case-insensitively (D-R6). */
 function isReservedFileName(name: string): boolean {
   return RESERVED_FILES.has(name.toLowerCase());

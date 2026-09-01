@@ -31,6 +31,7 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { parseFrontmatter, parseFrontmatterBlock } from "../../asset/frontmatter";
+import { toPosix } from "../../common";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -44,10 +45,6 @@ const PAGES_PREFIX = "stash/knowledge/";
 const MANIFEST_FILE = "manifest.json";
 /** The tag the snapshot writer stamps on every crawled page. */
 const WEBSITE_TAG = "website";
-
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 
 /** The snapshot-page fields the adapter reads (a real YAML parse so list-valued `tags:` round-trips). */
 interface SnapshotFrontmatter {

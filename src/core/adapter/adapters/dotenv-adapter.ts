@@ -33,6 +33,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import { assetPathCandidatesForName, assetPathForName, typeForStashDir } from "../../asset/asset-placement";
+import { scanEnvKeyNames, toPosix } from "../../common";
 import type { FileChange } from "../../file-change";
 import type { BundleAdapter } from "../bundle-adapter";
 import type { BundleComponent, Diagnostic, IndexDocument, ValidateContext } from "../types";
@@ -47,12 +48,6 @@ const ENV_DIR = "env";
 const SECRETS_DIR = "secrets";
 /** Non-secret marker suffixes under `secrets/` (spec §6 secret row). */
 const SECRET_SKIP_SUFFIXES = [".lock", ".sensitive"];
-/** Matches a KEY=value assignment line, capturing only the key (mirrors akm-lint scanKeys). */
-const ASSIGN_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
-
-function toPosix(p: string): string {
-  return p.replace(/\\/g, "/");
-}
 
 type DotenvType = "env" | "secret";
 
@@ -92,21 +87,6 @@ function hasSensitiveMarker(absPath: string, type: DotenvType): boolean {
   return marker !== absPath && fs.existsSync(marker);
 }
 
-/** Extract KEY NAMES (never values) from an env file's raw content, first-appearance order, deduped. */
-function scanKeyNames(raw: string): string[] {
-  const keys: string[] = [];
-  const seen = new Set<string>();
-  for (const line of raw.split(/\r?\n/)) {
-    const m = line.match(ASSIGN_RE);
-    if (!m) continue;
-    const key = m[1]!;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    keys.push(key);
-  }
-  return keys;
-}
-
 function conceptIdForPath(type: DotenvType, relativePath: string): string {
   const posix = toPosix(relativePath);
   if (type === "secret") return posix;
@@ -125,7 +105,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     // env: strip `.env`; surface KEY NAMES only (never values/comments/content).
     const conceptId = conceptIdForPath(type, posix);
     const name = (conceptId.split("/").pop() ?? conceptId) || "default";
-    const keys = scanKeyNames(raw);
+    const keys = scanEnvKeyNames(raw);
     const doc: IndexDocument = {
       ref: `${c.id}//${conceptId}`,
       bundle: c.id,
