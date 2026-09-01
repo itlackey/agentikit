@@ -4,6 +4,7 @@
 
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
 import { resolveStashDir } from "../core/common";
+import { ConfigError } from "../core/errors";
 import { getConfigPath } from "../core/paths";
 import { applyConfigExtraParamsLift, findConfigExtraParamsLift } from "./migrate/config-extra-params";
 import { findDeadResidueEntries, removeDeadResidue } from "./migrate/dead-residue";
@@ -117,7 +118,15 @@ export async function runMigrateSubcommand(
   // legacy extraParams -> first-class-field config lift (#852) is the same
   // shape: status names it, apply persists it once instead of the old
   // permanent silent lift on every config load.
-  const stashDir = resolveStashDir();
+  // No configured bundle means there is no stash to scan — an empty domain,
+  // not an error — so migrate still works before `akm bundle create`. Any
+  // OTHER ConfigError propagates.
+  let stashDir: string | undefined;
+  try {
+    stashDir = resolveStashDir();
+  } catch (error) {
+    if (!(error instanceof ConfigError) || error.code !== "STASH_DIR_NOT_FOUND") throw error;
+  }
   const configPath = getConfigPath();
   const applyResidue = command === "migrate-apply" && !genOneArgs.includes("--dry-run");
   const first = await callMigrateTool(genOneArgs, runTool);

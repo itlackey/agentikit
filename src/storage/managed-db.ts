@@ -119,6 +119,12 @@ export function withManagedDb<T>(open: () => Database, fn: (db: Database) => T, 
   try {
     return fn(db);
   } finally {
-    db.close();
+    try {
+      db.close();
+    } catch {
+      // A close() throw here would REPLACE fn's in-flight exception — the same
+      // masking openManagedDatabase above was hardened against. The handle is
+      // being discarded either way; fn's error is the one that matters.
+    }
   }
 }

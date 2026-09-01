@@ -108,7 +108,11 @@ function canonicalJson(value: unknown): string {
   if (value && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>)
       .filter(([, entry]) => entry !== undefined)
-      .sort(([left], [right]) => left.localeCompare(right));
+      // Codepoint order, NOT localeCompare: this string feeds sha256Hex for the
+      // bundle-audit generation, and localeCompare is ICU/locale-dependent — the
+      // same object could hash differently on two machines. Matches the other
+      // canonicalJson implementations (workflows/ir/plan-hash.ts).
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
     return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
   }
   return JSON.stringify(value);

@@ -22,8 +22,8 @@ export function isConsolidationEligibleMemoryName(name: string): boolean {
  *
  * Reads the file once per check; consolidate runs against ~10 memories per
  * chunk so the IO cost is trivial. Returns false on any read/parse error
- * (fail-safe: an unparseable file is treated as not-hot, but the broader
- * consolidate flow already guards against unparseable memories elsewhere).
+ * (fail-safe: an unreadable or unparseable file is treated as HOT — protected
+ * — because a deletion shield must not fail open; a missing file is not-hot).
  *
  * Defends against four observed defect classes (see
  * `memories/akm-improve-critical-review-2026-05-20`):
@@ -33,12 +33,18 @@ export function isConsolidationEligibleMemoryName(name: string): boolean {
  *   - Cascade deletes (LLM uses ref:X as `contradictedBy` for ref:Y then deletes both)
  */
 export function isHotCapturedMemory(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
   try {
-    if (!fs.existsSync(filePath)) return false;
     const content = fs.readFileSync(filePath, "utf8");
     const parsed = parseFrontmatter(content);
     return hasHotCaptureMode(parsed.data as Record<string, unknown> | undefined);
   } catch {
-    return false;
+    // Fail CLOSED. This predicate is a deletion shield: "hot" memories are
+    // protected from consolidate's merge/delete. Returning false on a read or
+    // parse failure marked exactly the memories we could not inspect as fair
+    // game — the one direction a protection check must never fail. A missing
+    // file stays false (nothing to protect); an unreadable one is protected
+    // until someone can actually read it.
+    return true;
   }
 }
