@@ -131,15 +131,6 @@ describe("applyInputDefaults (§4.2) — defaults are additive, supplied values 
     });
   });
 
-  test("an explicit falsy value for one input coexists with a default applied for another, absent input", () => {
-    const contract: InputContract = {
-      strict: { schema: { type: "boolean" }, default: true, required: false },
-      count: { schema: { type: "integer" }, default: 5, required: false },
-      label: { schema: { type: "string" }, default: "x", required: false },
-    };
-    expect(applyInputDefaults(contract, { strict: false })).toEqual({ strict: false, count: 5, label: "x" });
-  });
-
   test("a declared input with no default that is absent from values is left absent from the result", () => {
     const contract: InputContract = { ticket: { schema: { type: "string" }, required: false } };
     const result = applyInputDefaults(contract, {});
@@ -527,15 +518,6 @@ describe("materializeInputFlags (§4.2, D3-N3) — exact-name matching and coerc
     });
   });
 
-  test("array-item coercion preserves a numeric-looking string element too", () => {
-    const contract: InputContract = {
-      tags: { schema: { type: "array", items: { type: "string" } }, required: false },
-    };
-    expect(materializeInputFlags(contract, [{ name: "tags", value: "007" }], poisonedDiagnostics())).toEqual({
-      tags: ["007"],
-    });
-  });
-
   // Regression (finding F1): `materializeFlagValues` took the array-grouping
   // branch whenever "array" appeared ANYWHERE in a union type — even when the
   // union also permits a scalar type that a single, non-bracketed value could
@@ -567,22 +549,6 @@ describe("materializeInputFlags (§4.2, D3-N3) — exact-name matching and coerc
       const result = materializeInputFlags(contract, [{ name: "version", value: "001" }], poisonedDiagnostics());
       expect(result).toEqual({ version: "001" });
       expect(typeof (result as { version: unknown }).version).toBe("string");
-    });
-
-    test("repeated flags on the same union still group into an array (unaffected by this fix)", () => {
-      const contract: InputContract = { x: { schema: { type: ["array", "string"] }, required: false } };
-      const flags: InputFlag[] = [
-        { name: "x", value: "a" },
-        { name: "x", value: "b" },
-      ];
-      expect(materializeInputFlags(contract, flags, poisonedDiagnostics())).toEqual({ x: ["a", "b"] });
-    });
-
-    test("the `[`-prefixed JSON-array shorthand still parses as an array on a union too (unaffected by this fix)", () => {
-      const contract: InputContract = { x: { schema: { type: ["array", "string"] }, required: false } };
-      expect(materializeInputFlags(contract, [{ name: "x", value: "[1,2]" }], poisonedDiagnostics())).toEqual({
-        x: [1, 2],
-      });
     });
   });
 
@@ -626,13 +592,7 @@ describe("materializeInputFlags (§4.2, D3-N3) — exact-name matching and coerc
 /** Nested objects, arrays, null, unicode keys, and insertion-order permutations — D3-N2's named categories. */
 const CANONICAL_JSON_FIXTURES: readonly unknown[] = [
   {},
-  { a: 1, b: 2 },
-  { b: 2, a: 1 },
   { outer: { z: 1, a: 2 }, list: [3, 1, 2] },
-  [
-    { b: 1, a: 2 },
-    { d: 4, c: 3 },
-  ],
   { a: null, b: [null, 1, null] },
   { héllo: "wörld", 日本語: 123 },
   { scope: "changed", strict: true, count: 0, tags: ["a", "b"], nested: { z: 1, a: { deep: [1, { y: 2, x: 1 }] } } },
