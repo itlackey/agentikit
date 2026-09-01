@@ -16,18 +16,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import type { AkmConfig } from "../../src/core/config/config";
-import { ConfigError } from "../../src/core/errors";
-import * as graphDb from "../../src/indexer/db/graph-db";
-import { loadGraphFilesOnly, replaceStoredGraph } from "../../src/indexer/db/graph-db";
-import * as graphExtraction from "../../src/indexer/graph/graph-extraction";
-import type { GraphFile } from "../../src/indexer/graph/graph-types";
-import { deriveEntryProvenance } from "../../src/indexer/installations";
-import type { Database } from "../../src/storage/database";
-import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
-import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
-import { computeBodyHash } from "../../src/storage/repositories/index-llm-cache-repository";
-import { makeStashDir, type SandboxedDir, withEnv } from "../_helpers/sandbox";
+import type { AkmConfig } from "../../../src/core/config/config";
+import { ConfigError } from "../../../src/core/errors";
+import * as graphDb from "../../../src/indexer/db/graph-db";
+import { loadGraphFilesOnly, replaceStoredGraph } from "../../../src/indexer/db/graph-db";
+import * as graphExtraction from "../../../src/indexer/graph/graph-extraction";
+import type { GraphFile } from "../../../src/indexer/graph/graph-types";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
+import type { Database } from "../../../src/storage/database";
+import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
+import { computeBodyHash } from "../../../src/storage/repositories/index-llm-cache-repository";
+import { makeStashDir, type SandboxedDir, withEnv } from "../../_helpers/sandbox";
 
 // ── Deferred (not-yet-exported) P3 symbols ───────────────────────────────────
 //

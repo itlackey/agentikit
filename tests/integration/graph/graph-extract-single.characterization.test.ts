@@ -30,9 +30,9 @@
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import type { LlmConnectionConfig } from "../../src/core/config/config";
-import { isQuiet, setQuiet } from "../../src/core/warn";
-import { testLlmRunner } from "../_helpers/llm-runner";
+import type { LlmConnectionConfig } from "../../../src/core/config/config";
+import { isQuiet, setQuiet } from "../../../src/core/warn";
+import { testLlmRunner } from "../../_helpers/llm-runner";
 
 // ── Local LLM server (fake chat/LLM seam) ────────────────────────────────────
 
@@ -71,7 +71,7 @@ const llmServer = Bun.serve({
   },
 });
 
-const { extractGraphFromBody } = await import("../../src/llm/graph-extract");
+const { extractGraphFromBody } = await import("../../../src/llm/graph-extract");
 
 // ── Shared fixtures ──────────────────────────────────────────────────────────
 

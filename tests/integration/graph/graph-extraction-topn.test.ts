@@ -16,11 +16,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import * as graphExtraction from "../../src/indexer/graph/graph-extraction";
-import { collectEligibleFiles } from "../../src/indexer/graph/graph-extraction";
-import { deriveEntryProvenance } from "../../src/indexer/installations";
-import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
-import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
+import * as graphExtraction from "../../../src/indexer/graph/graph-extraction";
+import { collectEligibleFiles } from "../../../src/indexer/graph/graph-extraction";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
+import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
 
 type Candidate = { absPath: string; type: string; body: string };
 
@@ -32,8 +32,8 @@ const rankCandidatesByUtility = (
   }
 ).rankCandidatesByUtility;
 
-import type { Database } from "../../src/storage/database";
-import { makeStashDir, type SandboxedDir } from "../_helpers/sandbox";
+import type { Database } from "../../../src/storage/database";
+import { makeStashDir, type SandboxedDir } from "../../_helpers/sandbox";
 
 // ── Local sandbox plumbing ───────────────────────────────────────────────────
 

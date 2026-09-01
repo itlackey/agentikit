@@ -14,15 +14,15 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import type { AkmConfig, LlmConnectionConfig } from "../../src/core/config/config";
-import { loadStoredGraphSnapshot } from "../../src/indexer/db/graph-db";
-import type { GraphExtractionResult } from "../../src/indexer/graph/graph-extraction";
-import { deriveEntryProvenance } from "../../src/indexer/installations";
-import { buildSearchText } from "../../src/indexer/search/search-fields";
-import type { GraphExtraction } from "../../src/llm/graph-extract";
-import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
-import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import type { AkmConfig, LlmConnectionConfig } from "../../../src/core/config/config";
+import { loadStoredGraphSnapshot } from "../../../src/indexer/db/graph-db";
+import type { GraphExtractionResult } from "../../../src/indexer/graph/graph-extraction";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
+import { buildSearchText } from "../../../src/indexer/search/search-fields";
+import type { GraphExtraction } from "../../../src/llm/graph-extract";
+import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 // ── Local LLM server ─────────────────────────────────────────────────────────
 
@@ -78,7 +78,9 @@ const llmServer = Bun.serve({
   },
 });
 
-const { runGraphExtractionPass, GRAPH_FILE_SCHEMA_VERSION } = await import("../../src/indexer/graph/graph-extraction");
+const { runGraphExtractionPass, GRAPH_FILE_SCHEMA_VERSION } = await import(
+  "../../../src/indexer/graph/graph-extraction"
+);
 
 // ── Fixture helpers ──────────────────────────────────────────────────────────
 

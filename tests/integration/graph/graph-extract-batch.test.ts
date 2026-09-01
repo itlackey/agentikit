@@ -18,8 +18,8 @@
  */
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import type { AkmConfig, LlmConnectionConfig } from "../../src/core/config/config";
-import { testLlmRunner } from "../_helpers/llm-runner";
+import type { AkmConfig, LlmConnectionConfig } from "../../../src/core/config/config";
+import { testLlmRunner } from "../../_helpers/llm-runner";
 
 // ── Local LLM server ─────────────────────────────────────────────────────────
 
@@ -59,7 +59,7 @@ const llmServer = Bun.serve({
   },
 });
 
-const { extractGraphFromBodies, extractGraphFromBody } = await import("../../src/llm/graph-extract");
+const { extractGraphFromBodies, extractGraphFromBody } = await import("../../../src/llm/graph-extract");
 
 // ── Shared fixtures ──────────────────────────────────────────────────────────
 

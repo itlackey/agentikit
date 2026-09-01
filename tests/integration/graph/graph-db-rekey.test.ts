@@ -21,27 +21,27 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
-import * as graphDb from "../../src/indexer/db/graph-db";
-import { loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
-import { deriveEntryProvenance } from "../../src/indexer/installations";
-import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
+import * as graphDb from "../../../src/indexer/db/graph-db";
+import { loadStoredGraphSnapshot, replaceStoredGraph } from "../../../src/indexer/db/graph-db";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
+import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 import {
   deleteEntriesByIds,
   getEntryIdByFilePath,
   upsertEntry,
-} from "../../src/storage/repositories/index-entries-repository";
-import { getMeta, setMeta } from "../../src/storage/repositories/index-meta-repository";
-import { DB_VERSION, GRAPH_SCHEMA_VERSION } from "../../src/storage/repositories/index-schema";
+} from "../../../src/storage/repositories/index-entries-repository";
+import { getMeta, setMeta } from "../../../src/storage/repositories/index-meta-repository";
+import { DB_VERSION, GRAPH_SCHEMA_VERSION } from "../../../src/storage/repositories/index-schema";
 
 // hasGraphData (P1 deliverable) is referenced via the namespace for ESM-safety;
 // the cast resolves to the real export from graph-db.ts.
 const hasGraphData = (graphDb as { hasGraphData?: (db: Database, stashRoot: string, filePath: string) => boolean })
   .hasGraphData as (db: Database, stashRoot: string, filePath: string) => boolean;
 
-import type { GraphFile, GraphFileNode } from "../../src/indexer/graph/graph-types";
-import { buildSearchText } from "../../src/indexer/search/search-fields";
-import type { Database } from "../../src/storage/database";
-import { makeSandboxDir, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import type { GraphFile, GraphFileNode } from "../../../src/indexer/graph/graph-types";
+import { buildSearchText } from "../../../src/indexer/search/search-fields";
+import type { Database } from "../../../src/storage/database";
+import { makeSandboxDir, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 // ── Temp / env management ───────────────────────────────────────────────────
 //

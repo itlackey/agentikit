@@ -17,16 +17,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { AkmConfig } from "../../src/core/config/config";
-import { ConfigError } from "../../src/core/errors";
-import { enqueueGraphExtraction, loadStoredGraphSnapshot, replaceStoredGraph } from "../../src/indexer/db/graph-db";
-import { deriveEntryProvenance } from "../../src/indexer/installations";
-import { buildSearchText } from "../../src/indexer/search/search-fields";
-import type { SearchSource } from "../../src/indexer/search/search-source";
-import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
-import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
-import { computeBodyHash } from "../../src/storage/repositories/index-llm-cache-repository";
-import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
+import type { AkmConfig } from "../../../src/core/config/config";
+import { ConfigError } from "../../../src/core/errors";
+import { enqueueGraphExtraction, loadStoredGraphSnapshot, replaceStoredGraph } from "../../../src/indexer/db/graph-db";
+import { deriveEntryProvenance } from "../../../src/indexer/installations";
+import { buildSearchText } from "../../../src/indexer/search/search-fields";
+import type { SearchSource } from "../../../src/indexer/search/search-source";
+import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
+import { computeBodyHash } from "../../../src/storage/repositories/index-llm-cache-repository";
+import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 // ── Local LLM server ────────────────────────────────────────────────────────
 
@@ -105,8 +105,8 @@ const llmServer = Bun.serve({
 });
 
 const { runGraphExtractionPass, collectEligibleFiles, GRAPH_FILE_SCHEMA_VERSION, getGraphExtractionIncludeTypes } =
-  await import("../../src/indexer/graph/graph-extraction");
-const { GRAPH_EXTRACT_PROMPT_VERSION: graphExtractPromptVersion } = await import("../../src/llm/graph-extract");
+  await import("../../../src/indexer/graph/graph-extraction");
+const { GRAPH_EXTRACT_PROMPT_VERSION: graphExtractPromptVersion } = await import("../../../src/llm/graph-extract");
 
 // ── Fixture helpers ─────────────────────────────────────────────────────────
 
@@ -182,7 +182,7 @@ const SAMPLE_LLM = {
 
 function withGraphDb<T>(
   name: string,
-  fn: (db: import("../../src/storage/database").Database) => Promise<T> | T,
+  fn: (db: import("../../../src/storage/database").Database) => Promise<T> | T,
 ): Promise<T> | T {
   void name;
   const db = openIndexDatabase(path.join(tmpStash, "graph-test.db"));
