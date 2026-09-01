@@ -70,24 +70,30 @@ afterEach(() => {
 });
 
 describe("migration 024-workflow-run-outputs — registry position and safety classification", () => {
-  test("is the final entry of STATE_MIGRATIONS, directly after 023-child-workflow-runs", () => {
+  // Not asserted as the final entry: migration 025-task-history-vocabulary-
+  // backfill is authorized to append after this one (see
+  // state-migration-025.test.ts), so this test pins only 024's own position
+  // relative to its immediate predecessor, 023 — mirroring how
+  // state-migration-023.test.ts was narrowed when 024 landed.
+  test("appears in STATE_MIGRATIONS directly after 023-child-workflow-runs", () => {
     const ids = STATE_MIGRATIONS.map((migration) => migration.id);
-    expect(ids.at(-1)).toBe(MIGRATION_ID);
-    expect(ids.at(-2)).toBe(PRECEDING_MIGRATION_ID);
+    const index = ids.indexOf(MIGRATION_ID);
+    expect(index).toBeGreaterThan(-1);
+    expect(ids[index - 1]).toBe(PRECEDING_MIGRATION_ID);
   });
 
-  test("is the final classified id in STATE_MIGRATION_SAFETY_BY_ID, directly after 023-child-workflow-runs, classified additive", () => {
+  test("is classified additive in STATE_MIGRATION_SAFETY_BY_ID, directly after 023-child-workflow-runs", () => {
     const classifiedIds = Object.keys(STATE_MIGRATION_SAFETY_BY_ID);
-    expect(classifiedIds.at(-1)).toBe(MIGRATION_ID);
-    expect(classifiedIds.at(-2)).toBe(PRECEDING_MIGRATION_ID);
+    const index = classifiedIds.indexOf(MIGRATION_ID);
+    expect(index).toBeGreaterThan(-1);
+    expect(classifiedIds[index - 1]).toBe(PRECEDING_MIGRATION_ID);
     expect(getStateMigrationSafety(MIGRATION_ID)).toBe("additive");
   });
 
   test("the safety-classification registry key order matches the migration registry order exactly", () => {
     // The module itself asserts this at load time (assertStateMigrationSafetyRegistry
     // in src/core/state/migrations.ts) — a mismatch would already have thrown before
-    // this test could run. This is the explicit, itemized re-assertion, one
-    // migration later than state-migration-023.test.ts's identical check.
+    // this test could run. This is the explicit, itemized re-assertion.
     expect(Object.keys(STATE_MIGRATION_SAFETY_BY_ID)).toEqual(STATE_MIGRATIONS.map((migration) => migration.id));
   });
 

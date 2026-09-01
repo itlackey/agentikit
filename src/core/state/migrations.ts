@@ -51,6 +51,7 @@ export const STATE_MIGRATION_SAFETY_BY_ID: Readonly<Record<string, StateMigratio
   "022-workflow-unit-attempts": "additive",
   "023-child-workflow-runs": "additive",
   "024-workflow-run-outputs": "additive",
+  "025-task-history-vocabulary-backfill": "data-preserving-rebuild",
 });
 
 export const STATE_MIGRATIONS: readonly Migration[] = [
@@ -1109,6 +1110,54 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
     id: "024-workflow-run-outputs",
     up: `
       ALTER TABLE workflow_runs ADD COLUMN outputs_json TEXT;
+    `,
+  },
+
+  // ── Migration 025 — task_history D8 result-vocabulary backfill ─────────────
+  //
+  // The D8 re-code (docs/architecture/decisions/0005-task-result-vocabulary-
+  // and-legacy-read-mapping.md) renamed the written `target_kind` vocabulary
+  // and marked every new row with `targetVocab: 2` in `metadata_json`, but
+  // left every row written before it in the OLD vocabulary forever, pushing
+  // the "which generation is this row" decision onto three separate read
+  // sites (src/tasks/run/task-history.ts, src/commands/health/
+  // improve-metrics.ts, src/commands/health/windows.ts). That is exactly the
+  // shape `docs/plans/specs/p4-deletions-closeout.md` row B-51 ratified
+  // keeping "forever" — SUPERSEDED here: `task_history` is DB-owned data, the
+  // remap is deterministic and total, so it belongs in a one-time migration,
+  // not three permanently-recurring read-side shims.
+  //
+  // The remap, applied only to rows with no `targetVocab` marker yet (a
+  // NULL/absent `$.targetVocab` in the JSON column — already-marked or
+  // malformed metadata_json is left untouched; malformed rows are a
+  // pre-existing, unrelated skip-and-warn concern at read time):
+  //   - target_kind 'prompt'  -> 'command' (the prepared command/agent-LLM
+  //     arm; D8 renamed its written label, this backfills the old one)
+  //   - target_kind 'command' -> 'shell'   (the legacy native shell/script
+  //     arm's shared old label; D8 split it into 'shell'/'script', and only
+  //     'shell' is reconstructable — the old vocabulary never distinguished
+  //     script from shell, matching the read mapping this migration retires)
+  // Only 'prompt' and legacy 'command' rows actually change meaning between
+  // vocabularies (see the read mapping this migration retires); every other
+  // target_kind ('workflow', NULL, or anything else) already reads
+  // identically in both, so it is left alone — including its metadata_json,
+  // since no reader consults `targetVocab` once the shim is deleted.
+  {
+    id: "025-task-history-vocabulary-backfill",
+    up: `
+      UPDATE task_history
+      SET target_kind = 'command',
+          metadata_json = json_set(metadata_json, '$.targetVocab', 2)
+      WHERE target_kind = 'prompt'
+        AND json_valid(metadata_json)
+        AND json_extract(metadata_json, '$.targetVocab') IS NULL;
+
+      UPDATE task_history
+      SET target_kind = 'shell',
+          metadata_json = json_set(metadata_json, '$.targetVocab', 2)
+      WHERE target_kind = 'command'
+        AND json_valid(metadata_json)
+        AND json_extract(metadata_json, '$.targetVocab') IS NULL;
     `,
   },
 ];

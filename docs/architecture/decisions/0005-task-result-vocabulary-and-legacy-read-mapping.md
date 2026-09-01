@@ -86,6 +86,18 @@ below):
   is about — every OTHER dispatch arm still builds its own
   `TaskRunResult.target` per the Decision above, and `task-history.ts`'s read
   side is unchanged.
+- **Superseded 2026-09-01**: the "PERMANENT part of the codebase" ruling
+  above (row B-51) is overturned. `task_history` is DB-owned data, and the
+  legacy->current remap is deterministic and total, so it belongs in a
+  one-time schema migration, not three permanently-recurring read-side
+  branches (the mapping had been independently re-implemented at
+  `src/tasks/run/task-history.ts`, `src/commands/health/improve-metrics.ts`'s
+  `isAgentTaskHistoryRow`, and `src/commands/health/windows.ts`). State
+  migration `025-task-history-vocabulary-backfill`
+  (`src/core/state/migrations.ts`) now rewrites every legacy row's
+  `target_kind` (and stamps `targetVocab: 2`) the first time a pre-migration
+  state.db is opened by this or a later release; all three read sites were
+  deleted and now read `target_kind` directly in the current vocabulary.
 
 ## Provenance
 
