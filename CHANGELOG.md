@@ -4,6 +4,128 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.8] - 2026-09-01
+
+A cleanup and stabilization release. 58 commits, **492 files, +4,963 /
+-25,798 — net -20,835 lines**. Almost all of it is deletion of machinery that
+policed the codebase's shape rather than its behaviour.
+
+### Fixed
+
+- **Pruning a memory no longer leaves dangling belief edges (#885).**
+  `writeContradictEdge` — the hardened, test-covered `contradictedBy` writer —
+  had no production caller; its docstring named three that did not exist. The
+  live pass used a private near-copy that had drifted on exactly the two
+  behaviours the original was hardened for: it read the key with
+  `Array.isArray` only, so a SCALAR edge (live data the indexer accepts and
+  lint never flags) read as "no edges" and was overwritten out of existence;
+  and it set `beliefState: "contradicted"` unconditionally, promoting an
+  `archived` memory back up the ranking. The tests for both behaviours were
+  guarding dead code. The copy is gone.
+
+  `persistBeliefStateTransition` is deliberately NOT routed through the shared
+  primitive: it is a state-transition writer that replaces the edge list
+  wholesale and can clear it, which an append-only, never-weaken primitive
+  cannot express.
+
+- **`git worktree` operations no longer fail on a busy machine (#891).** The
+  module's internal `GIT_TIMEOUT_MS` was a flat 30s with no margin, so a
+  healthy `git worktree remove` on a loaded host returned
+  `{ removed: false, error: "timed out after 30000ms" }`. Anyone running a
+  workflow with `isolation: worktree` alongside other git activity could hit
+  spurious create failures, or have a clean worktree wrongly retained as
+  unremovable. Raised to 120s, matching the existing `GIT_PUSH_TIMEOUT_MS`
+  precedent. Note `scripts/test-integration.sh` had already raised *bun's*
+  per-test timeout for this reason, but that never touched the production
+  subprocess timeout, which fires first.
+
+- **`akm health`'s dead-link check no longer reports an unearned all-clear
+  (#892).** `checkDeadUrls` capped at 20 URLs across the whole bundle, plus an
+  undocumented `slice(0, 3)` per entry, then the caller logged "URL check
+  complete (0 dead)". A bundle with thousands of links got a clean bill of
+  health after twenty were examined. Both caps removed; every URL is checked
+  and a failed request surfaces instead of being swallowed.
+
+- **`akm lint --fix` no longer breaks on gitignored drafts (#887).** The doc
+  linter walked `docs/` with no gitignore awareness, so unpublished drafts
+  under `docs/.pending/` were held to the published-docs contract —
+  `bun run lint` failed locally while CI, which never has those files, stayed
+  green.
+
+### Changed
+
+- **Search no longer truncates long queries (#892).** `MAX_LEXICAL_QUERY_TOKENS
+  = 16` silently dropped every token past the sixteenth, and tokens are
+  collected in order, so the discarded half was the tail — for
+  natural-language input, usually where the discriminating words are. It also
+  fed ranking, so token-overlap scoring ran on the truncated set too. It was
+  unexplained in the code and in the commit that introduced it, and unreachable
+  from any flag, config key, or environment variable. Removed: the planner
+  handles 10,000 tokens in 9ms, so no performance cliff was being protected.
+
+- **Content and memory bodies are no longer silently truncated.**
+  `MAX_CONTENT_CHARS` (100k, duplicated across 8 adapters) cut indexed content
+  so the tail of a long document was unsearchable; `MAX_BODY_CHARS` (4000) cut
+  the text sent for memory inference, so on a large-context engine the model
+  saw a fraction of the input while the derived memory looked complete. Both
+  removed.
+
+- **GitHub Actions are pinned to commit SHAs (#768).** All 29 `uses:` steps
+  across every workflow, with the tag preserved in a trailing comment.
+
+- **Gated CI runs on schedule, dispatch, and candidate tags only.** The
+  `detect-changes` job that selected suites by regex-matching a PR diff is
+  gone — its path patterns had gone stale and still named test files this
+  release moved or deleted, so it was silently under-selecting suites. Release
+  evidence is unchanged; the checklist always required an exact-SHA dispatch.
+
+- **`akm-eval` in CI is now a determinism check only.** Its score gates are
+  removed. Measured before cutting: the baseline scored a perfect 1.0 against
+  a 0.75 gate, and seven of nine case types never ran — CI has no LLM and no
+  run history, so everything the eval exists to measure was skipped while the
+  job reported green. The harness itself is unchanged and remains a genuine
+  quality signal when run against a real bundle.
+
+### Removed
+
+- **14 architecture ratchets, 15 golden/snapshot suites, 12 characterization
+  suites.** Function-size and import-cycle ratchets that failed on refactors
+  harming nothing; byte-for-byte snapshots "fixed" by regenerating; tests that
+  pinned "what the code does today" by definition.
+- **11 of 14 lint scripts (-3,988 lines).** `lint-tests-isolation` alone was
+  717 lines standing in front of `src/core/paths.ts`, which already throws
+  `TEST_ISOLATION_MISSING` at runtime. Also removed: the `gen-config-schema
+  --check` gate (`build` regenerates the schema anyway, so what ships is always
+  current), and `lint-devto-posts` (322 lines that were wired to nothing and
+  duplicated checks `devto-cli` performs itself). The three kept catch
+  user-visible problems: secrets must route through the resolver, no dead refs
+  in shipped assets, no docs teaching commands that do not exist.
+- **Both `MIN_TESTS` floors** — arbitrary numbers whose only job was to fail
+  the suite when test count dropped.
+- **`release-workflow-syntax.yml`** — a workflow that ran actionlint over the
+  other workflows. A broken workflow file already fails at GitHub.
+- **Dead `$STASH/.akm` residue is now reportable (#889).** `akm health` gains a
+  read-only `stash-dead-residue` advisory naming each stale path and its size;
+  deletion is gated behind an explicit `akm health --clean-dead-residue`. On a
+  real bundle 82% of `.akm` (135 MB) was pre-0.9.0 leftovers no code reads.
+
+### Testing
+
+- Test isolation grandfather list drained 58 -> 2 (#785); the two retained
+  entries are the helper-definitions file and a meta-test of the guard itself.
+- The test tree now has a stated unit/integration rule and ~250 files were
+  reclassified by evidence — real DB, network, or process spawn — rather than
+  by filename (#786).
+- 31 status-only `not.toBe(0)` assertions replaced with exact exit codes and
+  machine-readable error codes, every value observed rather than inferred
+  (#787).
+- Near-duplicate clusters drained (#788); real-server timing flakes removed or
+  made deterministic (#789).
+- Kept deliberately: `registry-network-boundary.test.ts`, which enforces that
+  only `pinned-transport.ts` may import `node:http`/`node:https` — the control
+  that stops a raw request bypassing address-pinned fetching. No lint script
+  covers that boundary.
+
 ## [0.9.7] - 2026-08-31
 
 ### Added
