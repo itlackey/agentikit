@@ -42,11 +42,8 @@
  * schema validation.
  */
 
+import { isRecord, tryParseJson } from "../../../core/common";
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Keys that may carry the final answer, in precedence order. `response` is
@@ -102,15 +99,6 @@ function extractSessionId(value: unknown): string | undefined {
     if (typeof candidate === "string" && candidate.length > 0) return candidate;
   }
   return undefined;
-}
-
-/** JSON.parse that returns undefined instead of throwing. */
-function tryParseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

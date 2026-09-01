@@ -41,11 +41,8 @@
  * schema validation.
  */
 
+import { isRecord, tryParseJson } from "../../../core/common";
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** Keys that may carry the final answer, in precedence order. */
 const TEXT_KEYS = ["result", "response", "text", "output", "content", "message"] as const;
@@ -128,15 +125,6 @@ function isTransportEnvelope(value: Record<string, unknown>): boolean {
   const type = value.type;
   if (typeof type === "string" && (ENVELOPE_TYPES.has(type) || type.startsWith("session."))) return true;
   return extractSessionId(value) !== undefined;
-}
-
-/** JSON.parse that returns undefined instead of throwing. */
-function tryParseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

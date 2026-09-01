@@ -27,6 +27,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { asNonEmptyString } from "../core/common";
 
 /**
  * One terminal record per chat-completion HTTP attempt. Token fields are
@@ -152,10 +153,6 @@ export interface RawUsage {
 
 function asFiniteNonNegative(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function asLlmUsageErrorCode(value: unknown): LlmUsageErrorCode | undefined {

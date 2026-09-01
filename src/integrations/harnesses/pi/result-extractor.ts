@@ -47,11 +47,8 @@
  * schema validation.
  */
 
+import { isRecord, tryParseJson } from "../../../core/common";
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** Keys that may carry the harness-native session id, in precedence order. */
 const SESSION_KEYS = ["session_id", "sessionId", "session"] as const;
@@ -118,15 +115,6 @@ function extractSessionId(event: Record<string, unknown>): string | undefined {
     return event.id;
   }
   return undefined;
-}
-
-/** JSON.parse that returns undefined instead of throwing. */
-function tryParseJson(raw: string): unknown {
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    return undefined;
-  }
 }
 
 /**

@@ -45,15 +45,8 @@
  * schema validation.
  */
 
+import { asNonEmptyString, isRecord } from "../../../core/common";
 import type { AgentResultExtraction, AgentResultExtractor } from "../../agent/builder-shared";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
 
 /** What one JSONL event contributed, if anything. */
 interface EventContribution {
