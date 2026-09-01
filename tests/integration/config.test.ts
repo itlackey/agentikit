@@ -16,6 +16,14 @@ import {
 import { backupExistingConfig } from "../../src/core/config/config-io";
 import { ConfigError } from "../../src/core/errors";
 import { getCacheDir, getConfigDir, getConfigPath } from "../../src/core/paths";
+import {
+  type Cleanup,
+  sandboxHome,
+  sandboxXdgCacheHome,
+  sandboxXdgConfigHome,
+  sandboxXdgDataHome,
+  sandboxXdgStateHome,
+} from "../_helpers/sandbox";
 
 function makeTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "akm-config-test-"));
@@ -38,43 +46,21 @@ function writeCurrentConfig(value: Record<string, unknown>): void {
 // tests/_preload.ts. This block only owns the per-test tmp-dir lifecycle
 // and the production-singleton reset.
 let testConfigHome = "";
-let testCacheHome = "";
-let testDataHome = "";
-let testStateHome = "";
+let xdgCleanup: Cleanup = () => {};
 
 beforeEach(() => {
-  testConfigHome = makeTmpDir();
-  testCacheHome = makeTmpDir();
-  testDataHome = makeTmpDir();
-  testStateHome = makeTmpDir();
-  process.env.XDG_CONFIG_HOME = testConfigHome;
-  process.env.XDG_CACHE_HOME = testCacheHome;
-  process.env.XDG_DATA_HOME = testDataHome;
-  process.env.XDG_STATE_HOME = testStateHome;
+  const cfg = sandboxXdgConfigHome();
+  const cache = sandboxXdgCacheHome(cfg.cleanup);
+  const data = sandboxXdgDataHome(cache.cleanup);
+  const state = sandboxXdgStateHome(data.cleanup);
+  testConfigHome = cfg.dir;
+  xdgCleanup = state.cleanup;
   resetConfigCache();
 });
 
 afterEach(() => {
-  if (testConfigHome) {
-    cleanup(testConfigHome);
-    testConfigHome = "";
-  }
-
-  if (testCacheHome) {
-    cleanup(testCacheHome);
-    testCacheHome = "";
-  }
-
-  if (testDataHome) {
-    cleanup(testDataHome);
-    testDataHome = "";
-  }
-
-  if (testStateHome) {
-    cleanup(testStateHome);
-    testStateHome = "";
-  }
-
+  xdgCleanup();
+  testConfigHome = "";
   resetConfigCache();
 });
 
@@ -86,7 +72,6 @@ describe("getConfigPath", () => {
   });
 
   test("defaults to ~/.config/akm when XDG_CONFIG_HOME is unset", () => {
-    const home = makeTmpDir();
     delete process.env.XDG_CONFIG_HOME;
     // Defense against CI environments where AKM_BUNDLE_DIR is inherited
     // from outer test isolation: if it points at a transient path,
@@ -94,11 +79,11 @@ describe("getConfigPath", () => {
     // fallback this test is verifying (the 2026-05-23
     // setup-clobbers-user-config incident).
     delete process.env.AKM_BUNDLE_DIR;
-    process.env.HOME = home;
+    const home = sandboxHome();
 
-    expect(getConfigPath()).toBe(path.join(home, ".config", "akm", "config.json"));
+    expect(getConfigPath()).toBe(path.join(home.dir, ".config", "akm", "config.json"));
 
-    cleanup(home);
+    home.cleanup();
   });
 
   test("uses APPDATA on Windows", () => {

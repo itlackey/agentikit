@@ -16,6 +16,7 @@ import {
   purgeOrphanProposals,
 } from "../../src/commands/proposal/repository";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 function bundleIdFor(stashDir: string): string {
   return deriveInstallations([{ path: stashDir, writable: true }])[0]?.id ?? slugForPath(stashDir);
@@ -35,13 +36,6 @@ function durableRef(stashDir: string, type: string, name: string): string {
 }
 
 const tempDirs: string[] = [];
-const savedEnv: Record<string, string | undefined> = {
-  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
-  AKM_DATA_DIR: process.env.AKM_DATA_DIR,
-  AKM_STATE_DIR: process.env.AKM_STATE_DIR,
-  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-  XDG_STATE_HOME: process.env.XDG_STATE_HOME,
-};
 
 function makeStashDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-proposal-validation-"));
@@ -49,20 +43,14 @@ function makeStashDir(): string {
   return dir;
 }
 
+let storage: IsolatedAkmStorage;
+
 beforeEach(() => {
-  process.env.AKM_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "akm-proposal-validation-data-"));
-  tempDirs.push(process.env.AKM_DATA_DIR);
-  // Pair AKM_BUNDLE_DIR with AKM_STATE_DIR so the test-isolation guard in
-  // src/core/paths.ts stays inert for getDataDir.
-  process.env.AKM_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "akm-proposal-validation-state-"));
-  tempDirs.push(process.env.AKM_STATE_DIR);
+  storage = withIsolatedAkmStorage();
 });
 
 afterEach(() => {
-  for (const [key, val] of Object.entries(savedEnv)) {
-    if (val === undefined) delete process.env[key];
-    else process.env[key] = val;
-  }
+  storage.cleanup();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }

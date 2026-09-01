@@ -86,9 +86,10 @@ describe("akm search --include-proposed (CLI)", () => {
       "---\ndescription: deploy widgets experimentally\ntags:\n  - deploy\nquality: proposed\n---\n# Proposed deploy\n",
     );
 
-    process.env.AKM_BUNDLE_DIR = stash;
-    saveConfig({ semanticSearchMode: "off" });
-    await akmIndex({ stashDir: stash, full: true });
+    await withEnv({ AKM_BUNDLE_DIR: stash }, async () => {
+      saveConfig({ semanticSearchMode: "off" });
+      await akmIndex({ stashDir: stash, full: true });
+    });
 
     const baseline = await runCli(["search", "deploy", "--format=json"], stash);
     expect(baseline.status).toBe(0);

@@ -1,7 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { searchRegistry } from "../../src/commands/read/registry-search";
 import type { RegistryIndex } from "../../src/registry/providers/static-index";
 import { type Cleanup, sandboxEnvDir, sandboxXdgCacheHome } from "../_helpers/sandbox";
@@ -73,14 +70,6 @@ const V2_INDEX: RegistryIndex = {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const createdTmpDirs: string[] = [];
-
-function _createTmpDir(prefix = "akm-v2-"): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  createdTmpDirs.push(dir);
-  return dir;
-}
-
 function serveIndex(index: RegistryIndex): { url: string; close: () => void } {
   const body = JSON.stringify(index);
   const server = Bun.serve({
@@ -97,14 +86,6 @@ function serveIndex(index: RegistryIndex): { url: string; close: () => void } {
   };
 }
 
-afterAll(() => {
-  for (const dir of createdTmpDirs) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-const originalRegistryUrl = process.env.AKM_REGISTRY_URL;
-
 let envCleanup: Cleanup = () => {};
 
 beforeEach(() => {
@@ -113,18 +94,22 @@ beforeEach(() => {
   // servers get OS-assigned ports, and a recycled port would resurrect a
   // previous test's cached index (observed: a v2 query returning a stale v1
   // index — duplicate hits). A per-test AKM_DATA_DIR keeps the cache empty.
-  envCleanup = sandboxEnvDir("akm-registry-v2-data", "AKM_DATA_DIR", cacheResult.cleanup).cleanup;
+  const dataResult = sandboxEnvDir("akm-registry-v2-data", "AKM_DATA_DIR", cacheResult.cleanup);
+  const originalRegistryUrl = process.env.AKM_REGISTRY_URL;
   delete process.env.AKM_REGISTRY_URL;
+  envCleanup = () => {
+    dataResult.cleanup();
+    if (originalRegistryUrl === undefined) {
+      delete process.env.AKM_REGISTRY_URL;
+    } else {
+      process.env.AKM_REGISTRY_URL = originalRegistryUrl;
+    }
+  };
 });
 
 afterEach(() => {
   envCleanup();
   envCleanup = () => {};
-  if (originalRegistryUrl === undefined) {
-    delete process.env.AKM_REGISTRY_URL;
-  } else {
-    process.env.AKM_REGISTRY_URL = originalRegistryUrl;
-  }
 });
 
 // ── Parser: v1 index compatibility ──────────────────────────────────────────

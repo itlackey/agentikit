@@ -9,7 +9,6 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { akmDistill, buildDistillPrompt, deriveLessonRef } from "../../src/commands/improve/distill";
@@ -28,30 +27,26 @@ import { readEvents } from "../../src/core/events";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 import { LlmFeatureTimeoutError } from "../../src/llm/feature-gate";
-import { mutateScopedEnv, withEnv } from "../_helpers/sandbox";
+import {
+  type Cleanup,
+  mutateScopedEnv,
+  makeStashDir as sandboxMakeStashDir,
+  withEnv,
+  withIsolatedAkmStorage,
+} from "../_helpers/sandbox";
 
 // ── Test scaffolding ────────────────────────────────────────────────────────
 
-const tempDirs: string[] = [];
-const savedEnv = {
-  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
-  XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-};
+const stashCleanups: Cleanup[] = [];
+let storage: ReturnType<typeof withIsolatedAkmStorage>;
 
-function makeTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
+/** A scaffolded stash dir, independent of `storage.stashDir` — a test that
+ * needs more than one isolated stash (e.g. "never writes salience to another
+ * source") calls this more than once. */
 function makeStashDir(): string {
-  const stash = makeTempDir("akm-distill-stash-");
-  for (const dir of ["lessons", "skills", "memories", "knowledge"]) {
-    fs.mkdirSync(path.join(stash, dir), { recursive: true });
-  }
-  return stash;
+  const { dir, cleanup } = sandboxMakeStashDir();
+  stashCleanups.push(cleanup);
+  return dir;
 }
 
 /** The durable `proposals.ref` item_ref (WI-8.5a): `<bundle>//<conceptId>`. */
@@ -154,22 +149,13 @@ function eventsFor(ref: string, signals: Array<"positive" | "negative">) {
 }
 
 beforeEach(() => {
-  process.env.XDG_CACHE_HOME = makeTempDir("akm-distill-cache-");
-  process.env.XDG_CONFIG_HOME = makeTempDir("akm-distill-config-");
-  process.env.XDG_DATA_HOME = makeTempDir("akm-distill-data-");
+  storage = withIsolatedAkmStorage();
 });
 
 afterEach(() => {
-  if (savedEnv.AKM_BUNDLE_DIR === undefined) delete process.env.AKM_BUNDLE_DIR;
-  else process.env.AKM_BUNDLE_DIR = savedEnv.AKM_BUNDLE_DIR;
-  if (savedEnv.XDG_CACHE_HOME === undefined) delete process.env.XDG_CACHE_HOME;
-  else process.env.XDG_CACHE_HOME = savedEnv.XDG_CACHE_HOME;
-  if (savedEnv.XDG_CONFIG_HOME === undefined) delete process.env.XDG_CONFIG_HOME;
-  else process.env.XDG_CONFIG_HOME = savedEnv.XDG_CONFIG_HOME;
-  if (savedEnv.XDG_DATA_HOME === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = savedEnv.XDG_DATA_HOME;
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+  storage.cleanup();
+  for (const cleanup of stashCleanups.splice(0)) {
+    cleanup();
   }
 });
 

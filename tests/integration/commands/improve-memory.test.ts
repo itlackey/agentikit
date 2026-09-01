@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { akmImprove } from "../../../src/commands/improve/improve";
 import { akmSearch } from "../../../src/commands/read/search";
@@ -15,17 +14,23 @@ import { getWebsiteCachePaths } from "../../../src/sources/snapshot-fetchers/web
 import { writeMemory } from "../../_helpers/assets";
 import { makeProposal } from "../../_helpers/factories";
 import { withImproveAutonomy, withTestImproveLlm } from "../../_helpers/improve-config";
+import {
+  type IsolatedAkmStorage,
+  makeSandboxDir,
+  mutateScopedEnv,
+  withIsolatedAkmStorage,
+} from "../../_helpers/sandbox";
 
-const tempDirs: string[] = [];
+const dirCleanups: (() => void)[] = [];
 
 function makeTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
+  const { dir, cleanup } = makeSandboxDir(prefix);
+  dirCleanups.push(cleanup);
   return dir;
 }
 
 async function buildIndex(stashDir: string): Promise<void> {
-  process.env.AKM_BUNDLE_DIR = stashDir;
+  mutateScopedEnv("AKM_BUNDLE_DIR", stashDir);
   saveConfig(
     withImproveAutonomy(
       withTestImproveLlm({
@@ -44,21 +49,20 @@ function durableRef(ref: string): string {
   return `stash//${ref}`;
 }
 
+let storage: IsolatedAkmStorage;
+
 beforeEach(() => {
-  process.env.XDG_CACHE_HOME = makeTempDir("akm-improve-memory-cache-");
-  process.env.XDG_CONFIG_HOME = makeTempDir("akm-improve-memory-config-");
   // index.db moved from $CACHE to $DATA in v0.9; isolate it so tests don't
   // share or contaminate the real ~/.local/share/akm/index.db.
-  process.env.AKM_DATA_DIR = makeTempDir("akm-improve-memory-data-");
-  process.env.AKM_STATE_DIR = makeTempDir("akm-improve-memory-state-");
+  const akmDataDir = makeSandboxDir("akm-improve-memory-data-");
+  const akmStateDir = makeSandboxDir("akm-improve-memory-state-");
+  dirCleanups.push(akmDataDir.cleanup, akmStateDir.cleanup);
+  storage = withIsolatedAkmStorage({ AKM_DATA_DIR: akmDataDir.dir, AKM_STATE_DIR: akmStateDir.dir });
 });
 
 afterEach(() => {
-  // Env-var restoration is handled by the global harness (_preload.ts).
-  // Only clean up temp dirs created in this test.
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  storage.cleanup();
+  for (const cleanup of dirCleanups.splice(0)) cleanup();
 });
 
 describe("akm improve memory cleanup", () => {

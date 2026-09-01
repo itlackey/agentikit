@@ -25,7 +25,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { emitPromotionProposal, loadExistingKnowledgeBodyHashes } from "../../../../src/commands/improve/consolidate";
 import { mergePlans } from "../../../../src/commands/improve/consolidate/merge";
@@ -35,29 +34,14 @@ import { createProposal, isProposalSkipped, listProposals } from "../../../../sr
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { resolveWriteTarget } from "../../../../src/core/write-source";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../../../src/indexer/installations";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-const tempDirs: string[] = [];
 
 /** The durable `proposals.ref` item_ref (WI-8.5a): `<bundle>//<conceptId>`. */
 function durableRef(stashDir: string, type: string, name: string): string {
   const bundleId = deriveInstallations([{ path: stashDir, writable: true }])[0]?.id ?? slugForPath(stashDir);
   return deriveEntryProvenance({ bundleId, componentId: bundleId, adapterId: "akm" }, type, name).itemRef;
-}
-
-function makeTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
-function makeStashDir(): string {
-  const stash = makeTempDir("akm-promote-dedup-");
-  for (const dir of ["lessons", "skills", "memories", "knowledge"]) {
-    fs.mkdirSync(path.join(stash, dir), { recursive: true });
-  }
-  return stash;
 }
 
 function makePromoteOp(ref: string, knowledgeRef: string): ConsolidatePromoteOp {
@@ -72,21 +56,21 @@ function makePromoteOp(ref: string, knowledgeRef: string): ConsolidatePromoteOp 
 
 // ── Setup / teardown ─────────────────────────────────────────────────────────
 
+let storage: IsolatedAkmStorage;
+
 beforeEach(() => {
-  // Isolate XDG directories so test proposals don't pollute the real stash.
-  process.env.XDG_CACHE_HOME = makeTempDir("akm-dedup-cache-");
-  process.env.XDG_CONFIG_HOME = makeTempDir("akm-dedup-config-");
-  process.env.XDG_DATA_HOME = makeTempDir("akm-dedup-data-");
+  // Isolate XDG directories (and a scaffolded stash) so test proposals don't
+  // pollute the real stash.
+  storage = withIsolatedAkmStorage();
 });
 
 afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-  delete process.env.XDG_CACHE_HOME;
-  delete process.env.XDG_CONFIG_HOME;
-  delete process.env.XDG_DATA_HOME;
+  storage.cleanup();
 });
+
+function makeStashDir(): string {
+  return storage.stashDir;
+}
 
 // ── Tests: mergePlans within-run dedup ───────────────────────────────────────
 
@@ -331,7 +315,8 @@ describe("existing knowledge body dedup", () => {
   });
 
   it("returns an empty set when the knowledge directory is absent", () => {
-    const stash = makeTempDir("akm-promote-dedup-no-knowledge-");
+    const stash = path.join(storage.root, "no-knowledge-stash");
+    fs.mkdirSync(stash, { recursive: true });
     expect(loadExistingKnowledgeBodyHashes(stash)).toEqual(new Set());
   });
 

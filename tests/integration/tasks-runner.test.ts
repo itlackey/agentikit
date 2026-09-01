@@ -1,6 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { stringify as stringifyYaml } from "yaml";
@@ -15,7 +14,7 @@ import { runTask } from "../../src/tasks/run/run-task";
 import { DEFAULT_WORKFLOW_TASK_TIMEOUT_MS } from "../../src/tasks/run/run-workflow-task";
 import { readTaskHistory } from "../../src/tasks/run/task-history";
 import { exitCodeForStatus } from "../../src/tasks/run/task-result";
-import { withEnv } from "../_helpers/sandbox";
+import { makeSandboxDir, withEnv } from "../_helpers/sandbox";
 
 type FakeWorkflowRunner = (options: { target: string; params?: Record<string, unknown> }) => Promise<{
   run: {
@@ -35,7 +34,8 @@ type FakeWorkflowRunner = (options: { target: string; params?: Record<string, un
 
 type FakeRunAgent = (...args: unknown[]) => Promise<AgentRunResult>;
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "akm-tasks-runner-"));
+const tasksRunnerSandbox = makeSandboxDir("akm-tasks-runner");
+const tmpRoot = tasksRunnerSandbox.dir;
 const bundleDir = path.join(tmpRoot, "stash");
 const cacheDir = path.join(tmpRoot, "cache");
 const dataDir = path.join(tmpRoot, "data");
@@ -82,7 +82,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  tasksRunnerSandbox.cleanup();
 });
 
 function shellWord(value: string): string {

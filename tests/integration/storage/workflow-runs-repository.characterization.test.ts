@@ -3,8 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
 import type { Database } from "../../../src/storage/database";
@@ -12,6 +10,7 @@ import {
   WorkflowRunsRepository,
   withWorkflowRunsRepo,
 } from "../../../src/storage/repositories/workflow-runs-repository";
+import { type Cleanup, sandboxEnvDir } from "../../_helpers/sandbox";
 
 /**
  * Characterization tests for WorkflowRunsRepository (WS5).
@@ -24,7 +23,7 @@ import {
  */
 
 let tmpDir = "";
-let prevDataDir: string | undefined;
+let cleanup: Cleanup;
 let dbPath = "";
 
 const RUN_A = "aaaaaaaa-1111-4111-8111-111111111111";
@@ -63,21 +62,15 @@ function seed(): void {
 }
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-wf-repo-"));
-  prevDataDir = process.env.AKM_DATA_DIR;
-  process.env.AKM_DATA_DIR = tmpDir;
+  const sandboxed = sandboxEnvDir("akm-wf-repo-", "AKM_DATA_DIR");
+  tmpDir = sandboxed.dir;
+  cleanup = sandboxed.cleanup;
   dbPath = path.join(tmpDir, "state.db");
   seed();
 });
 
 afterEach(() => {
-  if (prevDataDir === undefined) delete process.env.AKM_DATA_DIR;
-  else process.env.AKM_DATA_DIR = prevDataDir;
-  try {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    /* ignore */
-  }
+  cleanup();
 });
 
 describe("WorkflowRunsRepository reads", () => {

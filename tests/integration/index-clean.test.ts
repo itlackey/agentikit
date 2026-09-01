@@ -11,103 +11,23 @@
  */
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { saveConfig } from "../../src/core/config/config";
 import { getDbPath } from "../../src/core/paths";
 import { akmIndex } from "../../src/indexer/indexer";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { getAllEntries } from "../../src/storage/repositories/index-entries-repository";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
-let testConfigDir = "";
-let testCacheDir = "";
-let testDataDir = "";
-let testStateDir = "";
-
-const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
-const originalXdgCacheHome = process.env.XDG_CACHE_HOME;
-const originalXdgDataHome = process.env.XDG_DATA_HOME;
-const originalXdgStateHome = process.env.XDG_STATE_HOME;
-const originalAkmStashDir = process.env.AKM_BUNDLE_DIR;
+let storage: IsolatedAkmStorage;
 
 beforeEach(() => {
-  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clean-config-"));
-  testCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clean-cache-"));
-  testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clean-data-"));
-  testStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clean-state-"));
-
-  process.env.XDG_CONFIG_HOME = testConfigDir;
-  process.env.XDG_CACHE_HOME = testCacheDir;
-  process.env.XDG_DATA_HOME = testDataDir;
-  process.env.XDG_STATE_HOME = testStateDir;
-
-  if (originalAkmStashDir === undefined) {
-    delete process.env.AKM_BUNDLE_DIR;
-  } else {
-    process.env.AKM_BUNDLE_DIR = originalAkmStashDir;
-  }
-
-  // Wipe any leftover database from previous test
-  const dbPath = getDbPath();
-  for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
-    try {
-      fs.unlinkSync(f);
-    } catch {
-      /* ignore */
-    }
-  }
+  storage = withIsolatedAkmStorage();
 });
 
 afterEach(() => {
-  if (originalXdgConfigHome === undefined) {
-    delete process.env.XDG_CONFIG_HOME;
-  } else {
-    process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
-  }
-  if (originalXdgCacheHome === undefined) {
-    delete process.env.XDG_CACHE_HOME;
-  } else {
-    process.env.XDG_CACHE_HOME = originalXdgCacheHome;
-  }
-  if (originalXdgDataHome === undefined) {
-    delete process.env.XDG_DATA_HOME;
-  } else {
-    process.env.XDG_DATA_HOME = originalXdgDataHome;
-  }
-  if (originalXdgStateHome === undefined) {
-    delete process.env.XDG_STATE_HOME;
-  } else {
-    process.env.XDG_STATE_HOME = originalXdgStateHome;
-  }
-  if (originalAkmStashDir === undefined) {
-    delete process.env.AKM_BUNDLE_DIR;
-  } else {
-    process.env.AKM_BUNDLE_DIR = originalAkmStashDir;
-  }
-
-  for (const dir of [testConfigDir, testCacheDir, testDataDir, testStateDir]) {
-    if (dir) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-  testConfigDir = "";
-  testCacheDir = "";
-  testDataDir = "";
-  testStateDir = "";
+  storage.cleanup();
 });
-
-/** Create a temporary stash directory with the standard subdirectory layout. */
-function tmpStash(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clean-stash-"));
-  for (const sub of ["skills", "commands", "agents", "knowledge", "scripts"]) {
-    fs.mkdirSync(path.join(dir, sub), { recursive: true });
-  }
-  return dir;
-}
 
 /** Write a file, creating parent directories as needed. */
 function writeFile(filePath: string, content = ""): void {
@@ -116,11 +36,10 @@ function writeFile(filePath: string, content = ""): void {
 }
 
 test("akmIndex --clean with no missing files: removed is 0, checked matches entry count", async () => {
-  const stashDir = tmpStash();
+  const stashDir = storage.stashDir;
   writeFile(path.join(stashDir, "scripts", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
   writeFile(path.join(stashDir, "scripts", "lint", "lint.ts"), "console.log('lint')\n");
 
-  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
 
   // First index: build the normal index
@@ -138,13 +57,12 @@ test("akmIndex --clean with no missing files: removed is 0, checked matches entr
 });
 
 test("akmIndex --clean with a missing file: entry deleted from DB, removedRefs populated", async () => {
-  const stashDir = tmpStash();
+  const stashDir = storage.stashDir;
   const deployFile = path.join(stashDir, "scripts", "deploy", "deploy.sh");
   const lintFile = path.join(stashDir, "scripts", "lint", "lint.ts");
   writeFile(deployFile, "#!/usr/bin/env bash\necho deploy\n");
   writeFile(lintFile, "console.log('lint')\n");
 
-  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
 
   // Build initial index with both files present
@@ -177,13 +95,12 @@ test("akmIndex --clean with a missing file: entry deleted from DB, removedRefs p
 });
 
 test("akmIndex --clean --dry-run with missing file: removed is 0, ref listed, entry NOT deleted", async () => {
-  const stashDir = tmpStash();
+  const stashDir = storage.stashDir;
   const deployFile = path.join(stashDir, "scripts", "deploy", "deploy.sh");
   const lintFile = path.join(stashDir, "scripts", "lint", "lint.ts");
   writeFile(deployFile, "#!/usr/bin/env bash\necho deploy\n");
   writeFile(lintFile, "console.log('lint')\n");
 
-  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
 
   // Build initial index
@@ -216,10 +133,9 @@ test("akmIndex --clean --dry-run with missing file: removed is 0, ref listed, en
 });
 
 test("akmIndex --dry-run without --clean rejects instead of silently running a real index (R-022)", async () => {
-  const stashDir = tmpStash();
+  const stashDir = storage.stashDir;
   writeFile(path.join(stashDir, "scripts", "deploy", "deploy.sh"), "#!/usr/bin/env bash\necho deploy\n");
 
-  process.env.AKM_BUNDLE_DIR = stashDir;
   saveConfig({ semanticSearchMode: "off" });
 
   // Before the fix, `dryRun` was only consulted inside the `--clean` pass, so

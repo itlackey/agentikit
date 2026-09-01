@@ -16,6 +16,7 @@ import {
 } from "../../src/indexer/search/search-source";
 import type { InstallKind } from "../../src/registry/types";
 import { seedLockEntries } from "../_helpers/lockfile";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 /**
  * Seed a lock-backed registry-managed source (a git/npm `bundles` entry + its
@@ -34,52 +35,17 @@ import * as gitProvider from "../../src/sources/providers/git";
 import { NpmSourceProvider } from "../../src/sources/providers/npm";
 import * as websiteIngest from "../../src/sources/snapshot-fetchers/website-ingest";
 
-const originalStashDir = process.env.AKM_BUNDLE_DIR;
-const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
-const originalXdgDataHome = process.env.XDG_DATA_HOME;
-const originalXdgStateHome = process.env.XDG_STATE_HOME;
-let testConfigDir = "";
-let testDataDir = "";
-let testStateDir = "";
+let storage: IsolatedAkmStorage;
 let stashDir = "";
 
 beforeEach(() => {
-  testConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-source-config-"));
-  testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-source-data-"));
-  testStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-source-state-"));
-  stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-source-stash-"));
-  for (const sub of ["scripts", "skills", "commands", "agents", "knowledge"]) {
-    fs.mkdirSync(path.join(stashDir, sub), { recursive: true });
-  }
-  process.env.XDG_CONFIG_HOME = testConfigDir;
-  // Pair AKM_BUNDLE_DIR mutations with XDG_DATA_HOME / XDG_STATE_HOME so the
-  // write-guard in src/core/paths.ts stays inert.
-  process.env.XDG_DATA_HOME = testDataDir;
-  process.env.XDG_STATE_HOME = testStateDir;
-  process.env.AKM_BUNDLE_DIR = stashDir;
+  storage = withIsolatedAkmStorage();
+  stashDir = storage.stashDir;
 });
 
 afterEach(() => {
-  process.env.AKM_BUNDLE_DIR = originalStashDir ?? undefined;
-  if (originalXdgConfigHome === undefined) {
-    delete process.env.XDG_CONFIG_HOME;
-  } else {
-    process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
-  }
-  if (originalXdgDataHome === undefined) {
-    delete process.env.XDG_DATA_HOME;
-  } else {
-    process.env.XDG_DATA_HOME = originalXdgDataHome;
-  }
-  if (originalXdgStateHome === undefined) {
-    delete process.env.XDG_STATE_HOME;
-  } else {
-    process.env.XDG_STATE_HOME = originalXdgStateHome;
-  }
-  if (testConfigDir) fs.rmSync(testConfigDir, { recursive: true, force: true });
-  if (testDataDir) fs.rmSync(testDataDir, { recursive: true, force: true });
-  if (testStateDir) fs.rmSync(testStateDir, { recursive: true, force: true });
-  if (stashDir) fs.rmSync(stashDir, { recursive: true, force: true });
+  storage.cleanup();
+  stashDir = "";
 });
 
 describe("resolveSourceEntries", () => {

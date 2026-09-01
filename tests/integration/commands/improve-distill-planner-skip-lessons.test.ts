@@ -25,7 +25,6 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import {
@@ -42,21 +41,18 @@ import { appendEvent } from "../../../src/core/events";
 import type { AkmDistillResult, AkmReflectResult } from "../../../src/core/improve-types";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
+import {
+  type IsolatedAkmStorage,
+  makeSandboxDir,
+  mutateScopedEnv,
+  withIsolatedAkmStorage,
+} from "../../_helpers/sandbox";
 
-const tempDirs: string[] = [];
-const savedEnv = {
-  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
-  AKM_DATA_DIR: process.env.AKM_DATA_DIR,
-  AKM_STATE_DIR: process.env.AKM_STATE_DIR,
-  XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-  XDG_STATE_HOME: process.env.XDG_STATE_HOME,
-};
+const dirCleanups: (() => void)[] = [];
 
 function makeTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
+  const { dir, cleanup } = makeSandboxDir(prefix);
+  dirCleanups.push(cleanup);
   return dir;
 }
 
@@ -113,7 +109,7 @@ function makeFixtureStash(): string {
 }
 
 async function indexStash(stashDir: string): Promise<void> {
-  process.env.AKM_BUNDLE_DIR = stashDir;
+  mutateScopedEnv("AKM_BUNDLE_DIR", stashDir);
   saveConfig(
     withTestImproveLlm({
       semanticSearchMode: "off",
@@ -129,31 +125,18 @@ function durableRef(ref: string): string {
   return `stash//${ref}`;
 }
 
+let storage: IsolatedAkmStorage;
+
 beforeEach(() => {
-  process.env.AKM_DATA_DIR = makeTempDir("akm-improve-planner-skip-data-");
-  process.env.AKM_STATE_DIR = makeTempDir("akm-improve-planner-skip-state-");
-  process.env.XDG_CACHE_HOME = makeTempDir("akm-improve-planner-skip-cache-");
-  process.env.XDG_CONFIG_HOME = makeTempDir("akm-improve-planner-skip-config-");
+  const akmDataDir = makeSandboxDir("akm-improve-planner-skip-data-");
+  const akmStateDir = makeSandboxDir("akm-improve-planner-skip-state-");
+  dirCleanups.push(akmDataDir.cleanup, akmStateDir.cleanup);
+  storage = withIsolatedAkmStorage({ AKM_DATA_DIR: akmDataDir.dir, AKM_STATE_DIR: akmStateDir.dir });
 });
 
 afterEach(() => {
-  if (savedEnv.AKM_BUNDLE_DIR === undefined) delete process.env.AKM_BUNDLE_DIR;
-  else process.env.AKM_BUNDLE_DIR = savedEnv.AKM_BUNDLE_DIR;
-  if (savedEnv.AKM_DATA_DIR === undefined) delete process.env.AKM_DATA_DIR;
-  else process.env.AKM_DATA_DIR = savedEnv.AKM_DATA_DIR;
-  if (savedEnv.AKM_STATE_DIR === undefined) delete process.env.AKM_STATE_DIR;
-  else process.env.AKM_STATE_DIR = savedEnv.AKM_STATE_DIR;
-  if (savedEnv.XDG_CACHE_HOME === undefined) delete process.env.XDG_CACHE_HOME;
-  else process.env.XDG_CACHE_HOME = savedEnv.XDG_CACHE_HOME;
-  if (savedEnv.XDG_CONFIG_HOME === undefined) delete process.env.XDG_CONFIG_HOME;
-  else process.env.XDG_CONFIG_HOME = savedEnv.XDG_CONFIG_HOME;
-  if (savedEnv.XDG_DATA_HOME === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = savedEnv.XDG_DATA_HOME;
-  if (savedEnv.XDG_STATE_HOME === undefined) delete process.env.XDG_STATE_HOME;
-  else process.env.XDG_STATE_HOME = savedEnv.XDG_STATE_HOME;
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  storage.cleanup();
+  for (const cleanup of dirCleanups.splice(0)) cleanup();
 });
 
 describe("improve planner: skip distill-refused input types", () => {

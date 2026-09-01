@@ -41,6 +41,7 @@ import { akmIndex } from "../../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../../src/storage/repositories/index-connection";
 import { getAllEntries } from "../../../../src/storage/repositories/index-entries-repository";
 import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
+import { type IsolatedAkmStorage, mutateScopedEnv, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 describe("resolveImproveScope syntax classification", () => {
   test("rejects colon, fragment, and malformed slash-shaped explicit refs as usage errors", () => {
@@ -73,15 +74,6 @@ const OLDER_MS = Date.now() - 60_000;
 const NEWER_MS = Date.now() - 30_000;
 
 const tempDirs: string[] = [];
-const savedEnv = {
-  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
-  AKM_DATA_DIR: process.env.AKM_DATA_DIR,
-  XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-  AKM_STATE_DIR: process.env.AKM_STATE_DIR,
-  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-  XDG_STATE_HOME: process.env.XDG_STATE_HOME,
-};
 
 function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -97,7 +89,7 @@ function writeMemory(stashDir: string, name: string, body: string, mtime?: Date)
 }
 
 async function buildIndex(stashDir: string): Promise<void> {
-  process.env.AKM_BUNDLE_DIR = stashDir;
+  mutateScopedEnv("AKM_BUNDLE_DIR", stashDir);
   saveConfig(
     withImproveAutonomy(
       withTestImproveLlm({
@@ -169,18 +161,14 @@ const okDistill = (ref: string): AkmDistillResult => ({
   proposalRef: `lessons/${ref.replaceAll("/", "-")}-lesson`,
 });
 
+let storage: IsolatedAkmStorage;
+
 beforeEach(() => {
-  process.env.XDG_CACHE_HOME = makeTempDir("akm-elig-cache-");
-  process.env.XDG_CONFIG_HOME = makeTempDir("akm-elig-config-");
-  process.env.AKM_DATA_DIR = makeTempDir("akm-elig-data-");
-  process.env.AKM_STATE_DIR = makeTempDir("akm-elig-state-");
+  storage = withIsolatedAkmStorage();
 });
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(savedEnv)) {
-    if (v === undefined) delete (process.env as Record<string, string | undefined>)[k];
-    else (process.env as Record<string, string>)[k] = v;
-  }
+  storage.cleanup();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -206,7 +194,7 @@ test("a read-only nested bundle is never eligible through its writable ancestor"
   const nested = path.join(stash, ".read-only-bundle");
   writeMemory(stash, "writable", "Writable memory.");
   writeMemory(nested, "readonly", "Read-only nested memory.");
-  process.env.AKM_BUNDLE_DIR = stash;
+  mutateScopedEnv("AKM_BUNDLE_DIR", stash);
   const config = withImproveAutonomy(
     withTestImproveLlm({
       semanticSearchMode: "off",

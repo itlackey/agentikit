@@ -12,37 +12,18 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 
 import { akmReflect } from "../../../../src/commands/improve/reflect";
 import { listProposals } from "../../../../src/commands/proposal/repository";
 import { readEvents } from "../../../../src/core/events";
 import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
-const tempDirs: string[] = [];
-const savedEnv = {
-  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
-  XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-  XDG_STATE_HOME: process.env.XDG_STATE_HOME,
-};
-
-function makeTempDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
+let storage: IsolatedAkmStorage;
 
 function makeStashDir(): string {
-  const stash = makeTempDir("akm-reflect-failpaths-stash-");
-  for (const dir of ["lessons", "skills", "memories", "knowledge", "scripts"]) {
-    fs.mkdirSync(path.join(stash, dir), { recursive: true });
-  }
-  return stash;
+  return storage.stashDir;
 }
 
 function asReadableStream(text: string): ReadableStream<Uint8Array> {
@@ -80,20 +61,11 @@ function getReflectCompletedEvents(): ReturnType<typeof readEvents>["events"] {
 }
 
 beforeEach(() => {
-  process.env.XDG_CACHE_HOME = makeTempDir("akm-reflect-failpaths-cache-");
-  process.env.XDG_CONFIG_HOME = makeTempDir("akm-reflect-failpaths-config-");
-  process.env.XDG_DATA_HOME = makeTempDir("akm-reflect-failpaths-data-");
-  process.env.XDG_STATE_HOME = makeTempDir("akm-reflect-failpaths-state-");
+  storage = withIsolatedAkmStorage();
 });
 
 afterEach(() => {
-  for (const [key, value] of Object.entries(savedEnv)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  storage.cleanup();
 });
 
 describe("akm reflect — reflect_completed on failure paths (Fix #3)", () => {

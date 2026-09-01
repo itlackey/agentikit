@@ -10,7 +10,6 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { AkmConfig } from "../../src/core/config/config";
 import { resetConfigCache, saveConfig } from "../../src/core/config/config";
@@ -23,7 +22,13 @@ import { getEmbeddableEntryCount, getEntryCount } from "../../src/storage/reposi
 import { getMeta } from "../../src/storage/repositories/index-meta-repository";
 import { EMBEDDING_DIM } from "../../src/storage/repositories/index-schema";
 import { getEmbeddingCount } from "../../src/storage/repositories/index-vec-repository";
-import { type Cleanup, sandboxStashDir, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
+import {
+  type Cleanup,
+  mutateScopedEnv,
+  sandboxStashDir,
+  sandboxXdgCacheHome,
+  sandboxXdgConfigHome,
+} from "../_helpers/sandbox";
 
 // ── Gate ───────────────────────────────────────────────────────────────────
 
@@ -33,12 +38,6 @@ const DEFAULT_HF_HOME = path.resolve(import.meta.dir, "../..", ".ci-cache", "hug
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 const createdTmpDirs: string[] = [];
-
-function createTmpDir(prefix: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  createdTmpDirs.push(dir);
-  return dir;
-}
 
 /**
  * Create a stash directory populated with semantically distinct test assets.
@@ -53,8 +52,7 @@ function createTmpDir(prefix: string): string {
  * ranking assertions still hold. Five indexable assets total — `vaults/` is never
  * indexed.
  */
-function createTestStash(): string {
-  const stashDir = createTmpDir("akm-semantic-e2e-stash-");
+function createTestStash(stashDir: string): string {
   const knowledgeDir = path.join(stashDir, "knowledge");
   fs.mkdirSync(knowledgeDir, { recursive: true });
 
@@ -297,9 +295,10 @@ describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)",
       process.env.HF_HOME = DEFAULT_HF_HOME;
     }
 
-    // Create test stash with semantically distinct assets
-    stashDir = createTestStash();
-    process.env.AKM_BUNDLE_DIR = stashDir;
+    // Create test stash with semantically distinct assets, written directly into
+    // the stash sandboxStashDir() already pointed AKM_BUNDLE_DIR at.
+    stashDir = stashResult.dir;
+    createTestStash(stashDir);
 
     // Write config with semantic search enabled (default behavior)
     resetConfigCache();
@@ -328,9 +327,9 @@ describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)",
   // Restore env vars before each test in case the degradation describe
   // (which runs in the same file) overwrites them between beforeAll and tests.
   beforeEach(() => {
-    process.env.XDG_CACHE_HOME = savedCacheDir;
-    process.env.XDG_CONFIG_HOME = savedConfigDir;
-    process.env.AKM_BUNDLE_DIR = stashDir;
+    mutateScopedEnv("XDG_CACHE_HOME", savedCacheDir);
+    mutateScopedEnv("XDG_CONFIG_HOME", savedConfigDir);
+    mutateScopedEnv("AKM_BUNDLE_DIR", stashDir);
     resetConfigCache();
   });
 
@@ -541,35 +540,38 @@ describe("Semantic search graceful degradation", () => {
   let stashDir: string;
   let degradationCacheDir: string;
   let degradationConfigDir: string;
+  let degradationEnvCleanup: Cleanup = () => {};
 
   beforeAll(() => {
-    degradationCacheDir = createTmpDir("akm-semantic-degrade-cache-");
-    degradationConfigDir = createTmpDir("akm-semantic-degrade-config-");
-    process.env.XDG_CACHE_HOME = degradationCacheDir;
-    process.env.XDG_CONFIG_HOME = degradationConfigDir;
+    const cacheResult = sandboxXdgCacheHome();
+    const cfgResult = sandboxXdgConfigHome(cacheResult.cleanup);
+    const stashResult = sandboxStashDir(cfgResult.cleanup);
+    degradationEnvCleanup = stashResult.cleanup;
+    degradationCacheDir = cacheResult.dir;
+    degradationConfigDir = cfgResult.dir;
+    stashDir = stashResult.dir;
 
     // Create a minimal stash. #39: sidecars retired — the skill's metadata now
     // lives in its native SKILL.md frontmatter home (name "hello", type skill).
-    stashDir = createTmpDir("akm-semantic-degrade-stash-");
     const skillDir = path.join(stashDir, "skills", "hello");
     fs.mkdirSync(skillDir, { recursive: true });
     fs.writeFileSync(
       path.join(skillDir, "SKILL.md"),
       "---\ndescription: A simple hello world greeting skill\ntags:\n  - hello\n  - greeting\nquality: curated\n---\n# Hello Skill\n\nA simple hello world greeting skill.\n",
     );
-
-    process.env.AKM_BUNDLE_DIR = stashDir;
   });
 
   beforeEach(() => {
-    process.env.XDG_CACHE_HOME = degradationCacheDir;
-    process.env.XDG_CONFIG_HOME = degradationConfigDir;
-    process.env.AKM_BUNDLE_DIR = stashDir;
+    mutateScopedEnv("XDG_CACHE_HOME", degradationCacheDir);
+    mutateScopedEnv("XDG_CONFIG_HOME", degradationConfigDir);
+    mutateScopedEnv("AKM_BUNDLE_DIR", stashDir);
     resetConfigCache();
   });
 
   afterAll(() => {
-    restoreEnv();
+    degradationEnvCleanup();
+    degradationEnvCleanup = () => {};
+    resetConfigCache();
     // Clean up all temp dirs from both describe blocks
     for (const dir of createdTmpDirs) {
       try {

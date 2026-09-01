@@ -12,18 +12,9 @@ import { writeMemory } from "../../_helpers/assets";
 import { makeProposal } from "../../_helpers/factories";
 import { withTestImproveLlm } from "../../_helpers/improve-config";
 import { testLlmRunner } from "../../_helpers/llm-runner";
-import { mutateScopedEnv, withEnv } from "../../_helpers/sandbox";
+import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 const tempDirs: string[] = [];
-const savedEnv = {
-  AKM_BUNDLE_DIR: process.env.AKM_BUNDLE_DIR,
-  AKM_DATA_DIR: process.env.AKM_DATA_DIR,
-  XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
-  AKM_STATE_DIR: process.env.AKM_STATE_DIR,
-  XDG_DATA_HOME: process.env.XDG_DATA_HOME,
-  XDG_STATE_HOME: process.env.XDG_STATE_HOME,
-};
 
 function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -43,7 +34,7 @@ function configureStash(stashDir: string): void {
 }
 
 async function buildIndex(stashDir: string): Promise<void> {
-  process.env.AKM_BUNDLE_DIR = stashDir;
+  mutateScopedEnv("AKM_BUNDLE_DIR", stashDir);
   configureStash(stashDir);
   await akmIndex({ stashDir, full: true });
 }
@@ -52,28 +43,14 @@ function durableRef(ref: string): string {
   return `stash//${ref}`;
 }
 
+let storage: IsolatedAkmStorage;
+
 beforeEach(() => {
-  process.env.XDG_CACHE_HOME = makeTempDir("akm-improve-memory-cache-");
-  process.env.XDG_CONFIG_HOME = makeTempDir("akm-improve-memory-config-");
-  process.env.AKM_DATA_DIR = makeTempDir("akm-improve-memory-data-");
-  process.env.AKM_STATE_DIR = makeTempDir("akm-improve-memory-state-");
+  storage = withIsolatedAkmStorage();
 });
 
 afterEach(() => {
-  if (savedEnv.AKM_BUNDLE_DIR === undefined) delete process.env.AKM_BUNDLE_DIR;
-  else process.env.AKM_BUNDLE_DIR = savedEnv.AKM_BUNDLE_DIR;
-  if (savedEnv.AKM_DATA_DIR === undefined) delete process.env.AKM_DATA_DIR;
-  else process.env.AKM_DATA_DIR = savedEnv.AKM_DATA_DIR;
-  if (savedEnv.XDG_STATE_HOME === undefined) delete process.env.XDG_STATE_HOME;
-  else process.env.XDG_STATE_HOME = savedEnv.XDG_STATE_HOME;
-  if (savedEnv.XDG_DATA_HOME === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = savedEnv.XDG_DATA_HOME;
-  if (savedEnv.AKM_STATE_DIR === undefined) delete process.env.AKM_STATE_DIR;
-  else process.env.AKM_STATE_DIR = savedEnv.AKM_STATE_DIR;
-  if (savedEnv.XDG_CACHE_HOME === undefined) delete process.env.XDG_CACHE_HOME;
-  else process.env.XDG_CACHE_HOME = savedEnv.XDG_CACHE_HOME;
-  if (savedEnv.XDG_CONFIG_HOME === undefined) delete process.env.XDG_CONFIG_HOME;
-  else process.env.XDG_CONFIG_HOME = savedEnv.XDG_CONFIG_HOME;
+  storage.cleanup();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }

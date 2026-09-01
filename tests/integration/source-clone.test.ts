@@ -20,6 +20,7 @@ import {
   sandboxXdgConfigHome,
   sandboxXdgDataHome,
   sandboxXdgStateHome,
+  withEnv,
 } from "../_helpers/sandbox";
 import { withSeam } from "../_helpers/seams";
 
@@ -499,15 +500,15 @@ describe("akmClone --dest", () => {
   test("--dest does not require a working stash", async () => {
     writeFile(path.join(searchPathDir, "scripts", "deploy.sh"), "echo deploy\n");
     // Point AKM_BUNDLE_DIR to a non-existent directory to simulate no working stash
-    process.env.AKM_BUNDLE_DIR = path.join(os.tmpdir(), `nonexistent-stash-${Date.now()}`);
+    await withEnv({ AKM_BUNDLE_DIR: path.join(os.tmpdir(), `nonexistent-stash-${Date.now()}`) }, async () => {
+      const result = await akmClone({
+        sourceRef: `${searchPathDir}//scripts/deploy.sh`,
+        dest: customDest,
+      });
 
-    const result = await akmClone({
-      sourceRef: `${searchPathDir}//scripts/deploy.sh`,
-      dest: customDest,
+      expect(fs.existsSync(path.join(customDest, "scripts", "deploy.sh"))).toBe(true);
+      expect(result.destination.path).toBe(path.join(customDest, "scripts", "deploy.sh"));
     });
-
-    expect(fs.existsSync(path.join(customDest, "scripts", "deploy.sh"))).toBe(true);
-    expect(result.destination.path).toBe(path.join(customDest, "scripts", "deploy.sh"));
   });
 
   test("--dest with --force overwrites at custom destination", async () => {

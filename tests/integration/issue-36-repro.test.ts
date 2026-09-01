@@ -19,7 +19,7 @@ import type { SourceSearchHit } from "../../src/sources/types";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { getAllEntries } from "../../src/storage/repositories/index-entries-repository";
 import { searchFts } from "../../src/storage/repositories/index-fts-repository";
-import { type Cleanup, sandboxStashDir, sandboxXdgCacheHome, sandboxXdgConfigHome } from "../_helpers/sandbox";
+import { type Cleanup, sandboxStashDir, sandboxXdgCacheHome, sandboxXdgConfigHome, withEnv } from "../_helpers/sandbox";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -37,15 +37,27 @@ function tmpStash(): string {
   return dir;
 }
 
-async function buildTestIndex(stashDir: string, files: Record<string, string> = {}) {
+/**
+ * Point AKM_BUNDLE_DIR at `stashDir` (via the restoring `withEnv` wrapper) for
+ * the duration of `run`, writing `files` into the stash first, indexing it,
+ * then handing the index result to `run` while the env override is still in
+ * effect — every akmSearch/akmIndex call a test makes must run inside `run`.
+ */
+async function withTestIndex<T>(
+  stashDir: string,
+  files: Record<string, string>,
+  run: (indexResult: Awaited<ReturnType<typeof akmIndex>>) => Promise<T> | T,
+): Promise<T> {
   for (const [relPath, content] of Object.entries(files)) {
     const fullPath = path.join(stashDir, relPath);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, content);
   }
-  process.env.AKM_BUNDLE_DIR = stashDir;
-  saveConfig({ semanticSearchMode: "off" });
-  return akmIndex({ stashDir, full: true });
+  return withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
+    saveConfig({ semanticSearchMode: "off" });
+    const indexResult = await akmIndex({ stashDir, full: true });
+    return run(indexResult);
+  });
 }
 
 // ── Environment isolation ───────────────────────────────────────────────────
@@ -71,85 +83,93 @@ describe("Issue #36: Script search and index", () => {
     const stashDir = tmpStash();
 
     // Mimics the reported scenario: a script file placed directly in scripts/
-    writeFile(
-      path.join(stashDir, "scripts", "provision-ai-foundry.sh"),
-      "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+    await withTestIndex(
+      stashDir,
+      {
+        "scripts/provision-ai-foundry.sh":
+          "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+      },
+      async (result) => {
+        expect(result.totalEntries).toBeGreaterThanOrEqual(1);
+
+        // Verify the script entry was created in the index
+        const db = openIndexDatabase();
+        try {
+          const entries = getAllEntries(db);
+          const scriptEntries = entries.filter((e) => e.entry.type === "script");
+          expect(scriptEntries.length).toBeGreaterThanOrEqual(1);
+
+          const foundryEntry = scriptEntries.find(
+            (e) => e.entry.name.includes("provision") || e.entry.name.includes("foundry"),
+          );
+          expect(foundryEntry).toBeDefined();
+        } finally {
+          closeDatabase(db);
+        }
+      },
     );
-
-    const result = await buildTestIndex(stashDir);
-
-    expect(result.totalEntries).toBeGreaterThanOrEqual(1);
-
-    // Verify the script entry was created in the index
-    const db = openIndexDatabase();
-    try {
-      const entries = getAllEntries(db);
-      const scriptEntries = entries.filter((e) => e.entry.type === "script");
-      expect(scriptEntries.length).toBeGreaterThanOrEqual(1);
-
-      const foundryEntry = scriptEntries.find(
-        (e) => e.entry.name.includes("provision") || e.entry.name.includes("foundry"),
-      );
-      expect(foundryEntry).toBeDefined();
-    } finally {
-      closeDatabase(db);
-    }
   });
 
   test("search for 'foundry' finds provision-ai-foundry.sh", async () => {
     const stashDir = tmpStash();
 
-    writeFile(
-      path.join(stashDir, "scripts", "provision-ai-foundry.sh"),
-      "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+    await withTestIndex(
+      stashDir,
+      {
+        "scripts/provision-ai-foundry.sh":
+          "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+      },
+      async () => {
+        const result = await akmSearch({ query: "foundry", source: "local" });
+        const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+
+        expect(localHits.length).toBeGreaterThanOrEqual(1);
+        const foundryHit = localHits.find((h) => h.name.includes("foundry") || h.name.includes("provision"));
+        expect(foundryHit).toBeDefined();
+      },
     );
-
-    await buildTestIndex(stashDir);
-
-    const result = await akmSearch({ query: "foundry", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
-    const foundryHit = localHits.find((h) => h.name.includes("foundry") || h.name.includes("provision"));
-    expect(foundryHit).toBeDefined();
   });
 
   test("search for 'provision' finds provision-ai-foundry.sh", async () => {
     const stashDir = tmpStash();
 
-    writeFile(
-      path.join(stashDir, "scripts", "provision-ai-foundry.sh"),
-      "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+    await withTestIndex(
+      stashDir,
+      {
+        "scripts/provision-ai-foundry.sh":
+          "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+      },
+      async () => {
+        const result = await akmSearch({ query: "provision", source: "local" });
+        const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+
+        expect(localHits.length).toBeGreaterThanOrEqual(1);
+        const hit = localHits.find((h) => h.name.includes("provision") || h.name.includes("foundry"));
+        expect(hit).toBeDefined();
+      },
     );
-
-    await buildTestIndex(stashDir);
-
-    const result = await akmSearch({ query: "provision", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
-    const hit = localHits.find((h) => h.name.includes("provision") || h.name.includes("foundry"));
-    expect(hit).toBeDefined();
   });
 
   test("search for 'ai' finds provision-ai-foundry.sh", async () => {
     const stashDir = tmpStash();
 
-    writeFile(
-      path.join(stashDir, "scripts", "provision-ai-foundry.sh"),
-      "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+    await withTestIndex(
+      stashDir,
+      {
+        "scripts/provision-ai-foundry.sh":
+          "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+      },
+      async () => {
+        const result = await akmSearch({ query: "ai", source: "local" });
+        const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+
+        expect(localHits.length).toBeGreaterThanOrEqual(1);
+        const hit = localHits.find(
+          (h) => h.name.includes("provision") || h.name.includes("foundry") || h.name.includes("ai"),
+        );
+        expect(hit).toBeDefined();
+      },
     );
-
-    await buildTestIndex(stashDir);
-
-    const result = await akmSearch({ query: "ai", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
-    const hit = localHits.find(
-      (h) => h.name.includes("provision") || h.name.includes("foundry") || h.name.includes("ai"),
-    );
-    expect(hit).toBeDefined();
   });
 
   test("multiple scripts in scripts/ dir are all indexed", async () => {
@@ -164,36 +184,38 @@ describe("Issue #36: Script search and index", () => {
       "scripts/run-tests.ts": "// Run all test suites\nconsole.log('test')\n",
     };
 
-    const result = await buildTestIndex(stashDir, scripts);
+    await withTestIndex(stashDir, scripts, async (result) => {
+      // All 5 scripts should be indexed
+      expect(result.totalEntries).toBeGreaterThanOrEqual(5);
 
-    // All 5 scripts should be indexed
-    expect(result.totalEntries).toBeGreaterThanOrEqual(5);
-
-    const db = openIndexDatabase();
-    try {
-      const entries = getAllEntries(db);
-      const scriptEntries = entries.filter((e) => e.entry.type === "script");
-      expect(scriptEntries.length).toBe(5);
-    } finally {
-      closeDatabase(db);
-    }
+      const db = openIndexDatabase();
+      try {
+        const entries = getAllEntries(db);
+        const scriptEntries = entries.filter((e) => e.entry.type === "script");
+        expect(scriptEntries.length).toBe(5);
+      } finally {
+        closeDatabase(db);
+      }
+    });
   });
 
   test("scripts in subdirectories of scripts/ are indexed", async () => {
     const stashDir = tmpStash();
 
-    writeFile(
-      path.join(stashDir, "scripts", "azure", "provision-ai-foundry.sh"),
-      "#!/bin/bash\n# Provision AI Foundry\necho provision\n",
+    await withTestIndex(
+      stashDir,
+      {
+        "scripts/azure/provision-ai-foundry.sh": "#!/bin/bash\n# Provision AI Foundry\necho provision\n",
+      },
+      async (result) => {
+        expect(result.totalEntries).toBeGreaterThanOrEqual(1);
+
+        const searchResult = await akmSearch({ query: "foundry", source: "local" });
+        const localHits = searchResult.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+
+        expect(localHits.length).toBeGreaterThanOrEqual(1);
+      },
     );
-
-    const result = await buildTestIndex(stashDir);
-    expect(result.totalEntries).toBeGreaterThanOrEqual(1);
-
-    const searchResult = await akmSearch({ query: "foundry", source: "local" });
-    const localHits = searchResult.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -201,27 +223,29 @@ describe("Issue #36: buildSearchText includes script content from comments", () 
   test("buildSearchText includes description derived from comments for scripts", async () => {
     const stashDir = tmpStash();
 
-    writeFile(
-      path.join(stashDir, "scripts", "provision-ai-foundry.sh"),
-      "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+    await withTestIndex(
+      stashDir,
+      {
+        "scripts/provision-ai-foundry.sh":
+          "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
+      },
+      async () => {
+        const db = openIndexDatabase();
+        try {
+          const entries = getAllEntries(db);
+          const scriptEntry = entries.find((e) => e.entry.name.includes("provision"));
+          expect(scriptEntry).toBeDefined();
+
+          // The search text should include words from filename AND from the description
+          // (which is extracted from the comment header)
+          const searchText = scriptEntry?.searchText;
+          expect(searchText).toContain("provision");
+          expect(searchText).toContain("foundry");
+        } finally {
+          closeDatabase(db);
+        }
+      },
     );
-
-    await buildTestIndex(stashDir);
-
-    const db = openIndexDatabase();
-    try {
-      const entries = getAllEntries(db);
-      const scriptEntry = entries.find((e) => e.entry.name.includes("provision"));
-      expect(scriptEntry).toBeDefined();
-
-      // The search text should include words from filename AND from the description
-      // (which is extracted from the comment header)
-      const searchText = scriptEntry?.searchText;
-      expect(searchText).toContain("provision");
-      expect(searchText).toContain("foundry");
-    } finally {
-      closeDatabase(db);
-    }
   });
 });
 
@@ -229,37 +253,37 @@ describe("Issue #36: short FTS5 query tokens", () => {
   test("the lexical planner keeps short but valid tokens like 'ai'", async () => {
     const stashDir = tmpStash();
 
-    writeFile(path.join(stashDir, "scripts", "ai-helper.sh"), "#!/bin/bash\n# AI helper script\necho ai\n");
-
-    await buildTestIndex(stashDir);
-
-    // Directly test FTS with "ai" query
-    const db = openIndexDatabase();
-    try {
-      const results = searchFts(db, "ai", 10);
-      expect(results.length).toBeGreaterThanOrEqual(1);
-    } finally {
-      closeDatabase(db);
-    }
+    await withTestIndex(
+      stashDir,
+      { "scripts/ai-helper.sh": "#!/bin/bash\n# AI helper script\necho ai\n" },
+      async () => {
+        // Directly test FTS with "ai" query
+        const db = openIndexDatabase();
+        try {
+          const results = searchFts(db, "ai", 10);
+          expect(results.length).toBeGreaterThanOrEqual(1);
+        } finally {
+          closeDatabase(db);
+        }
+      },
+    );
   });
 
   test("the lexical planner preserves single-character tokens", async () => {
     const stashDir = tmpStash();
 
-    writeFile(path.join(stashDir, "scripts", "x-tool.sh"), "#!/bin/bash\n# X tool\necho x\n");
-
-    await buildTestIndex(stashDir);
-
-    // Single-char tokens are now passed through to FTS5 so that searches
-    // for short identifiers (e.g., "R", "C", "x") can return results.
-    const db = openIndexDatabase();
-    try {
-      const results = searchFts(db, "x", 10);
-      // "x" appears in the indexed search text, so FTS should find it
-      expect(results.length).toBeGreaterThanOrEqual(1);
-    } finally {
-      closeDatabase(db);
-    }
+    await withTestIndex(stashDir, { "scripts/x-tool.sh": "#!/bin/bash\n# X tool\necho x\n" }, async () => {
+      // Single-char tokens are now passed through to FTS5 so that searches
+      // for short identifiers (e.g., "R", "C", "x") can return results.
+      const db = openIndexDatabase();
+      try {
+        const results = searchFts(db, "x", 10);
+        // "x" appears in the indexed search text, so FTS should find it
+        expect(results.length).toBeGreaterThanOrEqual(1);
+      } finally {
+        closeDatabase(db);
+      }
+    });
   });
 });
 
@@ -268,15 +292,20 @@ describe("Issue #36: Stale .stash.json prevents new files from being indexed", (
     const stashDir = tmpStash();
 
     // Step 1: Create initial scripts and index
-    writeFile(path.join(stashDir, "scripts", "deploy-app.sh"), "#!/bin/bash\n# Deploy application\necho deploy\n");
-    writeFile(path.join(stashDir, "scripts", "backup-db.sh"), "#!/bin/bash\n# Backup database\necho backup\n");
+    await withTestIndex(
+      stashDir,
+      {
+        "scripts/deploy-app.sh": "#!/bin/bash\n# Deploy application\necho deploy\n",
+        "scripts/backup-db.sh": "#!/bin/bash\n# Backup database\necho backup\n",
+      },
+      async (result1) => {
+        expect(result1.totalEntries).toBe(2);
 
-    const result1 = await buildTestIndex(stashDir);
-    expect(result1.totalEntries).toBe(2);
-
-    // No .stash.json should be auto-generated
-    const stashJsonPath = path.join(stashDir, "scripts", ".stash.json");
-    expect(fs.existsSync(stashJsonPath)).toBe(false);
+        // No .stash.json should be auto-generated
+        const stashJsonPath = path.join(stashDir, "scripts", ".stash.json");
+        expect(fs.existsSync(stashJsonPath)).toBe(false);
+      },
+    );
 
     // Step 2: Add a NEW script file after the initial index
     writeFile(
@@ -285,25 +314,28 @@ describe("Issue #36: Stale .stash.json prevents new files from being indexed", (
     );
 
     // Step 3: Re-index (full rebuild) — all files discovered without .stash.json
-    const result2 = await buildTestIndex(stashDir);
-    expect(result2.totalEntries).toBe(3);
+    await withTestIndex(stashDir, {}, async (result2) => {
+      expect(result2.totalEntries).toBe(3);
 
-    // Step 4: Verify the new script is searchable
-    const searchResult = await akmSearch({ query: "foundry", source: "local" });
-    const localHits = searchResult.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      // Step 4: Verify the new script is searchable
+      const searchResult = await akmSearch({ query: "foundry", source: "local" });
+      const localHits = searchResult.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
-    const foundryHit = localHits.find((h) => h.name.includes("foundry") || h.name.includes("provision"));
-    expect(foundryHit).toBeDefined();
+      expect(localHits.length).toBeGreaterThanOrEqual(1);
+      const foundryHit = localHits.find((h) => h.name.includes("foundry") || h.name.includes("provision"));
+      expect(foundryHit).toBeDefined();
+    });
   });
 
   test("incremental index discovers newly added scripts in existing directory", async () => {
     const stashDir = tmpStash();
 
     // Initial index with one script
-    writeFile(path.join(stashDir, "scripts", "existing.sh"), "#!/bin/bash\n# Existing script\necho existing\n");
-
-    await buildTestIndex(stashDir);
+    await withTestIndex(
+      stashDir,
+      { "scripts/existing.sh": "#!/bin/bash\n# Existing script\necho existing\n" },
+      () => {},
+    );
 
     // Add new script and run incremental index
     writeFile(
@@ -312,17 +344,18 @@ describe("Issue #36: Stale .stash.json prevents new files from being indexed", (
     );
 
     // Incremental index (not full)
-    process.env.AKM_BUNDLE_DIR = stashDir;
-    saveConfig({ semanticSearchMode: "off" });
-    const result = await akmIndex({ stashDir });
+    await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
+      saveConfig({ semanticSearchMode: "off" });
+      const result = await akmIndex({ stashDir });
 
-    // Both scripts should be in the index
-    expect(result.totalEntries).toBe(2);
+      // Both scripts should be in the index
+      expect(result.totalEntries).toBe(2);
 
-    // Search should find the new script
-    const searchResult = await akmSearch({ query: "provision", source: "local" });
-    const localHits = searchResult.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
+      // Search should find the new script
+      const searchResult = await akmSearch({ query: "provision", source: "local" });
+      const localHits = searchResult.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      expect(localHits.length).toBeGreaterThanOrEqual(1);
+    });
   });
 });
 
@@ -337,16 +370,17 @@ describe("Issue #36: Search path and installed source indexing", () => {
       "#!/usr/bin/env bash\n# Provision AI Foundry resources on Azure\naz group create --name ai-foundry\n",
     );
 
-    process.env.AKM_BUNDLE_DIR = workingStash;
-    saveConfig({ semanticSearchMode: "off", bundles: { searchpath: { path: searchPathStash } } });
-    await akmIndex({ stashDir: workingStash, full: true });
+    await withEnv({ AKM_BUNDLE_DIR: workingStash }, async () => {
+      saveConfig({ semanticSearchMode: "off", bundles: { searchpath: { path: searchPathStash } } });
+      await akmIndex({ stashDir: workingStash, full: true });
 
-    const result = await akmSearch({ query: "foundry", source: "local" });
-    const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      const result = await akmSearch({ query: "foundry", source: "local" });
+      const localHits = result.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
 
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
-    const hit = localHits.find((h) => h.name.includes("foundry") || h.name.includes("provision"));
-    expect(hit).toBeDefined();
+      expect(localHits.length).toBeGreaterThanOrEqual(1);
+      const hit = localHits.find((h) => h.name.includes("foundry") || h.name.includes("provision"));
+      expect(hit).toBeDefined();
+    });
   });
 
   test("empty primary stash + populated search path still indexes all assets", async () => {
@@ -368,16 +402,17 @@ describe("Issue #36: Search path and installed source indexing", () => {
       "---\ndescription: Release the project\n---\n# Release\n",
     );
 
-    process.env.AKM_BUNDLE_DIR = workingStash;
-    saveConfig({ semanticSearchMode: "off", bundles: { searchpath: { path: searchPathStash } } });
-    const indexResult = await akmIndex({ stashDir: workingStash, full: true });
+    await withEnv({ AKM_BUNDLE_DIR: workingStash }, async () => {
+      saveConfig({ semanticSearchMode: "off", bundles: { searchpath: { path: searchPathStash } } });
+      const indexResult = await akmIndex({ stashDir: workingStash, full: true });
 
-    // All 4 assets from the search path should be indexed
-    expect(indexResult.totalEntries).toBeGreaterThanOrEqual(4);
+      // All 4 assets from the search path should be indexed
+      expect(indexResult.totalEntries).toBeGreaterThanOrEqual(4);
 
-    // Verify search finds the script
-    const searchResult = await akmSearch({ query: "foundry", source: "local" });
-    const localHits = searchResult.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
-    expect(localHits.length).toBeGreaterThanOrEqual(1);
+      // Verify search finds the script
+      const searchResult = await akmSearch({ query: "foundry", source: "local" });
+      const localHits = searchResult.hits.filter((h): h is SourceSearchHit => h.type !== "registry");
+      expect(localHits.length).toBeGreaterThanOrEqual(1);
+    });
   });
 });

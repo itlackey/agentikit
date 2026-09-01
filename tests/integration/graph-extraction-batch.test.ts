@@ -13,7 +13,6 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { AkmConfig, LlmConnectionConfig } from "../../src/core/config/config";
 import { loadStoredGraphSnapshot } from "../../src/indexer/db/graph-db";
@@ -23,6 +22,7 @@ import { buildSearchText } from "../../src/indexer/search/search-fields";
 import type { GraphExtraction } from "../../src/llm/graph-extract";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../src/storage/repositories/index-entries-repository";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 // ── Local LLM server ─────────────────────────────────────────────────────────
 
@@ -105,24 +105,16 @@ function makeConfig(overrides?: Partial<AkmConfig>): AkmConfig {
 }
 
 let tmpStash = "";
-let tmpDataHome = "";
-let tmpStateHome = "";
-const savedXdgDataHome = process.env.XDG_DATA_HOME;
-const savedXdgStateHome = process.env.XDG_STATE_HOME;
-const savedAkmStashDir = process.env.AKM_BUNDLE_DIR;
+let storage: IsolatedAkmStorage;
 
 beforeEach(() => {
-  tmpStash = fs.mkdtempSync(path.join(os.tmpdir(), "akm-batch-pass-"));
-  fs.mkdirSync(path.join(tmpStash, "memories"), { recursive: true });
-  fs.mkdirSync(path.join(tmpStash, "knowledge"), { recursive: true });
-  // Pair tmpStash with XDG_DATA_HOME / XDG_STATE_HOME so that any
-  // production helper inside graph-db / graph-extraction that incidentally
-  // calls getDbPath()/getTaskHistoryStateDir() does not fire the test-isolation guard
-  // when a prior leaky test left process.env.AKM_BUNDLE_DIR set.
-  tmpDataHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-batch-pass-data-"));
-  tmpStateHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-batch-pass-state-"));
-  process.env.XDG_DATA_HOME = tmpDataHome;
-  process.env.XDG_STATE_HOME = tmpStateHome;
+  // withIsolatedAkmStorage pairs the stash with XDG_DATA_HOME / XDG_STATE_HOME
+  // so that any production helper inside graph-db / graph-extraction that
+  // incidentally calls getDbPath()/getTaskHistoryStateDir() does not fire the
+  // test-isolation guard when a prior leaky test left process.env.AKM_BUNDLE_DIR
+  // set. The stash scaffold already includes memories/ and knowledge/.
+  storage = withIsolatedAkmStorage();
+  tmpStash = storage.stashDir;
   batchExtractorStub = null;
   singleExtractorStub = null;
   batchCallCount = 0;
@@ -130,24 +122,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (tmpStash) {
-    fs.rmSync(tmpStash, { recursive: true, force: true });
-    tmpStash = "";
-  }
-  if (tmpDataHome) {
-    fs.rmSync(tmpDataHome, { recursive: true, force: true });
-    tmpDataHome = "";
-  }
-  if (tmpStateHome) {
-    fs.rmSync(tmpStateHome, { recursive: true, force: true });
-    tmpStateHome = "";
-  }
-  if (savedXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
-  else process.env.XDG_DATA_HOME = savedXdgDataHome;
-  if (savedXdgStateHome === undefined) delete process.env.XDG_STATE_HOME;
-  else process.env.XDG_STATE_HOME = savedXdgStateHome;
-  if (savedAkmStashDir === undefined) delete process.env.AKM_BUNDLE_DIR;
-  else process.env.AKM_BUNDLE_DIR = savedAkmStashDir;
+  storage.cleanup();
+  tmpStash = "";
 });
 
 afterAll(() => {

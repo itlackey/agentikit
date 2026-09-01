@@ -14,107 +14,100 @@
 // escape hatch, the host config is still preserved.
 //
 // Requires TMPDIR (if set) to be a /tmp-family path: fixtures are built
-// under os.tmpdir(), and isTransientStashPath() deliberately hardcodes
-// /tmp, /var/tmp, and their macOS /private equivalents rather than reading
-// TMPDIR. A relocated TMPDIR makes these fixtures fail for reasons
-// unrelated to the guard under test. See AGENTS.md's Tests section.
+// under os.tmpdir() (via makeSandboxDir), and isTransientStashPath()
+// deliberately hardcodes /tmp, /var/tmp, and their macOS /private
+// equivalents rather than reading TMPDIR. A relocated TMPDIR makes these
+// fixtures fail for reasons unrelated to the guard under test. See
+// AGENTS.md's Tests section.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { assertSetupSandbox, runSetupFromConfig, runSetupWithDefaults } from "../../src/setup/setup";
-
-const SAVED_ENV: Record<string, string | undefined> = {};
-const TRACKED_ENV = [
-  "AKM_BUNDLE_DIR",
-  "AKM_DATA_DIR",
-  "AKM_STATE_DIR",
-  "AKM_CACHE_DIR",
-  "AKM_CONFIG_DIR",
-  "AKM_FORCE_SETUP_TMP_STASH",
-  "XDG_DATA_HOME",
-  "XDG_STATE_HOME",
-  "XDG_CACHE_HOME",
-  "XDG_CONFIG_HOME",
-  "HOME",
-];
-
-beforeEach(() => {
-  for (const key of TRACKED_ENV) SAVED_ENV[key] = process.env[key];
-});
-
-afterEach(() => {
-  for (const key of TRACKED_ENV) {
-    if (SAVED_ENV[key] === undefined) delete process.env[key];
-    else process.env[key] = SAVED_ENV[key];
-  }
-});
+import { makeSandboxDir, withEnv, withEnvSync } from "../_helpers/sandbox";
 
 // ── Layer 1: assertSetupSandbox refuses /tmp/* explicit --dir ───────────────
 
 describe("setup tmp-stash guard (layer 1: assertSetupSandbox)", () => {
   test("runSetupWithDefaults refuses --dir /tmp/X by default", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-setup-guard-"));
+    const { dir: tmpDir, cleanup } = makeSandboxDir("akm-setup-guard-");
     try {
       // Set up the transient stash env so getConfigDir would isolate (layer
       // 2). Layer 1 should still throw before we reach saveConfig.
-      process.env.AKM_BUNDLE_DIR = tmpDir;
-      process.env.AKM_DATA_DIR = path.join(tmpDir, "data");
-      process.env.AKM_STATE_DIR = path.join(tmpDir, "state");
-      process.env.XDG_DATA_HOME = path.join(tmpDir, "data");
-      process.env.XDG_STATE_HOME = path.join(tmpDir, "state");
-      // Make sure the escape hatch is NOT set.
-      delete process.env.AKM_FORCE_SETUP_TMP_STASH;
-
-      await expect(runSetupWithDefaults({ dir: tmpDir, noInit: true })).rejects.toThrow(
-        /SETUP_TMP_STASH_REFUSED|transient\/sandbox/,
+      await withEnv(
+        {
+          AKM_BUNDLE_DIR: tmpDir,
+          AKM_DATA_DIR: path.join(tmpDir, "data"),
+          AKM_STATE_DIR: path.join(tmpDir, "state"),
+          XDG_DATA_HOME: path.join(tmpDir, "data"),
+          XDG_STATE_HOME: path.join(tmpDir, "state"),
+          // Make sure the escape hatch is NOT set.
+          AKM_FORCE_SETUP_TMP_STASH: undefined,
+        },
+        async () => {
+          await expect(runSetupWithDefaults({ dir: tmpDir, noInit: true })).rejects.toThrow(
+            /SETUP_TMP_STASH_REFUSED|transient\/sandbox/,
+          );
+        },
       );
     } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      cleanup();
     }
   });
 
   test("runSetupFromConfig refuses --dir /tmp/X by default", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-setup-guard-"));
+    const { dir: tmpDir, cleanup } = makeSandboxDir("akm-setup-guard-");
     try {
-      process.env.AKM_BUNDLE_DIR = tmpDir;
-      process.env.AKM_DATA_DIR = path.join(tmpDir, "data");
-      process.env.AKM_STATE_DIR = path.join(tmpDir, "state");
-      process.env.XDG_DATA_HOME = path.join(tmpDir, "data");
-      process.env.XDG_STATE_HOME = path.join(tmpDir, "state");
-      delete process.env.AKM_FORCE_SETUP_TMP_STASH;
-
-      await expect(runSetupFromConfig({ configJson: "{}", dir: tmpDir, noInit: true })).rejects.toThrow(
-        /SETUP_TMP_STASH_REFUSED|transient\/sandbox/,
+      await withEnv(
+        {
+          AKM_BUNDLE_DIR: tmpDir,
+          AKM_DATA_DIR: path.join(tmpDir, "data"),
+          AKM_STATE_DIR: path.join(tmpDir, "state"),
+          XDG_DATA_HOME: path.join(tmpDir, "data"),
+          XDG_STATE_HOME: path.join(tmpDir, "state"),
+          AKM_FORCE_SETUP_TMP_STASH: undefined,
+        },
+        async () => {
+          await expect(runSetupFromConfig({ configJson: "{}", dir: tmpDir, noInit: true })).rejects.toThrow(
+            /SETUP_TMP_STASH_REFUSED|transient\/sandbox/,
+          );
+        },
       );
     } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      cleanup();
     }
   });
 
   test("AKM_FORCE_SETUP_TMP_STASH=1 opts out of the refusal", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-setup-guard-"));
+    const { dir: tmpDir, cleanup } = makeSandboxDir("akm-setup-guard-");
     try {
-      process.env.AKM_BUNDLE_DIR = tmpDir;
-      process.env.AKM_DATA_DIR = path.join(tmpDir, "data");
-      process.env.AKM_STATE_DIR = path.join(tmpDir, "state");
-      process.env.XDG_DATA_HOME = path.join(tmpDir, "data");
-      process.env.XDG_STATE_HOME = path.join(tmpDir, "state");
-      process.env.AKM_FORCE_SETUP_TMP_STASH = "1";
-
-      // Should NOT throw the SETUP_TMP_STASH_REFUSED error. We do not assert
-      // the call fully succeeds (it depends on a lot of subsystems being
-      // available); we just assert the guard doesn't fire.
-      await expect(runSetupWithDefaults({ dir: tmpDir, noInit: true })).resolves.toMatchObject({ bundleDir: tmpDir });
+      await withEnv(
+        {
+          AKM_BUNDLE_DIR: tmpDir,
+          AKM_DATA_DIR: path.join(tmpDir, "data"),
+          AKM_STATE_DIR: path.join(tmpDir, "state"),
+          XDG_DATA_HOME: path.join(tmpDir, "data"),
+          XDG_STATE_HOME: path.join(tmpDir, "state"),
+          AKM_FORCE_SETUP_TMP_STASH: "1",
+        },
+        async () => {
+          // Should NOT throw the SETUP_TMP_STASH_REFUSED error. We do not assert
+          // the call fully succeeds (it depends on a lot of subsystems being
+          // available); we just assert the guard doesn't fire.
+          await expect(runSetupWithDefaults({ dir: tmpDir, noInit: true })).resolves.toMatchObject({
+            bundleDir: tmpDir,
+          });
+        },
+      );
     } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      cleanup();
     }
   });
 
   test("a persistent --dir is NOT refused", () => {
-    delete process.env.AKM_FORCE_SETUP_TMP_STASH;
-    expect(() => assertSetupSandbox("/home/example/akm", true)).not.toThrow();
+    withEnvSync({ AKM_FORCE_SETUP_TMP_STASH: undefined }, () => {
+      expect(() => assertSetupSandbox("/home/example/akm", true)).not.toThrow();
+    });
   });
 });
 
@@ -127,8 +120,8 @@ describe("setup pre-sets AKM_BUNDLE_DIR when --dir is given (so layer 2 fires)",
     // applyStashIsolationToEnv, still see getConfigDir() fall through to
     // the host ~/.config/akm and clobber it. Setup must propagate the
     // operator's --dir choice to AKM_BUNDLE_DIR so the isolation rule fires.
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-setup-isolation-cli-"));
-    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-setup-fakehome-cli-"));
+    const { dir: tmpDir, cleanup: cleanupTmp } = makeSandboxDir("akm-setup-isolation-cli-");
+    const { dir: fakeHome, cleanup: cleanupHome } = makeSandboxDir("akm-setup-fakehome-cli-");
     const hostConfigDir = path.join(fakeHome, ".config", "akm");
     fs.mkdirSync(hostConfigDir, { recursive: true });
     const hostConfigPath = path.join(hostConfigDir, "config.json");
@@ -139,36 +132,41 @@ describe("setup pre-sets AKM_BUNDLE_DIR when --dir is given (so layer 2 fires)",
     const hostMtimeBefore = fs.statSync(hostConfigPath).mtimeMs;
 
     try {
-      process.env.HOME = fakeHome;
-      // CRITICALLY: do NOT set AKM_BUNDLE_DIR before the call. We want the
-      // setup code to set it for us. This mirrors the CLI invocation
-      // `akm setup --dir /tmp/X` with no env pre-arrangement.
-      delete process.env.AKM_BUNDLE_DIR;
-      process.env.AKM_DATA_DIR = path.join(tmpDir, "data");
-      process.env.AKM_STATE_DIR = path.join(tmpDir, "state");
-      process.env.XDG_DATA_HOME = path.join(tmpDir, "data");
-      process.env.XDG_STATE_HOME = path.join(tmpDir, "state");
-      delete process.env.AKM_CONFIG_DIR;
-      delete process.env.XDG_CONFIG_HOME;
-      process.env.AKM_FORCE_SETUP_TMP_STASH = "1"; // opt past layer 1
+      await withEnv(
+        {
+          HOME: fakeHome,
+          // CRITICALLY: do NOT set AKM_BUNDLE_DIR before the call. We want the
+          // setup code to set it for us. This mirrors the CLI invocation
+          // `akm setup --dir /tmp/X` with no env pre-arrangement.
+          AKM_BUNDLE_DIR: undefined,
+          AKM_DATA_DIR: path.join(tmpDir, "data"),
+          AKM_STATE_DIR: path.join(tmpDir, "state"),
+          XDG_DATA_HOME: path.join(tmpDir, "data"),
+          XDG_STATE_HOME: path.join(tmpDir, "state"),
+          AKM_CONFIG_DIR: undefined,
+          XDG_CONFIG_HOME: undefined,
+          AKM_FORCE_SETUP_TMP_STASH: "1", // opt past layer 1
+        },
+        async () => {
+          await runSetupWithDefaults({ dir: tmpDir, noInit: true });
 
-      await runSetupWithDefaults({ dir: tmpDir, noInit: true });
+          // The host config must be byte-identical, even though we did not
+          // pre-set AKM_BUNDLE_DIR ourselves.
+          const hostConfigAfter = fs.readFileSync(hostConfigPath, "utf8");
+          expect(hostConfigAfter).toBe(hostConfigContent);
+          expect(fs.statSync(hostConfigPath).mtimeMs).toBe(hostMtimeBefore);
 
-      // The host config must be byte-identical, even though we did not
-      // pre-set AKM_BUNDLE_DIR ourselves.
-      const hostConfigAfter = fs.readFileSync(hostConfigPath, "utf8");
-      expect(hostConfigAfter).toBe(hostConfigContent);
-      expect(fs.statSync(hostConfigPath).mtimeMs).toBe(hostMtimeBefore);
+          // And the isolated config must have landed in the stash.
+          expect(fs.existsSync(path.join(tmpDir, ".akm", "config.json"))).toBe(true);
 
-      // And the isolated config must have landed in the stash.
-      expect(fs.existsSync(path.join(tmpDir, ".akm", "config.json"))).toBe(true);
-
-      // Setup is expected to have pre-set AKM_BUNDLE_DIR for the duration
-      // of the call (we don't reset it; the afterEach hook does).
-      expect(process.env.AKM_BUNDLE_DIR ?? "").toBe(tmpDir);
+          // Setup is expected to have pre-set AKM_BUNDLE_DIR for the duration
+          // of the call (withEnv restores it afterward).
+          expect(process.env.AKM_BUNDLE_DIR ?? "").toBe(tmpDir);
+        },
+      );
     } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-      fs.rmSync(fakeHome, { recursive: true, force: true });
+      cleanupTmp();
+      cleanupHome();
     }
   });
 
@@ -176,24 +174,29 @@ describe("setup pre-sets AKM_BUNDLE_DIR when --dir is given (so layer 2 fires)",
     // If the operator already exported AKM_BUNDLE_DIR=somewhere-else, do not
     // overwrite it. (Defense against a setup call that uses --dir for stash
     // bootstrap but expects config to follow a different env-anchored path.)
-    const stashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-setup-prefer-env-stash-"));
-    const envStashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-setup-prefer-env-other-"));
+    const { dir: stashDir, cleanup: cleanupStash } = makeSandboxDir("akm-setup-prefer-env-stash-");
+    const { dir: envStashDir, cleanup: cleanupEnvStash } = makeSandboxDir("akm-setup-prefer-env-other-");
 
     try {
-      process.env.AKM_BUNDLE_DIR = envStashDir;
-      process.env.AKM_DATA_DIR = path.join(stashDir, "data");
-      process.env.AKM_STATE_DIR = path.join(stashDir, "state");
-      process.env.XDG_DATA_HOME = path.join(stashDir, "data");
-      process.env.XDG_STATE_HOME = path.join(stashDir, "state");
-      process.env.AKM_FORCE_SETUP_TMP_STASH = "1";
+      await withEnv(
+        {
+          AKM_BUNDLE_DIR: envStashDir,
+          AKM_DATA_DIR: path.join(stashDir, "data"),
+          AKM_STATE_DIR: path.join(stashDir, "state"),
+          XDG_DATA_HOME: path.join(stashDir, "data"),
+          XDG_STATE_HOME: path.join(stashDir, "state"),
+          AKM_FORCE_SETUP_TMP_STASH: "1",
+        },
+        async () => {
+          await runSetupWithDefaults({ dir: stashDir, noInit: true });
 
-      await runSetupWithDefaults({ dir: stashDir, noInit: true });
-
-      // The pre-existing AKM_BUNDLE_DIR was NOT overwritten by the --dir value.
-      expect(process.env.AKM_BUNDLE_DIR ?? "").toBe(envStashDir);
+          // The pre-existing AKM_BUNDLE_DIR was NOT overwritten by the --dir value.
+          expect(process.env.AKM_BUNDLE_DIR ?? "").toBe(envStashDir);
+        },
+      );
     } finally {
-      fs.rmSync(stashDir, { recursive: true, force: true });
-      fs.rmSync(envStashDir, { recursive: true, force: true });
+      cleanupStash();
+      cleanupEnvStash();
     }
   });
 });
@@ -207,7 +210,7 @@ describe("setup config isolation (layer 2: getConfigDir under transient stash)",
     // getConfigDir isolation rule still routes config writes into the
     // stash. The host config file at ~/.config/akm/config.json must not
     // be modified.
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-setup-isolation-"));
+    const { dir: tmpDir, cleanup: cleanupTmp } = makeSandboxDir("akm-setup-isolation-");
     const hostConfigContent = '{"hostConfigCanary":true,"stashDir":"/home/test/host-akm"}\n';
 
     // Synthesize a host config in a sandboxed HOME so we can assert it
@@ -215,7 +218,7 @@ describe("setup config isolation (layer 2: getConfigDir under transient stash)",
     // moves the host's ~/.config/akm into our sandbox; if isolation
     // works, the file at HOME/.config/akm/config.json remains as
     // hostConfigContent. If isolation fails, setup overwrites it.)
-    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-setup-fakehome-"));
+    const { dir: fakeHome, cleanup: cleanupHome } = makeSandboxDir("akm-setup-fakehome-");
     const hostConfigDir = path.join(fakeHome, ".config", "akm");
     fs.mkdirSync(hostConfigDir, { recursive: true });
     const hostConfigPath = path.join(hostConfigDir, "config.json");
@@ -223,33 +226,38 @@ describe("setup config isolation (layer 2: getConfigDir under transient stash)",
     const hostMtimeBefore = fs.statSync(hostConfigPath).mtimeMs;
 
     try {
-      process.env.HOME = fakeHome;
-      process.env.AKM_BUNDLE_DIR = tmpDir;
-      process.env.AKM_DATA_DIR = path.join(tmpDir, "data");
-      process.env.AKM_STATE_DIR = path.join(tmpDir, "state");
-      process.env.XDG_DATA_HOME = path.join(tmpDir, "data");
-      process.env.XDG_STATE_HOME = path.join(tmpDir, "state");
-      // Important: do NOT set AKM_CONFIG_DIR — we want to verify the
-      // isolation rule fires (which it does only when AKM_CONFIG_DIR is
-      // unset and AKM_BUNDLE_DIR is transient).
-      delete process.env.AKM_CONFIG_DIR;
-      delete process.env.XDG_CONFIG_HOME;
-      process.env.AKM_FORCE_SETUP_TMP_STASH = "1";
+      await withEnv(
+        {
+          HOME: fakeHome,
+          AKM_BUNDLE_DIR: tmpDir,
+          AKM_DATA_DIR: path.join(tmpDir, "data"),
+          AKM_STATE_DIR: path.join(tmpDir, "state"),
+          XDG_DATA_HOME: path.join(tmpDir, "data"),
+          XDG_STATE_HOME: path.join(tmpDir, "state"),
+          // Important: do NOT set AKM_CONFIG_DIR — we want to verify the
+          // isolation rule fires (which it does only when AKM_CONFIG_DIR is
+          // unset and AKM_BUNDLE_DIR is transient).
+          AKM_CONFIG_DIR: undefined,
+          XDG_CONFIG_HOME: undefined,
+          AKM_FORCE_SETUP_TMP_STASH: "1",
+        },
+        async () => {
+          await runSetupWithDefaults({ dir: tmpDir, noInit: true });
 
-      await runSetupWithDefaults({ dir: tmpDir, noInit: true });
+          // The host config must be byte-identical to what we wrote before.
+          const hostConfigAfter = fs.readFileSync(hostConfigPath, "utf8");
+          expect(hostConfigAfter).toBe(hostConfigContent);
+          const hostMtimeAfter = fs.statSync(hostConfigPath).mtimeMs;
+          expect(hostMtimeAfter).toBe(hostMtimeBefore);
 
-      // The host config must be byte-identical to what we wrote before.
-      const hostConfigAfter = fs.readFileSync(hostConfigPath, "utf8");
-      expect(hostConfigAfter).toBe(hostConfigContent);
-      const hostMtimeAfter = fs.statSync(hostConfigPath).mtimeMs;
-      expect(hostMtimeAfter).toBe(hostMtimeBefore);
-
-      // The isolated config must have been written into the stash.
-      const isolatedConfigPath = path.join(tmpDir, ".akm", "config.json");
-      expect(fs.existsSync(isolatedConfigPath)).toBe(true);
+          // The isolated config must have been written into the stash.
+          const isolatedConfigPath = path.join(tmpDir, ".akm", "config.json");
+          expect(fs.existsSync(isolatedConfigPath)).toBe(true);
+        },
+      );
     } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-      fs.rmSync(fakeHome, { recursive: true, force: true });
+      cleanupTmp();
+      cleanupHome();
     }
   });
 });
