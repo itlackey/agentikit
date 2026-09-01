@@ -894,8 +894,6 @@ export function listProposalsReadOnly(
         return false;
       }
     });
-  } catch {
-    return [];
   } finally {
     db?.close();
   }

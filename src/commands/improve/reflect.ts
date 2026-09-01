@@ -279,10 +279,11 @@ const PROTECTED_FRONTMATTER_FIELDS: ReadonlySet<string> = new Set(["name", "ref"
 
 /**
  * Read the last 1–3 archived rejected proposals for a given ref from the
- * proposal store. Best-effort — returns `[]` when the proposals dir is absent
- * or the ref is undefined. Used to inject Reflexion-style verbal-RL context
- * into the reflect prompt so the agent avoids re-proposing already-refused
- * content (arXiv:2303.11366).
+ * proposal store. Returns `[]` when the proposals store is absent (not yet
+ * created) or the ref is undefined — `listProposalsReadOnly` already handles
+ * that case; a genuine read failure propagates instead of being swallowed,
+ * since silently dropping this Reflexion-style context risks re-proposing
+ * content that was already rejected (arXiv:2303.11366).
  */
 function readRejectedProposals(
   stash: string,
@@ -290,18 +291,14 @@ function readRejectedProposals(
   proposalsCtx?: ProposalsContext,
 ): RejectedProposalContext[] {
   if (!ref) return [];
-  try {
-    return listProposalsReadOnly(stash, { ref, status: "rejected", includeArchive: true }, proposalsCtx)
-      .sort((a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime())
-      .slice(0, MAX_REJECTED_PROPOSALS)
-      .map((p) => ({
-        ref: p.ref,
-        reason: p.review?.reason ?? "no reason given",
-        contentPreview: proposalContent(p).slice(0, 500),
-      }));
-  } catch {
-    return [];
-  }
+  return listProposalsReadOnly(stash, { ref, status: "rejected", includeArchive: true }, proposalsCtx)
+    .sort((a, b) => new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime())
+    .slice(0, MAX_REJECTED_PROPOSALS)
+    .map((p) => ({
+      ref: p.ref,
+      reason: p.review?.reason ?? "no reason given",
+      contentPreview: proposalContent(p).slice(0, 500),
+    }));
 }
 
 /**
