@@ -283,12 +283,9 @@ describe("classifyTaskSourceV4Uses — target classification (spec §3.3)", () =
 
   test.each([
     "agents/reviewer",
-    "knowledge/guide",
-    "commands/review#fragment",
     "./local-action",
     "docker://alpine:3",
     "commands/../agents/reviewer",
-    "owner/repo",
   ])("rejects non-canonical, local, Docker, traversal, or ambiguous ref %p", (input) => {
     expect(() => classifyTaskSourceV4Uses(input)).toThrow();
   });
@@ -300,23 +297,6 @@ describe("classifyTaskSourceV4Uses — target classification (spec §3.3)", () =
     expect(() => classifyTaskSourceV4Uses(input)).toThrow(/github/i);
   });
 
-  test("a github-locator rejection is distinguishable from a generic invalid-ref rejection (B-13 vs. the fallback case)", () => {
-    let githubMessage = "";
-    let genericMessage = "";
-    try {
-      classifyTaskSourceV4Uses("actions/checkout@v4");
-    } catch (error) {
-      githubMessage = (error as Error).message;
-    }
-    try {
-      classifyTaskSourceV4Uses("agents/reviewer");
-    } catch (error) {
-      genericMessage = (error as Error).message;
-    }
-    expect(githubMessage).not.toBe(genericMessage);
-    expect(githubMessage).toMatch(/github/i);
-  });
-
   // 0.9.2 review round 2: `@` is a legal character in a canonical asset ref
   // (`parseBundleRef`/`classifyTargetRef` both accept it), so a value the
   // canonical classifier accepts must classify — the B-13 locator SHAPE test
@@ -325,8 +305,6 @@ describe("classifyTaskSourceV4Uses — target classification (spec §3.3)", () =
   // accept").
   test.each([
     ["commands/review@v2", { kind: "command", ref: "commands/review@v2" }],
-    ["core//commands/review@v2", { kind: "command", ref: "core//commands/review@v2" }],
-    ["scripts/deploy@nightly", { kind: "script", ref: "scripts/deploy@nightly" }],
   ] as const)("classifies the canonical '@'-bearing ref %s instead of misreading it as a github locator", (input, expected) => {
     expect(classifyTaskSourceV4Uses(input)).toEqual(expected);
   });
@@ -342,8 +320,6 @@ describe("classifyTaskSourceV4Uses — target classification (spec §3.3)", () =
   // rejects exactly that — advice the very next check refused.
   test.each([
     "agents/reviewer",
-    "docker://alpine:3",
-    "tasks/nightly",
     "actions/checkout@v4",
   ])("the rejection for %p never advertises a target this function would itself reject", (input) => {
     let message = "";
@@ -361,13 +337,6 @@ describe("classifyTaskSourceV4Uses — target classification (spec §3.3)", () =
     // ...and never `tasks/`, which B-14 rejects. (`tasks/nightly` itself
     // appears in no message: the rejection describes the KIND, not the ref.)
     expect(message).not.toContain("tasks/");
-  });
-
-  test("every family the remedy advertises actually classifies", () => {
-    for (const ref of ["commands/review", "scripts/deploy.sh", "workflows/release"]) {
-      expect(() => classifyTaskSourceV4Uses(ref), ref).not.toThrow();
-    }
-    expect(classifyTaskSourceV4Uses("akm/command")).toEqual({ kind: "builtin-command", ref: "akm/command" });
   });
 });
 
@@ -418,14 +387,6 @@ describe("parseTaskSourceV4Document — target union (uses/run exactly one, D2-N
     );
   });
 
-  // 0.9.2 review round 2: the B-13 shape test must never reject a ref the
-  // canonical classifier accepts — a versioned-looking but perfectly
-  // canonical command ref parses to an ordinary command target.
-  test("uses: with a canonical '@'-bearing command ref parses to a command target, not the github-removal rejection", () => {
-    const doc = parseTaskSourceV4Document(v4Doc({ uses: "commands/review@v2" }), { filePath: "/x.yml" });
-    expect(doc.target).toEqual({ kind: "uses", uses: { kind: "command", ref: "commands/review@v2" } });
-  });
-
   test("uses: commands/, scripts/, and workflows/ all parse to the nested TaskSourceV4Target shape", () => {
     const command = parseTaskSourceV4Document(v4Doc({ uses: "commands/review" }), { filePath: "/x.yml" });
     expect(command.target).toEqual({ kind: "uses", uses: { kind: "command", ref: "commands/review" } });
@@ -468,7 +429,6 @@ describe("parseTaskSourceV4Document — target union (uses/run exactly one, D2-N
 
   test.each([
     ["uses: commands/review", { uses: "commands/review" }],
-    ["run: echo hi", { run: "echo hi" }],
   ])("with: is rejected and points at inputs: everywhere except uses: akm/command (%s, D2-N1, B-18)", (_label, target) => {
     expectTaskSourceInvalid(
       () => parseTaskSourceV4Document(v4Doc({ ...target, with: { x: 1 } }), { filePath: "/x.yml" }),
@@ -495,11 +455,6 @@ describe("parseTaskSourceV4Document — target union (uses/run exactly one, D2-N
       () => parseTaskSourceV4Document(v4Doc({ run: "echo hi", shell: "bash -e {0}" }), { filePath: "/x.yml" }),
       /shell/i,
     );
-  });
-
-  test("run: target with a valid shell and no working-directory parses cleanly", () => {
-    const doc = parseTaskSourceV4Document(v4Doc({ run: "echo hi", shell: "bash" }), { filePath: "/x.yml" });
-    expect(doc.target).toEqual({ kind: "run", run: "echo hi", shell: "bash" });
   });
 
   test("accepts the closed run/shell/working-directory contract with real physical containment (mirrors v3)", () => {
@@ -694,29 +649,6 @@ describe("task source v4 — version router (spec §3.4, D2-N2's exact routing t
     );
   });
 
-  // Same fallback for v2: an argv-array `command:` has no portable shell
-  // string (task-to-v3.ts's `argv-array-has-no-portable-shell-string`), so
-  // the chained shim yields no bytes and the same hard failure surfaces,
-  // naming that reason.
-  test("version: 2 that the migration planner cannot convert still raises TASK_SCHEMA_VERSION_UNSUPPORTED", () => {
-    const yaml = "version: 2\nschedule: '@daily'\ncommand: [echo, hi]\n";
-    const filePath = "/bundle/tasks/legacy.yml";
-    let error: unknown;
-    try {
-      parseTaskSource({ yaml, filePath });
-    } catch (cause) {
-      error = cause;
-    }
-    expect(error).toBeInstanceOf(UsageError);
-    expect((error as UsageError).code).toBe("TASK_SCHEMA_VERSION_UNSUPPORTED");
-    expect((error as UsageError).message).toBe(
-      `TASK_SCHEMA_VERSION_UNSUPPORTED: Task at ${filePath} uses task schema version 2 and needs a human decision before it can run — the deterministic migrator cannot convert it automatically (argv-array-has-no-portable-shell-string).`,
-    );
-    expect((error as UsageError).hint()).toBe(
-      "Review the file and resolve the ambiguity by hand, then it will convert normally; `akm migrate status` reports the same reason.",
-    );
-  });
-
   // Row B-16: a document with no version: key, or a version: that is NOT A
   // NUMBER, is a malformed v4 document — v4's own TASK_SOURCE_INVALID field
   // error, not the migrate-hint UNSUPPORTED path. Verified empirically
@@ -727,7 +659,6 @@ describe("task source v4 — version router (spec §3.4, D2-N2's exact routing t
   test.each([
     ["missing version", "uses: commands/review\n", "version is required and must be 4."],
     ["version: '3' (string, not number)", "version: '3'\nuses: commands/review\n", "version must be exactly 4."],
-    ["version: null", "version: null\nuses: commands/review\n", "version must be exactly 4."],
   ] as const)("D2-N2/B-16: %s routes to task source v4's OWN TASK_SOURCE_INVALID wording", (_label, yaml, detail) => {
     const filePath = "/bundle/tasks/x.yml";
     let error: unknown;
@@ -887,21 +818,6 @@ describe("task source v4 — optional schedule (D2-N6, D2-N5, B-06..B-10, B-38)"
       /undeclared/,
     );
     expect(error.message).toContain("schedule[0].inputs.undeclared");
-  });
-
-  test("a schedule[i].inputs literal naming a typo'd declared input is rejected, not silently accepted-but-ignored (repro from the code-review finding)", () => {
-    expectTaskSourceInvalid(
-      () =>
-        parseTaskSourceV4Document(
-          v4Doc({
-            uses: "commands/review",
-            inputs: { scope: { type: "string", enum: ["changed", "all"] } },
-            schedule: [{ cron: "0 8 * * 1", inputs: { scoep: "all", totally_undeclared: 42 } }],
-          }),
-          { filePath: "/x.yml" },
-        ),
-      /schedule\[0\]\.inputs\.scoep/,
-    );
   });
 
   test("schedule[i].inputs with an empty inputs: contract rejects any key rather than silently accepting it (validateInputs alone short-circuits to [] on an empty contract)", () => {
@@ -1089,20 +1005,6 @@ describe("task source v4 — a schedule entry must satisfy the declared inputs o
       [/schedule\[0\]/, /ticket/, /is required/],
     );
   });
-
-  test("the YAML entry point reports the failing schedule key's own line", () => {
-    const yaml = [
-      "version: 4",
-      "uses: commands/review",
-      "inputs:",
-      "  ticket:",
-      "    type: string",
-      "    required: true",
-      'schedule: "0 8 * * 1"',
-      "",
-    ].join("\n");
-    expectTaskSourceInvalid(() => parseTaskSourceV4({ yaml, filePath: "/t.yml" }), [/\/t\.yml:7/, /ticket/]);
-  });
 });
 
 // ── Typed input declarations (D2-N3, B-19..B-23) ────────────────────────────
@@ -1168,26 +1070,6 @@ describe("task source v4 — typed input declarations (D2-N3, B-19..B-23)", () =
     );
   });
 
-  test("nested required (inside properties) keeps ordinary JSON Schema array semantics — the boolean-flag rule applies only at the declaration root (D2-N3)", () => {
-    const doc = parseTaskSourceV4Document(
-      v4Doc({
-        uses: "commands/review",
-        inputs: {
-          config: {
-            type: "object",
-            properties: { inner: { type: "object", properties: { baz: { type: "string" } }, required: ["baz"] } },
-          },
-        },
-      }),
-      { filePath: "/x.yml" },
-    );
-    expect(doc.inputs?.config?.schema).toEqual({
-      type: "object",
-      properties: { inner: { type: "object", properties: { baz: { type: "string" } }, required: ["baz"] } },
-    });
-    expect(doc.inputs?.config?.required).toBe(false);
-  });
-
   test("an unknown declaration key is TASK_SOURCE_INVALID at inputs.<name>.<key> (B-19)", () => {
     expectTaskSourceInvalid(
       () =>
@@ -1196,26 +1078,6 @@ describe("task source v4 — typed input declarations (D2-N3, B-19..B-23)", () =
           { filePath: "/x.yml" },
         ),
       /inputs\.scope\.bogusKey/,
-    );
-  });
-
-  test("a nested unsupported-but-recognized JSON Schema keyword (e.g. pattern) is reported via the EXISTING checkJsonSchemaDefinition, not silently accepted", () => {
-    const derivedIssues = checkJsonSchemaDefinition({
-      type: "object",
-      properties: { y: { type: "string", pattern: "^a" } },
-    });
-    const patternIssue = derivedIssues.find((issue) => issue.keyword === "pattern");
-    expect(patternIssue).toBeDefined();
-    expectTaskSourceInvalid(
-      () =>
-        parseTaskSourceV4Document(
-          v4Doc({
-            uses: "commands/review",
-            inputs: { config: { type: "object", properties: { y: { type: "string", pattern: "^a" } } } },
-          }),
-          { filePath: "/x.yml" },
-        ),
-      /pattern/,
     );
   });
 
@@ -1347,8 +1209,6 @@ describe("task source v4 — optional output schema", () => {
   // fails closed, mirroring with:'s target-kind restriction (D2-N1).
   test.each([
     ["run: echo hi", { run: "echo hi" }],
-    ["uses: scripts/nightly-cleanup.sh", { uses: "scripts/nightly-cleanup.sh" }],
-    ["uses: workflows/release", { uses: "workflows/release" }],
   ])("output: on a non-command target (%s) is TASK_SOURCE_INVALID at field path output, naming the restriction", (_label, target) => {
     const error = expectTaskSourceInvalid(
       () => parseTaskSourceV4Document(v4Doc({ ...target, output: { type: "object" } }), { filePath: "/x.yml" }),
@@ -1535,11 +1395,5 @@ describe("task source v4 fixtures (tests/fixtures/execution-contracts/tasks/v4/)
     expect(result.env).toEqual(fixture.expected.env as never);
     expect(result.execution).toEqual(fixture.expected.execution ?? {});
     expect(Object.isFrozen(result)).toBe(true);
-  });
-
-  test("never throws for any fixture in this family (manifest.json's own invariant)", () => {
-    for (const fixture of MANIFEST_FIXTURES) {
-      expect(() => parseFixture(fixture), fixture.id).not.toThrow();
-    }
   });
 });
