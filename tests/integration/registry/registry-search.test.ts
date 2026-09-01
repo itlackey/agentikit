@@ -1,0 +1,1009 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { searchRegistry } from "../../../src/commands/read/registry-search";
+import type { RegistryIndex } from "../../../src/registry/providers/static-index";
+import { type Cleanup, sandboxXdgCacheHome, sandboxXdgDataHome } from "../../_helpers/sandbox";
+
+// ── Test fixtures ───────────────────────────────────────────────────────────
+
+// One entry intentionally carries the legacy `curated` boolean to exercise
+// the v1 parse-and-ignore rule (spec §4.2). The cast is necessary because
+// `curated` was removed from `RegistryBundleEntry` in v1.
+const FIXTURE_INDEX: RegistryIndex = {
+  version: 3,
+  updatedAt: "2026-03-09T00:00:00Z",
+  stashes: [
+    {
+      id: "npm:@itlackey/openkit",
+      name: "@itlackey/openkit",
+      description: "Starter stash for building OpenCode extensions with Bun.js",
+      ref: "@itlackey/openkit",
+      source: "npm",
+      homepage: "https://github.com/itlackey/openkit-starter",
+      tags: ["opencode", "bun", "typescript", "starter"],
+      assetTypes: ["skill", "script", "command"],
+      author: "itlackey",
+      license: "MIT",
+      latestVersion: "1.2.0",
+    },
+    {
+      id: "github:itlackey/dimm-city-stash",
+      name: "Dimm City TTRPG Stash",
+      description: "Agent skills for Dimm City creaturepunk TTRPG content generation",
+      ref: "itlackey/dimm-city-stash",
+      source: "github",
+      tags: ["ttrpg", "dimm-city", "creaturepunk", "print", "markdown"],
+      assetTypes: ["skill", "command", "knowledge"],
+      author: "itlackey",
+      license: "CC-BY-4.0",
+      // Legacy v0.6.x field — kept here to verify v1 parse-and-ignore.
+      curated: true,
+    } as RegistryIndex["stashes"][number] & { curated: boolean },
+    {
+      id: "github:someone/azure-ops-stash",
+      name: "Azure Ops Stash",
+      description: "CLI skills for managing Azure Container Apps and DevOps",
+      ref: "someone/azure-ops-stash",
+      source: "github",
+      tags: ["azure", "devops", "container-apps", "infrastructure"],
+      assetTypes: ["skill", "script"],
+      author: "someone",
+      license: "MIT",
+      latestVersion: "v0.3.1",
+    },
+    {
+      id: "npm:generic-agent-utils",
+      name: "generic-agent-utils",
+      description: "Utility functions for agent development",
+      ref: "generic-agent-utils",
+      source: "npm",
+      tags: ["utility", "agent"],
+      author: "devperson",
+    },
+  ],
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Start a minimal HTTP server that serves the fixture index. */
+function serveIndex(index: RegistryIndex): { url: string; close: () => void } {
+  const body = JSON.stringify(index);
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response(body, {
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  return {
+    url: `http://localhost:${server.port}/index.json`,
+    close: () => server.stop(true),
+  };
+}
+
+/** Start a server that always returns an error. */
+function serveError(status: number): { url: string; close: () => void } {
+  const server = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response("error", { status });
+    },
+  });
+  return {
+    url: `http://localhost:${server.port}/index.json`,
+    close: () => server.stop(true),
+  };
+}
+
+const originalRegistryUrl = process.env.AKM_REGISTRY_URL;
+
+let envCleanup: Cleanup = () => {};
+
+beforeEach(() => {
+  // Isolate cache per test.
+  const cacheResult = sandboxXdgCacheHome();
+  // Also isolate the data dir per test. The registry-index cache lives in
+  // index.db under getDataDir() (XDG_DATA_HOME/HOME), NOT XDG_CACHE_HOME. That
+  // cache is keyed solely on the registry URL with a 1-hour TTL. Test servers
+  // bind random ports that the OS reuses across tests, so without a fresh data
+  // dir a later test whose serveIndex() lands on a previously-used port reads a
+  // stale, unrelated index out of the shared real ~/.local/share/akm/index.db —
+  // making queries like "openkit" return zero hits and flaking hits[0] reads.
+  const dataResult = sandboxXdgDataHome(cacheResult.cleanup);
+  envCleanup = dataResult.cleanup;
+  delete process.env.AKM_REGISTRY_URL;
+});
+
+afterEach(() => {
+  envCleanup();
+  envCleanup = () => {};
+  if (originalRegistryUrl === undefined) {
+    delete process.env.AKM_REGISTRY_URL;
+  } else {
+    process.env.AKM_REGISTRY_URL = originalRegistryUrl;
+  }
+});
+
+// ── Empty / blank queries ───────────────────────────────────────────────────
+
+describe("searchRegistry", () => {
+  test("returns empty for blank query", async () => {
+    const result = await searchRegistry("");
+    expect(result).toEqual({ query: "", hits: [], warnings: [] });
+  });
+
+  test("returns empty for whitespace query", async () => {
+    const result = await searchRegistry("   ");
+    expect(result).toEqual({ query: "", hits: [], warnings: [] });
+  });
+});
+
+// ── Scoring and ranking ─────────────────────────────────────────────────────
+
+describe("scoring", () => {
+  test("exact name match ranks highest", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("Azure Ops Stash", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0]!.id).toBe("github:someone/azure-ops-stash");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("tag match surfaces relevant stashes", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("creaturepunk", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0]!.id).toBe("github:itlackey/dimm-city-stash");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("description substring matches", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("Container Apps", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.some((h) => h.id === "github:someone/azure-ops-stash")).toBe(true);
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("no match returns empty hits without error", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("zzz-nonexistent-xxy", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits).toEqual([]);
+      expect(result.warnings).toEqual([]);
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("multi-token query scores across fields", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("bun typescript starter", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      // openkit has all three in its tags
+      expect(result.hits[0]!.id).toBe("npm:@itlackey/openkit");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("author match works", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("devperson", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.length).toBe(1);
+      expect(result.hits[0]!.id).toBe("npm:generic-agent-utils");
+    } finally {
+      srv.close();
+    }
+  });
+});
+
+// ── Limit enforcement ───────────────────────────────────────────────────────
+
+describe("limit enforcement", () => {
+  test("limit: 1 returns at most 1 hit", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("stash", {
+        registries: [{ url: srv.url }],
+        limit: 1,
+      });
+      expect(result.hits.length).toBeLessThanOrEqual(1);
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("limit: 0 falls back to default", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("stash", {
+        registries: [{ url: srv.url }],
+        limit: 0,
+      });
+      // Should not crash, uses default of 20
+      expect(result.hits.length).toBeLessThanOrEqual(20);
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("limit: NaN falls back to default", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("stash", {
+        registries: [{ url: srv.url }],
+        limit: NaN,
+      });
+      expect(result.hits.length).toBeLessThanOrEqual(20);
+    } finally {
+      srv.close();
+    }
+  });
+});
+
+// ── Caching ─────────────────────────────────────────────────────────────────
+
+describe("caching", () => {
+  test("second call uses cached index (no network needed)", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    const url = srv.url;
+
+    // First call — fetches from server
+    const result1 = await searchRegistry("openkit", { registries: [{ url }] });
+    expect(result1.hits.length).toBeGreaterThan(0);
+
+    // Kill the server
+    srv.close();
+
+    // Second call — should use cache
+    const result2 = await searchRegistry("openkit", { registries: [{ url }] });
+    expect(result2.hits.length).toBeGreaterThan(0);
+    expect(result2.hits[0]!.id).toBe(result1.hits[0]!.id);
+  });
+});
+
+// ── Error handling ──────────────────────────────────────────────────────────
+
+describe("error handling", () => {
+  test("server error produces warning, not exception", async () => {
+    const srv = serveError(500);
+    try {
+      const result = await searchRegistry("test", { registries: [{ url: srv.url }] });
+      expect(result.hits).toEqual([]);
+      expect(result.warnings.length).toBe(1);
+      expect(result.warnings[0]).toContain("HTTP 500");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("unreachable server produces warning", async () => {
+    const result = await searchRegistry("test", {
+      registries: [{ url: "http://127.0.0.1:1/nonexistent" }],
+    });
+    expect(result.hits).toEqual([]);
+    expect(result.warnings.length).toBe(1);
+  });
+
+  test("invalid JSON produces warning", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response("not json", {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    try {
+      const result = await searchRegistry("test", {
+        registries: [{ url: `http://localhost:${server.port}/index.json` }],
+      });
+      expect(result.hits).toEqual([]);
+      expect(result.warnings.length).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+// ── Multiple registries ─────────────────────────────────────────────────────
+
+describe("multiple registries", () => {
+  test("merges stashes from multiple registry URLs", async () => {
+    const index1: RegistryIndex = {
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:stash-a",
+          name: "Stash A",
+          description: "First stash",
+          ref: "stash-a",
+          source: "npm",
+          tags: ["deploy"],
+        },
+      ],
+    };
+    const index2: RegistryIndex = {
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "github:org/stash-b",
+          name: "Stash B",
+          description: "Second stash for deploy workflows",
+          ref: "org/stash-b",
+          source: "github",
+          tags: ["deploy"],
+        },
+      ],
+    };
+
+    const srv1 = serveIndex(index1);
+    const srv2 = serveIndex(index2);
+    try {
+      const result = await searchRegistry("deploy", {
+        registries: [{ url: srv1.url }, { url: srv2.url }],
+      });
+      expect(result.hits.length).toBe(2);
+      const ids = result.hits.map((h) => h.id);
+      expect(ids).toContain("npm:stash-a");
+      expect(ids).toContain("github:org/stash-b");
+    } finally {
+      srv1.close();
+      srv2.close();
+    }
+  });
+
+  test("one failing registry does not block others", async () => {
+    const goodIndex: RegistryIndex = {
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:good-stash",
+          name: "Good Stash",
+          ref: "good-stash",
+          source: "npm",
+          tags: ["works"],
+        },
+      ],
+    };
+
+    const good = serveIndex(goodIndex);
+    const bad = serveError(500);
+    try {
+      const result = await searchRegistry("works", {
+        registries: [{ url: good.url }, { url: bad.url }],
+      });
+      expect(result.hits.length).toBe(1);
+      expect(result.hits[0]!.id).toBe("npm:good-stash");
+      expect(result.warnings.length).toBe(1);
+    } finally {
+      good.close();
+      bad.close();
+    }
+  });
+});
+
+// ── Hit shape ───────────────────────────────────────────────────────────────
+
+describe("hit shape", () => {
+  test("includes metadata fields from index", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("openkit", { registries: [{ url: srv.url }] });
+      const hit = result.hits.find((h) => h.id === "npm:@itlackey/openkit");
+      expect(hit).toBeDefined();
+      expect(hit?.source).toBe("npm");
+      expect(hit?.title).toBe("@itlackey/openkit");
+      expect(hit?.ref).toBe("@itlackey/openkit");
+      expect(hit?.installRef).toBe("npm:@itlackey/openkit");
+      expect(hit?.metadata?.version).toBe("1.2.0");
+      expect(hit?.metadata?.author).toBe("itlackey");
+      expect(hit?.metadata?.license).toBe("MIT");
+      expect(hit?.metadata?.assetTypes).toBe("skill, script, command");
+      expect(typeof hit?.score).toBe("number");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("installRef is prefixed with source type for github stashes", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("azure", { registries: [{ url: srv.url }] });
+      const hit = result.hits.find((h) => h.id === "github:someone/azure-ops-stash");
+      expect(hit).toBeDefined();
+      expect(hit?.installRef).toBe("github:someone/azure-ops-stash");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("legacy `curated` key in registry JSON parses and is silently ignored", async () => {
+    // Spec §4.2: the legacy registry boolean `curated` is removed in v1.
+    // Legacy index JSON containing it MUST parse without error and the key
+    // MUST NOT appear on emitted hits.
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("itlackey", { registries: [{ url: srv.url }] });
+      const legacyCuratedHit = result.hits.find((h) => h.id === "github:itlackey/dimm-city-stash");
+      expect(legacyCuratedHit).toBeDefined();
+      expect(legacyCuratedHit as unknown as Record<string, unknown>).not.toHaveProperty("curated");
+
+      const autoHit = result.hits.find((h) => h.id === "npm:@itlackey/openkit");
+      expect(autoHit).toBeDefined();
+      expect(autoHit as unknown as Record<string, unknown>).not.toHaveProperty("curated");
+    } finally {
+      srv.close();
+    }
+  });
+});
+
+// ── Environment variable override ───────────────────────────────────────────
+
+describe("AKM_REGISTRY_URL env var", () => {
+  test("uses env var when no explicit URLs provided", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    process.env.AKM_REGISTRY_URL = srv.url;
+    try {
+      const result = await searchRegistry("azure");
+      expect(result.hits.length).toBeGreaterThan(0);
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("supports comma-separated URLs in env var", async () => {
+    const srv1 = serveIndex(FIXTURE_INDEX);
+    const srv2 = serveIndex({
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:extra-stash",
+          name: "extra-stash",
+          ref: "extra-stash",
+          source: "npm",
+          tags: ["azure"],
+        },
+      ],
+    });
+    process.env.AKM_REGISTRY_URL = `${srv1.url},${srv2.url}`;
+    try {
+      const result = await searchRegistry("azure");
+      const ids = result.hits.map((h) => h.id);
+      expect(ids).toContain("github:someone/azure-ops-stash");
+      expect(ids).toContain("npm:extra-stash");
+    } finally {
+      srv1.close();
+      srv2.close();
+    }
+  });
+
+  // Problem A: env-based override must preserve provider type
+  test("provider::url syntax routes to the declared provider type", async () => {
+    // Stand up a skills-sh-shaped endpoint
+    const skillsSrv = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          JSON.stringify({
+            skills: [{ id: "org/tools/my-skill", name: "my-skill", installs: 200, source: "org/tools" }],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+    process.env.AKM_REGISTRY_URL = `skills-sh::http://localhost:${skillsSrv.port}`;
+    try {
+      const result = await searchRegistry("my-skill");
+      // skills-sh provider should have handled this — hits use skills-sh id format
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0]!.id).toBe("skills-sh:org/tools/my-skill");
+      expect(result.hits[0]!.installRef).toBe("github:org/tools");
+      expect(result.warnings).toEqual([]);
+    } finally {
+      skillsSrv.stop(true);
+    }
+  });
+
+  test("bare URL in env var defaults to static-index provider", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    process.env.AKM_REGISTRY_URL = srv.url;
+    try {
+      const result = await searchRegistry("openkit");
+      expect(result.hits.length).toBeGreaterThan(0);
+      // static-index uses the stash id directly
+      expect(result.hits[0]!.id).toBe("npm:@itlackey/openkit");
+    } finally {
+      srv.close();
+    }
+  });
+
+  // "unknown provider type in env var produces warning, not crash" moved into
+  // the parameterized "unknown provider type via %s" test in the "provider
+  // routing" describe below (DUP-10): it asserted the same three things
+  // (empty hits, exactly one warning, warning names the bad provider) as the
+  // options.registries path, just reached through AKM_REGISTRY_URL instead.
+
+  test("mixed provider types in comma-separated env var", async () => {
+    const staticSrv = serveIndex({
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:env-static-stash",
+          name: "env-static-stash",
+          ref: "env-static-stash",
+          source: "npm",
+          tags: ["deploy"],
+        },
+      ],
+    });
+    const skillsSrv = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          JSON.stringify({
+            skills: [{ id: "user/tools/env-skill", name: "env-skill", installs: 100, source: "user/tools" }],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+    process.env.AKM_REGISTRY_URL = `${staticSrv.url},skills-sh::http://localhost:${skillsSrv.port}`;
+    try {
+      const result = await searchRegistry("env");
+      const ids = result.hits.map((h) => h.id);
+      expect(ids).toContain("npm:env-static-stash");
+      expect(ids).toContain("skills-sh:user/tools/env-skill");
+      expect(result.warnings).toEqual([]);
+    } finally {
+      staticSrv.close();
+      skillsSrv.stop(true);
+    }
+  });
+});
+
+// ── Score normalization (Problem B) ─────────────────────────────────────────
+
+describe("cross-provider score normalization", () => {
+  test("scores from all providers are in [0, 1] after normalization", async () => {
+    // static-index raw scores can exceed 1 (e.g. exact name + tag + description).
+    // After normalization, all scores in the merged response must be <= 1.
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("openkit bun typescript starter", {
+        registries: [{ url: srv.url }],
+      });
+      for (const hit of result.hits) {
+        if (hit.score !== undefined) {
+          expect(hit.score).toBeGreaterThanOrEqual(0);
+          expect(hit.score).toBeLessThanOrEqual(1);
+        }
+      }
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("top hit within a provider batch retains score = 1 after normalization", async () => {
+    // The highest-scored hit in each provider batch should map to exactly 1.0.
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("openkit", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      const topScore = result.hits[0]!.score;
+      expect(topScore).toBe(1);
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("merged multi-provider results are ordered by normalized score", async () => {
+    // Provider A: static-index with a moderate-relevance match.
+    // Provider B: skills-sh with a high-installs match.
+    // After normalization each batch has max=1; the better-matched bundle wins.
+    const staticSrv = serveIndex({
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:exact-name-match",
+          name: "deploy",
+          description: "exact match",
+          ref: "exact-name-match",
+          source: "npm",
+          tags: ["deploy"],
+        },
+        {
+          id: "npm:partial-match",
+          name: "deployment-helper",
+          description: "partial",
+          ref: "partial-match",
+          source: "npm",
+          tags: [],
+        },
+      ],
+    });
+    const skillsSrv = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          JSON.stringify({
+            skills: [
+              { id: "org/deploy-skill", name: "deploy-skill", installs: 1000, source: "org/deploy-skill" },
+              { id: "org/other-skill", name: "other-skill", installs: 100, source: "org/other" },
+            ],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+    try {
+      const result = await searchRegistry("deploy", {
+        registries: [{ url: staticSrv.url }, { url: `http://localhost:${skillsSrv.port}`, provider: "skills-sh" }],
+      });
+      // All scores in [0, 1]
+      for (const hit of result.hits) {
+        if (hit.score !== undefined) {
+          expect(hit.score).toBeGreaterThanOrEqual(0);
+          expect(hit.score).toBeLessThanOrEqual(1);
+        }
+      }
+      // Results should be sorted descending
+      for (let i = 1; i < result.hits.length; i++) {
+        expect((result.hits[i - 1]!.score ?? 0) >= (result.hits[i]!.score ?? 0)).toBe(true);
+      }
+    } finally {
+      staticSrv.close();
+      skillsSrv.stop(true);
+    }
+  });
+
+  test("single-hit provider batch normalizes to score 1", async () => {
+    const srv = serveIndex({
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:only-stash",
+          name: "only-stash",
+          description: "only one",
+          ref: "only-stash",
+          source: "npm",
+          tags: ["unique"],
+        },
+      ],
+    });
+    try {
+      const result = await searchRegistry("unique", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.length).toBe(1);
+      expect(result.hits[0]!.score).toBe(1);
+    } finally {
+      srv.close();
+    }
+  });
+});
+
+// ── Provenance tagging ──────────────────────────────────────────────────────
+
+describe("provenance tagging", () => {
+  test("hits include registryName from entry config", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("openkit", {
+        registries: [{ url: srv.url, name: "test-registry" }],
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0]!.registryName).toBe("test-registry");
+    } finally {
+      srv.close();
+    }
+  });
+
+  test("registryName is undefined when entry has no name", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      const result = await searchRegistry("openkit", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0]!.registryName).toBeUndefined();
+    } finally {
+      srv.close();
+    }
+  });
+});
+
+// ── Provider-based routing ──────────────────────────────────────────────────
+
+describe("provider routing", () => {
+  // DUP-10: one behavior (an unrecognized provider type produces exactly one
+  // warning naming it, never a crash, and yields no hits), reached through
+  // the two ways a provider type is configured.
+  test.each([
+    [
+      "options.registries",
+      async () =>
+        searchRegistry("test", {
+          registries: [{ url: "http://example.com", provider: "nonexistent-type" }],
+        }),
+      "nonexistent-type",
+    ],
+    [
+      "AKM_REGISTRY_URL env var",
+      async () => {
+        process.env.AKM_REGISTRY_URL = `no-such-provider::http://127.0.0.1:1/index.json`;
+        return searchRegistry("anything");
+      },
+      "no-such-provider",
+    ],
+  ] as const)("unknown provider type via %s produces warning, not crash", async (_label, run, needle) => {
+    const result = await run();
+    expect(result.hits).toEqual([]);
+    expect(result.warnings.length).toBe(1);
+    expect(result.warnings[0]).toContain(needle);
+  });
+
+  test("mixed static-index and skills-sh registries return merged results", async () => {
+    const staticSrv = serveIndex({
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:deploy-stash",
+          name: "deploy-stash",
+          description: "Deployment tools",
+          ref: "deploy-stash",
+          source: "npm",
+          tags: ["deploy"],
+        },
+      ],
+    });
+
+    const skillsSrv = Bun.serve({
+      port: 0,
+      fetch() {
+        return new Response(
+          JSON.stringify({
+            skills: [{ id: "org/skills/deploy-vercel", name: "deploy-vercel", installs: 500, source: "org/skills" }],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      },
+    });
+
+    try {
+      const result = await searchRegistry("deploy", {
+        registries: [
+          { url: staticSrv.url, name: "static" },
+          { url: `http://localhost:${skillsSrv.port}`, name: "skills.sh", provider: "skills-sh" },
+        ],
+      });
+
+      const ids = result.hits.map((h) => h.id);
+      expect(ids).toContain("npm:deploy-stash");
+      expect(ids).toContain("skills-sh:org/skills/deploy-vercel");
+
+      // installRef should be directly usable with `akm add`
+      const npmHit = result.hits.find((h) => h.id === "npm:deploy-stash");
+      expect(npmHit?.installRef).toBe("npm:deploy-stash");
+      const skillsHit = result.hits.find((h) => h.id === "skills-sh:org/skills/deploy-vercel");
+      expect(skillsHit?.installRef).toBe("github:org/skills");
+
+      expect(result.warnings).toEqual([]);
+    } finally {
+      staticSrv.close();
+      skillsSrv.stop(true);
+    }
+  });
+
+  test("one provider fails, other succeeds — partial results + warning", async () => {
+    const goodSrv = serveIndex({
+      version: 3,
+      updatedAt: "2026-01-01T00:00:00Z",
+      stashes: [
+        {
+          id: "npm:good-stash",
+          name: "good-stash",
+          ref: "good-stash",
+          source: "npm",
+          tags: ["test"],
+        },
+      ],
+    });
+
+    try {
+      const result = await searchRegistry("test", {
+        registries: [
+          { url: goodSrv.url, name: "good" },
+          { url: "http://127.0.0.1:1", name: "bad", provider: "skills-sh" },
+        ],
+      });
+
+      expect(result.hits.length).toBe(1);
+      expect(result.hits[0]!.id).toBe("npm:good-stash");
+      expect(result.warnings.length).toBe(1);
+    } finally {
+      goodSrv.close();
+    }
+  });
+
+  test("default provider is static-index when omitted", async () => {
+    const srv = serveIndex(FIXTURE_INDEX);
+    try {
+      // No provider field — should use static-index
+      const result = await searchRegistry("openkit", {
+        registries: [{ url: srv.url }],
+      });
+      expect(result.hits.length).toBeGreaterThan(0);
+      expect(result.hits[0]!.id).toBe("npm:@itlackey/openkit");
+    } finally {
+      srv.close();
+    }
+  });
+});
+
+// ── Issue #159: incomplete hits must never appear in JSON output ────────────
+
+describe("incomplete hits filter (#159)", () => {
+  // ISOLATION-04: createProviderRegistry (src/registry/create-provider-registry.ts)
+  // is a module-level singleton Map, so a registration made here would
+  // otherwise outlive the test for the rest of the process. Each test below
+  // unregisters its synthetic key in a try/finally using the real unregister
+  // seam.
+  test("hits missing required fields are dropped from response", async () => {
+    const { registerRegistryProvider, unregisterRegistryProvider } = await import("../../../src/registry/factory");
+    const goodHit = {
+      source: "github" as const,
+      id: "github:owner/good",
+      title: "Good Hit",
+      ref: "github:owner/good",
+      installRef: "github:owner/good",
+    };
+    registerRegistryProvider("incomplete-hits-test", (() => ({
+      type: "incomplete-hits-test",
+      async search() {
+        return {
+          // {} = empty placeholder; missing-id = partial; goodHit = valid
+          hits: [{} as never, { source: "github", title: "x" } as never, goodHit],
+        };
+      },
+    })) as unknown as Parameters<typeof registerRegistryProvider>[1]);
+
+    try {
+      const result = await searchRegistry("anything", {
+        registries: [{ url: "http://unused", provider: "incomplete-hits-test" }],
+      });
+
+      expect(result.hits).toEqual([goodHit]);
+      expect(result.hits.every((h) => h && typeof h === "object" && Object.keys(h).length > 0)).toBe(true);
+      expect(result.warnings.some((w) => /incomplete hit/i.test(w))).toBe(true);
+    } finally {
+      unregisterRegistryProvider("incomplete-hits-test");
+    }
+  });
+
+  test("incomplete asset hits are dropped from assetHits", async () => {
+    const { registerRegistryProvider, unregisterRegistryProvider } = await import("../../../src/registry/factory");
+    registerRegistryProvider("incomplete-assets-test", (() => ({
+      type: "incomplete-assets-test",
+      async search() {
+        return {
+          hits: [],
+          assetHits: [
+            {} as never,
+            { type: "registry-asset", assetType: "skill" } as never,
+            {
+              type: "registry-asset" as const,
+              assetType: "skill",
+              assetName: "deploy",
+              action: "akm show skills/deploy",
+              stash: { id: "x", name: "x" },
+            },
+          ],
+        };
+      },
+    })) as unknown as Parameters<typeof registerRegistryProvider>[1]);
+
+    try {
+      const result = await searchRegistry("anything", {
+        registries: [{ url: "http://unused", provider: "incomplete-assets-test" }],
+      });
+
+      expect(result.assetHits).toBeDefined();
+      expect(result.assetHits?.length).toBe(1);
+      expect(result.assetHits![0]!.assetName).toBe("deploy");
+    } finally {
+      unregisterRegistryProvider("incomplete-assets-test");
+    }
+  });
+
+  // PR #168 review #9: asset hits with missing/empty `stash.id` or `stash.name`
+  // are also incomplete and must not propagate to JSON output.
+  test("asset hits with missing or empty stash fields are dropped", async () => {
+    const { registerRegistryProvider, unregisterRegistryProvider } = await import("../../../src/registry/factory");
+    registerRegistryProvider("incomplete-stash-test", (() => ({
+      type: "incomplete-stash-test",
+      async search() {
+        return {
+          hits: [],
+          assetHits: [
+            // stash entirely missing
+            {
+              type: "registry-asset",
+              assetType: "skill",
+              assetName: "no-stash",
+              action: "akm show skills/no-stash",
+            } as never,
+            // stash present but id is empty
+            {
+              type: "registry-asset",
+              assetType: "skill",
+              assetName: "empty-id",
+              action: "akm show skills/empty-id",
+              stash: { id: "", name: "x" },
+            } as never,
+            // stash present but name is missing
+            {
+              type: "registry-asset",
+              assetType: "skill",
+              assetName: "no-name",
+              action: "akm show skills/no-name",
+              stash: { id: "x" },
+            } as never,
+            // valid — only this one should survive
+            {
+              type: "registry-asset" as const,
+              assetType: "skill",
+              assetName: "good",
+              action: "akm show skills/good",
+              stash: { id: "x", name: "x" },
+            },
+          ],
+        };
+      },
+    })) as unknown as Parameters<typeof registerRegistryProvider>[1]);
+
+    try {
+      const result = await searchRegistry("anything", {
+        registries: [{ url: "http://unused", provider: "incomplete-stash-test" }],
+      });
+
+      expect(result.assetHits?.length).toBe(1);
+      expect(result.assetHits![0]!.assetName).toBe("good");
+    } finally {
+      unregisterRegistryProvider("incomplete-stash-test");
+    }
+  });
+});
