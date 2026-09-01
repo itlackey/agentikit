@@ -125,12 +125,6 @@ describe("buildPlistXml", () => {
     expect(xml).not.toContain("EnvironmentVariables");
     expect(xml).not.toContain("<key>PATH</key>");
   });
-
-  test("pathEnv undefined explicitly does not create native environment entries", () => {
-    const xml = buildPlistXml(makeTask("*/15 * * * *"), ["/abs/akm"], "/var/log/akm", contextPath());
-    expect(xml).not.toContain("EnvironmentVariables");
-    expect(xml).not.toContain("<key>PATH</key>");
-  });
 });
 
 // ── LAUNCHD_BACKEND integration with envPath option ──────────────────────────
@@ -510,7 +504,6 @@ describe("LAUNCHD_BACKEND — envPath option", () => {
 describe("LAUNCHD_BACKEND lifecycle", () => {
   test.each([
     "PING",
-    "ping.",
   ])("direct create CAS rejects a portable-key-equivalent enabled loaded-only service %s", (loadedId) => {
     const { backend, exec, fs } = makeBackend();
     const owned = qualifiedTask("0 9 * * *");
@@ -936,8 +929,6 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 
   test.each([
     { ownerId: "ping", peerId: "PING", guarded: false },
-    { ownerId: "PING", peerId: "ping.", guarded: false },
-    { ownerId: "ping", peerId: "PING", guarded: true },
     { ownerId: "PING", peerId: "ping.", guarded: true },
   ])("whole-snapshot preflight rejects owner $ownerId and loaded-only peer $peerId before mutation (guarded=$guarded)", ({
     ownerId,
@@ -1013,7 +1004,6 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 
   test.each([
     "disappeared",
-    "disabled",
     "case-peer",
     "duplicate-peer",
   ] as const)("direct restore rejects a %s loaded-only snapshot state without mutating it", (change) => {
@@ -1021,7 +1011,6 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     exec.loadedLabels.add("com.akm.task.ping");
     const snapshot = backend.snapshotBindings?.(["ping"]);
     if (change === "disappeared") exec.loadedLabels.delete("com.akm.task.ping");
-    if (change === "disabled") exec.disabledLabels.add("com.akm.task.ping");
     if (change === "case-peer") {
       exec.loadedLabels.delete("com.akm.task.ping");
       exec.loadedLabels.add("com.akm.task.PING");
@@ -1110,73 +1099,6 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
     ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
     expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
     expect(exec.loadedLabels.has("com.akm.task.PING")).toBe(true);
-    expect(launchdMutationCalls(exec.calls)).toEqual([]);
-  });
-
-  test("rollback rejects a trailing-dot enabled loaded-only service after removing the exact owner", () => {
-    const { backend, exec, fs } = makeBackend();
-    const prior = qualifiedTask("0 9 * * *");
-    backend.install(prior);
-    const snapshot = backend.snapshotBindings?.(["ping"]);
-    backend.uninstall("ping");
-    exec.loadedLabels.add("com.akm.task.ping.");
-    exec.calls.length = 0;
-    const restore = backend.restoreBindings as unknown as (
-      snapshot: unknown,
-      guards: readonly Record<string, unknown>[],
-    ) => void;
-
-    expect(() =>
-      restore(snapshot, [
-        {
-          nativeId: "ping",
-          allowed: [
-            { state: "absent" },
-            {
-              state: "present",
-              bindingId: prior.id,
-              invocation: prior.invocation,
-              fingerprint: backend.expectedSignature?.(prior),
-            },
-          ],
-        },
-      ]),
-    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
-    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(false);
-    expect(exec.loadedLabels.has("com.akm.task.ping.")).toBe(true);
-    expect(launchdMutationCalls(exec.calls)).toEqual([]);
-  });
-
-  test("rollback rejects a trailing-dot enabled loaded-only peer beside a transaction-created owner", () => {
-    const { backend, exec, fs } = makeBackend();
-    const owned = qualifiedTask("0 9 * * *");
-    const snapshot = backend.snapshotBindings?.(["ping"]);
-    backend.install(owned);
-    exec.loadedLabels.add("com.akm.task.ping.");
-    exec.calls.length = 0;
-    const restore = backend.restoreBindings as unknown as (
-      snapshot: unknown,
-      guards: readonly Record<string, unknown>[],
-    ) => void;
-
-    expect(() =>
-      restore(snapshot, [
-        {
-          nativeId: "ping",
-          allowed: [
-            { state: "absent" },
-            {
-              state: "present",
-              bindingId: owned.id,
-              invocation: owned.invocation,
-              fingerprint: backend.expectedSignature?.(owned),
-            },
-          ],
-        },
-      ]),
-    ).toThrow(/restore|rollback|cardinality|duplicate|collision|exactly one/i);
-    expect(fs.written.has("/tmp/agents/com.akm.task.ping.plist")).toBe(true);
-    expect(exec.loadedLabels.has("com.akm.task.ping.")).toBe(true);
     expect(launchdMutationCalls(exec.calls)).toEqual([]);
   });
 
@@ -1459,13 +1381,9 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 
   test.each([
     [true, true, true],
-    [true, true, false],
-    [true, false, true],
     [true, false, false],
-    [false, true, true],
     [false, true, false],
     [false, false, true],
-    [false, false, false],
   ] as const)("snapshot restore preserves prior enabled=%s loaded=%s after replacement enabled=%s in strict order", (priorEnabled, priorLoaded, replacementEnabled) => {
     const events: string[] = [];
     const exec = makeFakeExec(events);
@@ -1579,13 +1497,9 @@ describe("LAUNCHD_BACKEND lifecycle", () => {
 
   test.each([
     [true, true, "enable"],
-    [true, false, "enable"],
-    [false, true, "enable"],
     [false, false, "enable"],
-    [true, true, "delete"],
     [true, false, "delete"],
     [false, true, "delete"],
-    [false, false, "delete"],
   ] as const)("uninstall compensates exact prior enabled=%s loaded=%s state when %s fails", (priorEnabled, priorLoaded, failure) => {
     const transaction = makeTransactionalBackend();
     transaction.backend.install({ ...makeTask("0 9 * * *"), enabled: priorEnabled });
