@@ -1122,6 +1122,15 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     persist: !planOnly,
   });
 
+  const eligibilitySourceByRef = stampEligibilitySource({
+    scope,
+    processableRefs: gathered.processableRefs,
+    mergedRefs: gathered.mergedRefs,
+    signalFiltered: gathered.signalFiltered,
+    proactiveRefs: gathered.proactiveRefs,
+    highSalienceRefs: gathered.highSalienceRefs,
+  });
+
   // Shared admission boundary for every synthetic fallback lane. Cleanup and
   // structural validation are exclusive selectors: no later rank/replay state
   // may re-create a candidate they removed. Keep the exact surviving objects
@@ -1134,7 +1143,7 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     primaryStashDir,
     eventsCtx,
     mergedRefs: gathered.mergedRefs,
-    eligibilitySourceByRef: gathered.eligibilitySourceByRef,
+    eligibilitySourceByRef,
     feedbackSummary: gathered.feedbackSummary,
     retrievalCounts: gathered.retrievalCounts,
     signalFiltered: gathered.signalFiltered,
@@ -1155,7 +1164,7 @@ export async function runImprovePreparationStage(args: ImprovePreparationStageAr
     eventsCtx,
     mergedRefs: scored.mergedRefs,
     salienceMap: scored.salienceMap,
-    eligibilitySourceByRef: gathered.eligibilitySourceByRef,
+    eligibilitySourceByRef,
     distillOnlyRefs: gathered.distillOnlyRefs,
     validationFailureRefs,
     summary: {
@@ -1443,13 +1452,15 @@ interface GatheredCandidates {
   highSalienceRefs: ImproveEligibleRef[];
   signalAndRetrievalRefs: ImproveEligibleRef[];
   mergedRefs: ImproveEligibleRef[];
-  eligibilitySourceByRef: Map<string, EligibilitySource>;
+  processableRefs: ImproveEligibleRef[];
 }
 
 /**
  * Pass: candidate-gather — the signal-delta partition, the bulk feedback
  * summary, retrieval signals, the Layer-2 proactive and Layer-3 high-salience
- * rescue lanes, the merged candidate set, and lane attribution stamping.
+ * rescue lanes, and the merged candidate set. Lane attribution stamping is a
+ * separate pass — see `stampEligibilitySource` — run by the caller once
+ * `mergedRefs` is known.
  */
 function gatherCandidates(args: {
   scope: ImproveScope;
@@ -1568,23 +1579,52 @@ function gatherCandidates(args: {
   const mergedRefs =
     scope.mode === "ref" ? processableRefs : options.requireFeedbackSignal ? signalFiltered : signalAndRetrievalRefs;
 
-  // ── Attribution tagging: stamp each ref with the eligibility lane that
-  // selected it ──────────────────────────────────────────────────────────────
-  // Every reflect/distill proposal must record WHICH lane chose its source asset
-  // so downstream accept/reject/revert/retrieval outcomes can be sliced by lane
-  // (does the PROACTIVE lane produce value vs the reactive lanes?). We build the
-  // lane map here — the one place all three lanes are known — and stamp it onto
-  // each ImproveEligibleRef object. Because the ref objects are shared by
-  // reference across buckets, the stamp travels with the ref through the sort,
-  // disk-check, and loop stages down to the reflect/distill event emit sites and
-  // createProposal calls. See EligibilitySource for the lane vocabulary.
-  //
-  // Precedence (prefer the most specific reactive signal):
-  //   scope > signal-delta > proactive > high-salience
-  // A ref with real feedback is attributed to feedback even if it was also due
-  // for proactive maintenance or had high encoding salience. We apply lanes
-  // weakest-first so the strongest overwrites; the explicit --scope <ref> bypass
-  // wins outright (user intent).
+  return {
+    distillCooledRefs,
+    preCooldownCount,
+    distillOnlyRefs,
+    feedbackSummary,
+    signalFiltered,
+    signalBearingSet,
+    retrievalCounts,
+    proactiveRefs,
+    proactiveMaintenanceSummary,
+    proactivePlan: proactive.proactivePlan,
+    highSalienceRefs,
+    signalAndRetrievalRefs,
+    mergedRefs,
+    processableRefs,
+  };
+}
+
+/**
+ * Attribution tagging: stamp each ref with the eligibility lane that selected
+ * it. Every reflect/distill proposal must record WHICH lane chose its source
+ * asset so downstream accept/reject/revert/retrieval outcomes can be sliced by
+ * lane (does the PROACTIVE lane produce value vs the reactive lanes?). We
+ * build the lane map here — the one place all three lanes are known — and
+ * stamp it onto each ImproveEligibleRef object. Because the ref objects are
+ * shared by reference across buckets, the stamp travels with the ref through
+ * the sort, disk-check, and loop stages down to the reflect/distill event
+ * emit sites and createProposal calls. See EligibilitySource for the lane
+ * vocabulary.
+ *
+ * Precedence (prefer the most specific reactive signal):
+ *   scope > signal-delta > proactive > high-salience
+ * A ref with real feedback is attributed to feedback even if it was also due
+ * for proactive maintenance or had high encoding salience. We apply lanes
+ * weakest-first so the strongest overwrites; the explicit --scope <ref> bypass
+ * wins outright (user intent).
+ */
+function stampEligibilitySource(args: {
+  scope: ImproveScope;
+  processableRefs: ImproveEligibleRef[];
+  mergedRefs: ImproveEligibleRef[];
+  signalFiltered: ImproveEligibleRef[];
+  proactiveRefs: ImproveEligibleRef[];
+  highSalienceRefs: ImproveEligibleRef[];
+}): Map<string, EligibilitySource> {
+  const { scope, processableRefs, mergedRefs, signalFiltered, proactiveRefs, highSalienceRefs } = args;
   const eligibilitySourceByRef = new Map<string, EligibilitySource>();
   for (const r of highSalienceRefs) eligibilitySourceByRef.set(r.ref, "high-salience");
   for (const r of proactiveRefs) eligibilitySourceByRef.set(r.ref, "proactive");
@@ -1600,23 +1640,7 @@ function gatherCandidates(args: {
     // mergedRefs is always a subset of the four lanes above).
     r.eligibilitySource = eligibilitySourceByRef.get(r.ref) ?? "unknown";
   }
-
-  return {
-    distillCooledRefs,
-    preCooldownCount,
-    distillOnlyRefs,
-    feedbackSummary,
-    signalFiltered,
-    signalBearingSet,
-    retrievalCounts,
-    proactiveRefs,
-    proactiveMaintenanceSummary,
-    proactivePlan: proactive.proactivePlan,
-    highSalienceRefs,
-    signalAndRetrievalRefs,
-    mergedRefs,
-    eligibilitySourceByRef,
-  };
+  return eligibilitySourceByRef;
 }
 
 /**
