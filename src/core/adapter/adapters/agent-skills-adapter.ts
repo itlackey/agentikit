@@ -63,8 +63,6 @@ const DESCRIPTION_MAX = 1024;
 const RESERVED_NAME_WORDS = ["anthropic", "claude"];
 /** name charset/shape rule (spec §4.5). */
 const NAME_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-/** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
-const MAX_CONTENT_CHARS = 100_000;
 
 function toPosix(p: string): string {
   return p.replace(/\\/g, "/");
@@ -106,7 +104,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     adapterId: "agent-skills",
     type: "skill",
     name,
-    content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,
+    content: body,
   };
   if (description !== undefined) doc.description = description;
   if (tags !== undefined) doc.tags = tags;

@@ -137,9 +137,6 @@ function parseLifecycleStatus(value: unknown): "draft" | "stable" | "deprecated"
 /** Reserved OKF files (case-insensitive) — recognized, never indexed as concepts (§5, OKF §1.4). */
 const RESERVED_FILES = new Set(["index.md", "log.md"]);
 
-/** Upper bound on the bounded `content` FTS field (§3: "content: FTS 1 (bounded)"). Small fixtures are never truncated. */
-const MAX_CONTENT_CHARS = 100_000;
-
 /** POSIX-normalize separators without importing a cycle-participant helper. */
 function toPosix(p: string): string {
   return p.replace(/\\/g, "/");
@@ -280,7 +277,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     ownsPresentation: true,
     type,
     name,
-    content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,
+    content: body,
   };
   if (description !== undefined) doc.description = description;
   if (tags !== undefined) doc.tags = tags;

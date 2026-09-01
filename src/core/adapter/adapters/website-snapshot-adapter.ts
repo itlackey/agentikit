@@ -44,8 +44,6 @@ const PAGES_PREFIX = "stash/knowledge/";
 const MANIFEST_FILE = "manifest.json";
 /** The tag the snapshot writer stamps on every crawled page. */
 const WEBSITE_TAG = "website";
-/** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
-const MAX_CONTENT_CHARS = 100_000;
 
 function toPosix(p: string): string {
   return p.replace(/\\/g, "/");
@@ -116,7 +114,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     ownsPresentation: true,
     type: "website",
     name,
-    content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,
+    content: body,
   };
   if (fm.description !== undefined) doc.description = fm.description;
   if (fm.sourceUrl !== undefined) doc.documentJson = { sourceRef: fm.sourceUrl };

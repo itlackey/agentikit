@@ -36,8 +36,6 @@ import { hashContent, nonEmptyString, type ParsedForValidate, readTags, runBaseV
 const COMPONENT_ID = "main";
 /** The two authoritative workflow source formats. `.yaml` is deliberately not accepted. */
 const WORKFLOW_EXTS = new Set([".md", ".yml"]);
-/** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
-const MAX_CONTENT_CHARS = 100_000;
 
 function toPosix(p: string): string {
   return p.replace(/\\/g, "/");
@@ -89,7 +87,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     adapterId: "akm-workflow",
     type: "workflow",
     name,
-    content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,
+    content: body,
   };
   if (description !== undefined) doc.description = description;
   if (tags !== undefined) doc.tags = tags;

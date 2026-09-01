@@ -52,8 +52,6 @@ import { hashContent } from "./shared";
 const COMPONENT_ID = "main";
 /** The task YAML extension (spec §6 task row). */
 const TASK_EXT = TASK_EXTENSION;
-/** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
-const MAX_CONTENT_CHARS = 100_000;
 
 function toPosix(p: string): string {
   return p.replace(/\\/g, "/");
@@ -75,7 +73,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     adapterId: "akm-task",
     type: "task",
     name,
-    content: raw.length > MAX_CONTENT_CHARS ? raw.slice(0, MAX_CONTENT_CHARS) : raw,
+    content: raw,
   };
 }
 

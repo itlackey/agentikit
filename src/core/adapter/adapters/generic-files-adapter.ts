@@ -38,8 +38,6 @@ const COMPONENT_ID = "main";
 const DOCUMENT_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".text"]);
 /** OKF reserved structural files (D-R6) — excluded from the catch-all, case-insensitive. */
 const RESERVED_FILES = new Set(["index.md", "log.md"]);
-/** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
-const MAX_CONTENT_CHARS = 100_000;
 
 type GenericType = "script" | "document" | "file";
 
@@ -81,7 +79,7 @@ function recognize(c: BundleComponent, file: FileContext): IndexDocument | null 
     adapterId: "generic-files",
     type,
     name,
-    content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,
+    content: body,
   };
   if (type !== "script") doc.ownsPresentation = true;
   const description = nonEmptyString(parsed.data.description);

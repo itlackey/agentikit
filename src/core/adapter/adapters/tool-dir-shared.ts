@@ -65,8 +65,6 @@ import { hashContent, nonEmptyString, readTags, runBaseValidateChecks } from "./
 
 /** OKF reserved structural files (D-R6) — excluded at every depth, case-insensitive. */
 const RESERVED_FILES = new Set(["index.md", "log.md"]);
-/** Upper bound on the bounded `content` FTS field (mirrors okf-adapter). */
-const MAX_CONTENT_CHARS = 100_000;
 /** The canonical (plural) subdir spellings writes normalize to (open-question-6). */
 const CANONICAL_COMMAND_DIR = "commands";
 const CANONICAL_AGENT_DIR = "agents";
@@ -165,7 +163,7 @@ export function recognizeToolDir(layout: ToolDirLayout, c: BundleComponent, file
     adapterId: layout.adapterId,
     type: cls.type,
     name,
-    content: body.length > MAX_CONTENT_CHARS ? body.slice(0, MAX_CONTENT_CHARS) : body,
+    content: body,
   };
   if (cls.type === "instruction") doc.ownsPresentation = true;
   if (description !== undefined) doc.description = description;

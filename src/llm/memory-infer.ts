@@ -29,9 +29,6 @@ import type { LoweredExecutionDispatchLease } from "../integrations/agent/execut
 import type { TryLlmFeatureFallbackEvent } from "./feature-gate";
 import { callStructured, type StructuredLlmRunner } from "./structured-call";
 
-/** Hard cap on body chars sent to the model — pragmatic and matches `runLlmEnrich`. */
-const MAX_BODY_CHARS = 4000;
-
 const SYSTEM_PROMPT = memoryInferSystemPrompt;
 
 const USER_PROMPT_PREFIX = memoryInferUserPrompt;
@@ -115,7 +112,7 @@ export async function compressMemoryToDerivedMemory(
   const trimmedBody = body.trim();
   if (!trimmedBody) return undefined;
 
-  const userPrompt = `${USER_PROMPT_PREFIX}${trimmedBody.slice(0, MAX_BODY_CHARS)}`;
+  const userPrompt = `${USER_PROMPT_PREFIX}${trimmedBody}`;
 
   // Memory inference is always gated: no config closes the gate instead of
   // taking callStructured's ungated path for direct callers.
