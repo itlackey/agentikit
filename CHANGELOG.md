@@ -4,115 +4,25 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.9.8-beta.3] - 2026-09-02
-
-### Fixed
-
-- **The incremental index no longer misses an edit whose timestamp did not move
-  forward.** The per-directory freshness check summarised a directory as its
-  file-name set plus the single newest mtime, which lost two kinds of change.
-  An edit to any file other than the newest one landed below that maximum and
-  was invisible even though its own mtime changed — so a restore, checkout, or
-  archive extraction that stamped a plausible older date left stale content in
-  the index. And because mtime is writable by ordinary tooling (`touch -r`,
-  `rsync --times`, `cp -p`), an edit with a restored timestamp was invisible
-  outright. The directory is now digested per file over
-  `(basename, size, mtime, ctime)` at nanosecond resolution. It is the same one
-  `stat` call per file, so the incremental fast path costs what it did before.
-  Both gaps predate 0.9.8 and applied to every earlier release.
-
-  Trade-off worth knowing: `ctime` also moves on metadata-only changes such as
-  `chmod`, and after copying a tree, so those now cost one extra rescan. That
-  direction is deliberate — extra work, never stale content. Existing indexes
-  rescan once as the digest changes shape, then return to the fast path.
-
-- **`akm migrate apply` can now clear a legacy `extraParams` config.** A config
-  still carrying a liftable key such as `extraParams.temperature` fails config
-  load closed, and that error names `akm migrate apply` as the fix — but the
-  migrate command resolved the stash directory and ran the task migrator, both
-  of which load config, so it died on the very error it exists to clear. An
-  operator hitting this had no reachable way forward. The config lift now runs
-  before anything that loads config, and `akm migrate status` reports the
-  pending lift as its blocker instead of re-raising the same error. A genuine
-  conflict, where an `extraParams` key and its first-class field disagree, still
-  hard-rejects and names both values rather than guessing.
-
-- **`akm health` no longer warns about disk usage on a fresh install.** The
-  `data-dir-usage` advisory added earlier in 0.9.8 counted SQLite's `-wal` and
-  `-shm` sidecars toward the data directory's total but not toward the live
-  databases they belong to. On an untouched install the write-ahead log is most
-  of the directory, so the very first `akm health` reported a ~126x ratio and
-  exited `warn` with no user data present. Sidecars now count as part of their
-  database, and the advisory stays quiet below 1 GB, where a ratio says nothing
-  useful about disk pressure.
-
-## [0.9.8-beta.2] - 2026-09-02
-
-> **Adds state migration `026-proposals-strip-legacy-fragment-refs`.** The
-> one-way caveat below applies to it as well: once this build opens
-> `state.db`, 0.9.8-beta.1 and earlier refuse it with `unknown migration ID
-> 026-proposals-strip-legacy-fragment-refs`.
-
-### Added
-
-- **`akm health` reports data-dir disk usage** (#896). A `data-dir-usage`
-  advisory sums the data directory with a stat-only walk and warns when it is
-  more than 3× the three live databases (state.db, index.db, logs.db) or when
-  one top-level subdirectory holds more than half of it, naming that
-  subdirectory with its size and share (for example `backups/ is 70G (94% of
-  data dir)`). The walk stops after 100,000 entries and says so. Silent when
-  nothing looks wrong.
-
-### Fixed
-
-- **`akm task sync` no longer spawns `npm root --global` on every call** (#901).
-  The npm-global-root probe behind `resolveAkmInvocation` is memoized for the
-  process, so a `task sync --rebind` cycle spawns npm at most once instead of
-  twice, and an installation that loops it every minute stops accumulating an
-  npm debug log per spawn.
-- **A blocked v2 task now says how to convert it** (#902, #899). The
-  `argv-array-has-no-portable-shell-string` blocker printed by `akm migrate`
-  and the `TASK_SCHEMA_VERSION_UNSUPPORTED` read error now state that manual
-  conversion is required and name the rewrite (`command:` argv array →
-  `run:` string plus `shell:`). The full v2 → v4 field mapping is documented in
-  `docs/migration/v0.9.1-to-v0.9.2.md`.
-- **Legacy `#fragment` proposal rows are repaired instead of warned about
-  forever** (#898). State migration 026 strips the retired export-fragment
-  selector from `proposals.ref` in place so the rows parse again, and an
-  unparseable proposal row now warns once per process instead of once per
-  read (`akm health --report` read the table seven times).
-
-- **A no-op incremental `akm index` no longer costs minutes of CPU** (#900).
-  Two causes: the per-directory freshness check ran two full scans of the
-  `entries` table for every directory (O(directories × entries)), and every
-  file was read, hashed, and parsed before the freshness check decided the
-  directory was unchanged. The directory lookup now uses the existing
-  `file_path` index, and a stat-based gate over each directory's walked file
-  set skips unchanged directories before any file is read. On a synthetic
-  800-directory, 4,000-entry corpus a no-op pass fell from ~37 s to under 1 s
-  of CPU with identical entries and search results. The persisted directory
-  fingerprint now covers every walked file and `index_dir_state` gains a
-  `row_count` column; an existing index.db drains each directory once more
-  after upgrading, then takes the fast path.
-
-- **Task-migration snapshots are capped at the five most recent** (#897).
-  `akm migrate apply` writes one snapshot directory per run under
-  `backups/task-v3` and `backups/task-v4` and never pruned them; each apply
-  now keeps the five newest and removes the rest, the same policy config
-  backups already use. Nothing in the current code writes the legacy
-  `backups/migrations`, `manual`, `releases`, or `operations` directories,
-  so they are left alone; the new health advisory is what surfaces them.
-
-## [0.9.8-beta.1] - 2026-09-01
+## [0.9.8] - 2026-09-02
 
 A cleanup and stabilization release: deletion of machinery that policed the
 codebase's shape rather than its behaviour, and — because auditing for that
 machinery meant reading the code closely — a run of real defects it had been
-sitting on top of.
+sitting on top of. Two security holes, two search-correctness bugs, a
+locale-dependent hash, a deletion shield that failed open, and sixteen places
+that answered a failure with a confident wrong answer instead of an error.
 
-> **Upgrading is one-way for `state.db`.** This release adds migration
-> `025-task-history-vocabulary-backfill`. Once any 0.9.8 command opens
-> `state.db`, the ledger contains an ID that 0.9.7 does not know, and 0.9.7
+Then a second round, from verifying the release against a real 23,865-entry
+environment: a no-op incremental index costing ~21 CPU-minutes, legacy proposal
+rows that could not be repaired, an npm probe spawning on every scheduler tick,
+a blocked task migration that named no remedy, and a data directory that could
+reach 74 GB with nothing reporting it.
+
+> **Upgrading is one-way for `state.db`.** This release adds two migrations,
+> `025-task-history-vocabulary-backfill` and
+> `026-proposals-strip-legacy-fragment-refs`. Once any 0.9.8 command opens
+> `state.db`, its ledger contains IDs that 0.9.7 does not know, and 0.9.7
 > refuses to open it: `Refusing to open a database with a newer migration
 > ledger: unknown migration ID 025-task-history-vocabulary-backfill`.
 >
@@ -127,12 +37,22 @@ sitting on top of.
 >
 > ```sh
 > akm info --format json    # confirm your data dir
-> sqlite3 "$DATA_DIR/state.db" "VACUUM INTO '''state.db.pre-0.9.8.bak'''"
+> sqlite3 "$DATA_DIR/state.db" "VACUUM INTO 'state.db.pre-0.9.8.bak'"
 > ```
 
-Two security holes, two search-correctness bugs, a locale-dependent hash, a
-deletion shield that failed open, and sixteen places that answered a failure
-with a confident wrong answer instead of an error.
+> **`index.db` rescans once.** The per-directory freshness fingerprint changed
+> shape, so the first `akm index` after upgrading re-reads every directory and
+> then returns to the fast path. Nothing is lost; the index is derived.
+
+### Added
+
+- **`akm health` reports data-dir disk usage** (#896). A `data-dir-usage`
+  advisory sums the data directory with a stat-only walk and warns when it is
+  more than 3× the three live databases (state.db, index.db, logs.db) or when
+  one top-level subdirectory holds more than half of it, naming that
+  subdirectory with its size and share (for example `backups/ is 70G (94% of
+  data dir)`). The walk stops after 100,000 entries and says so. Silent when
+  nothing looks wrong.
 
 ### Changed
 
@@ -148,6 +68,39 @@ with a confident wrong answer instead of an error.
   nothing for anyone whose config already resolved to json. Deleted, along with
   ~60 lines of comment justifying it. `--format text` still renders the same
   summary through the same formatter; it is simply no longer the default.
+
+
+- **Search no longer truncates long queries (#892).** `MAX_LEXICAL_QUERY_TOKENS
+  = 16` silently dropped every token past the sixteenth, and tokens are
+  collected in order, so the discarded half was the tail — for
+  natural-language input, usually where the discriminating words are. It also
+  fed ranking, so token-overlap scoring ran on the truncated set too. It was
+  unexplained in the code and in the commit that introduced it, and unreachable
+  from any flag, config key, or environment variable. Removed: the planner
+  handles 10,000 tokens in 9ms, so no performance cliff was being protected.
+
+- **Content and memory bodies are no longer silently truncated.**
+  `MAX_CONTENT_CHARS` (100k, duplicated across 8 adapters) cut indexed content
+  so the tail of a long document was unsearchable; `MAX_BODY_CHARS` (4000) cut
+  the text sent for memory inference, so on a large-context engine the model
+  saw a fraction of the input while the derived memory looked complete. Both
+  removed.
+
+- **GitHub Actions are pinned to commit SHAs (#768).** All 29 `uses:` steps
+  across every workflow, with the tag preserved in a trailing comment.
+
+- **Gated CI runs on schedule, dispatch, and candidate tags only.** The
+  `detect-changes` job that selected suites by regex-matching a PR diff is
+  gone — its path patterns had gone stale and still named test files this
+  release moved or deleted, so it was silently under-selecting suites. Release
+  evidence is unchanged; the checklist always required an exact-SHA dispatch.
+
+- **`akm-eval` in CI is now a determinism check only.** Its score gates are
+  removed. Measured before cutting: the baseline scored a perfect 1.0 against
+  a 0.75 gate, and seven of nine case types never ran — CI has no LLM and no
+  run history, so everything the eval exists to measure was skipped while the
+  job reported green. The harness itself is unchanged and remains a genuine
+  quality signal when run against a real bundle.
 
 ### Fixed
 
@@ -264,39 +217,83 @@ with a confident wrong answer instead of an error.
   `bun run lint` failed locally while CI, which never has those files, stayed
   green.
 
-### Changed
 
-- **Search no longer truncates long queries (#892).** `MAX_LEXICAL_QUERY_TOKENS
-  = 16` silently dropped every token past the sixteenth, and tokens are
-  collected in order, so the discarded half was the tail — for
-  natural-language input, usually where the discriminating words are. It also
-  fed ranking, so token-overlap scoring ran on the truncated set too. It was
-  unexplained in the code and in the commit that introduced it, and unreachable
-  from any flag, config key, or environment variable. Removed: the planner
-  handles 10,000 tokens in 9ms, so no performance cliff was being protected.
+- **`akm task sync` no longer spawns `npm root --global` on every call** (#901).
+  The npm-global-root probe behind `resolveAkmInvocation` is memoized for the
+  process, so a `task sync --rebind` cycle spawns npm at most once instead of
+  twice, and an installation that loops it every minute stops accumulating an
+  npm debug log per spawn.
+- **A blocked v2 task now says how to convert it** (#902, #899). The
+  `argv-array-has-no-portable-shell-string` blocker printed by `akm migrate`
+  and the `TASK_SCHEMA_VERSION_UNSUPPORTED` read error now state that manual
+  conversion is required and name the rewrite (`command:` argv array →
+  `run:` string plus `shell:`). The full v2 → v4 field mapping is documented in
+  `docs/migration/v0.9.1-to-v0.9.2.md`.
+- **Legacy `#fragment` proposal rows are repaired instead of warned about
+  forever** (#898). State migration 026 strips the retired export-fragment
+  selector from `proposals.ref` in place so the rows parse again, and an
+  unparseable proposal row now warns once per process instead of once per
+  read (`akm health --report` read the table seven times).
 
-- **Content and memory bodies are no longer silently truncated.**
-  `MAX_CONTENT_CHARS` (100k, duplicated across 8 adapters) cut indexed content
-  so the tail of a long document was unsearchable; `MAX_BODY_CHARS` (4000) cut
-  the text sent for memory inference, so on a large-context engine the model
-  saw a fraction of the input while the derived memory looked complete. Both
-  removed.
+- **A no-op incremental `akm index` no longer costs minutes of CPU** (#900).
+  Two causes: the per-directory freshness check ran two full scans of the
+  `entries` table for every directory (O(directories × entries)), and every
+  file was read, hashed, and parsed before the freshness check decided the
+  directory was unchanged. The directory lookup now uses the existing
+  `file_path` index, and a stat-based gate over each directory's walked file
+  set skips unchanged directories before any file is read. On a synthetic
+  800-directory, 4,000-entry corpus a no-op pass fell from ~37 s to under 1 s
+  of CPU with identical entries and search results. The persisted directory
+  fingerprint now covers every walked file and `index_dir_state` gains a
+  `row_count` column; an existing index.db drains each directory once more
+  after upgrading, then takes the fast path.
 
-- **GitHub Actions are pinned to commit SHAs (#768).** All 29 `uses:` steps
-  across every workflow, with the tag preserved in a trailing comment.
+- **Task-migration snapshots are capped at the five most recent** (#897).
+  `akm migrate apply` writes one snapshot directory per run under
+  `backups/task-v3` and `backups/task-v4` and never pruned them; each apply
+  now keeps the five newest and removes the rest, the same policy config
+  backups already use. Nothing in the current code writes the legacy
+  `backups/migrations`, `manual`, `releases`, or `operations` directories,
+  so they are left alone; the new health advisory is what surfaces them.
 
-- **Gated CI runs on schedule, dispatch, and candidate tags only.** The
-  `detect-changes` job that selected suites by regex-matching a PR diff is
-  gone — its path patterns had gone stale and still named test files this
-  release moved or deleted, so it was silently under-selecting suites. Release
-  evidence is unchanged; the checklist always required an exact-SHA dispatch.
 
-- **`akm-eval` in CI is now a determinism check only.** Its score gates are
-  removed. Measured before cutting: the baseline scored a perfect 1.0 against
-  a 0.75 gate, and seven of nine case types never ran — CI has no LLM and no
-  run history, so everything the eval exists to measure was skipped while the
-  job reported green. The harness itself is unchanged and remains a genuine
-  quality signal when run against a real bundle.
+- **The incremental index no longer misses an edit whose timestamp did not move
+  forward.** The per-directory freshness check summarised a directory as its
+  file-name set plus the single newest mtime, which lost two kinds of change.
+  An edit to any file other than the newest one landed below that maximum and
+  was invisible even though its own mtime changed — so a restore, checkout, or
+  archive extraction that stamped a plausible older date left stale content in
+  the index. And because mtime is writable by ordinary tooling (`touch -r`,
+  `rsync --times`, `cp -p`), an edit with a restored timestamp was invisible
+  outright. The directory is now digested per file over
+  `(basename, size, mtime, ctime)` at nanosecond resolution. It is the same one
+  `stat` call per file, so the incremental fast path costs what it did before.
+  Both gaps predate 0.9.8 and applied to every earlier release.
+
+  Trade-off worth knowing: `ctime` also moves on metadata-only changes such as
+  `chmod`, and after copying a tree, so those now cost one extra rescan. That
+  direction is deliberate — extra work, never stale content. Existing indexes
+  rescan once as the digest changes shape, then return to the fast path.
+
+- **`akm migrate apply` can now clear a legacy `extraParams` config.** A config
+  still carrying a liftable key such as `extraParams.temperature` fails config
+  load closed, and that error names `akm migrate apply` as the fix — but the
+  migrate command resolved the stash directory and ran the task migrator, both
+  of which load config, so it died on the very error it exists to clear. An
+  operator hitting this had no reachable way forward. The config lift now runs
+  before anything that loads config, and `akm migrate status` reports the
+  pending lift as its blocker instead of re-raising the same error. A genuine
+  conflict, where an `extraParams` key and its first-class field disagree, still
+  hard-rejects and names both values rather than guessing.
+
+- **`akm health` no longer warns about disk usage on a fresh install.** The
+  `data-dir-usage` advisory added earlier in 0.9.8 counted SQLite's `-wal` and
+  `-shm` sidecars toward the data directory's total but not toward the live
+  databases they belong to. On an untouched install the write-ahead log is most
+  of the directory, so the very first `akm health` reported a ~126x ratio and
+  exited `warn` with no user data present. Sidecars now count as part of their
+  database, and the advisory stays quiet below 1 GB, where a ratio says nothing
+  useful about disk pressure.
 
 ### Removed
 
