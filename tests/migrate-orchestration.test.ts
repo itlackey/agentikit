@@ -25,6 +25,8 @@
  */
 
 import { afterEach, expect, spyOn, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
 import { EXIT_CODES } from "../src/cli/shared";
 import {
   combineMigrationPlans,
@@ -32,7 +34,9 @@ import {
   type RunMigrationTool,
   runMigrateSubcommand,
 } from "../src/commands/migrate-cli";
+import { resetConfigCache } from "../src/core/config/config";
 import { initOutputMode, resetOutputMode } from "../src/output/context";
+import { sandboxXdgConfigHome } from "./_helpers/sandbox";
 
 type FakeCall = { readonly status: number; readonly plan?: Record<string, unknown> };
 
@@ -204,4 +208,88 @@ test("apply threads --dry-run into both generations", async () => {
     ["task-v4-apply", "--dry-run"],
   ]);
   expect(printed.read().status).toBe("current");
+});
+
+// ── The lift must run before anything that loads config ──────────────────────
+//
+// A config still carrying legacy `extraParams` keys fails `loadConfig` closed,
+// and that error names `akm migrate apply` as the remedy. But the orchestrator
+// resolves the stash dir (a config load) and the task migrator loads config
+// too, so the remedy used to die on the very error it exists to clear --
+// leaving an operator with no reachable way forward.
+
+/** Write a config whose only fault is a liftable legacy extraParams key. */
+function writeLegacyExtraParamsConfig(configHome: string): string {
+  const configPath = path.join(configHome, "akm", "config.json");
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify({
+      configVersion: "0.9.0",
+      engines: {
+        "my-llm": {
+          kind: "llm",
+          endpoint: "https://example.com/v1/chat/completions",
+          model: "test-model",
+          extraParams: { temperature: 0.7 },
+        },
+      },
+    }),
+  );
+  return configPath;
+}
+
+test("migrate apply lifts a legacy extraParams config even though loading that config fails closed", async () => {
+  const sandbox = sandboxXdgConfigHome();
+  const configPath = writeLegacyExtraParamsConfig(sandbox.dir);
+  resetConfigCache();
+  // The task migrator loads config itself, so it must not run until the lift
+  // has already cleared the key. Record what was on disk at call time.
+  const extraParamsAtToolCall: unknown[] = [];
+  const { runTool } = fakeRunner(() => {
+    const onDisk = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      engines: { "my-llm": { extraParams?: unknown } };
+    };
+    extraParamsAtToolCall.push(onDisk.engines["my-llm"].extraParams);
+    return { status: EXIT_CODES.SUCCESS, plan: { status: "current" } };
+  });
+
+  const printed = capturePrintedPlan();
+  let written: { engines: { "my-llm": { temperature?: number; extraParams?: unknown } } };
+  try {
+    await runMigrateSubcommand("migrate-apply", ["apply"], ["task-v4-apply"], runTool);
+    written = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } finally {
+    printed.restore();
+    resetConfigCache();
+    sandbox.cleanup();
+  }
+  expect(written.engines["my-llm"].temperature).toBe(0.7);
+  expect(written.engines["my-llm"].extraParams).toBeUndefined();
+  // Both generations must have seen an already-lifted config on disk.
+  expect(extraParamsAtToolCall).toEqual([undefined, undefined]);
+});
+
+test("migrate status names the pending lift as the blocker instead of dying on the config it describes", async () => {
+  const sandbox = sandboxXdgConfigHome();
+  writeLegacyExtraParamsConfig(sandbox.dir);
+  resetConfigCache();
+  const { runTool, calls } = fakeRunner(() => ({ status: EXIT_CODES.SUCCESS, plan: { status: "current" } }));
+
+  const printed = capturePrintedPlan();
+  let plan: Record<string, unknown>;
+  try {
+    await runMigrateSubcommand("migrate-status", ["status"], ["task-v4-status"], runTool);
+    plan = printed.read();
+  } finally {
+    printed.restore();
+    resetConfigCache();
+    sandbox.cleanup();
+  }
+
+  expect(plan.status).toBe("blocked");
+  expect(plan.blockers).toEqual(["engines.my-llm.extraParams.temperature -> engines.my-llm.temperature"]);
+  expect(process.exitCode).toBe(EXIT_CODES.GENERAL);
+  // Nothing that loads config should have been reached.
+  expect(calls).toEqual([]);
 });

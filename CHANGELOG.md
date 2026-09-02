@@ -26,6 +26,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   direction is deliberate — extra work, never stale content. Existing indexes
   rescan once as the digest changes shape, then return to the fast path.
 
+- **`akm migrate apply` can now clear a legacy `extraParams` config.** A config
+  still carrying a liftable key such as `extraParams.temperature` fails config
+  load closed, and that error names `akm migrate apply` as the fix — but the
+  migrate command resolved the stash directory and ran the task migrator, both
+  of which load config, so it died on the very error it exists to clear. An
+  operator hitting this had no reachable way forward. The config lift now runs
+  before anything that loads config, and `akm migrate status` reports the
+  pending lift as its blocker instead of re-raising the same error. A genuine
+  conflict, where an `extraParams` key and its first-class field disagree, still
+  hard-rejects and names both values rather than guessing.
+
 - **`akm health` no longer warns about disk usage on a fresh install.** The
   `data-dir-usage` advisory added earlier in 0.9.8 counted SQLite's `-wal` and
   `-shm` sidecars toward the data directory's total but not toward the live

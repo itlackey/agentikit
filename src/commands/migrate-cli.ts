@@ -4,6 +4,7 @@
 
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
 import { resolveStashDir } from "../core/common";
+import { resetConfigCache } from "../core/config/config";
 import { ConfigError } from "../core/errors";
 import { getConfigPath } from "../core/paths";
 import { applyConfigExtraParamsLift, findConfigExtraParamsLift } from "./migrate/config-extra-params";
@@ -121,14 +122,37 @@ export async function runMigrateSubcommand(
   // No configured bundle means there is no stash to scan — an empty domain,
   // not an error — so migrate still works before `akm bundle create`. Any
   // OTHER ConfigError propagates.
+  const configPath = getConfigPath();
+  const applyResidue = command === "migrate-apply" && !genOneArgs.includes("--dry-run");
+
+  // The config lift runs BEFORE anything that loads config. A config still
+  // carrying legacy extraParams keys fails `loadConfig` closed, and the error
+  // it fails with names `akm migrate apply` as the remedy -- but both
+  // `resolveStashDir` below and the task migrator itself load config, so that
+  // remedy could never reach the lift that fixes it. Applying it first is what
+  // makes the advice true. `resetConfigCache` so every load below sees the
+  // rewritten file rather than the rejected one.
+  const configExtraParams = applyResidue
+    ? applyConfigExtraParamsLift(configPath)
+    : { pending: findConfigExtraParamsLift(configPath) };
+  if (applyResidue && (configExtraParams as { applied?: boolean }).applied) resetConfigCache();
+
+  // status and --dry-run cannot rewrite the file, so a pending lift still
+  // blocks every config load below. Report it as the blocker rather than
+  // letting the operator hit the same circular error again.
+  const pendingLift = applyResidue ? undefined : (configExtraParams as { pending: { lifted: string[] } }).pending;
+  if (pendingLift && pendingLift.lifted.length > 0) {
+    output(command, { status: "blocked", blockers: pendingLift.lifted, configExtraParams });
+    process.exitCode = EXIT_CODES.GENERAL;
+    return;
+  }
+
   let stashDir: string | undefined;
   try {
     stashDir = resolveStashDir();
   } catch (error) {
     if (!(error instanceof ConfigError) || error.code !== "STASH_DIR_NOT_FOUND") throw error;
   }
-  const configPath = getConfigPath();
-  const applyResidue = command === "migrate-apply" && !genOneArgs.includes("--dry-run");
   const first = await callMigrateTool(genOneArgs, runTool);
   if (first.status !== EXIT_CODES.SUCCESS && first.status !== EXIT_CODES.GENERAL) {
     process.exitCode = first.status;
@@ -161,9 +185,6 @@ export async function runMigrateSubcommand(
             ? { recovered: await recoverStaleTxns(stashDir) }
             : { pending: findStaleTxnEntries(stashDir) },
         };
-  const configExtraParams = applyResidue
-    ? applyConfigExtraParamsLift(configPath)
-    : { pending: findConfigExtraParamsLift(configPath) };
   output(command, { ...combined, ...stashSections, configExtraParams });
 
   if (combined.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
