@@ -68,14 +68,4 @@ describe("pruneTaskMigrationBackups (#897)", () => {
     const missing = path.join(os.tmpdir(), "akm-task-migration-backups-does-not-exist");
     expect(() => pruneTaskMigrationBackups(missing)).not.toThrow();
   });
-
-  test("honors a custom max", () => {
-    const backupDir = makeBackupDir();
-    const base = Date.now();
-    for (let i = 0; i < 4; i++) writeSnapshot(backupDir, `snap-${i}`, new Date(base + i * 60_000));
-
-    pruneTaskMigrationBackups(backupDir, 2);
-
-    expect(fs.readdirSync(backupDir).sort()).toEqual(["snap-2", "snap-3"]);
-  });
 });

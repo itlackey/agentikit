@@ -145,16 +145,31 @@ export function backupExistingConfig(configPath: string, now = new Date()): Conf
 }
 
 function pruneOldBackups(backupDir: string): void {
-  let entries: string[];
+  pruneToNewest(backupDir, MAX_CONFIG_BACKUPS, (entry) => entry.isFile() && isTimestampedConfigBackup(entry.name));
+}
+
+function isTimestampedConfigBackup(name: string): boolean {
+  return name.startsWith("config-") && name.endsWith(".json") && name !== "config.latest.json";
+}
+
+/**
+ * Keep the `keep` most-recently-modified entries of `dir` that `select`
+ * admits and remove the rest. Best-effort: an unreadable dir is a no-op, an
+ * unreadable entry sorts oldest (pruned first), and a failed removal is
+ * retried by the next call. Shared by the config backups above and the task
+ * migration snapshots (#897).
+ */
+export function pruneToNewest(dir: string, keep: number, select: (entry: fs.Dirent) => boolean): void {
+  let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(backupDir);
+    entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return;
   }
-  const timestamped = entries
-    .filter((n) => n.startsWith("config-") && n.endsWith(".json") && n !== "config.latest.json")
-    .map((name) => {
-      const full = path.join(backupDir, name);
+  const candidates = entries
+    .filter(select)
+    .map((entry) => {
+      const full = path.join(dir, entry.name);
       let mtime = 0;
       try {
         mtime = fs.statSync(full).mtimeMs;
@@ -164,11 +179,11 @@ function pruneOldBackups(backupDir: string): void {
       return { path: full, mtime };
     })
     .sort((a, b) => b.mtime - a.mtime);
-  for (const stale of timestamped.slice(MAX_CONFIG_BACKUPS)) {
+  for (const stale of candidates.slice(keep)) {
     try {
-      fs.unlinkSync(stale.path);
+      fs.rmSync(stale.path, { recursive: true, force: true });
     } catch {
-      // Best-effort prune; next save will retry.
+      // Best-effort prune; the next call will retry.
     }
   }
 }

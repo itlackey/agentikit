@@ -142,6 +142,23 @@ export function warn(...args: unknown[]): void {
   }
 }
 
+const warnedOnceKeys = new Set<string>();
+
+/**
+ * `warn()` at most once per process for a given `key`. For diagnostics that
+ * would otherwise repeat on every read of the same bad row or value.
+ */
+export function warnOnce(key: string, ...args: unknown[]): void {
+  if (warnedOnceKeys.has(key)) return;
+  warnedOnceKeys.add(key);
+  warn(...args);
+}
+
+/** TEST-ONLY. Forget every `warnOnce` key so a test can re-trigger a warning. */
+export function _resetWarnOnceForTests(): void {
+  warnedOnceKeys.clear();
+}
+
 /**
  * Emit an error to stderr unless --quiet is active.
  * Always written to the log file if one is active.

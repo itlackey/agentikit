@@ -16,15 +16,14 @@
  * of migration 026.
  */
 
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
-import {
-  _resetUnparseableProposalRowWarnings,
-  listStateProposals,
-} from "../../../src/storage/repositories/proposals-repository";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../../src/core/warn";
+import { listStateProposals } from "../../../src/storage/repositories/proposals-repository";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
+import { withSeam } from "../../_helpers/seams";
 
 let storage: IsolatedAkmStorage;
 
@@ -34,7 +33,7 @@ beforeEach(() => {
 
 afterEach(() => {
   storage.cleanup();
-  _resetUnparseableProposalRowWarnings();
+  _resetWarnOnceForTests();
 });
 
 /** Seeds two rows carrying the retired `#fragment` ref shape (#898), plus one healthy row. */
@@ -79,27 +78,30 @@ describe("listStateProposals — unparseable-row warning is deduped per row per 
     seedFragmentRows();
     const file = getStateDbPath();
 
-    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      for (let i = 0; i < 3; i++) {
-        const db = openStateDatabase(file);
-        try {
-          const proposals = listStateProposals(db, { stashDir: path.resolve(storage.stashDir) });
-          // The well-formed row is always returned; the two broken rows never are.
-          expect(proposals.map((p) => p.id)).toEqual(["healthy-row"]);
-        } finally {
-          db.close();
+    const warnings: string[] = [];
+    withSeam(
+      _setWarnSinkForTests,
+      (level, args) => {
+        if (level === "warn") warnings.push(String(args[0]));
+      },
+      () => {
+        for (let i = 0; i < 3; i++) {
+          const db = openStateDatabase(file);
+          try {
+            const proposals = listStateProposals(db, { stashDir: path.resolve(storage.stashDir) });
+            // The well-formed row is always returned; the two broken rows never are.
+            expect(proposals.map((p) => p.id)).toEqual(["healthy-row"]);
+          } finally {
+            db.close();
+          }
         }
-      }
+      },
+    );
 
-      // Two distinct broken rows, read 3 times each => 6 parse failures, but
-      // only ONE warning line per distinct row id for the life of the process.
-      expect(warnSpy).toHaveBeenCalledTimes(2);
-      const messages = warnSpy.mock.calls.map((call) => String(call[0]));
-      expect(messages.some((m) => m.includes("fragment-row-a"))).toBe(true);
-      expect(messages.some((m) => m.includes("fragment-row-b"))).toBe(true);
-    } finally {
-      warnSpy.mockRestore();
-    }
+    // Two distinct broken rows, read 3 times each => 6 parse failures, but
+    // only ONE warning line per distinct row id for the life of the process.
+    expect(warnings).toHaveLength(2);
+    expect(warnings.some((m) => m.includes("fragment-row-a"))).toBe(true);
+    expect(warnings.some((m) => m.includes("fragment-row-b"))).toBe(true);
   });
 });

@@ -11,12 +11,12 @@
  *
  * Two persisted signals back the decision:
  *   1. The `entries` rows already indexed for the directory (`getEntriesByDir`).
- *   2. The `index_dir_state` fingerprint row (`getIndexDirState`), which caches
- *      the file-set hash + max mtime for directories that legitimately produced
- *      zero rows, so they are not rescanned every run.
+ *   2. The `index_dir_state` row (`getIndexDirState`): the fingerprint of the
+ *      directory's walked file set (basename set + max mtime, `computeDirFingerprint`)
+ *      as of its last drain, plus the row count that drain persisted.
  *
- * `computeDirFingerprint` derives the fingerprint (basename set + max mtime)
- * that both the freshness check and the persisted `index_dir_state` row use.
+ * `getCachedDirState` is the pre-drain gate (#900): a directory whose walked
+ * fingerprint still matches its row is skipped before any file is read.
  */
 
 import fs from "node:fs";
@@ -51,15 +51,26 @@ export interface DirIndexState {
   persistedRowCount: number;
 }
 
+export interface DirFingerprint {
+  fileSetHash: string;
+  fileMtimeMaxMs: number;
+}
+
+/**
+ * Post-drain freshness verdict. `files` is the recognized file set the drain
+ * produced (compared against the persisted entries); `fingerprint` is the
+ * walked-set fingerprint compared against the persisted row and defaults to
+ * one computed over `files`.
+ */
 export function getDirIndexState(
   db: Database,
   dirPath: string,
   files: string[],
   builtAtMs: number,
   indexVariant = "",
+  fingerprint: DirFingerprint = computeDirFingerprint(dirPath, files, indexVariant),
 ): DirIndexState {
   const prevEntries = getEntriesByDir(db, dirPath);
-  const fingerprint = computeDirFingerprint(dirPath, files, indexVariant);
   if (prevEntries.length > 0) {
     const staleReason = getDirStaleReason(dirPath, files, prevEntries, builtAtMs);
     if (staleReason) return { stale: true, reason: staleReason, persistedRowCount: prevEntries.length };
@@ -94,62 +105,37 @@ export function getDirIndexState(
   };
 }
 
-export function getCachedZeroRowDirState(
+/**
+ * Pre-drain gate (#900). A directory whose walked-set fingerprint matches its
+ * persisted row cannot recognize differently than last time, so it is skipped
+ * before `drainDirDocuments` reads a single file. A row that recorded a real
+ * generation (`rowCount > 0`) is skipped outright; a zero-row or pre-#900 row
+ * goes through the entries-aware check so the dedup-order guard still applies.
+ */
+export function getCachedDirState(
   db: Database,
   dirPath: string,
   files: string[],
   builtAtMs: number,
   priorDirsChanged: boolean,
-  indexVariant = "",
+  indexVariant: string,
+  fingerprint: DirFingerprint,
 ): DirIndexState | undefined {
-  const state = getDirIndexState(db, dirPath, files, builtAtMs, indexVariant);
+  const cached = getIndexDirState(db, dirPath);
+  if (
+    !cached ||
+    cached.fileSetHash !== fingerprint.fileSetHash ||
+    cached.fileMtimeMaxMs !== fingerprint.fileMtimeMaxMs
+  ) {
+    return undefined;
+  }
+  if (cached.rowCount !== undefined && cached.rowCount > 0) {
+    return { stale: false, reason: { kind: "unchanged-precheck" }, persistedRowCount: cached.rowCount };
+  }
+  const state = getDirIndexState(db, dirPath, files, builtAtMs, indexVariant, fingerprint);
   if (state.stale || state.reason.kind !== "cached-zero-row-state") return undefined;
   if (!canUseIncrementalSkip(state, priorDirsChanged)) return undefined;
   return state;
-}
-
-/**
- * #900 pre-drain freshness gate: decide "this directory cannot have changed"
- * from stat data alone (file names + max mtime over the RAW walked file
- * list), before `drainDirDocuments` reads/hashes/parses a single file.
- *
- * This is deliberately a coarser, cheaper cousin of `getDirIndexState`'s
- * post-drain "unchanged" check: that check compares the previous ENTRIES'
- * filenames (the recognized subset) against the current drain's recognized
- * output, which requires having already drained. This gate instead compares
- * the full walked file set (recognized or not — `.json`, `.gitkeep`, ...
- * included) against the walked file set fingerprint recorded the last time
- * this directory was actually drained (`walkedFileSetHash`/
- * `walkedFileMtimeMaxMs`, populated in lockstep with `fileSetHash`/
- * `fileMtimeMaxMs` — see `indexer.ts`'s persist step). Identical walked
- * input can only ever re-derive identical recognized output (recognition is
- * a pure function of a file's path/content), so a match here is sound even
- * though it never inspects the persisted `entries` rows.
- *
- * Restricted to directories whose last real drain produced at least one row
- * (`rowCount > 0`): a directory that produced zero rows already has its own
- * pre-drain fast path (`getCachedZeroRowDirState`) with its own dedup-order
- * nuance (`canUseIncrementalSkip`'s "deduped-zero-row" guard) that does not
- * apply here, so this gate defers to that one instead of duplicating it.
- * A row written before #900 (no `rowCount`/`walkedFileSetHash` yet) also
- * defers — one more full drain populates them.
- */
-export function getCachedUnchangedDirState(
-  db: Database,
-  dirPath: string,
-  files: string[],
-  indexVariant = "",
-): DirIndexState | undefined {
-  const cachedState = getIndexDirState(db, dirPath);
-  if (!cachedState) return undefined;
-  if (cachedState.rowCount === undefined || cachedState.rowCount <= 0) return undefined;
-  if (cachedState.walkedFileSetHash === undefined || cachedState.walkedFileMtimeMaxMs === undefined) return undefined;
-
-  const fingerprint = computeDirFingerprint(dirPath, files, indexVariant);
-  if (cachedState.walkedFileSetHash !== fingerprint.fileSetHash) return undefined;
-  if (cachedState.walkedFileMtimeMaxMs !== fingerprint.fileMtimeMaxMs) return undefined;
-
-  return { stale: false, reason: { kind: "unchanged-precheck" }, persistedRowCount: cachedState.rowCount };
 }
 
 export function canUseIncrementalSkip(state: DirIndexState, priorDirsChanged: boolean): boolean {
@@ -160,11 +146,7 @@ export function canUseIncrementalSkip(state: DirIndexState, priorDirsChanged: bo
   );
 }
 
-export function computeDirFingerprint(
-  _dirPath: string,
-  files: string[],
-  indexVariant = "",
-): { fileSetHash: string; fileMtimeMaxMs: number } {
+export function computeDirFingerprint(_dirPath: string, files: string[], indexVariant = ""): DirFingerprint {
   const normalizedFiles = [...new Set(files.map((file) => path.basename(file)))].sort();
   let fileMtimeMaxMs = 0;
   for (const file of files) {

@@ -23,12 +23,10 @@ import {
   STATE_MIGRATIONS,
 } from "../../../src/core/state/migrations";
 import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
+import { _resetWarnOnceForTests } from "../../../src/core/warn";
 import { openDatabase } from "../../../src/storage/database";
 import { runMigrations } from "../../../src/storage/engines/sqlite-migrations";
-import {
-  _resetUnparseableProposalRowWarnings,
-  listStateProposals,
-} from "../../../src/storage/repositories/proposals-repository";
+import { listStateProposals } from "../../../src/storage/repositories/proposals-repository";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 const MIGRATION_ID = "026-proposals-strip-legacy-fragment-refs";
@@ -135,7 +133,7 @@ describe("migration 026-proposals-strip-legacy-fragment-refs — legacy fragment
 
     afterEach(() => {
       storage.cleanup();
-      _resetUnparseableProposalRowWarnings();
+      _resetWarnOnceForTests();
     });
 
     test("reads every migrated row without throwing or skip-warning, once migration 026 has run", () => {

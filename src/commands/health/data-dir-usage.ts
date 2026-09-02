@@ -51,15 +51,6 @@ const MAX_WALK_ENTRIES = 100_000;
 
 const LIVE_DB_FILES = ["state.db", "index.db", "logs.db"] as const;
 
-function safeFileSize(filePath: string): number {
-  try {
-    const stat = fs.statSync(filePath);
-    return stat.isFile() ? stat.size : 0;
-  } catch {
-    return 0; // missing/unreadable — treated as absent, not an error.
-  }
-}
-
 interface WalkResult {
   bytes: number;
   truncated: boolean;
@@ -116,7 +107,7 @@ function formatBytes(bytes: number): string {
   return `${rendered}${units[unit]}`;
 }
 
-export interface DataDirSubdirUsage {
+interface DataDirSubdirUsage {
   name: string;
   bytes: number;
   percent: number;
@@ -139,22 +130,23 @@ export function collectDataDirUsageAdvisory(dataDir: string): HealthCheckResult 
   const budget = { remaining: MAX_WALK_ENTRIES };
   let totalBytes = 0;
   let truncated = false;
-  const subdirs: DataDirSubdirUsage[] = [];
+  const sizes = new Map<string, { bytes: number; isDirectory: boolean }>();
 
   for (const entry of topEntries) {
-    const full = path.join(dataDir, entry.name);
-    const size = sizeOfPath(full, budget);
+    const size = sizeOfPath(path.join(dataDir, entry.name), budget);
     totalBytes += size.bytes;
     if (size.truncated) truncated = true;
-    if (entry.isDirectory()) subdirs.push({ name: entry.name, bytes: size.bytes, percent: 0 });
+    sizes.set(entry.name, { bytes: size.bytes, isDirectory: entry.isDirectory() });
   }
   if (totalBytes === 0) return undefined;
 
-  for (const subdir of subdirs) subdir.percent = (subdir.bytes / totalBytes) * 100;
-  subdirs.sort((a, b) => b.bytes - a.bytes);
+  const subdirs: DataDirSubdirUsage[] = [...sizes]
+    .filter(([, size]) => size.isDirectory)
+    .map(([name, size]) => ({ name, bytes: size.bytes, percent: (size.bytes / totalBytes) * 100 }))
+    .sort((a, b) => b.bytes - a.bytes);
   const largest = subdirs[0];
 
-  const liveDbBreakdown = Object.fromEntries(LIVE_DB_FILES.map((f) => [f, safeFileSize(path.join(dataDir, f))]));
+  const liveDbBreakdown = Object.fromEntries(LIVE_DB_FILES.map((f) => [f, sizes.get(f)?.bytes ?? 0]));
   const liveDbBytes = Object.values(liveDbBreakdown).reduce((a, b) => a + b, 0);
   const ratio = liveDbBytes > 0 ? totalBytes / liveDbBytes : undefined;
 
@@ -174,9 +166,7 @@ export function collectDataDirUsageAdvisory(dataDir: string): HealthCheckResult 
   if (truncated) {
     parts.push(`size figures are a lower bound — the walk stopped after ${MAX_WALK_ENTRIES} entries`);
   }
-  const message =
-    `${parts.join("; ")}. Prune the largest subdirectory: task-migration snapshots under ` +
-    "backups/task-v3 and backups/task-v4 are capped automatically; anything else under backups/ is not.";
+  const message = `${parts.join("; ")}.`;
 
   return {
     name: "data-dir-usage",

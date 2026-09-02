@@ -48,9 +48,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `file_path` index, and a stat-based gate over each directory's walked file
   set skips unchanged directories before any file is read. On a synthetic
   800-directory, 4,000-entry corpus a no-op pass fell from ~37 s to under 1 s
-  of CPU with identical entries and search results. `index_dir_state` gains
-  three nullable columns; an existing index.db drains every directory once
-  more after upgrading, then takes the fast path.
+  of CPU with identical entries and search results. The persisted directory
+  fingerprint now covers every walked file and `index_dir_state` gains a
+  `row_count` column; an existing index.db drains each directory once more
+  after upgrading, then takes the fast path.
 
 - **Task-migration snapshots are capped at the five most recent** (#897).
   `akm migrate apply` writes one snapshot directory per run under

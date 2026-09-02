@@ -80,7 +80,12 @@ export interface DbVecResult {
   distance: number;
 }
 
-/** Per-directory incremental-index state row. */
+/**
+ * Per-directory incremental-index state row. `fileSetHash`/`fileMtimeMaxMs`
+ * fingerprint the directory's walked file set (every file the walk saw,
+ * recognized or not) as of its last drain, so a later run can skip the
+ * directory from stat data alone.
+ */
 export interface IndexDirState {
   dirPath: string;
   fileSetHash: string;
@@ -88,23 +93,9 @@ export interface IndexDirState {
   reason: string;
   updatedAt: string;
   /**
-   * #900: fingerprint over the directory's WALKED file set (every file the
-   * walk saw, recognized or not) as of the last successful drain, keyed
-   * separately from `fileSetHash` (which is derived from the RECOGNIZED
-   * subset — see `resolveIndexedFiles`). Lets a pre-drain gate detect "this
-   * directory cannot have changed" without running `adapter.recognize` /
-   * hashing every file first. `undefined` on a row written before #900 or by
-   * a codepath that never drained (never populated until the next real scan).
-   */
-  walkedFileSetHash?: string;
-  /** Companion max-mtime for {@link walkedFileSetHash}. */
-  walkedFileMtimeMaxMs?: number;
-  /**
-   * Row count the directory produced the last time it was actually drained.
-   * Distinguishes a real (non-zero) generation from the zero-row case (which
-   * has its own dedicated cache path with different dedup semantics) so the
-   * walked-fileset pre-drain gate only fires for directories known to have
-   * produced entries. `undefined` on a row written before #900.
+   * Entries the last drain persisted for this directory; `undefined` on a
+   * row written before #900 or by a drain that lost rows to per-source dedup
+   * (those directories depend on their predecessors and keep draining).
    */
   rowCount?: number;
 }

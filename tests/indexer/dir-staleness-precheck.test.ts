@@ -3,135 +3,86 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #900 pre-drain freshness gate — direct unit coverage for
- * `getCachedUnchangedDirState`, independent of a full `akmIndex()` run (see
- * tests/integration/indexer/dir-precheck-skip.test.ts for the end-to-end
+ * #900 pre-drain freshness gate — direct unit coverage for `getCachedDirState`
+ * (see tests/integration/indexer/dir-precheck-skip.test.ts for the end-to-end
  * "an unchanged directory is never drained" behavior).
- *
- * Covers the deference conditions the gate must get right: no persisted
- * state, a pre-#900 row (no walked columns yet), a zero-row-only row (the
- * gate defers to `getCachedZeroRowDirState` instead), a real mismatch, and
- * the genuine match.
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { computeDirFingerprint, getCachedUnchangedDirState } from "../../src/indexer/passes/dir-staleness";
+import { computeDirFingerprint, getCachedDirState } from "../../src/indexer/passes/dir-staleness";
 import { openIndexDatabase } from "../../src/storage/repositories/index-connection";
 import { upsertIndexDirState } from "../../src/storage/repositories/index-meta-repository";
 
+const VARIANT = "akm@1";
 const createdTmpDirs: string[] = [];
 
-function tmpDbPath(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-dir-staleness-precheck-"));
-  createdTmpDirs.push(dir);
-  return path.join(dir, "test.db");
+/** A fresh index.db plus one directory holding `a.md`, with the walked fingerprint. */
+function seed(): { db: ReturnType<typeof openIndexDatabase>; dir: string; files: string[] } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-dir-staleness-precheck-"));
+  createdTmpDirs.push(root);
+  const dir = path.join(root, "dir");
+  fs.mkdirSync(dir);
+  const file = path.join(dir, "a.md");
+  fs.writeFileSync(file, "content");
+  return { db: openIndexDatabase(path.join(root, "test.db")), dir, files: [file] };
+}
+
+function persist(db: ReturnType<typeof openIndexDatabase>, dir: string, files: string[], rowCount?: number): void {
+  upsertIndexDirState(db, { dirPath: dir, ...computeDirFingerprint(dir, files, VARIANT), reason: "updated", rowCount });
+}
+
+function gate(db: ReturnType<typeof openIndexDatabase>, dir: string, files: string[], priorDirsChanged = false) {
+  return getCachedDirState(
+    db,
+    dir,
+    files,
+    Date.now(),
+    priorDirsChanged,
+    VARIANT,
+    computeDirFingerprint(dir, files, VARIANT),
+  );
 }
 
 afterAll(() => {
   for (const dir of createdTmpDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe("getCachedUnchangedDirState", () => {
+describe("getCachedDirState", () => {
   test("no persisted index_dir_state row -> defers (undefined)", () => {
-    const db = openIndexDatabase(tmpDbPath());
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-dsp-dir-"));
-    createdTmpDirs.push(dir);
-    const file = path.join(dir, "a.md");
-    fs.writeFileSync(file, "content");
-
-    expect(getCachedUnchangedDirState(db, dir, [file], "akm@1")).toBeUndefined();
+    const { db, dir, files } = seed();
+    expect(gate(db, dir, files)).toBeUndefined();
   });
 
-  test("a pre-#900 row with no walked columns -> defers (undefined)", () => {
-    const db = openIndexDatabase(tmpDbPath());
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-dsp-dir-"));
-    createdTmpDirs.push(dir);
-    const file = path.join(dir, "a.md");
-    fs.writeFileSync(file, "content");
-
-    const fp = computeDirFingerprint(dir, [file], "akm@1");
-    // Old-shape row: fileSetHash/fileMtimeMaxMs populated, walked columns and
-    // rowCount absent (exactly what an upgrade finds pre-#900).
-    upsertIndexDirState(db, {
-      dirPath: dir,
-      fileSetHash: fp.fileSetHash,
-      fileMtimeMaxMs: fp.fileMtimeMaxMs,
-      reason: "unchanged",
+  test("identical walked file set and mtime, rowCount > 0 -> unchanged-precheck", () => {
+    const { db, dir, files } = seed();
+    persist(db, dir, files, 3);
+    expect(gate(db, dir, files)).toEqual({
+      stale: false,
+      reason: { kind: "unchanged-precheck" },
+      persistedRowCount: 3,
     });
-
-    expect(getCachedUnchangedDirState(db, dir, [file], "akm@1")).toBeUndefined();
   });
 
-  test("a zero-row-only persisted row (rowCount 0) -> defers to the zero-row cache instead", () => {
-    const db = openIndexDatabase(tmpDbPath());
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-dsp-dir-"));
-    createdTmpDirs.push(dir);
-    const file = path.join(dir, "ignored.json");
-    fs.writeFileSync(file, "{}");
-
-    const fp = computeDirFingerprint(dir, [file], "akm@1");
-    upsertIndexDirState(db, {
-      dirPath: dir,
-      fileSetHash: fp.fileSetHash,
-      fileMtimeMaxMs: fp.fileMtimeMaxMs,
-      reason: "empty-generated-set",
-      walkedFileSetHash: fp.fileSetHash,
-      walkedFileMtimeMaxMs: fp.fileMtimeMaxMs,
-      rowCount: 0,
-    });
-
-    expect(getCachedUnchangedDirState(db, dir, [file], "akm@1")).toBeUndefined();
+  test("walked file set changed (new file) -> defers (undefined)", () => {
+    const { db, dir, files } = seed();
+    persist(db, dir, files, 3);
+    const extra = path.join(dir, "b.md");
+    fs.writeFileSync(extra, "more");
+    expect(gate(db, dir, [...files, extra])).toBeUndefined();
   });
 
-  test("walked file set changed (new file) -> stale (undefined)", () => {
-    const db = openIndexDatabase(tmpDbPath());
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-dsp-dir-"));
-    createdTmpDirs.push(dir);
-    const file = path.join(dir, "a.md");
-    fs.writeFileSync(file, "content");
-
-    const fp = computeDirFingerprint(dir, [file], "akm@1");
-    upsertIndexDirState(db, {
-      dirPath: dir,
-      fileSetHash: fp.fileSetHash,
-      fileMtimeMaxMs: fp.fileMtimeMaxMs,
-      reason: "unchanged",
-      walkedFileSetHash: fp.fileSetHash,
-      walkedFileMtimeMaxMs: fp.fileMtimeMaxMs,
-      rowCount: 1,
-    });
-
-    const newFile = path.join(dir, "b.md");
-    fs.writeFileSync(newFile, "content2");
-
-    expect(getCachedUnchangedDirState(db, dir, [file, newFile], "akm@1")).toBeUndefined();
+  test("a zero-row row (rowCount 0) -> takes the entries-aware zero-row path", () => {
+    const { db, dir, files } = seed();
+    persist(db, dir, files, 0);
+    expect(gate(db, dir, files)?.reason.kind).toBe("cached-zero-row-state");
   });
 
-  test("identical walked file set and mtime, rowCount > 0 -> not stale", () => {
-    const db = openIndexDatabase(tmpDbPath());
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-dsp-dir-"));
-    createdTmpDirs.push(dir);
-    const file = path.join(dir, "a.md");
-    fs.writeFileSync(file, "content");
-
-    const fp = computeDirFingerprint(dir, [file], "akm@1");
-    upsertIndexDirState(db, {
-      dirPath: dir,
-      fileSetHash: fp.fileSetHash,
-      fileMtimeMaxMs: fp.fileMtimeMaxMs,
-      reason: "unchanged",
-      walkedFileSetHash: fp.fileSetHash,
-      walkedFileMtimeMaxMs: fp.fileMtimeMaxMs,
-      rowCount: 3,
-    });
-
-    const state = getCachedUnchangedDirState(db, dir, [file], "akm@1");
-    expect(state).toBeDefined();
-    expect(state?.stale).toBe(false);
-    expect(state?.reason.kind).toBe("unchanged-precheck");
-    expect(state?.persistedRowCount).toBe(3);
+  test("a pre-#900 row (no rowCount) with no entries -> still cached as zero-row", () => {
+    const { db, dir, files } = seed();
+    persist(db, dir, files);
+    expect(gate(db, dir, files)?.reason.kind).toBe("cached-zero-row-state");
   });
 });

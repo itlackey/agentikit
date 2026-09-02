@@ -392,32 +392,38 @@ export function getPositiveFeedbackCountsByIds(ids: number[]): Map<number, numbe
 }
 
 /**
- * Half-open `[prefix, upperBound)` byte range over `entries.file_path` that
- * contains every row whose path starts with `dirPath + path.sep`, plus a few
- * false positives from sibling directories sharing that prefix (e.g. `/a/bc`
- * for dir `/a/b`, or nested `/a/b/c`) — `idx_entries_file_path` is a BINARY
- * (byte-order) index, so this range scan is a cheap index seek rather than a
- * table scan. Callers MUST still post-filter with `path.dirname(...) ===
- * resolvedDir` (every caller below does) to get the exact directory match;
- * the range only narrows what SQLite has to hand back.
+ * Rows whose `file_path` sits directly in `dirPath`. A half-open byte range
+ * over `idx_entries_file_path` (`[dir + sep, dir + sep + 1)`) turns the lookup
+ * into an index seek; the range is exact for "starts with `dir/`" but also
+ * admits nested subdirectories (`/a/b/c/x.md` for `/a/b`), so the dirname
+ * post-filter stays.
  */
-function directoryFilePathRange(dirPath: string): { resolvedDir: string; prefix: string; upperBound: string } {
+function selectRowsInDirectory<T extends { file_path: string }>(
+  db: Database,
+  dirPath: string,
+  columns: string,
+  bundleId?: string,
+): T[] {
   const resolvedDir = path.resolve(dirPath);
   const prefix = resolvedDir + path.sep;
-  const upperBound = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
-  return { resolvedDir, prefix, upperBound };
-}
-
-function rowsInDirectory(db: Database, dirPath: string, bundleId?: string): Array<{ id: number; item_ref: string }> {
-  const { resolvedDir, prefix, upperBound } = directoryFilePathRange(dirPath);
+  const upperBound = resolvedDir + String.fromCharCode(path.sep.charCodeAt(0) + 1);
   const params: SqlValue[] = [prefix, upperBound];
-  let sql = "SELECT id, item_ref, file_path FROM entries WHERE file_path >= ? AND file_path < ?";
+  let sql = `SELECT ${columns} FROM entries WHERE file_path >= ? AND file_path < ?`;
   if (bundleId) {
     sql += " AND bundle_id = ?";
     params.push(bundleId);
   }
-  const rows = db.prepare(sql).all(...params) as Array<{ id: number; item_ref: string; file_path: string }>;
-  return rows.filter((row) => path.dirname(path.resolve(row.file_path)) === resolvedDir);
+  const rows = db.prepare(sql).all(...params) as T[];
+  return rows.filter((row) => path.dirname(row.file_path) === resolvedDir);
+}
+
+function rowsInDirectory(db: Database, dirPath: string, bundleId?: string): Array<{ id: number; item_ref: string }> {
+  return selectRowsInDirectory<{ id: number; item_ref: string; file_path: string }>(
+    db,
+    dirPath,
+    "id, item_ref, file_path",
+    bundleId,
+  );
 }
 
 function deleteEntryRows(
@@ -796,13 +802,7 @@ export function getEntryById(
 }
 
 export function getEntriesByDir(db: Database, dirPath: string): DbIndexedEntry[] {
-  const { resolvedDir, prefix, upperBound } = directoryFilePathRange(dirPath);
-  const rows = (
-    db
-      .prepare(`SELECT ${ENTRY_COLUMNS} FROM entries WHERE file_path >= ? AND file_path < ?`)
-      .all(prefix, upperBound) as Array<Record<string, unknown>>
-  ).filter((row) => path.dirname(path.resolve(row.file_path as string)) === resolvedDir);
-  return parseEntryRows(rows, "getEntriesByDir");
+  return parseEntryRows(selectRowsInDirectory<EntryRow>(db, dirPath, ENTRY_COLUMNS), "getEntriesByDir");
 }
 
 /** Return every directory previously indexed for one canonical bundle. */
@@ -815,15 +815,8 @@ export function getIndexedDirPathsByBundleId(db: Database, bundleId: string): st
 
 /** Return every persisted bundle owner for one physical directory. */
 export function getIndexedBundleIdsByDir(db: Database, dirPath: string): string[] {
-  const { resolvedDir, prefix, upperBound } = directoryFilePathRange(dirPath);
-  const rows = db
-    .prepare("SELECT bundle_id, file_path FROM entries WHERE file_path >= ? AND file_path < ?")
-    .all(prefix, upperBound) as Array<{ bundle_id: string; file_path: string }>;
-  return [
-    ...new Set(
-      rows.filter((row) => path.dirname(path.resolve(row.file_path)) === resolvedDir).map((row) => row.bundle_id),
-    ),
-  ];
+  const rows = selectRowsInDirectory<{ bundle_id: string; file_path: string }>(db, dirPath, "bundle_id, file_path");
+  return [...new Set(rows.map((row) => row.bundle_id))];
 }
 
 /**

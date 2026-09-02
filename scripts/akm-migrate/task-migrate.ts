@@ -12,7 +12,7 @@ import { EXIT_CODES } from "../../src/cli/shared";
 import { detectAdapterId } from "../../src/core/adapter/detect-adapter";
 import { bundleComponentConfig, bundlesToSourceEntries } from "../../src/core/config/config-sources";
 import { type AkmConfig, loadConfig, resetConfigCache } from "../../src/core/config/config";
-import { withConfigLock } from "../../src/core/config/config-io";
+import { pruneToNewest, withConfigLock } from "../../src/core/config/config-io";
 import { ConfigError } from "../../src/core/errors";
 import { withMaintenanceStartBarrier } from "../../src/core/maintenance-barrier";
 import { getDataDir } from "../../src/core/paths";
@@ -195,58 +195,15 @@ export function inspectMigrationPlan(): MigrationPlan {
 }
 
 /**
- * Max snapshot directories retained per generation under
- * `<dataDir>/backups/task-v3/` and `<dataDir>/backups/task-v4/` (#897).
- * Same cap and "keep N newest by mtime" policy as `MAX_CONFIG_BACKUPS` /
- * `pruneOldBackups` in `src/core/config/config-io.ts` (#459) — one apply run
- * writes one timestamped-UUID snapshot dir here, and nothing ever pruned
- * them, so eight migration runs in July left eight ~5.7 GB copies of
- * state.db (49 GB) sitting under `backups/migrations/` unpruned. This only
- * caps the two paths current code actually writes (task-v3, task-v4); the
- * legacy `migrations/`, `manual/`, `releases/`, `operations/` directories
- * are untouched deliberately — nothing writes them anymore, and pruning a
- * user's manual backups is not this fix's call.
+ * Snapshot dirs kept per generation under `<dataDir>/backups/task-v3|task-v4`
+ * (#897): one apply run writes one timestamped-UUID dir and nothing pruned
+ * them. Same cap as config backups; the legacy `backups/{migrations,manual,
+ * releases,operations}` dirs are not written by current code and are left alone.
  */
 const MAX_TASK_MIGRATION_BACKUPS = 5;
 
-/**
- * Keep the {@link MAX_TASK_MIGRATION_BACKUPS} most-recently-modified snapshot
- * dirs directly under `generationBackupDir` (e.g.
- * `<dataDir>/backups/task-v3`) and delete the rest. Best-effort: an
- * unreadable/missing dir or a failed delete is swallowed — pruning is a
- * housekeeping nicety, never a reason to fail a migration apply that already
- * succeeded.
- */
-export function pruneTaskMigrationBackups(
-  generationBackupDir: string,
-  max: number = MAX_TASK_MIGRATION_BACKUPS,
-): void {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(generationBackupDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  const snapshots = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => {
-      const full = path.join(generationBackupDir, entry.name);
-      let mtime = 0;
-      try {
-        mtime = fs.statSync(full).mtimeMs;
-      } catch {
-        // Unreadable — sorts to the end via mtime 0, pruned first.
-      }
-      return { path: full, mtime };
-    })
-    .sort((a, b) => b.mtime - a.mtime);
-  for (const stale of snapshots.slice(max)) {
-    try {
-      fs.rmSync(stale.path, { recursive: true, force: true });
-    } catch {
-      // Best-effort prune; next apply run will retry.
-    }
-  }
+export function pruneTaskMigrationBackups(generationBackupDir: string): void {
+  pruneToNewest(generationBackupDir, MAX_TASK_MIGRATION_BACKUPS, (entry) => entry.isDirectory());
 }
 
 function printPlan(plan: { readonly status: "current" | "ready" | "blocked" }): void {
