@@ -3,18 +3,21 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #900 pre-drain freshness gate — direct unit coverage for `getCachedDirState`
- * (see tests/integration/indexer/dir-precheck-skip.test.ts for the end-to-end
- * "an unchanged directory is never drained" behavior).
+ * #900 pre-drain freshness gate — direct coverage for `getCachedDirState`
+ * (see dir-precheck-skip.test.ts for the end-to-end "an unchanged directory is
+ * never drained" behavior).
+ *
+ * Lives under tests/integration/ because it opens a real index database via
+ * `openIndexDatabase` (AGENTS.md classification rule).
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { computeDirFingerprint, getCachedDirState } from "../../src/indexer/passes/dir-staleness";
-import { openIndexDatabase } from "../../src/storage/repositories/index-connection";
-import { upsertIndexDirState } from "../../src/storage/repositories/index-meta-repository";
+import { computeDirFingerprint, getCachedDirState } from "../../../src/indexer/passes/dir-staleness";
+import { openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import { upsertIndexDirState } from "../../../src/storage/repositories/index-meta-repository";
 
 const VARIANT = "akm@1";
 const createdTmpDirs: string[] = [];

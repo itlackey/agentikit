@@ -6,8 +6,8 @@
  * #896: the `data-dir-usage` health advisory must name the data dir's total
  * size and its largest top-level subdirectory (with size + percentage) when
  * the data dir dwarfs the live databases or one subdirectory dominates, and
- * stay silent on a small, balanced data dir. Also guards the cost: a data
- * dir with tens of thousands of small files must not make the walk slow.
+ * stay silent on a small, balanced data dir. Also covers a data dir holding
+ * tens of thousands of small files, the case the walk cap exists for.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -76,20 +76,36 @@ describe("collectDataDirUsageAdvisory (#896)", () => {
     expect(Math.round(largest.percent)).toBeGreaterThan(90);
   });
 
-  test("walks ~50k small files under a second or two", () => {
+  // Guards the walk over a data dir polluted with tens of thousands of small
+  // files (task logs, npm logs). Asserts the observable RESULT of the full
+  // walk, not a wall-clock delta: `expect(elapsed).toBeLessThan(...)` is flaky
+  // under this repo's sharded runners (up to min(nproc, 8) concurrent `bun
+  // test` processes) — see tests/integration/ranking-salience-boost.test.ts:155
+  // for the same reasoning. The duration is logged for observability, and the
+  // test-level timeout is the loose promptness guard.
+  test("walks a data dir of ~50k small files without truncating", () => {
     const dataDir = makeTempDir("akm-ddu-manyfiles-");
-    writeFileOfSize(path.join(dataDir, "state.db"), 1_000_000);
+    writeFileOfSize(path.join(dataDir, "state.db"), 1_000);
     const logsDir = path.join(dataDir, "task-logs");
     fs.mkdirSync(logsDir, { recursive: true });
+    const body = Buffer.alloc(100, 1);
     for (let i = 0; i < 50_000; i++) {
-      fs.writeFileSync(path.join(logsDir, `run-${i}.log`), "x");
+      fs.writeFileSync(path.join(logsDir, `run-${i}.log`), body);
     }
 
     const start = performance.now();
-    collectDataDirUsageAdvisory(dataDir);
-    const elapsedMs = performance.now() - start;
+    const advisory = collectDataDirUsageAdvisory(dataDir);
+    console.log(`[data-dir-usage] 50k-file walk took ${(performance.now() - start).toFixed(0)}ms`);
 
-    console.log(`[data-dir-usage] 50k-file walk took ${elapsedMs.toFixed(0)}ms`);
-    expect(elapsedMs).toBeLessThan(2000);
-  }, 10_000);
+    // 50k entries is under MAX_WALK_ENTRIES (100k), so every file is counted:
+    // task-logs dominates, and the reported total is exact, not a lower bound.
+    const evidence = advisory?.evidence as
+      | { totalBytes: number; walkBounded: boolean; largestSubdir?: { name: string; bytes: number } }
+      | undefined;
+    expect(advisory?.name).toBe("data-dir-usage");
+    expect(evidence?.walkBounded).toBe(false);
+    expect(evidence?.largestSubdir?.name).toBe("task-logs");
+    expect(evidence?.largestSubdir?.bytes).toBe(50_000 * 100);
+    expect(evidence?.totalBytes).toBe(50_000 * 100 + 1_000);
+  }, 60_000);
 });
