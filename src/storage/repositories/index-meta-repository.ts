@@ -41,7 +41,7 @@ export function deleteMeta(db: Database, key: string): void {
 export function getIndexDirState(db: Database, dirPath: string): IndexDirState | undefined {
   const row = db
     .prepare(
-      "SELECT dir_path, file_set_hash, file_mtime_max_ms, reason, updated_at FROM index_dir_state WHERE dir_path = ?",
+      "SELECT dir_path, file_set_hash, file_mtime_max_ms, reason, updated_at, row_count FROM index_dir_state WHERE dir_path = ?",
     )
     .get(dirPath) as
     | {
@@ -50,6 +50,7 @@ export function getIndexDirState(db: Database, dirPath: string): IndexDirState |
         file_mtime_max_ms: number;
         reason: string;
         updated_at: string;
+        row_count: number | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -59,22 +60,31 @@ export function getIndexDirState(db: Database, dirPath: string): IndexDirState |
     fileMtimeMaxMs: row.file_mtime_max_ms,
     reason: row.reason,
     updatedAt: row.updated_at,
+    rowCount: row.row_count ?? undefined,
   };
 }
 
 export function upsertIndexDirState(
   db: Database,
-  state: Pick<IndexDirState, "dirPath" | "fileSetHash" | "fileMtimeMaxMs" | "reason">,
+  state: Pick<IndexDirState, "dirPath" | "fileSetHash" | "fileMtimeMaxMs" | "reason" | "rowCount">,
 ): void {
   db.prepare(
-    `INSERT INTO index_dir_state (dir_path, file_set_hash, file_mtime_max_ms, reason, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO index_dir_state (dir_path, file_set_hash, file_mtime_max_ms, reason, updated_at, row_count)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(dir_path) DO UPDATE SET
        file_set_hash = excluded.file_set_hash,
        file_mtime_max_ms = excluded.file_mtime_max_ms,
        reason = excluded.reason,
-       updated_at = excluded.updated_at`,
-  ).run(state.dirPath, state.fileSetHash, state.fileMtimeMaxMs, state.reason, new Date().toISOString());
+       updated_at = excluded.updated_at,
+       row_count = excluded.row_count`,
+  ).run(
+    state.dirPath,
+    state.fileSetHash,
+    state.fileMtimeMaxMs,
+    state.reason,
+    new Date().toISOString(),
+    state.rowCount ?? null,
+  );
 }
 
 export function deleteIndexDirState(db: Database, dirPath: string): void {

@@ -110,7 +110,8 @@ import { type EmbeddingGenerationResult, generateEmbeddingsForDb } from "./mater
 import {
   canUseIncrementalSkip,
   computeDirFingerprint,
-  getCachedZeroRowDirState,
+  type DirFingerprint,
+  getCachedDirState,
   getDirIndexState,
   inferZeroRowReason,
 } from "./passes/dir-staleness";
@@ -668,6 +669,21 @@ function indexTransactionHook(point: IndexTransactionPoint): void {
   indexTransactionHookForTests?.(point);
 }
 
+let drainObserverForTests: ((dirPath: string, fileCount: number) => void) | undefined;
+
+/**
+ * TEST-ONLY. Observe every directory that actually reaches
+ * `drainDirDocuments` — the per-file read/sha256-hash/frontmatter-parse step
+ * (#900) — with the directory path and its walked file count. `undefined`
+ * restores. A directory the pre-drain gate (`getCachedDirState`) skips never
+ * fires this observer, so it is the
+ * seam #900's own tests use to assert an unchanged directory's files are
+ * never read on a no-op incremental run.
+ */
+export function _setDrainObserverForTests(observer?: (dirPath: string, fileCount: number) => void): void {
+  drainObserverForTests = observer;
+}
+
 /**
  * Detect an adapter for every resolvable source that does not declare one, and
  * persist each detection into `config.json`.
@@ -974,6 +990,7 @@ type DirScanReason = {
     | "duplicate-dir"
     | "no-indexable-files"
     | "unchanged"
+    | "unchanged-precheck"
     | "index-context-changed"
     | "full-rebuild"
     | "no-previous-rows"
@@ -993,6 +1010,8 @@ type DirRecord = {
   skip: boolean;
   reason?: DirScanReason;
   persistedRowCount?: number;
+  /** Walked-set fingerprint taken at scan time (#900); persisted as-is for scanned and unchanged dirs. */
+  fingerprint?: DirFingerprint;
   /**
    * F4a M-core-2: `doc.hash` keyed by recognized-file absolute path, produced by
    * the per-dir document drain. Read by the persist layer to populate
@@ -1351,6 +1370,7 @@ async function scanSourceDirs(
     dirPath: string,
     currentStashDir: string,
     stateFiles: string[],
+    fingerprint: DirFingerprint,
     stash: StashFile | null,
     hashByFile: Map<string, string>,
     conceptIdByFile: Map<string, string>,
@@ -1358,16 +1378,18 @@ async function scanSourceDirs(
     forceScan: boolean,
     pruneMissing: boolean,
   ): void => {
-    const previousState = getDirIndexState(db, dirPath, stateFiles, builtAtMs, indexVariant);
+    const previousState = getDirIndexState(db, dirPath, stateFiles, builtAtMs, indexVariant, fingerprint);
     if (isIncremental && !forceScan && !previousState.stale && canUseIncrementalSkip(previousState, priorDirsChanged)) {
       skippedDirs++;
       dirRecords.push({
         dirPath,
         currentStashDir,
         files: stateFiles,
+        fingerprint,
         stash: null,
         skip: true,
         reason: previousState.reason,
+        persistedRowCount: previousState.persistedRowCount,
         indexVariant,
       });
       reportDirDecision("skip", dirPath, currentStashDir, previousState.reason, previousState.persistedRowCount);
@@ -1381,6 +1403,7 @@ async function scanSourceDirs(
       dirPath,
       currentStashDir,
       files: stateFiles,
+      fingerprint,
       stash,
       skip: false,
       reason,
@@ -1441,11 +1464,14 @@ async function scanSourceDirs(
         continue;
       }
 
-      const cachedZeroRowState =
+      // #900: decide from stat data alone whether the directory can be skipped,
+      // before drainDirDocuments reads, hashes, and parses every file.
+      const fingerprint = computeDirFingerprint(dirPath, indexableFiles, indexVariant);
+      const cachedState =
         isIncremental &&
         !forceScan &&
-        getCachedZeroRowDirState(db, dirPath, indexableFiles, builtAtMs, priorDirsChanged, indexVariant);
-      if (cachedZeroRowState) {
+        getCachedDirState(db, dirPath, indexableFiles, builtAtMs, priorDirsChanged, indexVariant, fingerprint);
+      if (cachedState) {
         skippedDirs++;
         dirRecords.push({
           dirPath,
@@ -1453,22 +1479,17 @@ async function scanSourceDirs(
           files: indexableFiles,
           stash: null,
           skip: true,
-          reason: cachedZeroRowState.reason,
+          reason: cachedState.reason,
           indexVariant,
         });
-        reportDirDecision(
-          "skip",
-          dirPath,
-          currentStashDir,
-          cachedZeroRowState.reason,
-          cachedZeroRowState.persistedRowCount,
-        );
+        reportDirDecision("skip", dirPath, currentStashDir, cachedState.reason, cachedState.persistedRowCount);
         continue;
       }
 
       // F4a M-core-2 (the flip): drain the dir's `IndexDocument` stream via the
       // component's dispatched `adapter.recognize` (broken workflows dropped-with-
       // warning at the drain layer) and reconstruct the durable `IndexDocument`s.
+      drainObserverForTests?.(dirPath, ctxs.length);
       const drained = drainDirDocuments(adapter, component, ctxs);
       if (drained.warnings.length) warnings.push(...drained.warnings);
       const generated: StashFile = drained.warnings.length
@@ -1488,6 +1509,7 @@ async function scanSourceDirs(
         dirPath,
         currentStashDir,
         staleFiles,
+        fingerprint,
         stash,
         drained.hashByFile,
         drained.conceptIdByFile,
@@ -1615,9 +1637,11 @@ function persistDirRecords(
       dirPath,
       currentStashDir,
       files,
+      fingerprint,
       stash,
       skip,
       reason,
+      persistedRowCount,
       hashByFile,
       conceptIdByFile,
       indexVariant,
@@ -1635,14 +1659,11 @@ function persistDirRecords(
         continue;
       }
       if (skip) {
-        if (reason?.kind === "unchanged") {
-          const fingerprint = computeDirFingerprint(dirPath, files, indexVariant);
-          upsertIndexDirState(db, {
-            dirPath,
-            fileSetHash: fingerprint.fileSetHash,
-            fileMtimeMaxMs: fingerprint.fileMtimeMaxMs,
-            reason: reason.kind,
-          });
+        // "unchanged" is the post-drain verdict: re-persist so the row carries
+        // row_count and the gate skips this directory before draining next
+        // time. "unchanged-precheck" already matched the stored row.
+        if (reason?.kind === "unchanged" && fingerprint) {
+          upsertIndexDirState(db, { dirPath, ...fingerprint, reason: reason.kind, rowCount: persistedRowCount });
         }
         continue;
       }
@@ -1711,7 +1732,7 @@ function persistDirRecords(
         );
       }
 
-      const fingerprint = computeDirFingerprint(dirPath, files, indexVariant);
+      const persistedFingerprint = fingerprint ?? computeDirFingerprint(dirPath, files, indexVariant);
       const persistedReason =
         persistedRows === 0
           ? inferZeroRowReason(stash, reason, warnings, dirPath, dedupedRows)
@@ -1720,9 +1741,13 @@ function persistDirRecords(
             : (reason?.kind ?? "updated");
       upsertIndexDirState(db, {
         dirPath,
-        fileSetHash: fingerprint.fileSetHash,
-        fileMtimeMaxMs: fingerprint.fileMtimeMaxMs,
+        ...persistedFingerprint,
         reason: persistedReason,
+        // A directory that lost rows to per-source dedup depends on the
+        // directories persisted before it, not only on its own files, so it
+        // must keep draining every run (as it did before the gate) until a
+        // drain persists it without dedup. NULL keeps the gate closed.
+        rowCount: dedupedRows === 0 ? persistedRows : undefined,
       });
       if (persistedRows === 0) {
         // Warn only when the dir had files that *could* produce entries (.md or

@@ -364,6 +364,26 @@ describe("Entry CRUD", () => {
     }
   });
 
+  // #900: `getEntriesByDir` is backed by an indexed byte-range scan over
+  // `file_path` (idx_entries_file_path) rather than a full-table scan, so it
+  // MUST still land on the exact directory and nothing from a sibling whose
+  // name merely shares the same prefix, or from a nested subdirectory that
+  // sorts inside the same byte range.
+  test("getEntriesByDir excludes sibling dirs sharing a prefix and nested subdirectories", () => {
+    const db = openIndexDatabase(tmpDbPath());
+    try {
+      insertTestEntry(db, "x", { filePath: "/a/b/x.md" });
+      insertTestEntry(db, "y", { filePath: "/a/bc/y.md" });
+      insertTestEntry(db, "z", { filePath: "/a/b/c/z.md" });
+
+      const entries = getEntriesByDir(db, "/a/b");
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.filePath).toBe("/a/b/x.md");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   test("getAllEntries returns all entries", () => {
     const db = openIndexDatabase(tmpDbPath());
     try {

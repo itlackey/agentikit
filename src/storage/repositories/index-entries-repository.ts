@@ -20,7 +20,7 @@ import { getStateDbPath, withStateDb } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import type { IndexDocument } from "../../indexer/passes/metadata";
 import { buildSearchText } from "../../indexer/search/search-fields";
-import type { Database } from "../database";
+import type { Database, SqlValue } from "../database";
 import { ENTRY_COLUMNS, type EntryRow, rowToIndexedEntry } from "./index-entry-mapper";
 import type { DbIndexedEntry, EntryProvenance, RekeyEntryOptions, RelinkUsageEventsOptions } from "./index-entry-types";
 import { deleteFtsEntries, replaceFtsEntry } from "./index-fts-repository";
@@ -391,12 +391,39 @@ export function getPositiveFeedbackCountsByIds(ids: number[]): Map<number, numbe
   return result;
 }
 
-function rowsInDirectory(db: Database, dirPath: string, bundleId?: string): Array<{ id: number; item_ref: string }> {
-  const rows = db
-    .prepare(`SELECT id, item_ref, file_path FROM entries${bundleId ? " WHERE bundle_id = ?" : ""}`)
-    .all(...(bundleId ? [bundleId] : [])) as Array<{ id: number; item_ref: string; file_path: string }>;
+/**
+ * Rows whose `file_path` sits directly in `dirPath`. A half-open byte range
+ * over `idx_entries_file_path` (`[dir + sep, dir + sep + 1)`) turns the lookup
+ * into an index seek; the range is exact for "starts with `dir/`" but also
+ * admits nested subdirectories (`/a/b/c/x.md` for `/a/b`), so the dirname
+ * post-filter stays.
+ */
+function selectRowsInDirectory<T extends { file_path: string }>(
+  db: Database,
+  dirPath: string,
+  columns: string,
+  bundleId?: string,
+): T[] {
   const resolvedDir = path.resolve(dirPath);
-  return rows.filter((row) => path.dirname(path.resolve(row.file_path)) === resolvedDir);
+  const prefix = resolvedDir + path.sep;
+  const upperBound = resolvedDir + String.fromCharCode(path.sep.charCodeAt(0) + 1);
+  const params: SqlValue[] = [prefix, upperBound];
+  let sql = `SELECT ${columns} FROM entries WHERE file_path >= ? AND file_path < ?`;
+  if (bundleId) {
+    sql += " AND bundle_id = ?";
+    params.push(bundleId);
+  }
+  const rows = db.prepare(sql).all(...params) as T[];
+  return rows.filter((row) => path.dirname(row.file_path) === resolvedDir);
+}
+
+function rowsInDirectory(db: Database, dirPath: string, bundleId?: string): Array<{ id: number; item_ref: string }> {
+  return selectRowsInDirectory<{ id: number; item_ref: string; file_path: string }>(
+    db,
+    dirPath,
+    "id, item_ref, file_path",
+    bundleId,
+  );
 }
 
 function deleteEntryRows(
@@ -775,11 +802,7 @@ export function getEntryById(
 }
 
 export function getEntriesByDir(db: Database, dirPath: string): DbIndexedEntry[] {
-  const ids = new Set(rowsInDirectory(db, dirPath).map((row) => row.id));
-  const rows = (db.prepare(`SELECT ${ENTRY_COLUMNS} FROM entries`).all() as Array<Record<string, unknown>>).filter(
-    (row) => ids.has((row as { id: number }).id),
-  );
-  return parseEntryRows(rows, "getEntriesByDir");
+  return parseEntryRows(selectRowsInDirectory<EntryRow>(db, dirPath, ENTRY_COLUMNS), "getEntriesByDir");
 }
 
 /** Return every directory previously indexed for one canonical bundle. */
@@ -792,9 +815,8 @@ export function getIndexedDirPathsByBundleId(db: Database, bundleId: string): st
 
 /** Return every persisted bundle owner for one physical directory. */
 export function getIndexedBundleIdsByDir(db: Database, dirPath: string): string[] {
-  const ids = new Set(rowsInDirectory(db, dirPath).map((row) => row.id));
-  const rows = db.prepare("SELECT id, bundle_id FROM entries").all() as Array<{ id: number; bundle_id: string }>;
-  return [...new Set(rows.filter((row) => ids.has(row.id)).map((row) => row.bundle_id))];
+  const rows = selectRowsInDirectory<{ bundle_id: string; file_path: string }>(db, dirPath, "bundle_id, file_path");
+  return [...new Set(rows.map((row) => row.bundle_id))];
 }
 
 /**

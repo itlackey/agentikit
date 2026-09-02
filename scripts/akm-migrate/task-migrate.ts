@@ -12,7 +12,7 @@ import { EXIT_CODES } from "../../src/cli/shared";
 import { detectAdapterId } from "../../src/core/adapter/detect-adapter";
 import { bundleComponentConfig, bundlesToSourceEntries } from "../../src/core/config/config-sources";
 import { type AkmConfig, loadConfig, resetConfigCache } from "../../src/core/config/config";
-import { withConfigLock } from "../../src/core/config/config-io";
+import { pruneToNewest, withConfigLock } from "../../src/core/config/config-io";
 import { ConfigError } from "../../src/core/errors";
 import { withMaintenanceStartBarrier } from "../../src/core/maintenance-barrier";
 import { getDataDir } from "../../src/core/paths";
@@ -194,6 +194,18 @@ export function inspectMigrationPlan(): MigrationPlan {
   return inspectCurrentTaskPlan().result;
 }
 
+/**
+ * Snapshot dirs kept per generation under `<dataDir>/backups/task-v3|task-v4`
+ * (#897): one apply run writes one timestamped-UUID dir and nothing pruned
+ * them. Same cap as config backups; the legacy `backups/{migrations,manual,
+ * releases,operations}` dirs are not written by current code and are left alone.
+ */
+const MAX_TASK_MIGRATION_BACKUPS = 5;
+
+export function pruneTaskMigrationBackups(generationBackupDir: string): void {
+  pruneToNewest(generationBackupDir, MAX_TASK_MIGRATION_BACKUPS, (entry) => entry.isDirectory());
+}
+
 function printPlan(plan: { readonly status: "current" | "ready" | "blocked" }): void {
   console.log(JSON.stringify(plan));
   if (plan.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
@@ -215,12 +227,14 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
       // can be migrated and report the rest as blocked (printPlan below
       // exits non-zero whenever any file is still blocked afterward).
       if (before.result.taskV3Migration.changed === 0) return before.result;
-      const backupPath = path.join(getDataDir(), "backups", "task-v3", `${Date.now()}-${randomUUID()}`);
+      const backupRoot = path.join(getDataDir(), "backups", "task-v3");
+      const backupPath = path.join(backupRoot, `${Date.now()}-${randomUUID()}`);
       const applied = applyTaskToV3MigrationPlan(before.plan, { backupRoot: backupPath });
       const after = inspectCurrentTaskPlan().result;
       if (after.taskV3Migration.changed > 0) {
         throw new ConfigError("Task migration did not converge to task v3.", "INVALID_CONFIG_FILE");
       }
+      pruneTaskMigrationBackups(backupRoot);
       return { ...after, backupPath, applied: applied.changed.length };
     }),
   );
@@ -327,12 +341,14 @@ export async function runTaskV4MigrationApply(options: MigrationCommandOptions =
       // can be migrated and report the rest as blocked (printPlan below
       // exits non-zero whenever any file is still blocked afterward).
       if (before.result.taskV4Migration.changed === 0) return before.result;
-      const backupPath = path.join(getDataDir(), "backups", "task-v4", `${Date.now()}-${randomUUID()}`);
+      const backupRoot = path.join(getDataDir(), "backups", "task-v4");
+      const backupPath = path.join(backupRoot, `${Date.now()}-${randomUUID()}`);
       const applied = applyTaskToV4MigrationPlan(before.plan, { backupRoot: backupPath });
       const after = inspectCurrentTaskV4Plan().result;
       if (after.taskV4Migration.changed > 0) {
         throw new ConfigError("Task migration did not converge to task source v4.", "INVALID_CONFIG_FILE");
       }
+      pruneTaskMigrationBackups(backupRoot);
       return { ...after, backupPath, applied: applied.changed.length };
     }),
   );

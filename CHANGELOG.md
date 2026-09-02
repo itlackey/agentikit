@@ -4,6 +4,63 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+> **Adds state migration `026-proposals-strip-legacy-fragment-refs`.** The
+> one-way caveat below applies to it as well: once this build opens
+> `state.db`, 0.9.8-beta.1 and earlier refuse it with `unknown migration ID
+> 026-proposals-strip-legacy-fragment-refs`.
+
+### Added
+
+- **`akm health` reports data-dir disk usage** (#896). A `data-dir-usage`
+  advisory sums the data directory with a stat-only walk and warns when it is
+  more than 3× the three live databases (state.db, index.db, logs.db) or when
+  one top-level subdirectory holds more than half of it, naming that
+  subdirectory with its size and share (for example `backups/ is 70G (94% of
+  data dir)`). The walk stops after 100,000 entries and says so. Silent when
+  nothing looks wrong.
+
+### Fixed
+
+- **`akm task sync` no longer spawns `npm root --global` on every call** (#901).
+  The npm-global-root probe behind `resolveAkmInvocation` is memoized for the
+  process, so a `task sync --rebind` cycle spawns npm at most once instead of
+  twice, and an installation that loops it every minute stops accumulating an
+  npm debug log per spawn.
+- **A blocked v2 task now says how to convert it** (#902, #899). The
+  `argv-array-has-no-portable-shell-string` blocker printed by `akm migrate`
+  and the `TASK_SCHEMA_VERSION_UNSUPPORTED` read error now state that manual
+  conversion is required and name the rewrite (`command:` argv array →
+  `run:` string plus `shell:`). The full v2 → v4 field mapping is documented in
+  `docs/migration/v0.9.1-to-v0.9.2.md`.
+- **Legacy `#fragment` proposal rows are repaired instead of warned about
+  forever** (#898). State migration 026 strips the retired export-fragment
+  selector from `proposals.ref` in place so the rows parse again, and an
+  unparseable proposal row now warns once per process instead of once per
+  read (`akm health --report` read the table seven times).
+
+- **A no-op incremental `akm index` no longer costs minutes of CPU** (#900).
+  Two causes: the per-directory freshness check ran two full scans of the
+  `entries` table for every directory (O(directories × entries)), and every
+  file was read, hashed, and parsed before the freshness check decided the
+  directory was unchanged. The directory lookup now uses the existing
+  `file_path` index, and a stat-based gate over each directory's walked file
+  set skips unchanged directories before any file is read. On a synthetic
+  800-directory, 4,000-entry corpus a no-op pass fell from ~37 s to under 1 s
+  of CPU with identical entries and search results. The persisted directory
+  fingerprint now covers every walked file and `index_dir_state` gains a
+  `row_count` column; an existing index.db drains each directory once more
+  after upgrading, then takes the fast path.
+
+- **Task-migration snapshots are capped at the five most recent** (#897).
+  `akm migrate apply` writes one snapshot directory per run under
+  `backups/task-v3` and `backups/task-v4` and never pruned them; each apply
+  now keeps the five newest and removes the rest, the same policy config
+  backups already use. Nothing in the current code writes the legacy
+  `backups/migrations`, `manual`, `releases`, or `operations` directories,
+  so they are left alone; the new health advisory is what surfaces them.
+
 ## [0.9.8-beta.1] - 2026-09-01
 
 A cleanup and stabilization release: deletion of machinery that policed the

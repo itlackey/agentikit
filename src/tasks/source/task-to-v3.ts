@@ -170,6 +170,14 @@ function base(input: TaskToV3FileInput): Omit<TaskToV3OutcomeBase, "reason"> {
   };
 }
 
+/**
+ * #902: the one blocker with an unambiguous remedy. The sibling shell-safety
+ * reasons need a case-by-case judgement and stay reason-only.
+ */
+const ARGV_ARRAY_BLOCK_DETAIL =
+  "Manual conversion required: an array `command:` has no safe v3 `run:` string. Rewrite it by hand as " +
+  "`run:` (string) plus `shell:` — see docs/migration/v0.9.1-to-v0.9.2.md for the full v2 to v4 field mapping.";
+
 function blocked(input: TaskToV3FileInput, reason: string, detail?: string): TaskToV3Blocked {
   return Object.freeze({ status: "blocked" as const, ...base(input), reason, ...(detail ? { detail } : {}) });
 }
@@ -442,7 +450,10 @@ export function planLegacyTaskDataToV3(input: TaskToV3FileInput, data: Record<st
   } catch (cause) {
     return blocked(input, "invalid-v2-task", cause instanceof Error ? cause.message : String(cause));
   }
-  if (isReason(migrated)) return blocked(input, migrated);
+  if (isReason(migrated)) {
+    const detail = migrated === "argv-array-has-no-portable-shell-string" ? ARGV_ARRAY_BLOCK_DETAIL : undefined;
+    return blocked(input, migrated, detail);
+  }
   const after = Buffer.from(stringifyYaml(migrated), "utf8");
   try {
     parseTaskV3Yaml({

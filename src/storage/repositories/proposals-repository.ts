@@ -16,6 +16,7 @@ import type { Proposal, ProposalGateDecisionOutcome } from "../../commands/propo
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { bundleRefToString, isBundleSlug, parseBundleRef } from "../../core/asset/asset-ref";
 import type { FileChange } from "../../core/file-change";
+import { warnOnce } from "../../core/warn";
 import type { Database, SqlValue } from "../database";
 
 /**
@@ -433,8 +434,13 @@ export function listStateProposals(
     try {
       proposals.push(proposalRowToProposal(row));
     } catch (error) {
+      // Once per row per process (#898): health alone reads this table several
+      // times per invocation.
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[akm] Skipping unparseable proposal row (id=${row.id}, ref=${row.ref}): ${message}`);
+      warnOnce(
+        `unparseable-proposal-row:${row.id}`,
+        `[akm] Skipping unparseable proposal row (id=${row.id}, ref=${row.ref}): ${message}`,
+      );
     }
   }
   return proposals;

@@ -60,6 +60,7 @@ Override: set `AKM_CONFIG_DIR` or `XDG_CONFIG_HOME`.
 | `state.db` | Events, local usage telemetry, proposals, task history, improve run results, and workflow run state/history (the former `workflow.db` was folded in during the 0.9.0 cutover) | **No** — deletes event/usage logs, proposal queue, improve history, and workflow run history |
 | `logs.db` | Structured, high-volume task/run log lines (`{ts, task_id, run_id, stream, level, line}`), joined to `state.db`'s `task_history` rows by `task_id@started_at`. Kept separate from `state.db` because log lines are append-only and freely purgeable, unlike durable state | Yes — log lines are regenerable per run; deleting loses historical run output only |
 | `akm.lock` | Inter-process write lock | Yes — recreated automatically |
+| `backups/task-v3/`, `backups/task-v4/` | Copies of task files taken by `akm migrate apply` before it rewrites them, one timestamped directory per run; the five most recent per generation are kept (#897) | Yes — once the migrated tasks are verified |
 | `akm.lock.lck` | Lock write sentinel | Yes — recreated automatically |
 
 Override: set `AKM_DATA_DIR` or `XDG_DATA_HOME`.

@@ -52,6 +52,7 @@ export const STATE_MIGRATION_SAFETY_BY_ID: Readonly<Record<string, StateMigratio
   "023-child-workflow-runs": "additive",
   "024-workflow-run-outputs": "additive",
   "025-task-history-vocabulary-backfill": "data-preserving-rebuild",
+  "026-proposals-strip-legacy-fragment-refs": "data-preserving-rebuild",
 });
 
 export const STATE_MIGRATIONS: readonly Migration[] = [
@@ -1158,6 +1159,28 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       WHERE target_kind = 'command'
         AND json_valid(metadata_json)
         AND json_extract(metadata_json, '$.targetVocab') IS NULL;
+    `,
+  },
+
+  // ── Migration 026 — strip the retired proposal-ref export fragment (#898) ──
+  //
+  // Older releases could write a proposal `ref` carrying the export-fragment
+  // selector (`[bundle//]conceptId#fragment`, see src/core/asset/asset-ref.ts).
+  // `currentProposalRef` (proposals-repository.ts) now rejects any fragment, so
+  // those rows failed to parse on every read and could not be listed, repaired,
+  // or deleted through the CLI. Every surface that still reads an archived row
+  // is concept-scoped, so the fragment carries nothing they use.
+  //
+  // `#` is legal in a ref only as the fragment separator, so truncating at the
+  // first `#` is exactly the split `parseBundleRef` performs. `ref` has no
+  // UNIQUE constraint, and no writer ever produced an empty concept id, so
+  // every legacy row normalizes without a drop path.
+  {
+    id: "026-proposals-strip-legacy-fragment-refs",
+    up: `
+      UPDATE proposals
+      SET ref = substr(ref, 1, instr(ref, '#') - 1)
+      WHERE ref LIKE '%#%';
     `,
   },
 ];
