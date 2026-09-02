@@ -62,7 +62,7 @@ if (process.argv[2] === STANDALONE_FROZEN_SCRIPT_ARG) {
   // see it, and a re-entrant `akm` child dispatches normally.
   delete process.env.AKM_MIGRATE_ENTRY;
   const { runWithJsonErrors } = await import("../src/cli/shared");
-  const { main } = await import("./akm-migrate");
+  const { main } = await import("./akm-migrate/main");
   await runWithJsonErrors(() => main(process.argv.slice(2)));
 } else {
   const { registerStandaloneModelMapFallback } = await import("../src/integrations/agent/model-map");

@@ -227,3 +227,62 @@ test.skipIf(!ENABLED)(
   },
   180_000,
 );
+
+test.skipIf(!ENABLED)("the compiled binary runs its embedded migrator exactly once per invocation", () => {
+  // The migrator shim's "am I the entry module" guard fires inside a
+  // single-file bundle, so a binary that imported the shim printed -- and
+  // applied -- every plan twice; `akm upgrade` then read two JSON lines as a
+  // failed migration. The standalone entry dispatches to the guard-free
+  // module instead. This pins the observable: one plan, one line, whether
+  // reached through `akm migrate` or the internal re-exec marker.
+  const candidateBinary = path.resolve(process.env.AKM_STANDALONE_TEST_BIN ?? "");
+  expect(fs.existsSync(candidateBinary)).toBe(true);
+  const sandbox = makeSandboxDir("akm-linux-standalone-migrate");
+  const configHome = path.join(sandbox.dir, "config");
+  const stashDir = path.join(sandbox.dir, "stash");
+  for (const dir of [
+    path.join(configHome, "akm"),
+    stashDir,
+    path.join(sandbox.dir, "data"),
+    path.join(sandbox.dir, "cache"),
+    path.join(sandbox.dir, "state"),
+  ]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(
+    path.join(configHome, "akm", "config.json"),
+    `${JSON.stringify({ configVersion: "0.9.0", bundles: { stash: { path: stashDir } }, defaultBundle: "stash", semanticSearchMode: "off" })}\n`,
+    { mode: 0o600 },
+  );
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: path.join(sandbox.dir, "home"),
+    XDG_CONFIG_HOME: configHome,
+    XDG_DATA_HOME: path.join(sandbox.dir, "data"),
+    XDG_CACHE_HOME: path.join(sandbox.dir, "cache"),
+    XDG_STATE_HOME: path.join(sandbox.dir, "state"),
+  };
+  try {
+    for (const [label, argv, extraEnv] of [
+      ["akm migrate status", [candidateBinary, "migrate", "status"], {}],
+      ["re-exec marker", [candidateBinary, "status"], { AKM_MIGRATE_ENTRY: "1" }],
+    ] as const) {
+      const result = run([...argv], { ...env, ...extraEnv });
+      expectSuccess(result, label);
+      // Exactly one JSON document: a second concatenated plan fails to parse.
+      // (The wrapper pretty-prints through the output pipeline; the marker
+      // path prints the migrator's own single line.)
+      let plan: { status?: string; stateMigrations?: unknown };
+      try {
+        plan = JSON.parse(result.stdout) as typeof plan;
+      } catch {
+        throw new Error(`${label} did not print exactly one plan:\n${result.stdout}`);
+      }
+      expect(plan.status).toBe("current");
+      expect(plan.stateMigrations).toEqual({ pending: [] });
+      if (extraEnv.AKM_MIGRATE_ENTRY) expect(result.stdout.trim().split("\n")).toHaveLength(1);
+    }
+  } finally {
+    sandbox.cleanup();
+  }
+});
