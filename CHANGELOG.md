@@ -11,6 +11,26 @@ codebase's shape rather than its behaviour, and — because auditing for that
 machinery meant reading the code closely — a run of real defects it had been
 sitting on top of.
 
+> **Upgrading is one-way for `state.db`.** This release adds migration
+> `025-task-history-vocabulary-backfill`. Once any 0.9.8 command opens
+> `state.db`, the ledger contains an ID that 0.9.7 does not know, and 0.9.7
+> refuses to open it: `Refusing to open a database with a newer migration
+> ledger: unknown migration ID 025-task-history-vocabulary-backfill`.
+>
+> The refusal is deliberate — an older binary must not write a database whose
+> schema it cannot reason about — but the practical effect is that
+> **downgrading to 0.9.7 requires restoring a `state.db` backup.** Commands
+> that only read the derived index (`akm info`, `akm search`) keep working on
+> 0.9.7; everything that touches `state.db` (`akm health`, `akm task`,
+> `akm improve`, proposals) does not.
+>
+> Snapshot `state.db` before upgrading if you may need to go back:
+>
+> ```sh
+> akm info --format json    # confirm your data dir
+> sqlite3 "$DATA_DIR/state.db" "VACUUM INTO '''state.db.pre-0.9.8.bak'''"
+> ```
+
 Two security holes, two search-correctness bugs, a locale-dependent hash, a
 deletion shield that failed open, and sixteen places that answered a failure
 with a confident wrong answer instead of an error.
