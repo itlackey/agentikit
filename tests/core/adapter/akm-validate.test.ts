@@ -226,8 +226,12 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
   // `invalid-task-yaml` here — this fixture uses an argv-array `command:`
   // (task-to-v3.ts's `argv-array-has-no-portable-shell-string`), which the
   // shim's deterministic planner genuinely cannot convert, so it still
-  // fires, naming that reason (issue #869).
-  test("a v2 task the migration planner cannot convert is flagged naming the reason it needs a human decision (row B-15)", async () => {
+  // fires, naming that reason (issue #869). The reason code alone only names
+  // a cause, not a remedy — issue #902 requires the detail to also say
+  // manual conversion is required and what to change (v2 array `command:` ->
+  // v4 `run:` string + `shell:`), so both the stable reason code and that
+  // actionable text must appear.
+  test("a v2 task the migration planner cannot convert is flagged naming the reason and the remedy it needs a human decision for (row B-15)", async () => {
     const ctx = overlayCtx(ROOT, {});
     const diags = await akmAdapter.validate(
       component({ root: ROOT }),
@@ -236,6 +240,9 @@ describe("akm adapter — validate fires each type's positive finding (§6)", ()
     );
     const hit = diags.find((d) => d.issue === "invalid-task-yaml");
     expect(hit?.detail).toContain("argv-array-has-no-portable-shell-string");
+    expect(hit?.detail).toMatch(/manual conversion/i);
+    expect(hit?.detail).toContain("run:");
+    expect(hit?.detail).toContain("shell:");
   });
 
   test("dangerous-env-key — a dangerous key name in an env file (env dangerous-key scan)", async () => {

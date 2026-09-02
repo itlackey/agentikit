@@ -127,6 +127,19 @@ describe("pure task v2 to v3 migration planner", () => {
     assertFixtureBytesUnchanged(ROOT, before);
   });
 
+  // #902: the reason code alone ("argv-array-has-no-portable-shell-string")
+  // names a cause, not a remedy — the blocked outcome must also carry an
+  // actionable `detail` telling the operator manual conversion is required
+  // and what to change (v2 array `command:` -> v4 `run:` string + `shell:`).
+  test("names the argv-array block's remedy, not just its reason (#902)", () => {
+    const outcome = planTaskToV3File(memoryInput("version: 2\nschedule: '@daily'\ncommand: [echo, hi]\n"));
+    expect(outcome.status).toBe("blocked");
+    expect(outcome.reason).toBe("argv-array-has-no-portable-shell-string");
+    expect(outcome.detail).toMatch(/manual conversion/i);
+    expect(outcome.detail).toContain("run:");
+    expect(outcome.detail).toContain("shell:");
+  });
+
   test.each([
     "FOO=bar echo ok",
     "if true",

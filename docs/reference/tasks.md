@@ -325,6 +325,17 @@ for both generations combined. Resolve every blocked file manually, then
 preview again. Apply validates a complete replacement before writing and
 backs up each original immediately before replacement.
 
+Common v2 → v3 blocked reasons and what to do about each — these need a
+hand-authored replacement, not a re-run; see [the 0.9.1 to 0.9.2 migration
+guide](../migration/v0.9.1-to-v0.9.2.md#v2--v3-blocked-cases) for the full v2
+to v4 field mapping (`command:` array → `run:` + `shell:`, `timeoutMs:` →
+`timeout:`, document-level `enabled:` → per-`schedule:`-entry `enabled`):
+
+| Reason | Meaning | Fix |
+|---|---|---|
+| `argv-array-has-no-portable-shell-string` | The task's `command:` is an argv array; no single shell string is provably equivalent. | Rewrite the file by hand — a `run:` string plus `shell:` — using the field mapping above. |
+| `shell-quoting-changes-v2-whitespace-split-semantics`, `shell-operators-change-v2-literal-argv-semantics`, `shell-command-resolution-changes-v2-literal-argv-semantics` | The `command:` string contains quoting, shell operators, or a bare executable name whose v2 argv-exec behavior a v3 `run:` (host-shell) invocation cannot reproduce unambiguously. | Review the command's intended shell semantics and author the v3/v4 `run:`/`shell:` fields by hand. |
+
 Common v3 → v4 blocked reasons and what to do about each:
 
 | Reason | Meaning | Fix |

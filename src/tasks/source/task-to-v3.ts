@@ -170,8 +170,35 @@ function base(input: TaskToV3FileInput): Omit<TaskToV3OutcomeBase, "reason"> {
   };
 }
 
+/**
+ * `reason` stays a stable machine code (JSON `files[].reason`, unchanged
+ * since #869) — this supplies the human-facing `detail` for reasons that
+ * name a cause but not a remedy, so the printed blocker text
+ * (`akm migrate status`/`apply`'s `blockers[]`) and the
+ * `TASK_SCHEMA_VERSION_UNSUPPORTED` read-time error (both built from
+ * `reason`+`detail`, see ../parse-task-source.ts and
+ * ../../../scripts/akm-migrate/task-migrate.ts) tell the operator what to
+ * change instead of just naming why the migrator gave up (#902). Only the
+ * argv-array case is covered: it is the one #902/#899 named, and it is the
+ * only one of the sibling "command has no v3 shell-string equivalent"
+ * reasons where the fix (an array `command:` cannot become a `run:` string
+ * at all) is unambiguous — the others (quoting/operators/resolution) are
+ * blocked on genuinely case-by-case shell semantics.
+ */
+const BLOCKED_REASON_DETAIL: Readonly<Record<string, string>> = Object.freeze({
+  "argv-array-has-no-portable-shell-string":
+    "Manual conversion required: an array `command:` has no safe v3 `run:` string. Rewrite it by hand as " +
+    "`run:` (string) plus `shell:` — see docs/migration/v0.9.1-to-v0.9.2.md for the full v2 to v4 field mapping.",
+});
+
 function blocked(input: TaskToV3FileInput, reason: string, detail?: string): TaskToV3Blocked {
-  return Object.freeze({ status: "blocked" as const, ...base(input), reason, ...(detail ? { detail } : {}) });
+  const resolvedDetail = detail ?? BLOCKED_REASON_DETAIL[reason];
+  return Object.freeze({
+    status: "blocked" as const,
+    ...base(input),
+    reason,
+    ...(resolvedDetail ? { detail: resolvedDetail } : {}),
+  });
 }
 
 function plainRecord(value: unknown, label: string): Record<string, unknown> {
