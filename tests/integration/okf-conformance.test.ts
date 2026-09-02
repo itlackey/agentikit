@@ -547,7 +547,11 @@ describe("OKF first-class conformance", () => {
     });
     resetConfigCache();
 
-    await akmIndex({ stashDir: storage.stashDir, full: true });
+    // #909: an unrecognised adapter is rejected when the config loads, naming
+    // the accepted values -- so the index never starts, never mind wipes.
+    await expect(akmIndex({ stashDir: storage.stashDir, full: true })).rejects.toThrow(
+      /unrecognized adapter "no-such-adapter"; expected one of: .*\bakm\b/,
+    );
 
     const db = openExistingDatabase(getDbPath());
     try {

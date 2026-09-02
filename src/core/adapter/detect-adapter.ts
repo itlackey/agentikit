@@ -19,7 +19,7 @@ import type { BundleComponent } from "./types";
  *
  * `okf` / `llm-wiki` / `dotenv` / `website-snapshot` / `akm-workflow` /
  * `akm-task` are deliberately NOT in this set: each carries its own tight,
- * disjoint marker (a root `index.md`, `schema.md`+`pages/`, an env/secrets-only
+ * disjoint marker (a root index document, `schema.md`+`pages/`, an env/secrets-only
  * layout, `manifest.json`, a workflow/task-shaped top-level file) that is not
  * at risk of firing merely because a FEW directory names happen to overlap
  * with akm's own stash subdirs — narrowing the fix to the three families the
