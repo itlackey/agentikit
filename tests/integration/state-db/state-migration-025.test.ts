@@ -62,15 +62,18 @@ afterEach(() => {
 });
 
 describe("migration 025-task-history-vocabulary-backfill — registry position and safety classification", () => {
-  test("is the final entry of STATE_MIGRATIONS, directly after 024-workflow-run-outputs", () => {
+  // #898 appended 026-proposals-strip-legacy-fragment-refs directly after
+  // this one, so 025 is no longer the final registry entry — pin its
+  // position relative to its immediate neighbors instead (append-only
+  // registry order is still exactly preserved).
+  test("comes directly after 024-workflow-run-outputs", () => {
     const ids = STATE_MIGRATIONS.map((migration) => migration.id);
-    expect(ids.at(-1)).toBe(MIGRATION_ID);
-    expect(ids.at(-2)).toBe(PRECEDING_MIGRATION_ID);
+    const index = ids.indexOf(MIGRATION_ID);
+    expect(index).toBeGreaterThan(0);
+    expect(ids[index - 1]).toBe(PRECEDING_MIGRATION_ID);
   });
 
-  test("is the final classified id in STATE_MIGRATION_SAFETY_BY_ID, classified data-preserving-rebuild", () => {
-    const classifiedIds = Object.keys(STATE_MIGRATION_SAFETY_BY_ID);
-    expect(classifiedIds.at(-1)).toBe(MIGRATION_ID);
+  test("is classified data-preserving-rebuild", () => {
     expect(getStateMigrationSafety(MIGRATION_ID)).toBe("data-preserving-rebuild");
   });
 

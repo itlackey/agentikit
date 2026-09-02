@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+> **Adds state migration `026-proposals-strip-legacy-fragment-refs`.** The
+> one-way caveat below applies to it as well: once this build opens
+> `state.db`, 0.9.8-beta.1 and earlier refuse it with `unknown migration ID
+> 026-proposals-strip-legacy-fragment-refs`.
+
+### Fixed
+
+- **`akm task sync` no longer spawns `npm root --global` on every call** (#901).
+  The npm-global-root probe behind `resolveAkmInvocation` is memoized for the
+  process, so a `task sync --rebind` cycle spawns npm at most once instead of
+  twice, and an installation that loops it every minute stops accumulating an
+  npm debug log per spawn.
+- **A blocked v2 task now says how to convert it** (#902, #899). The
+  `argv-array-has-no-portable-shell-string` blocker printed by `akm migrate`
+  and the `TASK_SCHEMA_VERSION_UNSUPPORTED` read error now state that manual
+  conversion is required and name the rewrite (`command:` argv array →
+  `run:` string plus `shell:`). The full v2 → v4 field mapping is documented in
+  `docs/migration/v0.9.1-to-v0.9.2.md`.
+- **Legacy `#fragment` proposal rows are repaired instead of warned about
+  forever** (#898). State migration 026 strips the retired export-fragment
+  selector from `proposals.ref` in place so the rows parse again, and an
+  unparseable proposal row now warns once per process instead of once per
+  read (`akm health --report` read the table seven times).
+
 ## [0.9.8-beta.1] - 2026-09-01
 
 A cleanup and stabilization release: deletion of machinery that policed the

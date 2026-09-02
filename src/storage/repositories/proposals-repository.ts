@@ -428,16 +428,38 @@ export function listStateProposals(
   // must not abort the entire list. Every caller of this function reads a
   // multi-row archive; one bad row hiding the rest behind a thrown error is
   // strictly worse than surfacing the well-formed rows plus a warning.
+  //
+  // #898: `akm health --report` alone calls this function upwards of half a
+  // dozen times in one process (the implicit --window-compare pass, the main
+  // summary pass, and computeAcceptRateBySource each read the proposals
+  // table independently) — a stash with a handful of unparseable legacy rows
+  // therefore printed the SAME warning line once per call, not once per row.
+  // Dedupe per row id, mirroring `warnedUnknownQualityValues` in
+  // src/indexer/passes/metadata.ts: one line per distinct bad row, for the
+  // life of the process, no matter how many times it is re-read.
   const proposals: Proposal[] = [];
   for (const row of rows) {
     try {
       proposals.push(proposalRowToProposal(row));
     } catch (error) {
+      if (warnedUnparseableProposalRowIds.has(row.id)) continue;
+      warnedUnparseableProposalRowIds.add(row.id);
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[akm] Skipping unparseable proposal row (id=${row.id}, ref=${row.ref}): ${message}`);
     }
   }
   return proposals;
+}
+
+/** Tracks proposal row ids already warned about as unparseable (one warning per row per process, #898). */
+const warnedUnparseableProposalRowIds = new Set<string>();
+
+/**
+ * Test-only: clear the per-process unparseable-proposal-row warning memo so
+ * a test can re-trigger the warning. Not part of the public API.
+ */
+export function _resetUnparseableProposalRowWarnings(): void {
+  warnedUnparseableProposalRowIds.clear();
 }
 
 /**
