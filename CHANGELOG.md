@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.9.8-beta.2] - 2026-09-02
 
 > **Adds state migration `026-proposals-strip-legacy-fragment-refs`.** The
 > one-way caveat below applies to it as well: once this build opens
