@@ -49,7 +49,26 @@ const DOMINANT_SUBDIR_PERCENT_THRESHOLD = 50;
  */
 const MAX_WALK_ENTRIES = 100_000;
 
+/**
+ * Below this the data dir is not worth an opinion. The advisory exists for
+ * disk blowups (74 GB in the incident); on a small directory a ratio is
+ * arithmetic noise, and akm's own housekeeping can dominate it outright.
+ */
+const MIN_TOTAL_BYTES_TO_REPORT = 1_000_000_000;
+
 const LIVE_DB_FILES = ["state.db", "index.db", "logs.db"] as const;
+
+/**
+ * SQLite writes `-wal` and `-shm` beside each database. They are part of the
+ * live working set, not overhead sitting next to it, so they must count as
+ * live: on a fresh install the WAL is most of the data dir, and leaving it
+ * out of the denominator made an empty install report a ~126x ratio.
+ */
+function liveDbBytesFor(name: string, sizes: ReadonlyMap<string, { bytes: number }>): number {
+  return (
+    (sizes.get(name)?.bytes ?? 0) + (sizes.get(`${name}-wal`)?.bytes ?? 0) + (sizes.get(`${name}-shm`)?.bytes ?? 0)
+  );
+}
 
 interface WalkResult {
   bytes: number;
@@ -146,9 +165,11 @@ export function collectDataDirUsageAdvisory(dataDir: string): HealthCheckResult 
     .sort((a, b) => b.bytes - a.bytes);
   const largest = subdirs[0];
 
-  const liveDbBreakdown = Object.fromEntries(LIVE_DB_FILES.map((f) => [f, sizes.get(f)?.bytes ?? 0]));
+  const liveDbBreakdown = Object.fromEntries(LIVE_DB_FILES.map((f) => [f, liveDbBytesFor(f, sizes)]));
   const liveDbBytes = Object.values(liveDbBreakdown).reduce((a, b) => a + b, 0);
   const ratio = liveDbBytes > 0 ? totalBytes / liveDbBytes : undefined;
+
+  if (totalBytes < MIN_TOTAL_BYTES_TO_REPORT) return undefined;
 
   const bloatWarn = ratio !== undefined && ratio > DATA_DIR_BLOAT_RATIO_THRESHOLD;
   const dominantWarn = largest !== undefined && largest.percent > DOMINANT_SUBDIR_PERCENT_THRESHOLD;

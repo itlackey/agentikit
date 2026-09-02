@@ -26,6 +26,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   direction is deliberate — extra work, never stale content. Existing indexes
   rescan once as the digest changes shape, then return to the fast path.
 
+- **`akm health` no longer warns about disk usage on a fresh install.** The
+  `data-dir-usage` advisory added earlier in 0.9.8 counted SQLite's `-wal` and
+  `-shm` sidecars toward the data directory's total but not toward the live
+  databases they belong to. On an untouched install the write-ahead log is most
+  of the directory, so the very first `akm health` reported a ~126x ratio and
+  exited `warn` with no user data present. Sidecars now count as part of their
+  database, and the advisory stays quiet below 1 GB, where a ratio says nothing
+  useful about disk pressure.
+
 ## [0.9.8-beta.2] - 2026-09-02
 
 > **Adds state migration `026-proposals-strip-legacy-fragment-refs`.** The
