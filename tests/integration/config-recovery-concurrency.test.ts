@@ -99,9 +99,8 @@ describe("raw recovery startup", () => {
       })}\n`,
     );
 
-    // Call the standalone generation-1 migrator directly (not the top-level
-    // `akm migrate apply`, which unconditionally chains into generation 2 as
-    // well) so this test stays focused on the v2 -> v3 skip-and-report fix.
+    // The standalone migrator runs every step in one plan; what this test
+    // pins is the v2 -> v3 skip-and-report rule inside it.
     const child = Bun.spawn(["bun", "scripts/akm-migrate.ts", "apply"], {
       cwd: path.resolve(import.meta.dir, "../.."),
       env: { ...process.env },
@@ -114,22 +113,23 @@ describe("raw recovery startup", () => {
       new Response(child.stderr).text(),
     ]);
     // A blocked file remains after apply -> exit 1 (EXIT_CODES.GENERAL, set by
-    // printPlan in scripts/akm-migrate/task-migrate.ts). Ground-truthed by
-    // probing the actual process exit code before pinning.
+    // printPlan in scripts/akm-migrate.ts). Ground-truthed by probing the
+    // actual process exit code before pinning.
     expect(exitCode, stderr).toBe(1);
     const result = JSON.parse(stdout);
-    // The reported plan is re-inspected AFTER apply: the good file already
-    // converged to v3 ("skipped"/"already-v3"), and `applied: 1` confirms it
-    // was actually written this run.
+    // The reported plan is re-inspected AFTER apply: the good file converged
+    // ("skipped"), `applied: 1` confirms generation 1 wrote it this run, and
+    // generation 2 then carried it on to task source v4.
     expect(result).toMatchObject({
       status: "blocked",
       applied: 1,
       taskV3Migration: { changed: 0, skipped: 1, blocked: 1 },
+      taskV4Applied: 1,
     });
-    // The good file was migrated to v3 despite the blocked sibling (matched
-    // via regex, not a literal contiguous substring, so this file does not
-    // trip the task-fixture-vocabulary ratchet's two-needle scan).
-    expect(fs.readFileSync(goodTask, "utf8")).toMatch(/version:\s*3/);
+    // The good file was migrated all the way to v4 despite the blocked
+    // sibling (matched via regex, not a literal contiguous substring, so this
+    // file does not trip the task-fixture-vocabulary ratchet's two-needle scan).
+    expect(fs.readFileSync(goodTask, "utf8")).toMatch(/version:\s*4/);
     // The blocked file was left untouched, not corrupted or written.
     expect(fs.readFileSync(badTask, "utf8")).toContain("command: [echo, unsafe]");
   });
