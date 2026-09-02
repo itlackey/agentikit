@@ -1240,8 +1240,7 @@ export function runMigrations(db: Database, options?: RunStateMigrationsOptions)
     if (!options.allowHistoricalDestructiveStateUpgrade) {
       throw new Error(
         "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
-          "Run `akm upgrade --force` to snapshot it before migration 001, " +
-          "or `akm upgrade --state-only` where akm cannot reinstall itself (container/global install).",
+          "Run `akm upgrade` (or `akm migrate apply`) to snapshot it before migration 001 and apply it deliberately.",
       );
     }
     const ledger = assertMigrationLedger(lockedDb, STATE_MIGRATIONS);
@@ -1272,8 +1271,7 @@ export function runMigrations(db: Database, options?: RunStateMigrationsOptions)
       if (!options?.allowHistoricalDestructiveStateUpgrade) {
         throw new Error(
           `Refusing to apply historical destructive state migration ${migration.id} during an ordinary managed open. ` +
-            "Run `akm upgrade --force` to create a sibling state.db safety copy and apply it deliberately, " +
-            "or `akm upgrade --state-only` where akm cannot reinstall itself (container/global install).",
+            "Run `akm upgrade` (or `akm migrate apply`) to create a sibling state.db safety copy and apply it deliberately.",
         );
       }
       if (!options.beforeHistoricalDestructiveMigration) {

@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **`akm upgrade` and `akm migrate apply` apply pending `state.db` migrations
+  themselves** (#895 follow-up). The state step — migration 018 and the
+  verified safety copy included — now runs first on every `akm upgrade`,
+  before any release check result is acted on, so a plain `akm upgrade` on an
+  already-current install migrates state and a failed install can no longer
+  strand the migration behind it. `akm migrate status` lists the pending
+  state migrations under `stateMigrations.pending`; `akm migrate apply`
+  applies them before the task migrators run and reports
+  `stateMigrations.applied` (plus `safetyCopyPath` when one was taken).
+  An ordinary managed open still refuses a historical-destructive migration;
+  its message now names these two commands. `akm upgrade --state-only`
+  remains as the same step with no release check, for offline installs, and
+  its `stateUpgrade` field gains `migrations` (the IDs applied).
+  A container that ships akm can put `akm upgrade` (or `akm migrate apply`)
+  in its entrypoint: on a current database the state step is a no-op.
+
 ## [0.9.8] - 2026-09-02
 
 A cleanup and stabilization release: deletion of machinery that policed the

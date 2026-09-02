@@ -214,6 +214,18 @@ export async function performUpgrade(
   const force = opts?.force === true;
   const skipPostUpgrade = opts?.skipPostUpgrade === true;
 
+  // Pending state.db migrations are applied FIRST, before any install is
+  // attempted. They belong to the akm that is running, need no network, no
+  // root, and no new binary -- and the post-install step that used to own
+  // them sat behind an install that fails EACCES wherever an image ships the
+  // CLI (#895). Running them here means a plain `akm upgrade` on an already-
+  // current install (a container entrypoint) still migrates state, and a
+  // failed install can no longer strand a migration behind it. A state
+  // failure aborts the upgrade: it is reported, never buried under an install.
+  const { stateUpgrade, note: stateNote } = describeStateUpgrade(
+    (dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase)(),
+  );
+
   // All install methods can short-circuit here unless the user explicitly forces an upgrade.
   if (!check.updateAvailable && !force) {
     return {
@@ -221,7 +233,8 @@ export async function performUpgrade(
       newVersion: latestVersion,
       upgraded: false,
       installMethod,
-      message: `akm v${currentVersion} is already the latest version`,
+      message: `akm v${currentVersion} is already the latest version. ${stateNote}`,
+      stateUpgrade,
     };
   }
 
@@ -233,7 +246,8 @@ export async function performUpgrade(
       latestVersion,
       installMethod,
       skipPostUpgrade,
-      upgradeState: dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase,
+      stateUpgrade,
+      stateNote,
     });
   }
 
@@ -244,6 +258,7 @@ export async function performUpgrade(
       upgraded: false,
       installMethod,
       message: `Unable to detect install method. Upgrade manually from https://github.com/${REPO}/releases`,
+      stateUpgrade,
     };
   }
 
@@ -378,41 +393,43 @@ export async function performUpgrade(
     installMethod,
     binaryPath: execPath,
     checksumVerified,
-    postUpgrade: runPostUpgradeTasks(
-      execPath,
-      { skip: skipPostUpgrade },
-      dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase,
-    ),
+    stateUpgrade,
+    postUpgrade: runPostUpgradeTasks(execPath, { skip: skipPostUpgrade }),
+  };
+}
+
+/**
+ * The `stateUpgrade` envelope field plus the one sentence every upgrade
+ * message carries about it, so `upgrade`, `upgrade --force`, and
+ * `upgrade --state-only` all report the state step the same way.
+ */
+function describeStateUpgrade(result: HistoricalStateUpgradeResult): {
+  stateUpgrade: NonNullable<UpgradeResponse["stateUpgrade"]>;
+  note: string;
+} {
+  const stateUpgrade = {
+    applied: result.upgraded,
+    migrations: result.applied,
+    ...(result.safetyCopyPath ? { safetyCopyPath: result.safetyCopyPath } : {}),
+  };
+  if (!result.upgraded) return { stateUpgrade, note: "state.db is already current." };
+  const ids = result.applied.length === 1 ? result.applied[0] : `${result.applied[0]} through ${result.applied.at(-1)}`;
+  const copy = result.safetyCopyPath ? `; safety copy: ${result.safetyCopyPath}` : "";
+  return {
+    stateUpgrade,
+    note: `Applied ${result.applied.length} pending state.db migration(s) (${ids})${copy}.`,
   };
 }
 
 /**
  * Rebuild the derived index after a successful upgrade.
  */
-function runPostUpgradeTasks(
-  akmBin: string,
-  opts: { skip: boolean },
-  upgradeState: () => HistoricalStateUpgradeResult,
-): NonNullable<UpgradeResponse["postUpgrade"]> {
-  let stateUpgrade: HistoricalStateUpgradeResult;
-  try {
-    stateUpgrade = upgradeState();
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      skipped: opts.skip,
-      message:
-        `Upgrade completed, but the state schema was not prepared (${detail}). ` +
-        "Preserve state.db and run `akm upgrade --state-only` before other AKM commands (the binary is already current).",
-    };
-  }
-  const stateNote = stateUpgrade.safetyCopyPath ? ` Historical state safety copy: ${stateUpgrade.safetyCopyPath}.` : "";
+function runPostUpgradeTasks(akmBin: string, opts: { skip: boolean }): NonNullable<UpgradeResponse["postUpgrade"]> {
   if (opts.skip) {
     return {
       ok: true,
       skipped: true,
-      message: `Upgrade completed.${stateNote} Skipped the index rebuild. Run \`akm index\` manually to rebuild the index.`,
+      message: "Upgrade completed. Skipped the index rebuild. Run `akm index` manually to rebuild the index.",
     };
   }
   try {
@@ -425,7 +442,7 @@ function runPostUpgradeTasks(
       return {
         ok: false,
         skipped: false,
-        message: `Upgrade completed.${stateNote} The index rebuild could not start: ${result.error.message}. Run \`akm index\` manually.`,
+        message: `Upgrade completed. The index rebuild could not start: ${result.error.message}. Run \`akm index\` manually.`,
       };
     }
     if (result.status !== 0) {
@@ -434,21 +451,21 @@ function runPostUpgradeTasks(
         ok: false,
         skipped: false,
         exitCode: result.status,
-        message: `Upgrade completed.${stateNote} Post-upgrade \`akm index\` failed (${detail}). Run \`akm index\` manually.`,
+        message: `Upgrade completed. Post-upgrade \`akm index\` failed (${detail}). Run \`akm index\` manually.`,
       };
     }
     return {
       ok: true,
       skipped: false,
       exitCode: 0,
-      message: `Upgrade completed and the index was rebuilt against the new binary.${stateNote}`,
+      message: "Upgrade completed and the index was rebuilt against the new binary.",
     };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
       skipped: false,
-      message: `Upgrade completed.${stateNote} The index rebuild failed: ${detail}. Run \`akm index\` manually.`,
+      message: `Upgrade completed. The index rebuild failed: ${detail}. Run \`akm index\` manually.`,
     };
   }
 }
@@ -464,9 +481,18 @@ function runPackageManagerUpgrade(input: {
   latestVersion: string | undefined;
   installMethod: InstallMethod;
   skipPostUpgrade: boolean;
-  upgradeState: () => HistoricalStateUpgradeResult;
+  stateUpgrade: NonNullable<UpgradeResponse["stateUpgrade"]>;
+  stateNote: string;
 }): UpgradeResponse {
-  const { packageManagerCommand, currentVersion, latestVersion, installMethod, skipPostUpgrade, upgradeState } = input;
+  const {
+    packageManagerCommand,
+    currentVersion,
+    latestVersion,
+    installMethod,
+    skipPostUpgrade,
+    stateUpgrade,
+    stateNote,
+  } = input;
   if (!latestVersion) {
     throw new Error(
       "Unable to determine latest version from GitHub releases. Check https://github.com/itlackey/akm/releases",
@@ -485,8 +511,11 @@ function runPackageManagerUpgrade(input: {
 
   if (result.status !== 0) {
     const details = (result.stderr ?? "").trim() || (result.stdout ?? "").trim() || `exit code ${result.status}`;
+    // The state step already ran; say so, or a container operator reading
+    // the EACCES will assume the migration is still stuck behind it.
+    const stateApplied = stateUpgrade.applied ? `\n${stateNote}` : "";
     throw new Error(
-      `Failed to upgrade akm via ${installMethod}: ${details}\nRun manually: ${packageManagerCommand.displayCommand}`,
+      `Failed to upgrade akm via ${installMethod}: ${details}\nRun manually: ${packageManagerCommand.displayCommand}${stateApplied}`,
     );
   }
 
@@ -507,6 +536,7 @@ function runPackageManagerUpgrade(input: {
         `v${installedVersion} (expected v${latestVersion}). The ${installMethod} registry's @latest tag ` +
         `may be lagging the GitHub release — try again shortly, or install the exact version: ` +
         `${packageManagerCommand.displayCommand.replace(/@latest\b/, `@${latestVersion}`)}`,
+      stateUpgrade,
     };
   }
 
@@ -519,7 +549,8 @@ function runPackageManagerUpgrade(input: {
       installedVersion === latestVersion
         ? `akm upgraded via ${installMethod} (verified: akm --version reports v${installedVersion})`
         : `akm upgraded via ${installMethod} (installed version could not be verified)`,
-    postUpgrade: runPostUpgradeTasks("akm", { skip: skipPostUpgrade }, upgradeState),
+    stateUpgrade,
+    postUpgrade: runPostUpgradeTasks("akm", { skip: skipPostUpgrade }),
   };
 }
 
@@ -621,42 +652,27 @@ export function getPackageManagerUpgradeCommand(
 }
 
 /**
- * Apply pending historical destructive state.db migrations WITHOUT installing a
- * new akm — the body of `akm upgrade --state-only`.
- *
- * Migrations flagged `historical-destructive` are refused during an ordinary
- * managed open: they need a verified sibling safety copy taken under the
- * migration writer lock, and that is deliberate, so an unattended `akm index`
- * can never quietly drop operator state.
- *
- * The bug this fixes is not the guard but its reachability (#895). The only
- * code path that set `allowHistoricalDestructiveStateUpgrade` ran as a
- * POST-INSTALL step of a real upgrade, so it sat behind an npm install. Where
- * akm is installed globally by an image and the runtime user is unprivileged,
- * that install fails EACCES and throws long before the migration is reached —
- * leaving the documented remedy impossible to run and `akm index --full`
- * permanently blocked. Nothing about the migration itself needs the network,
- * root, or a new binary; it is local, offline, and already verified.
- *
- * The safety copy is NOT skipped here. This changes only who may ask for the
- * migration, never what it does.
+ * The body of `akm upgrade --state-only`: the state step every `akm upgrade`
+ * runs first, on its own, with no release check at all -- for installs with
+ * no network access. Migrations flagged `historical-destructive` are refused
+ * during an ordinary managed open (they need a verified sibling safety copy
+ * taken under the migration writer lock, so an unattended `akm index` can
+ * never quietly drop operator state); this path and `akm migrate apply` are
+ * the ones that may admit them. The safety copy is NOT skipped here.
  */
 export function upgradeStateOnly(
   currentVersion: string,
   dependencies?: { upgradeHistoricalStateDatabase?: () => HistoricalStateUpgradeResult },
 ): UpgradeResponse {
-  const upgradeState = dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase;
-  const result = upgradeState();
+  const { stateUpgrade, note } = describeStateUpgrade(
+    (dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase)(),
+  );
   return {
     currentVersion,
     newVersion: currentVersion,
     upgraded: false,
     installMethod: detectInstallMethod(),
-    message: result.upgraded
-      ? `Applied pending state.db migrations. Safety copy: ${result.safetyCopyPath}`
-      : "state.db is already current; no migration was needed",
-    stateUpgrade: result.safetyCopyPath
-      ? { applied: result.upgraded, safetyCopyPath: result.safetyCopyPath }
-      : { applied: result.upgraded },
+    message: note,
+    stateUpgrade,
   };
 }

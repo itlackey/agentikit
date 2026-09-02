@@ -181,7 +181,7 @@ describe("state.db automatic migration boundary", () => {
     ).toEqual({ count: 0 });
     expect(inspected.prepare("SELECT value FROM operator_probe").get()).toEqual({ value: "untouched" });
     inspected.close();
-    expect(error instanceof Error ? error.message : "").toMatch(/existing unversioned state\.db.*akm upgrade --force/i);
+    expect(error instanceof Error ? error.message : "").toMatch(/existing unversioned state\.db.*akm upgrade/i);
   });
 
   test("explicit upgrade snapshots an existing unversioned database before migration 001", () => {
@@ -224,7 +224,7 @@ describe("state.db automatic migration boundary", () => {
       error = caught;
     }
 
-    expect(error instanceof Error ? error.message : "").toMatch(/existing unversioned state\.db.*akm upgrade --force/i);
+    expect(error instanceof Error ? error.message : "").toMatch(/existing unversioned state\.db.*akm upgrade/i);
     expect(createHash("sha256").update(fs.readFileSync(file)).digest("hex")).toBe(before);
     expect(fs.existsSync(`${file}-wal`)).toBe(false);
     expect(fs.existsSync(`${file}-shm`)).toBe(false);
@@ -466,7 +466,7 @@ describe("state.db automatic migration boundary", () => {
     }
 
     expect(injected).toBe(true);
-    expect(error instanceof Error ? error.message : "").toMatch(/018-drop-dead-lane-schema.*akm upgrade --force/i);
+    expect(error instanceof Error ? error.message : "").toMatch(/018-drop-dead-lane-schema.*akm upgrade/i);
     const inspected = openDatabase(file, { readonly: true });
     expect(inspected.prepare("SELECT content_hash FROM consolidation_judged").get()).toEqual({
       content_hash: "appeared-during-open",
@@ -489,7 +489,7 @@ describe("state.db automatic migration boundary", () => {
       .run("daily", "completed", "2026-08-24T00:00:00.000Z", '{"marker":"kept"}');
     seeded.close();
 
-    expect(() => openStateDatabase(file)).toThrow(/018-drop-dead-lane-schema.*akm upgrade --force/i);
+    expect(() => openStateDatabase(file)).toThrow(/018-drop-dead-lane-schema.*akm upgrade/i);
 
     const inspected = openDatabase(file, { readonly: true });
     const ids = inspected.prepare("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>;
@@ -515,7 +515,7 @@ describe("state.db automatic migration boundary", () => {
       .run("memories/keep", "keep-me", "2026-08-24T00:00:00.000Z", "no_action");
     seeded.close();
 
-    expect(() => openStateDatabase(file)).toThrow(/018-drop-dead-lane-schema.*akm upgrade --force/i);
+    expect(() => openStateDatabase(file)).toThrow(/018-drop-dead-lane-schema.*akm upgrade/i);
 
     const inspected = openDatabase(file, { readonly: true });
     expect(
@@ -582,7 +582,7 @@ describe("state.db automatic migration boundary", () => {
     ).toBe(before018.length);
     safetyCopy.close();
 
-    expect(upgradeHistoricalStateDatabase(file)).toEqual({ upgraded: false });
+    expect(upgradeHistoricalStateDatabase(file)).toEqual({ upgraded: false, applied: [] });
   });
 
   test("snapshot and migration 018 share one writer-exclusion window", async () => {

@@ -88,14 +88,20 @@ export function getStateDbPath(): string {
 }
 
 interface OpenStateDatabaseOptions {
-  /** Narrow intent supplied only by the successful `akm upgrade` post-install step. */
+  /**
+   * Narrow intent supplied only by `akm upgrade` and `akm migrate apply` --
+   * never by an ordinary managed open, which refuses instead.
+   */
   allowHistoricalDestructiveStateUpgrade?: boolean;
   /** Internal result seam used to report the verified safety-copy path. */
   onHistoricalStateSafetyCopy?: (safetyCopyPath: string) => void;
 }
 
 export interface HistoricalStateUpgradeResult {
+  /** Whether any pending migration was applied. */
   upgraded: boolean;
+  /** The migration IDs this call applied, in ledger order; empty when current. */
+  applied: string[];
   safetyCopyPath?: string;
 }
 
@@ -447,8 +453,8 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
         if (existingUnversionedDatabase && !options?.allowHistoricalDestructiveStateUpgrade) {
           throw new Error(
             "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
-              "Run `akm upgrade --force` to create a verified snapshot before migration 001, " +
-              "or `akm upgrade --state-only` where akm cannot reinstall itself (container/global install).",
+              "Run `akm upgrade` (or `akm migrate apply`) to create a verified snapshot before migration 001 " +
+              "and apply it deliberately.",
           );
         }
       } finally {
@@ -530,12 +536,34 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
 }
 
 /**
- * Narrow state-schema step owned by `akm upgrade` after executable replacement.
- * Missing/current databases are no-ops. A pre-018 exact ledger is snapshotted
- * beside state.db and verified before the immutable released migration runs.
+ * Read-only: the state migration IDs the running akm would apply to `dbPath`,
+ * in ledger order. Empty when the database is missing or current. Throws on a
+ * ledger this akm cannot own (newer, or not an exact ordered prefix) -- the
+ * same refusal a managed open makes.
+ */
+export function listPendingStateMigrations(dbPath = getStateDbPath()): string[] {
+  if (!fs.existsSync(dbPath)) return [];
+  const preflight = openDatabase(dbPath, { readonly: true });
+  try {
+    preflight.exec("PRAGMA busy_timeout = 30000");
+    const ledger = assertMigrationLedger(preflight, STATE_MIGRATIONS);
+    return STATE_MIGRATIONS.slice(ledger.migrationIds.length).map((migration) => migration.id);
+  } finally {
+    preflight.close();
+  }
+}
+
+/**
+ * Apply every pending state migration, historical-destructive ones included:
+ * the one step `akm upgrade` and `akm migrate apply` share, and the only
+ * caller that may admit migration 018 (an ordinary managed open refuses it by
+ * design). Missing/current databases are no-ops. A pre-018 exact ledger, or an
+ * unversioned database, is snapshotted beside state.db and verified before the
+ * immutable released migration runs.
  */
 export function upgradeHistoricalStateDatabase(dbPath = getStateDbPath()): HistoricalStateUpgradeResult {
-  if (!fs.existsSync(dbPath)) return { upgraded: false };
+  const pending = listPendingStateMigrations(dbPath);
+  if (pending.length === 0) return { upgraded: false, applied: [] };
 
   let safetyCopyPath: string | undefined;
   try {
@@ -551,7 +579,7 @@ export function upgradeHistoricalStateDatabase(dbPath = getStateDbPath()): Histo
     const recovery = safetyCopyPath ? ` Verified safety copy: ${safetyCopyPath}.` : "";
     throw new Error(`${detail}${recovery}`);
   }
-  return safetyCopyPath ? { upgraded: true, safetyCopyPath } : { upgraded: false };
+  return safetyCopyPath ? { upgraded: true, applied: pending, safetyCopyPath } : { upgraded: true, applied: pending };
 }
 
 /**

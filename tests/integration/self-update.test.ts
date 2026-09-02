@@ -542,6 +542,7 @@ describe("performUpgrade", () => {
     } as never);
     const upgradeHistoricalStateDatabase = mock(() => ({
       upgraded: true,
+      applied: ["018-drop-dead-lane-schema"],
       safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260824T010000000Z.bak",
     }));
 
@@ -560,11 +561,12 @@ describe("performUpgrade", () => {
     expect(upgradeHistoricalStateDatabase).toHaveBeenCalledTimes(1);
     expect(result.postUpgrade?.ok).toBe(true);
     expect(result.postUpgrade?.skipped).toBe(true);
-    expect(result.postUpgrade?.message).toContain("state.db.pre-018-drop-dead-lane-schema");
+    expect(result.stateUpgrade?.applied).toBe(true);
+    expect(result.stateUpgrade?.safetyCopyPath).toContain("state.db.pre-018-drop-dead-lane-schema");
     expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
   });
 
-  test("a historical state failure reports the verified copy and does not start the index rebuild", async () => {
+  test("a historical state failure aborts the upgrade before any install is attempted", async () => {
     const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
       status: 0,
       stdout: "",
@@ -576,23 +578,21 @@ describe("performUpgrade", () => {
       );
     });
 
-    const result = await performUpgrade(
-      {
-        currentVersion: "0.0.13",
-        latestVersion: "0.0.14",
-        updateAvailable: true,
-        installMethod: "npm",
-      },
-      undefined,
-      { upgradeHistoricalStateDatabase },
-    );
-
-    expect(result.upgraded).toBe(true);
-    expect(result.postUpgrade?.ok).toBe(false);
-    expect(result.postUpgrade?.skipped).toBe(false);
-    expect(result.postUpgrade?.message).toContain("state.db.pre-018-drop-dead-lane-schema");
-    // Package install and version verification only; index is not attempted.
-    expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
+    // The state step runs first, and its failure is the upgrade's failure:
+    // reported with the verified copy, never buried under an install result.
+    await expect(
+      performUpgrade(
+        {
+          currentVersion: "0.0.13",
+          latestVersion: "0.0.14",
+          updateAvailable: true,
+          installMethod: "npm",
+        },
+        undefined,
+        { upgradeHistoricalStateDatabase },
+      ),
+    ).rejects.toThrow(/state\.db\.pre-018-drop-dead-lane-schema/);
+    expect(spawnSyncSpy).not.toHaveBeenCalled();
   });
 
   // ── #895: the state migration must be reachable without an install ───────
@@ -611,6 +611,7 @@ describe("performUpgrade", () => {
     } as never);
     const upgradeHistoricalStateDatabase = mock(() => ({
       upgraded: true,
+      applied: ["018-drop-dead-lane-schema"],
       safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260901T010000000Z.bak",
     }));
 
@@ -634,11 +635,11 @@ describe("performUpgrade", () => {
       stdout: "",
       stderr: "",
     } as never);
-    const upgradeHistoricalStateDatabase = mock(() => ({ upgraded: false }));
+    const upgradeHistoricalStateDatabase = mock(() => ({ upgraded: false, applied: [] }));
 
     const result = upgradeStateOnly("0.9.6", { upgradeHistoricalStateDatabase });
 
-    expect(result.stateUpgrade).toEqual({ applied: false });
+    expect(result.stateUpgrade).toEqual({ applied: false, migrations: [] });
     expect(result.message).toContain("already current");
     expect(spawnSyncSpy).not.toHaveBeenCalled();
   });
@@ -651,6 +652,71 @@ describe("performUpgrade", () => {
     // A failed migration must throw. Reporting a cheerful no-op here would
     // leave the operator believing state was migrated when it was not.
     expect(() => upgradeStateOnly("0.9.6", { upgradeHistoricalStateDatabase })).toThrow(/018 failed/);
+  });
+
+  // ── Every `akm upgrade` runs the state step first, install or no install ──
+  //
+  // `--state-only` made the migration reachable, but only for a human who
+  // types it. An image that ships the current akm has no install to run and
+  // nobody in the loop, so a plain `akm upgrade` (a container entrypoint) has
+  // to migrate state on its own -- and a failing install must not strand the
+  // migration behind it the way the old post-install step did.
+
+  test("an already-current install still applies pending state migrations", async () => {
+    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
+      status: 0,
+      stdout: "",
+      stderr: "",
+    } as never);
+    const upgradeHistoricalStateDatabase = mock(() => ({
+      upgraded: true,
+      applied: ["018-drop-dead-lane-schema", "019-proposal-fingerprints"],
+      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260902T010000000Z.bak",
+    }));
+
+    const result = await performUpgrade(
+      { currentVersion: "0.9.8", latestVersion: "0.9.8", updateAvailable: false, installMethod: "npm" },
+      undefined,
+      { upgradeHistoricalStateDatabase },
+    );
+
+    expect(upgradeHistoricalStateDatabase).toHaveBeenCalledTimes(1);
+    expect(result.upgraded).toBe(false);
+    expect(result.stateUpgrade).toEqual({
+      applied: true,
+      migrations: ["018-drop-dead-lane-schema", "019-proposal-fingerprints"],
+      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260902T010000000Z.bak",
+    });
+    expect(result.message).toContain("already the latest");
+    expect(result.message).toContain("018-drop-dead-lane-schema through 019-proposal-fingerprints");
+    expect(spawnSyncSpy).not.toHaveBeenCalled();
+  });
+
+  test("a failed package-manager install no longer strands the state migration behind it", async () => {
+    // The reporter's exact shape (#895): a global install the runtime user
+    // cannot rewrite. The install still fails -- but the migration ran first,
+    // and the failure says so.
+    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
+      status: 243,
+      stdout: "",
+      stderr: "npm error code EACCES\nnpm error path /usr/local/lib/node_modules/akm-cli",
+    } as never);
+    const upgradeHistoricalStateDatabase = mock(() => ({
+      upgraded: true,
+      applied: ["018-drop-dead-lane-schema"],
+      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260902T020000000Z.bak",
+    }));
+
+    await expect(
+      performUpgrade(
+        { currentVersion: "0.9.6", latestVersion: "0.9.8", updateAvailable: true, installMethod: "npm" },
+        undefined,
+        { upgradeHistoricalStateDatabase },
+      ),
+    ).rejects.toThrow(/EACCES[\s\S]*Applied 1 pending state\.db migration/);
+    expect(upgradeHistoricalStateDatabase).toHaveBeenCalledTimes(1);
+    // The install attempt itself, and nothing after it.
+    expect(spawnSyncSpy).toHaveBeenCalledTimes(1);
   });
 
   test("captures post-upgrade failure without failing the upgrade", async () => {

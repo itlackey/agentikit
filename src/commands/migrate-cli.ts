@@ -7,6 +7,7 @@ import { resolveStashDir } from "../core/common";
 import { resetConfigCache } from "../core/config/config";
 import { ConfigError } from "../core/errors";
 import { getConfigPath } from "../core/paths";
+import { listPendingStateMigrations, upgradeHistoricalStateDatabase } from "../core/state-db";
 import { applyConfigExtraParamsLift, findConfigExtraParamsLift } from "./migrate/config-extra-params";
 import { findDeadResidueEntries, removeDeadResidue } from "./migrate/dead-residue";
 import { findStaleTxnEntries, recoverStaleTxns } from "./migrate/stale-txn";
@@ -147,6 +148,17 @@ export async function runMigrateSubcommand(
     return;
   }
 
+  // Pending state.db migrations are a migration concern like the rest, and
+  // the one step this command shares with `akm upgrade`: status names them,
+  // apply applies them, historical-destructive ones included, with the same
+  // verified safety copy. An ordinary managed open refuses those by design,
+  // so `akm upgrade` and this are the only two routes that admit them. It
+  // runs BEFORE the task migrators, which open state.db themselves and would
+  // otherwise stop on that refusal against a pre-018 database.
+  const stateMigrations = applyResidue
+    ? describeAppliedStateMigrations(upgradeHistoricalStateDatabase())
+    : { pending: listPendingStateMigrations() };
+
   let stashDir: string | undefined;
   try {
     stashDir = resolveStashDir();
@@ -185,9 +197,18 @@ export async function runMigrateSubcommand(
             ? { recovered: await recoverStaleTxns(stashDir) }
             : { pending: findStaleTxnEntries(stashDir) },
         };
-  output(command, { ...combined, ...stashSections, configExtraParams });
+  output(command, { ...combined, ...stashSections, configExtraParams, stateMigrations });
 
   if (combined.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
+}
+
+function describeAppliedStateMigrations(result: ReturnType<typeof upgradeHistoricalStateDatabase>): {
+  applied: string[];
+  safetyCopyPath?: string;
+} {
+  return result.safetyCopyPath
+    ? { applied: result.applied, safetyCopyPath: result.safetyCopyPath }
+    : { applied: result.applied };
 }
 
 /**
@@ -223,10 +244,13 @@ export function combineMigrationPlans(first: MigrateToolCall, second: MigrateToo
 }
 
 export const migrateCommand = defineGroupCommand({
-  meta: { name: "migrate", description: "Inspect or apply task-v2 and task-v3 sources to task source v4" },
+  meta: {
+    name: "migrate",
+    description: "Inspect or apply pending migrations: task-v2/v3 sources to v4, state.db, and legacy config",
+  },
   subCommands: {
     status: defineJsonCommand({
-      meta: { name: "status", description: "Read-only task-v2 and task-v3 migration check" },
+      meta: { name: "status", description: "Read-only check of pending task-source, state.db, and config migrations" },
       run() {
         return runMigrateSubcommand("migrate-status", ["status"], ["task-v4-status"]);
       },
@@ -234,7 +258,8 @@ export const migrateCommand = defineGroupCommand({
     apply: defineJsonCommand({
       meta: {
         name: "apply",
-        description: "Back up and atomically convert task-v2 and task-v3 files to task source v4",
+        description:
+          "Back up and apply pending migrations: task-v2/v3 files to task source v4, state.db, and legacy config",
       },
       args: {
         "dry-run": {

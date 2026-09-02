@@ -489,12 +489,14 @@ export interface UpgradeResponse {
     message: string;
   };
   /**
-   * Result of the historical destructive state.db migration. Present for
-   * `upgrade --state-only`, whose whole purpose is this step, so callers can
-   * see whether a migration ran without parsing `message`.
+   * Result of the pending state.db migration step, which runs FIRST on every
+   * `akm upgrade` -- before any install -- and is the whole of
+   * `--state-only`. `migrations` lists the IDs this call applied, in ledger
+   * order, so callers can see what ran without parsing `message`.
    */
   stateUpgrade?: {
     applied: boolean;
+    migrations: string[];
     safetyCopyPath?: string;
   };
 }

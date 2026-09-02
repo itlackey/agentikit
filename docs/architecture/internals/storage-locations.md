@@ -342,8 +342,8 @@ migration ID. Additive migrations and released
 migration 002's verified data-preserving `task_history` rebuild run
 automatically. Released migration 018's dead-lane table/column drops do not:
 an ordinary managed open stops at that boundary and directs the operator to
-`akm upgrade --force`. After executable replacement, that command creates a
-consistent sibling snapshot with `VACUUM INTO`, fsyncs it, requires
+`akm upgrade` or `akm migrate apply`. Before any install, those commands create a
+consistent sibling snapshot with `VACUUM INTO`, fsync it, require
 `PRAGMA quick_check` to report `ok`, and only then admits migration 018. The
 snapshot is named
 `state.db.pre-018-drop-dead-lane-schema.<UTC-digits>.<UUID>.bak`. Its randomized

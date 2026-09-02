@@ -1010,26 +1010,31 @@ Upgrade `akm` itself to the latest release. Standalone binaries are downloaded,
 checksummed, and staged before replacement; npm, Bun, and pnpm global installs
 use their package manager.
 
-Upgrade replaces the installed program and then rebuilds the derived index.
-It does not run legacy config, database, or workflow migration paths. Standalone
-downloads use a temporary rollback copy only during atomic executable replacement.
+Upgrade first applies any pending `state.db` migrations — including released
+migration 018, which an ordinary command refuses — then replaces the installed
+program and rebuilds the derived index. The state step runs on every
+`akm upgrade`, install or no install, so it is safe as a container entrypoint:
+on a current database it is a no-op. It does not run legacy config or workflow
+migration paths (`akm migrate` owns those, and applies the same state step).
+Standalone downloads use a temporary rollback copy only during atomic
+executable replacement.
 
 Standalone downloads are streamed directly to the staged file while SHA-256 is
 computed, with a 256 MiB binary limit. Release/checksum metadata is capped at
 1 MiB; an oversized response is cancelled and the staged file is removed.
 
 ```sh
-akm upgrade              # Download and replace the running binary
-akm upgrade --check      # Check for updates without installing
-akm upgrade --force      # Force upgrade even if already on latest
-akm upgrade --state-only # Apply pending state.db migrations; install nothing
+akm upgrade              # Apply pending state.db migrations, then download and replace the running binary
+akm upgrade --check      # Check for updates without installing (no state step)
+akm upgrade --force      # Force the install even if already on latest
+akm upgrade --state-only # The state step alone: no release check, no install
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--check` | Check for updates without installing |
 | `--force` | Force upgrade even if on latest version |
-| `--state-only` | Apply pending `state.db` migrations without installing a new akm. For installs that cannot rewrite their own binary — a container shipping akm globally, an unprivileged runtime user — where the install step would fail `EACCES` before the migration could run. Takes the same verified safety copy as `--force`; it changes who may request the migration, not what it does. |
+| `--state-only` | Apply pending `state.db` migrations only, with no release check and no install — for installs that cannot reach the network. Every `akm upgrade` runs this step first anyway. |
 | `--skip-post-upgrade` | Skip the post-upgrade index rebuild |
 
 Checksum verification is not optional and has no flag. If a release's

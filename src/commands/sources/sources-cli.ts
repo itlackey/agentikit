@@ -49,18 +49,14 @@ export const upgradeCommand = defineJsonCommand({
     },
     "state-only": {
       type: "boolean",
-      description: "Apply pending state.db migrations without installing a new akm",
+      description: "Apply pending state.db migrations only; skip the release check and install (offline installs)",
       default: false,
     },
   },
   async run({ args }) {
-    // Applying a historical destructive state migration used to be reachable
-    // ONLY as a post-install step of a real upgrade, so an install akm cannot
-    // rewrite -- a global npm install owned by root, an image that ships the
-    // CLI -- had no route to it at all: the npm step fails EACCES and throws
-    // long before the migration runs (#895). The migration is a local,
-    // offline, already-verified operation; it does not need the network or a
-    // new binary, and coupling it to one was the bug.
+    // Every `akm upgrade` applies pending state.db migrations before it
+    // touches the install (#895). `--state-only` is that step alone, with no
+    // release check at all, for installs that cannot reach the network.
     if (args["state-only"]) {
       output("upgrade", upgradeStateOnly(pkgVersion));
       return;
