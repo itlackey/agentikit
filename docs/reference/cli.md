@@ -582,7 +582,7 @@ Subcommands:
 | `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`). Child workflow runs are excluded unless `--children` is passed |
 | `resume <run-id>` | Flip a `blocked` or `failed` run back to `active`. Completed runs cannot be resumed |
 | `abandon <run-id>` | Mark a run failed so it stops counting as active (`resume` can reopen it) |
-| `plan <ref>` | **Evolving.** Compile and freeze a workflow WITHOUT publishing a run: the canonical step graph, per-step frozen target kinds, task/child expansion, input bindings, source read set, and lowering notices — zero durable writes. Defaults to a human-readable summary; pass `--format json` for the full envelope |
+| `plan <ref>` | **Evolving.** Compile and freeze a workflow WITHOUT publishing a run: the canonical step graph, per-step frozen target kinds, task/child expansion, input bindings, source read set, and lowering notices — zero durable writes. Returns the full JSON envelope by default, like every other command; pass `--format text` for a human-readable summary |
 
 The public `workflow start`, `next`, and `complete` lifecycle was removed in
 0.9, along with the experimental `brief`/`report` external-driver protocol.

@@ -35,6 +35,21 @@ Two security holes, two search-correctness bugs, a locale-dependent hash, a
 deletion shield that failed open, and sixteen places that answered a failure
 with a confident wrong answer instead of an error.
 
+### Changed
+
+- **`akm workflow plan` returns JSON by default**, like every other command
+  (#903). It was the one verb whose unmarked default was a human summary. That
+  exception cost a bespoke branch which could not reliably distinguish "no
+  format named" from "`--format json` named globally before the subcommand" —
+  citty parses each command level against its own argv, so the leaf read
+  `undefined` in both cases. Working around that meant reading the invocation
+  singleton, folding in a persisted `output.format`, and finally leaving a
+  resolved `"json"` on the text branch because it was indistinguishable from
+  "nothing configured" — which meant an explicit `--format json` silently did
+  nothing for anyone whose config already resolved to json. Deleted, along with
+  ~60 lines of comment justifying it. `--format text` still renders the same
+  summary through the same formatter; it is simply no longer the default.
+
 ### Fixed
 
 - **Historical state migrations are reachable where akm cannot reinstall

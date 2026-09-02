@@ -9,18 +9,12 @@
  * GitHub-shaped `.yml` workflow sources. Validate with `akm lint --type workflows`.
  */
 
-import { getParsedInvocation } from "../cli/invocation";
 import { getStringArg } from "../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
 import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { NotFoundError, UsageError } from "../core/errors";
 import { akmIndex } from "../indexer/indexer";
-import { getOutputMode } from "../output/context";
-import { renderGenericText } from "../output/generic-render";
-import { deliverRendered } from "../output/html-render";
-import { shapeForCommand } from "../output/shapes";
-import { formatPlain } from "../output/text";
 import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
 import type { WorkflowParameterFlag } from "../workflows/ir/params";
 import { WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/ir/schema";
@@ -356,61 +350,17 @@ const workflowPlanCommand = defineJsonCommand({
   },
   async run({ args }) {
     const result = await akmWorkflowPlan(args.ref);
-    // B-46/B-57: `akm workflow plan` is read-only introspection whose UNMARKED
-    // default is a human summary — `--format json` (B-N9) is the opt-in for
-    // the full structure, the mirror image of every other verb's json-by-
-    // default (DEFAULT_CONFIG.output.format).
-    //
-    // Detecting "the caller named no format at all" MUST NOT read
-    // `args.format` (code-review round 4, finding 3 / Review log R3):
-    // citty's one-parse rule (GLOBAL_OUTPUT_ARGS's own doc comment, "no
-    // command body may read these args") isn't just style here — reading it
-    // is actively wrong. citty parses each command level against only that
-    // level's own remaining argv, so a GLOBAL, pre-subcommand `--format json`
-    // (e.g. `akm --format json workflow plan <ref>`) is consumed by the ROOT
-    // command's own declared `format` arg before the `workflow`/`plan`
-    // subcommand tokens are even resolved — this LEAF's `args.format` reads
-    // `undefined` in exactly that case too, indistinguishable from "no
-    // format was named anywhere". Reproduced live: that invocation printed
-    // the human TEXT summary at exit 0 even though `getOutputMode().format`
-    // was already `"json"` (the control, `akm --format json workflow list`,
-    // correctly emitted JSON — only this leaf's own arg-read was wrong).
-    // Detect it instead off the process-wide invocation singleton
-    // (`getParsedInvocation`, src/cli/invocation.ts) — the same canonical,
-    // position-independent argv parse `src/cli.ts` mints ONCE at startup
-    // (`setParsedInvocation`, immediately before `initOutputMode` builds the
-    // `getOutputMode()` singleton from that identical argv), so this agrees
-    // with `getOutputMode()` regardless of where `--format` appeared. A bare
-    // `process.argv` read is reserved for `src/cli.ts`/`cli/invocation.ts`
-    // themselves (`lint-process-argv.ts`); every other module reads through
-    // this singleton instead. When explicit, this defers to the normal
-    // `output()` path (json/yaml/text/md/html/jsonl, `--output <path>`)
-    // unchanged; when absent, it reproduces `output()`'s OWN "text" branch
-    // verbatim (same shape/detail projection, same registered-formatter-or-
-    // generic-fallback, same `--output <path>` handling) without touching
-    // the shared dispatcher other commands rely on.
-    //
-    // "No format named anywhere" also has to check the RESOLVED mode, not
-    // just argv: `getOutputMode().format` already folds a persisted
-    // `output.format` config default in ahead of the hardcoded "json"
-    // fallback (`resolveOutputMode`, src/output/context.ts — argv ?? config
-    // default ?? "json"). A user who has configured e.g. `output.format:
-    // "yaml"` gets yaml from every other command with no `--format` on the
-    // line; `workflow plan` must honor that too instead of forcing its
-    // human-text branch over a real persisted default. A resolved format of
-    // exactly "json" is deliberately left on the text branch below: it's
-    // indistinguishable from "nothing configured" (DEFAULT_CONFIG.output.format
-    // is also "json" — OutputConfigSchema's `format` carries no independent
-    // zod default, so the merge is the only source), and collapsing that case
-    // onto the JSON envelope would erase the documented unmarked-default text
-    // summary for the overwhelmingly common "user configured nothing" case.
-    const mode = getOutputMode();
-    if (getParsedInvocation().getFlagValue("--format") === undefined && mode.format === "json") {
-      const shaped = shapeForCommand("workflow-plan", result, mode.detail, mode.shape);
-      const plain = formatPlain("workflow-plan", shaped, mode.detail);
-      deliverRendered(plain ?? renderGenericText("workflow-plan", shaped), mode.outputPath);
-      return;
-    }
+    // json-by-default, like every other verb (#903). This used to default to
+    // the human summary, which cost ~60 lines of branch: `args.format` cannot
+    // detect "no format named" (citty parses per level, so a global
+    // pre-subcommand `--format json` is eaten by the ROOT command and the leaf
+    // reads undefined), so it had to route through `getParsedInvocation()`,
+    // then fold in a persisted `output.format`, and then still leave a
+    // resolved "json" on the text branch because that is indistinguishable
+    // from "nothing configured". The last compromise meant an explicit
+    // `--format json` silently did nothing for anyone whose config already
+    // resolved to json. `--format text` still renders the summary through the
+    // registered formatter; it is just no longer the unmarked default.
     output("workflow-plan", result);
   },
 });

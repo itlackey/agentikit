@@ -190,12 +190,42 @@ function writeWarningWorkflow(): void {
   );
 }
 
+describe("akm workflow plan <ref> — json by default (#903)", () => {
+  test("with no --format and no configured format, emits the JSON envelope like every other command", async () => {
+    writeBasicWorkflow();
+    await index();
+
+    // `plan` used to be the one verb that defaulted to a human summary. That
+    // cost a bespoke branch which could not reliably tell "no format named"
+    // from "--format json named globally before the subcommand", so an
+    // explicit `--format json` silently did nothing whenever the resolved
+    // format was already json. Deleted in #903.
+    const result = await runCliCapture(["workflow", "plan", "workflows/basic-plan"]);
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(parsed.ok).toBe(true);
+    expect(parsed.shape).toBe("workflow-plan");
+    expect(Array.isArray(parsed.steps)).toBe(true);
+  });
+
+  test("a global --format json placed BEFORE the subcommand is honoured, not silently ignored", async () => {
+    writeBasicWorkflow();
+    await index();
+
+    const result = await runCliCapture(["--format", "json", "workflow", "plan", "workflows/basic-plan"]);
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout).ok).toBe(true);
+  });
+});
+
 describe("akm workflow plan <ref> — text mode (B-46)", () => {
   test("exits 0 and prints a human summary on stdout", async () => {
     writeBasicWorkflow();
     await index();
 
-    const result = await runCliCapture(["workflow", "plan", "workflows/basic-plan"]);
+    // #903: text is no longer the unmarked default, so ask for it. The
+    // renderer itself is unchanged and still worth pinning.
+    const result = await runCliCapture(["workflow", "plan", "workflows/basic-plan", "--format", "text"]);
     expect(result.code).toBe(0);
     expect(result.stdout.length).toBeGreaterThan(0);
     expect(result.stdout).toContain("workflows/basic-plan");
@@ -304,15 +334,21 @@ describe("akm workflow plan <ref> honors a persisted output.format config defaul
     expect(Array.isArray(parsed.steps)).toBe(true);
   });
 
-  test("no --format anywhere, config sets output.format: json (matches the hardcoded default) -> still the human text summary", async () => {
+  test("no --format anywhere, config sets output.format: json -> the JSON envelope like every other command (#903)", async () => {
     writeBasicWorkflow();
     await index();
     writeSandboxConfig({ output: { format: "json" } });
 
+    // Before #903 this case deliberately produced the human text summary: a
+    // resolved "json" was indistinguishable from "nothing configured", so the
+    // bespoke branch could not honour it. `plan` is json-by-default now, so
+    // there is nothing to distinguish and the envelope is simply correct.
     const result = await runCliCapture(["workflow", "plan", "workflows/basic-plan"]);
     expect(result.code).toBe(0);
-    expect(result.stdout.trimStart().startsWith("{")).toBe(false);
-    expect(result.stdout).toContain("workflows/basic-plan");
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ref).toContain("workflows/basic-plan");
+    expect(Array.isArray(parsed.steps)).toBe(true);
   });
 
   test("an explicit --format on the line still wins over a persisted yaml default", async () => {
@@ -419,7 +455,7 @@ describe("akm workflow plan <ref> — lowering notices from freeze surface in no
     expect(notice?.adapter).toBe("llm");
     expect(String(notice?.message)).toContain("outputSchema");
 
-    const text = await runCliCapture(["workflow", "plan", "workflows/plan-lowering-notice"]);
+    const text = await runCliCapture(["workflow", "plan", "workflows/plan-lowering-notice", "--format", "text"]);
     expect(text.code).toBe(0);
     expect(text.stdout).toContain("notices:");
     // §4.6's exact line shape: `! lowering[<severity>] <code> (<adapter>): <message>`.
@@ -531,7 +567,13 @@ describe("akm workflow plan <ref> — a workflow composing a child (B-49)", () =
     const expansion = dispatch.expansion as Record<string, unknown>;
     const childPlanHash = String(expansion.childPlanHash);
 
-    const textResult = await runCliCapture(["workflow", "plan", "workflows/plan-composes-child-text"]);
+    const textResult = await runCliCapture([
+      "workflow",
+      "plan",
+      "workflows/plan-composes-child-text",
+      "--format",
+      "text",
+    ]);
     expect(textResult.code).toBe(0);
     expect(textResult.stdout).toContain(`(plan ${childPlanHash})`);
     expect(textResult.stdout).toContain('with: scope="urgent" (literal)');
