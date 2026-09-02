@@ -296,13 +296,22 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS index_dir_state (
-      dir_path          TEXT PRIMARY KEY,
-      file_set_hash     TEXT NOT NULL,
-      file_mtime_max_ms REAL NOT NULL,
-      reason            TEXT NOT NULL,
-      updated_at        TEXT NOT NULL
+      dir_path              TEXT PRIMARY KEY,
+      file_set_hash         TEXT NOT NULL,
+      file_mtime_max_ms     REAL NOT NULL,
+      reason                TEXT NOT NULL,
+      updated_at            TEXT NOT NULL,
+      walked_file_set_hash     TEXT,
+      walked_file_mtime_max_ms REAL,
+      row_count                INTEGER
     );
   `);
+  // #900: three columns added after the table's initial release, backfilled
+  // as NULL on a pre-existing row (ADD COLUMN cannot be folded into the
+  // CREATE TABLE IF NOT EXISTS above once the table already exists). A NULL
+  // row simply cannot satisfy the walked-fileset pre-drain gate yet — its
+  // directory takes one more full drain, which repopulates all three columns.
+  ensureIndexDirStateWalkedColumns(db);
 
   // LLM enrichment result cache. Stores a SHA-256 body hash and the JSON
   // result for each asset so that subsequent `akm index --enrich` runs can
@@ -417,4 +426,28 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
 function tableExists(db: Database, name: string): boolean {
   const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1").get(name);
   return row !== undefined && row !== null;
+}
+
+/**
+ * #900: add the walked-fileset pre-drain-gate columns to a pre-existing
+ * `index_dir_state` table. `CREATE TABLE IF NOT EXISTS` only applies to a
+ * fresh table, so a database created before these columns existed needs an
+ * explicit `ALTER TABLE`. Idempotent (checked via `PRAGMA table_info`) so it
+ * is safe to call on every `ensureSchema`. index.db is a regenerable cache,
+ * so no data migration is attempted: a pre-existing row simply has NULL in
+ * the new columns until its directory is next drained, at which point the
+ * gate has real values to compare against.
+ */
+function ensureIndexDirStateWalkedColumns(db: Database): void {
+  const columns = db.prepare("PRAGMA table_info(index_dir_state)").all() as Array<{ name: string }>;
+  const names = new Set(columns.map((c) => c.name));
+  if (!names.has("walked_file_set_hash")) {
+    db.exec("ALTER TABLE index_dir_state ADD COLUMN walked_file_set_hash TEXT");
+  }
+  if (!names.has("walked_file_mtime_max_ms")) {
+    db.exec("ALTER TABLE index_dir_state ADD COLUMN walked_file_mtime_max_ms REAL");
+  }
+  if (!names.has("row_count")) {
+    db.exec("ALTER TABLE index_dir_state ADD COLUMN row_count INTEGER");
+  }
 }

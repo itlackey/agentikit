@@ -30,6 +30,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unparseable proposal row now warns once per process instead of once per
   read (`akm health --report` read the table seven times).
 
+- **A no-op incremental `akm index` no longer costs minutes of CPU** (#900).
+  Two causes: the per-directory freshness check ran two full scans of the
+  `entries` table for every directory (O(directories × entries)), and every
+  file was read, hashed, and parsed before the freshness check decided the
+  directory was unchanged. The directory lookup now uses the existing
+  `file_path` index, and a stat-based gate over each directory's walked file
+  set skips unchanged directories before any file is read. On a synthetic
+  800-directory, 4,000-entry corpus a no-op pass fell from ~37 s to under 1 s
+  of CPU with identical entries and search results. `index_dir_state` gains
+  three nullable columns; an existing index.db drains every directory once
+  more after upgrading, then takes the fast path.
+
 ## [0.9.8-beta.1] - 2026-09-01
 
 A cleanup and stabilization release: deletion of machinery that policed the

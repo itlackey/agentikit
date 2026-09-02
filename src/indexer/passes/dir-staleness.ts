@@ -35,6 +35,7 @@ import type { StashFile } from "./metadata";
 export type DirStaleReason = {
   kind:
     | "unchanged"
+    | "unchanged-precheck"
     | "index-context-changed"
     | "no-previous-rows"
     | "cached-zero-row-state"
@@ -105,6 +106,50 @@ export function getCachedZeroRowDirState(
   if (state.stale || state.reason.kind !== "cached-zero-row-state") return undefined;
   if (!canUseIncrementalSkip(state, priorDirsChanged)) return undefined;
   return state;
+}
+
+/**
+ * #900 pre-drain freshness gate: decide "this directory cannot have changed"
+ * from stat data alone (file names + max mtime over the RAW walked file
+ * list), before `drainDirDocuments` reads/hashes/parses a single file.
+ *
+ * This is deliberately a coarser, cheaper cousin of `getDirIndexState`'s
+ * post-drain "unchanged" check: that check compares the previous ENTRIES'
+ * filenames (the recognized subset) against the current drain's recognized
+ * output, which requires having already drained. This gate instead compares
+ * the full walked file set (recognized or not — `.json`, `.gitkeep`, ...
+ * included) against the walked file set fingerprint recorded the last time
+ * this directory was actually drained (`walkedFileSetHash`/
+ * `walkedFileMtimeMaxMs`, populated in lockstep with `fileSetHash`/
+ * `fileMtimeMaxMs` — see `indexer.ts`'s persist step). Identical walked
+ * input can only ever re-derive identical recognized output (recognition is
+ * a pure function of a file's path/content), so a match here is sound even
+ * though it never inspects the persisted `entries` rows.
+ *
+ * Restricted to directories whose last real drain produced at least one row
+ * (`rowCount > 0`): a directory that produced zero rows already has its own
+ * pre-drain fast path (`getCachedZeroRowDirState`) with its own dedup-order
+ * nuance (`canUseIncrementalSkip`'s "deduped-zero-row" guard) that does not
+ * apply here, so this gate defers to that one instead of duplicating it.
+ * A row written before #900 (no `rowCount`/`walkedFileSetHash` yet) also
+ * defers — one more full drain populates them.
+ */
+export function getCachedUnchangedDirState(
+  db: Database,
+  dirPath: string,
+  files: string[],
+  indexVariant = "",
+): DirIndexState | undefined {
+  const cachedState = getIndexDirState(db, dirPath);
+  if (!cachedState) return undefined;
+  if (cachedState.rowCount === undefined || cachedState.rowCount <= 0) return undefined;
+  if (cachedState.walkedFileSetHash === undefined || cachedState.walkedFileMtimeMaxMs === undefined) return undefined;
+
+  const fingerprint = computeDirFingerprint(dirPath, files, indexVariant);
+  if (cachedState.walkedFileSetHash !== fingerprint.fileSetHash) return undefined;
+  if (cachedState.walkedFileMtimeMaxMs !== fingerprint.fileMtimeMaxMs) return undefined;
+
+  return { stale: false, reason: { kind: "unchanged-precheck" }, persistedRowCount: cachedState.rowCount };
 }
 
 export function canUseIncrementalSkip(state: DirIndexState, priorDirsChanged: boolean): boolean {

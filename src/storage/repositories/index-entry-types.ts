@@ -87,6 +87,26 @@ export interface IndexDirState {
   fileMtimeMaxMs: number;
   reason: string;
   updatedAt: string;
+  /**
+   * #900: fingerprint over the directory's WALKED file set (every file the
+   * walk saw, recognized or not) as of the last successful drain, keyed
+   * separately from `fileSetHash` (which is derived from the RECOGNIZED
+   * subset — see `resolveIndexedFiles`). Lets a pre-drain gate detect "this
+   * directory cannot have changed" without running `adapter.recognize` /
+   * hashing every file first. `undefined` on a row written before #900 or by
+   * a codepath that never drained (never populated until the next real scan).
+   */
+  walkedFileSetHash?: string;
+  /** Companion max-mtime for {@link walkedFileSetHash}. */
+  walkedFileMtimeMaxMs?: number;
+  /**
+   * Row count the directory produced the last time it was actually drained.
+   * Distinguishes a real (non-zero) generation from the zero-row case (which
+   * has its own dedicated cache path with different dedup semantics) so the
+   * walked-fileset pre-drain gate only fires for directories known to have
+   * produced entries. `undefined` on a row written before #900.
+   */
+  rowCount?: number;
 }
 
 /** Parameters for `rekeyEntryInPlace`. */
