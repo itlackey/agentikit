@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findDeadResidueEntries, removeDeadResidue } from "../../../src/commands/migrate/dead-residue";
+import { findDeadResidueEntries, removeDeadResidue } from "../../scripts/akm-migrate/migrate/dead-residue";
 
 let stashDir: string;
 

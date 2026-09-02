@@ -17,7 +17,7 @@ import path from "node:path";
 import {
   applyConfigExtraParamsLift,
   findConfigExtraParamsLift,
-} from "../../../src/commands/migrate/config-extra-params";
+} from "../../scripts/akm-migrate/migrate/config-extra-params";
 
 let root: string;
 let configPath: string;

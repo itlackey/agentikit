@@ -3,263 +3,53 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
-import { resolveStashDir } from "../core/common";
-import { resetConfigCache } from "../core/config/config";
-import { ConfigError } from "../core/errors";
-import { getConfigPath } from "../core/paths";
-import { listPendingStateMigrations, upgradeHistoricalStateDatabase } from "../core/state-db";
-import { applyConfigExtraParamsLift, findConfigExtraParamsLift } from "./migrate/config-extra-params";
-import { findDeadResidueEntries, removeDeadResidue } from "./migrate/dead-residue";
-import { findStaleTxnEntries, recoverStaleTxns } from "./migrate/stale-txn";
 import { runMigrationTool } from "./migration-tool";
 
-/**
- * One subprocess call into the standalone task migrator. Returns the raw
- * exit status alongside the parsed JSON plan the child printed on stdout
- * (absent when the child produced none — e.g. a hard failure before its own
- * `printPlan` ran, whose `{ok:false,...}` envelope already went to stderr).
- */
-export interface MigrateToolCall {
-  readonly status: number;
-  readonly plan?: Record<string, unknown>;
-}
-
-/**
- * The one seam between this module and the real `spawnSync`. Passed as a
- * parameter rather than swapped through module-level state: the two
- * generations' orchestration is only reachable through
- * {@link runMigrateSubcommand}, so a caller can hand it a stand-in directly
- * and nothing process-wide is mutated, left to be restored, or visible to a
- * concurrent caller.
- */
 export type RunMigrationTool = typeof runMigrationTool;
 
-async function callMigrateTool(args: string[], runTool: RunMigrationTool): Promise<MigrateToolCall> {
-  const result = await runTool(args);
-  if (result.stderr) process.stderr.write(result.stderr);
-  const resultLine = result.stdout.trim();
-  if (!resultLine) return { status: result.status };
-  try {
-    return { status: result.status, plan: JSON.parse(resultLine) as Record<string, unknown> };
-  } catch {
-    console.log(resultLine);
-    return { status: result.status };
-  }
-}
-
-type PlanStatus = "current" | "ready" | "blocked";
-
-function worstStatus(left: PlanStatus, right: PlanStatus): PlanStatus {
-  if (left === "blocked" || right === "blocked") return "blocked";
-  if (left === "ready" || right === "ready") return "ready";
-  return "current";
-}
-
 /**
- * Resolve one generation's contribution to the combined status — fail
- * CLOSED, never open (code-review finding: this tool advertises itself as
- * "blocked-not-guessed").
- *
- * A generation that exited SUCCESS with no plan on stdout legitimately means
- * "nothing to report" and defaults to `"current"`. A generation that exited
- * NON-SUCCESS (by the caller's own guard, this can only be `EXIT_CODES.
- * GENERAL` — the "blocked" code) with a parsed `plan.status` reports that
- * status verbatim, same as before.
- *
- * The gap this closes: NON-SUCCESS with NO parseable plan at all —
- * `runMigrationTool` coerces a `spawnSync` `status` of `null` (the child was
- * killed by a signal — OOM, a timeout, a manual kill — never scheduled to
- * exit) to `1`, indistinguishable from the migrator's own legitimate
- * "blocked" exit code, and truncated/malformed stdout hits the same
- * `JSON.parse` catch in `callMigrateTool`. Previously `?? "current"` silently
- * read a crashed generation as "nothing to migrate"; this reports it as
- * `"blocked"` with an explanatory blocker instead, so the combined exit code
- * (`EXIT_CODES.GENERAL` below) actually reflects that the generation's real
- * state is unknown, rather than reporting success at exit 0.
- */
-export function resolveGenerationStatus(call: MigrateToolCall, label: string): { status: PlanStatus; error?: string } {
-  const planStatus = call.plan?.status as PlanStatus | undefined;
-  if (planStatus !== undefined) return { status: planStatus };
-  if (call.status !== EXIT_CODES.SUCCESS) {
-    return {
-      status: "blocked",
-      error: `${label}: the child process exited without printing a plan (exit status ${call.status}) — its real migration state is unknown.`,
-    };
-  }
-  return { status: "current" };
-}
-
-/**
- * Run BOTH migration generations — task-v2-to-v3, then task-v3-to-task-
- * source-v4 — and print one combined plan (spec
- * docs/plans/specs/p4-deletions-closeout.md §3.2.5, rows B-31/B-32).
- *
- * Each generation is its OWN subprocess call into the standalone migrator
- * (`scripts/akm-migrate.ts`'s `status`/`apply` and `task-v4-status`/
- * `task-v4-apply` verbs, UNCHANGED — row B-33), so each keeps its own
- * `withConfigLock` + `O_EXCL` backup root + prevalidate + TOCTOU recheck +
- * atomic replace + reverse rollback + convergence check, and the two are
- * NEVER interleaved. The two calls are unconditional and independent of
- * each other's outcome: a blocked (or otherwise incomplete) generation-1
- * result does not stop generation 2 from running against whatever is
- * already task source v4 — exactly `akm-migrate status`/`task-v4-status`
- * (or `apply`/`task-v4-apply`) run back to back by hand. Only a genuine
- * hard failure (a status neither SUCCESS nor the "blocked" GENERAL code —
- * a config error, a crash) aborts the second call, since generation 1 never
- * got to look at a stable tree in that case.
+ * `akm migrate` is a thin wrapper over the standalone `akm-migrate`
+ * executable, which owns every migration step and every historical shape
+ * (`scripts/akm-migrate/`). This module only spawns it, re-emits its one JSON
+ * plan through the normal output pipeline so `--format` applies, and mirrors
+ * its exit code. `akm upgrade` calls the same executable after an install.
+ * Passed the runner as a parameter so a test can hand it a stand-in.
  */
 export async function runMigrateSubcommand(
   command: "migrate-status" | "migrate-apply",
-  genOneArgs: string[],
-  genTwoArgs: string[],
+  args: readonly string[],
   runTool: RunMigrationTool = runMigrationTool,
 ): Promise<void> {
-  // Superseded pre-0.9.0 .akm layouts are a migration concern like any other:
-  // status names them, apply removes them. (First shipped as a bolted-on
-  // `health --clean-dead-residue` flag; folded here where it belongs.) The
-  // legacy extraParams -> first-class-field config lift (#852) is the same
-  // shape: status names it, apply persists it once instead of the old
-  // permanent silent lift on every config load.
-  // No configured bundle means there is no stash to scan — an empty domain,
-  // not an error — so migrate still works before `akm bundle create`. Any
-  // OTHER ConfigError propagates.
-  const configPath = getConfigPath();
-  const applyResidue = command === "migrate-apply" && !genOneArgs.includes("--dry-run");
-
-  // The config lift runs BEFORE anything that loads config. A config still
-  // carrying legacy extraParams keys fails `loadConfig` closed, and the error
-  // it fails with names `akm migrate apply` as the remedy -- but both
-  // `resolveStashDir` below and the task migrator itself load config, so that
-  // remedy could never reach the lift that fixes it. Applying it first is what
-  // makes the advice true. `resetConfigCache` so every load below sees the
-  // rewritten file rather than the rejected one.
-  const configExtraParams = applyResidue
-    ? applyConfigExtraParamsLift(configPath)
-    : { pending: findConfigExtraParamsLift(configPath) };
-  if (applyResidue && (configExtraParams as { applied?: boolean }).applied) resetConfigCache();
-
-  // status and --dry-run cannot rewrite the file, so a pending lift still
-  // blocks every config load below. Report it as the blocker rather than
-  // letting the operator hit the same circular error again.
-  const pendingLift = applyResidue ? undefined : (configExtraParams as { pending: { lifted: string[] } }).pending;
-  if (pendingLift && pendingLift.lifted.length > 0) {
-    output(command, { status: "blocked", blockers: pendingLift.lifted, configExtraParams });
-    process.exitCode = EXIT_CODES.GENERAL;
-    return;
-  }
-
-  // Pending state.db migrations are a migration concern like the rest, and
-  // the one step this command shares with `akm upgrade`: status names them,
-  // apply applies them, historical-destructive ones included, with the same
-  // verified safety copy. An ordinary managed open refuses those by design,
-  // so `akm upgrade` and this are the only two routes that admit them. It
-  // runs BEFORE the task migrators, which open state.db themselves and would
-  // otherwise stop on that refusal against a pre-018 database.
-  const stateMigrations = applyResidue
-    ? describeAppliedStateMigrations(upgradeHistoricalStateDatabase())
-    : { pending: listPendingStateMigrations() };
-
-  let stashDir: string | undefined;
+  const result = await runTool(args);
+  if (result.stderr) process.stderr.write(result.stderr);
+  const line = result.stdout.trim();
+  let plan: Record<string, unknown> | undefined;
   try {
-    stashDir = resolveStashDir();
-  } catch (error) {
-    if (!(error instanceof ConfigError) || error.code !== "STASH_DIR_NOT_FOUND") throw error;
+    plan = line ? (JSON.parse(line) as Record<string, unknown>) : undefined;
+  } catch {
+    plan = undefined;
   }
-  const first = await callMigrateTool(genOneArgs, runTool);
-  if (first.status !== EXIT_CODES.SUCCESS && first.status !== EXIT_CODES.GENERAL) {
-    process.exitCode = first.status;
-    return;
-  }
-
-  const second = await callMigrateTool(genTwoArgs, runTool);
-  if (second.status !== EXIT_CODES.SUCCESS && second.status !== EXIT_CODES.GENERAL) {
-    process.exitCode = second.status;
-    return;
-  }
-
-  if (!first.plan && !second.plan) {
-    if (first.status !== EXIT_CODES.SUCCESS) process.exitCode = first.status;
-    return;
-  }
-
-  const combined = combineMigrationPlans(first, second);
-  // The stash-scoped sections need a bundle to scan; no configured bundle is
-  // an empty domain, not an error, so migrate still works before
-  // `akm bundle create`. The config lift is config-scoped and always runs.
-  const stashSections =
-    stashDir === undefined
-      ? {}
-      : {
-          deadResidue: applyResidue
-            ? { removed: removeDeadResidue(stashDir) }
-            : { pending: findDeadResidueEntries(stashDir) },
-          staleTxns: applyResidue
-            ? { recovered: await recoverStaleTxns(stashDir) }
-            : { pending: findStaleTxnEntries(stashDir) },
-        };
-  output(command, { ...combined, ...stashSections, configExtraParams, stateMigrations });
-
-  if (combined.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
-}
-
-function describeAppliedStateMigrations(result: ReturnType<typeof upgradeHistoricalStateDatabase>): {
-  applied: string[];
-  safetyCopyPath?: string;
-} {
-  return result.safetyCopyPath
-    ? { applied: result.applied, safetyCopyPath: result.safetyCopyPath }
-    : { applied: result.applied };
-}
-
-/**
- * Merge both generations' plans into the one combined envelope the command
- * prints. Deliberately PURE — every rule the combined plan encodes (the
- * {@link worstStatus} rollup, the fail-closed
- * {@link resolveGenerationStatus} contribution, and the blockers merge, which
- * orders generation 1's own blockers after its resolution error and before
- * generation 2's) is decided here from two plain values, so it is provable
- * without a subprocess, a CLI dispatch, or an output-mode singleton. The
- * caller keeps the only two effectful decisions: whether generation 2 runs at
- * all, and the process exit code.
- */
-export function combineMigrationPlans(first: MigrateToolCall, second: MigrateToolCall) {
-  const firstResolved = resolveGenerationStatus(first, "task-v2-to-v3");
-  const secondResolved = resolveGenerationStatus(second, "task-v3-to-task-source-v4");
-  return {
-    schemaVersion: 1 as const,
-    status: worstStatus(firstResolved.status, secondResolved.status),
-    blockers: [
-      ...(firstResolved.error ? [firstResolved.error] : []),
-      ...((first.plan?.blockers as string[] | undefined) ?? []),
-      ...(secondResolved.error ? [secondResolved.error] : []),
-      ...((second.plan?.blockers as string[] | undefined) ?? []),
-    ],
-    taskV3Migration: first.plan?.taskV3Migration,
-    taskV4Migration: second.plan?.taskV4Migration,
-    ...(first.plan?.backupPath !== undefined ? { backupPath: first.plan.backupPath } : {}),
-    ...(first.plan?.applied !== undefined ? { applied: first.plan.applied } : {}),
-    ...(second.plan?.backupPath !== undefined ? { taskV4BackupPath: second.plan.backupPath } : {}),
-    ...(second.plan?.applied !== undefined ? { taskV4Applied: second.plan.applied } : {}),
-  };
+  if (plan) output(command, plan);
+  else if (line) console.log(line);
+  if (result.status !== EXIT_CODES.SUCCESS) process.exitCode = result.status;
 }
 
 export const migrateCommand = defineGroupCommand({
   meta: {
     name: "migrate",
-    description: "Inspect or apply pending migrations: task-v2/v3 sources to v4, state.db, and legacy config",
+    description: "Inspect or apply pending migrations: legacy config, state.db, and task-v2/v3 sources to v4",
   },
   subCommands: {
     status: defineJsonCommand({
-      meta: { name: "status", description: "Read-only check of pending task-source, state.db, and config migrations" },
+      meta: { name: "status", description: "Read-only check of every pending migration" },
       run() {
-        return runMigrateSubcommand("migrate-status", ["status"], ["task-v4-status"]);
+        return runMigrateSubcommand("migrate-status", ["status"]);
       },
     }),
     apply: defineJsonCommand({
       meta: {
         name: "apply",
-        description:
-          "Back up and apply pending migrations: task-v2/v3 files to task source v4, state.db, and legacy config",
+        description: "Back up and apply every pending migration (`akm upgrade` runs this after an install)",
       },
       args: {
         "dry-run": {
@@ -269,13 +59,10 @@ export const migrateCommand = defineGroupCommand({
         },
       },
       run({ args }) {
-        const dryRunFlag = args.dryRun ? ["--dry-run"] : [];
-        return runMigrateSubcommand("migrate-apply", ["apply", ...dryRunFlag], ["task-v4-apply", ...dryRunFlag]);
+        return runMigrateSubcommand("migrate-apply", args.dryRun ? ["apply", "--dry-run"] : ["apply"]);
       },
     }),
   },
-  // No `defaultRun`: bare `akm migrate` is a usage error (exit 2). This group
-  // already threw its own hand-rolled UsageError; it now shares the canonical
-  // one from `defineGroupCommand` so the message and hint match every other
-  // group — owner ruling 12.
+  // No `defaultRun`: bare `akm migrate` is a usage error (exit 2), the
+  // canonical bare-group behavior shared with every other group.
 });

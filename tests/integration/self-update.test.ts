@@ -12,7 +12,6 @@ import {
   type InstallSignals,
   performUpgrade,
   streamResponseToFile,
-  upgradeStateOnly,
 } from "../../src/commands/sources/self-update";
 import { upgradeCommand } from "../../src/commands/sources/sources-cli";
 import { sandboxHome, withEnv } from "../_helpers/sandbox";
@@ -47,6 +46,15 @@ function disposableBinaryPath(name: string): string {
   fs.writeFileSync(binaryPath, "old-binary");
   return binaryPath;
 }
+
+/** A stand-in `akm-migrate` whose plan says everything is current. */
+const currentMigrator = {
+  runMigrationTool: async (_args: readonly string[]) => ({
+    status: 0,
+    stdout: JSON.stringify({ schemaVersion: 1, status: "current", blockers: [] }),
+    stderr: "",
+  }),
+};
 
 // ── detectInstallMethod ─────────────────────────────────────────────────────
 
@@ -151,6 +159,26 @@ describe("detectInstallMethod", () => {
     };
     expect(detectInstallMethod(signals)).toBe("unknown");
   });
+
+  test("returns 'package-local' for a node_modules install outside the proven npm global root", () => {
+    const signals: InstallSignals = {
+      bunMain: undefined,
+      importMetaDir: "/opt/openpalm/tools/node_modules/akm-cli/dist",
+      hasAkmVersion: false,
+      npmGlobalRoot: "/usr/local/lib/node_modules",
+    };
+    expect(detectInstallMethod(signals)).toBe("package-local");
+  });
+
+  test("returns 'npm' for a node_modules install inside the proven npm global root", () => {
+    const signals: InstallSignals = {
+      bunMain: undefined,
+      importMetaDir: "/usr/local/lib/node_modules/akm-cli/dist",
+      hasAkmVersion: false,
+      npmGlobalRoot: "/usr/local/lib/node_modules",
+    };
+    expect(detectInstallMethod(signals)).toBe("npm");
+  });
 });
 
 // ── getAkmBinaryName ────────────────────────────────────────────────────────
@@ -245,12 +273,16 @@ describe("performUpgrade", () => {
       stdout: "",
       stderr: "",
     } as never);
-    const result = await performUpgrade({
-      currentVersion: "0.0.13",
-      latestVersion: "0.0.14",
-      updateAvailable: true,
-      installMethod: "npm",
-    });
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "npm",
+      },
+      undefined,
+      currentMigrator,
+    );
 
     expect(result.postUpgrade?.message).not.toMatch(/config migrated|migrate config|auto-migrat/i);
     expect(spawnSyncSpy).toHaveBeenCalled();
@@ -263,12 +295,16 @@ describe("performUpgrade", () => {
       if (args[0] === "--version") return { status: 0, stdout: "0.0.13\n", stderr: "" } as never;
       return { status: 0, stdout: "", stderr: "" } as never;
     }) as never);
-    const result = await performUpgrade({
-      currentVersion: "0.0.13",
-      latestVersion: "0.0.14",
-      updateAvailable: true,
-      installMethod: "npm",
-    });
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "npm",
+      },
+      undefined,
+      currentMigrator,
+    );
 
     expect(result.upgraded).toBe(false);
     expect(result.message).toContain("still reports v0.0.13");
@@ -289,6 +325,7 @@ describe("performUpgrade", () => {
         installMethod: "npm",
       },
       { skipPostUpgrade: true },
+      currentMigrator,
     );
 
     expect(result.upgraded).toBe(true);
@@ -318,7 +355,7 @@ describe("performUpgrade", () => {
           installMethod: "binary",
         },
         { skipPostUpgrade: true },
-        { execPath: binaryPath },
+        { execPath: binaryPath, ...currentMigrator },
       ),
     ).rejects.toThrow(/exceed|too large|limit/i);
     expect(fs.readFileSync(binaryPath, "utf8")).toBe("old-binary");
@@ -351,7 +388,7 @@ describe("performUpgrade", () => {
           installMethod: "binary",
         },
         { skipPostUpgrade: true },
-        { execPath: binaryPath },
+        { execPath: binaryPath, ...currentMigrator },
       ),
     ).rejects.toThrow(/exceed|too large|limit/i);
     expect(fs.readFileSync(binaryPath, "utf8")).toBe("old-binary");
@@ -379,7 +416,7 @@ describe("performUpgrade", () => {
         installMethod: "binary",
       },
       { skipPostUpgrade: true },
-      { execPath: binaryPath },
+      { execPath: binaryPath, ...currentMigrator },
     );
 
     expect(result.upgraded).toBe(true);
@@ -394,12 +431,16 @@ describe("performUpgrade", () => {
       stderr: "",
     } as never);
 
-    const result = await performUpgrade({
-      currentVersion: "0.0.13",
-      latestVersion: "0.0.14",
-      updateAvailable: true,
-      installMethod: "npm",
-    });
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "npm",
+      },
+      undefined,
+      currentMigrator,
+    );
 
     expect(spawnSyncSpy).toHaveBeenCalledWith(
       expect.stringContaining("npm"),
@@ -417,12 +458,16 @@ describe("performUpgrade", () => {
       stderr: "",
     } as never);
 
-    const result = await performUpgrade({
-      currentVersion: "0.0.13",
-      latestVersion: "0.0.14",
-      updateAvailable: true,
-      installMethod: "bun",
-    });
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "bun",
+      },
+      undefined,
+      currentMigrator,
+    );
 
     expect(spawnSyncSpy).toHaveBeenCalledWith(
       expect.stringContaining("bun"),
@@ -440,12 +485,16 @@ describe("performUpgrade", () => {
       stderr: "",
     } as never);
 
-    const result = await performUpgrade({
-      currentVersion: "0.0.13",
-      latestVersion: "0.0.14",
-      updateAvailable: true,
-      installMethod: "pnpm",
-    });
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "pnpm",
+      },
+      undefined,
+      currentMigrator,
+    );
 
     expect(spawnSyncSpy).toHaveBeenCalledWith(
       expect.stringContaining("pnpm"),
@@ -457,12 +506,16 @@ describe("performUpgrade", () => {
   });
 
   test("returns guidance message for unknown install method", async () => {
-    const result = await performUpgrade({
-      currentVersion: "0.0.13",
-      latestVersion: "0.0.14",
-      updateAvailable: true,
-      installMethod: "unknown",
-    });
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "unknown",
+      },
+      undefined,
+      currentMigrator,
+    );
 
     expect(result.upgraded).toBe(false);
     expect(result.installMethod).toBe("unknown");
@@ -470,12 +523,16 @@ describe("performUpgrade", () => {
   });
 
   test("returns already-latest message when no update available", async () => {
-    const result = await performUpgrade({
-      currentVersion: "0.0.13",
-      latestVersion: "0.0.13",
-      updateAvailable: false,
-      installMethod: "binary",
-    });
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.13",
+        updateAvailable: false,
+        installMethod: "binary",
+      },
+      undefined,
+      currentMigrator,
+    );
 
     expect(result.upgraded).toBe(false);
     expect(result.message).toContain("already the latest");
@@ -488,12 +545,16 @@ describe("performUpgrade", () => {
       stderr: "",
     } as never);
 
-    const result = await performUpgrade({
-      currentVersion: "0.0.13",
-      latestVersion: "0.0.14",
-      updateAvailable: true,
-      installMethod: "npm",
-    });
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "npm",
+      },
+      undefined,
+      currentMigrator,
+    );
 
     expect(result.upgraded).toBe(true);
     expect(result.postUpgrade).toBeDefined();
@@ -524,6 +585,7 @@ describe("performUpgrade", () => {
         installMethod: "npm",
       },
       { skipPostUpgrade: true },
+      currentMigrator,
     );
 
     expect(result.upgraded).toBe(true);
@@ -534,189 +596,145 @@ describe("performUpgrade", () => {
     expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
   });
 
-  test("a successful upgrade explicitly prepares historical state even when the index rebuild is skipped", async () => {
-    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
-      status: 0,
-      stdout: "",
-      stderr: "",
-    } as never);
-    const upgradeHistoricalStateDatabase = mock(() => ({
-      upgraded: true,
-      applied: ["018-drop-dead-lane-schema"],
-      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260824T010000000Z.bak",
-    }));
+  // ── `akm upgrade` ends with `akm-migrate apply`, install or no install ────
+  //
+  // `--state-only` (0.9.8) made migration 018 reachable, but only for a human
+  // who typed it; an image that ships akm has nothing to install and nobody in
+  // the loop (#895). So every upgrade runs the migrator on disk AFTER its
+  // install step -- the new one after a successful install, the current one
+  // when nothing installs -- and reports that plan as `migration`.
+
+  function migrator(plan: Record<string, unknown> | Error, order?: string[]) {
+    return mock(async (_args: readonly string[]) => {
+      order?.push("migrate");
+      if (plan instanceof Error) throw plan;
+      return { status: plan.status === "blocked" ? 1 : 0, stdout: JSON.stringify(plan), stderr: "" };
+    });
+  }
+
+  test("a package-manager upgrade runs the migrator after the install and reports its plan", async () => {
+    const order: string[] = [];
+    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockImplementation((() => {
+      order.push("spawn");
+      return { status: 0, stdout: "", stderr: "" } as never;
+    }) as never);
+    const runMigrationTool = migrator(
+      { status: "current", stateMigrations: { applied: ["018-drop-dead-lane-schema"] } },
+      order,
+    );
 
     const result = await performUpgrade(
-      {
-        currentVersion: "0.0.13",
-        latestVersion: "0.0.14",
-        updateAvailable: true,
-        installMethod: "npm",
-      },
+      { currentVersion: "0.0.13", latestVersion: "0.0.14", updateAvailable: true, installMethod: "npm" },
       { skipPostUpgrade: true },
-      { upgradeHistoricalStateDatabase },
+      { runMigrationTool },
     );
 
     expect(result.upgraded).toBe(true);
-    expect(upgradeHistoricalStateDatabase).toHaveBeenCalledTimes(1);
-    expect(result.postUpgrade?.ok).toBe(true);
-    expect(result.postUpgrade?.skipped).toBe(true);
-    expect(result.stateUpgrade?.applied).toBe(true);
-    expect(result.stateUpgrade?.safetyCopyPath).toContain("state.db.pre-018-drop-dead-lane-schema");
+    expect(runMigrationTool).toHaveBeenCalledTimes(1);
+    expect(runMigrationTool.mock.calls[0]?.[0]).toEqual(["apply"]);
+    expect(result.migration?.status).toBe("current");
+    expect(result.migration?.stateMigrations).toEqual({ applied: ["018-drop-dead-lane-schema"] });
+    // Install and version check first, THEN the migrator: it is the one the install just put on disk.
+    expect(order).toEqual(["spawn", "spawn", "migrate"]);
     expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
   });
 
-  test("a historical state failure aborts the upgrade before any install is attempted", async () => {
+  test("an already-current install still runs the migrator (the container entrypoint case)", async () => {
     const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
       status: 0,
       stdout: "",
       stderr: "",
     } as never);
-    const upgradeHistoricalStateDatabase = mock(() => {
-      throw new Error(
-        "018 failed. Verified safety copy: /data/state.db.pre-018-drop-dead-lane-schema.20260824T020000000Z.bak.",
-      );
+    const runMigrationTool = migrator({
+      status: "current",
+      stateMigrations: { applied: ["018-drop-dead-lane-schema"] },
     });
-
-    // The state step runs first, and its failure is the upgrade's failure:
-    // reported with the verified copy, never buried under an install result.
-    await expect(
-      performUpgrade(
-        {
-          currentVersion: "0.0.13",
-          latestVersion: "0.0.14",
-          updateAvailable: true,
-          installMethod: "npm",
-        },
-        undefined,
-        { upgradeHistoricalStateDatabase },
-      ),
-    ).rejects.toThrow(/state\.db\.pre-018-drop-dead-lane-schema/);
-    expect(spawnSyncSpy).not.toHaveBeenCalled();
-  });
-
-  // ── #895: the state migration must be reachable without an install ───────
-  //
-  // Reported from a container that ships akm globally and runs unprivileged.
-  // `akm index --full` was blocked on a historical destructive migration whose
-  // only documented remedy, `akm upgrade --force`, npm-installs FIRST and dies
-  // EACCES on /usr/local/lib/node_modules -- so the remedy could never run and
-  // the install was permanently stuck. These tests pin the decoupling.
-
-  test("state-only upgrade applies the migration without invoking any package manager", () => {
-    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
-      status: 0,
-      stdout: "",
-      stderr: "",
-    } as never);
-    const upgradeHistoricalStateDatabase = mock(() => ({
-      upgraded: true,
-      applied: ["018-drop-dead-lane-schema"],
-      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260901T010000000Z.bak",
-    }));
-
-    const result = upgradeStateOnly("0.9.6", { upgradeHistoricalStateDatabase });
-
-    expect(upgradeHistoricalStateDatabase).toHaveBeenCalledTimes(1);
-    expect(result.stateUpgrade?.applied).toBe(true);
-    expect(result.stateUpgrade?.safetyCopyPath).toContain("pre-018-drop-dead-lane-schema");
-    // THE regression: the npm/bun install is what failed EACCES for the
-    // reporter. This path must never shell out to a package manager at all.
-    expect(spawnSyncSpy).not.toHaveBeenCalled();
-    // No binary changed, so the reported version must not claim one did.
-    expect(result.upgraded).toBe(false);
-    expect(result.currentVersion).toBe("0.9.6");
-    expect(result.newVersion).toBe("0.9.6");
-  });
-
-  test("state-only upgrade on an already-current database reports no migration", () => {
-    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
-      status: 0,
-      stdout: "",
-      stderr: "",
-    } as never);
-    const upgradeHistoricalStateDatabase = mock(() => ({ upgraded: false, applied: [] }));
-
-    const result = upgradeStateOnly("0.9.6", { upgradeHistoricalStateDatabase });
-
-    expect(result.stateUpgrade).toEqual({ applied: false, migrations: [] });
-    expect(result.message).toContain("already current");
-    expect(spawnSyncSpy).not.toHaveBeenCalled();
-  });
-
-  test("state-only upgrade surfaces a migration failure instead of reporting success", () => {
-    const upgradeHistoricalStateDatabase = mock(() => {
-      throw new Error("018 failed. Verified safety copy: /data/state.db.pre-018.bak.");
-    });
-
-    // A failed migration must throw. Reporting a cheerful no-op here would
-    // leave the operator believing state was migrated when it was not.
-    expect(() => upgradeStateOnly("0.9.6", { upgradeHistoricalStateDatabase })).toThrow(/018 failed/);
-  });
-
-  // ── Every `akm upgrade` runs the state step first, install or no install ──
-  //
-  // `--state-only` made the migration reachable, but only for a human who
-  // types it. An image that ships the current akm has no install to run and
-  // nobody in the loop, so a plain `akm upgrade` (a container entrypoint) has
-  // to migrate state on its own -- and a failing install must not strand the
-  // migration behind it the way the old post-install step did.
-
-  test("an already-current install still applies pending state migrations", async () => {
-    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
-      status: 0,
-      stdout: "",
-      stderr: "",
-    } as never);
-    const upgradeHistoricalStateDatabase = mock(() => ({
-      upgraded: true,
-      applied: ["018-drop-dead-lane-schema", "019-proposal-fingerprints"],
-      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260902T010000000Z.bak",
-    }));
 
     const result = await performUpgrade(
       { currentVersion: "0.9.8", latestVersion: "0.9.8", updateAvailable: false, installMethod: "npm" },
       undefined,
-      { upgradeHistoricalStateDatabase },
+      { runMigrationTool },
     );
 
-    expect(upgradeHistoricalStateDatabase).toHaveBeenCalledTimes(1);
+    expect(runMigrationTool).toHaveBeenCalledTimes(1);
     expect(result.upgraded).toBe(false);
-    expect(result.stateUpgrade).toEqual({
-      applied: true,
-      migrations: ["018-drop-dead-lane-schema", "019-proposal-fingerprints"],
-      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260902T010000000Z.bak",
-    });
     expect(result.message).toContain("already the latest");
-    expect(result.message).toContain("018-drop-dead-lane-schema through 019-proposal-fingerprints");
+    expect(result.migration?.status).toBe("current");
     expect(spawnSyncSpy).not.toHaveBeenCalled();
   });
 
-  test("a failed package-manager install no longer strands the state migration behind it", async () => {
-    // The reporter's exact shape (#895): a global install the runtime user
-    // cannot rewrite. The install still fails -- but the migration ran first,
-    // and the failure says so.
+  test("a package-local install never runs a package manager: the parent package owns the binary", async () => {
+    // An `npm install -g` here reports success while the parent keeps
+    // executing its own node_modules copy (the databasin report on #895).
+    const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
+      status: 0,
+      stdout: "",
+      stderr: "",
+    } as never);
+    const runMigrationTool = migrator({ status: "current" });
+
+    const result = await performUpgrade(
+      { currentVersion: "0.8.14", latestVersion: "0.9.8", updateAvailable: true, installMethod: "package-local" },
+      undefined,
+      { runMigrationTool },
+    );
+
+    expect(spawnSyncSpy).not.toHaveBeenCalled();
+    expect(result.upgraded).toBe(false);
+    expect(result.message).toContain("dependency of the package at");
+    expect(runMigrationTool).toHaveBeenCalledTimes(1);
+    expect(result.migration?.status).toBe("current");
+  });
+
+  test("a failed package-manager install still runs the migrator, and the failure says so", async () => {
+    // The original #895 shape: a global install the runtime user cannot
+    // rewrite. The install fails, the migrator on disk is still the right
+    // one, and the error must not leave the operator thinking the migration
+    // is stuck behind the EACCES.
     const spawnSyncSpy = spyOn(childProcess, "spawnSync").mockReturnValue({
       status: 243,
       stdout: "",
       stderr: "npm error code EACCES\nnpm error path /usr/local/lib/node_modules/akm-cli",
     } as never);
-    const upgradeHistoricalStateDatabase = mock(() => ({
-      upgraded: true,
-      applied: ["018-drop-dead-lane-schema"],
-      safetyCopyPath: "/data/state.db.pre-018-drop-dead-lane-schema.20260902T020000000Z.bak",
-    }));
+    const runMigrationTool = migrator({ status: "current" });
 
     await expect(
       performUpgrade(
         { currentVersion: "0.9.6", latestVersion: "0.9.8", updateAvailable: true, installMethod: "npm" },
         undefined,
-        { upgradeHistoricalStateDatabase },
+        { runMigrationTool },
       ),
-    ).rejects.toThrow(/EACCES[\s\S]*Applied 1 pending state\.db migration/);
-    expect(upgradeHistoricalStateDatabase).toHaveBeenCalledTimes(1);
-    // The install attempt itself, and nothing after it.
+    ).rejects.toThrow(/EACCES[\s\S]*Pending migrations ran anyway \(status: current\)/);
+    expect(runMigrationTool).toHaveBeenCalledTimes(1);
     expect(spawnSyncSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a migrator that cannot run is reported as failed, never thrown, so the install outcome survives", async () => {
+    spyOn(childProcess, "spawnSync").mockReturnValue({ status: 0, stdout: "", stderr: "" } as never);
+    const runMigrationTool = migrator(new Error("Cannot start the standalone akm-migrate tool: ENOENT"));
+
+    const result = await performUpgrade(
+      { currentVersion: "0.9.8", latestVersion: "0.9.8", updateAvailable: false, installMethod: "npm" },
+      undefined,
+      { runMigrationTool },
+    );
+
+    expect(result.migration?.status).toBe("failed");
+    expect(result.migration?.error).toContain("Cannot start the standalone akm-migrate tool");
+  });
+
+  test("a blocked migration is reported verbatim", async () => {
+    spyOn(childProcess, "spawnSync").mockReturnValue({ status: 0, stdout: "", stderr: "" } as never);
+    const runMigrationTool = migrator({ status: "blocked", blockers: ["tasks/nightly.yml: invalid-v2-task"] });
+
+    const result = await performUpgrade(
+      { currentVersion: "0.9.8", latestVersion: "0.9.8", updateAvailable: false, installMethod: "npm" },
+      undefined,
+      { runMigrationTool },
+    );
+
+    expect(result.migration?.status).toBe("blocked");
+    expect(result.migration?.blockers).toEqual(["tasks/nightly.yml: invalid-v2-task"]);
   });
 
   test("captures post-upgrade failure without failing the upgrade", async () => {
@@ -731,12 +749,16 @@ describe("performUpgrade", () => {
       return { status: 1, stdout: "", stderr: "no embedding model configured" } as never;
     }) as never);
 
-    const result = await performUpgrade({
-      currentVersion: "0.0.13",
-      latestVersion: "0.0.14",
-      updateAvailable: true,
-      installMethod: "npm",
-    });
+    const result = await performUpgrade(
+      {
+        currentVersion: "0.0.13",
+        latestVersion: "0.0.14",
+        updateAvailable: true,
+        installMethod: "npm",
+      },
+      undefined,
+      currentMigrator,
+    );
 
     expect(result.upgraded).toBe(true); // upgrade itself succeeded
     expect(result.postUpgrade?.ok).toBe(false);
@@ -755,6 +777,7 @@ describe("performUpgrade", () => {
           installMethod: "binary",
         },
         { force: true },
+        currentMigrator,
       ),
     ).rejects.toThrow("Unable to determine latest version");
   });
@@ -789,6 +812,7 @@ describe("performUpgrade", () => {
           installMethod: "npm",
         },
         { skipPostUpgrade: true },
+        currentMigrator,
       ),
     ).resolves.toMatchObject({ upgraded: true, installMethod: "npm" });
     expect(spawnSyncSpy).toHaveBeenCalledTimes(2);
@@ -813,7 +837,7 @@ describe("performUpgrade", () => {
           installMethod: "binary",
         },
         undefined,
-        { execPath: disposableBinaryPath("checksum-404") },
+        { execPath: disposableBinaryPath("checksum-404"), ...currentMigrator },
       ),
     ).rejects.toThrow(/Checksum verification failed/);
   });
@@ -843,7 +867,7 @@ describe("performUpgrade", () => {
           installMethod: "binary",
         },
         { skipPostUpgrade: true },
-        { execPath: binaryPath },
+        { execPath: binaryPath, ...currentMigrator },
       ),
     );
 
@@ -870,7 +894,7 @@ describe("performUpgrade", () => {
             installMethod: "binary",
           },
           { skipPostUpgrade: true },
-          { execPath: binaryPath },
+          { execPath: binaryPath, ...currentMigrator },
         ),
       ),
     ).rejects.toThrow(/Checksum verification failed/);
@@ -896,7 +920,7 @@ describe("performUpgrade", () => {
           installMethod: "binary",
         },
         undefined,
-        { execPath: disposableBinaryPath("checksum-name") },
+        { execPath: disposableBinaryPath("checksum-name"), ...currentMigrator },
       ),
     ).rejects.toThrow(new RegExp(`${binaryName.replace(".", "\\.")}.*not listed|Checksum verification failed`));
   });
@@ -921,7 +945,7 @@ describe("performUpgrade", () => {
           installMethod: "binary",
         },
         undefined,
-        { execPath: disposableBinaryPath("checksum-mismatch") },
+        { execPath: disposableBinaryPath("checksum-mismatch"), ...currentMigrator },
       ),
     ).rejects.toThrow(/Checksum mismatch/);
   });

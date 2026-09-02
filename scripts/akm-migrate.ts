@@ -5,15 +5,15 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { pathToFileURL } from "node:url";
-import { runWithJsonErrors } from "../src/cli/shared";
+import { EXIT_CODES, runWithJsonErrors } from "../src/cli/shared";
 import { UsageError } from "../src/core/errors";
 import helpText from "./akm-migrate/help.txt" with { type: "text" };
-import {
-  runMigrationApply,
-  runMigrationStatus,
-  runTaskV4MigrationApply,
-  runTaskV4MigrationStatus,
-} from "./akm-migrate/task-migrate";
+import { type CombinedMigrationPlan, runMigration } from "./akm-migrate/run-migrate";
+
+function printPlan(plan: CombinedMigrationPlan): void {
+  console.log(JSON.stringify(plan));
+  if (plan.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
+}
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
   const [command, ...rest] = args;
@@ -25,27 +25,16 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       return;
     case "status":
       if (rest.length > 0) throw new UsageError("`status` accepts no options.", "INVALID_FLAG_VALUE");
-      await runMigrationStatus();
+      printPlan(await runMigration({ apply: false }));
       return;
-    case "apply":
-      await runMigrationApply({
-        dryRun: rest.includes("--dry-run"),
-      });
+    case "apply": {
+      const unknown = rest.find((arg) => arg !== "--dry-run");
+      if (unknown !== undefined) throw new UsageError(`\`apply\` does not accept ${unknown}.`, "INVALID_FLAG_VALUE");
+      printPlan(await runMigration({ apply: !rest.includes("--dry-run") }));
       return;
-    case "task-v4-status":
-      if (rest.length > 0) throw new UsageError("`task-v4-status` accepts no options.", "INVALID_FLAG_VALUE");
-      await runTaskV4MigrationStatus();
-      return;
-    case "task-v4-apply":
-      await runTaskV4MigrationApply({
-        dryRun: rest.includes("--dry-run"),
-      });
-      return;
+    }
     default:
-      throw new UsageError(
-        "Choose `status`, `apply`, `task-v4-status`, or `task-v4-apply`.",
-        "MISSING_REQUIRED_ARGUMENT",
-      );
+      throw new UsageError("Choose `status` or `apply [--dry-run]`.", "MISSING_REQUIRED_ARGUMENT");
   }
 }
 

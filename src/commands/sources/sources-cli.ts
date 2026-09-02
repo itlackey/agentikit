@@ -28,13 +28,13 @@
  */
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../../cli/invocation";
-import { defineJsonCommand, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
+import { defineJsonCommand, EXIT_CODES, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { resolveWritableOverride, saveGitStash } from "../../sources/providers/git";
 import { pkgVersion } from "../../version";
-import { checkForUpdate, performUpgrade, upgradeStateOnly } from "./self-update";
+import { checkForUpdate, performUpgrade } from "./self-update";
 import { akmClone } from "./source-clone";
 
 export const upgradeCommand = defineJsonCommand({
@@ -47,20 +47,8 @@ export const upgradeCommand = defineJsonCommand({
       description: "Skip the post-upgrade index rebuild",
       default: false,
     },
-    "state-only": {
-      type: "boolean",
-      description: "Apply pending state.db migrations only; skip the release check and install (offline installs)",
-      default: false,
-    },
   },
   async run({ args }) {
-    // Every `akm upgrade` applies pending state.db migrations before it
-    // touches the install (#895). `--state-only` is that step alone, with no
-    // release check at all, for installs that cannot reach the network.
-    if (args["state-only"]) {
-      output("upgrade", upgradeStateOnly(pkgVersion));
-      return;
-    }
     const check = await checkForUpdate(pkgVersion);
     if (args.check) {
       output("upgrade", check);
@@ -69,6 +57,11 @@ export const upgradeCommand = defineJsonCommand({
     const skipPostUpgrade = args["skip-post-upgrade"];
     const result = await performUpgrade(check, { force: args.force, skipPostUpgrade });
     output("upgrade", result);
+    // The install may have succeeded, but an upgrade whose migration is
+    // blocked or could not run is not done: exit like `akm migrate apply` does.
+    if (result.migration?.status === "blocked" || result.migration?.status === "failed") {
+      process.exitCode = EXIT_CODES.GENERAL;
+    }
   },
 });
 

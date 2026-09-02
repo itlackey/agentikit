@@ -22,10 +22,10 @@
  * exactly that kind of entry point.
  */
 
-import { canonicalTxnRoot, listTxnJournalsTolerant, recoverTxnsForRoot, type TxnJournal } from "../../core/fs-txn";
+import { canonicalTxnRoot, listTxnJournalsTolerant, recoverTxnsForRoot, type TxnJournal } from "../../../src/core/fs-txn";
 // Side-effect import: registers the `proposal`/`proposal-reject` txn kinds
 // so recovery below can roll them forward/back for the stash root.
-import "../proposal/repository";
+import "../../../src/commands/proposal/repository";
 
 /** One stale journal found under the stash root's transaction namespace. */
 export interface StaleTxnEntry {

@@ -214,7 +214,7 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
   // rewritten onto the first-class engine field they now shadow. This used
   // to happen silently, in memory, on every load; that ran forever and never
   // converged. The lift itself is now `akm migrate apply`'s job (see
-  // src/commands/migrate/config-extra-params.ts) and persists to disk, so a
+  // scripts/akm-migrate/migrate/config-extra-params.ts) and persists to disk, so a
   // config that has not been migrated yet fails closed here instead of
   // silently drifting from what's on disk.
   const where = sourcePath ? ` at ${sourcePath}` : "";

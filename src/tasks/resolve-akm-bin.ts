@@ -200,7 +200,7 @@ function samePath(left: string, right: string): boolean {
 // still gets its own answer instead of a stale one.
 let cachedNpmGlobalRoot: { nodePath: string; value: string | undefined } | undefined;
 
-function resolveNpmGlobalRoot(nodePath: string, env: NodeJS.ProcessEnv): string | undefined {
+export function resolveNpmGlobalRoot(nodePath: string, env: NodeJS.ProcessEnv): string | undefined {
   if (cachedNpmGlobalRoot && cachedNpmGlobalRoot.nodePath === nodePath) {
     return cachedNpmGlobalRoot.value;
   }

@@ -8,21 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **`akm upgrade` and `akm migrate apply` apply pending `state.db` migrations
-  themselves** (#895 follow-up). The state step — migration 018 and the
-  verified safety copy included — now runs first on every `akm upgrade`,
-  before any release check result is acted on, so a plain `akm upgrade` on an
-  already-current install migrates state and a failed install can no longer
-  strand the migration behind it. `akm migrate status` lists the pending
-  state migrations under `stateMigrations.pending`; `akm migrate apply`
-  applies them before the task migrators run and reports
-  `stateMigrations.applied` (plus `safetyCopyPath` when one was taken).
-  An ordinary managed open still refuses a historical-destructive migration;
-  its message now names these two commands. `akm upgrade --state-only`
-  remains as the same step with no release check, for offline installs, and
-  its `stateUpgrade` field gains `migrations` (the IDs applied).
+- **`akm-migrate` is the one migration tool, and `akm upgrade` runs it**
+  (#895 follow-up, #901). The standalone `akm-migrate` executable now runs
+  every migration step in one plan — the legacy config `extraParams` lift,
+  pending `state.db` migrations (historical-destructive ones included, with
+  the verified safety copy), task v2 → v3, task v3 → task source v4, and the
+  residue sweeps — as `akm-migrate status` / `apply [--dry-run]`; its
+  per-generation verbs (`task-v4-status`, `task-v4-apply`) are gone.
+  `akm migrate status|apply` is now a thin wrapper over that executable, and
+  every historical shape (`scripts/akm-migrate/`) lives outside the CLI
+  proper. `akm upgrade` runs `akm-migrate apply` **after** its install step —
+  the migrator that shipped with whatever is now installed — on every run,
+  install or no install, and reports the plan under `migration`; a blocked or
+  failed migration exits 1. A package-manager install that fails (EACCES on a
+  root-owned global directory) still runs the migrator and says so. An akm
+  installed as a dependency of another package is now detected
+  (`installMethod: "package-local"`) and never reinstalled — an
+  `npm install -g` there "succeeded" while the parent kept executing its own
+  copy — but its migrations still run. `akm upgrade --state-only` and the
+  `stateUpgrade` response field are removed; `akm migrate apply` is the
+  offline path. An ordinary managed open still refuses a historical-
+  destructive migration, and its message names these two commands.
   A container that ships akm can put `akm upgrade` (or `akm migrate apply`)
-  in its entrypoint: on a current database the state step is a no-op.
+  in its entrypoint: on a current installation it is a no-op.
 
 ## [0.9.8] - 2026-09-02
 

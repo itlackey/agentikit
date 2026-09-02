@@ -21,8 +21,8 @@ import {
   parseConfigText,
   readConfigText,
   writeConfigAtomic,
-} from "../../core/config/config-io";
-import { type ExtraParamsLiftConflict, liftLegacyEngineExtraParams } from "../../core/extra-params";
+} from "../../../src/core/config/config-io";
+import { type ExtraParamsLiftConflict, liftLegacyEngineExtraParams } from "../../../src/core/extra-params";
 
 export interface ConfigExtraParamsLiftPlan {
   /** One human-readable line per key that would be lifted (or dropped as redundant). */

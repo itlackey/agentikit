@@ -467,14 +467,14 @@ export interface UpgradeCheckResponse {
   currentVersion: string;
   latestVersion: string;
   updateAvailable: boolean;
-  installMethod: "binary" | "bun" | "npm" | "pnpm" | "unknown";
+  installMethod: "binary" | "bun" | "npm" | "pnpm" | "package-local" | "unknown";
 }
 
 export interface UpgradeResponse {
   currentVersion: string;
   newVersion: string;
   upgraded: boolean;
-  installMethod: "binary" | "bun" | "npm" | "pnpm" | "unknown";
+  installMethod: "binary" | "bun" | "npm" | "pnpm" | "package-local" | "unknown";
   binaryPath?: string;
   checksumVerified?: boolean;
   message?: string;
@@ -489,16 +489,11 @@ export interface UpgradeResponse {
     message: string;
   };
   /**
-   * Result of the pending state.db migration step, which runs FIRST on every
-   * `akm upgrade` -- before any install -- and is the whole of
-   * `--state-only`. `migrations` lists the IDs this call applied, in ledger
-   * order, so callers can see what ran without parsing `message`.
+   * The `akm-migrate apply` plan run after the install step -- or in its
+   * place, when there is nothing to install. Every `akm upgrade` carries one.
+   * `failed` means the migrator could not run at all; `error` says why.
    */
-  stateUpgrade?: {
-    applied: boolean;
-    migrations: string[];
-    safetyCopyPath?: string;
-  };
+  migration?: { status: "current" | "ready" | "blocked" | "failed"; error?: string } & Record<string, unknown>;
 }
 
 export interface InfoResponse {

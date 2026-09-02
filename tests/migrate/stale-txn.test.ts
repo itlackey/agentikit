@@ -10,9 +10,9 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { findStaleTxnEntries, recoverStaleTxns } from "../../../src/commands/migrate/stale-txn";
-import { advanceTxn, beginTxn, registerTxnKind } from "../../../src/core/fs-txn";
-import { makeStashDir, type SandboxedDir, sandboxXdgDataHome } from "../../_helpers/sandbox";
+import { findStaleTxnEntries, recoverStaleTxns } from "../../scripts/akm-migrate/migrate/stale-txn";
+import { advanceTxn, beginTxn, registerTxnKind } from "../../src/core/fs-txn";
+import { makeStashDir, type SandboxedDir, sandboxXdgDataHome } from "../_helpers/sandbox";
 
 const disposers: Array<{ cleanup: () => void }> = [];
 

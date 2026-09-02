@@ -1010,32 +1010,35 @@ Upgrade `akm` itself to the latest release. Standalone binaries are downloaded,
 checksummed, and staged before replacement; npm, Bun, and pnpm global installs
 use their package manager.
 
-Upgrade first applies any pending `state.db` migrations — including released
-migration 018, which an ordinary command refuses — then replaces the installed
-program and rebuilds the derived index. The state step runs on every
-`akm upgrade`, install or no install, so it is safe as a container entrypoint:
-on a current database it is a no-op. It does not run legacy config or workflow
-migration paths (`akm migrate` owns those, and applies the same state step).
-Standalone downloads use a temporary rollback copy only during atomic
-executable replacement.
+Upgrade replaces the installed program when a newer release exists, then runs
+`akm-migrate apply` — the migrator that shipped with whatever is now installed
+— and rebuilds the derived index. The migration step runs on every
+`akm upgrade`, install or no install, and its plan is reported under
+`migration`; an upgrade whose migration is blocked or could not run exits 1.
+That makes `akm upgrade` safe as a container entrypoint: on a current
+installation it is a no-op. An akm installed as a dependency of another
+package (`installMethod: "package-local"`) is never reinstalled — the parent
+package owns that copy — but its migrations still run. Standalone downloads
+use a temporary rollback copy only during atomic executable replacement.
 
 Standalone downloads are streamed directly to the staged file while SHA-256 is
 computed, with a 256 MiB binary limit. Release/checksum metadata is capped at
 1 MiB; an oversized response is cancelled and the staged file is removed.
 
 ```sh
-akm upgrade              # Apply pending state.db migrations, then download and replace the running binary
-akm upgrade --check      # Check for updates without installing (no state step)
+akm upgrade              # Install a newer release if there is one, then run every pending migration
+akm upgrade --check      # Check for updates without installing (no migration step)
 akm upgrade --force      # Force the install even if already on latest
-akm upgrade --state-only # The state step alone: no release check, no install
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--check` | Check for updates without installing |
 | `--force` | Force upgrade even if on latest version |
-| `--state-only` | Apply pending `state.db` migrations only, with no release check and no install — for installs that cannot reach the network. Every `akm upgrade` runs this step first anyway. |
 | `--skip-post-upgrade` | Skip the post-upgrade index rebuild |
+
+Offline, or to migrate without a release check, run `akm migrate apply`
+directly: it is the same step.
 
 Checksum verification is not optional and has no flag. If a release's
 `checksums.txt` is genuinely unreachable, the recovery hatch is the
@@ -1445,33 +1448,39 @@ akm registry remove my-team --yes    # Skip the confirmation prompt
 
 ### migrate
 
-Inspect or apply the explicit, one-way conversion of on-disk task sources to
-task source v4, the only grammar normal task execution accepts. `akm migrate`
-runs **both** migration generations in one pass — task-v2 to task-v3, then
-task-v3 to task source v4 against the resulting files — each keeping its own
-lock, backup, prevalidation, and rollback, so a file blocked in the first
-generation does not stop the second generation from converting files that are
-already `version: 3`. Database schema upgrades are additive and run
-automatically when `state.db` opens; config and workflow formats have no
-runtime compatibility migrator.
+Inspect or apply every pending migration in one plan. `akm migrate` is a thin
+wrapper over the standalone `akm-migrate` executable (installed alongside
+`akm`, and embedded in the release binary), which owns every historical shape
+akm has ever written so the CLI proper reads only current schemas. The steps,
+in order:
+
+1. legacy config `extraParams` keys lifted onto first-class engine fields
+   (`configExtraParams`);
+2. pending `state.db` migrations, historical-destructive ones included, with
+   a verified sibling safety copy (`stateMigrations`) — the only path besides
+   `akm upgrade` that admits released migration 018, which an ordinary
+   command refuses;
+3. task-v2 files to task v3, then task-v3 files to task source v4
+   (`taskV3Migration`, `taskV4Migration`), each keeping its own lock, backup,
+   prevalidation, and rollback, so a file blocked in the first generation does
+   not stop the second from converting files already at `version: 3`;
+4. superseded pre-0.9.0 `.akm` residue and stale filesystem transactions
+   (`deadResidue`, `staleTxns`).
 
 ```sh
 akm migrate status
 akm migrate apply --dry-run
 akm migrate apply
+akm-migrate apply          # the same, without the akm wrapper
 ```
 
-`status` and `apply --dry-run` are read-only. Apply refuses blocked task
-sources, backs up each changed file immediately before replacement, and
-atomically publishes strict task source v4 YAML; it is idempotent per
-generation, skipping a file already at that generation's target version
-(`already-v3`, `already-v4`). To run only the second generation in isolation
-(for example, previewing just the v3-to-v4 step against a tree that is
-already all `version: 3`), the frozen migrator's standalone entry points
-remain available as a separate executable: `akm-migrate task-v4-status` /
-`akm-migrate task-v4-apply [--dry-run]`. See [Tasks: Migrating to task
-source v4](tasks.md#migrating-to-task-source-v4) for the full blocked-reason
-table and worked examples.
+`status` and `apply --dry-run` are read-only. Apply skips blocked task
+sources rather than failing (and exits 1 while any remain), backs up each
+changed file immediately before replacement, and atomically publishes strict
+task source v4 YAML; it is idempotent, so a current installation is a no-op.
+`akm upgrade` runs `apply` after its install step. See [Tasks: Migrating to
+task source v4](tasks.md#migrating-to-task-source-v4) for the full
+blocked-reason table and worked examples.
 
 ### config
 

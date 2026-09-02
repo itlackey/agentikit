@@ -8,7 +8,6 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EXIT_CODES } from "../../src/cli/shared";
 import { detectAdapterId } from "../../src/core/adapter/detect-adapter";
 import { bundleComponentConfig, bundlesToSourceEntries } from "../../src/core/config/config-sources";
 import { type AkmConfig, loadConfig, resetConfigCache } from "../../src/core/config/config";
@@ -22,10 +21,6 @@ import { applyTaskToV3MigrationPlan, inspectTaskToV3Files, type TaskToV3Root } f
 import { planTaskToV3Migration, type TaskToV3MigrationPlan } from "../../src/tasks/source/task-to-v3";
 import { applyTaskToV4MigrationPlan, inspectTaskToV4Files } from "./migrate/task-files-to-v4";
 import { planTaskToV4Migration, type TaskToV4MigrationPlan } from "../../src/tasks/source/task-to-v4";
-
-export interface MigrationCommandOptions {
-  dryRun?: boolean;
-}
 
 export interface TaskV3MigrationFileSummary {
   filePath: string;
@@ -206,26 +201,14 @@ export function pruneTaskMigrationBackups(generationBackupDir: string): void {
   pruneToNewest(generationBackupDir, MAX_TASK_MIGRATION_BACKUPS, (entry) => entry.isDirectory());
 }
 
-function printPlan(plan: { readonly status: "current" | "ready" | "blocked" }): void {
-  console.log(JSON.stringify(plan));
-  if (plan.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
-}
-
-export async function runMigrationStatus(): Promise<void> {
-  printPlan(inspectMigrationPlan());
-}
-
-export async function runMigrationApply(options: MigrationCommandOptions = {}): Promise<void> {
-  if (options.dryRun) {
-    printPlan(inspectMigrationPlan());
-    return;
-  }
-  const result = withConfigLock(() =>
+/** Convert eligible task-v2 files to task v3 and return the resulting plan. */
+export function applyTaskV3Migration(): MigrationPlan {
+  return withConfigLock(() =>
     withMaintenanceStartBarrier(() => {
       const before = inspectCurrentTaskPlan();
       // Blocked files are skipped, not fatal: migrate whatever in the batch
-      // can be migrated and report the rest as blocked (printPlan below
-      // exits non-zero whenever any file is still blocked afterward).
+      // can be migrated and report the rest as blocked (the entrypoint exits
+      // non-zero whenever any file is still blocked afterward).
       if (before.result.taskV3Migration.changed === 0) return before.result;
       const backupRoot = path.join(getDataDir(), "backups", "task-v3");
       const backupPath = path.join(backupRoot, `${Date.now()}-${randomUUID()}`);
@@ -238,7 +221,6 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
       return { ...after, backupPath, applied: applied.changed.length };
     }),
   );
-  printPlan(result);
 }
 
 // ─── Second generation: task v3 -> task source v4 (spec docs/plans/specs/p2b-input-bindings.md §5) ───
@@ -325,21 +307,14 @@ export function inspectTaskV4MigrationStatus(): TaskV4MigrationStatus {
   return inspectCurrentTaskV4Plan().result;
 }
 
-export async function runTaskV4MigrationStatus(): Promise<void> {
-  printPlan(inspectTaskV4MigrationStatus());
-}
-
-export async function runTaskV4MigrationApply(options: MigrationCommandOptions = {}): Promise<void> {
-  if (options.dryRun) {
-    printPlan(inspectTaskV4MigrationStatus());
-    return;
-  }
-  const result = withConfigLock(() =>
+/** Convert eligible task-v3 files to task source v4 and return the resulting plan. */
+export function applyTaskV4Migration(): TaskV4MigrationStatus {
+  return withConfigLock(() =>
     withMaintenanceStartBarrier(() => {
       const before = inspectCurrentTaskV4Plan();
       // Blocked files are skipped, not fatal: migrate whatever in the batch
-      // can be migrated and report the rest as blocked (printPlan below
-      // exits non-zero whenever any file is still blocked afterward).
+      // can be migrated and report the rest as blocked (the entrypoint exits
+      // non-zero whenever any file is still blocked afterward).
       if (before.result.taskV4Migration.changed === 0) return before.result;
       const backupRoot = path.join(getDataDir(), "backups", "task-v4");
       const backupPath = path.join(backupRoot, `${Date.now()}-${randomUUID()}`);
@@ -352,5 +327,4 @@ export async function runTaskV4MigrationApply(options: MigrationCommandOptions =
       return { ...after, backupPath, applied: applied.changed.length };
     }),
   );
-  printPlan(result);
 }

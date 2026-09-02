@@ -165,7 +165,7 @@ export interface LiftLegacyExtraParamsResult {
  * (#852, following #815).
  *
  * Pure: never touches the filesystem. Two callers use this differently:
- * `akm migrate apply` (src/commands/migrate/config-extra-params.ts) uses the
+ * `akm migrate apply` (scripts/akm-migrate/migrate/config-extra-params.ts) uses the
  * returned `config` to persist the rewrite to disk, once; `parseAndValidateConfigText`
  * (src/core/config/config.ts) calls this only to detect whether a lift is
  * needed and discards `config` — an unmigrated config fails closed there

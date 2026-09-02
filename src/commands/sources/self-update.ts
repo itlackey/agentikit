@@ -14,11 +14,12 @@ import {
   readChunkWithDeadline,
 } from "../../core/common";
 import { ConfigError } from "../../core/errors";
-import { type HistoricalStateUpgradeResult, upgradeHistoricalStateDatabase } from "../../core/state-db";
 import { warn } from "../../core/warn";
 import { githubHeaders } from "../../integrations/github";
 import { getDirname, mainPath, semverOrder } from "../../runtime";
 import type { UpgradeCheckResponse, UpgradeResponse } from "../../sources/types";
+import { resolveNpmGlobalRoot } from "../../tasks/resolve-akm-bin";
+import { runMigrationTool } from "../migration-tool";
 
 const REPO = "itlackey/akm";
 const DEFAULT_PACKAGE_NAME = "akm-cli";
@@ -32,7 +33,7 @@ export type InstallMethod = UpgradeCheckResponse["installMethod"];
 
 export interface SelfUpdateDependencies {
   execPath: string;
-  upgradeHistoricalStateDatabase: () => HistoricalStateUpgradeResult;
+  runMigrationTool: typeof runMigrationTool;
 }
 
 /**
@@ -109,6 +110,8 @@ export interface InstallSignals {
   bunMain: string | undefined;
   importMetaDir: string | undefined;
   hasAkmVersion: boolean;
+  /** The npm global root for the Node this install runs under, when provable. */
+  npmGlobalRoot?: string;
 }
 
 /** Read live runtime signals. */
@@ -117,7 +120,36 @@ export function getInstallSignals(): InstallSignals {
     bunMain: mainPath,
     importMetaDir: getDirname(import.meta.url),
     hasAkmVersion: typeof AKM_VERSION !== "undefined",
+    npmGlobalRoot: resolveNpmGlobalRootForThisProcess(),
   };
+}
+
+function resolveNpmGlobalRootForThisProcess(): string | undefined {
+  const nodePath = process.env.AKM_LAUNCHER_NODE?.trim() || (process.versions.bun ? undefined : process.execPath);
+  if (!nodePath) return undefined;
+  try {
+    return resolveNpmGlobalRoot(nodePath, process.env);
+  } catch {
+    return undefined;
+  }
+}
+
+function isUnderDirectory(dir: string, root: string): boolean {
+  const real = (value: string): string => {
+    try {
+      return fs.realpathSync(value);
+    } catch {
+      return path.resolve(value);
+    }
+  };
+  const relative = path.relative(real(root), real(dir));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/** The package that depends on this akm: the directory holding the `node_modules` it lives in. */
+function packageLocalRoot(importMetaDir: string): string {
+  const index = normalizePathSeparators(importMetaDir).lastIndexOf(NODE_MODULES_SEGMENT);
+  return index < 0 ? importMetaDir : importMetaDir.slice(0, index);
 }
 
 // AKM_VERSION ambient type is declared in globals.d.ts
@@ -132,6 +164,14 @@ export function detectInstallMethod(signals?: InstallSignals): InstallMethod {
     }
     if (PNPM_GLOBAL_INSTALL_PATTERN.test(normalizedImportMetaDir)) {
       return "pnpm";
+    }
+    // A node_modules install outside the npm global root is a DEPENDENCY of
+    // some other package (an image's tools dir, a plugin's node_modules):
+    // it moves when that package does, and an `npm install -g` here would
+    // "succeed" while the parent kept executing its own copy. Only a proven
+    // global root can make that call; without one this stays "npm".
+    if (s.npmGlobalRoot && s.importMetaDir && !isUnderDirectory(s.importMetaDir, s.npmGlobalRoot)) {
+      return "package-local";
     }
     return "npm";
   }
@@ -213,28 +253,32 @@ export async function performUpgrade(
   const { currentVersion, latestVersion, installMethod } = check;
   const force = opts?.force === true;
   const skipPostUpgrade = opts?.skipPostUpgrade === true;
+  const runTool = dependencies?.runMigrationTool ?? runMigrationTool;
 
-  // Pending state.db migrations are applied FIRST, before any install is
-  // attempted. They belong to the akm that is running, need no network, no
-  // root, and no new binary -- and the post-install step that used to own
-  // them sat behind an install that fails EACCES wherever an image ships the
-  // CLI (#895). Running them here means a plain `akm upgrade` on an already-
-  // current install (a container entrypoint) still migrates state, and a
-  // failed install can no longer strand a migration behind it. A state
-  // failure aborts the upgrade: it is reported, never buried under an install.
-  const { stateUpgrade, note: stateNote } = describeStateUpgrade(
-    (dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase)(),
-  );
-
-  // All install methods can short-circuit here unless the user explicitly forces an upgrade.
+  // Every `akm upgrade` ends by running `akm-migrate apply`, install or no
+  // install: the migrator on disk after the install step is the one whose
+  // migrations the installed akm needs, and an image that ships akm has
+  // nothing to install and nobody to run a migration by hand (#895). The two
+  // no-install cases return here.
+  if (installMethod === "package-local") {
+    const parent = packageLocalRoot(getInstallSignals().importMetaDir ?? "");
+    return {
+      currentVersion,
+      newVersion: latestVersion,
+      upgraded: false,
+      installMethod,
+      message: `akm runs as a dependency of the package at ${parent}; upgrade that package to move akm.`,
+      migration: await runMigrationStep(runTool),
+    };
+  }
   if (!check.updateAvailable && !force) {
     return {
       currentVersion,
       newVersion: latestVersion,
       upgraded: false,
       installMethod,
-      message: `akm v${currentVersion} is already the latest version. ${stateNote}`,
-      stateUpgrade,
+      message: `akm v${currentVersion} is already the latest version`,
+      migration: await runMigrationStep(runTool),
     };
   }
 
@@ -246,8 +290,7 @@ export async function performUpgrade(
       latestVersion,
       installMethod,
       skipPostUpgrade,
-      stateUpgrade,
-      stateNote,
+      runTool,
     });
   }
 
@@ -258,7 +301,7 @@ export async function performUpgrade(
       upgraded: false,
       installMethod,
       message: `Unable to detect install method. Upgrade manually from https://github.com/${REPO}/releases`,
-      stateUpgrade,
+      migration: await runMigrationStep(runTool),
     };
   }
 
@@ -386,6 +429,8 @@ export async function performUpgrade(
   // The replacement completed; the temporary rollback copy is no longer needed.
   removeFileBestEffort(backupPath);
 
+  // The new binary is at execPath now, so this re-execs the NEW migrator.
+  const migration = await runMigrationStep(runTool);
   return {
     currentVersion,
     newVersion: latestVersion,
@@ -393,32 +438,35 @@ export async function performUpgrade(
     installMethod,
     binaryPath: execPath,
     checksumVerified,
-    stateUpgrade,
+    migration,
     postUpgrade: runPostUpgradeTasks(execPath, { skip: skipPostUpgrade }),
   };
 }
 
 /**
- * The `stateUpgrade` envelope field plus the one sentence every upgrade
- * message carries about it, so `upgrade`, `upgrade --force`, and
- * `upgrade --state-only` all report the state step the same way.
+ * `akm-migrate apply`, spawned so it is whichever migrator is on disk NOW:
+ * after a successful install, the new one. Its JSON plan becomes the
+ * response's `migration`. A migrator that could not run or print a plan
+ * reports `failed` with its error text instead of throwing, so the install
+ * outcome the caller is about to report is never lost behind it.
  */
-function describeStateUpgrade(result: HistoricalStateUpgradeResult): {
-  stateUpgrade: NonNullable<UpgradeResponse["stateUpgrade"]>;
-  note: string;
-} {
-  const stateUpgrade = {
-    applied: result.upgraded,
-    migrations: result.applied,
-    ...(result.safetyCopyPath ? { safetyCopyPath: result.safetyCopyPath } : {}),
-  };
-  if (!result.upgraded) return { stateUpgrade, note: "state.db is already current." };
-  const ids = result.applied.length === 1 ? result.applied[0] : `${result.applied[0]} through ${result.applied.at(-1)}`;
-  const copy = result.safetyCopyPath ? `; safety copy: ${result.safetyCopyPath}` : "";
-  return {
-    stateUpgrade,
-    note: `Applied ${result.applied.length} pending state.db migration(s) (${ids})${copy}.`,
-  };
+async function runMigrationStep(runTool: typeof runMigrationTool): Promise<NonNullable<UpgradeResponse["migration"]>> {
+  let result: Awaited<ReturnType<typeof runMigrationTool>>;
+  try {
+    result = await runTool(["apply"]);
+  } catch (error) {
+    return { status: "failed", error: error instanceof Error ? error.message : String(error) };
+  }
+  const line = result.stdout.trim();
+  try {
+    const plan = JSON.parse(line) as { status?: unknown } & Record<string, unknown>;
+    if (plan.status === "current" || plan.status === "ready" || plan.status === "blocked") {
+      return plan as NonNullable<UpgradeResponse["migration"]>;
+    }
+  } catch {
+    // Not a plan; reported below with whatever the migrator did say.
+  }
+  return { status: "failed", error: result.stderr.trim() || line || `akm-migrate exited ${result.status}` };
 }
 
 /**
@@ -475,24 +523,15 @@ function runPostUpgradeTasks(akmBin: string, opts: { skip: boolean }): NonNullab
  * version verification → post-upgrade tasks.
  * Extracted whole so performUpgrade stays under its fn-size baseline.
  */
-function runPackageManagerUpgrade(input: {
+async function runPackageManagerUpgrade(input: {
   packageManagerCommand: NonNullable<ReturnType<typeof getPackageManagerUpgradeCommand>>;
   currentVersion: string;
   latestVersion: string | undefined;
   installMethod: InstallMethod;
   skipPostUpgrade: boolean;
-  stateUpgrade: NonNullable<UpgradeResponse["stateUpgrade"]>;
-  stateNote: string;
-}): UpgradeResponse {
-  const {
-    packageManagerCommand,
-    currentVersion,
-    latestVersion,
-    installMethod,
-    skipPostUpgrade,
-    stateUpgrade,
-    stateNote,
-  } = input;
+  runTool: typeof runMigrationTool;
+}): Promise<UpgradeResponse> {
+  const { packageManagerCommand, currentVersion, latestVersion, installMethod, skipPostUpgrade, runTool } = input;
   if (!latestVersion) {
     throw new Error(
       "Unable to determine latest version from GitHub releases. Check https://github.com/itlackey/akm/releases",
@@ -511,11 +550,13 @@ function runPackageManagerUpgrade(input: {
 
   if (result.status !== 0) {
     const details = (result.stderr ?? "").trim() || (result.stdout ?? "").trim() || `exit code ${result.status}`;
-    // The state step already ran; say so, or a container operator reading
-    // the EACCES will assume the migration is still stuck behind it.
-    const stateApplied = stateUpgrade.applied ? `\n${stateNote}` : "";
+    // The install could not change what runs, so the migrator on disk is
+    // still the right one: run it, then say so, or an operator reading the
+    // EACCES will assume the migration is stuck behind it (#895).
+    const migration = await runMigrationStep(runTool);
     throw new Error(
-      `Failed to upgrade akm via ${installMethod}: ${details}\nRun manually: ${packageManagerCommand.displayCommand}${stateApplied}`,
+      `Failed to upgrade akm via ${installMethod}: ${details}\nRun manually: ${packageManagerCommand.displayCommand}\n` +
+        `Pending migrations ran anyway (status: ${migration.status}).`,
     );
   }
 
@@ -536,7 +577,7 @@ function runPackageManagerUpgrade(input: {
         `v${installedVersion} (expected v${latestVersion}). The ${installMethod} registry's @latest tag ` +
         `may be lagging the GitHub release — try again shortly, or install the exact version: ` +
         `${packageManagerCommand.displayCommand.replace(/@latest\b/, `@${latestVersion}`)}`,
-      stateUpgrade,
+      migration: await runMigrationStep(runTool),
     };
   }
 
@@ -549,7 +590,7 @@ function runPackageManagerUpgrade(input: {
       installedVersion === latestVersion
         ? `akm upgraded via ${installMethod} (verified: akm --version reports v${installedVersion})`
         : `akm upgraded via ${installMethod} (installed version could not be verified)`,
-    stateUpgrade,
+    migration: await runMigrationStep(runTool),
     postUpgrade: runPostUpgradeTasks("akm", { skip: skipPostUpgrade }),
   };
 }
@@ -649,30 +690,4 @@ export function getPackageManagerUpgradeCommand(
   }
 
   return undefined;
-}
-
-/**
- * The body of `akm upgrade --state-only`: the state step every `akm upgrade`
- * runs first, on its own, with no release check at all -- for installs with
- * no network access. Migrations flagged `historical-destructive` are refused
- * during an ordinary managed open (they need a verified sibling safety copy
- * taken under the migration writer lock, so an unattended `akm index` can
- * never quietly drop operator state); this path and `akm migrate apply` are
- * the ones that may admit them. The safety copy is NOT skipped here.
- */
-export function upgradeStateOnly(
-  currentVersion: string,
-  dependencies?: { upgradeHistoricalStateDatabase?: () => HistoricalStateUpgradeResult },
-): UpgradeResponse {
-  const { stateUpgrade, note } = describeStateUpgrade(
-    (dependencies?.upgradeHistoricalStateDatabase ?? upgradeHistoricalStateDatabase)(),
-  );
-  return {
-    currentVersion,
-    newVersion: currentVersion,
-    upgraded: false,
-    installMethod: detectInstallMethod(),
-    message: note,
-    stateUpgrade,
-  };
 }

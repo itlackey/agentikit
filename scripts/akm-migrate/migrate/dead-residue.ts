@@ -43,7 +43,7 @@ const DEAD_RESIDUE_PATHS: readonly DeadResiduePath[] = [
 ];
 
 /** One resolved dead-residue path found on disk, with its computed size. */
-interface DeadResidueEntry {
+export interface DeadResidueEntry {
   /** Path relative to the stash root (e.g. `.akm/proposals`). */
   relativePath: string;
   absolutePath: string;
@@ -111,7 +111,7 @@ export function findDeadResidueEntries(stashDir: string): DeadResidueEntry[] {
 }
 
 /** One path removed (or that failed to remove) by {@link removeDeadResidue}. */
-interface DeadResidueRemoval {
+export interface DeadResidueRemoval {
   relativePath: string;
   sizeBytes: number;
   removed: boolean;

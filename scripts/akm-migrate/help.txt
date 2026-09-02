@@ -1,12 +1,20 @@
 Usage: akm-migrate <command> [options]
 
-Converts task-v2 and task-v3 sources to task source v4, one generation per
-command below. `akm migrate status` / `akm migrate apply` (the wrapped CLI)
-run both generations in sequence and print one combined plan; each command
-here runs exactly one generation on its own.
+The one migration tool for an akm installation. Every historical shape akm
+has ever written lives here; the CLI proper reads only current schemas.
+`status` and `apply` run every step, in order, and print one combined JSON
+plan (exit 1 when any step is blocked):
+
+  1. legacy config `extraParams` keys lifted onto first-class engine fields
+  2. pending state.db migrations, historical-destructive ones included,
+     with a verified sibling safety copy (the only path that admits them)
+  3. task-v2 files to task v3, then task-v3 files to task source v4
+  4. superseded pre-0.9.0 `.akm` residue and stale filesystem transactions
+
+`akm migrate status|apply` wraps this executable; `akm upgrade` runs
+`apply` after its install step, so an image that ships akm can put either
+in its entrypoint (a current installation is a no-op).
 
 Commands:
-  status                      Inspect task-v2 files without changing them.
-  apply [--dry-run]           Convert eligible task-v2 files to task v3.
-  task-v4-status              Inspect task-v3 files without changing them.
-  task-v4-apply [--dry-run]   Convert eligible task-v3 files to task source v4.
+  status              Inspect every pending migration without changing anything.
+  apply [--dry-run]   Back up and apply every pending migration.
