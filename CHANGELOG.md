@@ -52,6 +52,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   three nullable columns; an existing index.db drains every directory once
   more after upgrading, then takes the fast path.
 
+- **Task-migration snapshots are capped at the five most recent** (#897).
+  `akm migrate apply` writes one snapshot directory per run under
+  `backups/task-v3` and `backups/task-v4` and never pruned them; each apply
+  now keeps the five newest and removes the rest, the same policy config
+  backups already use. Nothing in the current code writes the legacy
+  `backups/migrations`, `manual`, `releases`, or `operations` directories,
+  so they are left alone; the new health advisory is what surfaces them.
+
 ## [0.9.8-beta.1] - 2026-09-01
 
 A cleanup and stabilization release: deletion of machinery that policed the

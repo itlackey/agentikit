@@ -194,6 +194,61 @@ export function inspectMigrationPlan(): MigrationPlan {
   return inspectCurrentTaskPlan().result;
 }
 
+/**
+ * Max snapshot directories retained per generation under
+ * `<dataDir>/backups/task-v3/` and `<dataDir>/backups/task-v4/` (#897).
+ * Same cap and "keep N newest by mtime" policy as `MAX_CONFIG_BACKUPS` /
+ * `pruneOldBackups` in `src/core/config/config-io.ts` (#459) — one apply run
+ * writes one timestamped-UUID snapshot dir here, and nothing ever pruned
+ * them, so eight migration runs in July left eight ~5.7 GB copies of
+ * state.db (49 GB) sitting under `backups/migrations/` unpruned. This only
+ * caps the two paths current code actually writes (task-v3, task-v4); the
+ * legacy `migrations/`, `manual/`, `releases/`, `operations/` directories
+ * are untouched deliberately — nothing writes them anymore, and pruning a
+ * user's manual backups is not this fix's call.
+ */
+const MAX_TASK_MIGRATION_BACKUPS = 5;
+
+/**
+ * Keep the {@link MAX_TASK_MIGRATION_BACKUPS} most-recently-modified snapshot
+ * dirs directly under `generationBackupDir` (e.g.
+ * `<dataDir>/backups/task-v3`) and delete the rest. Best-effort: an
+ * unreadable/missing dir or a failed delete is swallowed — pruning is a
+ * housekeeping nicety, never a reason to fail a migration apply that already
+ * succeeded.
+ */
+export function pruneTaskMigrationBackups(
+  generationBackupDir: string,
+  max: number = MAX_TASK_MIGRATION_BACKUPS,
+): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(generationBackupDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const snapshots = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const full = path.join(generationBackupDir, entry.name);
+      let mtime = 0;
+      try {
+        mtime = fs.statSync(full).mtimeMs;
+      } catch {
+        // Unreadable — sorts to the end via mtime 0, pruned first.
+      }
+      return { path: full, mtime };
+    })
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const stale of snapshots.slice(max)) {
+    try {
+      fs.rmSync(stale.path, { recursive: true, force: true });
+    } catch {
+      // Best-effort prune; next apply run will retry.
+    }
+  }
+}
+
 function printPlan(plan: { readonly status: "current" | "ready" | "blocked" }): void {
   console.log(JSON.stringify(plan));
   if (plan.status === "blocked") process.exitCode = EXIT_CODES.GENERAL;
@@ -215,12 +270,14 @@ export async function runMigrationApply(options: MigrationCommandOptions = {}): 
       // can be migrated and report the rest as blocked (printPlan below
       // exits non-zero whenever any file is still blocked afterward).
       if (before.result.taskV3Migration.changed === 0) return before.result;
-      const backupPath = path.join(getDataDir(), "backups", "task-v3", `${Date.now()}-${randomUUID()}`);
+      const backupRoot = path.join(getDataDir(), "backups", "task-v3");
+      const backupPath = path.join(backupRoot, `${Date.now()}-${randomUUID()}`);
       const applied = applyTaskToV3MigrationPlan(before.plan, { backupRoot: backupPath });
       const after = inspectCurrentTaskPlan().result;
       if (after.taskV3Migration.changed > 0) {
         throw new ConfigError("Task migration did not converge to task v3.", "INVALID_CONFIG_FILE");
       }
+      pruneTaskMigrationBackups(backupRoot);
       return { ...after, backupPath, applied: applied.changed.length };
     }),
   );
@@ -327,12 +384,14 @@ export async function runTaskV4MigrationApply(options: MigrationCommandOptions =
       // can be migrated and report the rest as blocked (printPlan below
       // exits non-zero whenever any file is still blocked afterward).
       if (before.result.taskV4Migration.changed === 0) return before.result;
-      const backupPath = path.join(getDataDir(), "backups", "task-v4", `${Date.now()}-${randomUUID()}`);
+      const backupRoot = path.join(getDataDir(), "backups", "task-v4");
+      const backupPath = path.join(backupRoot, `${Date.now()}-${randomUUID()}`);
       const applied = applyTaskToV4MigrationPlan(before.plan, { backupRoot: backupPath });
       const after = inspectCurrentTaskV4Plan().result;
       if (after.taskV4Migration.changed > 0) {
         throw new ConfigError("Task migration did not converge to task source v4.", "INVALID_CONFIG_FILE");
       }
+      pruneTaskMigrationBackups(backupRoot);
       return { ...after, backupPath, applied: applied.changed.length };
     }),
   );
