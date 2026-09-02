@@ -127,6 +127,84 @@ describe("scheduler runtime binding", () => {
     }
   });
 
+  test("a second --rebind sync to the SAME invocation emits no warning (#868 residue)", async () => {
+    // Models an image-baked install's periodic `akm task sync --rebind`: once
+    // the entries actually carry the resolved (ineligible) invocation, a
+    // later rebind to that same invocation changes nothing and must not nag
+    // on every run.
+    const storage = withIsolatedAkmStorage();
+    try {
+      configureStash(storage.stashDir);
+      writeTask(storage.stashDir);
+      const ownerBundlePath = path.resolve(storage.stashDir);
+      const invocation = ["task", "run", "ping", "--bundle", "stash", "--scheduled"] as const;
+      let bound: SchedulerInstallOptions | undefined;
+      const entry = () => ({
+        id: "ping",
+        nativeId: "ping",
+        signature: "installed",
+        target: "stash",
+        binding: bound?.binding ? [...bound.binding] : ["/old/node", "/old/dist/akm"],
+        contextPath: bound?.contextPath ?? "/old/context.json",
+        ownerBundlePath,
+        invocation,
+      });
+      const artifact = () => ({ nativeId: "ping", bindingId: "ping", invocation, fingerprint: "installed" });
+      const backend: SchedulerBackend = {
+        name: "cron",
+        install(_task, installOptions) {
+          bound = installOptions;
+        },
+        uninstall() {},
+        setEnabled() {},
+        list: () => [entry()],
+        listNativeArtifacts: () => [artifact()],
+        inspectBindings: () => ({ installed: [entry()], artifacts: [artifact()] }),
+        snapshotBindings: (nativeIds) => ({ nativeIds: [...nativeIds], artifacts: [artifact()] }),
+        restoreBindings() {},
+        expectedSignature: () => "expected",
+      };
+      const ineligibleRuntime = () => ({
+        binding: ["/repo/bun", "/repo/src/cli.ts"],
+        contextPath: "/new/context.json",
+        eligible: false,
+        kind: "checkout" as const,
+      });
+
+      const first = await akmTasksSync({ backend, schedulerRuntime: ineligibleRuntime }, undefined, {
+        rebind: true,
+      });
+      expect(first.warnings).toHaveLength(1);
+
+      // The entries now carry the same invocation just bound above — a
+      // second rebind pass is a true no-op and must not warn.
+      const second = await akmTasksSync({ backend, schedulerRuntime: ineligibleRuntime }, undefined, {
+        rebind: true,
+      });
+      expect(second.warnings).toBeUndefined();
+
+      // A rebind to a genuinely DIFFERENT invocation is a real change and
+      // must still warn, even though a prior rebind already occurred.
+      const third = await akmTasksSync(
+        {
+          backend,
+          schedulerRuntime: () => ({
+            binding: ["/other/bun", "/other/src/cli.ts"],
+            contextPath: "/other/context.json",
+            eligible: false,
+            kind: "checkout" as const,
+          }),
+        },
+        undefined,
+        { rebind: true },
+      );
+      expect(third.warnings).toHaveLength(1);
+      expect(third.warnings?.[0]).toContain("/other/bun /other/src/cli.ts");
+    } finally {
+      storage.cleanup();
+    }
+  });
+
   test("sync --rebind emits no warning when the resolved runtime is eligible", async () => {
     const storage = withIsolatedAkmStorage();
     try {

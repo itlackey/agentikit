@@ -639,6 +639,82 @@ describe("cron backend drift detection", () => {
     expect(writes).toBe(0);
   });
 
+  // #910: a supercronic-managed container (OpenPalm) has no real `crontab`
+  // binary, so any nonzero exit from a fake/absent one must not be
+  // misdiagnosed. Three shapes, one per case in the issue's fix:
+  describe("crontab -l failures (#910)", () => {
+    test("a genuinely missing binary (ENOENT) reports the binary is missing", () => {
+      const exec: CronExec = {
+        read: () => ({ status: 1, stdout: "", stderr: "", enoent: true }),
+        write: () => ({ status: 0, stdout: "", stderr: "" }),
+      };
+      const backend = CRON_BACKEND(opts(exec));
+
+      expect(() => backend.list()).toThrow(/crontab.*binary was not found on PATH/i);
+      try {
+        backend.list();
+        throw new Error("expected list() to throw");
+      } catch (err) {
+        const hint = (err as { hint?: () => string | undefined }).hint?.();
+        expect(hint).toMatch(/install.*crontab.*binary|add one to PATH/i);
+      }
+    });
+
+    test("a nonzero exit with empty stdout is an empty crontab, not an error (supercronic PATH shim, #910)", () => {
+      // Models OpenPalm's `/tmp/openpalm-bin/crontab` shim: present on PATH,
+      // spawns fine, but there is no real spool yet — exits nonzero with
+      // nothing on stdout or stderr.
+      const exec: CronExec = {
+        read: () => ({ status: 1, stdout: "", stderr: "" }),
+        write: () => ({ status: 0, stdout: "", stderr: "" }),
+      };
+      const backend = CRON_BACKEND(opts(exec));
+
+      expect(backend.list()).toEqual([]);
+    });
+
+    test("a nonzero exit with empty stdout but a real stderr message is an error, not an empty crontab", () => {
+      // A refusal is not an empty crontab: cron said something, and that
+      // something is what the operator needs to read.
+      const exec: CronExec = {
+        read: () => ({ status: 1, stdout: "", stderr: "crontab: you are not allowed to use this program\n" }),
+        write: () => ({ status: 0, stdout: "", stderr: "" }),
+      };
+      const backend = CRON_BACKEND(opts(exec));
+
+      expect(() => backend.list()).toThrow(/not allowed to use this program/);
+    });
+
+    test("a nonzero exit with stderr saying 'no crontab' is an empty crontab (BSD wording)", () => {
+      const exec: CronExec = {
+        read: () => ({ status: 1, stdout: "", stderr: "no crontab for someone\n" }),
+        write: () => ({ status: 0, stdout: "", stderr: "" }),
+      };
+      const backend = CRON_BACKEND(opts(exec));
+
+      expect(backend.list()).toEqual([]);
+    });
+
+    test("any other nonzero exit still errors, but never claims the binary is missing", () => {
+      const exec: CronExec = {
+        read: () => ({ status: 2, stdout: "permission denied\n", stderr: "crontab: permission denied\n" }),
+        write: () => ({ status: 0, stdout: "", stderr: "" }),
+      };
+      const backend = CRON_BACKEND(opts(exec));
+
+      let thrown: unknown;
+      try {
+        backend.list();
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeDefined();
+      expect((thrown as Error).message).not.toMatch(/binary.*missing|was not found on PATH/i);
+      const hint = (thrown as { hint?: () => string | undefined }).hint?.();
+      expect(hint).not.toMatch(/install.*crontab.*binary|add one to PATH/i);
+    });
+  });
+
   test("rejects a cron command over the portable 1000-byte ceiling before scheduler I/O", () => {
     let reads = 0;
     let writes = 0;

@@ -360,8 +360,8 @@ describe("task lifecycle failure handling", () => {
     });
 
     expect(result.installed).toEqual(["a-valid"]);
-    expect(result.failed).toHaveLength(1);
-    expect(result.failed[0]?.reason).toMatch(/task schema version 2/i);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]?.reason).toMatch(/task schema version 2/i);
     expect(runtimeCalls).toBe(1);
     expect(installed.has("a-valid")).toBe(true);
   });

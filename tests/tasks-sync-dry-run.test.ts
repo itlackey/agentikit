@@ -300,8 +300,11 @@ describe("akmTasksSync / akmTasksSyncPlan — degrade on a bad source (#867)", (
     const result = await akmTasksSync({ backend });
 
     expect(result.installed).toEqual(["alpha"]);
-    expect(result.failed).toHaveLength(1);
-    expect(result.failed[0]?.path).toContain("broken.yml");
+    // #906: the live-sync envelope must report failures under the same
+    // `failures` key the `--dry-run` preview uses above — no separate
+    // `failed` name for the same concept.
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]?.path).toContain("broken.yml");
     expect(exec.writeCalls).toBe(1);
     expect(exec.current()).toContain("task run alpha");
   });

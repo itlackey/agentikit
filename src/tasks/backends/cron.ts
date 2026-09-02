@@ -22,7 +22,11 @@
 //     `LOGNAME`/`USER` only). The cron line uses an absolute akm path
 //     resolved at install time so it doesn't rely on the inherited PATH.
 //   • BSD `crontab -l` returns exit 1 with "no crontab for <user>" on a
-//     fresh user; we treat that as an empty crontab rather than an error.
+//     fresh user; a supercronic-managed PATH shim (#910, e.g. OpenPalm's
+//     `/tmp/openpalm-bin/crontab` before any spool exists) does the same
+//     with empty stdout instead. Both mean "empty crontab", not "broken
+//     install" — only a genuinely missing binary (ENOENT from the spawn
+//     itself) gets the "install crontab" remedy.
 //
 // Tests inject a fake exec so unit tests don't touch the real crontab.
 
@@ -65,7 +69,13 @@ import {
 import { type NodeFs, nodeFs, throwIfNotOk } from "./exec-utils";
 import type { InstalledSchedulerBinding, SchedulerBackend, SchedulerInstallOptions } from "./types";
 
-export type CronExecResult = { status: number; stdout: string; stderr: string };
+export type CronExecResult = {
+  status: number;
+  stdout: string;
+  stderr: string;
+  /** True when the `crontab` binary itself could not be spawned (ENOENT), not merely a nonzero exit. */
+  enoent?: boolean;
+};
 
 export interface CronExec {
   /** Read the user's current crontab. Empty string when none is installed. */
@@ -591,13 +601,27 @@ function assertPortableCronLine(line: string): void {
 function readCrontab(exec: CronExec): string {
   const result = exec.read();
   if (result.status === 0) return result.stdout ?? "";
-  // BSD crontab returns 1 with "no crontab for <user>" on stderr — treat as empty.
-  if (/no crontab for/i.test(result.stderr ?? "")) return "";
-  if (/no crontab/i.test(result.stdout ?? "")) return "";
+  // The spawn itself failed to find the binary (ENOENT) — this is the only
+  // case where "install/PATH the crontab binary" is the correct remedy.
+  if (result.enoent) {
+    throw new ConfigError(
+      "crontab -l failed: the `crontab` binary was not found on PATH.",
+      "INVALID_CONFIG_FILE",
+      "Install the `crontab` binary (e.g. cron/cronie/vixie-cron) or add one to PATH.",
+    );
+  }
+  // #910: a nonzero exit that says nothing at all, or whose stderr says
+  // "no crontab" (BSD's "no crontab for <user>"; a supercronic-managed PATH
+  // shim like OpenPalm's before any spool exists), is cron's own contract
+  // for "empty crontab" — not evidence the binary is missing or broken. A
+  // nonzero exit that DID say something else (a permission refusal) is
+  // reported as what it said, below.
+  const stderr = (result.stderr ?? "").trim();
+  if (((result.stdout ?? "").trim() === "" && stderr === "") || /no crontab/i.test(stderr)) return "";
   throw new ConfigError(
     `crontab -l failed (exit ${result.status}): ${result.stderr || result.stdout || "no output"}.`,
     "INVALID_CONFIG_FILE",
-    "Ensure the `crontab` binary is on PATH and your shell can read the user crontab.",
+    "The `crontab` binary ran but did not report success; check its output above.",
   );
 }
 
@@ -631,6 +655,7 @@ function defaultCronExec(): CronExec {
         status: r.status ?? 1,
         stdout: r.stdout ?? "",
         stderr: r.stderr ?? "",
+        enoent: (r.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT",
       };
     },
     write(content: string): CronExecResult {
@@ -639,6 +664,7 @@ function defaultCronExec(): CronExec {
         status: r.status ?? 1,
         stdout: r.stdout ?? "",
         stderr: r.stderr ?? "",
+        enoent: (r.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT",
       };
     },
   };

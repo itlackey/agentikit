@@ -659,7 +659,7 @@ describe("previous-release corpus — pre-`--scheduler-context` crontab row (#88
       const result = await akmTasksSync({ backend });
       expect(result.installed).toEqual([]);
       expect(result.updated).toEqual(["ping"]);
-      expect(result.failed).toEqual([]);
+      expect(result.failures).toEqual([]);
       // The crontab now carries a current row for the same task, not a
       // second, colliding one.
       expect((exec.current().match(/# akm:task ping BEGIN/g) ?? []).length).toBe(1);

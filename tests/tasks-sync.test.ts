@@ -165,8 +165,8 @@ describe("akmTasksSync — schedule drift", () => {
 
     const result = await akmTasksSync({ backend });
     expect(result.installed).toEqual([]);
-    expect(result.failed).toHaveLength(1);
-    expect(result.failed[0]?.reason).toMatch(/version is required and must be 4/);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]?.reason).toMatch(/version is required and must be 4/);
     expect(exec.current()).toBe("");
   });
 

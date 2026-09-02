@@ -378,10 +378,11 @@ const tasksSyncCommand = defineJsonCommand({
     const result = await akmTasksSync({}, args.bundle, { rebind });
     output("task-sync", result);
     // #867: sync degrades — sources that failed to parse/prepare are
-    // excluded from reconciliation and reported in `result.failed` rather
+    // excluded from reconciliation and reported in `result.failures` rather
     // than poisoning the whole sync, but their presence must still fail
-    // the command's exit code so the breakage stays visible.
-    if (result.failed.length > 0) process.exitCode = EXIT_CODES.GENERAL;
+    // the command's exit code so the breakage stays visible. (#906: this key
+    // matches the `--dry-run` preview's `failures` field — no separate name.)
+    if (result.failures.length > 0) process.exitCode = EXIT_CODES.GENERAL;
   },
 });
 

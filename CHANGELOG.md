@@ -32,6 +32,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A container that ships akm can put `akm upgrade` (or `akm migrate apply`)
   in its entrypoint: on a current installation it is a no-op.
 
+### Fixed
+
+- **`akm task sync` reports failed sources under `failures` on both the live
+  and `--dry-run` shapes** (#906). Live sync used to report them under
+  `failed` while `--dry-run` already used `failures`. No alias; both paths
+  now agree.
+- **`akm task sync` no longer misdiagnoses a supercronic-managed container as
+  missing the `crontab` binary** (#910). `crontab -l` exiting non-zero with
+  no output, or with stderr saying "no crontab", is cron's own way of saying
+  "empty crontab" (BSD's `no crontab for <user>`, or a PATH shim like
+  OpenPalm's before any spool exists). Only a spawn that cannot find the
+  binary (ENOENT) is reported as missing; any other failure is reported as
+  what it said.
+- **`akm task sync --rebind` no longer warns on every run of an image-baked
+  install** (#868 residue). The warning about binding scheduled tasks to a
+  mutable, unproven binary fires only when a rebind actually changes an
+  entry's bound invocation.
+
 ## [0.9.8] - 2026-09-02
 
 A cleanup and stabilization release: deletion of machinery that policed the

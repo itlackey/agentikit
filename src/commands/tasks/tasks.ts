@@ -464,9 +464,11 @@ export interface TasksSyncResult {
    * Sources that failed to parse/prepare (#867) — excluded from
    * install/update/remove/unchanged above, never silently dropped. Every
    * OTHER task/workflow still reconciles; the CLI exits non-zero whenever
-   * this is non-empty so the failure stays visible.
+   * this is non-empty so the failure stays visible. Named `failures` to
+   * match the `--dry-run` preview shape (#906) — both report the same
+   * concept under the same key.
    */
-  failed: { path: string; ref?: string; reason: string }[];
+  failures: { path: string; ref?: string; reason: string }[];
   /** Present only when a rebind bound an ineligible (e.g. mutable checkout) runtime. */
   warnings?: string[];
 }
@@ -576,6 +578,7 @@ async function buildSchedulerSyncPlan(
         options.rebind === true,
         "reconcile native scheduler bindings",
         warnings,
+        allEntries.map((entry) => entry.binding),
       )
     : undefined;
   const plan = finalizeSchedulerSyncPlan(
@@ -615,7 +618,7 @@ export async function akmTasksSync(
     unchanged: [...plan.unchanged],
     skipped: [],
     backend: sched.name,
-    failed: plan.failures.map((failure) => ({ ...failure })),
+    failures: plan.failures.map((failure) => ({ ...failure })),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
@@ -1232,16 +1235,17 @@ function prepareSchedulerSyncRuntime(
   explicitRebind: boolean,
   operation: string,
   warnings: string[],
+  installedBindings: readonly (readonly string[])[] = [],
 ): { options?: SchedulerInstallOptions; publish?: () => void } {
   if (deps.backend && !deps.schedulerRuntime) return base ? { options: base } : {};
   if (deps.schedulerRuntime) {
     const runtime = deps.schedulerRuntime();
-    warnIneligibleRebind(runtime, explicitRebind, warnings);
+    warnIneligibleRebind(runtime, explicitRebind, warnings, installedBindings);
     return { options: { ...base, binding: runtime.binding, contextPath: runtime.contextPath } };
   }
 
   const invocation = resolveAndValidateSchedulerInvocation(explicitRebind, operation);
-  warnIneligibleRebind(invocation, explicitRebind, warnings);
+  warnIneligibleRebind(invocation, explicitRebind, warnings, installedBindings);
   const descriptor = schedulerContextDescriptor();
   const contextPath = schedulerContextPath(descriptor);
   return {
@@ -1267,8 +1271,19 @@ function resolveAndValidateSchedulerInvocation(explicitRebind: boolean, operatio
   return { binding: invocation.argv, contextPath: "", eligible: invocation.eligible, kind: invocation.kind };
 }
 
-function warnIneligibleRebind(runtime: PreparedSchedulerRuntime, explicitRebind: boolean, warnings: string[]): void {
+function warnIneligibleRebind(
+  runtime: PreparedSchedulerRuntime,
+  explicitRebind: boolean,
+  warnings: string[],
+  installedBindings: readonly (readonly string[])[],
+): void {
   if (!explicitRebind || runtime.eligible !== false || warnings.length > 0) return;
+  // #868 residue: a `--rebind` that binds every currently-installed
+  // entry to the SAME invocation it already carries changes nothing — this
+  // is the steady state of an image-baked install re-running `task sync
+  // --rebind` on a timer. Only warn when the rebind actually moves an entry
+  // to a different invocation.
+  if (installedBindings.length > 0 && installedBindings.every((bound) => sameArgv(bound, runtime.binding))) return;
   warnings.push(
     `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm task sync --rebind\`.`,
   );

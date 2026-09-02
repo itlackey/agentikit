@@ -174,8 +174,8 @@ describe("WP7 scheduler desired-set durable v4 RED", () => {
     );
 
     expect(result.installed).toHaveLength(1);
-    expect(result.failed).toHaveLength(1);
-    expect(result.failed[0]?.reason).toMatch(message);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]?.reason).toMatch(message);
     expect(calls.installs).toBe(1);
   });
 
