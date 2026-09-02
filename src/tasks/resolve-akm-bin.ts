@@ -192,7 +192,24 @@ function samePath(left: string, right: string): boolean {
   return normalize(left) === normalize(right);
 }
 
+// #901: the global root can't change within a process lifetime, and every
+// `resolveAkmInvocation()` call in a scheduler-sync process re-derives the
+// same `nodePath` — so this spawns `npm root --global` at most once per
+// process instead of once per call. Keyed by nodePath (rather than a bare
+// once-only flag) so a differently-invoked probe later in the same process
+// still gets its own answer instead of a stale one.
+let cachedNpmGlobalRoot: { nodePath: string; value: string | undefined } | undefined;
+
 function resolveNpmGlobalRoot(nodePath: string, env: NodeJS.ProcessEnv): string | undefined {
+  if (cachedNpmGlobalRoot && cachedNpmGlobalRoot.nodePath === nodePath) {
+    return cachedNpmGlobalRoot.value;
+  }
+  const value = resolveNpmGlobalRootUncached(nodePath, env);
+  cachedNpmGlobalRoot = { nodePath, value };
+  return value;
+}
+
+function resolveNpmGlobalRootUncached(nodePath: string, env: NodeJS.ProcessEnv): string | undefined {
   const npmCli = resolveAssociatedNpmCli(nodePath);
   if (!npmCli) return undefined;
   const result = spawnSync(absoluteInvocationPath(nodePath), [npmCli, "root", "--global"], {

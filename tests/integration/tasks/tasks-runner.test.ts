@@ -1459,4 +1459,46 @@ describe("resolveAkmInvocation", () => {
       eligible: true,
     });
   });
+
+  // #901: `akm task sync --rebind` used to spawn `npm root --global` once per
+  // resolveAkmInvocation() call — two per sync cycle — leaving behind an npm
+  // debug log every time even though every spawn succeeded. The probe result
+  // can't change within a process, so it must be memoized. Rather than
+  // stubbing out the probe (which would bypass the memoization under test),
+  // this drives the REAL default `resolveNpmGlobalRoot` path: `nodePath` is a
+  // POSIX shebang script that stands in for `node`, counting how many times
+  // it is actually invoked via a marker file, with a real `npm-cli.js` file
+  // beside it so `resolveAssociatedNpmCli` finds it and the probe proceeds to
+  // spawn.
+  test.skipIf(process.platform === "win32")(
+    "resolveAkmInvocation spawns the npm-global-root probe at most once per process (#901)",
+    () => {
+      const fakeBin = path.join(tmpRoot, "npm-probe-memo", "bin");
+      fs.mkdirSync(path.join(fakeBin, "node_modules", "npm", "bin"), { recursive: true });
+      const spawnCountFile = path.join(tmpRoot, "npm-probe-memo", "spawn-count");
+      fs.writeFileSync(spawnCountFile, "");
+
+      const fakeNode = path.join(fakeBin, "node");
+      fs.writeFileSync(
+        fakeNode,
+        ["#!/usr/bin/env bash", `echo x >> ${JSON.stringify(spawnCountFile)}`, "echo /fake/npm/global/root", ""].join(
+          "\n",
+        ),
+      );
+      fs.chmodSync(fakeNode, 0o755);
+      fs.writeFileSync(path.join(fakeBin, "node_modules", "npm", "bin", "npm-cli.js"), "");
+
+      const launcher = packageLauncher(path.join(tmpRoot, "npm-probe-memo-package", "akm-cli"));
+
+      for (let i = 0; i < 3; i++) {
+        resolveAkmInvocation({ env: {}, runtime: "node", launcherPath: launcher, nodePath: fakeNode });
+      }
+
+      const spawnCount = fs
+        .readFileSync(spawnCountFile, "utf8")
+        .split("\n")
+        .filter((line) => line.length > 0).length;
+      expect(spawnCount).toBe(1);
+    },
+  );
 });
