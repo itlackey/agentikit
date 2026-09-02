@@ -41,6 +41,7 @@ Package complete capabilities and turn knowledge into repeatable work.
 - [Bundle Author's Guide](https://github.com/itlackey/akm/blob/main/docs/guides/author-bundles.md) -- Build a bundle, make it discoverable, and share it so others can install it with `akm bundle add`
 - [Author's Guide: Writing Workflows](https://github.com/itlackey/akm/blob/main/docs/guides/author-workflows.md) -- Write and test a workflow definition, from a minimal example to gates and outputs
 - [Claude Code workflows vs. akm workflows](https://github.com/itlackey/akm/blob/main/docs/guides/claude-code-vs-akm-workflows.md) -- Short decision guide for choosing between a session-native workflow and an akm workflow ([full technical comparison](https://github.com/itlackey/akm/blob/main/docs/architecture/comparisons/claude-code-vs-akm-workflows-full.md))
+- [Bundling akm](integration/bundling-akm.md) -- Ship akm inside your own product: the pin/migrate/health boot contract, plan JSON shapes, and exit codes for bundlers
 
 ### Maintainers
 

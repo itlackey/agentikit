@@ -97,8 +97,8 @@ test("status names the pending state migrations without applying them", async ()
   const plan = await runMigration({ apply: false });
 
   expect(plan.stateMigrations).toEqual({ pending: FROM_018 });
-  // Pending is "ready", not "blocked": the combined status is the task generations'.
-  expect(plan.status).toBe("current");
+  // Pending state reads as "ready" (apply would change state.db), never "blocked".
+  expect(plan.status).toBe("ready");
   expect(ledgerLength(file)).toBe(BEFORE_018.length);
   // The ordinary open still refuses, and points at the two commands that run this.
   expect(() => openStateDatabase(file).close()).toThrow(/018-drop-dead-lane-schema.*akm migrate apply/i);
@@ -149,6 +149,7 @@ test("dry-run reports the pending state migrations and applies nothing", async (
   const plan = await runMigration({ apply: false });
 
   expect(plan.stateMigrations).toEqual({ pending: FROM_018 });
+  expect(plan.status).toBe("ready");
   expect(ledgerLength(file)).toBe(BEFORE_018.length);
   expect(stateDbOpens(file)).toBe(false);
 });

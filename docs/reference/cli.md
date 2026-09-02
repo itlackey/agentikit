@@ -1053,6 +1053,10 @@ Checksum verification is not optional and has no flag. If a release's
 `AKM_UPGRADE_SKIP_CHECKSUM=1` environment variable (Internal — deliberately
 not a discoverable, tab-completable flag). See STABILITY.md.
 
+Shipping akm inside your own product (a Docker image, a plugin's own
+`node_modules`)? See [Bundling akm](../integration/bundling-akm.md) for the
+full boot contract, JSON shapes, and exit codes.
+
 ### clone
 
 Copy an asset from any source into a managed writable bundle or an unmanaged
@@ -1488,7 +1492,9 @@ changed file immediately before replacement, and atomically publishes strict
 task source v4 YAML; it is idempotent, so a current installation is a no-op.
 `akm upgrade` runs `apply` after its install step. See [Tasks: Migrating to
 task source v4](tasks.md#migrating-to-task-source-v4) for the full
-blocked-reason table and worked examples.
+blocked-reason table and worked examples, and
+[Bundling akm](../integration/bundling-akm.md) for the plan JSON shape and
+how to drive this from a container/image boot step.
 
 ### config
 

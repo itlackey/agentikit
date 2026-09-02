@@ -114,9 +114,12 @@ export async function runMigration(options: { apply: boolean }): Promise<Combine
           staleTxns: apply ? { recovered: await recoverStaleTxns(stashDir) } : { pending: findStaleTxnEntries(stashDir) },
         };
 
+  // A pending state migration reads as "ready" under status/--dry-run, so the
+  // preview says what apply will do; after a real apply it has been applied.
+  const stateStatus: MigrationStatus = "pending" in stateMigrations && stateMigrations.pending.length > 0 ? "ready" : "current";
   return {
     schemaVersion: 1,
-    status: worstStatus(taskV3.status, taskV4.status),
+    status: worstStatus(worstStatus(taskV3.status, taskV4.status), stateStatus),
     blockers: [...taskV3.blockers, ...taskV4.blockers],
     configExtraParams,
     stateMigrations,
