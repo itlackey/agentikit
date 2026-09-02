@@ -10,7 +10,7 @@ import { ConfigError, UsageError } from "../core/errors";
 import { readEvents } from "../core/events";
 import { openLogsDatabase } from "../core/logs-db";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
-import { getConfigPath, getDbPath, getStateDbPathInDataDir } from "../core/paths";
+import { getConfigPath, getDataDir, getDbPath, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import type { Database } from "../storage/database";
@@ -20,6 +20,7 @@ import { queryTaskHistory } from "../storage/repositories/task-history-repositor
 import { pkgVersion } from "../version";
 import { collectImproveAdvisories } from "./health/advisories";
 import { HEALTH_CHECKS, type HealthCheckContext, runHealthEngineProbes } from "./health/checks";
+import { collectDataDirUsageAdvisory } from "./health/data-dir-usage";
 import {
   buildImproveSkipSummary,
   computeWallTimeStats,
@@ -322,9 +323,10 @@ function gatherImproveSummaryPhase(
 }
 
 /**
- * The four best-effort advisory groups beyond the health-check registry:
- * improve advisories, the `stash-git-exposure` probe, the 08 surfaces group
- * (binary-config-skew, egress-endpoints), and `plugin-version` (itlackey/akm#832).
+ * The best-effort advisory groups beyond the health-check registry: improve
+ * advisories, the `stash-git-exposure` probe, the 08 surfaces group
+ * (binary-config-skew, egress-endpoints), `type-directory-disagreement`
+ * (#831), `data-dir-usage` (#896), and `plugin-version` (itlackey/akm#832).
  * Order matches emission order in the returned array. A probe/filesystem
  * failure in any try/catch must not abort the health report — each group
  * degrades to "no advisory" independently.
@@ -380,6 +382,18 @@ function gatherAncillaryAdvisories(
   try {
     const typeDirMismatch = detectTypeDirectoryDisagreements(options.stashDir ?? resolveStashDir());
     if (typeDirMismatch) advisories.push(typeDirMismatch);
+  } catch {
+    // Non-fatal.
+  }
+
+  // #896: report the data dir's total size and its largest top-level
+  // subdirectory, so a disk-usage blowup (e.g. unpruned migration snapshot
+  // backups, #897) is self-diagnosing instead of requiring `du` archaeology.
+  // Best-effort — an unreadable/missing data dir must not abort the health
+  // report.
+  try {
+    const dataDirUsage = collectDataDirUsageAdvisory(getDataDir());
+    if (dataDirUsage) advisories.push(dataDirUsage);
   } catch {
     // Non-fatal.
   }

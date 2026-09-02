@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > `state.db`, 0.9.8-beta.1 and earlier refuse it with `unknown migration ID
 > 026-proposals-strip-legacy-fragment-refs`.
 
+### Added
+
+- **`akm health` reports data-dir disk usage** (#896). A `data-dir-usage`
+  advisory sums the data directory with a stat-only walk and warns when it is
+  more than 3× the three live databases (state.db, index.db, logs.db) or when
+  one top-level subdirectory holds more than half of it, naming that
+  subdirectory with its size and share (for example `backups/ is 70G (94% of
+  data dir)`). The walk stops after 100,000 entries and says so. Silent when
+  nothing looks wrong.
+
 ### Fixed
 
 - **`akm task sync` no longer spawns `npm root --global` on every call** (#901).
