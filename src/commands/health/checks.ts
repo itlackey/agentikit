@@ -5,6 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { type AkmConfig, loadConfig } from "../../core/config/config";
 import { ConfigError } from "../../core/errors";
+import { listPendingStateMigrations } from "../../core/state-db";
 import type { WhichFn } from "../../integrations/agent/detect";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
 import { resolveEngine } from "../../integrations/agent/engine-resolution";
@@ -565,6 +566,48 @@ export function runSelectedModelAliasesProbe(deps: SelectedModelAliasesProbeDepe
   };
 }
 
+export interface PendingStateMigrationsCheckDependencies {
+  listPendingStateMigrations?: (dbPath?: string) => string[];
+}
+
+/**
+ * Hard check: state.db's migration ledger has no pending entries.
+ *
+ * Read-only via `listPendingStateMigrations` (a preflight open, never a
+ * managed one), so running this check is always safe — even when the
+ * corresponding managed open would refuse outright because a pending
+ * migration is historical-destructive (see `beforeMigrationLocked` in
+ * `src/core/state/migrations.ts`). This is what lets `akm health` report that
+ * refusal as an ordinary `fail` check instead of crashing the whole command —
+ * and what replaces a bundler grepping akm's refusal error text
+ * to detect the same case.
+ */
+export function runPendingStateMigrationsCheck(
+  stateDbPath: string,
+  deps: PendingStateMigrationsCheckDependencies = {},
+): HealthCheckResult {
+  const pending = (deps.listPendingStateMigrations ?? listPendingStateMigrations)(stateDbPath);
+  if (pending.length === 0) {
+    return {
+      name: "state-db-migrations",
+      kind: "deterministic",
+      status: "pass",
+      confidence: "high",
+      message: "state.db has no pending migrations.",
+      evidence: { path: stateDbPath, pending: [] },
+    };
+  }
+  const range = pending.length > 1 ? `${pending[0]} … ${pending[pending.length - 1]}` : pending[0];
+  return {
+    name: "state-db-migrations",
+    kind: "deterministic",
+    status: "fail",
+    confidence: "high",
+    message: `${pending.length} pending state.db migration(s) (${range}); run \`akm migrate apply\`.`,
+    evidence: { path: stateDbPath, pending },
+  };
+}
+
 /**
  * The ordered health-check registry. ORDER IS LOAD-BEARING: `akmHealth`
  * iterates this array and appends to hardChecks/advisories in sequence, so the
@@ -601,6 +644,11 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
         : `state.db round-trip failed: ${ctx.probe.error}`,
       evidence: { path: ctx.stateDbPath, durationMs: ctx.probe.durationMs },
     }),
+  },
+  {
+    name: "state-db-migrations",
+    channel: "hard",
+    run: (ctx) => runPendingStateMigrationsCheck(ctx.stateDbPath),
   },
   {
     name: "task-history-read",

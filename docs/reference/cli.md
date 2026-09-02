@@ -282,7 +282,7 @@ Primary result fields:
 | Field | Description |
 | --- | --- |
 | `status` | Overall health verdict: `pass`, `warn`, or `fail` |
-| `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `task-log-backing`, `active-runs`, `default-engine`, and `model-map-files` |
+| `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `state-db-migrations`, `task-log-backing`, `active-runs`, `default-engine`, and `model-map-files` |
 | `advisories` | Non-fatal warnings including `semantic-search-runtime` and `session-extraction` (akmExtract pipeline health) |
 | `metrics` | Aggregate task/runtime metrics: `taskFailRate`, `agentFailureRate`, `stuckActiveRuns`, `logBackingRate`, `probeRoundTripMs` |
 | `improve` | Recent improve-loop counts derived from `improve_invoked`, `improve_skipped`, and `improve_completed` events |
@@ -291,6 +291,14 @@ The `improve` section includes counts for planned refs, reflect/distill actions,
 memory-prune actions, memory-inference writes, graph-extraction refreshes,
 session-extraction outcomes (`sessionsScanned`, `sessionsExtracted`, `proposalsCreated`),
 dead-URL detections, and skip reasons observed in the selected time window.
+
+`state-db-migrations` reports whether `state.db`'s migration ledger has any
+pending entries (checked read-only, without applying anything). It `fail`s
+when migrations are pending — naming them and pointing at `akm migrate apply`
+— rather than the command crashing, which is what happens when `state.db`
+holds a pending historical-destructive migration and something other than
+`akm upgrade` / `akm migrate apply` opens it directly. Read this check's
+`status` instead of grepping akm's error text for that case.
 
 The `session-extraction` advisory reflects the health of the `akmExtract` pipeline
 (Phase 0.4 of `akm improve`). It warns on harness errors or when no proposals are

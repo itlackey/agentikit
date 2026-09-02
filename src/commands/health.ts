@@ -11,7 +11,7 @@ import { readEvents } from "../core/events";
 import { openLogsDatabase } from "../core/logs-db";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getConfigPath, getDataDir, getDbPath, getStateDbPathInDataDir } from "../core/paths";
-import { listExistingTableNames, openStateDatabase } from "../core/state-db";
+import { listExistingTableNames, listPendingStateMigrations, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import type { Database } from "../storage/database";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
@@ -19,7 +19,12 @@ import { getAllEntries } from "../storage/repositories/index-entries-repository"
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
 import { pkgVersion } from "../version";
 import { collectImproveAdvisories } from "./health/advisories";
-import { HEALTH_CHECKS, type HealthCheckContext, runHealthEngineProbes } from "./health/checks";
+import {
+  HEALTH_CHECKS,
+  type HealthCheckContext,
+  runHealthEngineProbes,
+  runPendingStateMigrationsCheck,
+} from "./health/checks";
 import { collectDataDirUsageAdvisory } from "./health/data-dir-usage";
 import {
   buildImproveSkipSummary,
@@ -558,38 +563,32 @@ function resolveWindowComparePhase(
 }
 
 /**
- * The health report for a state.db this process cannot read (#791).
+ * The health report for a state.db a managed open cannot reach at all: either
+ * the file is not readable (#791), or — the same shape, a different cause —
+ * it holds a pending migration the managed open refuses to apply without
+ * deliberate consent (`akm upgrade` / `akm migrate apply` are the
+ * only two callers allowed to admit a historical-destructive migration; see
+ * `beforeMigrationLocked` in `src/core/state/migrations.ts`).
  *
- * `akm health` is what an operator runs when other commands are misbehaving, so
- * it must survive the permission problem long enough to NAME it. Previously it
- * threw `ConfigError` (exit 78) on the state.db open, which meant the one
- * command able to explain a data-directory permission fault died before
- * reaching any of its advisories.
+ * `akm health` is what an operator (or a bundler's boot check) runs when
+ * something else is misbehaving, so it must survive either problem long
+ * enough to NAME it. Previously an unreadable file was already handled this
+ * way, but a pending migration was not: the managed open's refusal escaped as
+ * a thrown `ConfigError` (exit 78) and crashed the whole command before any
+ * check — including this one — could report anything.
  *
- * Reported as a hard-channel `fail` — the run genuinely could not assess the
- * install — with the path, errno, mode/owner and running uid in the message. It
- * exits non-zero either way; the difference is that the operator is now told
- * WHY instead of being handed a bare "unable to open database file".
+ * Reported as a single hard-channel `fail` check — the run genuinely could
+ * not open state.db, so every check that depends on it is skipped rather than
+ * attempted — and it still exits non-zero, just through health's normal
+ * `fail` path instead of a thrown config-error exit.
  */
-function unreadableStateDbReport(detail: string, options: AkmHealthOptions): AkmHealthResult {
+function degradedStateDbReport(hardCheck: HealthCheckResult, options: AkmHealthOptions): AkmHealthResult {
   return {
     schemaVersion: 3,
     ok: false,
     status: "fail",
     since: parseHealthSince(options.since),
-    hardChecks: [
-      {
-        name: "state-db-readable",
-        kind: "deterministic",
-        status: "fail",
-        confidence: "high",
-        message:
-          `state.db exists but is not readable: ${detail}. Every other health check is skipped because ` +
-          "none of them can read it. Check the owner and mode of the data directory, or point " +
-          "AKM_DATA_DIR / XDG_DATA_HOME at a location this user owns.",
-        evidence: { detail },
-      },
-    ],
+    hardChecks: [hardCheck],
     advisories: [],
     metrics: {
       taskFailRate: 0,
@@ -605,6 +604,20 @@ function unreadableStateDbReport(detail: string, options: AkmHealthOptions): Akm
   };
 }
 
+function unreadableStateDbCheck(detail: string): HealthCheckResult {
+  return {
+    name: "state-db-readable",
+    kind: "deterministic",
+    status: "fail",
+    confidence: "high",
+    message:
+      `state.db exists but is not readable: ${detail}. Every other health check is skipped because ` +
+      "none of them can read it. Check the owner and mode of the data directory, or point " +
+      "AKM_DATA_DIR / XDG_DATA_HOME at a location this user owns.",
+    evidence: { detail },
+  };
+}
+
 export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
   validateAkmHealthOptions(options);
   const now = options.now ?? (() => Date.now());
@@ -613,18 +626,36 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
   const hardChecks: HealthCheckResult[] = [];
   const advisories: HealthCheckResult[] = [];
 
-  // #791: an UNREADABLE state.db is the one failure `akm health` most needs to
-  // be able to report, because it is the command an operator runs to find out
-  // why everything else is behaving oddly. Dying here with exit 78 meant health
-  // could not diagnose that state at all — not even the checks that never touch
-  // state.db got to run. Report it as a finding instead.
+  // #791: an UNREADABLE state.db, or one with a pending migration the
+  // managed open refuses to apply, are the two failures `akm health` most
+  // needs to be able to report, because this is the command an operator (or a
+  // bundler's boot check) runs to find out why everything else is behaving
+  // oddly. Dying here meant health could not diagnose that state at all — not
+  // even the checks that never touch state.db got to run. Report it as a
+  // finding instead.
   let db: ReturnType<typeof openStateDatabase>;
   try {
     db = openStateDatabase(stateDbPath);
   } catch (error) {
     const { access, code } = classifyPathAccess(stateDbPath);
     if (access === "inaccessible") {
-      return unreadableStateDbReport(describeInaccessiblePath(stateDbPath, code), options);
+      return degradedStateDbReport(unreadableStateDbCheck(describeInaccessiblePath(stateDbPath, code)), options);
+    }
+    // The managed open's refusal of a pending historical-destructive
+    // migration is a plain `Error`, not a distinguishable error class — so
+    // confirm the cause via the read-only preflight (`listPendingStateMigrations`,
+    // which never applies anything) rather than pattern-matching the message.
+    // A ledger too broken to enumerate at all throws here too; in that case
+    // fall through to the generic config-error report below, since it is a
+    // genuinely different, rarer failure this check cannot explain.
+    let pendingMigrationsCheck: HealthCheckResult | undefined;
+    try {
+      pendingMigrationsCheck = runPendingStateMigrationsCheck(stateDbPath, { listPendingStateMigrations });
+    } catch {
+      pendingMigrationsCheck = undefined;
+    }
+    if (pendingMigrationsCheck?.status === "fail") {
+      return degradedStateDbReport(pendingMigrationsCheck, options);
     }
     throw new ConfigError(
       `Unable to open state.db: ${error instanceof Error ? error.message : String(error)}`,
