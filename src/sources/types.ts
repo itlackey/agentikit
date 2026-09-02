@@ -279,7 +279,10 @@ export interface SourceLock {
 export interface SourceComponent {
   name: string;
   root?: string;
+  /** The EFFECTIVE adapter — explicitly configured, or auto-detected when not (#908). */
   adapter?: string;
+  /** `true` when `adapter` came from auto-detection rather than explicit config (#908). */
+  detected?: boolean;
   writable?: boolean;
 }
 

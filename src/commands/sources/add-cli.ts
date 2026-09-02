@@ -4,6 +4,7 @@
 
 import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { defineJsonCommand, output } from "../../cli/shared";
+import { VALID_ADAPTER_IDS } from "../../core/adapter/adapter-ids";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { warn } from "../../core/warn";
@@ -90,6 +91,12 @@ export const addCommand = defineJsonCommand({
     provider: { type: "string", description: "Provider type (e.g. website, npm). Required for URL sources." },
     options: { type: "string", description: 'Provider options as JSON (e.g. \'{"apiKey":"key"}\').' },
     name: { type: "string", description: "Human-friendly name for the source" },
+    adapter: {
+      type: "string",
+      description:
+        "Override the auto-detected component adapter for a local directory (#909). One of: " +
+        `${VALID_ADAPTER_IDS.join(", ")}.`,
+    },
     writable: {
       type: "boolean",
       description: "Mark a git bundle as writable so changes can be pushed back",
@@ -174,6 +181,7 @@ export const addCommand = defineJsonCommand({
       name: args.name,
       options: Object.keys(websiteOptions).length > 0 ? websiteOptions : undefined,
       writable: args.writable,
+      adapter: args.adapter,
     });
     appendEvent({
       eventType: "add",

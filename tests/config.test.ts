@@ -584,6 +584,57 @@ describe("getImproveProcessConfig", () => {
   });
 });
 
+// ── components.*.adapter validation (#909) ───────────────────────────────────
+
+describe("components.*.adapter validation (#909)", () => {
+  test("an unrecognized adapter fails INVALID_CONFIG_FILE listing the accepted names", () => {
+    writeCurrentConfig({
+      bundles: {
+        main: {
+          path: "/home/user/my-stash",
+          writable: true,
+          components: { main: { root: ".", adapter: "__invalid__" } },
+        },
+      },
+      defaultBundle: "main",
+    });
+    // RED on old code: an unknown adapter silently fell back to `akm` at
+    // detect-time — loadConfig() never threw, and `akm bundle list` reported
+    // "akm" as if it had been configured (#909). GREEN on the fix: config
+    // load itself rejects it.
+    let thrown: unknown;
+    try {
+      loadConfig();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect((thrown as ConfigError).code).toBe("INVALID_CONFIG_FILE");
+    const message = (thrown as ConfigError).message;
+    expect(message).toContain("__invalid__");
+    // The accepted names are listed, derived from the registry — spot-check a
+    // representative few rather than pinning the whole (registry-owned) list.
+    expect(message).toContain("akm");
+    expect(message).toContain("agent-skills");
+    expect(message).toContain("okf");
+  });
+
+  test("a valid adapter name loads without error", () => {
+    writeCurrentConfig({
+      bundles: {
+        main: {
+          path: "/home/user/my-stash",
+          writable: true,
+          components: { main: { root: ".", adapter: "agent-skills" } },
+        },
+      },
+      defaultBundle: "main",
+    });
+    const config = loadConfig();
+    expect(config.bundles?.main?.components?.main?.adapter).toBe("agent-skills");
+  });
+});
+
 // ── primary stash (defaultBundle) config ─────────────────────────────────────
 
 describe("primary stash config", () => {

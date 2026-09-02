@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import path from "node:path";
 import { main } from "../../src/cli";
 import { akmListSources } from "../../src/commands/sources/installed-stashes";
 import { resetConfigCache } from "../../src/core/config/config";
@@ -144,5 +145,41 @@ describe("akm list bundle inventory", () => {
     expect(output.defaultBundle).toBe("primary");
     expect(output.sources[0]).toHaveProperty("itemCount");
     expect(output.sources[0]).toHaveProperty("lock");
+  });
+
+  // #908/#909: `akm bundle list` must disclose, per component, the EFFECTIVE
+  // adapter and whether it came from auto-detection — before this, an
+  // auto-detected adapter was invisible (no "adapter" field at all when no
+  // component was configured), which is how a mixed-layout bundle's silent
+  // shadowing (#908) and an invalid adapter's silent fallback (#909) both
+  // escaped notice on the one command an operator would check first.
+  test("bundle list reports the effective adapter + detected per component", async () => {
+    const agentSkillsFixture = path.resolve(import.meta.dir, "..", "fixtures", "bundles", "agent-skills");
+    writeSandboxConfig({
+      semanticSearchMode: "off",
+      bundles: {
+        primary: {
+          path: storage.stashDir,
+          writable: true,
+          components: { main: { root: ".", adapter: "akm", writable: true } },
+        },
+        // No `components` at all — the implicit single component every
+        // bundle gets; its adapter is auto-detected, never persisted here.
+        auto: { path: agentSkillsFixture },
+      },
+      defaultBundle: "primary",
+    });
+    resetConfigCache();
+
+    const result = await akmListSources({ stashDir: storage.stashDir });
+    const byName = new Map(result.sources.map((source) => [source.name, source]));
+
+    // RED on old code: `components` carried no `adapter`/`detected` field at
+    // all for an explicitly-configured component, and was an EMPTY array for
+    // one with no configured component (nothing to auto-detect through).
+    expect(byName.get("primary")?.components).toEqual([
+      { name: "main", root: ".", adapter: "akm", detected: false, writable: true },
+    ]);
+    expect(byName.get("auto")?.components).toEqual([{ name: "main", adapter: "agent-skills", detected: true }]);
   });
 });

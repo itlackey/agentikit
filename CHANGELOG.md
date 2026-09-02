@@ -49,6 +49,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   install** (#868 residue). The warning about binding scheduled tasks to a
   mutable, unproven binary fires only when a rebind actually changes an
   entry's bound invocation.
+- **A mixed-layout bundle no longer auto-detects as a narrow tool-dir adapter
+  and silently drops the rest** (#908). A root that a tool-dir-shaped adapter
+  (`agent-skills`, `claude`, `opencode`) claims but that also carries ordinary
+  akm content detects as `akm`, the superset. `akm bundle list` now reports
+  each component's effective `adapter` and whether it was `detected`, and
+  indexing under an explicitly narrow adapter warns once with the count of
+  files and directories it skipped.
+- **An unrecognised `components.*.adapter` is rejected** (#909) with
+  `INVALID_CONFIG_FILE` listing the accepted names instead of silently
+  falling back to `akm`. `akm bundle add --adapter <name>` overrides
+  auto-detection for a local directory; its `--help` lists the registry.
 
 ## [0.9.8] - 2026-09-02
 

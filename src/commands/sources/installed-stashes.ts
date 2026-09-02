@@ -18,6 +18,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { detectAdapterId } from "../../core/adapter/detect-adapter";
 import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, BundleConfigEntry } from "../../core/config/config";
 import { acquireConfigReadFence, bundleComponentConfig, getSources, loadConfig } from "../../core/config/config";
@@ -216,13 +217,40 @@ function describeBundleSource(entry: BundleConfigEntry): SourceDescriptor {
   return { kind: "npm", locator: entry.npm ?? "" };
 }
 
-function describeComponents(entry: BundleConfigEntry): SourceComponent[] {
-  return Object.entries(entry.components ?? {}).map(([name, component]) => ({
-    name,
-    ...(component.root !== undefined ? { root: component.root } : {}),
-    ...(component.adapter !== undefined ? { adapter: component.adapter } : {}),
-    ...(component.writable !== undefined ? { writable: component.writable } : {}),
-  }));
+/**
+ * Per-component `{ adapter, detected }` disclosure (#908/#909): `adapter` is
+ * the EFFECTIVE adapter (explicit config, or auto-detected via the same
+ * ordered probe `akm index` uses) and `detected` is `true` exactly when no
+ * explicit `adapter` was configured. Before this, an auto-detected adapter
+ * was invisible on `akm bundle list` — a mixed-layout bundle silently
+ * shadowed by a narrower adapter (#908) gave no sign a choice had even been
+ * made. `bundleRoot` is the bundle's resolved content root (lock `localRoot`
+ * or its plain `path`), or `undefined` when neither is known yet (an
+ * unresolved registry/website source) — detection is skipped in that case
+ * rather than probing a path that may not exist.
+ */
+function describeComponents(entry: BundleConfigEntry, bundleRoot: string | undefined): SourceComponent[] {
+  const configuredComponents = entry.components ?? {};
+  const names = Object.keys(configuredComponents);
+  if (names.length === 0) {
+    // No explicit component at all — the implicit single component every
+    // bundle gets (spec §1.2 rule 5; `deriveInstallations`/`componentForSource`
+    // apply the same "main"-shaped default at index time).
+    const adapter = bundleRoot !== undefined ? detectAdapterId(bundleRoot) : "akm";
+    return [{ name: "main", adapter, detected: true }];
+  }
+  return names.map((name) => {
+    const component = configuredComponents[name]!;
+    const componentRoot = bundleRoot !== undefined ? path.resolve(bundleRoot, component.root ?? ".") : undefined;
+    const adapter = component.adapter ?? (componentRoot !== undefined ? detectAdapterId(componentRoot) : "akm");
+    return {
+      name,
+      ...(component.root !== undefined ? { root: component.root } : {}),
+      adapter,
+      detected: component.adapter === undefined,
+      ...(component.writable !== undefined ? { writable: component.writable } : {}),
+    };
+  });
 }
 
 function describeLock(entry: LockfileEntry | undefined): SourceLock | null {
@@ -309,7 +337,7 @@ export async function akmListSources(input?: { stashDir?: string; kind?: SourceK
       ...(lock?.resolvedVersion !== undefined ? { version: lock.resolvedVersion } : {}),
       writable: componentWritable ?? bundle.writable ?? kind === "filesystem",
       ...(configured.registryId !== undefined ? { registryId: configured.registryId } : {}),
-      components: describeComponents(configured),
+      components: describeComponents(configured, root || undefined),
       lock: describeLock(lock),
       itemCount: bundleCounts.itemCount,
       byType: bundleCounts.byType,

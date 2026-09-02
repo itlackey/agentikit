@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { main } from "../../src/cli";
 import { GLOBAL_OUTPUT_ARGS } from "../../src/cli/shared";
+import { VALID_ADAPTER_IDS } from "../../src/core/adapter/adapter-ids";
 import { ConfigError, NotFoundError, UsageError } from "../../src/core/errors";
 import { formatExemptSurfaces } from "../../src/output/format-exempt";
 import { runCliCapture } from "../_helpers/cli";
@@ -803,6 +804,20 @@ describe("S11: sectioned root help", () => {
     expect(stderr).toBe("");
     expect(stdout).toContain(`akm ${command}`);
     expect(stdout).toContain("USAGE");
+  });
+
+  test("akm bundle add --help lists every registry adapter id in --adapter's description (#909)", () => {
+    // Regression: there was no way to discover the valid `components.*.adapter`
+    // names from the CLI at all (`akm bundle add --help` named no `--adapter`
+    // flag, let alone a registry listing). RED on old code: no `--adapter` flag
+    // existed, so none of these assertions held.
+    const { status, stdout, stderr } = spawnCli(["bundle", "add", "--help"], { cwd: repoRoot });
+    expect(status).toBe(0);
+    expect(stderr).toBe("");
+    expect(stdout).toContain("--adapter");
+    for (const id of VALID_ADAPTER_IDS) {
+      expect(stdout).toContain(id);
+    }
   });
 
   test("akm task run --help includes the akm prefix on nested USAGE lines", () => {

@@ -37,6 +37,8 @@ export async function akmAdd(input: {
   name?: string;
   options?: Record<string, unknown>;
   writable?: boolean;
+  /** Override the auto-detected component adapter (#909). Local (filesystem) adds only. */
+  adapter?: string;
 }): Promise<AddResponse> {
   const ref = input.ref.trim();
   if (!ref)
@@ -56,7 +58,7 @@ export async function akmAdd(input: {
   try {
     const parsed = parseRegistryRef(ref);
     if (parsed.source === "local") {
-      return addLocalSource(ref, parsed.sourcePath, stashDir, input.name);
+      return addLocalSource(ref, parsed.sourcePath, stashDir, input.name, input.adapter);
     }
   } catch {
     // Not a local ref — fall through to registry install
@@ -71,21 +73,23 @@ async function addLocalSource(
   sourcePath: string,
   stashDir: string,
   explicitName?: string,
+  explicitAdapter?: string,
 ): Promise<AddResponse> {
   const stashRoot = detectStashRoot(sourcePath);
   const resolvedPath = path.resolve(stashRoot);
+  const adapter = explicitAdapter ?? detectAdapterId(resolvedPath);
   let bundleKey = explicitName ?? toReadableId(resolvedPath);
   mutateConfig((config) => {
     const existing = bundleKeyForPath(config, resolvedPath);
     if (existing) {
       bundleKey = existing;
       const current = config.bundles?.[existing];
-      if (current?.components) return config;
+      if (current?.components && explicitAdapter === undefined) return config;
       const bundles = { ...(config.bundles ?? {}) };
       bundles[existing] = {
         ...current,
         path: resolvedPath,
-        components: { main: { root: ".", adapter: detectAdapterId(resolvedPath) } },
+        components: { main: { root: ".", adapter } },
       };
       return { ...config, bundles };
     }
@@ -93,7 +97,7 @@ async function addLocalSource(
     bundleKey = nextBundleKey(bundles, explicitName, resolvedPath);
     bundles[bundleKey] = {
       path: resolvedPath,
-      components: { main: { root: ".", adapter: detectAdapterId(resolvedPath) } },
+      components: { main: { root: ".", adapter } },
     };
     return { ...config, bundles };
   });

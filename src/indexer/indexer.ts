@@ -17,7 +17,7 @@ import { classifyPathAccess, describeInaccessiblePath } from "../core/path-acces
 import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
 import { withStateDb } from "../core/state-db";
-import { isVerbose, warn, warnVerbose } from "../core/warn";
+import { isVerbose, warn, warnOnce, warnVerbose } from "../core/warn";
 import type { LoweringNotice } from "../execution/resolved-request";
 import {
   disposeLoweredExecutionDispatchLease,
@@ -1181,6 +1181,67 @@ function sourceSnapshotRemovals(
     }));
 }
 
+/**
+ * Warn ONCE per process (#908) when the chosen adapter for a component
+ * entirely skips a top-level directory that holds files the `akm` adapter —
+ * the format-neutral superset — would have indexed. `detectAdapterId` now
+ * corrects this for AUTO-DETECTION (a mixed layout detects as `akm`); this
+ * covers the case detection cannot see, an EXPLICITLY configured narrow
+ * adapter (`components.<name>.adapter: "agent-skills"`, say) sitting next to
+ * ordinary akm content. One line for the whole process — not one per bundle,
+ * not one per directory — naming the count and the directories is enough to
+ * point an operator at the fix.
+ */
+function warnIfAdapterSkipsAkmContent(
+  component: BundleComponent,
+  files: readonly FileContext[],
+  adapter: BundleAdapter,
+): void {
+  if (adapter.id === "akm") return;
+  const akm = adapterForId("akm");
+  if (!akm) return;
+
+  const byTopDir = new Map<string, FileContext[]>();
+  for (const file of files) {
+    const top = file.ancestorDirs[0];
+    if (!top) continue; // a root-level file is not a "skipped directory" concern
+    const group = byTopDir.get(top);
+    if (group) group.push(file);
+    else byTopDir.set(top, [file]);
+  }
+
+  const akmComponent: BundleComponent = { ...component, adapter: "akm" };
+  let skippedCount = 0;
+  const skippedDirs: string[] = [];
+  for (const [dir, dirFiles] of byTopDir) {
+    const chosenRecognizesAny = dirFiles.some((file) => {
+      try {
+        return adapter.recognize(component, file) !== null;
+      } catch {
+        return false;
+      }
+    });
+    if (chosenRecognizesAny) continue; // the chosen adapter owns this dir; nothing skipped
+    const akmCandidates = dirFiles.filter((file) => {
+      try {
+        return akm.recognize(akmComponent, file) !== null;
+      } catch {
+        return false;
+      }
+    });
+    if (akmCandidates.length === 0) continue; // akm would drop it too — not a shadowing case
+    skippedCount += akmCandidates.length;
+    skippedDirs.push(dir);
+  }
+  if (skippedCount === 0) return;
+  skippedDirs.sort();
+  warnOnce(
+    "adapter-skip-akm-content",
+    `${adapter.id} adapter skipped ${skippedCount} file${skippedCount === 1 ? "" : "s"} in ` +
+      `${skippedDirs.map((dir) => `${dir}/`).join(", ")} — set components.<name>.adapter to "akm" to index them`,
+  );
+}
+
 function buildSourceScanPlans(
   db: Database,
   allSourceEntries: SearchSource[],
@@ -1211,6 +1272,7 @@ function buildSourceScanPlans(
     });
     const dirGroups = groupFileContextsByDir(walked.files);
     const adapter = adapterForId(component.adapter);
+    if (adapter) warnIfAdapterSkipsAkmContent(component, walked.files, adapter);
     return {
       currentStashDir,
       component,
