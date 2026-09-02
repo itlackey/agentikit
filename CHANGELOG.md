@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **The incremental index no longer misses an edit whose timestamp did not move
+  forward.** The per-directory freshness check summarised a directory as its
+  file-name set plus the single newest mtime, which lost two kinds of change.
+  An edit to any file other than the newest one landed below that maximum and
+  was invisible even though its own mtime changed — so a restore, checkout, or
+  archive extraction that stamped a plausible older date left stale content in
+  the index. And because mtime is writable by ordinary tooling (`touch -r`,
+  `rsync --times`, `cp -p`), an edit with a restored timestamp was invisible
+  outright. The directory is now digested per file over
+  `(basename, size, mtime, ctime)` at nanosecond resolution. It is the same one
+  `stat` call per file, so the incremental fast path costs what it did before.
+  Both gaps predate 0.9.8 and applied to every earlier release.
+
+  Trade-off worth knowing: `ctime` also moves on metadata-only changes such as
+  `chmod`, and after copying a tree, so those now cost one extra rescan. That
+  direction is deliberate — extra work, never stale content. Existing indexes
+  rescan once as the digest changes shape, then return to the fast path.
+
 ## [0.9.8-beta.2] - 2026-09-02
 
 > **Adds state migration `026-proposals-strip-legacy-fragment-refs`.** The
