@@ -36,6 +36,7 @@ import { rethrowIfTestIsolationError } from "../core/errors";
 import { getDbPath } from "../core/paths";
 import { warn } from "../core/warn";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
+import { isCanonicalIndexGeneration } from "../storage/repositories/index-entry-schema";
 
 let guardSettled = false;
 
@@ -51,6 +52,16 @@ function indexBundlePrefixes(dbPath: string): string[] | undefined {
   try {
     db = openReadonlyExistingDatabase(dbPath);
     if (!db) return undefined;
+    // openReadonlyExistingDatabase no longer throws on a non-canonical
+    // generation (#895) — it warns and hands back the connection. A
+    // hand-tampered or foreign generation can still answer this exact
+    // query (bundle_id is one of the oldest, most stable columns), but this
+    // guard's rename-vs-fresh-bundle call is consequential enough (it tells
+    // the operator their data is either strandable or safe to re-mint) that
+    // it should stay best-effort-skip on anything this binary cannot
+    // verify the shape of, same as the pre-existing corrupted/locked case
+    // below.
+    if (!isCanonicalIndexGeneration(db)) return undefined;
     return (
       db
         .prepare("SELECT DISTINCT bundle_id AS b FROM entries WHERE bundle_id IS NOT NULL AND bundle_id != ''")

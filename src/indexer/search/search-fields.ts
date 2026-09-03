@@ -12,11 +12,7 @@
  * so it can be safely imported by both db.ts and indexer.ts.
  */
 
-import { warnVerbose } from "../../core/warn";
 import type { IndexDocument } from "../passes/metadata";
-
-/** Structured metadata plus bounded body text supplied to embedding providers. */
-export const SEARCH_TEXT_MAX_CHARS = 8_192;
 
 /**
  * Return per-field search text for multi-column FTS5 indexing.
@@ -87,31 +83,26 @@ export function buildSearchFields(entry: IndexDocument): {
  * Build a single concatenated search text string for an entry.
  * Used for the `search_text` column in the entries table.
  * and for generating embedding text.
+ *
+ * Deliberately NO cap here. A fixed 8192-char ceiling used to truncate this —
+ * both the FTS content column and the exact embedding input — silently: past
+ * the cap a long document's body was unfindable by any term past char 8192,
+ * and when the structured fields (name/description/tags/hints) alone reached
+ * the cap the body was dropped entirely with nothing left to search or embed
+ * against. FTS5 has no reason to bound this (see the identical
+ * `MAX_LEXICAL_QUERY_TOKENS` deletion in `search/fts-query.ts` for the same
+ * reasoning applied to queries); the one real bound — a native Markdown
+ * body's own length — lives upstream in `passes/metadata.ts`
+ * (`MARKDOWN_CONTENT_MAX_CHARS`), and an embedding provider's own token limit
+ * is already handled at the embedding layer (`llm/embedders/remote.ts` skips
+ * an oversized document rather than truncating or crashing).
  */
 export function buildSearchText(entry: IndexDocument): string {
   const fields = buildSearchFields(entry);
   const structured = [fields.name, fields.description, fields.tags, fields.hints]
     .filter((field) => field.length > 0)
     .join(" ");
-  if (structured.length >= SEARCH_TEXT_MAX_CHARS) {
-    warnVerbose(
-      `${entry.ref ?? entry.name}: search text truncated to ${SEARCH_TEXT_MAX_CHARS} chars (content dropped entirely)`,
-    );
-    return truncateUnicodeSafe(structured, SEARCH_TEXT_MAX_CHARS);
-  }
   if (!fields.content) return structured;
   const separator = structured ? " " : "";
-  const remaining = SEARCH_TEXT_MAX_CHARS - structured.length - separator.length;
-  if (fields.content.length > remaining) {
-    warnVerbose(`${entry.ref ?? entry.name}: search text truncated to ${SEARCH_TEXT_MAX_CHARS} chars`);
-  }
-  return `${structured}${separator}${truncateUnicodeSafe(fields.content, remaining)}`;
-}
-
-function truncateUnicodeSafe(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  let cut = text.slice(0, maxChars);
-  const lastCode = cut.charCodeAt(cut.length - 1);
-  if (lastCode >= 0xd800 && lastCode <= 0xdbff) cut = cut.slice(0, -1);
-  return cut.trimEnd();
+  return `${structured}${separator}${fields.content}`;
 }

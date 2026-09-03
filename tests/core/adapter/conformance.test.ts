@@ -455,7 +455,14 @@ describe("conformance — read candidates and recognition are two-way canonical 
         return originalRead(candidate, options as never);
       }) as typeof fs.readFileSync);
       try {
+        // Default (write): the collision aborts up front, without reading
+        // either candidate's bytes.
         expect(() => resolveAdapterConceptOwner(root, "akm", "commands/same")).toThrow(AdapterConceptCollisionError);
+
+        // An explicit read resolves the same collision to the deterministic
+        // first owner instead — also without reading either candidate.
+        const owner = resolveAdapterConceptOwner(root, "akm", "commands/same", { mode: "read" });
+        expect(owner?.path).toBe(canonical);
       } finally {
         readSpy.mockRestore();
       }
