@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveStashDir } from "../core/common";
-import { loadConfig } from "../core/config/config";
+import { type LlmConnectionConfig, loadConfig } from "../core/config/config";
 import { ConfigError, UsageError } from "../core/errors";
 import { readEvents } from "../core/events";
 import { openLogsDatabase } from "../core/logs-db";
@@ -14,6 +14,7 @@ import { getConfigPath, getDataDir, getDbPath, getStateDbPathInDataDir } from ".
 import { listExistingTableNames, listPendingStateMigrations, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import type { Database } from "../storage/database";
+import { getExtractOutcomeCountsSince } from "../storage/repositories/extract-sessions-repository";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
 import { getAllEntries } from "../storage/repositories/index-entries-repository";
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
@@ -97,6 +98,17 @@ export interface AkmHealthOptions {
    * stashes — never spawns. Tests pass a fake to exercise the advisory directly.
    */
   stashExposureGit?: GitRunner;
+  /**
+   * #914: reachability probe for a `kind: "llm"` runner's connection (and an
+   * SDK runner's LLM fallback connection), used by the `default-llm-engine`
+   * and `configured-engines` checks. Omitted ⇒ every probe is skipped and
+   * each check's message notes that reachability was not probed — this
+   * keeps every caller that doesn't pass this (including the whole test
+   * suite) fully offline. The `health` CLI command wires the real
+   * `probeLlmReachable` (`src/llm/client.ts`) here unless `--no-probe` is
+   * given.
+   */
+  probeReachable?: (connection: LlmConnectionConfig) => Promise<{ reachable: boolean; error?: string }>;
 }
 
 const DEFAULT_SINCE_MS = 24 * 60 * 60 * 1000;
@@ -280,6 +292,22 @@ function gatherEgressConfigPhase(): EgressConfigPhase {
 interface ImproveSummaryPhase {
   improveSummary: ImproveHealthMetrics;
   perRunSummaries: ImproveRunSummary[];
+}
+
+/** #914: the rolling 7-day ledger window `session-extraction` reads, independent of the top-level `--since`. */
+const SESSION_EXTRACTION_LEDGER_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * #914: outcome counts from the `extract_sessions_seen` ledger for the last
+ * 7 days — what `session-extraction` reads instead of `improve_runs`, which
+ * the hook-driven `akm proposal extract --session-id ...` never populates.
+ */
+function gatherSessionExtractionLedgerPhase(
+  db: Database,
+  now: () => number,
+): HealthCheckContext["sessionExtractionLedger"] {
+  const since = new Date(now() - SESSION_EXTRACTION_LEDGER_WINDOW_MS).toISOString();
+  return { since, rows: getExtractOutcomeCountsSince(db, since) };
 }
 
 /**
@@ -618,7 +646,7 @@ function unreadableStateDbCheck(detail: string): HealthCheckResult {
   };
 }
 
-export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
+export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHealthResult> {
   validateAkmHealthOptions(options);
   const now = options.now ?? (() => Date.now());
   const since = parseHealthSince(options.since);
@@ -683,7 +711,11 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
 
     advisories.push(...gatherAncillaryAdvisories(db, stateDbPath, since, improveSummary, options, egressConfigView));
 
-    const engineProbes = runHealthEngineProbes();
+    const sessionExtractionLedger = gatherSessionExtractionLedgerPhase(db, now);
+
+    const engineProbes = await runHealthEngineProbes(
+      options.probeReachable ? { probeReachable: options.probeReachable } : undefined,
+    );
 
     // Run the ordered health-check registry. Each check projects the shared
     // context computed above into one HealthCheckResult; `channel` routes it to
@@ -704,6 +736,7 @@ export function akmHealth(options: AkmHealthOptions = {}): AkmHealthResult {
       stuckActiveTasks: taskHistory.stuckActiveTasks,
       worstTaskFailRate: taskHistory.worstTaskFailRate,
       sessionExtraction: improveSummary.sessionExtraction,
+      sessionExtractionLedger,
       autoAccept: improveSummary.autoAccept,
       engineProbes,
     };

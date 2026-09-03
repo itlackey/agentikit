@@ -23,14 +23,14 @@ changes.
 | `default-engine` | The configured general default agent, SDK, or LLM engine is missing or incomplete. | Correct `defaults.engine`; SDK operation requires the `opencode` binary on PATH (the npm SDK is an HTTP client and spawns `opencode serve`), while a fallback LLM is checked only when configured. |
 | `model-map-files` | The installed or optional user `models.json` is missing, unreadable, or invalid. | Repair the installation for an installed-map failure; remove or correct the user overlay for a warning. |
 | `selected-model-aliases` | A known selected alias lacks a mapping for its selected engine. Unknown model strings remain exact pass-through identifiers. | Add the missing alias/engine entry or select an exact model ID. |
-| `default-llm-engine` | The independently configured LLM default is missing, incompatible, or lacks a required credential. | Correct `defaults.llmEngine`, its connection, and any symbolic credential binding. |
-| `configured-engines` | Checks every explicitly configured engine and aggregates its deterministic availability. | Repair engines whose safe status is `warn`; no configured engines yields `unknown`. |
-| `active-improve-strategy` | An enabled process in the effective improve strategy cannot resolve its engine or required credential. | Inspect the named unavailable process, then correct its process override, strategy triage engine, SDK fallback, or default LLM. |
+| `default-llm-engine` | The independently configured LLM default is missing, incompatible, lacks a required credential, or (#914) its endpoint refuses the reachability probe. | Correct `defaults.llmEngine`, its connection, any symbolic credential binding, or the endpoint itself; an unreachable default is a hard `fail`. |
+| `configured-engines` | Checks every explicitly configured engine and aggregates its deterministic availability, including (#914) reachability for `kind: "llm"` engines. | Repair engines whose safe status is `warn`; no configured engines yields `unknown`. |
+| `active-improve-strategy` | An enabled process in the effective improve strategy cannot resolve its engine or required credential; evidence and the message name the resolved engine per process (#913), surfacing a strategy-level pin that shadows `defaults.llmEngine`. | Inspect the named unavailable process, then correct its process override, strategy triage engine, SDK fallback, or default LLM. |
 | `task-fail-rate` | ≥5% of scheduled task runs failed in the window (exit 143/70 recurring). | Triage as a bug: `akm task doctor`, inspect failing lane logs; exit-143 = killed/timeout, exit-70 = internal error. |
 | `data-dir-usage` | The data directory is more than 3× the live databases (`state.db` + `index.db` + `logs.db`), or one top-level subdirectory holds more than half of it; the message names that subdirectory with its size and share. | Look at the named subdirectory. `backups/task-v3` and `backups/task-v4` are capped at five snapshots per `akm migrate apply` (#897); anything else under `backups/` is yours to prune. |
 | `stash-git-exposure` | `env/` or `secrets/` assets are git-tracked **and** a remote is set — `git push` can leak keys. | `git rm --cached` the files, add `env/`+`secrets/` to `.gitignore` (a rule alone does not untrack). |
 | `semantic-search-runtime` | Semantic search is blocked; often a configured remote embedding endpoint is down. | Restore the endpoint, or set `semanticSearchMode` to `off`, or drop `embedding.endpoint` to use the local model. |
-| `session-extraction` | Extraction ran but hit harness errors or produced zero proposals across ≥5 sessions. | Check the agent CLI and session-log source; extraction is degraded, not failing hard. |
+| `session-extraction` | (#914) Derived from the `extract_sessions_seen` ledger for the last 7 days — not `improve_runs`, which the hook-driven `akm proposal extract --session-id ...` never writes. `unknown` when nothing was recorded; `warn` when every session in the window was skipped for an infrastructure reason (`llm_unavailable`, `read_failed`, `exception`, `locked_concurrent`), naming the reason and engine; otherwise `pass` with per-outcome counts. | An `unknown` machine may be deliberately not configured for extraction, or may have stopped harvesting — check for recent sessions. A `warn` names the broken engine/reason directly. |
 | `pool-saturation` | <2% of the session pool was new — possible discovery/dedup bug. | Verify `akm proposal extract` still finds new sessions; a healthy steady state sits above 10%. |
 | `auto-accept-validation` | Proposals passed the confidence gate but failed validation (bad frontmatter, truncation). | Review the affected pending proposals via `akm proposal list`; they were held, not lost. |
 | `outcome-proxy-adequacy` | Retrieval proxy is *inverted* (corr < −0.3): popular assets are the most-needing-improvement. | Known WS-2 limitation; no live action — see plan §WS-2 / CONTEXT before tuning. |
@@ -59,10 +59,18 @@ safe evidence containing only engine name and status. All available engines
 pass; any unavailable engine warns; no explicitly configured engines is
 `unknown`.
 
-These health checks make no network or provider call. Agent checks inspect
-local binary availability; SDK checks inspect the package/binary and any
-configured fallback; LLM checks validate local configuration and symbolic
-credential availability without contacting the endpoint.
+Agent checks inspect local binary availability; SDK checks inspect the
+package/binary and any configured fallback. LLM checks (a `kind: "llm"`
+runner, and an SDK runner's LLM fallback connection) additionally send a
+real, bounded (3 s timeout) reachability probe (#914) — the same one-token
+completion `akm setup` uses — to `default-llm-engine`'s and
+`configured-engines`' endpoints, one probe per distinct endpoint per
+invocation (no cross-run cache, so a stale "reachable" verdict never lingers).
+An unreachable endpoint is a hard `fail` for `default-llm-engine` (extraction
+and improve depend on it directly) and a `warn` for every other engine that
+resolves to it. Pass `--no-probe` to skip these probes entirely (offline or
+air-gapped hosts) — every affected check then reports its prior,
+credential-only verdict and notes that reachability was not probed.
 
 Health evidence never includes endpoint values.
 Health evidence never includes exact model IDs.

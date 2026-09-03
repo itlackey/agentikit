@@ -123,6 +123,7 @@ import { DURATION_UNITS, parseDuration } from "./core/time";
 import { plainize } from "./core/tty";
 import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
+import { probeLlmReachable } from "./llm/client";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "./output/cli-hints";
 import { getOutputMode, initOutputMode, parseDetailLevel } from "./output/context";
 import { isFormatExemptCommand } from "./output/format-exempt";
@@ -325,6 +326,12 @@ const healthCommand = defineCommand({
         "Fetch the full report dataset: per-run rows, trend deltas vs the prior window, and the pending proposal queue. Renders as the rich report under --format md/html and as complete data under any other format.",
       default: false,
     },
+    "no-probe": {
+      type: "boolean",
+      description:
+        "Skip the default-llm-engine / configured-engines reachability probes (for an offline or air-gapped host).",
+      default: false,
+    },
   },
   async run({ args }) {
     let resultStatus: "pass" | "warn" | "fail" | undefined;
@@ -359,11 +366,12 @@ const healthCommand = defineCommand({
       const sinceIsDuration = args.since !== undefined && parseDuration(args.since, DURATION_UNITS) !== null;
       const implicitCompare = explicitWindows ? undefined : ((sinceIsDuration ? args.since : undefined) ?? "24h");
       const windowCompare = report ? (args["window-compare"] ?? implicitCompare) : args["window-compare"];
-      const base = akmHealth({
+      const base = await akmHealth({
         since: args.since,
         groupBy: report ? "run" : (groupBy as "run" | undefined),
         windowCompare,
         windows,
+        probeReachable: args["no-probe"] ? undefined : probeLlmReachable,
       });
       const reportCompare =
         windowCompare ??
