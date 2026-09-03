@@ -36,10 +36,6 @@ export type ConfigErrorCode =
   | "LLM_NOT_CONFIGURED"
   | "INVALID_CONFIG_FILE"
   | "UNSUPPORTED_CONFIG_VERSION"
-  // Defense-in-depth sentinel raised by `akm bundle create` under `bun test`
-  // to refuse persisting a temp-dir stashDir to the user's real config.
-  // See src/commands/sources/init.ts.
-  | "INIT_TMP_STASH_REFUSED"
   | "UNKNOWN_IMPROVE_STRATEGY"
   | "DANGEROUS_ENV_AUDIT_FAILED"
   | "EXECUTION_NOT_AUTHORIZED"
