@@ -263,7 +263,7 @@ describe("common execution cascade resolver", () => {
     ).toThrow(/opencode-sdk.*unavailable/i);
   });
 
-  test("fails known-unmapped aliases and invalid engines before authorization", () => {
+  test("fails invalid engines before authorization; a known-unmapped alias now resolves as exact instead (finding 14)", () => {
     let calls = 0;
     const authorizeTools = () => {
       calls += 1;
@@ -292,18 +292,22 @@ describe("common execution cascade resolver", () => {
     ).toThrow(/engine.*missing.*configured/i);
     expect(calls).toBe(1);
 
-    expect(() =>
-      planExecutionCascade({
-        ...input,
-        authorizeTools,
-        layers: { ...input.layers, current: layer("current", { engine: "custom", model: "mapped", tools: ["read"] }) },
-        engines: {
-          ...engines,
-          custom: { selection: { name: "custom", kind: "agent", platform: "gemini" }, defaults: {} },
-        },
-      }),
-    ).toThrow(/known alias.*mapped.*gemini/i);
-    expect(calls).toBe(1);
+    // Finding 14 (guard-audit): a known alias ("mapped") with no mapping for
+    // the selected engine's platform ("gemini") no longer fails the plan —
+    // it resolves as an exact pass-through (with a warning), same as a
+    // wholly unknown model name would. Authorization still runs after model
+    // resolution either way; it is just reached now instead of skipped.
+    const plan = planExecutionCascade({
+      ...input,
+      authorizeTools,
+      layers: { ...input.layers, current: layer("current", { engine: "custom", model: "mapped", tools: ["read"] }) },
+      engines: {
+        ...engines,
+        custom: { selection: { name: "custom", kind: "agent", platform: "gemini" }, defaults: {} },
+      },
+    });
+    expect(plan.request.model).toEqual({ input: "mapped", interpretation: "exact", resolved: "mapped" });
+    expect(calls).toBe(2);
   });
 
   test("keeps provenance canonical and free of prompt, environment, model, and policy values", () => {

@@ -10,6 +10,7 @@ import { writeFileAtomic } from "../../core/common";
 import { ENGINE_NAME_PATTERN_SOURCE } from "../../core/config/engine-semantics";
 import { ConfigError, UsageError } from "../../core/errors";
 import { getConfigDir } from "../../core/paths";
+import { warnOnce } from "../../core/warn";
 import { cloneExecutionJsonObject, type ExecutionJsonObject, type ExecutionJsonValue } from "../../execution/json";
 
 /**
@@ -277,10 +278,16 @@ export function resolveModelMapAlias(
   if (profile !== undefined) return selectionFromProfile(input, profile);
 
   if (tier !== undefined) {
-    throw new ConfigError(
-      `Known alias ${JSON.stringify(input)} has no model mapping for selected engine ${JSON.stringify(engine)}.`,
-      "INVALID_CONFIG_FILE",
-      `Add $.aliases.${alias}.${engine} to models.json.`,
+    // Finding 14 (guard-audit): a KNOWN alias with no mapping for the
+    // selected engine used to throw, while an UNKNOWN alias silently passed
+    // through as the exact model string. That inconsistency punished the
+    // more informative case — an alias declared for OTHER engines but not
+    // this one is not a config error, it just has nothing to translate here.
+    // Warn and take the same pass-through path an unknown alias already
+    // takes, rather than refusing to run.
+    warnOnce(
+      `model-map-alias-no-engine-mapping:${alias}:${selectedEngine}`,
+      `[akm] Model alias ${JSON.stringify(input)} has no mapping for engine ${JSON.stringify(engine)}; using ${JSON.stringify(input)} as the literal model name. Add $.aliases.${alias}.${engine} to models.json to map it.`,
     );
   }
   return Object.freeze({ input, interpretation: "exact" as const, model: input });
