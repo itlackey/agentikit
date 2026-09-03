@@ -51,15 +51,19 @@ function makeProposal(content: string, envelopeFm: Record<string, unknown> = {})
 }
 
 describe("Bug #5 — consolidate writer must merge description INTO body frontmatter", () => {
-  test("OLD writer shape (description ONLY in envelope) is rejected by the validator", () => {
+  test("OLD writer shape (description ONLY in envelope) is reported by the validator", () => {
     // This is what consolidate produced before the 2026-05-25 fix: body
-    // frontmatter has the memory's native keys but no description.
+    // frontmatter has the memory's native keys but no description. The
+    // finding is what catches a writer regression; it is advisory rather
+    // than blocking, because `proposal accept` is typed by a human and the
+    // proposal surface offers no way to edit the payload.
     const bodyWithoutDescription = `---\ncaptureMode: hot\nbeliefState: asserted\nupdated: 2026-05-21\n---\n\nReal substantive memory body here, more than a hundred characters of useful engineering knowledge.\n`;
     const proposal = makeProposal(bodyWithoutDescription, { description: "Description only in envelope" });
 
     const report = validateProposal(proposal);
-    expect(report.ok).toBe(false);
-    expect(report.findings.some((f) => /description/i.test(f.message))).toBe(true);
+    const description = report.findings.find((f) => /description/i.test(f.message));
+    expect(description).toBeDefined();
+    expect(description?.severity).toBe("warn");
   });
 
   test("NEW writer shape (description merged into body) is accepted by the validator", () => {

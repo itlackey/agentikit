@@ -68,6 +68,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`akm proposal accept` no longer rewrites your content.** Two "repairs" ran
+  before validation: one deleted every body line matching `description:` or
+  `when_to_use:`, the other deleted every `---` in a body that had
+  frontmatter. Both fired inside fenced code blocks, so any asset documenting
+  frontmatter — a note about akm, Claude Code skills, Jekyll, Hugo — was
+  silently gutted on accept, and the rewritten bytes were saved back over the
+  original in the proposals database. Nothing was printed. Both repairs are
+  gone; the truncated-description repair, which only ever rewrote a
+  frontmatter value, stays.
+- **Prose-quality findings no longer block `proposal accept`.** A description
+  that read like a heading, an odd number of backticks, or a reflect revision
+  outside the size ratio refused the promotion and told the user to "fix the
+  proposal payload and try again" — but there is no `akm proposal edit` and
+  `accept` has no `--force`, so the only way out was hand-editing the
+  proposals database. These findings are now reported as warnings on a
+  command a human typed. Structural defects that genuinely cannot be written
+  (empty content, an unparseable ref, malformed frontmatter, a broken
+  workflow shape) still block.
 - **akm no longer refuses to open a state database migrated by a newer akm.**
   Two akm versions sharing one data directory is a supported deployment — a
   bundled CLI beside a newer global install — and the old binary was bricked
