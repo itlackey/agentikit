@@ -12,10 +12,13 @@
  * `index-vec-repository` modules.
  */
 
+import { ConfigError } from "../../core/errors";
+import { warn } from "../../core/warn";
 import type { Database } from "../database";
 import {
   CANONICAL_ENTRY_SCHEMA_SQL,
   CANONICAL_INDEX_DB_VERSION,
+  classifyIndexGeneration,
   isCanonicalIndexGeneration,
 } from "./index-entry-schema";
 import { getMeta, setMeta } from "./index-meta-repository";
@@ -179,12 +182,33 @@ function ensureGraphTables(db: Database): void {
  * generation. No row conversion or dual-schema compatibility is attempted:
  * the next index run rebuilds entries, FTS, embeddings, utility aggregates,
  * graph extraction, and enrichment caches from current sources/state.
+ *
+ * A *newer* generation is left alone instead: this binary's write path does
+ * not understand that schema, so wiping it — or even stamping our older
+ * version over it — would be a one-way loss of a generation a newer akm can
+ * still read. Report it as unusable rather than destroy it (#895).
  */
 function rebuildIncompatibleIndexGeneration(db: Database): void {
   const version = getMeta(db, "version");
   const hasEntries = tableExists(db, "entries");
   if (!hasEntries && version === undefined) return;
   if (isCanonicalIndexGeneration(db)) return;
+
+  const classification = classifyIndexGeneration(db);
+  if (classification.status === "newer") {
+    throw new ConfigError(
+      `Index database was built by a newer akm (stored generation ${classification.storedVersion ?? "unknown"}; ` +
+        `this binary understands generation ${CANONICAL_INDEX_DB_VERSION}). Refusing to modify it — upgrade akm to ` +
+        "write to this index, or delete index.db to rebuild it from scratch with this binary.",
+      "INDEX_SCHEMA_INCOMPATIBLE",
+    );
+  }
+
+  warn(
+    `Index database generation ${classification.storedVersion ?? "unknown"} is older than this akm's generation ` +
+      `${CANONICAL_INDEX_DB_VERSION} — rebuilding the derived index (entries, FTS, embeddings, graph tables, ` +
+      "utility scores, and the LLM enrichment cache). This re-walks and re-indexes every source on the next run.",
+  );
 
   let vecResetPending = false;
   try {

@@ -330,10 +330,49 @@ export function hasCanonicalEntrySchema(db: EntrySchemaInspectionDatabase): bool
   }
 }
 
-export function isCanonicalIndexGeneration(db: EntrySchemaInspectionDatabase): boolean {
+/**
+ * Where a stored generation sits relative to what this binary understands.
+ *
+ * - `canonical` — exact version match and the entry-schema fingerprint agrees.
+ * - `older` — the stored `index_meta.version` (or its absence, or a fingerprint
+ *   mismatch under an older/unreadable stamp) predates this binary's schema.
+ *   Regenerable: the derived generation is safe to discard and rebuild.
+ * - `newer` — the stored version is a later generation than this binary
+ *   knows how to write. This binary's write path does not understand that
+ *   schema, so touching it (including a version-stamp rewrite) would risk
+ *   producing a wrong schema — the one-way gate from #895 stays one-way.
+ */
+export type IndexGenerationStatus = "canonical" | "older" | "newer";
+
+export interface IndexGenerationClassification {
+  status: IndexGenerationStatus;
+  /** Raw `index_meta.version` value, or undefined when unset/unreadable. */
+  storedVersion: string | undefined;
+}
+
+export function classifyIndexGeneration(db: EntrySchemaInspectionDatabase): IndexGenerationClassification {
+  let storedVersion: string | undefined;
   try {
     const row = db.prepare("SELECT value FROM index_meta WHERE key = 'version'").get() as { value: string } | undefined;
-    return row?.value === String(CANONICAL_INDEX_DB_VERSION) && hasCanonicalEntrySchema(db);
+    storedVersion = row?.value;
+  } catch {
+    storedVersion = undefined;
+  }
+
+  if (storedVersion === String(CANONICAL_INDEX_DB_VERSION) && hasCanonicalEntrySchema(db)) {
+    return { status: "canonical", storedVersion };
+  }
+
+  const storedNumeric = storedVersion === undefined ? undefined : Number(storedVersion);
+  if (storedNumeric !== undefined && Number.isFinite(storedNumeric) && storedNumeric > CANONICAL_INDEX_DB_VERSION) {
+    return { status: "newer", storedVersion };
+  }
+  return { status: "older", storedVersion };
+}
+
+export function isCanonicalIndexGeneration(db: EntrySchemaInspectionDatabase): boolean {
+  try {
+    return classifyIndexGeneration(db).status === "canonical";
   } catch {
     return false;
   }
