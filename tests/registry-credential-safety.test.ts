@@ -488,19 +488,24 @@ describe("registry credential-bearing URL mutation boundaries", () => {
     }
   });
 
-  test("registry add no longer refuses at the CLI layer for a credentialed URL (0.9.12)", async () => {
+  test("registry add accepts a credentialed URL, warning with the credential redacted (0.9.12)", async () => {
     // registry-cli.ts's own guard is gone: the built-in static-index and
     // skills-sh providers ignore URL userinfo, so `registry add` no longer
-    // throws its own usage error (exit 2, INVALID_FLAG_VALUE) for one.
+    // throws its own usage error for one. The config-schema check
+    // `RegistryConfigEntrySchema` used to run (core/config/schema/
+    // sources-bundles.ts) is also gone — a registry URL with credentials is
+    // not a config-load hazard, since it never reaches every command the
+    // way a config-wide parse failure would; the registry/search call sites
+    // that actually dial out already check `hasRegistryUrlCredentials` and
+    // skip the one bad entry on their own. So the registry is now added
+    // (exit 0) and a warning is emitted instead.
     //
-    // `registry add` still calls the shared `mutateConfig`, whose
-    // `validateCompleteConfig` runs the SAME config-schema credential check
-    // `config set` above hits — a separate guard (core/config/schema/
-    // sources-bundles.ts) not owned by this change and not yet removed in
-    // this branch, so these calls still fail today, but with a config error
-    // (exit 78) rather than the removed CLI usage error (exit 2). Once that
-    // guard is also removed, this assertion should read `.toBe(0)` and these
-    // calls should succeed with a warning instead.
+    // The property that makes warning-instead-of-refusing safe here:
+    // `formatRegistryUrl` structurally clears the URL's username/password
+    // before it is ever echoed — in the warning below, in `registry list`,
+    // anywhere. Persisted config.json is the one place the raw URL (as
+    // typed) legitimately lives, matching every other value a human passed
+    // as a CLI argument themselves.
     const invocations = [
       ["registry", "add", CREDENTIAL_URL, "--verbose", "--format=json"],
       ["registry", "add", STRICT_NESTED_USERINFO_URLS[0], "--format=json"],
@@ -509,13 +514,21 @@ describe("registry credential-bearing URL mutation boundaries", () => {
     ];
 
     for (const argv of invocations) {
+      const url = argv[2] as string;
+      // The property that makes it safe to warn instead of refuse: display
+      // never carries the raw credential, regardless of how it's detected.
+      expect(formatRegistryUrl(url)).not.toContain(url);
+      expectCredentialsAbsent(formatRegistryUrl(url));
+
       const result = await runCliCapture(argv);
-      expect(result.code).not.toBe(2);
-      expect(result.code).toBe(78);
+      expect(result.code).toBe(0);
       expect(result.stderr.toLowerCase()).toContain("credential");
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
-      expectNoPersistedCredentials();
+
+      const parsed = JSON.parse(result.stdout) as { added: boolean; registries: Array<{ url: string }> };
+      expect(parsed.added).toBe(true);
+      expect(parsed.registries.some((r) => r.url === formatRegistryUrl(url))).toBe(true);
     }
   });
 
