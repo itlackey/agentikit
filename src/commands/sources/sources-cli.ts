@@ -56,10 +56,13 @@ export const upgradeCommand = defineJsonCommand({
     }
     const skipPostUpgrade = args["skip-post-upgrade"];
     const result = await performUpgrade(check, { force: args.force, skipPostUpgrade });
-    output("upgrade", result);
     // The install may have succeeded, but an upgrade whose migration is
     // blocked or could not run is not done: exit like `akm migrate apply` does.
-    if (result.migration?.status === "blocked" || result.migration?.status === "failed") {
+    // #918: `ok` mirrors this same predicate rather than the blanket
+    // passthrough default, so it can't disagree with the exit code.
+    const migrationFailed = result.migration?.status === "blocked" || result.migration?.status === "failed";
+    output("upgrade", { ...result, ok: !migrationFailed });
+    if (migrationFailed) {
       process.exitCode = EXIT_CODES.GENERAL;
     }
   },
