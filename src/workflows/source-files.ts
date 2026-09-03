@@ -6,10 +6,18 @@
  * Authoritative workflow-source ownership.
  *
  * Markdown and the bounded GitHub-shaped YAML subset are peer authoring
- * formats, but one canonical workflow ref must have exactly one source file.
- * This module is the shared filesystem arbitration point used before indexing,
- * cache reuse, lookup/show, and runtime load/start. It never chooses one
- * extension by priority: two recognized siblings are a hard collision.
+ * formats. This module is the shared filesystem arbitration point used
+ * before indexing, cache reuse, lookup/show, and runtime load/start.
+ *
+ * Issue 9 (guard-audit): a `.md` + `.yml` sibling for the same canonical
+ * name used to be a hard collision, refusing the ref outright, and ANY
+ * invalid candidate in a canonical domain (a broken symlink, an
+ * unreadable file) used to poison every valid sibling alongside it. Both
+ * are now warn-and-proceed: `.md` wins deterministically over `.yml`
+ * (matching `source-ir/compile.ts`'s own extension-priority precedent) with
+ * a warning naming the shadowed sibling, and an individually-invalid
+ * candidate is skipped with a warning naming it, never blocking a valid
+ * sibling in the same domain.
  */
 
 import fs from "node:fs";
@@ -17,6 +25,7 @@ import path from "node:path";
 import { compareCodePoints, toPosix } from "../core/common";
 import { UsageError, type UsageErrorCode } from "../core/errors";
 import { canonicalizeWorkflowName, WORKFLOW_EXTENSIONS } from "../core/recognition-util";
+import { warnOnce } from "../core/warn";
 
 export type WorkflowSourceFormat = "markdown" | "github-yaml";
 
@@ -47,9 +56,15 @@ export interface WorkflowSourceDomainResolution {
   canonicalName: string;
   /** Authored, bundle-relative candidate paths in deterministic order. */
   sourcePaths: readonly string[];
-  /** Present only when this canonical domain has exactly one valid owner. */
+  /** Present when this canonical domain has a winning owner (issue 9: `.md` over `.yml`, never a collision). */
   source?: WorkflowSourceFile;
-  /** Present when any candidate is invalid or multiple valid owners collide. */
+  /**
+   * Never populated by this module any more (issue 9: an invalid or
+   * colliding domain now warns and resolves `source` instead of rejecting).
+   * Kept for callers' existing structural type — see
+   * `commands/lint/index.ts`'s `resolveWorkflowLintOwnership`, outside this
+   * area.
+   */
   rejection?: WorkflowSourceRejectionError;
 }
 
@@ -75,35 +90,6 @@ export class WorkflowSourceCollisionError extends WorkflowSourceRejectionError {
       sorted,
     );
     this.name = "WorkflowSourceCollisionError";
-    this.canonicalName = canonicalName;
-    Object.setPrototypeOf(this, new.target.prototype);
-  }
-}
-
-export class WorkflowSourceDomainError extends WorkflowSourceRejectionError {
-  readonly canonicalName: string;
-
-  constructor(
-    canonicalName: string,
-    sourcePaths: readonly string[],
-    issues: readonly WorkflowSourceRejectionError[],
-    collidingSourcePaths: readonly string[],
-  ) {
-    const sortedPaths = [...sourcePaths].sort(compareCodePoints);
-    const sortedCollisions = [...collidingSourcePaths].sort(compareCodePoints);
-    const code: UsageErrorCode = issues.some((issue) => issue.code === "PATH_ESCAPE_VIOLATION")
-      ? "PATH_ESCAPE_VIOLATION"
-      : "WORKFLOW_SOURCE_INVALID";
-    const collisionDetail =
-      sortedCollisions.length > 1 ? ` Valid owners also collide: ${sortedCollisions.join(", ")}.` : "";
-    super(
-      `Workflow "${canonicalName}" has an invalid source ownership domain across candidates: ${sortedPaths.join(", ")}. ` +
-        `Problems: ${issues.map((issue) => issue.message).join(" ")}${collisionDetail} ` +
-        "Every candidate in the canonical domain is rejected until all invalid or duplicate sources are removed.",
-      code,
-      sortedPaths,
-    );
-    this.name = "WorkflowSourceDomainError";
     this.canonicalName = canonicalName;
     Object.setPrototypeOf(this, new.target.prototype);
   }
@@ -193,9 +179,12 @@ export function workflowNameForSourcePath(
 }
 
 /**
- * Enumerate every owned source path that maps to `name` under one component.
- * Ownership is decided before parsing so a malformed peer cannot be hidden by
- * a valid source. Results retain authored extension case for diagnostics.
+ * Enumerate every VALID owned source path that maps to `name` under one
+ * component. A candidate that fails its own inspection (nested-suffix stem,
+ * unresolvable symlink, path escape, symlink/format mismatch) is skipped
+ * with a warning naming it (issue 9) — never allowed to block a valid
+ * sibling from being listed. Results retain authored extension case for
+ * diagnostics.
  */
 export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, name: string): WorkflowSourceFile[] {
   if (adapterId !== "akm" && adapterId !== "akm-workflow") return [];
@@ -244,12 +233,7 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
   }
 
   candidates.sort((left, right) => compareCodePoints(left.relativePath, right.relativePath));
-  const { sources, issues } = inspectWorkflowSourceDomain(candidates, canonicalName, realRoot);
-
-  if (issues.length > 0) {
-    throw workflowSourceDomainError(adapterId, canonicalName, candidates, sources, issues);
-  }
-  return sources;
+  return inspectWorkflowSourceDomain(candidates, canonicalName, realRoot);
 }
 
 /**
@@ -258,8 +242,9 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
  * Callers that already walked a component (for example full lint/index scans)
  * must use this surface instead of point-resolving every canonical ref and
  * re-reading the same parent directory once per workflow. Candidate
- * inspection, symlink containment/format rules, nested-suffix rejection, and
- * collision construction remain shared with {@link listWorkflowSourceFiles}.
+ * inspection and symlink containment/format rules remain shared with
+ * {@link listWorkflowSourceFiles}; the `.md`-over-`.yml` tie-break (issue 9)
+ * is shared with {@link resolveUniqueWorkflowSource}.
  */
 export function resolveWorkflowSourceDomains(
   sourceRoot: string,
@@ -309,60 +294,67 @@ export function resolveWorkflowSourceDomains(
   for (const canonicalName of [...candidatesByName.keys()].sort(compareCodePoints)) {
     const candidates = candidatesByName.get(canonicalName) ?? [];
     candidates.sort((left, right) => compareCodePoints(left.relativePath, right.relativePath));
-    const { sources, issues } = inspectWorkflowSourceDomain(candidates, canonicalName, realRoot);
+    const sources = inspectWorkflowSourceDomain(candidates, canonicalName, realRoot);
     const sourcePaths = candidates.map((candidate) => candidate.relativePath);
-    if (issues.length > 0) {
-      resolutions.push({
-        canonicalName,
-        sourcePaths,
-        rejection: workflowSourceDomainError(adapterId, canonicalName, candidates, sources, issues),
-      });
-      continue;
-    }
-    if (sources.length > 1) {
-      resolutions.push({
-        canonicalName,
-        sourcePaths,
-        rejection: new WorkflowSourceCollisionError(
-          adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName,
-          sources.map((source) => source.relativePath),
-        ),
-      });
-      continue;
-    }
-    resolutions.push({ canonicalName, sourcePaths, source: sources[0] });
+    resolutions.push({
+      canonicalName,
+      sourcePaths,
+      source: pickWorkflowSource(adapterId, canonicalName, sources),
+    });
   }
   return resolutions;
 }
 
+/**
+ * Inspect every candidate in one canonical domain, skipping (and warning
+ * about) any that fails its own inspection — never letting one bad candidate
+ * block a valid sibling (issue 9).
+ */
 function inspectWorkflowSourceDomain(
   candidates: readonly WorkflowSourceCandidate[],
   canonicalName: string,
   realRoot: string,
-): { sources: WorkflowSourceFile[]; issues: WorkflowSourceRejectionError[] } {
+): WorkflowSourceFile[] {
   const sources: WorkflowSourceFile[] = [];
-  const issues: WorkflowSourceRejectionError[] = [];
   for (const candidate of candidates) {
     const inspection = inspectWorkflowSourceCandidate(candidate, canonicalName, realRoot);
-    if (inspection.source) sources.push(inspection.source);
-    issues.push(...inspection.issues);
+    if (inspection.source) {
+      sources.push(inspection.source);
+      continue;
+    }
+    for (const issue of inspection.issues) {
+      warnOnce(`workflow-source-invalid:${issue.sourcePaths.join(",")}`, issue.message);
+    }
   }
-  return { sources, issues };
+  return sources;
 }
 
-function workflowSourceDomainError(
+/**
+ * Pick the ONE winning source among a canonical domain's valid candidates
+ * (issue 9): `.md` deterministically over `.yml` — matching
+ * `source-ir/compile.ts`'s own extension-priority precedent — warning once
+ * about every shadowed sibling. `WORKFLOW_EXTENSIONS` is exactly
+ * `[".md", ".yml"]`, so a domain never has more than one of each.
+ */
+function pickWorkflowSource(
   adapterId: string,
   canonicalName: string,
-  candidates: readonly WorkflowSourceCandidate[],
   sources: readonly WorkflowSourceFile[],
-  issues: readonly WorkflowSourceRejectionError[],
-): WorkflowSourceDomainError {
-  return new WorkflowSourceDomainError(
-    adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName,
-    candidates.map((candidate) => candidate.relativePath),
-    issues,
-    sources.map((source) => source.relativePath),
+): WorkflowSourceFile | undefined {
+  if (sources.length <= 1) return sources[0];
+  const winner = [...sources].sort((left, right) =>
+    left.format === right.format ? 0 : left.format === "markdown" ? -1 : 1,
+  )[0];
+  const shadowed = sources.filter((source) => source !== winner);
+  const displayName = adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName;
+  warnOnce(
+    `workflow-source-collision:${displayName}`,
+    `Workflow "${displayName}" has both a .md and .yml source (${shadowed
+      .map((source) => source.relativePath)
+      .join(", ")} shadowed by ${winner?.relativePath}); using the .md source. Remove the shadowed sibling to ` +
+      "silence this warning.",
   );
+  return winner;
 }
 
 function inspectWorkflowSourceCandidate(
@@ -370,11 +362,11 @@ function inspectWorkflowSourceCandidate(
   canonicalName: string,
   realRoot: string,
 ): WorkflowSourceCandidateInspection {
+  // Issue 9: a nested suffix (`deploy.md.yml`) is no longer rejected — an
+  // extensionless stem that happens to end in a recognized workflow suffix
+  // is unusual authoring, not a hazard; the file is a perfectly readable
+  // `.yml` (or `.md`) source under its own real extension either way.
   const issues: WorkflowSourceRejectionError[] = [];
-  const nestedSuffix = (WORKFLOW_EXTENSIONS as readonly string[]).find((suffix) =>
-    candidate.extensionlessStem.toLowerCase().endsWith(suffix),
-  );
-  if (nestedSuffix) issues.push(new WorkflowSourceNameError(candidate.relativePath, nestedSuffix));
 
   let authoredStat: fs.Stats;
   try {
@@ -424,21 +416,18 @@ function inspectWorkflowSourceCandidate(
   };
 }
 
-/** Return the sole owner, throw on a collision, or return undefined when absent. */
+/**
+ * Return the winning owner (`.md` over `.yml`, warning about a shadowed
+ * sibling — issue 9), or `undefined` when the domain has no valid source.
+ */
 export function resolveUniqueWorkflowSource(
   sourceRoot: string,
   adapterId: string,
   name: string,
 ): WorkflowSourceFile | undefined {
   const sources = listWorkflowSourceFiles(sourceRoot, adapterId, name);
-  if (sources.length > 1) {
-    const canonicalName = sources[0]?.canonicalName ?? canonicalizeWorkflowName(normalizeName(name));
-    throw new WorkflowSourceCollisionError(
-      adapterId === "akm" ? `workflows/${canonicalName}` : canonicalName,
-      sources.map((source) => source.relativePath),
-    );
-  }
-  return sources[0];
+  const canonicalName = sources[0]?.canonicalName ?? canonicalizeWorkflowName(normalizeName(name));
+  return pickWorkflowSource(adapterId, canonicalName, sources);
 }
 
 /** Compare an indexed path with the single authoritative on-disk source. */
