@@ -313,9 +313,27 @@ const tasksRunCommand = defineCommand({
   },
 });
 
+/**
+ * #911: `task run <id>` and `task explain <ref>` take the id positionally, so
+ * `task history <id>` is the natural thing to write — and it used to be
+ * accepted and silently discarded, answering with every task's newest rows.
+ * A positional id now means the same as `--id`; giving both with different
+ * values is a usage error rather than a silent pick.
+ */
+export function resolveTaskHistoryId(positional: string | undefined, flag: string | undefined): string | undefined {
+  if (positional !== undefined && flag !== undefined && positional !== flag) {
+    throw new UsageError(
+      `\`akm task history\` was given two task ids: "${positional}" and --id "${flag}". Pass one.`,
+      "INVALID_FLAG_VALUE",
+    );
+  }
+  return flag ?? positional;
+}
+
 const tasksHistoryCommand = defineJsonCommand({
   meta: { name: "history", description: "Show recent task run history" },
   args: {
+    task: { type: "positional", description: "Task id to filter to (same as --id)", required: false },
     id: { type: "string", description: "Filter to one task id" },
     limit: { type: "string", description: "Maximum rows to return (default 50)" },
     ...bundleArg,
@@ -323,7 +341,8 @@ const tasksHistoryCommand = defineJsonCommand({
   async run({ args }) {
     rejectRetiredTaskTargetFlag();
     const limit = parsePositiveIntFlag(args.limit ?? undefined);
-    const result = await akmTasksHistory({ id: args.id, limit, target: args.bundle });
+    const id = resolveTaskHistoryId(args.task, args.id);
+    const result = await akmTasksHistory({ id, limit, target: args.bundle });
     output("task-history", result);
   },
 });

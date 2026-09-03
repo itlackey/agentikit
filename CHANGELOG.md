@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.10] - 2026-09-02
+
+### Fixed
+
+- **`akm task history <id>` now filters to that task instead of silently
+  ignoring the positional id (#911).** `task run <id>` and `task explain <ref>`
+  take the id positionally, so `task history <id>` was the natural thing to
+  write, and it answered with every task's newest rows while exiting 0. A
+  positional id now means the same as `--id`; passing both with different
+  values is a usage error (exit 2) rather than a silent pick.
+
 ## [0.9.9] - 2026-09-02
 
 ### Changed

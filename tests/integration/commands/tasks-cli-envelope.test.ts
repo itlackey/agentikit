@@ -211,6 +211,16 @@ describe("akm task — JSON envelope snapshot (WS6)", () => {
       const history = await runCliCapture(["task", "history", "--id", `scheduled//${taskId}`]);
       expect(history.code, history.stderr).toBe(0);
       expect(JSON.parse(history.stdout).rows[0]).toMatchObject({ id: taskId, status: "completed" });
+
+      // #911: a positional id means the same as --id instead of being
+      // silently discarded (which answered with every task's newest rows).
+      const positional = await runCliCapture(["task", "history", `scheduled//${taskId}`, "--limit", "1"]);
+      expect(positional.code, positional.stderr).toBe(0);
+      expect(JSON.parse(positional.stdout).rows).toEqual(JSON.parse(history.stdout).rows.slice(0, 1));
+
+      const conflict = await runCliCapture(["task", "history", "other-task", "--id", `scheduled//${taskId}`]);
+      expect(conflict.code).toBe(2);
+      expect(`${conflict.stdout}${conflict.stderr}`).toContain("two task ids");
     } finally {
       storage.cleanup();
     }

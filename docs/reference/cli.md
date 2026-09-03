@@ -2472,7 +2472,7 @@ akm task add nightly --schedule "@daily" --command "akm improve" --disabled  # r
 akm task add nightly --schedule "@daily" --command "akm improve" --force    # overwrite an existing task id
 akm task run <id>                           # Execute now (what the scheduler calls)
 akm task explain <ref>                      # Read-only: declared inputs, target, schedule — spawns nothing
-akm task history [--id <id>] [--limit <n>]  # Recent runs from state.db
+akm task history [<id>] [--id <id>] [--limit <n>]  # Recent runs from state.db (positional id == --id)
 akm task sync                               # Reconcile on-disk YAML with scheduler
 akm task sync --dry-run                     # Preview the reconcile — zero scheduler writes
 akm task sync --rebind                      # Also capture the current installed runtime
