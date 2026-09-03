@@ -12,6 +12,7 @@
  */
 
 import { isRecord } from "../../core/common";
+import { warnOnce } from "../../core/warn";
 import type { Database, SqlValue } from "../database";
 
 export type TaskHistoryDetail = {
@@ -44,9 +45,10 @@ function metadataError(message: string): never {
 function validateDetail(value: unknown): asserts value is TaskHistoryDetail | null | undefined {
   if (value === undefined || value === null) return;
   if (!isRecord(value)) metadataError("detail must be an object or null");
-  const allowed = new Set(["runId", "reason", "error", "exitCode"]);
-  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
-  if (unknown.length > 0) metadataError(`unknown detail fields: ${unknown.sort().join(", ")}`);
+  // Unknown detail keys are ignored, not rejected — the same policy this
+  // file already applies to unknown TOP-LEVEL keys (profile, repairReason)
+  // just below. A newer akm's additive field on `detail` must not brick
+  // every read of a row it wrote.
   for (const field of ["runId", "reason", "error"] as const) {
     if (value[field] !== undefined && typeof value[field] !== "string")
       metadataError(`detail.${field} must be a string`);
@@ -68,10 +70,19 @@ function validateDetail(value: unknown): asserts value is TaskHistoryDetail | nu
  * `null`) instead of throwing. Unknown keys are ignored rather than
  * hard-rejected, so the next additive field never regresses this again;
  * neither `profile` nor `repairReason` is read anywhere downstream, so they
- * are dropped harmlessly rather than round-tripped. A `metadataVersion` that
- * IS present but not `2` is a genuinely unknown/future shape and still
- * rejected, as is a non-number `durationMs` or a `detail` that fails
- * {@link validateDetail} — real corruption, not version skew.
+ * are dropped harmlessly rather than round-tripped — the same policy applies
+ * one level down, to unknown keys on `detail`.
+ *
+ * A `metadataVersion` or `targetVocab` HIGHER than this binary understands is
+ * the same version skew, not corruption: a row a newer akm wrote must still
+ * be readable by an older one sharing the same data dir. Both decode
+ * best-effort (one `warnOnce` per distinct value) rather than rejecting the
+ * row outright — `targetVocab` is dropped so the read boundary falls back to
+ * its legacy mapping table, since this binary cannot know what a future
+ * vocabulary means. A non-number `durationMs` or a `detail` that fails
+ * {@link validateDetail}'s type checks on the fields actually read
+ * (`runId`/`reason`/`error`/`exitCode`) stays rejected — that is real
+ * corruption, not version skew.
  */
 export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryMetadata {
   let parsed: unknown = input;
@@ -85,7 +96,11 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
   if (!isRecord(parsed)) metadataError("root must be an object");
 
   if (parsed.metadataVersion !== undefined && parsed.metadataVersion !== 2) {
-    metadataError(`unsupported metadataVersion: ${String(parsed.metadataVersion)}`);
+    warnOnce(
+      `task-history-metadata-version:${String(parsed.metadataVersion)}`,
+      `task_history row has metadataVersion ${String(parsed.metadataVersion)}, newer than this akm's 2 — ` +
+        "decoding it best-effort as version 2 rather than rejecting the row.",
+    );
   }
   if (typeof parsed.durationMs !== "number") metadataError("durationMs must be a number");
   const detail = "detail" in parsed ? parsed.detail : null;
@@ -93,13 +108,25 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
     metadataError("engine must be a string or null");
   }
   if (parsed.targetVocab !== undefined && parsed.targetVocab !== 2) {
-    metadataError("targetVocab must be 2 when present");
+    warnOnce(
+      `task-history-target-vocab:${String(parsed.targetVocab)}`,
+      `task_history row has targetVocab ${String(parsed.targetVocab)}, newer than this akm's 2 — falling back to ` +
+        "the legacy target_kind mapping rather than rejecting the row.",
+    );
   }
   validateDetail(detail);
+  const cleanDetail: TaskHistoryDetail | null = detail
+    ? {
+        ...(detail.runId !== undefined ? { runId: detail.runId } : {}),
+        ...(detail.reason !== undefined ? { reason: detail.reason } : {}),
+        ...(detail.error !== undefined ? { error: detail.error } : {}),
+        ...(detail.exitCode !== undefined ? { exitCode: detail.exitCode } : {}),
+      }
+    : null;
   return {
     metadataVersion: 2,
     durationMs: parsed.durationMs,
-    detail: detail ?? null,
+    detail: cleanDetail,
     ...(parsed.engine !== undefined ? { engine: parsed.engine as string | null } : {}),
     ...(parsed.targetVocab === 2 ? { targetVocab: 2 as const } : {}),
   };
