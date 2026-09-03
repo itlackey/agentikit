@@ -157,20 +157,24 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
   test.each([
     ["ordinary", akmAdapter, "akm", "workflows"],
     ["standalone", akmWorkflowAdapter, "akm-workflow", "."],
-  ] as const)("%s adapter owns invalid portable command diagnostics without throwing or caching", (_label, adapter, adapterId, subdir) => {
+  ] as const)("%s adapter drains a command template containing prose that only resembles a construct", (_label, adapter, adapterId, subdir) => {
+    // akm expands exactly one token, the literal `$ARGUMENTS` placeholder, and
+    // never interprets anything else in a command template. `$HOME` here is
+    // ordinary prose (e.g. "Check that $HOME/.config/akm exists"), not a
+    // construct akm rejects, so the step drains as a normal workflow entry.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-drain-template-"));
     const ownedDir = path.join(root, subdir);
     fs.mkdirSync(ownedDir, { recursive: true });
-    const invalidPath = path.join(ownedDir, "invalid.yml");
+    const prosePath = path.join(ownedDir, "prose.yml");
     fs.writeFileSync(
-      invalidPath,
-      `name: Invalid template
+      prosePath,
+      `name: Prose template
 on: { workflow_dispatch: null }
 jobs:
   main:
     runs-on: [self-hosted]
     steps:
-      - id: invalid
+      - id: prose
         uses: akm/command
         with:
           content: echo $HOME
@@ -178,15 +182,13 @@ jobs:
     );
     try {
       const c: BundleComponent = { id: "b", adapter: adapterId, root, writable: true };
-      const context = buildFileContext(root, invalidPath);
+      const context = buildFileContext(root, prosePath);
       expect(adapter.recognize(c, context)).toMatchObject({ type: "workflow" });
 
       const drained = drainDirDocuments(adapter, c, [context]);
-      expect(drained.entries).toHaveLength(0);
-      expect(drained.hashByFile.has(invalidPath)).toBe(false);
-      expect(drained.warnings).toHaveLength(1);
-      expect(drained.warnings[0]).toContain(invalidPath);
-      expect(drained.warnings[0]).toMatch(/unsupported portable template construct/i);
+      expect(drained.entries).toHaveLength(1);
+      expect(drained.hashByFile.has(prosePath)).toBe(true);
+      expect(drained.warnings).toHaveLength(0);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import { compileGithubWorkflowSource, compileMarkdownWorkflowSource } from "../../src/workflows/source-ir/compile";
 import { sourceStepInstructions, sourceStepProgramUnit } from "../../src/workflows/source-ir/program";
 import { decodeWorkflowSourceIrV1, type WorkflowSourceIrV1 } from "../../src/workflows/source-ir/schema";
@@ -442,18 +443,25 @@ jobs:
     expect(result.ir.jobs[0]?.steps[0]?.commandMode).toBe("portable-template");
   });
 
-  test("validates portable inline command templates at source compile and strict decode boundaries", () => {
-    expectGithubError(
-      `${VALID_HEADER}
+  test("accepts prose inline command templates and warns (without rejecting) $ARGUMENTS[N] at source compile and strict decode boundaries", () => {
+    // akm expands exactly one token, the literal `$ARGUMENTS` placeholder, and
+    // never interprets anything else in a command template. `$HOME` here is
+    // ordinary prose, not a construct akm rejects.
+    const prose = github(`${VALID_HEADER}
       - id: unsafe
         uses: akm/command
         with:
           content: echo $HOME
           arguments: exact input
-`,
-      "builtin-command-inputs",
-      11,
-    );
+`);
+    expect(prose.ok).toBe(true);
+    if (!prose.ok) return;
+    expect(prose.ir.jobs[0]?.steps[0]).toMatchObject({
+      uses: "akm/command",
+      commandMode: "portable-template",
+      with: { content: "echo $HOME", arguments: "exact input" },
+    });
+    expect(decodeWorkflowSourceIrV1(prose.ir)).toEqual(prose.ir);
 
     const stored = github(`${VALID_HEADER}
       - id: stored
@@ -476,11 +484,20 @@ jobs:
     requireOnlyDecodedStep(mismatchedStored).commandMode = "literal";
     expect(() => decodeWorkflowSourceIrV1(mismatchedStored)).toThrow(/stored.*commandMode stored-ref/i);
 
-    const hostile = structuredClone(stored.ir);
-    const hostileStep = requireOnlyDecodedStep(hostile);
-    hostileStep.commandMode = "portable-template";
-    hostileStep.with = { content: "echo $HOME", arguments: "exact input" };
-    expect(() => decodeWorkflowSourceIrV1(hostile)).toThrow(/unsupported portable template construct/i);
+    const indexed = structuredClone(stored.ir);
+    const indexedStep = requireOnlyDecodedStep(indexed);
+    indexedStep.commandMode = "portable-template";
+    indexedStep.with = { content: "echo $ARGUMENTS[0]", arguments: "exact input" };
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      expect(decodeWorkflowSourceIrV1(indexed)).toEqual(indexed);
+      expect(warnings.some((line) => line.includes("$ARGUMENTS[N]"))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
   });
 
   test("carries literal and portable-template command semantics explicitly in portable bytes", () => {

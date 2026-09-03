@@ -201,18 +201,19 @@ describe("command CLI execution convergence", () => {
     expect(result.stderr).not.toContain("DO-NOT-LEAK-secret-key");
   });
 
-  test("unsupported native placeholders fail before the runner", async () => {
+  test("prose that only resembles a native placeholder runs instead of failing before the runner", async () => {
+    // akm expands exactly one token, the literal `$ARGUMENTS` placeholder, and
+    // never interprets `$1` or any other construct in a command's own
+    // markdown body. This used to be a hard failure before dispatch even
+    // began; it must now run normally.
     const commandFile = path.join(storage.stashDir, "commands", "review.md");
-    fs.writeFileSync(
-      commandFile,
-      "---\nname: review\ntype: command\nupdated: 2026-08-19\n---\nNever dispatch sentinel $1\n",
-    );
+    fs.writeFileSync(commandFile, "---\nname: review\ntype: command\nupdated: 2026-08-19\n---\nBudget is $1 per run\n");
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const result = await runCliCapture(["command", "run", "commands/review", "--format=json", "-q"]);
-    expect(result.code).toBe(2);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("unsupported portable template construct");
-    expect(result.stderr).not.toContain("Never dispatch sentinel");
+    const result = await runCliCapture(["command", "run", "commands/review", "--dry-run", "--format=json", "-q"]);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const envelope = JSON.parse(result.stdout) as Record<string, unknown>;
+    expect(envelope).toMatchObject({ ok: true, shape: "command-dry-run", dryRun: true });
   });
 });
