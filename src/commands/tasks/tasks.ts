@@ -575,8 +575,6 @@ async function buildSchedulerSyncPlan(
     ? prepareSchedulerSyncRuntime(
         syncTarget ? { target: syncTarget } : undefined,
         deps,
-        options.rebind === true,
-        "reconcile native scheduler bindings",
         warnings,
         allEntries.map((entry) => entry.binding),
       )
@@ -1137,13 +1135,7 @@ async function prepareTaskAddSchedulerTransaction(input: {
             contextPath: installedEntry.contextPath,
           },
         }
-      : prepareSchedulerSyncRuntime(
-          input.installOpts,
-          input.deps,
-          input.rebind,
-          `create scheduler entry for task "${input.id}"`,
-          [],
-        );
+      : prepareSchedulerSyncRuntime(input.installOpts, input.deps, []);
   const runtimeOpts = preparedRuntime.options;
   const removals: SchedulerSyncPlan["operations"][number][] = taskEntries.map((entry) => {
     const invocation = entry.invocation;
@@ -1232,20 +1224,18 @@ async function prepareTaskAddSchedulerTransaction(input: {
 function prepareSchedulerSyncRuntime(
   base: { target?: string } | undefined,
   deps: { backend?: SchedulerBackend; schedulerRuntime?: () => PreparedSchedulerRuntime },
-  explicitRebind: boolean,
-  operation: string,
   warnings: string[],
   installedBindings: readonly (readonly string[])[] = [],
 ): { options?: SchedulerInstallOptions; publish?: () => void } {
   if (deps.backend && !deps.schedulerRuntime) return base ? { options: base } : {};
   if (deps.schedulerRuntime) {
     const runtime = deps.schedulerRuntime();
-    warnIneligibleRebind(runtime, explicitRebind, warnings, installedBindings);
+    warnIneligibleRebind(runtime, warnings, installedBindings);
     return { options: { ...base, binding: runtime.binding, contextPath: runtime.contextPath } };
   }
 
-  const invocation = resolveAndValidateSchedulerInvocation(explicitRebind, operation);
-  warnIneligibleRebind(invocation, explicitRebind, warnings, installedBindings);
+  const invocation = resolveAndValidateSchedulerInvocation();
+  warnIneligibleRebind(invocation, warnings, installedBindings);
   const descriptor = schedulerContextDescriptor();
   const contextPath = schedulerContextPath(descriptor);
   return {
@@ -1259,33 +1249,30 @@ function prepareSchedulerSyncRuntime(
   };
 }
 
-function resolveAndValidateSchedulerInvocation(explicitRebind: boolean, operation: string): PreparedSchedulerRuntime {
+function resolveAndValidateSchedulerInvocation(): PreparedSchedulerRuntime {
+  // #1 (0.9.12): akm cannot prove ownership of every launcher a package
+  // manager or version manager produces (bun/pnpm/yarn/Volta/asdf, or a
+  // project-local install) — that used to refuse scheduler writes outright
+  // unless the operator passed --rebind. `akm task doctor` already reports
+  // and remediates an ineligible binding, so bind it and warn instead.
   const invocation = resolveAkmInvocation();
-  if (!invocation.eligible && !explicitRebind) {
-    throw new UsageError(
-      `Refusing to ${operation} from an ineligible ${invocation.kind ?? "unknown"} invocation (${invocation.argv.join(" ")}).`,
-      "INVALID_FLAG_VALUE",
-      "npm-global ownership could not be verified. Run `npm install --global akm-cli` and use that launcher, use a standalone installation, or explicitly repeat the operation with --rebind.",
-    );
-  }
   return { binding: invocation.argv, contextPath: "", eligible: invocation.eligible, kind: invocation.kind };
 }
 
 function warnIneligibleRebind(
   runtime: PreparedSchedulerRuntime,
-  explicitRebind: boolean,
   warnings: string[],
   installedBindings: readonly (readonly string[])[],
 ): void {
-  if (!explicitRebind || runtime.eligible !== false || warnings.length > 0) return;
-  // #868 residue: a `--rebind` that binds every currently-installed
-  // entry to the SAME invocation it already carries changes nothing — this
-  // is the steady state of an image-baked install re-running `task sync
-  // --rebind` on a timer. Only warn when the rebind actually moves an entry
-  // to a different invocation.
+  if (runtime.eligible !== false || warnings.length > 0) return;
+  // #868 residue: binding every currently-installed entry to the SAME
+  // invocation it already carries changes nothing — this is the steady
+  // state of an image-baked install re-running `task sync` on a timer.
+  // Only warn when the bind actually moves an entry to a different
+  // invocation.
   if (installedBindings.length > 0 && installedBindings.every((bound) => sameArgv(bound, runtime.binding))) return;
   warnings.push(
-    `--rebind bound scheduled tasks to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm task sync --rebind\`.`,
+    `Scheduled tasks are bound to an ineligible ${runtime.kind ?? "unknown"} invocation (${runtime.binding.join(" ")}); scheduled runs will invoke a mutable, unproven binary. Install akm via \`npm install --global akm-cli\` or a standalone release, then re-run \`akm task sync --rebind\`.`,
   );
 }
 
