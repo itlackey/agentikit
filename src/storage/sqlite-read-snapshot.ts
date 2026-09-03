@@ -15,8 +15,18 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { sleepSync } from "../runtime";
 import type { Database } from "./database";
 import { openDatabaseFinalizing } from "./database";
+
+/** Retry budget for a database whose main/WAL pair is actively changing, or
+ * that has a hot rollback journal, while a snapshot is being taken. Both
+ * conditions are transient — a live writer commits in milliseconds; a
+ * genuinely orphaned journal from a killed process is cleared the moment any
+ * connection recovers it. The previous 3-attempt, no-backoff loop lost that
+ * race against almost any live writer and failed the whole snapshot closed. */
+const SNAPSHOT_MAX_ATTEMPTS = 8;
+const SNAPSHOT_BACKOFF_MS = 25;
 
 export class SqliteReadSnapshotUnavailableError extends Error {
   constructor(message: string) {
@@ -77,36 +87,33 @@ function fingerprintsEqual(left: DatabaseFingerprint, right: DatabaseFingerprint
  * Returns `undefined` only when the source is absent. Committed WAL frames are
  * copied beside the private main file; the source SHM is intentionally not
  * copied because SQLite can safely create one inside the disposable directory.
- * A live rollback-journal database fails closed because a file-level copy
- * cannot distinguish its committed and uncommitted pages without attaching to
- * the source.
+ * A hot rollback journal (present, or appearing mid-copy) or a main/WAL pair
+ * that keeps changing under a live writer is retried with a short backoff
+ * (see `SNAPSHOT_MAX_ATTEMPTS`/`SNAPSHOT_BACKOFF_MS`) rather than failing on
+ * the first observation — both conditions normally clear within milliseconds.
+ * This snapshot is the PREFERRED way to read without touching the source's
+ * lock bytes, not the only way: a caller that cannot get one at all is
+ * expected to fall back to a plain read-only open (see
+ * `openReadonlyExistingDatabase`) rather than treat this as fatal.
  */
 export function openSqliteReadSnapshot(dbPath: string): Database | undefined {
   if (!pathExists(dbPath)) return undefined;
-  if (pathExists(`${dbPath}-journal`)) {
-    throw new SqliteReadSnapshotUnavailableError(
-      "an active SQLite rollback journal is present; a non-mutating point-in-time snapshot is unavailable",
-    );
-  }
 
   const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-sqlite-read-"));
   const snapshotPath = path.join(snapshotDir, "snapshot.db");
   let db: Database | undefined;
   try {
     let copied = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < SNAPSHOT_MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) sleepSync(SNAPSHOT_BACKOFF_MS * attempt);
       try {
-        if (pathExists(`${dbPath}-journal`)) {
-          throw new SqliteReadSnapshotUnavailableError(
-            "an active SQLite rollback journal appeared while taking the non-mutating snapshot",
-          );
-        }
+        if (pathExists(`${dbPath}-journal`)) continue;
         const before = databaseFingerprint(dbPath);
         fs.copyFileSync(dbPath, snapshotPath);
         if (before.wal) fs.copyFileSync(`${dbPath}-wal`, `${snapshotPath}-wal`);
         else fs.rmSync(`${snapshotPath}-wal`, { force: true });
         const after = databaseFingerprint(dbPath);
-        if (fingerprintsEqual(before, after)) {
+        if (fingerprintsEqual(before, after) && !pathExists(`${dbPath}-journal`)) {
           copied = true;
           break;
         }
@@ -117,7 +124,8 @@ export function openSqliteReadSnapshot(dbPath: string): Database | undefined {
     }
     if (!copied) {
       throw new SqliteReadSnapshotUnavailableError(
-        "SQLite main/WAL files kept changing while taking the non-mutating snapshot",
+        `SQLite main/WAL files did not settle after ${SNAPSHOT_MAX_ATTEMPTS} attempts with backoff — ` +
+          "a writer may be continuously active, or a hot rollback journal never cleared",
       );
     }
     db = openDatabaseFinalizing(snapshotPath, { readonly: true, create: false });

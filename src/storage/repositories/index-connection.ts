@@ -22,7 +22,7 @@ import type { Database } from "../database";
 import { openDatabase } from "../database";
 import { openManagedDatabase } from "../managed-db";
 import { SQLITE_BUSY_TIMEOUT_MS } from "../sqlite-pragmas";
-import { openSqliteReadSnapshot } from "../sqlite-read-snapshot";
+import { openSqliteReadSnapshot, SqliteReadSnapshotUnavailableError } from "../sqlite-read-snapshot";
 import { CANONICAL_INDEX_DB_VERSION, classifyIndexGeneration, isCanonicalIndexGeneration } from "./index-entry-schema";
 import { ensureSchema } from "./index-schema";
 import { loadVecExtension, warnIfVecMissing } from "./index-vec-repository";
@@ -194,6 +194,32 @@ export function assertIndexPathReadable(resolvedPath: string): void {
   );
 }
 
+function openPlainReadonly(resolvedPath: string): Database | undefined {
+  return openDatabase(resolvedPath, { readonly: true, create: false });
+}
+
+/**
+ * Prefer the isolated point-in-time snapshot (no read-lock bookkeeping
+ * touches the source SHM), but a snapshot that cannot be taken right now —
+ * a hot rollback journal that never cleared, or a writer that never stopped
+ * changing the file during every retry — is not a reason to refuse the read
+ * outright. Fall through to a plain read-only open, which lets SQLite's own
+ * concurrency handling (busy_timeout, WAL readers) serve the request instead.
+ */
+function openIsolatedSnapshotOrFallBack(resolvedPath: string): Database | undefined {
+  try {
+    return openSqliteReadSnapshot(resolvedPath);
+  } catch (error) {
+    if (!(error instanceof SqliteReadSnapshotUnavailableError)) throw error;
+    warnOnce(
+      `index-read-snapshot-unavailable:${resolvedPath}`,
+      `Could not take a non-mutating snapshot of ${resolvedPath} (${error.message}) — falling back to a plain ` +
+        "read-only open of the index database.",
+    );
+    return openPlainReadonly(resolvedPath);
+  }
+}
+
 /**
  * Open an existing index for queries without changing the source database or
  * running schema initialization. The default path attaches read-only to the
@@ -209,9 +235,7 @@ export function openReadonlyExistingDatabase(
   // let an unreadable index raise instead of masquerading as absent (#791).
   assertIndexPathReadable(resolvedPath);
   if (classifyPathAccess(resolvedPath).access === "absent") return undefined;
-  const db = options?.isolatedSnapshot
-    ? openSqliteReadSnapshot(resolvedPath)
-    : openDatabase(resolvedPath, { readonly: true, create: false });
+  const db = options?.isolatedSnapshot ? openIsolatedSnapshotOrFallBack(resolvedPath) : openPlainReadonly(resolvedPath);
   if (!db) return undefined;
   // This opener bypasses openManagedDatabase/applyStandardPragmas by design (no
   // journal or schema work on a read-only handle), but that also left
