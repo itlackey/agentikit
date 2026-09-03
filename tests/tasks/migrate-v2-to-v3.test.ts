@@ -203,6 +203,14 @@ describe("pure task v2 to v3 migration planner", () => {
     expect(parseYaml(outcome.after.toString("utf8"))).toMatchObject({ run: "./tools/check --exact" });
   });
 
+  test("a v3 run: containing a GitHub-style ${{ }} expression is accepted verbatim by the frozen v3 reader (finding 2) — akm has no expander on this path", () => {
+    const parsed = parseTaskV3Yaml({
+      yaml: 'version: 3\nrun: "echo runs-on ${{ matrix.os }}"\nakm:\n  schedule: "@daily"\n',
+      filePath: "/bundle/tasks/x.yml",
+    });
+    expect(parsed.target).toEqual({ kind: "run", run: "echo runs-on ${{ matrix.os }}" });
+  });
+
   test("classifies changed, skipped, and blocked files in stable path order with a deterministic generation", () => {
     const alreadyV3 = Buffer.from("version: 3\nuses: commands/review\nakm:\n  schedule: '@daily'\n");
     const files = [
