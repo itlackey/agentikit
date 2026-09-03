@@ -31,6 +31,7 @@
 // Tests inject a fake exec so unit tests don't touch the real crontab.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
@@ -84,7 +85,12 @@ export interface CronExec {
   write(content: string): CronExecResult;
 }
 
-export type CronFs = Pick<NodeFs, "ensureDir">;
+// `writeFile` is optional so every existing test fake (which only ever
+// exercises short, direct cron lines) keeps compiling unchanged; the real
+// default (`nodeFs()`) always provides it, and `install()` throws a clear
+// error if a wrapper script is actually needed but the injected `fs` cannot
+// write one.
+export type CronFs = Pick<NodeFs, "ensureDir"> & Partial<Pick<NodeFs, "writeFile">>;
 
 export interface CronBackendOptions {
   exec?: CronExec;
@@ -130,15 +136,25 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): SchedulerBackend
       // Create the log directory before writing the crontab line — cron
       // appends with `>>` and the surrounding shell will fail the entire
       // entry if the parent directory doesn't exist.
-      const cronLine = buildCronLine(
+      const cronLineParts = buildCronLineParts(
         task,
         [...(opts?.binding ?? akmArgv)],
         logDir,
         opts?.contextPath ?? defaultContextPath,
         opts?.target,
       );
+      const cronLine = cronLineParts.line;
       assertPortableCronLine(cronLine);
       fsLike.ensureDir(logDir);
+      if (cronLineParts.wrapper) {
+        if (!fsLike.writeFile) {
+          throw new ConfigError(
+            "Cron backend needs to write a wrapper script for this task's long invocation, but the configured filesystem cannot write files.",
+            "INVALID_CONFIG_FILE",
+          );
+        }
+        fsLike.writeFile(cronLineParts.wrapper.path, cronLineParts.wrapper.content);
+      }
       const existing = readCrontab(exec);
       const nativeId = schedulerBindingNativeId(task);
       const blocks = listBlocks(existing);
@@ -345,6 +361,72 @@ function isCronBindingSnapshot(value: unknown): value is CronBindingSnapshot {
 
 // ── helpers (exported for tests) ────────────────────────────────────────────
 
+/** A wrapper script `buildCronLine` decided is needed, for the caller to actually write to disk. */
+export interface CronWrapperScript {
+  /** Content-addressed path (changes whenever the invocation it wraps changes, so drift detection still sees a change). */
+  readonly path: string;
+  readonly content: string;
+}
+
+export interface CronLineResult {
+  readonly line: string;
+  /** Present only when the direct line would exceed {@link PORTABLE_CRON_LINE_LIMIT}. */
+  readonly wrapper?: CronWrapperScript;
+}
+
+/**
+ * Build the crontab line for a task, spilling into a wrapper script when the
+ * direct line would exceed the portable command-line length vixie-cron
+ * actually enforces (finding 16, docs/plans/guard-audit.md). Truncating the
+ * line would execute a partial command — genuinely destructive — so this is
+ * the only escape hatch besides refusing to install the task outright.
+ *
+ * The wrapper's path is content-addressed (a hash of its own content) rather
+ * than just `<nativeId>.sh`: the crontab line otherwise would not change when
+ * the WRAPPED invocation does (only the file it references would), silently
+ * defeating every drift-detection / expected-signature check in this backend,
+ * which all work by hashing the crontab line's own text.
+ */
+function buildCronLineParts(
+  task: SchedulerBinding,
+  akmArgv: string[],
+  logDir: string,
+  contextPath: string,
+  _target?: string,
+): CronLineResult {
+  const spec = parseSchedule(task.cron, "cron");
+  const cronExpr = translateToCron(spec);
+  const nativeId = schedulerBindingNativeId(task);
+  const logPath = path.join(logDir, `${nativeId}.log`);
+  const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
+  const cmd = invocation.argv.map((part) => quoteForCron(part)).join(" ");
+  const directLine = `${cronExpr} ${cmd} >> ${quoteForCron(logPath)} 2>&1`;
+  if (Buffer.byteLength(directLine, "utf8") <= PORTABLE_CRON_LINE_LIMIT) {
+    return { line: directLine };
+  }
+  const content = cronWrapperScriptContent(invocation.argv);
+  const contentHash = createHash("sha256").update(content).digest("hex").slice(0, 16);
+  const wrapperPath = path.join(logDir, `${CRON_WRAPPER_PREFIX}${nativeId}-${contentHash}.sh`);
+  // Invoked as `sh <path>` (not `<path>` alone) so no execute bit is needed
+  // on the wrapper file at all.
+  const line = `${cronExpr} sh ${quoteForCron(wrapperPath)} >> ${quoteForCron(logPath)} 2>&1`;
+  return { line, wrapper: { path: wrapperPath, content } };
+}
+
+/** File name prefix for generated wrapper scripts, so a listing of `logDir` can recognize them. */
+const CRON_WRAPPER_PREFIX = ".akm-cron-wrapper-";
+
+/** Quote one argv token for a POSIX `sh` script body — ordinary shell quoting, no cron `%`-escaping. */
+function quoteForShellScript(part: string): string {
+  if (/^[A-Za-z0-9_\-./@:=+,]+$/.test(part)) return part;
+  return `'${part.replace(/'/g, `'\\''`)}'`;
+}
+
+function cronWrapperScriptContent(argv: string[]): string {
+  const cmd = argv.map(quoteForShellScript).join(" ");
+  return `#!/bin/sh\nexec ${cmd}\n`;
+}
+
 export function buildCronLine(
   task: SchedulerBinding,
   akmArgv: string[],
@@ -352,12 +434,7 @@ export function buildCronLine(
   contextPath: string,
   _target?: string,
 ): string {
-  const spec = parseSchedule(task.cron, "cron");
-  const cronExpr = translateToCron(spec);
-  const logPath = path.join(logDir, `${schedulerBindingNativeId(task)}.log`);
-  const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
-  const cmd = invocation.argv.map((part) => quoteForCron(part)).join(" ");
-  return `${cronExpr} ${cmd} >> ${quoteForCron(logPath)} 2>&1`;
+  return buildCronLineParts(task, akmArgv, logDir, contextPath, _target).line;
 }
 
 /** The crontab line as it appears inside a block — commented when disabled. */
