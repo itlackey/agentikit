@@ -186,7 +186,8 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INVALID_SOURCE_VALUE: "Pick one of: local, registry, all, or a configured source name.",
   INVALID_FORMAT_VALUE: "Pick one of: json, jsonl, yaml, text, md, html.",
   INVALID_DETAIL_VALUE: "Pick one of: brief, normal, full. For agent/summary projections use --shape.",
-  INVALID_SHAPE_VALUE: "Pick one of: human, agent, summary (summary is only valid on `akm show`).",
+  INVALID_SHAPE_VALUE:
+    "Pick one of: human, agent, summary (summary falls back to agent, with a warning, on commands with no summary projection).",
   INVALID_JSON_CONFIG_VALUE:
     'Quote JSON values in your shell, for example: akm config set embedding \'{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}\'.',
   MISSING_OR_AMBIGUOUS_TARGET:

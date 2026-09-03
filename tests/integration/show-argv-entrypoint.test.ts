@@ -3,16 +3,16 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Real-subprocess entrypoint test for the global `--shape` pre-execution gate.
+ * Real-subprocess entrypoint test for global `--shape=summary` on a
+ * non-`show` command.
  *
- * WHY THIS NEEDS A REAL SUBPROCESS: `--shape summary` is rejected for every
- * non-`show` command by an early, pre-execution gate in the guarded startup
- * block of src/cli.ts (before any command runs). The in-process harness
- * (tests/_helpers/cli.ts `runCliCapture`) intentionally skips that startup
- * block, so it only enforces the later, post-execution `shapeForCommand()`
- * gate — by which point a write command like `remember` would already have
- * run. This test asserts the write did NOT happen, which only holds for the
- * real subprocess entry point, so it lives in tests/integration/ on spawnSync.
+ * `--shape` is documented as a GLOBAL flag, so a command with no summary
+ * projection degrades to the `agent` shape with a warning instead of
+ * refusing outright — the same treatment `--format` gets on an exempt
+ * command. This runs a real subprocess (rather than the in-process harness
+ * in tests/_helpers/cli.ts) so the assertion that the write DID happen is
+ * observed past the real entry point in src/cli.ts, not just the shaping
+ * layer.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -47,15 +47,14 @@ function runEntrypointSpawn(args: string[]) {
   });
 }
 
-describe("entrypoint global --shape=summary pre-execution gate", () => {
-  test("rejects global --shape=summary before non-show commands before they run", () => {
+describe("entrypoint global --shape=summary on a non-show command", () => {
+  test("warns and still performs the write, falling back to the agent shape", () => {
     const storage = useStorage();
 
-    const result = runEntrypointSpawn(["--format=json", "--shape=summary", "remember", "do not write"]);
+    const result = runEntrypointSpawn(["--format=json", "--shape=summary", "remember", "write me anyway"]);
 
-    expect(result.status).toBe(2);
-    const error = JSON.parse(result.stderr) as Record<string, unknown>;
-    expect(error.code).toBe("INVALID_SHAPE_VALUE");
-    expect(fs.readdirSync(path.join(storage.stashDir, "memories"))).toEqual([]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("not supported for 'akm remember'");
+    expect(fs.readdirSync(path.join(storage.stashDir, "memories"))).not.toEqual([]);
   });
 });

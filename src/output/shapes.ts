@@ -19,7 +19,7 @@
  * fallback).
  */
 
-import { UsageError } from "../core/errors";
+import { warnOnce } from "../core/warn";
 import type { DetailLevel, ShapeMode } from "./context";
 import { curateShapes } from "./shapes/curate";
 import { envListShapes } from "./shapes/env-list";
@@ -85,9 +85,11 @@ registerOutputShapes(BUILT_IN_OUTPUT_SHAPES);
 export type OutputCommandName = string;
 
 /**
- * Commands whose shape handler implements the `summary` projection. For every
- * other command, `--shape summary` is a usage error (v1 §5 — honest rejection
- * for a soon-frozen contract, not a silent fallback to `human`).
+ * Commands whose shape handler implements the `summary` projection.
+ * `--shape` is documented as a GLOBAL flag, so a command without a summary
+ * projection falls back to `agent` with a warning rather than a hard usage
+ * error — the same "degrade, don't refuse" treatment `--format` already gets
+ * on an exempt command (src/cli.ts).
  */
 const SHAPE_SUMMARY_COMMANDS = new Set(["show"]);
 
@@ -97,15 +99,17 @@ export function shapeForCommand(
   detail: DetailLevel,
   shape: ShapeMode = "human",
 ): unknown {
+  let effectiveShape = shape;
   if (shape === "summary" && !SHAPE_SUMMARY_COMMANDS.has(command)) {
-    throw new UsageError(
-      `'--shape summary' is not supported for 'akm ${command}'. It is only available on 'akm show'.`,
-      "INVALID_SHAPE_VALUE",
+    warnOnce(
+      `shape-summary-unsupported:${command}`,
+      `[output] '--shape summary' is not supported for 'akm ${command}' (only 'akm show' has a summary projection); falling back to 'agent'.`,
     );
+    effectiveShape = "agent";
   }
   const handler = getOutputShapeHandler(command);
   if (handler) {
-    return handler(result, detail, shape);
+    return handler(result, detail, effectiveShape);
   }
   // v1 spec §9 (output-shape registry exhaustive): no silent JSON.stringify
   // fallback. A missing case here is a registration bug — fail loudly so

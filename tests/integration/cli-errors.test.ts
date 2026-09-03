@@ -356,7 +356,7 @@ describe("error class hints", () => {
       "Pick one of: brief, normal, full. For agent/summary projections use --shape.",
     );
     expect(new UsageError("bad shape", "INVALID_SHAPE_VALUE").hint()).toBe(
-      "Pick one of: human, agent, summary (summary is only valid on `akm show`).",
+      "Pick one of: human, agent, summary (summary falls back to agent, with a warning, on commands with no summary projection).",
     );
     expect(new UsageError("bad json", "INVALID_JSON_CONFIG_VALUE").hint()).toContain("Quote JSON values");
     expect(new UsageError("bad target", "MISSING_OR_AMBIGUOUS_TARGET").hint()).toContain("akm bundle update --all");
@@ -932,8 +932,9 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
 // boilerplate was dropped from the canonical wording — `list` doesn't exist
 // as a bare command any more (folded into `akm bundle list`, S7), and a
 // caveat naming stale commands is worse than no caveat). `--shape summary`
-// is still a hard usage error everywhere except `akm show`, and that caveat
-// should still be visible from a leaf's own `--help`, not only the root's.
+// falls back to `agent` with a warning everywhere except `akm show` (only
+// `show` has a dedicated summary projection), and that caveat should still
+// be visible from a leaf's own `--help`, not only the root's.
 describe("GLOBAL_OUTPUT_ARGS help text is scoped honestly (R-050c)", () => {
   test("--shape repeats the 'summary is show-only' caveat root help documents", () => {
     expect(GLOBAL_OUTPUT_ARGS.shape.description).toContain("summary");

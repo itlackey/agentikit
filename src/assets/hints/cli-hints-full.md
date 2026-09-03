@@ -414,7 +414,7 @@ Result-envelope commands accept `--format`, `--detail`, and `--shape` flags:
 - `--detail full` — includes scores, paths, timing, debug info
 - `--shape human` (default) — standard projection
 - `--shape agent` — agent-optimized output: strips non-actionable fields
-- `--shape summary` — metadata only (no content/template/prompt), under 200 tokens; only valid on `akm show`
+- `--shape summary` — metadata only (no content/template/prompt), under 200 tokens; only `akm show` has a dedicated summary projection — elsewhere it falls back to `agent` with a warning
 
 Run `akm help <command>` or `akm <command> -h` for per-command help. Run
 `akm --help` for the sectioned command overview.

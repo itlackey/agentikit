@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import { shapeForCommand } from "../src/output/shapes";
 import {
   capDescription,
@@ -434,11 +435,28 @@ describe("shapeForCommand", () => {
     expect(shapeForCommand("health", result, "full", "human")).toMatchObject(result);
   });
 
-  test("--shape summary on a non-show command throws INVALID_SHAPE_VALUE", () => {
-    expect(() => shapeForCommand("search", { hits: [], registryHits: [] }, "normal", "summary")).toThrow(
-      /not supported for 'akm search'/,
-    );
-    expect(() => shapeForCommand("info", { x: 1 }, "normal", "summary")).toThrow(/only available on 'akm show'/);
+  test("--shape summary on a non-show command warns and falls back to 'agent' instead of throwing", () => {
+    const warnings: unknown[][] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    try {
+      const summaryResult = shapeForCommand("search", { hits: [], registryHits: [] }, "normal", "summary");
+      const agentResult = shapeForCommand("search", { hits: [], registryHits: [] }, "normal", "agent");
+      expect(summaryResult).toEqual(agentResult);
+      expect(warnings.some((args) => args.some((a) => String(a).includes("not supported for 'akm search'")))).toBe(
+        true,
+      );
+
+      warnings.length = 0;
+      const infoSummary = shapeForCommand("info", { x: 1 }, "normal", "summary");
+      const infoAgent = shapeForCommand("info", { x: 1 }, "normal", "agent");
+      expect(infoSummary).toEqual(infoAgent);
+      expect(warnings.some((args) => args.some((a) => String(a).includes("not supported for 'akm info'")))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
   });
 
   test("--shape summary on show is allowed", () => {
