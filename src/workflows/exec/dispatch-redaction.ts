@@ -22,6 +22,7 @@ import {
   redactSensitiveText,
   redactSensitiveValue,
 } from "../../core/redaction";
+import { lookupApiKeyFileValue } from "../../integrations/agent/engine-resolution";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { UnitDispatcher } from "./unit-dispatch";
 
@@ -35,18 +36,19 @@ export interface DispatchSecretSources {
 /**
  * Every exact value that must never survive into the journal from ONE frozen
  * dispatch: the resolved `env` bindings injected into the child, the selected
- * engine's (and its SDK fallback's) credential env values, and any
- * `envPassthrough` value the redaction policy does not consider safe to expose.
+ * engine's (and its SDK fallback's) credential — an env value, or a
+ * file-backed one (#905) — and any `envPassthrough` value the redaction
+ * policy does not consider safe to expose.
  *
  * Shared by the unit path and the gate-judge path. There is deliberately ONE
  * collector: a second, parallel implementation is exactly how a dispatch path
  * silently loses the scrub.
  *
- * The credential values are read from `process.env` AT CALL TIME, so a caller
- * must collect no earlier than the dispatch whose outcome it scrubs. A snapshot
- * taken when the dispatch was merely *planned* can predate a credential the
- * dispatch then resolves live, leaving the exact value it must remove out of
- * the set.
+ * The credential values are read from `process.env` (or disk, for a file-
+ * backed one) AT CALL TIME, so a caller must collect no earlier than the
+ * dispatch whose outcome it scrubs. A snapshot taken when the dispatch was
+ * merely *planned* can predate a credential the dispatch then resolves live,
+ * leaving the exact value it must remove out of the set.
  */
 export function collectWorkflowDispatchSensitiveValues(
   dispatch: DispatchSecretSources,
@@ -60,6 +62,12 @@ export function collectWorkflowDispatchSensitiveValues(
         const value = process.env[name]?.trim();
         if (value) values.add(value);
       }
+      // #905: file-backed credential — best-effort read, never throws, so a
+      // broken apiKeyFile is reported by the real dispatch, not this collector.
+      if (runner.apiKeyFile) {
+        const value = lookupApiKeyFileValue(runner.apiKeyFile);
+        if (value) values.add(value);
+      }
       return;
     }
     for (const name of runner.profile.envPassthrough ?? []) {
@@ -69,6 +77,10 @@ export function collectWorkflowDispatchSensitiveValues(
     if (runner.kind === "sdk") {
       for (const name of runner.fallbackCredential?.names ?? []) {
         const value = process.env[name]?.trim();
+        if (value) values.add(value);
+      }
+      if (runner.fallbackApiKeyFile) {
+        const value = lookupApiKeyFileValue(runner.fallbackApiKeyFile);
         if (value) values.add(value);
       }
     }

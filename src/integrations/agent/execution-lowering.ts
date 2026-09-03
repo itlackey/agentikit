@@ -358,16 +358,32 @@ function snapshotRunnerSpec(
   validateOptionalString(cloned, "engine", "execution runner material");
   if (own(cloned, "timeoutMs")) validateTimeout(cloned.timeoutMs, "execution runner material.timeoutMs");
   if (kind === "llm") {
-    assertKeys(cloned, ["kind", "engine", "connection", "credential", "timeoutMs"], "execution runner material");
+    assertKeys(
+      cloned,
+      ["kind", "engine", "connection", "credential", "apiKeyFile", "timeoutMs"],
+      "execution runner material",
+    );
     validateConnection(cloned.connection, "execution runner material.connection", !options.allowMissingLlmModel);
     if (own(cloned, "credential")) validateCredential(cloned.credential, "execution runner material.credential");
+    // #905: a path, not the secret itself — as safe to freeze as `credential`'s
+    // env-var name.
+    validateOptionalString(cloned, "apiKeyFile", "execution runner material");
   } else if (kind === "agent") {
     assertKeys(cloned, ["kind", "engine", "profile", "timeoutMs"], "execution runner material");
     validateProfile(cloned.profile, "execution runner material.profile");
   } else if (kind === "sdk") {
     assertKeys(
       cloned,
-      ["kind", "engine", "profile", "fallbackConnection", "fallbackCredential", "fallbackTimeoutMs", "timeoutMs"],
+      [
+        "kind",
+        "engine",
+        "profile",
+        "fallbackConnection",
+        "fallbackCredential",
+        "fallbackApiKeyFile",
+        "fallbackTimeoutMs",
+        "timeoutMs",
+      ],
       "execution runner material",
     );
     validateProfile(cloned.profile, "execution runner material.profile");
@@ -381,6 +397,7 @@ function snapshotRunnerSpec(
     if (own(cloned, "fallbackCredential")) {
       validateCredential(cloned.fallbackCredential, "execution runner material.fallbackCredential");
     }
+    validateOptionalString(cloned, "fallbackApiKeyFile", "execution runner material");
     if (own(cloned, "fallbackTimeoutMs")) {
       validateTimeout(cloned.fallbackTimeoutMs, "execution runner material.fallbackTimeoutMs");
     }

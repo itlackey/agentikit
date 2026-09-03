@@ -217,7 +217,8 @@ and is never rescued by that fallback.
 Index passes select engines through `index.defaults.engine` or
 `index.<pass>.engine`. Per-pass `model`, `timeoutMs`, and `llm` fields are
 invocation overrides; `enabled: false` disables that pass. Connection fields
-such as `endpoint`, `provider`, and `apiKey` belong only on named engines.
+such as `endpoint`, `provider`, `apiKey`, and `apiKeyFile` belong only on
+named engines.
 
 `workflow.maxConcurrency` is the native workflow engine ceiling. An explicit
 value is clamped to `1..64`. When absent, AKM derives the cap once from the CPU
@@ -502,6 +503,15 @@ generic walker.
 For an engine named `fast`, its fallback variable is
 `AKM_ENGINE_FAST_API_KEY`. An explicit `apiKey` symbolic reference is
 authoritative and does not fall through to another variable.
+
+`engines.<name>.apiKeyFile` is a file-backed alternative to `apiKey`, for a
+host that refuses to put secrets in the process environment (a container
+runtime's mounted secret, for example). It is a plain filesystem path — `~`
+expands to the home directory — read at dispatch time and trimmed of one
+trailing newline; the raw path is safe to keep in `config.json` since it is
+not itself a secret. Setting both `apiKey` and `apiKeyFile` on the same
+engine is rejected. A missing, unreadable, or empty file fails the call
+closed, naming the engine and path but never the file's content.
 
 Use `AKM_SQLITE_JOURNAL_MODE=DELETE` or `TRUNCATE` when WAL is unavailable,
 such as on some NFS/SMB mounts. With the default `WAL` setting, AKM detects a

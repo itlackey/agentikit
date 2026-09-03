@@ -3,11 +3,17 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { deepMergeConfig } from "../src/core/config/deep-merge";
 import { resolveDispatchModel } from "../src/integrations/agent/builder-shared";
 import {
+  collectEngineCredentialValues,
+  lookupApiKeyFileValue,
   materializeLlmConnection,
   resolveEngine,
+  resolveLlmCredentialValue,
   resolveLlmEngineUse,
 } from "../src/integrations/agent/engine-resolution";
 import { buildSdkConfig } from "../src/integrations/harnesses/opencode-sdk/sdk-runner";
@@ -227,5 +233,141 @@ describe("engine resolution", () => {
         },
       }),
     ).toThrow(/cannot dispatch agents/);
+  });
+});
+
+describe("file-backed engine credential (#905)", () => {
+  function makeTmpFile(content: string): { filePath: string; dir: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-apikeyfile-test-"));
+    const filePath = path.join(dir, "api-key");
+    fs.writeFileSync(filePath, content);
+    return { filePath, dir };
+  }
+
+  function withApiKeyFileEngine(filePath: string) {
+    return {
+      ...config,
+      engines: {
+        ...config.engines,
+        filed: {
+          kind: "llm" as const,
+          endpoint: "https://example.test/v1/chat/completions",
+          model: "base-model",
+          apiKeyFile: filePath,
+        },
+      },
+    };
+  }
+
+  test("resolves apiKeyFile onto ResolvedLlmUse without reading it, and expands a leading ~", () => {
+    // A path under a home directory that does not exist proves the resolve
+    // step never opens the file: if it did, this test would throw here
+    // instead of only at materializeLlmConnection.
+    const resolved = resolveLlmEngineUse(withApiKeyFileEngine("~/secrets/does-not-exist"), [{ engine: "filed" }]);
+    expect(resolved.apiKeyFile).toBe(path.join(os.homedir(), "secrets/does-not-exist"));
+    expect(resolved.credential).toBeUndefined();
+    expect(Object.hasOwn(resolved.connection, "apiKey")).toBe(false);
+    expect(Object.hasOwn(resolved.connection, "apiKeyFile")).toBe(false);
+  });
+
+  test("materializeLlmConnection reads apiKeyFile and trims exactly one trailing newline", () => {
+    const { filePath, dir } = makeTmpFile("sk-file-secret\n");
+    try {
+      const resolved = resolveLlmEngineUse(withApiKeyFileEngine(filePath), [{ engine: "filed" }]);
+      expect(materializeLlmConnection(resolved).apiKey).toBe("sk-file-secret");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("does not trim interior whitespace, only a single trailing newline", () => {
+    const { filePath, dir } = makeTmpFile("sk-file-secret\n\n");
+    try {
+      const resolved = resolveLlmEngineUse(withApiKeyFileEngine(filePath), [{ engine: "filed" }]);
+      expect(materializeLlmConnection(resolved).apiKey).toBe("sk-file-secret\n");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an env credential wins over apiKeyFile when both would resolve (env checked first)", () => {
+    // The schema already rejects apiKey + apiKeyFile together; this exercises
+    // resolveLlmCredentialValue's own precedence directly, since it is the
+    // shared seam every dispatch path (incl. SDK fallback) calls through.
+    const { filePath, dir } = makeTmpFile("from-file\n");
+    try {
+      const value = resolveLlmCredentialValue("filed", { names: ["SOME_VAR"], required: false }, filePath, {
+        SOME_VAR: "from-env",
+      });
+      expect(value).toBe("from-env");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed with a config error naming the engine and path, never the value, when the file is missing", () => {
+    const missingPath = path.join(os.tmpdir(), "akm-apikeyfile-test-missing", "does-not-exist");
+    const resolved = resolveLlmEngineUse(withApiKeyFileEngine(missingPath), [{ engine: "filed" }]);
+    let threw: unknown;
+    try {
+      materializeLlmConnection(resolved);
+    } catch (err) {
+      threw = err;
+    }
+    expect(threw).toBeInstanceOf(Error);
+    const message = (threw as Error).message;
+    expect(message).toContain("filed");
+    expect(message).toContain(missingPath);
+    expect(message).toMatch(/does not exist/);
+  });
+
+  test("fails closed with a config error naming the engine and path, never the value, when the file is empty", () => {
+    const { filePath, dir } = makeTmpFile("");
+    try {
+      const resolved = resolveLlmEngineUse(withApiKeyFileEngine(filePath), [{ engine: "filed" }]);
+      let threw: unknown;
+      try {
+        materializeLlmConnection(resolved);
+      } catch (err) {
+        threw = err;
+      }
+      expect(threw).toBeInstanceOf(Error);
+      const message = (threw as Error).message;
+      expect(message).toContain("filed");
+      expect(message).toContain(filePath);
+      expect(message).toMatch(/is empty/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a file containing only a newline resolves to empty and is rejected the same as a truly empty file", () => {
+    const { filePath, dir } = makeTmpFile("\n");
+    try {
+      const resolved = resolveLlmEngineUse(withApiKeyFileEngine(filePath), [{ engine: "filed" }]);
+      expect(() => materializeLlmConnection(resolved)).toThrow(/is empty/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("lookupApiKeyFileValue is best-effort: undefined for a missing or empty file, never throws", () => {
+    expect(lookupApiKeyFileValue(path.join(os.tmpdir(), "akm-apikeyfile-test-missing-2", "nope"))).toBeUndefined();
+    const { filePath, dir } = makeTmpFile("");
+    try {
+      expect(lookupApiKeyFileValue(filePath)).toBeUndefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("collectEngineCredentialValues includes a file-backed engine's current value for redaction", () => {
+    const { filePath, dir } = makeTmpFile("collect-me-secret\n");
+    try {
+      const values = collectEngineCredentialValues(withApiKeyFileEngine(filePath));
+      expect(values).toContain("collect-me-secret");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

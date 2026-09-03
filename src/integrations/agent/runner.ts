@@ -16,6 +16,8 @@ export type RunnerSpec =
       engine: string;
       connection: LlmConnectionConfig;
       credential?: CredentialDescriptor;
+      /** File-backed credential (#905), read lazily at dispatch. See engine-resolution.ts. */
+      apiKeyFile?: string;
       timeoutMs?: number | null;
     }
   | { kind: "agent"; engine: string; profile: AgentProfile; timeoutMs?: number | null }
@@ -25,6 +27,8 @@ export type RunnerSpec =
       profile: AgentProfile;
       fallbackConnection?: LlmConnectionConfig;
       fallbackCredential?: CredentialDescriptor;
+      /** File-backed fallback credential (#905), read lazily at dispatch. */
+      fallbackApiKeyFile?: string;
       fallbackTimeoutMs?: number | null;
       timeoutMs?: number | null;
     };
@@ -39,6 +43,7 @@ export function materializeLlmRunnerConnection(runner: Extract<RunnerSpec, { kin
     engine: runner.engine,
     connection: runner.connection,
     ...(runner.credential ? { credential: runner.credential } : {}),
+    ...(runner.apiKeyFile ? { apiKeyFile: runner.apiKeyFile } : {}),
     timeoutMs: runner.timeoutMs ?? null,
   });
 }
@@ -53,6 +58,7 @@ export function materializeLlmRunnerConnectionWithCredential(
       engine: runner.engine,
       connection: runner.connection,
       ...(runner.credential ? { credential: runner.credential } : {}),
+      ...(runner.apiKeyFile ? { apiKeyFile: runner.apiKeyFile } : {}),
       timeoutMs: runner.timeoutMs ?? null,
     },
     credentialValue,

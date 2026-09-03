@@ -83,6 +83,11 @@ const LlmEngineSchema = z
     endpoint: chatCompletionsEndpoint,
     model: nonEmptyString,
     apiKey: z.string().regex(ENV_REFERENCE_PATTERN, `apiKey must be $VAR or \${VAR}`).optional(),
+    // #905: file-backed alternative to `apiKey` for hosts that refuse
+    // secrets in the process environment. A plain filesystem path (`~`
+    // expanded, read at dispatch) — see resolveLlmEngineUse/
+    // materializeLlmConnectionWithCredential in integrations/agent/engine-resolution.ts.
+    apiKeyFile: nonEmptyString.optional(),
     temperature: z.number().finite().optional(),
     maxTokens: positiveInt.optional(),
     timeoutMs: timeoutMsField,
@@ -97,6 +102,17 @@ const LlmEngineSchema = z
     for (const key of ["platform", "bin", "args", "workspace", "modelAliases", "llmEngine"]) {
       if (key in value)
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is not valid on an LLM engine` });
+    }
+    // #905: apiKey and apiKeyFile are two alternative ways to supply the same
+    // credential; a third (the implicit AKM_ENGINE_<NAME>_API_KEY env var) is
+    // still available when neither is set, so only the both-set case is
+    // rejected here.
+    if (value.apiKey !== undefined && value.apiKeyFile !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["apiKeyFile"],
+        message: "apiKey and apiKeyFile cannot both be set",
+      });
     }
   });
 
@@ -119,6 +135,7 @@ const AgentEngineSchema = z
       "provider",
       "endpoint",
       "apiKey",
+      "apiKeyFile",
       "temperature",
       "maxTokens",
       "concurrency",

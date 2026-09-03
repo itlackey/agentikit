@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { renderMarkdownExecutionSource } from "../../src/core/adapter/execution-source";
 import type { AkmConfig } from "../../src/core/config/config";
 import { redactSensitiveText } from "../../src/core/redaction";
@@ -1787,6 +1790,21 @@ describe("optimistic lowering safety", () => {
     const sensitive = collectDispatchSensitiveValues(sdk, { envSource }, envSource);
     expect(sensitive).toContain(fallbackSecret);
     expect(redactSensitiveText(`draft=${fallbackSecret}`, sensitive)).toBe("draft=[REDACTED]");
+
+    // #905: a file-backed credential is read at dispatch, so the scrub set
+    // must carry it exactly like the env-backed one.
+    const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-apikeyfile-"));
+    const fileSecret = "file-secret-value-3f9a";
+    const apiKeyFile = path.join(keyDir, "key");
+    fs.writeFileSync(apiKeyFile, `${fileSecret}\n`);
+    try {
+      const fromFile: RunnerSpec = { ...primary, credential: undefined, apiKeyFile };
+      expect(collectDispatchSensitiveValues(fromFile, { envSource }, envSource)).toContain(fileSecret);
+      const sdkFromFile: RunnerSpec = { ...sdk, fallbackCredential: undefined, fallbackApiKeyFile: apiKeyFile };
+      expect(collectDispatchSensitiveValues(sdkFromFile, { envSource }, envSource)).toContain(fileSecret);
+    } finally {
+      fs.rmSync(keyDir, { recursive: true, force: true });
+    }
 
     const result = await withEnv({ PRIMARY_SYMBOLIC_KEY: primarySecret, FALLBACK_SYMBOLIC_KEY: fallbackSecret }, () =>
       executeRunner(

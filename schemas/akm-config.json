@@ -34,6 +34,10 @@
                 "type": "string",
                 "pattern": "^\\$[A-Za-z_][A-Za-z0-9_]*$|^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
               },
+              "apiKeyFile": {
+                "type": "string",
+                "minLength": 1
+              },
               "temperature": {
                 "type": "number"
               },
@@ -1718,6 +1722,10 @@
                   "apiKey": {
                     "type": "string",
                     "pattern": "^\\$[A-Za-z_][A-Za-z0-9_]*$|^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
+                  },
+                  "apiKeyFile": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "temperature": {
                     "type": "number"

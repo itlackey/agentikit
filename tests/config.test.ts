@@ -515,6 +515,53 @@ describe("LLM engine config", () => {
     expect(loadConfig().engines?.cloud?.apiKey).toBe("$OPENAI_API_KEY");
   });
 
+  test("loads a file-backed LLM engine apiKeyFile (#905)", () => {
+    writeCurrentConfig({
+      engines: {
+        cloud: {
+          kind: "llm",
+          endpoint: "https://api.openai.com/v1/chat/completions",
+          model: "gpt-4",
+          apiKeyFile: "/run/secrets/cloud-api-key",
+        },
+      },
+    });
+    expect(loadConfig().engines?.cloud?.apiKeyFile).toBe("/run/secrets/cloud-api-key");
+    expect(loadConfig().engines?.cloud?.apiKey).toBeUndefined();
+  });
+
+  // Neither field is required at the schema level: an engine that sets
+  // neither still resolves its credential through the pre-existing implicit
+  // `AKM_ENGINE_<NAME>_API_KEY` convention (see engine-resolution.test.ts).
+  // apiKeyFile is an alternative to apiKey, not a narrowing of what was
+  // already valid.
+  test("allows an LLM engine with neither apiKey nor apiKeyFile set (#905)", () => {
+    writeCurrentConfig({
+      engines: {
+        cloud: { kind: "llm", endpoint: "https://api.openai.com/v1/chat/completions", model: "gpt-4" },
+      },
+    });
+    expect(() => loadConfig()).not.toThrow();
+    expect(loadConfig().engines?.cloud?.apiKey).toBeUndefined();
+    expect(loadConfig().engines?.cloud?.apiKeyFile).toBeUndefined();
+  });
+
+  test("rejects an LLM engine with both apiKey and apiKeyFile set (#905)", () => {
+    writeCurrentConfig({
+      engines: {
+        cloud: {
+          kind: "llm",
+          endpoint: "https://api.openai.com/v1/chat/completions",
+          model: "gpt-4",
+          apiKey: "$OPENAI_API_KEY",
+          apiKeyFile: "/run/secrets/cloud-api-key",
+        },
+      },
+    });
+    expect(() => loadConfig()).toThrow(ConfigError);
+    expect(() => loadConfig()).toThrow(/apiKey and apiKeyFile cannot both be set/);
+  });
+
   test("loads an LLM engine with provider, temperature, and maxTokens", () => {
     writeCurrentConfig({
       engines: {

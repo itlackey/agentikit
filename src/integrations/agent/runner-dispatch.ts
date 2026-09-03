@@ -33,10 +33,11 @@ import {
   runOpencodeSdk,
 } from "../harnesses/opencode-sdk/sdk-runner";
 import {
+  lookupApiKeyFileValue,
   lookupCredentialFromEnv,
   materializeLlmConnection,
   materializeLlmConnectionWithCredential,
-  resolveCredentialFromEnv,
+  resolveLlmCredentialValue,
 } from "./engine-resolution";
 import type { AgentProfile } from "./profiles";
 import {
@@ -120,6 +121,7 @@ function runnerLeaseBinding(spec: RunnerSpec): string {
         endpoint: spec.connection.endpoint,
         provider: spec.connection.provider ?? null,
         credential: credentialBinding(spec.credential),
+        apiKeyFile: spec.apiKeyFile ?? null,
       });
     case "agent":
       return JSON.stringify({
@@ -141,6 +143,7 @@ function runnerLeaseBinding(spec: RunnerSpec): string {
         fallbackEndpoint: spec.fallbackConnection?.endpoint ?? null,
         fallbackProvider: spec.fallbackConnection?.provider ?? null,
         fallbackCredential: credentialBinding(spec.fallbackCredential),
+        fallbackApiKeyFile: spec.fallbackApiKeyFile ?? null,
       });
     default:
       return assertNever(spec);
@@ -179,9 +182,13 @@ export function acquireRunnerDispatchLease(
     },
   });
   const primaryCredential =
-    spec.kind === "llm" ? resolveCredentialFromEnv(spec.credential, credentialSource) : undefined;
+    spec.kind === "llm"
+      ? resolveLlmCredentialValue(spec.engine, spec.credential, spec.apiKeyFile, credentialSource)
+      : undefined;
   const fallbackCredential =
-    spec.kind === "sdk" ? resolveCredentialFromEnv(spec.fallbackCredential, credentialSource) : undefined;
+    spec.kind === "sdk"
+      ? resolveLlmCredentialValue(spec.engine, spec.fallbackCredential, spec.fallbackApiKeyFile, credentialSource)
+      : undefined;
   const handle = Object.create(null) as object;
   Object.defineProperty(handle, "toJSON", {
     configurable: false,
@@ -269,6 +276,10 @@ export function collectDispatchSensitiveValues(
   if (spec.kind === "sdk") addConnection(spec.fallbackConnection);
   if (spec.kind === "llm") add(lookupCredentialFromEnv(spec.credential, envSource));
   if (spec.kind === "sdk") add(lookupCredentialFromEnv(spec.fallbackCredential, envSource));
+  // #905: a file-backed credential is read at dispatch, so it must be in the
+  // scrub set for the same reason the env-backed one is.
+  if (spec.kind === "llm" && spec.apiKeyFile) add(lookupApiKeyFileValue(spec.apiKeyFile));
+  if (spec.kind === "sdk" && spec.fallbackApiKeyFile) add(lookupApiKeyFileValue(spec.fallbackApiKeyFile));
   if (spec.kind !== "llm") {
     for (const value of Object.values(spec.profile.env ?? {})) add(value);
     for (const name of spec.profile.envPassthrough) {
@@ -402,6 +413,7 @@ export async function executeRunner(
             engine: spec.engine ?? "unnamed-sdk-fallback",
             connection: spec.fallbackConnection,
             ...(spec.fallbackCredential ? { credential: spec.fallbackCredential } : {}),
+            ...(spec.fallbackApiKeyFile ? { apiKeyFile: spec.fallbackApiKeyFile } : {}),
             timeoutMs:
               spec.fallbackTimeoutMs !== undefined
                 ? spec.fallbackTimeoutMs

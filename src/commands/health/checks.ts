@@ -8,7 +8,7 @@ import { ConfigError } from "../../core/errors";
 import { listPendingStateMigrations } from "../../core/state-db";
 import type { WhichFn } from "../../integrations/agent/detect";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
-import { resolveEngine } from "../../integrations/agent/engine-resolution";
+import { lookupApiKeyFileValue, resolveEngine } from "../../integrations/agent/engine-resolution";
 import { executionEngineDefinitionsFromConfig } from "../../integrations/agent/execution-definitions";
 import {
   type LoadedModelMap,
@@ -108,8 +108,14 @@ export interface HealthEngineProbeResults {
 function credentialAvailable(
   credential: { names: readonly string[]; required: boolean } | undefined,
   env: NodeJS.ProcessEnv,
+  apiKeyFile?: string,
 ): boolean {
-  return !credential?.required || credential.names.some((name) => Boolean(env[name]?.trim()));
+  if (credential?.required) return credential.names.some((name) => Boolean(env[name]?.trim()));
+  // #905: an engine with no env descriptor may still require a file-backed
+  // credential — probe it too, rather than reporting an unreadable/empty
+  // apiKeyFile as available just because it carries no env var names.
+  if (apiKeyFile !== undefined) return lookupApiKeyFileValue(apiKeyFile) !== undefined;
+  return true;
 }
 
 function runConfiguredEngineProbe(
@@ -159,6 +165,7 @@ function runConfiguredEngineProbe(
     const fallbackEngine = configuredEngine.llmEngine ?? config.defaults?.llmEngine;
     let fallback: Extract<RunnerSpec, { kind: "llm" }> | undefined;
     let fallbackCredential: Extract<RunnerSpec, { kind: "llm" }>["credential"];
+    let fallbackApiKeyFile: string | undefined;
     let sdkRunner: Extract<RunnerSpec, { kind: "sdk" }> | undefined;
     const resolve = deps.resolveEngine ?? resolveEngine;
     try {
@@ -170,12 +177,14 @@ function runConfiguredEngineProbe(
     if (sdkRunner?.fallbackConnection && fallbackEngine) {
       fallback = { kind: "llm", engine: fallbackEngine, connection: sdkRunner.fallbackConnection };
       fallbackCredential = sdkRunner.fallbackCredential;
+      fallbackApiKeyFile = sdkRunner.fallbackApiKeyFile;
     } else if (fallbackEngine) {
       try {
         const resolved = resolve(fallbackEngine, config);
         if (resolved.kind === "llm") {
           fallback = resolved;
           fallbackCredential = resolved.credential;
+          fallbackApiKeyFile = resolved.apiKeyFile;
         }
       } catch {
         fallback = undefined;
@@ -183,7 +192,7 @@ function runConfiguredEngineProbe(
     }
     const configuredModel = configuredEngine.model;
     const effectiveModel = sdkRunner?.profile.model ?? configuredModel ?? fallback?.connection.model;
-    const fallbackCredentialAvailable = credentialAvailable(fallbackCredential, env);
+    const fallbackCredentialAvailable = credentialAvailable(fallbackCredential, env, fallbackApiKeyFile);
     const missing = [
       !packageAvailable ? "@opencode-ai/sdk package" : undefined,
       !binaryAvailable ? `${binary} binary` : undefined,
@@ -220,7 +229,7 @@ function runConfiguredEngineProbe(
   try {
     const runner = (deps.resolveEngine ?? resolveEngine)(engineName, config);
     if (runner.kind === "llm") {
-      const requiredCredentialAvailable = credentialAvailable(runner.credential, env);
+      const requiredCredentialAvailable = credentialAvailable(runner.credential, env, runner.apiKeyFile);
       return {
         name: checkName,
         kind: "deterministic",
@@ -406,7 +415,7 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
     const env = deps.env ?? process.env;
     const unavailableProcesses = Object.entries(plan.processes).flatMap(([name, process]) => {
       if (!process.enabled || !process.runner) return [];
-      return credentialAvailable(process.runner.credential, env) ? [] : [name];
+      return credentialAvailable(process.runner.credential, env, process.runner.apiKeyFile) ? [] : [name];
     });
     if (plan.triageJudgment) {
       const judgmentCredential =
@@ -415,7 +424,15 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
           : plan.triageJudgment.kind === "sdk"
             ? plan.triageJudgment.fallbackCredential
             : undefined;
-      if (!credentialAvailable(judgmentCredential, env)) unavailableProcesses.push("triage.judgment");
+      const judgmentApiKeyFile =
+        plan.triageJudgment.kind === "llm"
+          ? plan.triageJudgment.apiKeyFile
+          : plan.triageJudgment.kind === "sdk"
+            ? plan.triageJudgment.fallbackApiKeyFile
+            : undefined;
+      if (!credentialAvailable(judgmentCredential, env, judgmentApiKeyFile)) {
+        unavailableProcesses.push("triage.judgment");
+      }
     }
     return {
       name: "active-improve-strategy",

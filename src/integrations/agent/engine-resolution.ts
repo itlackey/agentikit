@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { LlmConnectionConfig } from "../../core/config/config-types";
 import { deepMergeConfig } from "../../core/config/deep-merge";
@@ -44,6 +46,7 @@ export interface LlmEngineConfig {
   endpoint: string;
   model: string;
   apiKey?: string;
+  apiKeyFile?: string;
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number | null;
@@ -83,6 +86,14 @@ export interface ResolvedLlmUse {
   /** Frozen connection fields only; resolution never places apiKey or timeoutMs here. */
   connection: LlmConnectionConfig;
   credential?: CredentialDescriptor;
+  /**
+   * Home-expanded, but NOT YET READ, path to a file-backed credential (#905).
+   * Mutually exclusive with `credential` at the schema level — read lazily by
+   * {@link resolveLlmCredentialValue} only when no env credential value is
+   * supplied, so the frozen resolution/plan objects never carry the secret
+   * itself.
+   */
+  apiKeyFile?: string;
   timeoutMs: number | null;
 }
 
@@ -101,6 +112,53 @@ function sterileRecord<T extends object>(value: T): T {
 function envName(reference: string): string | undefined {
   const match = /^\$(?:\{)?([A-Za-z_][A-Za-z0-9_]*)(?:\})?$/.exec(reference);
   return match?.[1];
+}
+
+/** Expand a leading `~` the same way `loadSetupConfigFromFile` does for `--from <file>`. */
+function expandHomePath(filePath: string): string {
+  return filePath.startsWith("~") ? path.join(os.homedir(), filePath.slice(1)) : filePath;
+}
+
+/** Trim exactly one trailing newline (`\n` or `\r\n`) — never interior whitespace. */
+function trimTrailingNewline(raw: string): string {
+  return raw.replace(/\r?\n$/, "");
+}
+
+/**
+ * Read a file-backed credential (#905) at the dispatch boundary. Never
+ * includes the file's content in a thrown message — only the engine name and
+ * path, so a misconfigured `apiKeyFile` cannot leak its (partial) contents
+ * into a log or error report.
+ */
+function readApiKeyFile(engineName: string, filePath: string): string {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(filePath, "utf8");
+  } catch (err) {
+    const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+    const reason = code === "ENOENT" ? "does not exist" : "could not be read";
+    throw new ConfigError(`Engine "${engineName}" apiKeyFile ${reason}: ${filePath}`, "INVALID_CONFIG_FILE");
+  }
+  const value = trimTrailingNewline(raw);
+  if (value.length === 0) {
+    throw new ConfigError(`Engine "${engineName}" apiKeyFile is empty: ${filePath}`, "INVALID_CONFIG_FILE");
+  }
+  return value;
+}
+
+/**
+ * Best-effort, non-throwing read of a file-backed credential's current value
+ * (#905), for redaction inventories and health probes that must never fail
+ * just because a value collector ran ahead of the real dispatch — a missing
+ * or empty file is reported by {@link readApiKeyFile} at the actual call.
+ */
+export function lookupApiKeyFileValue(filePath: string): string | undefined {
+  try {
+    const value = trimTrailingNewline(fs.readFileSync(filePath, "utf8"));
+    return value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function selectedEngineName(
@@ -139,6 +197,10 @@ function resolveCredential(
       throw new ConfigError(`Engine "${name}" has an invalid symbolic apiKey reference.`, "INVALID_CONFIG_FILE");
     return { names: [explicit], required: true };
   }
+  // #905: an explicit apiKeyFile is its own credential source — resolved
+  // separately onto `ResolvedLlmUse.apiKeyFile` — so it does not also fall
+  // through to the implicit AKM_ENGINE_<NAME>_API_KEY convention below.
+  if (ownValue(engine, "apiKeyFile") !== undefined) return undefined;
   const specific = `AKM_ENGINE_${name.toUpperCase().replaceAll("-", "_")}_API_KEY`;
   const defaults = ownValue(config, "defaults");
   return (defaults ? ownValue(defaults, "llmEngine") : undefined) === name
@@ -177,6 +239,25 @@ export function resolveCredentialFromEnv(
   return undefined;
 }
 
+/**
+ * The enforcing credential seam for one resolved LLM engine or SDK fallback
+ * (#905): the symbolic env-var descriptor first (throws if a required one is
+ * missing), then the file-backed alternative when no env descriptor applies.
+ * Call this once per operation — lease acquisition, or direct materialize —
+ * so a whole operation observes one stable credential value instead of
+ * re-reading the file on every dispatch within it.
+ */
+export function resolveLlmCredentialValue(
+  engine: string,
+  credential: CredentialDescriptor | undefined,
+  apiKeyFile: string | undefined,
+  envSource: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  const envValue = resolveCredentialFromEnv(credential, envSource);
+  if (envValue !== undefined) return envValue;
+  return apiKeyFile !== undefined ? readApiKeyFile(engine, apiKeyFile) : undefined;
+}
+
 /** Collect materialized engine credentials for output and persistence redaction. */
 export function collectEngineCredentialValues(
   config: EngineResolutionConfig,
@@ -187,6 +268,14 @@ export function collectEngineCredentialValues(
     if (engine.kind !== "llm") continue;
     for (const envVar of resolveCredential(name, engine, config)?.names ?? []) {
       const value = envSource[envVar]?.trim();
+      if (value) values.add(value);
+    }
+    // #905: file-backed credential — best-effort, so a broken apiKeyFile on
+    // one engine never stops redaction from collecting every other engine's
+    // credential too.
+    const apiKeyFile = ownValue(engine, "apiKeyFile");
+    if (apiKeyFile !== undefined) {
+      const value = lookupApiKeyFileValue(expandHomePath(apiKeyFile));
       if (value) values.add(value);
     }
   }
@@ -259,15 +348,23 @@ export function resolveLlmEngineUse(
   for (const key of Object.keys(connection)) {
     if (connection[key] === undefined) delete connection[key];
   }
+  const apiKeyFile = ownValue(engine, "apiKeyFile");
   return {
     engine: name,
     connection: sterileRecord(connection) as LlmConnectionConfig,
     credential: resolveCredential(name, engine, config),
+    ...(apiKeyFile !== undefined ? { apiKeyFile: expandHomePath(apiKeyFile) } : {}),
     timeoutMs: effectiveTimeout(engine, layers, DEFAULT_LLM_TIMEOUT_MS),
   };
 }
 
-/** Read a resolved symbolic credential only at the runtime dispatch boundary. */
+/**
+ * Inject an already-resolved credential value into a connection. Callers
+ * resolve the value themselves via {@link resolveLlmCredentialValue} (or its
+ * lease-cached equivalent) — this function never reads env or disk itself, so
+ * a frozen `ResolvedLlmUse`/`RunnerSpec` plan object can be materialized
+ * repeatedly without re-triggering I/O per call.
+ */
 export function materializeLlmConnectionWithCredential(
   resolved: ResolvedLlmUse,
   credentialValue: string | undefined,
@@ -289,12 +386,19 @@ export function materializeLlmConnectionWithCredential(
   }) as LlmConnectionConfig;
 }
 
-/** Read and inject one resolved symbolic credential at the runtime boundary. */
+/**
+ * Read and inject one resolved credential at the runtime boundary: the
+ * symbolic `$VAR` reference, or the file-backed alternative (#905) when the
+ * engine has no env descriptor.
+ */
 export function materializeLlmConnection(
   resolved: ResolvedLlmUse,
   envSource: NodeJS.ProcessEnv = process.env,
 ): LlmConnectionConfig {
-  return materializeLlmConnectionWithCredential(resolved, resolveCredentialFromEnv(resolved.credential, envSource));
+  return materializeLlmConnectionWithCredential(
+    resolved,
+    resolveLlmCredentialValue(resolved.engine, resolved.credential, resolved.apiKeyFile, envSource),
+  );
 }
 
 function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: EngineResolutionConfig): RunnerSpec {
@@ -346,6 +450,7 @@ function lowerAgentEngine(name: string, engine: AgentEngineConfig, config: Engin
       ? {
           fallbackConnection: fallback.connection,
           ...(fallback.credential ? { fallbackCredential: fallback.credential } : {}),
+          ...(fallback.apiKeyFile ? { fallbackApiKeyFile: fallback.apiKeyFile } : {}),
           fallbackTimeoutMs: fallback.timeoutMs,
         }
       : {}),
@@ -366,6 +471,7 @@ export function resolveEngine(name: string, config: EngineResolutionConfig): Run
       engine: name,
       connection: resolved.connection,
       ...(resolved.credential ? { credential: resolved.credential } : {}),
+      ...(resolved.apiKeyFile ? { apiKeyFile: resolved.apiKeyFile } : {}),
       timeoutMs: resolved.timeoutMs,
     };
   }
