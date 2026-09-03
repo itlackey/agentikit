@@ -336,12 +336,6 @@ export function resolveLlmEngineUse(
   }
   const engine = resolveEngineConfig(name, config);
   if (engine.kind !== "llm") {
-    // A caller here wants a chat-completions endpoint, not an interactive
-    // agent — but the agent engine may already declare exactly that as its
-    // own fallback (`llmEngine`, also consumed by `lowerAgentEngine`'s SDK
-    // fallback), or the install may have a default one. Falling back is
-    // strictly LESS capable than the agent engine (never hands the caller a
-    // tool-capable runner), so it is safe to prefer over refusing outright.
     const defaults = ownValue(config, "defaults");
     const fallbackName = ownValue(engine, "llmEngine") ?? (defaults ? ownValue(defaults, "llmEngine") : undefined);
     const fallbackEngine = fallbackName ? resolveEngineConfig(fallbackName, config) : undefined;
@@ -357,9 +351,6 @@ export function resolveLlmEngineUse(
     warn(
       `[akm] Engine "${name}" is an agent engine, not an LLM engine; using its llmEngine "${fallbackName}" instead.`,
     );
-    // `fallbackEngine.kind === "llm"` was just verified above, so this
-    // recursive call always lands in the `engine.kind === "llm"` branch —
-    // no risk of looping back through this fallback again.
     return options.optional
       ? resolveLlmEngineUse(config, [{ engine: fallbackName }], { optional: true })
       : resolveLlmEngineUse(config, [{ engine: fallbackName }]);

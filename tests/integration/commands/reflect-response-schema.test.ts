@@ -358,15 +358,6 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
 });
 
 describe("akmReflect — passes REFLECT_JSON_SCHEMA for the selected LLM engine", () => {
-  // Finding 15 (guard-audit): reflect used to derive a character-based
-  // max_tokens cap and send it on every direct-LLM call — llm/client.ts
-  // deliberately does not send max_tokens by default, because a
-  // character-to-token conversion is inherently approximate and this exact
-  // derivation had already cut a real response off mid-envelope once (the
-  // 2,048-token headroom this test used to pin was itself a fudge factor
-  // bolted on to compensate). The content-size policy is still enforced by
-  // the prompt rules and the post-processor's own size check, so reflect no
-  // longer sends maxTokens at all.
   test("does not send a content-derived max_tokens cap", async () => {
     const stash = makeStashDir();
     const observedMaxTokens: Array<number | undefined> = [];
@@ -875,9 +866,6 @@ describe("akmReflect — direct LLM output recovery", () => {
       },
     });
 
-    // A well-formed response the size guard flags is not a parse failure —
-    // there is nothing to repair, and the guard no longer discards the
-    // revision (content_policy_reject); it queues, flagged for review.
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected success");
     expect(calls).toBe(1);

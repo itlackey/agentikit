@@ -90,14 +90,6 @@ function implicitComponentForEntry(
     const source = sources[index];
     const component = installation.components[0];
     if (!source || !component) continue;
-    // Root/adapter drift between the index and the live working source used
-    // to abort dispatch outright, even though the bytes actually dispatched
-    // (`realFile`, already stat'd and containment-checked against `realRoot`
-    // by the caller) never depend on this bookkeeping — and
-    // `assertRenderedIdentity` independently re-verifies the rendered
-    // result's identity against the index entry afterward. Warn and
-    // re-resolve from the live source instead of refusing to dispatch a file
-    // that already passed containment.
     const canonicalRoot = realDirectory(component.root, `Canonical implicit source root for ${entry.bundleId}`);
     if (canonicalRoot !== realRoot) {
       warnOnce(
@@ -134,11 +126,6 @@ function componentForEntry(entry: IndexEntry, config: AkmConfig, realRoot: strin
   }
   const component = bundleComponentConfig(configured);
   const configuredAdapter = component?.adapter;
-  // Adapter/root drift against the live bundle config — same reasoning as
-  // the implicit branch above: the dispatched bytes are already
-  // containment-checked independently of this bookkeeping, and
-  // `assertRenderedIdentity` re-verifies the rendered result's identity
-  // against the index entry afterward. Warn instead of refusing dispatch.
   if (configuredAdapter && configuredAdapter !== entry.adapterId) {
     warnOnce(
       `execution-source-adapter-drift:${entry.itemRef}`,
@@ -148,8 +135,6 @@ function componentForEntry(entry: IndexEntry, config: AkmConfig, realRoot: strin
   const configuredSource = bundlesToSourceEntries(config)?.find((source) => source.name === entry.bundleId);
   const configuredContentRoot = configuredSource ? resolveEntryContentDir(configuredSource) : undefined;
   if (!configuredSource || !configuredContentRoot) {
-    // No live source to re-resolve against at all — fall through to the
-    // already-validated indexed root/adapter below rather than refusing.
     warnOnce(
       `execution-source-unresolved:${entry.itemRef}`,
       `[command] Configured source for ${JSON.stringify(entry.itemRef)} no longer resolves to materialized content; dispatching from the indexed location instead. Run \`akm index --full\` after restoring or updating the bundle.`,
@@ -169,10 +154,6 @@ function componentForEntry(entry: IndexEntry, config: AkmConfig, realRoot: strin
     try {
       configuredRoot = realDirectory(lexicalConfiguredRoot, `Configured component root for ${entry.bundleId}`);
     } catch {
-      // Distinct from a root/adapter bookkeeping disagreement: the live
-      // source resolves, but genuinely has nothing at this path (never
-      // cloned, deleted, …) — there is no live content to re-resolve
-      // against, so this stays a hard failure.
       throw new ConfigError(
         `Configured ${JSON.stringify(configuredSource.type)} source for ${JSON.stringify(entry.itemRef)} is not materialized at its current component root.`,
         "INVALID_CONFIG_FILE",

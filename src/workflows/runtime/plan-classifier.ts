@@ -50,8 +50,6 @@ export function classifyWorkflowRunPlan(row: {
       error:
         row.plan_ir_version < WORKFLOW_IR_V5_VERSION
           ? // Issue 8: leads with the remedy available to a user who has
-            // ALREADY upgraded — "complete it before upgrading" is advice
-            // for the past, not something they can act on now.
             `Workflow run ${runId} was frozen as workflow plan irVersion ${row.plan_ir_version}; pre-irVersion-5 ` +
             `plans cannot execute after the 0.9.2 upgrade. Run 'akm workflow abandon ${runId}' and start a new ` +
             `run from the authored workflow to continue. 'akm workflow status' and 'akm workflow list' still ` +
@@ -62,19 +60,9 @@ export function classifyWorkflowRunPlan(row: {
             `the authored workflow. 'akm workflow status' and 'akm workflow list' still work on this run.`,
     };
   }
-  // Issue 8: `plan_ir_version IS NULL` is merely OLD (a row from before the
-  // column existed), not corrupt — the column's absence says nothing about
-  // whether the plan JSON itself is v5-shaped. Attempt the decode below the
-  // same as a `WORKFLOW_IR_V5_VERSION` row (`decodeCanonicalPlan` treats a
-  // `null`/`undefined` expected version as "no version to check") and let
-  // its hash/shape verdict decide, rather than rejecting it as corrupt
-  // before ever trying.
   try {
     return {
       support: "supported",
-      // A successful decode below IS v5 (it decoded against the v5 schema),
-      // whether or not this row's `plan_ir_version` column said so — see the
-      // comment above.
       irVersion: WORKFLOW_IR_V5_VERSION,
       plan: decodeCanonicalPlan(runId, row.plan_json, row.plan_hash, row.plan_ir_version),
     };
@@ -210,16 +198,6 @@ export function reconcileWorkflowSpineWithPlan(
   }
 }
 
-/**
- * Verify run-status-vs-spine consistency: checks the plan CANNOT supply on
- * its own (issue 7), since they depend on which step is genuinely current
- * and what state the runtime left it in — never repaired, always a hard
- * failure. Callers that may need to normalize a blocked/failed run first
- * (`resumeWorkflowRun`'s `reopenStepsForResume`/`markRunActive`) must call
- * this AFTER that normalization, against the refreshed rows — checking a
- * blocked/failed run's spine before the very repair that resume exists to
- * perform would defeat the repair.
- */
 export function assertRunStatusMatchesSpine(run: WorkflowRunRow, rows: readonly WorkflowRunStepRow[]): void {
   const current = run.current_step_id ? rows.find((row) => row.step_id === run.current_step_id) : undefined;
   if (run.current_step_id !== null && !current)

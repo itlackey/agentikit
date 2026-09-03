@@ -317,8 +317,6 @@ describe("akmExtract — discovery mode", () => {
     cfg.improve.strategies.extract.processes.extract.maxSessionsPerRun = 3;
 
     let chatCalls = 0;
-    // No explicit --since: the default discovery window applies, and so does
-    // the cap.
     const result = await akmExtract({
       type: "claude",
       stashDir: stash,
@@ -336,10 +334,6 @@ describe("akmExtract — discovery mode", () => {
   });
 
   test("an explicit --since bypasses maxSessionsPerRun", async () => {
-    // A human naming exactly the window they want processed this run gets
-    // the same deliberate-command exemption --force already has — the cap
-    // exists to bound an UNATTENDED default-window run's wall time/LLM
-    // spend, not to second-guess an explicit ask.
     const stash = makeStashDir();
     const now = Date.now();
     const sessions = Array.from({ length: 5 }, (_, i) => fakeSession(`s${i}`, now - (i + 1) * 60_000));
@@ -1796,11 +1790,8 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const stash = makeStashDir();
     const session = fakeSession("ses_bad_mode", Date.now() - 60_000);
     // Build a config where the agent profile EXISTS so the runner resolver
-    // successfully resolves to it, but the resolved engine is not an LLM —
-    // akmExtract's own "no LLM configured" guard fires either way (the
-    // resolver now returns null uniformly for "nothing resolved" and
-    // "resolved to the wrong kind", so one process pointed at an agent engine
-    // doesn't need a separate abort path).
+    // succeeds and akmExtract's own kind-check fires (not the resolver's
+    // missing-profile guard).
     const config = configWithStrategy(stash, { engine: "fake-agent" });
     config.engines = {
       ...config.engines,

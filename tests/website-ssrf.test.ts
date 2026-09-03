@@ -197,8 +197,6 @@ describe("start URL the operator typed is not refused outright (finding 1)", () 
     const originalBunTest = process.env.BUN_TEST;
     const originalNodeEnv = process.env.NODE_ENV;
     try {
-      // shouldAllowPrivateWebsiteHostsForTests() must read false here so the
-      // warn path (only taken outside test mode in production) is exercised.
       delete process.env.BUN_TEST;
       delete process.env.NODE_ENV;
       expect(shouldAllowPrivateWebsiteUrlForTests("http://10.9.9.9/handbook")).toBe(true);
@@ -225,9 +223,6 @@ describe("start URL the operator typed is not refused outright (finding 1)", () 
       async () => new Response("<html><body>hello from the intranet</body></html>", { status: 200 }),
     );
     expect(result.markdown).toContain("hello from the intranet");
-    // A real lookup for this made-up host cannot resolve at all in CI, which
-    // this module already treats the same as "resolves privately" — proceed
-    // rather than abort, per finding 1's "at minimum" verdict.
     expect(seen.length).toBeGreaterThan(0);
   });
 });

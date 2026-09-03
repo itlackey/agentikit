@@ -35,14 +35,6 @@ describe("0.9 config contract", () => {
     expect(() => loadUserConfig()).toThrow(/UNSUPPORTED_CONFIG_VERSION|configVersion/);
   });
 
-  // Both the retired `profiles` vocabulary and a literal (non-`$VAR`) engine
-  // apiKey used to fail the WHOLE config load — every akm command exits 78
-  // over a value the reader can (and must) still use. Both are now warned
-  // once and used/ignored as configured, matching the "reading persisted
-  // data" rule: a human hand-editing config.json, or a config a prior akm
-  // wrote, must still load. `akm config set` (config-walker.ts) still
-  // refuses a literal apiKey outright — see the "permits only symbolic
-  // engine apiKey values through config set" test below.
   test("loads a config with retired profile vocabulary and a literal engine apiKey, using both as configured", () => {
     writeConfig({
       configVersion: "0.9.0" as const,
@@ -325,11 +317,6 @@ describe("0.9 config contract", () => {
     ).toBe(false);
   });
 
-  // Top-level `writable` and `index.stalenessDetection` used to fail config
-  // load over a single retired key, taking down every command. Both are now
-  // ignored (warned once, dropped) rather than rejected — see
-  // core/config/config-schema.ts's superRefine and
-  // core/config/schema/index-config.ts's preprocess.
   test("ignores retired top-level writable and index.stalenessDetection instead of failing config load", () => {
     expect(validateConfigShape({ configVersion: "0.9.0", writable: true }).ok).toBe(true);
     expect(validateConfigShape({ configVersion: "0.9.0", index: { stalenessDetection: { enabled: true } } }).ok).toBe(
@@ -379,10 +366,6 @@ describe("0.9 config contract", () => {
     ).toBe(false);
   });
 
-  // A stray top-level `bindings` block used to fail the whole config load —
-  // the never-shipped Tier B feature has no runtime meaning, so it is now
-  // ignored (warned once, passed through) rather than rejected, same as the
-  // other retired top-level vocabulary below.
   test("ignores a stray top-level bindings block instead of failing config load", () => {
     expect(validateConfigShape({ configVersion: "0.9.0", bindings: { release: { export: "a//x" } } }).ok).toBe(true);
   });

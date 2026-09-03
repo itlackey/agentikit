@@ -17,12 +17,8 @@
  * (see `tests/workflows/schema-definition.test.ts`) and ignored at evaluation.
  *
  * Also pins the evaluation bounds documented in that module's header —
- * exhausting the depth limit is an ERROR, not a silent acceptance: the
- * subset never fails open. There is deliberately no separate node-visit
- * budget (removed per guard-audit finding #12): the schema tree is
- * author-supplied, finite, and acyclic, so a large but entirely valid value
- * must evaluate cleanly rather than being invalidated after the LLM call
- * that produced it was already paid for.
+ * exhausting the depth or node budget is an ERROR, not a silent acceptance:
+ * the subset never fails open.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -137,12 +133,6 @@ describe("validateJsonSchemaSubset — totality", () => {
     expect(errors.some((e) => e.includes("depth limit"))).toBe(true);
   });
 
-  // #12 (guard-audit): a node-visit budget used to invalidate a large but
-  // VALID structured output after the LLM call that produced it was already
-  // paid for. The schema is author-supplied structured-output config, not
-  // adversarial input, and the schema tree is finite and acyclic (no `$ref`),
-  // so there is nothing unbounded left to guard against once the depth limit
-  // stays in place. A large, entirely valid array now evaluates cleanly.
   test("a large, entirely valid array against a combinator schema evaluates cleanly (no node budget)", () => {
     const schema = {
       type: "array",

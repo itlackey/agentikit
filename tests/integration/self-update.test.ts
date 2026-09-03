@@ -430,8 +430,6 @@ describe("performUpgrade", () => {
     fs.mkdirSync(installDir, { recursive: true });
     const binaryPath = path.join(installDir, "akm");
     fs.writeFileSync(binaryPath, "old-binary");
-    // Simulate a previous `akm upgrade` that was interrupted after writing
-    // its rollback copy but before its own cleanup ran.
     fs.writeFileSync(`${binaryPath}.bak`, "orphaned-binary-from-a-crashed-upgrade");
     const binaryData = "new-binary";
     const binaryName = getAkmBinaryName();
@@ -460,9 +458,6 @@ describe("performUpgrade", () => {
 
       expect(result.upgraded).toBe(true);
       expect(fs.readFileSync(binaryPath, "utf8")).toBe(binaryData);
-      // The stale backup was overwritten and then cleaned up by the
-      // successful upgrade's own end-of-call cleanup — never left bricking
-      // the next run.
       expect(fs.existsSync(`${binaryPath}.bak`)).toBe(false);
       expect(warnings.some((args) => args.some((a) => String(a).includes("stale backup")))).toBe(true);
     } finally {

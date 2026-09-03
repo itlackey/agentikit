@@ -204,21 +204,18 @@ describe("run-completion output resolution failures complete with a warning, nev
     const eventsBefore = countEvents();
     const outcome = await completeSummarize(runId, { output: { present: true } });
 
-    // The run completes — the actual work is done, and re-dispatching the
-    // final step over an unresolved OUTPUT would be another paid call that
-    // fails identically on retry.
     if (!("run" in outcome)) throw new Error("expected a WorkflowRunDetail, not a validation failure");
     expect(outcome.run.status).toBe("completed");
     expect(outcome.warnings?.some((w) => w.includes("report"))).toBe(true);
 
+    // Fail-before-mutation (B-N13): the step stays pending, the run stays
+    // active, and no event is appended for the failed completion attempt.
     const row = await withWorkflowRunsRepo((repo) => repo.getRunById(runId));
     expect(row?.status).toBe("completed");
     const step = await withWorkflowRunsRepo((repo) => repo.getStep(runId, "summarize"));
     expect(step?.status).toBe("completed");
-    // The run genuinely finished, so the normal completion events still fire.
     expect(countEvents()).toBeGreaterThan(eventsBefore);
 
-    // What DID resolve is still stored — only the bad output is missing.
     const view = row as unknown as OutputsColumnView;
     expect(JSON.parse(view.outputs_json as string)).toEqual({ ok: 5 });
   });
@@ -230,6 +227,10 @@ describe("run-completion output resolution failures complete with a warning, nev
     });
     seedRun(runId, plan);
 
+    // Comfortably over WORKFLOW_MAX_EVIDENCE_JSON_BYTES (1 MiB): the SAME
+    // technique tests/integration/workflows/persistence-write-path.test.ts
+    // already uses to force `clipStepEvidenceForPersistence` to replace
+    // `evidence.output` with a marked truncation envelope.
     const huge = Array.from({ length: 4000 }, (_, i) => `${"x".repeat(512)}#${i}`);
     expect(Buffer.byteLength(JSON.stringify(huge), "utf8")).toBeGreaterThan(1024 * 1024);
     await completeCollect(runId, { output: huge });

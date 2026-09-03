@@ -210,23 +210,16 @@ export function acquireConfigReadFence(): { config: AkmConfig; release: () => vo
  */
 export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
   const versioned = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
-  // Retired 0.8 source-config shape (`stashDir`/`sources[]`/`installed[]`) —
-  // no migrator has ever existed for these, so without this shim they hard-
-  // reject at load and take down every command. See the module doc.
   const parsedRaw = migrateLegacySourceShape(versioned, sourcePath);
 
   // #852 (following #815): a config still using legacy `extraParams` keys —
   // e.g. `reasoning_effort`, a documented 0.9.1 workaround — needs to be
-  // rewritten onto the first-class engine field they now shadow.
-  // `liftLegacyEngineExtraParams` is pure and already computes the lifted
-  // result; AGENTS.md cites this guard as already fixed to warn-and-auto-lift
-  // once (#815/#816's worked example), but a later change reintroduced a hard
-  // rejection that discarded that computed result and failed the WHOLE config
-  // load instead. Use the lifted config and warn once; `akm migrate apply`
-  // (scripts/akm-migrate/migrate/config-extra-params.ts) still exists to
-  // persist the lift and silence the warning. A genuine conflict (the
-  // extraParams key and the first-class field disagree) still fails closed —
-  // akm cannot guess which value the user meant.
+  // rewritten onto the first-class engine field they now shadow. This used
+  // to happen silently, in memory, on every load; that ran forever and never
+  // converged. The lift itself is now `akm migrate apply`'s job (see
+  // scripts/akm-migrate/migrate/config-extra-params.ts) and persists to disk, so a
+  // config that has not been migrated yet fails closed here instead of
+  // silently drifting from what's on disk.
   const where = sourcePath ? ` at ${sourcePath}` : "";
   const { config: liftedConfig, lifted, conflicts } = liftLegacyEngineExtraParams(parsedRaw);
   if (conflicts.length > 0) {
@@ -443,12 +436,6 @@ export function sanitizeConfigForWrite(config: AkmConfig): Record<string, unknow
     );
   }
 
-  // Registry URL credentials: `registry add` / `config set registries` already
-  // refuse these at the human-typed entry point (core/config/config-walker.ts,
-  // commands/registry-cli.ts). This is the same belt-and-suspenders as the
-  // apiKey strip above for a caller that reaches `saveConfig`/`mutateConfig`
-  // directly — a credential must never reach config.json on disk, regardless
-  // of how it got into the in-memory config.
   if (config.registries) {
     const droppedRegistries: string[] = [];
     const registries = config.registries.filter((entry) => {

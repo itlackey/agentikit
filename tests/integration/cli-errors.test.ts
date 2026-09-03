@@ -932,9 +932,8 @@ describe("GLOBAL_OUTPUT_ARGS coverage guard (R-051)", () => {
 // boilerplate was dropped from the canonical wording — `list` doesn't exist
 // as a bare command any more (folded into `akm bundle list`, S7), and a
 // caveat naming stale commands is worse than no caveat). `--shape summary`
-// falls back to `agent` with a warning everywhere except `akm show` (only
-// `show` has a dedicated summary projection), and that caveat should still
-// be visible from a leaf's own `--help`, not only the root's.
+// is still a hard usage error everywhere except `akm show`, and that caveat
+// should still be visible from a leaf's own `--help`, not only the root's.
 describe("GLOBAL_OUTPUT_ARGS help text is scoped honestly (R-050c)", () => {
   test("--shape repeats the 'summary is show-only' caveat root help documents", () => {
     expect(GLOBAL_OUTPUT_ARGS.shape.description).toContain("summary");

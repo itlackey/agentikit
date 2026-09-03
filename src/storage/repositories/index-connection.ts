@@ -144,21 +144,6 @@ export function openExistingDatabase(dbPath?: string): Database {
   });
 }
 
-/**
- * A non-canonical generation used to be a hard refusal here
- * (`INDEX_SCHEMA_INCOMPATIBLE`) on every reader, including read-only tooling
- * that cannot rebuild the index itself (`improve --dry-run`, `health`,
- * `bundle list` counts). That took an existing, readable index and made it
- * unusable for the whole process rather than just the one query that
- * actually needs a column or table this generation lacks.
- *
- * Warn once and hand back the connection instead: a query against a
- * genuinely absent table (e.g. `entries`) still fails with SQLite's own
- * clear error, which several callers already interpret as "index not usable
- * yet" (see `commands/improve/eligibility.ts`'s `incompatible` snapshot
- * status) — the same "not usable yet" outcome, just decided at the query
- * that actually needs the missing shape instead of unconditionally at open.
- */
 function warnIfNonCanonicalIndexGeneration(db: Database, resolvedPath: string): void {
   if (isCanonicalIndexGeneration(db)) return;
   const classification = classifyIndexGeneration(db);
@@ -198,14 +183,6 @@ function openPlainReadonly(resolvedPath: string): Database | undefined {
   return openDatabase(resolvedPath, { readonly: true, create: false });
 }
 
-/**
- * Prefer the isolated point-in-time snapshot (no read-lock bookkeeping
- * touches the source SHM), but a snapshot that cannot be taken right now —
- * a hot rollback journal that never cleared, or a writer that never stopped
- * changing the file during every retry — is not a reason to refuse the read
- * outright. Fall through to a plain read-only open, which lets SQLite's own
- * concurrency handling (busy_timeout, WAL readers) serve the request instead.
- */
 function openIsolatedSnapshotOrFallBack(resolvedPath: string): Database | undefined {
   try {
     return openSqliteReadSnapshot(resolvedPath);

@@ -178,10 +178,6 @@ describe("resolveIndexPassExecution", () => {
       expect(() => resolveIndexPassExecution("graph", config)).toThrow(/missing/i);
     });
 
-    // Finding 5 (guard-audit): a bad/non-LLM engine on ONE index pass used to
-    // throw before the enclosing try in indexer.ts — killing FTS and
-    // embeddings too, which need no LLM at all. It now degrades exactly like
-    // `enabled: false`, with a warning naming the pass and engine.
     test("a non-LLM engine on a pass degrades to no runner (with a warning) instead of aborting the whole index run", () => {
       const seen: unknown[][] = [];
       overrideSeam(_setWarnSinkForTests, (level, args) => {

@@ -194,19 +194,16 @@ export type ComputeWorkListResult = { ok: true; list: StepWorkList } | { ok: fal
  */
 /**
  * Validate a fan-out item list BEFORE any identity/dispatch work: expansion
- * within the resource limit, no null/undefined items. Returns the failure
- * message, or undefined when the list is dispatchable.
+ * within the resource limit, no null/undefined items, no canonical duplicates.
+ * Returns the failure message, or undefined when the list is dispatchable.
  *
  * Null items: producer garbage — there is nothing to hand the unit as its work
  * item. The pre-unification format rejected them incidentally (substituting
  * `${{ item }}` failed); with items attached as context instead of spliced,
  * nothing later would stop a unit from being dispatched with "Item: null", so
- * the rejection is explicit here.
- *
- * Canonical duplicates are NOT rejected (issue 6): the item list comes from a
- * PRODUCING step, so "deduplicate the list" is often not something the
- * workflow's author can do. {@link occurrenceSuffixedUnitIds} disambiguates
- * them instead.
+ * the rejection is explicit here. Duplicates: content-derived unit identity
+ * makes canonical duplicates collide on id — an authoring error caught
+ * deterministically, before dispatch.
  */
 function validateFanOutItems(stepId: string, items: unknown[]): string | undefined {
   const nullIndex = items.findIndex((item) => item === null || item === undefined);
@@ -220,8 +217,8 @@ function validateFanOutItems(stepId: string, items: unknown[]): string | undefin
 }
 
 /**
- * Content-derived unit ids for a fan-out list, disambiguating canonical
- * duplicates by OCCURRENCE ORDINAL rather than rejecting the list (issue 6).
+ * Resolve one whole-value reference, refusing a value a persisted TRUNCATION
+ * ENVELOPE stands in for (`clipStepEvidenceForPersistence`, runtime/runs.ts).
  *
  * The first occurrence of a given canonical value keeps the byte-identical id
  * {@link unitIdFor} always produced for it — so a plan with no duplicates (the
@@ -252,6 +249,9 @@ function occurrenceSuffixedUnitIds(nodeId: string, items: readonly unknown[]): s
  * wrapper — it never interpolates prose.
  */
 function resolveStepReference(reference: string, scope: ExpressionScope): ResolveReferenceResult {
+  // Source adapters may retain GitHub's whole-value `${{ ... }}` spelling.
+  // The source IR owns GitHub's whole-value spelling; this work-list seam
+  // unwraps only an exact whole-value wrapper and never interpolates prose.
   const exactWrapper = /^\$\{\{\s*([^{}]+?)\s*\}\}$/.exec(reference);
   const canonicalReference = exactWrapper?.[1] ?? reference;
   return resolveReferenceString(canonicalReference, scope);

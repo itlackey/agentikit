@@ -450,21 +450,11 @@ afterEach(() => {
 
 describe("registry credential-bearing URL mutation boundaries", () => {
   test("the shared save boundary drops the complete credential corpus instead of persisting it", () => {
-    // `registry add` / `config set registries` (the human-typed entry points,
-    // covered below) already refuse a credentialed URL outright. This is the
-    // lower-level `saveConfig`/`sanitizeConfigForWrite` boundary underneath
-    // both — reachable directly by any future in-process caller — and it must
-    // never let a credential reach config.json on disk, so it drops the
-    // offending registry entry (like the sibling apiKey strip above it) and
-    // warns, rather than writing it verbatim.
     for (const url of SAVE_BOUNDARY_UNSAFE_URLS) {
       try {
         saveRegistryUrl(url);
         expect(loadConfig().registries ?? []).toEqual([]);
       } catch (err) {
-        // A literal `http(s):<control-char>//` scheme isn't a credential
-        // finding at all — it fails the base `httpUrl` shape check (kept),
-        // same as any other malformed scheme would.
         expect(String(err)).not.toContain("credential");
         expect(String(err)).toContain("http:// or https://");
       }
@@ -473,10 +463,6 @@ describe("registry credential-bearing URL mutation boundaries", () => {
   });
 
   test("config set rejects representative credential classes before persistence", async () => {
-    // `config set registries` validates through the same config schema
-    // (core/config/schema/sources-bundles.ts) as a startup config load, and
-    // config-cli.ts reclassifies that failure into a usage error (exit 2) —
-    // unaffected by the registry-cli.ts change below.
     const invocations = [
       [
         "config",
@@ -505,23 +491,6 @@ describe("registry credential-bearing URL mutation boundaries", () => {
   });
 
   test("registry add accepts a credentialed URL, warning with the credential redacted (0.9.12)", async () => {
-    // registry-cli.ts's own guard is gone: the built-in static-index and
-    // skills-sh providers ignore URL userinfo, so `registry add` no longer
-    // throws its own usage error for one. The config-schema check
-    // `RegistryConfigEntrySchema` used to run (core/config/schema/
-    // sources-bundles.ts) is also gone — a registry URL with credentials is
-    // not a config-load hazard, since it never reaches every command the
-    // way a config-wide parse failure would; the registry/search call sites
-    // that actually dial out already check `hasRegistryUrlCredentials` and
-    // skip the one bad entry on their own. So the registry is now added
-    // (exit 0) and a warning is emitted instead.
-    //
-    // The property that makes warning-instead-of-refusing safe here:
-    // `formatRegistryUrl` structurally clears the URL's username/password
-    // before it is ever echoed — in the warning below, in `registry list`,
-    // anywhere. Persisted config.json is the one place the raw URL (as
-    // typed) legitimately lives, matching every other value a human passed
-    // as a CLI argument themselves.
     const invocations = [
       ["registry", "add", CREDENTIAL_URL, "--verbose", "--format=json"],
       ["registry", "add", STRICT_NESTED_USERINFO_URLS[0], "--format=json"],
@@ -531,8 +500,6 @@ describe("registry credential-bearing URL mutation boundaries", () => {
 
     for (const argv of invocations) {
       const url = argv[2] as string;
-      // The property that makes it safe to warn instead of refuse: display
-      // never carries the raw credential, regardless of how it's detected.
       expect(formatRegistryUrl(url)).not.toContain(url);
       expectCredentialsAbsent(formatRegistryUrl(url));
 
@@ -589,13 +556,6 @@ describe("already-persisted registry credentials load and stay redacted", () => 
       registries: [{ url: CREDENTIAL_URL, name: "private", provider: "static-index" }],
     });
 
-    // A credential-bearing registry URL is not a config-load hazard (#5): it
-    // never reaches every command the way a config-wide parse failure would,
-    // only the commands that actually dial out or display it. Every command
-    // below loads config successfully; display-only commands (registry list,
-    // config list, info, health) show the entry with its userinfo stripped by
-    // `formatRegistryUrl`, and `search` (which would actually fetch from it)
-    // skips the entry entirely with a `formatRegistryCredentialWarning`.
     const displayInvocations = [
       ["registry", "list", "--format=json"],
       ["config", "list", "--format=json"],
@@ -624,12 +584,6 @@ describe("already-persisted registry credentials load and stay redacted", () => 
   });
 
   test("every persisted credential class loads without leaking a credential into registry list", async () => {
-    // A registry URL is config, not the config-load gate: bundles/schema config
-    // load must not brick every command over one bad registry entry (#5). A
-    // literal `http(s):<control-char>//` scheme (not a real akm shape — it
-    // only appears in this adversarial corpus) still fails the base `httpUrl`
-    // shape check and keeps failing closed; every other class loads and is
-    // display-redacted by `formatRegistryUrl`, same as an already-safe URL.
     for (const url of PERSISTED_BOUNDARY_UNSAFE_URLS) {
       writeSandboxConfig({ registries: [{ url, name: "private", provider: "static-index" }] });
       const result = await runCliCapture(["registry", "list", "--verbose", "--format=json"]);

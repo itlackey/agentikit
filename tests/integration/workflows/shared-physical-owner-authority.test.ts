@@ -152,11 +152,6 @@ describe("shared adapter physical-owner authority", () => {
   });
 
   test("a stale indexed identity for a workflow falls back to the physical owner instead of aborting", async () => {
-    // The sibling non-workflow branch above (`mutateEntry(..., "stale", ...)`)
-    // falls back to the physical owner on a stale row. Workflows used to
-    // throw WorkflowSourceIdentityError here instead — the authoritative
-    // file was already in hand as `owner`, so this is the same recoverable
-    // staleness a reindex fixes, not a reason to abort resolution.
     const early = fixture("early-workflow-stale", "akm-workflow");
     const later = fixture("later-workflow-stale", "akm");
     const workflowPath = write(early.root, "collision.md", getWorkflowTemplate());

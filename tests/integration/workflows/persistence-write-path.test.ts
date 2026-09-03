@@ -26,19 +26,14 @@ import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../
  *      DATABASE PATH, so unrelated databases never queue behind each other,
  *      while a wide concurrent fan-out against ONE database still produces
  *      exactly one correct terminal row per unit.
- *   C. Evidence persistence (issue C) — `evidence_json` is persisted WHOLE,
- *      unclipped, at any size. It used to be capped at 1 MiB and an over-cap
- *      value replaced by a marked truncation envelope; the run then looked
- *      successful but a LATER invocation reading that row (any resume, or
- *      any downstream step referencing the artifact) failed permanently,
- *      with the value unrecoverable and every prior paid step wasted. There
- *      is no cap any more: what a step promoted is exactly what a resumed
- *      run reads back.
- *   D. …which a live run already relied on: a step's own invocation always
- *      fed its later steps the complete value (the persistence bound never
- *      reached the live run). Section D now also covers the case the bound
- *      used to break — a run RESUMED from rows a previous invocation wrote
- *      still dispatches against the complete value, not a tombstone.
+ *   C. Evidence bound — `evidence_json` is capped at
+ *      {@link WORKFLOW_MAX_EVIDENCE_JSON_BYTES} and an over-cap value is stored
+ *      as an unmistakably-marked truncation envelope, never as a silently
+ *      shortened value that reads like complete data.
+ *   D. …and that bound is a PERSISTENCE bound only: the invocation that
+ *      produced an over-cap artifact still feeds the complete value to its own
+ *      later steps, while a run resumed from the truncated row refuses to
+ *      dispatch against it and says truncation is why.
  */
 
 let storage: IsolatedAkmStorage;
@@ -309,15 +304,15 @@ describe("evidence_json persistence (no cap — issue C)", () => {
   });
 });
 
-// ── D. issue C: a big artifact survives a live run AND a resume ─────────────
+// ── D. the row bound never reaches the LIVE run ──────────────────────────────
 
 const FLOW_RUN_ID = "55555555-5555-4555-8555-555555555555";
 
-/** Wide + long enough that `produce`'s promoted array alone would have blown the FORMER 1 MiB row cap. */
+/** Wide + long enough that `produce`'s promoted array alone blows the 1 MiB row cap. */
 const CHUNK_COUNT = 20;
 const CHUNK_CHARS = 60_000;
 
-/** Distinct per index — kept distinct for clarity, though duplicates are no longer rejected (issue 6). */
+/** Distinct per index — content-derived unit identity rejects duplicate items. */
 function chunkText(index: number): string {
   return `${"c".repeat(CHUNK_CHARS - 4)}#${String(index).padStart(3, "0")}`;
 }
@@ -379,13 +374,14 @@ describe("a big artifact survives both a live run and a resume (issue C fix)", (
 
     expect(result.done).toBe(true);
     // The whole promoted array reached `consume` — every unit got its own
-    // complete 60k-char item.
+    // complete 60k-char item, not a truncation envelope (which is not even an
+    // array, so the fan-out would have failed to resolve at all).
     expect(consumePrompts).toHaveLength(CHUNK_COUNT);
     for (let i = 0; i < CHUNK_COUNT; i++) {
       expect(consumePrompts.some((prompt) => prompt.includes(chunkText(i)))).toBe(true);
     }
 
-    // …and the persisted row holds the SAME complete array — no cap, no marker.
+    // …and the row is STILL bounded: the cap did its job on persistence only.
     const stored = await withWorkflowRunsRepo((repo) => repo.getStep(FLOW_RUN_ID, "produce"));
     expect(Buffer.byteLength(stored?.evidence_json as string, "utf8")).toBeGreaterThan(ONE_MIB);
     const persisted = JSON.parse(stored?.evidence_json as string) as { output: string[] };
@@ -415,8 +411,6 @@ describe("a big artifact survives both a live run and a resume (issue C fix)", (
       db.close();
     }
 
-    // A NEW invocation (this is the resume path) reads the row cold — no
-    // live in-memory evidence map from a prior call in this process.
     const consumePrompts: string[] = [];
     const result = await runWorkflowSteps({
       target: FLOW_RUN_ID,
@@ -427,8 +421,6 @@ describe("a big artifact survives both a live run and a resume (issue C fix)", (
       summaryJudge: null,
     });
 
-    // Every unit dispatched against the real chunk — nothing was lost, no
-    // paid step needs re-running, and the run completes normally.
     expect(result.done).toBe(true);
     expect(consumePrompts).toHaveLength(CHUNK_COUNT);
     for (let i = 0; i < CHUNK_COUNT; i++) {

@@ -95,10 +95,6 @@ describe("resolveMetaFilePath", () => {
     }
   });
 
-  // #11: a symlink is only a hazard when it ESCAPES the bundle. Refusing any
-  // symlink at all — even one that resolves back inside the very same
-  // bundle — broke every stow/chezmoi-managed dotfile stash, since both tools
-  // commonly make `.meta/` itself, or individual files inside it, symlinks.
   testSymlink("reads a meta file symlinked to another location inside the same bundle", () => {
     fs.mkdirSync(path.join(root, "real-content"), { recursive: true });
     fs.writeFileSync(path.join(root, "real-content", "about.md"), "# real content, symlinked in\n");

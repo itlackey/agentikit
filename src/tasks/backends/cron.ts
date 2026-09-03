@@ -85,11 +85,6 @@ export interface CronExec {
   write(content: string): CronExecResult;
 }
 
-// `writeFile` is optional so every existing test fake (which only ever
-// exercises short, direct cron lines) keeps compiling unchanged; the real
-// default (`nodeFs()`) always provides it, and `install()` throws a clear
-// error if a wrapper script is actually needed but the injected `fs` cannot
-// write one.
 export type CronFs = Pick<NodeFs, "ensureDir"> & Partial<Pick<NodeFs, "writeFile">>;
 
 export interface CronBackendOptions {
@@ -361,32 +356,16 @@ function isCronBindingSnapshot(value: unknown): value is CronBindingSnapshot {
 
 // ── helpers (exported for tests) ────────────────────────────────────────────
 
-/** A wrapper script `buildCronLine` decided is needed, for the caller to actually write to disk. */
 export interface CronWrapperScript {
-  /** Content-addressed path (changes whenever the invocation it wraps changes, so drift detection still sees a change). */
   readonly path: string;
   readonly content: string;
 }
 
 export interface CronLineResult {
   readonly line: string;
-  /** Present only when the direct line would exceed {@link PORTABLE_CRON_LINE_LIMIT}. */
   readonly wrapper?: CronWrapperScript;
 }
 
-/**
- * Build the crontab line for a task, spilling into a wrapper script when the
- * direct line would exceed the portable command-line length vixie-cron
- * actually enforces (finding 16, docs/plans/guard-audit.md). Truncating the
- * line would execute a partial command — genuinely destructive — so this is
- * the only escape hatch besides refusing to install the task outright.
- *
- * The wrapper's path is content-addressed (a hash of its own content) rather
- * than just `<nativeId>.sh`: the crontab line otherwise would not change when
- * the WRAPPED invocation does (only the file it references would), silently
- * defeating every drift-detection / expected-signature check in this backend,
- * which all work by hashing the crontab line's own text.
- */
 function buildCronLineParts(
   task: SchedulerBinding,
   akmArgv: string[],
@@ -407,16 +386,12 @@ function buildCronLineParts(
   const content = cronWrapperScriptContent(invocation.argv);
   const contentHash = createHash("sha256").update(content).digest("hex").slice(0, 16);
   const wrapperPath = path.join(logDir, `${CRON_WRAPPER_PREFIX}${nativeId}-${contentHash}.sh`);
-  // Invoked as `sh <path>` (not `<path>` alone) so no execute bit is needed
-  // on the wrapper file at all.
   const line = `${cronExpr} sh ${quoteForCron(wrapperPath)} >> ${quoteForCron(logPath)} 2>&1`;
   return { line, wrapper: { path: wrapperPath, content } };
 }
 
-/** File name prefix for generated wrapper scripts, so a listing of `logDir` can recognize them. */
 const CRON_WRAPPER_PREFIX = ".akm-cron-wrapper-";
 
-/** Quote one argv token for a POSIX `sh` script body — ordinary shell quoting, no cron `%`-escaping. */
 function quoteForShellScript(part: string): string {
   if (/^[A-Za-z0-9_\-./@:=+,]+$/.test(part)) return part;
   return `'${part.replace(/'/g, `'\\''`)}'`;

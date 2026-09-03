@@ -85,11 +85,9 @@ registerOutputShapes(BUILT_IN_OUTPUT_SHAPES);
 export type OutputCommandName = string;
 
 /**
- * Commands whose shape handler implements the `summary` projection.
- * `--shape` is documented as a GLOBAL flag, so a command without a summary
- * projection falls back to `agent` with a warning rather than a hard usage
- * error — the same "degrade, don't refuse" treatment `--format` already gets
- * on an exempt command (src/cli.ts).
+ * Commands whose shape handler implements the `summary` projection. For every
+ * other command, `--shape summary` is a usage error (v1 §5 — honest rejection
+ * for a soon-frozen contract, not a silent fallback to `human`).
  */
 const SHAPE_SUMMARY_COMMANDS = new Set(["show"]);
 

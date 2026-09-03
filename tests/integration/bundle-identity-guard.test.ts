@@ -91,14 +91,6 @@ describe("§11.5 bundle-rename startup guard", () => {
 
     warnOnBundleRenameDrift(bundlesConfig("newname"));
 
-    // openReadonlyExistingDatabase no longer aborts the read for a
-    // non-canonical generation (#895) — it warns once and hands back the
-    // connection, which is why a schema-mismatch warning is now expected
-    // here. What must NOT happen is the guard trusting this generation
-    // enough to draw its own, separate rename-drift conclusion: a
-    // hand-tampered/foreign shape still answers the bundle_id query, so the
-    // guard has its own explicit canonical-generation check rather than
-    // relying on a query failure to stay silent.
     expect(warnCalls).toHaveLength(1);
     expect(warnCalls[0]).toContain("does not match this akm's derived schema");
     expect(warnCalls.some((message) => message.includes("bundle identity drift"))).toBe(false);

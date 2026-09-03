@@ -163,10 +163,6 @@ function pullRepo(repoDir: string): void {
     throw new UsageError(`Writable Git source at ${repoDir} has uncommitted changes; refusing to update it.`);
   }
   const relation = inspectGitUpstream(repoDir);
-  // `ahead` alone is not a reason to refuse: with nothing to fast-forward
-  // (`behind === 0`), there is no merge to attempt and no data at risk —
-  // refusing here blocked a no-op update. Only check `ahead` (and re-check
-  // for a concurrent change) when there is actually something to merge.
   if (relation.behind > 0 && relation.upstream) {
     if (relation.ahead > 0) {
       throw new UsageError(`Writable Git source at ${repoDir} has unpushed commits; refusing to update it.`);

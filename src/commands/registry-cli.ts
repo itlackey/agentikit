@@ -40,9 +40,6 @@ export const registryCommand = defineGroupCommand({
         },
       },
       async run({ args }) {
-        // The built-in static-index and skills-sh providers don't support
-        // authenticated registries and ignore any userinfo in the URL —
-        // warn rather than refuse an operator-typed registry outright.
         if (hasRegistryUrlCredentials(args.url)) {
           warn(
             `Registry ${formatRegistryLabel({ url: args.url, name: args.name })} was added, but its URL's ` +

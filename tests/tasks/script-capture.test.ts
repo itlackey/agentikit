@@ -1,14 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
-/**
- * Finding 4 (guard-audit): `.js`/`.ts` script targets were refused whenever
- * Bun was absent, even though the running Node can execute plain JavaScript
- * directly — this fires exactly on the npm-global install `resolve-akm-bin`
- * treats as eligible, never under `bun test` (`process.versions.bun` is
- * always truthy there), so these tests fake Bun's absence directly.
- */
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
@@ -16,7 +5,6 @@ import { UsageError } from "../../src/core/errors";
 import { captureScriptTarget, scriptInterpreter } from "../../src/tasks/prepare/script-capture";
 import { makeSandboxDir } from "../_helpers/sandbox";
 
-/** Run `fn` with `process.versions.bun` deleted, then restore it unconditionally. */
 function withoutBun<T>(fn: () => T): T {
   const versions = process.versions as Record<string, string | undefined>;
   const original = versions.bun;
@@ -28,7 +16,6 @@ function withoutBun<T>(fn: () => T): T {
   }
 }
 
-/** Run `fn` with `process.features.typescript` forced to a given value, then restore it. */
 function withNodeTypeScriptSupport<T>(supported: boolean, fn: () => T): T {
   const proc = process as unknown as { features?: Record<string, unknown> };
   const originalFeatures = proc.features;

@@ -21,12 +21,9 @@
  *     that reclassification, so it would misreport the exit code here. See
  *     tests/integration/cli-errors.test.ts's "R-032" describe block for the
  *     same real-subprocess-required pattern applied to other removed surfaces.
- *   - `secret run` validation failures (invalid var name, missing command)
- *     run in-process — they fail before any child spawn. Injecting into a
- *     known process-hijacking variable (LD_PRELOAD, PATH, ...) only BLOCKS
- *     for a third-party (named, non-primary) stash; a first-party stash
- *     warns and the command still runs — same first-party/third-party split
- *     as `env run` (src/core/activation-policy.ts).
+ *   - `secret run` validation failures (LD_PRELOAD rejection, invalid var
+ *     name, missing command) run in-process — they fail before any child
+ *     spawn.
  *   - The happy-path `secret run` injection test lives in
  *     tests/integration/secret-run.test.ts: it needs a real process boundary
  *     to observe the CHILD's env.
@@ -133,10 +130,6 @@ describe("secret run", () => {
   // lives in tests/integration/secret-run.test.ts — it requires a real
   // subprocess. The cases below fail validation before any child spawn.
   test("warns and still runs for a dangerous target variable name on a first-party (primary) stash", async () => {
-    // `akm secret run <ref> GIT_SSH_COMMAND -- git push` is the canonical use
-    // of this feature: the value comes from the operator's own store and the
-    // var name was typed on the command line, so a first-party stash warns
-    // instead of refusing outright.
     const stashDir = makeStash();
     setSecret(path.join(stashDir, "secrets", "demo"), Buffer.from("v"));
     const { status, stdout, stderr } = await runCli(["secret", "run", "secrets/demo", "LD_PRELOAD", "--", "true"], {

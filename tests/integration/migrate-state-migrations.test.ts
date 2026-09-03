@@ -5,12 +5,11 @@
 /**
  * `akm-migrate` runs every migration in one plan, in order: legacy config
  * lift, pending state.db migrations, the task generations, residue sweeps.
- * These prove the two steps the CLI proper does not do on its own -- the
- * on-disk config lift (`loadConfig` itself auto-lifts extraParams in memory
- * with a warning, but only `akm migrate apply` persists it and silences the
- * warning), and the historical-destructive state migration an ordinary open
- * refuses (#895) -- and that they run BEFORE the task migrators, which load
- * config and open state.db themselves.
+ * These prove the two steps the CLI proper refuses to do on its own -- the
+ * config lift a failing `loadConfig` names as its own remedy, and the
+ * historical-destructive state migration an ordinary open refuses (#895) --
+ * and that they run BEFORE the task migrators, which load config and open
+ * state.db themselves.
  *
  * Integration: seeds and opens a real state.db under an isolated data dir.
  */

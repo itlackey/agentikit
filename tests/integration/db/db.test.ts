@@ -984,12 +984,6 @@ describe("Vector / Embedding integration", () => {
   });
 
   test("openExistingDatabase opens a non-canonical generation instead of refusing it outright", () => {
-    // A hard refusal here used to take down every caller of openExistingDatabase
-    // for a generation mismatch it could not fix itself (read-only tooling
-    // included). It now opens the connection and lets the query that actually
-    // needs the missing/changed shape fail with SQLite's own clear error,
-    // which callers such as `improve`'s eligibility selector already turn
-    // into an "index not usable yet" result instead of a crash.
     const dbPath = tmpDbPath();
     const seed = openIndexDatabase(dbPath);
     setMeta(seed, "version", "0");

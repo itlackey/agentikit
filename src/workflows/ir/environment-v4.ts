@@ -81,9 +81,6 @@ export function freezeWorkflowEnvironment(
       );
     }
     if (logical.has(resolved.ref)) {
-      // Same logical owner authored twice (e.g. once directly, once via an
-      // included fragment) resolves to the same values either way — drop the
-      // repeat rather than aborting the freeze over it.
       continue;
     }
     logical.add(resolved.ref);
@@ -100,9 +97,6 @@ export function freezeWorkflowEnvironment(
     const physicalKey = `${captured.containmentPhysicalIdentity}\0${captured.physicalIdentity}`;
     const alias = physical.get(physicalKey);
     if (alias !== undefined && alias !== resolved.ref) {
-      // Two logical owners pointing at the same physical env file would just
-      // materialize the identical values twice under different names — warn
-      // and collapse onto the first-seen owner instead of refusing to freeze.
       warn(
         `Workflow env ref ${resolved.ref} aliases the same physical environment source as ${alias} under a different logical owner. Using ${alias}.`,
       );

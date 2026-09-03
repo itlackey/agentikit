@@ -436,10 +436,6 @@ describe("post-loop hook gating", () => {
     await akmImprove({
       scope: "memory",
       stashDir: storage.stashDir,
-      // Consolidate explicitly disabled: the pool-size guard no longer has a
-      // built-in default (guard-audit finding D-4), so a 30-memory corpus on
-      // its own no longer skips consolidation — it needs its own reason not
-      // to run for this negative-path test to mean what its name says.
       config: withTestImproveLlm({
         semanticSearchMode: "off",
         improve: { strategies: { default: { processes: { consolidate: { enabled: false } } } } },

@@ -121,17 +121,11 @@ export function resolveMetaFilePath(sourceRoot: string, name: string): string | 
 }
 
 /**
- * Resolve and read a meta doc from one stable file descriptor. The
- * descriptor/path identity check closes the swap window between path
+ * Resolve and read a meta doc from one stable, no-follow file descriptor.
+ * The descriptor/path identity check closes the swap window between path
  * validation and reading: even if a writable local bundle changes the path
  * concurrently, bytes are returned only when the opened inode is still the
  * validated file inside the bundle's real `.meta/` directory.
- *
- * Symlinks are followed, not refused: stow/chezmoi-managed dotfile layouts
- * commonly make `.meta/` itself, or individual files inside it, symlinks —
- * a REAL hazard only if the resolved target escapes the stash, which is what
- * {@link isSafeRegularMetaFile}'s realpath-containment check (not a "no
- * symlinks at all" rule) actually guards against.
  */
 export function readMetaFile(sourceRoot: string, name: string): ResolvedMetaFile | null {
   const filePath = resolveMetaFilePath(sourceRoot, name);
@@ -160,16 +154,6 @@ export function readMetaFile(sourceRoot: string, name: string): ResolvedMetaFile
   }
 }
 
-/**
- * A meta doc is safe to read when, after following every symlink in its
- * path (`.meta/` itself included), the resolved file sits inside the
- * resolved stash root and is a regular file. This is the same realpath +
- * `isWithin` containment pattern used everywhere else in the codebase for a
- * read path that must tolerate symlinks (`core/common.ts`'s own doc comment
- * on {@link isWithin}) — the earlier per-segment "any symlink at all is
- * refused" walk added no containment guarantee this doesn't already give,
- * while breaking every dotfile-managed (`stow`/`chezmoi`) stash layout.
- */
 function isSafeRegularMetaFile(sourceRoot: string, metaRoot: string, filePath: string): boolean {
   const relative = path.relative(metaRoot, filePath);
   if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {

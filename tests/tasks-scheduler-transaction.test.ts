@@ -251,10 +251,6 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
   });
 
   test("task add replaces a hand-edited installed binding (unparseable ordinal) with a warning, skipping only its own CAS", async () => {
-    // Models a hand-edited crontab line: the entry runs this task (its
-    // invocation tail matches "task run mytask ..."), but its own scheduler
-    // binding id is not one this parser can map back to a schedule ordinal
-    // — so there is no exact compare-and-swap proof to build for it.
     const handEdited: SchedulerBinding = {
       id: "hand-edited-id",
       logicalSource: { kind: "task", ref: "stash//tasks/mytask" },
@@ -277,7 +273,6 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
       _resetWarnOnceForTests();
     }
 
-    // Replaced (not refused): the stale entry is gone and the new one installed.
     expect(backend.calls).toEqual(["remove:hand-edited-id:missing-cas", "install:mytask:cas"]);
     expect(backend.stored.has("hand-edited-id")).toBe(false);
     expect(backend.stored.has("mytask")).toBe(true);
@@ -291,10 +286,6 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
   });
 
   test("task add reads an existing symlinked task source instead of refusing it (containment still enforced)", async () => {
-    // Standard `~/dotfiles/akm/tasks/` layout: the task file inside the
-    // stash is a symlink. Containment is enforced independently via the
-    // REALPATH of the resolved target, which here still lands inside the
-    // stash root.
     const realTarget = path.join(storage.stashDir, "tasks", ".mytask-real.yml");
     fs.writeFileSync(realTarget, 'version: 4\nrun: echo old\nschedule: "@daily"\n');
     const assetPath = path.join(storage.stashDir, "tasks", "mytask.yml");
@@ -314,10 +305,6 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     const assetPath = path.join(storage.stashDir, "tasks", "mytask.yml");
     fs.writeFileSync(assetPath, 'version: 4\nrun: echo old\nschedule: "@daily"\n');
 
-    // Scope the induced tear to the FIRST read of THIS file's descriptor —
-    // captureTaskSourceExpectation reads by fd, so track fd->path via
-    // openSync to avoid perturbing any other file the add path reads
-    // (config, other task sources, etc).
     const openedPaths = new Map<number, string>();
     const realOpenSync = fs.openSync.bind(fs);
     const openSpy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {

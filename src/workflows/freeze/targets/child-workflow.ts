@@ -112,17 +112,17 @@ function childWorkflowContentHash(fields: {
 }
 
 /**
- * Issue 10 (guard-audit): a step composing a child workflow has no path to
- * honor its own authored `env:` — the child run carries its own frozen
- * environment inside its own plan, so `freezeEnvironment` (the ONE mechanism
- * a step's `env:` reaches a frozen unit through, `../environment.ts`) is
- * never called for this target. This used to refuse to freeze at all; it
- * now warns and continues — the authored `env:` is silently unreachable
- * either way, and refusing the whole workflow over it costs more than the
- * warning does. Checks BOTH shapes a step's `env:` can take
- * (`../environment.ts`'s `freezeEnvironment`): literal `env:` values and
- * `unit: {env: [...]}` refs. An absent/empty `env:` is not authored and
- * stays silent.
+ * Code-review finding (see this file's `environment: []` return field): a
+ * step composing a child workflow has no path to honor its own authored
+ * `env:` — the child run carries its own frozen environment inside its own
+ * plan, so `freezeEnvironment` (the ONE mechanism a step's `env:` reaches a
+ * frozen unit through, `../environment.ts`) is never called for this
+ * target. Leaving that silent would repeat exactly the defect A-N5 already
+ * closed for `with:` on a non-binding surface — an authored construct that
+ * cannot be honored on this composing target now rejects instead of
+ * vanishing. Checks BOTH shapes a step's `env:` can take (`../environment.ts`'s
+ * `freezeEnvironment`): literal `env:` values and `unit: {env: [...]}` refs.
+ * An absent/empty `env:` is not authored and stays valid.
  */
 function warnIfStepEnvironment(stepId: string, childRef: string, source: WorkflowSourceStep): void {
   const hasLiteralEnv = Object.keys(source.env ?? {}).length > 0;
@@ -160,14 +160,11 @@ function assertNoCompositionCycle(stepId: string, childRef: string, refPath: rea
 }
 
 /**
- * Track the child's embedded plan bytes against the shared, tree-wide
- * running total (A-N6). This used to fail publication once the AGGREGATE
- * crossed a 1 MiB cap — composing several substantial workflows together is
- * a legitimate, deliberate authoring choice, not a wrong plan, and nothing
- * downstream depended on the aggregate staying under any particular size
- * (`planHash`/`contentHash` verification covers correctness regardless of
- * size). The running total is kept only because `ir/schema-v4.ts`'s
- * decode-time mirror of this function still reports it for diagnostics.
+ * Add the child's embedded plan bytes to the shared, tree-wide budget
+ * (A-N6) and fail before publication if the AGGREGATE crosses the cap.
+ * Mutates `budget` only on success — a rejected step leaves the running
+ * total exactly as it was, matching every other freeze-time failure's
+ * no-partial-effect shape.
  */
 function chargeEmbeddedBudget(
   _stepId: string,
@@ -271,9 +268,8 @@ export async function childWorkflowDispatch(input: ChildWorkflowDispatchInput): 
   return {
     target,
     // A child run carries its own frozen environment inside its own plan.
-    // A composing step's own env: cannot reach it, so warnIfStepEnvironment
-    // above already warned about one instead of it silently vanishing here
-    // (§4.2 step 8, issue 10).
+    // A composing step's own env: cannot reach it, so assertNoStepEnvironment
+    // above rejects one instead of it silently vanishing here (§4.2 step 8).
     environment: [],
     unit: baseUnit,
     instructions:

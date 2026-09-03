@@ -214,11 +214,6 @@ describe("task runner mutation boundary", () => {
     expect(logFiles()).toEqual([]);
   });
 
-  // Finding 11 (guard-audit): env: on a task's workflow target used to fail
-  // closed before the workflow start contract was ever consumed. env: is
-  // real authored intent the durable workflow runtime does not translate,
-  // not a malformed document — it is now dropped (with a warning) and the
-  // workflow dispatches normally.
   test("workflow task env: is dropped (with a warning) and the workflow still dispatches (finding 11)", async () => {
     const workflowsDir = path.join(storage.stashDir, "workflows");
     fs.mkdirSync(workflowsDir, { recursive: true });

@@ -692,15 +692,6 @@ export function runSelectedModelAliasesProbe(deps: SelectedModelAliasesProbeDepe
     };
   }
 
-  // resolveModelMapAlias no longer throws for a known alias with no mapping
-  // for the selected engine (finding 14, docs/plans/guard-audit.md) — it
-  // degrades to an exact pass-through, same as a wholly unknown alias, so
-  // this probe can keep running instead of refusing. `unmappedForEngine`
-  // restores exactly the distinction this check needs (a real gap in the
-  // alias table, worth a `warn`) without relying on an exception: absent for
-  // a genuinely unrecognized model string, `true` only for a known-alias/
-  // wrong-engine gap. The try/catch stays as defense-in-depth for a
-  // genuinely invalid resolved map entry, which would be a bug elsewhere.
   const outcomes = selected.map(({ engine, alias, modelMapKey }) => {
     try {
       const resolution = resolveModelMapAlias(alias, modelMapKey, modelMap.map);

@@ -26,7 +26,6 @@ function refuses(p: string): { ok: false; code?: string; message: string } | { o
   }
 }
 
-/** Call assertSafeStashDir(p), capturing every warn() line it produces. */
 function warnsOnly(p: string): { threw: boolean; warnings: string[] } {
   const warnings: string[] = [];
   _resetWarnOnceForTests();
@@ -134,10 +133,6 @@ describe("assertSafeStashDir (#473)", () => {
     });
   });
 
-  // #13 (guard-audit): `/var/tmp` and the plain user-data parents
-  // (Documents/Downloads/AppData) are not a credential hazard the way a
-  // dotfile config dir is, and an operator who explicitly points a stash
-  // there is not racing themselves. Warn, don't refuse.
   describe("warns instead of refusing merely-inconvenient paths", () => {
     it("warns but allows /var/tmp", () => {
       const { threw, warnings } = warnsOnly("/var/tmp");

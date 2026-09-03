@@ -192,24 +192,12 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
 
   // #454: apiKey paths are not persistable. Throw at set time.
   rejectApiKeyPath(path, dotted);
-  // A literal (non-`$VAR`) apiKey embedded in a whole-object patch
-  // (`config set engines.<name> '{...}'` or `config set embedding '{...}'`)
-  // bypasses the leaf-path check above; the field-level schema regex used to
-  // catch it too, but that now only warns at LOAD (a config a prior akm
-  // wrote, or a human hand-edited, must still load). A human typing `config
-  // set` right now still gets told the better way immediately.
   rejectLiteralApiKeyInWholeObjectSet(path, raw, dotted);
 
   const schema = resolveSchemaAt(path, config, raw);
   const symbolicApiKey =
     (path[0] === "engines" && path[2] === "apiKey") ||
     (path[0] === "embedding" && path.length === 2 && path[1] === "apiKey");
-  // An unknown key is not a config-load hazard the schema needs to reject —
-  // it's a human explicitly typing `config set` right now. `get`/`unset`
-  // still refuse an unknown key (a typo there silently no-ops or reads
-  // nothing back, which is worse than telling the user immediately); `set`
-  // stores the value and warns, matching akm's own forward-compatible
-  // passthrough for a NEWER version's config keys.
   const isUnknownKey = !schema && !symbolicApiKey;
   if (isUnknownKey) {
     warnOnce(
@@ -230,12 +218,6 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
             ? bestEffortJsonValue(raw)
             : coerceForSchema(schema as z.ZodTypeAny, raw, dotted);
 
-  // Registry URL credentials are not persistable through an explicit `config
-  // set registries ...`, the same way a literal apiKey is not persistable
-  // (#454 above): the schema itself only warns-and-skips a credentialed entry
-  // at registry-consumption time (so an already-persisted or upgraded config
-  // still loads), but a human typing the credential right now can be told
-  // the better way immediately instead of having it silently ignored later.
   if (path[0] === "registries") rejectRegistryCredentialValue(value, dotted);
 
   const existing = path.reduce<unknown>((value, key) => {
@@ -344,13 +326,6 @@ function rejectApiKeyPath(path: Path, dotted: string): void {
   );
 }
 
-/**
- * Reject a literal (non-`$VAR`) `apiKey` inside a whole-object `config set
- * engines.<name> '{...}'` or `config set embedding '{...}'` patch. The
- * leaf-path form (`engines.<name>.apiKey`) is covered by `rejectApiKeyPath`
- * and its own symbolic-only check in `configSet` above; this covers the same
- * field arriving embedded in a larger JSON object instead.
- */
 function rejectLiteralApiKeyInWholeObjectSet(path: Path, raw: string, dotted: string): void {
   const isWholeEngineSet = path[0] === "engines" && path.length === 2;
   const isWholeEmbeddingSet = path.length === 1 && path[0] === "embedding";
@@ -371,7 +346,6 @@ function rejectLiteralApiKeyInWholeObjectSet(path: Path, raw: string, dotted: st
   );
 }
 
-/** Reject a credential-bearing registry URL anywhere inside a `registries` config-set value. */
 function rejectRegistryCredentialValue(value: unknown, dotted: string): void {
   const entries = Array.isArray(value) ? value : [value];
   for (const entry of entries) {
@@ -386,13 +360,6 @@ function rejectRegistryCredentialValue(value: unknown, dotted: string): void {
   }
 }
 
-/**
- * Coerce an unknown-key `config set` value the way a human typing it almost
- * certainly means: JSON when it parses as JSON (so `true`/`42`/`{"a":1}`
- * round-trip as their real types, not string literals), the raw string
- * otherwise. There is no schema to guide coercion for a key this binary
- * doesn't recognize, so this is a best-effort guess, not a validated parse.
- */
 function bestEffortJsonValue(raw: string): unknown {
   try {
     return JSON.parse(raw);

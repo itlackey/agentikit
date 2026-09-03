@@ -347,14 +347,6 @@ describe("plan freezing at workflow start (migration 006)", () => {
     expect(afterBadHashSteps).toEqual(beforeSteps);
   });
 
-  // Issue 7 (guard-audit): the durable spine's step_title/instructions/
-  // completion_json/sequence_index are PURE DERIVATIONS of the frozen plan
-  // (`frozenStepRows`, `runtime/plan-classifier.ts`) — recomputed on every
-  // read, never a second source of truth. A row that no longer matches its
-  // derivation (an akm upgrade changing how one is formatted, or — as here
-  // — a hand-edit) used to mark the WHOLE run "corrupt" and refuse to
-  // mutate it. It now warns and proceeds: the frozen plan, never this
-  // display column, is what dispatch and the completion gate actually read.
   test("a stale derived spine field warns and self-heals instead of blocking completion", async () => {
     writeWorkflow("drifted", "Do immutable work.");
     const started = await startWorkflowRun("workflows/drifted", {});

@@ -205,12 +205,6 @@ describe("akmShow sensitive fragments", () => {
       _resetWarnOnceForTests();
     }
 
-    // The secret-file renderer never surfaces content regardless of the
-    // fragment — the guard existed only for the sensitive namespace, not
-    // because a fragment can widen what's shown. The one read that does
-    // happen is the indexer's own content-hash pass (unrelated to the
-    // fragment or the renderer) — secretFileRenderer.buildShowResponse
-    // itself never touches the body.
     expect(result.type).toBe("secret");
     expect(result.content).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain("DO_NOT_PRINT");
@@ -240,8 +234,6 @@ describe("akmShow sensitive fragments", () => {
       _resetWarnOnceForTests();
     }
 
-    // The env-file renderer reads the file to list KEY NAMES only — that was
-    // always true independent of any fragment — and never surfaces values.
     expect(result.type).toBe("env");
     expect(result.keys).toEqual(["API_KEY"]);
     expect(JSON.stringify(result)).not.toContain("DO_NOT_PRINT");

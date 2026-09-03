@@ -409,12 +409,6 @@ export async function performUpgrade(
     }
   }
 
-  // A `.bak`/`.old` here is leftover from a previous `performUpgrade` call
-  // that was interrupted before its own cleanup (`removeFileBestEffort`
-  // below) ran — the backup is only ever meaningful within one call, whose
-  // own rollback (the catch block below) restores from it inside the same
-  // try. A stale one must not brick every future upgrade: warn and replace
-  // it rather than refusing.
   if (fs.existsSync(backupPath)) {
     warn(`A previous upgrade left a stale backup at ${backupPath}; overwriting it.`);
     removeFileBestEffort(backupPath);

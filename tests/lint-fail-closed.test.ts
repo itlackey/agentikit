@@ -5,14 +5,11 @@
 /**
  * `akm lint` fail-closed behavior (§24.2 "Lint" release gate).
  *
- * A nonexistent `--dir` used to walk nothing and report a clean
- * `ok:true, flagged:0`, silently passing scripted `--fail-on-flagged` gates —
- * that is still a usage error. An unknown `--type` on an akm bundle (e.g.
- * singular "workflow", the classic typo for "workflows") used to be a usage
- * error too; it now matches the non-akm adapter's own `--type` mismatch
- * handling (`lintViaAdapter`) — warn, validate the whole bundle, and proceed,
- * since a hard error would break scripts passing one `--type` across
- * mixed-adapter bundle sets (0.9.12).
+ * A mistyped invocation used to scan nothing and report a clean
+ * `ok:true, flagged:0`: an unknown `--type` (e.g. singular "workflow")
+ * filtered the sweep to zero directories, and a nonexistent `--dir` walked
+ * nothing — both silently passing scripted `--fail-on-flagged` gates. Both
+ * are now usage errors.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -24,7 +21,6 @@ import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import { makeConfig } from "./_helpers/factories";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "./_helpers/sandbox";
 
-/** A workflow document whose step fails schema validation (real flagged issue, not just advisory). */
 const BROKEN_WORKFLOW = [
   "---",
   "type: workflow",
@@ -83,7 +79,6 @@ describe("akm lint fails closed on a nonexistent --dir", () => {
     }
     const wholeBundleResult = await akmLint({ dir: storage.stashDir, config: makeConfig(storage.stashDir) });
 
-    // Not filtered to zero directories: the broken workflow was still found.
     expect(typoResult.flagged.length).toBeGreaterThan(0);
     expect(typoResult.flagged.length).toBe(wholeBundleResult.flagged.length);
     expect(warnings.some((w) => w.includes('"workflow"') && w.includes("workflows"))).toBe(true);

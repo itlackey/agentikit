@@ -301,14 +301,6 @@ function evaluateConsolidationEligibility(args: {
   const minPoolSize =
     typeof configuredMinPoolSize === "number" ? configuredMinPoolSize : CONSOLIDATE_DEFAULT_MIN_POOL_SIZE;
   const eligiblePoolSize = typeof memorySummary.eligible === "number" ? memorySummary.eligible : 0;
-  // A human who named `--strategy consolidate`, or targeted a specific asset
-  // with `--scope <ref>`, has already decided consolidation should run for
-  // this invocation; the guard does not get a second say (AGENTS.md Defensive
-  // Code test 3 — an explicitly typed command is not racing itself). A bare
-  // `--scope <type>` filter (e.g. `--scope memory`) is not this: it is the
-  // ordinary way to select which assets a broad, possibly-scheduled run
-  // considers, not a directive that consolidation must run regardless of pool
-  // size.
   const userNamedStrategyOrScope = options.strategy !== undefined || resolveImproveScope(options.scope).mode === "ref";
   // volumeTriggered means the pool already exceeds the volume threshold (100),
   // so a force-triggered run never trips the pool-size guard. The guard only

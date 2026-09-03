@@ -42,17 +42,6 @@ export const engineName = z
   .max(63)
   .regex(ENGINE_NAME_PATTERN, "names must be lowercase kebab-case and must not begin with reserved akm-");
 
-/**
- * A `$VAR`/`${VAR}` symbolic credential reference is the documented way to
- * configure an apiKey. A literal secret typed into config.json is the most
- * common thing anyone hand-edits, and used to hard-reject the WHOLE config —
- * every akm command exits 78 over a value the reader must still use. Warn
- * once (per schema site — `label` distinguishes the LLM-engine field from the
- * embedding field, not each individual engine name, since schemas are
- * defined once and reused across every named engine) and use it as given;
- * `akm config set` (`config-walker.ts`) still refuses a literal outright,
- * since a human typing it right now can be told the better way immediately.
- */
 export function symbolicOrWarnApiKey(label: string) {
   return z.string().superRefine((value) => {
     if (ENV_REFERENCE_PATTERN.test(value)) return;
@@ -63,14 +52,6 @@ export function symbolicOrWarnApiKey(label: string) {
   });
 }
 
-/**
- * A chat-completions endpoint only needs to be a real http(s) URL — Azure
- * OpenAI's mandatory `?api-version=` query string, and endpoints that don't
- * literally end `/chat/completions` (proxies, gateways), are real shapes and
- * must load. Embedded userinfo and a non-`/chat/completions` path are worth
- * flagging (a copy-pasted credential, a likely typo) but not worth bricking
- * config load over — warn once naming the endpoint instead of rejecting it.
- */
 export const chatCompletionsEndpoint = z.string().superRefine((value, ctx) => {
   let url: URL;
   try {

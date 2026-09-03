@@ -83,19 +83,6 @@ export function buildSearchFields(entry: IndexDocument): {
  * Build a single concatenated search text string for an entry.
  * Used for the `search_text` column in the entries table.
  * and for generating embedding text.
- *
- * Deliberately NO cap here. A fixed 8192-char ceiling used to truncate this —
- * both the FTS content column and the exact embedding input — silently: past
- * the cap a long document's body was unfindable by any term past char 8192,
- * and when the structured fields (name/description/tags/hints) alone reached
- * the cap the body was dropped entirely with nothing left to search or embed
- * against. FTS5 has no reason to bound this (see the identical
- * `MAX_LEXICAL_QUERY_TOKENS` deletion in `search/fts-query.ts` for the same
- * reasoning applied to queries); the one real bound — a native Markdown
- * body's own length — lives upstream in `passes/metadata.ts`
- * (`MARKDOWN_CONTENT_MAX_CHARS`), and an embedding provider's own token limit
- * is already handled at the embedding layer (`llm/embedders/remote.ts` skips
- * an oversized document rather than truncating or crashing).
  */
 export function buildSearchText(entry: IndexDocument): string {
   const fields = buildSearchFields(entry);

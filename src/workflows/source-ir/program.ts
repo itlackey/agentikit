@@ -24,20 +24,7 @@ export function sourceStepProgramUnit(source: WorkflowSourceStep): ProgramUnit {
   return unit;
 }
 
-/**
- * Derive the instruction bytes consumed by the one workflow engine.
- *
- * A `portable-template` inline command's `$ARGUMENTS` placeholder is still
- * substituted here (matching what dispatch will do), but WITHOUT the native
- * construct scan `applyPortableCommandArguments` also performs (issue 4):
- * that scan exists to catch a STANDALONE command file accidentally carrying
- * native-tool-only syntax it will never expand. Inline workflow prose is
- * authored for akm alone — `@docs/style-guide.md` is just a file reference in
- * prose, not a broken portable template — so scanning it here bought only
- * false positives, exactly as `.md` steps (always `commandMode: "literal"`,
- * `source-ir/compile.ts`) already prove: identical prose containing a bare
- * `@file` mention compiles fine when it isn't routed through this scan.
- */
+/** Derive the instruction bytes consumed by the one workflow engine. */
 export function sourceStepInstructions(source: WorkflowSourceStep): string {
   if (source.instructions !== undefined) return source.instructions;
   if (source.run !== undefined) return `Run ${source.run}.`;

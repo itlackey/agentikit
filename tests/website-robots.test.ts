@@ -587,11 +587,6 @@ describe("loadRobotsTxt", () => {
     expect(warnCalls).toEqual([]);
   });
 
-  // Finding 12 (guard-audit): a 5xx on the site's OWN robots.txt is not the
-  // site owner's Disallow — it is the site being flaky. A transient 5xx is
-  // now reported as "unavailable" (the same outcome a 4xx gets, resolving to
-  // ALLOW_ALL_RULES), not "unreachable" (DISALLOW_ALL_RULES), so it no
-  // longer blocks the crawl the operator asked for.
   test("F-06: 500 is unavailable (not unreachable) and warns, naming the URL, status, and respectRobots", async () => {
     const outcome = await withMockedFetch(
       () => loadRobotsTxt(ROBOTS_URL, { resolveHostname }),

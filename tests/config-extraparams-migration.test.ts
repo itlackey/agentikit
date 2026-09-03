@@ -3,20 +3,15 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 // #852 (following #815): a 0.9.1-shaped config using the documented
-// `extraParams.reasoning_effort` workaround lifts the value onto
-// `reasoningEffort` (now a first-class engine field) in memory on load, with
-// a one-line deprecation warning. AGENTS.md cites this guard as already fixed
-// to warn-and-auto-lift (the #815/#816 worked example); a later change
-// reintroduced a hard rejection that discarded the already-computed lift and
-// failed the WHOLE config load over a key with a documented first-class
-// replacement. `liftLegacyEngineExtraParams` (tests/commands/migrate-config-
-// extra-params.test.ts) is unchanged and pure — `akm migrate apply` still
-// exists to persist the lift and silence the warning, but it is no longer
-// required just to keep reading. A genuine conflict (the extraParams key and
-// the first-class field disagree) still fails closed — akm cannot guess which
-// value the user meant. `parseAndValidateConfigText` is pure (no filesystem),
-// so these run directly against it rather than through the tmp-XDG-dir
-// config-load integration harness.
+// `extraParams.reasoning_effort` workaround used to load silently, lifting
+// the value onto `reasoningEffort` (now a first-class — and therefore
+// protected — engine field) on every load, forever, and never writing the
+// rewrite back to disk. That silent-lift-forever shape was deleted: the lift
+// is now `akm migrate apply`'s job (tests/commands/migrate-config-extra-
+// params.test.ts), and a not-yet-migrated config fails closed here instead,
+// naming `akm migrate apply` as the fix. `parseAndValidateConfigText` is
+// pure (no filesystem), so these run directly against it rather than
+// through the tmp-XDG-dir config-load integration harness.
 import { describe, expect, test } from "bun:test";
 import { parseAndValidateConfigText } from "../src/core/config/config";
 import { ConfigError } from "../src/core/errors";
@@ -46,7 +41,6 @@ function expectThrows(text: string): string {
   }
 }
 
-/** Load `text`, capturing every warn() line, and return them alongside the parsed config. */
 function loadCapturingWarnings(text: string): {
   config: ReturnType<typeof parseAndValidateConfigText>;
   warnings: string[];

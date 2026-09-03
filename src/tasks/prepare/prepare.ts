@@ -108,14 +108,6 @@ export async function prepareTaskV3Execution(
   }
   if (target.kind === "workflow") {
     // Stays reachable — task source v4 still has a top-level env: (P4-N4).
-    //
-    // Guard-audit finding 11 (docs/plans/guard-audit.md): this used to abort
-    // the task outright. env: on a workflow target is real authored intent
-    // the durable workflow runtime does not consume, not a malformed
-    // document — dropping it and running the workflow anyway (with a
-    // warning naming the field, mirroring the untranslated-field pattern in
-    // integrations/agent/execution-lowering.ts) serves the operator better
-    // than refusing to run at all.
     if (Object.keys(environment).length > 0) {
       warn(
         "[akm] Task %s: env: is not translated for a workflow target and will be ignored; the durable workflow runtime does not consume it. Use a command target, or drop env:.",

@@ -46,16 +46,6 @@ export interface ResolveEnvBindingOptions {
   except?: string[];
   /** Callback for non-fatal warnings (defaults to stderr). */
   warn?: (message: string) => void;
-  /**
-   * Operator override for a third-party stash injecting a genuine RCE-class
-   * key (LD_PRELOAD, GIT_SSH_COMMAND, BASH_FUNC_*, …), threaded from `env
-   * run --allow-insecure`. Mirrors `bundle add --allow-insecure` for the
-   * same class of hazard (`decideDangerousEnvInjection` in
-   * core/activation-policy.ts). Does not affect the interactive-tool group
-   * (EDITOR/VISUAL/PAGER) or a first-party stash, which already only warn.
-   * Defaults to `false` — a genuine hijack key from a third-party stash
-   * still blocks unless the operator explicitly passes this.
-   */
   allowInsecure?: boolean;
 }
 

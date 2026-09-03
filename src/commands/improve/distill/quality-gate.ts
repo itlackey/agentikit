@@ -255,9 +255,6 @@ async function runQualityJudge(
       parsed.score > 5 ||
       typeof parsed.reason !== "string"
     ) {
-      // The generation call was already paid for; an unparseable verdict is
-      // the judge's failure, not evidence the content is bad. Route to human
-      // review (the gate's own uncertainty band) instead of discarding it.
       return { pass: false, score: -1, reason: "judge parse failed — routed to review", reviewNeeded: true };
     }
     // D-5 / #388: Three-band system (MT-Bench arXiv:2306.05685 — ~±0.5 judge variance).
@@ -273,10 +270,6 @@ async function runQualityJudge(
     // Invalid symbolic credentials are configuration failures, not a negative
     // content verdict. Provider/runtime failures retain the fail-closed result.
     if (error instanceof ConfigError) throw error;
-    // Same reasoning as the parse-failure branch above: a transport timeout
-    // or throw says nothing about the content's quality, and the generation
-    // that produced it already cost real money. Route to review, don't
-    // discard it where no one can see it.
     return { pass: false, score: -1, reason: "judge timeout/error — routed to review", reviewNeeded: true };
   }
 }
@@ -289,14 +282,9 @@ async function runQualityJudge(
  * the caller before this function runs.
  *
  * Fail-CLOSED (07 P0-2): returns `pass: false` (score -1) on timeout, parse
- * failure, or missing LLM — an unverifiable judge must never auto-accept
- * content into the stash. A transport timeout or an unparseable verdict says
- * nothing about the content's own quality, though, and the generation that
- * produced it already cost real money: those two cases additionally carry
- * `reviewNeeded: true` so the caller routes the content to human review
- * (`review_needed`) instead of discarding it where no one can see it. Missing
- * LLM configuration precedes generation entirely (nothing was paid for) and
- * stays a plain `quality_rejected`.
+ * failure, or missing LLM. Minted content that cannot be judged is rejected,
+ * not passed through — an unverifiable judge must never wave content into the
+ * stash. The rejection is `quality_rejected`, not `review_needed`.
  */
 export async function runLessonQualityJudge(
   config: AkmConfig,

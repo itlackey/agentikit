@@ -830,12 +830,10 @@ export async function akmLint(options: AkmLintOptions = {}): Promise<AkmLintResu
   const extraStashRoots = sources.map((s) => s.path).filter((p) => p !== stashRoot && fs.existsSync(p));
 
   if (adapterId !== "akm") return lintViaAdapter(adapterId, stashRoot, extraStashRoots, sources, cfg, options);
-  // Same treatment as the non-akm --type mismatch above (lintViaAdapter): an
-  // unknown value used to filter the walk to ZERO directories — a false-clean
-  // result on the classic singular/plural typo ("workflow" for "workflows").
-  // Warn and validate the whole bundle rather than hard-erroring, matching
-  // the non-akm adapter's behavior and its own reasoning (a hard error would
-  // break scripts passing one --type across mixed-adapter bundle sets).
+  // Same fail-closed rule for --type on the akm sweep: an unknown value used
+  // to filter the walk to ZERO directories — a false-clean result on the
+  // classic singular/plural typo ("workflow" for "workflows"). Non-akm
+  // adapters keep their own type vocabularies (see lintViaAdapter).
   if (options.typeFilter && !(STASH_SUBDIRS as readonly string[]).includes(options.typeFilter)) {
     warn(
       `Warning: lint --type "${options.typeFilter}" is not a recognized akm stash subdirectory — ` +

@@ -363,10 +363,6 @@ describe("akmClone", () => {
   });
 
   test("clones into a per-type directory that is itself a symlink into a contained location", async () => {
-    // A dotfiles-managed bundle commonly symlinks a whole per-type directory
-    // (e.g. `skills/`) into a separately managed location. That must not be
-    // treated as an escape when the symlink's target is still contained
-    // within the bundle root.
     writeFile(path.join(searchPathDir, "skills", "review", "SKILL.md"), "# Review Skill\n");
     fs.rmSync(path.join(stashDir, "skills"), { recursive: true, force: true });
     const realSkills = path.join(stashDir, ".real-skills");

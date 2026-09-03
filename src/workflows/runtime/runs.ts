@@ -539,10 +539,6 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
     const run = readWorkflowRunOrPrefix(repo, runId);
     const storedPlan = requireExecutableWorkflowPlan(run);
     const steps = readWorkflowRunSteps(repo, run.id);
-    // Pure-derivation drift (issue 7) never blocks resume — warn only. The
-    // plan-derived spine rows are pure derivations of an already
-    // hash-verified plan; a later akm release changing how one is FORMATTED
-    // must not make an in-flight run un-resumable.
     reconcileWorkflowSpineWithPlan(storedPlan, run, steps);
     if (run.status === "completed") {
       throw new UsageError(`Workflow run ${run.id} is already completed and cannot be resumed.`);
@@ -562,9 +558,6 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
     });
     const updated: WorkflowRunRow = { ...run, status: "active", updated_at: now };
     const refreshedSteps = readWorkflowRunSteps(repo, run.id);
-    // Status-vs-spine consistency is checked AFTER normalization above: it
-    // is the one check reopenStepsForResume/markRunActive exist to satisfy,
-    // not to race against (issue 7).
     assertRunStatusMatchesSpine(updated, refreshedSteps);
     return buildWorkflowRunDetail(repo, updated, refreshedSteps);
   });
@@ -752,11 +745,11 @@ export async function completeWorkflowStep(
 
       // P3b (spec §4.3, B-N13): resolve + persist declared outputs INSIDE
       // this same transaction, immediately after the run is known to have
-      // COMPLETED. A resolution failure no longer rolls the completion back —
-      // the workflow's real work is already done and every unresolved output
-      // is a re-dispatch (another paid step) that would fail identically on
-      // retry. Whatever resolved is stored; the rest is surfaced as a warning
-      // on the returned run envelope, set below once `detail` exists.
+      // COMPLETED. A resolution failure throws here, and the transaction
+      // rolls back whole — the step completion included — so the observable
+      // outcome is fail-before-mutation: the step stays pending, the run
+      // stays active, and (since appendEvent runs outside this transaction)
+      // no event is appended.
       let outputsJson: string | null | undefined; // undefined = untouched, keep the row's existing value
       if (state.status === "completed" && plan.outputs) {
         const resolved = resolveWorkflowRunOutputs(plan, refreshedSteps);

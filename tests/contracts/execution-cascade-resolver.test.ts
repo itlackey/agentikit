@@ -292,11 +292,6 @@ describe("common execution cascade resolver", () => {
     ).toThrow(/engine.*missing.*configured/i);
     expect(calls).toBe(1);
 
-    // Finding 14 (guard-audit): a known alias ("mapped") with no mapping for
-    // the selected engine's platform ("gemini") no longer fails the plan —
-    // it resolves as an exact pass-through (with a warning), same as a
-    // wholly unknown model name would. Authorization still runs after model
-    // resolution either way; it is just reached now instead of skipped.
     const plan = planExecutionCascade({
       ...input,
       authorizeTools,

@@ -56,16 +56,6 @@ export interface ResolvedModelMapSelection {
   readonly interpretation: "alias" | "exact";
   readonly model: string;
   readonly inference?: ExecutionJsonObject | null;
-  /**
-   * Set only when `interpretation` is `"exact"` because `input` is a KNOWN
-   * alias with no mapping for the selected engine — as opposed to a wholly
-   * unrecognized model string. Absent in every other case (never `false`).
-   * Restores the distinction the resolver's own pass-through collapsed
-   * (finding 14, docs/plans/guard-audit.md) for a caller that needs to tell
-   * the two apart without relying on the removed exception — e.g. a health
-   * check that should still flag a gap in the alias table without refusing
-   * to resolve it.
-   */
   readonly unmappedForEngine?: true;
 }
 
@@ -290,13 +280,6 @@ export function resolveModelMapAlias(
 
   const knownAliasUnmappedForEngine = tier !== undefined;
   if (knownAliasUnmappedForEngine) {
-    // Finding 14 (guard-audit): a KNOWN alias with no mapping for the
-    // selected engine used to throw, while an UNKNOWN alias silently passed
-    // through as the exact model string. That inconsistency punished the
-    // more informative case — an alias declared for OTHER engines but not
-    // this one is not a config error, it just has nothing to translate here.
-    // Warn and take the same pass-through path an unknown alias already
-    // takes, rather than refusing to run.
     warnOnce(
       `model-map-alias-no-engine-mapping:${alias}:${selectedEngine}`,
       `[akm] Model alias ${JSON.stringify(input)} has no mapping for engine ${JSON.stringify(engine)}; using ${JSON.stringify(input)} as the literal model name. Add $.aliases.${alias}.${engine} to models.json to map it.`,
@@ -334,16 +317,9 @@ function modelMapFileError(label: string, filePath: string, action: string): Con
 }
 
 /**
- * Read through a nonblocking descriptor and enforce the config-size ceiling
- * before parsing. `optional` recognizes only a true stat ENOENT (including a
- * dangling link) as absence.
- *
- * Follows symlinks deliberately — a stow/chezmoi/yadm-managed
- * `~/.config/akm/models.json` symlinked into a dotfiles repo is completely
- * ordinary, not an attack, and reading it should not require breaking that
- * setup. This is a READ path only: `copyDefaultModelMap`'s write side (below)
- * still refuses to replace a non-regular target via `lstatSync`, which is the
- * check that actually matters for a write.
+ * Read through a nonblocking, no-follow descriptor and enforce the config-size
+ * ceiling before parsing. `optional` recognizes only a true lstat ENOENT as
+ * absence; dangling links and every non-regular type are configuration errors.
  */
 function readModelMapFile(filePath: string, label: string, optional: boolean): string | undefined {
   let targetStat: fs.Stats;

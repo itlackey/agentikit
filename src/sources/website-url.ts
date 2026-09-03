@@ -35,21 +35,6 @@ export function shouldAllowPrivateWebsiteHostsForTests(): boolean {
   return process.env.BUN_TEST === "1" || process.env.NODE_ENV === "test";
 }
 
-/**
- * Decide whether to bypass the public-host guard for a website URL a human
- * explicitly typed or configured — `akm bundle add <url>`, `akm knowledge add
- * <url>`, or a bundle's persisted start URL on refresh — as opposed to a link
- * discovered by crawling a page (see `resolveCrawlAllowPrivateHosts` in
- * `snapshot-fetchers/website-ingest.ts`, which extends this only to the exact
- * origin the operator named, never to a link the crawled site points at).
- *
- * The operator already named this exact host, so a local mkdocs server, a
- * corporate wiki reachable only over VPN, or a LAN docs box is legitimate
- * work, not an attack: refusing it outright with no escape hatch makes akm
- * unusable for those installs. Only the literal hostname is inspected here
- * (no DNS lookup) — a name that resolves privately only via DNS is instead
- * caught, and recovered from the same way, by the crawl-time check.
- */
 export function shouldAllowPrivateWebsiteUrlForTests(rawUrl: string): boolean {
   let hostname: string;
   try {

@@ -443,11 +443,6 @@ jobs:
   });
 
   test("compiles inline command templates without scanning for native-tool constructs (issue 4) — mode/stored consistency is still enforced", () => {
-    // `$HOME` (and `@file`, `${...}`, etc.) used to reject as an "unsupported
-    // portable template construct" — a check that exists for a STANDALONE
-    // portable command file that might round-trip through a native tool.
-    // Inline workflow content is authored for akm alone, so this now
-    // compiles like any other inline prose.
     const inline = github(`${VALID_HEADER}
       - id: safe
         uses: akm/command
@@ -483,8 +478,6 @@ jobs:
     requireOnlyDecodedStep(mismatchedStored).commandMode = "literal";
     expect(() => decodeWorkflowSourceIrV1(mismatchedStored)).toThrow(/stored.*commandMode stored-ref/i);
 
-    // A decoded object carrying inline content shaped like a native-tool
-    // template (issue 4) also decodes cleanly now, for the same reason.
     const formerlyHostile = structuredClone(stored.ir);
     const formerlyHostileStep = requireOnlyDecodedStep(formerlyHostile);
     formerlyHostileStep.commandMode = "portable-template";
@@ -617,10 +610,6 @@ Review $ARGUMENTS and \${{ github.sha }} literally.
       );
       expect(result.ok, shell).toBe(true);
     }
-    // `run:` lowers to `exec: {command: ["sh", "-c", <this value>]}`
-    // (source-ir/program.ts), and an authored `exec:` step already accepts
-    // these identical bytes with only a NUL check — the former token-safe
-    // grammar blocked nothing an author could not already do one line away.
     for (const run of ["echo ok && curl example.com", "echo $HOME", "echo %PATH%", 'echo "quoted"']) {
       const result = github(`${VALID_HEADER}\n      - id: safe\n        run: ${run}\n`);
       expect(result.ok, run).toBe(true);
@@ -632,8 +621,6 @@ Review $ARGUMENTS and \${{ github.sha }} literally.
     if (multiline.ok) {
       expect(multiline.ir.jobs[0]?.steps[0]?.run).toBe("echo one\necho two\n");
     }
-    // `${{ }}` still rejected: akm genuinely does not evaluate GitHub
-    // expressions/contexts.
     expectGithubError(
       `${VALID_HEADER}\n      - id: unsafe\n        run: echo $` + "{{ github.sha }}\n",
       "unsupported-github-expression",
@@ -679,9 +666,6 @@ jobs:
     expect(right.ok).toBe(true);
     if (!left.ok || !right.ok) return;
     expect(left.ir.triggers[0]).toMatchObject({ cron: "0 8 * * 1" });
-    // The exact authored bytes survive — collapsing internal whitespace would
-    // corrupt a real multiline script's indentation, so `run:` is no longer
-    // touched beyond the `${{ }}`/NUL rejections.
     expect(left.ir.jobs[0]?.steps[0]).toMatchObject({ run: "bun\t run   check", workingDirectory: "packages/cli" });
     expect(canonicalPortableWorkflowSourceBytes(left.ir)).toBe(canonicalPortableWorkflowSourceBytes(right.ir));
   });
@@ -1068,9 +1052,6 @@ describe("strict source IR decoder", () => {
     scheduled.triggers = [{ kind: "schedule", cron: "61 25 * * *", ordinal: 0, source: scheduled.source }];
     expect(() => decodeWorkflowSourceIrV1(scheduled)).toThrow(/cron|schedule/i);
 
-    // Issue 3: shell operators in `run:` are accepted, not rejected — the
-    // former token-safe grammar blocked nothing an authored `exec:` step
-    // could not already do with the identical bytes. `${{ }}` still throws.
     const acceptedRun = structuredClone(valid);
     requireOnlyDecodedStep(acceptedRun).run = "echo ok && curl example.com";
     expect(decodeWorkflowSourceIrV1(acceptedRun)).toEqual(acceptedRun);

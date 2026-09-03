@@ -149,22 +149,6 @@ function claimsWithoutContent(adapter: BundleAdapter, component: BundleComponent
 }
 
 export interface ResolveAdapterConceptOwnerOptions {
-  /**
-   * `"write"` (default, unchanged) — a caller that is about to create or
-   * overwrite a physical file for this concept, or dispatch/execute one
-   * (a workflow run picking the wrong physical source is not a passive
-   * read — it runs unintended steps), needs to know the collision exists
-   * BEFORE it acts on one of the ambiguous spellings. Keep the hard
-   * refusal.
-   *
-   * `"read"` — an informational lookup (search/show resolution, `improve`
-   * eligibility, index bookkeeping) must not break for every ref that
-   * merely touches a concept with two physical spellings (`commands/same.md`
-   * + a loose `same.md`, or case-only siblings from a macOS-authored repo),
-   * including refs the caller never asked about. Opt in explicitly to pick
-   * the first owner in the existing deterministic order and warn naming the
-   * losing paths, rather than throwing.
-   */
   mode?: "read" | "write";
 }
 

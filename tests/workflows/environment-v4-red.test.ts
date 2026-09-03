@@ -317,19 +317,6 @@ describe("freezeWorkflowEnvironment", () => {
   });
 
   test("two logical refs aliasing the same physical file still refuse to freeze (shared guarded-source contract, not this module)", async () => {
-    // freezeWorkflowEnvironment's own physical-alias check (the one this
-    // guard-audit finding asked to soften to a warn-and-collapse) sits behind
-    // src/execution/guarded-source.ts's GuardedExecutionSourceCollector#bindIdentity,
-    // which independently refuses to bind a second logical identity onto a
-    // physical source it has already bound — see
-    // #assertNoPhysicalOwnerAlias and the cached-identity branch in
-    // bindIdentity. That shared, cross-area contract throws first on every
-    // real alias, so this module's own collapse-and-warn code (now dead,
-    // reachable only if the shared guard is ever loosened) never runs
-    // end-to-end. Softening the shared guard is out of this area's scope
-    // (src/workflows/**); this test pins the current, still-refusing,
-    // end-to-end behavior so a future change to guarded-source.ts is not
-    // mistaken for a regression here.
     const { freezeWorkflowEnvironment } = await environmentV4();
     const root = sandbox("akm-env-v4-owner-alias");
     const file = write(root, "env/prod.env", "SAFE=yes\n");

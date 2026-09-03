@@ -1302,7 +1302,6 @@ function assembleAndValidateDistillContent(args: {
   filteredFeedbackCount: number;
   eligMeta: { eligibilitySource?: EligibilitySource };
   eventsCtx?: EventsContext;
-  /** Needed only for the review_needed persistence path below. */
   stash: string;
 }): { content: string; descriptionSwapped: number } | { rejection: AkmDistillResult } {
   const {
@@ -1365,12 +1364,8 @@ function assembleAndValidateDistillContent(args: {
       ? validateKnowledgeContent(content, inputRef)
       : lintLessonContent(content, `distill:${inputRef}`).findings;
 
-  // Additional lesson-only quality validators — flag the systematic failure
+  // Additional lesson-only quality validators — reject the systematic failure
   // modes seen across 323 archived rejected proposals (see distill/content-repair).
-  // These run only when the structural lint above is already clean (the
-  // required fields are present and non-empty); a finding here is a PROSE
-  // heuristic ("looks like a section heading", "identical to when_to_use"),
-  // not a missing field, so it is never mixed with a structural finding.
   const qualityFindings =
     effectiveProposalKind !== "knowledge" && structuralFindings.length === 0
       ? collectLessonQualityFindings(content, inputRef)
@@ -1404,12 +1399,6 @@ function assembleAndValidateDistillContent(args: {
   }
 
   if (qualityFindings.length > 0) {
-    // A prose-quality finding on an otherwise-complete lesson used to discard
-    // the generated (and already paid-for) content entirely — the only trace
-    // left behind was the finding kinds in an event, not the content itself.
-    // Route it to review instead, the same reviewNeeded mechanism the
-    // LLM-as-judge quality gate uses (quality-gate.ts) for its own uncertainty
-    // band, so a human can still act on it.
     return {
       rejection: writeQualityRejection(
         stash,

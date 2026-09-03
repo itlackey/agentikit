@@ -416,19 +416,6 @@ export function syncExistingWritableCheckout(
   }
 
   const relation = gitRelation(repoDir, targetRevision);
-  // Same shape as finding 8 (src/sources/providers/git-provider.ts's
-  // pullRepo): `ahead` alone is not a reason to refuse. When `behind === 0`,
-  // `targetRevision` is already an ancestor of HEAD — there is nothing to
-  // fast-forward and no data at risk, so this is a genuine no-op. Local
-  // commits only matter once a merge is actually about to happen.
-  //
-  // The two checks below that also read `targetRevision` — the ignored-path
-  // overwrite check and the required-content-root tree check — move inside
-  // the same guard for the same reason: run against a no-op's `targetRevision`
-  // (an ANCESTOR of the current, ahead HEAD), they would compare against
-  // stale content and could throw a false positive blamed on local commits
-  // that are never going to be touched. The component-root containment check
-  // just below stays unconditional — it validates config, not target state.
   const rootsToPreserve = [...new Set([root, ...requiredRoots.map((candidate) => path.resolve(candidate))])];
   for (const requiredRoot of rootsToPreserve) {
     if (!isWithin(requiredRoot, repoDir)) {

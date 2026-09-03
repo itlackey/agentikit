@@ -9,13 +9,6 @@
  * situation, and telling the reader it is sends them looking for the wrong
  * problem. Pure in-memory logic (no db/network/spawn) — belongs under
  * `tests/`, not `tests/integration/`.
- *
- * Issue 8 (guard-audit): the pre-irVersion-5 remedy used to tell a user who
- * has ALREADY upgraded to "complete them before upgrading" — advice for the
- * past. It now leads with what they can do now. Separately, a row whose
- * `plan_ir_version` column is NULL (written before that column existed) is
- * merely OLD, not corrupt: it is decoded exactly like a v5 row, and the
- * hash/shape verdict — not the column's absence — decides its fate.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -44,8 +37,6 @@ describe("#919 — classifyWorkflowRunPlan's unsupported-version message", () =>
     expect(result.error).toContain("pre-irVersion-5");
     expect(result.error).toContain("0.9.2 upgrade");
     expect(result.error).toContain("akm workflow abandon test-run-id");
-    // Issue 8: no longer tells an already-upgraded reader to do something in
-    // the past — the remedy is what they can do now.
     expect(result.error).not.toContain("Complete them before upgrading");
   });
 
@@ -119,8 +110,6 @@ Do the work.
     const result = classifyWorkflowRunPlan({
       id: "null-version-corrupt",
       plan_json: '{"irVersion":5,"execution":{},"steps":[]}',
-      // Deliberately wrong hash: the decode must still reject this exactly as
-      // it would for a plan_ir_version: 5 row — NULL earns no free pass.
       plan_hash: "0".repeat(64),
       plan_ir_version: null,
     });

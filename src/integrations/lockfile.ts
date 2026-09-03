@@ -59,20 +59,12 @@ export interface LockfileEntry {
 
 // ── Lock sentinel ────────────────────────────────────────────────────────────
 
-// A concurrent read-modify-write of akm.lock is real data loss, so the lock
-// itself stays — but 300ms total budget (3 retries * 100ms) made an
-// entirely ordinary overlap (two `akm bundle add` invocations, a scheduled
-// task landing mid-install) fail outright instead of just waiting its turn.
-// Budget raised to ~30s with exponential backoff; a single "waiting" notice
-// tells the operator why the command has not returned yet, rather than
-// letting it look hung.
 const LOCK_ACQUIRE_TIMEOUT_MS = 30_000;
 const LOCK_RETRY_INITIAL_DELAY_MS = 50;
 const LOCK_RETRY_MAX_DELAY_MS = 1_000;
 
 let lockAcquireTimeoutMsForTests: number | undefined;
 
-/** TEST-ONLY. Shrink the lock-acquisition budget so a contended-sentinel test does not take ~30s; `undefined` restores the real default. */
 export function _setLockAcquireTimeoutMsForTests(ms: number | undefined): void {
   lockAcquireTimeoutMsForTests = ms;
 }

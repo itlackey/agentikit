@@ -154,13 +154,6 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
     }
   });
 
-  // Issue 4 (guard-audit): inline `uses: akm/command` content used to be
-  // scanned for native-tool-only template constructs (`@file`, bare `$NAME`,
-  // …) whenever it contained `$ARGUMENTS` — a scan meant for a STANDALONE
-  // portable command file, not workflow-authored prose. This document used
-  // to be dropped at drain with an "unsupported portable template construct"
-  // warning; it is now valid, exactly like the identical prose written as a
-  // markdown step's body always was (`commandMode: "literal"`).
   test.each([
     ["ordinary", akmAdapter, "akm", "workflows"],
     ["standalone", akmWorkflowAdapter, "akm-workflow", "."],

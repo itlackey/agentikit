@@ -34,14 +34,12 @@
  *
  * ## Totality and bounds
  *
- * Evaluation is TOTAL. Recursion is capped at {@link MAX_DEFINITION_DEPTH};
- * exhausting it emits an explicit error rather than silently accepting the
- * value — the subset never fails open. The schema tree is finite and acyclic
- * (no `$ref`), so combinator branching multiplies work by schema size, never
- * exponentially — there is no separate node-visit budget, since the schema is
- * author-supplied structured-output config, not adversarial input, and a
- * large-but-valid result being invalidated after the LLM call that produced
- * it was already paid for made the budget strictly worse than no bound at all.
+ * Evaluation is TOTAL and BOUNDED. Recursion is capped at
+ * {@link MAX_DEFINITION_DEPTH} and the whole evaluation shares a single
+ * node-visit budget ({@link MAX_VALIDATION_NODES}); exhausting either emits an
+ * explicit error rather than silently accepting the value — the subset never
+ * fails open. The schema tree is finite and acyclic (no `$ref`), so combinator
+ * branching multiplies work by schema size, never exponentially.
  *
  * Returns a flat list of human-readable error strings (empty = valid), each
  * prefixed with a JSON-pointer-ish path — the shape `runStructured`'s
@@ -437,8 +435,10 @@ function matchesType(actual: JsonTypeName, expected: string): boolean {
 }
 
 /**
- * Evaluation state. `errors` is per-branch (a combinator evaluates its
- * branches into a scratch list).
+ * Evaluation state. `budget` is SHARED by every nested/branch evaluation of one
+ * {@link validateJsonSchemaSubset} call, so combinator branching cannot buy
+ * more work than the whole call is allowed; `errors` is per-branch (a
+ * combinator evaluates its branches into a scratch list).
  */
 interface EvalCtx {
   errors: string[];
@@ -452,7 +452,7 @@ interface EvalCtx {
   redactValues: boolean;
 }
 
-/** Evaluate `schema` against `value` in a scratch error list. */
+/** Evaluate `schema` against `value` in a scratch error list, sharing the caller's budget. */
 function branchErrors(value: unknown, schema: Record<string, unknown>, path: string, ctx: EvalCtx): string[] {
   const errors: string[] = [];
   validateNode(value, schema, path, { ...ctx, errors, depth: ctx.depth + 1 });

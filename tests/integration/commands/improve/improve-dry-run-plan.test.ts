@@ -219,9 +219,6 @@ describe("#800 effective dry-run planner", () => {
       reason: "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it",
     });
     expect(result.plannedRefs).toEqual([]);
-    // A read-only dry run never touches the legacy file — it opens it for a
-    // point-in-time snapshot and lets the missing `entries` table fail the
-    // one query that needs it, rather than refusing the whole run up front.
     expect(snapshotTree(storage.root)).toEqual(before);
   });
 

@@ -185,11 +185,6 @@ describe("createProposal / listProposals / getProposal", () => {
     });
     if (isProposalSkipped(createdResult)) throw new Error("unexpected skip");
 
-    // None of these findings keep malformed data out of the written file
-    // (validateProposal's structural checks already do that, unaffected) —
-    // they read oddly, which is a proposal accept has no remedy surface for
-    // (`akm proposal edit` does not exist and `accept` takes no `--force`).
-    // Reported, not blocking.
     const warnings: string[] = [];
     _setWarnSinkForTests((level, args) => {
       if (level === "warn") warnings.push(args.map(String).join(" "));

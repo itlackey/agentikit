@@ -61,11 +61,6 @@ export function resolveIndexPassExecution(passName: string, config: AkmConfig): 
   });
   const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
   if (lowered.runner.kind !== "llm") {
-    // A bad/non-LLM engine on this ONE pass must not take down the whole
-    // `akm index` run: FTS and embeddings need no LLM and should still
-    // complete. Degrade exactly like the `pass?.enabled === false` path
-    // above — the caller already treats an undefined runner as "this pass is
-    // off" — rather than aborting before FTS/embeddings ever start.
     warn("[akm] Index pass %s requires an LLM engine; %s is not one. Skipping this pass.", passName, selectedEngine);
     return Object.freeze({ runner: undefined, notices: NO_LOWERING_NOTICES });
   }

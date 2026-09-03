@@ -99,15 +99,11 @@ describe("decodeTaskHistoryMetadata", () => {
     expect(() => decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: "not an object" })).toThrow(
       /detail must be an object or null/,
     );
-    // A type error on a field actually read stays rejected.
     expect(() =>
       decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: { exitCode: "oops" } }),
     ).toThrow(/detail\.exitCode must be a number or null/);
   });
 
-  // An unknown `detail` key is the same additive-field policy as the
-  // top-level `profile`/`repairReason` case above, one level down — dropped
-  // harmlessly, not rejected.
   test("decodes a detail object carrying an unknown field, dropping it harmlessly", () => {
     expect(
       decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: { exitCode: 0, bogus: true } }),
@@ -133,10 +129,6 @@ describe("decodeTaskHistoryMetadata", () => {
   });
 
   test("decodes a non-2 targetVocab by dropping it (falls back to the legacy mapping) instead of rejecting", () => {
-    // A higher targetVocab is a newer akm's vocabulary this binary does not
-    // know how to interpret — version skew, not corruption. Dropping it
-    // keeps the row readable via the read boundary's legacy target_kind
-    // mapping instead of aborting the whole read.
     _resetWarnOnceForTests();
     const messages: string[] = [];
     _setWarnSinkForTests((level, args) => {

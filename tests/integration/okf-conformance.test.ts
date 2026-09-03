@@ -231,10 +231,6 @@ describe("OKF first-class conformance", () => {
     });
     expect(parseType(native.path)).toBe("memory");
 
-    // A reserved concept name (#15, guard-audit) used to refuse the write
-    // outright on every platform. It now warns and still writes — nothing
-    // about `index`/`log` is unsafe to write on POSIX; only the MS-DOS
-    // device names are a genuine (Windows-only) portability concern.
     const warnings: string[] = [];
     _resetWarnOnceForTests();
     _setWarnSinkForTests((level, args) => {
@@ -792,11 +788,6 @@ describe("OKF first-class conformance", () => {
       resetConfigCache();
 
       expect((await loadWorkflowAsset("native//upper")).path).toBe(path.join(workflowRoot, "upper.MD"));
-      // guard-audit finding 9: one bad candidate in a canonical-name domain
-      // (here, a symlink resolving outside the bundle root) is warned about
-      // and skipped rather than poisoning the lookup with a distinct error —
-      // "escape" simply has no valid source left, so it reports not-found
-      // like any other absent ref, not PATH_ESCAPE_VIOLATION.
       await expect(loadWorkflowAsset("native//escape")).rejects.toMatchObject({ code: "ASSET_NOT_FOUND" });
       await expect(loadWorkflowAsset("native//duplicate")).rejects.toMatchObject({
         code: "RESOURCE_ALREADY_EXISTS",

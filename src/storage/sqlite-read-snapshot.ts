@@ -19,12 +19,6 @@ import { sleepSync } from "../runtime";
 import type { Database } from "./database";
 import { openDatabaseFinalizing } from "./database";
 
-/** Retry budget for a database whose main/WAL pair is actively changing, or
- * that has a hot rollback journal, while a snapshot is being taken. Both
- * conditions are transient — a live writer commits in milliseconds; a
- * genuinely orphaned journal from a killed process is cleared the moment any
- * connection recovers it. The previous 3-attempt, no-backoff loop lost that
- * race against almost any live writer and failed the whole snapshot closed. */
 const SNAPSHOT_MAX_ATTEMPTS = 8;
 const SNAPSHOT_BACKOFF_MS = 25;
 
@@ -87,14 +81,9 @@ function fingerprintsEqual(left: DatabaseFingerprint, right: DatabaseFingerprint
  * Returns `undefined` only when the source is absent. Committed WAL frames are
  * copied beside the private main file; the source SHM is intentionally not
  * copied because SQLite can safely create one inside the disposable directory.
- * A hot rollback journal (present, or appearing mid-copy) or a main/WAL pair
- * that keeps changing under a live writer is retried with a short backoff
- * (see `SNAPSHOT_MAX_ATTEMPTS`/`SNAPSHOT_BACKOFF_MS`) rather than failing on
- * the first observation — both conditions normally clear within milliseconds.
- * This snapshot is the PREFERRED way to read without touching the source's
- * lock bytes, not the only way: a caller that cannot get one at all is
- * expected to fall back to a plain read-only open (see
- * `openReadonlyExistingDatabase`) rather than treat this as fatal.
+ * A live rollback-journal database fails closed because a file-level copy
+ * cannot distinguish its committed and uncommitted pages without attaching to
+ * the source.
  */
 export function openSqliteReadSnapshot(dbPath: string): Database | undefined {
   if (!pathExists(dbPath)) return undefined;

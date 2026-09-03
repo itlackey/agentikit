@@ -31,22 +31,6 @@ import {
   targetConcurrency,
 } from "../step-values";
 
-/**
- * `commandMode: "portable-template"` only ever applies to an inline
- * `uses: akm/command` step's `with:` (schema.ts: legal only alongside
- * `uses: akm/command`) — never to a `uses: commands/<ref>` stored-command
- * target, whose loaded content genuinely is a portable, reusable template
- * and keeps the shared scan (`applyPortableCommandArguments`,
- * `commands/command/command-execution.ts`).
- *
- * For the inline case, this workflow layer is the one place with authority
- * over the step's own `$ARGUMENTS`, so it substitutes the placeholder itself
- * and hands the shared executor the already-resolved text as `literal`
- * (issue 4): the executor's native-construct scan exists to catch a
- * STANDALONE command file accidentally carrying syntax akm never expands —
- * inline workflow prose is authored for akm alone, so a `@file` mention
- * elsewhere in the same string is just prose, not a broken template.
- */
 function inlineWorkflowCommandAction(action: unknown, commandMode: WorkflowSourceStep["commandMode"]): unknown {
   if (commandMode !== "portable-template") return action;
   const parsed = parseBuiltinCommandAction(action);

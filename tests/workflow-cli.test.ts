@@ -118,7 +118,6 @@ describe("workflow CLI", () => {
     const assetPath = path.join(storage.stashDir, "workflows", "template-target.md");
     expect(fs.readFileSync(assetPath, "utf8")).toContain("route:");
 
-    // No --from and no --reset: --force alone must not refuse.
     const result = await runCliCapture(["workflow", "create", "template-target", "--force"]);
     expect(result.code).toBe(0);
     expect(fs.readFileSync(assetPath, "utf8")).not.toContain("route:");

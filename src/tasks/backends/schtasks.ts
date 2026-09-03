@@ -883,12 +883,6 @@ function nextStartBoundary(trigger: NativeSchtasksTrigger, now: Date): Date {
       boundary.setHours(trigger.atHour, trigger.atMinute, 0, 0);
       const daysOfMonth = new Set(trigger.daysOfMonth);
       const months = new Set(trigger.months);
-      // Bounded to ~11 years of days: every day-of-month value that occurs at
-      // all recurs within a year, so this always converges quickly for a
-      // schedule that can ever fire — a day/month combination that can NEVER
-      // occur (day 31 restricted to February) just exhausts the bound and
-      // returns whatever boundary it lands on, matching Task Scheduler's own
-      // behavior of a trigger that structurally never matches.
       for (let guard = 0; guard < 4000; guard++) {
         if (
           daysOfMonth.has(boundary.getDate()) &&

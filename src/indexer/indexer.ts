@@ -2533,13 +2533,6 @@ async function lookupBundleRefWithResolutionUsing(
         const entry = readLookupEntry(db, id, ref.conceptId, source.path);
         if (entry) {
           if (owner.workflowSource) {
-            // A stale indexed identity (or adapter mismatch) is the same
-            // staleness the non-workflow branch below handles by falling
-            // back to the physical owner — the authoritative source is
-            // already in hand as `owner`. Workflows used to throw here
-            // instead, aborting resolution for a stale row a reindex fixes,
-            // rather than letting the caller fall back like every other
-            // concept type does.
             try {
               assertIndexedWorkflowSourceIdentity(inputRef, entry.filePath, owner.workflowSource);
               if (entry.adapterId !== adapterId) {

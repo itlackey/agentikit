@@ -334,11 +334,6 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
     expect(fields.inputBindings).toEqual([{ kind: "literal", name: "scope", value: "from-v4-task" }]);
   });
 
-  // Finding 11 (guard-audit): env: on a task's workflow target used to
-  // reject the run outright — reversing the prior B-15 PRESERVE decision.
-  // env: is real authored intent the durable workflow runtime does not
-  // consume, not a malformed document; it is now dropped (with a warning)
-  // and the workflow runs, same shape as B-12/B-14 above.
   test("B-15: a task with env: on a workflow target runs anyway, ignoring env: (finding 11)", async () => {
     writeChild();
     write(
@@ -359,15 +354,12 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
   });
 });
 
-// ── Issue 10 (guard-audit): a composing step's own env: has no path into a ─
+// ── Code-review finding: a composing step's own env: has no path into a ────
 // ── child run (the frozen environment is the CHILD's own, not the parent ───
 // ── step's) — src/workflows/freeze/targets/child-workflow.ts's ─────────────
-// ── warnIfStepEnvironment. Distinct from B-15 above: B-15 is the task ──────
-// ── DOCUMENT's own top-level env:; this is env: authored on the WORKFLOW ───
-// ── STEP that composes a child, direct or task-wrapped. Used to reject; ────
-// ── now warns and freezes normally — the env: was always unreachable ───────
-// ── either way, so refusing the whole workflow over it cost more than the ──
-// ── warning does. ───────────────────────────────────────────────────────────
+// ── assertNoStepEnvironment. Distinct from B-15 above: B-15 is the ─────────
+// ── task DOCUMENT's own top-level env:; this is env: authored on the ───────
+// ── WORKFLOW STEP that composes a child, direct or task-wrapped. ───────────
 
 describe("a step composing a child workflow that also authors env: warns instead of refusing to freeze", () => {
   function writeChild(): void {
@@ -608,13 +600,9 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
   test("B-24: aggregate embedded child plan bytes once over the former 1 MiB cap now freezes fine (guard-audit finding 13: a large plan is not a wrong plan)", async () => {
     // Five children at 250,000 'x' bytes each (well under the 256 KiB
     // per-instruction cap and the 1 MiB per-source-file cap individually)
-    // sum to 1,250,000 bytes — what used to be comfortably over the
-    // 1,048,576-byte (1 MiB) aggregate cap once every embedded plan's
-    // structural overhead was added on top. The cap (and the standalone
-    // 2 MiB whole-plan cap next to it) is removed: composing several
-    // substantial workflows together is a legitimate authoring choice, and
-    // planHash/contentHash verification already covers correctness
-    // regardless of size.
+    // sum to 1,250,000 bytes — comfortably over the 1,048,576-byte
+    // (1 MiB) aggregate cap once every embedded plan's structural overhead
+    // is added on top.
     const bigBody = (n: number) =>
       ["---", "type: workflow", "steps:", "  - id: work", "---", "", "## work", "", "x".repeat(n), ""].join("\n");
     for (let i = 0; i < 5; i++) write(`workflows/big-${i}.md`, bigBody(250_000));

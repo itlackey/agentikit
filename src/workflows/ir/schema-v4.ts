@@ -370,10 +370,6 @@ function decodeGateV4(value: unknown, stepId: string, requiredSources: Execution
     fail(`gate ${stepId} with criteria is missing its frozenJudge field`);
   }
   if (gate.frozenJudge === null) {
-    // No verification engine was available when this step was frozen (issue
-    // 2) — a legitimate frozen state, not corruption: the runtime blocks the
-    // step gracefully for `akm workflow resume` rather than dispatching an
-    // unverifiable judge.
     return Object.freeze({
       kind: "gate",
       id: gate.id as string,
@@ -421,16 +417,19 @@ function decodeFrozenTarget(
  * COMPLETE child plan, re-verified against its own `planHash` and this
  * target's own `contentHash` on every decode (rows A-20, A-21), recursively
  * enforcing `irVersion` 5 (row A-22, via the recursive
- * {@link decodeWorkflowPlanV4} call) and the composition depth bound (row
- * A-23) as the decoder recurses. `budget` still accumulates the AGGREGATE
- * embedded-plan bytes (§3.6 step 6, A-N6) for diagnostics, but no longer
- * caps it (guard-audit finding 13: a large plan is not a wrong plan, and
- * `planHash`/`contentHash` verification already covers correctness
- * regardless of size). `budget` is charged with THIS child's own full
- * canonical byte length AFTER it decodes (so any further-nested
- * grandchildren it embeds have already charged themselves, mirroring the
- * freeze-side `chargeEmbeddedBudget`'s post-recursion charge order in
- * `src/workflows/freeze/targets/child-workflow.ts`). `frozenPlan` is
+ * {@link decodeWorkflowPlanV4} call), the composition depth bound (row A-23),
+ * and the AGGREGATE embedded-plan-bytes bound (§3.6 step 6, A-N6) as the
+ * decoder recurses. `WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES` — unlike the
+ * depth bound above — is imported directly from
+ * `src/workflows/resource-limits.ts` rather than reproduced: that constant
+ * was already Lane B's when this decode-time re-enforcement was added (no
+ * lane-ordering constraint left to honor), and re-deriving a byte cap by
+ * hand invites drift a depth integer does not. `budget` is charged with
+ * THIS child's own full canonical byte length AFTER it decodes (so any
+ * further-nested grandchildren it embeds have already charged themselves,
+ * mirroring the freeze-side `chargeEmbeddedBudget`'s post-recursion charge
+ * order in `src/workflows/freeze/targets/child-workflow.ts`) — a rejected
+ * plan therefore never partially charges the budget. `frozenPlan` is
  * covered wholesale through `planHash`, so it is deliberately NOT
  * re-serialized into `contentHash` (§3.5). No `requiredSources`
  * contribution: unlike a command/script target's own referenced source, the

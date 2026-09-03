@@ -43,7 +43,6 @@ function writeCurrentConfig(value: Record<string, unknown>): void {
   writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", ...value }));
 }
 
-/** Run `fn`, capturing every warn() line it produces. */
 function captureWarnings(fn: () => void): string[] {
   const warnings: string[] = [];
   _resetWarnOnceForTests();
@@ -219,22 +218,12 @@ describe("loadConfig", () => {
     }
   });
 
-  // These four retired 0.8/0.9-transitional keys used to hard-reject the
-  // WHOLE config load — every akm command exits 78 over one stale key, with
-  // no migrator ever provided to fix it. `stashes` (never a real runtime
-  // shape) is now ignored; `stashDir`/`sources[]`/`installed[]` fold into
-  // `bundles`/`defaultBundle` in memory via `legacy-source-shape-shim.ts`.
-  // See tests/integration/previous-release-corpus.test.ts for the combined,
-  // real-shaped 0.8 fixture this shim targets.
   test("ignores the retired `stashes[]` key instead of failing config load", () => {
     writeCurrentConfig({
       stashes: [{ type: "filesystem", path: "/legacy-stash", name: "legacy" }],
     });
 
     const warnings = captureWarnings(() => {
-      // `.passthrough()` round-trips the now-ignored key harmlessly; nothing
-      // in the runtime reads it any more (the point is that load no longer
-      // fails), so this only asserts loadConfig() did not throw.
       expect(() => loadConfig()).not.toThrow();
     });
     expect(warnings.some((w) => w.includes("stashes") && w.includes("retired"))).toBe(true);
@@ -254,7 +243,6 @@ describe("loadConfig", () => {
 
     const warnings = captureWarnings(() => {
       const config = loadConfig();
-      // The unrecognized `openviking` type is dropped, not guessed at.
       expect(config.bundles).not.toHaveProperty("my-ov");
       expect(config.bundles?.keep).toMatchObject({ path: "/keep", writable: true });
       expect(config.defaultBundle).toBe("keep");
@@ -911,10 +899,6 @@ describe("0.9 config shape parsing", () => {
     expect(warnings.some((w) => w.includes("features") && w.includes("retired"))).toBe(true);
   });
 
-  // A literal (non-`$VAR`) engine apiKey used to fail the WHOLE config load —
-  // the most common thing anyone hand-edits. It now warns once and loads with
-  // the value as configured; `akm config set engines.<name>.apiKey` still
-  // refuses a literal outright (tests/config-v09.test.ts).
   test("loads a literal engine apiKey, warning instead of failing", () => {
     writeCurrentConfig({
       engines: {

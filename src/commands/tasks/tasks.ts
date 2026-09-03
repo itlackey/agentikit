@@ -1151,14 +1151,6 @@ async function prepareTaskAddSchedulerTransaction(input: {
     const logicalSource = primary.logicalSource;
     const ordinal = invocation ? schedulerBindingOrdinal(entry.id, logicalSource, invocation) : undefined;
     if (!invocation || ordinal === undefined) {
-      // A hand-edited crontab/launchd/schtasks line has no owner/ordinal this
-      // parser can exactly reproduce, so there is no compare-and-swap proof
-      // to build for it. Replace it (with a warning naming the native id)
-      // instead of refusing the whole add/sync — `akm task doctor` already
-      // reports this drift, and the per-operation CAS this skips is only
-      // this one entry's: the whole-transaction snapshot/rollback in
-      // applySchedulerTransaction still guards every native id (this one
-      // included) against a concurrent external edit racing the mutation.
       warn(
         `Installed scheduler binding ${JSON.stringify(entry.id)} (native id ${JSON.stringify(nativeId)}) could not be exactly parsed — likely a hand-edited entry; replacing it without a compare-and-swap guard.`,
       );
@@ -1209,9 +1201,6 @@ async function prepareTaskAddSchedulerTransaction(input: {
   const initialByKey = new Map<string, SchedulerMutationExpectation>();
   for (const removal of removals) {
     if (removal.kind !== "remove") continue;
-    // No exact identity to preflight-check for an unparseable (hand-edited)
-    // entry — see the warn() above. The whole-transaction snapshot/rollback
-    // still covers this native id; only its own per-operation CAS is absent.
     if (!removal.expected) continue;
     initialByKey.set(
       schedulerNativeArtifactKey(removal.nativeId),
@@ -1261,11 +1250,6 @@ function prepareSchedulerSyncRuntime(
 }
 
 function resolveAndValidateSchedulerInvocation(): PreparedSchedulerRuntime {
-  // #1 (0.9.12): akm cannot prove ownership of every launcher a package
-  // manager or version manager produces (bun/pnpm/yarn/Volta/asdf, or a
-  // project-local install) — that used to refuse scheduler writes outright
-  // unless the operator passed --rebind. `akm task doctor` already reports
-  // and remediates an ineligible binding, so bind it and warn instead.
   const invocation = resolveAkmInvocation();
   return { binding: invocation.argv, contextPath: "", eligible: invocation.eligible, kind: invocation.kind };
 }
@@ -1400,10 +1384,6 @@ function captureTaskSourceExpectation(filePathInput: string, rootInput: string):
   const common = { filePath, rootRealPath };
   let descriptor: number | undefined;
   try {
-    // No O_NOFOLLOW: a symlinked task source (e.g. the standard
-    // `~/dotfiles/akm/tasks/` layout) must open fine. Containment is
-    // enforced independently below via the REALPATH of `filePath`, which a
-    // symlink cannot escape undetected.
     descriptor = fs.openSync(filePath, fs.constants.O_RDONLY);
     let before = fs.fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) {
@@ -1414,10 +1394,6 @@ function captureTaskSourceExpectation(filePathInput: string, rootInput: string):
       !sameTaskSourceStat(before, fs.fstatSync(descriptor, { bigint: true })) ||
       BigInt(bytes.byteLength) !== before.size;
     if (torn) {
-      // Retry once, then proceed regardless: the content is SHA-256'd and
-      // re-compared at publish time (assertTaskSourceExpectation /
-      // publishSource below), so a torn read here can never reach disk — it
-      // can only cost a wasted retry, not a corrupted write.
       fs.closeSync(descriptor);
       descriptor = fs.openSync(filePath, fs.constants.O_RDONLY);
       before = fs.fstatSync(descriptor, { bigint: true });
@@ -1758,11 +1734,6 @@ function assertInlineTaskPrompt(input: string): void {
   const pathShaped =
     /^(?:\.{1,2}[\\/]|~[\\/]|[\\/]|[A-Za-z]:[\\/])/.test(value) ||
     (!/\s/.test(value) && /[\\/]/.test(value) && path.extname(value) !== "");
-  // Nothing expands --prompt's value; it is written verbatim into the task's
-  // `with: {content}`. A slash-command ref ("/daily-standup" — how Claude
-  // Code, OpenCode and Cursor users invoke their own commands) or a path
-  // ("src/api/handler.ts") is very likely a mistake, but guessing intent
-  // from free text can only warn, never refuse a value the operator typed.
   if (!isFullRefInput(value) && !pathShaped) return;
   warn(
     `--prompt "${input}" looks like an asset ref or file path; --prompt sends it as literal text, not a reference. Did you mean --workflow?`,

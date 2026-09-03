@@ -186,9 +186,6 @@ describe("crawlWebsite robots.txt compliance", () => {
     },
   );
 
-  // Finding 12 (guard-audit): a 5xx on the site's OWN robots.txt is not the
-  // site owner's Disallow — it is the site being flaky. The crawl now
-  // proceeds unrestricted (with a warning) instead of refusing outright.
   test("C-03: a 5xx robots.txt on the start origin no longer blocks the crawl", async () => {
     const { url, requestLog } = startFixtureServer({
       robots: { status: 500, body: "boom" },

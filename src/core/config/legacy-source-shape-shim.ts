@@ -1,48 +1,6 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
-/**
- * The retired 0.8 source-config shape (`stashDir` / `sources[]` / `installed[]`)
- * read shim.
- *
- * These three keys fully predate the 0.9.0 `bundles` + `defaultBundle` shape
- * (spec §10.1) and no migrator has ever existed for them — `akm migrate apply`
- * does not touch them. `AkmConfigSchema`'s `superRefine` therefore hard-rejects
- * them (see `config-schema.ts`), which means every akm command exits 78 the
- * moment a real 0.8-era config.json is read, with no working command left to
- * recover with.
- *
- * This module is the in-memory read shim, mirroring the established pattern in
- * `config-version-shim.ts` and `src/tasks/source/parse-task-source.ts`: a pure
- * function that takes the raw parsed JSON object and returns a new raw object
- * in the current shape, with a one-line stderr deprecation warning. The result
- * is never written back to disk automatically — `akm migrate apply` is the
- * on-disk rewrite path, and until it runs, this shim re-derives the same
- * bundles on every load.
- *
- * The transform is deliberately simple, not a byte-perfect reconstruction:
- *   - `stashDir: "/p"` becomes `bundles.stash = { path: "/p", writable: true }`
- *     and `defaultBundle` defaults to `"stash"`.
- *   - Each `sources[]` entry becomes its own bundle, keyed by its `name` (when
- *     it is a legal bundle slug) or a positional fallback. An entry whose
- *     shape this shim does not recognize (unknown `type`, or missing the field
- *     that type requires) is dropped rather than guessed at.
- *   - `installed[]` has no 0.9 equivalent (asset installation is tracked by
- *     the index now, not a static list) and is simply dropped.
- *   - Only used only when this call site (`loadConfig`/`loadUserConfig`) is
- *     the read shim; `validateConfigShape`, used to test the schema directly,
- *     intentionally does not route through this shim — see its own tests for
- *     why a `bundles` config that still carries these keys should keep
- *     failing loudly there.
- */
 import { isBundleSlug } from "../asset/asset-ref";
 import { warnOnce } from "../warn";
 
-// A local, dependency-free record guard (rather than `../common`'s `isRecord`)
-// — `common.ts` itself calls into this module from `readStashDirFromConfig`,
-// which documents its own reason for avoiding a `../config` import cycle;
-// importing `../common` back from here would recreate exactly that cycle.
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -54,7 +12,6 @@ const DEFAULT_WRITABLE_BY_TYPE: Record<string, boolean | undefined> = {
   npm: false,
 };
 
-/** Convert one legacy `sources[]` entry into a `[bundleKey, bundleEntry]` pair, or `undefined` if unrecognized. */
 function bundleFromLegacySource(entry: unknown, index: number): [string, Record<string, unknown>] | undefined {
   if (!isPlainRecord(entry)) return undefined;
   const type = typeof entry.type === "string" ? entry.type : undefined;
@@ -89,12 +46,6 @@ function bundleFromLegacySource(entry: unknown, index: number): [string, Record<
   return [key, bundle];
 }
 
-/**
- * Route a raw parsed config object through the retired-source-shape shim.
- * Returns `raw` unchanged when none of `stashDir`/`sources`/`installed` are
- * present; otherwise returns a new object with those keys removed and their
- * content folded into `bundles`/`defaultBundle`, plus a one-line warning.
- */
 export function migrateLegacySourceShape(raw: Record<string, unknown>, sourcePath?: string): Record<string, unknown> {
   const hasStashDir = typeof raw.stashDir === "string" && raw.stashDir.trim().length > 0;
   const hasSources = Array.isArray(raw.sources) && raw.sources.length > 0;

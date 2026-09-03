@@ -97,9 +97,6 @@ describe("bulk workflow source ownership deduplicates authored paths", () => {
     expect(resolveUniqueWorkflowSource(root, "akm", "beta")).toMatchObject({ relativePath: forward[1]?.source });
   });
 
-  // Issue 9 (guard-audit): a repeated workflow suffix (`hostile.md.yml`) is
-  // no longer rejected — both the point lookup and the batch domain
-  // resolver agree it is simply a valid `.yml` source with an unusual stem.
   test("a duplicated nested-suffix path resolves as one valid domain with point-lookup parity", () => {
     const root = fixtureRoot("akm-workflow-source-bulk-invalid-");
     const file = workflow(root, "hostile.md.yml");

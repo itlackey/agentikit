@@ -15,7 +15,6 @@ import type { AkmConfig } from "../../../src/core/config/config";
 import { ConfigError, NotFoundError, UsageError } from "../../../src/core/errors";
 import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../../src/core/warn";
 
-/** Run `fn`, capturing every warn() line it produces. */
 function captureWarnings(fn: () => void): string[] {
   const warnings: string[] = [];
   _resetWarnOnceForTests();
@@ -81,11 +80,6 @@ describe("error hint rendering (#8)", () => {
 describe("config-cli setConfigValue sources error message (#16)", () => {
   const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
 
-  // #16 (guard-audit) supersedes the original #16's premise here: `config
-  // set` on an unrecognized key no longer rejects at all (a second gate on
-  // an explicitly typed command), so there is no error message left to
-  // mis-name. The surviving regression value — "sources" is never confused
-  // with "stashes" — is now pinned on the warning instead.
   test("unrecognized 'sources' warns naming 'sources', not 'stashes'", () => {
     let result!: ReturnType<typeof setConfigValue>;
     const warnings = captureWarnings(() => {

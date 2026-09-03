@@ -150,12 +150,6 @@ const RETIRED_SOURCE_SHAPE_KEY_MESSAGES: Record<string, string> = {
 
 export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => {
   const raw = config as Record<string, unknown>;
-  // Retired vocabulary with no runtime meaning left (pre-0.9 profiles/llm/
-  // agent/features config, the removed `stashes[]`/`modelAliases` tables, and
-  // the never-shipped `bindings`/top-level `writable`). These used to hard-
-  // reject the WHOLE config at load — the single worst guard shape in the
-  // repo, since every akm command loads config first. `.passthrough()`
-  // already round-trips them harmlessly; just say so once and move on.
   for (const key of ["profiles", "llm", "agent", "features", "stashes", "modelAliases", "bindings", "writable"]) {
     if (key in raw) {
       warnOnce(
@@ -165,13 +159,7 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
     }
   }
   // Only the current source shape enters the runtime. There is no config
-  // compatibility path; `bundles` + `defaultBundle` fully supersede these
-  // keys. `parseAndValidateConfigText` (the real load path) folds a real
-  // `stashDir`/`sources[]`/`installed[]` config into `bundles`/`defaultBundle`
-  // in memory before the schema ever sees it (`legacy-source-shape-shim.ts`);
-  // this rejection only fires for a caller that validates raw JSON directly
-  // (`validateConfigShape`) — e.g. a half-migrated config that still carries
-  // these alongside `bundles`, which is intentionally still loud here.
+  // compatibility path; `bundles` + `defaultBundle` fully supersede these keys.
   for (const key of ["stashDir", "sources", "installed"]) {
     if (key in raw && raw[key] !== undefined) {
       ctx.addIssue({

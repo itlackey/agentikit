@@ -12,25 +12,13 @@ export interface AppliedPortableCommandArguments {
   readonly content: string;
 }
 
-// akm expands exactly one token, the literal `$ARGUMENTS` placeholder, by a
-// single split/join pass; it never rescans or interprets anything else in the
-// template. Every other construct that used to be rejected here (`$NAME`,
-// `$N`, `${...}`, `$(...)`, `@file`, `{{...}}`, native shell/file
-// interpolation) is ordinary prose to akm and was producing false positives
-// ("Budget is $5 per run", "$HOME/.config/akm", "mention @alice"). Only
-// `$ARGUMENTS[N]` — the one spelling that looks like the supported
-// placeholder but isn't — is worth flagging, and only as a warning: akm still
-// runs the template with the literal text left in place.
 const INDEXED_ARGUMENTS_PATTERN = /\$ARGUMENTS\s*\[/u;
 
 /**
- * Warn when a template uses `$ARGUMENTS[N]`-style indexed placeholders, which
- * akm does not support or expand (it only ever replaces the bare literal
- * `$ARGUMENTS`). The construct is left in the template untouched; this never
- * blocks execution.
+ * Validate the deliberately small portable command-template language.
  *
  * The source identifier is safe to surface; template and argument bytes never
- * enter the warning because they may contain user or secret material.
+ * enter the error because they may contain user or secret material.
  */
 export function validatePortableCommandTemplate(template: string, source: string): void {
   if (typeof template !== "string") throw new TypeError("command template must be a string");

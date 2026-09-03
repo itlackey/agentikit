@@ -2,14 +2,9 @@
  * 07 P0-2 — the LLM-as-judge quality gate must fail CLOSED.
  *
  * When the judge cannot render a verdict (no LLM configured, parse failure, or
- * timeout/error), minted content must never be auto-accepted (`pass: false`
- * always). Missing LLM configuration precedes generation entirely (nothing
- * was paid for) and is a plain rejection. A judge transport timeout or an
- * unparseable verdict, though, says nothing about the content's own quality —
- * and the generation that produced it already cost real money — so those two
- * cases additionally carry `reviewNeeded: true`, routing the content to human
- * review instead of discarding it where no one can see it (the same
- * uncertainty-band mechanism the gate already uses for a 2.5-3.5 score).
+ * timeout/error), minted content must be REJECTED, not passed through. An
+ * unverifiable judge waving content into the stash is exactly the injection
+ * surface this flip removes.
  */
 
 import { describe, expect, test } from "bun:test";

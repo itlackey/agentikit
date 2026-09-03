@@ -43,11 +43,6 @@ describe("activation-policy — rule 1: dangerous env-key injection", () => {
     expect(decideDangerousEnvInjection({ dangerousKeys: ["EDITOR"], thirdParty: false })).toBe("warn");
   });
 
-  // #10: EDITOR/VISUAL/PAGER are flagged for a documented RCE vector, but
-  // akm's own env-injection path never invokes them as a command — an
-  // installed bundle supplying a value cannot trigger it. Blocking a
-  // third-party install over them protected nothing while making the common,
-  // legitimate case (a bundle just sets a preferred editor) eat the refusal.
   test("third-party stash whose ONLY findings are the interactive-tool group → warn, not block", () => {
     expect(decideDangerousEnvInjection({ dangerousKeys: ["EDITOR"], thirdParty: true })).toBe("warn");
     expect(decideDangerousEnvInjection({ dangerousKeys: ["VISUAL"], thirdParty: true })).toBe("warn");

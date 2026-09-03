@@ -160,13 +160,6 @@ describe("versioned installed/user model-map contract", () => {
     expect(resolveModelMapAlias("balanced", "Claude", map).model).toBe("claude-sonnet-exact");
   });
 
-  // Finding 14 (guard-audit): a known alias with no mapping for the
-  // selected engine used to throw, inconsistently with an UNKNOWN alias
-  // passing through as the exact model string. It now takes that same
-  // pass-through path (with a warning) instead of refusing to run.
-  // `unmappedForEngine: true` distinguishes this case (a real gap in the
-  // alias table) from a wholly unrecognized model string — a caller such as
-  // the health probe uses it instead of relying on the removed exception.
   test("passes a known alias through as exact when it lacks the selected engine mapping", () => {
     const map = mergeModelMapLayers(parseModelMapLayer(installedText, "installed models.json"));
     expect(resolveModelMapAlias("balanced", "gemini", map)).toEqual({

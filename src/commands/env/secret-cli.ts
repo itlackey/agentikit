@@ -184,12 +184,9 @@ const secretRunCommand = defineJsonCommand({
     },
   },
   async run({ args }) {
-    // Validate the target env var name FIRST (before the command split) so an
-    // invalid name is rejected regardless of how the command is supplied —
-    // and so the failure does not depend on argv parsing. The
-    // process-hijacking check below has to wait for `resolveSecretPath`
-    // (further down): whether it blocks or only warns depends on the
-    // resolved source's first-party/third-party status.
+    // Validate the target env var name FIRST (before the command split) so a
+    // dangerous/invalid name is rejected regardless of how the command is
+    // supplied — and so the failure does not depend on argv parsing.
     const varName = args.var;
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) {
       throw new UsageError(`"${varName}" is not a valid environment variable name.`, "INVALID_FLAG_VALUE");
@@ -205,11 +202,6 @@ const secretRunCommand = defineJsonCommand({
       throw new NotFoundError(`Secret not found: ${makeSecretRef(name, source)}`);
     }
 
-    // Match `env run`: block only a third-party (registry-installed) source
-    // injecting a known process-hijacking variable; warn for a first-party
-    // one. The value came from the operator's own store and the var name was
-    // typed on the command line — `akm secret run <ref> GIT_SSH_COMMAND --
-    // git push` is the canonical use of this feature.
     const { isDangerousEnvKey } = await import("../lint/env-key-rules.js");
     if (isDangerousEnvKey(varName)) {
       const detail = `"${varName}" is a known process-hijacking variable (e.g. LD_PRELOAD, PATH).`;

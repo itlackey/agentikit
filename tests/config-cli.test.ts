@@ -3,7 +3,6 @@ import { getConfigValue, listConfig, setConfigValue, unsetConfigValue } from "..
 import type { AkmConfig } from "../src/core/config/config";
 import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 
-/** Run `fn`, capturing every warn() line it produces. */
 function captureWarnings(fn: () => void): string[] {
   const warnings: string[] = [];
   _resetWarnOnceForTests();
@@ -80,12 +79,6 @@ describe("config CLI helpers", () => {
     ).toThrow(/Invalid input/);
   });
 
-  // #16 (guard-audit): `config set` on an unrecognized key — including a
-  // retired one like `sources` — used to reject outright. That refusal is a
-  // second gate on an explicitly typed command with no override; it now
-  // warns and stores the value (JSON-decoded on a best-effort basis) rather
-  // than blocking the write. `config get`/`config unset` still refuse an
-  // unknown key (see "unknown-key hint" tests below).
   test("setConfigValue warns and stores an unrecognized retired key like sources instead of rejecting it (#37)", () => {
     const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     let result!: ReturnType<typeof setConfigValue>;
@@ -371,11 +364,6 @@ describe("nested schema keys are all settable via zod walker (#455)", () => {
 // ── #460: unknown-key hint references current schema (no legacy `agent`) ────
 
 describe("unknown-key hint stays in sync with schema (#460)", () => {
-  // `config get`/`config unset` still refuse an unknown key (#16 only
-  // degrades `config set`, per the module doc: a typo on a read/remove
-  // silently returns nothing or no-ops, which is worse than telling the
-  // user immediately) — so the schema-derived hint is exercised through
-  // `getConfigValue` here.
   test("unknown top-level key error lists schema-derived keys and does not mention retired profiles", () => {
     const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     try {

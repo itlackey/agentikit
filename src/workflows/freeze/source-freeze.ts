@@ -93,9 +93,6 @@ export async function resolveWorkflowSourceV4(
     if (sourceStep.gate?.rubric?.trim()) {
       const judge = resolveJudge(sourceStep, context);
       if (judge === undefined) {
-        // No engine anywhere to run this step's judge (issue 2): warn and
-        // freeze with no judge rather than refusing the whole workflow —
-        // see resolveJudge's doc for why this is safe.
         warn(
           `Workflow step "${sourceStep.id}" has completion criteria but no verification engine is available ` +
             "(set workflow.judgeEngine, defaults.engine, or install an opencode-sdk binary). The step will block " +

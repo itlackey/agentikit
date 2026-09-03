@@ -137,10 +137,6 @@ describe("default improve strategies (#552)", () => {
 
   test("minPoolSize is no longer shipped on consolidate.json now that 0 is the runtime default", () => {
     // #553 added `minPoolSize` to consolidate.json (500) and catchup.json (0).
-    // consolidate.json's floor was removed (guard-audit finding D-4): the
-    // runtime default is now 0, so an explicit 0 on catchup.json is
-    // redundant-but-harmless documentation, while consolidate.json needs
-    // nothing at all to get the same disabled-by-default behavior.
     expect(JSON.stringify(profileConsolidate)).not.toContain("minPoolSize");
     expect(JSON.stringify(profileCatchup)).toContain("minPoolSize");
   });

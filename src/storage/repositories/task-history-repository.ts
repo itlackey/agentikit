@@ -45,10 +45,6 @@ function metadataError(message: string): never {
 function validateDetail(value: unknown): asserts value is TaskHistoryDetail | null | undefined {
   if (value === undefined || value === null) return;
   if (!isRecord(value)) metadataError("detail must be an object or null");
-  // Unknown detail keys are ignored, not rejected — the same policy this
-  // file already applies to unknown TOP-LEVEL keys (profile, repairReason)
-  // just below. A newer akm's additive field on `detail` must not brick
-  // every read of a row it wrote.
   for (const field of ["runId", "reason", "error"] as const) {
     if (value[field] !== undefined && typeof value[field] !== "string")
       metadataError(`detail.${field} must be a string`);
@@ -70,19 +66,10 @@ function validateDetail(value: unknown): asserts value is TaskHistoryDetail | nu
  * `null`) instead of throwing. Unknown keys are ignored rather than
  * hard-rejected, so the next additive field never regresses this again;
  * neither `profile` nor `repairReason` is read anywhere downstream, so they
- * are dropped harmlessly rather than round-tripped — the same policy applies
- * one level down, to unknown keys on `detail`.
- *
- * A `metadataVersion` or `targetVocab` HIGHER than this binary understands is
- * the same version skew, not corruption: a row a newer akm wrote must still
- * be readable by an older one sharing the same data dir. Both decode
- * best-effort (one `warnOnce` per distinct value) rather than rejecting the
- * row outright — `targetVocab` is dropped so the read boundary falls back to
- * its legacy mapping table, since this binary cannot know what a future
- * vocabulary means. A non-number `durationMs` or a `detail` that fails
- * {@link validateDetail}'s type checks on the fields actually read
- * (`runId`/`reason`/`error`/`exitCode`) stays rejected — that is real
- * corruption, not version skew.
+ * are dropped harmlessly rather than round-tripped. A `metadataVersion` that
+ * IS present but not `2` is a genuinely unknown/future shape and still
+ * rejected, as is a non-number `durationMs` or a `detail` that fails
+ * {@link validateDetail} — real corruption, not version skew.
  */
 export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryMetadata {
   let parsed: unknown = input;

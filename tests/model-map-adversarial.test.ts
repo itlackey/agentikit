@@ -50,14 +50,6 @@ function expectAlreadyExists(fn: () => unknown): UsageError {
 }
 
 describe("models.json bounded safe loader", () => {
-  // Finding 7 (guard-audit): the read path now follows symlinks (a
-  // stow/chezmoi/yadm-managed ~/.config/akm/models.json symlinked into a
-  // dotfiles repo is ordinary, not an attack) — see "reads through a valid
-  // symlink" below. A DANGLING symlink then means the same thing a plain
-  // missing file already does for this optional read: nothing to load, not
-  // an error. This inverts the guard's old "distinguishes a dangling symlink
-  // from true absence" behavior, which is exactly the refusal finding 7
-  // asks to remove.
   test("treats a dangling symlink the same as true absence", () => {
     const sandbox = makeRoot("models-dangling");
     try {

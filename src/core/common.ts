@@ -296,12 +296,8 @@ function isValidDirectory(dir: string): boolean {
  * Read the primary stash path directly from config.json without pulling in the
  * full config module, to avoid circular dependencies.
  *
- * Reads the current `bundles`/`defaultBundle` shape. A retired pre-cutover
- * `stashDir`/`sources[]`/`installed[]` shape is folded into that shape first,
- * in memory, via the same read shim `loadConfig` uses (`legacy-source-shape-
- * shim.ts`) — this helper runs on every akm invocation ahead of full config
- * validation, so it must tolerate what that shim tolerates rather than
- * throwing over a shape the full loader has already learned to read.
+ * Reads only the current `bundles`/`defaultBundle` shape. Unsupported older
+ * keys are never interpreted as a second config architecture.
  */
 function readStashDirFromConfig(): string | undefined {
   try {

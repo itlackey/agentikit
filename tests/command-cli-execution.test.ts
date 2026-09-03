@@ -202,10 +202,6 @@ describe("command CLI execution convergence", () => {
   });
 
   test("prose that only resembles a native placeholder runs instead of failing before the runner", async () => {
-    // akm expands exactly one token, the literal `$ARGUMENTS` placeholder, and
-    // never interprets `$1` or any other construct in a command's own
-    // markdown body. This used to be a hard failure before dispatch even
-    // began; it must now run normally.
     const commandFile = path.join(storage.stashDir, "commands", "review.md");
     fs.writeFileSync(commandFile, "---\nname: review\ntype: command\nupdated: 2026-08-19\n---\nBudget is $1 per run\n");
     await akmIndex({ stashDir: storage.stashDir, full: true });

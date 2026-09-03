@@ -1,20 +1,17 @@
 // Regression tests for the 2026-05-23 setup-clobbers-user-config incident.
 //
 // Two layers of defense, both tested here:
-//   1. assertSetupSandbox (in src/setup/setup.ts): warns (does not refuse)
-//      when `akm setup --dir /tmp/X` targets a transient/sandbox path — the
-//      OS may reap it, so the operator is told up front. `akm setup --dir
-//      $(mktemp -d)` resolves under this family on every macOS machine
-//      (`/var/folders/...`), so a hard refusal here broke setup on every
-//      such machine; the real protection is layer 2, so this layer only
-//      warns and proceeds. Tested indirectly by invoking
-//      runSetupWithDefaults / runSetupFromConfig with /tmp paths.
+//   1. assertSetupSandbox (in src/setup/setup.ts): refuses `akm setup --dir
+//      /tmp/X` unless AKM_FORCE_SETUP_TMP_STASH=1. Tested indirectly by
+//      invoking runSetupWithDefaults / runSetupFromConfig with /tmp paths.
 //   2. getConfigDir (in src/core/paths.ts): when AKM_BUNDLE_DIR points at a
 //      transient path, isolates config writes into $STASH/.akm/. Tested
-//      end-to-end by asserting the host config file is untouched.
+//      end-to-end by running setup with the escape hatch and asserting the
+//      host config file is untouched.
 //
-// Layer 2 is what actually protects the host config; layer 1 is advisory
-// only, so both are tested.
+// Both layers are intentionally redundant: layer 1 fails fast for the
+// common case; layer 2 ensures that even when the user opts in to the
+// escape hatch, the host config is still preserved.
 //
 // Requires TMPDIR (if set) to be a /tmp-family path: fixtures are built
 // under os.tmpdir() (via makeSandboxDir), and isTransientStashPath()

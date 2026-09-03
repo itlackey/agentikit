@@ -2139,16 +2139,6 @@ export function preflightProposalPromotion(
   const stampedContent = assetPath.toLowerCase().endsWith(".md")
     ? stampProposalProvenance(repairedContent, preparedProposal, options.gateDecision, ctx, nowIso(ctx))
     : repairedContent;
-  // Same shape as the accept-time prose-quality gate: `missing-ref` blocked
-  // accepting a proposal whose prose forward-references an asset that does
-  // not exist YET (a normal ordering artifact — nothing stops a human from
-  // authoring the referenced asset next), and `unquoted-colon` /
-  // `stale-path` are the same kind of "reads oddly" heuristic already
-  // advisory everywhere else lint runs. None keep malformed data out of the
-  // written file — `validateProposal` above already did that — so a hit
-  // here is reported, not blocking. There is no `akm proposal edit` and
-  // `accept` takes no `--force`, so a blocking finding here had no remedy
-  // reachable from the proposal surface.
   const lintBlockers = promotionLintBlockers(stampedContent, assetPath, target.source.path, ref.type, config);
   if (lintBlockers.length > 0) {
     const summary = lintBlockers.map((finding) => `[${finding.issue}] ${finding.detail}`).join("; ");

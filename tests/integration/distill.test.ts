@@ -1713,11 +1713,9 @@ describe("akmDistill — pipeline-fix integration", () => {
 
   test("LLM returns the archived recursive-lesson bad fixture → routed to review, not discarded", async () => {
     // Synthesised from proposal id 187de1c9-d7eb-47c1-92a2-23ad29f669cc (lesson-of-a-lesson
-    // with double frontmatter, placeholder description, and circular when_to_use).
-    // description/when_to_use are PRESENT (structural lint passes) but fail the
-    // prose-quality heuristics — a finding on an otherwise-complete, already
-    // generated lesson must route to review, not discard the content with only
-    // the finding kinds left behind in an event.
+    // with double frontmatter, placeholder description, and circular when_to_use). The
+    // recursive-ref guard fires first, so chat is never called — but to be defensive we
+    // also exercise the path where the bad content comes from a non-lesson source.
     const stash = makeStashDir();
     const archivedBadContent = [
       "---",
@@ -1745,7 +1743,6 @@ describe("akmDistill — pipeline-fix integration", () => {
     expect(result.score).toBe(2.0);
     expect(result.reason).toMatch(/description|when_to_use|frontmatter/);
     expect(listProposals(stash)).toEqual([]);
-    // The content itself is preserved for review, not just its finding kinds.
     const rejectedDir = getDistillRejectedDir(stash);
     const rejectedFiles = fs.readdirSync(rejectedDir);
     expect(rejectedFiles).toHaveLength(1);
@@ -1889,13 +1886,9 @@ describe("akmDistill — R3 judge verdict routing + G4 output encoding salience"
   test("07 P0-2 end-to-end: gate ON + unjudgeable verdict → routed to review, never auto-queued", async () => {
     const stash = makeStashDir();
     // Distill returns a valid lesson, but the judge's second call receives the
-    // same non-JSON text → parse failure. An unparseable verdict says nothing
-    // about the content's own quality, and the generation that produced it
-    // already cost real money, so this drives the whole akmDistill path (not
-    // just runLessonQualityJudge in isolation) to prove unjudgeable minted
-    // content is routed to human review — never silently auto-queued, but
-    // also never discarded where the score alone (-1) would make it
-    // indistinguishable from genuinely bad content.
+    // same non-JSON text → parse failure → the gate fails CLOSED. This drives
+    // the whole akmDistill path (not just runLessonQualityJudge in isolation)
+    // to prove unjudgeable minted content is rejected, never queued.
     const result = await akmDistill({
       ref: "skills/deploy",
       config: configJudgeEnabled(stash),

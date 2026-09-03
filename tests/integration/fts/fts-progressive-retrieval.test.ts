@@ -370,13 +370,6 @@ The spectral quokka calibration nonce rotates every Thursday.
   });
 
   test("buildSearchText never truncates — a long document stays fully searchable and embeddable (#895)", () => {
-    // A fixed 8192-char SEARCH_TEXT_MAX_CHARS cap used to silently cut this —
-    // both the FTS content column and the exact embedding input — making
-    // anything past char 8192 unfindable. There is deliberately no cap here
-    // any more (the sibling MAX_LEXICAL_QUERY_TOKENS deletion in
-    // search/fts-query.ts is the same fix for queries instead of documents),
-    // so a long body's tail, including a term found nowhere else, stays in
-    // both the search text and the exact bytes handed to the embedder.
     const messages: string[] = [];
     _setWarnSinkForTests((level, args) => {
       messages.push(`${level}:${args.map(String).join(" ")}`);

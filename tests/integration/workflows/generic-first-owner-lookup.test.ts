@@ -249,12 +249,6 @@ describe("generic lookup/show installation-priority ownership", () => {
     expect((await loadWorkflowAsset("later//workflows/same")).path).toBe(laterPath);
   });
 
-  // Issue 9 (guard-audit): the "later" bundle's own `.md`/`.yml` sibling is
-  // no longer an invalid collision domain — `.md` wins deterministically
-  // (warning about the shadowed `.yml`) and resolves normally. The test's
-  // real subject (an early OKF owner staying insulated once its index entry
-  // is deleted) is unaffected; only the "later" bundle's own domain outcome
-  // changes.
   test("an established earlier OKF owner is insulated from a lower bundle's own resolvable .md/.yml domain", async () => {
     const early = fixture("early-okf-collision", "okf");
     const later = fixture("later-native-collision", "akm");

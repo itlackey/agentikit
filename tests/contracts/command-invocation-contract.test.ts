@@ -58,11 +58,6 @@ describe("portable command arguments", () => {
     expect(applyPortableCommandArguments(template, undefined, "inline").content).toBe(template);
   });
 
-  // akm expands exactly one token, the literal `$ARGUMENTS` placeholder, and
-  // never rescans or interprets anything else. Every construct below reads as
-  // prose to akm and must survive untouched — these used to be rejected and
-  // produced verified false positives ("Budget is $5 per run", "$HOME/.config
-  // /akm exists", "mention @alice", "install @anthropic-ai/sdk").
   test.each([
     ["positional", "Review $1 and $0"],
     ["named", "Review $TARGET"],
@@ -83,9 +78,6 @@ describe("portable command arguments", () => {
   });
 
   test("still expands the literal $ARGUMENTS prefix inside a portable-prefix-named construct", () => {
-    // `$ARGUMENTS_SUFFIX` is not the supported placeholder, but akm's expansion
-    // is a plain substring split/join on "$ARGUMENTS" with no construct
-    // awareness, so the shared prefix is replaced regardless of what follows it.
     expect(
       applyPortableCommandArguments("Review $ARGUMENTS_SUFFIX", undefined, "fixture//commands/unsafe").content,
     ).toBe("Review _SUFFIX");

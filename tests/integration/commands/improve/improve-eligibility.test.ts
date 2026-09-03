@@ -108,12 +108,10 @@ function durableRef(ref: string): string {
 }
 
 // #553: these pool-delta / #551-gate tests use single-memory sandboxed pools.
-// A configured consolidate minPoolSize guard would otherwise short-circuit the
-// consolidation pass before the mtime-delta gate runs (the runtime default is
-// 0/disabled since the guard-audit removed the built-in strategies' shipped
-// 500, but this suite sets it explicitly for clarity). Disable the pool-size
-// guard (minPoolSize: 0) so these tests exercise the gate they pin, not the
-// other guard. (A dedicated suite covers the minPoolSize guard itself.)
+// The default consolidate minPoolSize guard (500) would otherwise short-circuit
+// the consolidation pass before the mtime-delta gate runs. Disable the pool-size
+// guard (minPoolSize: 0) so these tests exercise the gate they pin, not the new
+// guard. (A dedicated suite covers the minPoolSize guard itself.)
 //
 // proactiveMaintenance is ALSO disabled explicitly because these tests pin the
 // signal-delta / high-salience SELECTION gates in isolation. The opt-in lane
@@ -255,12 +253,6 @@ test("degrades an index without an entries table to an empty incompatible snapsh
   db.exec("DROP TABLE entries");
   closeDatabase(db);
 
-  // openExistingDatabase no longer refuses a non-canonical generation up
-  // front — the caller's own "no such table: entries" handling below decides
-  // the index is unusable, exactly as it already does for the read-only
-  // dry-run path. This keeps `improve` running (empty result) instead of
-  // aborting the whole command for a generation mismatch it can recover from
-  // by reindexing.
   const result = await collectEligibleRefs({ mode: "all" }, stash, {});
   expect(result.plannedRefs).toEqual([]);
   expect(result.indexSnapshot).toEqual({

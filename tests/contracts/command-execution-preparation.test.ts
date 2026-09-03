@@ -364,10 +364,6 @@ describe("common command invocation preparation", () => {
   test("prose resembling a native construct authorizes normally; denied tools fail before runner dispatch", async () => {
     let authorizationCalls = 0;
     let dispatchCalls = 0;
-    // akm expands exactly one token, the literal $ARGUMENTS placeholder, and
-    // never interprets `$1` or any other construct in a command body — this
-    // used to be rejected before authorization ever ran; it must now proceed
-    // like any other prose command.
     const prose = rendered("command", "fixture//commands/prose", "Review $1.", { tools: ["shell"] });
     const prepared = await prepareCommandInvocation({
       action: { ref: "fixture//commands/prose" },

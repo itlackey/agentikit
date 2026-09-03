@@ -182,11 +182,6 @@ function ensureGraphTables(db: Database): void {
  * generation. No row conversion or dual-schema compatibility is attempted:
  * the next index run rebuilds entries, FTS, embeddings, utility aggregates,
  * graph extraction, and enrichment caches from current sources/state.
- *
- * A *newer* generation is left alone instead: this binary's write path does
- * not understand that schema, so wiping it — or even stamping our older
- * version over it — would be a one-way loss of a generation a newer akm can
- * still read. Report it as unusable rather than destroy it (#895).
  */
 function rebuildIncompatibleIndexGeneration(db: Database): void {
   const version = getMeta(db, "version");
@@ -387,15 +382,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   //     that dim and owns the dim-change/backup/wipe semantics.
   const dimExplicit = embeddingDim !== undefined;
   const requestedDim = embeddingDim ?? (Number(getMeta(db, "embeddingDim")) || EMBEDDING_DIM);
-  // A non-integer or non-positive dimension cannot back a vec0 column at
-  // all — that stays rejected, but by warning and falling back to the
-  // static default (matching resolveConfiguredEmbeddingDim's behavior for
-  // the same bad-value case) rather than throwing a bare Error that
-  // aborted the whole index open at exit 70 mid-run. There is no upper
-  // bound any more: a real embedding model's width is not this layer's
-  // business to cap, and index-connection.ts already handles an
-  // oversized/invalid configured value by falling back instead of
-  // refusing the whole database.
   const effectiveDim = Number.isInteger(requestedDim) && requestedDim > 0 ? requestedDim : EMBEDDING_DIM;
   if (effectiveDim !== requestedDim) {
     warn(`Invalid embedding dimension ${requestedDim} — falling back to the default (${EMBEDDING_DIM}).`);

@@ -7,14 +7,6 @@
 // (literal AND $\{VAR} reference) on every save without warning. The fix:
 //   1. Preserve $\{VAR} / $VAR references — not secrets.
 //   2. Strip literal values, but warn() so the user knows.
-//
-// A literal apiKey used to also hard-reject the whole config at the schema
-// level before sanitization ever ran (every akm command exits 78 over the
-// most common thing anyone hand-edits). That schema-level rejection now only
-// warns at LOAD (see tests/config-v09.test.ts / tests/config.test.ts) — the
-// enforcement that a literal secret never reaches disk lives entirely in
-// this sanitizer now, which is unchanged: `saveConfig` no longer throws over
-// a literal apiKey, it silently strips it (with a warning) before writing.
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import fs from "node:fs";
@@ -24,7 +16,6 @@ import { saveConfig } from "../src/core/config/config";
 import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "./_helpers/sandbox";
 
-/** Run `fn`, capturing every warn() line it produces. */
 function captureWarnings(fn: () => void): string[] {
   const warnings: string[] = [];
   _resetWarnOnceForTests();
@@ -126,7 +117,6 @@ describe("sanitizeConfigForWrite — secret handling (#474)", () => {
       );
     });
     const persisted = fs.readFileSync(path.join(configDir, "config.json"), "utf8");
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal env-var reference under test
     expect(persisted).not.toContain("${OPENAI_API_KEY:-fallback}");
     expect(warnings.some((w) => w.includes("embedding.apiKey"))).toBe(true);
   });

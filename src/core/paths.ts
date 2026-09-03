@@ -459,11 +459,9 @@ export function getDefaultStashDir(env: NodeJS.ProcessEnv = process.env): string
 // ── Stash directory safety check (#473) ──────────────────────────────────────
 
 /**
- * Refuse stashDir values that would clobber a sensitive system path, a
- * credential directory, or the user's home directory itself. Warn (without
- * refusing) for a merely inconvenient-but-not-dangerous choice. Called from
- * `akm init`, `akm setup`, and the setup-wizard validator before any disk
- * write.
+ * Refuse stashDir values that would clobber a sensitive system path or the
+ * user's home directory itself. Called from `akm init`, `akm setup`, and the
+ * setup-wizard validator before any disk write.
  *
  * Refuses:
  *   - The filesystem root (`/` or Windows drive root `C:\`)
@@ -472,22 +470,13 @@ export function getDefaultStashDir(env: NodeJS.ProcessEnv = process.env): string
  *     `/run`, `/home`, `/root`, `/mnt`, `/media`,
  *     `/Library`, `/System`, `/Applications`)
  *   - The user's home directory itself (exact match — subdirs are fine)
- *   - Credential/config dotfile parents: `~/.config`, `~/.local`, `~/.cache`,
- *     `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker` — a real secret
- *     leak risk (SSH keys, cloud/kube credentials) into search results or a
- *     committed bundle
+ *   - User-data dotfile parents: `~/.config`, `~/.local`, `~/.cache`,
+ *     `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`,
+ *     and the macOS/Windows `~/Documents` and `~/Downloads` parents
  *
- * Warns (does not refuse):
- *   - `/var/tmp` — a shared, periodically-cleaned scratch directory, not a
- *     hazard on the order of `/etc` or `/proc`
- *   - Plain user-data parents `~/Documents`, `~/Downloads`, and (Windows)
- *     `~/AppData` — inconvenient to index (large, unrelated content) but not
- *     a credential hazard
- *
- * Subdirectories of any refused (or warned-about) path are allowed (so
- * `~/.local/share/akm-test` is fine even though `~/.local` is refused). This
- * catches fat-finger `--dir /` or `--dir ~` without preventing legitimate
- * nested use.
+ * Subdirectories of any refused path are allowed (so `~/.local/share/akm-test`
+ * is fine even though `~/.local` is refused). This catches fat-finger
+ * `--dir /` or `--dir ~` without preventing legitimate nested use.
  */
 export function assertSafeStashDir(stashDir: string, env: NodeJS.ProcessEnv = process.env): void {
   const resolved = path.resolve(stashDir);
@@ -531,11 +520,6 @@ export function assertSafeStashDir(stashDir: string, env: NodeJS.ProcessEnv = pr
     );
   }
 
-  // `/var/tmp` survives system-process reboots (unlike `/tmp`) but is still a
-  // shared, world-writable, periodically-cleaned scratch directory, not a
-  // hazard on the order of `/etc` or `/proc` — an operator who explicitly
-  // points a stash there (a container, a throwaway eval box) is not racing
-  // themselves. Warn instead of refusing.
   if (resolved === "/var/tmp") {
     warnOnce(
       "stash-dir:var-tmp",
@@ -558,14 +542,7 @@ export function assertSafeStashDir(stashDir: string, env: NodeJS.ProcessEnv = pr
     // os.homedir() can throw on misconfigured systems; ignore.
   }
 
-  // Credential/config dirs: putting the akm index/write path here risks a
-  // real secret leak (SSH keys, cloud credentials, kube/docker config) into
-  // search results or a committed bundle. Kept as a hard refusal.
   const CREDENTIAL_USER_PARENTS = [".config", ".local", ".cache", ".ssh", ".gnupg", ".aws", ".kube", ".docker"];
-  // Plain user-data folders: inconvenient to index (large, unrelated
-  // content) but not a credential hazard, and an operator who explicitly
-  // points a stash at their Documents/Downloads/AppData folder is not
-  // racing themselves. Degrade to a warning.
   const PLAIN_USER_DATA_PARENTS = ["Documents", "Downloads", "AppData"];
 
   for (const home of candidateHomes) {

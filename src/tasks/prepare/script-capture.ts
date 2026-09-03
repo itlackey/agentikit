@@ -38,13 +38,6 @@ const SCRIPT_INTERPRETERS: Readonly<Record<string, TaskV3ScriptInterpreter>> = O
   ".kts": "kotlin",
 });
 
-/**
- * Interpreters a `#!` shebang line can name, for a script with no extension
- * at all. Matched against the shebang's final path segment (so both
- * `#!/bin/bash` and `#!/usr/bin/env bash` resolve the same way) — same
- * generic-family collapsing the closed extension table above already applies
- * (`.sh` always runs as plain `sh`, regardless of which shell it names).
- */
 const SHEBANG_INTERPRETERS: ReadonlyArray<readonly [RegExp, TaskV3ScriptInterpreter]> = [
   [/^(bash|sh|zsh|dash|ksh)$/, "sh"],
   [/^python[0-9.]*$/, "python"],
@@ -55,13 +48,6 @@ const SHEBANG_INTERPRETERS: ReadonlyArray<readonly [RegExp, TaskV3ScriptInterpre
   [/^node$/, "node"],
 ];
 
-/**
- * Read the interpreter named by a `#!` shebang line, if any. Handles both
- * `#!/path/to/interpreter` and `#!/usr/bin/env interpreter` forms. Returns
- * `undefined` when there is no shebang, or it names something outside the
- * closed set above — callers fall back to their existing "no interpreter"
- * rejection rather than guessing.
- */
 function interpreterFromShebang(bytes: Uint8Array | undefined): TaskV3ScriptInterpreter | undefined {
   if (!bytes || bytes.length < 2 || bytes[0] !== 0x23 || bytes[1] !== 0x21) return undefined;
   const newline = bytes.indexOf(0x0a);
@@ -76,14 +62,6 @@ function interpreterFromShebang(bytes: Uint8Array | undefined): TaskV3ScriptInte
   return undefined;
 }
 
-/**
- * Does the running Node build strip TypeScript syntax natively? Checked via
- * the runtime's own feature flag rather than a hardcoded version threshold,
- * so this stays correct as Node's native-TS support graduates from
- * experimental/flagged to on-by-default across releases. `false`/absent on
- * Bun too, which is harmless — Bun callers never reach this check (they take
- * the `process.versions.bun` branch below instead).
- */
 function nodeStripsTypeScript(): boolean {
   const features = (process as unknown as { features?: { typescript?: string | boolean } }).features;
   return Boolean(features?.typescript);
@@ -101,11 +79,6 @@ export function scriptInterpreter(extension: string, ref: string, bytes?: Uint8A
   if (process.versions.bun) {
     return isBunStandaloneMain() ? "bun-standalone" : "bun";
   }
-  // Bun is absent — the npm-global install akm's own `resolve-akm-bin` treats
-  // as eligible. Plain JavaScript runs directly under the Node that is
-  // already running akm; TypeScript only when this Node build strips types
-  // natively (otherwise there is genuinely no way to run it without a
-  // separately-installed loader).
   if (extension === ".js" || (extension === ".ts" && nodeStripsTypeScript())) {
     return "node";
   }

@@ -11,20 +11,17 @@
  * rationale): it runs the real `akmAdapter.validate()` — with a
  * `createValidateContext` overlay carrying the proposal's about-to-be-written
  * bytes — immediately before the write, and surfaces any finding via `warn()`,
- * but never blocks promotion on it. `promotionLintBlockers` (the OTHER
- * pre-commit lint pass, using the legacy `commands/lint/base-linter.ts`
- * resolver) is ALSO advisory now — same reasoning, same `warn()` shape —
- * so promotion is never blocked by either. This suite proves:
+ * but never blocks promotion on it. This suite proves:
  *
  *   1. the wiring genuinely runs against a REAL proposal-accept transaction
  *      (not a mock `ValidateContext`) and finds a real diagnostic the
- *      `promotionLintBlockers` gate does not catch (a different resolver, not
- *      a different enforcement level — both are advisory);
- *   2. that diagnostic does NOT block acceptance;
+ *      EXISTING `promotionLintBlockers` gate does not catch;
+ *   2. that diagnostic does NOT block acceptance (the disclosed non-blocking
+ *      scope decision, proven empirically, not just asserted in a comment);
  *   3. a clean proposal produces no adapter warning at all;
- *   4. a finding `promotionLintBlockers` DOES catch is reported via its own
- *      `warn()`, not blocked — the two advisory passes stay independent
- *      (one gate's silence on a ref shape is not the other gate's business).
+ *   4. a proposal that already fails today's `promotionLintBlockers` gate
+ *      still fails exactly the same way (this addition changes nothing about
+ *      existing blocking behavior).
  */
 
 import { describe, expect, test } from "bun:test";

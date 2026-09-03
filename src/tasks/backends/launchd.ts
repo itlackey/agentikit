@@ -793,12 +793,6 @@ function inspectStableLaunchdNamespace(
     );
   }
   const loadedLabels = parseLaunchdLoadedLabels(domain.stdout);
-  // print-disabled is best-effort: over SSH without a GUI session, on a
-  // macOS release that adds a header line, or on any other unparseable
-  // output, treat it as "nothing is known to be disabled" (with a warning)
-  // rather than aborting scheduler state inspection outright — the loaded
-  // inventory above already carries the information the rest of this
-  // function actually depends on.
   const disabledLabels = readDisabledLabels(context.exec);
   const akmDisabledLabels = [...disabledLabels].filter((label) => label.startsWith(LAUNCHD_LABEL_PREFIX)).sort();
   const plistEntries: Array<readonly [nativeId: string, raw: string]> = [];
@@ -1193,9 +1187,7 @@ function normalizeSignature(xml: string): string {
  *
  * The two bounds that remain are real resource bounds, not structural ones: a
  * cap on how much output we will read, and a cap on how many distinct akm
- * labels we will track. Exceeding either is degraded, not refused — scan
- * whatever fits within the bound rather than giving up on the user's own
- * inventory entirely.
+ * labels we will track. Exceeding either still returns `undefined`.
  */
 export function parseLaunchdLoadedLabels(output: string): Set<string> {
   const labels = new Set<string>();
@@ -1213,25 +1205,10 @@ export function parseLaunchdLoadedLabels(output: string): Set<string> {
   return labels;
 }
 
-/**
- * Bound a launchctl output blob before scanning it, in characters rather than
- * exact UTF-8 bytes (launchctl output is effectively ASCII, so this is an
- * accurate-enough proxy without re-encoding the whole string just to measure
- * it). A resource cap, not a structural one: truncate and scan what fits
- * rather than refusing to look at the user's own scheduler inventory just
- * because it is unusually large.
- */
 function boundLaunchdOutput(output: string): string {
   return output.length > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES ? output.slice(0, MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES) : output;
 }
 
-/**
- * Best-effort: `print-disabled` can fail outright (over SSH without a GUI
- * session) or throw. Either way, this is the user's own scheduler state, not
- * an attacker-controlled document — treat a failure the same as "nothing is
- * known to be disabled" rather than aborting scheduler state inspection over
- * a diagnostic call that was never the source of truth for what is loaded.
- */
 function readDisabledLabels(exec: LaunchdExec): Set<string> {
   try {
     const result = exec.run(["launchctl", "print-disabled", `gui/${exec.uid()}`]);
@@ -1249,16 +1226,6 @@ function readDisabledLabels(exec: LaunchdExec): Set<string> {
   }
 }
 
-/**
- * Parse `launchctl print-disabled`'s `com.akm.task.*` entries permissively —
- * mirrors {@link parseLaunchdLoadedLabels}'s reasoning exactly. The previous
- * grammar required the ENTIRE output to match `disabled services = { … }`
- * with every entry parsed in strict sequence; a header line real launchctl
- * output sometimes prints before that envelope (or any other quirk) failed
- * the whole match and surfaced as a hard abort. Scanning for our own
- * namespace's entries anywhere in the text, same as the loaded-labels parser,
- * survives all of that — a warning-worthy oddity, not a refusal.
- */
 function parseDisabledLabels(output: string): Set<string> {
   const disabled = new Set<string>();
   const entryPattern = /"(com\.akm\.task\.[^"\r\n]+)"\s*=>\s*(true|false|enabled|disabled)/gu;

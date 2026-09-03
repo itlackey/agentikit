@@ -211,8 +211,6 @@ describe("canonical derived-index entry schema", () => {
 
       expect(() => openIndexDatabase(dbPath)).toThrow(/newer akm/);
 
-      // The refusal must not have touched the file: a later akm that DOES
-      // understand this generation has to still find its data intact.
       const survivor = openDatabase(dbPath, { readonly: true, create: false });
       try {
         expect(

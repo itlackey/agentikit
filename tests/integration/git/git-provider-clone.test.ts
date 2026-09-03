@@ -190,20 +190,11 @@ describe("writable Git checkout safety", () => {
     expect(fs.readFileSync(dirtyFile, "utf8")).toBe("dirty work\n");
   });
 
-  // Companion to finding 8's fix in git-provider.ts, applied to the same
-  // ahead-blocks-a-no-op shape in this file's syncExistingWritableCheckout:
-  // when the requested target revision is already an ancestor of HEAD
-  // (behind === 0), there is nothing to fast-forward and nothing at risk, so
-  // local commits ahead of it are not a reason to refuse — the update is a
-  // genuine no-op and must succeed, keeping the local commit intact.
   test("ahead with nothing to fast-forward (behind === 0) is a no-op, not a refusal", () => {
     const ahead = makeWritableFixture();
     fs.writeFileSync(path.join(ahead.contentRoot, "lessons", "local.md"), "local commit\n", "utf8");
     git(["-C", ahead.checkout, "add", "."]);
     git(["-C", ahead.checkout, "commit", "-m", "local only"]);
-    // The author (== remote) was never advanced past the seed commit the
-    // checkout was cloned from, so this target is an ancestor of the
-    // checkout's new HEAD: ahead > 0, behind === 0.
     const remoteRevision = git(["-C", ahead.author, "rev-parse", "HEAD"]);
 
     const result = syncExistingWritableCheckout(
@@ -222,9 +213,6 @@ describe("writable Git checkout safety", () => {
     fs.writeFileSync(path.join(both.contentRoot, "lessons", "local.md"), "local commit\n", "utf8");
     git(["-C", both.checkout, "add", "."]);
     git(["-C", both.checkout, "commit", "-m", "local only"]);
-    // Advance the remote past the commit the checkout was cloned from, so the
-    // checkout is now BOTH ahead (its own local commit) and behind (the new
-    // upstream commit it has not seen).
     fs.writeFileSync(path.join(both.author, "content", "lessons", "upstream.md"), "upstream\n", "utf8");
     git(["-C", both.author, "add", "."]);
     git(["-C", both.author, "commit", "-m", "upstream commit"]);
@@ -344,11 +332,6 @@ exec ${JSON.stringify(realGit)} "$@"
   });
 
   test("mutation preparation warns instead of refusing pre-existing unpushed commits", () => {
-    // No CLI flag ever existed to get past this refusal (`allowAhead` is
-    // internal-only), and being ahead of upstream is not a lost-commit
-    // hazard the way a detached HEAD is: the write still lands as an
-    // ordinary commit `git push` reconciles later. Warn once instead of
-    // refusing the write.
     const fixture = makeWritableFixture();
     fs.writeFileSync(path.join(fixture.contentRoot, "lessons", "local.md"), "local commit\n", "utf8");
     git(["-C", fixture.checkout, "add", "."]);

@@ -442,10 +442,6 @@ describe("drainProposals — dry-run", () => {
   });
 
   test("reports a candidate the real preflight only flags advisorily as promotable", async () => {
-    // `promotionLintBlockers` findings (unquoted-colon, missing-ref,
-    // stale-path) are advisory now — they read oddly but keep no malformed
-    // data out of the write, so dry-run reporting must not treat this
-    // candidate as unpromotable.
     const stash = makeStashDir();
     const advisoryOnly = seed(
       stash,

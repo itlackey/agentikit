@@ -109,18 +109,9 @@ export interface ResolvedImproveProcess {
   notices?: readonly Readonly<LoweringNotice>[];
 }
 
-/**
- * One LLM-requiring process the plan disabled because no usable engine
- * resolved for it — either nothing was configured, or what resolved was not
- * an LLM engine. Same shape as {@link GatedLane} (autonomy-gate.ts) for the
- * same reason: the warning line and the `improve_skipped` event must not
- * drift from each other.
- */
 export interface EngineUnavailableProcess {
   process: ImproveProcessName;
-  /** The config key that would fix it — user-facing, so it comes from one place. */
   configKey: string;
-  /** Why it was disabled, phrased for an operator reading the warning. */
   reason: string;
 }
 
@@ -138,13 +129,6 @@ export interface ResolvedImprovePlan {
    * lane is never a silent no-op.
    */
   autonomyGated: readonly GatedLane[];
-  /**
-   * Processes disabled because no usable LLM engine resolved for them. A
-   * process without a usable engine used to abort the ENTIRE plan — including
-   * processes needing no engine at all (proactiveMaintenance) or a different
-   * one (triage). Each is now disabled individually and reported here so the
-   * run can warn + emit `improve_skipped` naming it, never a silent no-op.
-   */
   engineUnavailable: readonly EngineUnavailableProcess[];
 }
 
@@ -204,12 +188,6 @@ function buildImprovePlan(
       notices = resolved?.notices ?? [];
     }
     if (!runner && !skipsRepairEngine) {
-      // A process with no usable LLM engine — nothing configured, or what
-      // resolved was not an LLM engine — used to throw here and abort the
-      // WHOLE plan, taking down every other process too (including ones that
-      // need no engine at all, like proactiveMaintenance). Disable only this
-      // process; the run reports it (warn + `improve_skipped`) rather than
-      // silently doing nothing, and aborts only if nothing is left enabled.
       const configKey = `improve.strategies.${strategy.name}.processes.${processName}.engine`;
       engineUnavailable.push({
         process: processName,
@@ -232,9 +210,6 @@ function buildImprovePlan(
     });
   }
 
-  // Abort only if disabling engine-less processes left literally nothing
-  // enabled — the "aborts the whole run" failure mode this replaces, kept for
-  // the genuinely-nothing-to-do case, not for one process among several.
   if (engineUnavailable.length > 0 && !Object.values(processes).some((process) => process.enabled)) {
     const names = engineUnavailable.map((item) => `"${item.process}"`).join(", ");
     throw new ConfigError(

@@ -114,9 +114,6 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     expect(result.summary).toEqual({ fixed: 0, flagged: 1, warnings: 0 });
   });
 
-  // Issue 9 (guard-audit): a `.md`/`.yml` peer collision is no longer a hard
-  // refusal — `.md` wins deterministically (a warning names the shadowed
-  // `.yml`) and lints normally, exactly as if the `.yml` were not there.
   test("a peer .md/.yml canonical-owner collision picks the .md deterministically and lints it cleanly", async () => {
     const root = fixtureRoot("akm-lint-yaml-collision-");
     write(root, "workflows/dual.md", VALID_MARKDOWN);
@@ -185,9 +182,6 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     // to akm's resolved cache root, not a name).
     const root = fixtureRoot("akm-lint-yaml-cached-peer-");
     write(root, "workflows/release.md", VALID_MARKDOWN);
-    // No .md sibling here (issue 9 made a peer collision unflaggable — .md
-    // would just win and lint clean) — a lone invalid .yml still fails to
-    // compile and must still surface, proving these directories are linted.
     write(root, "workflows/.cache/shadow.yml", INVALID_YAML);
     write(root, "workflows/registry/mirror.yml", INVALID_YAML);
 
@@ -199,9 +193,6 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     expect(flaggedFiles.some((f) => f.includes("registry/mirror"))).toBe(true);
   });
 
-  // Issue 9 (guard-audit): a repeated workflow suffix is no longer rejected
-  // — the file lints cleanly under its real extension, same as any other
-  // valid source.
   test.each([
     ["collision.md.yml", VALID_YAML],
     ["collision.yml.md", VALID_MARKDOWN],
@@ -265,13 +256,6 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     },
   );
 
-  // Issue 9 point 3 (guard-audit): each of these three files is the SOLE
-  // candidate in its own canonical domain (distinct stems: broken, escape,
-  // format — none are siblings of each other), and each fails its own
-  // filesystem-level inspection. That is now warn-and-skip rather than a
-  // reported domain error: with no valid source left in the domain, the
-  // file is simply absent from lint's structured output (same as if no
-  // workflow existed at that name) — never read for content either way.
   test.skipIf(process.platform === "win32")(
     "dangling, escaping, and format-changing workflow symlinks are silently skipped, never read for content",
     async () => {
@@ -306,10 +290,6 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     },
   );
 
-  // Issue 9: the .md sibling wins deterministically and is genuinely linted
-  // (its content IS read and compiled — that is real lint work, not domain
-  // arbitration), while the shadowed .yml symlink and its target are never
-  // read at all.
   test.skipIf(process.platform === "win32")(
     "a contained symlink and canonical peer: the .md peer wins and lints cleanly, the shadowed .yml symlink is never read",
     async () => {

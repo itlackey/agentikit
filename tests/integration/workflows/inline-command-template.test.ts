@@ -1,32 +1,3 @@
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-
-/**
- * Issue 4 — an inline `uses: akm/command` step's `with: {content}` used to be
- * scanned for native-tool-only template constructs (`@file`, bare `$NAME`,
- * `${...}`, …) whenever it contained `$ARGUMENTS` or declared `arguments:`.
- * `content: "Review $ARGUMENTS against @docs/style-guide.md"` failed to
- * compile, though the identical prose written as a markdown step's body
- * (always `commandMode: "literal"`, `source-ir/compile.ts`) was fine. The
- * scan is removed at every point it reached inline workflow content — source
- * compile (`source-ir/semantics.ts`), asset loading's display instructions
- * (`source-ir/program.ts`), and freeze's actual dispatch preparation
- * (`freeze/targets/command.ts`, which now substitutes `$ARGUMENTS` itself and
- * hands the shared executor already-resolved literal text).
- *
- * A STORED `uses: commands/<ref>` action routes through the SAME shared
- * scan (`commands/command/portable-template.ts`), which the repo-wide audit
- * removed outright rather than merely exempting workflow-inline content: the
- * hazard it guarded (a command file that might round-trip through a native
- * tool where `$HOME`/`@file` would be interpreted) is a portability caveat,
- * not a destructive or unrecoverable error, and the false-positive cost was
- * the same complaint driving this fix — ordinary prose like "Budget is $5
- * per run" or "$HOME/.config/akm" is common in a reusable command file too.
- * So a stored ref carrying the identical native-tool-shaped prose now
- * compiles and freezes as well, exactly like the inline case above.
- */
-
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
@@ -84,8 +55,6 @@ describe("inline akm/command content is never scanned for native-tool constructs
     );
 
     const asset = await loadWorkflowAsset("workflows/gated");
-    // Display instructions (workflow-asset-loader.ts / akm show) never
-    // scanned, and $ARGUMENTS is substituted the same way dispatch will.
     expect(asset.steps[0]?.instructions).toBe("Review the diff against @docs/style-guide.md");
 
     const frozen = await compileResolveFreezeWorkflowV4(asset, loadConfig());

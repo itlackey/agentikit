@@ -156,16 +156,6 @@ describe("state.db automatic migration boundary", () => {
     expect(fs.existsSync(literalMemoryPath)).toBe(false);
   });
 
-  // An existing file with no ledger AND no table at all has nothing a
-  // pre-migration snapshot could protect (#8): the historical-destructive
-  // snapshot requirement below exists to protect real operator rows from an
-  // in-place migration bug, not to gate a file that merely lacks a ledger row
-  // (e.g. `touch state.db`, or a process that created the file and crashed
-  // before the first migration ran). It migrates the same as a brand-new
-  // file, with no `akm upgrade` step required. A table that already exists
-  // (even with zero rows) still requires the snapshot path — see
-  // `unversionedDatabaseHasNoTables`'s doc comment for why an empty-but-
-  // present table isn't safe to fold into this case.
   test("an existing but genuinely empty database (no tables at all) migrates like a fresh file", () => {
     const file = statePath();
     openDatabase(file).close(); // creates an empty SQLite file, zero tables

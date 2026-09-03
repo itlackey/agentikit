@@ -8,14 +8,15 @@
  *
  * Pure; no IO. `resolveWorkflowRunOutputs` reads PERSISTED step rows (never
  * live in-memory evidence — `completeWorkflowStep` sees only the current
- * step's; a resumed run has nothing else to rebuild the scope from, B-N12).
+ * step's; a resumed run has nothing else to rebuild the scope from, B-N12)
+ * and fails loudly, by name, when a declared output's source artifact was
+ * replaced by a truncation envelope at persistence.
  *
- * Every declared output is resolved independently and failures never stop
- * the run: the workflow's actual steps already completed, so an output that
- * cannot be resolved (a bad reference, a schema violation) is dropped from
- * `outputs` and its message returned in `errors` for the caller to surface
- * as a warning — never a reason to roll the completion back and force a
- * re-dispatch of paid work that would fail identically on retry.
+ * This module must stay IMPORT-CYCLE-FREE with `./runs.ts` (which imports
+ * it): `WORKFLOW_EVIDENCE_TRUNCATED_MARKER`'s value is therefore reproduced
+ * locally rather than imported — the same "reproduce across a boundary
+ * rather than import" idiom `ir/schema-v4.ts` already uses for
+ * `CHILD_WORKFLOW_DECODE_MAX_DEPTH`.
  */
 
 import { validateJsonSchemaSubset } from "../../core/json-schema";

@@ -864,7 +864,6 @@ describe("task lifecycle failure handling", () => {
       _resetWarnOnceForTests();
     }
 
-    // Nothing expands the value; it is written verbatim into `with: {content}`.
     expect(result.target).toMatchObject({
       kind: "uses",
       uses: { kind: "builtin-command", ref: "akm/command" },

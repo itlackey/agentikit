@@ -6,18 +6,10 @@
  * Authoritative workflow-source ownership.
  *
  * Markdown and the bounded GitHub-shaped YAML subset are peer authoring
- * formats. This module is the shared filesystem arbitration point used
- * before indexing, cache reuse, lookup/show, and runtime load/start.
- *
- * Issue 9 (guard-audit): a `.md` + `.yml` sibling for the same canonical
- * name used to be a hard collision, refusing the ref outright, and ANY
- * invalid candidate in a canonical domain (a broken symlink, an
- * unreadable file) used to poison every valid sibling alongside it. Both
- * are now warn-and-proceed: `.md` wins deterministically over `.yml`
- * (matching `source-ir/compile.ts`'s own extension-priority precedent) with
- * a warning naming the shadowed sibling, and an individually-invalid
- * candidate is skipped with a warning naming it, never blocking a valid
- * sibling in the same domain.
+ * formats, but one canonical workflow ref must have exactly one source file.
+ * This module is the shared filesystem arbitration point used before indexing,
+ * cache reuse, lookup/show, and runtime load/start. It never chooses one
+ * extension by priority: two recognized siblings are a hard collision.
  */
 
 import fs from "node:fs";
@@ -56,15 +48,9 @@ export interface WorkflowSourceDomainResolution {
   canonicalName: string;
   /** Authored, bundle-relative candidate paths in deterministic order. */
   sourcePaths: readonly string[];
-  /** Present when this canonical domain has a winning owner (issue 9: `.md` over `.yml`, never a collision). */
+  /** Present only when this canonical domain has exactly one valid owner. */
   source?: WorkflowSourceFile;
-  /**
-   * Never populated by this module any more (issue 9: an invalid or
-   * colliding domain now warns and resolves `source` instead of rejecting).
-   * Kept for callers' existing structural type — see
-   * `commands/lint/index.ts`'s `resolveWorkflowLintOwnership`, outside this
-   * area.
-   */
+  /** Present when any candidate is invalid or multiple valid owners collide. */
   rejection?: WorkflowSourceRejectionError;
 }
 
@@ -179,12 +165,9 @@ export function workflowNameForSourcePath(
 }
 
 /**
- * Enumerate every VALID owned source path that maps to `name` under one
- * component. A candidate that fails its own inspection (nested-suffix stem,
- * unresolvable symlink, path escape, symlink/format mismatch) is skipped
- * with a warning naming it (issue 9) — never allowed to block a valid
- * sibling from being listed. Results retain authored extension case for
- * diagnostics.
+ * Enumerate every owned source path that maps to `name` under one component.
+ * Ownership is decided before parsing so a malformed peer cannot be hidden by
+ * a valid source. Results retain authored extension case for diagnostics.
  */
 export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, name: string): WorkflowSourceFile[] {
   if (adapterId !== "akm" && adapterId !== "akm-workflow") return [];
@@ -242,9 +225,8 @@ export function listWorkflowSourceFiles(sourceRoot: string, adapterId: string, n
  * Callers that already walked a component (for example full lint/index scans)
  * must use this surface instead of point-resolving every canonical ref and
  * re-reading the same parent directory once per workflow. Candidate
- * inspection and symlink containment/format rules remain shared with
- * {@link listWorkflowSourceFiles}; the `.md`-over-`.yml` tie-break (issue 9)
- * is shared with {@link resolveUniqueWorkflowSource}.
+ * inspection, symlink containment/format rules, nested-suffix rejection, and
+ * collision construction remain shared with {@link listWorkflowSourceFiles}.
  */
 export function resolveWorkflowSourceDomains(
   sourceRoot: string,
@@ -305,11 +287,6 @@ export function resolveWorkflowSourceDomains(
   return resolutions;
 }
 
-/**
- * Inspect every candidate in one canonical domain, skipping (and warning
- * about) any that fails its own inspection — never letting one bad candidate
- * block a valid sibling (issue 9).
- */
 function inspectWorkflowSourceDomain(
   candidates: readonly WorkflowSourceCandidate[],
   canonicalName: string,
@@ -329,13 +306,6 @@ function inspectWorkflowSourceDomain(
   return sources;
 }
 
-/**
- * Pick the ONE winning source among a canonical domain's valid candidates
- * (issue 9): `.md` deterministically over `.yml` — matching
- * `source-ir/compile.ts`'s own extension-priority precedent — warning once
- * about every shadowed sibling. `WORKFLOW_EXTENSIONS` is exactly
- * `[".md", ".yml"]`, so a domain never has more than one of each.
- */
 function pickWorkflowSource(
   adapterId: string,
   canonicalName: string,
@@ -362,10 +332,6 @@ function inspectWorkflowSourceCandidate(
   canonicalName: string,
   realRoot: string,
 ): WorkflowSourceCandidateInspection {
-  // Issue 9: a nested suffix (`deploy.md.yml`) is no longer rejected — an
-  // extensionless stem that happens to end in a recognized workflow suffix
-  // is unusual authoring, not a hazard; the file is a perfectly readable
-  // `.yml` (or `.md`) source under its own real extension either way.
   const issues: WorkflowSourceRejectionError[] = [];
 
   let authoredStat: fs.Stats;
@@ -416,10 +382,7 @@ function inspectWorkflowSourceCandidate(
   };
 }
 
-/**
- * Return the winning owner (`.md` over `.yml`, warning about a shadowed
- * sibling — issue 9), or `undefined` when the domain has no valid source.
- */
+/** Return the sole owner, throw on a collision, or return undefined when absent. */
 export function resolveUniqueWorkflowSource(
   sourceRoot: string,
   adapterId: string,

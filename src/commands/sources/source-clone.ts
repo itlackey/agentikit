@@ -299,12 +299,6 @@ function assertNoDestinationSymlinkParent(root: string, destination: string): vo
     throw new UsageError(`Clone destination escapes the selected target: ${destination}.`, "PATH_ESCAPE_VIOLATION");
   }
 
-  // A dotfiles-managed bundle commonly symlinks a whole per-type directory
-  // (e.g. `skills/`) into a separately managed location — `~/akm/skills`
-  // symlinked into a dotfiles repo used to trip here on that first path
-  // segment alone. Resolve the parent's REALPATH and containment-check
-  // THAT instead of banning any intermediate symlink outright; refuse only
-  // when it genuinely resolves outside the bundle root.
   if (!isWithin(parentDir, resolvedRoot)) {
     throw new UsageError(
       `Clone destination has a symbolic-link parent outside the selected target boundary: ${parentDir}.`,

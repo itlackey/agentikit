@@ -38,16 +38,6 @@ export function canonicalizeWorkflowCron(value: string): string {
   return canonical;
 }
 
-/**
- * `run:` is lowered to `exec: {command: ["sh", "-c", <this value>]}`
- * (`source-ir/program.ts`'s `sourceStepProgramUnit`), and an author-written
- * `exec:` step already passes the identical bytes through with only a NUL
- * check (`rejectNulInArgv`). The former token-safe grammar here (rejecting
- * `run: |` multiline, `&&`, pipes, quotes, `$`) blocked nothing an author
- * could not already do one line away with `exec:` — it was a restriction on
- * spelling, not on capability. `${{ }}` stays rejected: akm genuinely does
- * not evaluate GitHub expressions/contexts, in `run:` or anywhere else.
- */
 export function canonicalizeWorkflowRun(value: string): string {
   if (value.includes("${{")) {
     throw new WorkflowSourceSemanticError(
@@ -136,16 +126,10 @@ export function classifyWorkflowStepUses(
 /**
  * Validate AKM's built-in command action at the shared source/decoder boundary.
  *
- * Mode consistency (stored vs. inline, literal vs. portable-template) is
- * still enforced here. The portable-template CONTENT SCAN (issue 4) is not:
- * it used to reject ordinary inline prose like `"Review $ARGUMENTS against
- * @docs/style-guide.md"` for using constructs (`@file`, bare `$NAME`, …) that
- * only matter for a STANDALONE command file meant to round-trip through a
- * native tool. The identical prose, written directly as a markdown step's
- * body instead of an explicit `uses: akm/command`, was always literal and
- * never scanned (`source-ir/compile.ts`'s `commandMode: "literal"`) — an
- * inline workflow step is authored for akm alone, so scanning it for
- * constructs akm never expands bought nothing but false positives.
+ * Inline YAML actions are portable templates and therefore use WP4's one
+ * authoritative template validator. Markdown prose is explicitly `literal`,
+ * while a stored ref remains resolution-owned because its template bytes are
+ * not available until the later resolver loads the command asset.
  */
 export function validateWorkflowBuiltinCommand(
   value: unknown,

@@ -107,16 +107,6 @@ describe("selected model alias health diagnostics", () => {
     },
   });
 
-  // Finding 14 (guard-audit): resolveModelMapAlias no longer THROWS when a
-  // known alias has no mapping for the selected engine — it degrades to the
-  // same exact pass-through an unknown alias already takes (with a
-  // warning), since refusing to run over a per-engine gap in an alias table
-  // punished the more informative case worse than a truly unknown model
-  // name. This probe used to catch that throw to build its "missing"
-  // evidence; it now reads the resolution's own `unmappedForEngine` flag
-  // instead, restoring the exact same warning this test pins — trading a
-  // hard throw for a silently-green health check would have been a worse
-  // outcome than either.
   test("warns when a selected known alias has no mapping for its engine", () => {
     const config: AkmConfig = {
       configVersion: "0.9.0",

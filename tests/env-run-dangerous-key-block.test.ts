@@ -55,12 +55,6 @@ describe("env run dangerous-key blocking", () => {
     expect(parsed.error).toContain("GIT_CONFIG_GLOBAL");
   });
 
-  // #10 (guard-audit) added `allowInsecure` to the shared activation-policy
-  // predicate, but left it with no caller — `env run` had no flag to pass
-  // it, so a third-party stash's RCE-class key blocked with no escape,
-  // unlike its sibling `bundle add --allow-insecure` for the same hazard
-  // class. These two pin both directions of the completed fix: still
-  // blocked by default, and only unblocked by an explicit flag.
   test("blocks a genuine RCE-class key (GIT_SSH_COMMAND) for a third-party stash without --allow-insecure", async () => {
     const sourceDir = makeTempStash();
     fs.mkdirSync(path.join(sourceDir, "env"), { recursive: true });

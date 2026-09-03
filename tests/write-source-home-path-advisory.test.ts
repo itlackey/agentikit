@@ -95,10 +95,6 @@ describe("writeAssetToSource emits the advisory but still writes", () => {
   });
 });
 
-// Reserved basenames (`index`/`log`) and MS-DOS device names (CON, PRN, NUL,
-// COM1-9, LPT1-9) used to refuse the write outright on every platform, even
-// POSIX where these are ordinary filenames. Now warns (a real Windows-
-// portability concern for the device names) and still writes.
 describe("writeAssetToSource warns instead of refusing reserved basenames and Windows device names", () => {
   const tempDirs: string[] = [];
   const warnings: unknown[][] = [];

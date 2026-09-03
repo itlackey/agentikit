@@ -144,13 +144,6 @@ describe("resolveAdapterConceptOwner — closed-form candidates (#857)", () => {
       fs.writeFileSync(loose, "Use $ARGUMENTS exactly.\n");
       fs.writeFileSync(canonical, "# Same command\n");
 
-      // Two spellings of one concept must not break an informational lookup
-      // for every ref that merely touches it, including refs the caller
-      // never asked about — an explicit read opts into the deterministic
-      // first owner instead. The default stays "write" (unchanged, above):
-      // this engine cannot tell a display-only caller from one about to
-      // dispatch/execute the resolved file, and picking the wrong physical
-      // source to run is not a passive read.
       const owner = resolveAdapterConceptOwner(root, "akm", "commands/same", { mode: "read" });
       expect(owner?.path).toBe(canonical);
     } finally {

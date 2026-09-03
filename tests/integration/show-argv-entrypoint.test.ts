@@ -3,16 +3,16 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Real-subprocess entrypoint test for global `--shape=summary` on a
- * non-`show` command.
+ * Real-subprocess entrypoint test for the global `--shape` pre-execution gate.
  *
- * `--shape` is documented as a GLOBAL flag, so a command with no summary
- * projection degrades to the `agent` shape with a warning instead of
- * refusing outright — the same treatment `--format` gets on an exempt
- * command. This runs a real subprocess (rather than the in-process harness
- * in tests/_helpers/cli.ts) so the assertion that the write DID happen is
- * observed past the real entry point in src/cli.ts, not just the shaping
- * layer.
+ * WHY THIS NEEDS A REAL SUBPROCESS: `--shape summary` is rejected for every
+ * non-`show` command by an early, pre-execution gate in the guarded startup
+ * block of src/cli.ts (before any command runs). The in-process harness
+ * (tests/_helpers/cli.ts `runCliCapture`) intentionally skips that startup
+ * block, so it only enforces the later, post-execution `shapeForCommand()`
+ * gate — by which point a write command like `remember` would already have
+ * run. This test asserts the write did NOT happen, which only holds for the
+ * real subprocess entry point, so it lives in tests/integration/ on spawnSync.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";

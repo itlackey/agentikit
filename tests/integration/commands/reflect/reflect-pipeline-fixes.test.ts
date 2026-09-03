@@ -194,10 +194,6 @@ describe("Reflect type guard — refuses non-markdown asset types", () => {
   });
 
   test("a type outside the fixed list is allowed when its content is genuinely frontmatter + markdown", async () => {
-    // `instruction` is a real akm placement type (markdownSpec-shaped, same as
-    // knowledge) that was never added to the fixed allowlist — the exact
-    // "extend this set" problem: fixing it required editing akm's own source.
-    // The structural check accepts it on its actual shape instead.
     const stash = makeStashDir();
     const sourceContent = "---\ndescription: Existing instruction doc\n---\n\nFollow these steps.\n";
     const payload = JSON.stringify({
@@ -216,9 +212,6 @@ describe("Reflect type guard — refuses non-markdown asset types", () => {
   });
 
   test("an unregistered/custom type with no existing content is still refused, not minted fresh", async () => {
-    // A brand-new asset of an unverified type has nothing to check
-    // structurally yet; defaulting to refused avoids minting a wrongly-shaped
-    // file the same way the original `8737ab63` regression did.
     const stash = makeStashDir();
     let spawned = false;
     const result = await akmReflect({
@@ -401,9 +394,6 @@ describe("Reflect quality gate — source context", () => {
       _setWarnSinkForTests(undefined);
     }
 
-    // The gate is enabled but has no LLM engine to judge with — that must
-    // never block generation: the agent still runs and the proposal still
-    // lands in the queue, just flagged for human review instead of judged.
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected reflect to succeed with the gate skipped");
     expect(spawned).toBe(1);
@@ -602,9 +592,6 @@ describe("Reflect quality gate — source context", () => {
       },
     });
 
-    // The size guard flags this for review regardless of what a judge would
-    // say, so it never pays for a judge call — but it still queues, rather
-    // than discarding the revision.
     expect(result.ok).toBe(true);
     expect(judgeInvoked).toBe(false);
     if (!result.ok) throw new Error("expected success");

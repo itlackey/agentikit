@@ -253,12 +253,6 @@ export async function showLocal(input: {
   if (!indexedEntry && !resolution.owner) {
     const unrecognized = findUnrecognizedScriptSource(assetParts, searchSources);
     if (unrecognized) {
-      // The extension set above governs recognition/typing during indexing —
-      // it must not gate READING a script that plainly exists and is
-      // readable (an extensionless `bin/` script with a shebang, `.mjs`,
-      // `.bash`, `.zsh`, `.fish`, `.sql`, `.awk`, ...). Fall back to the
-      // plain-text script renderer rather than reporting a file we just
-      // confirmed exists as not found.
       const displayExtension = unrecognized.extension || "no extension";
       warn(
         `Script ref "${makeBundleRef(parsed.bundle, parsed.conceptId)}" has extension "${displayExtension}", which is outside the recognized set used for indexing (${[...SCRIPT_EXTENSIONS].join(", ")}); showing it as plain text.`,
@@ -437,10 +431,8 @@ function warnSensitiveFragmentUnsupported(ref: BundleRef): void {
  * first; this is a diagnostic for its miss, never an alternate owner or
  * runnable-file classifier. No authored bytes are read.
  */
-/** An existing, containment-checked script asset whose extension is outside {@link SCRIPT_EXTENSIONS}. */
 interface UnrecognizedScriptSource {
   extension: string;
-  /** Realpath of the file, already confirmed to resolve inside `sourceRoot`. */
   path: string;
   sourceRoot: string;
 }
@@ -560,10 +552,6 @@ async function maybeExtractGraphInline(
 export async function showByRef(ref: string): Promise<{ filePath: string; body: string }> {
   const parsed = parseBundleRef(ref);
   if (parsed.fragment !== undefined) {
-    // Raw show always returns the whole file regardless — there is no
-    // fragment-slicing to apply here. Warn rather than refuse a ref a
-    // fragment-aware caller (e.g. an interactive `akm show <ref>#section`)
-    // might legitimately pass through unchanged.
     warn(`Fragment "#${parsed.fragment}" was ignored by raw show: ${ref}. Returning the whole file.`);
   }
   const entry = await lookupBundleRef(parsed);

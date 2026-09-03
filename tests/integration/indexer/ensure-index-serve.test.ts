@@ -126,14 +126,6 @@ describe("ensureIndex read-path (background mode)", () => {
   });
 
   test("openExistingDatabase opens a populated pre-current generation instead of refusing it, but ensureIndex still detects it as unusable", () => {
-    // openExistingDatabase itself no longer hard-aborts on a non-canonical
-    // generation (#895): the connection is a warn-and-hand-back so a caller
-    // with its own recovery — ensureIndex, via indexCanServeStash/isIndexStale
-    // below — can decide, rather than every reader crashing on a generation
-    // one `akm index` fixes. The legacy `entries` table here would otherwise
-    // still answer a schema-agnostic COUNT(*) as "servable", so the recovery
-    // path checks the stored generation explicitly rather than inferring it
-    // from a query failure.
     replaceWithPopulatedV17Index();
     expect(() => {
       const db = openExistingDatabase(getDbPath());

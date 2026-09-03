@@ -20,18 +20,22 @@ import { primaryBundlePath, withPrimaryBundle } from "./bundle-config-ops";
 import { copyStashSkeleton, ensureStashGitignore, scaffoldStashMeta } from "./stash-skeleton";
 
 /**
- * Warn (does not refuse) when persisting a temporary-directory stashDir to
- * the user's config while running under a test runner AND `--dir <tempdir>`
- * was passed explicitly. This targets the exact agent-overreach pattern
- * documented in `memories/akm-init-persists-stashdir-warning`: an agent ran
- * `akm bundle create --dir $(mktemp -d)` for an E2E test and rewrote the
- * developer's real config to point at a now-deleted temp dir. NODE_ENV=test
- * and BUN_TEST=1 are also common outside `bun test` (CI matrices,
- * devcontainers), so a hard refusal here fired too broadly; the config
- * still gets written, but the operator is told.
+ * Refuse to persist a temporary-directory stashDir to the user's config when
+ * running under a test runner AND `--dir <tempdir>` was passed explicitly.
+ * This guard targets the exact agent-overreach pattern documented in
+ * `memories/akm-init-persists-stashdir-warning`: an agent ran
+ * `akm bundle create --dir $(mktemp -d)` for an E2E test and silently rewrote the
+ * developer's real config to point at a now-deleted temp dir.
  *
  * Tests that legitimately resolve a tempdir via HOME (default-path init) are
  * unaffected — those are normal `~/akm` resolutions and not the failure mode.
+ *
+ * Test sentinels (either suffices):
+ *   - `BUN_TEST=1`     — explicit opt-in
+ *   - `NODE_ENV=test`  — what `bun test` sets today
+ *
+ * Tests that genuinely need to exercise `akm bundle create --dir /tmp/...` should set
+ * `AKM_FORCE_INIT_TMP_STASH=1`.
  */
 function assertInitSandbox(stashDir: string, dirExplicitlyProvided: boolean): void {
   if (!dirExplicitlyProvided) return; // Only guard explicit --dir, not default HOME resolution.

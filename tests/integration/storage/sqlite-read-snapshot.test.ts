@@ -52,10 +52,6 @@ describe("SQLite read snapshot lifecycle", () => {
       const elapsedMs = performance.now() - startedAt;
 
       expect(caught).toBeInstanceOf(SqliteReadSnapshotUnavailableError);
-      // Previously this failed instantly on the first observation (3
-      // no-backoff attempts). The retry budget now spends real wall-clock
-      // time backing off before giving up — this is the regression guard for
-      // that budget, not a promise on its exact duration.
       expect(elapsedMs).toBeGreaterThanOrEqual(300);
     } finally {
       holder.exec("ROLLBACK");
@@ -74,9 +70,6 @@ describe("SQLite read snapshot lifecycle", () => {
       holder.exec("INSERT INTO held VALUES ('uncommitted')");
       expect(fs.existsSync(`${sourcePath}-journal`)).toBe(true);
 
-      // A hot journal makes the isolated snapshot unavailable. The opener
-      // must not propagate that as a hard failure — it degrades to the plain
-      // read-only path (index-connection.ts) instead of aborting the read.
       const db = openReadonlyExistingDatabase(sourcePath, { isolatedSnapshot: true });
       expect(db).toBeDefined();
       db?.close();

@@ -36,11 +36,6 @@ describe("source provider copy safety", () => {
     expect(fs.existsSync(path.join(dest.dir, "escaped.md"))).toBe(false);
   });
 
-  // Finding 10 (guard-audit): a published package with, say,
-  // `README.md -> docs/README.md` is ordinary, not an attack — refusing the
-  // whole install over one symlinked include target left zero assets
-  // landed. copyIncludedPaths now follows the link and copies its target's
-  // content instead.
   test("copyIncludedPaths follows a symlink include target that stays inside the package", () => {
     const source = makeSandboxDir("akm-include-src");
     const dest = makeSandboxDir("akm-include-dest");
@@ -59,11 +54,6 @@ describe("source provider copy safety", () => {
   });
 
   test("copyIncludedPaths skips (rather than follows) a nested symlink that escapes the package", () => {
-    // A symlink named directly in akm.include still goes through the
-    // existing isWithin containment check (kept exactly as-is per finding
-    // 10) — this exercises the case that check cannot see: a symlink
-    // discovered while recursively copying a DIRECTORY the operator did
-    // name in akm.include.
     const source = makeSandboxDir("akm-include-src");
     const dest = makeSandboxDir("akm-include-dest");
     cleanup = () => {
