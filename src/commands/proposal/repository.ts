@@ -119,10 +119,7 @@ import {
 import { hasCanonicalProposalValidator } from "./validators/proposal-validators";
 import { repairProposalContent, validateProposal } from "./validators/proposals";
 
-// Despite the name, these no longer BLOCK promotion — see the warn() call at
-// their one use site in preflightProposalPromotion. The name is kept to avoid
-// an unrelated rename; it now means "the lint issue types promotion reports".
-const PROMOTION_LINT_BLOCKERS = new Set<LintIssueType>(["unquoted-colon", "missing-ref", "stale-path"]);
+const PROMOTION_LINT_ISSUE_TYPES = new Set<LintIssueType>(["unquoted-colon", "missing-ref", "stale-path"]);
 
 // ── Proposal domain types (moved to ./proposal-types.ts, WI-9.8 KILL 1) ─────
 //
@@ -2094,7 +2091,7 @@ function promotionLintBlockers(
     fix: false,
     stashRoot: targetRoot,
     extraStashRoots,
-  }).filter((finding) => PROMOTION_LINT_BLOCKERS.has(finding.issue));
+  }).filter((finding) => PROMOTION_LINT_ISSUE_TYPES.has(finding.issue));
 }
 
 export interface ProposalPromotionPreflight {
