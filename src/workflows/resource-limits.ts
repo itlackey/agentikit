@@ -4,7 +4,6 @@
 
 import { EXECUTION_MAX_TIMEOUT_MS } from "../execution/limits";
 
-export const WORKFLOW_MAX_PLAN_BYTES = 2 * 1024 * 1024;
 export const WORKFLOW_MAX_SOURCE_BYTES = 1024 * 1024;
 export const WORKFLOW_MAX_INSTRUCTION_BYTES = 256 * 1024;
 export const WORKFLOW_MAX_SCHEMA_BYTES = 256 * 1024;
@@ -207,22 +206,21 @@ export function jsonBytes(value: unknown): number {
 // ── Recursive child-workflow composition bounds (spec docs/plans/specs/
 // ── p3a-plan-v5-child-freeze.md §4.5, A-N6) ──────────────────────────────────
 //
-// Enforced ONCE, at freeze, before publication, in
-// `src/workflows/freeze/targets/child-workflow.ts` — the ONE resolver both the
-// direct `uses: workflows/<ref>` form and the task-wrapped form route through
-// — and re-enforced as a corruption gate whenever a parent plan is DECODED
-// (`src/workflows/ir/schema-v4.ts`'s recursive `decodeChildWorkflowTarget`).
-// Full design history, including the rejected alternative for the byte cap:
-// docs/architecture/decisions/0007-workflow-composition-bounds.md.
-//
 // Composition DEPTH is unbounded — `assertNoCompositionCycle` (freeze/targets/
 // child-workflow.ts) already makes infinite composition mathematically
 // impossible, so a depth ceiling on top of it only bounded how many
 // legitimately distinct workflows an author could nest.
-
-/**
- * Max AGGREGATE canonical-JSON bytes of every embedded child plan in ONE root
- * freeze (the sum across the whole composition tree, not per child).
- * Deliberately HALF of {@link WORKFLOW_MAX_PLAN_BYTES} — see ADR 0007.
- */
-export const WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES = 1024 * 1024;
+//
+// This section used to also cap the AGGREGATE canonical-JSON bytes of every
+// embedded child plan in one root freeze (`WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES`,
+// enforced in `freeze/targets/child-workflow.ts` and re-checked on every
+// decode in `ir/schema-v4.ts`'s `decodeChildWorkflowTarget`), alongside a
+// standalone cap on any one frozen plan's own bytes
+// (`WORKFLOW_MAX_PLAN_BYTES`, enforced in `ir/plan-hash.ts` and
+// `ir/schema.ts`). A large plan is not a wrong plan: composing several
+// substantial workflows together is a legitimate, deliberate authoring
+// choice, and SQLite has no practical row-size problem here (its own
+// ceiling is ~1 GB) — there was nothing left for either cap to protect that
+// `planHash`/`contentHash` verification does not already cover. Both caps
+// are removed; the hash/canonical-JSON integrity checks they sat next to
+// are unchanged.

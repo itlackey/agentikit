@@ -43,7 +43,6 @@ import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-ru
 import { compileResolveFreezeWorkflowV4 } from "../../src/workflows/ir/freeze-v4";
 import { computePlanHash } from "../../src/workflows/ir/plan-hash";
 import { decodeWorkflowPlanV4, type FrozenWorkflowTarget } from "../../src/workflows/ir/schema-v4";
-import { WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../../src/workflows/resource-limits";
 import { listWorkflowRuns, startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../src/workflows/runtime/workflow-asset-loader";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
@@ -601,12 +600,16 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
     expect(fields1.frozenPlanIrVersion).toBe(fields2.frozenPlanIrVersion);
   });
 
-  test("B-24: aggregate embedded child plan bytes over the 1 MiB cap fails COMPOSITION_INVALID naming the cap, the running total, and the child that crossed it", async () => {
+  test("B-24: aggregate embedded child plan bytes once over the former 1 MiB cap now freezes fine (guard-audit finding 13: a large plan is not a wrong plan)", async () => {
     // Five children at 250,000 'x' bytes each (well under the 256 KiB
     // per-instruction cap and the 1 MiB per-source-file cap individually)
-    // sum to 1,250,000 bytes — comfortably over the 1,048,576-byte
-    // (1 MiB) aggregate cap once every embedded plan's structural overhead
-    // is added on top.
+    // sum to 1,250,000 bytes — what used to be comfortably over the
+    // 1,048,576-byte (1 MiB) aggregate cap once every embedded plan's
+    // structural overhead was added on top. The cap (and the standalone
+    // 2 MiB whole-plan cap next to it) is removed: composing several
+    // substantial workflows together is a legitimate authoring choice, and
+    // planHash/contentHash verification already covers correctness
+    // regardless of size.
     const bigBody = (n: number) =>
       ["---", "type: workflow", "steps:", "  - id: work", "---", "", "## work", "", "x".repeat(n), ""].join("\n");
     for (let i = 0; i < 5; i++) write(`workflows/big-${i}.md`, bigBody(250_000));
@@ -616,15 +619,12 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
     );
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await expectCompositionInvalid("workflows/aggregate-root");
-    expect(error.message.toLowerCase()).toContain("byte");
-    // The title promises the cap, the running total, and the child that
-    // crossed it all appear — not just SOME mention of "byte".
-    expect(error.message).toContain(String(WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES));
-    const totalMatch = error.message.match(/total (\d+) bytes/);
-    expect(totalMatch).not.toBeNull();
-    expect(Number(totalMatch?.[1])).toBeGreaterThan(WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES);
-    expect(error.message).toMatch(/workflows\/big-\d/);
-    await expectNoRunRowWritten();
+    const started = await startWorkflowRun("workflows/aggregate-root");
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    for (let i = 0; i < 5; i++) {
+      const fields = childWorkflowFields(stepTarget(plan, i));
+      expect(fields.ref).toMatch(new RegExp(`//workflows/big-${i}$`));
+    }
   });
 });

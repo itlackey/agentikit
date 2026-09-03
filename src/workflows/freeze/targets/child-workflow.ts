@@ -37,7 +37,7 @@ import { workflowParamContract } from "../../ir/params";
 import { canonicalJson, canonicalPlanJson } from "../../ir/plan-hash";
 import type { FrozenChildWorkflowTarget, WorkflowPlanGraphV4 } from "../../ir/schema-v4";
 import type { ProgramUnit } from "../../program/schema";
-import { utf8Bytes, WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../../resource-limits";
+import { utf8Bytes } from "../../resource-limits";
 import { loadWorkflowAsset } from "../../runtime/workflow-asset-loader";
 import type { WorkflowSourceStep } from "../../source-ir/schema";
 import { resolveOwnedAsset } from "../environment";
@@ -160,29 +160,22 @@ function assertNoCompositionCycle(stepId: string, childRef: string, refPath: rea
 }
 
 /**
- * Add the child's embedded plan bytes to the shared, tree-wide budget
- * (A-N6) and fail before publication if the AGGREGATE crosses the cap.
- * Mutates `budget` only on success — a rejected step leaves the running
- * total exactly as it was, matching every other freeze-time failure's
- * no-partial-effect shape.
+ * Track the child's embedded plan bytes against the shared, tree-wide
+ * running total (A-N6). This used to fail publication once the AGGREGATE
+ * crossed a 1 MiB cap — composing several substantial workflows together is
+ * a legitimate, deliberate authoring choice, not a wrong plan, and nothing
+ * downstream depended on the aggregate staying under any particular size
+ * (`planHash`/`contentHash` verification covers correctness regardless of
+ * size). The running total is kept only because `ir/schema-v4.ts`'s
+ * decode-time mirror of this function still reports it for diagnostics.
  */
 function chargeEmbeddedBudget(
-  stepId: string,
-  childRef: string,
+  _stepId: string,
+  _childRef: string,
   childPlanBytes: number,
   budget: { embeddedBytes: number },
 ): void {
-  const projected = budget.embeddedBytes + childPlanBytes;
-  if (projected > WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES) {
-    throw new UsageError(
-      `Workflow step ${stepId} cannot compose ${childRef}: the embedded child plans would total ${projected} ` +
-        `bytes, over the ${WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES}-byte limit for one workflow run.`,
-      "COMPOSITION_INVALID",
-      "Reduce the number or size of workflows composed into this run — split the work across separate " +
-        "top-level runs, or trim the composed children's own plans.",
-    );
-  }
-  budget.embeddedBytes = projected;
+  budget.embeddedBytes += childPlanBytes;
 }
 
 export async function childWorkflowDispatch(input: ChildWorkflowDispatchInput): Promise<ResolvedDispatch> {

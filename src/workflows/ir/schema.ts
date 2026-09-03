@@ -12,7 +12,6 @@ import {
   WORKFLOW_ENV_VAR_NAME_PATTERN,
   WORKFLOW_MAX_CONCURRENCY,
   WORKFLOW_MAX_INSTRUCTION_BYTES,
-  WORKFLOW_MAX_PLAN_BYTES,
   WORKFLOW_MAX_SCHEMA_BYTES,
   WORKFLOW_MAX_TIMEOUT_MS,
 } from "../resource-limits";
@@ -140,7 +139,6 @@ export function validateWorkflowPlanStructure(input: unknown, options: WorkflowP
     fail(`irVersion must be ${options.expectedVersion}`);
   }
   assertJson(input);
-  if (jsonBytes(input) > WORKFLOW_MAX_PLAN_BYTES) fail("plan exceeds the 2 MiB resource limit");
   const plan = input as unknown as WorkflowPlanStructure;
   assertKeys(
     input,
