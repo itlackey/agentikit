@@ -4,7 +4,6 @@
 
 import type { AkmConfig, ImproveProcessConfig, ImproveProfileConfig } from "../../core/config/config";
 import { deepMergeConfig } from "../../core/config/deep-merge";
-import { ConfigError } from "../../core/errors";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import type { UnresolvedExecutionDefaults } from "../../execution/source";
 import { lowerResolvedExecutionRequest } from "../../integrations/agent/execution-lowering";
@@ -83,10 +82,15 @@ export function resolveImproveLlmExecution(
   const resolved = resolveImproveExecution(options);
   if (!resolved) return null;
   if (resolved.runner.kind !== "llm") {
-    throw new ConfigError(
-      `Engine ${JSON.stringify(resolved.runner.engine ?? "unknown")} is not an LLM engine.`,
-      "INVALID_CONFIG_FILE",
-    );
+    // An engine resolved, but it is not an LLM engine (e.g. the only engine
+    // configured is an agent). Every caller already treats a null return as
+    // "no usable engine for this process" and degrades accordingly — the
+    // improve process loop disables just that process rather than aborting
+    // the whole run, and every other caller either falls back or reports its
+    // own clearer "no LLM configured" error. Folding this into the same null
+    // return means one process pointed at the wrong kind of engine no longer
+    // needs its own abort path.
+    return null;
   }
   return { runner: resolved.runner, notices: resolved.notices };
 }
