@@ -384,7 +384,6 @@ describe("akmExtract — skip aggregation + resolved engine (#912, #913)", () =>
     expect(result.warnings).toContain('3 of 3 sessions skipped: llm_unavailable (engine "default")');
     expect(result.skipReasons).toEqual({ llm_unavailable: 3 });
     expect(result.engine).toBe("default");
-    expect(result.engineKind).toBe("llm");
     expect(result.sessions.every((s) => s.engine === "default")).toBe(true);
   });
 
@@ -439,7 +438,6 @@ describe("akmExtract — skip aggregation + resolved engine (#912, #913)", () =>
     expect(result.sessionsSkipped).toBe(0);
     expect(result.skipReasons).toBeUndefined();
     expect(result.engine).toBe("default");
-    expect(result.engineKind).toBe("llm");
   });
 });
 

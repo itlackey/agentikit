@@ -1684,7 +1684,6 @@ function discoverExtractCandidates(
           warnings: [`session ${options.sessionId} not found for harness ${options.type}`],
           durationMs: Date.now() - startMs,
           engine: llmRunner.engine,
-          engineKind: llmRunner.kind,
         },
       };
     }
@@ -1926,7 +1925,6 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       warnings: [`no available harness matches type "${options.type}" (check that the platform is installed)`],
       durationMs: Date.now() - startMs,
       engine: llmRunner.engine,
-      engineKind: llmRunner.kind,
     };
   }
   if (!harness.isAvailable()) {
@@ -1944,7 +1942,6 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       warnings: [`harness ${options.type} is registered but reports not-available (no session data on this machine)`],
       durationMs: Date.now() - startMs,
       engine: llmRunner.engine,
-      engineKind: llmRunner.kind,
     };
   }
 
@@ -2068,7 +2065,6 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
     ...(getNotices().length > 0 ? { notices: getNotices() } : {}),
     ...(skipReasons ? { skipReasons } : {}),
     engine: llmRunner.engine,
-    engineKind: llmRunner.kind,
   };
 }
 

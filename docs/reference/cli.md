@@ -2306,7 +2306,6 @@ harvest" branch on `skipReasons`, `warnings`, or `sessionsProcessed` /
 | Field | Description |
 | --- | --- |
 | `engine` | Resolved LLM engine name for this run. Absent only when extract is disabled by the selected improve strategy (the run returns before an engine is resolved). |
-| `engineKind` | `"llm"` or `"sdk"` — the resolved runner's kind. Same absence condition as `engine`. |
 | `skipReasons` | Per-`skipReason` count across `sessions[]` (e.g. `{ "llm_unavailable": 25 }`). Present only when `sessionsSkipped > 0`. |
 | `warnings` | Includes one aggregate line per infrastructure skip reason that fired (`llm_unavailable`, `read_failed`, `exception`, `locked_concurrent`) — e.g. `25 of 25 sessions skipped: llm_unavailable (engine "default")` — so an engine outage is visible without inspecting `sessions[]`. Session-content skips (`already_extracted`, `too_short`, `triaged_out`) are counted in `skipReasons` but never produce a warning line. |
 

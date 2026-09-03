@@ -624,7 +624,7 @@ export interface AkmExtractResult {
    */
   skipReasons?: Partial<Record<NonNullable<ExtractedSessionResult["skipReason"]>, number>>;
   /**
-   * #913 — resolved engine name / kind for this run, sourced from the same
+   * #913 — resolved engine name for this run, sourced from the same
    * `llmRunner` stamped onto each `sessions[].engine`. Optional because the
    * feature-disabled early return (`extract is disabled by the selected
    * improve strategy`) returns before any engine is resolved; every other
@@ -633,8 +633,6 @@ export interface AkmExtractResult {
    * looking up the harness — has a real value here.
    */
   engine?: string;
-  /** #913 — see {@link AkmExtractResult.engine}; absent under the same condition. */
-  engineKind?: "llm" | "sdk";
 }
 
 export interface AkmReflectFailure {
