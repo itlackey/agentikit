@@ -357,9 +357,18 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
 });
 
 describe("akmReflect — passes REFLECT_JSON_SCHEMA for the selected LLM engine", () => {
-  test("reserves reasoning-token headroom beyond the content-derived output cap", async () => {
+  // Finding 15 (guard-audit): reflect used to derive a character-based
+  // max_tokens cap and send it on every direct-LLM call — llm/client.ts
+  // deliberately does not send max_tokens by default, because a
+  // character-to-token conversion is inherently approximate and this exact
+  // derivation had already cut a real response off mid-envelope once (the
+  // 2,048-token headroom this test used to pin was itself a fudge factor
+  // bolted on to compensate). The content-size policy is still enforced by
+  // the prompt rules and the post-processor's own size check, so reflect no
+  // longer sends maxTokens at all.
+  test("does not send a content-derived max_tokens cap", async () => {
     const stash = makeStashDir();
-    const observedMaxTokens: number[] = [];
+    const observedMaxTokens: Array<number | undefined> = [];
     const sourceBody = "x".repeat(1_000);
 
     const result = await akmReflect({
@@ -368,7 +377,7 @@ describe("akmReflect — passes REFLECT_JSON_SCHEMA for the selected LLM engine"
       config: reflectLlmConfig(),
       assetContent: `---\ndescription: Reserve enough response capacity for thinking models\nwhen_to_use: When direct reflection sends a content-derived output ceiling\n---\n\n${sourceBody}`,
       chat: async (connection) => {
-        observedMaxTokens.push(connection.maxTokens ?? -1);
+        observedMaxTokens.push(connection.maxTokens);
         return JSON.stringify({
           content: `# Completed response\n\n${"y".repeat(600)}`,
           confidence: 0.9,
@@ -378,10 +387,7 @@ describe("akmReflect — passes REFLECT_JSON_SCHEMA for the selected LLM engine"
     });
 
     expect(result.ok).toBe(true);
-    // 2,500 content chars + 500 response-envelope chars -> 1,000 tokens;
-    // reflect must reserve another 2,048 tokens for servers that ignore
-    // `enable_thinking: false` and bill hidden reasoning against max_tokens.
-    expect(observedMaxTokens).toEqual([3_048]);
+    expect(observedMaxTokens).toEqual([undefined]);
   });
 
   test("selected LLM engine wires REFLECT_JSON_SCHEMA into the underlying chatCompletion call", async () => {

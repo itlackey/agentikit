@@ -836,29 +836,17 @@ function wantsJsonSchemaOutput(connection: { endpoint: string; model: string; su
 const REFLECT_CRITIQUE_PROMPT =
   "Your previous proposal is shown above. Review it critically and provide an improved version that is more specific, actionable, and avoids any issues with the previous attempt. Return only the improved response using the output contract from the original prompt.";
 
-/**
- * OpenAI-compatible thinking models charge hidden reasoning against
- * `max_tokens` before they emit the visible response. Reflect asks for a
- * machine-readable payload and requests `enableThinking: false`, but local
- * servers do not uniformly honour that flag. Keep visible-content sizing
- * separate from the allowance that lets an uncooperative thinking model reach
- * its JSON/frame envelope.
- *
- * The 2,048-token allowance exceeds the observed 1,798-token peak that
- * previously cut direct reflect responses off mid-envelope. It applies to all
- * bounded direct-LLM calls because a server's thinking behavior is not a
- * reliable capability signal; the post-processor still enforces the original
- * content-size policy.
- */
-const REFLECT_REASONING_TOKEN_HEADROOM = 2_048;
-const REFLECT_RESPONSE_ENVELOPE_CHARS = 500;
-
-function reflectMaxTokensForOutput(maxOutputChars: number | undefined): number | undefined {
-  if (maxOutputChars === undefined) return undefined;
-  // Divide by 3 chars/token (conservative — most models are 3.5–4), retain
-  // space for the JSON/frame wrapper, then reserve independent reasoning room.
-  return Math.ceil((maxOutputChars + REFLECT_RESPONSE_ENVELOPE_CHARS) / 3) + REFLECT_REASONING_TOKEN_HEADROOM;
-}
+// Guard-audit finding 15 (docs/plans/guard-audit.md): reflect no longer
+// derives a `max_tokens` cap from the prompt's character-based size policy.
+// llm/client.ts does not send `max_tokens` by default for exactly this
+// reason — the model/API already knows its own limits, and a character-to-
+// token conversion is inherently approximate (the very history this
+// function's old doc comment recorded: it had already cut a real response
+// off mid-envelope once and needed a 2,048-token fudge factor bolted on to
+// compensate). The content-size policy is still enforced twice over — the
+// prompt rules the model reads, and the post-processor's own size check —
+// so nothing is lost by not adding a third, byte-derived cap whose only
+// possible effect is truncating a response early.
 
 /** Options for the direct-LLM reflect runner selected by the current execution path. */
 export interface RunReflectViaLlmOptions {
@@ -1827,7 +1815,7 @@ async function runReflectRefineIterations(args: {
       lastDraftPath = iterDraftPath;
     }
 
-    const { prompt, maxOutputChars } = buildReflectPrompt({
+    const { prompt } = buildReflectPrompt({
       ...(options.ref ? { ref: options.ref } : {}),
       ...(parsedRef?.type ? { type: parsedRef.type } : {}),
       ...(parsedRef?.name ? { name: parsedRef.name } : {}),
@@ -1848,8 +1836,6 @@ async function runReflectRefineIterations(args: {
       ...(iterDraftPath ? { draftFilePath: iterDraftPath } : {}),
       ...(outputMode ? { outputMode } : {}),
     });
-    const maxTokensForLlm = reflectMaxTokensForOutput(maxOutputChars);
-
     let iterResult: AgentRunResult;
     if (runnerIsLlm(runnerSpec)) {
       // LLM HTTP runners cannot honor the file-write contract, so they return
@@ -1870,7 +1856,6 @@ async function runReflectRefineIterations(args: {
         ...(options.ref ? { targetRef: options.ref } : {}),
         allowRepair: repairAttempts === 0,
         ...(options.chat ? { chat: options.chat } : {}),
-        ...(maxTokensForLlm !== undefined ? { maxTokens: maxTokensForLlm } : {}),
         onNotices,
       });
     } else {
