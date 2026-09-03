@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { ConfigError } from "../src/core/errors";
 import { assertSafeStashDir } from "../src/core/paths";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 
 function refuses(p: string): { ok: false; code?: string; message: string } | { ok: true } {
   try {
@@ -23,6 +24,24 @@ function refuses(p: string): { ok: false; code?: string; message: string } | { o
     }
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** Call assertSafeStashDir(p), capturing every warn() line it produces. */
+function warnsOnly(p: string): { threw: boolean; warnings: string[] } {
+  const warnings: string[] = [];
+  _resetWarnOnceForTests();
+  _setWarnSinkForTests((level, args) => {
+    if (level === "warn") warnings.push(args.map(String).join(" "));
+  });
+  let threw = false;
+  try {
+    assertSafeStashDir(p);
+  } catch {
+    threw = true;
+  } finally {
+    _setWarnSinkForTests(undefined);
+  }
+  return { threw, warnings };
 }
 
 describe("assertSafeStashDir (#473)", () => {
@@ -112,6 +131,33 @@ describe("assertSafeStashDir (#473)", () => {
       // path.resolve('./scratch') → <cwd>/scratch; cwd here is the repo root.
       expect(refuses("./scratch-stash").ok).toBe(true);
       expect(refuses(path.join(cwd, "scratch")).ok).toBe(true);
+    });
+  });
+
+  // #13 (guard-audit): `/var/tmp` and the plain user-data parents
+  // (Documents/Downloads/AppData) are not a credential hazard the way a
+  // dotfile config dir is, and an operator who explicitly points a stash
+  // there is not racing themselves. Warn, don't refuse.
+  describe("warns instead of refusing merely-inconvenient paths", () => {
+    it("warns but allows /var/tmp", () => {
+      const { threw, warnings } = warnsOnly("/var/tmp");
+      expect(threw).toBe(false);
+      expect(warnings.some((w) => w.includes("/var/tmp"))).toBe(true);
+    });
+
+    it("warns but allows Documents/Downloads/AppData under home", () => {
+      const home = os.homedir();
+      for (const sub of ["Documents", "Downloads", "AppData"]) {
+        const { threw, warnings } = warnsOnly(path.join(home, sub));
+        expect(threw).toBe(false);
+        expect(warnings.some((w) => w.includes(sub))).toBe(true);
+      }
+    });
+
+    it("still allows subdirs of the warned-about paths, silently", () => {
+      const home = os.homedir();
+      expect(refuses(path.join(home, "Documents", "notes")).ok).toBe(true);
+      expect(refuses("/var/tmp/akm-fixture").ok).toBe(true);
     });
   });
 });
