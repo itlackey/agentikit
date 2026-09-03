@@ -161,13 +161,22 @@ function assertSpineIdentityMatchesPlan(
  * {@link assertSpineIdentityMatchesPlan} because the plan cannot have
  * produced a different step id for an already-frozen run.
  *
- * This does not (and, from `src/workflows/**`, cannot) rewrite the stale
- * durable row: `workflow_run_steps` is owned by
- * `storage/repositories/workflow-runs-repository.ts`, which exposes no
- * write path for these fields. The frozen plan — not this row — is what
- * every dispatch decision already reads, so the drift is display-only
- * (`akm workflow status` step title/instructions text) until that repository
- * grows one; see this change's `crossAreaNeeds`.
+ * The durable row — not the plan — is what a driving agent actually acts
+ * on: `getNextWorkflowStep` reads `instructions` straight off this row
+ * (`toWorkflowRunStepState`/`projectNextResult` in `runtime/runs.ts`), and
+ * `exec/run-workflow.ts`/`exec/step-work.ts` dispatch from that result. So
+ * warning and proceeding with the STORED row (rather than rewriting it to
+ * match the plan's current formatting) is the conservative choice: the
+ * durable spine is the contract this run has been executing against since
+ * freeze, and a newer akm formatting the same plan data differently should
+ * not retroactively change an in-flight run's instructions out from under
+ * it mid-execution. This module has no write path for that anyway
+ * (`workflow_run_steps` is owned by
+ * `storage/repositories/workflow-runs-repository.ts`) — and it should not
+ * gain one for this purpose; see this change's `crossAreaNeeds`. Step
+ * identity (row count, which step ids exist) is the part that would
+ * actually desynchronize execution from the plan, which is exactly why
+ * {@link assertSpineIdentityMatchesPlan} keeps that a hard failure.
  */
 export function reconcileWorkflowSpineWithPlan(
   plan: WorkflowPlanGraphV4,
@@ -195,8 +204,8 @@ export function reconcileWorkflowSpineWithPlan(
       `workflow-spine-drift:${run.id}`,
       `Workflow run ${run.id}: durable step row(s) [${drifted.join(", ")}] no longer match the frozen plan's ` +
         "title/instructions/completion-criteria/sequence derivation (an akm upgrade likely changed how one of " +
-        "these is formatted from the same plan data). Continuing — the frozen plan, not this display text, is " +
-        "what every dispatch decision reads.",
+        "these is formatted from the same plan data). Continuing with the stored row(s) as-is — this run keeps " +
+        "executing against the instructions it was frozen with, rather than having them rewritten mid-flight.",
     );
   }
 }
