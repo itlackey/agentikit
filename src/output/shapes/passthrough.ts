@@ -33,10 +33,13 @@ function makeStampHandler(command: string) {
     const obj = result as Record<string, unknown>;
     if (obj.shape !== undefined && obj.schemaVersion !== undefined && obj.ok !== undefined) return obj;
     return {
+      // `ok` first so it heads the printed envelope instead of trailing a
+      // (possibly large) dump — the spread below still wins with `obj`'s own
+      // `ok` value when present, only its position is fixed here.
+      ok: obj.ok ?? true,
       ...obj,
       shape: obj.shape ?? command,
       schemaVersion: obj.schemaVersion ?? 1,
-      ok: obj.ok ?? true,
     };
   };
 }
