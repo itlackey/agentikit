@@ -56,7 +56,7 @@ import type { AkmConfig, ConfiguredSource, SourceConfigEntry } from "./config/co
 import { bundleContentRoot, resolveConfiguredSources } from "./config/config";
 import { ConfigError, UsageError } from "./errors";
 import { sanitizeCommitMessage } from "./git-message";
-import { warn } from "./warn";
+import { warn, warnOnce } from "./warn";
 import { recordWrittenPath } from "./write-provenance";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -1120,17 +1120,23 @@ export function prepareWriteTargetForMutation(
     );
   }
 
+  // Being behind or ahead of upstream is not a commit-boundary hazard the
+  // way a detached HEAD is (kept above): the write still lands as a normal
+  // commit on the current branch, `git pull`/`git push` reconciles it same
+  // as any other local commit, and there is no CLI flag to get past a
+  // refusal here (`allowAhead` is internal-only). Warn once per run instead
+  // of refusing the write outright.
   const upstream = inspectGitUpstream(repoPath);
   if (upstream.behind > 0) {
-    throw new UsageError(
-      `Writable Git target "${target.source.name}" is behind ${upstream.upstream}; run \`akm bundle update ${target.source.name}\` before writing.`,
-      "INVALID_FLAG_VALUE",
+    warnOnce(
+      `write-source:git-behind:${realRepoPath}`,
+      `Writable Git target "${target.source.name}" is ${upstream.behind} commit(s) behind ${upstream.upstream}; writing anyway. Run \`akm bundle update ${target.source.name}\` to catch up.`,
     );
   }
-  if (upstream.ahead > 0 && options.allowAhead !== true) {
-    throw new UsageError(
-      `Writable Git target "${target.source.name}" has unpushed commits; push or reconcile them before AKM writes another commit.`,
-      "INVALID_FLAG_VALUE",
+  if (upstream.ahead > 0) {
+    warnOnce(
+      `write-source:git-ahead:${realRepoPath}`,
+      `Writable Git target "${target.source.name}" has ${upstream.ahead} unpushed commit(s); writing another on top. Push or reconcile them when convenient.`,
     );
   }
 
@@ -1297,17 +1303,20 @@ const WINDOWS_RESERVED_DEVICE_NAMES = new Set([
 function resolveAssetFilePath(source: WriteTargetSource, ref: AssetRef): string {
   const basename = path.posix.basename(ref.name.replaceAll("\\", "/")).replace(/\.md$/i, "").toLowerCase();
   if (basename === "index" || basename === "log") {
-    throw new UsageError(`Reserved concept name "${basename}" cannot be written.`, "INVALID_FLAG_VALUE");
+    warnOnce(
+      `write-source:reserved-basename:${basename}`,
+      `Concept name "${basename}" collides with a reserved word some tooling treats specially; writing it anyway.`,
+    );
   }
   // Windows resolves these names as DEVICES no matter the directory or the
   // extension, so `CON.md` is not a file — a write goes to the console and a
-  // read blocks on console input. Rejected on every platform so a stash stays
-  // portable: an asset authored on Linux must not become unopenable when the
-  // same bundle is used on Windows.
+  // read blocks on console input. On POSIX these are ordinary filenames; warn
+  // so a stash authored there stays portable (a bundle later used on Windows
+  // would find this asset unopenable) instead of refusing the write outright.
   if (WINDOWS_RESERVED_DEVICE_NAMES.has(basename)) {
-    throw new UsageError(
-      `Asset name "${basename}" is a reserved Windows device name and cannot be written.`,
-      "INVALID_FLAG_VALUE",
+    warnOnce(
+      `write-source:windows-device-name:${basename}`,
+      `Asset name "${basename}" is a reserved Windows device name; writing it anyway, but this bundle will not be portable to Windows.`,
     );
   }
   const typeDir = stashDirFor(ref.type);

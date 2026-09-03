@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../../src/core/warn";
 import { prepareWriteTargetForMutation } from "../../../src/core/write-source";
 import type { ParsedGitRef } from "../../../src/registry/types";
 import { classifyCloneFailure, cloneRepo, syncExistingWritableCheckout } from "../../../src/sources/providers/git";
@@ -305,14 +306,24 @@ exec ${JSON.stringify(realGit)} "$@"
     expect(git(["-C", fixture.checkout, "rev-parse", "HEAD"])).not.toBe(revision);
   });
 
-  test("mutation preparation rejects pre-existing unpushed commits", () => {
+  test("mutation preparation warns instead of refusing pre-existing unpushed commits", () => {
+    // No CLI flag ever existed to get past this refusal (`allowAhead` is
+    // internal-only), and being ahead of upstream is not a lost-commit
+    // hazard the way a detached HEAD is: the write still lands as an
+    // ordinary commit `git push` reconciles later. Warn once instead of
+    // refusing the write.
     const fixture = makeWritableFixture();
     fs.writeFileSync(path.join(fixture.contentRoot, "lessons", "local.md"), "local commit\n", "utf8");
     git(["-C", fixture.checkout, "add", "."]);
     git(["-C", fixture.checkout, "commit", "-m", "local only"]);
 
-    expect(() =>
-      prepareWriteTargetForMutation({
+    const warnings: string[] = [];
+    _resetWarnOnceForTests();
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      const prepared = prepareWriteTargetForMutation({
         source: {
           kind: "git",
           name: "team",
@@ -321,8 +332,12 @@ exec ${JSON.stringify(realGit)} "$@"
           adapterId: "akm",
         },
         config: { type: "git", name: "team", path: fixture.contentRoot, writable: true },
-      }),
-    ).toThrow(/unpushed commits/);
+      });
+      expect(prepared.source.path).toBe(fixture.contentRoot);
+      expect(warnings.some((w) => w.includes("unpushed commit"))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
   });
 
   test("writable cache ids remain distinct after slug sanitization", () => {

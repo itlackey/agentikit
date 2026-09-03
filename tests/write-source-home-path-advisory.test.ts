@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AssetRef } from "../src/core/asset/resolve-ref";
 import type { SourceConfigEntry } from "../src/core/config/config";
-import { _setWarnSinkForTests } from "../src/core/warn";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import { findAbsoluteHomePaths, type WriteTargetSource, writeAssetToSource } from "../src/core/write-source";
 
 describe("findAbsoluteHomePaths", () => {
@@ -90,6 +90,73 @@ describe("writeAssetToSource emits the advisory but still writes", () => {
     const ref: AssetRef = { type: "knowledge", name: "portable-note" };
 
     await writeAssetToSource(source, config, ref, "Store things under $HOME/projects.\n");
+
+    expect(warnings.length).toBe(0);
+  });
+});
+
+// Reserved basenames (`index`/`log`) and MS-DOS device names (CON, PRN, NUL,
+// COM1-9, LPT1-9) used to refuse the write outright on every platform, even
+// POSIX where these are ordinary filenames. Now warns (a real Windows-
+// portability concern for the device names) and still writes.
+describe("writeAssetToSource warns instead of refusing reserved basenames and Windows device names", () => {
+  const tempDirs: string[] = [];
+  const warnings: unknown[][] = [];
+
+  afterEach(() => {
+    _setWarnSinkForTests(undefined);
+    _resetWarnOnceForTests();
+    for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+    tempDirs.length = 0;
+    warnings.length = 0;
+  });
+
+  function sink(): { source: WriteTargetSource; config: SourceConfigEntry } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-reserved-name-"));
+    tempDirs.push(dir);
+    return {
+      source: { kind: "filesystem", name: "stash", path: dir },
+      config: { type: "filesystem", name: "stash", path: dir, writable: true },
+    };
+  }
+
+  test("warns and still writes a concept literally named `index`", async () => {
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    const { source, config } = sink();
+    const ref: AssetRef = { type: "knowledge", name: "index" };
+
+    const res = await writeAssetToSource(source, config, ref, "body\n");
+
+    expect(fs.existsSync(res.path)).toBe(true);
+    const joined = warnings.map((a) => a.map(String).join(" ")).join("\n");
+    expect(joined).toContain("index");
+  });
+
+  test("warns and still writes a concept named after a reserved Windows device name", async () => {
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    const { source, config } = sink();
+    const ref: AssetRef = { type: "knowledge", name: "con" };
+
+    const res = await writeAssetToSource(source, config, ref, "body\n");
+
+    expect(fs.existsSync(res.path)).toBe(true);
+    const joined = warnings.map((a) => a.map(String).join(" ")).join("\n");
+    expect(joined).toContain("con");
+    expect(joined.toLowerCase()).toContain("windows");
+  });
+
+  test("does NOT warn on an ordinary concept name", async () => {
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    const { source, config } = sink();
+    const ref: AssetRef = { type: "knowledge", name: "ordinary-note" };
+
+    await writeAssetToSource(source, config, ref, "body\n");
 
     expect(warnings.length).toBe(0);
   });
