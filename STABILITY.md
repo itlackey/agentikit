@@ -220,11 +220,9 @@ enumeration of the whole `proposal` noun group.
   | `70` | Internal / unclassified |
   | `78` | Configuration error |
 
-  **From 0.9.12**, every success envelope also carries `ok: true` alongside
-  its result data, so a caller branching on `.ok` sees the same field on
-  success as it does on the `{ok: false, ...}` failure envelope. A command
-  that already computes its own `ok` from a graded outcome (e.g. `task run`'s
-  exit-code mapping) keeps that value, `false` included.
+  **From 0.9.12**, every success envelope produced by the passthrough stamp
+  (`config`, `clone`, `models`, `task-*`, `workflow-*`, `registry-*`, …) also
+  carries `ok: true`; a command that already computes its own `ok` keeps it.
 - **Install scripts** — `install.sh` and `install.ps1` URLs; the `--prefix`
   / `AKM_INSTALL_DIR` environment override.
 - **Runtime** — the npm package requires Node.js >= 22 as its bootstrap and
@@ -487,11 +485,8 @@ lives in this repo). **D3** shipped too, in the end: `akm mv` was removed in
 0.9.0 (see the Renames bullet above), with `scripts/rekey-asset-ref.ts` as the
 Internal replacement for the one capability nothing else covered.
 
-- **0.10 — `config set`/`config unset` may drop the config dump.** Both
-  commands may stop printing the whole resulting config on success in favor
-  of a compact `{ok: true, shape, key}`-style result; `akm config list`
-  remains the way to read the full document. This is additive-only in
-  0.9.12 — no top-level key removed — so it belongs to a minor release.
+- **0.10 — `config set`/`config unset` may drop the config dump** in favor of
+  a compact `{ok, shape, key}` result; `akm config list` remains the full read.
 - **0.10 — migration extraction.** The migration machinery leaves the CLI for
   a separately published `akm-migrate` package (see Internal above).
 - **0.10 — `--auto-accept` hard error.** It is currently accepted-and-warned;

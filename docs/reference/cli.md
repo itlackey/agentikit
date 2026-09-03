@@ -113,11 +113,13 @@ The `hint` field is present only when actionable remediation is available
 `ok === false` on the parsed stderr envelope or a non-zero exit code to
 detect failure. Scripts can rely on the exit code alone.
 
-Every success envelope carries `ok: true` alongside its result data (0.9.12+),
-so a caller branching on `.ok` sees the same field on both sides — success
-and failure — instead of `undefined` on success. A command that already
-computes its own `ok` from a graded outcome (e.g. `task run`'s exit-code
-mapping, `akm lint`, `akm extract`) keeps that value, `false` included.
+Every success envelope produced by the passthrough stamp — `config`, `clone`,
+`models`, `task-*`, `workflow-*`, `registry-*`, and the rest of that shared
+handler — also carries `ok: true` (0.9.12+), so a caller branching on `.ok`
+sees the same field on both sides — success and failure — instead of
+`undefined` on success. A command that already computes its own `ok` from a
+graded outcome (e.g. `task run`'s exit-code mapping, `akm lint`, `akm
+extract`) keeps that value, `false` included.
 
 `env run`, `secret run`, and `migrate` preserve the spawned process's exact
 status and raw streams instead of replacing them with an akm failure envelope.
