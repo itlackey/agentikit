@@ -326,11 +326,17 @@ const healthCommand = defineCommand({
         "Fetch the full report dataset: per-run rows, trend deltas vs the prior window, and the pending proposal queue. Renders as the rich report under --format md/html and as complete data under any other format.",
       default: false,
     },
-    "no-probe": {
+    // #914: citty strips any `--no-X` argument and treats it as negating `X`
+    // (see `parseArgs` in citty's dist), regardless of whether an arg literally
+    // named "no-X" is declared — declaring "no-probe" directly would silently
+    // never populate `args["no-probe"]` and the flag would do nothing. Declare
+    // the positive flag instead; `--no-probe` is citty's automatic negation of
+    // it (rendered in `--help` via `negativeDescription`).
+    probe: {
       type: "boolean",
-      description:
-        "Skip the default-llm-engine / configured-engines reachability probes (for an offline or air-gapped host).",
-      default: false,
+      default: true,
+      description: "Probe default-llm-engine / configured-engines reachability (on by default).",
+      negativeDescription: "Skip the reachability probes (for an offline or air-gapped host).",
     },
   },
   async run({ args }) {
@@ -371,7 +377,7 @@ const healthCommand = defineCommand({
         groupBy: report ? "run" : (groupBy as "run" | undefined),
         windowCompare,
         windows,
-        probeReachable: args["no-probe"] ? undefined : probeLlmReachable,
+        probeReachable: args.probe === false ? undefined : probeLlmReachable,
       });
       const reportCompare =
         windowCompare ??
