@@ -206,7 +206,7 @@ describe("#554 extract minNewSessions gate", () => {
       await runImprove(configWithMinNewSessions(3), 1);
       expect(belowMinNewSessionsEvents().length).toBe(1);
 
-      const health = akmHealth({ since: "30d" });
+      const health = await akmHealth({ since: "30d" });
       expect(health.improve?.skipReasons?.below_min_new_sessions).toBe(1);
     },
     TIMEOUT_MS,

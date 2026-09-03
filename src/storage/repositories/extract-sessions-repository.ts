@@ -154,6 +154,46 @@ export function getLastExtractRunAt(db: Database, harness: string): number | nul
 }
 
 /**
+ * One grouped row of {@link getExtractOutcomeCountsSince}: how many sessions
+ * a harness recorded with a given outcome/skipReason/engine combination.
+ */
+export interface ExtractOutcomeCount {
+  harness: string;
+  outcome: ExtractedSessionRow["outcome"];
+  /** `metadata_json.skipReason`, or `null` for a non-skip outcome or a row a pre-#912 release wrote (no such key). */
+  skipReason: string | null;
+  /** `metadata_json.engine`, or `null` for a row a pre-#913 release wrote (no such key). */
+  engine: string | null;
+  count: number;
+}
+
+/**
+ * #914: outcome counts from the `extract_sessions_seen` ledger since
+ * `sinceIso`, grouped by harness/outcome/skipReason/engine. This is what lets
+ * `akm health`'s `session-extraction` check derive its verdict from what
+ * standalone `akm proposal extract` actually recorded — the only write path
+ * the hook-driven SessionEnd extraction uses (`improve_runs` is never
+ * populated by it). `skipReason`/`engine` are read from `metadata_json` via
+ * `json_extract` and come back `null` both for a non-skip outcome and for a
+ * row a release before #912/#913 wrote (no key at that path) — callers must
+ * treat a `null` reason as "skipped, reason unknown", not as evidence of a
+ * specific cause.
+ */
+export function getExtractOutcomeCountsSince(db: Database, sinceIso: string): ExtractOutcomeCount[] {
+  return db
+    .prepare(
+      `SELECT harness, outcome,
+              json_extract(metadata_json, '$.skipReason') AS skipReason,
+              json_extract(metadata_json, '$.engine') AS engine,
+              COUNT(*) AS count
+       FROM extract_sessions_seen
+       WHERE processed_at >= ?
+       GROUP BY harness, outcome, skipReason, engine`,
+    )
+    .all(sinceIso) as ExtractOutcomeCount[];
+}
+
+/**
  * Decide whether a session should be skipped because the extractor has already
  * processed BYTE-IDENTICAL content (#602). The skip authority is the content
  * hash, NOT `session_ended_at` — this is clock-independent, so it is immune to

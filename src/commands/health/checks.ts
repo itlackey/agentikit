@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { spawnSync } from "node:child_process";
-import { type AkmConfig, loadConfig } from "../../core/config/config";
+import { type AkmConfig, type LlmConnectionConfig, loadConfig } from "../../core/config/config";
 import { ConfigError } from "../../core/errors";
 import { listPendingStateMigrations } from "../../core/state-db";
 import type { WhichFn } from "../../integrations/agent/detect";
@@ -21,8 +21,18 @@ import {
   userModelMapPath,
 } from "../../integrations/agent/model-map";
 import type { RunnerSpec } from "../../integrations/agent/runner";
+import type { ExtractOutcomeCount } from "../../storage/repositories/extract-sessions-repository";
 import { resolveImprovePlan } from "../improve/improve-strategies";
 import { ACTIVE_RUN_WARN_MS, type HealthCheckResult, type ImproveHealthMetrics, TASK_FAIL_RATE_WARN } from "./types";
+
+/**
+ * #914: skip-reasons that indicate infrastructure being down rather than a
+ * session being legitimately uninteresting. Duplicated here (rather than
+ * imported) because `src/core/improve-types.ts` is owned by a parallel
+ * change on this release — unify with `EXTRACT_INFRASTRUCTURE_SKIP_REASONS`
+ * (improve-types) once #912 lands.
+ */
+const INFRASTRUCTURE_SKIP_REASONS = ["llm_unavailable", "read_failed", "exception", "locked_concurrent"] as const;
 
 /**
  * Pre-computed inputs shared by the health-check registry. `akmHealth` runs the
@@ -61,6 +71,14 @@ export interface HealthCheckContext {
    */
   worstTaskFailRate: { taskId: string; rate: number; rows: number } | null;
   sessionExtraction: ImproveHealthMetrics["sessionExtraction"];
+  /**
+   * #914: `extract_sessions_seen` outcome counts for the rolling 7-day
+   * ledger window (independent of the top-level `--since`) — what lets
+   * `session-extraction` tell "off on purpose" apart from "broken" on a
+   * hook-driven (`akm proposal extract --session-id`) machine, which never
+   * writes an `improve_runs` row at all.
+   */
+  sessionExtractionLedger: { since: string; rows: ExtractOutcomeCount[] };
   autoAccept: ImproveHealthMetrics["autoAccept"];
   /** Engine availability collected once and shared by its three registry projections. */
   engineProbes: HealthEngineProbeResults;
@@ -92,6 +110,65 @@ export interface DefaultEngineProbeDependencies {
   resolvePackage?: (name: string) => string;
   which?: WhichFn;
   env?: NodeJS.ProcessEnv;
+  /**
+   * #914: reachability seam for a `kind: "llm"` runner's connection, and an
+   * SDK runner's LLM fallback connection. Absent ⇒ the probe is skipped and
+   * the check's message notes that reachability was not probed — this keeps
+   * every existing caller (including the whole test suite, which never
+   * supplies this) fully offline. The CLI wires the real `probeLlmReachable`
+   * (`src/llm/client.ts`) here unless `--no-probe` is given.
+   */
+  probeReachable?: (connection: LlmConnectionConfig) => Promise<{ reachable: boolean; error?: string }>;
+}
+
+/**
+ * Endpoint → in-flight/settled reachability probe, scoped to ONE call of an
+ * engine-probe entry point (never shared across health invocations — #914's
+ * fix spec is explicit that a cross-run cache would reintroduce the stale
+ * "reachable" verdict this check exists to catch). Callers create a fresh
+ * `Map` per call; distinct engine NAMES that resolve to the same endpoint
+ * (e.g. `default-llm-engine` and a `configured-engines` entry) share one
+ * probe instead of hitting the endpoint twice.
+ */
+type ReachabilityCache = Map<string, Promise<{ reachable: boolean; error?: string }>>;
+
+interface ReachabilityOutcome {
+  probed: boolean;
+  reachable: boolean | null;
+  error?: string;
+}
+
+/** Probe (and de-dupe by endpoint) one LLM connection's reachability, bounded to a 3s timeout applied only to this probe call. */
+async function probeConnectionReachable(
+  connection: LlmConnectionConfig,
+  deps: DefaultEngineProbeDependencies,
+  cache: ReachabilityCache,
+): Promise<ReachabilityOutcome> {
+  if (!deps.probeReachable) return { probed: false, reachable: null };
+  const key = connection.endpoint;
+  let pending = cache.get(key);
+  if (!pending) {
+    pending = deps.probeReachable({ ...connection, timeoutMs: 3000 });
+    cache.set(key, pending);
+  }
+  const result = await pending;
+  return { probed: true, reachable: result.reachable, ...(result.error ? { error: result.error } : {}) };
+}
+
+/**
+ * #914: an unreachable LLM engine is a hard `fail` when it is the resolved
+ * `default-llm-engine` — extraction and improve depend on it directly — but
+ * only a `warn` for the identical probe result viewed as `default-engine` or
+ * a `configured-engines` entry. Escalates ONLY a reachability-derived warn
+ * (`evidence.reachable === false`); a credential-unavailable warn is
+ * untouched, matching the fix spec's "keep the credential-unavailable branch
+ * as it is."
+ */
+function escalateDefaultLlmEngineFailure(result: HealthCheckResult): HealthCheckResult {
+  if (result.status === "warn" && result.evidence?.reachable === false) {
+    return { ...result, status: "fail" };
+  }
+  return result;
 }
 
 export interface SelectedModelAliasesProbeDependencies extends LoadModelMapOptions {
@@ -118,12 +195,13 @@ function credentialAvailable(
   return true;
 }
 
-function runConfiguredEngineProbe(
+async function runConfiguredEngineProbe(
   checkName: string,
   engineName: string | undefined,
   config: AkmConfig,
   deps: DefaultEngineProbeDependencies,
-): HealthCheckResult {
+  reachabilityCache: ReachabilityCache,
+): Promise<HealthCheckResult> {
   if (!engineName) {
     return {
       name: checkName,
@@ -199,52 +277,123 @@ function runConfiguredEngineProbe(
       fallbackEngine && !fallback ? "configured fallback LLM connection" : undefined,
       !fallbackCredentialAvailable ? "required fallback credential" : undefined,
     ].filter((value): value is string => value !== undefined);
+    const sdkEvidence = {
+      engine: engineName,
+      platform: configuredEngine.platform,
+      runtimeKind: "sdk",
+      binary,
+      binaryAvailable,
+      package: "@opencode-ai/sdk",
+      packageAvailable,
+      model: effectiveModel ?? null,
+      configuredModel: configuredModel ?? null,
+      modelSource: configuredModel ? "sdk" : effectiveModel ? "fallback" : null,
+      fallbackEngine: fallbackEngine ?? null,
+      fallbackEndpoint: fallback?.connection.endpoint ?? null,
+      fallbackModel: fallback?.connection.model ?? null,
+      requiredCredentialAvailable: fallbackCredentialAvailable,
+    };
+    if (missing.length > 0) {
+      return {
+        name: checkName,
+        kind: "deterministic",
+        status: "warn",
+        confidence: "high",
+        message: `SDK engine "${engineName}" is incomplete: missing ${missing.join(", ")}.`,
+        evidence: sdkEvidence,
+      };
+    }
+    // #914: probe the SDK's LLM fallback connection — the only place this
+    // engine actually talks to a network endpoint. Ordering matches the
+    // plain-LLM branch below: only reached once every non-network
+    // precondition (package, binary, fallback resolution, credential) is
+    // already satisfied.
+    if (fallback) {
+      const reach = await probeConnectionReachable(fallback.connection, deps, reachabilityCache);
+      if (reach.probed) {
+        return {
+          name: checkName,
+          kind: "deterministic",
+          status: reach.reachable ? "pass" : "warn",
+          confidence: "high",
+          message: reach.reachable
+            ? `SDK engine "${engineName}" is available and its LLM fallback is reachable.`
+            : `SDK engine "${engineName}" is available, but its LLM fallback is not reachable: ${reach.error ?? "unknown error"}`,
+          evidence: {
+            ...sdkEvidence,
+            probed: true,
+            reachable: reach.reachable,
+            ...(reach.error ? { error: reach.error } : {}),
+          },
+        };
+      }
+      return {
+        name: checkName,
+        kind: "deterministic",
+        status: "pass",
+        confidence: "high",
+        message: `SDK engine "${engineName}" is available. Reachability was not probed.`,
+        evidence: { ...sdkEvidence, probed: false, reachable: null },
+      };
+    }
     return {
       name: checkName,
       kind: "deterministic",
-      status: missing.length === 0 ? "pass" : "warn",
+      status: "pass",
       confidence: "high",
-      message:
-        missing.length === 0
-          ? `SDK engine "${engineName}" is available.`
-          : `SDK engine "${engineName}" is incomplete: missing ${missing.join(", ")}.`,
-      evidence: {
-        engine: engineName,
-        platform: configuredEngine.platform,
-        runtimeKind: "sdk",
-        binary,
-        binaryAvailable,
-        package: "@opencode-ai/sdk",
-        packageAvailable,
-        model: effectiveModel ?? null,
-        configuredModel: configuredModel ?? null,
-        modelSource: configuredModel ? "sdk" : effectiveModel ? "fallback" : null,
-        fallbackEngine: fallbackEngine ?? null,
-        fallbackEndpoint: fallback?.connection.endpoint ?? null,
-        fallbackModel: fallback?.connection.model ?? null,
-        requiredCredentialAvailable: fallbackCredentialAvailable,
-      },
+      message: `SDK engine "${engineName}" is available.`,
+      evidence: sdkEvidence,
     };
   }
   try {
     const runner = (deps.resolveEngine ?? resolveEngine)(engineName, config);
     if (runner.kind === "llm") {
       const requiredCredentialAvailable = credentialAvailable(runner.credential, env, runner.apiKeyFile);
+      const llmEvidence = {
+        engine: engineName,
+        platform: null,
+        runtimeKind: "llm",
+        model: runner.connection.model,
+        endpoint: runner.connection.endpoint,
+        requiredCredentialAvailable,
+      };
+      if (!requiredCredentialAvailable) {
+        return {
+          name: checkName,
+          kind: "deterministic",
+          status: "warn",
+          confidence: "high",
+          message: `LLM engine "${engineName}" is configured, but its required credential is unavailable.`,
+          evidence: llmEvidence,
+        };
+      }
+      // #914: reachability probe — bounded to a 3s timeout (see
+      // probeConnectionReachable) and shared across every engine name that
+      // resolves to this same endpoint within this health invocation.
+      const reach = await probeConnectionReachable(runner.connection, deps, reachabilityCache);
+      if (!reach.probed) {
+        return {
+          name: checkName,
+          kind: "deterministic",
+          status: "pass",
+          confidence: "high",
+          message: `LLM engine "${engineName}" is configured. Reachability was not probed.`,
+          evidence: { ...llmEvidence, probed: false, reachable: null },
+        };
+      }
       return {
         name: checkName,
         kind: "deterministic",
-        status: requiredCredentialAvailable ? "pass" : "warn",
+        status: reach.reachable ? "pass" : "warn",
         confidence: "high",
-        message: requiredCredentialAvailable
-          ? `LLM engine "${engineName}" is configured.`
-          : `LLM engine "${engineName}" is configured, but its required credential is unavailable.`,
+        message: reach.reachable
+          ? `LLM engine "${engineName}" is configured and reachable.`
+          : `LLM engine "${engineName}" is not reachable: ${reach.error ?? "unknown error"}`,
         evidence: {
-          engine: engineName,
-          platform: null,
-          runtimeKind: "llm",
-          model: runner.connection.model,
-          endpoint: runner.connection.endpoint,
-          requiredCredentialAvailable,
+          ...llmEvidence,
+          probed: true,
+          reachable: reach.reachable,
+          ...(reach.error ? { error: reach.error } : {}),
         },
       };
     }
@@ -300,7 +449,10 @@ function projectSelectedEngineProbe(
   checkName: "default-engine" | "default-llm-engine",
 ): HealthCheckResult {
   const result = availability.get(engineName);
-  if (result) return projectEngineProbe(result, checkName);
+  if (result) {
+    const projected = projectEngineProbe(result, checkName);
+    return checkName === "default-llm-engine" ? escalateDefaultLlmEngineFailure(projected) : projected;
+  }
   return {
     name: checkName,
     kind: "deterministic",
@@ -355,35 +507,51 @@ function configuredEnginesProjection(
   };
 }
 
-export function runDefaultEngineProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
+export async function runDefaultEngineProbe(deps: DefaultEngineProbeDependencies = {}): Promise<HealthCheckResult> {
   // Probe the effective view: an install with no `defaults.engine` but a usable
   // opencode binary DOES have a working default, and reporting otherwise would
   // contradict what `workflow run` / `task run` actually do.
   const { config } = withEngineFallback(deps.loadConfig?.() ?? loadConfig(), deps.which);
-  return runConfiguredEngineProbe("default-engine", config.defaults?.engine, config, deps);
+  return runConfiguredEngineProbe("default-engine", config.defaults?.engine, config, deps, new Map());
 }
 
-export function runDefaultLlmEngineProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
+export async function runDefaultLlmEngineProbe(deps: DefaultEngineProbeDependencies = {}): Promise<HealthCheckResult> {
   const config = deps.loadConfig?.() ?? loadConfig();
-  return runConfiguredEngineProbe("default-llm-engine", config.defaults?.llmEngine, config, deps);
+  const result = await runConfiguredEngineProbe(
+    "default-llm-engine",
+    config.defaults?.llmEngine,
+    config,
+    deps,
+    new Map(),
+  );
+  return escalateDefaultLlmEngineFailure(result);
 }
 
 /** Probe every explicitly configured engine without exposing connection or model material. */
-export function runConfiguredEnginesProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
+export async function runConfiguredEnginesProbe(deps: DefaultEngineProbeDependencies = {}): Promise<HealthCheckResult> {
   const config = deps.loadConfig?.() ?? loadConfig();
   const engineNames = Object.keys(config.engines ?? {}).sort();
+  const cache: ReachabilityCache = new Map();
   const availability = new Map(
-    engineNames.map((engine) => [engine, runConfiguredEngineProbe("configured-engine", engine, config, deps)]),
+    await Promise.all(
+      engineNames.map(
+        async (engine) =>
+          [engine, await runConfiguredEngineProbe("configured-engine", engine, config, deps, cache)] as const,
+      ),
+    ),
   );
   return configuredEnginesProjection(engineNames, availability);
 }
 
 /**
  * Build the per-health-run availability snapshot. Each distinct selected or
- * explicitly configured engine is probed once; the three public checks are
- * projections of that immutable result set.
+ * explicitly configured engine is probed once (reachability probes further
+ * de-duped by endpoint, see {@link ReachabilityCache}); the three public
+ * checks are projections of that immutable result set.
  */
-export function runHealthEngineProbes(deps: DefaultEngineProbeDependencies = {}): HealthEngineProbeResults {
+export async function runHealthEngineProbes(
+  deps: DefaultEngineProbeDependencies = {},
+): Promise<HealthEngineProbeResults> {
   const configured = deps.loadConfig?.() ?? loadConfig();
   const effective = withEngineFallback(configured, deps.which).config;
   const defaultEngineName = effective.defaults?.engine;
@@ -392,8 +560,14 @@ export function runHealthEngineProbes(deps: DefaultEngineProbeDependencies = {})
   const probeNames = [...new Set([...explicitEngineNames, defaultEngineName, defaultLlmEngineName])]
     .filter((name): name is string => name !== undefined)
     .sort();
+  const cache: ReachabilityCache = new Map();
   const availability = new Map(
-    probeNames.map((engine) => [engine, runConfiguredEngineProbe("configured-engine", engine, effective, deps)]),
+    await Promise.all(
+      probeNames.map(
+        async (engine) =>
+          [engine, await runConfiguredEngineProbe("configured-engine", engine, effective, deps, cache)] as const,
+      ),
+    ),
   );
 
   return Object.freeze({
@@ -434,6 +608,18 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
         unavailableProcesses.push("triage.judgment");
       }
     }
+    // #913: name the engine each process actually resolved to, so a
+    // strategy-level `engine` pin that shadows `defaults.llmEngine` is
+    // visible on `akm health` instead of requiring config archaeology.
+    const engines: Record<string, string> = {};
+    for (const [name, process] of Object.entries(plan.processes)) {
+      if (process.enabled && process.runner) engines[name] = process.runner.engine;
+    }
+    if (plan.triageJudgment) engines["triage.judgment"] = plan.triageJudgment.engine;
+    const engineList = Object.entries(engines)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([process, engine]) => `${process}: "${engine}"`)
+      .join(", ");
     return {
       name: "active-improve-strategy",
       kind: "deterministic",
@@ -441,11 +627,12 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
       confidence: "high",
       message:
         unavailableProcesses.length === 0
-          ? `Active improve strategy "${plan.strategy.name}" has available process engines.`
-          : `Active improve strategy "${plan.strategy.name}" has unavailable required credentials for: ${unavailableProcesses.join(", ")}.`,
+          ? `Active improve strategy "${plan.strategy.name}" has available process engines${engineList ? ` (${engineList})` : ""}.`
+          : `Active improve strategy "${plan.strategy.name}" has unavailable required credentials for: ${unavailableProcesses.join(", ")}${engineList ? ` (engines: ${engineList})` : ""}.`,
       evidence: {
         strategy: plan.strategy.name,
         unavailableProcesses,
+        engines,
       },
     };
   } catch (error) {
@@ -800,33 +987,82 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
     },
   },
   {
+    // #914: derived from the `extract_sessions_seen` LEDGER, not
+    // `improve_runs.result_json` — the hook-driven `akm proposal extract
+    // --session-id ...` (the standard Claude Code plugin setup) never writes
+    // an `improve_runs` row, so the old improve_runs-only source reported
+    // "not active" as `pass` unconditionally on a plugin-driven machine, no
+    // matter how healthy or broken extraction actually was. The
+    // `improve_runs`-derived numbers (`ctx.sessionExtraction`) are kept in
+    // evidence for continuity, but the status/message come from the ledger.
     name: "session-extraction",
     channel: "advisory",
     run: (ctx) => {
       const sx = ctx.sessionExtraction;
-      const sxWarnReasons: string[] = [];
-      if (sx.warnings > 0) sxWarnReasons.push(`${sx.warnings} harness error(s)`);
-      if (sx.ran && sx.sessionsScanned >= 5 && sx.proposalsCreated === 0)
-        sxWarnReasons.push("no proposals generated across scanned sessions");
+      const legacyEvidence = {
+        sessionsScanned: sx.sessionsScanned,
+        sessionsExtracted: sx.sessionsExtracted,
+        sessionsSkipped: sx.sessionsSkipped,
+        proposalsCreated: sx.proposalsCreated,
+        warnings: sx.warnings,
+        durationMs: sx.durationMs,
+      };
+      const { since: ledgerSince, rows } = ctx.sessionExtractionLedger;
+      const totalRows = rows.reduce((sum, row) => sum + row.count, 0);
+
+      if (totalRows === 0) {
+        return {
+          name: "session-extraction",
+          kind: "heuristic",
+          status: "unknown",
+          confidence: "medium",
+          message: "No extraction recorded in the last 7 days.",
+          evidence: { ran: sx.ran, ledgerSince, ledgerRows: rows, ...legacyEvidence },
+        };
+      }
+
+      const allSkipped = rows.every((row) => row.outcome === "skipped");
+      const knownSkipReasons = [...new Set(rows.flatMap((row) => (row.skipReason ? [row.skipReason] : [])))];
+      const hasUnknownReasonRows = rows.some((row) => row.skipReason === null);
+      const allKnownReasonsAreInfra = knownSkipReasons.every((reason) =>
+        (INFRASTRUCTURE_SKIP_REASONS as readonly string[]).includes(reason),
+      );
+
+      if (allSkipped && allKnownReasonsAreInfra) {
+        const reasonClauses = [...knownSkipReasons].sort().map((reason) => {
+          const engines = [
+            ...new Set(
+              rows.filter((row) => row.skipReason === reason && row.engine).map((row) => row.engine as string),
+            ),
+          ].sort();
+          return engines.length > 0
+            ? `${reason} (engine ${engines.map((engine) => `"${engine}"`).join(", ")})`
+            : reason;
+        });
+        if (hasUnknownReasonRows) reasonClauses.push("unknown reason");
+        return {
+          name: "session-extraction",
+          kind: "heuristic",
+          status: "warn",
+          confidence: "medium",
+          message: `${totalRows} of ${totalRows} sessions in the last 7 days skipped: ${reasonClauses.join(", ")}.`,
+          evidence: { ran: sx.ran, ledgerSince, ledgerRows: rows, ...legacyEvidence },
+        };
+      }
+
+      const outcomeCounts = new Map<string, number>();
+      for (const row of rows) outcomeCounts.set(row.outcome, (outcomeCounts.get(row.outcome) ?? 0) + row.count);
+      const outcomeSummary = [...outcomeCounts.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([outcome, count]) => `${outcome}: ${count}`)
+        .join(", ");
       return {
         name: "session-extraction",
         kind: "heuristic",
-        status: sxWarnReasons.length > 0 ? "warn" : "pass",
-        confidence: sx.ran ? "medium" : "low",
-        message: sx.ran
-          ? sxWarnReasons.length > 0
-            ? `Session extraction degraded: ${sxWarnReasons.join("; ")}.`
-            : `Session extraction healthy: ${sx.sessionsScanned} scanned, ${sx.sessionsExtracted} extracted, ${sx.proposalsCreated} proposal(s) created.`
-          : "Session extraction not active (feature disabled or no harness available).",
-        evidence: {
-          ran: sx.ran,
-          sessionsScanned: sx.sessionsScanned,
-          sessionsExtracted: sx.sessionsExtracted,
-          sessionsSkipped: sx.sessionsSkipped,
-          proposalsCreated: sx.proposalsCreated,
-          warnings: sx.warnings,
-          durationMs: sx.durationMs,
-        },
+        status: "pass",
+        confidence: "medium",
+        message: `Session extraction active in the last 7 days (${outcomeSummary}).`,
+        evidence: { ran: sx.ran, ledgerSince, ledgerRows: rows, ...legacyEvidence },
       };
     },
   },

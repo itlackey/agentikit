@@ -182,7 +182,7 @@ describe("installLlmUsagePersistenceIfAbsent", () => {
 });
 
 describe("akmHealth llmUsage aggregate", () => {
-  test("aggregates per-stage token + time totals from llm_usage events", () => {
+  test("aggregates per-stage token + time totals from llm_usage events", async () => {
     const dispose = installLlmUsagePersistence();
     withLlmStage(
       "reflect",
@@ -221,7 +221,7 @@ describe("akmHealth llmUsage aggregate", () => {
     // Seam out the real session-log scan (it walks the host filesystem and is
     // unrelated to this assertion) so the test exercises only the llm_usage
     // aggregation path.
-    const result = akmHealth({ since: "7d" });
+    const result = await akmHealth({ since: "7d" });
     const usage = result.metrics.llmUsage;
 
     expect(usage.calls).toBe(4);
@@ -247,8 +247,8 @@ describe("akmHealth llmUsage aggregate", () => {
     expect(usage.byEngine.careful).toMatchObject({ calls: 1, totalDurationMs: 40, totalTokens: 6 });
   });
 
-  test("reports an empty aggregate when no llm_usage events exist", () => {
-    const result = akmHealth({ since: "7d" });
+  test("reports an empty aggregate when no llm_usage events exist", async () => {
+    const result = await akmHealth({ since: "7d" });
     expect(result.metrics.llmUsage.calls).toBe(0);
     expect(result.metrics.llmUsage.byStage).toEqual({});
   });

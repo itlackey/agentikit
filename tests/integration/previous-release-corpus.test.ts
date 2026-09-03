@@ -311,7 +311,7 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       target_ref: null,
     };
 
-    test("a real-shaped row with no metadataVersion (the 8,508-row live shape) reads via `akm task history` and `akm health --report` without throwing", () => {
+    test("a real-shaped row with no metadataVersion (the 8,508-row live shape) reads via `akm task history` and `akm health --report` without throwing", async () => {
       const db = openStateDatabase();
       try {
         upsertTaskHistory(db, {
@@ -327,10 +327,10 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.durationMs).toBe(48557);
 
-      expect(() => akmHealth({ since: "7d" })).not.toThrow();
+      await expect(akmHealth({ since: "7d" })).resolves.toBeDefined();
     });
 
-    test("real-shaped rows carrying the additive `profile`/`repairReason` fields (88 live rows) read without throwing", () => {
+    test("real-shaped rows carrying the additive `profile`/`repairReason` fields (88 live rows) read without throwing", async () => {
       const db = openStateDatabase();
       try {
         upsertTaskHistory(db, {
@@ -354,7 +354,7 @@ describe("previous-release corpus — upgrade must not break reads", () => {
 
       expect(readTaskHistory({ id: "corpus-legacy-profile" })).toHaveLength(1);
       expect(readTaskHistory({ id: "corpus-legacy-repair-reason" })).toHaveLength(1);
-      expect(() => akmHealth({ since: "7d" })).not.toThrow();
+      await expect(akmHealth({ since: "7d" })).resolves.toBeDefined();
     });
   });
 
