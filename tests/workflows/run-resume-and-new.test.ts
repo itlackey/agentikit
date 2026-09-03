@@ -166,4 +166,51 @@ describe("#919 — `--new` starts a fresh run without touching the active one", 
     expect(second.run.id).not.toBe(first.run.id);
     expect(second.run.status).toBe("completed");
   });
+
+  test("parameter flags without --new against an active run name the remedy: --new or `akm workflow abandon <id>`", async () => {
+    fs.mkdirSync(path.join(storage.stashDir, "workflows"), { recursive: true });
+    fs.writeFileSync(
+      path.join(storage.stashDir, "workflows", "params-active.md"),
+      [
+        "---",
+        "type: workflow",
+        "description: params against an active run",
+        "params:",
+        "  label: { type: string }",
+        "steps:",
+        "  - id: first-step",
+        "  - id: second-step",
+        "---",
+        "",
+        "## first-step",
+        "",
+        "Handle {{ params.label }}.",
+        "",
+        "## second-step",
+        "",
+        "Do the second thing.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const first = await runWorkflowSteps({
+      target: "workflows/params-active",
+      params: { label: "first" },
+      maxSteps: 1,
+      dispatcher: okDispatcher,
+    });
+    expect(first.run.status).toBe("active");
+
+    const error = await runWorkflowSteps({
+      target: "workflows/params-active",
+      params: { label: "second" },
+      dispatcher: okDispatcher,
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(UsageError);
+    if (!(error instanceof UsageError)) throw new Error("unreachable");
+    expect(error.hint()).toContain("--new");
+    expect(error.hint()).toContain(`akm workflow abandon ${first.run.id}`);
+  });
 });

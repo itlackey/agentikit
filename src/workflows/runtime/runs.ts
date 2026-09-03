@@ -849,7 +849,11 @@ async function resolveRunSpecifier(
   } catch (error) {
     if (detached) {
       if (hasParameters) {
-        throw new UsageError(`Workflow parameter flags can only be set on a new run; ${specifier} is already active.`);
+        throw new UsageError(
+          `Workflow parameter flags can only be set on a new run; ${specifier} is already active.`,
+          "INVALID_FLAG_VALUE",
+          `Pass --new to start a separate run, or run "akm workflow abandon ${detached.id}" to free up ${specifier} first.`,
+        );
       }
       return { run: detached, autoStarted: false, resumed: true };
     }
@@ -861,7 +865,11 @@ async function resolveRunSpecifier(
   const active = forceNew ? undefined : repo.getActiveRunRowForScope(await workflowRunRefSet(ref, exactRef), scopeKey);
   if (active) {
     if (hasParameters) {
-      throw new UsageError(`Workflow parameter flags can only be set on a new run; ${ref} is already active.`);
+      throw new UsageError(
+        `Workflow parameter flags can only be set on a new run; ${ref} is already active.`,
+        "INVALID_FLAG_VALUE",
+        `Pass --new to start a separate run, or run "akm workflow abandon ${active.id}" to free up ${ref} first.`,
+      );
     }
     return { run: active, autoStarted: false, resumed: true };
   }
