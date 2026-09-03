@@ -13,9 +13,18 @@
  * compile (`source-ir/semantics.ts`), asset loading's display instructions
  * (`source-ir/program.ts`), and freeze's actual dispatch preparation
  * (`freeze/targets/command.ts`, which now substitutes `$ARGUMENTS` itself and
- * hands the shared executor already-resolved literal text) — while a STORED
- * `uses: commands/<ref>` keeps the real scan: that content is a genuinely
- * portable, reusable command file.
+ * hands the shared executor already-resolved literal text).
+ *
+ * A STORED `uses: commands/<ref>` action routes through the SAME shared
+ * scan (`commands/command/portable-template.ts`), which the repo-wide audit
+ * removed outright rather than merely exempting workflow-inline content: the
+ * hazard it guarded (a command file that might round-trip through a native
+ * tool where `$HOME`/`@file` would be interpreted) is a portability caveat,
+ * not a destructive or unrecoverable error, and the false-positive cost was
+ * the same complaint driving this fix — ordinary prose like "Budget is $5
+ * per run" or "$HOME/.config/akm" is common in a reusable command file too.
+ * So a stored ref carrying the identical native-tool-shaped prose now
+ * compiles and freezes as well, exactly like the inline case above.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -87,7 +96,7 @@ describe("inline akm/command content is never scanned for native-tool constructs
     expect(target.frozenTarget.request.command.content).toBe("Review the diff against @docs/style-guide.md");
   });
 
-  test("a STORED commands/<ref> action keeps the real scan — a genuinely portable file is still protected", async () => {
+  test("a STORED commands/<ref> action carrying the same native-tool-shaped prose also compiles and freezes with its content intact", async () => {
     write("commands/review.md", "Review $ARGUMENTS against @native/tool-construct\n");
     write(
       "workflows/stored.yml",
@@ -104,8 +113,11 @@ describe("inline akm/command content is never scanned for native-tool constructs
 
     await akmIndex({ stashDir: storage.stashDir, full: true });
     const asset = await loadWorkflowAsset("workflows/stored");
-    await expect(compileResolveFreezeWorkflowV4(asset, loadConfig())).rejects.toThrow(
-      /unsupported portable template construct/i,
-    );
+    const frozen = await compileResolveFreezeWorkflowV4(asset, loadConfig());
+    const target = frozen.plan.steps[0]?.root;
+    if (!target || target.kind !== "unit" || target.frozenTarget.kind !== "command") {
+      throw new Error("expected a frozen command unit");
+    }
+    expect(target.frozenTarget.request.command.content).toBe("Review the diff against @native/tool-construct\n");
   });
 });
