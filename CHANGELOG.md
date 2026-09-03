@@ -4,6 +4,78 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.12] - 2026-09-03
+
+### Added
+
+- **`akm health` probes LLM engine reachability (#914).** `default-llm-engine`
+  and `configured-engines` now send the same bounded one-token completion
+  `akm setup --probe` uses (3 s timeout, one probe per distinct endpoint per
+  invocation, no cross-run cache) instead of only checking that a credential is
+  present. An unreachable default LLM engine is a hard `fail` naming the
+  connection error; an unreachable non-default engine is a `warn`. Pass
+  `--no-probe` on an offline or air-gapped host to keep the credential-only
+  verdict; the message then says reachability was not probed.
+- **`akm proposal extract` reports the engine it resolved (#913).** The
+  envelope carries `engine`, every `sessions[]` entry carries `engine`, and
+  the `extract_sessions_seen` ledger
+  metadata records it, so "which engine did that run actually use" is one
+  field instead of config archaeology. `akm health`'s `active-improve-strategy`
+  check names the engine each improve process resolved to, which makes a
+  strategy-level `engine` pin that shadows `defaults.llmEngine` visible.
+- **`akm workflow run <ref>` says when it resumes, and `--new` starts fresh
+  (#919).** Resolving a ref to an already-active run in the current scope is
+  unchanged, but the `workflow-run` envelope now carries `resumed: true` and
+  the text output leads with `resuming existing run <id> for <ref>; pass --new
+  to start a fresh run`. `--new` starts a second run and leaves the active one
+  untouched. `status`, `abandon`, `resume`, and `run <id>` all accept a unique
+  run-id prefix of eight or more characters.
+
+### Changed
+
+- **A run that skipped every session for an infrastructure reason is visible
+  in the extract envelope (#912).** `warnings[]` gains one aggregate line per
+  infrastructure skip reason (`llm_unavailable`, `read_failed`, `exception`,
+  `locked_concurrent`), for example `25 of 25 sessions skipped: llm_unavailable
+  (engine "default")`, and a `skipReasons` count map is present whenever
+  `sessionsSkipped > 0`. `ok` keeps meaning "the command ran" and the exit code
+  does not change; that meaning is now written down on the type.
+- **`akm health`'s `session-extraction` check reads the extraction ledger
+  (#914).** It used to read only `improve_runs`, which the hook-driven
+  `akm proposal extract --session-id` never writes, so a plugin-driven machine
+  reported "not active" as `pass` forever. It now derives its verdict from the
+  last seven days of `extract_sessions_seen`: `unknown` when nothing was
+  recorded, `warn` naming the reason and engine when every session was skipped
+  or failed for an infrastructure reason (`llm_unavailable`, `read_failed`,
+  `exception`, `locked_concurrent`), otherwise `pass` with per-outcome counts.
+- **Every passthrough success envelope carries `ok: true` (#918).**
+  `akm config set` and `akm config unset` printed the resulting config with no
+  `ok` field while their failure envelope had `ok: false`, so a caller
+  branching on `.ok` read success as failure. The shared passthrough stamp now
+  adds `ok: true` when a result has no `ok` of its own; commands whose exit
+  code already grades the outcome (`task sync`, `task sync --dry-run`,
+  `task prune`, `workflow run`, `upgrade`) compute `ok` from that same
+  predicate so the field and the exit code cannot disagree. `--silent` still
+  prints nothing.
+- **The unsupported-plan error names the real situation (#919).** A frozen
+  workflow plan with an `irVersion` above the current one no longer reports
+  "pre-irVersion-5 ... after the 0.9.2 upgrade"; it says the plan was probably
+  written by a newer akm. The reported `irVersion 111` did not reproduce
+  against this tree (the column is only ever written as `5` and no path
+  rewrites it on a source edit); a regression test pins that editing a
+  workflow source leaves its in-flight run executable.
+
+### Fixed
+
+- **The 0.9.2 `claude-code` -> `claude` harness rename left the ledgers split
+  (#915).** State migration `027-extract-sessions-seen-harness-rename` moves
+  `extract_sessions_seen` and `workflow_runs.agent_harness` rows off the old
+  key, keeping a session already recorded under `claude` as the authoritative
+  row, and empties the old key space. `PERSISTED_HARNESS_IDS` in the harness
+  registry is now pinned by a test so the next rename cannot ship without a
+  migration. Scripts querying the ledger by `claude-code` will find it empty
+  after upgrade; see the 0.9.1 -> 0.9.2 migration guide.
+
 ## [0.9.11] - 2026-09-03
 
 ### Added
