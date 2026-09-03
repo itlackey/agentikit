@@ -180,17 +180,23 @@ describe("workflow CLI", () => {
     await createWorkflow("wedged", execWorkflow(["bun", "-e", "await Bun.sleep(30000)"]));
     const wedged = await runCliCapture(["workflow", "run", "workflows/wedged", "--timeout=150ms"]);
     expect(wedged.code).toBe(1);
+    // #918: `ok` must mirror the same failed/blocked/gateRejection/aborted
+    // predicate that already drives the nonzero exit code — an aborted run
+    // must never read as ok:true.
     expect(JSON.parse(wedged.stdout)).toMatchObject({
       run: { status: "active" },
       aborted: true,
       timedOut: true,
+      ok: false,
     });
 
     await createWorkflow("quick", execWorkflow(["bun", "-e", "process.stdout.write('ok')"]));
     const completed = await runCliCapture(["workflow", "run", "workflows/quick"]);
     expect(completed.code).toBe(0);
-    const finished = (JSON.parse(completed.stdout) as { run: { id: string; status: string } }).run;
+    const completedEnvelope = JSON.parse(completed.stdout) as { run: { id: string; status: string }; ok: boolean };
+    const finished = completedEnvelope.run;
     expect(finished.status).toBe("completed");
+    expect(completedEnvelope.ok).toBe(true);
 
     // Re-running a completed run is a no-op that returns `done`; a deadline
     // that fires around it describes nothing an operator could resume.

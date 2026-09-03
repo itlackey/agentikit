@@ -13,6 +13,7 @@
 // `clone` (still a passthrough) as the representative command.
 
 import { describe, expect, it } from "bun:test";
+import { taskPruneExitCode, taskSyncDryRunExitCode } from "../src/commands/tasks/tasks-cli";
 import { shapeForCommand } from "../src/output/shapes";
 
 describe("passthrough envelope stamping (#484)", () => {
@@ -146,5 +147,81 @@ describe("passthrough envelope stamping (#484)", () => {
     };
     const shaped = shapeForCommand("search", result, "brief") as Record<string, unknown>;
     expect(shaped).not.toHaveProperty("schemaVersion");
+  });
+
+  // #918 follow-up: `task-sync`, `task-sync-dry-run`, `task-prune`,
+  // `workflow-run`, and `upgrade` carry no top-level `ok` of their own, so
+  // the blanket passthrough stamp used to print `ok: true` even when the
+  // command already sets a nonzero `process.exitCode` from a predicate the
+  // JSON body never reflected. Each call site (src/commands/tasks/tasks-cli.ts,
+  // src/commands/workflow-cli.ts, src/commands/sources/sources-cli.ts) now
+  // computes `ok` from that exact predicate before calling `output()`, so the
+  // `??` default in makeStampHandler preserves it. These tests exercise the
+  // same predicate helpers / expressions the call sites use, on a failing
+  // fixture, to prove `ok: false` reaches the shaped envelope alongside the
+  // condition that drives the nonzero exit code.
+  describe("#918: command-computed ok mirrors the exit-code predicate on failure", () => {
+    it("task-sync-dry-run: ok:false when the plan has removals", () => {
+      const preview = Object.freeze({
+        backend: "cron",
+        dryRun: true,
+        adds: Object.freeze([]),
+        updates: Object.freeze([]),
+        removes: Object.freeze([{ id: "gamma", kind: "remove" }]),
+        unchanged: Object.freeze([]),
+        hasRemovals: true,
+        failures: Object.freeze([]),
+      });
+      const exitCode = taskSyncDryRunExitCode(preview);
+      expect(exitCode).toBeDefined();
+      const shaped = shapeForCommand(
+        "task-sync-dry-run",
+        { ...preview, ok: exitCode === undefined },
+        "normal",
+      ) as Record<string, unknown>;
+      expect(shaped.ok).toBe(false);
+      expect(shaped.hasRemovals).toBe(true);
+    });
+
+    it("task-sync: ok:false when failures is non-empty", () => {
+      const result = {
+        installed: [],
+        updated: [],
+        removed: [],
+        failures: [{ id: "legacy", reason: "version is required and must be 4" }],
+      };
+      const ok = result.failures.length === 0;
+      expect(ok).toBe(false);
+      const shaped = shapeForCommand("task-sync", { ...result, ok }, "normal") as Record<string, unknown>;
+      expect(shaped.ok).toBe(false);
+    });
+
+    it("task-prune: ok:false on a dry-run that found removals", () => {
+      const result = { dryRun: true, preview: { hasRemovals: true } };
+      const exitCode = taskPruneExitCode(result);
+      expect(exitCode).toBeDefined();
+      const shaped = shapeForCommand("task-prune", { ...result, ok: exitCode === undefined }, "normal") as Record<
+        string,
+        unknown
+      >;
+      expect(shaped.ok).toBe(false);
+    });
+
+    it("upgrade: ok:false when the post-install migration is blocked", () => {
+      const result = {
+        currentVersion: "0.9.11",
+        newVersion: "0.9.12",
+        upgraded: true,
+        installMethod: "npm" as const,
+        migration: { status: "blocked" as const, error: "pending confirmation" },
+      };
+      const migrationFailed = result.migration.status === "blocked" || (result.migration.status as string) === "failed";
+      expect(migrationFailed).toBe(true);
+      const shaped = shapeForCommand("upgrade", { ...result, ok: !migrationFailed }, "normal") as Record<
+        string,
+        unknown
+      >;
+      expect(shaped.ok).toBe(false);
+    });
   });
 });
