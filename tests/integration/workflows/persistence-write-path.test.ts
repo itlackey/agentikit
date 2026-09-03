@@ -317,7 +317,7 @@ const FLOW_RUN_ID = "55555555-5555-4555-8555-555555555555";
 const CHUNK_COUNT = 20;
 const CHUNK_CHARS = 60_000;
 
-/** Distinct per index — content-derived unit identity rejects duplicate items. */
+/** Distinct per index — kept distinct for clarity, though duplicates are no longer rejected (issue 6). */
 function chunkText(index: number): string {
   return `${"c".repeat(CHUNK_CHARS - 4)}#${String(index).padStart(3, "0")}`;
 }

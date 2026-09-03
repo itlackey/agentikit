@@ -194,16 +194,19 @@ export type ComputeWorkListResult = { ok: true; list: StepWorkList } | { ok: fal
  */
 /**
  * Validate a fan-out item list BEFORE any identity/dispatch work: expansion
- * within the resource limit, no null/undefined items, no canonical duplicates.
- * Returns the failure message, or undefined when the list is dispatchable.
+ * within the resource limit, no null/undefined items. Returns the failure
+ * message, or undefined when the list is dispatchable.
  *
  * Null items: producer garbage — there is nothing to hand the unit as its work
  * item. The pre-unification format rejected them incidentally (substituting
  * `${{ item }}` failed); with items attached as context instead of spliced,
  * nothing later would stop a unit from being dispatched with "Item: null", so
- * the rejection is explicit here. Duplicates: content-derived unit identity
- * makes canonical duplicates collide on id — an authoring error caught
- * deterministically, before dispatch.
+ * the rejection is explicit here.
+ *
+ * Canonical duplicates are NOT rejected (issue 6): the item list comes from a
+ * PRODUCING step, so "deduplicate the list" is often not something the
+ * workflow's author can do. {@link occurrenceSuffixedUnitIds} disambiguates
+ * them instead.
  */
 function validateFanOutItems(stepId: string, items: unknown[]): string | undefined {
   const nullIndex = items.findIndex((item) => item === null || item === undefined);
@@ -213,20 +216,31 @@ function validateFanOutItems(stepId: string, items: unknown[]): string | undefin
       `Every item must be a concrete value — fix the producing step's output.`
     );
   }
-  const firstIndexByCanonical = new Map<string, number>();
-  for (let i = 0; i < items.length; i++) {
-    const canonical = canonicalJson(items[i]) ?? "null";
-    const firstIndex = firstIndexByCanonical.get(canonical);
-    if (firstIndex !== undefined) {
-      return (
-        `Step "${stepId}" fan-out list contains duplicate items (indices ${firstIndex} and ${i}: ` +
-        `${clip(canonical, 200)}). Content-derived unit identity requires distinct items — ` +
-        `deduplicate the list this workflow fans out over.`
-      );
-    }
-    firstIndexByCanonical.set(canonical, i);
-  }
   return undefined;
+}
+
+/**
+ * Content-derived unit ids for a fan-out list, disambiguating canonical
+ * duplicates by OCCURRENCE ORDINAL rather than rejecting the list (issue 6).
+ *
+ * The first occurrence of a given canonical value keeps the byte-identical id
+ * {@link unitIdFor} always produced for it — so a plan with no duplicates (the
+ * overwhelming common case) is completely unaffected, and no prior journal
+ * entry is ever invalidated by this change. Only the SECOND and later
+ * occurrences gain a `#<n>` suffix (`#2`, `#3`, …), computed purely from each
+ * item's position in `items` — deterministic across a fresh run and a
+ * resumed one, since both call this from the same place in
+ * {@link computeStepWorkList} over the same resolved list.
+ */
+function occurrenceSuffixedUnitIds(nodeId: string, items: readonly unknown[]): string[] {
+  const occurrenceByCanonical = new Map<string, number>();
+  return items.map((item) => {
+    const base = unitIdFor(nodeId, item, true, true);
+    const canonical = canonicalJson(item) ?? "null";
+    const occurrence = (occurrenceByCanonical.get(canonical) ?? 0) + 1;
+    occurrenceByCanonical.set(canonical, occurrence);
+    return occurrence === 1 ? base : `${base}#${occurrence}`;
+  });
 }
 
 /**
@@ -379,9 +393,13 @@ export function computeStepWorkList(plan: IrStepPlanV4, input: WorkListInput): C
   const fanOutProblem = isFanOut ? validateFanOutItems(plan.stepId, items) : undefined;
   if (fanOutProblem) return { ok: false, error: fanOutProblem };
 
-  // Content-derived unit identity: compute every id up front (duplicate items
-  // were rejected above — identity requires distinct items).
-  const unitIds = items.map((item) => unitIdFor(template.id, item, isFanOut, true));
+  // Content-derived unit identity: compute every id up front. A fan-out's
+  // canonical duplicates are disambiguated by occurrence ordinal rather than
+  // rejected (issue 6); a solo (non-fan-out) step has exactly one item, so
+  // there is nothing to disambiguate.
+  const unitIds = isFanOut
+    ? occurrenceSuffixedUnitIds(template.id, items)
+    : [unitIdFor(template.id, undefined, false, true)];
 
   const gateLoop = input.gateLoop ?? 1;
   const target = template.frozenTarget;
