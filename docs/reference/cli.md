@@ -568,8 +568,10 @@ akm workflow create ship-release
 akm workflow create ship-release --from ./ship-release.md
 akm workflow run workflows/ship-release --version 1.2.3
 akm workflow run <run-id>                  # continue an active partial run
+akm workflow run workflows/ship-release --new  # start a fresh run even if one is already active
 akm workflow status <run-id>
 akm workflow status workflows/ship-release
+akm workflow status 7c115132               # 8+ char run-id prefix also works
 akm workflow resume <run-id>
 akm workflow abandon <run-id>
 akm workflow list --active
@@ -585,12 +587,20 @@ Subcommands:
 | Subcommand | Description |
 | --- | --- |
 | `create <name>` | Validate and write a Markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
-| `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or continues the active run in the current scope; a run id continues that exact active run. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
+| `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or resumes the active run in the current scope (announced as `resumed: true`, see below); a run id continues that exact active run. `--new` starts a fresh run even when one is already active. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
 | `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only). Renders a `children:` tree when the run composes child workflows |
 | `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`). Child workflow runs are excluded unless `--children` is passed |
 | `resume <run-id>` | Flip a `blocked` or `failed` run back to `active`. Completed runs cannot be resumed |
 | `abandon <run-id>` | Mark a run failed so it stops counting as active (`resume` can reopen it) |
 | `plan <ref>` | **Evolving.** Compile and freeze a workflow WITHOUT publishing a run: the canonical step graph, per-step frozen target kinds, task/child expansion, input bindings, source read set, and lowering notices — zero durable writes. Returns the full JSON envelope by default, like every other command; pass `--format text` for a human-readable summary |
+
+Everywhere a run id is accepted (`run`, `status`, `resume`, `abandon`), a
+unique run-id **prefix** of 8 or more characters works too — the same
+convention `akm proposal accept`/`reject` use for proposal UUIDs. A prefix
+matching more than one run is a usage error listing every candidate; a
+prefix matching none is a not-found error. Only strings shaped like a run id
+(hex digits and hyphens, 8+ characters) are ever treated as a prefix, so a
+workflow ref is never mistaken for one.
 
 The public `workflow start`, `next`, and `complete` lifecycle was removed in
 0.9, along with the experimental `brief`/`report` external-driver protocol.
@@ -633,6 +643,14 @@ The old `--params <json>` bag is removed.
 | `--max-steps <n>` | Stop once this many steps have finished, leaving a partial run active. Must be at least 1. |
 | `--max-retries <n>` | When a step fails, reopen the same run and retry the failed step up to this many additional times. Range: 0 through 100; default 0. Gate rejection and interruption are not retried. |
 | `--timeout <duration>` | Abort the whole invocation after `N`, `Nms`, `Ns`, or `Nm`; bare `N` is milliseconds. The active step remains resumable. |
+| `--new` | Start a fresh run even when one is already active for this ref, instead of resuming it. The existing active run is left untouched — it is never abandoned automatically. A workflow ref only: passing a run id with `--new` is a usage error (exit 2). Parameter flags are allowed together with `--new`, since it is starting a new run. |
+
+**Resuming an active run is announced, not silent.** Passing a ref that
+already has an active run in the current scope resumes that run rather than
+starting a new one (unchanged since #485) — but the envelope now carries
+`resumed: true` alongside the resumed run's `run.id`, and the default text
+output leads with `resuming existing run <id> for <ref>; pass --new to start
+a fresh run`. Pass `--new` to start a second, independent run instead.
 
 The result includes the current `run`, an `executed` step report list, a
 `stepsProcessed` count of the steps that finished, and optional `done`,
@@ -668,7 +686,7 @@ repos or directories. akm resolves that context from the nearest `.akm/config.js
 ancestor when present, otherwise the nearest git root, otherwise the bundle root
 when the cwd is inside it, otherwise the cwd itself. In practice this means:
 
-- `workflow run workflows/<name>` continues the active run for the current project/worktree/directory, or starts one when none is active.
+- `workflow run workflows/<name>` resumes the active run for the current project/worktree/directory (announced with `resumed: true`), or starts one when none is active. `--new` always starts a fresh run.
 - `workflow status workflows/<name>` resolves the most-recently-updated run in the current scope only.
 - `workflow list` shows runs for the current scope only.
 - Direct run-id commands like `workflow status <run-id>` still work even if the run was started from another directory.
@@ -714,11 +732,12 @@ akm workflow status workflows/ship-release
 akm workflow status <run-id> --units    # also list per-unit rows from the run journal
 ```
 
-Accepts either a run-id or a workflow ref. When given a workflow ref, resolves
-to the most-recently-updated run for that ref in the current working scope.
-`--units` adds per-unit rows (unit id, status, failure reason, and any
-result/error diagnostic text) from the run journal — diagnostics only; step
-evidence stays deterministic and is unaffected.
+Accepts a run id, a unique 8+ character run-id prefix, or a workflow ref.
+When given a workflow ref, resolves to the most-recently-updated run for that
+ref in the current working scope. `--units` adds per-unit rows (unit id,
+status, failure reason, and any result/error diagnostic text) from the run
+journal — diagnostics only; step evidence stays deterministic and is
+unaffected.
 
 #### workflow plan
 
