@@ -69,16 +69,9 @@ test("a pending historical-destructive migration reports as a fail check, not a 
   // call throw "Refusing to apply historical destructive state migration
   // 018-drop-dead-lane-schema during an ordinary managed open. Run `akm
   // upgrade`..." straight out of this call — no envelope was ever produced.
-  let result: Awaited<ReturnType<typeof akmHealth>> | undefined;
-  let threw = false;
-  try {
-    result = await akmHealth();
-  } catch {
-    threw = true;
-  }
-  expect(threw).toBe(false);
+  const result = await akmHealth();
 
-  const check = findHardCheck(result!, "state-db-migrations");
+  const check = findHardCheck(result, "state-db-migrations");
   expect(check.status).toBe("fail");
   expect((check.evidence?.pending as string[])[0]).toBe("018-drop-dead-lane-schema");
   expect(result!.status).toBe("fail");

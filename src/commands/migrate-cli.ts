@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand, EXIT_CODES, outputWithExitCode } from "../cli/shared";
 import { runMigrationTool } from "./migration-tool";
 
 export type RunMigrationTool = typeof runMigrationTool;
@@ -29,8 +29,11 @@ export async function runMigrateSubcommand(
   } catch {
     plan = undefined;
   }
-  if (plan) output(command, plan);
-  else if (line) console.log(line);
+  if (plan) {
+    outputWithExitCode(command, plan, result.status);
+    return;
+  }
+  if (line) console.log(line);
   if (result.status !== EXIT_CODES.SUCCESS) process.exitCode = result.status;
 }
 

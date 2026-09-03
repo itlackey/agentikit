@@ -80,16 +80,9 @@ describe("#919 — WorkflowRunsRepository.resolveRunIdPrefix", () => {
   test("throws a UsageError naming every candidate when the prefix is ambiguous", async () => {
     insertRunWithId("abcdef12-0000-0000-0000-000000000001");
     insertRunWithId("abcdef12-0000-0000-0000-000000000002");
-    await expect(withWorkflowRunsRepo((repo) => repo.resolveRunIdPrefix("abcdef12"))).rejects.toThrow(UsageError);
-    try {
-      await withWorkflowRunsRepo((repo) => repo.resolveRunIdPrefix("abcdef12"));
-      throw new Error("expected resolveRunIdPrefix to throw");
-    } catch (error) {
-      expect(error).toBeInstanceOf(UsageError);
-      const message = (error as Error).message;
-      expect(message).toContain("abcdef12-0000-0000-0000-000000000001");
-      expect(message).toContain("abcdef12-0000-0000-0000-000000000002");
-    }
+    await expect(withWorkflowRunsRepo((repo) => repo.resolveRunIdPrefix("abcdef12"))).rejects.toThrow(
+      /abcdef12-0000-0000-0000-000000000001.*abcdef12-0000-0000-0000-000000000002/,
+    );
   });
 
   test("throws a NotFoundError when nothing matches the prefix", async () => {

@@ -619,3 +619,22 @@ export async function probeLlmReachable(config: LlmConnectionConfig): Promise<{ 
     return { reachable: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+/**
+ * Reachability probe for `akm health` (#914): one GET against the
+ * OpenAI-compatible `/models` route, bounded by `timeoutMs`. Any HTTP
+ * response counts as reachable — the question is whether the endpoint
+ * answers, not whether the route exists or the credential is right — so a
+ * cold local server is never asked to load a model just to be checked.
+ */
+export async function probeLlmEndpoint(
+  config: LlmConnectionConfig,
+  timeoutMs = 3_000,
+): Promise<{ reachable: boolean; error?: string }> {
+  try {
+    await fetch(`${config.endpoint.replace(/\/+$/, "")}/models`, { signal: AbortSignal.timeout(timeoutMs) });
+    return { reachable: true };
+  } catch (err) {
+    return { reachable: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}

@@ -309,6 +309,17 @@ export function defineGroupCommand<const T extends ArgsDef = ArgsDef>(def: {
  * document is written to that file instead of stdout (jsonl excepted — it is
  * a line-streaming protocol and always goes to stdout).
  */
+/**
+ * Emit a result whose success is graded by an exit code. `ok` on the envelope
+ * and `process.exitCode` are set from the same value here, so the two cannot
+ * disagree (#918); `exitCode` undefined or 0 means success.
+ */
+export function outputWithExitCode(command: string, result: object, exitCode: number | undefined): void {
+  const failed = exitCode !== undefined && exitCode !== EXIT_CODES.SUCCESS;
+  output(command, { ...result, ok: !failed });
+  if (failed) process.exitCode = exitCode;
+}
+
 export function output(command: string, result: unknown): void {
   const mode: OutputMode = getOutputMode();
   const shaped = shapeForCommand(command, result, mode.detail, mode.shape);

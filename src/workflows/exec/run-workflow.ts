@@ -333,8 +333,11 @@ async function runWorkflowAttempt(
     // about a decision it did not make. `driveRun` never sets `warnings` or
     // `resumed` — both are properties of THIS resolution of `target`, not of
     // the run row (#919).
-    const withResumed = next.resumed ? { ...result, resumed: true as const } : result;
-    return next.startWarnings?.length ? { ...withResumed, warnings: next.startWarnings } : withResumed;
+    return {
+      ...result,
+      ...(next.resumed ? { resumed: true as const } : {}),
+      ...(next.startWarnings?.length ? { warnings: next.startWarnings } : {}),
+    };
   } finally {
     heartbeat?.stop();
     try {

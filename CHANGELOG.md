@@ -9,10 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **`akm health` probes LLM engine reachability (#914).** `default-llm-engine`
-  and `configured-engines` now send the same bounded one-token completion
-  `akm setup --probe` uses (3 s timeout, one probe per distinct endpoint per
+  and `configured-engines` now send one bounded `GET` to the endpoint's
+  `/models` route (3 s timeout, one probe per distinct endpoint per
   invocation, no cross-run cache) instead of only checking that a credential is
-  present. An unreachable default LLM engine is a hard `fail` naming the
+  present. Any HTTP response counts as reachable, so a cold local server is
+  never asked to load a model just to be checked. An unreachable default LLM engine is a hard `fail` naming the
   connection error; an unreachable non-default engine is a `warn`. Pass
   `--no-probe` on an offline or air-gapped host to keep the credential-only
   verdict; the message then says reachability was not probed.
@@ -53,9 +54,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ok` field while their failure envelope had `ok: false`, so a caller
   branching on `.ok` read success as failure. The shared passthrough stamp now
   adds `ok: true` when a result has no `ok` of its own; commands whose exit
-  code already grades the outcome (`task sync`, `task sync --dry-run`,
-  `task prune`, `workflow run`, `upgrade`) compute `ok` from that same
-  predicate so the field and the exit code cannot disagree. `--silent` still
+  code grades the outcome (`task sync`, `task sync --dry-run`, `task prune`,
+  `workflow run`, `upgrade`, and the `migrate` subcommands) set `ok` and the
+  exit code from the same value, so the two cannot disagree. `--silent` still
   prints nothing.
 - **The unsupported-plan error names the real situation (#919).** A frozen
   workflow plan with an `irVersion` above the current one no longer reports

@@ -4,8 +4,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { resolveStashDir } from "../core/common";
-import { type LlmConnectionConfig, loadConfig } from "../core/config/config";
+import { daysToMs, resolveStashDir } from "../core/common";
+import { loadConfig } from "../core/config/config";
 import { ConfigError, UsageError } from "../core/errors";
 import { readEvents } from "../core/events";
 import { openLogsDatabase } from "../core/logs-db";
@@ -13,6 +13,7 @@ import { classifyPathAccess, describeInaccessiblePath } from "../core/path-acces
 import { getConfigPath, getDataDir, getDbPath, getStateDbPathInDataDir } from "../core/paths";
 import { listExistingTableNames, listPendingStateMigrations, openStateDatabase } from "../core/state-db";
 import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
+import { probeLlmEndpoint } from "../llm/client";
 import type { Database } from "../storage/database";
 import { getExtractOutcomeCountsSince } from "../storage/repositories/extract-sessions-repository";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
@@ -25,6 +26,7 @@ import {
   type HealthCheckContext,
   runHealthEngineProbes,
   runPendingStateMigrationsCheck,
+  SESSION_EXTRACTION_LEDGER_WINDOW_DAYS,
 } from "./health/checks";
 import { collectDataDirUsageAdvisory } from "./health/data-dir-usage";
 import {
@@ -99,16 +101,11 @@ export interface AkmHealthOptions {
    */
   stashExposureGit?: GitRunner;
   /**
-   * #914: reachability probe for a `kind: "llm"` runner's connection (and an
-   * SDK runner's LLM fallback connection), used by the `default-llm-engine`
-   * and `configured-engines` checks. Omitted ⇒ every probe is skipped and
-   * each check's message notes that reachability was not probed — this
-   * keeps every caller that doesn't pass this (including the whole test
-   * suite) fully offline. The `health` CLI command wires the real
-   * `probeLlmReachable` (`src/llm/client.ts`) here unless `--no-probe` is
-   * given.
+   * Probe LLM engine reachability in the engine checks (#914). Off by default
+   * so library callers and tests stay offline; the CLI turns it on unless
+   * `--no-probe` is given.
    */
-  probeReachable?: (connection: LlmConnectionConfig) => Promise<{ reachable: boolean; error?: string }>;
+  probe?: boolean;
 }
 
 const DEFAULT_SINCE_MS = 24 * 60 * 60 * 1000;
@@ -294,19 +291,12 @@ interface ImproveSummaryPhase {
   perRunSummaries: ImproveRunSummary[];
 }
 
-/** #914: the rolling 7-day ledger window `session-extraction` reads, independent of the top-level `--since`. */
-const SESSION_EXTRACTION_LEDGER_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-
-/**
- * #914: outcome counts from the `extract_sessions_seen` ledger for the last
- * 7 days — what `session-extraction` reads instead of `improve_runs`, which
- * the hook-driven `akm proposal extract --session-id ...` never populates.
- */
+/** Extract-ledger outcome counts for the `session-extraction` check's window, independent of `--since`. */
 function gatherSessionExtractionLedgerPhase(
   db: Database,
   now: () => number,
 ): HealthCheckContext["sessionExtractionLedger"] {
-  const since = new Date(now() - SESSION_EXTRACTION_LEDGER_WINDOW_MS).toISOString();
+  const since = new Date(now() - daysToMs(SESSION_EXTRACTION_LEDGER_WINDOW_DAYS)).toISOString();
   return { since, rows: getExtractOutcomeCountsSince(db, since) };
 }
 
@@ -702,6 +692,9 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
   }
 
   try {
+    // Network probes overlap the local database phases below; awaited where consumed.
+    const engineProbesPromise = runHealthEngineProbes({ probeReachable: options.probe ? probeLlmEndpoint : undefined });
+    engineProbesPromise.catch(() => undefined);
     const taskHistory = gatherTaskHistoryPhase(db, logsDb, since, stateDbPath, now);
     const { tableNames, missingTables, probe } = taskHistory;
 
@@ -713,9 +706,7 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
 
     const sessionExtractionLedger = gatherSessionExtractionLedgerPhase(db, now);
 
-    const engineProbes = await runHealthEngineProbes(
-      options.probeReachable ? { probeReachable: options.probeReachable } : undefined,
-    );
+    const engineProbes = await engineProbesPromise;
 
     // Run the ordered health-check registry. Each check projects the shared
     // context computed above into one HealthCheckResult; `channel` routes it to

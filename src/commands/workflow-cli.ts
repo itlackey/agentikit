@@ -10,7 +10,7 @@
  */
 
 import { getStringArg } from "../cli/parse-args";
-import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output, outputWithExitCode } from "../cli/shared";
 import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { NotFoundError, UsageError } from "../core/errors";
@@ -45,9 +45,6 @@ const workflowStatusCommand = defineJsonCommand({
   async run({ args }) {
     const target = args.target;
     const includeUnits = args.units === true;
-    // #919: a run id AND its unique 8+ char prefix resolve here identically —
-    // `resolveWorkflowRunTarget` returns `undefined` only when `target` isn't
-    // id-shaped at all, so it falls through to the workflow-ref listing below.
     const resolvedRunId = await resolveWorkflowRunTarget(target);
     if (resolvedRunId !== undefined) {
       const result = await getWorkflowStatus(resolvedRunId, { includeUnits });
@@ -191,7 +188,6 @@ const workflowRunCommand = defineJsonCommand({
   async run({ args, rawArgs }) {
     const { runWorkflowSteps } = await import("../workflows/exec/run-workflow.js");
     const parameterFlags = parseWorkflowParameterFlags(rawArgs, args.target);
-    const newRun = args.new === true;
     const maxSteps = parseIntegerFlag(getStringArg(args, "max-steps"), "--max-steps", 1);
     const maxRetries = parseIntegerFlag(getStringArg(args, "max-retries"), "--max-retries", 0);
     const timeoutMs = parseWorkflowTimeout(getStringArg(args, "timeout"));
@@ -217,7 +213,7 @@ const workflowRunCommand = defineJsonCommand({
         parameterFlags,
         ...(maxSteps !== undefined ? { maxSteps } : {}),
         ...(maxRetries !== undefined ? { maxRetries } : {}),
-        ...(newRun ? { newRun: true } : {}),
+        newRun: args.new,
         signal: controller.signal,
       });
       // The abort is observed between steps, so a deadline landing in the run's
@@ -228,16 +224,13 @@ const workflowRunCommand = defineJsonCommand({
       // `blocked` is a stopped, unverified run — a verification-judge failure
       // leaves it there for `akm workflow resume` — so it must not exit 0 and
       // read as success to a script (it maps to 1 for scheduled tasks too).
-      // #918: `ok` is derived from this exact predicate (computed once, used
-      // for both the envelope and the exit code) so it can never disagree
-      // with the exit code the way the blanket passthrough default would.
       const failed =
         result.run.status === "failed" || result.run.status === "blocked" || result.gateRejection || result.aborted;
-      const rendered = { ...result, ...(timedOut ? { timedOut: true as const } : {}), ok: !failed };
-      output("workflow-run", rendered);
-      if (failed) {
-        process.exitCode = signalExitCode ?? EXIT_CODES.GENERAL;
-      }
+      outputWithExitCode(
+        "workflow-run",
+        { ...result, ...(timedOut ? { timedOut: true as const } : {}) },
+        failed ? (signalExitCode ?? EXIT_CODES.GENERAL) : undefined,
+      );
     } finally {
       deadline.disarm();
       process.off("SIGINT", onSigint);

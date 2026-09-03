@@ -3,31 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #919 reproduction — "editing a workflow breaks its in-flight runs despite
- * the plan being frozen", reported as `plan_ir_version` jumping to 111 after
- * a mid-run source edit.
- *
- * Static analysis before writing this test (per the #919 triage and team
- * brief): `plan_ir_version` is written in exactly two places in the whole
- * repository (`storage/repositories/workflow-runs-repository.ts`, the fresh
- * `publishWorkflowRunV4` insert and the child-run publish path), both as the
- * literal SQL `= 5` — never a bound parameter, so the column can only ever
- * receive the integer 5 from these sites. The column itself
- * (`core/state/migrations.ts` migration 020) was declared
- * `plan_ir_version INTEGER` at table creation with no later ALTER/backfill
- * touching it. `grep -r plan_ir_version` across `scripts/akm-migrate/` finds
- * nothing. So there is no code path — including a stored TEXT value compared
- * with `!==`, or a migration carrying an old value forward — that could
- * produce anything other than 5 on a run this codebase created.
- *
- * This test exercises the reported scenario end to end anyway: start a run,
- * execute part of it, edit the source (as the report describes — extend a
- * step body), then resolve the SAME ref again exactly as
- * `akm workflow run <ref>` does (silently reusing the active run, #485).
- * `plan_ir_version` must read 5 before and after the edit, and the second
- * invocation must succeed (not raise `WORKFLOW_IR_VERSION_UNSUPPORTED`) —
- * confirming the report does not reproduce on this tree, and pinning the
- * frozen-plan contract the report expected in the first place.
+ * #919: a run keeps executing its frozen plan after its source is edited.
+ * `plan_ir_version` is only ever written as the literal 5, so the reported
+ * `irVersion 111` cannot come from this tree; this pins the contract the
+ * report expected: edit the source mid-run, resolve the same ref again, and
+ * the run finishes on the ORIGINAL step text.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -91,7 +71,6 @@ describe("#919 repro — mid-run source edit does not bump plan_ir_version or in
 
     const before = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
     expect(before?.plan_ir_version).toBe(5);
-    expect(typeof before?.plan_ir_version).toBe("number");
 
     // "edit ~/akm/workflows/repro-919.md — extend a step body"
     writeWorkflow("repro-919", "Do the EDITED second thing, now with more detail.");
@@ -121,6 +100,5 @@ describe("#919 repro — mid-run source edit does not bump plan_ir_version or in
 
     const after = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
     expect(after?.plan_ir_version).toBe(5);
-    expect(after?.plan_ir_version).toBe(before?.plan_ir_version);
   });
 });

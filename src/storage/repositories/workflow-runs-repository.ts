@@ -8,6 +8,7 @@ import { openStateDatabase, withImmediateTransaction } from "../../core/state-db
 import { borrowScopedStateDb, withStateDbScope } from "../../core/state-db-scope";
 import type { WorkflowRunStatus, WorkflowRunStepStatus } from "../../sources/types";
 import type { Database } from "../database";
+import { escapeLikePattern } from "../like-pattern";
 import { resolveStorageLocations } from "../locations";
 import { insertEventOnce, insertEventStrict } from "./events-repository";
 
@@ -417,17 +418,9 @@ export class WorkflowRunsRepository {
     return !!row;
   }
 
-  /**
-   * Resolve a run-id prefix (#919) to the single run id it identifies.
-   * Mirrors `resolveProposalId`'s UUID-prefix precedent
-   * (`commands/proposal/repository.ts`): exactly one match wins, several
-   * matches is a `UsageError` naming every candidate, none is a
-   * `NotFoundError`. Callers are expected to have already checked the input
-   * looks id-shaped (see `RUN_ID_PREFIX_PATTERN` in `runtime/runs.ts`)
-   * — this method itself does not require it, it just matches by SQL prefix.
-   */
+  /** The one run id starting with `prefix` (#919); `UsageError` on several, `NotFoundError` on none. */
   resolveRunIdPrefix(prefix: string): string {
-    const escaped = prefix.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const escaped = escapeLikePattern(prefix);
     const rows = this.db
       .prepare("SELECT id FROM workflow_runs WHERE id LIKE ? ESCAPE '\\' ORDER BY id ASC")
       .all(`${escaped}%`) as Array<{ id: string }>;

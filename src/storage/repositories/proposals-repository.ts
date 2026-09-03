@@ -18,6 +18,7 @@ import { bundleRefToString, isBundleSlug, parseBundleRef } from "../../core/asse
 import type { FileChange } from "../../core/file-change";
 import { warnOnce } from "../../core/warn";
 import type { Database, SqlValue } from "../database";
+import { escapeLikePattern } from "../like-pattern";
 
 /**
  * Persisted shape of one `FileChange` inside `metadata_json.changes`.
@@ -467,7 +468,7 @@ export function getStateProposal(db: Database, id: string, stashDir?: string): P
  * `%` / `_` / `\` in the prefix are escaped so the LIKE pattern is literal.
  */
 export function listStateProposalIdsByPrefix(db: Database, stashDir: string, idPrefix: string): string[] {
-  const escaped = idPrefix.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  const escaped = escapeLikePattern(idPrefix);
   const rows = db
     .prepare(
       `SELECT id FROM proposals

@@ -62,8 +62,9 @@ pass; any unavailable engine warns; no explicitly configured engines is
 Agent checks inspect local binary availability; SDK checks inspect the
 package/binary and any configured fallback. LLM checks (a `kind: "llm"`
 runner, and an SDK runner's LLM fallback connection) additionally send a
-real, bounded (3 s timeout) reachability probe (#914) — the same one-token
-completion `akm setup` uses — to `default-llm-engine`'s and
+real, bounded (3 s timeout) reachability probe (#914) — one `GET` against
+the endpoint's `/models` route; any HTTP response counts, so a cold local
+server is never asked to load a model — to `default-llm-engine`'s and
 `configured-engines`' endpoints, one probe per distinct endpoint per
 invocation (no cross-run cache, so a stale "reachable" verdict never lingers).
 An unreachable endpoint is a hard `fail` for `default-llm-engine` (extraction

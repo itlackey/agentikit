@@ -1185,15 +1185,10 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
     `,
   },
 
-  // ── Migration 027 — extract_sessions_seen / workflow_runs: claude-code -> claude harness rename (#915) ──
+  // ── Migration 027 — claude-code -> claude harness rename (#915) ──
   //
-  // The 0.9.2 harness id rename (ClaudeCodeProvider.name "claude-code" ->
-  // "claude", commit 35fd98167e9de743d577cc67ec98944b40dbd523) deleted the
-  // HARNESS_BY_ANY_ID compatibility bridge in the same change that made new
-  // writes use "claude", with no data migration. Every row a pre-0.9.2 akm
-  // wrote under the old key stayed there, invisible to any reader keyed on
-  // "claude" (extraction re-skip checks, coverage/fail-rate reasoning) —
-  // 5,803 stranded rows observed in the field.
+  // The 0.9.2 rename shipped without a data migration, so rows written under
+  // the old key were invisible to every reader keyed on "claude".
   //
   // `extract_sessions_seen` has PRIMARY KEY (harness, session_id), so a
   // session already recorded under "claude" (written by a run that really

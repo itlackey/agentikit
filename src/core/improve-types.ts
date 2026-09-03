@@ -6,6 +6,7 @@ import type { EligibilitySource, Proposal } from "../commands/proposal/proposal-
 import type { LoweringNotice } from "../execution/resolved-request";
 import type { GraphExtractionResult } from "../indexer/graph/graph-extraction";
 import type { MemoryInferenceResult } from "../indexer/passes/memory-inference";
+import type { RunnerSpec } from "../integrations/agent/runner";
 import type { AgentFailureReason } from "../integrations/agent/spawn";
 import { assertNever } from "./assert";
 
@@ -633,15 +634,8 @@ export interface AkmExtractResult {
    * looking up the harness — has a real value here.
    */
   engine?: string;
-  /**
-   * #913 — kind of the runner `engine` resolved to: `"llm"` (a direct
-   * OpenAI-compatible connection), `"sdk"` (an SDK harness, executing through
-   * its LLM fallback connection), or `"agent"` (a dispatched agent harness).
-   * Absent under the same condition as `engine`. Consumers must not assume a
-   * single value: which kinds a process accepts is a per-process capability
-   * (`IMPROVE_PROCESS_ENGINE_CAPABILITIES`), not a property of the envelope.
-   */
-  engineKind?: "llm" | "sdk" | "agent";
+  /** Kind of the runner `engine` resolved to; absent under the same condition as `engine`. */
+  engineKind?: RunnerSpec["kind"];
 }
 
 export interface AkmReflectFailure {

@@ -540,7 +540,7 @@ function projectNextResult(run: WorkflowRunRow, steps: WorkflowRunStepRow[]): Wo
 
 export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetail> {
   return withWorkflowRunsRepo((repo) => {
-    const run = readWorkflowRun(repo, runId);
+    const run = readWorkflowRunOrPrefix(repo, runId);
     const storedPlan = requireExecutableWorkflowPlan(run);
     const steps = readWorkflowRunSteps(repo, run.id);
     assertWorkflowSpineMatchesPlan(storedPlan, run, steps);
@@ -575,7 +575,7 @@ export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDeta
   return withWorkflowRunsRepo((repo) => {
     const now = new Date().toISOString();
     const run = repo.immediateTransaction((db) => {
-      const current = readWorkflowRun(repo, runId);
+      const current = readWorkflowRunOrPrefix(repo, runId);
       if (current.status === "completed" || current.status === "failed") {
         throw new UsageError(`Workflow run ${current.id} is already ${current.status}.`);
       }
@@ -956,7 +956,7 @@ async function resolveRunSpecifier(
   forceNew?: boolean,
 ): Promise<{ run: WorkflowRunRow; autoStarted: boolean; resumed?: true; startWarnings?: string[] }> {
   const hasParameters = (params && Object.keys(params).length > 0) || (parameterFlags?.length ?? 0) > 0;
-  const explicitRun = repo.getRunById(resolveRunIdOrPrefix(repo, specifier));
+  const explicitRun = findRunByIdOrPrefix(repo, specifier);
   if (explicitRun) {
     // `--new` starts a fresh run FROM A REF; it never makes sense against a
     // run id (or an id prefix), which already names the run to act on (#919).
@@ -1051,35 +1051,27 @@ async function workflowRunRefSet(canonicalRef: string, exactRef: string): Promis
  */
 const RUN_ID_PREFIX_PATTERN = /^[0-9a-f-]{8,}$/;
 
-/**
- * Resolve `specifier` to an exact run id: unchanged when it already is one,
- * the prefix's unique match when it looks like an id-shaped prefix (throws
- * `UsageError`/`NotFoundError` per {@link WorkflowRunsRepository.resolveRunIdPrefix}
- * on ambiguity/no-match), unchanged otherwise (a workflow ref, left for the
- * caller to resolve as such).
- */
-function resolveRunIdOrPrefix(repo: WorkflowRunsRepository, specifier: string): string {
-  if (repo.hasRun(specifier)) return specifier;
-  if (!RUN_ID_PREFIX_PATTERN.test(specifier)) return specifier;
-  return repo.resolveRunIdPrefix(specifier);
+/** The run `specifier` names: by exact id, or by unique id prefix (#919) when it is id-shaped; `undefined` for a workflow ref. */
+function findRunByIdOrPrefix(repo: WorkflowRunsRepository, specifier: string): WorkflowRunRow | undefined {
+  const exact = repo.getRunById(specifier);
+  if (exact || !RUN_ID_PREFIX_PATTERN.test(specifier)) return exact;
+  return repo.getRunById(repo.resolveRunIdPrefix(specifier));
 }
 
-/**
- * Resolve `specifier` to a run id for CLI verbs that accept EITHER a run id
- * (or prefix) or a workflow ref (`status`, #919): the exact/unique-prefix id
- * when it resolves, `undefined` when `specifier` is not id-shaped at all —
- * the signal callers use to fall through to ref-based resolution.
- */
+/** For verbs that take a run id/prefix OR a workflow ref (`status`): the run id, or `undefined` to fall through to ref resolution. */
 export async function resolveWorkflowRunTarget(specifier: string): Promise<string | undefined> {
-  return withWorkflowRunsRepo((repo) => {
-    const runId = resolveRunIdOrPrefix(repo, specifier);
-    return repo.hasRun(runId) ? runId : undefined;
-  });
+  return withWorkflowRunsRepo((repo) => findRunByIdOrPrefix(repo, specifier)?.id);
+}
+
+/** User-facing read: accepts an id prefix. Internal reads use {@link readWorkflowRun} with an exact id. */
+function readWorkflowRunOrPrefix(repo: WorkflowRunsRepository, specifier: string): WorkflowRunRow {
+  const run = findRunByIdOrPrefix(repo, specifier);
+  if (!run) throw new NotFoundError(`Workflow run "${specifier}" not found.`, "WORKFLOW_NOT_FOUND");
+  return run;
 }
 
 function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowRunRow {
-  const resolvedId = resolveRunIdOrPrefix(repo, runId);
-  const run = repo.getRunById(resolvedId);
+  const run = repo.getRunById(runId);
   if (!run) {
     throw new NotFoundError(`Workflow run "${runId}" not found.`, "WORKFLOW_NOT_FOUND");
   }

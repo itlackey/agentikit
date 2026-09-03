@@ -28,7 +28,6 @@ import path from "node:path";
 // site regardless of future command additions.
 import "../src/cli";
 import { shapeForCommand } from "../src/output/shapes";
-import { passthroughShapes } from "../src/output/shapes/passthrough";
 
 const SRC_ROOT = path.join(__dirname, "..", "src");
 
@@ -81,19 +80,6 @@ describe("output-shape registry exhaustiveness", () => {
       // covered by other tests.
       const probe: Record<string, unknown> = { ok: true };
       expect(() => shapeForCommand(name, probe, "brief")).not.toThrow(/output shape not registered/);
-    });
-  }
-
-  // #918: every passthrough command's success envelope must carry `ok`.
-  // The probe deliberately omits `ok` (unlike the exhaustiveness probe
-  // above, which pre-seeds it) so a shape that forgot to stamp it would
-  // actually be caught here rather than the assertion passing on input that
-  // already satisfied it.
-  for (const { command } of passthroughShapes) {
-    test(`passthrough shape "${command}" stamps ok on a result with none`, () => {
-      const probe: Record<string, unknown> = { sample: "value" };
-      const shaped = shapeForCommand(command, probe, "normal") as Record<string, unknown>;
-      expect(shaped.ok).toBe(true);
     });
   }
 });

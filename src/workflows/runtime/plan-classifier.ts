@@ -47,7 +47,7 @@ export function classifyWorkflowRunPlan(row: {
       // an "upgrade" problem — so it gets its own text below rather than
       // being folded into the pre-5 wording.
       error:
-        typeof row.plan_ir_version === "number" && row.plan_ir_version < WORKFLOW_IR_V5_VERSION
+        row.plan_ir_version < WORKFLOW_IR_V5_VERSION
           ? `Workflow run ${runId} was frozen as workflow plan irVersion ${row.plan_ir_version}; pre-irVersion-5 ` +
             `plans cannot execute after the 0.9.2 upgrade. Complete them before upgrading, or run ` +
             `'akm workflow abandon ${runId}' and start a new run from the authored workflow. ` +

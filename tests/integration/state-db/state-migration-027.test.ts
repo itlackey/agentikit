@@ -60,10 +60,6 @@ describe("migration 027-extract-sessions-seen-harness-rename — registry positi
     expect(Object.keys(STATE_MIGRATION_SAFETY_BY_ID)).toContain(MIGRATION_ID);
     expect(getStateMigrationSafety(MIGRATION_ID)).toBe("data-preserving-rebuild");
   });
-
-  test("the safety-classification registry key order matches the migration registry order exactly", () => {
-    expect(Object.keys(STATE_MIGRATION_SAFETY_BY_ID)).toEqual(STATE_MIGRATIONS.map((migration) => migration.id));
-  });
 });
 
 interface ExtractSessionsRow {

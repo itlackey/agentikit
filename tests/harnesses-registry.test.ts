@@ -21,7 +21,6 @@ import {
   getHarness,
   HARNESS_BY_ID,
   HARNESS_REGISTRY,
-  PERSISTED_HARNESS_IDS,
   SESSION_LOG_HARNESSES,
   VALID_HARNESS_IDS,
 } from "../src/integrations/harnesses";
@@ -180,30 +179,26 @@ describe("defaultProfileName — registry-derived headless default (#566)", () =
   });
 });
 
-// #915 — the 0.9.2 claude-code -> claude rename shipped without a state
-// migration and stranded 5,803 extract_sessions_seen rows under the old key.
-// PERSISTED_HARNESS_IDS is a hardcoded literal (not derived from
-// HARNESS_REGISTRY) precisely so that renaming or removing a registry id
-// without also deciding on a state migration fails this test, instead of the
-// two lists silently staying "in sync" by construction.
-describe("PERSISTED_HARNESS_IDS guards the persisted-key surface (#915)", () => {
-  it("contains every HARNESS_REGISTRY id", () => {
-    for (const h of HARNESS_REGISTRY) {
-      expect(PERSISTED_HARNESS_IDS).toContain(h.id);
-    }
-  });
+// #915: harness ids are persisted keys (`extract_sessions_seen.harness`,
+// `workflow_runs.agent_harness`). This literal is deliberately NOT derived from
+// the registry: renaming or removing an id must fail here until a state
+// migration ships for the old key (see 027-extract-sessions-seen-harness-rename).
+const PERSISTED_HARNESS_IDS = [
+  "opencode",
+  "claude",
+  "opencode-sdk",
+  "codex",
+  "copilot",
+  "pi",
+  "gemini",
+  "aider",
+  "amazonq",
+  "openhands",
+];
 
-  it("contains no id that HARNESS_REGISTRY does not (no stale/retired ids)", () => {
-    const registryIds = new Set(HARNESS_REGISTRY.map((h) => h.id as string));
-    for (const id of PERSISTED_HARNESS_IDS) {
-      expect(registryIds.has(id)).toBe(true);
-    }
-  });
-
-  it("matches HARNESS_REGISTRY exactly as sets, with no duplicates", () => {
-    expect(new Set(PERSISTED_HARNESS_IDS).size).toBe(PERSISTED_HARNESS_IDS.length);
-    const persistedSorted: string[] = [...PERSISTED_HARNESS_IDS].sort();
-    expect(persistedSorted).toEqual(HARNESS_REGISTRY.map((h) => h.id as string).sort());
+describe("harness ids are persisted keys (#915)", () => {
+  it("HARNESS_REGISTRY matches the persisted-id list exactly; a rename needs a state migration", () => {
+    expect(HARNESS_REGISTRY.map((h) => h.id as string).sort()).toEqual([...PERSISTED_HARNESS_IDS].sort());
   });
 });
 

@@ -35,6 +35,7 @@ import {
   EXIT_CODES,
   GLOBAL_OUTPUT_ARGS,
   output,
+  outputWithExitCode,
   runWithJsonErrors,
 } from "../../cli/shared";
 import { UsageError } from "../../core/errors";
@@ -389,14 +390,8 @@ const tasksSyncCommand = defineJsonCommand({
     rejectRetiredTaskTargetFlag();
     const rebind = args.rebind === true;
     if (args["dry-run"] === true) {
-      // `preview` is Object.freeze()d by its producer — spread into a fresh
-      // object rather than mutating it, matching the makeStampHandler
-      // idempotence contract (#918: ok must reflect the same predicate as
-      // the exit code, never the blanket-true default).
       const preview = await akmTasksSyncPlan({}, args.bundle, { rebind });
-      const exitCode = taskSyncDryRunExitCode(preview);
-      output("task-sync-dry-run", { ...preview, ok: exitCode === undefined });
-      if (exitCode !== undefined) process.exitCode = exitCode;
+      outputWithExitCode("task-sync-dry-run", preview, taskSyncDryRunExitCode(preview));
       return;
     }
     const result = await akmTasksSync({}, args.bundle, { rebind });
@@ -405,11 +400,7 @@ const tasksSyncCommand = defineJsonCommand({
     // than poisoning the whole sync, but their presence must still fail
     // the command's exit code so the breakage stays visible. (#906: this key
     // matches the `--dry-run` preview's `failures` field — no separate name.)
-    // #918: `ok` mirrors this same predicate so it never disagrees with the
-    // exit code the way the blanket passthrough default would.
-    const ok = result.failures.length === 0;
-    output("task-sync", { ...result, ok });
-    if (!ok) process.exitCode = EXIT_CODES.GENERAL;
+    outputWithExitCode("task-sync", result, result.failures.length > 0 ? EXIT_CODES.GENERAL : undefined);
   },
 });
 
@@ -530,12 +521,7 @@ const tasksPruneCommand = defineJsonCommand({
           .filter(Boolean)
       : undefined;
     const result = await akmTasksPrune({}, { yes: args.yes === true, id });
-    // #918: ok mirrors the same predicate that drives the exit code, so a
-    // dry-run that found removals to make (still nonzero exit) never reads
-    // as ok:true.
-    const exitCode = taskPruneExitCode(result);
-    output("task-prune", { ...result, ok: exitCode === undefined });
-    if (exitCode !== undefined) process.exitCode = exitCode;
+    outputWithExitCode("task-prune", result, taskPruneExitCode(result));
   },
 });
 

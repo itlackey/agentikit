@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { akmHealth } from "../../../src/commands/health";
 import type { HealthCheckResult } from "../../../src/commands/health/types";
+import { daysToMs } from "../../../src/core/common";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { upsertExtractedSession } from "../../../src/storage/repositories/extract-sessions-repository";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
@@ -37,7 +38,7 @@ function findAdvisory(checks: HealthCheckResult[], name: string): HealthCheckRes
 }
 
 function isoDaysAgo(days: number): string {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  return new Date(Date.now() - daysToMs(days)).toISOString();
 }
 
 describe("session-extraction is derived from the extract_sessions_seen ledger (#914)", () => {

@@ -123,7 +123,6 @@ import { DURATION_UNITS, parseDuration } from "./core/time";
 import { plainize } from "./core/tty";
 import { info, isQuiet, setQuiet, setVerbose, warn } from "./core/warn";
 import { disposeDispatchResources } from "./integrations/agent/runner-dispatch";
-import { probeLlmReachable } from "./llm/client";
 import { EMBEDDED_HINTS, EMBEDDED_HINTS_FULL } from "./output/cli-hints";
 import { getOutputMode, initOutputMode, parseDetailLevel } from "./output/context";
 import { isFormatExemptCommand } from "./output/format-exempt";
@@ -377,7 +376,7 @@ const healthCommand = defineCommand({
         groupBy: report ? "run" : (groupBy as "run" | undefined),
         windowCompare,
         windows,
-        probeReachable: args.probe === false ? undefined : probeLlmReachable,
+        probe: args.probe !== false,
       });
       const reportCompare =
         windowCompare ??
