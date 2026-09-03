@@ -408,11 +408,15 @@ describe("drainProposals — dry-run", () => {
     expect(stillPending.map((p) => p.id).sort()).toEqual([accepted.id, empty.id].sort());
   });
 
-  test("reports only candidates that pass the real stamped promotion preflight", async () => {
+  test("reports a candidate the real preflight only flags advisorily as promotable", async () => {
+    // `promotionLintBlockers` findings (unquoted-colon, missing-ref,
+    // stale-path) are advisory now — they read oddly but keep no malformed
+    // data out of the write, so dry-run reporting must not treat this
+    // candidate as unpromotable.
     const stash = makeStashDir();
-    const blocked = seed(
+    const advisoryOnly = seed(
       stash,
-      "lessons/preflight-blocked",
+      "lessons/preflight-advisory",
       "extract",
       "---\ndescription: Proposal lint:blocks invalid output.\nwhen_to_use: Testing drain preflight\n---\n\nUseful body.\n",
     );
@@ -423,8 +427,8 @@ describe("drainProposals — dry-run", () => {
       fakeReject(),
     );
 
-    expect(result.promoted).toEqual([]);
-    expect(getProposal(stash, blocked.id).status).toBe("pending");
+    expect(result.promoted).toEqual([advisoryOnly.id]);
+    expect(getProposal(stash, advisoryOnly.id).status).toBe("pending");
   });
 });
 
