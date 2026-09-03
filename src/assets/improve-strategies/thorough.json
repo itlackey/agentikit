@@ -13,8 +13,7 @@
     },
     "consolidate": {
       "enabled": true,
-      "allowedTypes": ["memory"],
-      "minPoolSize": 500
+      "allowedTypes": ["memory"]
     },
     "memoryInference": {
       "enabled": true

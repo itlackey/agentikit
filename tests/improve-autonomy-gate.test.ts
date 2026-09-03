@@ -28,7 +28,7 @@ const DEFAULT_STRATEGY = {
   processes: {
     reflect: { enabled: true },
     distill: { enabled: true },
-    consolidate: { enabled: true, allowedTypes: ["memory"], minPoolSize: 500 },
+    consolidate: { enabled: true, allowedTypes: ["memory"] },
     memoryInference: { enabled: true },
     graphExtraction: { enabled: true },
     validation: { enabled: true },
