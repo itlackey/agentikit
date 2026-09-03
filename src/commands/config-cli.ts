@@ -119,7 +119,10 @@ export const configCommand = defineGroupCommand({
       },
     }),
     set: defineJsonCommand({
-      meta: { name: "set", description: "Set a configuration value by key" },
+      meta: {
+        name: "set",
+        description: "Set a configuration value by key; prints the resulting config with ok: true",
+      },
       args: {
         key: {
           type: "positional",
@@ -133,7 +136,7 @@ export const configCommand = defineGroupCommand({
         silent: {
           type: "boolean",
           description:
-            "Suppress the post-write config dump on stdout. Use from hooks and CI scripts; the write still happens and errors still print.",
+            "Suppress the post-write config dump on stdout entirely (prints nothing; exit code is the status). Use from hooks and CI scripts; the write still happens and errors still print.",
           default: false,
         },
       },
@@ -145,12 +148,17 @@ export const configCommand = defineGroupCommand({
       },
     }),
     unset: defineJsonCommand({
-      meta: { name: "unset", description: "Unset an optional configuration key or whole embedding/engine section" },
+      meta: {
+        name: "unset",
+        description:
+          "Unset an optional configuration key or whole embedding/engine section; prints the resulting config with ok: true",
+      },
       args: {
         key: { type: "positional", required: true, description: "Config key to unset" },
         silent: {
           type: "boolean",
-          description: "Suppress the post-write config dump on stdout.",
+          description:
+            "Suppress the post-write config dump on stdout entirely (prints nothing; exit code is the status).",
           default: false,
         },
       },
