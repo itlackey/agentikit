@@ -113,6 +113,26 @@ describe("workflow CLI", () => {
     expect(fs.existsSync(path.join(storage.stashDir, "workflows", "print-test.md"))).toBe(false);
   });
 
+  test("create --force alone replaces an existing workflow with a fresh template", async () => {
+    await createWorkflow("template-target", ROUTED_WORKFLOW);
+    const assetPath = path.join(storage.stashDir, "workflows", "template-target.md");
+    expect(fs.readFileSync(assetPath, "utf8")).toContain("route:");
+
+    // No --from and no --reset: --force alone must not refuse.
+    const result = await runCliCapture(["workflow", "create", "template-target", "--force"]);
+    expect(result.code).toBe(0);
+    expect(fs.readFileSync(assetPath, "utf8")).not.toContain("route:");
+  });
+
+  test("create --force --reset still works (deprecated alias, no independent effect)", async () => {
+    await createWorkflow("template-target-reset", ROUTED_WORKFLOW);
+    const assetPath = path.join(storage.stashDir, "workflows", "template-target-reset.md");
+
+    const result = await runCliCapture(["workflow", "create", "template-target-reset", "--force", "--reset"]);
+    expect(result.code).toBe(0);
+    expect(fs.readFileSync(assetPath, "utf8")).not.toContain("route:");
+  });
+
   test("create --from rejects invalid and duplicate-step documents", async () => {
     const invalid = await runCliCapture([
       "workflow",

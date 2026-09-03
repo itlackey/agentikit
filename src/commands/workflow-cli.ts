@@ -113,12 +113,13 @@ const workflowCreateCommand = defineJsonCommand({
     },
     force: {
       type: "boolean",
-      description: "Overwrite an existing workflow (requires --from or --reset)",
+      description:
+        "Overwrite an existing workflow. Combined with --from, replaces its content; alone, replaces it with a fresh template.",
       default: false,
     },
     reset: {
       type: "boolean",
-      description: "Explicitly replace an existing workflow with a fresh template (use with --force)",
+      description: "Deprecated alias for --force with no --from (replaces an existing workflow with a fresh template).",
       default: false,
     },
     print: {
@@ -145,11 +146,6 @@ const workflowCreateCommand = defineJsonCommand({
       // a usable starter file, not `{ok,template,kind}` JSON.
       process.stdout.write(getWorkflowTemplate());
       return;
-    }
-    if (args.force && !args.from && !args.reset) {
-      throw new UsageError(
-        "Refusing to overwrite with template: pass --from <file> to replace content, or --reset to explicitly replace with a fresh template.",
-      );
     }
     const result = createWorkflowAsset({
       name: effectiveName,
