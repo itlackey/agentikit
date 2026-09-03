@@ -36,9 +36,10 @@ import { type SummaryJudge, validateStepSummary } from "../validate-summary";
 import { resolveAgentIdentity } from "./agent-identity";
 import { type CheckinDirective, evaluateCheckin } from "./checkin";
 import {
-  assertWorkflowSpineMatchesPlan,
+  assertRunStatusMatchesSpine,
   classifyWorkflowRunPlan,
   frozenStepRows,
+  reconcileWorkflowSpineWithPlan,
   requireExecutableWorkflowPlan,
 } from "./plan-classifier";
 import { resolveWorkflowRunOutputs } from "./run-outputs";
@@ -490,7 +491,8 @@ export async function getNextWorkflowStep(
     );
     const steps = readWorkflowRunSteps(repo, run.id);
     const plan = requireExecutableWorkflowPlan(run);
-    assertWorkflowSpineMatchesPlan(plan, run, steps);
+    reconcileWorkflowSpineWithPlan(plan, run, steps);
+    assertRunStatusMatchesSpine(run, steps);
     return {
       ...projectNextResult(run, steps),
       ...(autoStarted ? { autoStarted: true as const } : {}),
@@ -537,11 +539,16 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
     const run = readWorkflowRunOrPrefix(repo, runId);
     const storedPlan = requireExecutableWorkflowPlan(run);
     const steps = readWorkflowRunSteps(repo, run.id);
-    assertWorkflowSpineMatchesPlan(storedPlan, run, steps);
+    // Pure-derivation drift (issue 7) never blocks resume — warn only. The
+    // plan-derived spine rows are pure derivations of an already
+    // hash-verified plan; a later akm release changing how one is FORMATTED
+    // must not make an in-flight run un-resumable.
+    reconcileWorkflowSpineWithPlan(storedPlan, run, steps);
     if (run.status === "completed") {
       throw new UsageError(`Workflow run ${run.id} is already completed and cannot be resumed.`);
     }
     if (run.status === "active") {
+      assertRunStatusMatchesSpine(run, steps);
       return buildWorkflowRunDetail(repo, run, steps);
     }
     // blocked or failed → flip back to active and re-open the current step so
@@ -555,6 +562,10 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
     });
     const updated: WorkflowRunRow = { ...run, status: "active", updated_at: now };
     const refreshedSteps = readWorkflowRunSteps(repo, run.id);
+    // Status-vs-spine consistency is checked AFTER normalization above: it
+    // is the one check reopenStepsForResume/markRunActive exist to satisfy,
+    // not to race against (issue 7).
+    assertRunStatusMatchesSpine(updated, refreshedSteps);
     return buildWorkflowRunDetail(repo, updated, refreshedSteps);
   });
 }
@@ -608,7 +619,8 @@ export async function completeWorkflowStep(
     const run = readWorkflowRun(repo, input.runId);
     const storedPlan = requireExecutableWorkflowPlan(run);
     const steps = readWorkflowRunSteps(repo, run.id);
-    assertWorkflowSpineMatchesPlan(storedPlan, run, steps);
+    reconcileWorkflowSpineWithPlan(storedPlan, run, steps);
+    assertRunStatusMatchesSpine(run, steps);
     if (run.status !== "active") {
       throw new UsageError(`Workflow run ${run.id} is ${run.status} and cannot be updated.`);
     }
@@ -693,7 +705,8 @@ export async function completeWorkflowStep(
       const run = readWorkflowRun(repo, input.runId);
       const plan = requireExecutableWorkflowPlan(run);
       const spine = readWorkflowRunSteps(repo, run.id);
-      assertWorkflowSpineMatchesPlan(plan, run, spine);
+      reconcileWorkflowSpineWithPlan(plan, run, spine);
+      assertRunStatusMatchesSpine(run, spine);
       if (run.status !== "active") {
         throw new UsageError(`Workflow run ${run.id} is ${run.status} and cannot be updated.`);
       }

@@ -101,13 +101,17 @@ function execOnWorkflowDb(sql: string, ...params: Array<string | number | null>)
   }
 }
 
-/** §3.2's exact unsupported-version message. */
+/**
+ * §3.2's exact unsupported-version message. Issue 8 (guard-audit): the
+ * remedy no longer tells an already-upgraded reader to "complete them
+ * before upgrading" — it leads with `akm workflow abandon <id>`, the thing
+ * they can actually do now.
+ */
 function unsupportedVersionMessage(runId: string, version: number): string {
   return (
     `Workflow run ${runId} was frozen as workflow plan irVersion ${version}; pre-irVersion-5 ` +
-    `plans cannot execute after the 0.9.2 upgrade. Complete them before upgrading, or run ` +
-    `'akm workflow abandon ${runId}' and start a new run from the authored workflow. ` +
-    `'akm workflow status' and 'akm workflow list' still work on this run.`
+    `plans cannot execute after the 0.9.2 upgrade. Run 'akm workflow abandon ${runId}' and start a new run ` +
+    `from the authored workflow to continue. 'akm workflow status' and 'akm workflow list' still work on this run.`
   );
 }
 

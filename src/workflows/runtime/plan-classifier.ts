@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { UsageError } from "../../core/errors";
+import { warnOnce } from "../../core/warn";
 import type { WorkflowRunRow, WorkflowRunStepRow } from "../../storage/repositories/workflow-runs-repository";
 import { decodeCanonicalPlan } from "../ir/plan-hash";
 import type { IrRouteSpec } from "../ir/schema";
@@ -48,33 +49,39 @@ export function classifyWorkflowRunPlan(row: {
       // being folded into the pre-5 wording.
       error:
         row.plan_ir_version < WORKFLOW_IR_V5_VERSION
-          ? `Workflow run ${runId} was frozen as workflow plan irVersion ${row.plan_ir_version}; pre-irVersion-5 ` +
-            `plans cannot execute after the 0.9.2 upgrade. Complete them before upgrading, or run ` +
-            `'akm workflow abandon ${runId}' and start a new run from the authored workflow. ` +
-            `'akm workflow status' and 'akm workflow list' still work on this run.`
+          ? // Issue 8: leads with the remedy available to a user who has
+            // ALREADY upgraded — "complete it before upgrading" is advice
+            // for the past, not something they can act on now.
+            `Workflow run ${runId} was frozen as workflow plan irVersion ${row.plan_ir_version}; pre-irVersion-5 ` +
+            `plans cannot execute after the 0.9.2 upgrade. Run 'akm workflow abandon ${runId}' and start a new ` +
+            `run from the authored workflow to continue. 'akm workflow status' and 'akm workflow list' still ` +
+            `work on this run.`
           : `Workflow run ${runId} was frozen with workflow plan irVersion ${row.plan_ir_version}, which this akm ` +
             `(irVersion ${WORKFLOW_IR_V5_VERSION}) does not understand; it was probably written by a newer akm. ` +
             `Complete it with that akm version, or run 'akm workflow abandon ${runId}' and start a new run from ` +
             `the authored workflow. 'akm workflow status' and 'akm workflow list' still work on this run.`,
     };
   }
-  if (row.plan_ir_version !== WORKFLOW_IR_V5_VERSION) {
-    return {
-      support: "corrupt-plan",
-      irVersion: null,
-      error: `Workflow run ${runId} does not declare a supported workflow IR version.`,
-    };
-  }
+  // Issue 8: `plan_ir_version IS NULL` is merely OLD (a row from before the
+  // column existed), not corrupt — the column's absence says nothing about
+  // whether the plan JSON itself is v5-shaped. Attempt the decode below the
+  // same as a `WORKFLOW_IR_V5_VERSION` row (`decodeCanonicalPlan` treats a
+  // `null`/`undefined` expected version as "no version to check") and let
+  // its hash/shape verdict decide, rather than rejecting it as corrupt
+  // before ever trying.
   try {
     return {
       support: "supported",
-      irVersion: row.plan_ir_version,
+      // A successful decode below IS v5 (it decoded against the v5 schema),
+      // whether or not this row's `plan_ir_version` column said so — see the
+      // comment above.
+      irVersion: WORKFLOW_IR_V5_VERSION,
       plan: decodeCanonicalPlan(runId, row.plan_json, row.plan_hash, row.plan_ir_version),
     };
   } catch (cause) {
     return {
       support: "corrupt-plan",
-      irVersion: row.plan_ir_version,
+      irVersion: row.plan_ir_version ?? null,
       error: cause instanceof Error ? cause.message : String(cause),
     };
   }
@@ -119,43 +126,95 @@ export function frozenStepRows(plan: WorkflowPlanGraphV4): FrozenStepRowDefiniti
   }));
 }
 
-/** Verify the durable spine still agrees with the decoded/hash-verified plan before any mutation. */
-export function assertWorkflowSpineMatchesPlan(
+/**
+ * Verify the durable spine's STEP IDENTITY still agrees with the
+ * decoded/hash-verified plan: the same number of steps, and the same set of
+ * step ids. A published plan's own step ids are fixed forever at freeze
+ * time, so a mismatch here means the row set itself is wrong — genuine
+ * corruption, not something a later akm release could have caused by
+ * changing how a field is FORMATTED (that is
+ * {@link reconcileWorkflowSpineWithPlan}'s concern, issue 7).
+ */
+function assertSpineIdentityMatchesPlan(
+  runId: string,
+  expected: readonly FrozenStepRowDefinition[],
+  rows: readonly WorkflowRunStepRow[],
+): void {
+  if (rows.length !== expected.length) corruptSpine(runId, "step count differs from the frozen plan");
+  const expectedIds = new Set(expected.map((step) => step.stepId));
+  for (const row of rows) {
+    if (!expectedIds.has(row.step_id)) corruptSpine(runId, `step "${row.step_id}" is not in the frozen plan`);
+  }
+}
+
+/**
+ * Reconcile the durable spine's PURE-DERIVATION fields (title, instructions,
+ * completion criteria, sequence position) against the plan (issue 7).
+ *
+ * These are recomputed from the plan by {@link frozenStepRows} on every
+ * read; a later akm release changing how one of them is FORMATTED from the
+ * SAME plan data used to mark every in-flight run from the previous release
+ * "corrupt" the moment anything (`akm workflow status`, `resume`, a step
+ * completion) touched it. A mismatch here is warned about, once per run,
+ * rather than blocking the caller — never step identity (row count, which
+ * step ids exist), which stays a hard failure in
+ * {@link assertSpineIdentityMatchesPlan} because the plan cannot have
+ * produced a different step id for an already-frozen run.
+ *
+ * This does not (and, from `src/workflows/**`, cannot) rewrite the stale
+ * durable row: `workflow_run_steps` is owned by
+ * `storage/repositories/workflow-runs-repository.ts`, which exposes no
+ * write path for these fields. The frozen plan — not this row — is what
+ * every dispatch decision already reads, so the drift is display-only
+ * (`akm workflow status` step title/instructions text) until that repository
+ * grows one; see this change's `crossAreaNeeds`.
+ */
+export function reconcileWorkflowSpineWithPlan(
   plan: WorkflowPlanGraphV4,
   run: WorkflowRunRow,
-  rows: WorkflowRunStepRow[],
+  rows: readonly WorkflowRunStepRow[],
 ): void {
   const expected = frozenStepRows(plan);
-  if (rows.length !== expected.length) corruptSpine(run.id, "step count differs from the frozen plan");
-  for (let index = 0; index < expected.length; index++) {
-    const actual = rows[index];
-    const planned = expected[index];
-    // The length check above (corruptSpine returns `never`) guarantees both are
-    // present; the guard narrows them and preserves the "missing row" message.
-    if (!actual || !planned) {
-      corruptSpine(run.id, `step row ${index} differs from the frozen plan (missing row)`);
-    }
+  assertSpineIdentityMatchesPlan(run.id, expected, rows);
+  const expectedById = new Map(expected.map((step) => [step.stepId, step]));
+  const drifted: string[] = [];
+  for (const row of rows) {
+    const planned = expectedById.get(row.step_id);
+    if (!planned) continue; // unreachable after assertSpineIdentityMatchesPlan; kept defensive.
     if (
-      actual.step_id !== planned.stepId ||
-      actual.step_title !== planned.stepTitle ||
-      actual.instructions !== planned.instructions ||
-      actual.completion_json !== planned.completionJson ||
-      actual.sequence_index !== planned.sequenceIndex
+      row.step_title !== planned.stepTitle ||
+      row.instructions !== planned.instructions ||
+      row.completion_json !== planned.completionJson ||
+      row.sequence_index !== planned.sequenceIndex
     ) {
-      const fields = [
-        actual.step_id !== planned.stepId ? "step_id" : "",
-        actual.step_title !== planned.stepTitle ? "step_title" : "",
-        actual.instructions !== planned.instructions ? "instructions" : "",
-        actual.completion_json !== planned.completionJson ? "completion_json" : "",
-        actual.sequence_index !== planned.sequenceIndex ? "sequence_index" : "",
-      ].filter(Boolean);
-      corruptSpine(run.id, `step row ${index} differs from the frozen plan (${fields.join(", ")})`);
+      drifted.push(row.step_id);
     }
   }
-  if (run.current_step_id !== null && !expected.some((step) => step.stepId === run.current_step_id))
-    corruptSpine(run.id, `current step ${run.current_step_id} is not in the frozen plan`);
+  if (drifted.length > 0) {
+    warnOnce(
+      `workflow-spine-drift:${run.id}`,
+      `Workflow run ${run.id}: durable step row(s) [${drifted.join(", ")}] no longer match the frozen plan's ` +
+        "title/instructions/completion-criteria/sequence derivation (an akm upgrade likely changed how one of " +
+        "these is formatted from the same plan data). Continuing — the frozen plan, not this display text, is " +
+        "what every dispatch decision reads.",
+    );
+  }
+}
 
+/**
+ * Verify run-status-vs-spine consistency: checks the plan CANNOT supply on
+ * its own (issue 7), since they depend on which step is genuinely current
+ * and what state the runtime left it in — never repaired, always a hard
+ * failure. Callers that may need to normalize a blocked/failed run first
+ * (`resumeWorkflowRun`'s `reopenStepsForResume`/`markRunActive`) must call
+ * this AFTER that normalization, against the refreshed rows — checking a
+ * blocked/failed run's spine before the very repair that resume exists to
+ * perform would defeat the repair.
+ */
+export function assertRunStatusMatchesSpine(run: WorkflowRunRow, rows: readonly WorkflowRunStepRow[]): void {
   const current = run.current_step_id ? rows.find((row) => row.step_id === run.current_step_id) : undefined;
+  if (run.current_step_id !== null && !current)
+    corruptSpine(run.id, `current step ${run.current_step_id} is not in the frozen plan`);
   if (run.status === "active") {
     const firstPending = rows.find((row) => row.status === "pending");
     if (!current || current.status !== "pending" || firstPending?.step_id !== current.step_id)
