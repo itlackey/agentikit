@@ -105,6 +105,39 @@ export const VALID_HARNESS_IDS = Object.freeze(HARNESS_REGISTRY.map((h) => h.id)
 ];
 
 /**
+ * Every harness id that has ever been written as a persisted key into
+ * state.db (`extract_sessions_seen.harness`, `workflow_runs.agent_harness` —
+ * every registered harness is `agentDispatch`-capable, so every id here is
+ * reachable as `workflow_runs.agent_harness`; `claude` and `opencode` are
+ * additionally reachable as `extract_sessions_seen.harness` via their
+ * `sessionLogs` capability).
+ *
+ * Deliberately a hardcoded literal, NOT derived from `HARNESS_REGISTRY`: the
+ * harness id is a persisted key, not just a display string, so **renaming or
+ * removing an id in the registry is a schema change that needs a state
+ * migration** — see `027-extract-sessions-seen-harness-rename` in
+ * `src/core/state/migrations.ts` for the precedent (the 0.9.2 `claude-code`
+ * -> `claude` rename shipped without one and stranded 5,803 rows, #915). This
+ * list is what the deleted `HARNESS_BY_ANY_ID` compatibility bridge (removed
+ * in 0.9.2) used to protect. A unit test asserts this list and
+ * `HARNESS_REGISTRY`'s ids match exactly (as sets), so a rename or addition
+ * in one without the other fails the suite until the author writes the
+ * migration and updates this list to match.
+ */
+export const PERSISTED_HARNESS_IDS = Object.freeze([
+  "opencode",
+  "claude",
+  "opencode-sdk",
+  "codex",
+  "copilot",
+  "pi",
+  "gemini",
+  "aider",
+  "amazonq",
+  "openhands",
+] as const);
+
+/**
  * Harnesses that expose readable native session logs. Narrowed via the
  * {@link isSessionLogHarness} type-predicate (rather than a plain boolean
  * callback) so `sessionLogProvider` is known-present on every element — see
