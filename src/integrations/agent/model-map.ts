@@ -310,35 +310,40 @@ function modelMapFileError(label: string, filePath: string, action: string): Con
 }
 
 /**
- * Read through a nonblocking, no-follow descriptor and enforce the config-size
- * ceiling before parsing. `optional` recognizes only a true lstat ENOENT as
- * absence; dangling links and every non-regular type are configuration errors.
+ * Read through a nonblocking descriptor and enforce the config-size ceiling
+ * before parsing. `optional` recognizes only a true stat ENOENT (including a
+ * dangling link) as absence.
+ *
+ * Follows symlinks deliberately — a stow/chezmoi/yadm-managed
+ * `~/.config/akm/models.json` symlinked into a dotfiles repo is completely
+ * ordinary, not an attack, and reading it should not require breaking that
+ * setup. This is a READ path only: `copyDefaultModelMap`'s write side (below)
+ * still refuses to replace a non-regular target via `lstatSync`, which is the
+ * check that actually matters for a write.
  */
 function readModelMapFile(filePath: string, label: string, optional: boolean): string | undefined {
-  let linkStat: fs.Stats;
+  let targetStat: fs.Stats;
   try {
-    linkStat = fs.lstatSync(filePath);
+    targetStat = fs.statSync(filePath);
   } catch (error) {
     if (optional && (error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
     throw modelMapFileError(label, filePath, optional ? "inspected" : "found");
   }
-  if (!linkStat.isFile()) {
+  if (!targetStat.isFile()) {
     throw new ConfigError(
       `Unable to read ${label.toLowerCase()} because it is not a readable regular file: ${filePath}.`,
       "INVALID_CONFIG_FILE",
-      "Move the symlink or non-regular target aside, or replace it with a readable regular models.json file.",
+      "Replace it with a readable regular models.json file, or a symlink to one.",
     );
   }
 
-  const noFollow =
-    process.platform !== "win32" && typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
   const nonblock =
     process.platform !== "win32" && typeof fs.constants.O_NONBLOCK === "number" ? fs.constants.O_NONBLOCK : 0;
   let fd: number | undefined;
   try {
-    fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow | nonblock);
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | nonblock);
     const openedStat = fs.fstatSync(fd);
-    if (!sameFileIdentity(linkStat, openedStat)) {
+    if (!sameFileIdentity(targetStat, openedStat)) {
       throw new ConfigError(
         `${label} changed while it was being opened: ${filePath}.`,
         "INVALID_CONFIG_FILE",
