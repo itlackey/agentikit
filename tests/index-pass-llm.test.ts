@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AkmConfig } from "../src/core/config/config";
 import { loadUserConfig, resetConfigCache } from "../src/core/config/config";
-import { ConfigError } from "../src/core/errors";
 import { getConfigPath } from "../src/core/paths";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import type { LoweringNotice } from "../src/execution/resolved-request";
 import { createEnrichmentDeadline } from "../src/indexer/indexer";
 import { resolveIndexPassExecution } from "../src/llm/index-passes";
@@ -305,7 +305,7 @@ describe("config loader: `index` block parsing", () => {
     expect(getIndexPassConfig(config.index, "graph")?.graphExtractionIncludeTypes).toEqual(["memory", "command"]);
   });
 
-  test("rejects per-pass provider configuration (duplicate provider path)", () => {
+  test("warns and drops per-pass provider configuration instead of failing config load (duplicate provider path)", () => {
     writeUserConfig({
       configVersion: "0.9.0",
       index: {
@@ -315,25 +315,39 @@ describe("config loader: `index` block parsing", () => {
         },
       },
     });
-    expect(() => loadUserConfig()).toThrow(ConfigError);
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
     try {
-      loadUserConfig();
-    } catch (err) {
-      expect(err).toBeInstanceOf(ConfigError);
-      expect((err as ConfigError).code).toBe("INVALID_CONFIG_FILE");
-      expect((err as Error).message).toContain("Retired or misplaced engine setting");
-      expect((err as Error).message).toContain("index.enrichment.endpoint");
+      const config = loadUserConfig();
+      expect(config.index?.enrichment?.model).toBe("other-model");
+      expect((config.index?.enrichment as Record<string, unknown> | undefined)?.endpoint).toBeUndefined();
+      expect(warnings.some((w) => w.includes("index.enrichment.endpoint") && w.includes("retired"))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
     }
   });
 
-  test("rejects per-pass provider configuration fields", () => {
+  test("warns and drops per-pass provider configuration fields instead of failing config load", () => {
     for (const key of ["provider", "apiKey", "temperature", "maxTokens", "baseUrl", "capabilities"]) {
       writeUserConfig({
         configVersion: "0.9.0",
         index: { enrichment: { [key]: "anything" } },
       });
       resetConfigCache();
-      expect(() => loadUserConfig()).toThrow(/Retired or misplaced engine setting/);
+      _resetWarnOnceForTests();
+      const warnings: string[] = [];
+      _setWarnSinkForTests((level, args) => {
+        if (level === "warn") warnings.push(args.map(String).join(" "));
+      });
+      try {
+        const config = loadUserConfig();
+        expect((config.index?.enrichment as Record<string, unknown> | undefined)?.[key]).toBeUndefined();
+        expect(warnings.some((w) => w.includes(`index.enrichment.${key}`))).toBe(true);
+      } finally {
+        _setWarnSinkForTests(undefined);
+      }
     }
   });
 
@@ -356,12 +370,23 @@ describe("config loader: `index` block parsing", () => {
     expect(resolved?.connection).toMatchObject({ temperature: 0.2, maxTokens: 64 });
   });
 
-  test("rejects unknown keys under a pass entry", () => {
+  test("warns and drops an unknown key under a pass entry instead of failing config load", () => {
     writeUserConfig({
       configVersion: "0.9.0",
-      index: { enrichment: { foo: true } },
+      index: { enrichment: { enabled: true, foo: true } },
     });
-    expect(() => loadUserConfig()).toThrow(/Unknown key `index\.enrichment\.foo`/);
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      const config = loadUserConfig();
+      expect(config.index?.enrichment?.enabled).toBe(true);
+      expect((config.index?.enrichment as Record<string, unknown> | undefined)?.foo).toBeUndefined();
+      expect(warnings.some((w) => w.includes("Unknown key `index.enrichment.foo`"))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
   });
 
   test("accepts arbitrary graphExtractionIncludeTypes values (WI-9.6c: accept-any until Chunk 2)", () => {

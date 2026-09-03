@@ -17,6 +17,7 @@ import { validateConfigShape } from "../src/core/config/config-schema";
 import { configSet } from "../src/core/config/config-walker";
 import { ConfigError } from "../src/core/errors";
 import { getConfigPath } from "../src/core/paths";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 
 beforeEach(() => resetConfigCache());
 afterEach(() => resetConfigCache());
@@ -34,7 +35,15 @@ describe("0.9 config contract", () => {
     expect(() => loadUserConfig()).toThrow(/UNSUPPORTED_CONFIG_VERSION|configVersion/);
   });
 
-  test("rejects profile vocabulary and literal LLM credentials", () => {
+  // Both the retired `profiles` vocabulary and a literal (non-`$VAR`) engine
+  // apiKey used to fail the WHOLE config load — every akm command exits 78
+  // over a value the reader can (and must) still use. Both are now warned
+  // once and used/ignored as configured, matching the "reading persisted
+  // data" rule: a human hand-editing config.json, or a config a prior akm
+  // wrote, must still load. `akm config set` (config-walker.ts) still
+  // refuses a literal apiKey outright — see the "permits only symbolic
+  // engine apiKey values through config set" test below.
+  test("loads a config with retired profile vocabulary and a literal engine apiKey, using both as configured", () => {
     writeConfig({
       configVersion: "0.9.0" as const,
       profiles: { llm: {} },
@@ -47,7 +56,8 @@ describe("0.9 config contract", () => {
         },
       },
     });
-    expect(() => loadUserConfig()).toThrow(ConfigError);
+    const config = loadUserConfig();
+    expect(config.engines?.fast?.apiKey).toBe("not-symbolic");
   });
 
   test("accepts symbolic engine credentials and retains them on save", () => {
@@ -174,10 +184,10 @@ describe("0.9 config contract", () => {
   // #852 (following #815): `extraParams.reasoning_effort` was the documented
   // 0.9.1 workaround for LM Studio, where `enableThinking` is a no-op.
   // `reasoningEffort` became a first-class — and therefore protected — field
-  // in 0.9.2. This used to lift silently onto it on load, forever; the lift
-  // is now `akm migrate apply`'s job, so an unmigrated config fails closed
-  // here instead, naming `akm migrate apply` as the fix.
-  test("rejects a legacy reasoning_effort extraParams override, naming akm migrate apply", () => {
+  // in 0.9.2. AGENTS.md cites this exact guard as already fixed to
+  // warn-and-auto-lift; loads onto the first-class field in memory, warning
+  // once and naming `akm migrate apply` as the way to persist it.
+  test("loads a legacy reasoning_effort extraParams override by lifting it, naming akm migrate apply in the warning", () => {
     writeConfig({
       configVersion: "0.9.0",
       engines: {
@@ -189,11 +199,17 @@ describe("0.9 config contract", () => {
         },
       },
     });
-    expect(() => loadUserConfig()).toThrow(ConfigError);
+    const warnings: string[] = [];
+    _resetWarnOnceForTests();
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
     try {
-      loadUserConfig();
-    } catch (err) {
-      expect(String(err)).toContain("akm migrate apply");
+      const config = loadUserConfig();
+      expect(config.engines?.fast?.reasoningEffort).toBe("high");
+      expect(warnings.some((w) => w.includes("akm migrate apply"))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
     }
   });
 
@@ -300,16 +316,24 @@ describe("0.9 config contract", () => {
     }
   });
 
-  test("rejects removed runtime compatibility settings", () => {
-    expect(validateConfigShape({ configVersion: "0.9.0", writable: true }).ok).toBe(false);
+  test("still rejects removed bundle-option runtime compatibility settings", () => {
     expect(
       validateConfigShape({
         configVersion: "0.9.0",
         bundles: { primary: { path: "/s", options: { pushOnCommit: true } } },
       }).ok,
     ).toBe(false);
+  });
+
+  // Top-level `writable` and `index.stalenessDetection` used to fail config
+  // load over a single retired key, taking down every command. Both are now
+  // ignored (warned once, dropped) rather than rejected — see
+  // core/config/config-schema.ts's superRefine and
+  // core/config/schema/index-config.ts's preprocess.
+  test("ignores retired top-level writable and index.stalenessDetection instead of failing config load", () => {
+    expect(validateConfigShape({ configVersion: "0.9.0", writable: true }).ok).toBe(true);
     expect(validateConfigShape({ configVersion: "0.9.0", index: { stalenessDetection: { enabled: true } } }).ok).toBe(
-      false,
+      true,
     );
   });
 
@@ -349,20 +373,30 @@ describe("0.9 config contract", () => {
     expect(resolved[2]!.source).toMatchObject({ type: "website", url: "https://example.test/docs/", maxPages: 25 });
   });
 
-  test("rejects defaultBundle that names no bundle and a stray bindings block", () => {
+  test("rejects defaultBundle that names no bundle", () => {
     expect(
       validateConfigShape({ configVersion: "0.9.0", bundles: { a: { path: "/s" } }, defaultBundle: "missing" }).ok,
     ).toBe(false);
-    expect(validateConfigShape({ configVersion: "0.9.0", bindings: { release: { export: "a//x" } } }).ok).toBe(false);
   });
 
-  test("rejects retired config-root and per-engine model alias tables", () => {
+  // A stray top-level `bindings` block used to fail the whole config load —
+  // the never-shipped Tier B feature has no runtime meaning, so it is now
+  // ignored (warned once, passed through) rather than rejected, same as the
+  // other retired top-level vocabulary below.
+  test("ignores a stray top-level bindings block instead of failing config load", () => {
+    expect(validateConfigShape({ configVersion: "0.9.0", bindings: { release: { export: "a//x" } } }).ok).toBe(true);
+  });
+
+  test("rejects a per-engine model alias table (still meaningful on an engine, unlike the retired top-level table)", () => {
     expect(
       validateConfigShape({
         configVersion: "0.9.0",
         engines: { agent: { kind: "agent", platform: "pi", modelAliases: { fast: "model-a" } } },
       }).ok,
     ).toBe(false);
-    expect(validateConfigShape({ configVersion: "0.9.0", modelAliases: { deep: { pi: "model-b" } } }).ok).toBe(false);
+  });
+
+  test("ignores the retired top-level modelAliases table instead of failing config load", () => {
+    expect(validateConfigShape({ configVersion: "0.9.0", modelAliases: { deep: { pi: "model-b" } } }).ok).toBe(true);
   });
 });

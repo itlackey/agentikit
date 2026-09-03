@@ -42,6 +42,7 @@
  *   enforced at save time via `superRefine` on the top-level schema.
  */
 import { z } from "zod";
+import { warnOnce } from "../warn";
 import { BUILTIN_IMPROVE_STRATEGY_NAMES, IMPROVE_PROCESS_ENGINE_CAPABILITIES } from "./engine-semantics";
 import { EmbeddingConnectionConfigSchema } from "./schema/embedding";
 import { EnginesSchema } from "./schema/engines";
@@ -149,27 +150,28 @@ const RETIRED_SOURCE_SHAPE_KEY_MESSAGES: Record<string, string> = {
 
 export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => {
   const raw = config as Record<string, unknown>;
-  for (const key of ["profiles", "llm", "agent", "features", "stashes", "modelAliases"]) {
+  // Retired vocabulary with no runtime meaning left (pre-0.9 profiles/llm/
+  // agent/features config, the removed `stashes[]`/`modelAliases` tables, and
+  // the never-shipped `bindings`/top-level `writable`). These used to hard-
+  // reject the WHOLE config at load — the single worst guard shape in the
+  // repo, since every akm command loads config first. `.passthrough()`
+  // already round-trips them harmlessly; just say so once and move on.
+  for (const key of ["profiles", "llm", "agent", "features", "stashes", "modelAliases", "bindings", "writable"]) {
     if (key in raw) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [key],
-        message: `${key} is retired in 0.9; configure engines and improve.strategies instead`,
-      });
+      warnOnce(
+        `config:retired-key:${key}`,
+        `Config key "${key}" is retired in 0.9 and is ignored; configure engines/improve.strategies/bundles.<id> instead.`,
+      );
     }
   }
-  // `bindings` (spec §10.1) is Tier B — never emitted, never accepted. The
-  // top-level schema is `.passthrough()`, so without this it would round-trip
-  // silently; reject it loudly so a stray/hand-written bindings block is caught.
-  if ("bindings" in raw) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["bindings"],
-      message: "bindings is not supported in 0.9.0 (Tier B); it is neither emitted nor accepted",
-    });
-  }
   // Only the current source shape enters the runtime. There is no config
-  // compatibility path; `bundles` + `defaultBundle` fully supersede these keys.
+  // compatibility path; `bundles` + `defaultBundle` fully supersede these
+  // keys. `parseAndValidateConfigText` (the real load path) folds a real
+  // `stashDir`/`sources[]`/`installed[]` config into `bundles`/`defaultBundle`
+  // in memory before the schema ever sees it (`legacy-source-shape-shim.ts`);
+  // this rejection only fires for a caller that validates raw JSON directly
+  // (`validateConfigShape`) — e.g. a half-migrated config that still carries
+  // these alongside `bundles`, which is intentionally still loud here.
   for (const key of ["stashDir", "sources", "installed"]) {
     if (key in raw && raw[key] !== undefined) {
       ctx.addIssue({
@@ -179,13 +181,6 @@ export const AkmConfigSchema = AkmConfigBaseSchema.superRefine((config, ctx) => 
           RETIRED_SOURCE_SHAPE_KEY_MESSAGES[key] ?? `${key} is not supported; configure the current bundles shape`,
       });
     }
-  }
-  if ("writable" in raw) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["writable"],
-      message: "top-level writable is not supported; configure bundles.<id>.writable instead",
-    });
   }
   // `defaultBundle`, when present, must name a configured bundle.
   if (config.defaultBundle !== undefined) {

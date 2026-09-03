@@ -4,7 +4,7 @@ import path from "node:path";
 import { getConfigValue, listConfig } from "../src/commands/config-cli";
 import { collectEgressAdvisory } from "../src/commands/health/surfaces";
 import { resolveRegistries, searchRegistry } from "../src/commands/read/registry-search";
-import { DEFAULT_CONFIG, loadConfig, saveConfig } from "../src/core/config/config";
+import { DEFAULT_CONFIG, loadConfig, resetConfigCache, saveConfig } from "../src/core/config/config";
 import {
   formatRegistryError,
   formatRegistryUrl,
@@ -449,11 +449,27 @@ afterEach(() => {
 });
 
 describe("registry credential-bearing URL mutation boundaries", () => {
-  test("the shared save boundary rejects the complete credential corpus without persistence", () => {
+  test("the shared save boundary drops the complete credential corpus instead of persisting it", () => {
+    // `registry add` / `config set registries` (the human-typed entry points,
+    // covered below) already refuse a credentialed URL outright. This is the
+    // lower-level `saveConfig`/`sanitizeConfigForWrite` boundary underneath
+    // both — reachable directly by any future in-process caller — and it must
+    // never let a credential reach config.json on disk, so it drops the
+    // offending registry entry (like the sibling apiKey strip above it) and
+    // warns, rather than writing it verbatim.
     for (const url of SAVE_BOUNDARY_UNSAFE_URLS) {
-      expect(() => saveRegistryUrl(url)).toThrow("credential");
+      try {
+        saveRegistryUrl(url);
+        expect(loadConfig().registries ?? []).toEqual([]);
+      } catch (err) {
+        // A literal `http(s):<control-char>//` scheme isn't a credential
+        // finding at all — it fails the base `httpUrl` shape check (kept),
+        // same as any other malformed scheme would.
+        expect(String(err)).not.toContain("credential");
+        expect(String(err)).toContain("http:// or https://");
+      }
+      resetConfigCache();
     }
-    expect(fs.existsSync(configPath())).toBe(false);
   });
 
   test("registry add and config set reject representative credential classes before persistence", async () => {
@@ -522,39 +538,59 @@ describe("registry credential-bearing URL mutation boundaries", () => {
   });
 });
 
-describe("already-persisted registry credentials fail closed", () => {
-  test("CLI config, registry, search, info, and health JSON errors never echo userinfo", async () => {
+describe("already-persisted registry credentials load and stay redacted", () => {
+  test("CLI config, registry, info, and health JSON never echo userinfo; search skips the entry with a credential warning", async () => {
     writeSandboxConfig({
       semanticSearchMode: "off",
       registries: [{ url: CREDENTIAL_URL, name: "private", provider: "static-index" }],
     });
 
-    const invocations = [
+    // A credential-bearing registry URL is not a config-load hazard (#5): it
+    // never reaches every command the way a config-wide parse failure would,
+    // only the commands that actually dial out or display it. Every command
+    // below loads config successfully; display-only commands (registry list,
+    // config list, info, health) show the entry with its userinfo stripped by
+    // `formatRegistryUrl`, and `search` (which would actually fetch from it)
+    // skips the entry entirely with a `formatRegistryCredentialWarning`.
+    const displayInvocations = [
       ["registry", "list", "--format=json"],
       ["config", "list", "--format=json"],
       ["info", "--format=json"],
       ["health", "--format=json"],
+    ];
+    for (const argv of displayInvocations) {
+      const result = await runCliCapture(argv);
+      expect(result.code).not.toBe(78);
+      expect(result.code).not.toBe(70);
+      expectCredentialsAbsent(result.stdout);
+      expectCredentialsAbsent(result.stderr);
+    }
+
+    const searchInvocations = [
       ["search", "needle", "--from", "registry", "--verbose", "--format=json"],
       ["search", "needle", "--from", "all", "--verbose", "--format=json"],
     ];
-
-    for (const argv of invocations) {
+    for (const argv of searchInvocations) {
       const result = await runCliCapture(argv);
-      expect(result.code).toBe(78);
+      expect(result.code).toBe(0);
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
-      expect(result.stderr.toLowerCase()).toContain("credential");
+      expect(result.stdout.toLowerCase()).toContain("credential");
     }
   });
 
-  test("every persisted credential class fails config load without leakage", async () => {
+  test("every persisted credential class loads without leaking a credential into registry list", async () => {
+    // A registry URL is config, not the config-load gate: bundles/schema config
+    // load must not brick every command over one bad registry entry (#5). A
+    // literal `http(s):<control-char>//` scheme (not a real akm shape — it
+    // only appears in this adversarial corpus) still fails the base `httpUrl`
+    // shape check and keeps failing closed; every other class loads and is
+    // display-redacted by `formatRegistryUrl`, same as an already-safe URL.
     for (const url of PERSISTED_BOUNDARY_UNSAFE_URLS) {
       writeSandboxConfig({ registries: [{ url, name: "private", provider: "static-index" }] });
       const result = await runCliCapture(["registry", "list", "--verbose", "--format=json"]);
-
-      expect(result.code).toBe(78);
+      expect([0, 78]).toContain(result.code);
       expect(result.code).not.toBe(70);
-      expect(result.stderr.toLowerCase()).toContain("credential");
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
     }

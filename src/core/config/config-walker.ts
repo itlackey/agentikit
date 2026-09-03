@@ -24,6 +24,7 @@
 import { z } from "zod";
 import { isRecord } from "../common";
 import { UsageError } from "../errors";
+import { hasRegistryUrlCredentials, REGISTRY_CREDENTIALS_UNSUPPORTED } from "../registry-url";
 import { AkmConfigBaseSchema, type AkmConfigShape, EngineConfigSchema, listTopLevelConfigKeys } from "./config-schema";
 import { deepMergeConfig } from "./deep-merge";
 
@@ -190,6 +191,13 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
 
   // #454: apiKey paths are not persistable. Throw at set time.
   rejectApiKeyPath(path, dotted);
+  // A literal (non-`$VAR`) apiKey embedded in a whole-object patch
+  // (`config set engines.<name> '{...}'` or `config set embedding '{...}'`)
+  // bypasses the leaf-path check above; the field-level schema regex used to
+  // catch it too, but that now only warns at LOAD (a config a prior akm
+  // wrote, or a human hand-edited, must still load). A human typing `config
+  // set` right now still gets told the better way immediately.
+  rejectLiteralApiKeyInWholeObjectSet(path, raw, dotted);
 
   const schema = resolveSchemaAt(path, config, raw);
   const symbolicApiKey =
@@ -208,6 +216,14 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
         : symbolicApiKey
           ? raw
           : coerceForSchema(schema as z.ZodTypeAny, raw, dotted);
+
+  // Registry URL credentials are not persistable through an explicit `config
+  // set registries ...`, the same way a literal apiKey is not persistable
+  // (#454 above): the schema itself only warns-and-skips a credentialed entry
+  // at registry-consumption time (so an already-persisted or upgraded config
+  // still loads), but a human typing the credential right now can be told
+  // the better way immediately instead of having it silently ignored later.
+  if (path[0] === "registries") rejectRegistryCredentialValue(value, dotted);
 
   const existing = path.reduce<unknown>((value, key) => {
     if (value && typeof value === "object") return (value as Record<string, unknown>)[key];
@@ -311,6 +327,48 @@ function rejectApiKeyPath(path: Path, dotted: string): void {
     "Storing API keys in config.json leaks them through backups, logs, and version control. " +
       "Use the corresponding environment variable. AKM reads it at request time.",
   );
+}
+
+/**
+ * Reject a literal (non-`$VAR`) `apiKey` inside a whole-object `config set
+ * engines.<name> '{...}'` or `config set embedding '{...}'` patch. The
+ * leaf-path form (`engines.<name>.apiKey`) is covered by `rejectApiKeyPath`
+ * and its own symbolic-only check in `configSet` above; this covers the same
+ * field arriving embedded in a larger JSON object instead.
+ */
+function rejectLiteralApiKeyInWholeObjectSet(path: Path, raw: string, dotted: string): void {
+  const isWholeEngineSet = path[0] === "engines" && path.length === 2;
+  const isWholeEmbeddingSet = path.length === 1 && path[0] === "embedding";
+  if (!isWholeEngineSet && !isWholeEmbeddingSet) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return; // Malformed JSON — the caller's own parse/coercion reports this.
+  }
+  if (!isRecord(parsed) || typeof parsed.apiKey !== "string") return;
+  if (/^\$[A-Za-z_][A-Za-z0-9_]*$|^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(parsed.apiKey)) return;
+  throw new UsageError(
+    `apiKey cannot be persisted in config; export ${recipeForApiKey([...path, "apiKey"], `${dotted}.apiKey`)} instead. (key: ${dotted}.apiKey)`,
+    "INVALID_FLAG_VALUE",
+    "Storing API keys in config.json leaks them through backups, logs, and version control. " +
+      "Use the corresponding environment variable. AKM reads it at request time.",
+  );
+}
+
+/** Reject a credential-bearing registry URL anywhere inside a `registries` config-set value. */
+function rejectRegistryCredentialValue(value: unknown, dotted: string): void {
+  const entries = Array.isArray(value) ? value : [value];
+  for (const entry of entries) {
+    const url = isRecord(entry) && typeof entry.url === "string" ? entry.url : undefined;
+    if (url && hasRegistryUrlCredentials(url)) {
+      throw new UsageError(
+        `${REGISTRY_CREDENTIALS_UNSUPPORTED} (key: ${dotted})`,
+        "INVALID_FLAG_VALUE",
+        REGISTRY_CREDENTIALS_UNSUPPORTED,
+      );
+    }
+  }
 }
 
 function parseObjectPatch(raw: string, key: string): Record<string, unknown> {

@@ -14,7 +14,6 @@ import { z } from "zod";
 // and, transitively, the indexer modules they delegate to).
 import { VALID_ADAPTER_IDS } from "../../adapter/adapter-ids";
 import { isBundleSlug } from "../../asset/asset-ref";
-import { hasRegistryUrlCredentials, REGISTRY_CREDENTIALS_UNSUPPORTED } from "../../registry-url";
 import { httpUrl, nonEmptyString, positiveInt } from "./primitives";
 
 const VALID_ADAPTER_IDS_SET: ReadonlySet<string> = new Set(VALID_ADAPTER_IDS);
@@ -61,13 +60,16 @@ export const SourceConfigEntrySchema = z
     }
   });
 
+// A registry URL carrying credentials is not a config-load hazard: it never
+// reaches every command like a config-wide parse failure would, only the
+// `registry`/`read` commands that actually dial out. Those call sites already
+// check `hasRegistryUrlCredentials` and skip the one bad entry with
+// `formatRegistryCredentialWarning` (see `registry/providers/*`,
+// `commands/read/registry-search.ts`) — rejecting it here too would just
+// brick config load for every command over one registry entry.
 export const RegistryConfigEntrySchema = z
   .object({
-    url: httpUrl.superRefine((value, ctx) => {
-      if (hasRegistryUrlCredentials(value)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, message: REGISTRY_CREDENTIALS_UNSUPPORTED });
-      }
-    }),
+    url: httpUrl,
     name: z.string().min(1).optional(),
     enabled: z.boolean().optional(),
     provider: z.string().min(1).optional(),

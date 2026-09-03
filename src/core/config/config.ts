@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "../errors";
 import { liftLegacyEngineExtraParams } from "../extra-params";
+import { formatRegistryLabel, hasRegistryUrlCredentials } from "../registry-url";
 import {
   acquireConfigLock,
   backupExistingConfig,
@@ -27,11 +28,12 @@ import type {
 } from "./config-types";
 import { upgradeConfigVersion } from "./config-version-shim";
 import { deepMergeConfig } from "./deep-merge";
+import { migrateLegacySourceShape } from "./legacy-source-shape-shim";
 
 export { stripJsonComments } from "./config-io";
 
 import { getConfigPath } from "../paths";
-import { warn } from "../warn";
+import { warn, warnOnce } from "../warn";
 
 // Re-export type surface from config-types.ts so call sites don't need to
 // move (the runtime values live here; the types are documentation-only).
@@ -207,18 +209,26 @@ export function acquireConfigReadFence(): { config: AkmConfig; release: () => vo
  * is validated.
  */
 export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
-  const parsedRaw = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
+  const versioned = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
+  // Retired 0.8 source-config shape (`stashDir`/`sources[]`/`installed[]`) —
+  // no migrator has ever existed for these, so without this shim they hard-
+  // reject at load and take down every command. See the module doc.
+  const parsedRaw = migrateLegacySourceShape(versioned, sourcePath);
 
   // #852 (following #815): a config still using legacy `extraParams` keys —
   // e.g. `reasoning_effort`, a documented 0.9.1 workaround — needs to be
-  // rewritten onto the first-class engine field they now shadow. This used
-  // to happen silently, in memory, on every load; that ran forever and never
-  // converged. The lift itself is now `akm migrate apply`'s job (see
-  // scripts/akm-migrate/migrate/config-extra-params.ts) and persists to disk, so a
-  // config that has not been migrated yet fails closed here instead of
-  // silently drifting from what's on disk.
+  // rewritten onto the first-class engine field they now shadow.
+  // `liftLegacyEngineExtraParams` is pure and already computes the lifted
+  // result; AGENTS.md cites this guard as already fixed to warn-and-auto-lift
+  // once (#815/#816's worked example), but a later change reintroduced a hard
+  // rejection that discarded that computed result and failed the WHOLE config
+  // load instead. Use the lifted config and warn once; `akm migrate apply`
+  // (scripts/akm-migrate/migrate/config-extra-params.ts) still exists to
+  // persist the lift and silence the warning. A genuine conflict (the
+  // extraParams key and the first-class field disagree) still fails closed —
+  // akm cannot guess which value the user meant.
   const where = sourcePath ? ` at ${sourcePath}` : "";
-  const { lifted, conflicts } = liftLegacyEngineExtraParams(parsedRaw);
+  const { config: liftedConfig, lifted, conflicts } = liftLegacyEngineExtraParams(parsedRaw);
   if (conflicts.length > 0) {
     const lines = conflicts
       .map(
@@ -232,12 +242,12 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
     );
   }
   if (lifted.length > 0) {
-    throw new ConfigError(
-      `Config${where} uses deprecated extraParams keys with first-class equivalents:\n  - ${lifted.join("\n  - ")}\n\nRun \`akm migrate apply\` to rewrite the config file, or move the values onto the first-class fields yourself.`,
-      "INVALID_CONFIG_FILE",
+    warnOnce(
+      `config:extra-params-lift${sourcePath ? `:${sourcePath}` : ""}`,
+      `Config${where} uses deprecated extraParams keys with first-class equivalents — auto-lifted in memory:\n  - ${lifted.join("\n  - ")}\n\nRun \`akm migrate apply\` to rewrite the config file and silence this warning.`,
     );
   }
-  const parsed = AkmConfigSchema.safeParse(parsedRaw);
+  const parsed = AkmConfigSchema.safeParse(liftedConfig);
   if (!parsed.success) {
     const lines = parsed.error.issues.map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`).join("\n");
     throw new ConfigError(`Invalid config${where}:\n${lines}`, "INVALID_CONFIG_FILE");
@@ -431,6 +441,27 @@ export function sanitizeConfigForWrite(config: AkmConfig): Record<string, unknow
     warn(
       `Config sanitizer dropped API key(s) before writing to disk:\n  - ${stripped.join("\n  - ")}\n\nakm does not persist API keys to config.json. Set the listed environment variables to provide them at runtime, or use \`\${VAR}\` references in your config to defer lookup. See docs/reference/data-and-telemetry.md.`,
     );
+  }
+
+  // Registry URL credentials: `registry add` / `config set registries` already
+  // refuse these at the human-typed entry point (core/config/config-walker.ts,
+  // commands/registry-cli.ts). This is the same belt-and-suspenders as the
+  // apiKey strip above for a caller that reaches `saveConfig`/`mutateConfig`
+  // directly — a credential must never reach config.json on disk, regardless
+  // of how it got into the in-memory config.
+  if (config.registries) {
+    const droppedRegistries: string[] = [];
+    const registries = config.registries.filter((entry) => {
+      if (!hasRegistryUrlCredentials(entry.url)) return true;
+      droppedRegistries.push(formatRegistryLabel(entry));
+      return false;
+    });
+    if (droppedRegistries.length > 0) {
+      sanitized.registries = registries;
+      warn(
+        `Config sanitizer dropped registry entr${droppedRegistries.length === 1 ? "y" : "ies"} with URL credentials before writing to disk:\n  - ${droppedRegistries.join("\n  - ")}\n\nRegistry URLs must be credential-free; configure a credential-free HTTPS endpoint.`,
+      );
+    }
   }
 
   return sanitized;

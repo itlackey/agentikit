@@ -7,7 +7,7 @@
  * `config-schema.ts` monolith — no behavior change.
  */
 import { z } from "zod";
-import { ENV_REFERENCE_PATTERN, positiveInt } from "./primitives";
+import { positiveInt, symbolicOrWarnApiKey } from "./primitives";
 
 const EmbeddingOllamaOptionsSchema = z
   .object({
@@ -29,7 +29,7 @@ export const EmbeddingConnectionConfigSchema = z
     provider: z.string().optional(),
     endpoint: z.string().optional(),
     model: z.string().optional(),
-    apiKey: z.string().regex(ENV_REFERENCE_PATTERN, `apiKey must be $VAR or \${VAR}`).optional(),
+    apiKey: symbolicOrWarnApiKey("embedding.apiKey").optional(),
     // Bounded to the index schema's own vec-table guard (1–4096,
     // storage/repositories/index-schema.ts) so an out-of-range dimension
     // fails at config validation with a clear message instead of crashing

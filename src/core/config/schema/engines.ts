@@ -18,11 +18,11 @@ import { HARNESS_AGENT_DISPATCH_IDS, VALID_HARNESS_IDS } from "../../../integrat
 import { WORKFLOW_MAX_TIMEOUT_MS } from "../../../workflows/resource-limits";
 import {
   chatCompletionsEndpoint,
-  ENV_REFERENCE_PATTERN,
   ExtraParamsSchema,
   engineName,
   nonEmptyString,
   positiveInt,
+  symbolicOrWarnApiKey,
 } from "./primitives";
 
 /**
@@ -82,7 +82,7 @@ const LlmEngineSchema = z
     provider: z.string().optional(),
     endpoint: chatCompletionsEndpoint,
     model: nonEmptyString,
-    apiKey: z.string().regex(ENV_REFERENCE_PATTERN, `apiKey must be $VAR or \${VAR}`).optional(),
+    apiKey: symbolicOrWarnApiKey("engines.<name>.apiKey").optional(),
     // #905: file-backed alternative to `apiKey` for hosts that refuse
     // secrets in the process environment. A plain filesystem path (`~`
     // expanded, read at dispatch) — see resolveLlmEngineUse/
