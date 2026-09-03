@@ -20,6 +20,7 @@ import { akmSearch } from "../../src/commands/read/search";
 import { akmShowUnified } from "../../src/commands/read/show";
 import { parseBundleRef } from "../../src/core/asset/asset-ref";
 import { resetConfigCache, saveConfig } from "../../src/core/config/config";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../src/core/warn";
 import { akmIndex, lookupBundleRef } from "../../src/indexer/indexer";
 import type { SourceSearchHit } from "../../src/sources/types";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
@@ -454,11 +455,28 @@ jobs:
     );
   });
 
-  test("non-Markdown indexed files reject Markdown heading fragments", async () => {
+  test("non-Markdown indexed files ignore Markdown heading fragments, with a warning, and render in full", async () => {
     await indexAdapterBundle("generic-fixture", copyFixtureToTmp(GENERIC_ROOT), "generic-files", true);
 
-    await expect(akmShowUnified({ ref: "generic-fixture//data.csv#alpha", skipLogging: true })).rejects.toThrow(
-      "Fragments are not supported",
-    );
+    const warnings: unknown[][] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    let shown: Awaited<ReturnType<typeof akmShowUnified>>;
+    try {
+      shown = await akmShowUnified({ ref: "generic-fixture//data.csv#alpha", skipLogging: true });
+    } finally {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
+
+    expect(shown.content).toContain("alpha");
+    expect(
+      warnings.some(
+        (args) =>
+          args.some((a) => String(a).includes('Fragment "#alpha"')) &&
+          args.some((a) => String(a).includes("not a Markdown document")),
+      ),
+    ).toBe(true);
   });
 });

@@ -33,7 +33,7 @@ import { NotFoundError, rethrowIfDataDirUnreadable, rethrowIfTestIsolationError,
 import { appendEvent } from "../../core/events";
 import { SCRIPT_EXTENSIONS } from "../../core/recognition-util";
 import { presentationFor } from "../../core/type-presentation";
-import { warn } from "../../core/warn";
+import { warn, warnOnce } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import { hasGraphData } from "../../indexer/db/graph-db";
 import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
@@ -110,12 +110,11 @@ export async function akmShowUnified(input: {
     if (metaRef) return showStashMeta(metaRef);
   }
 
-  // Env/secret bodies have no safe fragment surface. Reject from the canonical
-  // ref namespace before auto-index or lookup can touch authored bytes. This is
-  // deliberately independent of on-disk suffix probing: secret filenames keep
-  // their natural extension, and a misspelled extensionless ref must not move
-  // the sensitive-fragment policy behind a not-found result.
-  assertSensitiveFragmentUnsupported(parseBundleRef(ref));
+  // Env/secret bodies have no safe fragment surface, and a fragment cannot
+  // widen what the env/secret renderers expose: both always omit the body
+  // (env — key names only; secret — never rendered), fragment or not. Warn
+  // and ignore the fragment rather than refusing the whole show.
+  warnSensitiveFragmentUnsupported(parseBundleRef(ref));
 
   // Auto-index when stale so the index is current before lookup.
   const { primarySource } = resolveReadSources();
@@ -230,7 +229,7 @@ export async function showLocal(input: {
   stashDir?: string;
 }): Promise<ShowResponse> {
   const parsed = parseBundleRef(input.ref);
-  assertSensitiveFragmentUnsupported(parsed);
+  warnSensitiveFragmentUnsupported(parsed);
   const assetParts = typeNameFromConceptId(parsed.conceptId);
   const config = loadConfig();
   const allSources = resolveSourceEntries(input.stashDir);
@@ -330,12 +329,12 @@ export async function showLocal(input: {
       response = renderer.buildShowResponse(renderCtx);
       if (parsed.fragment !== undefined) {
         if (!match.renderer.endsWith("-md")) {
-          throw new UsageError(
-            `Fragments are not supported for ${makeBundleRef(parsed.bundle, parsed.conceptId)}. Only Markdown documents support heading fragments.`,
-            "INVALID_FLAG_VALUE",
+          warn(
+            `Fragment "#${parsed.fragment}" was ignored: ${makeBundleRef(parsed.bundle, parsed.conceptId)} is not a Markdown document, so heading fragments do not apply. Showing the whole asset.`,
           );
+        } else {
+          applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, presentedName);
         }
-        applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, presentedName);
       }
     }
   } catch (error) {
@@ -415,14 +414,20 @@ export async function showLocal(input: {
   return fullResponse;
 }
 
-/** Reject body fragments for namespaces whose authored bytes are sensitive. */
-function assertSensitiveFragmentUnsupported(ref: BundleRef): void {
+/**
+ * Warn and ignore body fragments for namespaces whose authored bytes are
+ * sensitive. `warnOnce`-keyed on the exact ref: `akmShowUnified` calls this
+ * before delegating to `showLocal`, which calls it again as its own
+ * defense-in-depth for callers that use `showLocal` directly — a single
+ * request must not print the same warning twice.
+ */
+function warnSensitiveFragmentUnsupported(ref: BundleRef): void {
   if (ref.fragment === undefined) return;
   const type = typeNameFromConceptId(ref.conceptId)?.type;
   if (type !== "env" && type !== "secret") return;
-  throw new UsageError(
-    `Fragments are not supported for ${makeBundleRef(ref.bundle, ref.conceptId)}. Sensitive ${type} assets do not expose body fragments.`,
-    "INVALID_FLAG_VALUE",
+  warnOnce(
+    `sensitive-fragment:${makeBundleRef(ref.bundle, ref.conceptId)}#${ref.fragment}`,
+    `Fragment "#${ref.fragment}" was ignored: sensitive ${type} assets do not expose body fragments. Showing ${makeBundleRef(ref.bundle, ref.conceptId)} in full.`,
   );
 }
 
@@ -555,7 +560,11 @@ async function maybeExtractGraphInline(
 export async function showByRef(ref: string): Promise<{ filePath: string; body: string }> {
   const parsed = parseBundleRef(ref);
   if (parsed.fragment !== undefined) {
-    throw new UsageError(`Fragments are not accepted by raw show: ${ref}`, "INVALID_FLAG_VALUE");
+    // Raw show always returns the whole file regardless — there is no
+    // fragment-slicing to apply here. Warn rather than refuse a ref a
+    // fragment-aware caller (e.g. an interactive `akm show <ref>#section`)
+    // might legitimately pass through unchanged.
+    warn(`Fragment "#${parsed.fragment}" was ignored by raw show: ${ref}. Returning the whole file.`);
   }
   const entry = await lookupBundleRef(parsed);
   if (!entry) {
@@ -608,15 +617,18 @@ function buildIndexedProjectionResponse(
   assetPath: string,
   fragment: string | undefined,
 ): ShowResponse {
-  if (fragment !== undefined && path.extname(assetPath).toLowerCase() !== ".md") {
-    throw new UsageError(
-      `Fragments are not supported for ${entry.conceptId}. Only Markdown documents support heading fragments.`,
-      "INVALID_FLAG_VALUE",
+  const isMarkdown = path.extname(assetPath).toLowerCase() === ".md";
+  if (fragment !== undefined && !isMarkdown) {
+    warn(
+      `Fragment "#${fragment}" was ignored: ${entry.conceptId} is not a Markdown document, so heading fragments do not apply. Showing the whole asset.`,
     );
   }
   const raw = fs.readFileSync(assetPath, "utf8");
   const parsed = parseFrontmatter(raw);
-  const content = fragment ? requireMarkdownSection(parsed.content, fragment, entry.name).content : parsed.content;
+  const content =
+    fragment !== undefined && isMarkdown
+      ? requireMarkdownSection(parsed.content, fragment, entry.name).content
+      : parsed.content;
   const description = entry.document?.description ?? asNonEmptyString(parsed.data.description);
   const tags =
     entry.document?.tags ??
