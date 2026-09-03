@@ -192,6 +192,51 @@ describe("Reflect type guard — refuses non-markdown asset types", () => {
       expect(result.proposal.ref).toBe(durableItemRef(stash, "knowledge", "foo"));
     }
   });
+
+  test("a type outside the fixed list is allowed when its content is genuinely frontmatter + markdown", async () => {
+    // `instruction` is a real akm placement type (markdownSpec-shaped, same as
+    // knowledge) that was never added to the fixed allowlist — the exact
+    // "extend this set" problem: fixing it required editing akm's own source.
+    // The structural check accepts it on its actual shape instead.
+    const stash = makeStashDir();
+    const sourceContent = "---\ndescription: Existing instruction doc\n---\n\nFollow these steps.\n";
+    const payload = JSON.stringify({
+      ref: "instructions/onboarding",
+      content: "---\ndescription: Existing instruction doc\n---\n\nFollow these revised steps.",
+    });
+    const result = await akmReflect({
+      ref: "instructions/onboarding",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      assetContent: sourceContent,
+      runAgentOptions: { spawn: fakeSpawn(payload, "", 0) },
+    });
+    if (!result.ok) throw new Error(`expected success, got: ${result.error}`);
+    expect(result.proposal.ref).toContain("instructions/onboarding");
+  });
+
+  test("an unregistered/custom type with no existing content is still refused, not minted fresh", async () => {
+    // A brand-new asset of an unverified type has nothing to check
+    // structurally yet; defaulting to refused avoids minting a wrongly-shaped
+    // file the same way the original `8737ab63` regression did.
+    const stash = makeStashDir();
+    let spawned = false;
+    const result = await akmReflect({
+      ref: "widgets/new-thing",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      runAgentOptions: {
+        spawn: (cmd) => {
+          spawned = true;
+          return fakeSpawn("", "", 0)(cmd, {});
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.reason).toBe("unsupported_type");
+    expect(spawned).toBe(false);
+  });
 });
 
 // ── 2. Frontmatter preservation ─────────────────────────────────────────────────
