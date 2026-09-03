@@ -155,3 +155,167 @@ describe("single-character lexical queries (Issue #9)", () => {
     }
   });
 });
+
+// ── Issue #929: the FTS cascade tops up instead of short-circuiting ─────────
+
+describe("searchFts — additive tier cascade (Issue #929)", () => {
+  test("a thin conjunctive match is topped up from the relaxed tier", () => {
+    // The bug: the exact-AND tier returning ONE row ended the search, so a
+    // sentence-shaped query needing several documents got exactly one, and the
+    // caller could not tell that better candidates were never considered.
+    const db = openIndexDatabase(tmpDbPath("fts-topup"));
+    try {
+      // Only this entry carries every term, so exact-AND matches it alone.
+      insertTestEntry(db, "backup-retention-policy", {
+        description: "vault backup retention policy snapshots",
+      });
+      // These carry two of the four terms — reachable only via the relaxed
+      // tier, and above the two-token top-up floor.
+      insertTestEntry(db, "vault-backup-schedule", { description: "vault backup nightly schedule" });
+      insertTestEntry(db, "retention-policy-notes", { description: "retention policy for archives" });
+      rebuildFts(db);
+
+      const results = searchFts(db, "vault backup retention policy", 5);
+      const names = results.map((r) => r.entry.name);
+
+      expect(results.length).toBeGreaterThan(1);
+      expect(names).toContain("backup-retention-policy");
+      expect(names).toContain("vault-backup-schedule");
+      expect(names).toContain("retention-policy-notes");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("a top-up never admits a document matching only one query term", () => {
+    // The precision half of the fix. Without the two-token floor, topping up a
+    // correct conjunctive result set with a bare OR pass appends documents that
+    // share a single common word — noise the caller did not ask for, promoted
+    // into a result set that was already right.
+    const db = openIndexDatabase(tmpDbPath("fts-floor"));
+    try {
+      insertTestEntry(db, "vault-backup-retention", {
+        description: "vault backup retention policy",
+      });
+      // Shares only "policy" — must not appear.
+      insertTestEntry(db, "unrelated-policy", { description: "expense travel reimbursement rules" });
+      rebuildFts(db);
+
+      const names = searchFts(db, "vault backup retention policy", 5).map((r) => r.entry.name);
+
+      expect(names).toContain("vault-backup-retention");
+      expect(names).not.toContain("unrelated-policy");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("the conjunctive hit keeps first position — top-ups only append", () => {
+    // The safety property that makes this change additive rather than a
+    // reordering: every result the old code returned keeps its position,
+    // because bm25 scores are comparable within a tier but not across tiers, so
+    // a global re-sort would be meaningless.
+    const db = openIndexDatabase(tmpDbPath("fts-order"));
+    try {
+      insertTestEntry(db, "backup-retention-policy", {
+        description: "vault backup retention policy snapshots",
+      });
+      insertTestEntry(db, "vault-backup-schedule", { description: "vault backup nightly schedule" });
+      rebuildFts(db);
+
+      const results = searchFts(db, "vault backup retention policy", 5);
+
+      expect(results[0]?.entry.name).toBe("backup-retention-policy");
+      expect(results[0]?.lexicalMatch).toBe("exact");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("each result keeps its own tier label, which the ranker depends on", () => {
+    // Downstream ranking applies a score ceiling to relaxed-tier hits that do
+    // not match on name. Mislabelling a topped-up row as `exact` would let it
+    // bypass that ceiling.
+    const db = openIndexDatabase(tmpDbPath("fts-labels"));
+    try {
+      insertTestEntry(db, "backup-retention-policy", {
+        description: "vault backup retention policy snapshots",
+      });
+      insertTestEntry(db, "vault-backup-schedule", { description: "vault backup nightly schedule" });
+      rebuildFts(db);
+
+      const byName = new Map(
+        searchFts(db, "vault backup retention policy", 5).map((r) => [r.entry.name, r.lexicalMatch]),
+      );
+
+      expect(byName.get("backup-retention-policy")).toBe("exact");
+      expect(byName.get("vault-backup-schedule")).toBe("relaxed");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("the relaxed FALLBACK is unfiltered, so zero-hit protection is preserved", () => {
+    // When nothing matched conjunctively, a single-term hit beats returning
+    // nothing. The two-token floor applies only to top-ups, never here.
+    const db = openIndexDatabase(tmpDbPath("fts-fallback"));
+    try {
+      insertTestEntry(db, "vault-notes", { description: "vault notes and reminders" });
+      rebuildFts(db);
+
+      // No document carries every term, so the conjunctive tiers find nothing.
+      const names = searchFts(db, "vault backup retention policy", 5).map((r) => r.entry.name);
+
+      expect(names).toContain("vault-notes");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("no duplicates when a document matches in more than one tier", () => {
+    const db = openIndexDatabase(tmpDbPath("fts-dedupe"));
+    try {
+      insertTestEntry(db, "backup-retention-policy", {
+        description: "vault backup retention policy snapshots",
+      });
+      insertTestEntry(db, "vault-backup-schedule", { description: "vault backup nightly schedule" });
+      rebuildFts(db);
+
+      const ids = searchFts(db, "vault backup retention policy", 5).map((r) => r.id);
+
+      expect(new Set(ids).size).toBe(ids.length);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("limit is still respected once the pool is filled", () => {
+    const db = openIndexDatabase(tmpDbPath("fts-limit"));
+    try {
+      insertTestEntry(db, "backup-retention-policy", {
+        description: "vault backup retention policy snapshots",
+      });
+      for (let i = 0; i < 8; i++) {
+        insertTestEntry(db, `vault-backup-${i}`, { description: `vault backup variant ${i}` });
+      }
+      rebuildFts(db);
+
+      expect(searchFts(db, "vault backup retention policy", 3).length).toBeLessThanOrEqual(3);
+      expect(searchFts(db, "vault backup retention policy", 1).length).toBe(1);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("a query matching nothing in any tier still returns empty", () => {
+    const db = openIndexDatabase(tmpDbPath("fts-empty"));
+    try {
+      insertTestEntry(db, "vault-notes", { description: "vault notes and reminders" });
+      rebuildFts(db);
+
+      expect(searchFts(db, "zzzznonexistent", 5)).toEqual([]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+});

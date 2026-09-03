@@ -65,20 +65,90 @@ export function searchFts(
   const plan = buildLexicalQueryPlan(query);
   if (!plan.exact) return [];
 
-  // Try the exact AND query first
+  // The tiers TOP UP a shared pool; they are not alternatives (#929).
+  //
+  // This used to return from whichever tier first produced a hit. A query
+  // whose strict conjunctive form matched exactly one document therefore
+  // yielded exactly that one document, and the looser tiers — which would
+  // very often have supplied the rest — never ran. The caller could not tell:
+  // results came back, they were relevant, and nothing indicated that better
+  // candidates were never considered. Measured on LongMemEval, 23 of 200
+  // queries returned a short result set that was NOT limit-bound, 22 of them
+  // on questions needing more than one document.
   const exactResults = runFtsQuery(db, plan.exact, "exact", limit, entryType, excludeTypes);
-  if (exactResults.length > 0) return exactResults;
+
+  // Fast path, byte-identical to the old behaviour: a full exact tier needs no
+  // top-up, so the looser queries never run and nothing is re-ordered.
+  if (exactResults.length >= limit) return exactResults;
+
+  const pool: DbSearchResult[] = [];
+  const seenEntryIds = new Set<number>();
+  const addTier = (tierResults: DbSearchResult[]): void => {
+    for (const result of tierResults) {
+      if (seenEntryIds.has(result.id)) continue;
+      seenEntryIds.add(result.id);
+      pool.push(result);
+    }
+  };
+
+  addTier(exactResults);
 
   if (plan.exactPrefix) {
-    const prefixResults = runFtsQuery(db, plan.exactPrefix, "prefix", limit, entryType, excludeTypes);
-    if (prefixResults.length > 0) return prefixResults;
+    addTier(runFtsQuery(db, plan.exactPrefix, "prefix", limit, entryType, excludeTypes));
   }
 
-  // One measured relaxation only after both conjunctive forms miss. This is
-  // still the same FTS table, BM25 weights, candidate collection, and
-  // downstream ranker — merely an OR candidate query for sentence-shaped
-  // input whose filler terms prevented a strict hit.
-  return plan.relaxed ? runFtsQuery(db, plan.relaxed, "relaxed", limit, entryType, excludeTypes) : [];
+  // The relaxed OR pass plays two different roles, and conflating them is a
+  // precision bug.
+  //
+  //  - As a FALLBACK (nothing matched conjunctively), any single-term hit
+  //    beats returning nothing. Unfiltered, exactly as before.
+  //  - As a TOP-UP (a thin conjunctive match left room), an unfiltered OR
+  //    appends documents matching just one term of a deliberately precise
+  //    query. Searching "deploy kube" would surface a doc about "deploy
+  //    docker" purely on the shared word "deploy" — noise the caller did not
+  //    ask for, promoted into a result set that was already correct.
+  //
+  // So a top-up requires a document to carry at least two of the query's
+  // terms. For a two-term query that collapses to the conjunctive result and
+  // adds nothing, which is right for precise input; for a sentence-shaped
+  // question it still admits genuinely related documents while rejecting
+  // single-common-word coincidences.
+  if (plan.relaxed) {
+    const relaxedResults = runFtsQuery(db, plan.relaxed, "relaxed", limit, entryType, excludeTypes);
+    const isTopUp = pool.length > 0;
+    addTier(isTopUp ? relaxedResults.filter((r) => countMatchedTokens(r, plan.tokens) >= 2) : relaxedResults);
+  }
+
+  // Re-sort the merged pool by bm25 before truncating. This is REQUIRED, not
+  // cosmetic: `normalizeFtsScores` (indexer/search/ranking.ts) reads
+  // `results[0]` as the best score and `results[last]` as the worst to build
+  // its min-max range, so handing it a tier-concatenated array silently
+  // corrupts every normalized score. bm25 is the same function over the same
+  // table and weights in all three tiers, and rewards matching more of the
+  // query, so the merged ordering is meaningful. Each result keeps its own
+  // `lexicalMatch` label, which is what the ranker's relaxed-tier score
+  // ceiling keys off — a promoted relaxed row does not escape that ceiling by
+  // sorting well here.
+  pool.sort((a, b) => a.bm25Score - b.bm25Score || a.id - b.id);
+  return pool.slice(0, limit);
+}
+
+/**
+ * How many of the query's tokens this result's indexed text actually carries.
+ *
+ * Approximate by design: FTS5 applies Porter stemming, so this substring check
+ * is a floor rather than an exact reproduction of the matcher. It only ever
+ * gates whether an already-matched relaxed row is worth appending as a top-up,
+ * so under-counting costs at most one extra candidate and never removes a row
+ * the conjunctive tiers found.
+ */
+function countMatchedTokens(result: DbSearchResult, tokens: readonly string[]): number {
+  const haystack = `${result.searchText} ${result.entry.name}`.toLowerCase();
+  let matched = 0;
+  for (const token of tokens) {
+    if (haystack.includes(token.toLowerCase())) matched++;
+  }
+  return matched;
 }
 
 function runFtsQuery(
