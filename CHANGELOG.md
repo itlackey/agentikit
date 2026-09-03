@@ -112,6 +112,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   migration. Scripts querying the ledger by `claude-code` will find it empty
   after upgrade; see the 0.9.1 -> 0.9.2 migration guide.
 
+### Changed — refusals that now degrade
+
+A repo-wide audit reviewed every defensive refusal in the codebase against
+three tests: has it demonstrably helped a real user, does its failure mode cost
+less than the hazard it guards, and is the hazard already gated behind a
+deliberate human command. Refusals that failed those tests were removed or
+downgraded to a warning, in that order of preference. Machinery that prevents
+data loss or corruption — atomic writes, backups, write-path validation, path
+containment — was explicitly out of scope and is unchanged.
+
+The user-visible effect is that akm stops aborting on conditions it can
+survive. Highlights:
+
+- **Config load no longer bricks every command over one bad key.** Retired
+  vocabulary (`profiles`, `llm`, `agent`, `features`, `stashes`,
+  `modelAliases`, `bindings`, top-level `writable`) warns and passes through,
+  and the pre-`bundles` `stashDir`/`sources[]`/`installed[]` shape folds into
+  the current shape in memory. An unknown `config set` key warns and stores.
+- **A newer or unfamiliar state.db migration ledger no longer refuses to
+  open.** A ledger carrying migrations this binary does not know warns once and
+  degrades; only a genuinely inconsistent ledger still aborts. This is what let
+  a bundled older akm keep working against a newer host's data directory.
+  A `plan_ir_version` of NULL (a row predating the column) decodes normally.
+- **Free text is no longer validated as code.** `akm agent` accepts prompts
+  containing `{{`/`}}`; inline workflow `akm/command` content and portable
+  command templates accept `$HOME`, `@file`, `${...}` and the rest as the prose
+  they are. Only `$ARGUMENTS[N]`, which merely looks like the one placeholder
+  akm expands, still warns.
+- **Version skew stops being treated as corruption.** A newer index is left
+  alone rather than wiped, a stale indexed workflow identity falls back, and
+  frozen-plan spine drift from a formatting change between releases warns
+  instead of marking every in-flight run corrupt.
+- **Deliberate commands stop being second-guessed.** `--since` bypasses
+  `extract`'s per-run cap the way `--force` already did; `workflow create
+  --force` no longer also demands `--reset`; scheduler writes, `setup --dir`
+  and `bundle create --dir` under transient paths warn instead of refusing.
+- **Symlinks are followed on read paths** (task sources, `models.json`, stash
+  meta, `akm.include` entries) with realpath containment doing the actual
+  safety work, rather than being refused outright.
+- **Blocks that had no escape hatch got one, or got removed.** `env run` gained
+  `--allow-insecure` for the third-party dangerous-key block that previously
+  had no bypass; `registry add` accepts a credentialed URL with a warning that
+  redacts the credential; promotion lint findings on `proposal accept` report
+  instead of blocking, since there is no `proposal edit` and no `accept
+  --force` to work around them.
+- **Limits that bounded nothing real were deleted.** Workflow plan and embedded
+  child-plan byte caps, step-evidence tombstoning, search-text truncation, and
+  the JSON-schema node budget are gone; the akm.lock acquisition budget went
+  from 300 ms to ~30 s with backoff and a "waiting for another akm process"
+  notice.
+- **A cron line too long for vixie-cron now spills into a wrapper script**
+  instead of refusing the install. The length limit stays, because a truncated
+  cron line would execute a partial command.
+
+Guards that passed the three tests were kept and documented, including the
+registry-URL credential inspection limit, the third-party dangerous-key block
+itself, `MAX_SCHTASKS_TRIGGERS`, and every path-containment check.
+
 ## [0.9.11] - 2026-09-03
 
 ### Added
