@@ -366,8 +366,22 @@ function decodeGateV4(value: unknown, stepId: string, requiredSources: Execution
       frozenJudge: null,
     });
   }
-  if (!Object.hasOwn(gate, "frozenJudge") || gate.frozenJudge === null) {
-    fail(`gate ${stepId} with criteria requires a frozen judge target`);
+  if (!Object.hasOwn(gate, "frozenJudge")) {
+    fail(`gate ${stepId} with criteria is missing its frozenJudge field`);
+  }
+  if (gate.frozenJudge === null) {
+    // No verification engine was available when this step was frozen (issue
+    // 2) — a legitimate frozen state, not corruption: the runtime blocks the
+    // step gracefully for `akm workflow resume` rather than dispatching an
+    // unverifiable judge.
+    return Object.freeze({
+      kind: "gate",
+      id: gate.id as string,
+      stepId,
+      criteria,
+      maxLoops: gate.maxLoops as number,
+      frozenJudge: null,
+    });
   }
   const identity: IrUnitNodeCore = {
     kind: "unit",
