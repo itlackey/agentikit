@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { parseBuiltinCommandAction } from "../../commands/command/builtin-action";
-import { applyPortableCommandArguments } from "../../commands/command/portable-template";
+import { PORTABLE_ARGUMENTS_PLACEHOLDER } from "../../commands/command/portable-template";
 import type { ProgramUnit } from "../program/schema";
 import type { SourceRef } from "../schema";
 import type { WorkflowSourceStep } from "./schema";
@@ -24,7 +24,20 @@ export function sourceStepProgramUnit(source: WorkflowSourceStep): ProgramUnit {
   return unit;
 }
 
-/** Derive the instruction bytes consumed by the one workflow engine. */
+/**
+ * Derive the instruction bytes consumed by the one workflow engine.
+ *
+ * A `portable-template` inline command's `$ARGUMENTS` placeholder is still
+ * substituted here (matching what dispatch will do), but WITHOUT the native
+ * construct scan `applyPortableCommandArguments` also performs (issue 4):
+ * that scan exists to catch a STANDALONE command file accidentally carrying
+ * native-tool-only syntax it will never expand. Inline workflow prose is
+ * authored for akm alone — `@docs/style-guide.md` is just a file reference in
+ * prose, not a broken portable template — so scanning it here bought only
+ * false positives, exactly as `.md` steps (always `commandMode: "literal"`,
+ * `source-ir/compile.ts`) already prove: identical prose containing a bare
+ * `@file` mention compiles fine when it isn't routed through this scan.
+ */
 export function sourceStepInstructions(source: WorkflowSourceStep): string {
   if (source.instructions !== undefined) return source.instructions;
   if (source.run !== undefined) return `Run ${source.run}.`;
@@ -34,7 +47,7 @@ export function sourceStepInstructions(source: WorkflowSourceStep): string {
       return `Invoke stored command ${action.ref}${action.arguments === undefined ? "" : " with arguments"}.`;
     }
     if (source.commandMode === "literal") return action.content;
-    return applyPortableCommandArguments(action.content, action.arguments, "inline workflow command").content;
+    return action.content.split(PORTABLE_ARGUMENTS_PLACEHOLDER).join(action.arguments ?? "");
   }
   if (source.uses !== undefined) return `Invoke local target ${source.uses}.`;
   return "";

@@ -442,18 +442,25 @@ jobs:
     expect(result.ir.jobs[0]?.steps[0]?.commandMode).toBe("portable-template");
   });
 
-  test("validates portable inline command templates at source compile and strict decode boundaries", () => {
-    expectGithubError(
-      `${VALID_HEADER}
-      - id: unsafe
+  test("compiles inline command templates without scanning for native-tool constructs (issue 4) — mode/stored consistency is still enforced", () => {
+    // `$HOME` (and `@file`, `${...}`, etc.) used to reject as an "unsupported
+    // portable template construct" — a check that exists for a STANDALONE
+    // portable command file that might round-trip through a native tool.
+    // Inline workflow content is authored for akm alone, so this now
+    // compiles like any other inline prose.
+    const inline = github(`${VALID_HEADER}
+      - id: safe
         uses: akm/command
         with:
           content: echo $HOME
           arguments: exact input
-`,
-      "builtin-command-inputs",
-      11,
-    );
+`);
+    expect(inline.ok).toBe(true);
+    if (!inline.ok) return;
+    expect(inline.ir.jobs[0]?.steps[0]).toMatchObject({
+      commandMode: "portable-template",
+      with: { content: "echo $HOME", arguments: "exact input" },
+    });
 
     const stored = github(`${VALID_HEADER}
       - id: stored
@@ -476,11 +483,13 @@ jobs:
     requireOnlyDecodedStep(mismatchedStored).commandMode = "literal";
     expect(() => decodeWorkflowSourceIrV1(mismatchedStored)).toThrow(/stored.*commandMode stored-ref/i);
 
-    const hostile = structuredClone(stored.ir);
-    const hostileStep = requireOnlyDecodedStep(hostile);
-    hostileStep.commandMode = "portable-template";
-    hostileStep.with = { content: "echo $HOME", arguments: "exact input" };
-    expect(() => decodeWorkflowSourceIrV1(hostile)).toThrow(/unsupported portable template construct/i);
+    // A decoded object carrying inline content shaped like a native-tool
+    // template (issue 4) also decodes cleanly now, for the same reason.
+    const formerlyHostile = structuredClone(stored.ir);
+    const formerlyHostileStep = requireOnlyDecodedStep(formerlyHostile);
+    formerlyHostileStep.commandMode = "portable-template";
+    formerlyHostileStep.with = { content: "echo $HOME", arguments: "exact input" };
+    expect(decodeWorkflowSourceIrV1(formerlyHostile)).toEqual(formerlyHostile);
   });
 
   test("carries literal and portable-template command semantics explicitly in portable bytes", () => {

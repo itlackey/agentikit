@@ -7,7 +7,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../../commands/command/builtin-action";
-import { validatePortableCommandTemplate } from "../../commands/command/portable-template";
 import { parseSchedule } from "../../tasks/schedule";
 import { classifyWorkflowSourceUses, type WorkflowSourceUsesClassifier, type WorkflowSourceUsesTarget } from "./uses";
 
@@ -137,10 +136,16 @@ export function classifyWorkflowStepUses(
 /**
  * Validate AKM's built-in command action at the shared source/decoder boundary.
  *
- * Inline YAML actions are portable templates and therefore use WP4's one
- * authoritative template validator. Markdown prose is explicitly `literal`,
- * while a stored ref remains resolution-owned because its template bytes are
- * not available until the later resolver loads the command asset.
+ * Mode consistency (stored vs. inline, literal vs. portable-template) is
+ * still enforced here. The portable-template CONTENT SCAN (issue 4) is not:
+ * it used to reject ordinary inline prose like `"Review $ARGUMENTS against
+ * @docs/style-guide.md"` for using constructs (`@file`, bare `$NAME`, …) that
+ * only matter for a STANDALONE command file meant to round-trip through a
+ * native tool. The identical prose, written directly as a markdown step's
+ * body instead of an explicit `uses: akm/command`, was always literal and
+ * never scanned (`source-ir/compile.ts`'s `commandMode: "literal"`) — an
+ * inline workflow step is authored for akm alone, so scanning it for
+ * constructs akm never expands bought nothing but false positives.
  */
 export function validateWorkflowBuiltinCommand(
   value: unknown,
@@ -173,21 +178,10 @@ export function validateWorkflowBuiltinCommand(
       "Inline akm/command content cannot use commandMode stored-ref.",
     );
   }
-  if (effectiveMode === "literal") {
-    if (action.arguments !== undefined) {
-      throw new WorkflowSourceSemanticError(
-        "builtin-command-inputs",
-        "Literal akm/command content cannot declare arguments because no substitution occurs.",
-      );
-    }
-    return action;
-  }
-  try {
-    validatePortableCommandTemplate(action.content, "inline workflow command");
-  } catch (cause) {
+  if (effectiveMode === "literal" && action.arguments !== undefined) {
     throw new WorkflowSourceSemanticError(
       "builtin-command-inputs",
-      cause instanceof Error ? cause.message : "Invalid portable command template.",
+      "Literal akm/command content cannot declare arguments because no substitution occurs.",
     );
   }
   return action;

@@ -154,39 +154,44 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
     }
   });
 
+  // Issue 4 (guard-audit): inline `uses: akm/command` content used to be
+  // scanned for native-tool-only template constructs (`@file`, bare `$NAME`,
+  // …) whenever it contained `$ARGUMENTS` — a scan meant for a STANDALONE
+  // portable command file, not workflow-authored prose. This document used
+  // to be dropped at drain with an "unsupported portable template construct"
+  // warning; it is now valid, exactly like the identical prose written as a
+  // markdown step's body always was (`commandMode: "literal"`).
   test.each([
     ["ordinary", akmAdapter, "akm", "workflows"],
     ["standalone", akmWorkflowAdapter, "akm-workflow", "."],
-  ] as const)("%s adapter owns invalid portable command diagnostics without throwing or caching", (_label, adapter, adapterId, subdir) => {
+  ] as const)("%s adapter drains inline akm/command content without scanning it for native-tool constructs", (_label, adapter, adapterId, subdir) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-drain-template-"));
     const ownedDir = path.join(root, subdir);
     fs.mkdirSync(ownedDir, { recursive: true });
-    const invalidPath = path.join(ownedDir, "invalid.yml");
+    const templatePath = path.join(ownedDir, "template.yml");
     fs.writeFileSync(
-      invalidPath,
-      `name: Invalid template
+      templatePath,
+      `name: Inline template
 on: { workflow_dispatch: null }
 jobs:
   main:
     runs-on: [self-hosted]
     steps:
-      - id: invalid
+      - id: review
         uses: akm/command
         with:
-          content: echo $HOME
+          content: Review $ARGUMENTS against @docs/style-guide.md
 `,
     );
     try {
       const c: BundleComponent = { id: "b", adapter: adapterId, root, writable: true };
-      const context = buildFileContext(root, invalidPath);
+      const context = buildFileContext(root, templatePath);
       expect(adapter.recognize(c, context)).toMatchObject({ type: "workflow" });
 
       const drained = drainDirDocuments(adapter, c, [context]);
-      expect(drained.entries).toHaveLength(0);
-      expect(drained.hashByFile.has(invalidPath)).toBe(false);
-      expect(drained.warnings).toHaveLength(1);
-      expect(drained.warnings[0]).toContain(invalidPath);
-      expect(drained.warnings[0]).toMatch(/unsupported portable template construct/i);
+      expect(drained.entries).toHaveLength(1);
+      expect(drained.warnings).toHaveLength(0);
+      expect(drained.hashByFile.has(templatePath)).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
