@@ -505,6 +505,15 @@ export interface ReflectSanitizeResult {
   warnings: string[];
   /** When set, the proposal must be rejected with this reason / error. */
   reject?: { reason: AgentFailureReason; error: string };
+  /**
+   * Set when the proposed body fell outside the reflect size-guard ratio
+   * (excessive shrinkage/expansion vs. the source). The revision is no
+   * longer discarded for this alone (the validator half of this guard is
+   * already advisory on `proposal accept` — see reflect-size-guard in
+   * proposal-quality-validators.ts); the caller attaches it to the created
+   * proposal as a review flag instead.
+   */
+  sizeGuardRatio?: { code: "EXCESSIVE_SHRINKAGE" | "EXCESSIVE_EXPANSION"; ratio: number };
 }
 
 /**
@@ -727,8 +736,14 @@ export function sanitizeReflectPayload(
 
   // Size guard — only when source body is meaningfully large. The pure
   // predicate lives in `core/proposal-quality-validators` so the same check
-  // also runs inside `runProposalValidators` on `proposal accept`.
+  // also runs inside `runProposalValidators` on `proposal accept` (already
+  // advisory there — see reflect-size-guard). A ratio outside the guard says
+  // nothing about whether the revision is WRONG, only that it is unusual;
+  // discarding it here duplicated the accept-time judgment call with a worse
+  // failure mode (the human reviewer never even sees it). Attach it as a
+  // review flag on the created proposal instead of rejecting the revision.
   const sizeOutcome = checkReflectSize(sourceBody, cleanedBody);
+  let sizeGuardRatio: ReflectSanitizeResult["sizeGuardRatio"];
   if (!sizeOutcome.ok) {
     const pct = (sizeOutcome.ratio * 100).toFixed(0);
     const limit = sizeOutcome.code === "EXCESSIVE_SHRINKAGE" ? "minimum 50%" : "maximum 250%";
@@ -736,18 +751,10 @@ export function sanitizeReflectPayload(
       sizeOutcome.code === "EXCESSIVE_SHRINKAGE"
         ? "Concrete content was likely deleted."
         : "Speculative material was likely added.";
-    return {
-      content: payload.content,
-      warnings,
-      reject: {
-        // Content-policy guard hit (EXCESSIVE_SHRINKAGE / EXCESSIVE_EXPANSION).
-        // This is the guard working as designed — the LLM responded fine, we
-        // blocked the output. Routed through `content_policy_reject` so the
-        // health aggregator can split guard hits out of true LLM faults.
-        reason: "content_policy_reject" as AgentFailureReason,
-        error: `Reflect rejected: ${sizeOutcome.code} — proposed body is ${pct}% of source (${limit}) for ref ${targetRef}. ${cause}`,
-      },
-    };
+    warnings.push(
+      `${sizeOutcome.code} — proposed body is ${pct}% of source (${limit}) for ref ${targetRef}. ${cause} Flagged for review.`,
+    );
+    sizeGuardRatio = { code: sizeOutcome.code, ratio: sizeOutcome.ratio };
   }
 
   // Reassemble final content: merged frontmatter + cleaned body.
@@ -763,6 +770,7 @@ export function sanitizeReflectPayload(
     content: reassembled,
     ...(hasFrontmatter ? { frontmatter: mergedFm } : {}),
     warnings,
+    ...(sizeGuardRatio ? { sizeGuardRatio } : {}),
   };
 }
 
@@ -1227,7 +1235,8 @@ async function finalizeReflectProposal(args: {
   //       fields (`description`, `when_to_use`, `tags`, ...).
   //     - Reset protected identity fields (`name`, `ref`, `id`, `slug`,
   //       `type`) the LLM tried to change.
-  //     - Reject proposals that shrink/expand the body past safe ratios.
+  //     - Flag proposals that shrink/expand the body past safe ratios for
+  //       human review, rather than discarding the revision.
   //
   // See REFLECT_ALLOWED_TYPES / sanitizeReflectPayload for the underlying
   // hypotheses + observed regressions (`8737ab63`, `26941510`, and the
@@ -1311,7 +1320,10 @@ async function finalizeReflectProposal(args: {
 
   // 7c. Judge the exact sanitized content that can be persisted. Fail closed
   // on cancellation, transport failure, malformed output, or an invalid score.
-  if (qualityGateEnabled) {
+  // Skipped when the size guard already flagged this revision: it is going to
+  // the review queue regardless of what a judge would say, so there is no
+  // reason to pay for a judge call whose verdict cannot change the outcome.
+  if (qualityGateEnabled && !sanitizeOutcome.sizeGuardRatio) {
     const judgeResult = await runReflectQualityJudge(
       config,
       payload.content,
@@ -1363,6 +1375,7 @@ async function finalizeReflectProposal(args: {
     emitReflectFailed,
     outputTelemetry,
     qualityGateSkippedNoJudge,
+    sizeGuardRatio: sanitizeOutcome.sizeGuardRatio,
   });
 }
 
@@ -1381,6 +1394,8 @@ function createReflectProposal(args: {
   outputTelemetry?: ReflectLlmTelemetry;
   /** True when the quality gate was skipped for lack of a configured judge; flags the created proposal for human review. */
   qualityGateSkippedNoJudge: boolean;
+  /** Set when the proposed body fell outside the reflect size-guard ratio; flags the created proposal for human review. */
+  sizeGuardRatio?: { code: "EXCESSIVE_SHRINKAGE" | "EXCESSIVE_EXPANSION"; ratio: number };
   emitReflectFailed: (
     reason: AgentFailureReason,
     subreason: string,
@@ -1397,6 +1412,7 @@ function createReflectProposal(args: {
     emitReflectFailed,
     outputTelemetry,
     qualityGateSkippedNoJudge,
+    sizeGuardRatio,
   } = args;
   // 8. Create the proposal. The proposal queue is the ONLY thing reflect
   // writes — promotion to a real asset is gated by `akm proposal accept`.
@@ -1464,16 +1480,31 @@ function createReflectProposal(args: {
 
   let proposal: Proposal = proposalResult;
 
-  if (qualityGateSkippedNoJudge) {
-    // No judge resolved to score this proposal; flag it for human review
-    // instead of silently letting it look identical to a judged one. Reuses
-    // the drain/triage engine's `no-judge-configured` gate-decision vocabulary
-    // (see `src/commands/proposal/drain.ts`).
+  // Reasons this proposal needs a human look before it can be trusted as
+  // auto-judged: no LLM judge resolved to score it, and/or the body's size
+  // ratio against source fell outside the reflect size-guard band (a ratio
+  // that used to discard the whole revision — content_policy_reject — even
+  // though the LLM responded fine; the accept-time validator half of this
+  // same guard is already advisory). Both stamp the SAME gateDecision field,
+  // so a proposal hit by both still gets exactly one combined record rather
+  // than the second overwriting the first.
+  const reviewReasons: string[] = [];
+  if (qualityGateSkippedNoJudge) reviewReasons.push("no-judge-configured");
+  if (sizeGuardRatio) reviewReasons.push("reflect-size-ratio");
+  if (reviewReasons.length > 0) {
+    // Reuses the drain/triage engine's gate-decision vocabulary and shape
+    // (see `src/commands/proposal/drain.ts`) so `akm proposal show`/`list`
+    // explain this the same way they explain any other deferred proposal.
     proposal =
       recordGateDecision(
         stash,
         proposal.id,
-        { outcome: "deferred", reason: "no-judge-configured", gate: "reflect" },
+        {
+          outcome: "deferred",
+          reason: reviewReasons.join("+"),
+          gate: "reflect",
+          ...(sizeGuardRatio ? { measured: Math.round(sizeGuardRatio.ratio * 100) } : {}),
+        },
         options.ctx,
       ) ?? proposal;
   }
@@ -1487,6 +1518,7 @@ function createReflectProposal(args: {
         source: "reflect",
         engine: engineName,
         ...(qualityGateSkippedNoJudge ? { qualityGateSkippedNoJudge: true } : {}),
+        ...(sizeGuardRatio ? { sizeGuardRatio: sizeGuardRatio.code, sizeGuardRatioValue: sizeGuardRatio.ratio } : {}),
         ...(outputTelemetry ?? {}),
       },
     },

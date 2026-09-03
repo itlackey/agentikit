@@ -525,7 +525,7 @@ describe("Reflect quality gate — source context", () => {
     expect(proposedRevision).toContain("description: Source context regression guard");
   });
 
-  test("rejects an invalid-size candidate before invoking the judge", async () => {
+  test("flags an invalid-size candidate for review without invoking the judge", async () => {
     const stash = makeStashDir();
     const sourceContent = `---\ndescription: Long doc\n---\n\n${LONG_SOURCE_BODY}\n`;
     const config = {
@@ -557,15 +557,20 @@ describe("Reflect quality gate — source context", () => {
       },
     });
 
-    expect(result.ok).toBe(false);
+    // The size guard flags this for review regardless of what a judge would
+    // say, so it never pays for a judge call — but it still queues, rather
+    // than discarding the revision.
+    expect(result.ok).toBe(true);
     expect(judgeInvoked).toBe(false);
+    if (!result.ok) throw new Error("expected success");
+    expect(listProposals(stash)[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-size-ratio" });
   });
 });
 
 // ── 3. Size guards — shrink and expand ────────────────────────────────────────
 
 describe("Reflect size guard — diff-size safety rails", () => {
-  test("body shrunk below 50% of source is rejected with EXCESSIVE_SHRINKAGE", async () => {
+  test("body shrunk below 50% of source is flagged for review, not discarded", async () => {
     const stash = makeStashDir();
     const sourceContent = `---\ndescription: Long doc\n---\n\n${LONG_SOURCE_BODY}\n`;
 
@@ -580,17 +585,19 @@ describe("Reflect size guard — diff-size safety rails", () => {
       assetContent: sourceContent,
       runAgentOptions: { spawn: fakeSpawn(payload, "", 0) },
     });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    // Reason changed 2026-05-26: content-policy guard hits now route through
-    // `content_policy_reject` (not `parse_error`) so health.ts can split them
-    // out of LLM-failure aggregates. See metrics-taxonomy-review §1a / Pattern A.
-    expect(result.reason).toBe("content_policy_reject");
-    expect(result.error).toContain("EXCESSIVE_SHRINKAGE");
-    expect(listProposals(stash).length).toBe(0);
+    // A size-ratio hit says nothing about whether the revision is WRONG, only
+    // that it is unusual — the LLM responded fine. It no longer discards the
+    // revision (content_policy_reject); the proposal is still queued, flagged
+    // for review via its gateDecision instead.
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const proposals = listProposals(stash);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-size-ratio" });
+    expect(proposals[0]?.gateDecision?.measured).toBeLessThan(50);
   });
 
-  test("body expanded above 250% of source is rejected with EXCESSIVE_EXPANSION", async () => {
+  test("body expanded above 250% of source is flagged for review, not discarded", async () => {
     const stash = makeStashDir();
     const sourceContent = `---\ndescription: Tight doc\n---\n\n${LONG_SOURCE_BODY}\n`;
 
@@ -605,14 +612,12 @@ describe("Reflect size guard — diff-size safety rails", () => {
       assetContent: sourceContent,
       runAgentOptions: { spawn: fakeSpawn(payload, "", 0) },
     });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    // Reason changed 2026-05-26: content-policy guard hits now route through
-    // `content_policy_reject` (not `parse_error`) so health.ts can split them
-    // out of LLM-failure aggregates. See metrics-taxonomy-review §1a / Pattern A.
-    expect(result.reason).toBe("content_policy_reject");
-    expect(result.error).toContain("EXCESSIVE_EXPANSION");
-    expect(listProposals(stash).length).toBe(0);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const proposals = listProposals(stash);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-size-ratio" });
+    expect(proposals[0]?.gateDecision?.measured).toBeGreaterThan(250);
   });
 
   test("modest size change (~120%) passes the size guard", async () => {
