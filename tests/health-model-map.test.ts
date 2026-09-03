@@ -107,18 +107,17 @@ describe("selected model alias health diagnostics", () => {
     },
   });
 
-  // Finding 14 (guard-audit): resolveModelMapAlias no longer throws when a
-  // known alias has no mapping for the selected engine — it now degrades to
-  // the same exact pass-through an unknown alias already takes (with a
+  // Finding 14 (guard-audit): resolveModelMapAlias no longer THROWS when a
+  // known alias has no mapping for the selected engine — it degrades to the
+  // same exact pass-through an unknown alias already takes (with a
   // warning), since refusing to run over a per-engine gap in an alias table
   // punished the more informative case worse than a truly unknown model
-  // name. This probe's own "missing" detection was a try/catch around that
-  // throw, so it can no longer distinguish the two: this is a known
-  // follow-up gap (reported in this pass's crossAreaNeeds, not fixed here —
-  // src/commands/health/checks.ts is outside area F), and this test is
-  // updated to describe what the probe now actually reports, which is a
-  // clean pass rather than a stale, no-longer-true warning.
-  test("no longer distinguishes an engine-unmapped known alias from an exact pass-through (finding 14 follow-up gap)", () => {
+  // name. This probe used to catch that throw to build its "missing"
+  // evidence; it now reads the resolution's own `unmappedForEngine` flag
+  // instead, restoring the exact same warning this test pins — trading a
+  // hard throw for a silently-green health check would have been a worse
+  // outcome than either.
+  test("warns when a selected known alias has no mapping for its engine", () => {
     const config: AkmConfig = {
       configVersion: "0.9.0",
       semanticSearchMode: "off",
@@ -131,12 +130,15 @@ describe("selected model alias health diagnostics", () => {
     expect(runSelectedModelAliasesProbe({ loadConfig: () => config, installedText })).toEqual({
       name: "selected-model-aliases",
       kind: "deterministic",
-      status: "pass",
+      status: "warn",
       confidence: "high",
-      message: "All 2 configured model selections resolve for their selected engines.",
+      message: "1 of 2 configured model selections has no mapping for its selected engine.",
       evidence: {
-        checked: [{ engine: "claude", alias: "balanced", modelMapKey: "claude" }],
-        missing: [],
+        checked: [
+          { engine: "claude", alias: "balanced", modelMapKey: "claude" },
+          { engine: "gemini", alias: "balanced", modelMapKey: "gemini" },
+        ],
+        missing: [{ engine: "gemini", alias: "balanced", modelMapKey: "gemini" }],
       },
     });
   });

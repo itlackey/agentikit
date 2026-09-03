@@ -56,6 +56,17 @@ export interface ResolvedModelMapSelection {
   readonly interpretation: "alias" | "exact";
   readonly model: string;
   readonly inference?: ExecutionJsonObject | null;
+  /**
+   * Set only when `interpretation` is `"exact"` because `input` is a KNOWN
+   * alias with no mapping for the selected engine — as opposed to a wholly
+   * unrecognized model string. Absent in every other case (never `false`).
+   * Restores the distinction the resolver's own pass-through collapsed
+   * (finding 14, docs/plans/guard-audit.md) for a caller that needs to tell
+   * the two apart without relying on the removed exception — e.g. a health
+   * check that should still flag a gap in the alias table without refusing
+   * to resolve it.
+   */
+  readonly unmappedForEngine?: true;
 }
 
 const ENGINE_KEY_PATTERN = new RegExp(ENGINE_NAME_PATTERN_SOURCE);
@@ -277,7 +288,8 @@ export function resolveModelMapAlias(
   const profile = ownValue(tier, selectedEngine);
   if (profile !== undefined) return selectionFromProfile(input, profile);
 
-  if (tier !== undefined) {
+  const knownAliasUnmappedForEngine = tier !== undefined;
+  if (knownAliasUnmappedForEngine) {
     // Finding 14 (guard-audit): a KNOWN alias with no mapping for the
     // selected engine used to throw, while an UNKNOWN alias silently passed
     // through as the exact model string. That inconsistency punished the
@@ -290,7 +302,12 @@ export function resolveModelMapAlias(
       `[akm] Model alias ${JSON.stringify(input)} has no mapping for engine ${JSON.stringify(engine)}; using ${JSON.stringify(input)} as the literal model name. Add $.aliases.${alias}.${engine} to models.json to map it.`,
     );
   }
-  return Object.freeze({ input, interpretation: "exact" as const, model: input });
+  return Object.freeze({
+    input,
+    interpretation: "exact" as const,
+    model: input,
+    ...(knownAliasUnmappedForEngine ? { unmappedForEngine: true as const } : {}),
+  });
 }
 
 export function userModelMapPath(env: NodeJS.ProcessEnv = process.env): string {
