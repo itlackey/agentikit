@@ -118,7 +118,7 @@ Every success envelope produced by the passthrough stamp — `config`, `clone`,
 handler — also carries `ok: true` (0.9.12+), so a caller branching on `.ok`
 sees the same field on both sides — success and failure — instead of
 `undefined` on success. A command that already computes its own `ok` from a
-graded outcome (e.g. `task run`'s exit-code mapping, `akm lint`, `akm
+graded outcome (e.g. `task run`'s exit-code mapping, `akm lint`, `akm proposal
 extract`) keeps that value, `false` included.
 
 `env run`, `secret run`, and `migrate` preserve the spawned process's exact
