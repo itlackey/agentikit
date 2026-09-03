@@ -1106,6 +1106,35 @@ describe("akmExtract — R4 transient outcomes stay retryable (null content_hash
     db.close();
   });
 
+  // #913 — the ledger row's metadata carries `engine` alongside `skipReason` so
+  // #914's health check can attribute a run of skips to the engine that produced
+  // them without re-deriving it from config.
+  test("ledger row metadata carries engine and skipReason", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("ses_metadata_engine", Date.now());
+    const db = openStateDatabase(":memory:");
+
+    const result = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config: configEnabled(stash),
+      harnesses: [makeHarness([session])],
+      stateDb: db,
+      chat: async () => {
+        throw new Error("llm endpoint unreachable");
+      },
+    });
+
+    expect(result.engine).toBe("default");
+    const row = getExtractedSession(db, "claude", "ses_metadata_engine");
+    expect(row).toBeDefined();
+    expect(JSON.parse(row?.metadata_json ?? "{}")).toMatchObject({
+      engine: "default",
+      skipReason: "llm_unavailable",
+    });
+    db.close();
+  });
+
   test("triaged_out → tracked row carries a null content_hash", async () => {
     const stash = makeStashDir();
     const session = fakeSession("ses_triaged", Date.now());

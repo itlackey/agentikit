@@ -335,6 +335,114 @@ describe("akmExtract — discovery mode", () => {
   });
 });
 
+// ── #912/#913: skip-reason aggregation + resolved engine on the envelope ────
+describe("akmExtract — skip aggregation + resolved engine (#912, #913)", () => {
+  function fakeSessionWithText(id: string, endedAt: number, text: string): SessionData {
+    return {
+      ref: {
+        harness: "claude",
+        sessionId: id,
+        filePath: `/tmp/fake/${id}.jsonl`,
+        startedAt: endedAt - 3600_000,
+        endedAt,
+        title: `Session ${id}`,
+      },
+      events: [
+        {
+          harness: "claude",
+          text,
+          ts: endedAt - 3000_000,
+          sessionId: id,
+          role: "user",
+          filePath: `/tmp/fake/${id}.jsonl`,
+        },
+      ],
+      inlineRefs: [],
+    };
+  }
+
+  test("every discovered session llm_unavailable → ok:true, aggregate warning naming the engine, skipReasons + envelope/session engine", async () => {
+    const stash = makeStashDir();
+    const now = Date.now();
+    const sessions = Array.from({ length: 3 }, (_, i) => fakeSession(`down-${i}`, now - (i + 1) * 60_000));
+
+    const result = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config: configEnabled(stash),
+      harnesses: [makeFakeHarness(sessions)],
+      since: "24h",
+      chat: async () => {
+        throw new Error("llm endpoint unreachable");
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.sessionsProcessed).toBe(0);
+    expect(result.sessionsSkipped).toBe(3);
+    expect(result.sessions.every((s) => s.skipReason === "llm_unavailable")).toBe(true);
+    expect(result.warnings).toContain('3 of 3 sessions skipped: llm_unavailable (engine "default")');
+    expect(result.skipReasons).toEqual({ llm_unavailable: 3 });
+    expect(result.engine).toBe("default");
+    expect(result.engineKind).toBe("llm");
+    expect(result.sessions.every((s) => s.engine === "default")).toBe(true);
+  });
+
+  test("a mix of llm_unavailable and too_short only warns for the infrastructure reason; skipReasons counts both", async () => {
+    const stash = makeStashDir();
+    const now = Date.now();
+    // Below the 50-char minContentChars floor set below → skipped too_short,
+    // never reaching the (throwing) LLM call.
+    const short = fakeSessionWithText("short", now - 60_000, "hi");
+    // Above the floor → reaches the LLM call, which always throws → llm_unavailable.
+    const long = fakeSessionWithText(
+      "long",
+      now - 120_000,
+      "a session transcript long enough to clear the minContentChars floor for this test",
+    );
+    const cfg = configEnabled(stash) as AkmConfig & {
+      improve: { strategies: { extract: { processes: { extract: Record<string, unknown> } } } };
+    };
+    cfg.improve.strategies.extract.processes.extract.minContentChars = 50;
+
+    const result = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config: cfg,
+      harnesses: [makeFakeHarness([short, long])],
+      since: "24h",
+      chat: async () => {
+        throw new Error("llm endpoint unreachable");
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.sessionsSkipped).toBe(2);
+    expect(result.skipReasons).toEqual({ llm_unavailable: 1, too_short: 1 });
+    const infraWarnings = result.warnings.filter((w) => w.includes("sessions skipped"));
+    expect(infraWarnings).toEqual(['1 of 2 sessions skipped: llm_unavailable (engine "default")']);
+  });
+
+  test("a fully successful run has no skipReasons key", async () => {
+    const stash = makeStashDir();
+    const session = fakeSession("clean", Date.now());
+
+    const result = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config: configEnabled(stash),
+      harnesses: [makeFakeHarness([session])],
+      chat: async () => JSON.stringify({ candidates: [] }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.sessionsSkipped).toBe(0);
+    expect(result.skipReasons).toBeUndefined();
+    expect(result.engine).toBe("default");
+    expect(result.engineKind).toBe("llm");
+  });
+});
+
 describe("akmExtract — single-session mode", () => {
   test("processes only the specified sessionId", async () => {
     const stash = makeStashDir();

@@ -42,6 +42,7 @@ import {
   tryAcquireLockSync,
 } from "../../core/file-lock";
 import type { AkmExtractResult, ExtractedSessionResult } from "../../core/improve-types";
+import { EXTRACT_INFRASTRUCTURE_SKIP_REASONS } from "../../core/improve-types";
 import { tryAcquireMaintenanceBarrier } from "../../core/maintenance-barrier";
 import { redactErrorBody } from "../../core/redaction";
 import { resolveStashStandards } from "../../core/standards/resolve-stash-standards";
@@ -374,6 +375,16 @@ export function resolveStandaloneExtractPlan(
 // so existing import sites (`from "./extract"`) are unchanged.
 export type { AkmExtractResult, ExtractedSessionResult } from "../../core/improve-types";
 
+/**
+ * #913 — the shape every session-result builder in this file produces before
+ * the run's resolved engine is known to it. `accountExtractSessionResult` is
+ * the single point where a run's `llmRunner.engine` is stamped onto every
+ * outcome as it is folded into the envelope's `sessions[]`, so none of the
+ * intermediate skip/success builders below need the runner threaded into
+ * them just to satisfy the now-required `ExtractedSessionResult.engine`.
+ */
+type ExtractSessionOutcome = Omit<ExtractedSessionResult, "engine">;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
@@ -530,7 +541,7 @@ function runPreLlmSessionGates(args: {
   minContentChars: number;
   triage: { enabled: boolean; minScore: number };
 }):
-  | { skip: ExtractedSessionResult }
+  | { skip: ExtractSessionOutcome }
   | {
       data: ReturnType<SessionLogHarness["readSession"]>;
       filtered: ReturnType<typeof preFilterSession>;
@@ -652,10 +663,10 @@ function runPreLlmSessionGates(args: {
   return { data, filtered, contentHash };
 }
 
-type ExtractEligibleGate = Exclude<ReturnType<typeof runPreLlmSessionGates>, { skip: ExtractedSessionResult }>;
+type ExtractEligibleGate = Exclude<ReturnType<typeof runPreLlmSessionGates>, { skip: ExtractSessionOutcome }>;
 
 type ExtractSessionPlan =
-  | { kind: "skip"; summary: SessionSummary; result: ExtractedSessionResult }
+  | { kind: "skip"; summary: SessionSummary; result: ExtractSessionOutcome }
   | { kind: "model"; summary: SessionSummary; gate: ExtractEligibleGate };
 
 function alreadyExtractedResult(
@@ -663,7 +674,7 @@ function alreadyExtractedResult(
   sessionId: string,
   prior: ExtractedSessionRow | undefined,
   contentHash: string,
-): ExtractedSessionResult {
+): ExtractSessionOutcome {
   return {
     sessionId,
     harness,
@@ -677,7 +688,7 @@ function alreadyExtractedResult(
   };
 }
 
-function lockedConcurrentResult(harness: string, summary: SessionSummary): ExtractedSessionResult {
+function lockedConcurrentResult(harness: string, summary: SessionSummary): ExtractSessionOutcome {
   return {
     sessionId: summary.sessionId,
     harness,
@@ -907,7 +918,7 @@ function malformedExtractionResult(args: {
   preFilter: ExtractedSessionResult["preFilter"];
   contentHash: string;
   notices: Pick<ExtractedSessionResult, "notices">;
-}): ExtractedSessionResult {
+}): ExtractSessionOutcome {
   const { extraction, sessionRef, harness, preFilter, contentHash, notices } = args;
   const diagnostic = `malformed_model_output: ${extraction.failure.message}; attempts=${extraction.attempts}; responseLength=${extraction.raw.length}; responseSha256=${sha256Hex(extraction.raw)}`;
   warnVerbose(
@@ -933,7 +944,7 @@ function unavailableExtractionResult(args: {
   preFilter: ExtractedSessionResult["preFilter"];
   contentHash: string;
   notices: Pick<ExtractedSessionResult, "notices">;
-}): ExtractedSessionResult {
+}): ExtractSessionOutcome {
   return {
     sessionId: args.sessionRef.sessionId,
     harness: args.harness,
@@ -984,7 +995,7 @@ async function maybeWriteSessionAsset(
 async function processSession(
   runCtx: ExtractSessionRunCtx,
   session: ExtractSessionInput,
-): Promise<ExtractedSessionResult> {
+): Promise<ExtractSessionOutcome> {
   const {
     harness,
     stashDir,
@@ -1215,10 +1226,12 @@ function recordExtractSessionOutcome(args: {
   dryRun: boolean;
   harness: string;
   summary: SessionSummary;
-  result: ExtractedSessionResult;
+  result: ExtractSessionOutcome;
   sourceRun: string;
+  /** #913 — the run's resolved engine name, written into `metadata.engine`. */
+  engine: string;
 }): void {
-  const { stateDb, trackingEnabled, dryRun, harness, summary, result, sourceRun } = args;
+  const { stateDb, trackingEnabled, dryRun, harness, summary, result, sourceRun, engine } = args;
   if (
     !trackingEnabled ||
     !stateDb ||
@@ -1257,6 +1270,7 @@ function recordExtractSessionOutcome(args: {
         preFilterInputCount: result.preFilter.inputCount,
         preFilterOutputCount: result.preFilter.outputCount,
         preFilterTruncatedCount: result.preFilter.truncatedCount,
+        engine,
         ...(result.skipReason ? { skipReason: result.skipReason } : {}),
         ...(result.sessionLogPath ? { logPath: result.sessionLogPath } : {}),
         ...(result.sessionAssetRef ? { sessionAssetRef: result.sessionAssetRef } : {}),
@@ -1270,11 +1284,13 @@ function recordExtractSessionOutcome(args: {
 }
 
 function accountExtractSessionResult(
-  result: ExtractedSessionResult,
+  result: ExtractSessionOutcome,
   triageEnabled: boolean,
   output: ExtractSessionLoopResult,
+  /** #913 — the run's resolved engine name, stamped onto every session result. */
+  engine: string,
 ): void {
-  output.sessions.push(result);
+  output.sessions.push({ ...result, engine });
   if (triageEnabled) {
     const preempted =
       result.skipReason === "read_failed" ||
@@ -1377,7 +1393,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     if (options.signal?.aborted) break;
     const { summary } = plan;
     if (plan.kind === "skip") {
-      accountExtractSessionResult(plan.result, triage.enabled, output);
+      accountExtractSessionResult(plan.result, triage.enabled, output, llmRunner.engine);
       recordExtractSessionOutcome({
         stateDb,
         trackingEnabled,
@@ -1386,6 +1402,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
         summary,
         result: plan.result,
         sourceRun,
+        engine: llmRunner.engine,
       });
       continue;
     }
@@ -1399,7 +1416,12 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
       );
       const sessionLock = acquireExtractSessionLock(sessionLockPath);
       if (!sessionLock.proceed) {
-        accountExtractSessionResult(lockedConcurrentResult(harness.name, summary), triage.enabled, output);
+        accountExtractSessionResult(
+          lockedConcurrentResult(harness.name, summary),
+          triage.enabled,
+          output,
+          llmRunner.engine,
+        );
         refillModelSlot();
         continue;
       }
@@ -1424,7 +1446,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
         triage,
       });
       if ("skip" in executionGate) {
-        accountExtractSessionResult(executionGate.skip, triage.enabled, output);
+        accountExtractSessionResult(executionGate.skip, triage.enabled, output, llmRunner.engine);
         recordExtractSessionOutcome({
           stateDb,
           trackingEnabled,
@@ -1433,6 +1455,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
           summary,
           result: executionGate.skip,
           sourceRun,
+          engine: llmRunner.engine,
         });
         refillModelSlot();
         continue;
@@ -1444,7 +1467,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
       if (result.skipReason === "malformed_model_output") {
         for (const warning of result.warnings) topLevelWarnings.push(`session ${summary.sessionId}: ${warning}`);
       }
-      accountExtractSessionResult(result, triage.enabled, output);
+      accountExtractSessionResult(result, triage.enabled, output, llmRunner.engine);
       recordExtractSessionOutcome({
         stateDb,
         trackingEnabled,
@@ -1453,6 +1476,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
         summary,
         result,
         sourceRun,
+        engine: llmRunner.engine,
       });
     } catch (err) {
       if (err instanceof ConfigError) throw err;
@@ -1473,6 +1497,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
         },
         triage.enabled,
         output,
+        llmRunner.engine,
       );
     } finally {
       if (sessionLockOwnership) releaseLock(sessionLockOwnership);
@@ -1636,6 +1661,7 @@ function discoverExtractCandidates(
   effectiveSince: string | undefined,
   startMs: number,
   dryRun: boolean,
+  llmRunner: ExtractLlmRunner,
 ): { candidates: SessionSummary[] } | { notFound: AkmExtractResult } {
   if (options.sessionId) {
     const all = harness.listSessions({
@@ -1657,6 +1683,8 @@ function discoverExtractCandidates(
           sessions: [],
           warnings: [`session ${options.sessionId} not found for harness ${options.type}`],
           durationMs: Date.now() - startMs,
+          engine: llmRunner.engine,
+          engineKind: llmRunner.kind,
         },
       };
     }
@@ -1785,6 +1813,41 @@ function emitExtractTriageEvent(args: {
   );
 }
 
+/**
+ * #912 — group a run's per-session outcomes by `skipReason` and push one
+ * aggregate warning line per infrastructure reason (see
+ * {@link EXTRACT_INFRASTRUCTURE_SKIP_REASONS}) that fired at least once, so
+ * "every session skipped because the engine is down" is visible in
+ * `warnings[]` instead of only in the per-session detail. `already_extracted`
+ * / `too_short` / `triaged_out` are counted in the returned map but never get
+ * a warning line — the ledger and pre-filter doing their job is not
+ * something to warn about. `malformed_model_output` is likewise counted but
+ * excluded from the warning line here; the caller already forwards it
+ * per-session into `warnings[]`, and double-reporting the same failure two
+ * ways would be noise, not signal.
+ *
+ * Returns `undefined` when nothing in this run was skipped, so a fully
+ * successful envelope has no `skipReasons` key at all rather than an empty one.
+ */
+function buildExtractSkipAggregate(
+  sessions: readonly ExtractedSessionResult[],
+  engine: string,
+  warnings: string[],
+): Partial<Record<NonNullable<ExtractedSessionResult["skipReason"]>, number>> | undefined {
+  const counts: Partial<Record<NonNullable<ExtractedSessionResult["skipReason"]>, number>> = {};
+  for (const session of sessions) {
+    if (!session.skipReason) continue;
+    counts[session.skipReason] = (counts[session.skipReason] ?? 0) + 1;
+  }
+  if (Object.keys(counts).length === 0) return undefined;
+  const total = sessions.length;
+  for (const reason of EXTRACT_INFRASTRUCTURE_SKIP_REASONS) {
+    const n = counts[reason];
+    if (n) warnings.push(`${n} of ${total} sessions skipped: ${reason} (engine "${engine}")`);
+  }
+  return counts;
+}
+
 export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtractResult> {
   const startMs = Date.now();
   if (!options.type || options.type.trim() === "") {
@@ -1862,6 +1925,8 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       sessions: [],
       warnings: [`no available harness matches type "${options.type}" (check that the platform is installed)`],
       durationMs: Date.now() - startMs,
+      engine: llmRunner.engine,
+      engineKind: llmRunner.kind,
     };
   }
   if (!harness.isAvailable()) {
@@ -1878,11 +1943,13 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       sessions: [],
       warnings: [`harness ${options.type} is registered but reports not-available (no session data on this machine)`],
       durationMs: Date.now() - startMs,
+      engine: llmRunner.engine,
+      engineKind: llmRunner.kind,
     };
   }
 
   // Decide which sessions to process: explicit sessionId OR discovery via since.
-  const discovery = discoverExtractCandidates(options, harness, effectiveSince, startMs, dryRun);
+  const discovery = discoverExtractCandidates(options, harness, effectiveSince, startMs, dryRun, llmRunner);
   if ("notFound" in discovery) return discovery.notFound;
   const candidates = discovery.candidates;
 
@@ -1970,6 +2037,7 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       `Reached maxSessionsPerRun=${maxSessionsPerRun}; ${loopResult.deferred} session(s) deferred to a later run.`,
     );
   }
+  const skipReasons = buildExtractSkipAggregate(sessions, llmRunner.engine, topLevelWarnings);
 
   emitExtractTriageEvent({
     modelPlanCount,
@@ -1998,6 +2066,9 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
     warnings: topLevelWarnings,
     durationMs: Date.now() - startMs,
     ...(getNotices().length > 0 ? { notices: getNotices() } : {}),
+    ...(skipReasons ? { skipReasons } : {}),
+    engine: llmRunner.engine,
+    engineKind: llmRunner.kind,
   };
 }
 
