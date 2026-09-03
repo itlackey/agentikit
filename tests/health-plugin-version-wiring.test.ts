@@ -50,15 +50,15 @@ function installPlugin(pluginsRoot: string, version: string, versionRange: strin
 }
 
 describe("plugin-version advisory wiring (itlackey/akm#832)", () => {
-  test("no Claude plugin installed produces no plugin-version advisory", () => {
-    const result = akmHealth({ since: "7d" });
+  test("no Claude plugin installed produces no plugin-version advisory", async () => {
+    const result = await akmHealth({ since: "7d" });
     expect(findChecks(result.advisories, "plugin-version")).toEqual([]);
   });
 
-  test("an installed plugin whose range rejects the running CLI is surfaced as a warn advisory", () => {
+  test("an installed plugin whose range rejects the running CLI is surfaced as a warn advisory", async () => {
     installPlugin(storage.claudePluginsDir, "0.9.1", "0.9.1");
 
-    const result = akmHealth({ since: "7d" });
+    const result = await akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "plugin-version");
 
     expect(advisory.status).toBe("warn");

@@ -58,7 +58,7 @@ describe("type-directory-disagreement advisory (#831, end-to-end)", () => {
       writeFile(path.join(storage.stashDir, "memories", "plain.md"), "Just a plain note.\n");
       await akmIndex({ stashDir: storage.stashDir, full: true });
 
-      const result = akmHealth({ since: "7d" });
+      const result = await akmHealth({ since: "7d" });
       expect(findAdvisory(result.advisories, "type-directory-disagreement")).toBeUndefined();
     } finally {
       storage.cleanup();
@@ -81,7 +81,7 @@ describe("type-directory-disagreement advisory (#831, end-to-end)", () => {
       );
       await akmIndex({ stashDir: storage.stashDir, full: true });
 
-      const result = akmHealth({ since: "7d" });
+      const result = await akmHealth({ since: "7d" });
       const advisory = findAdvisory(result.advisories, "type-directory-disagreement");
       expect(advisory).toBeDefined();
       expect(advisory?.status).toBe("warn");
@@ -136,7 +136,7 @@ describe("type-directory-disagreement advisory (#831, end-to-end)", () => {
         writableDb.close();
       }
 
-      const result = akmHealth({ since: "7d" });
+      const result = await akmHealth({ since: "7d" });
       const advisory = findAdvisory(result.advisories, "type-directory-disagreement");
       expect(advisory).toBeDefined();
       expect(advisory?.status).toBe("warn");

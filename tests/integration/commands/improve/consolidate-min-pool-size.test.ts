@@ -227,7 +227,7 @@ describe("#553 consolidate minPoolSize guard", () => {
       await runImprove(configWithMinPoolSize(3));
       expect(poolBelowMinSizeEvents().length).toBe(1);
 
-      const health = akmHealth({ since: "30d" });
+      const health = await akmHealth({ since: "30d" });
       expect(health.improve?.skipReasons?.pool_below_min_size).toBe(1);
     },
     TIMEOUT_MS,

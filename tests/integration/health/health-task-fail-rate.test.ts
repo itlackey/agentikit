@@ -63,10 +63,10 @@ function seedTasks(failed: number, completed: number): void {
 }
 
 describe("task-fail-rate advisory (C2)", () => {
-  test("fires warn at exactly the 5% threshold", () => {
+  test("fires warn at exactly the 5% threshold", async () => {
     // 1 failed / 20 total = 0.05 → at threshold.
     seedTasks(1, 19);
-    const result = akmHealth({ since: "7d" });
+    const result = await akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "task-fail-rate");
     expect(advisory.status).toBe("warn");
     expect(advisory.kind).toBe("deterministic");
@@ -74,25 +74,25 @@ describe("task-fail-rate advisory (C2)", () => {
     expect(advisory.message).toContain("20");
   });
 
-  test("fires warn above the 5% threshold", () => {
+  test("fires warn above the 5% threshold", async () => {
     // 3 failed / 20 total = 0.15 → above threshold.
     seedTasks(3, 17);
-    const result = akmHealth({ since: "7d" });
+    const result = await akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "task-fail-rate");
     expect(advisory.status).toBe("warn");
     expect(advisory.message).toContain("15.0%");
   });
 
-  test("stays pass below the 5% threshold", () => {
+  test("stays pass below the 5% threshold", async () => {
     // 1 failed / 21 total ≈ 0.0476 → below threshold.
     seedTasks(1, 20);
-    const result = akmHealth({ since: "7d" });
+    const result = await akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "task-fail-rate");
     expect(advisory.status).toBe("pass");
   });
 
-  test("stays pass when no cron tasks ran in the window", () => {
-    const result = akmHealth({ since: "7d" });
+  test("stays pass when no cron tasks ran in the window", async () => {
+    const result = await akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "task-fail-rate");
     expect(advisory.status).toBe("pass");
   });
@@ -143,14 +143,14 @@ function seedTaskRows(taskId: string, failed: number, completed: number): void {
 // aggregate when the overall population is large. `task-fail-rate` now also
 // warns off the worst single task_id (min row-count floor applies).
 describe("task-fail-rate worst-single-task signal (item 6)", () => {
-  test("warns off the worst task when the aggregate stays below threshold", () => {
+  test("warns off the worst task when the aggregate stays below threshold", async () => {
     // 96 distinct single-row healthy tasks (0 failed) + one "flaky-task" with
     // 5 rows (1 failed, 4 completed). Aggregate = 1/101 ≈ 1% (well below 5%).
     // flaky-task alone: 1/5 = 20% (>= 5% threshold, and >= the 5-row floor).
     for (let i = 0; i < 96; i++) seedTaskRows(`healthy-${i}`, 0, 1);
     seedTaskRows("flaky-task", 1, 4);
 
-    const result = akmHealth({ since: "7d" });
+    const result = await akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "task-fail-rate");
     expect(advisory.status).toBe("warn");
     expect(advisory.message).toContain('task "flaky-task" fails 20.0%');
@@ -159,13 +159,13 @@ describe("task-fail-rate worst-single-task signal (item 6)", () => {
     expect(advisory.evidence?.taskFailRate).toBeLessThan(0.05);
   });
 
-  test("ignores a below-min-rows task even at a 100% local fail rate", () => {
+  test("ignores a below-min-rows task even at a 100% local fail rate", async () => {
     // 96 distinct single-row healthy tasks (0 failed) + one task with only 4
     // failed rows (below the 5-row floor). Aggregate = 4/100 = 4% (< 5%).
     for (let i = 0; i < 96; i++) seedTaskRows(`healthy2-${i}`, 0, 1);
     seedTaskRows("flaky-below-min", 4, 0);
 
-    const result = akmHealth({ since: "7d" });
+    const result = await akmHealth({ since: "7d" });
     const advisory = findCheck(result.advisories, "task-fail-rate");
     expect(advisory.evidence?.taskFailRate).toBeCloseTo(0.04, 5);
     expect(advisory.evidence?.worstTaskFailRate).toBeNull();
