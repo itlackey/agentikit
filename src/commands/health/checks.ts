@@ -5,6 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { type AkmConfig, type LlmConnectionConfig, loadConfig } from "../../core/config/config";
 import { ConfigError } from "../../core/errors";
+import { EXTRACT_INFRASTRUCTURE_SKIP_REASONS } from "../../core/improve-types";
 import { listPendingStateMigrations } from "../../core/state-db";
 import type { WhichFn } from "../../integrations/agent/detect";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
@@ -24,15 +25,6 @@ import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { ExtractOutcomeCount } from "../../storage/repositories/extract-sessions-repository";
 import { resolveImprovePlan } from "../improve/improve-strategies";
 import { ACTIVE_RUN_WARN_MS, type HealthCheckResult, type ImproveHealthMetrics, TASK_FAIL_RATE_WARN } from "./types";
-
-/**
- * #914: skip-reasons that indicate infrastructure being down rather than a
- * session being legitimately uninteresting. Duplicated here (rather than
- * imported) because `src/core/improve-types.ts` is owned by a parallel
- * change on this release — unify with `EXTRACT_INFRASTRUCTURE_SKIP_REASONS`
- * (improve-types) once #912 lands.
- */
-const INFRASTRUCTURE_SKIP_REASONS = ["llm_unavailable", "read_failed", "exception", "locked_concurrent"] as const;
 
 /**
  * Pre-computed inputs shared by the health-check registry. `akmHealth` runs the
@@ -1021,14 +1013,20 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
         };
       }
 
-      const allSkipped = rows.every((row) => row.outcome === "skipped");
+      // `read_failed` / `exception` are recorded as outcome `failed`, not
+      // `skipped` (extract.ts `recordExtractSessionOutcome`), so a window where
+      // every session hit one of those is the same "nothing harvested,
+      // infrastructure at fault" verdict as one where every session was
+      // skipped for `llm_unavailable`.
+      const allSkippedOrFailed = rows.every((row) => row.outcome === "skipped" || row.outcome === "failed");
       const knownSkipReasons = [...new Set(rows.flatMap((row) => (row.skipReason ? [row.skipReason] : [])))];
       const hasUnknownReasonRows = rows.some((row) => row.skipReason === null);
       const allKnownReasonsAreInfra = knownSkipReasons.every((reason) =>
-        (INFRASTRUCTURE_SKIP_REASONS as readonly string[]).includes(reason),
+        (EXTRACT_INFRASTRUCTURE_SKIP_REASONS as readonly string[]).includes(reason),
       );
 
-      if (allSkipped && allKnownReasonsAreInfra) {
+      if (allSkippedOrFailed && allKnownReasonsAreInfra) {
+        const verb = rows.some((row) => row.outcome === "failed") ? "skipped or failed" : "skipped";
         const reasonClauses = [...knownSkipReasons].sort().map((reason) => {
           const engines = [
             ...new Set(
@@ -1045,7 +1043,7 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
           kind: "heuristic",
           status: "warn",
           confidence: "medium",
-          message: `${totalRows} of ${totalRows} sessions in the last 7 days skipped: ${reasonClauses.join(", ")}.`,
+          message: `${totalRows} of ${totalRows} sessions in the last 7 days ${verb}: ${reasonClauses.join(", ")}.`,
           evidence: { ran: sx.ran, ledgerSince, ledgerRows: rows, ...legacyEvidence },
         };
       }

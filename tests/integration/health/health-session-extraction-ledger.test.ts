@@ -96,6 +96,34 @@ describe("session-extraction is derived from the extract_sessions_seen ledger (#
     expect(advisory.message).toBe('25 of 25 sessions in the last 7 days skipped: llm_unavailable (engine "default").');
   });
 
+  test("every session recorded as failed for an infrastructure reason warns too", async () => {
+    // `read_failed` / `exception` land in the ledger as outcome `failed`, not
+    // `skipped` (extract.ts `recordExtractSessionOutcome`); the verdict must
+    // not depend on which of the two words the writer chose.
+    const db = openStateDatabase();
+    try {
+      for (let i = 0; i < 3; i += 1) {
+        upsertExtractedSession(db, {
+          harness: "claude-code",
+          sessionId: `failed-session-${i}`,
+          processedAt: isoDaysAgo(1),
+          outcome: "failed",
+          candidateCount: 0,
+          proposalCount: 0,
+          contentHash: null,
+          metadata: { skipReason: "exception", engine: "lab" },
+        });
+      }
+    } finally {
+      db.close();
+    }
+
+    const result = await akmHealth({ since: "7d" });
+    const advisory = findAdvisory(result.advisories, "session-extraction");
+    expect(advisory.status).toBe("warn");
+    expect(advisory.message).toBe('3 of 3 sessions in the last 7 days skipped or failed: exception (engine "lab").');
+  });
+
   test("a legacy skipped row with no metadata still warns as an unknown reason, not pass", async () => {
     const db = openStateDatabase();
     try {

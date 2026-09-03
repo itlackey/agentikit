@@ -72,10 +72,9 @@ resolves to it. Pass `--no-probe` to skip these probes entirely (offline or
 air-gapped hosts) — every affected check then reports its prior,
 credential-only verdict and notes that reachability was not probed.
 
-Health evidence never includes endpoint values.
-Health evidence never includes exact model IDs.
-Health evidence never includes credential values.
-Health evidence never includes provider output.
+Engine evidence names the endpoint and model of the probed connection so an
+operator can tell which connection was checked; it never includes credential
+values or provider output.
 
 The salience Gini guardrails are calibrated against distribution shape, not a
 top-ranked quantile: near-uniform `0.49/0.51` scores produce about `0.01`, a
