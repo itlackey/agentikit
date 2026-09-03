@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import type { AkmConfig, IndexPassConfig } from "../core/config/config";
-import { ConfigError } from "../core/errors";
+import { warn } from "../core/warn";
 import { cloneExecutionJsonObject } from "../execution/json";
 import type { LoweringNotice } from "../execution/resolved-request";
 import type { UnresolvedExecutionDefaults } from "../execution/source";
@@ -61,10 +61,13 @@ export function resolveIndexPassExecution(passName: string, config: AkmConfig): 
   });
   const lowered = lowerResolvedExecutionRequest(prepared.request, prepared.config);
   if (lowered.runner.kind !== "llm") {
-    throw new ConfigError(
-      `Index pass ${JSON.stringify(passName)} requires an LLM engine; ${JSON.stringify(selectedEngine)} is not one.`,
-      "INVALID_CONFIG_FILE",
-    );
+    // A bad/non-LLM engine on this ONE pass must not take down the whole
+    // `akm index` run: FTS and embeddings need no LLM and should still
+    // complete. Degrade exactly like the `pass?.enabled === false` path
+    // above — the caller already treats an undefined runner as "this pass is
+    // off" — rather than aborting before FTS/embeddings ever start.
+    warn("[akm] Index pass %s requires an LLM engine; %s is not one. Skipping this pass.", passName, selectedEngine);
+    return Object.freeze({ runner: undefined, notices: NO_LOWERING_NOTICES });
   }
   return Object.freeze({ runner: lowered.runner, notices: lowered.notices });
 }
