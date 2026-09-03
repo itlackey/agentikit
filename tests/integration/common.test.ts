@@ -104,17 +104,19 @@ describe("resolveStashDir", () => {
     }
   });
 
-  test("refuses the deleted stashDir-only config shape", () => {
-    // The general config migrator is gone. A retired top-level `stashDir`
-    // cannot enter the current runtime or be redirected into the task-only
-    // migrator; operators must author the current bundles shape explicitly.
+  test("resolves a retired stashDir-only config shape via the in-memory bundles shim", () => {
+    // A retired top-level `stashDir` used to hard-refuse here — no migrator
+    // ever existed for it, so this took down every command. It now folds
+    // into an in-memory `stash` bundle (legacy-source-shape-shim.ts, same
+    // shim `loadConfig` uses) rather than requiring the config be hand-
+    // authored into the current bundles shape first.
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-common-test-stash-"));
     try {
       const configDir = path.join(testConfigHome, "akm");
       fs.mkdirSync(configDir, { recursive: true });
       fs.writeFileSync(path.join(configDir, "config.json"), JSON.stringify({ stashDir: tmpDir }));
       withEnvSync({ AKM_BUNDLE_DIR: undefined }, () => {
-        expect(() => resolveStashDir()).toThrow(/stashDir is not supported.*current bundles shape/i);
+        expect(resolveStashDir()).toBe(path.resolve(tmpDir));
       });
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
