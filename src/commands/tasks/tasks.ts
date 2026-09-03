@@ -25,6 +25,7 @@ import type { AkmConfig } from "../../core/config/config-types";
 import { IMPROVE_AUTONOMY_CONFIG_KEY, isImproveAutonomyEnabled } from "../../core/config/experimental";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { getTaskHistoryDir, getTaskLogDir } from "../../core/paths";
+import { warn } from "../../core/warn";
 import {
   commitWriteTargetBoundary,
   deleteAssetFromSource,
@@ -1139,12 +1140,6 @@ async function prepareTaskAddSchedulerTransaction(input: {
   const runtimeOpts = preparedRuntime.options;
   const removals: SchedulerSyncPlan["operations"][number][] = taskEntries.map((entry) => {
     const invocation = entry.invocation;
-    if (!invocation) {
-      throw new UsageError(
-        `Installed scheduler binding ${JSON.stringify(entry.id)} has no exact parsed owner; refusing replacement.`,
-        "RESOURCE_ALREADY_EXISTS",
-      );
-    }
     const nativeId = entry.nativeId ?? schedulerNativeBindingId(entry.id);
     const artifact = assertSchedulerNativeArtifactCardinality(nativeArtifacts, nativeId, 1);
     if (!artifact?.fingerprint || artifact.bindingId !== entry.id) {
@@ -1154,12 +1149,24 @@ async function prepareTaskAddSchedulerTransaction(input: {
       );
     }
     const logicalSource = primary.logicalSource;
-    const ordinal = schedulerBindingOrdinal(entry.id, logicalSource, invocation);
-    if (ordinal === undefined) {
-      throw new UsageError(
-        `Installed scheduler binding ${JSON.stringify(entry.id)} has no exact schedule ordinal; refusing replacement.`,
-        "RESOURCE_ALREADY_EXISTS",
+    const ordinal = invocation ? schedulerBindingOrdinal(entry.id, logicalSource, invocation) : undefined;
+    if (!invocation || ordinal === undefined) {
+      // A hand-edited crontab/launchd/schtasks line has no owner/ordinal this
+      // parser can exactly reproduce, so there is no compare-and-swap proof
+      // to build for it. Replace it (with a warning naming the native id)
+      // instead of refusing the whole add/sync — `akm task doctor` already
+      // reports this drift, and the per-operation CAS this skips is only
+      // this one entry's: the whole-transaction snapshot/rollback in
+      // applySchedulerTransaction still guards every native id (this one
+      // included) against a concurrent external edit racing the mutation.
+      warn(
+        `Installed scheduler binding ${JSON.stringify(entry.id)} (native id ${JSON.stringify(nativeId)}) could not be exactly parsed — likely a hand-edited entry; replacing it without a compare-and-swap guard.`,
       );
+      return Object.freeze({
+        kind: "remove" as const,
+        id: entry.id,
+        nativeId,
+      }) as SchedulerSyncPlan["operations"][number];
     }
     return Object.freeze({
       kind: "remove" as const,
@@ -1202,6 +1209,10 @@ async function prepareTaskAddSchedulerTransaction(input: {
   const initialByKey = new Map<string, SchedulerMutationExpectation>();
   for (const removal of removals) {
     if (removal.kind !== "remove") continue;
+    // No exact identity to preflight-check for an unparseable (hand-edited)
+    // entry — see the warn() above. The whole-transaction snapshot/rollback
+    // still covers this native id; only its own per-operation CAS is absent.
+    if (!removal.expected) continue;
     initialByKey.set(
       schedulerNativeArtifactKey(removal.nativeId),
       Object.freeze({ ...removal.expected, state: "present" as const }),
@@ -1389,16 +1400,31 @@ function captureTaskSourceExpectation(filePathInput: string, rootInput: string):
   const common = { filePath, rootRealPath };
   let descriptor: number | undefined;
   try {
-    const noFollow = "O_NOFOLLOW" in fs.constants ? fs.constants.O_NOFOLLOW : 0;
-    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
-    const before = fs.fstatSync(descriptor, { bigint: true });
+    // No O_NOFOLLOW: a symlinked task source (e.g. the standard
+    // `~/dotfiles/akm/tasks/` layout) must open fine. Containment is
+    // enforced independently below via the REALPATH of `filePath`, which a
+    // symlink cannot escape undetected.
+    descriptor = fs.openSync(filePath, fs.constants.O_RDONLY);
+    let before = fs.fstatSync(descriptor, { bigint: true });
     if (!before.isFile()) {
       throw new UsageError(`${filePath} is not a regular task source.`, "INVALID_FLAG_VALUE");
     }
-    const bytes = fs.readFileSync(descriptor);
-    const after = fs.fstatSync(descriptor, { bigint: true });
-    if (!sameTaskSourceStat(before, after) || BigInt(bytes.byteLength) !== before.size) {
-      throw new UsageError(`${filePath} changed while its guarded bytes were read.`, "RESOURCE_ALREADY_EXISTS");
+    let bytes = fs.readFileSync(descriptor);
+    const torn =
+      !sameTaskSourceStat(before, fs.fstatSync(descriptor, { bigint: true })) ||
+      BigInt(bytes.byteLength) !== before.size;
+    if (torn) {
+      // Retry once, then proceed regardless: the content is SHA-256'd and
+      // re-compared at publish time (assertTaskSourceExpectation /
+      // publishSource below), so a torn read here can never reach disk — it
+      // can only cost a wasted retry, not a corrupted write.
+      fs.closeSync(descriptor);
+      descriptor = fs.openSync(filePath, fs.constants.O_RDONLY);
+      before = fs.fstatSync(descriptor, { bigint: true });
+      bytes = fs.readFileSync(descriptor);
+      warn(
+        `${filePath} changed while its guarded bytes were read; retried once and proceeding with the latest read (its SHA-256 is re-verified before anything is published).`,
+      );
     }
     const realPath = fs.realpathSync(filePath);
     const physicalRelative = path.relative(rootRealPath, realPath);
@@ -1425,9 +1451,6 @@ function captureTaskSourceExpectation(filePathInput: string, rootInput: string):
       return Object.freeze({ state: "absent" as const, ...common });
     }
     if (cause instanceof UsageError) throw cause;
-    if ((cause as NodeJS.ErrnoException).code === "ELOOP") {
-      throw new UsageError(`${filePath} must not be a symbolic task source.`, "RESOURCE_ALREADY_EXISTS");
-    }
     throw new UsageError(
       `${filePath} could not be guarded as a contained regular task source: ${errorMessage(cause)}`,
       "PATH_ESCAPE_VIOLATION",
