@@ -174,7 +174,7 @@ describe("assertResolvedHostAllowed (SSRF resolve-then-validate)", () => {
   });
 });
 
-describe("start URL the operator typed is not refused outright (finding 1)", () => {
+describe("start URL the operator typed is not refused outright", () => {
   test("a loopback start URL is allowed, not refused", () => {
     expect(shouldAllowPrivateWebsiteUrlForTests("http://localhost:8000/docs")).toBe(true);
     expect(shouldAllowPrivateWebsiteUrlForTests("http://192.168.1.50:8080/docs")).toBe(true);

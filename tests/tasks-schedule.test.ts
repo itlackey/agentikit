@@ -47,7 +47,7 @@ describe("parseSchedule", () => {
     expect(() => parseSchedule("7,99 * * * *", "cron")).toThrow(UsageError);
   });
 
-  // Finding 3 (guard audit): the cron backend was rejecting plain ranges even
+  // The cron backend was rejecting plain ranges even
   // though it emits the expression to a real crontab verbatim, and vixie/cronie
   // accept "0-30" natively. A plain range is a `rangeStep` with `step: 1` so
   // it reuses the exact same downstream handling a stepped range already has.
@@ -61,7 +61,7 @@ describe("parseSchedule", () => {
     expect(() => parseSchedule("0 9 * * 1-9", "cron")).toThrow(UsageError);
   });
 
-  test("weekdays at 9am (the guard-audit report's own example) is accepted verbatim on cron", () => {
+  test("weekdays at 9am is accepted verbatim on cron", () => {
     const spec = parseSchedule("0 9 * * 1-5", "cron");
     expect(spec.fields.dow).toEqual({ kind: "rangeStep", start: 1, end: 5, step: 1 });
     expect(translateToCron(spec)).toBe("0 9 * * 1-5");
@@ -144,7 +144,7 @@ describe("translateToLaunchd", () => {
   // Finding 3: a day-of-week (or month) range/list DOES have a launchd
   // primitive — one calendar dict per named day, the same "calendars" array
   // trick already used for minute/hour steps above.
-  test("expands a weekdays-at-9am range (the guard-audit report's own example) into one calendar dict per day", () => {
+  test("expands a weekdays-at-9am range into one calendar dict per day", () => {
     const t = translateToLaunchd(parseSchedule("0 9 * * 1-5", "launchd"));
     expect(t.calendars).toEqual([1, 2, 3, 4, 5].map((Weekday) => ({ Minute: 0, Hour: 9, Weekday })));
   });

@@ -420,7 +420,7 @@ describe("parseTaskSourceV4Document — target union (uses/run exactly one, D2-N
     );
   });
 
-  test("run: containing a GitHub-style ${{ }} expression is accepted verbatim (finding 1, D2-N1) — akm has no expander on this path, and the workflow side passes these bytes through unchanged", () => {
+  test("run: containing a GitHub-style ${{ }} expression is accepted verbatim — akm has no expander on this path, and the workflow side passes these bytes through unchanged", () => {
     const doc = parseTaskSourceV4Document(v4Doc({ run: "echo 'runs-on: ${{ matrix.os }}' >> ci.yml" }), {
       filePath: "/x.yml",
     });

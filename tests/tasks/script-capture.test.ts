@@ -27,7 +27,7 @@ function withNodeTypeScriptSupport<T>(supported: boolean, fn: () => T): T {
   }
 }
 
-describe("scriptInterpreter — Bun absent (finding 4)", () => {
+describe("scriptInterpreter — Bun absent", () => {
   test(".js falls back to node when Bun is unavailable", () => {
     withoutBun(() => {
       expect(scriptInterpreter(".js", "scripts/x")).toBe("node");
@@ -58,7 +58,7 @@ describe("scriptInterpreter — Bun present", () => {
   });
 });
 
-describe("scriptInterpreter — extensionless scripts honour a #! shebang (finding 4)", () => {
+describe("scriptInterpreter — extensionless scripts honour a #! shebang", () => {
   test("recognizes #!/usr/bin/env NAME and #!/path/to/NAME forms", () => {
     const cases: Array<[string, string]> = [
       ["#!/usr/bin/env bash\necho hi\n", "sh"],

@@ -235,12 +235,12 @@ describe("engine resolution", () => {
     ).toThrow(/cannot dispatch agents/);
   });
 
-  // Finding 6 (guard-audit): resolveLlmEngineUse used to reject an agent
+  // resolveLlmEngineUse used to reject an agent
   // engine outright, even when the exact fallback machinery lowerAgentEngine
   // already uses (AgentEngineConfig.llmEngine, then defaults.llmEngine)
   // names a real LLM engine. Falling back is strictly less capable than the
   // agent engine (never an interactive/tool-capable runner), so it is safe.
-  describe("resolveLlmEngineUse falls back off an agent engine's llmEngine (finding 6)", () => {
+  describe("resolveLlmEngineUse falls back off an agent engine's llmEngine", () => {
     test("falls back to the agent engine's OWN llmEngine when set", () => {
       const withOwnFallback = {
         ...config,

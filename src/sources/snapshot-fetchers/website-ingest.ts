@@ -680,8 +680,7 @@ async function resolveCrawlRobotsDecision(
 /**
  * C-02/C-03: fail fast, before any page fetch, when the start URL itself is
  * off-limits per an actually-parsed robots.txt rule. A 5xx on robots.txt
- * itself no longer reaches this as `disallowAll` (finding 12,
- * docs/plans/guard-audit.md) — `loadRobotsTxt` reports it the same way a
+ * itself no longer reaches this as `disallowAll`: `loadRobotsTxt` reports it the same way a
  * 4xx is reported (`ALLOW_ALL_RULES`), with its own warning, rather than
  * treating the site's own transient error as a Disallow. The check below
  * stays as defense-in-depth for a `RobotsPolicy` built over some other

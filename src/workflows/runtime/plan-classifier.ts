@@ -161,7 +161,7 @@ function assertSpineIdentityMatchesPlan(
  * it mid-execution. This module has no write path for that anyway
  * (`workflow_run_steps` is owned by
  * `storage/repositories/workflow-runs-repository.ts`) — and it should not
- * gain one for this purpose; see this change's `crossAreaNeeds`. Step
+ * gain one for this purpose. Step
  * identity (row count, which step ids exist) is the part that would
  * actually desynchronize execution from the plan, which is exactly why
  * {@link assertSpineIdentityMatchesPlan} keeps that a hard failure.

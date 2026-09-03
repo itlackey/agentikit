@@ -334,7 +334,7 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
     expect(fields.inputBindings).toEqual([{ kind: "literal", name: "scope", value: "from-v4-task" }]);
   });
 
-  test("B-15: a task with env: on a workflow target runs anyway, ignoring env: (finding 11)", async () => {
+  test("B-15: a task with env: on a workflow target runs anyway, ignoring env:", async () => {
     writeChild();
     write(
       "tasks/v4-env-wrapper.yml",
@@ -597,7 +597,7 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
     expect(fields1.frozenPlanIrVersion).toBe(fields2.frozenPlanIrVersion);
   });
 
-  test("B-24: aggregate embedded child plan bytes once over the former 1 MiB cap now freezes fine (guard-audit finding 13: a large plan is not a wrong plan)", async () => {
+  test("B-24: aggregate embedded child plan bytes once over the former 1 MiB cap now freezes fine (a large plan is not a wrong plan)", async () => {
     // Five children at 250,000 'x' bytes each (well under the 256 KiB
     // per-instruction cap and the 1 MiB per-source-file cap individually)
     // sum to 1,250,000 bytes — comfortably over the 1,048,576-byte

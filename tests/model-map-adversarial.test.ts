@@ -60,7 +60,7 @@ describe("models.json bounded safe loader", () => {
     }
   });
 
-  test("reads through a valid symlink instead of refusing it (finding 7)", () => {
+  test("reads through a valid symlink instead of refusing it", () => {
     const sandbox = makeRoot("models-valid-symlink");
     const real = path.join(sandbox.root, "real-models.json");
     try {

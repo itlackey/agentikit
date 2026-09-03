@@ -87,7 +87,7 @@ describe("source provider copy safety", () => {
     expect(fs.readFileSync(path.join(dest.dir, "present.md"), "utf8")).toBe("here\n");
   });
 
-  test("copyIncludedPaths expands a simple glob entry (finding 10)", () => {
+  test("copyIncludedPaths expands a simple glob entry", () => {
     const source = makeSandboxDir("akm-include-src");
     const dest = makeSandboxDir("akm-include-dest");
     cleanup = () => {

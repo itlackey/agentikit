@@ -263,7 +263,7 @@ describe("common execution cascade resolver", () => {
     ).toThrow(/opencode-sdk.*unavailable/i);
   });
 
-  test("fails invalid engines before authorization; a known-unmapped alias now resolves as exact instead (finding 14)", () => {
+  test("fails invalid engines before authorization; a known-unmapped alias now resolves as exact instead", () => {
     let calls = 0;
     const authorizeTools = () => {
       calls += 1;

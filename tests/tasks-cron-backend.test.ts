@@ -720,7 +720,7 @@ describe("cron backend drift detection", () => {
     });
   });
 
-  // Finding 16 (guard-audit): a cron line over vixie-cron's real MAX_COMMAND
+  // A cron line over vixie-cron's real MAX_COMMAND
   // used to refuse the install outright. It now spills the invocation into a
   // short generated wrapper script under logDir and references THAT from the
   // crontab line instead — never truncates the command (which would execute

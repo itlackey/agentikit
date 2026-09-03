@@ -838,7 +838,7 @@ function wantsJsonSchemaOutput(connection: { endpoint: string; model: string; su
 const REFLECT_CRITIQUE_PROMPT =
   "Your previous proposal is shown above. Review it critically and provide an improved version that is more specific, actionable, and avoids any issues with the previous attempt. Return only the improved response using the output contract from the original prompt.";
 
-// Guard-audit finding 15 (docs/plans/guard-audit.md): reflect no longer
+// Reflect no longer
 // derives a `max_tokens` cap from the prompt's character-based size policy.
 // llm/client.ts does not send `max_tokens` by default for exactly this
 // reason — the model/API already knows its own limits, and a character-to-

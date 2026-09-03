@@ -1716,7 +1716,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     }
   });
 
-  // Finding 9 (guard-audit): print-disabled failing outright, or returning
+  // print-disabled failing outright, or returning
   // output this parser doesn't recognize (a header line a newer macOS
   // release adds, an SSH session with no GUI domain), used to abort
   // scheduler state inspection entirely. It now degrades to "nothing is
@@ -1749,7 +1749,7 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     }
   });
 
-  test("a com.akm.task. entry inside an unrecognized print-disabled envelope is still found (finding 9)", () => {
+  test("a com.akm.task. entry inside an unrecognized print-disabled envelope is still found", () => {
     const exec = makeFakeExec();
     const { backend } = makeBackend(exec);
     const task = makeTask("0 9 * * *");

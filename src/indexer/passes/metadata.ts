@@ -881,7 +881,7 @@ export function isEnrichmentComplete(entry: IndexDocument): boolean {
 /**
  * Maximum native Markdown prose carried by the low-weight `content` field.
  *
- * Raised far past any real authored document (#895 guard audit finding 8):
+ * Raised far past any real authored document:
  * this used to sit at 16_384 chars, tight enough that ordinary long-form
  * skills/knowledge docs lost their tail from both FTS and the embedding
  * input with no visible signal (the cut was reported via `warnVerbose`,
@@ -1267,7 +1267,7 @@ export function applyPreContributorFields(
         if (truncationInfo.truncated) {
           entry.contentTruncated = true;
           // Unconditional, not warnVerbose: this bound now sits far past any
-          // real document (#895 guard audit finding 8), so tripping it means
+          // real document, so tripping it means
           // something unusual is in the bundle and the operator should see
           // it without having to pass --verbose.
           warn(`${file}: indexed content truncated to ${MARKDOWN_CONTENT_MAX_CHARS} chars`);

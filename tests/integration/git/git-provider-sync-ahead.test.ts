@@ -23,7 +23,7 @@ afterAll(() => {
   for (const dir of createdTmpDirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe("syncMirroredRepo: ahead with nothing to fast-forward is a no-op (finding 8)", () => {
+describe("syncMirroredRepo: ahead with nothing to fast-forward is a no-op", () => {
   test("does not refuse, and keeps the local commit, when ahead > 0 and behind === 0", async () => {
     const root = makeTempDir();
     const remote = path.join(root, "remote.git");

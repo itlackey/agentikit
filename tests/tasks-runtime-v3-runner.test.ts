@@ -214,7 +214,7 @@ describe("task runner mutation boundary", () => {
     expect(logFiles()).toEqual([]);
   });
 
-  test("workflow task env: is dropped (with a warning) and the workflow still dispatches (finding 11)", async () => {
+  test("workflow task env: is dropped (with a warning) and the workflow still dispatches", async () => {
     const workflowsDir = path.join(storage.stashDir, "workflows");
     fs.mkdirSync(workflowsDir, { recursive: true });
     fs.writeFileSync(
