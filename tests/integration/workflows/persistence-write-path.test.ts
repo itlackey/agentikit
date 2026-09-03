@@ -12,13 +12,7 @@ import {
 } from "../../../src/storage/repositories/workflow-runs-repository";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
 import { enqueueUnitWrite } from "../../../src/workflows/exec/unit-writer";
-import { WORKFLOW_MAX_EVIDENCE_JSON_BYTES } from "../../../src/workflows/resource-limits";
-import {
-  clipStepEvidenceForPersistence,
-  completeWorkflowStep,
-  getWorkflowStatus,
-  WORKFLOW_EVIDENCE_TRUNCATED_MARKER,
-} from "../../../src/workflows/runtime/runs";
+import { completeWorkflowStep, getWorkflowStatus } from "../../../src/workflows/runtime/runs";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
 import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../_helpers/workflow";
 
@@ -32,14 +26,19 @@ import { freezeWorkflow, seedWorkflowRun, storeFrozenWorkflowPlan } from "../../
  *      DATABASE PATH, so unrelated databases never queue behind each other,
  *      while a wide concurrent fan-out against ONE database still produces
  *      exactly one correct terminal row per unit.
- *   C. Evidence bound — `evidence_json` is capped at
- *      {@link WORKFLOW_MAX_EVIDENCE_JSON_BYTES} and an over-cap value is stored
- *      as an unmistakably-marked truncation envelope, never as a silently
- *      shortened value that reads like complete data.
- *   D. …and that bound is a PERSISTENCE bound only: the invocation that
- *      produced an over-cap artifact still feeds the complete value to its own
- *      later steps, while a run resumed from the truncated row refuses to
- *      dispatch against it and says truncation is why.
+ *   C. Evidence persistence (issue C) — `evidence_json` is persisted WHOLE,
+ *      unclipped, at any size. It used to be capped at 1 MiB and an over-cap
+ *      value replaced by a marked truncation envelope; the run then looked
+ *      successful but a LATER invocation reading that row (any resume, or
+ *      any downstream step referencing the artifact) failed permanently,
+ *      with the value unrecoverable and every prior paid step wasted. There
+ *      is no cap any more: what a step promoted is exactly what a resumed
+ *      run reads back.
+ *   D. …which a live run already relied on: a step's own invocation always
+ *      fed its later steps the complete value (the persistence bound never
+ *      reached the live run). Section D now also covers the case the bound
+ *      used to break — a run RESUMED from rows a previous invocation wrote
+ *      still dispatches against the complete value, not a tombstone.
  */
 
 let storage: IsolatedAkmStorage;
@@ -265,106 +264,28 @@ function bigOutput(entries: number): string[] {
   return Array.from({ length: entries }, (_, i) => `${"x".repeat(512)}#${i}`);
 }
 
-describe("evidence_json persistence bound", () => {
-  test("under-cap evidence is persisted verbatim", () => {
+const ONE_MIB = 1024 * 1024;
+
+describe("evidence_json persistence (no cap — issue C)", () => {
+  test("small evidence is persisted verbatim", async () => {
     const evidence = { output: ["a", "b"], units: [{ unitId: "u1", ok: true }] };
-    const clipped = clipStepEvidenceForPersistence(evidence);
-    expect(clipped.truncatedKeys).toEqual([]);
-    expect(JSON.parse(clipped.json as string)).toEqual(evidence);
+    await completeWorkflowStep({
+      runId: RUN_ID,
+      stepId: "step-1",
+      status: "completed",
+      summary: "did the thing",
+      evidence,
+      summaryJudge: null,
+    });
+    const stored = await withWorkflowRunsRepo((repo) => repo.getStep(RUN_ID, "step-1"));
+    expect(JSON.parse(stored?.evidence_json as string)).toEqual(evidence);
   });
 
-  test("an over-cap promoted artifact is replaced by a marked truncation envelope under the cap", () => {
+  test("evidence well over the FORMER 1 MiB cap is persisted whole, byte-for-byte, no marker", async () => {
     const evidence = { output: bigOutput(4000), units: [{ unitId: "u1", ok: true }] };
     const raw = JSON.stringify(evidence);
-    expect(Buffer.byteLength(raw, "utf8")).toBeGreaterThan(WORKFLOW_MAX_EVIDENCE_JSON_BYTES);
+    expect(Buffer.byteLength(raw, "utf8")).toBeGreaterThan(ONE_MIB);
 
-    const clipped = clipStepEvidenceForPersistence(evidence);
-    expect(clipped.truncatedKeys).toEqual(["output"]);
-    expect(Buffer.byteLength(clipped.json as string, "utf8")).toBeLessThanOrEqual(WORKFLOW_MAX_EVIDENCE_JSON_BYTES);
-
-    const parsed = JSON.parse(clipped.json as string) as Record<string, Record<string, unknown>>;
-    // The truncated value is unmistakable: it is NOT an array any more, it
-    // carries the marker key, and it says the data is unrecoverable.
-    expect(Array.isArray(parsed.output)).toBe(false);
-    expect(parsed.output?.[WORKFLOW_EVIDENCE_TRUNCATED_MARKER]).toBe(true);
-    expect(parsed.output?.originalBytes).toBe(Buffer.byteLength(JSON.stringify(evidence.output), "utf8"));
-    expect(parsed.output?.limitBytes).toBe(WORKFLOW_MAX_EVIDENCE_JSON_BYTES);
-    expect(String(parsed.output?.reason)).toContain("cannot be recovered");
-    // Untouched siblings survive intact.
-    expect(parsed.units).toEqual(evidence.units as never);
-    // The caller's in-memory object is NOT mutated — gates and the live step
-    // result keep the complete artifact.
-    expect(evidence.output).toHaveLength(4000);
-  });
-
-  test("truncation is bounded even when every key is oversized", () => {
-    const evidence: Record<string, unknown> = {};
-    for (let i = 0; i < 8; i++) evidence[`k${i}`] = bigOutput(1000);
-    const clipped = clipStepEvidenceForPersistence(evidence);
-    expect(Buffer.byteLength(clipped.json as string, "utf8")).toBeLessThanOrEqual(WORKFLOW_MAX_EVIDENCE_JSON_BYTES);
-    expect(clipped.truncatedKeys.length).toBeGreaterThan(0);
-    const parsed = JSON.parse(clipped.json as string) as Record<string, Record<string, unknown>>;
-    for (const key of clipped.truncatedKeys) {
-      expect(parsed[key]?.[WORKFLOW_EVIDENCE_TRUNCATED_MARKER]).toBe(true);
-    }
-  });
-
-  test("replacement order follows UTF-8 bytes, not UTF-16 length", () => {
-    // `ascii` is the LONGER string in code units but the SMALLER one in bytes;
-    // `cjk` is 3 bytes per char. Ordering by `.length` would sacrifice `ascii`
-    // first, leave the row still over cap, and then destroy `cjk` too —
-    // replacing only `cjk` is enough.
-    const evidence = { ascii: "a".repeat(400_000), cjk: "漢".repeat(350_000) };
-    expect(evidence.ascii.length).toBeGreaterThan(evidence.cjk.length);
-    expect(Buffer.byteLength(JSON.stringify(evidence.cjk), "utf8")).toBeGreaterThan(
-      Buffer.byteLength(JSON.stringify(evidence.ascii), "utf8"),
-    );
-
-    const clipped = clipStepEvidenceForPersistence(evidence);
-    expect(clipped.truncatedKeys).toEqual(["cjk"]);
-    expect(Buffer.byteLength(clipped.json as string, "utf8")).toBeLessThanOrEqual(WORKFLOW_MAX_EVIDENCE_JSON_BYTES);
-    const parsed = JSON.parse(clipped.json as string) as Record<string, unknown>;
-    expect(parsed.ascii).toBe(evidence.ascii);
-  });
-
-  test("the row is under cap at every cap, whatever the running size bookkeeping predicts", () => {
-    // The loop tracks the row size arithmetically to avoid re-serializing the
-    // whole object once per replaced key, but that total is only an estimate —
-    // `ghost` is charged the "null" the sort used while `JSON.stringify` OMITS
-    // it, so replacing `ghost` adds bytes the estimate never counted. Whatever
-    // the bookkeeping predicts, the row that comes back must fit the cap.
-    const evidence: Record<string, unknown> = {
-      ascii: "a".repeat(9_000),
-      cjk: "漢".repeat(4_000),
-      nested: { rows: Array.from({ length: 300 }, (_, i) => ({ i, text: "λ".repeat(20) })) },
-      ghost: undefined,
-      tiny: "t",
-    };
-    const rawBytes = Buffer.byteLength(JSON.stringify(evidence), "utf8");
-    for (let cap = 1_200; cap < rawBytes; cap += 149) {
-      const clipped = clipStepEvidenceForPersistence(evidence, cap);
-      const parsed = JSON.parse(clipped.json as string) as Record<string, unknown>;
-      // The whole-object marker is the bounded last resort — it is a fixed size
-      // and so is exempt from the cap it could not meet.
-      if (parsed[WORKFLOW_EVIDENCE_TRUNCATED_MARKER] === true) continue;
-      expect(Buffer.byteLength(clipped.json as string, "utf8")).toBeLessThanOrEqual(cap);
-      // Every replaced key really is an envelope, and no other key was touched.
-      for (const key of clipped.truncatedKeys) {
-        expect((parsed[key] as Record<string, unknown>)[WORKFLOW_EVIDENCE_TRUNCATED_MARKER]).toBe(true);
-      }
-      expect(clipped.truncatedKeys.length).toBeGreaterThan(0);
-    }
-  });
-
-  test("a tiny cap still yields a single whole-object marker rather than an oversized row", () => {
-    const clipped = clipStepEvidenceForPersistence({ output: bigOutput(4), units: [] }, 64);
-    const parsed = JSON.parse(clipped.json as string) as Record<string, unknown>;
-    expect(parsed[WORKFLOW_EVIDENCE_TRUNCATED_MARKER]).toBe(true);
-    expect(parsed.preview).toBeUndefined();
-  });
-
-  test("completeWorkflowStep persists the bounded form and status reads it back marked", async () => {
-    const evidence = { output: bigOutput(4000), units: [{ unitId: "u1", ok: true }] };
     await completeWorkflowStep({
       runId: RUN_ID,
       stepId: "step-1",
@@ -375,27 +296,24 @@ describe("evidence_json persistence bound", () => {
     });
 
     const stored = await withWorkflowRunsRepo((repo) => repo.getStep(RUN_ID, "step-1"));
-    expect(stored?.evidence_json).toBeTruthy();
-    expect(Buffer.byteLength(stored?.evidence_json as string, "utf8")).toBeLessThanOrEqual(
-      WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
-    );
+    expect(stored?.evidence_json).toBe(raw);
+    expect(Buffer.byteLength(stored?.evidence_json as string, "utf8")).toBeGreaterThan(ONE_MIB);
 
     const status = await getWorkflowStatus(RUN_ID);
-    const readBack = status.workflow.steps[0]?.evidence as Record<string, Record<string, unknown>> | undefined;
-    expect(readBack?.output?.[WORKFLOW_EVIDENCE_TRUNCATED_MARKER]).toBe(true);
-    // A downstream `${{ steps.step-1.output.<path> }}` reference now resolves
-    // against a marker object, so it fails loudly instead of silently reading a
-    // partial array.
-    expect(Array.isArray(readBack?.output)).toBe(false);
-    expect(readBack?.units).toEqual(evidence.units as never);
+    const readBack = status.workflow.steps[0]?.evidence as Record<string, unknown> | undefined;
+    // The complete array survives round-trip — no truncation marker, no
+    // shape change, nothing replaced.
+    expect(readBack?.output).toEqual(evidence.output);
+    expect(Array.isArray(readBack?.output)).toBe(true);
+    expect((readBack?.output as unknown[]).length).toBe(4000);
   });
 });
 
-// ── D. the row bound never reaches the LIVE run ──────────────────────────────
+// ── D. issue C: a big artifact survives a live run AND a resume ─────────────
 
 const FLOW_RUN_ID = "55555555-5555-4555-8555-555555555555";
 
-/** Wide + long enough that `produce`'s promoted array alone blows the 1 MiB row cap. */
+/** Wide + long enough that `produce`'s promoted array alone would have blown the FORMER 1 MiB row cap. */
 const CHUNK_COUNT = 20;
 const CHUNK_CHARS = 60_000;
 
@@ -441,8 +359,8 @@ function seedFlowRun(): void {
   }
 }
 
-describe("evidence_json bound vs. the live run", () => {
-  test("a step promoting more than the cap still feeds the NEXT step the complete value", async () => {
+describe("a big artifact survives both a live run and a resume (issue C fix)", () => {
+  test("a step promoting well over the FORMER cap still feeds the NEXT step the complete value, and the row holds it all", async () => {
     seedFlowRun();
     const consumePrompts: string[] = [];
     const result = await runWorkflowSteps({
@@ -461,133 +379,63 @@ describe("evidence_json bound vs. the live run", () => {
 
     expect(result.done).toBe(true);
     // The whole promoted array reached `consume` — every unit got its own
-    // complete 60k-char item, not a truncation envelope (which is not even an
-    // array, so the fan-out would have failed to resolve at all).
+    // complete 60k-char item.
     expect(consumePrompts).toHaveLength(CHUNK_COUNT);
     for (let i = 0; i < CHUNK_COUNT; i++) {
       expect(consumePrompts.some((prompt) => prompt.includes(chunkText(i)))).toBe(true);
     }
 
-    // …and the row is STILL bounded: the cap did its job on persistence only.
+    // …and the persisted row holds the SAME complete array — no cap, no marker.
     const stored = await withWorkflowRunsRepo((repo) => repo.getStep(FLOW_RUN_ID, "produce"));
-    expect(Buffer.byteLength(stored?.evidence_json as string, "utf8")).toBeLessThanOrEqual(
-      WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
-    );
-    const persisted = JSON.parse(stored?.evidence_json as string) as Record<string, Record<string, unknown>>;
-    expect(persisted.output?.[WORKFLOW_EVIDENCE_TRUNCATED_MARKER]).toBe(true);
+    expect(Buffer.byteLength(stored?.evidence_json as string, "utf8")).toBeGreaterThan(ONE_MIB);
+    const persisted = JSON.parse(stored?.evidence_json as string) as { output: string[] };
+    expect(persisted.output).toHaveLength(CHUNK_COUNT);
+    for (let i = 0; i < CHUNK_COUNT; i++) expect(persisted.output).toContain(chunkText(i));
   }, 60_000);
 
-  test("an UNREFERENCED bulk step alongside a referenced one does not disturb the live value", async () => {
-    // The live-evidence map is filtered at SET time by the frozen plan's
-    // reference surface: `noise` is named by nobody and is not retained, while
-    // `produce` is named by `consume` and must still arrive COMPLETE. Both
-    // steps blow the row cap, so only the in-memory value can carry it.
-    const MIXED_PLAN = freezeWorkflow(`---
-type: workflow
-params:
-  chunks: { type: array }
-steps:
-  - id: noise
-  - id: produce
-    map:
-      over: params.chunks
-  - id: consume
-    map:
-      over: steps.produce.output
----
-
-## noise
-
-Emit bulk nobody reads.
-
-## produce
-
-Emit the chunk.
-
-## consume
-
-Handle the chunk.
-`);
-    const db = openStateDatabase(getStateDbPath());
-    try {
-      seedWorkflowRun(db, {
-        runId: FLOW_RUN_ID,
-        params: { chunks: Array.from({ length: CHUNK_COUNT }, (_, i) => `seed-${i}`) },
-        steps: [{ stepId: "noise" }, { stepId: "produce" }, { stepId: "consume" }],
-        checkinArmedAt: new Date().toISOString(),
-      });
-      storeFrozenWorkflowPlan(db, FLOW_RUN_ID, MIXED_PLAN);
-    } finally {
-      db.close();
-    }
-
-    const consumePrompts: string[] = [];
-    const result = await runWorkflowSteps({
-      target: FLOW_RUN_ID,
-      dispatcher: async (request) => {
-        if (request.stepId === "noise") return { ok: true, text: "n".repeat(WORKFLOW_MAX_EVIDENCE_JSON_BYTES + 1) };
-        if (request.stepId === "consume") {
-          consumePrompts.push(request.prompt);
-          return { ok: true, text: "handled" };
-        }
-        const index = /^## Item \(index (\d+)\)$/m.exec(request.prompt)?.[1];
-        return { ok: true, text: chunkText(Number(index)) };
-      },
-      summaryJudge: null,
-    });
-
-    expect(result.done).toBe(true);
-    expect(consumePrompts).toHaveLength(CHUNK_COUNT);
-    for (let i = 0; i < CHUNK_COUNT; i++) {
-      expect(consumePrompts.some((prompt) => prompt.includes(chunkText(i)))).toBe(true);
-    }
-    // Both rows are bounded — the unreferenced step completed exactly as before.
-    for (const stepId of ["noise", "produce"]) {
-      const stored = await withWorkflowRunsRepo((repo) => repo.getStep(FLOW_RUN_ID, stepId));
-      expect(stored?.status).toBe("completed");
-      const persisted = JSON.parse(stored?.evidence_json as string) as Record<string, Record<string, unknown>>;
-      expect(persisted.output?.[WORKFLOW_EVIDENCE_TRUNCATED_MARKER]).toBe(true);
-    }
-  }, 60_000);
-
-  test("a run resumed from a truncated row fails the referencing step by NAMING truncation", async () => {
+  test("the fix for finding 1: a run RESUMED from a row a previous invocation wrote dispatches the next step against the complete value, not a tombstone", async () => {
     seedFlowRun();
-    // The rows a previous invocation would have left behind: `produce`
-    // completed, its promoted artifact replaced by the truncation envelope.
-    const truncated = clipStepEvidenceForPersistence({
+    // Simulate the rows a PRIOR invocation left behind: `produce` completed,
+    // its promoted artifact — well over the former 1 MiB cap — written whole,
+    // exactly as `completeWorkflowStep` now persists it.
+    const fullEvidence = JSON.stringify({
       units: [],
       itemCount: CHUNK_COUNT,
       output: Array.from({ length: CHUNK_COUNT }, (_, i) => chunkText(i)),
     });
-    expect(truncated.truncatedKeys).toContain("output");
+    expect(Buffer.byteLength(fullEvidence, "utf8")).toBeGreaterThan(ONE_MIB);
     const db = openStateDatabase(getStateDbPath());
     try {
       db.prepare(
         `UPDATE workflow_run_steps SET status = 'completed', summary = 'produced', evidence_json = ?, completed_at = ?
            WHERE run_id = ? AND step_id = 'produce'`,
-      ).run(truncated.json, new Date().toISOString(), FLOW_RUN_ID);
+      ).run(fullEvidence, new Date().toISOString(), FLOW_RUN_ID);
       db.prepare("UPDATE workflow_runs SET current_step_id = 'consume' WHERE id = ?").run(FLOW_RUN_ID);
     } finally {
       db.close();
     }
 
-    let dispatches = 0;
+    // A NEW invocation (this is the resume path) reads the row cold — no
+    // live in-memory evidence map from a prior call in this process.
+    const consumePrompts: string[] = [];
     const result = await runWorkflowSteps({
       target: FLOW_RUN_ID,
-      dispatcher: async () => {
-        dispatches++;
+      dispatcher: async (request) => {
+        consumePrompts.push(request.prompt);
         return { ok: true, text: "handled" };
       },
       summaryJudge: null,
     });
 
-    // Nothing ran on destroyed data, and the failure says WHY.
-    expect(dispatches).toBe(0);
-    expect(result.executed[0]?.ok).toBe(false);
-    expect(result.executed[0]?.summary).toContain("steps.produce.output");
-    expect(result.executed[0]?.summary).toContain("was NOT persisted");
-    expect(result.executed[0]?.summary).toContain("truncation marker");
+    // Every unit dispatched against the real chunk — nothing was lost, no
+    // paid step needs re-running, and the run completes normally.
+    expect(result.done).toBe(true);
+    expect(consumePrompts).toHaveLength(CHUNK_COUNT);
+    for (let i = 0; i < CHUNK_COUNT; i++) {
+      expect(consumePrompts.some((prompt) => prompt.includes(chunkText(i)))).toBe(true);
+    }
     const status = await getWorkflowStatus(FLOW_RUN_ID);
-    expect(status.workflow.steps[1]?.status).toBe("failed");
+    expect(status.workflow.steps[1]?.status).toBe("completed");
+    expect(status.run.status).toBe("completed");
   }, 30_000);
 });

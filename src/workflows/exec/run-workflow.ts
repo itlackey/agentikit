@@ -963,14 +963,10 @@ async function driveRun(
   /**
    * The COMPLETE in-memory evidence of every step THIS call has completed,
    * keyed by step id, preferred over the re-read row when the downstream scope
-   * is rebuilt below. The spine rows are re-read between steps, and
-   * `clipStepEvidenceForPersistence` (runtime/runs.ts) may have replaced an
-   * over-cap artifact with a truncation envelope on the way in — a bound on ONE
-   * SQLite row, not on what a run may promote (the exec per-pipe cap alone
-   * retains 8 MiB). Preferring the live value keeps the persistence bound
-   * invisible to the run that produced it. A LATER `akm workflow run` starts
-   * with an empty map and reads the rows, where a reference into a truncated
-   * artifact fails loudly by name (`isTruncatedEvidence`).
+   * is rebuilt below — avoiding a re-parse of a row this same invocation just
+   * wrote (step artifacts are persisted whole, so the two values agree; this
+   * is purely an avoided round trip, not a correctness dependency). A LATER
+   * `akm workflow run` starts with an empty map and reads the rows directly.
    *
    * Only steps some OTHER step's references NAME are stored (`referencedStepIds`
    * — the set-time filter): a step nothing downstream reads has no consumer to

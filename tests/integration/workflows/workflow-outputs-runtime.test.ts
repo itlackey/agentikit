@@ -42,7 +42,6 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { UsageError } from "../../../src/core/errors";
 import { getStateDbPath, openStateDatabase } from "../../../src/core/state-db";
 import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import * as RunOutputsModule from "../../../src/workflows/runtime/run-outputs";
@@ -192,67 +191,62 @@ describe("run-completion output resolution (B-18, B-19)", () => {
 
 // ── B-20, B-21, B-22: resolution failures roll back the completion ─────────
 
-describe("run-completion output resolution failures roll back (B-20…B-22, B-N13)", () => {
-  test("B-20: an output whose from resolves to a missing property rolls the completion back with WORKFLOW_OUTPUT_INVALID, leaving the step pending and the run active", async () => {
+describe("run-completion output resolution failures complete with a warning, never roll back (B-20…B-22, issue 5)", () => {
+  test("B-20: an output whose from resolves to a missing property is dropped and warned about; the run still completes, and a SIBLING output that DID resolve is still stored", async () => {
     const runId = randomUUID();
     const plan = planWithOutputs(freezeWorkflow(TWO_STEP_MD, "workflows/outputs-missing-prop.md"), {
       report: { from: "steps.summarize.output.missing" },
+      ok: { from: "steps.collect.output.total" },
     });
     seedRun(runId, plan);
     await completeCollect(runId, { output: { total: 5 } });
 
     const eventsBefore = countEvents();
-    let caught: unknown;
-    try {
-      await completeSummarize(runId, { output: { present: true } });
-    } catch (error) {
-      caught = error;
-    }
+    const outcome = await completeSummarize(runId, { output: { present: true } });
 
-    expect(caught).toBeInstanceOf(UsageError);
-    if (!(caught instanceof UsageError)) throw new Error("unreachable");
-    expect(caught.code).toBe<string>("WORKFLOW_OUTPUT_INVALID");
-    expect(caught.message).toContain("report");
+    // The run completes — the actual work is done, and re-dispatching the
+    // final step over an unresolved OUTPUT would be another paid call that
+    // fails identically on retry.
+    if (!("run" in outcome)) throw new Error("expected a WorkflowRunDetail, not a validation failure");
+    expect(outcome.run.status).toBe("completed");
+    expect(outcome.warnings?.some((w) => w.includes("report"))).toBe(true);
 
-    // Fail-before-mutation (B-N13): the step stays pending, the run stays
-    // active, and no event is appended for the failed completion attempt.
     const row = await withWorkflowRunsRepo((repo) => repo.getRunById(runId));
-    expect(row?.status).toBe("active");
-    expect(row?.current_step_id).toBe("summarize");
+    expect(row?.status).toBe("completed");
     const step = await withWorkflowRunsRepo((repo) => repo.getStep(runId, "summarize"));
-    expect(step?.status).toBe("pending");
-    expect(countEvents()).toBe(eventsBefore);
+    expect(step?.status).toBe("completed");
+    // The run genuinely finished, so the normal completion events still fire.
+    expect(countEvents()).toBeGreaterThan(eventsBefore);
+
+    // What DID resolve is still stored — only the bad output is missing.
+    const view = row as unknown as OutputsColumnView;
+    expect(JSON.parse(view.outputs_json as string)).toEqual({ ok: 5 });
   });
 
-  test("B-21: an output whose source step artifact was truncated at persistence fails loudly, naming the output and the truncation", async () => {
+  test("B-21: a huge output value (well over the FORMER 1 MiB evidence cap) resolves and is stored in full — no truncation any more (issue 1)", async () => {
     const runId = randomUUID();
-    const plan = planWithOutputs(freezeWorkflow(TWO_STEP_MD, "workflows/outputs-truncated.md"), {
+    const plan = planWithOutputs(freezeWorkflow(TWO_STEP_MD, "workflows/outputs-big.md"), {
       big: { from: "steps.collect.output" },
     });
     seedRun(runId, plan);
 
-    // Comfortably over WORKFLOW_MAX_EVIDENCE_JSON_BYTES (1 MiB): the SAME
-    // technique tests/integration/workflows/persistence-write-path.test.ts
-    // already uses to force `clipStepEvidenceForPersistence` to replace
-    // `evidence.output` with a marked truncation envelope.
     const huge = Array.from({ length: 4000 }, (_, i) => `${"x".repeat(512)}#${i}`);
+    expect(Buffer.byteLength(JSON.stringify(huge), "utf8")).toBeGreaterThan(1024 * 1024);
     await completeCollect(runId, { output: huge });
 
-    let caught: unknown;
-    try {
-      await completeSummarize(runId, { output: "done" });
-    } catch (error) {
-      caught = error;
-    }
+    const outcome = await completeSummarize(runId, { output: "done" });
+    if (!("run" in outcome)) throw new Error("expected a WorkflowRunDetail, not a validation failure");
+    expect(outcome.run.status).toBe("completed");
+    expect(outcome.warnings ?? []).toEqual([]);
 
-    expect(caught).toBeInstanceOf(UsageError);
-    if (!(caught instanceof UsageError)) throw new Error("unreachable");
-    expect(caught.code).toBe<string>("WORKFLOW_OUTPUT_INVALID");
-    expect(caught.message).toContain("big");
-    expect(caught.message.toLowerCase()).toContain("truncat");
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(runId));
+    const view = row as unknown as OutputsColumnView;
+    const outputs = JSON.parse(view.outputs_json as string) as { big: string[] };
+    expect(outputs.big).toHaveLength(4000);
+    expect(outputs.big).toEqual(huge);
   });
 
-  test("B-22: an output whose resolved value violates its declared schema fails, message carrying validateJsonSchemaSubset's errors", async () => {
+  test("B-22: an output whose resolved value violates its declared schema is dropped and warned about, without blocking completion", async () => {
     const runId = randomUUID();
     const plan = planWithOutputs(freezeWorkflow(TWO_STEP_MD, "workflows/outputs-schema-violation.md"), {
       changed_count: { from: "steps.collect.output.total", schema: { type: "integer", minimum: 0 } },
@@ -260,17 +254,14 @@ describe("run-completion output resolution failures roll back (B-20…B-22, B-N1
     seedRun(runId, plan);
     await completeCollect(runId, { output: { total: -5 } });
 
-    let caught: unknown;
-    try {
-      await completeSummarize(runId, { output: "done" });
-    } catch (error) {
-      caught = error;
-    }
+    const outcome = await completeSummarize(runId, { output: "done" });
+    if (!("run" in outcome)) throw new Error("expected a WorkflowRunDetail, not a validation failure");
+    expect(outcome.run.status).toBe("completed");
+    expect(outcome.warnings?.some((w) => w.includes("changed_count"))).toBe(true);
 
-    expect(caught).toBeInstanceOf(UsageError);
-    if (!(caught instanceof UsageError)) throw new Error("unreachable");
-    expect(caught.code).toBe<string>("WORKFLOW_OUTPUT_INVALID");
-    expect(caught.message).toContain("changed_count");
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(runId));
+    const view = row as unknown as OutputsColumnView;
+    expect(JSON.parse(view.outputs_json as string)).toEqual({});
   });
 });
 
