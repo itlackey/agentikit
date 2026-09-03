@@ -113,6 +113,12 @@ The `hint` field is present only when actionable remediation is available
 `ok === false` on the parsed stderr envelope or a non-zero exit code to
 detect failure. Scripts can rely on the exit code alone.
 
+Every success envelope carries `ok: true` alongside its result data (0.9.12+),
+so a caller branching on `.ok` sees the same field on both sides — success
+and failure — instead of `undefined` on success. A command that already
+computes its own `ok` from a graded outcome (e.g. `task run`'s exit-code
+mapping, `akm lint`, `akm extract`) keeps that value, `false` included.
+
 `env run`, `secret run`, and `migrate` preserve the spawned process's exact
 status and raw streams instead of replacing them with an akm failure envelope.
 `task run` maps completed, active, and disabled status to 0; blocked and failed
@@ -1517,13 +1523,14 @@ Subcommands:
 | --- | --- |
 | `get <key>` | Read one config key |
 | `list` | List current configuration |
-| `set <key> <value>` | Set one config key |
-| `unset <key>` | Unset an optional key, or a whole `embedding`/engine section |
+| `set <key> <value>` | Set one config key; prints the resulting config with `ok: true` |
+| `unset <key>` | Unset an optional key, or a whole `embedding`/engine section; prints the resulting config with `ok: true` |
 | `path` | Show paths to config, bundle, cache, and index. `--all` prints every path; without it, just the config path. Load-bearing: `config path` is the one subcommand the CLI still allows to run when the on-disk config itself fails to load, so you always have a way to locate a broken config. |
 
-`set` and `unset` accept `--silent` to suppress the post-write config dump on
-stdout (the write still happens and errors still print) — use it from hooks
-and CI scripts.
+`set` and `unset` accept `--silent` to suppress the post-write config dump
+entirely — nothing is printed on stdout, and the exit code is the status (the
+write still happens and errors still print) — use it from hooks and CI
+scripts.
 
 > **Removed in 0.9.0:** `akm config enable`/`akm config disable`. Use
 > `akm registry add|remove` to toggle a registry, the general mechanism.
