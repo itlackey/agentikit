@@ -374,7 +374,7 @@ function bindStepSections(
     if (!declaredIds.has(h.text)) {
       errors.push({
         line: h.line,
-        message: `Unexpected level-2 heading "## ${h.text}" on line ${h.line} — no step "${h.text}" is declared in frontmatter "steps:". Level-2 headings must exactly match a declared step id.`,
+        message: `Unexpected level-2 heading "## ${h.text}" on line ${h.line} — no step "${h.text}" is declared in frontmatter "steps:". Level-2 headings must exactly match a declared step id. To document something that is not a step, use a level-3 heading.`,
       });
       continue;
     }
