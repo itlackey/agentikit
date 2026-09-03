@@ -13,6 +13,22 @@ import { describe, expect, test } from "bun:test";
 import { setConfigValue } from "../../../src/commands/config-cli";
 import type { AkmConfig } from "../../../src/core/config/config";
 import { ConfigError, NotFoundError, UsageError } from "../../../src/core/errors";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../../src/core/warn";
+
+/** Run `fn`, capturing every warn() line it produces. */
+function captureWarnings(fn: () => void): string[] {
+  const warnings: string[] = [];
+  _resetWarnOnceForTests();
+  _setWarnSinkForTests((level, args) => {
+    if (level === "warn") warnings.push(args.map(String).join(" "));
+  });
+  try {
+    fn();
+    return warnings;
+  } finally {
+    _setWarnSinkForTests(undefined);
+  }
+}
 
 // #13's "error class exit-code classification" describe block was DELETED
 // here (D2, Phase 2 triage): all 4 tests asserted only `err.name` and
@@ -65,28 +81,29 @@ describe("error hint rendering (#8)", () => {
 describe("config-cli setConfigValue sources error message (#16)", () => {
   const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
 
-  test("invalid sources value shows 'sources' not 'stashes' in error", () => {
-    try {
-      setConfigValue(base, "sources", "not-json");
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(UsageError);
-      const msg = (err as UsageError).message;
-      expect(msg).toContain("sources");
-      expect(msg).not.toContain("stashes");
-    }
+  // #16 (guard-audit) supersedes the original #16's premise here: `config
+  // set` on an unrecognized key no longer rejects at all (a second gate on
+  // an explicitly typed command), so there is no error message left to
+  // mis-name. The surviving regression value — "sources" is never confused
+  // with "stashes" — is now pinned on the warning instead.
+  test("unrecognized 'sources' warns naming 'sources', not 'stashes'", () => {
+    let result!: ReturnType<typeof setConfigValue>;
+    const warnings = captureWarnings(() => {
+      result = setConfigValue(base, "sources", "not-json");
+    });
+    expect((result as unknown as Record<string, unknown>).sources).toBe("not-json");
+    expect(warnings.some((w) => w.includes("sources"))).toBe(true);
+    expect(warnings.some((w) => w.includes("stashes"))).toBe(false);
   });
 
-  test("retired stashes path is rejected without aliasing to sources", () => {
-    try {
-      setConfigValue(base, "stashes", "not-json");
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(UsageError);
-      const msg = (err as UsageError).message;
-      expect(msg).toContain("Unknown config key: stashes");
-      expect(msg).not.toContain("Invalid JSON array for sources");
-    }
+  test("retired stashes path warns naming 'stashes', not aliased to sources", () => {
+    let result!: ReturnType<typeof setConfigValue>;
+    const warnings = captureWarnings(() => {
+      result = setConfigValue(base, "stashes", "not-json");
+    });
+    expect((result as unknown as Record<string, unknown>).stashes).toBe("not-json");
+    expect(warnings.some((w) => w.includes("stashes"))).toBe(true);
+    expect(warnings.some((w) => w.includes("Invalid JSON array for sources"))).toBe(false);
   });
 
   test("invalid array element shows dotted zod indexing ('registries.0') — sources key retired (#37)", () => {

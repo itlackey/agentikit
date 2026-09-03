@@ -1,6 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { getConfigValue, listConfig, setConfigValue, unsetConfigValue } from "../src/commands/config-cli";
 import type { AkmConfig } from "../src/core/config/config";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
+
+/** Run `fn`, capturing every warn() line it produces. */
+function captureWarnings(fn: () => void): string[] {
+  const warnings: string[] = [];
+  _resetWarnOnceForTests();
+  _setWarnSinkForTests((level, args) => {
+    if (level === "warn") warnings.push(args.map(String).join(" "));
+  });
+  try {
+    fn();
+    return warnings;
+  } finally {
+    _setWarnSinkForTests(undefined);
+  }
+}
 
 describe("config CLI helpers", () => {
   test("listConfig omits unconfigured embedding and engines", () => {
@@ -64,11 +80,22 @@ describe("config CLI helpers", () => {
     ).toThrow(/Invalid input/);
   });
 
-  test("setConfigValue rejects the retired sources key outright (#37)", () => {
+  // #16 (guard-audit): `config set` on an unrecognized key — including a
+  // retired one like `sources` — used to reject outright. That refusal is a
+  // second gate on an explicitly typed command with no override; it now
+  // warns and stores the value (JSON-decoded on a best-effort basis) rather
+  // than blocking the write. `config get`/`config unset` still refuse an
+  // unknown key (see "unknown-key hint" tests below).
+  test("setConfigValue warns and stores an unrecognized retired key like sources instead of rejecting it (#37)", () => {
     const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
-    expect(() =>
-      setConfigValue(base, "sources", '[{"type":"website","url":"https://example.com","writable":true}]'),
-    ).toThrow(/Unknown config key: sources/);
+    let result!: ReturnType<typeof setConfigValue>;
+    const warnings = captureWarnings(() => {
+      result = setConfigValue(base, "sources", '[{"type":"website","url":"https://example.com","writable":true}]');
+    });
+    expect((result as unknown as Record<string, unknown>).sources).toEqual([
+      { type: "website", url: "https://example.com", writable: true },
+    ]);
+    expect(warnings.some((w) => w.includes("sources") && w.includes("not a known config key"))).toBe(true);
   });
 
   test("setConfigValue rejects writable non-filesystem bundles through config CLI", () => {
@@ -214,9 +241,14 @@ describe("config CLI helpers", () => {
     expect(withTemp.engines?.local?.temperature).toBe(0.5);
   });
 
-  test("setConfigValue rejects keys not in the schema", () => {
+  test("setConfigValue warns and stores a key not in the schema instead of rejecting it (#16)", () => {
     const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
-    expect(() => setConfigValue(base, "totally.unknown.path", "x")).toThrow("Unknown config key");
+    let result!: ReturnType<typeof setConfigValue>;
+    const warnings = captureWarnings(() => {
+      result = setConfigValue(base, "totally.unknown.path", "x");
+    });
+    expect((result as unknown as { totally?: { unknown?: { path?: string } } }).totally?.unknown?.path).toBe("x");
+    expect(warnings.some((w) => w.includes("totally.unknown.path"))).toBe(true);
   });
 
   test("setConfigValue rejects non-integer embedding dimension in JSON", () => {
@@ -339,10 +371,15 @@ describe("nested schema keys are all settable via zod walker (#455)", () => {
 // ── #460: unknown-key hint references current schema (no legacy `agent`) ────
 
 describe("unknown-key hint stays in sync with schema (#460)", () => {
+  // `config get`/`config unset` still refuse an unknown key (#16 only
+  // degrades `config set`, per the module doc: a typo on a read/remove
+  // silently returns nothing or no-ops, which is worse than telling the
+  // user immediately) — so the schema-derived hint is exercised through
+  // `getConfigValue` here.
   test("unknown top-level key error lists schema-derived keys and does not mention retired profiles", () => {
     const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
     try {
-      setConfigValue(base, "totally.unknown.path", "x");
+      getConfigValue(base, "totally.unknown.path");
       throw new Error("should have thrown");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -393,11 +430,16 @@ describe("unknown-key hint names a replacement for retired pre-0.9 keys", () => 
 // #462 strict typo-catching on source/registry entries: unknown fields are now
 // preserved rather than rejected. Known fields are still type-validated.
 describe("registries/sources tolerate unknown fields at set time (lenient policy)", () => {
-  test("set sources is rejected — the key retired with the 0.9.0 bundles cutover (#37)", () => {
+  test("set sources warns and stores instead of rejecting — the key retired with the 0.9.0 bundles cutover (#37/#16)", () => {
     const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
-    expect(() =>
-      setConfigValue(base, "sources", '[{"type":"git","name":"x","url":"https://example.com/r.git"}]'),
-    ).toThrow(/Unknown config key: sources/);
+    let result!: ReturnType<typeof setConfigValue>;
+    const warnings = captureWarnings(() => {
+      result = setConfigValue(base, "sources", '[{"type":"git","name":"x","url":"https://example.com/r.git"}]');
+    });
+    expect((result as unknown as Record<string, unknown>).sources).toEqual([
+      { type: "git", name: "x", url: "https://example.com/r.git" },
+    ]);
+    expect(warnings.some((w) => w.includes("sources"))).toBe(true);
   });
 
   test("set registries tolerates and preserves an unknown field on a registry entry", () => {

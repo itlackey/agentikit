@@ -25,6 +25,7 @@ import { z } from "zod";
 import { isRecord } from "../common";
 import { UsageError } from "../errors";
 import { hasRegistryUrlCredentials, REGISTRY_CREDENTIALS_UNSUPPORTED } from "../registry-url";
+import { warnOnce } from "../warn";
 import { AkmConfigBaseSchema, type AkmConfigShape, EngineConfigSchema, listTopLevelConfigKeys } from "./config-schema";
 import { deepMergeConfig } from "./deep-merge";
 
@@ -203,8 +204,18 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
   const symbolicApiKey =
     (path[0] === "engines" && path[2] === "apiKey") ||
     (path[0] === "embedding" && path.length === 2 && path[1] === "apiKey");
-  if (!schema && !symbolicApiKey) {
-    throw new UsageError(`Unknown config key: ${dotted}`, "INVALID_FLAG_VALUE", unknownKeyHint(dotted));
+  // An unknown key is not a config-load hazard the schema needs to reject —
+  // it's a human explicitly typing `config set` right now. `get`/`unset`
+  // still refuse an unknown key (a typo there silently no-ops or reads
+  // nothing back, which is worse than telling the user immediately); `set`
+  // stores the value and warns, matching akm's own forward-compatible
+  // passthrough for a NEWER version's config keys.
+  const isUnknownKey = !schema && !symbolicApiKey;
+  if (isUnknownKey) {
+    warnOnce(
+      `config-set:unknown-key:${dotted}`,
+      `"${dotted}" is not a known config key; storing it anyway. Run \`akm config get ${dotted}\` to confirm it round-trips as expected.`,
+    );
   }
 
   const judgmentObjectPath = isTriageJudgmentPath(path);
@@ -215,7 +226,9 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
         ? parseObjectPatch(raw, dotted)
         : symbolicApiKey
           ? raw
-          : coerceForSchema(schema as z.ZodTypeAny, raw, dotted);
+          : isUnknownKey
+            ? bestEffortJsonValue(raw)
+            : coerceForSchema(schema as z.ZodTypeAny, raw, dotted);
 
   // Registry URL credentials are not persistable through an explicit `config
   // set registries ...`, the same way a literal apiKey is not persistable
@@ -247,7 +260,9 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
         ? /^\$[A-Za-z_][A-Za-z0-9_]*$|^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(raw)
           ? { success: true as const, data: value }
           : { success: false as const, error: { issues: [{ path: [], message: `apiKey must be $VAR or \${VAR}` }] } }
-        : (schema as z.ZodTypeAny).safeParse(candidate);
+        : isUnknownKey
+          ? { success: true as const, data: value }
+          : (schema as z.ZodTypeAny).safeParse(candidate);
   if (!parsed.success) {
     const lines = parsed.error.issues
       .map((i) => {
@@ -368,6 +383,21 @@ function rejectRegistryCredentialValue(value: unknown, dotted: string): void {
         REGISTRY_CREDENTIALS_UNSUPPORTED,
       );
     }
+  }
+}
+
+/**
+ * Coerce an unknown-key `config set` value the way a human typing it almost
+ * certainly means: JSON when it parses as JSON (so `true`/`42`/`{"a":1}`
+ * round-trip as their real types, not string literals), the raw string
+ * otherwise. There is no schema to guide coercion for a key this binary
+ * doesn't recognize, so this is a best-effort guess, not a validated parse.
+ */
+function bestEffortJsonValue(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
   }
 }
 
