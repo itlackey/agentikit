@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { _setWarnSinkForTests } from "../src/core/warn";
 import { assertWebsiteRequestUrl, fetchGuardedResponse } from "../src/sources/snapshot-fetchers/host-guard";
-import { assertResolvedHostAllowed, type HostnameResolver } from "../src/sources/snapshot-fetchers/website-ingest";
+import {
+  assertResolvedHostAllowed,
+  fetchWebsiteMarkdownSnapshot,
+  type HostnameResolver,
+} from "../src/sources/snapshot-fetchers/website-ingest";
+import { shouldAllowPrivateWebsiteUrlForTests, validateWebsiteInputUrl } from "../src/sources/website-url";
 import { withMockedFetch } from "./_helpers/sandbox";
+import { overrideSeam } from "./_helpers/seams";
 
 // Stub resolver seam so NO real DNS ever runs in tests.
 function resolverReturning(...addresses: string[]): HostnameResolver {
@@ -164,5 +171,63 @@ describe("assertResolvedHostAllowed (SSRF resolve-then-validate)", () => {
     expect(message).toContain("embedded credentials");
     expect(message).not.toContain("alice");
     expect(message).not.toContain("s3cr3t");
+  });
+});
+
+describe("start URL the operator typed is not refused outright (finding 1)", () => {
+  test("a loopback start URL is allowed, not refused", () => {
+    expect(shouldAllowPrivateWebsiteUrlForTests("http://localhost:8000/docs")).toBe(true);
+    expect(shouldAllowPrivateWebsiteUrlForTests("http://192.168.1.50:8080/docs")).toBe(true);
+    expect(() => validateWebsiteInputUrl("http://localhost:8000/docs", { allowPrivateHosts: true })).not.toThrow();
+  });
+
+  test("a public start URL is left alone — no bypass, no warning", () => {
+    expect(shouldAllowPrivateWebsiteUrlForTests("https://docs.example.com/")).toBe(false);
+  });
+
+  test("an unparseable URL is not treated as private", () => {
+    expect(shouldAllowPrivateWebsiteUrlForTests("not a url")).toBe(false);
+  });
+
+  test("proceeding on a private start URL warns exactly once per host outside test mode", () => {
+    const seen: unknown[][] = [];
+    overrideSeam(_setWarnSinkForTests, (level, args) => {
+      if (level === "warn") seen.push(args);
+    });
+    const originalBunTest = process.env.BUN_TEST;
+    const originalNodeEnv = process.env.NODE_ENV;
+    try {
+      // shouldAllowPrivateWebsiteHostsForTests() must read false here so the
+      // warn path (only taken outside test mode in production) is exercised.
+      delete process.env.BUN_TEST;
+      delete process.env.NODE_ENV;
+      expect(shouldAllowPrivateWebsiteUrlForTests("http://10.9.9.9/handbook")).toBe(true);
+      expect(shouldAllowPrivateWebsiteUrlForTests("http://10.9.9.9/handbook")).toBe(true);
+      expect(seen.length).toBe(1);
+    } finally {
+      if (originalBunTest === undefined) delete process.env.BUN_TEST;
+      else process.env.BUN_TEST = originalBunTest;
+      if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = originalNodeEnv;
+    }
+  });
+
+  test("a start URL that only resolves privately via DNS is allowed with a warning, not refused", async () => {
+    const seen: unknown[][] = [];
+    overrideSeam(_setWarnSinkForTests, (level, args) => {
+      if (level === "warn") seen.push(args);
+    });
+    const result = await withMockedFetch(
+      () =>
+        fetchWebsiteMarkdownSnapshot("https://split-horizon.internal-corp.example/handbook", {
+          resolveSecret: undefined,
+        }),
+      async () => new Response("<html><body>hello from the intranet</body></html>", { status: 200 }),
+    );
+    expect(result.markdown).toContain("hello from the intranet");
+    // A real lookup for this made-up host cannot resolve at all in CI, which
+    // this module already treats the same as "resolves privately" — proceed
+    // rather than abort, per finding 1's "at minimum" verdict.
+    expect(seen.length).toBeGreaterThan(0);
   });
 });

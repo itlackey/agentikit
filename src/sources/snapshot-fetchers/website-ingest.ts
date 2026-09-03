@@ -15,7 +15,7 @@ import {
 } from "../../core/common";
 import type { SourceConfigEntry } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
-import { warn, warnVerbose } from "../../core/warn";
+import { warn, warnOnce, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
 import {
@@ -514,20 +514,21 @@ export async function fetchWebsiteMarkdownSnapshot(
 ): Promise<WebsiteMarkdownSnapshot> {
   const normalizedUrl = validateWebsiteInputUrl(rawUrl, { allowPrivateHosts: options?.allowPrivateHosts });
   const parsedUrl = new URL(normalizedUrl);
+  const allowPrivateHosts = await resolveAllowPrivateStartHost(parsedUrl, options?.allowPrivateHosts);
   const stashDir = resolveFetcherStashDir(options?.stashDir);
   const context: FetcherContext = {
     stashDir: stashDir ?? "",
     timeoutMs: options?.timeoutMs ?? 15_000,
     signal: options?.signal,
     ...(options?.resolveSecret ? { resolveSecret: options.resolveSecret } : {}),
-    ...(options?.allowPrivateHosts ? { allowPrivateHosts: true } : {}),
+    ...(allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   };
 
   const snapshot = await dispatchSnapshotFetchers(parsedUrl, context, stashDir);
   if (snapshot) return websiteMarkdownSnapshotFromResult(snapshot);
 
   const fetchedResponse = await fetchWebsiteResponse(normalizedUrl, 0, {
-    allowPrivateHosts: options?.allowPrivateHosts,
+    allowPrivateHosts,
     signal: options?.signal,
   });
   const finalUrl = normalizeCrawlUrl(fetchedResponse.finalUrl) ?? normalizedUrl;
@@ -546,7 +547,7 @@ export async function fetchWebsiteMarkdownSnapshot(
   }
 
   const fetched = await websitePageFromResponse(fetchedResponse, normalizedUrl, {
-    allowPrivateHosts: options?.allowPrivateHosts,
+    allowPrivateHosts,
     signal: options?.signal,
   });
   if (!fetched) throw new UsageError(`No content could be fetched from ${normalizedUrl}`);
@@ -724,6 +725,35 @@ async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL, r
   }
 }
 
+/**
+ * Decide whether to treat a fetch's start host — the URL an operator directly
+ * typed or configured (`akm bundle add`, `akm knowledge add`, a crawl's own
+ * start URL), never a link discovered while crawling — as private for this
+ * operation. `requested` (already true when the URL itself was
+ * loopback/private-literal, per `shouldAllowPrivateWebsiteUrlForTests`) wins
+ * outright. Otherwise, resolve the host: a name that only turns out to be
+ * private via DNS (a corporate wiki behind split-horizon DNS, a VPN hostname)
+ * would otherwise abort with no escape hatch even though the operator named
+ * this exact host. Callers scope the resulting bypass to same-origin work
+ * only — a link discovered mid-crawl is restricted to the start URL's origin
+ * before it ever reaches a guard, so this never extends trust to a host the
+ * fetched content merely points at.
+ */
+async function resolveAllowPrivateStartHost(start: URL, requested: boolean | undefined): Promise<boolean> {
+  if (requested) return true;
+  try {
+    await assertResolvedHostAllowed(start.hostname);
+    return false;
+  } catch {
+    warnOnce(
+      `website-private-start-host:${start.origin}`,
+      `[akm] ${start.origin} is not a publicly routable host, but you added it as a source directly — proceeding. ` +
+        "Links to other hosts found in its content are still checked.",
+    );
+    return true;
+  }
+}
+
 async function crawlWebsite(
   startUrl: string,
   options: {
@@ -748,6 +778,7 @@ async function crawlWebsite(
 ): Promise<WebsitePage[]> {
   const start = new URL(normalizeSiteUrl(startUrl));
   const allowedOrigin = start.origin;
+  const allowPrivateHosts = await resolveAllowPrivateStartHost(start, options.allowPrivateHosts);
   const queue: Array<{ url: string; rawUrl: string; depth: number; deferrals: number }> = [
     { url: start.toString(), rawUrl: options.rawStartUrl ?? start.toString(), depth: 0, deferrals: 0 },
   ];
@@ -779,9 +810,7 @@ async function crawlWebsite(
   const robots =
     options.respectRobots === false
       ? createAllowAllRobotsPolicy()
-      : createRobotsPolicy((robotsUrl) =>
-          loadRobotsTxt(robotsUrl, { allowPrivateHosts: options.allowPrivateHosts, signal: crawlSignal }),
-        );
+      : createRobotsPolicy((robotsUrl) => loadRobotsTxt(robotsUrl, { allowPrivateHosts, signal: crawlSignal }));
 
   await assertStartUrlAllowedByRobots(robots, start, options.rawStartUrl);
 
@@ -796,7 +825,7 @@ async function crawlWebsite(
   // whole site's manifest.
   if (isOriginRootUrl(start)) {
     const manifest = await fetchLlmsManifest(start, robots, {
-      allowPrivateHosts: options.allowPrivateHosts,
+      allowPrivateHosts,
       signal: crawlSignal,
     });
     if (manifest) {
@@ -872,7 +901,7 @@ async function crawlWebsite(
     fetchAttempts++;
 
     const fetched = await fetchWebsitePage(decision.fetchUrl, {
-      allowPrivateHosts: options.allowPrivateHosts,
+      allowPrivateHosts,
       robots,
       signal: crawlSignal,
     });
