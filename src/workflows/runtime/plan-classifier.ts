@@ -42,12 +42,20 @@ export function classifyWorkflowRunPlan(row: {
       support: "unsupported-version",
       irVersion: row.plan_ir_version,
       // §3.2's exact complete-or-abandon policy string (A-N2): pre-irVersion-5
-      // plans keep status/list/abandon working but can no longer execute.
+      // plans keep status/list/abandon working but can no longer execute. A
+      // version ABOVE the current one (#919) is a distinct situation — never
+      // an "upgrade" problem — so it gets its own text below rather than
+      // being folded into the pre-5 wording.
       error:
-        `Workflow run ${runId} was frozen as workflow plan irVersion ${row.plan_ir_version}; pre-irVersion-5 ` +
-        `plans cannot execute after the 0.9.2 upgrade. Complete them before upgrading, or run ` +
-        `'akm workflow abandon ${runId}' and start a new run from the authored workflow. ` +
-        `'akm workflow status' and 'akm workflow list' still work on this run.`,
+        typeof row.plan_ir_version === "number" && row.plan_ir_version < WORKFLOW_IR_V5_VERSION
+          ? `Workflow run ${runId} was frozen as workflow plan irVersion ${row.plan_ir_version}; pre-irVersion-5 ` +
+            `plans cannot execute after the 0.9.2 upgrade. Complete them before upgrading, or run ` +
+            `'akm workflow abandon ${runId}' and start a new run from the authored workflow. ` +
+            `'akm workflow status' and 'akm workflow list' still work on this run.`
+          : `Workflow run ${runId} was frozen with workflow plan irVersion ${row.plan_ir_version}, which this akm ` +
+            `(irVersion ${WORKFLOW_IR_V5_VERSION}) does not understand; it was probably written by a newer akm. ` +
+            `Complete it with that akm version, or run 'akm workflow abandon ${runId}' and start a new run from ` +
+            `the authored workflow. 'akm workflow status' and 'akm workflow list' still work on this run.`,
     };
   }
   if (row.plan_ir_version !== WORKFLOW_IR_V5_VERSION) {

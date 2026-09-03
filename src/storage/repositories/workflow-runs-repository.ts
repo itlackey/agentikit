@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { randomUUID } from "node:crypto";
-import { UsageError } from "../../core/errors";
+import { NotFoundError, UsageError } from "../../core/errors";
 import { openStateDatabase, withImmediateTransaction } from "../../core/state-db";
 import { borrowScopedStateDb, withStateDbScope } from "../../core/state-db-scope";
 import type { WorkflowRunStatus, WorkflowRunStepStatus } from "../../sources/types";
@@ -415,6 +415,30 @@ export class WorkflowRunsRepository {
       | { 1: number }
       | undefined;
     return !!row;
+  }
+
+  /**
+   * Resolve a run-id prefix (#919) to the single run id it identifies.
+   * Mirrors `resolveProposalId`'s UUID-prefix precedent
+   * (`commands/proposal/repository.ts`): exactly one match wins, several
+   * matches is a `UsageError` naming every candidate, none is a
+   * `NotFoundError`. Callers are expected to have already checked the input
+   * looks id-shaped (see `WORKFLOW_RUN_ID_PREFIX_PATTERN` in `runtime/runs.ts`)
+   * — this method itself does not require it, it just matches by SQL prefix.
+   */
+  resolveRunIdPrefix(prefix: string): string {
+    const escaped = prefix.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const rows = this.db
+      .prepare("SELECT id FROM workflow_runs WHERE id LIKE ? ESCAPE '\\' ORDER BY id ASC")
+      .all(`${escaped}%`) as Array<{ id: string }>;
+    if (rows.length === 1) return rows[0]!.id;
+    if (rows.length > 1) {
+      throw new UsageError(
+        `Ambiguous workflow run id prefix "${prefix}" — matches: ${rows.map((r) => r.id).join(", ")}`,
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    throw new NotFoundError(`Workflow run "${prefix}" not found.`, "WORKFLOW_NOT_FOUND");
   }
 
   listRuns(filter: ListRunsFilter): WorkflowRunRow[] {

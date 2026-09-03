@@ -225,6 +225,13 @@ export interface WorkflowNextResult {
   done?: true;
   autoStarted?: true;
   /**
+   * Present when a workflow REF (not a run id) resolved to an existing
+   * active run instead of starting a new one (#919's silent-resume report):
+   * the #485 concurrency guard's ref-to-active-run attach is unchanged, this
+   * just makes it visible. Never set together with `autoStarted`.
+   */
+  resumed?: true;
+  /**
    * Non-fatal notices produced when THIS invocation created the run (e.g. the
    * implicit engine fallback). Only present on the auto-start path — a resume
    * never re-surfaces a decision it did not make.
@@ -481,14 +488,15 @@ export async function listWorkflowRuns(input?: {
 export async function getNextWorkflowStep(
   specifier: string,
   params?: Record<string, unknown>,
-  options?: { parameterFlags?: readonly WorkflowParameterFlag[] },
+  options?: { parameterFlags?: readonly WorkflowParameterFlag[]; newRun?: boolean },
 ): Promise<WorkflowNextResult> {
   return withWorkflowRunsRepo(async (repo) => {
-    const { run, autoStarted, startWarnings } = await resolveRunSpecifier(
+    const { run, autoStarted, resumed, startWarnings } = await resolveRunSpecifier(
       repo,
       specifier,
       params,
       options?.parameterFlags,
+      options?.newRun,
     );
     const steps = readWorkflowRunSteps(repo, run.id);
     const plan = requireExecutableWorkflowPlan(run);
@@ -496,6 +504,7 @@ export async function getNextWorkflowStep(
     return {
       ...projectNextResult(run, steps),
       ...(autoStarted ? { autoStarted: true as const } : {}),
+      ...(resumed ? { resumed: true as const } : {}),
       ...(startWarnings?.length ? { startWarnings } : {}),
     };
   });
@@ -948,10 +957,19 @@ async function resolveRunSpecifier(
   specifier: string,
   params?: Record<string, unknown>,
   parameterFlags?: readonly WorkflowParameterFlag[],
-): Promise<{ run: WorkflowRunRow; autoStarted: boolean; startWarnings?: string[] }> {
+  forceNew?: boolean,
+): Promise<{ run: WorkflowRunRow; autoStarted: boolean; resumed?: true; startWarnings?: string[] }> {
   const hasParameters = (params && Object.keys(params).length > 0) || (parameterFlags?.length ?? 0) > 0;
-  const explicitRun = repo.getRunById(specifier);
+  const explicitRun = repo.getRunById(resolveRunIdOrPrefix(repo, specifier));
   if (explicitRun) {
+    // `--new` starts a fresh run FROM A REF; it never makes sense against a
+    // run id (or an id prefix), which already names the run to act on (#919).
+    if (forceNew) {
+      throw new UsageError(
+        `--new starts a fresh run from a workflow ref; "${specifier}" already names a run id.`,
+        "INVALID_FLAG_VALUE",
+      );
+    }
     if (hasParameters) {
       throw new UsageError(
         `Workflow parameter flags can only be used when starting a new run, not with existing run id "${specifier}".`,
@@ -964,7 +982,7 @@ async function resolveRunSpecifier(
   const exactRef = specifier.trim();
   const parsedExact = parseBundleRef(exactRef);
   const qualifiedExact = parsedExact.bundle !== undefined && parsedExact.fragment === undefined;
-  const detached = qualifiedExact ? repo.getActiveRunRowForScope(exactRef, scopeKey) : undefined;
+  const detached = qualifiedExact && !forceNew ? repo.getActiveRunRowForScope(exactRef, scopeKey) : undefined;
 
   let ref: string;
   try {
@@ -974,23 +992,28 @@ async function resolveRunSpecifier(
       if (hasParameters) {
         throw new UsageError(`Workflow parameter flags can only be set on a new run; ${specifier} is already active.`);
       }
-      return { run: detached, autoStarted: false };
+      return { run: detached, autoStarted: false, resumed: true };
     }
     if (error instanceof NotFoundError && !specifier.includes(":") && !specifier.includes("/")) {
       throw new NotFoundError(`Workflow run or workflow "${specifier}" not found.`, "WORKFLOW_NOT_FOUND");
     }
     throw error;
   }
-  const active = repo.getActiveRunRowForScope(await workflowRunRefSet(ref, exactRef), scopeKey);
+  const active = forceNew ? undefined : repo.getActiveRunRowForScope(await workflowRunRefSet(ref, exactRef), scopeKey);
   if (active) {
     if (hasParameters) {
       throw new UsageError(`Workflow parameter flags can only be set on a new run; ${ref} is already active.`);
     }
-    return { run: active, autoStarted: false };
+    return { run: active, autoStarted: false, resumed: true };
   }
 
+  // `force` (#485's own escape hatch) is what lets `--new` create a second
+  // active run for this (ref, scope) pair instead of the concurrency guard
+  // refusing it — the caller explicitly asked for a fresh run, so the guard
+  // that exists to catch an ACCIDENTAL second run does not apply (#919).
   const started = await startWorkflowRun(ref, params ?? {}, {
     ...(parameterFlags !== undefined ? { parameterFlags } : {}),
+    ...(forceNew ? { force: true } : {}),
   });
   return {
     run: readWorkflowRun(repo, started.run.id),
@@ -1023,8 +1046,43 @@ async function workflowRunRefSet(canonicalRef: string, exactRef: string): Promis
   return [...refs];
 }
 
+/**
+ * A workflow run id (or an accepted prefix of one, #919) is hex digits and
+ * hyphens, 8+ characters. A workflow ref always contains at least one
+ * character outside that set (a `/` path segment, at minimum), so this
+ * never mistakes a ref for an id — matching input is ALWAYS resolved as an
+ * id/prefix, never falls through to ref resolution.
+ */
+const RUN_ID_PREFIX_PATTERN = /^[0-9a-f-]{8,}$/;
+
+/**
+ * Resolve `specifier` to an exact run id: unchanged when it already is one,
+ * the prefix's unique match when it looks like an id-shaped prefix (throws
+ * `UsageError`/`NotFoundError` per {@link WorkflowRunsRepository.resolveRunIdPrefix}
+ * on ambiguity/no-match), unchanged otherwise (a workflow ref, left for the
+ * caller to resolve as such).
+ */
+function resolveRunIdOrPrefix(repo: WorkflowRunsRepository, specifier: string): string {
+  if (repo.hasRun(specifier)) return specifier;
+  if (!RUN_ID_PREFIX_PATTERN.test(specifier)) return specifier;
+  return repo.resolveRunIdPrefix(specifier);
+}
+
+/**
+ * Resolve `specifier` to a run id for CLI verbs that accept EITHER a run id
+ * (or prefix) or a workflow ref (`status`, #919): the exact/unique-prefix id
+ * when it resolves, `undefined` when `specifier` is not id-shaped at all —
+ * the signal callers use to fall through to ref-based resolution.
+ */
+export async function resolveWorkflowRunTarget(specifier: string): Promise<string | undefined> {
+  if (await hasWorkflowRun(specifier)) return specifier;
+  if (!RUN_ID_PREFIX_PATTERN.test(specifier)) return undefined;
+  return withWorkflowRunsRepo((repo) => repo.resolveRunIdPrefix(specifier));
+}
+
 function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowRunRow {
-  const run = repo.getRunById(runId);
+  const resolvedId = resolveRunIdOrPrefix(repo, runId);
+  const run = repo.getRunById(resolvedId);
   if (!run) {
     throw new NotFoundError(`Workflow run "${runId}" not found.`, "WORKFLOW_NOT_FOUND");
   }
