@@ -25,6 +25,8 @@ describe("akm models copy-defaults", () => {
           overwritten: false,
           shape: "models",
           schemaVersion: 1,
+          // #918: passthrough success envelopes now carry ok: true.
+          ok: true,
         });
         expect(fs.readFileSync(target, "utf8")).toBe(readInstalledModelMapText());
 
