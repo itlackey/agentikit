@@ -23,6 +23,7 @@
 import fs from "node:fs";
 import { prepareCommandInvocation } from "../../commands/command/command-execution";
 import { UsageError } from "../../core/errors";
+import { warn } from "../../core/warn";
 import type { TaskV3SourceDocument } from "../source-v3";
 import {
   base,
@@ -107,16 +108,18 @@ export async function prepareTaskV3Execution(
   }
   if (target.kind === "workflow") {
     // Stays reachable — task source v4 still has a top-level env: (P4-N4).
+    //
+    // Guard-audit finding 11 (docs/plans/guard-audit.md): this used to abort
+    // the task outright. env: on a workflow target is real authored intent
+    // the durable workflow runtime does not consume, not a malformed
+    // document — dropping it and running the workflow anyway (with a
+    // warning naming the field, mirroring the untranslated-field pattern in
+    // integrations/agent/execution-lowering.ts) serves the operator better
+    // than refusing to run at all.
     if (Object.keys(environment).length > 0) {
-      // P4 (docs/plans/specs/p4-deletions-closeout.md §5.5, row P-04): PRESERVED,
-      // not re-coded — tests/integration/tasks-with-classification-characterization.test.ts's
-      // P-04 block pins this exact code (CONVERT, not FLIP, per §7.2 F-A2.8:
-      // "the P-04 block ... stays reachable and stays pinned"). §5.2's target
-      // table predicted all 3 of this file's remaining sites → COMPOSITION_INVALID;
-      // this is the recorded deviation for the one site a preservation gate blocks.
-      throw new UsageError(
-        "Task workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
-        "INVALID_FLAG_VALUE",
+      warn(
+        "[akm] Task %s: env: is not translated for a workflow target and will be ignored; the durable workflow runtime does not consume it. Use a command target, or drop env:.",
+        context.taskRef,
       );
     }
     const resolved = await resolvedOwnedAsset(qualified, "workflow", context);

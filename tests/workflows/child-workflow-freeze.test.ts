@@ -333,7 +333,12 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
     expect(fields.inputBindings).toEqual([{ kind: "literal", name: "scope", value: "from-v4-task" }]);
   });
 
-  test("B-15: a task with env: on a workflow target still rejects, byte-unchanged (PRESERVE)", async () => {
+  // Finding 11 (guard-audit): env: on a task's workflow target used to
+  // reject the run outright — reversing the prior B-15 PRESERVE decision.
+  // env: is real authored intent the durable workflow runtime does not
+  // consume, not a malformed document; it is now dropped (with a warning)
+  // and the workflow runs, same shape as B-12/B-14 above.
+  test("B-15: a task with env: on a workflow target runs anyway, ignoring env: (finding 11)", async () => {
     writeChild();
     write(
       "tasks/v4-env-wrapper.yml",
@@ -342,14 +347,14 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
     writeParent("v4-env-wrapped", ["      - id: dispatch", "        uses: tasks/v4-env-wrapper"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await captureRejection("workflows/v4-env-wrapped");
-    expect(error).toBeInstanceOf(UsageError);
-    if (!(error instanceof UsageError)) throw new Error("unreachable");
-    expect(error.code).toBe("INVALID_FLAG_VALUE");
-    expect(error.message).toBe(
-      "Task workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
-    );
-    await expectNoRunRowWritten();
+    const started = await startWorkflowRun("workflows/v4-env-wrapped");
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    const target = stepTarget(plan, 0);
+
+    expect(target).toMatchObject({ kind: "child-workflow", via: "task" });
+    const fields = childWorkflowFields(target);
+    expect(fields.taskRef).toMatch(/\/\/tasks\/v4-env-wrapper$/);
   });
 });
 

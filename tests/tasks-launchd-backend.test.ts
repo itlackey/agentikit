@@ -1716,23 +1716,61 @@ describe("LAUNCHD_BACKEND drift signatures", () => {
     }
   });
 
-  test("unreadable or unknown launchctl disabled state fails coherent inspection closed", () => {
+  // Finding 9 (guard-audit): print-disabled failing outright, or returning
+  // output this parser doesn't recognize (a header line a newer macOS
+  // release adds, an SSH session with no GUI domain), used to abort
+  // scheduler state inspection entirely. It now degrades to "nothing is
+  // known to be disabled" — the task shows up enabled, same as if
+  // print-disabled had simply reported no disabled services.
+  test("unreadable or unknown launchctl disabled state degrades to 'nothing disabled' instead of failing closed", () => {
     for (const printDisabledResult of [
       { status: 1, stdout: "", stderr: "domain unavailable" },
       { status: 0, stdout: "unexpected launchctl output", stderr: "" },
     ]) {
       const exec = makeFakeExec();
       const { backend } = makeBackend(exec);
-      backend.install(makeTask("0 9 * * *"));
+      const task = makeTask("0 9 * * *");
+      backend.install(task);
       exec.printDisabledResult = printDisabledResult;
       exec.calls.length = 0;
 
-      expect(() => backend.list()).toThrow(/print-disabled failed.*inspection/i);
+      expect(backend.list()).toEqual([
+        {
+          id: "ping",
+          signature: backend.expectedSignature?.(task),
+          binding: ["/abs/akm"],
+          contextPath: expect.any(String),
+        },
+      ]);
       expect(exec.calls).toEqual([
         ["launchctl", "print", "gui/501"],
         ["launchctl", "print-disabled", "gui/501"],
       ]);
     }
+  });
+
+  test("a com.akm.task. entry inside an unrecognized print-disabled envelope is still found (finding 9)", () => {
+    const exec = makeFakeExec();
+    const { backend } = makeBackend(exec);
+    const task = makeTask("0 9 * * *");
+    backend.install(task);
+    // A header line before the envelope, and no closing brace at all — real
+    // launchctl output this parser previously required an exact-grammar
+    // match against, in full.
+    exec.printDisabledResult = {
+      status: 0,
+      stdout: 'some diagnostic banner\ndisabled services = {\n\t"com.akm.task.ping" => disabled\n',
+      stderr: "",
+    };
+
+    expect(backend.list()).toEqual([
+      {
+        id: "ping",
+        signature: backend.expectedSignature?.({ ...task, enabled: false }),
+        binding: ["/abs/akm"],
+        contextPath: expect.any(String),
+      },
+    ]);
   });
 
   test("reads modern launchctl enabled and disabled values", () => {

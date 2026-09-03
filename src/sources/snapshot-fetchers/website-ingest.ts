@@ -15,7 +15,7 @@ import {
 } from "../../core/common";
 import type { SourceConfigEntry } from "../../core/config/config";
 import { ConfigError, UsageError } from "../../core/errors";
-import { warn, warnVerbose } from "../../core/warn";
+import { warn, warnOnce, warnVerbose } from "../../core/warn";
 import { withFreshnessCache } from "../freshness";
 import { sanitizeString } from "../providers/provider-utils";
 import {
@@ -514,20 +514,21 @@ export async function fetchWebsiteMarkdownSnapshot(
 ): Promise<WebsiteMarkdownSnapshot> {
   const normalizedUrl = validateWebsiteInputUrl(rawUrl, { allowPrivateHosts: options?.allowPrivateHosts });
   const parsedUrl = new URL(normalizedUrl);
+  const allowPrivateHosts = await resolveAllowPrivateStartHost(parsedUrl, options?.allowPrivateHosts);
   const stashDir = resolveFetcherStashDir(options?.stashDir);
   const context: FetcherContext = {
     stashDir: stashDir ?? "",
     timeoutMs: options?.timeoutMs ?? 15_000,
     signal: options?.signal,
     ...(options?.resolveSecret ? { resolveSecret: options.resolveSecret } : {}),
-    ...(options?.allowPrivateHosts ? { allowPrivateHosts: true } : {}),
+    ...(allowPrivateHosts ? { allowPrivateHosts: true } : {}),
   };
 
   const snapshot = await dispatchSnapshotFetchers(parsedUrl, context, stashDir);
   if (snapshot) return websiteMarkdownSnapshotFromResult(snapshot);
 
   const fetchedResponse = await fetchWebsiteResponse(normalizedUrl, 0, {
-    allowPrivateHosts: options?.allowPrivateHosts,
+    allowPrivateHosts,
     signal: options?.signal,
   });
   const finalUrl = normalizeCrawlUrl(fetchedResponse.finalUrl) ?? normalizedUrl;
@@ -546,7 +547,7 @@ export async function fetchWebsiteMarkdownSnapshot(
   }
 
   const fetched = await websitePageFromResponse(fetchedResponse, normalizedUrl, {
-    allowPrivateHosts: options?.allowPrivateHosts,
+    allowPrivateHosts,
     signal: options?.signal,
   });
   if (!fetched) throw new UsageError(`No content could be fetched from ${normalizedUrl}`);
@@ -678,9 +679,13 @@ async function resolveCrawlRobotsDecision(
 
 /**
  * C-02/C-03: fail fast, before any page fetch, when the start URL itself is
- * off-limits. A 5xx robots.txt (RobotsPolicy caches `DISALLOW_ALL_RULES` for
- * that case) gets a distinct message calling out the server error, per spec
- * §4.6.
+ * off-limits per an actually-parsed robots.txt rule. A 5xx on robots.txt
+ * itself no longer reaches this as `disallowAll` (finding 12,
+ * docs/plans/guard-audit.md) — `loadRobotsTxt` reports it the same way a
+ * 4xx is reported (`ALLOW_ALL_RULES`), with its own warning, rather than
+ * treating the site's own transient error as a Disallow. The check below
+ * stays as defense-in-depth for a `RobotsPolicy` built over some other
+ * loader that does still report `disallowAll`.
  *
  * Checks both `start`'s (normalized) URL and `rawStartUrl` — the URL exactly
  * as the user supplied it in config, before `validateWebsiteUrl` ->
@@ -724,6 +729,35 @@ async function assertStartUrlAllowedByRobots(robots: RobotsPolicy, start: URL, r
   }
 }
 
+/**
+ * Decide whether to treat a fetch's start host — the URL an operator directly
+ * typed or configured (`akm bundle add`, `akm knowledge add`, a crawl's own
+ * start URL), never a link discovered while crawling — as private for this
+ * operation. `requested` (already true when the URL itself was
+ * loopback/private-literal, per `shouldAllowPrivateWebsiteUrlForTests`) wins
+ * outright. Otherwise, resolve the host: a name that only turns out to be
+ * private via DNS (a corporate wiki behind split-horizon DNS, a VPN hostname)
+ * would otherwise abort with no escape hatch even though the operator named
+ * this exact host. Callers scope the resulting bypass to same-origin work
+ * only — a link discovered mid-crawl is restricted to the start URL's origin
+ * before it ever reaches a guard, so this never extends trust to a host the
+ * fetched content merely points at.
+ */
+async function resolveAllowPrivateStartHost(start: URL, requested: boolean | undefined): Promise<boolean> {
+  if (requested) return true;
+  try {
+    await assertResolvedHostAllowed(start.hostname);
+    return false;
+  } catch {
+    warnOnce(
+      `website-private-start-host:${start.origin}`,
+      `[akm] ${start.origin} is not a publicly routable host, but you added it as a source directly — proceeding. ` +
+        "Links to other hosts found in its content are still checked.",
+    );
+    return true;
+  }
+}
+
 async function crawlWebsite(
   startUrl: string,
   options: {
@@ -748,6 +782,7 @@ async function crawlWebsite(
 ): Promise<WebsitePage[]> {
   const start = new URL(normalizeSiteUrl(startUrl));
   const allowedOrigin = start.origin;
+  const allowPrivateHosts = await resolveAllowPrivateStartHost(start, options.allowPrivateHosts);
   const queue: Array<{ url: string; rawUrl: string; depth: number; deferrals: number }> = [
     { url: start.toString(), rawUrl: options.rawStartUrl ?? start.toString(), depth: 0, deferrals: 0 },
   ];
@@ -779,9 +814,7 @@ async function crawlWebsite(
   const robots =
     options.respectRobots === false
       ? createAllowAllRobotsPolicy()
-      : createRobotsPolicy((robotsUrl) =>
-          loadRobotsTxt(robotsUrl, { allowPrivateHosts: options.allowPrivateHosts, signal: crawlSignal }),
-        );
+      : createRobotsPolicy((robotsUrl) => loadRobotsTxt(robotsUrl, { allowPrivateHosts, signal: crawlSignal }));
 
   await assertStartUrlAllowedByRobots(robots, start, options.rawStartUrl);
 
@@ -796,7 +829,7 @@ async function crawlWebsite(
   // whole site's manifest.
   if (isOriginRootUrl(start)) {
     const manifest = await fetchLlmsManifest(start, robots, {
-      allowPrivateHosts: options.allowPrivateHosts,
+      allowPrivateHosts,
       signal: crawlSignal,
     });
     if (manifest) {
@@ -872,7 +905,7 @@ async function crawlWebsite(
     fetchAttempts++;
 
     const fetched = await fetchWebsitePage(decision.fetchUrl, {
-      allowPrivateHosts: options.allowPrivateHosts,
+      allowPrivateHosts,
       robots,
       signal: crawlSignal,
     });
@@ -1148,16 +1181,22 @@ export async function loadRobotsTxt(
 
     if (response.status >= 500 && response.status < 600) {
       await response.body?.cancel().catch(() => undefined);
-      // RFC 9309 §2.3.1.4: an unreachable robots.txt is a full disallow, not
-      // an allow-all. `fetchWithRetry` already retried this once, so a
-      // transient blip does not trip it.
+      // Guard-audit finding 12: RFC 9309 §2.3.1.4 recommends treating an
+      // unreachable robots.txt as a full disallow, but for a personal tool
+      // crawling a site the operator explicitly chose, a transient 5xx on
+      // the site's OWN robots.txt is not a site owner's Disallow — it is the
+      // site being flaky. `fetchWithRetry` already retried this once, so
+      // this is not a single blip; still, blocking the crawl outright over
+      // it serves the operator worse than proceeding unrestricted. Reported
+      // as "unavailable" (the same outcome a 4xx gets), which resolves to
+      // ALLOW_ALL_RULES rather than DISALLOW_ALL_RULES.
       warn(
-        "[akm] robots.txt at %s returned %d; treating the crawl as fully disallowed until it recovers. " +
-          "Set respectRobots: false on this website source to bypass robots.txt.",
+        "[akm] robots.txt at %s returned %d; proceeding as if no robots.txt were published, rather than treating " +
+          "the crawl as fully disallowed. Set respectRobots: false on this website source to silence this warning.",
         robotsUrl,
         response.status,
       );
-      return { kind: "unreachable" };
+      return { kind: "unavailable" };
     }
 
     // 4xx (404 is the common, silent case), and any other non-2xx/5xx status.

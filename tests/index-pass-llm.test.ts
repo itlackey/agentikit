@@ -9,6 +9,7 @@ import type { LoweringNotice } from "../src/execution/resolved-request";
 import { createEnrichmentDeadline } from "../src/indexer/indexer";
 import { resolveIndexPassExecution } from "../src/llm/index-passes";
 import { type Cleanup, sandboxXdgConfigHome } from "./_helpers/sandbox";
+import { overrideSeam } from "./_helpers/seams";
 
 // Tests for standalone index-pass engine resolution.
 
@@ -175,6 +176,27 @@ describe("resolveIndexPassExecution", () => {
         index: { defaults: { engine: "primary" }, graph: { engine: "missing" } },
       };
       expect(() => resolveIndexPassExecution("graph", config)).toThrow(/missing/i);
+    });
+
+    // Finding 5 (guard-audit): a bad/non-LLM engine on ONE index pass used to
+    // throw before the enclosing try in indexer.ts — killing FTS and
+    // embeddings too, which need no LLM at all. It now degrades exactly like
+    // `enabled: false`, with a warning naming the pass and engine.
+    test("a non-LLM engine on a pass degrades to no runner (with a warning) instead of aborting the whole index run", () => {
+      const seen: unknown[][] = [];
+      overrideSeam(_setWarnSinkForTests, (level, args) => {
+        if (level === "warn") seen.push(args);
+      });
+      const config: AkmConfig = {
+        semanticSearchMode: "auto",
+        engines: { wrong: { kind: "agent", platform: "pi" } },
+        index: { defaults: { engine: "primary" }, graph: { engine: "wrong" } },
+      };
+      expect(() => resolveIndexPassExecution("graph", config)).not.toThrow();
+      const resolved = resolveIndexPassExecution("graph", config);
+      expect(resolved.runner).toBeUndefined();
+      expect(resolved.notices).toEqual([]);
+      expect(seen.some((args) => args.some((a) => String(a).includes("graph")))).toBe(true);
     });
 
     test("index.<pass>.enabled === false opts the pass out", () => {

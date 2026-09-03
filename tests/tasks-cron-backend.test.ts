@@ -308,7 +308,12 @@ const SYNC_TASK: SchedulerBinding = {
 function cronBackendOptions(exec: CronExec, scheduledContext: ScheduledTaskContext = SCHEDULED_CONTEXT) {
   return {
     exec,
-    fs: { ensureDir() {} },
+    // A no-op writeFile is present (not just ensureDir) so this shared
+    // default satisfies CronFs even for a caller that happens to trip the
+    // long-invocation wrapper-script path — see cronBackendOptions callers
+    // that need to actually INSPECT what was written, which build their own
+    // richer fs mock instead of this default.
+    fs: { ensureDir() {}, writeFile() {} },
     logDir: "/var/log/akm",
     akmArgv: ["/usr/local/bin/akm"],
     envPath: false as const,
@@ -715,7 +720,86 @@ describe("cron backend drift detection", () => {
     });
   });
 
-  test("rejects a cron command over the portable 1000-byte ceiling before scheduler I/O", () => {
+  // Finding 16 (guard-audit): a cron line over vixie-cron's real MAX_COMMAND
+  // used to refuse the install outright. It now spills the invocation into a
+  // short generated wrapper script under logDir and references THAT from the
+  // crontab line instead — never truncates the command (which would execute
+  // a partial, destructive one), and never simply warns-and-writes an
+  // over-length line either.
+  test("spills a too-long cron command into a wrapper script instead of refusing to install", () => {
+    let reads = 0;
+    let installedCrontab = "";
+    const exec: CronExec = {
+      read: () => {
+        reads += 1;
+        return { status: 0, stdout: "", stderr: "" };
+      },
+      write: (content) => {
+        installedCrontab = content;
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    };
+    const written = new Map<string, string>();
+    const backend = CRON_BACKEND({
+      ...opts(exec),
+      fs: {
+        ensureDir() {},
+        writeFile(file, content) {
+          written.set(file, content);
+        },
+      },
+      akmArgv: [`/${"x".repeat(1100)}`],
+    });
+
+    backend.install(SYNC_TASK);
+
+    // The install completes (reads the crontab once, writes it back once)...
+    expect(reads).toBe(1);
+    expect(installedCrontab).not.toBe("");
+    // ...by referencing a generated wrapper script via `sh <path>`, rather
+    // than embedding the long invocation directly.
+    expect(written.size).toBe(1);
+    const [wrapperPath, wrapperContent] = [...written.entries()][0]!;
+    expect(Buffer.byteLength(wrapperPath, "utf8")).toBeLessThan(200);
+    expect(wrapperContent).toStartWith("#!/bin/sh\nexec ");
+    expect(wrapperContent).toContain(`/${"x".repeat(1100)}`);
+    expect(installedCrontab).toContain(`sh ${wrapperPath}`);
+    expect(installedCrontab).not.toContain("x".repeat(1100));
+    for (const line of installedCrontab.split("\n")) {
+      if (line.startsWith("#")) continue;
+      expect(Buffer.byteLength(line, "utf8")).toBeLessThanOrEqual(1000);
+    }
+  });
+
+  test("changing a too-long invocation changes the wrapper script's path (drift detection survives the spill)", () => {
+    const written = new Map<string, string>();
+    const fs = {
+      ensureDir() {},
+      writeFile(file: string, content: string) {
+        written.set(file, content);
+      },
+    };
+    const first = CRON_BACKEND({
+      ...opts(memoryExec()),
+      fs,
+      akmArgv: [`/${"x".repeat(1100)}`],
+    });
+    first.install(SYNC_TASK);
+    const firstPaths = new Set(written.keys());
+    expect(firstPaths.size).toBe(1);
+
+    const second = CRON_BACKEND({
+      ...opts(memoryExec()),
+      fs,
+      akmArgv: [`/${"y".repeat(1100)}`],
+    });
+    second.install(SYNC_TASK);
+    const secondPaths = [...written.keys()].filter((path) => !firstPaths.has(path));
+    expect(secondPaths.length).toBe(1);
+    expect(secondPaths[0]).not.toBe([...firstPaths][0]);
+  });
+
+  test("still refuses when even the wrapper-referencing line cannot fit (an absurdly long logDir)", () => {
     let reads = 0;
     let writes = 0;
     const exec: CronExec = {
@@ -730,6 +814,8 @@ describe("cron backend drift detection", () => {
     };
     const backend = CRON_BACKEND({
       ...opts(exec),
+      fs: { ensureDir() {}, writeFile() {} },
+      logDir: `/${"d".repeat(1100)}`,
       akmArgv: [`/${"x".repeat(1100)}`],
     });
 

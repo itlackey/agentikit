@@ -10,6 +10,7 @@ import { writeFileAtomic } from "../../core/common";
 import { ENGINE_NAME_PATTERN_SOURCE } from "../../core/config/engine-semantics";
 import { ConfigError, UsageError } from "../../core/errors";
 import { getConfigDir } from "../../core/paths";
+import { warnOnce } from "../../core/warn";
 import { cloneExecutionJsonObject, type ExecutionJsonObject, type ExecutionJsonValue } from "../../execution/json";
 
 /**
@@ -55,6 +56,17 @@ export interface ResolvedModelMapSelection {
   readonly interpretation: "alias" | "exact";
   readonly model: string;
   readonly inference?: ExecutionJsonObject | null;
+  /**
+   * Set only when `interpretation` is `"exact"` because `input` is a KNOWN
+   * alias with no mapping for the selected engine — as opposed to a wholly
+   * unrecognized model string. Absent in every other case (never `false`).
+   * Restores the distinction the resolver's own pass-through collapsed
+   * (finding 14, docs/plans/guard-audit.md) for a caller that needs to tell
+   * the two apart without relying on the removed exception — e.g. a health
+   * check that should still flag a gap in the alias table without refusing
+   * to resolve it.
+   */
+  readonly unmappedForEngine?: true;
 }
 
 const ENGINE_KEY_PATTERN = new RegExp(ENGINE_NAME_PATTERN_SOURCE);
@@ -276,14 +288,26 @@ export function resolveModelMapAlias(
   const profile = ownValue(tier, selectedEngine);
   if (profile !== undefined) return selectionFromProfile(input, profile);
 
-  if (tier !== undefined) {
-    throw new ConfigError(
-      `Known alias ${JSON.stringify(input)} has no model mapping for selected engine ${JSON.stringify(engine)}.`,
-      "INVALID_CONFIG_FILE",
-      `Add $.aliases.${alias}.${engine} to models.json.`,
+  const knownAliasUnmappedForEngine = tier !== undefined;
+  if (knownAliasUnmappedForEngine) {
+    // Finding 14 (guard-audit): a KNOWN alias with no mapping for the
+    // selected engine used to throw, while an UNKNOWN alias silently passed
+    // through as the exact model string. That inconsistency punished the
+    // more informative case — an alias declared for OTHER engines but not
+    // this one is not a config error, it just has nothing to translate here.
+    // Warn and take the same pass-through path an unknown alias already
+    // takes, rather than refusing to run.
+    warnOnce(
+      `model-map-alias-no-engine-mapping:${alias}:${selectedEngine}`,
+      `[akm] Model alias ${JSON.stringify(input)} has no mapping for engine ${JSON.stringify(engine)}; using ${JSON.stringify(input)} as the literal model name. Add $.aliases.${alias}.${engine} to models.json to map it.`,
     );
   }
-  return Object.freeze({ input, interpretation: "exact" as const, model: input });
+  return Object.freeze({
+    input,
+    interpretation: "exact" as const,
+    model: input,
+    ...(knownAliasUnmappedForEngine ? { unmappedForEngine: true as const } : {}),
+  });
 }
 
 export function userModelMapPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -310,35 +334,40 @@ function modelMapFileError(label: string, filePath: string, action: string): Con
 }
 
 /**
- * Read through a nonblocking, no-follow descriptor and enforce the config-size
- * ceiling before parsing. `optional` recognizes only a true lstat ENOENT as
- * absence; dangling links and every non-regular type are configuration errors.
+ * Read through a nonblocking descriptor and enforce the config-size ceiling
+ * before parsing. `optional` recognizes only a true stat ENOENT (including a
+ * dangling link) as absence.
+ *
+ * Follows symlinks deliberately — a stow/chezmoi/yadm-managed
+ * `~/.config/akm/models.json` symlinked into a dotfiles repo is completely
+ * ordinary, not an attack, and reading it should not require breaking that
+ * setup. This is a READ path only: `copyDefaultModelMap`'s write side (below)
+ * still refuses to replace a non-regular target via `lstatSync`, which is the
+ * check that actually matters for a write.
  */
 function readModelMapFile(filePath: string, label: string, optional: boolean): string | undefined {
-  let linkStat: fs.Stats;
+  let targetStat: fs.Stats;
   try {
-    linkStat = fs.lstatSync(filePath);
+    targetStat = fs.statSync(filePath);
   } catch (error) {
     if (optional && (error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
     throw modelMapFileError(label, filePath, optional ? "inspected" : "found");
   }
-  if (!linkStat.isFile()) {
+  if (!targetStat.isFile()) {
     throw new ConfigError(
       `Unable to read ${label.toLowerCase()} because it is not a readable regular file: ${filePath}.`,
       "INVALID_CONFIG_FILE",
-      "Move the symlink or non-regular target aside, or replace it with a readable regular models.json file.",
+      "Replace it with a readable regular models.json file, or a symlink to one.",
     );
   }
 
-  const noFollow =
-    process.platform !== "win32" && typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
   const nonblock =
     process.platform !== "win32" && typeof fs.constants.O_NONBLOCK === "number" ? fs.constants.O_NONBLOCK : 0;
   let fd: number | undefined;
   try {
-    fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow | nonblock);
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | nonblock);
     const openedStat = fs.fstatSync(fd);
-    if (!sameFileIdentity(linkStat, openedStat)) {
+    if (!sameFileIdentity(targetStat, openedStat)) {
       throw new ConfigError(
         `${label} changed while it was being opened: ${filePath}.`,
         "INVALID_CONFIG_FILE",

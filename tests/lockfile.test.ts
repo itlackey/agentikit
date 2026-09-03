@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getLockfileLockPath } from "../src/core/paths";
 import {
+  _setLockAcquireTimeoutMsForTests,
   type LockfileEntry,
   readLockfile,
   removeLockEntry,
@@ -10,6 +11,7 @@ import {
   writeLockfile,
 } from "../src/integrations/lockfile";
 import { type Cleanup, sandboxXdgDataHome } from "./_helpers/sandbox";
+import { overrideSeam } from "./_helpers/seams";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -199,7 +201,13 @@ describe("writeLockfile", () => {
     expect(readLockfile()).toEqual(entries);
   });
 
+  // Finding 13 (guard-audit): the real acquisition budget is now ~30s (with
+  // backoff) so an ordinary overlap between two akm processes waits its turn
+  // instead of failing outright — this test shrinks that budget via the
+  // test-only seam so exercising the eventual timeout does not cost the
+  // suite 30 real seconds.
   test("fails closed when another live writer owns the sentinel", async () => {
+    overrideSeam(_setLockAcquireTimeoutMsForTests, 50);
     await writeLockfile([validEntry({ id: "original" })]);
     fs.writeFileSync(getLockfileLockPath(), String(process.pid), { flag: "wx" });
 

@@ -14,12 +14,10 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { ConfigError, UsageError } from "../core/errors";
+import { classifyNetworkHostname } from "../core/network-policy";
 import { getRegistryIndexCacheDir } from "../core/paths";
-import {
-  assertWebsiteRequestUrl,
-  type HostnameResolver,
-  isLoopbackWebsiteHostname,
-} from "./snapshot-fetchers/host-guard";
+import { warnOnce } from "../core/warn";
+import { assertWebsiteRequestUrl, type HostnameResolver } from "./snapshot-fetchers/host-guard";
 
 export interface WebsiteUrlValidationOptions {
   allowPrivateHosts?: boolean;
@@ -37,13 +35,37 @@ export function shouldAllowPrivateWebsiteHostsForTests(): boolean {
   return process.env.BUN_TEST === "1" || process.env.NODE_ENV === "test";
 }
 
+/**
+ * Decide whether to bypass the public-host guard for a website URL a human
+ * explicitly typed or configured — `akm bundle add <url>`, `akm knowledge add
+ * <url>`, or a bundle's persisted start URL on refresh — as opposed to a link
+ * discovered by crawling a page (see `resolveCrawlAllowPrivateHosts` in
+ * `snapshot-fetchers/website-ingest.ts`, which extends this only to the exact
+ * origin the operator named, never to a link the crawled site points at).
+ *
+ * The operator already named this exact host, so a local mkdocs server, a
+ * corporate wiki reachable only over VPN, or a LAN docs box is legitimate
+ * work, not an attack: refusing it outright with no escape hatch makes akm
+ * unusable for those installs. Only the literal hostname is inspected here
+ * (no DNS lookup) — a name that resolves privately only via DNS is instead
+ * caught, and recovered from the same way, by the crawl-time check.
+ */
 export function shouldAllowPrivateWebsiteUrlForTests(rawUrl: string): boolean {
-  if (!shouldAllowPrivateWebsiteHostsForTests()) return false;
+  let hostname: string;
   try {
-    return isLoopbackWebsiteHostname(new URL(rawUrl).hostname.toLowerCase());
+    hostname = new URL(rawUrl).hostname.toLowerCase();
   } catch {
     return false;
   }
+  if (classifyNetworkHostname(hostname) === "public") return false;
+  if (!shouldAllowPrivateWebsiteHostsForTests()) {
+    warnOnce(
+      `website-private-host:${hostname}`,
+      `[akm] "${hostname}" is not a publicly routable host, but you added it as a source directly — proceeding. ` +
+        "Links discovered elsewhere are still checked.",
+    );
+  }
+  return true;
 }
 
 export function getWebsiteCachePaths(siteUrl: string, cacheRootOverride?: string): WebsiteCachePaths {

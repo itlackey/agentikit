@@ -50,12 +50,32 @@ function expectAlreadyExists(fn: () => unknown): UsageError {
 }
 
 describe("models.json bounded safe loader", () => {
-  test("distinguishes a dangling symlink from true absence", () => {
+  // Finding 7 (guard-audit): the read path now follows symlinks (a
+  // stow/chezmoi/yadm-managed ~/.config/akm/models.json symlinked into a
+  // dotfiles repo is ordinary, not an attack) — see "reads through a valid
+  // symlink" below. A DANGLING symlink then means the same thing a plain
+  // missing file already does for this optional read: nothing to load, not
+  // an error. This inverts the guard's old "distinguishes a dangling symlink
+  // from true absence" behavior, which is exactly the refusal finding 7
+  // asks to remove.
+  test("treats a dangling symlink the same as true absence", () => {
     const sandbox = makeRoot("models-dangling");
     try {
       fs.symlinkSync(path.join(sandbox.root, "missing.json"), sandbox.target);
-      const error = expectConfigError(() => loadModelMap({ env: sandbox.env }));
-      expect(error.message).toMatch(/symbolic link|symlink|regular file/i);
+      expect(() => loadModelMap({ env: sandbox.env })).not.toThrow();
+    } finally {
+      fs.rmSync(sandbox.root, { recursive: true, force: true });
+    }
+  });
+
+  test("reads through a valid symlink instead of refusing it (finding 7)", () => {
+    const sandbox = makeRoot("models-valid-symlink");
+    const real = path.join(sandbox.root, "real-models.json");
+    try {
+      fs.writeFileSync(real, JSON.stringify({ version: 1, aliases: { fast: { claude: "via-symlink-802" } } }));
+      fs.symlinkSync(real, sandbox.target);
+      const { map } = loadModelMap({ env: sandbox.env });
+      expect(map.aliases.fast?.claude).toEqual({ model: "via-symlink-802" });
     } finally {
       fs.rmSync(sandbox.root, { recursive: true, force: true });
     }

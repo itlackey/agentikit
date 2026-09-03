@@ -30,6 +30,7 @@ import launchdTemplate from "../../assets/backends/launchd-template.xml" with { 
 import { hasErrnoCode } from "../../core/common";
 import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
+import { warn } from "../../core/warn";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { type LaunchdTrigger, parseSchedule, translateToLaunchd } from "../schedule";
 import {
@@ -792,16 +793,13 @@ function inspectStableLaunchdNamespace(
     );
   }
   const loadedLabels = parseLaunchdLoadedLabels(domain.stdout);
-  if (loadedLabels === undefined) {
-    throw new ConfigError(
-      "launchctl returned an unsafe, unsupported, or oversized loaded-service inventory during scheduler state inspection.",
-      "INVALID_CONFIG_FILE",
-    );
-  }
+  // print-disabled is best-effort: over SSH without a GUI session, on a
+  // macOS release that adds a header line, or on any other unparseable
+  // output, treat it as "nothing is known to be disabled" (with a warning)
+  // rather than aborting scheduler state inspection outright — the loaded
+  // inventory above already carries the information the rest of this
+  // function actually depends on.
   const disabledLabels = readDisabledLabels(context.exec);
-  if (disabledLabels === undefined) {
-    throw new ConfigError("launchctl print-disabled failed during scheduler state inspection.", "INVALID_CONFIG_FILE");
-  }
   const akmDisabledLabels = [...disabledLabels].filter((label) => label.startsWith(LAUNCHD_LABEL_PREFIX)).sort();
   const plistEntries: Array<readonly [nativeId: string, raw: string]> = [];
   if (context.fsLike.exists(context.agentsDir)) {
@@ -1195,47 +1193,80 @@ function normalizeSignature(xml: string): string {
  *
  * The two bounds that remain are real resource bounds, not structural ones: a
  * cap on how much output we will read, and a cap on how many distinct akm
- * labels we will track. Exceeding either still returns `undefined`.
+ * labels we will track. Exceeding either is degraded, not refused — scan
+ * whatever fits within the bound rather than giving up on the user's own
+ * inventory entirely.
  */
-export function parseLaunchdLoadedLabels(output: string): Set<string> | undefined {
-  if (Buffer.byteLength(output, "utf8") > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES) return undefined;
-
+export function parseLaunchdLoadedLabels(output: string): Set<string> {
   const labels = new Set<string>();
   // Our own namespace is the only thing we look for. `[^\s"{}=,()]` stops the
   // token at whatever punctuation the surrounding launchctl syntax uses, so a
   // label works whether it appears as a bare table cell, a quoted string, or a
   // dictionary key.
   const labelPattern = /com\.akm\.task\.[^\s"{}=,()]+/gu;
-  for (const match of output.matchAll(labelPattern)) {
+  for (const match of boundLaunchdOutput(output).matchAll(labelPattern)) {
     const label = match[0];
     if (!LAUNCHD_AKM_LABEL_RE.test(label)) continue;
     labels.add(label);
-    if (labels.size > MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) return undefined;
+    if (labels.size >= MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) break;
   }
   return labels;
 }
 
-function readDisabledLabels(exec: LaunchdExec): Set<string> | undefined {
+/**
+ * Bound a launchctl output blob before scanning it, in characters rather than
+ * exact UTF-8 bytes (launchctl output is effectively ASCII, so this is an
+ * accurate-enough proxy without re-encoding the whole string just to measure
+ * it). A resource cap, not a structural one: truncate and scan what fits
+ * rather than refusing to look at the user's own scheduler inventory just
+ * because it is unusually large.
+ */
+function boundLaunchdOutput(output: string): string {
+  return output.length > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES ? output.slice(0, MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES) : output;
+}
+
+/**
+ * Best-effort: `print-disabled` can fail outright (over SSH without a GUI
+ * session) or throw. Either way, this is the user's own scheduler state, not
+ * an attacker-controlled document — treat a failure the same as "nothing is
+ * known to be disabled" rather than aborting scheduler state inspection over
+ * a diagnostic call that was never the source of truth for what is loaded.
+ */
+function readDisabledLabels(exec: LaunchdExec): Set<string> {
   try {
     const result = exec.run(["launchctl", "print-disabled", `gui/${exec.uid()}`]);
-    if (result.status !== 0) return undefined;
+    if (result.status !== 0) {
+      warn("[akm] launchctl print-disabled exited %d; assuming no akm task is disabled.", result.status);
+      return new Set();
+    }
     return parseDisabledLabels(result.stdout);
-  } catch {
-    return undefined;
+  } catch (error) {
+    warn(
+      "[akm] launchctl print-disabled could not be run; assuming no akm task is disabled: %s",
+      error instanceof Error ? error.message : String(error),
+    );
+    return new Set();
   }
 }
 
-function parseDisabledLabels(output: string): Set<string> | undefined {
-  const envelope = /^\s*disabled services\s*=\s*\{([\s\S]*)\}\s*$/.exec(output);
-  if (!envelope) return undefined;
-
+/**
+ * Parse `launchctl print-disabled`'s `com.akm.task.*` entries permissively —
+ * mirrors {@link parseLaunchdLoadedLabels}'s reasoning exactly. The previous
+ * grammar required the ENTIRE output to match `disabled services = { … }`
+ * with every entry parsed in strict sequence; a header line real launchctl
+ * output sometimes prints before that envelope (or any other quirk) failed
+ * the whole match and surfaced as a hard abort. Scanning for our own
+ * namespace's entries anywhere in the text, same as the loaded-labels parser,
+ * survives all of that — a warning-worthy oddity, not a refusal.
+ */
+function parseDisabledLabels(output: string): Set<string> {
   const disabled = new Set<string>();
-  let body = envelope[1]!;
-  while (body.trim()) {
-    const entry = /^\s*"([^"\r\n]+)"\s*=>\s*(true|false|enabled|disabled)\s*/.exec(body);
-    if (!entry) return undefined;
-    if (entry[2] === "true" || entry[2] === "disabled") disabled.add(entry[1]!);
-    body = body.slice(entry[0].length);
+  const entryPattern = /"(com\.akm\.task\.[^"\r\n]+)"\s*=>\s*(true|false|enabled|disabled)/gu;
+  for (const match of boundLaunchdOutput(output).matchAll(entryPattern)) {
+    const label = match[1]!;
+    if (!LAUNCHD_AKM_LABEL_RE.test(label)) continue;
+    if (match[2] === "true" || match[2] === "disabled") disabled.add(label);
+    if (disabled.size >= MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) break;
   }
   return disabled;
 }

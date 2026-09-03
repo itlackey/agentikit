@@ -36,6 +36,7 @@ export type TaskV3ScriptInterpreter =
   | "sh"
   | "bun"
   | "bun-standalone"
+  | "node"
   | "powershell"
   | "cmd"
   | "python"

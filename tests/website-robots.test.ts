@@ -587,12 +587,17 @@ describe("loadRobotsTxt", () => {
     expect(warnCalls).toEqual([]);
   });
 
-  test("F-06: 500 is unreachable and warns, naming the URL, status, and respectRobots", async () => {
+  // Finding 12 (guard-audit): a 5xx on the site's OWN robots.txt is not the
+  // site owner's Disallow — it is the site being flaky. A transient 5xx is
+  // now reported as "unavailable" (the same outcome a 4xx gets, resolving to
+  // ALLOW_ALL_RULES), not "unreachable" (DISALLOW_ALL_RULES), so it no
+  // longer blocks the crawl the operator asked for.
+  test("F-06: 500 is unavailable (not unreachable) and warns, naming the URL, status, and respectRobots", async () => {
     const outcome = await withMockedFetch(
       () => loadRobotsTxt(ROBOTS_URL, { resolveHostname }),
       () => new Response("boom", { status: 500 }),
     );
-    expect(outcome).toEqual({ kind: "unreachable" });
+    expect(outcome).toEqual({ kind: "unavailable" });
     expect(warnCalls.length).toBeGreaterThanOrEqual(1);
     const message = warnCalls.join(" ");
     expect(message).toContain(ROBOTS_URL);
