@@ -21,6 +21,7 @@ import type { AkmConfig } from "../../../../src/core/config/config";
 import { ConfigError } from "../../../../src/core/errors";
 import { readEvents } from "../../../../src/core/events";
 import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
+import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
 import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
@@ -321,7 +322,7 @@ describe("Reflect quality gate — source context", () => {
     expect(readEvents({ type: "reflect_invoked" }).events).toEqual([]);
   });
 
-  test("fails closed before generation when frozen judge selection has no LLM runner", async () => {
+  test("skips the gate and flags the proposal for review when frozen judge selection has no LLM runner", async () => {
     const stash = makeStashDir();
     let spawned = 0;
     const config = quietQualityGateConfig();
@@ -329,28 +330,42 @@ describe("Reflect quality gate — source context", () => {
     if (!processes) throw new Error("quiet quality-gate fixture is missing the default process config");
     processes.reflect = { qualityGate: { enabled: true } };
 
-    const result = await akmReflect({
-      ref: "knowledge/no-judge-runner",
-      stashDir: stash,
-      config,
-      runAgentOptions: {
-        spawn: (...args) => {
-          spawned += 1;
-          return fakeSpawn(
-            JSON.stringify({ ref: "knowledge/no-judge-runner", content: LONG_SOURCE_BODY }),
-            "",
-            0,
-          )(...args);
-        },
-      },
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected frozen no-judge failure");
-    expect(result.error).toContain("no LLM configured");
-    expect(spawned).toBe(0);
-    expect(listProposals(stash)).toEqual([]);
-    expect(readEvents({ type: "reflect_invoked" }).events).toEqual([]);
+    let result: Awaited<ReturnType<typeof akmReflect>>;
+    try {
+      result = await akmReflect({
+        ref: "knowledge/no-judge-runner",
+        stashDir: stash,
+        config,
+        runAgentOptions: {
+          spawn: (...args) => {
+            spawned += 1;
+            return fakeSpawn(
+              JSON.stringify({ ref: "knowledge/no-judge-runner", content: LONG_SOURCE_BODY }),
+              "",
+              0,
+            )(...args);
+          },
+        },
+      });
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+
+    // The gate is enabled but has no LLM engine to judge with — that must
+    // never block generation: the agent still runs and the proposal still
+    // lands in the queue, just flagged for human review instead of judged.
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected reflect to succeed with the gate skipped");
+    expect(spawned).toBe(1);
+    expect(warnings.some((line) => line.includes("no LLM configured"))).toBe(true);
+    const proposals = listProposals(stash);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "no-judge-configured" });
   });
 
   test.each([

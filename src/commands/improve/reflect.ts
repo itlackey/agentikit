@@ -39,7 +39,7 @@ import { lintLessonContent } from "../../core/lesson-lint";
 import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
-import { warn } from "../../core/warn";
+import { warn, warnOnce } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import { lookup } from "../../indexer/indexer";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
@@ -80,6 +80,7 @@ import {
   type Proposal,
   type ProposalsContext,
   proposalContent,
+  recordGateDecision,
 } from "../proposal/repository";
 import { checkReflectSize, isValidDescription } from "../proposal/validators/proposal-quality-validators";
 import { deriveLessonRef } from "./distill";
@@ -1189,6 +1190,8 @@ async function finalizeReflectProposal(args: {
   engineName: string;
   config: import("../../core/config/config").AkmConfig;
   qualityGateEnabled: boolean;
+  /** True when the gate is enabled but no judge resolved (skipped, not refused). See `akmReflect`. */
+  qualityGateSkippedNoJudge: boolean;
   qualityJudgeRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
   qualityJudgeLease: LoweredExecutionDispatchLease | undefined;
   feedback: Parameters<typeof runReflectQualityJudge>[3];
@@ -1208,6 +1211,7 @@ async function finalizeReflectProposal(args: {
     engineName,
     config,
     qualityGateEnabled,
+    qualityGateSkippedNoJudge,
     qualityJudgeRunner,
     qualityJudgeLease,
     feedback,
@@ -1358,6 +1362,7 @@ async function finalizeReflectProposal(args: {
     durationMs: result.durationMs,
     emitReflectFailed,
     outputTelemetry,
+    qualityGateSkippedNoJudge,
   });
 }
 
@@ -1374,6 +1379,8 @@ function createReflectProposal(args: {
   engineName: string;
   durationMs: number;
   outputTelemetry?: ReflectLlmTelemetry;
+  /** True when the quality gate was skipped for lack of a configured judge; flags the created proposal for human review. */
+  qualityGateSkippedNoJudge: boolean;
   emitReflectFailed: (
     reason: AgentFailureReason,
     subreason: string,
@@ -1381,7 +1388,16 @@ function createReflectProposal(args: {
     extra?: Record<string, unknown>,
   ) => void;
 }): AkmReflectResult {
-  const { payload, options, stash, engineName, durationMs, emitReflectFailed, outputTelemetry } = args;
+  const {
+    payload,
+    options,
+    stash,
+    engineName,
+    durationMs,
+    emitReflectFailed,
+    outputTelemetry,
+    qualityGateSkippedNoJudge,
+  } = args;
   // 8. Create the proposal. The proposal queue is the ONLY thing reflect
   // writes — promotion to a real asset is gated by `akm proposal accept`.
   //
@@ -1446,7 +1462,21 @@ function createReflectProposal(args: {
     };
   }
 
-  const proposal: Proposal = proposalResult;
+  let proposal: Proposal = proposalResult;
+
+  if (qualityGateSkippedNoJudge) {
+    // No judge resolved to score this proposal; flag it for human review
+    // instead of silently letting it look identical to a judged one. Reuses
+    // the drain/triage engine's `no-judge-configured` gate-decision vocabulary
+    // (see `src/commands/proposal/drain.ts`).
+    proposal =
+      recordGateDecision(
+        stash,
+        proposal.id,
+        { outcome: "deferred", reason: "no-judge-configured", gate: "reflect" },
+        options.ctx,
+      ) ?? proposal;
+  }
 
   appendEvent(
     {
@@ -1456,6 +1486,7 @@ function createReflectProposal(args: {
         proposalId: proposal.id,
         source: "reflect",
         engine: engineName,
+        ...(qualityGateSkippedNoJudge ? { qualityGateSkippedNoJudge: true } : {}),
         ...(outputTelemetry ?? {}),
       },
     },
@@ -2098,24 +2129,24 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
   collectLoweringNotices(executionNotices, resolutionNotices);
   const collectExecutionNotices = (notices: readonly Readonly<LoweringNotice>[]): void =>
     collectLoweringNotices(executionNotices, notices);
-  const qualityJudgeSelection = resolveReflectQualityJudgeRunner(
+  let qualityJudgeSelection = resolveReflectQualityJudgeRunner(
     config,
     runnerSpec,
     isReflectQualityGateEnabled(activeStrategy),
     collectExecutionNotices,
   );
-  if (qualityJudgeSelection.enabled && !qualityJudgeSelection.runner) {
-    return {
-      schemaVersion: 2,
-      ok: false,
-      reason: "parse_error",
-      error:
-        'Reflect proposal quality gate rejected: score=-1, reason="no LLM configured — cannot judge, failing closed"',
-      ...(options.ref ? { ref: options.ref } : {}),
-      engine: engineName,
-      exitCode: null,
-      ...reflectNoticeFields(executionNotices),
-    };
+  // The quality gate is on by default; a config without an LLM engine for the
+  // judge (e.g. `--engine claude` with no defaults.llmEngine) has no judge to
+  // resolve. Refusing here would block generation entirely over a gate the
+  // user never configured. Skip the gate instead: the proposal still lands in
+  // the queue, flagged for human review via its gateDecision.
+  const qualityGateSkippedNoJudge = qualityJudgeSelection.enabled && !qualityJudgeSelection.runner;
+  if (qualityGateSkippedNoJudge) {
+    warnOnce(
+      "reflect-quality-gate-no-judge",
+      "Reflect proposal quality gate has no LLM configured to judge proposals (set defaults.llmEngine, or improve.strategies.<name>.processes.reflect.qualityGate.engine). Skipping the gate for this run; the proposal is queued for human review instead.",
+    );
+    qualityJudgeSelection = Object.freeze({ enabled: false, runner: undefined });
   }
   const qualityJudgeRunner = qualityJudgeSelection.runner;
   let generationLease: LoweredExecutionDispatchLease | undefined;
@@ -2266,6 +2297,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
       engineName,
       config,
       qualityGateEnabled: qualityJudgeSelection.enabled,
+      qualityGateSkippedNoJudge,
       qualityJudgeRunner,
       qualityJudgeLease,
       feedback,
