@@ -293,10 +293,9 @@ function truncationNote(read: StreamReadResult): string {
  * The captured stdout, with an unmistakable truncation block appended when the
  * retention cap discarded part of it.
  *
- * Same idiom, same reason as `WORKFLOW_EVIDENCE_TRUNCATED_MARKER`
- * (`runtime/runs.ts`): truncated data must never be mistakable for complete
- * data. The block names both byte counts, so a reader can see exactly how much
- * is missing rather than inferring it from a suspiciously round length.
+ * Truncated data must never be mistakable for complete data. The block names
+ * both byte counts, so a reader can see exactly how much is missing rather
+ * than inferring it from a suspiciously round length.
  */
 function markTruncatedStdout(result: ManagedSubprocessResult): string {
   const read = result.stdoutRead;

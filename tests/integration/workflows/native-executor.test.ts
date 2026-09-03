@@ -430,6 +430,41 @@ describe("executeStepPlan — fan-out item shapes (edge cases)", () => {
     expect(result.summary).toContain("null item");
     expect(result.summary).toContain("index 0");
   });
+
+  test("duplicate fan-out items dispatch instead of failing the work-list — occurrence-suffixed unit ids (issue 6)", async () => {
+    // The item list comes from a PRODUCING step, so "deduplicate the list" is
+    // often not something the workflow's author can do. First occurrence
+    // keeps the byte-identical id `unitIdFor` always produced; the repeat
+    // gets a `#2` suffix — a purely additive disambiguation, not a rejection.
+    seedRun({ params: { files: ["a", "a", "b"] }, steps: [{ id: "review", title: "Review files" }] });
+    const stepPlan = plan(FAN_OUT_WF).steps[0]!;
+    let dispatches = 0;
+    const result = await executeStepPlan(stepPlan, {
+      runId: RUN_ID,
+      workflowRef: "workflows/demo",
+      params: { files: ["a", "a", "b"] },
+      evidence: {},
+      dispatcher: async () => {
+        dispatches++;
+        return { ok: true, text: "ok" };
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(dispatches).toBe(3);
+    expect(result.units).toHaveLength(3);
+
+    const unitIds = await withWorkflowRunsRepo((repo) => repo.getUnitsForStep(RUN_ID, "review").map((r) => r.unit_id));
+    expect(new Set(unitIds).size).toBe(3);
+    // Exactly one id is suffixed (the second "a"); the un-duplicated "b" and
+    // the first "a" both keep their plain content-derived id.
+    const suffixed = unitIds.filter((id) => id.includes("#"));
+    expect(suffixed).toHaveLength(1);
+    const suffixedId = suffixed[0];
+    if (!suffixedId) throw new Error("expected one suffixed unit id");
+    expect(suffixedId.endsWith("#2")).toBe(true);
+    const base = suffixedId.slice(0, suffixedId.indexOf("#"));
+    expect(unitIds).toContain(base);
+  });
 });
 
 const SCHEMA_WF = `---

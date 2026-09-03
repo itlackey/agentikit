@@ -14,6 +14,7 @@
 
 import type { AkmConfig } from "../../core/config/config-types";
 import { COMPOSITION_INVALID_MULTI_JOB_HINT, UsageError } from "../../core/errors";
+import { warn } from "../../core/warn";
 import type { GuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
 import type {
   FrozenWorkflowCommandTarget,
@@ -91,6 +92,17 @@ export async function resolveWorkflowSourceV4(
     }
     if (sourceStep.gate?.rubric?.trim()) {
       const judge = resolveJudge(sourceStep, context);
+      if (judge === undefined) {
+        // No engine anywhere to run this step's judge (issue 2): warn and
+        // freeze with no judge rather than refusing the whole workflow —
+        // see resolveJudge's doc for why this is safe.
+        warn(
+          `Workflow step "${sourceStep.id}" has completion criteria but no verification engine is available ` +
+            "(set workflow.judgeEngine, defaults.engine, or install an opencode-sdk binary). The step will block " +
+            "for `akm workflow resume` once it is reached.",
+        );
+        continue;
+      }
       if (judge.target.kind !== "command")
         throw new Error(`workflow judge ${sourceStep.id} did not resolve to a command target`);
       judges.set(sourceStep.id, judge.target);

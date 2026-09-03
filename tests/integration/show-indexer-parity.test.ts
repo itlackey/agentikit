@@ -432,10 +432,15 @@ jobs:
 
   test("invalid owned YAML is not indexed and show does not parse an unindexed file", async () => {
     const invalidPath = path.join(stashDir, "workflows", "invalid-template.yml");
+    // Missing `on:` entirely is a structural failure ("workflow.on must
+    // declare schedule or workflow_dispatch") unrelated to inline `akm/command`
+    // content scanning — `content: echo $HOME` used to make this fixture
+    // invalid too, but guard-audit finding 4 removed that scan for inline
+    // workflow content (ordinary prose like this is common and not native-tool
+    // syntax), so that content alone no longer fails to compile.
     writeFile(
       invalidPath,
       `name: Invalid template
-on: { workflow_dispatch: null }
 jobs:
   main:
     runs-on: [self-hosted]

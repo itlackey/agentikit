@@ -67,20 +67,51 @@ function rejectNonTaskBindingWith(source: WorkflowSourceStep, ref: string, kind:
   );
 }
 
-export function resolveJudge(source: WorkflowSourceStep, context: ResolutionContext): ResolvedDispatch {
-  const engine = context.config.workflow?.judgeEngine;
-  if (!engine) {
-    throw new ConfigError(
-      "This workflow declares completion criteria but no verification engine is configured. Set workflow.judgeEngine to a named LLM or agent engine.",
-      "INVALID_CONFIG_FILE",
-    );
-  }
+/**
+ * Message `chooseEngine` (`integrations/agent/execution-cascade.ts`) throws
+ * when NOTHING resolves — no explicit selection AND the fixed opencode-sdk
+ * fallback is unavailable. Matched by TEXT rather than a shared error code
+ * because it is the one ConfigError of many `INVALID_CONFIG_FILE` causes that
+ * means "there is truly no engine anywhere", as opposed to (for example) an
+ * explicitly-named engine that does not exist.
+ */
+const NO_ENGINE_AVAILABLE_MESSAGE = "the fixed opencode-sdk fallback is unavailable";
+
+function isNoEngineAvailable(err: unknown): boolean {
+  return err instanceof ConfigError && err.message.includes(NO_ENGINE_AVAILABLE_MESSAGE);
+}
+
+/**
+ * Resolve a step's completion-criteria judge, or `undefined` when NO engine
+ * resolves anywhere (issue 2).
+ *
+ * `workflow.judgeEngine` has no default, and akm's own `workflow create`
+ * scaffold ships a `### gate` — so a default install used to fail every
+ * `workflow run` outright. When `judgeEngine` is unset this now falls back to
+ * the same default-engine resolution the freeze pass already applies to
+ * ordinary unit targets (`targets/command.ts`, `integrations/agent/
+ * engine-fallback.ts`): the announcement, if any, is carried on the returned
+ * dispatch exactly like a unit's. Only when NOTHING resolves — no
+ * `defaults.engine` and no usable opencode-sdk binary — does this return
+ * `undefined` instead of throwing: the caller freezes `frozenJudge: null`,
+ * and the runtime already blocks a criteria-bearing step gracefully for
+ * `akm workflow resume` when its judge is null (`exec/step-work.ts`) rather
+ * than erroring. An EXPLICITLY configured `judgeEngine` that does not exist
+ * is a real authoring error and still throws.
+ */
+export function resolveJudge(source: WorkflowSourceStep, context: ResolutionContext): ResolvedDispatch | undefined {
+  const configuredEngine = context.config.workflow?.judgeEngine;
   const content = source.gate?.rubric?.trim() ?? "Judge workflow completion.";
-  const prepared = prepareInlineExecution({
-    content,
-    config: context.config,
-    invocationKind: "workflow",
-    current: { engine },
-  });
-  return commandResult(source, { onError: "fail", source: sourceStepRef(source) }, prepared, context);
+  try {
+    const prepared = prepareInlineExecution({
+      content,
+      config: context.config,
+      invocationKind: "workflow",
+      ...(configuredEngine ? { current: { engine: configuredEngine } } : {}),
+    });
+    return commandResult(source, { onError: "fail", source: sourceStepRef(source) }, prepared, context);
+  } catch (err) {
+    if (configuredEngine || !isNoEngineAvailable(err)) throw err;
+    return undefined;
+  }
 }

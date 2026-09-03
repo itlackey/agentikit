@@ -102,11 +102,13 @@ export async function compileResolveFreezeWorkflowV4(
     );
   }
   const steps = compiled.plan.steps.map((step): IrStepPlanV4 => {
-    const frozenJudge = step.gate.criteria.length === 0 ? null : resolved.judges.get(step.stepId);
-    if (step.gate.criteria.length > 0 && !frozenJudge) {
-      throw new Error(`resolved workflow judge missing for step ${step.stepId}`);
-    }
-    const gate = Object.freeze({ ...step.gate, maxLoops: step.gate.maxLoops ?? 1, frozenJudge: frozenJudge ?? null });
+    // A criteria-bearing step's judge is `undefined` in the map exactly when
+    // `resolveJudge` (freeze/resolve-steps.ts) found no engine anywhere to
+    // run it (issue 2) — freezing `frozenJudge: null` in that case rather
+    // than refusing to freeze at all; the runtime blocks such a step
+    // gracefully for `akm workflow resume` instead of erroring.
+    const frozenJudge = step.gate.criteria.length === 0 ? null : (resolved.judges.get(step.stepId) ?? null);
+    const gate = Object.freeze({ ...step.gate, maxLoops: step.gate.maxLoops ?? 1, frozenJudge });
     if (!step.root) {
       const { root: _root, ...withoutRoot } = step;
       return Object.freeze({ ...withoutRoot, gate });

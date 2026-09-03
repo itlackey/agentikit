@@ -154,41 +154,44 @@ describe("drain-layer broken-workflow drop (F4a M-core-2 item 3)", () => {
     }
   });
 
+  // Issue 4 (guard-audit): inline `uses: akm/command` content used to be
+  // scanned for native-tool-only template constructs (`@file`, bare `$NAME`,
+  // …) whenever it contained `$ARGUMENTS` — a scan meant for a STANDALONE
+  // portable command file, not workflow-authored prose. This document used
+  // to be dropped at drain with an "unsupported portable template construct"
+  // warning; it is now valid, exactly like the identical prose written as a
+  // markdown step's body always was (`commandMode: "literal"`).
   test.each([
     ["ordinary", akmAdapter, "akm", "workflows"],
     ["standalone", akmWorkflowAdapter, "akm-workflow", "."],
-  ] as const)("%s adapter drains a command template containing prose that only resembles a construct", (_label, adapter, adapterId, subdir) => {
-    // akm expands exactly one token, the literal `$ARGUMENTS` placeholder, and
-    // never interprets anything else in a command template. `$HOME` here is
-    // ordinary prose (e.g. "Check that $HOME/.config/akm exists"), not a
-    // construct akm rejects, so the step drains as a normal workflow entry.
+  ] as const)("%s adapter drains inline akm/command content without scanning it for native-tool constructs", (_label, adapter, adapterId, subdir) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-drain-template-"));
     const ownedDir = path.join(root, subdir);
     fs.mkdirSync(ownedDir, { recursive: true });
-    const prosePath = path.join(ownedDir, "prose.yml");
+    const templatePath = path.join(ownedDir, "template.yml");
     fs.writeFileSync(
-      prosePath,
-      `name: Prose template
+      templatePath,
+      `name: Inline template
 on: { workflow_dispatch: null }
 jobs:
   main:
     runs-on: [self-hosted]
     steps:
-      - id: prose
+      - id: review
         uses: akm/command
         with:
-          content: echo $HOME
+          content: Review $ARGUMENTS against @docs/style-guide.md
 `,
     );
     try {
       const c: BundleComponent = { id: "b", adapter: adapterId, root, writable: true };
-      const context = buildFileContext(root, prosePath);
+      const context = buildFileContext(root, templatePath);
       expect(adapter.recognize(c, context)).toMatchObject({ type: "workflow" });
 
       const drained = drainDirDocuments(adapter, c, [context]);
       expect(drained.entries).toHaveLength(1);
-      expect(drained.hashByFile.has(prosePath)).toBe(true);
       expect(drained.warnings).toHaveLength(0);
+      expect(drained.hashByFile.has(templatePath)).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

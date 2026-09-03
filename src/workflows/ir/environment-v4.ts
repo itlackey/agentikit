@@ -18,6 +18,7 @@ import dotenv from "dotenv";
 import { assetPathForName } from "../../core/asset/asset-placement";
 import { isWithin } from "../../core/common";
 import { NotFoundError, UsageError } from "../../core/errors";
+import { warn } from "../../core/warn";
 import { captureGuardedExecutionSource, GuardedExecutionSourceCollector } from "../../execution/guarded-source";
 import type { FrozenWorkflowEnvironmentBinding, FrozenWorkflowEnvironmentOwner } from "./schema-v4";
 
@@ -80,7 +81,10 @@ export function freezeWorkflowEnvironment(
       );
     }
     if (logical.has(resolved.ref)) {
-      throw new UsageError(`Workflow environment contains duplicate ref ${resolved.ref}.`, "WORKFLOW_SOURCE_INVALID");
+      // Same logical owner authored twice (e.g. once directly, once via an
+      // included fragment) resolves to the same values either way — drop the
+      // repeat rather than aborting the freeze over it.
+      continue;
     }
     logical.add(resolved.ref);
 
@@ -96,10 +100,13 @@ export function freezeWorkflowEnvironment(
     const physicalKey = `${captured.containmentPhysicalIdentity}\0${captured.physicalIdentity}`;
     const alias = physical.get(physicalKey);
     if (alias !== undefined && alias !== resolved.ref) {
-      throw new UsageError(
-        `${resolved.ref} aliases the same physical environment source as ${alias} under a different logical owner.`,
-        "RESOURCE_ALREADY_EXISTS",
+      // Two logical owners pointing at the same physical env file would just
+      // materialize the identical values twice under different names — warn
+      // and collapse onto the first-seen owner instead of refusing to freeze.
+      warn(
+        `Workflow env ref ${resolved.ref} aliases the same physical environment source as ${alias} under a different logical owner. Using ${alias}.`,
       );
+      continue;
     }
     physical.set(physicalKey, resolved.ref);
 

@@ -792,7 +792,12 @@ describe("OKF first-class conformance", () => {
       resetConfigCache();
 
       expect((await loadWorkflowAsset("native//upper")).path).toBe(path.join(workflowRoot, "upper.MD"));
-      await expect(loadWorkflowAsset("native//escape")).rejects.toMatchObject({ code: "PATH_ESCAPE_VIOLATION" });
+      // guard-audit finding 9: one bad candidate in a canonical-name domain
+      // (here, a symlink resolving outside the bundle root) is warned about
+      // and skipped rather than poisoning the lookup with a distinct error —
+      // "escape" simply has no valid source left, so it reports not-found
+      // like any other absent ref, not PATH_ESCAPE_VIOLATION.
+      await expect(loadWorkflowAsset("native//escape")).rejects.toMatchObject({ code: "ASSET_NOT_FOUND" });
       await expect(loadWorkflowAsset("native//duplicate")).rejects.toMatchObject({
         code: "RESOURCE_ALREADY_EXISTS",
       });

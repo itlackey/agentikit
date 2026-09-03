@@ -8,15 +8,14 @@
  *
  * Pure; no IO. `resolveWorkflowRunOutputs` reads PERSISTED step rows (never
  * live in-memory evidence — `completeWorkflowStep` sees only the current
- * step's; a resumed run has nothing else to rebuild the scope from, B-N12)
- * and fails loudly, by name, when a declared output's source artifact was
- * replaced by a truncation envelope at persistence.
+ * step's; a resumed run has nothing else to rebuild the scope from, B-N12).
  *
- * This module must stay IMPORT-CYCLE-FREE with `./runs.ts` (which imports
- * it): `WORKFLOW_EVIDENCE_TRUNCATED_MARKER`'s value is therefore reproduced
- * locally rather than imported — the same "reproduce across a boundary
- * rather than import" idiom `ir/schema-v4.ts` already uses for
- * `CHILD_WORKFLOW_DECODE_MAX_DEPTH`.
+ * Every declared output is resolved independently and failures never stop
+ * the run: the workflow's actual steps already completed, so an output that
+ * cannot be resolved (a bad reference, a schema violation) is dropped from
+ * `outputs` and its message returned in `errors` for the caller to surface
+ * as a warning — never a reason to roll the completion back and force a
+ * re-dispatch of paid work that would fail identically on retry.
  */
 
 import { validateJsonSchemaSubset } from "../../core/json-schema";
@@ -24,20 +23,10 @@ import type { WorkflowRunRow, WorkflowRunStepRow } from "../../storage/repositor
 import type { WorkflowPlanGraphV4 } from "../ir/schema-v4";
 import { type ExpressionScope, parseReference, resolveReferenceString } from "../program/expressions";
 
-/** Mirrors `runs.ts`'s `WORKFLOW_EVIDENCE_TRUNCATED_MARKER` byte-for-byte — see this file's header for why it is reproduced, not imported. */
-const EVIDENCE_TRUNCATED_MARKER = "__akm_evidence_truncated__";
-
-function isTruncatedEvidenceValue(value: unknown): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Record<string, unknown>)[EVIDENCE_TRUNCATED_MARKER] === true
-  );
+export interface ResolveRunOutputsResult {
+  readonly outputs: Record<string, unknown>;
+  readonly errors: string[];
 }
-
-export type ResolveRunOutputsResult =
-  | { readonly ok: true; readonly outputs: Record<string, unknown> }
-  | { readonly ok: false; readonly errors: string[] };
 
 /** Project a step artifact out of its persisted evidence — mirrors `exec/step-work.ts`'s `projectStepOutput`. */
 function projectStepOutput(evidence: Record<string, unknown>): unknown {
@@ -76,24 +65,9 @@ export function resolveWorkflowRunOutputs(
       errors.push(`output "${name}": "${declaration.from}" is not a valid step-output reference.`);
       continue;
     }
-    const rootValue = Object.hasOwn(stepOutputs, parsed.expr.stepId) ? stepOutputs[parsed.expr.stepId] : undefined;
-    if (isTruncatedEvidenceValue(rootValue)) {
-      errors.push(
-        `output "${name}" reads step "${parsed.expr.stepId}"'s artifact, which was truncated — it exceeded the ` +
-          `evidence persistence cap and was not stored.`,
-      );
-      continue;
-    }
     const resolved = resolveReferenceString(declaration.from, scope);
     if (!resolved.ok) {
       errors.push(`output "${name}": ${resolved.error.message}`);
-      continue;
-    }
-    if (isTruncatedEvidenceValue(resolved.value)) {
-      errors.push(
-        `output "${name}" reads step "${parsed.expr.stepId}"'s artifact, which was truncated — it exceeded the ` +
-          `evidence persistence cap and was not stored.`,
-      );
       continue;
     }
     if (declaration.schema) {
@@ -106,8 +80,7 @@ export function resolveWorkflowRunOutputs(
     outputs[name] = resolved.value;
   }
 
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, outputs };
+  return { outputs, errors };
 }
 
 /**

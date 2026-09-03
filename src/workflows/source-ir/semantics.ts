@@ -7,11 +7,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../../commands/command/builtin-action";
-import { validatePortableCommandTemplate } from "../../commands/command/portable-template";
 import { parseSchedule } from "../../tasks/schedule";
 import { classifyWorkflowSourceUses, type WorkflowSourceUsesClassifier, type WorkflowSourceUsesTarget } from "./uses";
-
-const TOKEN_SAFE_RUN = /^[A-Za-z0-9_./:@+=,-]+(?: [A-Za-z0-9_./:@+=,-]+)*$/;
 
 export class WorkflowSourceSemanticError extends Error {
   constructor(
@@ -41,6 +38,16 @@ export function canonicalizeWorkflowCron(value: string): string {
   return canonical;
 }
 
+/**
+ * `run:` is lowered to `exec: {command: ["sh", "-c", <this value>]}`
+ * (`source-ir/program.ts`'s `sourceStepProgramUnit`), and an author-written
+ * `exec:` step already passes the identical bytes through with only a NUL
+ * check (`rejectNulInArgv`). The former token-safe grammar here (rejecting
+ * `run: |` multiline, `&&`, pipes, quotes, `$`) blocked nothing an author
+ * could not already do one line away with `exec:` — it was a restriction on
+ * spelling, not on capability. `${{ }}` stays rejected: akm genuinely does
+ * not evaluate GitHub expressions/contexts, in `run:` or anywhere else.
+ */
 export function canonicalizeWorkflowRun(value: string): string {
   if (value.includes("${{")) {
     throw new WorkflowSourceSemanticError(
@@ -48,23 +55,10 @@ export function canonicalizeWorkflowRun(value: string): string {
       "GitHub expressions and contexts are not supported.",
     );
   }
-  if (value.includes("\n") || value.includes("\r")) {
-    throw new WorkflowSourceSemanticError(
-      "unsafe-run-syntax",
-      "Local run accepts only whitespace-separated safe tokens; shell expansion and operators are unsupported.",
-    );
+  if (value.includes("\0")) {
+    throw new WorkflowSourceSemanticError("invalid-exec-argv", "Local run may not contain NUL bytes.");
   }
-  const canonical = value
-    .trim()
-    .split(/[ \t]+/)
-    .join(" ");
-  if (!TOKEN_SAFE_RUN.test(canonical)) {
-    throw new WorkflowSourceSemanticError(
-      "unsafe-run-syntax",
-      "Local run accepts only whitespace-separated safe tokens; shell expansion and operators are unsupported.",
-    );
-  }
-  return canonical;
+  return value;
 }
 
 export function canonicalizeWorkflowWorkingDirectory(value: string, workspaceRoot?: string): string {
@@ -142,10 +136,16 @@ export function classifyWorkflowStepUses(
 /**
  * Validate AKM's built-in command action at the shared source/decoder boundary.
  *
- * Inline YAML actions are portable templates and therefore use WP4's one
- * authoritative template validator. Markdown prose is explicitly `literal`,
- * while a stored ref remains resolution-owned because its template bytes are
- * not available until the later resolver loads the command asset.
+ * Mode consistency (stored vs. inline, literal vs. portable-template) is
+ * still enforced here. The portable-template CONTENT SCAN (issue 4) is not:
+ * it used to reject ordinary inline prose like `"Review $ARGUMENTS against
+ * @docs/style-guide.md"` for using constructs (`@file`, bare `$NAME`, …) that
+ * only matter for a STANDALONE command file meant to round-trip through a
+ * native tool. The identical prose, written directly as a markdown step's
+ * body instead of an explicit `uses: akm/command`, was always literal and
+ * never scanned (`source-ir/compile.ts`'s `commandMode: "literal"`) — an
+ * inline workflow step is authored for akm alone, so scanning it for
+ * constructs akm never expands bought nothing but false positives.
  */
 export function validateWorkflowBuiltinCommand(
   value: unknown,
@@ -178,21 +178,10 @@ export function validateWorkflowBuiltinCommand(
       "Inline akm/command content cannot use commandMode stored-ref.",
     );
   }
-  if (effectiveMode === "literal") {
-    if (action.arguments !== undefined) {
-      throw new WorkflowSourceSemanticError(
-        "builtin-command-inputs",
-        "Literal akm/command content cannot declare arguments because no substitution occurs.",
-      );
-    }
-    return action;
-  }
-  try {
-    validatePortableCommandTemplate(action.content, "inline workflow command");
-  } catch (cause) {
+  if (effectiveMode === "literal" && action.arguments !== undefined) {
     throw new WorkflowSourceSemanticError(
       "builtin-command-inputs",
-      cause instanceof Error ? cause.message : "Invalid portable command template.",
+      "Literal akm/command content cannot declare arguments because no substitution occurs.",
     );
   }
   return action;

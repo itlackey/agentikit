@@ -31,20 +31,15 @@ import { compileResolveFreezeWorkflowV4 } from "../ir/freeze-v4";
 import { materializeWorkflowParameterFlags, validateWorkflowParams, type WorkflowParameterFlag } from "../ir/params";
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
 import type { IrRuntimeKind } from "../ir/schema";
-import {
-  clip,
-  utf8Bytes,
-  WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS,
-  WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
-  WORKFLOW_UNIT_DIAGNOSTIC_CLIP,
-} from "../resource-limits";
+import { clip, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 import { type SummaryJudge, validateStepSummary } from "../validate-summary";
 import { resolveAgentIdentity } from "./agent-identity";
 import { type CheckinDirective, evaluateCheckin } from "./checkin";
 import {
-  assertWorkflowSpineMatchesPlan,
+  assertRunStatusMatchesSpine,
   classifyWorkflowRunPlan,
   frozenStepRows,
+  reconcileWorkflowSpineWithPlan,
   requireExecutableWorkflowPlan,
 } from "./plan-classifier";
 import { resolveWorkflowRunOutputs } from "./run-outputs";
@@ -496,7 +491,8 @@ export async function getNextWorkflowStep(
     );
     const steps = readWorkflowRunSteps(repo, run.id);
     const plan = requireExecutableWorkflowPlan(run);
-    assertWorkflowSpineMatchesPlan(plan, run, steps);
+    reconcileWorkflowSpineWithPlan(plan, run, steps);
+    assertRunStatusMatchesSpine(run, steps);
     return {
       ...projectNextResult(run, steps),
       ...(autoStarted ? { autoStarted: true as const } : {}),
@@ -543,11 +539,16 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
     const run = readWorkflowRunOrPrefix(repo, runId);
     const storedPlan = requireExecutableWorkflowPlan(run);
     const steps = readWorkflowRunSteps(repo, run.id);
-    assertWorkflowSpineMatchesPlan(storedPlan, run, steps);
+    // Pure-derivation drift (issue 7) never blocks resume — warn only. The
+    // plan-derived spine rows are pure derivations of an already
+    // hash-verified plan; a later akm release changing how one is FORMATTED
+    // must not make an in-flight run un-resumable.
+    reconcileWorkflowSpineWithPlan(storedPlan, run, steps);
     if (run.status === "completed") {
       throw new UsageError(`Workflow run ${run.id} is already completed and cannot be resumed.`);
     }
     if (run.status === "active") {
+      assertRunStatusMatchesSpine(run, steps);
       return buildWorkflowRunDetail(repo, run, steps);
     }
     // blocked or failed → flip back to active and re-open the current step so
@@ -561,6 +562,10 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
     });
     const updated: WorkflowRunRow = { ...run, status: "active", updated_at: now };
     const refreshedSteps = readWorkflowRunSteps(repo, run.id);
+    // Status-vs-spine consistency is checked AFTER normalization above: it
+    // is the one check reopenStepsForResume/markRunActive exist to satisfy,
+    // not to race against (issue 7).
+    assertRunStatusMatchesSpine(updated, refreshedSteps);
     return buildWorkflowRunDetail(repo, updated, refreshedSteps);
   });
 }
@@ -605,140 +610,6 @@ export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDeta
   });
 }
 
-// ── Step-evidence persistence bound (issue C) ────────────────────────────────
-
-/**
- * Marker key stamped on every value this module replaced because it did not fit
- * in `workflow_run_steps.evidence_json`. It is deliberately ugly and unique so a
- * truncated value can NEVER be mistaken for real workflow data by a downstream
- * `steps.<id>.output…` reference, by `akm workflow status`, or by a human
- * reading the row.
- */
-export const WORKFLOW_EVIDENCE_TRUNCATED_MARKER = "__akm_evidence_truncated__";
-
-/** The replacement value persisted in place of an over-cap evidence entry. */
-export interface TruncatedEvidenceValue {
-  readonly [WORKFLOW_EVIDENCE_TRUNCATED_MARKER]: true;
-  /** Human-readable explanation, including that the full value is unrecoverable from this row. */
-  readonly reason: string;
-  /** Serialized size of the value that was dropped. */
-  readonly originalBytes: number;
-  /** The cap that was exceeded. */
-  readonly limitBytes: number;
-  /** Leading slice of the dropped value's JSON — evidence for debugging, NEVER usable as data. */
-  readonly preview?: string;
-}
-
-function truncatedEvidenceValue(
-  json: string,
-  what: string,
-  limitBytes: number,
-  withPreview: boolean,
-): TruncatedEvidenceValue {
-  return {
-    [WORKFLOW_EVIDENCE_TRUNCATED_MARKER]: true,
-    reason:
-      `${what} exceeded the ${limitBytes}-byte evidence_json persistence cap and was NOT stored. ` +
-      `The complete value existed only in the live step result; it cannot be recovered from this row. ` +
-      `Reduce the step's fan-out or have it emit a reference (path, id) instead of inline bulk data.`,
-    originalBytes: utf8Bytes(json),
-    limitBytes,
-    ...(withPreview ? { preview: json.slice(0, WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS) } : {}),
-  } as TruncatedEvidenceValue;
-}
-
-/**
- * True when `value` is the {@link TruncatedEvidenceValue} envelope persisted in
- * place of an over-cap evidence entry.
- *
- * A LIVE invocation never sees one: the engine threads each step's complete
- * in-memory evidence to the rest of its own run. A RESUMED invocation rebuilds
- * the downstream scope from these rows, so `exec/step-work.ts` tests every
- * whole-value reference with this predicate — otherwise a reference INTO the
- * envelope reports a generic missing property and a reference AT it silently
- * hands the envelope to a unit as if it were the artifact.
- */
-export function isTruncatedEvidence(value: unknown): value is TruncatedEvidenceValue {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Record<string, unknown>)[WORKFLOW_EVIDENCE_TRUNCATED_MARKER] === true
-  );
-}
-
-/**
- * Bound what a step's evidence costs in ONE SQLite row.
- *
- * `buildEvidence` (exec/step-work.ts) promotes `evidence.output` UNCLIPPED by
- * design: gates judge the full promoted artifact and the in-memory
- * {@link StepExecutionResult} carries it to the caller intact. Nothing bounded
- * the PERSISTED form, though — a `collect` reducer over an unbounded fan-out
- * can serialize to hundreds of megabytes. This is the write boundary, so the
- * bound lives here rather than in the shared step-semantics module.
- *
- * Over-cap values are REPLACED (largest top-level entry BY UTF-8 BYTES first —
- * the unit the cap is measured in — until the row fits) with a
- * {@link TruncatedEvidenceValue} envelope. Nothing is silently shortened: a
- * consumer either sees the real value or sees an object whose marker key says
- * the data is gone. `preview` is intentionally not shaped like the original, so
- * an expression reaching INTO a truncated artifact (`steps.x.output.files`)
- * cannot quietly resolve against a half-array; a resumed run's reference is
- * rejected by name through {@link isTruncatedEvidence}.
- *
- * Returns the JSON to persist plus the keys that were replaced (empty in the
- * overwhelmingly common case, where nothing is copied or re-serialized twice).
- */
-export function clipStepEvidenceForPersistence(
-  evidence: Record<string, unknown> | undefined,
-  limitBytes: number = WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
-): { json: string | null; truncatedKeys: string[] } {
-  if (!evidence) return { json: null, truncatedKeys: [] };
-  // Throws exactly as the previous inline `JSON.stringify` did on unserializable
-  // evidence — that contract is unchanged. Every stringify below operates on a
-  // subtree of a value already proven serializable here.
-  let json = JSON.stringify(evidence);
-  if (json === undefined) return { json: null, truncatedKeys: [] };
-  let bytes = utf8Bytes(json);
-  if (bytes <= limitBytes) return { json, truncatedKeys: [] };
-
-  const clipped: Record<string, unknown> = { ...evidence };
-  const truncatedKeys: string[] = [];
-  // Ordered by UTF-8 BYTES, the unit the cap itself is measured in: ordering by
-  // `json.length` (UTF-16 code units) sacrifices the char-largest key rather
-  // than the byte-largest one, so multibyte-heavy evidence loses extra keys the
-  // cap never required.
-  const bySizeDesc = Object.keys(evidence)
-    .map((key) => {
-      const json = JSON.stringify(evidence[key]) ?? "null";
-      return { key, json, bytes: utf8Bytes(json) };
-    })
-    .sort((a, b) => b.bytes - a.bytes);
-  for (const [index, entry] of bySizeDesc.entries()) {
-    const envelope = truncatedEvidenceValue(entry.json, `Step evidence "${entry.key}"`, limitBytes, true);
-    clipped[entry.key] = envelope;
-    truncatedKeys.push(entry.key);
-    // Track the row size arithmetically from the per-key sizes already computed
-    // for the sort, so a run of replacements costs ONE whole-object
-    // serialization rather than one per replaced key. The total is an ESTIMATE
-    // — a key whose value is `undefined` is charged the `"null"` the sort used
-    // but is OMITTED from the serialized row — so it decides only WHEN to
-    // measure. Whether the row FITS is settled by an exact serialization every
-    // time, the last key included, so an exhausted loop falls through to the
-    // whole-object marker on measurement rather than on drift.
-    bytes += utf8Bytes(JSON.stringify(envelope)) - entry.bytes;
-    if (bytes > limitBytes && index < bySizeDesc.length - 1) continue;
-    json = JSON.stringify(clipped);
-    bytes = utf8Bytes(json);
-    if (bytes <= limitBytes) return { json, truncatedKeys };
-  }
-  // Pathological shape (so many keys that even the envelopes overflow): persist
-  // ONE whole-object marker. Still unambiguous, still bounded.
-  return {
-    json: JSON.stringify(truncatedEvidenceValue(JSON.stringify(evidence), "Step evidence", limitBytes, false)),
-    truncatedKeys: Object.keys(evidence),
-  };
-}
-
 export async function completeWorkflowStep(
   input: CompleteWorkflowStepInput,
 ): Promise<WorkflowRunDetail | SummaryValidationFailure> {
@@ -748,7 +619,8 @@ export async function completeWorkflowStep(
     const run = readWorkflowRun(repo, input.runId);
     const storedPlan = requireExecutableWorkflowPlan(run);
     const steps = readWorkflowRunSteps(repo, run.id);
-    assertWorkflowSpineMatchesPlan(storedPlan, run, steps);
+    reconcileWorkflowSpineWithPlan(storedPlan, run, steps);
+    assertRunStatusMatchesSpine(run, steps);
     if (run.status !== "active") {
       throw new UsageError(`Workflow run ${run.id} is ${run.status} and cannot be updated.`);
     }
@@ -827,12 +699,14 @@ export async function completeWorkflowStep(
   return withWorkflowRunsRepo((repo) => {
     let updatedRun: WorkflowRunRow | undefined;
     let refreshedSteps: WorkflowRunStepRow[] = [];
+    let outputWarnings: string[] | undefined;
 
     repo.transaction(() => {
       const run = readWorkflowRun(repo, input.runId);
       const plan = requireExecutableWorkflowPlan(run);
       const spine = readWorkflowRunSteps(repo, run.id);
-      assertWorkflowSpineMatchesPlan(plan, run, spine);
+      reconcileWorkflowSpineWithPlan(plan, run, spine);
+      assertRunStatusMatchesSpine(run, spine);
       if (run.status !== "active") {
         throw new UsageError(`Workflow run ${run.id} is ${run.status} and cannot be updated.`);
       }
@@ -855,28 +729,18 @@ export async function completeWorkflowStep(
       if (input.signal?.aborted) throw interruptionReason(input.signal);
 
       const completedAt = new Date().toISOString();
-      // Bound the single-row cost of the promoted artifact (issue C). The
-      // caller's in-memory evidence object is never mutated — a clipped COPY is
-      // serialized — so the live step result and the gate's artifact judging
-      // keep the complete value. The DOWNSTREAM scope keeps it only because the
-      // engine threads this same in-memory evidence forward (`driveRun` prefers
-      // it over the re-read row): what the clip actually costs is a LATER
-      // invocation, which has nothing but these rows to rebuild the scope from.
-      const persistedEvidence = clipStepEvidenceForPersistence(input.evidence);
-      if (persistedEvidence.truncatedKeys.length > 0) {
-        warn(
-          `Workflow run ${run.id} step "${input.stepId}": evidence exceeded the ` +
-            `${WORKFLOW_MAX_EVIDENCE_JSON_BYTES}-byte persistence cap; ` +
-            `${persistedEvidence.truncatedKeys.map((k) => `"${k}"`).join(", ")} ` +
-            `${persistedEvidence.truncatedKeys.length === 1 ? "was" : "were"} stored as a truncation marker. ` +
-            `The rest of THIS invocation still reads the complete value, but a run resumed from these rows will ` +
-            `fail loudly when a later step references this step's output rather than read partial data.`,
-        );
-      }
+      // The promoted artifact is persisted WHOLE, unclipped (issue C): a
+      // step artifact that does not fit some cap used to be replaced by a
+      // truncation marker at this exact write, and the run looked fine right
+      // up until a LATER invocation (a resume, or any downstream step
+      // referencing it) found the marker instead of the value and failed
+      // permanently, with every prior paid step now unrecoverable. Persisting
+      // the real value here is what makes it readable again on resume.
+      const evidenceJson = input.evidence ? JSON.stringify(input.evidence) : null;
       repo.updateStepCompletion({
         status: input.status,
         notes: input.notes?.trim() || null,
-        evidenceJson: persistedEvidence.json,
+        evidenceJson,
         summary: summary || null,
         completedAt,
         runId: run.id,
@@ -888,23 +752,17 @@ export async function completeWorkflowStep(
 
       // P3b (spec §4.3, B-N13): resolve + persist declared outputs INSIDE
       // this same transaction, immediately after the run is known to have
-      // COMPLETED. A resolution failure throws here, and the transaction
-      // rolls back whole — the step completion included — so the observable
-      // outcome is fail-before-mutation: the step stays pending, the run
-      // stays active, and (since appendEvent runs outside this transaction)
-      // no event is appended.
+      // COMPLETED. A resolution failure no longer rolls the completion back —
+      // the workflow's real work is already done and every unresolved output
+      // is a re-dispatch (another paid step) that would fail identically on
+      // retry. Whatever resolved is stored; the rest is surfaced as a warning
+      // on the returned run envelope, set below once `detail` exists.
       let outputsJson: string | null | undefined; // undefined = untouched, keep the row's existing value
       if (state.status === "completed" && plan.outputs) {
         const resolved = resolveWorkflowRunOutputs(plan, refreshedSteps);
-        if (!resolved.ok) {
-          throw new UsageError(
-            `Workflow run ${run.id} completed its final step but its declared outputs could not be resolved:\n` +
-              resolved.errors.map((e) => `  - ${e}`).join("\n"),
-            "WORKFLOW_OUTPUT_INVALID",
-          );
-        }
         outputsJson = JSON.stringify(resolved.outputs);
         repo.setRunOutputs(run.id, outputsJson);
+        outputWarnings = resolved.errors;
       }
 
       // Re-arm the check-in on every state change: a healthy, progressing run
@@ -930,6 +788,11 @@ export async function completeWorkflowStep(
     });
 
     const detail = buildWorkflowRunDetail(repo, updatedRun as WorkflowRunRow, refreshedSteps);
+    if (outputWarnings?.length) {
+      const messages = outputWarnings.map((e) => `Workflow run ${input.runId} declared ${e}`);
+      for (const message of messages) warn(message);
+      detail.warnings = [...(detail.warnings ?? []), ...messages];
+    }
     // #11: emit `workflow_step_completed` ONLY for a genuine `completed`
     // transition; every other non-pending status (failed/skipped/blocked)
     // carries the honest `workflow_step_updated` name. The status is ALWAYS
@@ -986,7 +849,11 @@ async function resolveRunSpecifier(
   } catch (error) {
     if (detached) {
       if (hasParameters) {
-        throw new UsageError(`Workflow parameter flags can only be set on a new run; ${specifier} is already active.`);
+        throw new UsageError(
+          `Workflow parameter flags can only be set on a new run; ${specifier} is already active.`,
+          "INVALID_FLAG_VALUE",
+          `Pass --new to start a separate run, or run "akm workflow abandon ${detached.id}" to free up ${specifier} first.`,
+        );
       }
       return { run: detached, autoStarted: false, resumed: true };
     }
@@ -998,7 +865,11 @@ async function resolveRunSpecifier(
   const active = forceNew ? undefined : repo.getActiveRunRowForScope(await workflowRunRefSet(ref, exactRef), scopeKey);
   if (active) {
     if (hasParameters) {
-      throw new UsageError(`Workflow parameter flags can only be set on a new run; ${ref} is already active.`);
+      throw new UsageError(
+        `Workflow parameter flags can only be set on a new run; ${ref} is already active.`,
+        "INVALID_FLAG_VALUE",
+        `Pass --new to start a separate run, or run "akm workflow abandon ${active.id}" to free up ${ref} first.`,
+      );
     }
     return { run: active, autoStarted: false, resumed: true };
   }

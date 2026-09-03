@@ -345,9 +345,8 @@ async function driveChildRun(
     // (dispatchJournaledAttempt awaits this call with no try of its own),
     // so an uncaught throw here escaped all the way into the scheduler and
     // was silently swallowed (R1, above). Reachable causes include the
-    // child's own LeaseHeartbeat.assertAlive() firing mid-drive, a Lane B
-    // UsageError out of the child's own completeWorkflowStep (e.g.
-    // WORKFLOW_OUTPUT_INVALID), requireExecutableWorkflowPlan rejecting a
+    // child's own LeaseHeartbeat.assertAlive() firing mid-drive,
+    // requireExecutableWorkflowPlan rejecting a
     // tampered child plan_json, and the child's status changing between
     // this function's own step 5 read and the drive's internal
     // getNextWorkflowStep re-read — none of which match
