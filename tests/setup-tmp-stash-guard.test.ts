@@ -26,8 +26,8 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { assertSetupSandbox, runSetupFromConfig, runSetupWithDefaults } from "../src/setup/setup";
 import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
+import { assertSetupSandbox, runSetupFromConfig, runSetupWithDefaults } from "../src/setup/setup";
 import { makeSandboxDir, withEnv } from "./_helpers/sandbox";
 
 function captureWarnings(): { warnings: string[]; restore: () => void } {

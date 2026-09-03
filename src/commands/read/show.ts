@@ -252,15 +252,27 @@ export async function showLocal(input: {
   }
 
   if (!indexedEntry && !resolution.owner) {
-    const unsupportedExtension = existingUnsupportedScriptExtension(assetParts, searchSources);
-    if (unsupportedExtension !== undefined) {
-      const displayExtension = unsupportedExtension || "no extension";
-      throw new NotFoundError(
-        `Script ref "${makeBundleRef(parsed.bundle, parsed.conceptId)}" resolves to an existing file with ` +
-          `unsupported extension "${displayExtension}". Script refs must use a supported script extension: ` +
-          `${[...SCRIPT_EXTENSIONS].join(", ")}.`,
-        "ASSET_NOT_FOUND",
+    const unrecognized = findUnrecognizedScriptSource(assetParts, searchSources);
+    if (unrecognized) {
+      // The extension set above governs recognition/typing during indexing —
+      // it must not gate READING a script that plainly exists and is
+      // readable (an extensionless `bin/` script with a shebang, `.mjs`,
+      // `.bash`, `.zsh`, `.fish`, `.sql`, `.awk`, ...). Fall back to the
+      // plain-text script renderer rather than reporting a file we just
+      // confirmed exists as not found.
+      const displayExtension = unrecognized.extension || "no extension";
+      warn(
+        `Script ref "${makeBundleRef(parsed.bundle, parsed.conceptId)}" has extension "${displayExtension}", which is outside the recognized set used for indexing (${[...SCRIPT_EXTENSIONS].join(", ")}); showing it as plain text.`,
       );
+      const fileCtx = buildFileContext(unrecognized.sourceRoot, unrecognized.path);
+      const renderer = await getRenderer("script-source");
+      if (renderer) {
+        const match: MatchResult = { type: "script", specificity: 0, renderer: "script-source" };
+        const renderCtx = buildRenderContext(fileCtx, match, allSourceDirs);
+        const response = renderer.buildShowResponse(renderCtx);
+        response.name = assetParts?.name ?? response.name;
+        return response;
+      }
     }
   }
 
@@ -420,10 +432,18 @@ function assertSensitiveFragmentUnsupported(ref: BundleRef): void {
  * first; this is a diagnostic for its miss, never an alternate owner or
  * runnable-file classifier. No authored bytes are read.
  */
-function existingUnsupportedScriptExtension(
+/** An existing, containment-checked script asset whose extension is outside {@link SCRIPT_EXTENSIONS}. */
+interface UnrecognizedScriptSource {
+  extension: string;
+  /** Realpath of the file, already confirmed to resolve inside `sourceRoot`. */
+  path: string;
+  sourceRoot: string;
+}
+
+function findUnrecognizedScriptSource(
   assetParts: ReturnType<typeof typeNameFromConceptId>,
   sources: readonly SearchSource[],
-): string | undefined {
+): UnrecognizedScriptSource | undefined {
   if (assetParts?.type !== "script") return undefined;
   const extension = path.extname(assetParts.name);
   if (SCRIPT_EXTENSIONS.has(extension.toLowerCase())) return undefined;
@@ -441,7 +461,7 @@ function existingUnsupportedScriptExtension(
       const realRoot = fs.realpathSync(sourceRoot);
       const realCandidate = fs.realpathSync(candidate);
       if (!isWithin(realCandidate, realRoot) || !fs.statSync(realCandidate).isFile()) continue;
-      return extension;
+      return { extension, path: realCandidate, sourceRoot: realRoot };
     } catch {
       // Missing, unreadable, dangling, or otherwise unsafe paths remain normal
       // not-found misses; this diagnostic never widens physical ownership.
