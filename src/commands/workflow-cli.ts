@@ -21,8 +21,8 @@ import { WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/ir/schema";
 import {
   abandonWorkflowRun,
   getWorkflowStatus,
-  hasWorkflowRun,
   listWorkflowRuns,
+  resolveWorkflowRunTarget,
   resumeWorkflowRun,
 } from "../workflows/runtime/runs";
 import { akmWorkflowPlan } from "./workflow/plan";
@@ -45,8 +45,12 @@ const workflowStatusCommand = defineJsonCommand({
   async run({ args }) {
     const target = args.target;
     const includeUnits = args.units === true;
-    if (await hasWorkflowRun(target)) {
-      const result = await getWorkflowStatus(target, { includeUnits });
+    // #919: a run id AND its unique 8+ char prefix resolve here identically —
+    // `resolveWorkflowRunTarget` returns `undefined` only when `target` isn't
+    // id-shaped at all, so it falls through to the workflow-ref listing below.
+    const resolvedRunId = await resolveWorkflowRunTarget(target);
+    if (resolvedRunId !== undefined) {
+      const result = await getWorkflowStatus(resolvedRunId, { includeUnits });
       output("workflow-status", result);
       return;
     }
@@ -176,10 +180,18 @@ const workflowRunCommand = defineJsonCommand({
     "max-steps": { type: "string", description: "Stop after executing this many steps" },
     "max-retries": { type: "string", description: "Retry a failed workflow step this many additional times" },
     timeout: { type: "string", description: "Whole-run timeout: N, Nms, Ns, or Nm (bare N is milliseconds)" },
+    new: {
+      type: "boolean",
+      description:
+        "Start a fresh run even if one is already active for this ref, leaving the existing run untouched " +
+        "(never abandons it). A workflow ref only — passing a run id with --new is a usage error.",
+      default: false,
+    },
   },
   async run({ args, rawArgs }) {
     const { runWorkflowSteps } = await import("../workflows/exec/run-workflow.js");
     const parameterFlags = parseWorkflowParameterFlags(rawArgs, args.target);
+    const newRun = args.new === true;
     const maxSteps = parseIntegerFlag(getStringArg(args, "max-steps"), "--max-steps", 1);
     const maxRetries = parseIntegerFlag(getStringArg(args, "max-retries"), "--max-retries", 0);
     const timeoutMs = parseWorkflowTimeout(getStringArg(args, "timeout"));
@@ -205,6 +217,7 @@ const workflowRunCommand = defineJsonCommand({
         parameterFlags,
         ...(maxSteps !== undefined ? { maxSteps } : {}),
         ...(maxRetries !== undefined ? { maxRetries } : {}),
+        ...(newRun ? { newRun: true } : {}),
         signal: controller.signal,
       });
       // The abort is observed between steps, so a deadline landing in the run's
@@ -244,7 +257,7 @@ const WORKFLOW_RUN_VALUE_FLAGS = new Set([
   "shape",
   "output",
 ]);
-const WORKFLOW_RUN_BOOLEAN_FLAGS = new Set(["quiet", "verbose", "help", "no-quiet", "no-verbose"]);
+const WORKFLOW_RUN_BOOLEAN_FLAGS = new Set(["quiet", "verbose", "help", "no-quiet", "no-verbose", "new", "no-new"]);
 
 export function parseWorkflowParameterFlags(rawArgs: readonly string[], target: string): WorkflowParameterFlag[] {
   const flags: WorkflowParameterFlag[] = [];
