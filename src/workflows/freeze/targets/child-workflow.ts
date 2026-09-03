@@ -30,6 +30,7 @@
 import { createHash } from "node:crypto";
 import { parseBundleRef } from "../../../core/asset/asset-ref";
 import { UsageError } from "../../../core/errors";
+import { warn } from "../../../core/warn";
 import { GuardedExecutionSourceCollector } from "../../../execution/guarded-source";
 import type { TaskInputBinding } from "../../../execution/input-contract";
 import { workflowParamContract } from "../../ir/params";
@@ -111,29 +112,26 @@ function childWorkflowContentHash(fields: {
 }
 
 /**
- * Code-review finding (see this file's `environment: []` return field): a
- * step composing a child workflow has no path to honor its own authored
- * `env:` — the child run carries its own frozen environment inside its own
- * plan, so `freezeEnvironment` (the ONE mechanism a step's `env:` reaches a
- * frozen unit through, `../environment.ts`) is never called for this
- * target. Leaving that silent would repeat exactly the defect A-N5 already
- * closed for `with:` on a non-binding surface — an authored construct that
- * cannot be honored on this composing target now rejects instead of
- * vanishing. Checks BOTH shapes a step's `env:` can take (`../environment.ts`'s
- * `freezeEnvironment`): literal `env:` values and `unit: {env: [...]}` refs.
- * An absent/empty `env:` is not authored and stays valid.
+ * Issue 10 (guard-audit): a step composing a child workflow has no path to
+ * honor its own authored `env:` — the child run carries its own frozen
+ * environment inside its own plan, so `freezeEnvironment` (the ONE mechanism
+ * a step's `env:` reaches a frozen unit through, `../environment.ts`) is
+ * never called for this target. This used to refuse to freeze at all; it
+ * now warns and continues — the authored `env:` is silently unreachable
+ * either way, and refusing the whole workflow over it costs more than the
+ * warning does. Checks BOTH shapes a step's `env:` can take
+ * (`../environment.ts`'s `freezeEnvironment`): literal `env:` values and
+ * `unit: {env: [...]}` refs. An absent/empty `env:` is not authored and
+ * stays silent.
  */
-function assertNoStepEnvironment(stepId: string, childRef: string, source: WorkflowSourceStep): void {
+function warnIfStepEnvironment(stepId: string, childRef: string, source: WorkflowSourceStep): void {
   const hasLiteralEnv = Object.keys(source.env ?? {}).length > 0;
   const hasEnvRefs = (source.unit?.env ?? []).length > 0;
   if (!hasLiteralEnv && !hasEnvRefs) return;
-  throw new UsageError(
-    `Workflow step ${stepId} cannot pass env: while composing ${childRef}: a child run carries its own frozen ` +
-      `environment inside its own plan, so a parent-level env: on the composing step cannot be honored. Remove ` +
-      `env: from this step, or move it into ${childRef}'s own source.`,
-    "COMPOSITION_INVALID",
-    "Remove the env: (or unit: env:) block from this step, or set those variables inside the child workflow's " +
-      "own source — a composing step's environment is never delivered into a child run.",
+  warn(
+    `Workflow step ${stepId} declares env: while composing ${childRef}: a child run carries its own frozen ` +
+      `environment inside its own plan, so this composing step's env: (or unit: env:) is not delivered into it ` +
+      `and has no effect. Set those variables inside ${childRef}'s own source instead.`,
   );
 }
 
@@ -197,10 +195,10 @@ export async function childWorkflowDispatch(input: ChildWorkflowDispatchInput): 
   const childAsset = await loadWorkflowAsset(owned.ref);
   const childRef = childAsset.ref;
 
-  // Code-review finding: an authored env: on the composing step has no
-  // path to reach the child run and must reject, not vanish (see
-  // assertNoStepEnvironment's doc comment).
-  assertNoStepEnvironment(source.id, childRef, source);
+  // Issue 10: an authored env: on the composing step has no path to reach
+  // the child run — warn rather than vanish silently (see
+  // warnIfStepEnvironment's doc comment).
+  warnIfStepEnvironment(source.id, childRef, source);
 
   // §4.2 step 2: the composition cycle check, before any child compilation.
   assertNoCompositionCycle(source.id, childRef, context.composition.refPath);
@@ -280,8 +278,9 @@ export async function childWorkflowDispatch(input: ChildWorkflowDispatchInput): 
   return {
     target,
     // A child run carries its own frozen environment inside its own plan.
-    // A composing step's own env: cannot reach it, so assertNoStepEnvironment
-    // above rejects one instead of it silently vanishing here (§4.2 step 8).
+    // A composing step's own env: cannot reach it, so warnIfStepEnvironment
+    // above already warned about one instead of it silently vanishing here
+    // (§4.2 step 8, issue 10).
     environment: [],
     unit: baseUnit,
     instructions:

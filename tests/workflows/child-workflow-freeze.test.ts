@@ -36,6 +36,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, resetConfigCache } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import type { TaskInputBinding } from "../../src/execution/input-contract";
 import { akmIndex } from "../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
@@ -46,6 +47,7 @@ import { WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../../src/workflows/reso
 import { listWorkflowRuns, startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../src/workflows/runtime/workflow-asset-loader";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
+import { withSeam } from "../_helpers/seams";
 
 let storage: IsolatedAkmStorage;
 
@@ -353,19 +355,22 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
   });
 });
 
-// ── Code-review finding: a composing step's own env: has no path into a ────
+// ── Issue 10 (guard-audit): a composing step's own env: has no path into a ─
 // ── child run (the frozen environment is the CHILD's own, not the parent ───
 // ── step's) — src/workflows/freeze/targets/child-workflow.ts's ─────────────
-// ── assertNoStepEnvironment. Distinct from B-15 above: B-15 is the ─────────
-// ── task DOCUMENT's own top-level env:; this is env: authored on the ───────
-// ── WORKFLOW STEP that composes a child, direct or task-wrapped. ───────────
+// ── warnIfStepEnvironment. Distinct from B-15 above: B-15 is the task ──────
+// ── DOCUMENT's own top-level env:; this is env: authored on the WORKFLOW ───
+// ── STEP that composes a child, direct or task-wrapped. Used to reject; ────
+// ── now warns and freezes normally — the env: was always unreachable ───────
+// ── either way, so refusing the whole workflow over it cost more than the ──
+// ── warning does. ───────────────────────────────────────────────────────────
 
-describe("a step composing a child workflow that also authors env: rejects instead of silently dropping it", () => {
+describe("a step composing a child workflow that also authors env: warns instead of refusing to freeze", () => {
   function writeChild(): void {
     write("workflows/child.md", paramWorkflowDoc());
   }
 
-  test("a direct uses: workflows/<ref> step with env: rejects COMPOSITION_INVALID naming the step and the child ref", async () => {
+  test("a direct uses: workflows/<ref> step with env: freezes fine, warning names the step and the child ref", async () => {
     writeChild();
     writeParent("direct-env", [
       "      - id: dispatch",
@@ -375,14 +380,22 @@ describe("a step composing a child workflow that also authors env: rejects inste
     ]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await expectCompositionInvalid("workflows/direct-env");
-    expect(error.message).toContain("Workflow step dispatch cannot pass env:");
-    expect(error.message).toContain("//workflows/child");
-    expect(error.hint()).not.toContain("with:");
-    await expectNoRunRowWritten();
+    const warnCalls: string[] = [];
+    const started = await withSeam(
+      _setWarnSinkForTests,
+      (level, args) => {
+        if (level !== "warn") return;
+        warnCalls.push(args.map((value) => (typeof value === "string" ? value : JSON.stringify(value))).join(" "));
+      },
+      () => startWorkflowRun("workflows/direct-env"),
+    );
+    expect(warnCalls.some((w) => w.includes("dispatch") && w.includes("//workflows/child"))).toBe(true);
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    expect(stepTarget(plan, 0)).toMatchObject({ kind: "child-workflow", via: "direct" });
   });
 
-  test("a task-wrapped uses: tasks/<t> step (t targets a workflow) with env: on the COMPOSING STEP rejects COMPOSITION_INVALID the same way", async () => {
+  test("a task-wrapped uses: tasks/<t> step (t targets a workflow) with env: on the COMPOSING STEP freezes fine the same way", async () => {
     writeChild();
     write("tasks/wrapper.yml", ["version: 4", "uses: workflows/child", 'schedule: "@daily"', ""].join("\n"));
     writeParent("task-env", [
@@ -393,17 +406,36 @@ describe("a step composing a child workflow that also authors env: rejects inste
     ]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await expectCompositionInvalid("workflows/task-env");
-    expect(error.message).toContain("Workflow step dispatch cannot pass env:");
-    await expectNoRunRowWritten();
+    const warnCalls: string[] = [];
+    const started = await withSeam(
+      _setWarnSinkForTests,
+      (level, args) => {
+        if (level !== "warn") return;
+        warnCalls.push(args.map((value) => (typeof value === "string" ? value : JSON.stringify(value))).join(" "));
+      },
+      () => startWorkflowRun("workflows/task-env"),
+    );
+    expect(warnCalls.some((w) => w.includes("dispatch"))).toBe(true);
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    expect(stepTarget(plan, 0)).toMatchObject({ kind: "child-workflow", via: "task" });
   });
 
-  test("a direct uses: workflows/<ref> step with NO env: still freezes fine (regression guard)", async () => {
+  test("a direct uses: workflows/<ref> step with NO env: still freezes fine, no warning (regression guard)", async () => {
     writeChild();
     writeParent("direct-no-env", ["      - id: dispatch", "        uses: workflows/child"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const started = await startWorkflowRun("workflows/direct-no-env");
+    const warnCalls: string[] = [];
+    const started = await withSeam(
+      _setWarnSinkForTests,
+      (level, args) => {
+        if (level !== "warn") return;
+        warnCalls.push(args.map((value) => (typeof value === "string" ? value : JSON.stringify(value))).join(" "));
+      },
+      () => startWorkflowRun("workflows/direct-no-env"),
+    );
+    expect(warnCalls).toEqual([]);
     const row = await planRow(started.run.id);
     const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
     expect(stepTarget(plan, 0)).toMatchObject({ kind: "child-workflow", via: "direct" });
