@@ -13,6 +13,7 @@ import {
 import { adapterForId } from "../../src/core/adapter/registry";
 import { slugForPath } from "../../src/core/bundle-id";
 import type { AkmConfig } from "../../src/core/config/config-types";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import { createAdapterRenderedExecutionSource } from "../../src/execution/source";
 import type { IndexEntry } from "../../src/indexer/indexer";
 import { withEnv } from "../_helpers/sandbox";
@@ -167,40 +168,63 @@ describe("adapter-owned execution source loading", () => {
     ).rejects.toThrow(/did not render.*command|renderer/i);
   });
 
-  test("fails closed on missing files, root drift, configured adapter drift, and path escapes", async () => {
+  test("warns and re-resolves from the indexed source on root drift, configured adapter drift, and an unresolvable configured source", async () => {
+    // None of these three used to be reachable without dispatching different
+    // bytes: `entry.stashDir`/`entry.filePath` (already stat'd and
+    // containment-checked) are what actually gets read regardless of what
+    // `componentForEntry` computes, and `assertRenderedIdentity` re-verifies
+    // the rendered result's identity against the SAME index entry afterward.
+    // A config/index disagreement here used to abort dispatch of a file that
+    // was always going to render correctly; it now warns and proceeds.
     const fixture = installFixture("akm", "command");
     const config = fixtureConfig(fixture.root, "akm");
     const base = entryFor(fixture.root, fixture.destination, "akm", fixture.conceptId, "command");
     const other = tempRoot("other");
 
-    await expect(
-      loadAdapterExecutionSource("fixture//commands/contract-review", "command", {
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      const rootDrifted = await loadAdapterExecutionSource("fixture//commands/contract-review", "command", {
         config: fixtureConfig(other, "akm"),
         lookup: lookupFor(base),
-      }),
-    ).rejects.toThrow(/configured.*root|root.*drift/i);
-    await expect(
-      loadAdapterExecutionSource("fixture//commands/contract-review", "command", {
+      });
+      expect(rootDrifted.content).toStartWith("# Contract review");
+      expect(warnings.some((w) => /root/i.test(w) && /drift|re-resolving/i.test(w))).toBe(true);
+
+      warnings.length = 0;
+      const adapterDrifted = await loadAdapterExecutionSource("fixture//commands/contract-review", "command", {
         config: fixtureConfig(fixture.root, "claude"),
         lookup: lookupFor(base),
-      }),
-    ).rejects.toThrow(/configured.*adapter|adapter.*drift/i);
+      });
+      expect(adapterDrifted.content).toStartWith("# Contract review");
+      expect(adapterDrifted.identity.adapter).toBe("akm");
+      expect(warnings.some((w) => /adapter/i.test(w) && /drift|re-resolving/i.test(w))).toBe(true);
 
-    await expect(
-      loadAdapterExecutionSource("fixture//commands/contract-review", "command", {
+      warnings.length = 0;
+      // A bundle entry with no locator at all (no path/git/website/npm) maps
+      // to no SourceConfigEntry — `bundlesToSourceEntries` excludes it
+      // entirely, so there is nothing live to re-resolve against.
+      const unresolvedSource = await loadAdapterExecutionSource("fixture//commands/contract-review", "command", {
         config: {
           ...config,
           bundles: {
             fixture: {
-              git: "https://example.invalid/fixture.git",
               components: { main: { root: ".", adapter: "akm" } },
             },
           },
         },
         lookup: lookupFor(base),
-      }),
-    ).rejects.toThrow(/configured source|materialized|source.*drift/i);
+      });
+      expect(unresolvedSource.content).toStartWith("# Contract review");
+      expect(warnings.some((w) => /configured source|materialized/i.test(w))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
 
+    // Path containment and stale-index checks are unrelated safety rails and
+    // stay blocking.
     const outside = path.join(other, "outside.md");
     fs.writeFileSync(outside, "# Outside\n");
     await expect(
@@ -217,6 +241,32 @@ describe("adapter-owned execution source loading", () => {
         lookup: lookupFor(base),
       }),
     ).rejects.toThrow(/stale|missing|not.*read/i);
+  });
+
+  test("still rejects a configured source that resolves to a real path but is not actually materialized there", async () => {
+    // Distinct from the three warn-and-continue cases above: here a live
+    // source DOES resolve (a git locator's computed clone-cache path), it is
+    // just not cloned yet — a genuine "nothing to read" case with no indexed
+    // fallback content to re-resolve to, unlike root/adapter bookkeeping
+    // drift against a source that IS present on disk.
+    const fixture = installFixture("akm", "command");
+    const config = fixtureConfig(fixture.root, "akm");
+    const base = entryFor(fixture.root, fixture.destination, "akm", fixture.conceptId, "command");
+
+    await expect(
+      loadAdapterExecutionSource("fixture//commands/contract-review", "command", {
+        config: {
+          ...config,
+          bundles: {
+            fixture: {
+              git: "https://example.invalid/fixture-never-cloned.git",
+              components: { main: { root: ".", adapter: "akm" } },
+            },
+          },
+        },
+        lookup: lookupFor(base),
+      }),
+    ).rejects.toThrow(/missing|unreadable|materialized/i);
   });
 
   test("rejects configured component roots that lexically or physically escape their materialized source", async () => {
