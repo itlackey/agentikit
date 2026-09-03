@@ -1064,8 +1064,25 @@ describe("state.db automatic migration boundary", () => {
 
     // This akm's own second migration was never applied and something else was
     // in its place: running the pending set could conflict with schema it
-    // cannot see, so this one refuses.
-    expect(() => openStateDatabase(file)).toThrow(/not an exact ordered prefix/i);
+    // cannot see, so this one refuses. Applying the missing migration blind
+    // could still land on a schema a later, unrecognized migration already
+    // changed — a real corruption risk, not a "conceivable" one — so the
+    // refusal stays; only its message gained the unexpected id, the full
+    // expected order, and a remedy, so an operator has something to act on.
+    let caught: unknown;
+    try {
+      openStateDatabase(file);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/not an exact ordered prefix/i);
+    expect(message).toContain("someone-elses-migration");
+    expect(message).toContain(first.id);
+    expect(message).toContain(second.id);
+    expect(message.toLowerCase()).toMatch(/backup|restore/);
+    expect(message.toLowerCase()).toContain("delete it and let akm rebuild");
   });
 
   test("a ledger whose very first entry is foreign is rejected before current schema writes", () => {

@@ -97,7 +97,9 @@ function inspectLedgerAgainst(db: Database, registryIds: readonly string[]): Mig
       return {
         status: "inconsistent",
         migrationIds,
-        detail: `migration ledger is not an exact ordered prefix at position ${index + 1} (found ${row.id}, expected ${expectedId})`,
+        detail:
+          `migration ledger is not an exact ordered prefix at position ${index + 1} (found '${row.id}', expected '${expectedId}'). ` +
+          `Applied, in order: [${migrationIds.join(", ")}]. This akm's expected order: [${registryIds.join(", ")}].`,
       };
     }
   }
@@ -134,7 +136,16 @@ export function inspectMigrationLedger(db: Database, migrations: readonly Migrat
 export function assertMigrationLedger(db: Database, migrations: readonly Migration[]): MigrationLedgerState {
   const state = inspectMigrationLedger(db, migrations);
   if (state.status === "inconsistent") {
-    throw new Error(`Refusing a database whose migrations are not an exact ordered prefix: ${state.detail}.`);
+    throw new Error(
+      `Refusing a database whose migrations are not an exact ordered prefix: ${state.detail} ` +
+        "Applying this binary's missing migration now could run it against a schema a later migration already " +
+        "changed underneath it, which is a real risk of producing a wrong schema — not something akm can guess " +
+        "its way out of safely. This usually means the database was migrated by an incompatible akm build or " +
+        "fork, or schema_migrations was edited by hand. Restore this file from a backup taken before the " +
+        "divergence, or — if there is no backup and the data is not needed — delete it and let akm rebuild it " +
+        "from scratch (a derived index.db regenerates from your sources on the next 'akm index'; state.db loses " +
+        "durable history such as improve/proposal state and must be treated as a last resort).",
+    );
   }
   return state;
 }
