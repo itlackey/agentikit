@@ -11,11 +11,12 @@
 
 import { fetchWithTimeout, readBodyWithByteCap } from "../core/common";
 import { type LlmConnectionConfig, resolveSecret } from "../core/config/config";
-import { ENV_REFERENCE_PATTERN } from "../core/config/schema/primitives";
+import { isApiKeyReference } from "../core/config/schema/primitives";
 import { formatExtraParamsIssue, validateExtraParams } from "../core/extra-params";
 import { redactErrorBody, redactSensitiveText } from "../core/redaction";
 import { warn, warnVerbose } from "../core/warn";
 import { DEFAULT_LLM_TIMEOUT_MS } from "../integrations/agent/config";
+import { resolveSecretFromStore } from "../sources/snapshot-fetchers/secret-seam";
 import {
   emitLlmUsage,
   extractUsageTokens,
@@ -396,13 +397,16 @@ async function chatCompletionAttemptOnce(
     if (issue) throw new Error(formatExtraParamsIssue("LLM extraParams", issue));
   }
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  // Resolve ONLY a whole-string env reference. The execution boundary normally
-  // hands us a materialized credential after resolving `$VAR` upstream, so
-  // re-running the substitution over a literal key mangled any credential
-  // containing `$` — `sk-live$ecret` lost everything from the `$` onward, and
-  // the request failed with an opaque 401. The narrow check keeps the symbolic
-  // form working for any direct caller that still passes one.
-  const resolvedKey = ENV_REFERENCE_PATTERN.test(config.apiKey ?? "") ? resolveSecret(config.apiKey) : config.apiKey;
+  // Resolve ONLY a whole-string reference ($VAR/${VAR} or secret://<name>).
+  // The execution boundary normally hands us a materialized credential after
+  // resolving the reference upstream, so re-running the substitution over a
+  // literal key mangled any credential containing `$` — `sk-live$ecret` lost
+  // everything from the `$` onward, and the request failed with an opaque
+  // 401. The narrow check keeps the symbolic form working for any direct
+  // caller that still passes one.
+  const resolvedKey = isApiKeyReference(config.apiKey ?? "")
+    ? resolveSecret(config.apiKey, resolveSecretFromStore)
+    : config.apiKey;
   if (resolvedKey) {
     headers.Authorization = `Bearer ${resolvedKey}`;
   }
