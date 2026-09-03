@@ -14,6 +14,21 @@ import { getMaintenanceBarrierPath } from "./paths";
 const heldBarrierContext = new AsyncLocalStorage<{ active: boolean }>();
 
 /**
+ * The barrier is meant to be held only for the short critical section that
+ * registers one lock/lease/activity — a process that still holds it past
+ * this age is wedged (crashed mid-section, deadlocked, killed without
+ * cleanup), not doing legitimate long-running work. Without an age bound, a
+ * probe only reclaims a lock whose holder PID has verifiably died; a wedged
+ * — but still-alive — holder (or a PID a container/namespace boundary
+ * reused, making `isProcessAlive` see the wrong process as live) locked
+ * every other akm invocation out of ANY maintenance registration forever,
+ * with no recovery but killing the holder by hand.  5 minutes matches the
+ * stale-lock window already used for the improve extract-session lock
+ * (`commands/improve/extract.ts`).
+ */
+const MAINTENANCE_BARRIER_STALE_AFTER_MS = 5 * 60 * 1000;
+
+/**
  * Serialize the short critical section that creates each long-lived AKM lock,
  * lease, or state activity. The operation keeps its own ownership record; this
  * barrier is released immediately after acquisition.
@@ -26,7 +41,7 @@ export function tryAcquireMaintenanceBarrier(): (() => void) | undefined {
     if (ownership) {
       return () => releaseLock(ownership);
     }
-    const probe = probeLock(lockPath);
+    const probe = probeLock(lockPath, { staleAfterMs: MAINTENANCE_BARRIER_STALE_AFTER_MS });
     if (probe.state !== "stale" || !reclaimStaleLock(lockPath, probe)) return undefined;
   }
   return undefined;
@@ -36,7 +51,8 @@ export function acquireMaintenanceBarrier(): () => void {
   const release = tryAcquireMaintenanceBarrier();
   if (release) return release;
   throw new ConfigError(
-    `AKM maintenance is in progress (barrier ${getMaintenanceBarrierPath()}); retry after it completes.`,
+    `AKM maintenance is in progress (barrier ${getMaintenanceBarrierPath()}); retry after it completes. ` +
+      `A sentinel older than ${MAINTENANCE_BARRIER_STALE_AFTER_MS / 60_000} minute(s) is reclaimed automatically on the next attempt.`,
     "INVALID_CONFIG_FILE",
   );
 }
