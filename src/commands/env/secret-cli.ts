@@ -34,6 +34,7 @@ import path from "node:path";
 import { getParsedInvocation } from "../../cli/invocation";
 import { getStringArg } from "../../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, output } from "../../cli/shared";
+import { decideDangerousEnvInjection } from "../../core/activation-policy";
 import { deriveCanonicalAssetName } from "../../core/asset/asset-placement";
 import { loadConfig } from "../../core/config/config";
 import {
@@ -44,6 +45,7 @@ import {
 } from "../../core/env-secret-ref";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
+import { warn } from "../../core/warn";
 import { resolveSourceEntries } from "../../indexer/search/search-source";
 import { readStdin } from "../../runtime";
 import { buildChildEnv } from "./child-env";
@@ -189,13 +191,6 @@ const secretRunCommand = defineJsonCommand({
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(varName)) {
       throw new UsageError(`"${varName}" is not a valid environment variable name.`, "INVALID_FLAG_VALUE");
     }
-    const { isDangerousEnvKey } = await import("../lint/env-key-rules.js");
-    if (isDangerousEnvKey(varName)) {
-      throw new UsageError(
-        `Refusing to inject a secret into "${varName}": it is a known process-hijacking variable (e.g. LD_PRELOAD, PATH).`,
-        "INVALID_FLAG_VALUE",
-      );
-    }
 
     const command = getParsedInvocation().passthroughArgs();
     if (command.length === 0) {
@@ -206,6 +201,24 @@ const secretRunCommand = defineJsonCommand({
     if (!fs.existsSync(absPath)) {
       throw new NotFoundError(`Secret not found: ${makeSecretRef(name, source)}`);
     }
+
+    const { isDangerousEnvKey } = await import("../lint/env-key-rules.js");
+    if (isDangerousEnvKey(varName)) {
+      const detail = `"${varName}" is a known process-hijacking variable (e.g. LD_PRELOAD, PATH).`;
+      const decision = decideDangerousEnvInjection({
+        dangerousKeys: [varName],
+        thirdParty: Boolean(source.registryId),
+      });
+      if (decision === "block") {
+        throw new UsageError(
+          `Refusing to inject a secret from a third-party stash into ${detail}\n` +
+            "       Review the secret, then copy it into a first-party secret if you trust it.",
+          "INVALID_FLAG_VALUE",
+        );
+      }
+      warn(`Injecting a secret into ${detail} Injecting anyway (first-party stash).`);
+    }
+
     const { readValue } = await import("./secret.js");
 
     const mergedEnv = buildChildEnv(process.env, {

@@ -15,6 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseAndValidateConfigText } from "../src/core/config/config";
 import { ConfigError } from "../src/core/errors";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 
 function configWithEngine(engine: Record<string, unknown>): string {
   return JSON.stringify({
@@ -40,39 +41,66 @@ function expectThrows(text: string): string {
   }
 }
 
-describe("legacy extraParams -> first-class field config (#852) fails closed at load", () => {
-  test("a real 0.9.1-shaped config (extraParams.reasoning_effort) is rejected, naming akm migrate apply", () => {
+function loadCapturingWarnings(text: string): {
+  config: ReturnType<typeof parseAndValidateConfigText>;
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+  _resetWarnOnceForTests();
+  _setWarnSinkForTests((level, args) => {
+    if (level === "warn") warnings.push(args.map(String).join(" "));
+  });
+  try {
+    return { config: parseAndValidateConfigText(text), warnings };
+  } finally {
+    _setWarnSinkForTests(undefined);
+  }
+}
+
+describe("legacy extraParams -> first-class field config (#852) loads via the in-memory lift", () => {
+  test("a real 0.9.1-shaped config (extraParams.reasoning_effort) loads, lifted onto reasoningEffort, warning once", () => {
     const text = configWithEngine({ extraParams: { reasoning_effort: "none" } });
-    const message = expectThrows(text);
-    expect(message).toContain("extraParams.reasoning_effort -> engines.default.reasoningEffort");
-    expect(message).toContain("akm migrate apply");
+    const { config, warnings } = loadCapturingWarnings(text);
+    expect(config.engines?.default?.reasoningEffort).toBe("none");
+    expect(
+      (config.engines?.default?.extraParams as Record<string, unknown> | undefined)?.reasoning_effort,
+    ).toBeUndefined();
+    expect(warnings.some((w) => w.includes("extraParams.reasoning_effort -> engines.default.reasoningEffort"))).toBe(
+      true,
+    );
+    expect(warnings.some((w) => w.includes("akm migrate apply"))).toBe(true);
   });
 
-  test("extraParams.temperature is rejected, naming akm migrate apply", () => {
-    const message = expectThrows(configWithEngine({ extraParams: { temperature: 0.2 } }));
-    expect(message).toContain("extraParams.temperature -> engines.default.temperature");
-    expect(message).toContain("akm migrate apply");
+  test("extraParams.temperature lifts onto temperature, warning once", () => {
+    const { config, warnings } = loadCapturingWarnings(configWithEngine({ extraParams: { temperature: 0.2 } }));
+    expect(config.engines?.default?.temperature).toBe(0.2);
+    expect(warnings.some((w) => w.includes("extraParams.temperature -> engines.default.temperature"))).toBe(true);
+    expect(warnings.some((w) => w.includes("akm migrate apply"))).toBe(true);
   });
 
-  test("extraParams.maxtokens is rejected, naming akm migrate apply", () => {
-    const message = expectThrows(configWithEngine({ extraParams: { maxtokens: 512 } }));
-    expect(message).toContain("extraParams.maxtokens -> engines.default.maxTokens");
-    expect(message).toContain("akm migrate apply");
+  test("extraParams.maxtokens lifts onto maxTokens, warning once", () => {
+    const { config, warnings } = loadCapturingWarnings(configWithEngine({ extraParams: { maxtokens: 512 } }));
+    expect(config.engines?.default?.maxTokens).toBe(512);
+    expect(warnings.some((w) => w.includes("extraParams.maxtokens -> engines.default.maxTokens"))).toBe(true);
+    expect(warnings.some((w) => w.includes("akm migrate apply"))).toBe(true);
   });
 
-  test("extraParams.enable_thinking is rejected, naming akm migrate apply", () => {
-    const message = expectThrows(configWithEngine({ extraParams: { enable_thinking: false } }));
-    expect(message).toContain("extraParams.enable_thinking -> engines.default.enableThinking");
-    expect(message).toContain("akm migrate apply");
+  test("extraParams.enable_thinking lifts onto enableThinking, warning once", () => {
+    const { config, warnings } = loadCapturingWarnings(configWithEngine({ extraParams: { enable_thinking: false } }));
+    expect(config.engines?.default?.enableThinking).toBe(false);
+    expect(warnings.some((w) => w.includes("extraParams.enable_thinking -> engines.default.enableThinking"))).toBe(
+      true,
+    );
+    expect(warnings.some((w) => w.includes("akm migrate apply"))).toBe(true);
   });
 
-  test("a liftable key alongside an unrelated, still-protected extraParams key is rejected for the liftable key first", () => {
-    // The extraParams-needs-migration check runs before schema validation
-    // ever gets a chance to inspect `stream`, so the error names the
-    // migration path rather than the unrelated protected-key rejection.
+  test("a liftable key alongside an unrelated, still-protected extraParams key still rejects for the protected key", () => {
+    // The lift only removes the liftable key from extraParams; `stream` has
+    // no first-class equivalent and stays protected, so schema validation
+    // (which runs on the LIFTED config) still rejects it.
     const text = configWithEngine({ extraParams: { reasoning_effort: "none", stream: true } });
     const message = expectThrows(text);
-    expect(message).toContain("akm migrate apply");
+    expect(message).toContain("stream is protected by AKM");
   });
 
   test("a protected key with no first-class equivalent still rejects, and the error names the remedy", () => {
@@ -81,21 +109,20 @@ describe("legacy extraParams -> first-class field config (#852) fails closed at 
     expect(message).toContain("AKM controls streaming internally");
   });
 
-  test("extraParams.reasoning_effort conflicting with a different first-class reasoningEffort value rejects, naming both", () => {
+  test("extraParams.reasoning_effort conflicting with a different first-class reasoningEffort value still rejects, naming both", () => {
     const text = configWithEngine({ reasoningEffort: "high", extraParams: { reasoning_effort: "none" } });
     const message = expectThrows(text);
     expect(message).toContain('extraParams.reasoning_effort ("none")');
     expect(message).toContain('engines.default.reasoningEffort ("high")');
   });
 
-  test("extraParams.reasoning_effort matching the same first-class value is still rejected as not-yet-migrated", () => {
-    // Not a conflict (same value both places), but still a legacy-shaped
-    // config that has not run `akm migrate apply` — it is rejected the same
-    // way as a genuinely differing value, just via the lifted (not conflict)
-    // path.
+  test("extraParams.reasoning_effort matching the same first-class value loads, dropping the redundant duplicate", () => {
+    // Not a conflict (same value both places) — the redundant extraParams
+    // duplicate is dropped and the load succeeds, warning once.
     const text = configWithEngine({ reasoningEffort: "none", extraParams: { reasoning_effort: "none" } });
-    const message = expectThrows(text);
-    expect(message).toContain("redundant");
-    expect(message).toContain("akm migrate apply");
+    const { config, warnings } = loadCapturingWarnings(text);
+    expect(config.engines?.default?.reasoningEffort).toBe("none");
+    expect(warnings.some((w) => w.includes("redundant"))).toBe(true);
+    expect(warnings.some((w) => w.includes("akm migrate apply"))).toBe(true);
   });
 });

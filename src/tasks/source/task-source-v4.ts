@@ -373,7 +373,6 @@ function parseTarget(input: ExecutionJsonObject, ctx: BoundedDocumentContext): T
   if (own(input, "with"))
     sourceError(ctx, ["with"], "is legal only with uses: akm/command; declare typed inputs: instead.");
   const run = stringField(input.run, ctx, ["run"], { nonempty: true }) as string;
-  noGithubExpression(run, ctx, ["run"]);
   let shell: TaskV3HostShell | undefined;
   if (own(input, "shell")) {
     const rawShell = stringField(input.shell, ctx, ["shell"], { nonempty: true }) as string;

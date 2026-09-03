@@ -200,6 +200,8 @@ describe("akmAgentDispatch engine capability", () => {
     expect(calls).toEqual([
       {
         action: { content: "Review exactly this." },
+        // A prompt is free text: sent verbatim, never parsed as a template.
+        inlineContentMode: "literal",
         config: { configVersion: "0.9.0", semanticSearchMode: "off" },
         current: {
           agent: "fixture//agents/reviewer",
@@ -310,7 +312,9 @@ describe("akmAgentDispatch engine capability", () => {
       },
     );
     expect(result.stdout).toBe("llm output");
-    expect(calls).toEqual([{ action: { content: "hello" }, config, current: { engine: "fast" } }]);
+    expect(calls).toEqual([
+      { action: { content: "hello" }, inlineContentMode: "literal", config, current: { engine: "fast" } },
+    ]);
   });
 
   test("returns one structured envelope for a normal runner failure", async () => {
@@ -357,4 +361,58 @@ describe("akmAgentDispatch engine capability", () => {
     expect(result.warnings).toEqual([FALLBACK_ANNOUNCEMENT]);
     expect(warned).toContain(FALLBACK_ANNOUNCEMENT);
   });
+});
+
+describe("akm agent --prompt is free text, not a template", () => {
+  const agentConfig = {
+    configVersion: "0.9.0",
+    semanticSearchMode: "off",
+    engines: { native: { kind: "agent", platform: "claude", bin: "/bin/true" } },
+  } as unknown as AkmConfig;
+
+  // A prompt is a person's prose. akm substitutes nothing in it, so the
+  // portable command-template language must not be applied to it: a compact
+  // JSON example ends in `}}`, a shell snippet carries `$(` and `$VAR`, and a
+  // path reference carries `@src/...`. Every one of those used to be rejected
+  // with "unsupported portable template construct" before the agent started.
+  const promptsThatUsedToBeRejected = [
+    'Summarise this payload: {"outer":{"inner":1}}',
+    "Explain what $HOME and ${EDITOR} do in this snippet",
+    "Why does $(git rev-parse HEAD) differ here?",
+    "Review @src/core/state-db.ts for me",
+    "Run !`date` in your head and tell me the format",
+    "Interpolate $1 and $ARGUMENTS_SUFFIX literally",
+  ];
+
+  for (const prompt of promptsThatUsedToBeRejected) {
+    test(`passes through verbatim: ${JSON.stringify(prompt.slice(0, 32))}...`, async () => {
+      const seen: Array<{ content?: string; mode?: string }> = [];
+      const result = await akmAgentDispatch(
+        { prompt, agentConfig, engine: "native" },
+        {
+          executeCommand: async (options) => {
+            seen.push({
+              content: (options.action as { content?: string }).content,
+              mode: options.inlineContentMode,
+            });
+            return {
+              schemaVersion: 2,
+              ok: true,
+              shape: "agent-result",
+              engine: "native",
+              exitCode: 0,
+              stdout: "",
+              stderr: "",
+            } as Awaited<ReturnType<typeof akmAgentDispatch>>;
+          },
+        },
+      );
+
+      expect(result.ok).toBe(true);
+      expect(seen).toHaveLength(1);
+      // Verbatim: not masked, not escaped, not substituted.
+      expect(seen[0]?.content).toBe(prompt);
+      expect(seen[0]?.mode).toBe("literal");
+    });
+  }
 });

@@ -424,13 +424,36 @@ const reflectSizeGuardValidator: ProposalValidator = {
 };
 
 /**
+ * Report a validator's findings as advisory.
+ *
+ * These validators judge prose quality — a description that reads like a
+ * heading, an odd backtick count, a body that grew more than the reflect
+ * ratio allows. They used to BLOCK `proposal accept`, which a human types
+ * after reading the diff, and the error told that human to "fix the proposal
+ * payload and try again" — but there is no `akm proposal edit` and `accept`
+ * takes no `--force`, so the only way out was hand-editing the proposals
+ * database. A blocking check whose remedy does not exist is not a check.
+ *
+ * Structural findings stay blocking: an empty body, an unparseable ref,
+ * malformed frontmatter and a broken workflow shape genuinely cannot be
+ * written, and they live in {@link defaultProposalValidators}.
+ */
+function advisory(validator: ProposalValidator): ProposalValidator {
+  return {
+    ...validator,
+    validate: (proposal, ctx) =>
+      validator.validate(proposal, ctx).map((finding) => ({ ...finding, severity: "warn" as const })),
+  };
+}
+
+/**
  * Full set of quality validators in registration order. Appended onto
  * {@link defaultProposalValidators} so they run inside `validateProposal` on
- * `proposal accept` automatically.
+ * `proposal accept` automatically, and report without blocking.
  */
 export const defaultProposalQualityValidators: ProposalValidator[] = [
   descriptionQualityValidator,
   lessonContentQualityValidator,
   sourceNotSupersededValidator,
   reflectSizeGuardValidator,
-];
+].map(advisory);

@@ -28,7 +28,14 @@
  */
 import { defineCommand } from "citty";
 import { getParsedInvocation } from "../../cli/invocation";
-import { defineJsonCommand, EXIT_CODES, GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
+import {
+  defineJsonCommand,
+  EXIT_CODES,
+  GLOBAL_OUTPUT_ARGS,
+  output,
+  outputWithExitCode,
+  runWithJsonErrors,
+} from "../../cli/shared";
 import { loadConfig } from "../../core/config/config";
 import { UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
@@ -56,12 +63,10 @@ export const upgradeCommand = defineJsonCommand({
     }
     const skipPostUpgrade = args["skip-post-upgrade"];
     const result = await performUpgrade(check, { force: args.force, skipPostUpgrade });
-    output("upgrade", result);
     // The install may have succeeded, but an upgrade whose migration is
     // blocked or could not run is not done: exit like `akm migrate apply` does.
-    if (result.migration?.status === "blocked" || result.migration?.status === "failed") {
-      process.exitCode = EXIT_CODES.GENERAL;
-    }
+    const migrationFailed = result.migration?.status === "blocked" || result.migration?.status === "failed";
+    outputWithExitCode("upgrade", result, migrationFailed ? EXIT_CODES.GENERAL : undefined);
   },
 });
 

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmTasksAdd, akmTasksSync, setEnabledInYaml } from "../../src/commands/tasks/tasks";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../src/core/warn";
 import type { SchedulerBackend } from "../../src/tasks/backends/types";
 import type { ScheduleBackend } from "../../src/tasks/schedule";
 import {
@@ -842,7 +843,7 @@ describe("task lifecycle failure handling", () => {
     "agents/briefer",
     "stash//agents/briefer",
     "./prompts/review.md",
-  ])("add rejects asset/path-shaped --prompt %s before source or scheduler mutation", async (prompt) => {
+  ])("add warns on asset/path-shaped --prompt %s but still writes it as literal text", async (prompt) => {
     writeSandboxConfig({
       bundles: { stash: { path: storage.stashDir, writable: true } },
       defaultBundle: "stash",
@@ -851,11 +852,29 @@ describe("task lifecycle failure handling", () => {
       defaults: { engine: "reviewer" },
     });
 
-    await expect(akmTasksAdd({ id: "prompt-shape", schedule: "@daily", prompt }, { backend })).rejects.toThrow(
-      /inline text|asset ref|path/i,
-    );
-    expect(fs.existsSync(path.join(storage.stashDir, "tasks", "prompt-shape.yml"))).toBe(false);
-    expect(installCalls).toEqual([]);
+    const warnings: unknown[][] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    let result: Awaited<ReturnType<typeof akmTasksAdd>>;
+    try {
+      result = await akmTasksAdd({ id: "prompt-shape", schedule: "@daily", prompt }, { backend });
+    } finally {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
+
+    expect(result.target).toMatchObject({
+      kind: "uses",
+      uses: { kind: "builtin-command", ref: "akm/command" },
+      command: { kind: "inline", content: prompt },
+    });
+    expect(fs.existsSync(path.join(storage.stashDir, "tasks", "prompt-shape.yml"))).toBe(true);
+    expect(
+      warnings.some(
+        (args) => args.some((a) => String(a).includes(prompt)) && args.some((a) => String(a).includes("--workflow")),
+      ),
+    ).toBe(true);
   });
 
   test("add keeps ordinary --prompt text as inline akm/command content", async () => {

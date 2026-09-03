@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../../src/core/warn";
 import { prepareWriteTargetForMutation } from "../../../src/core/write-source";
 import type { ParsedGitRef } from "../../../src/registry/types";
 import { classifyCloneFailure, cloneRepo, syncExistingWritableCheckout } from "../../../src/sources/providers/git";
@@ -173,7 +174,7 @@ describe("writable Git checkout safety", () => {
     expect(fs.readFileSync(path.join(fixture.contentRoot, "lessons", "seed.md"), "utf8")).toBe("updated\n");
   });
 
-  test("rejects dirty and unpushed checkouts without deleting local work", () => {
+  test("rejects a dirty checkout without deleting local work", () => {
     const dirty = makeWritableFixture();
     const dirtyFile = path.join(dirty.contentRoot, "lessons", "seed.md");
     fs.writeFileSync(dirtyFile, "dirty work\n", "utf8");
@@ -187,21 +188,46 @@ describe("writable Git checkout safety", () => {
       ),
     ).toThrow(/uncommitted changes/);
     expect(fs.readFileSync(dirtyFile, "utf8")).toBe("dirty work\n");
+  });
 
+  test("ahead with nothing to fast-forward (behind === 0) is a no-op, not a refusal", () => {
     const ahead = makeWritableFixture();
     fs.writeFileSync(path.join(ahead.contentRoot, "lessons", "local.md"), "local commit\n", "utf8");
     git(["-C", ahead.checkout, "add", "."]);
     git(["-C", ahead.checkout, "commit", "-m", "local only"]);
     const remoteRevision = git(["-C", ahead.author, "rev-parse", "HEAD"]);
+
+    const result = syncExistingWritableCheckout(
+      parsedRef(ahead.remote),
+      resolvedRef(ahead.remote, remoteRevision),
+      ahead.contentRoot,
+      "2026-01-01T00:00:00.000Z",
+    );
+
+    expect(result.contentDir).toBe(ahead.contentRoot);
+    expect(fs.existsSync(path.join(ahead.contentRoot, "lessons", "local.md"))).toBe(true);
+  });
+
+  test("still refuses when ahead AND behind (a real merge is needed)", () => {
+    const both = makeWritableFixture();
+    fs.writeFileSync(path.join(both.contentRoot, "lessons", "local.md"), "local commit\n", "utf8");
+    git(["-C", both.checkout, "add", "."]);
+    git(["-C", both.checkout, "commit", "-m", "local only"]);
+    fs.writeFileSync(path.join(both.author, "content", "lessons", "upstream.md"), "upstream\n", "utf8");
+    git(["-C", both.author, "add", "."]);
+    git(["-C", both.author, "commit", "-m", "upstream commit"]);
+    git(["-C", both.author, "push"]);
+    const remoteRevision = git(["-C", both.author, "rev-parse", "HEAD"]);
+
     expect(() =>
       syncExistingWritableCheckout(
-        parsedRef(ahead.remote),
-        resolvedRef(ahead.remote, remoteRevision),
-        ahead.contentRoot,
+        parsedRef(both.remote),
+        resolvedRef(both.remote, remoteRevision),
+        both.contentRoot,
         "2026-01-01T00:00:00.000Z",
       ),
     ).toThrow(/local commits/);
-    expect(fs.existsSync(path.join(ahead.contentRoot, "lessons", "local.md"))).toBe(true);
+    expect(fs.existsSync(path.join(both.contentRoot, "lessons", "local.md"))).toBe(true);
   });
 
   test("rejects an upstream content-root removal before changing the checkout", () => {
@@ -305,14 +331,19 @@ exec ${JSON.stringify(realGit)} "$@"
     expect(git(["-C", fixture.checkout, "rev-parse", "HEAD"])).not.toBe(revision);
   });
 
-  test("mutation preparation rejects pre-existing unpushed commits", () => {
+  test("mutation preparation warns instead of refusing pre-existing unpushed commits", () => {
     const fixture = makeWritableFixture();
     fs.writeFileSync(path.join(fixture.contentRoot, "lessons", "local.md"), "local commit\n", "utf8");
     git(["-C", fixture.checkout, "add", "."]);
     git(["-C", fixture.checkout, "commit", "-m", "local only"]);
 
-    expect(() =>
-      prepareWriteTargetForMutation({
+    const warnings: string[] = [];
+    _resetWarnOnceForTests();
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      const prepared = prepareWriteTargetForMutation({
         source: {
           kind: "git",
           name: "team",
@@ -321,8 +352,12 @@ exec ${JSON.stringify(realGit)} "$@"
           adapterId: "akm",
         },
         config: { type: "git", name: "team", path: fixture.contentRoot, writable: true },
-      }),
-    ).toThrow(/unpushed commits/);
+      });
+      expect(prepared.source.path).toBe(fixture.contentRoot);
+      expect(warnings.some((w) => w.includes("unpushed commit"))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
   });
 
   test("writable cache ids remain distinct after slug sanitization", () => {

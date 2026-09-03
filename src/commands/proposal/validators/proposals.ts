@@ -40,13 +40,17 @@ export function validateProposal(proposal: Proposal): ProposalValidationReport {
  * structure and applies {@link repairTruncatedDescription} to a truncated
  * description when one is detected.
  *
- * Repairs performed (in order):
- *   1. Strip body lines that restate frontmatter fields as pseudo-frontmatter
- *      (e.g. `**description**: …` or `when_to_use: …` in the body).
- *   2. Remove stray body `---` horizontal-rule lines (leaving exactly the two
- *      frontmatter fences when the content has a valid frontmatter block).
- *   3. Apply {@link repairTruncatedDescription} to a truncated/hanging
+ * Repairs performed:
+ *   1. Apply {@link repairTruncatedDescription} to a truncated/hanging
  *      `description` field in the frontmatter.
+ *
+ * It deliberately does NOT delete body lines. Two earlier repairs dropped
+ * every body line that restated a frontmatter key and every `---` in a body
+ * with frontmatter. Both fired inside fenced code blocks, so any asset
+ * documenting frontmatter — a note about akm, Claude Code skills, Jekyll,
+ * Hugo — was silently gutted on `proposal accept`, and the repaired bytes
+ * were written back over the original in the proposals database. A repair
+ * that can destroy content is not a repair.
  *
  * Returns the repaired content string. When no repairs apply the input is
  * returned byte-identical so callers can use strict equality to detect
@@ -100,21 +104,6 @@ export function repairProposalContent(content: string): string {
     if (inFrontmatter) {
       // Still inside the frontmatter — keep as-is.
       repairedLines.push(line);
-      continue;
-    }
-
-    // Repair 1: Strip pseudo-frontmatter restatements in the body.
-    // Matches lines like `**description**: …` or `when_to_use: …`.
-    if (/^\s*(\*\*|__)?\s*(description|when_to_use)\s*(\*\*|__)?\s*:/i.test(line)) {
-      // Drop the line — it is a structural defect, not user content.
-      continue;
-    }
-
-    // Repair 2: Remove stray `---` horizontal-rule lines in the body.
-    // We keep these only when the content has NO frontmatter (in that case
-    // `---` is a legitimate thematic break in plain-body content).
-    if (isFence && hasFrontmatter) {
-      // Drop: these are extra `---` fences beyond the two frontmatter delimiters.
       continue;
     }
 

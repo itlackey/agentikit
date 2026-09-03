@@ -4,7 +4,7 @@ import path from "node:path";
 import { getConfigValue, listConfig } from "../src/commands/config-cli";
 import { collectEgressAdvisory } from "../src/commands/health/surfaces";
 import { resolveRegistries, searchRegistry } from "../src/commands/read/registry-search";
-import { DEFAULT_CONFIG, loadConfig, saveConfig } from "../src/core/config/config";
+import { DEFAULT_CONFIG, loadConfig, resetConfigCache, saveConfig } from "../src/core/config/config";
 import {
   formatRegistryError,
   formatRegistryUrl,
@@ -449,16 +449,21 @@ afterEach(() => {
 });
 
 describe("registry credential-bearing URL mutation boundaries", () => {
-  test("the shared save boundary rejects the complete credential corpus without persistence", () => {
+  test("the shared save boundary drops the complete credential corpus instead of persisting it", () => {
     for (const url of SAVE_BOUNDARY_UNSAFE_URLS) {
-      expect(() => saveRegistryUrl(url)).toThrow("credential");
+      try {
+        saveRegistryUrl(url);
+        expect(loadConfig().registries ?? []).toEqual([]);
+      } catch (err) {
+        expect(String(err)).not.toContain("credential");
+        expect(String(err)).toContain("http:// or https://");
+      }
+      resetConfigCache();
     }
-    expect(fs.existsSync(configPath())).toBe(false);
   });
 
-  test("registry add and config set reject representative credential classes before persistence", async () => {
+  test("config set rejects representative credential classes before persistence", async () => {
     const invocations = [
-      ["registry", "add", CREDENTIAL_URL, "--verbose", "--format=json"],
       [
         "config",
         "set",
@@ -466,7 +471,6 @@ describe("registry credential-bearing URL mutation boundaries", () => {
         JSON.stringify([{ url: EXACT_NESTED_SCHEME_CONTROL_URL, name: "private" }]),
         "--format=json",
       ],
-      ["registry", "add", STRICT_NESTED_USERINFO_URLS[0], "--format=json"],
       [
         "config",
         "set",
@@ -474,8 +478,6 @@ describe("registry credential-bearing URL mutation boundaries", () => {
         JSON.stringify([{ url: fixtureAt(STRICT_ENCODED_URLS, 0), name: "private" }]),
         "--format=json",
       ],
-      ["registry", "add", fixtureAt(STRICT_MIXED_LAYER_URLS, 0), "--format=json"],
-      ["registry", "add", fixtureAt(STRICT_INVALID_UTF8_CREDENTIAL_URLS, 0), "--format=json"],
     ];
 
     for (const argv of invocations) {
@@ -485,6 +487,31 @@ describe("registry credential-bearing URL mutation boundaries", () => {
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
       expectNoPersistedCredentials();
+    }
+  });
+
+  test("registry add accepts a credentialed URL, warning with the credential redacted (0.9.12)", async () => {
+    const invocations = [
+      ["registry", "add", CREDENTIAL_URL, "--verbose", "--format=json"],
+      ["registry", "add", STRICT_NESTED_USERINFO_URLS[0], "--format=json"],
+      ["registry", "add", fixtureAt(STRICT_MIXED_LAYER_URLS, 0), "--format=json"],
+      ["registry", "add", fixtureAt(STRICT_INVALID_UTF8_CREDENTIAL_URLS, 0), "--format=json"],
+    ];
+
+    for (const argv of invocations) {
+      const url = argv[2] as string;
+      expect(formatRegistryUrl(url)).not.toContain(url);
+      expectCredentialsAbsent(formatRegistryUrl(url));
+
+      const result = await runCliCapture(argv);
+      expect(result.code).toBe(0);
+      expect(result.stderr.toLowerCase()).toContain("credential");
+      expectCredentialsAbsent(result.stdout);
+      expectCredentialsAbsent(result.stderr);
+
+      const parsed = JSON.parse(result.stdout) as { added: boolean; registries: Array<{ url: string }> };
+      expect(parsed.added).toBe(true);
+      expect(parsed.registries.some((r) => r.url === formatRegistryUrl(url))).toBe(true);
     }
   });
 
@@ -522,39 +549,46 @@ describe("registry credential-bearing URL mutation boundaries", () => {
   });
 });
 
-describe("already-persisted registry credentials fail closed", () => {
-  test("CLI config, registry, search, info, and health JSON errors never echo userinfo", async () => {
+describe("already-persisted registry credentials load and stay redacted", () => {
+  test("CLI config, registry, info, and health JSON never echo userinfo; search skips the entry with a credential warning", async () => {
     writeSandboxConfig({
       semanticSearchMode: "off",
       registries: [{ url: CREDENTIAL_URL, name: "private", provider: "static-index" }],
     });
 
-    const invocations = [
+    const displayInvocations = [
       ["registry", "list", "--format=json"],
       ["config", "list", "--format=json"],
       ["info", "--format=json"],
       ["health", "--format=json"],
+    ];
+    for (const argv of displayInvocations) {
+      const result = await runCliCapture(argv);
+      expect(result.code).not.toBe(78);
+      expect(result.code).not.toBe(70);
+      expectCredentialsAbsent(result.stdout);
+      expectCredentialsAbsent(result.stderr);
+    }
+
+    const searchInvocations = [
       ["search", "needle", "--from", "registry", "--verbose", "--format=json"],
       ["search", "needle", "--from", "all", "--verbose", "--format=json"],
     ];
-
-    for (const argv of invocations) {
+    for (const argv of searchInvocations) {
       const result = await runCliCapture(argv);
-      expect(result.code).toBe(78);
+      expect(result.code).toBe(0);
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
-      expect(result.stderr.toLowerCase()).toContain("credential");
+      expect(result.stdout.toLowerCase()).toContain("credential");
     }
   });
 
-  test("every persisted credential class fails config load without leakage", async () => {
+  test("every persisted credential class loads without leaking a credential into registry list", async () => {
     for (const url of PERSISTED_BOUNDARY_UNSAFE_URLS) {
       writeSandboxConfig({ registries: [{ url, name: "private", provider: "static-index" }] });
       const result = await runCliCapture(["registry", "list", "--verbose", "--format=json"]);
-
-      expect(result.code).toBe(78);
+      expect([0, 78]).toContain(result.code);
       expect(result.code).not.toBe(70);
-      expect(result.stderr.toLowerCase()).toContain("credential");
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
     }

@@ -10,7 +10,7 @@
  */
 
 import { getStringArg } from "../cli/parse-args";
-import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output } from "../cli/shared";
+import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output, outputWithExitCode } from "../cli/shared";
 import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { NotFoundError, UsageError } from "../core/errors";
@@ -21,8 +21,8 @@ import { WORKFLOW_MAX_TIMEOUT_MS } from "../workflows/ir/schema";
 import {
   abandonWorkflowRun,
   getWorkflowStatus,
-  hasWorkflowRun,
   listWorkflowRuns,
+  resolveWorkflowRunTarget,
   resumeWorkflowRun,
 } from "../workflows/runtime/runs";
 import { akmWorkflowPlan } from "./workflow/plan";
@@ -45,8 +45,9 @@ const workflowStatusCommand = defineJsonCommand({
   async run({ args }) {
     const target = args.target;
     const includeUnits = args.units === true;
-    if (await hasWorkflowRun(target)) {
-      const result = await getWorkflowStatus(target, { includeUnits });
+    const resolvedRunId = await resolveWorkflowRunTarget(target);
+    if (resolvedRunId !== undefined) {
+      const result = await getWorkflowStatus(resolvedRunId, { includeUnits });
       output("workflow-status", result);
       return;
     }
@@ -112,12 +113,13 @@ const workflowCreateCommand = defineJsonCommand({
     },
     force: {
       type: "boolean",
-      description: "Overwrite an existing workflow (requires --from or --reset)",
+      description:
+        "Overwrite an existing workflow. Combined with --from, replaces its content; alone, replaces it with a fresh template.",
       default: false,
     },
     reset: {
       type: "boolean",
-      description: "Explicitly replace an existing workflow with a fresh template (use with --force)",
+      description: "Deprecated alias for --force with no --from (replaces an existing workflow with a fresh template).",
       default: false,
     },
     print: {
@@ -145,11 +147,6 @@ const workflowCreateCommand = defineJsonCommand({
       process.stdout.write(getWorkflowTemplate());
       return;
     }
-    if (args.force && !args.from && !args.reset) {
-      throw new UsageError(
-        "Refusing to overwrite with template: pass --from <file> to replace content, or --reset to explicitly replace with a fresh template.",
-      );
-    }
     const result = createWorkflowAsset({
       name: effectiveName,
       from: args.from,
@@ -176,6 +173,13 @@ const workflowRunCommand = defineJsonCommand({
     "max-steps": { type: "string", description: "Stop after executing this many steps" },
     "max-retries": { type: "string", description: "Retry a failed workflow step this many additional times" },
     timeout: { type: "string", description: "Whole-run timeout: N, Nms, Ns, or Nm (bare N is milliseconds)" },
+    new: {
+      type: "boolean",
+      description:
+        "Start a fresh run even if one is already active for this ref, leaving the existing run untouched " +
+        "(never abandons it). A workflow ref only — passing a run id with --new is a usage error.",
+      default: false,
+    },
   },
   async run({ args, rawArgs }) {
     const { runWorkflowSteps } = await import("../workflows/exec/run-workflow.js");
@@ -205,6 +209,7 @@ const workflowRunCommand = defineJsonCommand({
         parameterFlags,
         ...(maxSteps !== undefined ? { maxSteps } : {}),
         ...(maxRetries !== undefined ? { maxRetries } : {}),
+        newRun: args.new,
         signal: controller.signal,
       });
       // The abort is observed between steps, so a deadline landing in the run's
@@ -212,14 +217,16 @@ const workflowRunCommand = defineJsonCommand({
       // timed out would send an operator to resume a run with nothing left to
       // resume — `tasks/runner.ts` suppresses the same case.
       const timedOut = deadline.timedOut() && result.run.status !== "completed";
-      const rendered = { ...result, ...(timedOut ? { timedOut: true as const } : {}) };
-      output("workflow-run", rendered);
       // `blocked` is a stopped, unverified run — a verification-judge failure
       // leaves it there for `akm workflow resume` — so it must not exit 0 and
       // read as success to a script (it maps to 1 for scheduled tasks too).
-      if (result.run.status === "failed" || result.run.status === "blocked" || result.gateRejection || result.aborted) {
-        process.exitCode = signalExitCode ?? EXIT_CODES.GENERAL;
-      }
+      const failed =
+        result.run.status === "failed" || result.run.status === "blocked" || result.gateRejection || result.aborted;
+      outputWithExitCode(
+        "workflow-run",
+        { ...result, ...(timedOut ? { timedOut: true as const } : {}) },
+        failed ? (signalExitCode ?? EXIT_CODES.GENERAL) : undefined,
+      );
     } finally {
       deadline.disarm();
       process.off("SIGINT", onSigint);
@@ -239,7 +246,7 @@ const WORKFLOW_RUN_VALUE_FLAGS = new Set([
   "shape",
   "output",
 ]);
-const WORKFLOW_RUN_BOOLEAN_FLAGS = new Set(["quiet", "verbose", "help", "no-quiet", "no-verbose"]);
+const WORKFLOW_RUN_BOOLEAN_FLAGS = new Set(["quiet", "verbose", "help", "no-quiet", "no-verbose", "new", "no-new"]);
 
 export function parseWorkflowParameterFlags(rawArgs: readonly string[], target: string): WorkflowParameterFlag[] {
   const flags: WorkflowParameterFlag[] = [];

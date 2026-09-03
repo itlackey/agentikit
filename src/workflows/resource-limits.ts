@@ -4,7 +4,6 @@
 
 import { EXECUTION_MAX_TIMEOUT_MS } from "../execution/limits";
 
-export const WORKFLOW_MAX_PLAN_BYTES = 2 * 1024 * 1024;
 export const WORKFLOW_MAX_SOURCE_BYTES = 1024 * 1024;
 export const WORKFLOW_MAX_INSTRUCTION_BYTES = 256 * 1024;
 export const WORKFLOW_MAX_SCHEMA_BYTES = 256 * 1024;
@@ -80,10 +79,9 @@ export const DEFAULT_EXEC_TIMEOUT_MS = 600_000;
  *     corrupt every downstream reference. That is the residual failure the cap
  *     genuinely justifies.
  *
- * 8 MiB is deliberately generous — 8× the whole-row evidence cap
- * ({@link WORKFLOW_MAX_EVIDENCE_JSON_BYTES}), so any output that could survive
- * persistence intact fits many times over, and an ordinary full test/build log
- * is nowhere near it.
+ * 8 MiB is deliberately generous, so any output a step is likely to produce
+ * fits many times over and an ordinary full test/build log is nowhere near
+ * it.
  */
 export const WORKFLOW_MAX_EXEC_OUTPUT_BYTES = 8 * 1024 * 1024;
 
@@ -91,14 +89,13 @@ export const WORKFLOW_MAX_EXEC_OUTPUT_BYTES = 8 * 1024 * 1024;
  * Marker stamped on an exec artifact that was RETAINED ONLY IN PART because the
  * command wrote past {@link WORKFLOW_MAX_EXEC_OUTPUT_BYTES}.
  *
- * Deliberately ugly and unique, exactly like `WORKFLOW_EVIDENCE_TRUNCATED_MARKER`
- * (`runtime/runs.ts`) — the same idiom for the same reason: a truncated value
- * must NEVER be mistakable for a complete one by a downstream
- * `steps.<id>.output` reference, by a gate judge, by `akm workflow status`, or
- * by a human reading the row. The artifact is TEXT here rather than a JSON
- * value, so the marker is appended as a trailing block instead of replacing the
- * value with an envelope: the retained prefix is still genuinely useful (it is
- * the head of a real log), and the block says exactly how much is missing.
+ * Deliberately ugly and unique: a truncated value must NEVER be mistakable
+ * for a complete one by a downstream `steps.<id>.output` reference, by a gate
+ * judge, by `akm workflow status`, or by a human reading the row. The
+ * artifact is TEXT here rather than a JSON value, so the marker is appended
+ * as a trailing block instead of replacing the value with an envelope: the
+ * retained prefix is still genuinely useful (it is the head of a real log),
+ * and the block says exactly how much is missing.
  */
 export const WORKFLOW_EXEC_OUTPUT_TRUNCATED_MARKER = "__akm_exec_output_truncated__";
 
@@ -186,29 +183,17 @@ export function clip(text: string, max: number): string {
 }
 
 // ── Persistence bounds ───────────────────────────────────────────────────────
-
-/**
- * Max serialized size of one `workflow_run_steps.evidence_json` row value.
- *
- * The promoted step artifact (`evidence.output`) is deliberately NOT clipped
- * when it is built — gates judge the full artifact and downstream
- * `steps.<id>.output` references need it intact — but a `collect` reducer
- * over an unbounded fan-out (each unit contributing up to a full unit
- * result) would otherwise write an unbounded blob into a single SQLite row.
- * Persistence is therefore bounded here, at the write boundary, by
- * `clipStepEvidenceForPersistence` (`runtime/runs.ts`), which replaces
- * oversized values with an explicitly-marked truncation envelope rather than
- * silently shortening them.
- *
- * 1 MiB is deliberately generous: it is 4× the per-instruction cap and half the
- * whole-plan cap, so no realistic authored workflow reaches it, while a runaway
- * fan-out is still bounded to something SQLite and `akm workflow status` can
- * handle.
- */
-export const WORKFLOW_MAX_EVIDENCE_JSON_BYTES = 1024 * 1024;
-
-/** Chars of the original value retained (as a marked preview) in a truncation envelope. */
-export const WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS = 1000;
+//
+// `workflow_run_steps.evidence_json` is persisted WHOLE and unclipped. It used
+// to be capped at 1 MiB, past which the row was replaced by a marked
+// truncation envelope — but the run still looked successful, and the NEXT
+// invocation (a resume, or any later step referencing the artifact) failed
+// permanently: the value was gone from the only place a resumed run can read
+// it from, so every prior paid step had to be re-run from scratch. SQLite has
+// no practical row-size problem here (its own ceiling is ~1 GB), so there is
+// nothing this cap protected that a full write does not already handle
+// correctly. `JSON.stringify` throwing on genuinely unserializable evidence
+// is unchanged.
 
 export function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, "utf8");
@@ -221,22 +206,21 @@ export function jsonBytes(value: unknown): number {
 // ── Recursive child-workflow composition bounds (spec docs/plans/specs/
 // ── p3a-plan-v5-child-freeze.md §4.5, A-N6) ──────────────────────────────────
 //
-// Enforced ONCE, at freeze, before publication, in
-// `src/workflows/freeze/targets/child-workflow.ts` — the ONE resolver both the
-// direct `uses: workflows/<ref>` form and the task-wrapped form route through
-// — and re-enforced as a corruption gate whenever a parent plan is DECODED
-// (`src/workflows/ir/schema-v4.ts`'s recursive `decodeChildWorkflowTarget`).
-// Full design history, including the rejected alternative for the byte cap:
-// docs/architecture/decisions/0007-workflow-composition-bounds.md.
-//
 // Composition DEPTH is unbounded — `assertNoCompositionCycle` (freeze/targets/
 // child-workflow.ts) already makes infinite composition mathematically
 // impossible, so a depth ceiling on top of it only bounded how many
 // legitimately distinct workflows an author could nest.
-
-/**
- * Max AGGREGATE canonical-JSON bytes of every embedded child plan in ONE root
- * freeze (the sum across the whole composition tree, not per child).
- * Deliberately HALF of {@link WORKFLOW_MAX_PLAN_BYTES} — see ADR 0007.
- */
-export const WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES = 1024 * 1024;
+//
+// This section used to also cap the AGGREGATE canonical-JSON bytes of every
+// embedded child plan in one root freeze (`WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES`,
+// enforced in `freeze/targets/child-workflow.ts` and re-checked on every
+// decode in `ir/schema-v4.ts`'s `decodeChildWorkflowTarget`), alongside a
+// standalone cap on any one frozen plan's own bytes
+// (`WORKFLOW_MAX_PLAN_BYTES`, enforced in `ir/plan-hash.ts` and
+// `ir/schema.ts`). A large plan is not a wrong plan: composing several
+// substantial workflows together is a legitimate, deliberate authoring
+// choice, and SQLite has no practical row-size problem here (its own
+// ceiling is ~1 GB) — there was nothing left for either cap to protect that
+// `planHash`/`contentHash` verification does not already cover. Both caps
+// are removed; the hash/canonical-JSON integrity checks they sat next to
+// are unchanged.

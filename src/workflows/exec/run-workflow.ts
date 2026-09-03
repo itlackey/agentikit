@@ -61,6 +61,13 @@ export interface RunWorkflowOptions {
   params?: Record<string, unknown>;
   /** Raw exact-name parameter flags, materialized against the plan at start. */
   parameterFlags?: readonly WorkflowParameterFlag[];
+  /**
+   * Start a fresh run even when `target` (a workflow ref) already has an
+   * active run in scope, instead of silently resuming it (#919's `--new`).
+   * Leaves the existing active run untouched. A usage error when `target`
+   * is a run id rather than a ref — there is nothing to be "new" about.
+   */
+  newRun?: boolean;
   /** Stop after this many steps (default: run to completion/gate/failure). */
   maxSteps?: number;
   /** Retry a failed step this many additional times. */
@@ -182,6 +189,13 @@ export interface RunWorkflowResult {
   childBlocked?: { stepId: string; childRunId: string; childRef: string; resume: string; resumeParentCommand: string };
   /** Present when cooperative cancellation stopped before advancing the step. */
   aborted?: true;
+  /**
+   * Present when `target` (a workflow ref) resolved to an existing active
+   * run instead of starting a new one (#919) — the #485 concurrency guard's
+   * silent-resume behaviour, now visible. Absent when the run was freshly
+   * started (including via `newRun`) or `target` was already a run id.
+   */
+  resumed?: true;
   /** Deduped safe diagnostics from work lowered during this invocation only. */
   notices?: readonly Readonly<LoweringNotice>[];
   /**
@@ -196,6 +210,10 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
   let target = options.target;
   let params = options.params;
   let parameterFlags = options.parameterFlags;
+  // `--new` only applies to the FIRST resolution of `target` (a ref); every
+  // retry re-targets the run id `startWorkflowRun` already created, so it is
+  // cleared alongside `params`/`parameterFlags` below (#919).
+  let newRun = options.newRun;
   let remainingRetries = options.maxRetries ?? 0;
   let remainingSteps = options.maxSteps;
   const executed: ExecutedStepReport[] = [];
@@ -213,6 +231,7 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
         target,
         ...(params !== undefined ? { params } : { params: undefined }),
         ...(parameterFlags !== undefined ? { parameterFlags } : { parameterFlags: undefined }),
+        newRun,
         ...(remainingSteps !== undefined ? { maxSteps: remainingSteps } : { maxSteps: undefined }),
       },
       liveEvidence,
@@ -235,6 +254,7 @@ export async function runWorkflowSteps(options: RunWorkflowOptions): Promise<Run
     target = result.run.id;
     params = undefined;
     parameterFlags = undefined;
+    newRun = undefined;
     remainingRetries -= 1;
   }
 }
@@ -245,6 +265,7 @@ async function runWorkflowAttempt(
 ): Promise<RunWorkflowResult> {
   const next: WorkflowNextResult = await getNextWorkflowStep(options.target, options.params, {
     parameterFlags: options.parameterFlags,
+    newRun: options.newRun,
   });
   // Version/canonical/hash validation precedes every executable mutation,
   // including lease acquisition. Historical rows remain inspectable/abandonable.
@@ -309,8 +330,14 @@ async function runWorkflowAttempt(
     );
     // Creation-time notices reach the caller only here: the run row has no
     // warnings column, and a later invocation of the same run must stay silent
-    // about a decision it did not make. `driveRun` never sets `warnings`.
-    return next.startWarnings?.length ? { ...result, warnings: next.startWarnings } : result;
+    // about a decision it did not make. `driveRun` never sets `warnings` or
+    // `resumed` — both are properties of THIS resolution of `target`, not of
+    // the run row (#919).
+    return {
+      ...result,
+      ...(next.resumed ? { resumed: true as const } : {}),
+      ...(next.startWarnings?.length ? { warnings: next.startWarnings } : {}),
+    };
   } finally {
     heartbeat?.stop();
     try {
@@ -936,14 +963,10 @@ async function driveRun(
   /**
    * The COMPLETE in-memory evidence of every step THIS call has completed,
    * keyed by step id, preferred over the re-read row when the downstream scope
-   * is rebuilt below. The spine rows are re-read between steps, and
-   * `clipStepEvidenceForPersistence` (runtime/runs.ts) may have replaced an
-   * over-cap artifact with a truncation envelope on the way in — a bound on ONE
-   * SQLite row, not on what a run may promote (the exec per-pipe cap alone
-   * retains 8 MiB). Preferring the live value keeps the persistence bound
-   * invisible to the run that produced it. A LATER `akm workflow run` starts
-   * with an empty map and reads the rows, where a reference into a truncated
-   * artifact fails loudly by name (`isTruncatedEvidence`).
+   * is rebuilt below — avoiding a re-parse of a row this same invocation just
+   * wrote (step artifacts are persisted whole, so the two values agree; this
+   * is purely an avoided round trip, not a correctness dependency). A LATER
+   * `akm workflow run` starts with an empty map and reads the rows directly.
    *
    * Only steps some OTHER step's references NAME are stored (`referencedStepIds`
    * — the set-time filter): a step nothing downstream reads has no consumer to

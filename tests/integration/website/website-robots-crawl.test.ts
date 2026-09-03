@@ -186,24 +186,16 @@ describe("crawlWebsite robots.txt compliance", () => {
     },
   );
 
-  test("C-03: a 5xx robots.txt on the start origin also throws UsageError, naming the server error", async () => {
-    const { url } = startFixtureServer({
+  test("C-03: a 5xx robots.txt on the start origin no longer blocks the crawl", async () => {
+    const { url, requestLog } = startFixtureServer({
       robots: { status: 500, body: "boom" },
       pages: { "/": "<html><body>Home</body></html>" },
     });
     trackCache(url);
 
-    let caught: unknown;
-    try {
-      await ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true });
-    } catch (err) {
-      caught = err;
-    }
-
-    expect(caught).toBeInstanceOf(UsageError);
-    const message = (caught as Error).message;
-    expect(message).toMatch(/respectRobots/);
-    expect(message).toMatch(/server error|5\d\d/i);
+    await expect(ensureWebsiteMirror(websiteEntry(url), { allowPrivateHosts: true })).resolves.toBeDefined();
+    expect(requestLog.some((r) => r.pathname === "/robots.txt")).toBe(true);
+    expect(requestLog.some((r) => r.pathname === "/")).toBe(true);
   });
 
   test(

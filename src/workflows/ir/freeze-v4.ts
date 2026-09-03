@@ -102,11 +102,8 @@ export async function compileResolveFreezeWorkflowV4(
     );
   }
   const steps = compiled.plan.steps.map((step): IrStepPlanV4 => {
-    const frozenJudge = step.gate.criteria.length === 0 ? null : resolved.judges.get(step.stepId);
-    if (step.gate.criteria.length > 0 && !frozenJudge) {
-      throw new Error(`resolved workflow judge missing for step ${step.stepId}`);
-    }
-    const gate = Object.freeze({ ...step.gate, maxLoops: step.gate.maxLoops ?? 1, frozenJudge: frozenJudge ?? null });
+    const frozenJudge = step.gate.criteria.length === 0 ? null : (resolved.judges.get(step.stepId) ?? null);
+    const gate = Object.freeze({ ...step.gate, maxLoops: step.gate.maxLoops ?? 1, frozenJudge });
     if (!step.root) {
       const { root: _root, ...withoutRoot } = step;
       return Object.freeze({ ...withoutRoot, gate });

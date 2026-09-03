@@ -265,14 +265,6 @@ function sourceHasNonEmptyDescription(assetContent: string | undefined): boolean
 export interface ReflectPromptResult {
   /** Full prompt string to forward to the agent/LLM. */
   prompt: string;
-  /**
-   * Maximum body character count for the proposed content, derived from the
-   * same blended-bound formula used by {@link checkReflectSize}. Only set when
-   * the source body is ≥ REFLECT_SIZE_GUARD_MIN_BYTES (200 chars). Callers on
-   * the LLM path can convert this to a `max_tokens` cap so the model is hard-
-   * constrained from the API layer as well as by the prompt rules.
-   */
-  maxOutputChars?: number;
 }
 
 /**
@@ -456,9 +448,18 @@ export function buildReflectPrompt(input: ReflectPromptInput): ReflectPromptResu
   // asset content into shorter prose, drops concrete structure, or strips
   // load-bearing frontmatter. Loud and explicit so small models follow.
   //
-  // maxOutputChars is hoisted so the return value can include it for callers
-  // on the LLM path that want to set a hard max_tokens cap on the request.
-  let maxOutputChars: number | undefined;
+  // Guard-audit finding 15: this used to also hand back a maxOutputChars
+  // value so an LLM-path caller could convert it into a hard `max_tokens`
+  // cap on the API request. llm/client.ts's own doc comment (and
+  // commands/improve/reflect.ts's recorded history of responses actually
+  // getting cut off) is explicit that a character-derived max_tokens causes
+  // silent truncation — a real model's output is measured in tokens, not
+  // characters, and the ratio between the two varies enough that any fixed
+  // conversion either truncates legitimate output or provides no real cap at
+  // all. The size policy below is already enforced twice more (the prompt
+  // rules the model reads, and the post-processor's own size check), so nothing
+  // is lost by not adding a THIRD, byte-derived enforcement point that can
+  // only ever cut a response off early, never usefully re-check it.
   if (input.ref && input.assetContent?.trim()) {
     // Strip frontmatter to get source body length — mirrors checkReflectSize which
     // compares body-only lengths. Inline regex avoids importing parseFrontmatter.
@@ -473,7 +474,6 @@ export function buildReflectPrompt(input: ReflectPromptInput): ReflectPromptResu
     const showCharBounds = sourceBodyLen >= 200;
     const minChars = Math.max(Math.round(0.5 * sourceBodyLen), 150);
     const maxChars = Math.min(Math.max(Math.round(2.5 * sourceBodyLen), 2500), 25000);
-    if (showCharBounds) maxOutputChars = maxChars;
     sections.push(
       [
         "## Content preservation rules (MUST follow)",
@@ -495,7 +495,7 @@ export function buildReflectPrompt(input: ReflectPromptInput): ReflectPromptResu
     sections.push(`IMPORTANT: The JSON "ref" field is REQUIRED. It MUST be exactly: "${input.ref}"`);
   }
   sections.push(reflectResponseContract(input));
-  return { prompt: sections.join("\n\n"), ...(maxOutputChars !== undefined ? { maxOutputChars } : {}) };
+  return { prompt: sections.join("\n\n") };
 }
 
 export interface ProposePromptInput {

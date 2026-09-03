@@ -80,7 +80,6 @@ import { akmHealth } from "../../src/commands/health";
 import { createProposal as createProposalImpl, isProposalSkipped } from "../../src/commands/proposal/repository";
 import { akmTasksSync } from "../../src/commands/tasks/tasks";
 import { loadConfig, loadUserConfig, parseAndValidateConfigText, resetConfigCache } from "../../src/core/config/config";
-import { ConfigError } from "../../src/core/errors";
 import { getConfigPath } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { resetQuiet, setQuiet } from "../../src/core/warn";
@@ -311,7 +310,7 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       target_ref: null,
     };
 
-    test("a real-shaped row with no metadataVersion (the 8,508-row live shape) reads via `akm task history` and `akm health --report` without throwing", () => {
+    test("a real-shaped row with no metadataVersion (the 8,508-row live shape) reads via `akm task history` and `akm health --report` without throwing", async () => {
       const db = openStateDatabase();
       try {
         upsertTaskHistory(db, {
@@ -327,10 +326,10 @@ describe("previous-release corpus — upgrade must not break reads", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.durationMs).toBe(48557);
 
-      expect(() => akmHealth({ since: "7d" })).not.toThrow();
+      await expect(akmHealth({ since: "7d" })).resolves.toBeDefined();
     });
 
-    test("real-shaped rows carrying the additive `profile`/`repairReason` fields (88 live rows) read without throwing", () => {
+    test("real-shaped rows carrying the additive `profile`/`repairReason` fields (88 live rows) read without throwing", async () => {
       const db = openStateDatabase();
       try {
         upsertTaskHistory(db, {
@@ -354,7 +353,7 @@ describe("previous-release corpus — upgrade must not break reads", () => {
 
       expect(readTaskHistory({ id: "corpus-legacy-profile" })).toHaveLength(1);
       expect(readTaskHistory({ id: "corpus-legacy-repair-reason" })).toHaveLength(1);
-      expect(() => akmHealth({ since: "7d" })).not.toThrow();
+      await expect(akmHealth({ since: "7d" })).resolves.toBeDefined();
     });
   });
 
@@ -446,20 +445,20 @@ describe("previous-release corpus — AKM_BUNDLE_DIR duplicate 'stash' bundle (#
 
 // ── Retired 0.8 source-config keys (`stashDir`/`sources[]`/`installed[]`) ──
 //
-// Unlike every other fixture in this file, the 0.9.0 cutover deliberately
-// does NOT read-shim these — `bundles` + `defaultBundle` fully replaced them
-// (see the module doc in `src/core/config/config-schema.ts` and the
-// dedicated coverage in `tests/integration/config.test.ts`). A real 0.8
-// config carried all three together. The compatibility guarantee here is
-// narrower than "reads cleanly": it's that this real combined shape still
-// fails LOUDLY with actionable per-key guidance (pointing at `bundles`)
-// rather than a generic/opaque parse error or, worse, a silent passthrough
-// that drops the user's source configuration without telling them.
+// This was the worst config-load break in the repo: `stashDir`/`sources[]`/
+// `installed[]` fully predate the 0.9.0 `bundles` + `defaultBundle` shape
+// (spec §10.1) and no migrator ever existed for them, so a real 0.8-era
+// config.json failed EVERY akm command with no working command left to
+// recover with. `legacy-source-shape-shim.ts` is the in-memory read shim
+// (same pattern as the task-source v2/v3 and configVersion shims elsewhere
+// in this file): a known-old shape converts to the current one, in memory,
+// with a one-line deprecation warning, and `akm migrate apply` is the on-disk
+// rewrite path rather than a precondition for reading.
 describe("previous-release corpus — retired 0.8 source-config keys (configVersion shim territory, #863)", () => {
   beforeEach(() => resetConfigCache());
   afterEach(() => resetConfigCache());
 
-  test("a real-shaped 0.8 config (stashDir + sources[] + installed[] together) fails with actionable guidance, not a silent load or opaque crash", () => {
+  test("a real-shaped 0.8 config (stashDir + sources[] + installed[] together) loads via the in-memory bundles shim", () => {
     const configPath = getConfigPath();
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(
@@ -480,16 +479,19 @@ describe("previous-release corpus — retired 0.8 source-config keys (configVers
       }),
     );
 
-    let caught: unknown;
-    try {
-      loadConfig();
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(ConfigError);
-    const message = (caught as ConfigError).message;
-    expect(message).toContain("stashDir is not supported");
-    expect(message).toContain("bundles");
+    const config = loadConfig();
+    // `stashDir` becomes the `stash` bundle and the default write target.
+    expect(config.defaultBundle).toBe("stash");
+    expect(config.bundles?.stash).toMatchObject({ path: "/home/user/.akm-stash", writable: true });
+    // The duplicate `sources[]` entry (the same directory, under its own
+    // `primary` name) also converts — one bundle per legacy entry, even when
+    // it overlaps with `stashDir`'s.
+    expect(config.bundles?.primary).toMatchObject({ path: "/home/user/.akm-stash", writable: true });
+    // `installed[]` has no 0.9 equivalent (the index tracks installed assets
+    // now) and is dropped rather than guessed at.
+    expect((config as unknown as Record<string, unknown>).installed).toBeUndefined();
+    expect((config as unknown as Record<string, unknown>).stashDir).toBeUndefined();
+    expect((config as unknown as Record<string, unknown>).sources).toBeUndefined();
   });
 });
 

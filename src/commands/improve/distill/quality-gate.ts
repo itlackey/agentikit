@@ -255,7 +255,7 @@ async function runQualityJudge(
       parsed.score > 5 ||
       typeof parsed.reason !== "string"
     ) {
-      return { pass: false, score: -1, reason: "judge parse failed — cannot judge, failing closed" };
+      return { pass: false, score: -1, reason: "judge parse failed — routed to review", reviewNeeded: true };
     }
     // D-5 / #388: Three-band system (MT-Bench arXiv:2306.05685 — ~±0.5 judge variance).
     //   >= 3.5: auto-queue as pending (pass: true)
@@ -270,7 +270,7 @@ async function runQualityJudge(
     // Invalid symbolic credentials are configuration failures, not a negative
     // content verdict. Provider/runtime failures retain the fail-closed result.
     if (error instanceof ConfigError) throw error;
-    return { pass: false, score: -1, reason: "judge timeout/error — cannot judge, failing closed" };
+    return { pass: false, score: -1, reason: "judge timeout/error — routed to review", reviewNeeded: true };
   }
 }
 

@@ -26,7 +26,7 @@ import { decodeFrozenRunnerSpec } from "../../integrations/agent/execution-lower
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import { parseReference } from "../program/expressions";
 import { PROGRAM_PARAM_NAME_PATTERN } from "../program/schema";
-import { utf8Bytes, WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../resource-limits";
+import { utf8Bytes } from "../resource-limits";
 import {
   decodeWorkflowExecSpec,
   type IrMapNode,
@@ -366,8 +366,18 @@ function decodeGateV4(value: unknown, stepId: string, requiredSources: Execution
       frozenJudge: null,
     });
   }
-  if (!Object.hasOwn(gate, "frozenJudge") || gate.frozenJudge === null) {
-    fail(`gate ${stepId} with criteria requires a frozen judge target`);
+  if (!Object.hasOwn(gate, "frozenJudge")) {
+    fail(`gate ${stepId} with criteria is missing its frozenJudge field`);
+  }
+  if (gate.frozenJudge === null) {
+    return Object.freeze({
+      kind: "gate",
+      id: gate.id as string,
+      stepId,
+      criteria,
+      maxLoops: gate.maxLoops as number,
+      frozenJudge: null,
+    });
   }
   const identity: IrUnitNodeCore = {
     kind: "unit",
@@ -464,14 +474,7 @@ function decodeChildWorkflowTarget(
   if (actualPlanHash !== planHash) {
     fail(`unit ${unit.id} child workflow embedded plan does not match its frozen planHash`);
   }
-  const projectedBytes = budget.embeddedBytes + utf8Bytes(embeddedPlanJson);
-  if (projectedBytes > WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES) {
-    fail(
-      `unit ${unit.id} child workflow ${target.ref} embedded plans total ${projectedBytes} bytes, over the ` +
-        `${WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES}-byte limit`,
-    );
-  }
-  budget.embeddedBytes = projectedBytes;
+  budget.embeddedBytes += utf8Bytes(embeddedPlanJson);
   return Object.freeze({
     kind: "child-workflow",
     ref: target.ref,

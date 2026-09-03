@@ -14,7 +14,7 @@ import { parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import type { TocHeading } from "../../core/asset/markdown";
 import { asNonEmptyString } from "../../core/common";
-import { isVerbose, warn, warnVerbose } from "../../core/warn";
+import { isVerbose, warn } from "../../core/warn";
 import type { buildFileContext } from "../walk/file-context";
 
 // ── Schema ──────────────────────────────────────────────────────────────────
@@ -880,10 +880,17 @@ export function isEnrichmentComplete(entry: IndexDocument): boolean {
 
 /**
  * Maximum native Markdown prose carried by the low-weight `content` field.
- * Structured fields remain separate and higher-weighted; this bound prevents
- * large documents from dominating index size or embedding inputs.
+ *
+ * Raised far past any real authored document:
+ * this used to sit at 16_384 chars, tight enough that ordinary long-form
+ * skills/knowledge docs lost their tail from both FTS and the embedding
+ * input with no visible signal (the cut was reported via `warnVerbose`,
+ * silent unless `AKM_VERBOSE` was set). The remaining bound exists only to
+ * stop a truly pathological single file (a committed data dump, a decompressed
+ * log) from ballooning index size — not to shave real content — so a caller
+ * that hits it is always told, unconditionally.
  */
-export const MARKDOWN_CONTENT_MAX_CHARS = 16_384;
+export const MARKDOWN_CONTENT_MAX_CHARS = 1_000_000;
 
 /**
  * Locate a leading nested frontmatter block in a body: up to three blank
@@ -1259,7 +1266,11 @@ export function applyPreContributorFields(
         entry.content = contentProjection;
         if (truncationInfo.truncated) {
           entry.contentTruncated = true;
-          warnVerbose(`${file}: indexed content truncated to ${MARKDOWN_CONTENT_MAX_CHARS} chars`);
+          // Unconditional, not warnVerbose: this bound now sits far past any
+          // real document, so tripping it means
+          // something unusual is in the bundle and the operator should see
+          // it without having to pass --verbose.
+          warn(`${file}: indexed content truncated to ${MARKDOWN_CONTENT_MAX_CHARS} chars`);
         }
       }
     }

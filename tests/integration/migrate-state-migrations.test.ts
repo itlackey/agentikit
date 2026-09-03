@@ -154,14 +154,17 @@ test("dry-run reports the pending state migrations and applies nothing", async (
   expect(stateDbOpens(file)).toBe(false);
 });
 
-test("apply lifts a legacy extraParams config first, so the steps that load config can run", async () => {
-  // A config still carrying legacy extraParams keys fails `loadConfig`
-  // closed, and that error names `akm migrate apply` as the remedy. Every
-  // later step loads config, so the lift has to come first for that advice
-  // to be true. The seeded state.db proves the state step ran after it.
+test("apply lifts a legacy extraParams config to disk, and later steps that load config still run", async () => {
+  // `loadConfig` itself now auto-lifts a legacy extraParams config in memory
+  // (warning once) rather than failing closed, so this step is no longer a
+  // precondition for every LATER step's `loadConfig()` call to succeed —
+  // but `akm migrate apply` still persists the lift to disk (silencing the
+  // warning permanently) and this proves it still runs, and still runs
+  // before the state/task steps that themselves load config and open
+  // state.db. The seeded state.db proves the state step ran after it.
   const configPath = writeLegacyExtraParamsConfig(storage.configDir);
   seedBefore018(getStateDbPath());
-  expect(() => loadConfig()).toThrow(/extraParams/);
+  expect(loadConfig().engines?.["my-llm"]?.temperature).toBe(0.7);
 
   const plan = await runMigration({ apply: true });
 

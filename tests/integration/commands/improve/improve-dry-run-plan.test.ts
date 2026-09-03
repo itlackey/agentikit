@@ -199,7 +199,7 @@ describe("#800 effective dry-run planner", () => {
     expect(snapshotTree(storage.root)).toEqual(before);
   });
 
-  test("legacy index schema is rejected without migration", async () => {
+  test("legacy index schema degrades to an empty incompatible snapshot instead of rejecting", async () => {
     const storage = isolatedStorage();
     const config = plannerConfig();
     writeSkill(storage.stashDir, "unindexed", "This asset intentionally has no current index row.");
@@ -212,15 +212,17 @@ describe("#800 effective dry-run planner", () => {
     legacyDb.close();
     const before = snapshotTree(storage.root);
 
-    await expect(
-      akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true }),
-    ).rejects.toMatchObject({
-      code: "INDEX_SCHEMA_INCOMPATIBLE",
+    const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
+
+    expect(result.plan?.snapshot).toEqual({
+      status: "incompatible",
+      reason: "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it",
     });
+    expect(result.plannedRefs).toEqual([]);
     expect(snapshotTree(storage.root)).toEqual(before);
   });
 
-  test("held WAL index planning fails closed without changing main, WAL, or SHM bytes", async () => {
+  test("held WAL legacy index degrades to an empty incompatible snapshot without changing main, WAL, or SHM bytes", async () => {
     const storage = isolatedStorage();
     const config = plannerConfig();
     writeSkill(storage.stashDir, "unindexed", "This asset intentionally has no current index row.");
@@ -236,11 +238,13 @@ describe("#800 effective dry-run planner", () => {
       expect(fs.existsSync(`${dbPath}-shm`)).toBe(true);
       const before = snapshotTree(storage.root);
 
-      await expect(
-        akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true }),
-      ).rejects.toMatchObject({
-        code: "INDEX_SCHEMA_INCOMPATIBLE",
+      const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
+
+      expect(result.plan?.snapshot).toEqual({
+        status: "incompatible",
+        reason: "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it",
       });
+      expect(result.plannedRefs).toEqual([]);
       expect(snapshotTree(storage.root)).toEqual(before);
     } finally {
       legacyDb.close();

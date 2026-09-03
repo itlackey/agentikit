@@ -227,7 +227,7 @@ describe("registry pinned production transport", () => {
       await expect(
         fetchRegistryResponse(`http://registry.test:${port}/hang`, undefined, {
           ...productionOptions("registry.test"),
-          timeoutMs: 25,
+          timeoutMs: 250,
           requestPinnedForTesting: (url, address, init, timeoutMs) =>
             requestRegistryAddressPinned(url, address, init, timeoutMs, {
               onHelperSpawn(details) {

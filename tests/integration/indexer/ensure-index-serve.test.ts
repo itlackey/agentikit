@@ -125,12 +125,12 @@ describe("ensureIndex read-path (background mode)", () => {
     spy.mockRestore();
   });
 
-  test("openExistingDatabase refuses a populated pre-current generation", () => {
+  test("openExistingDatabase opens a populated pre-current generation instead of refusing it, but ensureIndex still detects it as unusable", () => {
     replaceWithPopulatedV17Index();
     expect(() => {
       const db = openExistingDatabase(getDbPath());
       closeDatabase(db);
-    }).toThrow(/canonical|incompatible|akm index/i);
+    }).not.toThrow();
   });
 
   test("a populated pre-current generation rebuilds from materialized sources before serving", async () => {

@@ -330,10 +330,36 @@ export function hasCanonicalEntrySchema(db: EntrySchemaInspectionDatabase): bool
   }
 }
 
-export function isCanonicalIndexGeneration(db: EntrySchemaInspectionDatabase): boolean {
+export type IndexGenerationStatus = "canonical" | "older" | "newer";
+
+export interface IndexGenerationClassification {
+  status: IndexGenerationStatus;
+  storedVersion: string | undefined;
+}
+
+export function classifyIndexGeneration(db: EntrySchemaInspectionDatabase): IndexGenerationClassification {
+  let storedVersion: string | undefined;
   try {
     const row = db.prepare("SELECT value FROM index_meta WHERE key = 'version'").get() as { value: string } | undefined;
-    return row?.value === String(CANONICAL_INDEX_DB_VERSION) && hasCanonicalEntrySchema(db);
+    storedVersion = row?.value;
+  } catch {
+    storedVersion = undefined;
+  }
+
+  if (storedVersion === String(CANONICAL_INDEX_DB_VERSION) && hasCanonicalEntrySchema(db)) {
+    return { status: "canonical", storedVersion };
+  }
+
+  const storedNumeric = storedVersion === undefined ? undefined : Number(storedVersion);
+  if (storedNumeric !== undefined && Number.isFinite(storedNumeric) && storedNumeric > CANONICAL_INDEX_DB_VERSION) {
+    return { status: "newer", storedVersion };
+  }
+  return { status: "older", storedVersion };
+}
+
+export function isCanonicalIndexGeneration(db: EntrySchemaInspectionDatabase): boolean {
+  try {
+    return classifyIndexGeneration(db).status === "canonical";
   } catch {
     return false;
   }

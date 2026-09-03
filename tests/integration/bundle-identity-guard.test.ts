@@ -80,7 +80,7 @@ describe("§11.5 bundle-rename startup guard", () => {
     expect(warnCalls).toHaveLength(0);
   });
 
-  test("refuses a stamped v22 index with a hidden generated legacy column before reading bundle ids", () => {
+  test("skips the rename-drift comparison for a stamped v22 index with a hidden generated legacy column", () => {
     seedIndexBundles(["oldname"]);
     const raw = openDatabase(getDbPath());
     try {
@@ -91,7 +91,9 @@ describe("§11.5 bundle-rename startup guard", () => {
 
     warnOnBundleRenameDrift(bundlesConfig("newname"));
 
-    expect(warnCalls).toEqual([]);
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]).toContain("does not match this akm's derived schema");
+    expect(warnCalls.some((message) => message.includes("bundle identity drift"))).toBe(false);
   });
 
   test("stays silent when a configured bundle is simply not yet indexed (all index ids configured)", () => {

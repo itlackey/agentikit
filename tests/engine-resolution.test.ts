@@ -234,6 +234,55 @@ describe("engine resolution", () => {
       }),
     ).toThrow(/cannot dispatch agents/);
   });
+
+  // resolveLlmEngineUse used to reject an agent
+  // engine outright, even when the exact fallback machinery lowerAgentEngine
+  // already uses (AgentEngineConfig.llmEngine, then defaults.llmEngine)
+  // names a real LLM engine. Falling back is strictly less capable than the
+  // agent engine (never an interactive/tool-capable runner), so it is safe.
+  describe("resolveLlmEngineUse falls back off an agent engine's llmEngine", () => {
+    test("falls back to the agent engine's OWN llmEngine when set", () => {
+      const withOwnFallback = {
+        ...config,
+        engines: { ...config.engines, reviewer: { ...config.engines.reviewer, llmEngine: "fast" } },
+      };
+      const resolved = resolveLlmEngineUse(withOwnFallback, [{ engine: "reviewer" }]);
+      expect(resolved.engine).toBe("fast");
+      expect(resolved.connection.model).toBe("base-model");
+    });
+
+    test("falls back to defaults.llmEngine when the agent engine names no fallback of its own", () => {
+      // `config.defaults.llmEngine` is "fast"; `reviewer` itself declares none.
+      const resolved = resolveLlmEngineUse(config, [{ engine: "reviewer" }]);
+      expect(resolved.engine).toBe("fast");
+    });
+
+    test("an agent engine's own llmEngine wins over defaults.llmEngine", () => {
+      const withBoth = {
+        ...config,
+        engines: {
+          ...config.engines,
+          reviewer: { ...config.engines.reviewer, llmEngine: "sdk-fallback-target" },
+          "sdk-fallback-target": { kind: "llm" as const, endpoint: "https://example.test/other", model: "other-model" },
+        },
+      };
+      expect(resolveLlmEngineUse(withBoth, [{ engine: "reviewer" }]).engine).toBe("sdk-fallback-target");
+    });
+
+    test("optional resolution returns undefined, not a throw, when no fallback exists", () => {
+      const noFallback = { ...config, defaults: { engine: "reviewer" } };
+      expect(resolveLlmEngineUse(noFallback, [{ engine: "reviewer" }], { optional: true })).toBeUndefined();
+    });
+
+    test("aborts only when truly no LLM engine exists anywhere — even the fallback names a non-LLM engine", () => {
+      const selfReferential = {
+        configVersion: "0.9.0",
+        engines: { wrong: { kind: "agent" as const, platform: "pi" as const } },
+        defaults: { llmEngine: "wrong" },
+      };
+      expect(() => resolveLlmEngineUse(selfReferential, [{ engine: "wrong" }])).toThrow(/is not an LLM engine/);
+    });
+  });
 });
 
 describe("file-backed engine credential (#905)", () => {

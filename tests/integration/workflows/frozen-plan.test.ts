@@ -330,10 +330,9 @@ describe("plan freezing at workflow start (migration 006)", () => {
     }
   });
 
-  test("bad hash and spine mismatch are rejected before any workflow mutation", async () => {
+  test("bad hash is rejected before any workflow mutation", async () => {
     writeWorkflow("preflight", "Do immutable work.");
     const started = await startWorkflowRun("workflows/preflight", {});
-    const beforeRun = await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id));
     const beforeSteps = await withWorkflowRunsRepo((repo) => repo.getStepsForRun(started.run.id));
 
     execOnWorkflowDb("UPDATE workflow_runs SET plan_hash = ? WHERE id = ?", "0".repeat(64), started.run.id);
@@ -346,24 +345,21 @@ describe("plan freezing at workflow start (migration 006)", () => {
     const afterBadHashSteps = await withWorkflowRunsRepo((repo) => repo.getStepsForRun(started.run.id));
     expect(afterBadHashRun?.status).toBe("failed");
     expect(afterBadHashSteps).toEqual(beforeSteps);
+  });
 
-    const valid = beforeRun;
-    if (!valid?.plan_hash) throw new Error("fixture requires a plan hash");
-    execOnWorkflowDb(
-      "UPDATE workflow_runs SET status = 'active', completed_at = NULL, plan_hash = ? WHERE id = ?",
-      valid.plan_hash,
-      started.run.id,
-    );
+  test("a stale derived spine field warns and self-heals instead of blocking completion", async () => {
+    writeWorkflow("drifted", "Do immutable work.");
+    const started = await startWorkflowRun("workflows/drifted", {});
+
     execOnWorkflowDb(
       "UPDATE workflow_run_steps SET instructions = ? WHERE run_id = ? AND step_id = ?",
-      "tampered instructions",
+      "stale instructions",
       started.run.id,
       "only-step",
     );
-    await expect(
-      completeWorkflowStep({ runId: started.run.id, stepId: "only-step", status: "blocked" }),
-    ).rejects.toThrow(/corrupt durable step spine/);
-    expect((await withWorkflowRunsRepo((repo) => repo.getRunById(started.run.id)))?.status).toBe("active");
-    expect((await withWorkflowRunsRepo((repo) => repo.getStep(started.run.id, "only-step")))?.status).toBe("pending");
+    const detail = await completeWorkflowStep({ runId: started.run.id, stepId: "only-step", status: "blocked" });
+    if (!("run" in detail)) throw new Error("expected a WorkflowRunDetail, not a validation failure");
+    expect(detail.run.status).toBe("blocked");
+    expect((await withWorkflowRunsRepo((repo) => repo.getStep(started.run.id, "only-step")))?.status).toBe("blocked");
   });
 });

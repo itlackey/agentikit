@@ -436,7 +436,10 @@ describe("post-loop hook gating", () => {
     await akmImprove({
       scope: "memory",
       stashDir: storage.stashDir,
-      config: withTestImproveLlm({ semanticSearchMode: "off" }) as never,
+      config: withTestImproveLlm({
+        semanticSearchMode: "off",
+        improve: { strategies: { default: { processes: { consolidate: { enabled: false } } } } },
+      }) as never,
       ensureIndexFn: async () => false,
       reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
       reflectFn: async () => ({ schemaVersion: 1, ok: true, outcome: "skipped", ref: "", message: "stub" }) as never,

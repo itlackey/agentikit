@@ -7,9 +7,9 @@ import type { RegistryConfigEntry } from "../core/config/config";
 import { getEffectiveRegistries, loadUserConfig, mutateConfig } from "../core/config/config";
 import { NotFoundError, UsageError } from "../core/errors";
 import {
+  formatRegistryLabel,
   formatRegistryUrl,
   hasRegistryUrlCredentials,
-  REGISTRY_CREDENTIALS_UNSUPPORTED,
   registryEntryForOutput,
 } from "../core/registry-url";
 import { warn } from "../core/warn";
@@ -41,7 +41,11 @@ export const registryCommand = defineGroupCommand({
       },
       async run({ args }) {
         if (hasRegistryUrlCredentials(args.url)) {
-          throw new UsageError(REGISTRY_CREDENTIALS_UNSUPPORTED);
+          warn(
+            `Registry ${formatRegistryLabel({ url: args.url, name: args.name })} was added, but its URL's ` +
+              "username/password is ignored: authenticated registries are not supported by the built-in " +
+              "static-index or skills-sh providers.",
+          );
         }
         if (!args.url.startsWith("http")) {
           throw new UsageError("Registry URL must start with http:// or https://");

@@ -108,14 +108,14 @@ function buildOpts(partial: Partial<HealthHtmlReportOptions> = {}): HealthHtmlRe
   };
 }
 
-function healthResult(): AkmHealthResult {
+async function healthResult(): Promise<AkmHealthResult> {
   return akmHealth({ since: "24h", groupBy: "run" });
 }
 
 describe("buildHealthHtmlReplacements", () => {
-  test("the replacement token set exactly matches the health template tokens", () => {
+  test("the replacement token set exactly matches the health template tokens", async () => {
     seedImproveRun();
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
 
     const templateTokens = new Set(fs.readFileSync(resolveTemplatePath("health"), "utf8").match(/%%[A-Z_]+%%/g) ?? []);
     const replacementTokens = new Set(Object.keys(replacements));
@@ -133,9 +133,9 @@ describe("buildHealthHtmlReplacements", () => {
     expect(replacementTokens.has("%%WATCH_ITEMS_HTML%%")).toBe(false);
   });
 
-  test("akm version is stamped and the hidden distill reason is excluded from the chart", () => {
+  test("akm version is stamped and the hidden distill reason is excluded from the chart", async () => {
     seedImproveRun("run-html-ver");
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
     // Version token is non-empty (semver-ish), used in header + footer.
     expect(replacements["%%AKM_VERSION%%"]).toMatch(/\d+\.\d+/);
     // The steady-state "no new signal since last proposal" reason is filtered
@@ -143,10 +143,10 @@ describe("buildHealthHtmlReplacements", () => {
     expect(replacements["%%DISTILL_REASONS_JSON%%"]).not.toContain("no new signal since last proposal");
   });
 
-  test("slice options are derived from the report window (not hard-coded days)", () => {
+  test("slice options are derived from the report window (not hard-coded days)", async () => {
     seedImproveRun();
     // 24h window → only sub-day slices (6h/12h), no day-based options, default All.
-    const opts24 = buildHealthHtmlReplacements(healthResult(), buildOpts({ window: "24h" }));
+    const opts24 = buildHealthHtmlReplacements(await healthResult(), buildOpts({ window: "24h" }));
     const slices24 = opts24["%%SLICE_OPTIONS_HTML%%"];
     expect(slices24).toContain('value="all" selected>All (24h)');
     expect(slices24).toContain("Last 12h");
@@ -155,7 +155,7 @@ describe("buildHealthHtmlReplacements", () => {
     expect(slices24).not.toContain("21d");
 
     // 7d window → day-based sub-windows, capped below the window.
-    const opts7 = buildHealthHtmlReplacements(healthResult(), buildOpts({ window: "7d" }));
+    const opts7 = buildHealthHtmlReplacements(await healthResult(), buildOpts({ window: "7d" }));
     const slices7 = opts7["%%SLICE_OPTIONS_HTML%%"];
     expect(slices7).toContain("All (7d)");
     expect(slices7).toContain("Last 3d");
@@ -164,27 +164,27 @@ describe("buildHealthHtmlReplacements", () => {
     expect(slices7).not.toContain("Last 14d");
   });
 
-  test("run taskId from the health summary flows into the report payload (not scope)", () => {
+  test("run taskId from the health summary flows into the report payload (not scope)", async () => {
     seedImproveRun("run-html-task");
-    const result = healthResult();
+    const result = await healthResult();
     // Stamp a taskId on the summary as akmHealth's task_history join would.
     if (result.runs?.[0]) (result.runs[0] as { taskId: string }).taskId = "akm-improve-frequent";
     const replacements = buildHealthHtmlReplacements(result, buildOpts());
     expect(replacements["%%RUNS_JS_CONST%%"]).toContain('"taskId":"akm-improve-frequent"');
   });
 
-  test("rendering the health template leaves no unreplaced tokens", () => {
+  test("rendering the health template leaves no unreplaced tokens", async () => {
     seedImproveRun();
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
     const html = renderHtml(resolveTemplatePath("health"), replacements);
     expect(html).not.toMatch(/%%[A-Z_]+%%/);
     expect(html).toContain("AKM Health Report");
     expect(html).toContain('id="chartWallTime"');
   });
 
-  test("run data and aggregates flow into the chart payload and KPI cards", () => {
+  test("run data and aggregates flow into the chart payload and KPI cards", async () => {
     seedImproveRun("run-html-kpi");
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
 
     expect(replacements["%%RUN_COUNT%%"]).toBe("1");
     expect(replacements["%%RUNS_JS_CONST%%"]).toStartWith("const RUNS = [");
@@ -196,11 +196,11 @@ describe("buildHealthHtmlReplacements", () => {
     expect(replacements["%%KPI_CARDS_HTML%%"]).toContain("12");
     // GENERATED_AT derives from the latest run, not wall-clock — deterministic.
     expect(replacements["%%GENERATED_AT%%"]).not.toBe("");
-    const again = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const again = buildHealthHtmlReplacements(await healthResult(), buildOpts());
     expect(again["%%GENERATED_AT%%"]).toBe(replacements["%%GENERATED_AT%%"]);
   });
 
-  test("#576 real LLM token/time aggregate renders into the KPI card and summary rows", () => {
+  test("#576 real LLM token/time aggregate renders into the KPI card and summary rows", async () => {
     seedImproveRun("run-html-llm");
     // Seed two llm_usage events into the sandboxed state.db (default path under
     // the isolated XDG_DATA_HOME); akmHealth aggregates them into metrics.llmUsage.
@@ -229,7 +229,7 @@ describe("buildHealthHtmlReplacements", () => {
       },
     });
 
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
 
     // KPI card: total tokens (140+80=220), call count (2), reasoning (10+5=15).
     expect(replacements["%%KPI_CARDS_HTML%%"]).toContain("🧠 LLM Work");
@@ -246,10 +246,10 @@ describe("buildHealthHtmlReplacements", () => {
     expect(rows).toContain("LLM calls");
   });
 
-  test("pending proposals are listed, counted, and HTML-escaped", () => {
+  test("pending proposals are listed, counted, and HTML-escaped", async () => {
     seedImproveRun();
     const replacements = buildHealthHtmlReplacements(
-      healthResult(),
+      await healthResult(),
       buildOpts({
         proposals: [
           { ref: "lesson:<script>alert(1)</script>", source: "extract", createdAt: "2026-06-10T12:00:00.000Z" },
@@ -267,10 +267,10 @@ describe("buildHealthHtmlReplacements", () => {
     expect(replacements["%%ACTION_ITEMS_HTML%%"]).toContain("akm proposal list");
   });
 
-  test("deltas drive the trend pills in the executive summary", () => {
+  test("deltas drive the trend pills in the executive summary", async () => {
     seedImproveRun();
     const replacements = buildHealthHtmlReplacements(
-      healthResult(),
+      await healthResult(),
       buildOpts({
         deltas: {
           "improve.consolidation.promoted": { from: 10, to: 25, pctChange: 150 },
@@ -285,9 +285,9 @@ describe("buildHealthHtmlReplacements", () => {
     expect(replacements["%%EXEC_SUMMARY_HTML%%"]).toContain("<b>improving</b>");
   });
 
-  test("echarts is CDN-only (chunk-9 WI-9.4d — the vendored inline payload was removed)", () => {
+  test("echarts is CDN-only (chunk-9 WI-9.4d — the vendored inline payload was removed)", async () => {
     seedImproveRun();
-    const result = healthResult();
+    const result = await healthResult();
 
     const replacements = buildHealthHtmlReplacements(result, buildOpts());
     expect(replacements["%%ECHARTS_TAG%%"]).toBe(
@@ -295,8 +295,8 @@ describe("buildHealthHtmlReplacements", () => {
     );
   });
 
-  test("empty window renders the no-runs snapshot and pass cards", () => {
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+  test("empty window renders the no-runs snapshot and pass cards", async () => {
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
     expect(replacements["%%RUN_COUNT%%"]).toBe("0");
     expect(replacements["%%EXEC_SUMMARY_HTML%%"]).toContain("No runs in window");
     expect(replacements["%%PROPOSAL_ROWS_HTML%%"]).toContain("No pending proposals");
@@ -305,16 +305,16 @@ describe("buildHealthHtmlReplacements", () => {
     expect(html).not.toMatch(/%%[A-Z_]+%%/);
   });
 
-  test("taskId falls back to 'manual' when no scheduled improve task matches the run", () => {
+  test("taskId falls back to 'manual' when no scheduled improve task matches the run", async () => {
     seedImproveRun("run-html-task");
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
     // The seeded run has no enclosing akm-improve task_history row, so the
     // task_history join yields "manual" — NOT the run's scope.mode ("all").
     expect(replacements["%%RUNS_JS_CONST%%"]).toContain('"taskId":"manual"');
     expect(replacements["%%RUNS_JS_CONST%%"]).not.toContain('"taskId":"all"');
   });
 
-  test("per-stage LLM token aggregate flows into the LLM_BY_STAGE_JSON token", () => {
+  test("per-stage LLM token aggregate flows into the LLM_BY_STAGE_JSON token", async () => {
     seedImproveRun("run-html-stages");
     appendEvent({
       eventType: "llm_usage",
@@ -328,7 +328,7 @@ describe("buildHealthHtmlReplacements", () => {
         reasoningTokens: 10,
       },
     });
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
     const byStage = JSON.parse(replacements["%%LLM_BY_STAGE_JSON%%"]!) as Record<
       string,
       { promptTokens: number; completionTokens: number; reasoningTokens: number }
@@ -343,19 +343,19 @@ describe("buildHealthHtmlReplacements", () => {
     expect(html).toContain("LLM_BY_STAGE");
   });
 
-  test("a synthesized verdict line renders under the exec summary", () => {
+  test("a synthesized verdict line renders under the exec summary", async () => {
     seedImproveRun("run-html-verdict", false); // failed run → drivers include failures
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
     const exec = replacements["%%EXEC_SUMMARY_HTML%%"];
     expect(exec).toContain("Verdict:");
     expect(exec).toContain('class="verdict');
     expect(exec).toContain("1 failed run");
   });
 
-  test("advisories and what-to-watch merge into one prioritized, de-duplicated Action Items list", () => {
+  test("advisories and what-to-watch merge into one prioritized, de-duplicated Action Items list", async () => {
     seedImproveRun("run-html-actions", false); // failed run
     const replacements = buildHealthHtmlReplacements(
-      healthResult(),
+      await healthResult(),
       buildOpts({
         proposals: [{ ref: "memories/x", source: "extract", createdAt: "2026-06-10T12:00:00.000Z" }],
       }),
@@ -371,9 +371,9 @@ describe("buildHealthHtmlReplacements", () => {
     expect(actions!.indexOf("p1")).toBeLessThan(actions!.indexOf("p2"));
   });
 
-  test("the rendered template includes the filter bar, Task column, and dataZoom", () => {
+  test("the rendered template includes the filter bar, Task column, and dataZoom", async () => {
     seedImproveRun("run-html-filterbar");
-    const replacements = buildHealthHtmlReplacements(healthResult(), buildOpts());
+    const replacements = buildHealthHtmlReplacements(await healthResult(), buildOpts());
     const html = renderHtml(resolveTemplatePath("health"), replacements);
     expect(html).toContain('class="filter-bar"');
     expect(html).toContain('id="taskFilter"');

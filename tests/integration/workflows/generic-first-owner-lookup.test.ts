@@ -249,11 +249,11 @@ describe("generic lookup/show installation-priority ownership", () => {
     expect((await loadWorkflowAsset("later//workflows/same")).path).toBe(laterPath);
   });
 
-  test("an established earlier OKF owner is insulated from a lower invalid native collision domain", async () => {
+  test("an established earlier OKF owner is insulated from a lower bundle's own resolvable .md/.yml domain", async () => {
     const early = fixture("early-okf-collision", "okf");
     const later = fixture("later-native-collision", "akm");
     const earlyPath = write(early.root, "workflows/same.md", genericDocument("EARLY_INSULATED_OWNER"));
-    write(later.root, "workflows/same.md", getWorkflowTemplate());
+    const laterPath = write(later.root, "workflows/same.md", getWorkflowTemplate());
     write(
       later.root,
       "workflows/same.yml",
@@ -274,12 +274,11 @@ describe("generic lookup/show installation-priority ownership", () => {
     await expect(loadWorkflowAsset("workflows/same")).rejects.toThrow(/adapter "okf"/i);
     expect(fs.readFileSync(getStateDbPath())).toEqual(stateBeforeRuntimeRejection);
 
-    await expect(lookupBundleRef(parseBundleRef("later//workflows/same"))).rejects.toMatchObject({
-      code: "RESOURCE_ALREADY_EXISTS",
+    expect(await lookupBundleRef(parseBundleRef("later//workflows/same"))).toMatchObject({
+      filePath: laterPath,
+      adapterId: "akm",
     });
-    await expect(showLocal({ ref: "later//workflows/same" })).rejects.toMatchObject({
-      code: "RESOURCE_ALREADY_EXISTS",
-    });
+    expect((await showLocal({ ref: "later//workflows/same" })).path).toBe(laterPath);
   });
 
   test("an absent or reserved earlier OKF concept allows fallback to the later native owner", async () => {

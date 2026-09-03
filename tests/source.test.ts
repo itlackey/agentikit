@@ -382,15 +382,15 @@ Creates a user.
     }
   });
 
-  test("akmShow throws unsupported script extension for .txt file", async () => {
+  test("akmShow renders a .txt script as plain text instead of refusing it", async () => {
     const stashDir = createTmpDir("akm-stash-");
     writeFile(path.join(stashDir, "scripts", "readme.txt"), "not a script\n");
 
     try {
       await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
-        await expect(akmShow({ ref: "scripts/readme.txt" })).rejects.toThrow(
-          /unsupported file type|supported script extension/i,
-        );
+        const result = await akmShow({ ref: "scripts/readme.txt" });
+        expect(result.type).toBe("script");
+        expect(result.content).toContain("not a script");
       });
     } finally {
       fs.rmSync(stashDir, { recursive: true, force: true });

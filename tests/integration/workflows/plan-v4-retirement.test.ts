@@ -105,9 +105,8 @@ function execOnWorkflowDb(sql: string, ...params: Array<string | number | null>)
 function unsupportedVersionMessage(runId: string, version: number): string {
   return (
     `Workflow run ${runId} was frozen as workflow plan irVersion ${version}; pre-irVersion-5 ` +
-    `plans cannot execute after the 0.9.2 upgrade. Complete them before upgrading, or run ` +
-    `'akm workflow abandon ${runId}' and start a new run from the authored workflow. ` +
-    `'akm workflow status' and 'akm workflow list' still work on this run.`
+    `plans cannot execute after the 0.9.2 upgrade. Run 'akm workflow abandon ${runId}' and start a new run ` +
+    `from the authored workflow to continue. 'akm workflow status' and 'akm workflow list' still work on this run.`
   );
 }
 
@@ -226,7 +225,7 @@ describe("A-09 — the WORKFLOW_IR_VERSION_UNSUPPORTED hint", () => {
     const error = new UsageError("irrelevant message", "WORKFLOW_IR_VERSION_UNSUPPORTED");
     expect(error.hint()).toBe(
       "Abandon the run with `akm workflow abandon <id>`, then start it again from the " +
-        "workflow source — pre-0.9.2 frozen plans are not re-executable.",
+        "workflow source — a frozen plan this akm cannot execute is not re-executable in place.",
     );
   });
 });

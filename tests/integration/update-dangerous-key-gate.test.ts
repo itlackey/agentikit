@@ -727,14 +727,14 @@ describe("akm bundle update dangerous-key gate (#765)", () => {
       .run(entry.id + 765_000, entry.item_ref);
     stateDb.close();
 
-    const splitHealth = akmHealth({ stashDir: storage.stashDir });
+    const splitHealth = await akmHealth({ stashDir: storage.stashDir });
     expect(splitHealth.advisories).toContainEqual(
       expect.objectContaining({ name: "index-state-generation", status: "warn" }),
     );
 
     await akmIndex({ stashDir: storage.stashDir, full: true, hydrateSources: false });
 
-    const repairedHealth = akmHealth({ stashDir: storage.stashDir });
+    const repairedHealth = await akmHealth({ stashDir: storage.stashDir });
     expect(repairedHealth.advisories.find((finding) => finding.name === "index-state-generation")).toBeUndefined();
     const repairedIndex = openReadonlyExistingDatabase(getDbPath());
     if (!repairedIndex) throw new Error("expected a repaired index");

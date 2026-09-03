@@ -163,10 +163,10 @@ function pullRepo(repoDir: string): void {
     throw new UsageError(`Writable Git source at ${repoDir} has uncommitted changes; refusing to update it.`);
   }
   const relation = inspectGitUpstream(repoDir);
-  if (relation.ahead > 0) {
-    throw new UsageError(`Writable Git source at ${repoDir} has unpushed commits; refusing to update it.`);
-  }
   if (relation.behind > 0 && relation.upstream) {
+    if (relation.ahead > 0) {
+      throw new UsageError(`Writable Git source at ${repoDir} has unpushed commits; refusing to update it.`);
+    }
     const statusBeforeMerge = runGit(["-C", repoDir, "status", "--porcelain"]);
     if (statusBeforeMerge.status !== 0 || statusBeforeMerge.stdout.trim()) {
       throw new UsageError(

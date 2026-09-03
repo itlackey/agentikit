@@ -214,7 +214,7 @@ describe("task runner mutation boundary", () => {
     expect(logFiles()).toEqual([]);
   });
 
-  test("workflow task env fails closed before history because the workflow start contract has no consumer", async () => {
+  test("workflow task env: is dropped (with a warning) and the workflow still dispatches", async () => {
     const workflowsDir = path.join(storage.stashDir, "workflows");
     fs.mkdirSync(workflowsDir, { recursive: true });
     fs.writeFileSync(
@@ -244,20 +244,32 @@ describe("task runner mutation boundary", () => {
     );
     let dispatched = false;
 
-    await expect(
-      runTask("workflow-env", {
-        bundleDir: storage.stashDir,
-        bundleName: "fixture",
-        scheduled: true,
-        runWorkflowStepsImpl: async () => {
-          dispatched = true;
-          throw new Error("must not dispatch");
-        },
-      }),
-    ).rejects.toThrow(/workflow.*env|env.*workflow|cannot preserve/i);
-    expect(dispatched).toBe(false);
-    expect(readTaskHistory({ id: "workflow-env" })).toEqual([]);
-    expect(logFiles()).toEqual([]);
+    const result = await runTask("workflow-env", {
+      bundleDir: storage.stashDir,
+      bundleName: "fixture",
+      scheduled: true,
+      runWorkflowStepsImpl: (async ({ target, params = {} }: { target: string; params?: Record<string, unknown> }) => {
+        dispatched = true;
+        return {
+          run: {
+            id: "run-workflow-env",
+            workflowRef: target,
+            workflowTitle: "Env target",
+            status: "completed" as const,
+            params,
+            createdAt: "2025-01-01T00:00:00Z",
+            updatedAt: "2025-01-01T00:00:00Z",
+            completedAt: "2025-01-01T00:00:00Z",
+            currentStepId: null,
+          },
+          executed: [],
+        };
+      }) as never,
+    });
+
+    expect(dispatched).toBe(true);
+    expect(result.status).toBe("completed");
+    expect(readTaskHistory({ id: "workflow-env" })).toHaveLength(1);
   });
 
   test("a bundle-qualified script resolves from the named configured bundle", async () => {

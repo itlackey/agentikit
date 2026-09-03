@@ -169,14 +169,15 @@ export const GLOBAL_OUTPUT_ARGS = {
   // R-050(c): single-sourced with the root command's own `--shape` help
   // (`main.args.shape` in src/cli.ts, which spreads this object) so the
   // caveat is visible from every leaf's own `--help`, not only the top-level
-  // one. `summary` outside `show` is a hard usage error (exit 2,
-  // INVALID_SHAPE_VALUE), enforced at startup in src/cli.ts before any
-  // command body runs.
+  // one. `summary` outside `show` falls back to `agent` with a warning
+  // (shapeForCommand in src/output/shapes.ts) — `--shape` is a global flag,
+  // so a script that passes it to a mixed batch of commands still works.
   shape: {
     type: "string",
     description:
       "Output projection: human|agent|summary (global flag). 'agent' trims to agent-essential fields; " +
-      "'summary' is only valid on 'akm show' (a usage error, exit 2, everywhere else). Default: human.",
+      "'summary' only has a dedicated projection on 'akm show' — elsewhere it falls back to 'agent' with a " +
+      "warning. Default: human.",
   },
   output: {
     type: "string",
@@ -309,6 +310,17 @@ export function defineGroupCommand<const T extends ArgsDef = ArgsDef>(def: {
  * document is written to that file instead of stdout (jsonl excepted — it is
  * a line-streaming protocol and always goes to stdout).
  */
+/**
+ * Emit a result whose success is graded by an exit code. `ok` on the envelope
+ * and `process.exitCode` are set from the same value here, so the two cannot
+ * disagree (#918); `exitCode` undefined or 0 means success.
+ */
+export function outputWithExitCode(command: string, result: object, exitCode: number | undefined): void {
+  const failed = exitCode !== undefined && exitCode !== EXIT_CODES.SUCCESS;
+  output(command, { ...result, ok: !failed });
+  if (failed) process.exitCode = exitCode;
+}
+
 export function output(command: string, result: unknown): void {
   const mode: OutputMode = getOutputMode();
   const shaped = shapeForCommand(command, result, mode.detail, mode.shape);

@@ -138,17 +138,25 @@ describe("parseLaunchdLoadedLabels", () => {
     expect([...parseLaunchdLoadedLabels(output)!]).toEqual(["com.akm.task.ping"]);
   });
 
-  test("fails closed when the output exceeds the size bound", () => {
-    expect(
-      parseLaunchdLoadedLabels(`PID Status Label\n- 0 com.apple.${"x".repeat(4 * 1024 * 1024)}\n`),
-    ).toBeUndefined();
+  test("scans up to the size bound instead of discarding the whole read when output exceeds it", () => {
+    const filler = "x".repeat(4 * 1024 * 1024);
+    const output = `PID Status Label\n1 0 com.akm.task.before\n2 0 com.apple.${filler}\n3 0 com.akm.task.after\n`;
+
+    const labels = parseLaunchdLoadedLabels(output);
+    expect(labels.has("com.akm.task.before")).toBe(true);
+    expect(labels.has("com.akm.task.after")).toBe(false);
   });
 
-  test("accepts 4096 distinct labels and fails closed on the 4097th", () => {
+  test("accepts up to 4096 distinct labels and stops there instead of failing closed on the 4097th", () => {
     const maximum = Array.from({ length: 4096 }, (_, index) => `${index + 1} 0 com.akm.task.task-${index}`).join("\n");
-    expect(parseLaunchdLoadedLabels(`PID Status Label\n${maximum}\n`)?.size).toBe(4096);
+    expect(parseLaunchdLoadedLabels(`PID Status Label\n${maximum}\n`).size).toBe(4096);
 
     const overflow = `${maximum}\n4097 0 com.akm.task.task-4096`;
-    expect(parseLaunchdLoadedLabels(`PID Status Label\n${overflow}\n`)).toBeUndefined();
+    const overflowLabels = parseLaunchdLoadedLabels(`PID Status Label\n${overflow}\n`);
+    expect(overflowLabels.size).toBe(4096);
+    expect(overflowLabels.has("com.akm.task.task-4096")).toBe(false);
+    for (let index = 0; index < 4096; index++) {
+      expect(overflowLabels.has(`com.akm.task.task-${index}`)).toBe(true);
+    }
   });
 });

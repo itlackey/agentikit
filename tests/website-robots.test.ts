@@ -587,12 +587,12 @@ describe("loadRobotsTxt", () => {
     expect(warnCalls).toEqual([]);
   });
 
-  test("F-06: 500 is unreachable and warns, naming the URL, status, and respectRobots", async () => {
+  test("F-06: 500 is unavailable (not unreachable) and warns, naming the URL, status, and respectRobots", async () => {
     const outcome = await withMockedFetch(
       () => loadRobotsTxt(ROBOTS_URL, { resolveHostname }),
       () => new Response("boom", { status: 500 }),
     );
-    expect(outcome).toEqual({ kind: "unreachable" });
+    expect(outcome).toEqual({ kind: "unavailable" });
     expect(warnCalls.length).toBeGreaterThanOrEqual(1);
     const message = warnCalls.join(" ");
     expect(message).toContain(ROBOTS_URL);

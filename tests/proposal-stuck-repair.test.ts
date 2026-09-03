@@ -228,7 +228,13 @@ describe("Bug 1 — drain skips auto-rejected proposals", () => {
 describe("Bug 2 — repairProposalContent", () => {
   // ── Pseudo-frontmatter-in-body repair ────────────────────────────────────
 
-  test("strips pseudo-frontmatter restatement from body", () => {
+  // These three used to pin the opposite behaviour: the repair deleted body
+  // lines that restated a frontmatter key, and every `---` in a body with
+  // frontmatter. Both fired inside fenced code blocks, so an asset that
+  // DOCUMENTS frontmatter was silently gutted on `proposal accept` and the
+  // gutted bytes were written back over the original. Content is preserved now.
+
+  test("keeps a body line that restates a frontmatter key", () => {
     const content = [
       "---",
       "description: A good description of the thing.",
@@ -240,38 +246,38 @@ describe("Bug 2 — repairProposalContent", () => {
       "More body text.",
     ].join("\n");
 
-    const repaired = repairProposalContent(content);
-
-    // The pseudo-frontmatter line must be gone from the body.
-    expect(repaired).not.toMatch(/\*\*description\*\*:/);
-    // The frontmatter description must still be intact.
-    expect(repaired).toContain("description: A good description of the thing.");
-    // The legitimate body content must remain.
-    expect(repaired).toContain("Some body text here.");
-    expect(repaired).toContain("More body text.");
+    expect(repairProposalContent(content)).toBe(content);
   });
 
-  test("strips `when_to_use:` restatement from body", () => {
+  test("keeps a fenced YAML example verbatim — the corruption case", () => {
     const content = [
       "---",
-      "description: A good description here.",
-      "when_to_use: When you need it daily",
+      "description: How akm assets declare frontmatter.",
+      "when_to_use: When authoring a new asset",
       "---",
       "",
-      "when_to_use: When you need it daily",
-      "Real content.",
+      "Every asset opens with a frontmatter block:",
+      "",
+      "```yaml",
+      "---",
+      "description: A short summary.",
+      "when_to_use: When you need X.",
+      "---",
+      "```",
+      "",
+      "That block is required.",
     ].join("\n");
 
     const repaired = repairProposalContent(content);
-    // Body pseudo-frontmatter line stripped.
-    const bodyLines = repaired.split("\n").slice(5); // skip fm
-    expect(bodyLines.every((l) => !/^when_to_use:/.test(l))).toBe(true);
-    expect(repaired).toContain("Real content.");
+
+    // The old repair emitted an EMPTY ```yaml fence here: all four inner
+    // lines matched a repair rule and were dropped.
+    expect(repaired).toBe(content);
+    expect(repaired).toContain("description: A short summary.");
+    expect(repaired).toContain("when_to_use: When you need X.");
   });
 
-  // ── Stray `---` in body repair ────────────────────────────────────────────
-
-  test("removes extra `---` horizontal rule lines from body, keeps fm fences", () => {
+  test("keeps a thematic break in a body that has frontmatter", () => {
     const content = [
       "---",
       "description: A good description of the test.",
@@ -283,16 +289,7 @@ describe("Bug 2 — repairProposalContent", () => {
       "Second paragraph.",
     ].join("\n");
 
-    const repaired = repairProposalContent(content);
-
-    const lines = repaired.split("\n");
-    // Only 2 `---` lines must remain (the frontmatter fences).
-    const fenceLines = lines.filter((l) => /^---\s*$/.test(l));
-    expect(fenceLines.length).toBe(2);
-
-    // Content must be preserved.
-    expect(repaired).toContain("First paragraph.");
-    expect(repaired).toContain("Second paragraph.");
+    expect(repairProposalContent(content)).toBe(content);
   });
 
   // ── Truncated description repair ──────────────────────────────────────────
@@ -349,7 +346,7 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
   // promoteProposal. We test the repair function standalone here because
   // promoteProposal requires a full stash + config setup.
 
-  test("repaired pseudo-frontmatter content passes validators", async () => {
+  test("a body restating a frontmatter key promotes unchanged, with the finding reported", async () => {
     const { runProposalValidators } = await import("../src/commands/proposal/validators/proposal-validators");
 
     const raw = [
@@ -363,11 +360,8 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
     ].join("\n");
 
     const repaired = repairProposalContent(raw);
+    expect(repaired).toBe(raw);
 
-    // The pseudo-frontmatter line must be gone.
-    expect(repaired).not.toMatch(/\*\*description\*\*:/);
-
-    // Build a minimal proposal and validate.
     const proposal = {
       id: "test-pseudo-fm",
       ref: "lessons/deploy-pipelines",
@@ -382,7 +376,7 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
     expect(report.ok).toBe(true);
   });
 
-  test("repaired double-`---` content passes validators", async () => {
+  test("a thematic break in the body promotes unchanged", async () => {
     const { runProposalValidators } = await import("../src/commands/proposal/validators/proposal-validators");
 
     const raw = [
@@ -397,10 +391,7 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
     ].join("\n");
 
     const repaired = repairProposalContent(raw);
-
-    // Only 2 fence lines remain.
-    const fences = repaired.split("\n").filter((l) => /^---\s*$/.test(l));
-    expect(fences.length).toBe(2);
+    expect(repaired).toBe(raw);
 
     const proposal = {
       id: "test-double-fence",
@@ -416,10 +407,12 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
     expect(report.ok).toBe(true);
   });
 
-  test("unrepairable (too short description) stays invalid after repair", async () => {
+  // A short description is a prose judgement. It is reported, but it must not
+  // block an accept a human typed: there is no `proposal edit` and no
+  // `--force`, so blocking here left the user hand-editing the proposals DB.
+  test("a too-short description is reported as a warning and does not block", async () => {
     const { runProposalValidators } = await import("../src/commands/proposal/validators/proposal-validators");
 
-    // 11 chars — too short for DESCRIPTION_MIN_CHARS (20).
     const raw = [
       "---",
       "description: Short txt",
@@ -429,8 +422,6 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
       "Body content.",
     ].join("\n");
 
-    const repaired = repairProposalContent(raw);
-
     const proposal = {
       id: "test-too-short",
       ref: "lessons/short-desc",
@@ -438,15 +429,34 @@ describe("Bug 2 — promote boundary re-validate after repair", () => {
       source: "extract",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      payload: { content: repaired },
-      changes: [{ path: "lessons/short-desc.md", op: "create" as const, after: repaired }],
+      payload: { content: raw },
+      changes: [{ path: "lessons/short-desc.md", op: "create" as const, after: raw }],
     };
     const report = runProposalValidators(proposal as Parameters<typeof runProposalValidators>[0]);
 
-    // Must still be invalid — repair cannot fabricate a longer description.
+    expect(report.ok).toBe(true);
+    const description = report.findings.find((f) => f.kind.includes("description"));
+    expect(description).toBeDefined();
+    expect(description?.severity).toBe("warn");
+  });
+
+  // Structural defects still block: these cannot be written at all.
+  test("empty content still blocks promotion", async () => {
+    const { runProposalValidators } = await import("../src/commands/proposal/validators/proposal-validators");
+
+    const proposal = {
+      id: "test-empty",
+      ref: "lessons/empty",
+      status: "pending" as const,
+      source: "extract",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      payload: { content: "   " },
+      changes: [{ path: "lessons/empty.md", op: "create" as const, after: "   " }],
+    };
+    const report = runProposalValidators(proposal as Parameters<typeof runProposalValidators>[0]);
+
     expect(report.ok).toBe(false);
-    const kinds = report.findings.map((f) => f.kind);
-    // Should have a description-related finding.
-    expect(kinds.some((k) => k.includes("description"))).toBe(true);
+    expect(report.findings.map((f) => f.kind)).toContain("empty-content");
   });
 });

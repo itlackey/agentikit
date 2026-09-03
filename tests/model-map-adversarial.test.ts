@@ -50,12 +50,24 @@ function expectAlreadyExists(fn: () => unknown): UsageError {
 }
 
 describe("models.json bounded safe loader", () => {
-  test("distinguishes a dangling symlink from true absence", () => {
+  test("treats a dangling symlink the same as true absence", () => {
     const sandbox = makeRoot("models-dangling");
     try {
       fs.symlinkSync(path.join(sandbox.root, "missing.json"), sandbox.target);
-      const error = expectConfigError(() => loadModelMap({ env: sandbox.env }));
-      expect(error.message).toMatch(/symbolic link|symlink|regular file/i);
+      expect(() => loadModelMap({ env: sandbox.env })).not.toThrow();
+    } finally {
+      fs.rmSync(sandbox.root, { recursive: true, force: true });
+    }
+  });
+
+  test("reads through a valid symlink instead of refusing it", () => {
+    const sandbox = makeRoot("models-valid-symlink");
+    const real = path.join(sandbox.root, "real-models.json");
+    try {
+      fs.writeFileSync(real, JSON.stringify({ version: 1, aliases: { fast: { claude: "via-symlink-802" } } }));
+      fs.symlinkSync(real, sandbox.target);
+      const { map } = loadModelMap({ env: sandbox.env });
+      expect(map.aliases.fast?.claude).toEqual({ model: "via-symlink-802" });
     } finally {
       fs.rmSync(sandbox.root, { recursive: true, force: true });
     }

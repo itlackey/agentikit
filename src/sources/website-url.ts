@@ -14,12 +14,10 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { ConfigError, UsageError } from "../core/errors";
+import { classifyNetworkHostname } from "../core/network-policy";
 import { getRegistryIndexCacheDir } from "../core/paths";
-import {
-  assertWebsiteRequestUrl,
-  type HostnameResolver,
-  isLoopbackWebsiteHostname,
-} from "./snapshot-fetchers/host-guard";
+import { warnOnce } from "../core/warn";
+import { assertWebsiteRequestUrl, type HostnameResolver } from "./snapshot-fetchers/host-guard";
 
 export interface WebsiteUrlValidationOptions {
   allowPrivateHosts?: boolean;
@@ -38,12 +36,21 @@ export function shouldAllowPrivateWebsiteHostsForTests(): boolean {
 }
 
 export function shouldAllowPrivateWebsiteUrlForTests(rawUrl: string): boolean {
-  if (!shouldAllowPrivateWebsiteHostsForTests()) return false;
+  let hostname: string;
   try {
-    return isLoopbackWebsiteHostname(new URL(rawUrl).hostname.toLowerCase());
+    hostname = new URL(rawUrl).hostname.toLowerCase();
   } catch {
     return false;
   }
+  if (classifyNetworkHostname(hostname) === "public") return false;
+  if (!shouldAllowPrivateWebsiteHostsForTests()) {
+    warnOnce(
+      `website-private-host:${hostname}`,
+      `[akm] "${hostname}" is not a publicly routable host, but you added it as a source directly — proceeding. ` +
+        "Links discovered elsewhere are still checked.",
+    );
+  }
+  return true;
 }
 
 export function getWebsiteCachePaths(siteUrl: string, cacheRootOverride?: string): WebsiteCachePaths {

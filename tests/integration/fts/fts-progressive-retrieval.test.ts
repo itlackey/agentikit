@@ -8,7 +8,7 @@ import type { IndexDocument } from "../../../src/indexer/passes/metadata";
 import { MARKDOWN_CONTENT_MAX_CHARS, projectMarkdownContent } from "../../../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../../../src/indexer/scan/drain-dir";
 import { buildLexicalQueryPlan } from "../../../src/indexer/search/fts-query";
-import { buildSearchFields, buildSearchText, SEARCH_TEXT_MAX_CHARS } from "../../../src/indexer/search/search-fields";
+import { buildSearchFields, buildSearchText } from "../../../src/indexer/search/search-fields";
 import type { Database as AkmDatabase } from "../../../src/storage/database";
 import { searchFts } from "../../../src/storage/repositories/index-fts-repository";
 
@@ -369,23 +369,19 @@ The spectral quokka calibration nonce rotates every Thursday.
     expect(shortEntry.contentTruncated).toBeUndefined();
   });
 
-  test("logs when buildSearchText truncates to SEARCH_TEXT_MAX_CHARS, and stays silent otherwise (#866)", () => {
+  test("buildSearchText never truncates — a long document stays fully searchable and embeddable (#895)", () => {
     const messages: string[] = [];
     _setWarnSinkForTests((level, args) => {
-      if (level === "warnVerbose") messages.push(args.map(String).join(" "));
+      messages.push(`${level}:${args.map(String).join(" ")}`);
     });
     try {
-      const bigEntry: IndexDocument = {
-        type: "knowledge",
-        name: "big-entry",
-        content: "word ".repeat(SEARCH_TEXT_MAX_CHARS),
-      };
-      buildSearchText(bigEntry);
-      expect(messages).toHaveLength(1);
-      expect(messages[0]).toContain("truncated");
-      expect(messages[0]).toContain("big-entry");
+      const longBody = `${"word ".repeat(4000)}tail-term-found-only-here`;
+      const bigEntry: IndexDocument = { type: "knowledge", name: "big-entry", content: longBody };
+      const searchText = buildSearchText(bigEntry);
+      expect(searchText).toContain("tail-term-found-only-here");
+      expect(searchText.length).toBeGreaterThan(20_000);
+      expect(messages).toHaveLength(0);
 
-      messages.length = 0;
       const smallEntry: IndexDocument = { type: "knowledge", name: "small-entry", content: "short body" };
       buildSearchText(smallEntry);
       expect(messages).toHaveLength(0);

@@ -4,8 +4,10 @@
 
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
 import path from "node:path";
-import { openSqliteReadSnapshot } from "../../../src/storage/sqlite-read-snapshot";
+import { openReadonlyExistingDatabase } from "../../../src/storage/repositories/index-connection";
+import { openSqliteReadSnapshot, SqliteReadSnapshotUnavailableError } from "../../../src/storage/sqlite-read-snapshot";
 import { makeSandboxDir } from "../../_helpers/sandbox";
 
 describe("SQLite read snapshot lifecycle", () => {
@@ -26,6 +28,54 @@ describe("SQLite read snapshot lifecycle", () => {
       expect(() => snapshot?.close()).not.toThrow();
     } finally {
       snapshot?.close();
+      fixture.cleanup();
+    }
+  });
+
+  test("a permanently held rollback journal retries with backoff before failing closed", () => {
+    const fixture = makeSandboxDir("akm-sqlite-read-held-journal");
+    const sourcePath = path.join(fixture.dir, "source.db");
+    const holder = new Database(sourcePath);
+    try {
+      holder.exec("CREATE TABLE held(value TEXT)");
+      holder.exec("BEGIN IMMEDIATE");
+      holder.exec("INSERT INTO held VALUES ('uncommitted')");
+      expect(fs.existsSync(`${sourcePath}-journal`)).toBe(true);
+
+      const startedAt = performance.now();
+      let caught: unknown;
+      try {
+        openSqliteReadSnapshot(sourcePath);
+      } catch (error) {
+        caught = error;
+      }
+      const elapsedMs = performance.now() - startedAt;
+
+      expect(caught).toBeInstanceOf(SqliteReadSnapshotUnavailableError);
+      expect(elapsedMs).toBeGreaterThanOrEqual(300);
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
+      fixture.cleanup();
+    }
+  });
+
+  test("openReadonlyExistingDatabase falls back to a plain read-only open when the snapshot is unavailable", () => {
+    const fixture = makeSandboxDir("akm-sqlite-read-fallback");
+    const sourcePath = path.join(fixture.dir, "source.db");
+    const holder = new Database(sourcePath);
+    try {
+      holder.exec("CREATE TABLE held(value TEXT)");
+      holder.exec("BEGIN IMMEDIATE");
+      holder.exec("INSERT INTO held VALUES ('uncommitted')");
+      expect(fs.existsSync(`${sourcePath}-journal`)).toBe(true);
+
+      const db = openReadonlyExistingDatabase(sourcePath, { isolatedSnapshot: true });
+      expect(db).toBeDefined();
+      db?.close();
+    } finally {
+      holder.exec("ROLLBACK");
+      holder.close();
       fixture.cleanup();
     }
   });

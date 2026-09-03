@@ -65,20 +65,13 @@ import { isRecord } from "./common";
  */
 const MAX_DEFINITION_DEPTH = 64;
 
-/** Total (schema node × value node) visits one {@link validateJsonSchemaSubset} call may make. */
-const MAX_VALIDATION_NODES = 100_000;
-
 export function validateJsonSchemaSubset(
   value: unknown,
   schema: Record<string, unknown>,
   options?: { readonly redactValues?: boolean },
 ): string[] {
   const errors: string[] = [];
-  const budget = { nodes: MAX_VALIDATION_NODES };
-  validateNode(value, schema, "$", { errors, budget, depth: 0, redactValues: options?.redactValues ?? false });
-  if (budget.nodes < 0) {
-    errors.push(`$: schema evaluation exceeded the limit of ${MAX_VALIDATION_NODES} checks and was stopped`);
-  }
+  validateNode(value, schema, "$", { errors, depth: 0, redactValues: options?.redactValues ?? false });
   return errors;
 }
 
@@ -449,7 +442,6 @@ function matchesType(actual: JsonTypeName, expected: string): boolean {
  */
 interface EvalCtx {
   errors: string[];
-  budget: { nodes: number };
   depth: number;
   /**
    * When true, value-echoing branches (`enum`, `minimum`, `maximum`) omit the
@@ -520,9 +512,6 @@ function validateNode(value: unknown, schema: Record<string, unknown>, path: str
     errors.push(`${path}: schema nesting exceeds the depth limit of ${MAX_DEFINITION_DEPTH}`);
     return;
   }
-  // Fail CLOSED: a truncated evaluation never returns "valid" — the counter
-  // going negative is what the wrapper turns into a top-level error.
-  if (--ctx.budget.nodes < 0) return;
 
   const actual = typeOf(value);
 

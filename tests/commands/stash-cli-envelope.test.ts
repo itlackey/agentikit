@@ -39,7 +39,6 @@ import {
 let envCleanup: Cleanup = () => {};
 
 beforeEach(() => {
-  process.env.AKM_FORCE_INIT_TMP_STASH = "1";
   const dataResult = sandboxXdgDataHome();
   const cacheResult = sandboxXdgCacheHome(dataResult.cleanup);
   const cfgResult = sandboxXdgConfigHome(cacheResult.cleanup);
@@ -49,7 +48,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.AKM_FORCE_INIT_TMP_STASH;
   envCleanup();
   envCleanup = () => {};
 });

@@ -362,6 +362,29 @@ describe("akmClone", () => {
     expect(fs.readFileSync(path.join(victimDir, "keep.md"), "utf8")).toBe("keep\n");
   });
 
+  test("clones into a per-type directory that is itself a symlink into a contained location", async () => {
+    writeFile(path.join(searchPathDir, "skills", "review", "SKILL.md"), "# Review Skill\n");
+    fs.rmSync(path.join(stashDir, "skills"), { recursive: true, force: true });
+    const realSkills = path.join(stashDir, ".real-skills");
+    fs.mkdirSync(realSkills, { recursive: true });
+    fs.symlinkSync(realSkills, path.join(stashDir, "skills"), "dir");
+
+    const result = await akmClone({ sourceRef: "skills/review" });
+
+    expect(result.overwritten).toBe(false);
+    expect(fs.existsSync(path.join(realSkills, "review", "SKILL.md"))).toBe(true);
+  });
+
+  test("still refuses a per-type directory symlinked outside the bundle root", async () => {
+    writeFile(path.join(searchPathDir, "skills", "review", "SKILL.md"), "# Review Skill\n");
+    fs.rmSync(path.join(stashDir, "skills"), { recursive: true, force: true });
+    const outsideSkills = fs.mkdtempSync(path.join(os.tmpdir(), "akm-clone-outside-skills-"));
+    fixtureDirs.push(outsideSkills);
+    fs.symlinkSync(outsideSkills, path.join(stashDir, "skills"), "dir");
+
+    await expect(akmClone({ sourceRef: "skills/review" })).rejects.toThrow(/symbolic-link parent/i);
+  });
+
   test("force overwrite removes stale files from skill directory", async () => {
     // Source skill has only SKILL.md
     writeFile(path.join(searchPathDir, "skills", "review", "SKILL.md"), "# Updated\n");

@@ -21,6 +21,7 @@ import type { AkmConfig } from "../../../../src/core/config/config";
 import { ConfigError } from "../../../../src/core/errors";
 import { readEvents } from "../../../../src/core/events";
 import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
+import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
 import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
@@ -191,6 +192,44 @@ describe("Reflect type guard — refuses non-markdown asset types", () => {
       expect(result.proposal.ref).toBe(durableItemRef(stash, "knowledge", "foo"));
     }
   });
+
+  test("a type outside the fixed list is allowed when its content is genuinely frontmatter + markdown", async () => {
+    const stash = makeStashDir();
+    const sourceContent = "---\ndescription: Existing instruction doc\n---\n\nFollow these steps.\n";
+    const payload = JSON.stringify({
+      ref: "instructions/onboarding",
+      content: "---\ndescription: Existing instruction doc\n---\n\nFollow these revised steps.",
+    });
+    const result = await akmReflect({
+      ref: "instructions/onboarding",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      assetContent: sourceContent,
+      runAgentOptions: { spawn: fakeSpawn(payload, "", 0) },
+    });
+    if (!result.ok) throw new Error(`expected success, got: ${result.error}`);
+    expect(result.proposal.ref).toContain("instructions/onboarding");
+  });
+
+  test("an unregistered/custom type with no existing content is still refused, not minted fresh", async () => {
+    const stash = makeStashDir();
+    let spawned = false;
+    const result = await akmReflect({
+      ref: "widgets/new-thing",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      runAgentOptions: {
+        spawn: (cmd) => {
+          spawned = true;
+          return fakeSpawn("", "", 0)(cmd, {});
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected failure");
+    expect(result.reason).toBe("unsupported_type");
+    expect(spawned).toBe(false);
+  });
 });
 
 // ── 2. Frontmatter preservation ─────────────────────────────────────────────────
@@ -321,7 +360,7 @@ describe("Reflect quality gate — source context", () => {
     expect(readEvents({ type: "reflect_invoked" }).events).toEqual([]);
   });
 
-  test("fails closed before generation when frozen judge selection has no LLM runner", async () => {
+  test("skips the gate and flags the proposal for review when frozen judge selection has no LLM runner", async () => {
     const stash = makeStashDir();
     let spawned = 0;
     const config = quietQualityGateConfig();
@@ -329,28 +368,39 @@ describe("Reflect quality gate — source context", () => {
     if (!processes) throw new Error("quiet quality-gate fixture is missing the default process config");
     processes.reflect = { qualityGate: { enabled: true } };
 
-    const result = await akmReflect({
-      ref: "knowledge/no-judge-runner",
-      stashDir: stash,
-      config,
-      runAgentOptions: {
-        spawn: (...args) => {
-          spawned += 1;
-          return fakeSpawn(
-            JSON.stringify({ ref: "knowledge/no-judge-runner", content: LONG_SOURCE_BODY }),
-            "",
-            0,
-          )(...args);
-        },
-      },
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected frozen no-judge failure");
-    expect(result.error).toContain("no LLM configured");
-    expect(spawned).toBe(0);
-    expect(listProposals(stash)).toEqual([]);
-    expect(readEvents({ type: "reflect_invoked" }).events).toEqual([]);
+    let result: Awaited<ReturnType<typeof akmReflect>>;
+    try {
+      result = await akmReflect({
+        ref: "knowledge/no-judge-runner",
+        stashDir: stash,
+        config,
+        runAgentOptions: {
+          spawn: (...args) => {
+            spawned += 1;
+            return fakeSpawn(
+              JSON.stringify({ ref: "knowledge/no-judge-runner", content: LONG_SOURCE_BODY }),
+              "",
+              0,
+            )(...args);
+          },
+        },
+      });
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected reflect to succeed with the gate skipped");
+    expect(spawned).toBe(1);
+    expect(warnings.some((line) => line.includes("no LLM configured"))).toBe(true);
+    const proposals = listProposals(stash);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "no-judge-configured" });
   });
 
   test.each([
@@ -510,7 +560,7 @@ describe("Reflect quality gate — source context", () => {
     expect(proposedRevision).toContain("description: Source context regression guard");
   });
 
-  test("rejects an invalid-size candidate before invoking the judge", async () => {
+  test("flags an invalid-size candidate for review without invoking the judge", async () => {
     const stash = makeStashDir();
     const sourceContent = `---\ndescription: Long doc\n---\n\n${LONG_SOURCE_BODY}\n`;
     const config = {
@@ -542,15 +592,17 @@ describe("Reflect quality gate — source context", () => {
       },
     });
 
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
     expect(judgeInvoked).toBe(false);
+    if (!result.ok) throw new Error("expected success");
+    expect(listProposals(stash)[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-size-ratio" });
   });
 });
 
 // ── 3. Size guards — shrink and expand ────────────────────────────────────────
 
 describe("Reflect size guard — diff-size safety rails", () => {
-  test("body shrunk below 50% of source is rejected with EXCESSIVE_SHRINKAGE", async () => {
+  test("body shrunk below 50% of source is flagged for review, not discarded", async () => {
     const stash = makeStashDir();
     const sourceContent = `---\ndescription: Long doc\n---\n\n${LONG_SOURCE_BODY}\n`;
 
@@ -565,17 +617,19 @@ describe("Reflect size guard — diff-size safety rails", () => {
       assetContent: sourceContent,
       runAgentOptions: { spawn: fakeSpawn(payload, "", 0) },
     });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    // Reason changed 2026-05-26: content-policy guard hits now route through
-    // `content_policy_reject` (not `parse_error`) so health.ts can split them
-    // out of LLM-failure aggregates. See metrics-taxonomy-review §1a / Pattern A.
-    expect(result.reason).toBe("content_policy_reject");
-    expect(result.error).toContain("EXCESSIVE_SHRINKAGE");
-    expect(listProposals(stash).length).toBe(0);
+    // A size-ratio hit says nothing about whether the revision is WRONG, only
+    // that it is unusual — the LLM responded fine. It no longer discards the
+    // revision (content_policy_reject); the proposal is still queued, flagged
+    // for review via its gateDecision instead.
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const proposals = listProposals(stash);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-size-ratio" });
+    expect(proposals[0]?.gateDecision?.measured).toBeLessThan(50);
   });
 
-  test("body expanded above 250% of source is rejected with EXCESSIVE_EXPANSION", async () => {
+  test("body expanded above 250% of source is flagged for review, not discarded", async () => {
     const stash = makeStashDir();
     const sourceContent = `---\ndescription: Tight doc\n---\n\n${LONG_SOURCE_BODY}\n`;
 
@@ -590,14 +644,12 @@ describe("Reflect size guard — diff-size safety rails", () => {
       assetContent: sourceContent,
       runAgentOptions: { spawn: fakeSpawn(payload, "", 0) },
     });
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected failure");
-    // Reason changed 2026-05-26: content-policy guard hits now route through
-    // `content_policy_reject` (not `parse_error`) so health.ts can split them
-    // out of LLM-failure aggregates. See metrics-taxonomy-review §1a / Pattern A.
-    expect(result.reason).toBe("content_policy_reject");
-    expect(result.error).toContain("EXCESSIVE_EXPANSION");
-    expect(listProposals(stash).length).toBe(0);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const proposals = listProposals(stash);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-size-ratio" });
+    expect(proposals[0]?.gateDecision?.measured).toBeGreaterThan(250);
   });
 
   test("modest size change (~120%) passes the size guard", async () => {

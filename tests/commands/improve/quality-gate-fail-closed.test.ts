@@ -43,7 +43,7 @@ function configWithoutLlm(): AkmConfig {
 }
 
 describe("runLessonQualityJudge — fail-CLOSED (07 P0-2)", () => {
-  test("parse failure → pass:false (score -1)", async () => {
+  test("parse failure → pass:false, routed to review (score -1, reviewNeeded)", async () => {
     const result = await runLessonQualityJudge(
       configWithLlm(),
       "some lesson body",
@@ -53,23 +53,25 @@ describe("runLessonQualityJudge — fail-CLOSED (07 P0-2)", () => {
     );
     expect(result.pass).toBe(false);
     expect(result.score).toBe(-1);
-    expect(result.reviewNeeded).toBeUndefined();
+    expect(result.reviewNeeded).toBe(true);
   });
 
-  test("no LLM configured → pass:false (score -1)", async () => {
+  test("no LLM configured → pass:false (score -1), not routed to review (nothing was generated yet)", async () => {
     const result = await runLessonQualityJudge(configWithoutLlm(), "some lesson body", "some source body", async () => {
       throw new Error("chat must not be called when no LLM is configured");
     });
     expect(result.pass).toBe(false);
     expect(result.score).toBe(-1);
+    expect(result.reviewNeeded).toBeUndefined();
   });
 
-  test("judge throws (timeout/error) → pass:false (score -1)", async () => {
+  test("judge throws (timeout/error) → pass:false, routed to review (score -1, reviewNeeded)", async () => {
     const result = await runLessonQualityJudge(configWithLlm(), "some lesson body", "some source body", async () => {
       throw new Error("upstream boom");
     });
     expect(result.pass).toBe(false);
     expect(result.score).toBe(-1);
+    expect(result.reviewNeeded).toBe(true);
   });
 
   test("missing required symbolic credential remains a hard config failure", async () => {
@@ -123,7 +125,11 @@ describe("runLessonQualityJudge — fail-CLOSED (07 P0-2)", () => {
     expect(enableThinking).toBe(false);
   });
 
-  test.each(["0", "5.1", "1e999"])("rejects an out-of-range or non-finite score: %s", async (score) => {
+  test.each([
+    "0",
+    "5.1",
+    "1e999",
+  ])("an out-of-range or non-finite score routes to review instead of being rejected: %s", async (score) => {
     const result = await runLessonQualityJudge(
       configWithLlm(),
       "some lesson body",
@@ -132,6 +138,7 @@ describe("runLessonQualityJudge — fail-CLOSED (07 P0-2)", () => {
     );
     expect(result.pass).toBe(false);
     expect(result.score).toBe(-1);
+    expect(result.reviewNeeded).toBe(true);
   });
 
   test("forwards the shared signal and remaining timeout", async () => {

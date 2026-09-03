@@ -410,8 +410,8 @@ export async function performUpgrade(
   }
 
   if (fs.existsSync(backupPath)) {
-    removeFileBestEffort(stagedPath);
-    throw new ConfigError(`Refusing to overwrite retained previous binary at ${backupPath}.`, "UPGRADE_BLOCKED");
+    warn(`A previous upgrade left a stale backup at ${backupPath}; overwriting it.`);
+    removeFileBestEffort(backupPath);
   }
 
   try {

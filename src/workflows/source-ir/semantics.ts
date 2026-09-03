@@ -7,11 +7,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { type ParsedBuiltinCommandAction, parseBuiltinCommandAction } from "../../commands/command/builtin-action";
-import { validatePortableCommandTemplate } from "../../commands/command/portable-template";
 import { parseSchedule } from "../../tasks/schedule";
 import { classifyWorkflowSourceUses, type WorkflowSourceUsesClassifier, type WorkflowSourceUsesTarget } from "./uses";
-
-const TOKEN_SAFE_RUN = /^[A-Za-z0-9_./:@+=,-]+(?: [A-Za-z0-9_./:@+=,-]+)*$/;
 
 export class WorkflowSourceSemanticError extends Error {
   constructor(
@@ -48,23 +45,10 @@ export function canonicalizeWorkflowRun(value: string): string {
       "GitHub expressions and contexts are not supported.",
     );
   }
-  if (value.includes("\n") || value.includes("\r")) {
-    throw new WorkflowSourceSemanticError(
-      "unsafe-run-syntax",
-      "Local run accepts only whitespace-separated safe tokens; shell expansion and operators are unsupported.",
-    );
+  if (value.includes("\0")) {
+    throw new WorkflowSourceSemanticError("invalid-exec-argv", "Local run may not contain NUL bytes.");
   }
-  const canonical = value
-    .trim()
-    .split(/[ \t]+/)
-    .join(" ");
-  if (!TOKEN_SAFE_RUN.test(canonical)) {
-    throw new WorkflowSourceSemanticError(
-      "unsafe-run-syntax",
-      "Local run accepts only whitespace-separated safe tokens; shell expansion and operators are unsupported.",
-    );
-  }
-  return canonical;
+  return value;
 }
 
 export function canonicalizeWorkflowWorkingDirectory(value: string, workspaceRoot?: string): string {
@@ -178,21 +162,10 @@ export function validateWorkflowBuiltinCommand(
       "Inline akm/command content cannot use commandMode stored-ref.",
     );
   }
-  if (effectiveMode === "literal") {
-    if (action.arguments !== undefined) {
-      throw new WorkflowSourceSemanticError(
-        "builtin-command-inputs",
-        "Literal akm/command content cannot declare arguments because no substitution occurs.",
-      );
-    }
-    return action;
-  }
-  try {
-    validatePortableCommandTemplate(action.content, "inline workflow command");
-  } catch (cause) {
+  if (effectiveMode === "literal" && action.arguments !== undefined) {
     throw new WorkflowSourceSemanticError(
       "builtin-command-inputs",
-      cause instanceof Error ? cause.message : "Invalid portable command template.",
+      "Literal akm/command content cannot declare arguments because no substitution occurs.",
     );
   }
   return action;

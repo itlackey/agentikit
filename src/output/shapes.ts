@@ -19,7 +19,7 @@
  * fallback).
  */
 
-import { UsageError } from "../core/errors";
+import { warnOnce } from "../core/warn";
 import type { DetailLevel, ShapeMode } from "./context";
 import { curateShapes } from "./shapes/curate";
 import { envListShapes } from "./shapes/env-list";
@@ -97,15 +97,17 @@ export function shapeForCommand(
   detail: DetailLevel,
   shape: ShapeMode = "human",
 ): unknown {
+  let effectiveShape = shape;
   if (shape === "summary" && !SHAPE_SUMMARY_COMMANDS.has(command)) {
-    throw new UsageError(
-      `'--shape summary' is not supported for 'akm ${command}'. It is only available on 'akm show'.`,
-      "INVALID_SHAPE_VALUE",
+    warnOnce(
+      `shape-summary-unsupported:${command}`,
+      `[output] '--shape summary' is not supported for 'akm ${command}' (only 'akm show' has a summary projection); falling back to 'agent'.`,
     );
+    effectiveShape = "agent";
   }
   const handler = getOutputShapeHandler(command);
   if (handler) {
-    return handler(result, detail, shape);
+    return handler(result, detail, effectiveShape);
   }
   // v1 spec §9 (output-shape registry exhaustive): no silent JSON.stringify
   // fallback. A missing case here is a registration bug — fail loudly so

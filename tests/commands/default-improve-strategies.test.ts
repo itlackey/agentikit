@@ -95,13 +95,16 @@ describe("default improve strategies (#552)", () => {
     expect(p.processes?.distill?.requirePlannedRefs).toBe(false);
   });
 
-  test("consolidate resolves to consolidation-only with maxChunkSize 25 and minPoolSize 500", () => {
+  test("consolidate resolves to consolidation-only with maxChunkSize 25 and no pool-size floor", () => {
     const p = resolveImproveStrategy("consolidate", MINIMAL_CONFIG).config;
     expect(p.processes?.consolidate?.enabled).toBe(true);
     expect(p.processes?.consolidate?.allowedTypes).toEqual(["memory"]);
     expect(p.processes?.consolidate?.maxChunkSize).toBe(25);
-    // #553: consolidate profile sets the production guard threshold.
-    expect(p.processes?.consolidate?.minPoolSize).toBe(500);
+    // The built-in strategies no longer ship a minPoolSize floor: a shipped
+    // 500 meant `akm improve --strategy consolidate`, typed by a human,
+    // silently did nothing on almost every real install. Unset resolves to
+    // the runtime default of 0 (disabled) in preparation.ts.
+    expect(p.processes?.consolidate?.minPoolSize).toBeUndefined();
     expect(p.processes?.reflect?.enabled).toBe(false);
     expect(p.processes?.distill?.enabled).toBe(false);
     expect(p.processes?.memoryInference?.enabled).toBe(false);
@@ -132,9 +135,9 @@ describe("default improve strategies (#552)", () => {
     expect(p.sync?.push).toBe(true);
   });
 
-  test("minPoolSize (#553) lives on the consolidate-bearing profiles", () => {
+  test("minPoolSize is no longer shipped on consolidate.json now that 0 is the runtime default", () => {
     // #553 added `minPoolSize` to consolidate.json (500) and catchup.json (0).
-    expect(JSON.stringify(profileConsolidate)).toContain("minPoolSize");
+    expect(JSON.stringify(profileConsolidate)).not.toContain("minPoolSize");
     expect(JSON.stringify(profileCatchup)).toContain("minPoolSize");
   });
 });

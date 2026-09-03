@@ -38,8 +38,37 @@ const SCRIPT_INTERPRETERS: Readonly<Record<string, TaskV3ScriptInterpreter>> = O
   ".kts": "kotlin",
 });
 
-export function scriptInterpreter(extension: string, ref: string): TaskV3ScriptInterpreter {
-  const interpreter = SCRIPT_INTERPRETERS[extension];
+const SHEBANG_INTERPRETERS: ReadonlyArray<readonly [RegExp, TaskV3ScriptInterpreter]> = [
+  [/^(bash|sh|zsh|dash|ksh)$/, "sh"],
+  [/^python[0-9.]*$/, "python"],
+  [/^ruby$/, "ruby"],
+  [/^perl$/, "perl"],
+  [/^php$/, "php"],
+  [/^lua$/, "lua"],
+  [/^node$/, "node"],
+];
+
+function interpreterFromShebang(bytes: Uint8Array | undefined): TaskV3ScriptInterpreter | undefined {
+  if (!bytes || bytes.length < 2 || bytes[0] !== 0x23 || bytes[1] !== 0x21) return undefined;
+  const newline = bytes.indexOf(0x0a);
+  const lineBytes = newline === -1 ? bytes.subarray(2) : bytes.subarray(2, newline);
+  const tokens = Buffer.from(lineBytes).toString("utf8").trim().split(/\s+/).filter(Boolean);
+  const [first, second] = tokens;
+  const named = first?.split("/").pop() === "env" ? second : first?.split("/").pop();
+  if (!named) return undefined;
+  for (const [pattern, interpreter] of SHEBANG_INTERPRETERS) {
+    if (pattern.test(named)) return interpreter;
+  }
+  return undefined;
+}
+
+function nodeStripsTypeScript(): boolean {
+  const features = (process as unknown as { features?: { typescript?: string | boolean } }).features;
+  return Boolean(features?.typescript);
+}
+
+export function scriptInterpreter(extension: string, ref: string, bytes?: Uint8Array): TaskV3ScriptInterpreter {
+  const interpreter = SCRIPT_INTERPRETERS[extension] ?? (extension === "" ? interpreterFromShebang(bytes) : undefined);
   if (!interpreter) {
     throw new UsageError(
       `Task v3 script target ${JSON.stringify(ref)} has no closed runtime interpreter for extension ${JSON.stringify(extension)}.`,
@@ -47,13 +76,16 @@ export function scriptInterpreter(extension: string, ref: string): TaskV3ScriptI
     );
   }
   if (interpreter !== "bun") return interpreter;
-  if (!process.versions.bun) {
-    throw new UsageError(
-      `Task v3 script target ${JSON.stringify(ref)} requires Bun for ${extension} execution, but this runtime cannot provide it.`,
-      "TASK_TARGET_UNSUPPORTED",
-    );
+  if (process.versions.bun) {
+    return isBunStandaloneMain() ? "bun-standalone" : "bun";
   }
-  return isBunStandaloneMain() ? "bun-standalone" : "bun";
+  if (extension === ".js" || (extension === ".ts" && nodeStripsTypeScript())) {
+    return "node";
+  }
+  throw new UsageError(
+    `Task v3 script target ${JSON.stringify(ref)} requires Bun for ${extension} execution, but this runtime cannot provide it.`,
+    "TASK_TARGET_UNSUPPORTED",
+  );
 }
 
 export function captureDirectoryIdentity(
@@ -102,7 +134,7 @@ export function captureScriptTarget(
   const bytes = Uint8Array.from(raw);
   const cwdIdentity = captureDirectoryIdentity(bundleRoot);
   return Object.freeze({
-    interpreter: scriptInterpreter(extension, ref),
+    interpreter: scriptInterpreter(extension, ref, bytes),
     extension,
     bytesBase64: Buffer.from(bytes).toString("base64"),
     byteLength: bytes.byteLength,

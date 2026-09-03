@@ -14,6 +14,7 @@ import {
   streamResponseToFile,
 } from "../../src/commands/sources/self-update";
 import { upgradeCommand } from "../../src/commands/sources/sources-cli";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../src/core/warn";
 import { sandboxHome, withEnv } from "../_helpers/sandbox";
 
 // ── Fetch mocking helper ────────────────────────────────────────────────────
@@ -422,6 +423,47 @@ describe("performUpgrade", () => {
     expect(result.upgraded).toBe(true);
     expect(fs.readFileSync(binaryPath, "utf8")).toBe(binaryData);
     expect(fs.existsSync(`${binaryPath}.bak`)).toBe(false);
+  });
+
+  test("overwrites a stale .bak left by a previous interrupted upgrade, warning instead of refusing", async () => {
+    const installDir = path.join(sandboxHome().dir, "self-update-stale-bak");
+    fs.mkdirSync(installDir, { recursive: true });
+    const binaryPath = path.join(installDir, "akm");
+    fs.writeFileSync(binaryPath, "old-binary");
+    fs.writeFileSync(`${binaryPath}.bak`, "orphaned-binary-from-a-crashed-upgrade");
+    const binaryData = "new-binary";
+    const binaryName = getAkmBinaryName();
+    const hash = createHash("sha256").update(binaryData).digest("hex");
+    mockFetch((url) =>
+      url.includes("checksums.txt")
+        ? new Response(`${hash}  ${binaryName}\n`, { status: 200 })
+        : new Response(binaryData, { status: 200 }),
+    );
+
+    const warnings: unknown[][] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    try {
+      const result = await performUpgrade(
+        {
+          currentVersion: "0.0.13",
+          latestVersion: "0.0.14",
+          updateAvailable: true,
+          installMethod: "binary",
+        },
+        { skipPostUpgrade: true },
+        { execPath: binaryPath, ...currentMigrator },
+      );
+
+      expect(result.upgraded).toBe(true);
+      expect(fs.readFileSync(binaryPath, "utf8")).toBe(binaryData);
+      expect(fs.existsSync(`${binaryPath}.bak`)).toBe(false);
+      expect(warnings.some((args) => args.some((a) => String(a).includes("stale backup")))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
   });
 
   test("runs npm global install for npm installs", async () => {

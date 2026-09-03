@@ -93,14 +93,22 @@ function rejectInvalidAgentRef(agentRef: string | undefined): void {
   );
 }
 
+/**
+ * Dispatch a `--prompt` / `--prompt-stdin` task through the canonical command
+ * path. The prompt is a person's free text, not a template: it is sent to the
+ * agent verbatim (`inlineContentMode: "literal"`), so prose containing `}}`
+ * from compact JSON, a `$VAR`, a shell snippet, or an `@path` reaches the
+ * agent instead of being rejected as an unsupported template construct.
+ */
 async function delegateCanonicalCommand(
   options: AkmAgentDispatchOptions,
   seams: AkmAgentDispatchSeams,
-  action: { readonly ref: string; readonly arguments?: string } | { readonly content: string },
+  action: { readonly content: string },
 ): Promise<AkmAgentDispatchResult> {
   const execute = seams.executeCommand ?? executeCommandInvocation;
   const result = await execute({
     action,
+    inlineContentMode: "literal",
     config: options.agentConfig as AkmConfig,
     current: canonicalCurrent(options),
   });

@@ -416,31 +416,34 @@ export function syncExistingWritableCheckout(
   }
 
   const relation = gitRelation(repoDir, targetRevision);
-  if (relation.ahead > 0) {
-    throw new UsageError(
-      `Writable Git install at ${root} has local commits that are not in the requested upstream revision; push or reconcile them before update.`,
-    );
-  }
-
-  assertNoIgnoredPathOverwrite(repoDir, targetRevision);
-
   const rootsToPreserve = [...new Set([root, ...requiredRoots.map((candidate) => path.resolve(candidate))])];
   for (const requiredRoot of rootsToPreserve) {
     if (!isWithin(requiredRoot, repoDir)) {
       throw new UsageError(`Configured Git component root ${requiredRoot} resolves outside ${repoDir}.`);
     }
-    const relative = path.relative(repoDir, requiredRoot).replaceAll(path.sep, "/");
-    if (!relative) continue;
-    const tree = runGit(["-C", repoDir, "ls-tree", "-d", "-z", "--name-only", targetRevision, "--", relative]);
-    const names = tree.stdout.split("\0").filter(Boolean);
-    if (tree.status !== 0 || !names.includes(relative)) {
-      throw new UsageError(
-        `Writable Git update would remove configured content root ${requiredRoot}; the existing checkout was left unchanged.`,
-      );
-    }
   }
 
   if (relation.behind > 0) {
+    if (relation.ahead > 0) {
+      throw new UsageError(
+        `Writable Git install at ${root} has local commits that are not in the requested upstream revision; push or reconcile them before update.`,
+      );
+    }
+
+    assertNoIgnoredPathOverwrite(repoDir, targetRevision);
+
+    for (const requiredRoot of rootsToPreserve) {
+      const relative = path.relative(repoDir, requiredRoot).replaceAll(path.sep, "/");
+      if (!relative) continue;
+      const tree = runGit(["-C", repoDir, "ls-tree", "-d", "-z", "--name-only", targetRevision, "--", relative]);
+      const names = tree.stdout.split("\0").filter(Boolean);
+      if (tree.status !== 0 || !names.includes(relative)) {
+        throw new UsageError(
+          `Writable Git update would remove configured content root ${requiredRoot}; the existing checkout was left unchanged.`,
+        );
+      }
+    }
+
     const statusBeforeMerge = runGit(["-C", repoDir, "status", "--porcelain"]);
     if (statusBeforeMerge.status !== 0 || statusBeforeMerge.stdout.trim()) {
       throw new UsageError(

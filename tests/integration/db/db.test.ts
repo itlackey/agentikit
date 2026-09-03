@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openStateDatabase } from "../../../src/core/state-db";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import type { IndexDocument } from "../../../src/indexer/passes/metadata";
 import type { Database } from "../../../src/storage/database";
@@ -26,7 +27,7 @@ import {
 } from "../../../src/storage/repositories/index-entries-repository";
 import { rebuildFts, searchFts } from "../../../src/storage/repositories/index-fts-repository";
 import { getMeta, setMeta } from "../../../src/storage/repositories/index-meta-repository";
-import { DB_VERSION } from "../../../src/storage/repositories/index-schema";
+import { DB_VERSION, EMBEDDING_DIM } from "../../../src/storage/repositories/index-schema";
 import {
   isVecAvailable,
   isVecFastPathComplete,
@@ -902,12 +903,39 @@ describe("Vector / Embedding integration", () => {
     }
   });
 
-  test("an out-of-range embeddingDim is rejected at open with a clear guard error", () => {
-    // The vec-table guard (index-schema.ts): dims must be integers in 1–4096.
-    // The config schema enforces the same bound at set-time; this pins the
-    // DB-layer backstop for values arriving through the options seam.
-    for (const dim of [0, -1, 4097, 384.5]) {
-      expect(() => openIndexDatabase(tmpDbPath(), { embeddingDim: dim })).toThrow(/Invalid embedding dimension/);
+  test("a non-integer or non-positive embeddingDim warns and falls back to the default instead of aborting", () => {
+    // index-schema.ts used to throw a bare Error for any dim outside 1–4096,
+    // aborting the whole index open at exit 70 mid-run — including for
+    // legitimately large real embedding widths above 4096, which the config
+    // schema does not itself reject. A dimension that cannot back a vec0
+    // column at all (non-integer, zero, negative) still cannot be used, but
+    // degrades to a warning and the static default (matching how
+    // index-connection.ts's resolveConfiguredEmbeddingDim already handles the
+    // same bad-value case) rather than aborting.
+    for (const dim of [0, -1, 384.5]) {
+      const messages: string[] = [];
+      _setWarnSinkForTests((level, args) => {
+        if (level === "warn") messages.push(args.map(String).join(" "));
+      });
+      let db: Database | undefined;
+      try {
+        db = openIndexDatabase(tmpDbPath(), { embeddingDim: dim });
+        expect(getMeta(db, "embeddingDim")).toBe(String(EMBEDDING_DIM));
+        expect(messages.some((message) => message.includes("Invalid embedding dimension"))).toBe(true);
+      } finally {
+        if (db) closeDatabase(db);
+        _setWarnSinkForTests(undefined);
+      }
+    }
+  });
+
+  test("an embeddingDim above the old 4096 ceiling is honored, not rejected", () => {
+    const dbPath = tmpDbPath();
+    const db = openIndexDatabase(dbPath, { embeddingDim: 8192 });
+    try {
+      expect(getMeta(db, "embeddingDim")).toBe("8192");
+    } finally {
+      closeDatabase(db);
     }
   });
 
@@ -950,6 +978,20 @@ describe("Vector / Embedding integration", () => {
       const results = searchVec(db, [1, 0, 0, 0], 10);
       expect(results.length).toBe(1);
       expect(results[0]!.id).toBe(id);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("openExistingDatabase opens a non-canonical generation instead of refusing it outright", () => {
+    const dbPath = tmpDbPath();
+    const seed = openIndexDatabase(dbPath);
+    setMeta(seed, "version", "0");
+    closeDatabase(seed);
+
+    const db = openExistingDatabase(dbPath);
+    try {
+      expect(() => db.prepare("SELECT COUNT(*) AS count FROM entries").get()).not.toThrow();
     } finally {
       closeDatabase(db);
     }

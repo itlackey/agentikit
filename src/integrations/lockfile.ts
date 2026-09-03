@@ -10,6 +10,7 @@ import { createLockPayload, probeLock, reclaimStaleLock, releaseLock, tryAcquire
 import { acquireMaintenanceBarrier } from "../core/maintenance-barrier";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getDataDir, getLockfileLockPath, getLockfilePath } from "../core/paths";
+import { warn } from "../core/warn";
 import type { InstallKind } from "../registry/types";
 // `InstallKind` is the install/registry source discriminator — exactly the
 // four kinds `parseRegistryRef` can emit ("npm" | "github" | "git" | "local").
@@ -58,14 +59,25 @@ export interface LockfileEntry {
 
 // ── Lock sentinel ────────────────────────────────────────────────────────────
 
-const LOCK_MAX_RETRIES = 3;
-const LOCK_RETRY_DELAY_MS = 100;
+const LOCK_ACQUIRE_TIMEOUT_MS = 30_000;
+const LOCK_RETRY_INITIAL_DELAY_MS = 50;
+const LOCK_RETRY_MAX_DELAY_MS = 1_000;
+
+let lockAcquireTimeoutMsForTests: number | undefined;
+
+export function _setLockAcquireTimeoutMsForTests(ms: number | undefined): void {
+  lockAcquireTimeoutMsForTests = ms;
+}
 
 async function acquireLockSentinel(): Promise<() => void> {
   const sentinelPath = getLockfileLockPath();
   // Ensure the directory exists before attempting to create the sentinel.
   fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
-  for (let attempt = 0; attempt < LOCK_MAX_RETRIES; attempt++) {
+  const timeoutMs = lockAcquireTimeoutMsForTests ?? LOCK_ACQUIRE_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
+  let delayMs = LOCK_RETRY_INITIAL_DELAY_MS;
+  let announced = false;
+  for (;;) {
     const releaseBarrier = acquireMaintenanceBarrier();
     try {
       const ownership = tryAcquireLockSync(sentinelPath, createLockPayload());
@@ -79,15 +91,20 @@ async function acquireLockSentinel(): Promise<() => void> {
     } finally {
       releaseBarrier();
     }
-    // Another process holds the lock — wait briefly before retrying.
-    if (attempt < LOCK_MAX_RETRIES - 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS));
+    // Another process holds the lock.
+    if (Date.now() >= deadline) {
+      throw new ConfigError(
+        `Could not acquire lockfile sentinel at ${sentinelPath} after ${(timeoutMs / 1000).toFixed(1)}s; refusing to write without exclusive ownership.`,
+        "INVALID_CONFIG_FILE",
+      );
     }
+    if (!announced) {
+      announced = true;
+      warn("[akm] Waiting for another akm process to release the lockfile...");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    delayMs = Math.min(delayMs * 2, LOCK_RETRY_MAX_DELAY_MS);
   }
-  throw new ConfigError(
-    `Could not acquire lockfile sentinel at ${sentinelPath}; refusing to write without exclusive ownership.`,
-    "INVALID_CONFIG_FILE",
-  );
 }
 
 // ── Read / Write ────────────────────────────────────────────────────────────

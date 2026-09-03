@@ -10,6 +10,7 @@ import { deepMergeConfig } from "../../core/config/deep-merge";
 import { ConfigError } from "../../core/errors";
 import { formatExtraParamsIssue, validateExtraParams } from "../../core/extra-params";
 import { collectSensitiveValues } from "../../core/redaction";
+import { warn } from "../../core/warn";
 import { getHarness } from "../harnesses";
 import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS } from "./config";
 import { type AgentProfile, getBuiltinAgentProfile } from "./profiles";
@@ -335,7 +336,24 @@ export function resolveLlmEngineUse(
   }
   const engine = resolveEngineConfig(name, config);
   if (engine.kind !== "llm") {
-    throw new ConfigError(`Engine "${name}" is not an LLM engine.`, "INVALID_CONFIG_FILE");
+    const defaults = ownValue(config, "defaults");
+    const fallbackName = ownValue(engine, "llmEngine") ?? (defaults ? ownValue(defaults, "llmEngine") : undefined);
+    const fallbackEngine = fallbackName ? resolveEngineConfig(fallbackName, config) : undefined;
+    if (!fallbackEngine || fallbackEngine.kind !== "llm") {
+      if (options.optional) return undefined;
+      throw new ConfigError(
+        fallbackName
+          ? `Engine "${name}" is not an LLM engine, and its llmEngine fallback "${fallbackName}" is not one either.`
+          : `Engine "${name}" is not an LLM engine, and has no llmEngine fallback configured.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    warn(
+      `[akm] Engine "${name}" is an agent engine, not an LLM engine; using its llmEngine "${fallbackName}" instead.`,
+    );
+    return options.optional
+      ? resolveLlmEngineUse(config, [{ engine: fallbackName }], { optional: true })
+      : resolveLlmEngineUse(config, [{ engine: fallbackName }]);
   }
 
   let connection = rawLlmConnection(engine);

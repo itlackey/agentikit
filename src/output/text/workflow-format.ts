@@ -187,7 +187,16 @@ export function formatWorkflowRunPlain(result: Record<string, unknown>): string 
     typeof result.run === "object" && result.run !== null ? (result.run as Record<string, unknown>) : undefined;
   if (!run) return null;
 
-  const lines = [`run: ${String(run.id ?? "unknown")}`, `status: ${String(run.status ?? "unknown")}`];
+  const lines: string[] = [];
+  // #919: `workflow run <ref>` silently resuming an existing active run (the
+  // #485 concurrency guard) is now announced up front, with the escape hatch.
+  if (result.resumed === true) {
+    lines.push(
+      `resuming existing run ${String(run.id ?? "unknown")} for ${String(run.workflowRef ?? "this ref")}; ` +
+        `pass --new to start a fresh run`,
+    );
+  }
+  lines.push(`run: ${String(run.id ?? "unknown")}`, `status: ${String(run.status ?? "unknown")}`);
   // Creation-time notices (e.g. the implicit engine fallback) must survive the
   // text renderer: JSON/YAML pass them through, and dropping them here would
   // hide the announcement from the DEFAULT output mode — where it matters most.

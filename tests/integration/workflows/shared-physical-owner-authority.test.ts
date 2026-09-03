@@ -11,7 +11,7 @@ import { parseBundleRef } from "../../../src/core/asset/asset-ref";
 import { resetConfigCache } from "../../../src/core/config/config";
 import { getDbPath } from "../../../src/core/paths";
 import { getStateDbPath, withStateDb } from "../../../src/core/state-db";
-import { akmIndex, lookupBundleRef } from "../../../src/indexer/indexer";
+import { akmIndex, lookupBundleRef, lookupBundleRefWithResolution } from "../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../src/storage/repositories/index-connection";
 import { getWorkflowTemplate } from "../../../src/workflows/authoring/authoring";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
@@ -149,6 +149,22 @@ describe("shared adapter physical-owner authority", () => {
     if (state === "complete") expect((await showLocal({ ref: "commands/same" })).path).toBe(earlyPath);
     else await expect(showLocal({ ref: "commands/same" })).rejects.toThrow(/not found/i);
     expect(await lookupBundleRef(parseBundleRef("later//commands/same"))).toMatchObject({ filePath: laterPath });
+  });
+
+  test("a stale indexed identity for a workflow falls back to the physical owner instead of aborting", async () => {
+    const early = fixture("early-workflow-stale", "akm-workflow");
+    const later = fixture("later-workflow-stale", "akm");
+    const workflowPath = write(early.root, "collision.md", getWorkflowTemplate());
+    configure(early, later);
+    await akmIndex({ stashDir: early.root, full: true });
+    mutateEntry("early//collision", "stale", path.join(early.root, "stale", "collision.md"));
+
+    const found = await lookupBundleRef(parseBundleRef("early//collision"));
+    expect(found).toBeNull();
+
+    const resolution = await lookupBundleRefWithResolution(parseBundleRef("early//collision"));
+    expect(resolution.entry).toBeNull();
+    expect(resolution.owner?.path).toBe(workflowPath);
   });
 
   test.each([

@@ -54,4 +54,73 @@ describe("env run dangerous-key blocking", () => {
     expect(parsed.error).toContain("Refusing to inject env from a third-party stash");
     expect(parsed.error).toContain("GIT_CONFIG_GLOBAL");
   });
+
+  test("blocks a genuine RCE-class key (GIT_SSH_COMMAND) for a third-party stash without --allow-insecure", async () => {
+    const sourceDir = makeTempStash();
+    fs.mkdirSync(path.join(sourceDir, "env"), { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, "env", "danger.env"), "GIT_SSH_COMMAND=/tmp/evil-ssh\n", "utf8");
+
+    const result = await withEnv(
+      {
+        AKM_BUNDLE_DIR: makeTempStash(),
+        HOME: makeTempDir("akm-env-run-home-"),
+        XDG_CONFIG_HOME: makeTempDir("akm-env-run-config-"),
+        XDG_CACHE_HOME: makeTempDir("akm-env-run-cache-"),
+        XDG_DATA_HOME: makeTempDir("akm-env-run-data-"),
+        XDG_STATE_HOME: makeTempDir("akm-env-run-state-"),
+      },
+      async () => {
+        writeSandboxConfig({
+          bundles: { vendor: { path: sourceDir } },
+        });
+        return runCliCapture(["env", "run", "vendor//env/danger", "--", "true"]);
+      },
+    );
+
+    expect(result.code).toBe(2);
+    const parsed = JSON.parse(result.stderr) as { ok?: boolean; error?: string; code?: string };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toContain("Refusing to inject env from a third-party stash");
+    expect(parsed.error).toContain("GIT_SSH_COMMAND");
+    expect(parsed.error).toContain("--allow-insecure");
+  });
+
+  test("--allow-insecure warns and injects the same RCE-class key from a third-party stash", async () => {
+    const sourceDir = makeTempStash();
+    fs.mkdirSync(path.join(sourceDir, "env"), { recursive: true });
+    fs.writeFileSync(path.join(sourceDir, "env", "danger.env"), "GIT_SSH_COMMAND=/tmp/evil-ssh\n", "utf8");
+    const markerDir = makeTempDir("akm-env-run-marker-");
+    const markerFile = path.join(markerDir, "git-ssh-command.txt");
+
+    const result = await withEnv(
+      {
+        AKM_BUNDLE_DIR: makeTempStash(),
+        HOME: makeTempDir("akm-env-run-home-"),
+        XDG_CONFIG_HOME: makeTempDir("akm-env-run-config-"),
+        XDG_CACHE_HOME: makeTempDir("akm-env-run-cache-"),
+        XDG_DATA_HOME: makeTempDir("akm-env-run-data-"),
+        XDG_STATE_HOME: makeTempDir("akm-env-run-state-"),
+      },
+      async () => {
+        writeSandboxConfig({
+          bundles: { vendor: { path: sourceDir } },
+        });
+        return runCliCapture([
+          "env",
+          "run",
+          "vendor//env/danger",
+          "--allow-insecure",
+          "--",
+          process.execPath,
+          "-e",
+          `require("fs").writeFileSync(${JSON.stringify(markerFile)}, process.env.GIT_SSH_COMMAND || "")`,
+        ]);
+      },
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("GIT_SSH_COMMAND");
+    expect(result.stderr).toContain("--allow-insecure");
+    expect(fs.readFileSync(markerFile, "utf8")).toBe("/tmp/evil-ssh");
+  });
 });

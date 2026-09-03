@@ -30,6 +30,7 @@ import launchdTemplate from "../../assets/backends/launchd-template.xml" with { 
 import { hasErrnoCode } from "../../core/common";
 import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
+import { warn } from "../../core/warn";
 import { resolveAkmInvocation } from "../resolve-akm-bin";
 import { type LaunchdTrigger, parseSchedule, translateToLaunchd } from "../schedule";
 import {
@@ -792,16 +793,7 @@ function inspectStableLaunchdNamespace(
     );
   }
   const loadedLabels = parseLaunchdLoadedLabels(domain.stdout);
-  if (loadedLabels === undefined) {
-    throw new ConfigError(
-      "launchctl returned an unsafe, unsupported, or oversized loaded-service inventory during scheduler state inspection.",
-      "INVALID_CONFIG_FILE",
-    );
-  }
   const disabledLabels = readDisabledLabels(context.exec);
-  if (disabledLabels === undefined) {
-    throw new ConfigError("launchctl print-disabled failed during scheduler state inspection.", "INVALID_CONFIG_FILE");
-  }
   const akmDisabledLabels = [...disabledLabels].filter((label) => label.startsWith(LAUNCHD_LABEL_PREFIX)).sort();
   const plistEntries: Array<readonly [nativeId: string, raw: string]> = [];
   if (context.fsLike.exists(context.agentsDir)) {
@@ -1197,45 +1189,51 @@ function normalizeSignature(xml: string): string {
  * cap on how much output we will read, and a cap on how many distinct akm
  * labels we will track. Exceeding either still returns `undefined`.
  */
-export function parseLaunchdLoadedLabels(output: string): Set<string> | undefined {
-  if (Buffer.byteLength(output, "utf8") > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES) return undefined;
-
+export function parseLaunchdLoadedLabels(output: string): Set<string> {
   const labels = new Set<string>();
   // Our own namespace is the only thing we look for. `[^\s"{}=,()]` stops the
   // token at whatever punctuation the surrounding launchctl syntax uses, so a
   // label works whether it appears as a bare table cell, a quoted string, or a
   // dictionary key.
   const labelPattern = /com\.akm\.task\.[^\s"{}=,()]+/gu;
-  for (const match of output.matchAll(labelPattern)) {
+  for (const match of boundLaunchdOutput(output).matchAll(labelPattern)) {
     const label = match[0];
     if (!LAUNCHD_AKM_LABEL_RE.test(label)) continue;
     labels.add(label);
-    if (labels.size > MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) return undefined;
+    if (labels.size >= MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) break;
   }
   return labels;
 }
 
-function readDisabledLabels(exec: LaunchdExec): Set<string> | undefined {
+function boundLaunchdOutput(output: string): string {
+  return output.length > MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES ? output.slice(0, MAX_LAUNCHD_DOMAIN_OUTPUT_BYTES) : output;
+}
+
+function readDisabledLabels(exec: LaunchdExec): Set<string> {
   try {
     const result = exec.run(["launchctl", "print-disabled", `gui/${exec.uid()}`]);
-    if (result.status !== 0) return undefined;
+    if (result.status !== 0) {
+      warn("[akm] launchctl print-disabled exited %d; assuming no akm task is disabled.", result.status);
+      return new Set();
+    }
     return parseDisabledLabels(result.stdout);
-  } catch {
-    return undefined;
+  } catch (error) {
+    warn(
+      "[akm] launchctl print-disabled could not be run; assuming no akm task is disabled: %s",
+      error instanceof Error ? error.message : String(error),
+    );
+    return new Set();
   }
 }
 
-function parseDisabledLabels(output: string): Set<string> | undefined {
-  const envelope = /^\s*disabled services\s*=\s*\{([\s\S]*)\}\s*$/.exec(output);
-  if (!envelope) return undefined;
-
+function parseDisabledLabels(output: string): Set<string> {
   const disabled = new Set<string>();
-  let body = envelope[1]!;
-  while (body.trim()) {
-    const entry = /^\s*"([^"\r\n]+)"\s*=>\s*(true|false|enabled|disabled)\s*/.exec(body);
-    if (!entry) return undefined;
-    if (entry[2] === "true" || entry[2] === "disabled") disabled.add(entry[1]!);
-    body = body.slice(entry[0].length);
+  const entryPattern = /"(com\.akm\.task\.[^"\r\n]+)"\s*=>\s*(true|false|enabled|disabled)/gu;
+  for (const match of boundLaunchdOutput(output).matchAll(entryPattern)) {
+    const label = match[1]!;
+    if (!LAUNCHD_AKM_LABEL_RE.test(label)) continue;
+    if (match[2] === "true" || match[2] === "disabled") disabled.add(label);
+    if (disabled.size >= MAX_LAUNCHD_AKM_NAMESPACE_ENTRIES) break;
   }
   return disabled;
 }

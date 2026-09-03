@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "../errors";
 import { liftLegacyEngineExtraParams } from "../extra-params";
+import { formatRegistryLabel, hasRegistryUrlCredentials } from "../registry-url";
 import {
   acquireConfigLock,
   backupExistingConfig,
@@ -27,11 +28,12 @@ import type {
 } from "./config-types";
 import { upgradeConfigVersion } from "./config-version-shim";
 import { deepMergeConfig } from "./deep-merge";
+import { migrateLegacySourceShape } from "./legacy-source-shape-shim";
 
 export { stripJsonComments } from "./config-io";
 
 import { getConfigPath } from "../paths";
-import { warn } from "../warn";
+import { warn, warnOnce } from "../warn";
 
 // Re-export type surface from config-types.ts so call sites don't need to
 // move (the runtime values live here; the types are documentation-only).
@@ -207,7 +209,8 @@ export function acquireConfigReadFence(): { config: AkmConfig; release: () => vo
  * is validated.
  */
 export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
-  const parsedRaw = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
+  const versioned = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
+  const parsedRaw = migrateLegacySourceShape(versioned, sourcePath);
 
   // #852 (following #815): a config still using legacy `extraParams` keys —
   // e.g. `reasoning_effort`, a documented 0.9.1 workaround — needs to be
@@ -218,7 +221,7 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
   // config that has not been migrated yet fails closed here instead of
   // silently drifting from what's on disk.
   const where = sourcePath ? ` at ${sourcePath}` : "";
-  const { lifted, conflicts } = liftLegacyEngineExtraParams(parsedRaw);
+  const { config: liftedConfig, lifted, conflicts } = liftLegacyEngineExtraParams(parsedRaw);
   if (conflicts.length > 0) {
     const lines = conflicts
       .map(
@@ -232,12 +235,12 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
     );
   }
   if (lifted.length > 0) {
-    throw new ConfigError(
-      `Config${where} uses deprecated extraParams keys with first-class equivalents:\n  - ${lifted.join("\n  - ")}\n\nRun \`akm migrate apply\` to rewrite the config file, or move the values onto the first-class fields yourself.`,
-      "INVALID_CONFIG_FILE",
+    warnOnce(
+      `config:extra-params-lift${sourcePath ? `:${sourcePath}` : ""}`,
+      `Config${where} uses deprecated extraParams keys with first-class equivalents — auto-lifted in memory:\n  - ${lifted.join("\n  - ")}\n\nRun \`akm migrate apply\` to rewrite the config file and silence this warning.`,
     );
   }
-  const parsed = AkmConfigSchema.safeParse(parsedRaw);
+  const parsed = AkmConfigSchema.safeParse(liftedConfig);
   if (!parsed.success) {
     const lines = parsed.error.issues.map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`).join("\n");
     throw new ConfigError(`Invalid config${where}:\n${lines}`, "INVALID_CONFIG_FILE");
@@ -431,6 +434,21 @@ export function sanitizeConfigForWrite(config: AkmConfig): Record<string, unknow
     warn(
       `Config sanitizer dropped API key(s) before writing to disk:\n  - ${stripped.join("\n  - ")}\n\nakm does not persist API keys to config.json. Set the listed environment variables to provide them at runtime, or use \`\${VAR}\` references in your config to defer lookup. See docs/reference/data-and-telemetry.md.`,
     );
+  }
+
+  if (config.registries) {
+    const droppedRegistries: string[] = [];
+    const registries = config.registries.filter((entry) => {
+      if (!hasRegistryUrlCredentials(entry.url)) return true;
+      droppedRegistries.push(formatRegistryLabel(entry));
+      return false;
+    });
+    if (droppedRegistries.length > 0) {
+      sanitized.registries = registries;
+      warn(
+        `Config sanitizer dropped registry entr${droppedRegistries.length === 1 ? "y" : "ies"} with URL credentials before writing to disk:\n  - ${droppedRegistries.join("\n  - ")}\n\nRegistry URLs must be credential-free; configure a credential-free HTTPS endpoint.`,
+      );
+    }
   }
 
   return sanitized;

@@ -10,7 +10,6 @@ exports[`default improve strategies (#552) complete resolved trees are pinned fo
           "memory",
         ],
         "enabled": true,
-        "minPoolSize": 500,
       },
       "distill": {
         "allowedTypes": [
@@ -78,7 +77,6 @@ exports[`default improve strategies (#552) complete resolved trees are pinned fo
           "memory",
         ],
         "enabled": false,
-        "minPoolSize": 500,
       },
       "distill": {
         "allowedTypes": [
@@ -146,7 +144,6 @@ exports[`default improve strategies (#552) complete resolved trees are pinned fo
           "memory",
         ],
         "enabled": true,
-        "minPoolSize": 500,
       },
       "distill": {
         "allowedTypes": [
@@ -219,7 +216,6 @@ exports[`default improve strategies (#552) complete resolved trees are pinned fo
           "memory",
         ],
         "enabled": false,
-        "minPoolSize": 500,
       },
       "distill": {
         "allowedTypes": [
@@ -289,7 +285,6 @@ exports[`default improve strategies (#552) complete resolved trees are pinned fo
         ],
         "enabled": true,
         "maxChunkSize": 25,
-        "minPoolSize": 500,
       },
       "distill": {
         "allowedTypes": [
@@ -431,7 +426,6 @@ exports[`default improve strategies (#552) complete resolved trees are pinned fo
           "memory",
         ],
         "enabled": false,
-        "minPoolSize": 500,
       },
       "distill": {
         "allowedTypes": [
@@ -506,7 +500,6 @@ exports[`default improve strategies (#552) complete resolved trees are pinned fo
           "memory",
         ],
         "enabled": false,
-        "minPoolSize": 500,
       },
       "distill": {
         "allowedTypes": [

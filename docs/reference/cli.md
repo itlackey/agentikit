@@ -113,6 +113,14 @@ The `hint` field is present only when actionable remediation is available
 `ok === false` on the parsed stderr envelope or a non-zero exit code to
 detect failure. Scripts can rely on the exit code alone.
 
+Every success envelope produced by the passthrough stamp — `config`, `clone`,
+`models`, `task-*`, `workflow-*`, `registry-*`, and the rest of that shared
+handler — also carries `ok: true` (0.9.12+), so a caller branching on `.ok`
+sees the same field on both sides — success and failure — instead of
+`undefined` on success. A command that already computes its own `ok` from a
+graded outcome (e.g. `task run`'s exit-code mapping, `akm lint`, `akm proposal
+extract`) keeps that value, `false` included.
+
 `env run`, `secret run`, and `migrate` preserve the spawned process's exact
 status and raw streams instead of replacing them with an akm failure envelope.
 `task run` maps completed, active, and disabled status to 0; blocked and failed
@@ -272,17 +280,21 @@ akm health --report --window-compare 7d --format html
 | `--window-compare` | Compare the current window against the prior window of the same duration (e.g. `24h`, `7d`). With `--report`, overrides the default trend window. |
 | `--group-by` | Group rows by `run` (one row per `improve_runs` entry). Omit for the default summary. |
 | `--windows` | Explicit comparison window(s) as `name=...,since=ISO,until=ISO` (repeatable, up to 4). Mutually exclusive with `--window-compare`. |
+| `--no-probe` | Skip the `default-llm-engine` / `configured-engines` reachability probes (for an offline or air-gapped host). |
 
 The command reads `state.db`, verifies that the required tables exist, performs a
 write-read probe against the events stream, inspects `task_history`, checks the
-default agent engine, and summarizes recent `improve_*` events.
+default agent engine, and summarizes recent `improve_*` events. Unless
+`--no-probe` is given, it also sends a bounded (3s timeout) reachability probe
+to the `default-llm-engine` and every `configured-engines` LLM connection (and
+an SDK engine's LLM fallback), one probe per distinct endpoint.
 
 Primary result fields:
 
 | Field | Description |
 | --- | --- |
 | `status` | Overall health verdict: `pass`, `warn`, or `fail` |
-| `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `state-db-migrations`, `task-log-backing`, `active-runs`, `default-engine`, and `model-map-files` |
+| `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `state-db-migrations`, `task-log-backing`, `active-runs`, `default-engine`, `model-map-files`, `default-llm-engine`, `configured-engines`, and `active-improve-strategy` |
 | `advisories` | Non-fatal warnings including `semantic-search-runtime` and `session-extraction` (akmExtract pipeline health) |
 | `metrics` | Aggregate task/runtime metrics: `taskFailRate`, `agentFailureRate`, `stuckActiveRuns`, `logBackingRate`, `probeRoundTripMs` |
 | `improve` | Recent improve-loop counts derived from `improve_invoked`, `improve_skipped`, and `improve_completed` events |
@@ -300,9 +312,21 @@ holds a pending historical-destructive migration and something other than
 `akm upgrade` / `akm migrate apply` opens it directly. Read this check's
 `status` instead of grepping akm's error text for that case.
 
-The `session-extraction` advisory reflects the health of the `akmExtract` pipeline
-(Phase 0.4 of `akm improve`). It warns on harness errors or when no proposals are
-generated across five or more scanned sessions.
+`default-llm-engine` and `configured-engines` probe reachability (not just
+configuration) for a `kind: "llm"` engine — an unreachable endpoint is a hard
+`fail` for `default-llm-engine` and a `warn` for any other engine. `--no-probe`
+skips this. `active-improve-strategy` names the resolved engine per process
+in its evidence and message, so a strategy-level `engine` pin that shadows
+`defaults.llmEngine` is visible without config archaeology.
+
+The `session-extraction` advisory is derived from the `extract_sessions_seen`
+ledger for the last 7 days — not `improve_runs`, which the hook-driven `akm
+proposal extract --session-id ...` invocation never writes. It reports
+`unknown` when nothing was recorded in the window (cannot tell "off on
+purpose" from "broken"), `warn` when every session in the window was skipped
+for an infrastructure reason (`llm_unavailable`, `read_failed`, `exception`,
+`locked_concurrent`) — naming the reason and, when recorded, the engine — and
+`pass` otherwise, with per-outcome counts.
 
 The indexed entity graph (entities/relations extracted from bundle assets) has
 no dedicated inspection command; its summary counts surface as an info-level
@@ -568,8 +592,10 @@ akm workflow create ship-release
 akm workflow create ship-release --from ./ship-release.md
 akm workflow run workflows/ship-release --version 1.2.3
 akm workflow run <run-id>                  # continue an active partial run
+akm workflow run workflows/ship-release --new  # start a fresh run even if one is already active
 akm workflow status <run-id>
 akm workflow status workflows/ship-release
+akm workflow status 7c115132               # 8+ char run-id prefix also works
 akm workflow resume <run-id>
 akm workflow abandon <run-id>
 akm workflow list --active
@@ -585,12 +611,20 @@ Subcommands:
 | Subcommand | Description |
 | --- | --- |
 | `create <name>` | Validate and write a Markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
-| `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or continues the active run in the current scope; a run id continues that exact active run. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
+| `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or resumes the active run in the current scope (announced as `resumed: true`, see below); a run id continues that exact active run. `--new` starts a fresh run even when one is already active. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
 | `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only). Renders a `children:` tree when the run composes child workflows |
 | `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`). Child workflow runs are excluded unless `--children` is passed |
 | `resume <run-id>` | Flip a `blocked` or `failed` run back to `active`. Completed runs cannot be resumed |
 | `abandon <run-id>` | Mark a run failed so it stops counting as active (`resume` can reopen it) |
 | `plan <ref>` | **Evolving.** Compile and freeze a workflow WITHOUT publishing a run: the canonical step graph, per-step frozen target kinds, task/child expansion, input bindings, source read set, and lowering notices — zero durable writes. Returns the full JSON envelope by default, like every other command; pass `--format text` for a human-readable summary |
+
+Everywhere a run id is accepted (`run`, `status`, `resume`, `abandon`), a
+unique run-id **prefix** of 8 or more characters works too — the same
+convention `akm proposal accept`/`reject` use for proposal UUIDs. A prefix
+matching more than one run is a usage error listing every candidate; a
+prefix matching none is a not-found error. Only strings shaped like a run id
+(hex digits and hyphens, 8+ characters) are ever treated as a prefix, so a
+workflow ref is never mistaken for one.
 
 The public `workflow start`, `next`, and `complete` lifecycle was removed in
 0.9, along with the experimental `brief`/`report` external-driver protocol.
@@ -633,6 +667,14 @@ The old `--params <json>` bag is removed.
 | `--max-steps <n>` | Stop once this many steps have finished, leaving a partial run active. Must be at least 1. |
 | `--max-retries <n>` | When a step fails, reopen the same run and retry the failed step up to this many additional times. Range: 0 through 100; default 0. Gate rejection and interruption are not retried. |
 | `--timeout <duration>` | Abort the whole invocation after `N`, `Nms`, `Ns`, or `Nm`; bare `N` is milliseconds. The active step remains resumable. |
+| `--new` | Start a fresh run even when one is already active for this ref, instead of resuming it. The existing active run is left untouched — it is never abandoned automatically. A workflow ref only: passing a run id with `--new` is a usage error (exit 2). Parameter flags are allowed together with `--new`, since it is starting a new run. |
+
+**Resuming an active run is announced, not silent.** Passing a ref that
+already has an active run in the current scope resumes that run rather than
+starting a new one (unchanged since #485) — but the envelope now carries
+`resumed: true` alongside the resumed run's `run.id`, and the default text
+output leads with `resuming existing run <id> for <ref>; pass --new to start
+a fresh run`. Pass `--new` to start a second, independent run instead.
 
 The result includes the current `run`, an `executed` step report list, a
 `stepsProcessed` count of the steps that finished, and optional `done`,
@@ -668,7 +710,7 @@ repos or directories. akm resolves that context from the nearest `.akm/config.js
 ancestor when present, otherwise the nearest git root, otherwise the bundle root
 when the cwd is inside it, otherwise the cwd itself. In practice this means:
 
-- `workflow run workflows/<name>` continues the active run for the current project/worktree/directory, or starts one when none is active.
+- `workflow run workflows/<name>` resumes the active run for the current project/worktree/directory (announced with `resumed: true`), or starts one when none is active. `--new` always starts a fresh run.
 - `workflow status workflows/<name>` resolves the most-recently-updated run in the current scope only.
 - `workflow list` shows runs for the current scope only.
 - Direct run-id commands like `workflow status <run-id>` still work even if the run was started from another directory.
@@ -714,11 +756,12 @@ akm workflow status workflows/ship-release
 akm workflow status <run-id> --units    # also list per-unit rows from the run journal
 ```
 
-Accepts either a run-id or a workflow ref. When given a workflow ref, resolves
-to the most-recently-updated run for that ref in the current working scope.
-`--units` adds per-unit rows (unit id, status, failure reason, and any
-result/error diagnostic text) from the run journal — diagnostics only; step
-evidence stays deterministic and is unaffected.
+Accepts a run id, a unique 8+ character run-id prefix, or a workflow ref.
+When given a workflow ref, resolves to the most-recently-updated run for that
+ref in the current working scope. `--units` adds per-unit rows (unit id,
+status, failure reason, and any result/error diagnostic text) from the run
+journal — diagnostics only; step evidence stays deterministic and is
+unaffected.
 
 #### workflow plan
 
@@ -1517,13 +1560,14 @@ Subcommands:
 | --- | --- |
 | `get <key>` | Read one config key |
 | `list` | List current configuration |
-| `set <key> <value>` | Set one config key |
-| `unset <key>` | Unset an optional key, or a whole `embedding`/engine section |
+| `set <key> <value>` | Set one config key; prints the resulting config with `ok: true` |
+| `unset <key>` | Unset an optional key, or a whole `embedding`/engine section; prints the resulting config with `ok: true` |
 | `path` | Show paths to config, bundle, cache, and index. `--all` prints every path; without it, just the config path. Load-bearing: `config path` is the one subcommand the CLI still allows to run when the on-disk config itself fails to load, so you always have a way to locate a broken config. |
 
-`set` and `unset` accept `--silent` to suppress the post-write config dump on
-stdout (the write still happens and errors still print) — use it from hooks
-and CI scripts.
+`set` and `unset` accept `--silent` to suppress the post-write config dump
+entirely — nothing is printed on stdout, and the exit code is the status (the
+write still happens and errors still print) — use it from hooks and CI
+scripts.
 
 > **Removed in 0.9.0:** `akm config enable`/`akm config disable`. Use
 > `akm registry add|remove` to toggle a registry, the general mechanism.
@@ -2252,6 +2296,19 @@ schedule) is the answer.
 
 Requires an LLM engine: pass `--engine`, select a `--strategy` whose
 `processes.extract.engine` is set, or configure `defaults.llmEngine`.
+
+**Output.** `ok` means the command ran to completion — it is `true` even when
+every session was skipped (an unreachable LLM engine included); it does not
+mean anything was harvested. Consumers that need "did this run actually
+harvest" branch on `skipReasons`, `warnings`, or `sessionsProcessed` /
+`sessionsSkipped` instead. The envelope also reports:
+
+| Field | Description |
+| --- | --- |
+| `engine` | Resolved LLM engine name for this run. Absent only when extract is disabled by the selected improve strategy (the run returns before an engine is resolved). |
+| `engineKind` | `"llm"`, `"sdk"`, or `"agent"` — the kind of runner `engine` resolved to. Same absence condition as `engine`. |
+| `skipReasons` | Per-`skipReason` count across `sessions[]` (e.g. `{ "llm_unavailable": 25 }`). Present only when `sessionsSkipped > 0`. |
+| `warnings` | Includes one aggregate line per infrastructure skip reason that fired (`llm_unavailable`, `read_failed`, `exception`, `locked_concurrent`) — e.g. `25 of 25 sessions skipped: llm_unavailable (engine "default")` — so an engine outage is visible without inspecting `sessions[]`. Session-content skips (`already_extracted`, `too_short`, `triaged_out`) are counted in `skipReasons` but never produce a warning line. |
 
 #### proposal new
 

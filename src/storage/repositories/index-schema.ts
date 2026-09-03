@@ -12,10 +12,13 @@
  * `index-vec-repository` modules.
  */
 
+import { ConfigError } from "../../core/errors";
+import { warn } from "../../core/warn";
 import type { Database } from "../database";
 import {
   CANONICAL_ENTRY_SCHEMA_SQL,
   CANONICAL_INDEX_DB_VERSION,
+  classifyIndexGeneration,
   isCanonicalIndexGeneration,
 } from "./index-entry-schema";
 import { getMeta, setMeta } from "./index-meta-repository";
@@ -185,6 +188,22 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
   const hasEntries = tableExists(db, "entries");
   if (!hasEntries && version === undefined) return;
   if (isCanonicalIndexGeneration(db)) return;
+
+  const classification = classifyIndexGeneration(db);
+  if (classification.status === "newer") {
+    throw new ConfigError(
+      `Index database was built by a newer akm (stored generation ${classification.storedVersion ?? "unknown"}; ` +
+        `this binary understands generation ${CANONICAL_INDEX_DB_VERSION}). Refusing to modify it — upgrade akm to ` +
+        "write to this index, or delete index.db to rebuild it from scratch with this binary.",
+      "INDEX_SCHEMA_INCOMPATIBLE",
+    );
+  }
+
+  warn(
+    `Index database generation ${classification.storedVersion ?? "unknown"} is older than this akm's generation ` +
+      `${CANONICAL_INDEX_DB_VERSION} — rebuilding the derived index (entries, FTS, embeddings, graph tables, ` +
+      "utility scores, and the LLM enrichment cache). This re-walks and re-indexes every source on the next run.",
+  );
 
   let vecResetPending = false;
   try {
@@ -362,12 +381,16 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   //   - When `embeddingDim` is a number, the caller explicitly asked for
   //     that dim and owns the dim-change/backup/wipe semantics.
   const dimExplicit = embeddingDim !== undefined;
-  const effectiveDim = embeddingDim ?? (Number(getMeta(db, "embeddingDim")) || EMBEDDING_DIM);
+  const requestedDim = embeddingDim ?? (Number(getMeta(db, "embeddingDim")) || EMBEDDING_DIM);
+  const effectiveDim = Number.isInteger(requestedDim) && requestedDim > 0 ? requestedDim : EMBEDDING_DIM;
+  if (effectiveDim !== requestedDim) {
+    warn(`Invalid embedding dimension ${requestedDim} — falling back to the default (${EMBEDDING_DIM}).`);
+  }
   if (isVecAvailable(db)) {
     // Check if stored embedding dimension differs from configured one
     if (dimExplicit) {
       const storedDim = getMeta(db, "embeddingDim");
-      if (storedDim && storedDim !== String(embeddingDim)) {
+      if (storedDim && storedDim !== String(effectiveDim)) {
         // Stored vectors are incompatible with the new dimension. Drop the vec
         // table so the block below recreates it at the new width; the BLOB rows
         // go too. Regenerable from markdown — re-embedded by the next index.
@@ -377,9 +400,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
 
     const vecExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'").get();
     if (!vecExists) {
-      if (!Number.isInteger(effectiveDim) || effectiveDim <= 0 || effectiveDim > 4096) {
-        throw new Error(`Invalid embedding dimension: ${effectiveDim}`);
-      }
       db.exec(`
         CREATE VIRTUAL TABLE entries_vec USING vec0(
           id       INTEGER PRIMARY KEY,
@@ -388,7 +408,7 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
       `);
     }
     if (dimExplicit) {
-      setMeta(db, "embeddingDim", String(embeddingDim));
+      setMeta(db, "embeddingDim", String(effectiveDim));
     }
   } else {
     // Also purge BLOB embeddings on dimension change (JS fallback path).
@@ -397,11 +417,11 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
     // changes, those stored BLOBs become silently incompatible.
     if (dimExplicit) {
       const storedDim = getMeta(db, "embeddingDim");
-      if (storedDim && storedDim !== String(embeddingDim)) {
+      if (storedDim && storedDim !== String(effectiveDim)) {
         // JS-fallback path: no vec table, just clear the stale BLOB vectors.
         purgeEmbeddings(db);
       }
-      setMeta(db, "embeddingDim", String(embeddingDim));
+      setMeta(db, "embeddingDim", String(effectiveDim));
     }
   }
 

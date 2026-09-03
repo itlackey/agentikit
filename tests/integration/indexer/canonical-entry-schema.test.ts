@@ -194,6 +194,38 @@ describe("canonical derived-index entry schema", () => {
     });
   });
 
+  test("a newer generation than this binary understands is left alone instead of wiped", () => {
+    withTempIndex((dbPath) => {
+      const newer = openDatabase(dbPath);
+      newer.exec(`
+        CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO index_meta (key, value) VALUES ('version', '${DB_VERSION + 1}');
+        CREATE TABLE entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          item_ref TEXT NOT NULL UNIQUE,
+          from_the_future TEXT NOT NULL
+        );
+        INSERT INTO entries (item_ref, from_the_future) VALUES ('stash//memories/future', 'do not wipe me');
+      `);
+      newer.close();
+
+      expect(() => openIndexDatabase(dbPath)).toThrow(/newer akm/);
+
+      const survivor = openDatabase(dbPath, { readonly: true, create: false });
+      try {
+        expect(
+          survivor.prepare("SELECT value FROM index_meta WHERE key = 'version'").get() as { value: string },
+        ).toEqual({ value: String(DB_VERSION + 1) });
+        expect(survivor.prepare("SELECT COUNT(*) AS count FROM entries").get()).toEqual({ count: 1 });
+        expect(
+          survivor.prepare("SELECT from_the_future FROM entries WHERE item_ref = 'stash//memories/future'").get(),
+        ).toEqual({ from_the_future: "do not wipe me" });
+      } finally {
+        survivor.close();
+      }
+    });
+  });
+
   test("a hostile v21 generation with stale FTS state is discarded wholesale", () => {
     withTempIndex((dbPath) => {
       const legacy = openIndexDatabase(dbPath);

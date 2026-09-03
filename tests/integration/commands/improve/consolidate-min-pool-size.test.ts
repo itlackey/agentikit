@@ -63,6 +63,7 @@ function configWithMinPoolSize(minPoolSize: number): AkmConfig {
 async function runImprove(
   config: AkmConfig,
   consolidateOptions?: AkmConsolidateOptions,
+  overrides?: { scope?: string; strategy?: string },
 ): Promise<Awaited<ReturnType<typeof akmImprove>>> {
   return akmImprove({
     scope: "memory",
@@ -71,6 +72,7 @@ async function runImprove(
     consolidateOptions,
     ensureIndexFn: async () => false,
     reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
+    ...overrides,
   });
 }
 
@@ -154,6 +156,32 @@ describe("#553 consolidate minPoolSize guard", () => {
     TIMEOUT_MS,
   );
 
+  test(
+    "an explicitly named --strategy bypasses the guard even below minPoolSize",
+    async () => {
+      writeMemory("only-mem", "A single memory — well below the guard.");
+      await akmIndex({ stashDir, full: true });
+
+      await runImprove(configWithMinPoolSize(3), undefined, { strategy: "default" });
+
+      expect(poolBelowMinSizeEvents().length).toBe(0);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "an explicit ref --scope bypasses the guard even below minPoolSize",
+    async () => {
+      writeMemory("only-mem", "A single memory — well below the guard.");
+      await akmIndex({ stashDir, full: true });
+
+      await runImprove(configWithMinPoolSize(3), undefined, { scope: "memories/only-mem" });
+
+      expect(poolBelowMinSizeEvents().length).toBe(0);
+    },
+    TIMEOUT_MS,
+  );
+
   test("advisory actionable operations do not advance the consolidation watermark", async () => {
     writeMemory(
       "primary",
@@ -227,7 +255,7 @@ describe("#553 consolidate minPoolSize guard", () => {
       await runImprove(configWithMinPoolSize(3));
       expect(poolBelowMinSizeEvents().length).toBe(1);
 
-      const health = akmHealth({ since: "30d" });
+      const health = await akmHealth({ since: "30d" });
       expect(health.improve?.skipReasons?.pool_below_min_size).toBe(1);
     },
     TIMEOUT_MS,

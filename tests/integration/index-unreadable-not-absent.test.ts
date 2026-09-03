@@ -147,13 +147,13 @@ describe("akm health diagnoses an unreadable state.db instead of dying on it (#7
   let storage: IsolatedAkmStorage;
   afterEach(() => storage?.cleanup());
 
-  test("returns a failing report naming the path, rather than throwing", () => {
+  test("returns a failing report naming the path, rather than throwing", async () => {
     storage = withIsolatedAkmStorage();
     const looping = makeUnresolvablePath(storage.root, "state.db");
 
     // Previously this threw ConfigError (exit 78) from the state.db open, so the
     // one command able to explain a data-dir permission fault could not run.
-    const result = akmHealth({ stateDbPath: looping, stashDir: storage.stashDir });
+    const result = await akmHealth({ stateDbPath: looping, stashDir: storage.stashDir });
 
     expect(result.ok).toBe(false);
     expect(result.status).toBe("fail");

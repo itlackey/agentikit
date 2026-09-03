@@ -2533,9 +2533,15 @@ async function lookupBundleRefWithResolutionUsing(
         const entry = readLookupEntry(db, id, ref.conceptId, source.path);
         if (entry) {
           if (owner.workflowSource) {
-            assertIndexedWorkflowSourceIdentity(inputRef, entry.filePath, owner.workflowSource);
-            if (entry.adapterId !== adapterId) {
-              throw new WorkflowSourceIdentityError(inputRef, entry.filePath, owner.path);
+            try {
+              assertIndexedWorkflowSourceIdentity(inputRef, entry.filePath, owner.workflowSource);
+              if (entry.adapterId !== adapterId) {
+                throw new WorkflowSourceIdentityError(inputRef, entry.filePath, owner.path);
+              }
+            } catch (error) {
+              if (!(error instanceof WorkflowSourceIdentityError)) throw error;
+              warn(`${error.message} Falling back to the physical owner.`);
+              return { entry: null, owner, ...(indexError === undefined ? {} : { indexError }) };
             }
           } else if (entry.adapterId !== adapterId || !indexedPathMatchesOwner(entry.filePath, owner)) {
             return { entry: null, owner, ...(indexError === undefined ? {} : { indexError }) };

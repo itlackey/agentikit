@@ -15,7 +15,6 @@
  */
 
 import { createHash } from "node:crypto";
-import { utf8Bytes, WORKFLOW_MAX_PLAN_BYTES } from "../resource-limits";
 import { decodeWorkflowPlanV4, WORKFLOW_IR_V5_VERSION, type WorkflowPlanGraphV4 } from "./schema-v4";
 
 /** sha256 hex of the canonical (recursively sorted-keys) JSON of the plan. */
@@ -40,8 +39,6 @@ export function decodeCanonicalPlan(
   planHash: string | null,
   expectedVersion?: number | null,
 ): WorkflowPlanGraphV4 {
-  if (utf8Bytes(planJson) > WORKFLOW_MAX_PLAN_BYTES)
-    throw new Error(`Workflow run ${runId} frozen plan exceeds the 2 MiB resource limit.`);
   let parsed: unknown;
   try {
     parsed = JSON.parse(planJson);

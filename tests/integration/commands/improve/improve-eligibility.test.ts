@@ -244,7 +244,7 @@ test("a read-only nested bundle is never eligible through its writable ancestor"
   });
 });
 
-test("rejects an index without an entries table as an incompatible canonical generation", async () => {
+test("degrades an index without an entries table to an empty incompatible snapshot instead of rejecting", async () => {
   const stash = makeTempDir("akm-elig-empty-index-");
   writeMemory(stash, "valid", "Valid memory.");
   await buildIndex(stash);
@@ -253,8 +253,11 @@ test("rejects an index without an entries table as an incompatible canonical gen
   db.exec("DROP TABLE entries");
   closeDatabase(db);
 
-  await expect(collectEligibleRefs({ mode: "all" }, stash, {})).rejects.toMatchObject({
-    code: "INDEX_SCHEMA_INCOMPATIBLE",
+  const result = await collectEligibleRefs({ mode: "all" }, stash, {});
+  expect(result.plannedRefs).toEqual([]);
+  expect(result.indexSnapshot).toEqual({
+    status: "incompatible",
+    reason: "index.db has no entries table; the selector uses an empty snapshot",
   });
 });
 

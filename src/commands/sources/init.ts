@@ -14,8 +14,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { stashDirNames } from "../../core/asset/asset-placement";
 import { mutateConfig } from "../../core/config/config";
-import { ConfigError } from "../../core/errors";
 import { assertSafeStashDir, getConfigPath, getDefaultStashDir } from "../../core/paths";
+import { warnOnce } from "../../core/warn";
 import { primaryBundlePath, withPrimaryBundle } from "./bundle-config-ops";
 import { copyStashSkeleton, ensureStashGitignore, scaffoldStashMeta } from "./stash-skeleton";
 
@@ -39,9 +39,8 @@ import { copyStashSkeleton, ensureStashGitignore, scaffoldStashMeta } from "./st
  */
 function assertInitSandbox(stashDir: string, dirExplicitlyProvided: boolean): void {
   if (!dirExplicitlyProvided) return; // Only guard explicit --dir, not default HOME resolution.
-  const isUnderTest = isUnderTestRunner();
+  const isUnderTest = process.env.BUN_TEST === "1" || process.env.NODE_ENV === "test";
   if (!isUnderTest) return;
-  if (process.env.AKM_FORCE_INIT_TMP_STASH === "1") return;
   const isTmp =
     stashDir.startsWith("/tmp/") ||
     stashDir === "/tmp" ||
@@ -50,14 +49,11 @@ function assertInitSandbox(stashDir: string, dirExplicitlyProvided: boolean): vo
     stashDir.startsWith("/private/var/folders/") ||
     stashDir.startsWith("/private/tmp/");
   if (!isTmp) return;
-  throw new ConfigError(
-    `refusing to persist --dir stashDir to a temporary path while under test runner; set AKM_FORCE_INIT_TMP_STASH=1 if you really mean it (stashDir=${stashDir})`,
-    "INIT_TMP_STASH_REFUSED",
+  warnOnce(
+    `init-tmp-stash:${stashDir}`,
+    `Persisting --dir stashDir to a temporary path (${stashDir}) while a test-runner env var (BUN_TEST/NODE_ENV=test) is set; ` +
+      "the OS may reap this path, leaving the next run pointing at a deleted bundle.",
   );
-}
-
-function isUnderTestRunner(): boolean {
-  return process.env.BUN_TEST === "1" || process.env.NODE_ENV === "test";
 }
 
 export interface InitResponse {

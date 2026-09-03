@@ -295,7 +295,7 @@ describe("resolveImprovePlan", () => {
         semanticSearchMode: "auto",
         improve: { strategies: { quick: { processes: { reflect: { model: "model-without-engine" } } } } },
       }),
-    ).toThrow('Enabled improve process "reflect" requires an LLM engine.');
+    ).toThrow('"reflect" requires an LLM engine that is not configured');
     expect(() =>
       resolveImprovePlan("quick", {
         configVersion: "0.9.0",
@@ -303,7 +303,7 @@ describe("resolveImprovePlan", () => {
         engines: { wrong: { kind: "agent", platform: "pi" } },
         defaults: { llmEngine: "wrong" },
       }),
-    ).toThrow('Engine "wrong" is not an LLM engine.');
+    ).toThrow('"reflect" requires an LLM engine that is not configured');
   });
 
   test("rejects an enabled model-backed process with no runner even when no model fields express intent", () => {
@@ -312,7 +312,45 @@ describe("resolveImprovePlan", () => {
         configVersion: "0.9.0",
         semanticSearchMode: "auto",
       }),
-    ).toThrow('Enabled improve process "reflect" requires an LLM engine.');
+    ).toThrow('"reflect" requires an LLM engine that is not configured');
+  });
+
+  test("disables just the processes with no usable LLM engine, instead of aborting the whole plan", () => {
+    const plan = resolveImprovePlan("default", {
+      configVersion: "0.9.0",
+      semanticSearchMode: "auto",
+      engines: { "only-agent": { kind: "agent", platform: "claude", bin: "/bin/true" } },
+      defaults: { engine: "only-agent" },
+      experimental: { improveAutonomy: true },
+      improve: {
+        strategies: {
+          default: { processes: { proactiveMaintenance: { enabled: true } } },
+        },
+      },
+    } as AkmConfig);
+
+    for (const name of [
+      "reflect",
+      "distill",
+      "consolidate",
+      "memoryInference",
+      "graphExtraction",
+      "validation",
+    ] as const) {
+      expect(plan.processes[name].enabled).toBe(false);
+      expect(plan.processes[name].runner).toBeNull();
+      expect(plan.strategy.config.processes?.[name]?.enabled).toBe(false);
+    }
+    expect(plan.processes.proactiveMaintenance.enabled).toBe(true);
+
+    const disabledNames: string[] = plan.engineUnavailable.map((item) => item.process).sort();
+    expect(disabledNames).toEqual(
+      (["consolidate", "distill", "graphExtraction", "memoryInference", "reflect", "validation"] as string[]).sort(),
+    );
+    for (const item of plan.engineUnavailable) {
+      expect(item.configKey).toBe(`improve.strategies.default.processes.${item.process}.engine`);
+      expect(item.reason).toContain("Set defaults.llmEngine or improve.strategies.default.processes");
+    }
   });
 
   test("does not require a validation engine when repair is disabled", () => {

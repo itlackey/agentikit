@@ -36,6 +36,7 @@ import { rethrowIfTestIsolationError } from "../core/errors";
 import { getDbPath } from "../core/paths";
 import { warn } from "../core/warn";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
+import { isCanonicalIndexGeneration } from "../storage/repositories/index-entry-schema";
 
 let guardSettled = false;
 
@@ -51,6 +52,7 @@ function indexBundlePrefixes(dbPath: string): string[] | undefined {
   try {
     db = openReadonlyExistingDatabase(dbPath);
     if (!db) return undefined;
+    if (!isCanonicalIndexGeneration(db)) return undefined;
     return (
       db
         .prepare("SELECT DISTINCT bundle_id AS b FROM entries WHERE bundle_id IS NOT NULL AND bundle_id != ''")

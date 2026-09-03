@@ -5,11 +5,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import {
-  resolveUniqueWorkflowSource,
-  resolveWorkflowSourceDomains,
-  WorkflowSourceRejectionError,
-} from "../../src/workflows/source-files";
+import { resolveUniqueWorkflowSource, resolveWorkflowSourceDomains } from "../../src/workflows/source-files";
 import { makeSandboxDir } from "../_helpers/sandbox";
 
 const cleanups: Array<() => void> = [];
@@ -101,24 +97,17 @@ describe("bulk workflow source ownership deduplicates authored paths", () => {
     expect(resolveUniqueWorkflowSource(root, "akm", "beta")).toMatchObject({ relativePath: forward[1]?.source });
   });
 
-  test("a duplicated invalid path yields one domain rejection with point-lookup detail parity", () => {
+  test("a duplicated nested-suffix path resolves as one valid domain with point-lookup parity", () => {
     const root = fixtureRoot("akm-workflow-source-bulk-invalid-");
     const file = workflow(root, "hostile.md.yml");
-    let pointRejection: WorkflowSourceRejectionError | undefined;
-    try {
-      resolveUniqueWorkflowSource(root, "akm", "hostile.md.yml");
-    } catch (cause) {
-      if (cause instanceof WorkflowSourceRejectionError) pointRejection = cause;
-      else throw cause;
-    }
+    const point = resolveUniqueWorkflowSource(root, "akm", "hostile.md.yml");
 
     const domains = resolveWorkflowSourceDomains(root, "akm", [file, lexicalDotPath(file), file]);
 
-    expect(pointRejection).toBeDefined();
+    expect(point).toBeDefined();
     expect(domains).toHaveLength(1);
     expect(domains[0]?.sourcePaths).toEqual(["workflows/hostile.md.yml"]);
-    expect(domains[0]?.source).toBeUndefined();
-    expect(domains[0]?.rejection?.message).toBe(pointRejection?.message);
-    expect(domains[0]?.rejection?.message.match(/has an extensionless stem/g)).toHaveLength(1);
+    expect(domains[0]?.source).toEqual(point);
+    expect(domains[0]?.rejection).toBeUndefined();
   });
 });

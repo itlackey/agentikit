@@ -67,20 +67,25 @@ function rejectNonTaskBindingWith(source: WorkflowSourceStep, ref: string, kind:
   );
 }
 
-export function resolveJudge(source: WorkflowSourceStep, context: ResolutionContext): ResolvedDispatch {
-  const engine = context.config.workflow?.judgeEngine;
-  if (!engine) {
-    throw new ConfigError(
-      "This workflow declares completion criteria but no verification engine is configured. Set workflow.judgeEngine to a named LLM or agent engine.",
-      "INVALID_CONFIG_FILE",
-    );
-  }
+const NO_ENGINE_AVAILABLE_MESSAGE = "the fixed opencode-sdk fallback is unavailable";
+
+function isNoEngineAvailable(err: unknown): boolean {
+  return err instanceof ConfigError && err.message.includes(NO_ENGINE_AVAILABLE_MESSAGE);
+}
+
+export function resolveJudge(source: WorkflowSourceStep, context: ResolutionContext): ResolvedDispatch | undefined {
+  const configuredEngine = context.config.workflow?.judgeEngine;
   const content = source.gate?.rubric?.trim() ?? "Judge workflow completion.";
-  const prepared = prepareInlineExecution({
-    content,
-    config: context.config,
-    invocationKind: "workflow",
-    current: { engine },
-  });
-  return commandResult(source, { onError: "fail", source: sourceStepRef(source) }, prepared, context);
+  try {
+    const prepared = prepareInlineExecution({
+      content,
+      config: context.config,
+      invocationKind: "workflow",
+      ...(configuredEngine ? { current: { engine: configuredEngine } } : {}),
+    });
+    return commandResult(source, { onError: "fail", source: sourceStepRef(source) }, prepared, context);
+  } catch (err) {
+    if (configuredEngine || !isNoEngineAvailable(err)) throw err;
+    return undefined;
+  }
 }

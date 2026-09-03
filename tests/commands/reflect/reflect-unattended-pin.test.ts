@@ -101,7 +101,7 @@ describe("unattended-improve reflect pin (07 Chain-G / P1.3)", () => {
           throw new Error("must-not-run");
         },
       }),
-    ).rejects.toThrow('Engine "fake-agent" is not an LLM engine.');
+    ).rejects.toThrow("Reflect requires an LLM engine for the active improve strategy.");
 
     expect(chatCalled).toBe(false);
   });

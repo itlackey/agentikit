@@ -6,6 +6,7 @@ import type { EligibilitySource, Proposal } from "../commands/proposal/proposal-
 import type { LoweringNotice } from "../execution/resolved-request";
 import type { GraphExtractionResult } from "../indexer/graph/graph-extraction";
 import type { MemoryInferenceResult } from "../indexer/passes/memory-inference";
+import type { RunnerSpec } from "../integrations/agent/runner";
 import type { AgentFailureReason } from "../integrations/agent/spawn";
 import { assertNever } from "./assert";
 
@@ -557,10 +558,50 @@ export interface ExtractedSessionResult {
   contentHash?: string;
   /** Stable, secret-free execution-lowering diagnostics for this session. */
   notices?: readonly Readonly<LoweringNotice>[];
+  /**
+   * #913 — resolved engine name for the run that produced this session
+   * result, stamped from the run's `llmRunner` at the point each result is
+   * accounted into the run (`accountExtractSessionResult`). Always present:
+   * every session result — success or any skip reason — is produced inside a
+   * run that has already resolved its engine (the one path with no resolved
+   * engine, the feature-disabled early return, produces zero session
+   * results). Today this is the same value for every session in a run; it
+   * exists per-session because a future per-session engine override would
+   * populate it, and because it keeps ledger metadata self-describing.
+   */
+  engine: string;
 }
+
+/**
+ * #912 — skip reasons that mean infrastructure failed to run the extraction,
+ * not that a session was legitimately uninteresting. `already_extracted`,
+ * `too_short`, and `triaged_out` are the ledger and pre-filter doing their
+ * job and are deliberately excluded; `malformed_model_output` already gets
+ * its own per-session forwarding into the envelope's `warnings[]` and is
+ * excluded here to avoid double-reporting the same failure two ways.
+ *
+ * Typed against `ExtractedSessionResult["skipReason"]` so a future reason
+ * cannot be added to one union without a compiler error surfacing here.
+ */
+export const EXTRACT_INFRASTRUCTURE_SKIP_REASONS = [
+  "llm_unavailable",
+  "read_failed",
+  "exception",
+  "locked_concurrent",
+] as const satisfies readonly NonNullable<ExtractedSessionResult["skipReason"]>[];
 
 export interface AkmExtractResult {
   schemaVersion: 1;
+  /**
+   * #912 — `ok` means the command ran to completion; it does not mean the
+   * run harvested anything. It is `true` even when every discovered session
+   * was skipped (including for an infrastructure reason like
+   * `llm_unavailable`), because the exit code follows `ok` and a
+   * SessionEnd/SessionStart hook must not start exiting non-zero because a
+   * LAN engine is temporarily down. Consumers that need "did this run
+   * actually harvest" branch on `skipReasons`, `warnings`, or the
+   * `sessionsProcessed`/`sessionsSkipped` counts instead.
+   */
   ok: boolean;
   shape: "extract-result";
   dryRun: boolean;
@@ -574,6 +615,27 @@ export interface AkmExtractResult {
   durationMs: number;
   /** Stable, secret-free execution-lowering diagnostics. */
   notices?: readonly Readonly<LoweringNotice>[];
+  /**
+   * #912 — per-reason count across every result in `sessions[]` (all skip
+   * reasons, not only infrastructure ones — the aggregate warning line in
+   * `warnings[]` is the infrastructure-only subset of this map). Present
+   * whenever `sessionsSkipped > 0`; absent (not merely empty) on a run that
+   * skipped nothing, so the envelope stays byte-identical to a run with no
+   * skips to report.
+   */
+  skipReasons?: Partial<Record<NonNullable<ExtractedSessionResult["skipReason"]>, number>>;
+  /**
+   * #913 — resolved engine name / kind for this run, sourced from the same
+   * `llmRunner` stamped onto each `sessions[].engine`. Optional because the
+   * feature-disabled early return (`extract is disabled by the selected
+   * improve strategy`) returns before any engine is resolved; every other
+   * return path — including the harness-not-found/not-available and
+   * session-not-found envelopes, which resolve the run's engine before
+   * looking up the harness — has a real value here.
+   */
+  engine?: string;
+  /** Kind of the runner `engine` resolved to; absent under the same condition as `engine`. */
+  engineKind?: RunnerSpec["kind"];
 }
 
 export interface AkmReflectFailure {

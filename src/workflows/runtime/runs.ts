@@ -31,20 +31,15 @@ import { compileResolveFreezeWorkflowV4 } from "../ir/freeze-v4";
 import { materializeWorkflowParameterFlags, validateWorkflowParams, type WorkflowParameterFlag } from "../ir/params";
 import { canonicalPlanJson, computePlanHash } from "../ir/plan-hash";
 import type { IrRuntimeKind } from "../ir/schema";
-import {
-  clip,
-  utf8Bytes,
-  WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS,
-  WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
-  WORKFLOW_UNIT_DIAGNOSTIC_CLIP,
-} from "../resource-limits";
+import { clip, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
 import { type SummaryJudge, validateStepSummary } from "../validate-summary";
 import { resolveAgentIdentity } from "./agent-identity";
 import { type CheckinDirective, evaluateCheckin } from "./checkin";
 import {
-  assertWorkflowSpineMatchesPlan,
+  assertRunStatusMatchesSpine,
   classifyWorkflowRunPlan,
   frozenStepRows,
+  reconcileWorkflowSpineWithPlan,
   requireExecutableWorkflowPlan,
 } from "./plan-classifier";
 import { resolveWorkflowRunOutputs } from "./run-outputs";
@@ -224,6 +219,13 @@ export interface WorkflowNextResult {
   step: WorkflowRunStepState | null;
   done?: true;
   autoStarted?: true;
+  /**
+   * Present when a workflow REF (not a run id) resolved to an existing
+   * active run instead of starting a new one (#919's silent-resume report):
+   * the #485 concurrency guard's ref-to-active-run attach is unchanged, this
+   * just makes it visible. Never set together with `autoStarted`.
+   */
+  resumed?: true;
   /**
    * Non-fatal notices produced when THIS invocation created the run (e.g. the
    * implicit engine fallback). Only present on the auto-start path — a resume
@@ -415,10 +417,6 @@ export async function getWorkflowStatus(
   });
 }
 
-export async function hasWorkflowRun(runId: string): Promise<boolean> {
-  return withWorkflowRunsRepo((repo) => repo.hasRun(runId));
-}
-
 export async function listWorkflowRuns(input?: {
   workflowRef?: string;
   activeOnly?: boolean;
@@ -481,21 +479,24 @@ export async function listWorkflowRuns(input?: {
 export async function getNextWorkflowStep(
   specifier: string,
   params?: Record<string, unknown>,
-  options?: { parameterFlags?: readonly WorkflowParameterFlag[] },
+  options?: { parameterFlags?: readonly WorkflowParameterFlag[]; newRun?: boolean },
 ): Promise<WorkflowNextResult> {
   return withWorkflowRunsRepo(async (repo) => {
-    const { run, autoStarted, startWarnings } = await resolveRunSpecifier(
+    const { run, autoStarted, resumed, startWarnings } = await resolveRunSpecifier(
       repo,
       specifier,
       params,
       options?.parameterFlags,
+      options?.newRun,
     );
     const steps = readWorkflowRunSteps(repo, run.id);
     const plan = requireExecutableWorkflowPlan(run);
-    assertWorkflowSpineMatchesPlan(plan, run, steps);
+    reconcileWorkflowSpineWithPlan(plan, run, steps);
+    assertRunStatusMatchesSpine(run, steps);
     return {
       ...projectNextResult(run, steps),
       ...(autoStarted ? { autoStarted: true as const } : {}),
+      ...(resumed ? { resumed: true as const } : {}),
       ...(startWarnings?.length ? { startWarnings } : {}),
     };
   });
@@ -535,14 +536,15 @@ function projectNextResult(run: WorkflowRunRow, steps: WorkflowRunStepRow[]): Wo
 
 export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetail> {
   return withWorkflowRunsRepo((repo) => {
-    const run = readWorkflowRun(repo, runId);
+    const run = readWorkflowRunOrPrefix(repo, runId);
     const storedPlan = requireExecutableWorkflowPlan(run);
     const steps = readWorkflowRunSteps(repo, run.id);
-    assertWorkflowSpineMatchesPlan(storedPlan, run, steps);
+    reconcileWorkflowSpineWithPlan(storedPlan, run, steps);
     if (run.status === "completed") {
       throw new UsageError(`Workflow run ${run.id} is already completed and cannot be resumed.`);
     }
     if (run.status === "active") {
+      assertRunStatusMatchesSpine(run, steps);
       return buildWorkflowRunDetail(repo, run, steps);
     }
     // blocked or failed → flip back to active and re-open the current step so
@@ -556,6 +558,7 @@ export async function resumeWorkflowRun(runId: string): Promise<WorkflowRunDetai
     });
     const updated: WorkflowRunRow = { ...run, status: "active", updated_at: now };
     const refreshedSteps = readWorkflowRunSteps(repo, run.id);
+    assertRunStatusMatchesSpine(updated, refreshedSteps);
     return buildWorkflowRunDetail(repo, updated, refreshedSteps);
   });
 }
@@ -570,7 +573,7 @@ export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDeta
   return withWorkflowRunsRepo((repo) => {
     const now = new Date().toISOString();
     const run = repo.immediateTransaction((db) => {
-      const current = readWorkflowRun(repo, runId);
+      const current = readWorkflowRunOrPrefix(repo, runId);
       if (current.status === "completed" || current.status === "failed") {
         throw new UsageError(`Workflow run ${current.id} is already ${current.status}.`);
       }
@@ -600,140 +603,6 @@ export async function abandonWorkflowRun(runId: string): Promise<WorkflowRunDeta
   });
 }
 
-// ── Step-evidence persistence bound (issue C) ────────────────────────────────
-
-/**
- * Marker key stamped on every value this module replaced because it did not fit
- * in `workflow_run_steps.evidence_json`. It is deliberately ugly and unique so a
- * truncated value can NEVER be mistaken for real workflow data by a downstream
- * `steps.<id>.output…` reference, by `akm workflow status`, or by a human
- * reading the row.
- */
-export const WORKFLOW_EVIDENCE_TRUNCATED_MARKER = "__akm_evidence_truncated__";
-
-/** The replacement value persisted in place of an over-cap evidence entry. */
-export interface TruncatedEvidenceValue {
-  readonly [WORKFLOW_EVIDENCE_TRUNCATED_MARKER]: true;
-  /** Human-readable explanation, including that the full value is unrecoverable from this row. */
-  readonly reason: string;
-  /** Serialized size of the value that was dropped. */
-  readonly originalBytes: number;
-  /** The cap that was exceeded. */
-  readonly limitBytes: number;
-  /** Leading slice of the dropped value's JSON — evidence for debugging, NEVER usable as data. */
-  readonly preview?: string;
-}
-
-function truncatedEvidenceValue(
-  json: string,
-  what: string,
-  limitBytes: number,
-  withPreview: boolean,
-): TruncatedEvidenceValue {
-  return {
-    [WORKFLOW_EVIDENCE_TRUNCATED_MARKER]: true,
-    reason:
-      `${what} exceeded the ${limitBytes}-byte evidence_json persistence cap and was NOT stored. ` +
-      `The complete value existed only in the live step result; it cannot be recovered from this row. ` +
-      `Reduce the step's fan-out or have it emit a reference (path, id) instead of inline bulk data.`,
-    originalBytes: utf8Bytes(json),
-    limitBytes,
-    ...(withPreview ? { preview: json.slice(0, WORKFLOW_EVIDENCE_TRUNCATION_PREVIEW_CHARS) } : {}),
-  } as TruncatedEvidenceValue;
-}
-
-/**
- * True when `value` is the {@link TruncatedEvidenceValue} envelope persisted in
- * place of an over-cap evidence entry.
- *
- * A LIVE invocation never sees one: the engine threads each step's complete
- * in-memory evidence to the rest of its own run. A RESUMED invocation rebuilds
- * the downstream scope from these rows, so `exec/step-work.ts` tests every
- * whole-value reference with this predicate — otherwise a reference INTO the
- * envelope reports a generic missing property and a reference AT it silently
- * hands the envelope to a unit as if it were the artifact.
- */
-export function isTruncatedEvidence(value: unknown): value is TruncatedEvidenceValue {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    (value as Record<string, unknown>)[WORKFLOW_EVIDENCE_TRUNCATED_MARKER] === true
-  );
-}
-
-/**
- * Bound what a step's evidence costs in ONE SQLite row.
- *
- * `buildEvidence` (exec/step-work.ts) promotes `evidence.output` UNCLIPPED by
- * design: gates judge the full promoted artifact and the in-memory
- * {@link StepExecutionResult} carries it to the caller intact. Nothing bounded
- * the PERSISTED form, though — a `collect` reducer over an unbounded fan-out
- * can serialize to hundreds of megabytes. This is the write boundary, so the
- * bound lives here rather than in the shared step-semantics module.
- *
- * Over-cap values are REPLACED (largest top-level entry BY UTF-8 BYTES first —
- * the unit the cap is measured in — until the row fits) with a
- * {@link TruncatedEvidenceValue} envelope. Nothing is silently shortened: a
- * consumer either sees the real value or sees an object whose marker key says
- * the data is gone. `preview` is intentionally not shaped like the original, so
- * an expression reaching INTO a truncated artifact (`steps.x.output.files`)
- * cannot quietly resolve against a half-array; a resumed run's reference is
- * rejected by name through {@link isTruncatedEvidence}.
- *
- * Returns the JSON to persist plus the keys that were replaced (empty in the
- * overwhelmingly common case, where nothing is copied or re-serialized twice).
- */
-export function clipStepEvidenceForPersistence(
-  evidence: Record<string, unknown> | undefined,
-  limitBytes: number = WORKFLOW_MAX_EVIDENCE_JSON_BYTES,
-): { json: string | null; truncatedKeys: string[] } {
-  if (!evidence) return { json: null, truncatedKeys: [] };
-  // Throws exactly as the previous inline `JSON.stringify` did on unserializable
-  // evidence — that contract is unchanged. Every stringify below operates on a
-  // subtree of a value already proven serializable here.
-  let json = JSON.stringify(evidence);
-  if (json === undefined) return { json: null, truncatedKeys: [] };
-  let bytes = utf8Bytes(json);
-  if (bytes <= limitBytes) return { json, truncatedKeys: [] };
-
-  const clipped: Record<string, unknown> = { ...evidence };
-  const truncatedKeys: string[] = [];
-  // Ordered by UTF-8 BYTES, the unit the cap itself is measured in: ordering by
-  // `json.length` (UTF-16 code units) sacrifices the char-largest key rather
-  // than the byte-largest one, so multibyte-heavy evidence loses extra keys the
-  // cap never required.
-  const bySizeDesc = Object.keys(evidence)
-    .map((key) => {
-      const json = JSON.stringify(evidence[key]) ?? "null";
-      return { key, json, bytes: utf8Bytes(json) };
-    })
-    .sort((a, b) => b.bytes - a.bytes);
-  for (const [index, entry] of bySizeDesc.entries()) {
-    const envelope = truncatedEvidenceValue(entry.json, `Step evidence "${entry.key}"`, limitBytes, true);
-    clipped[entry.key] = envelope;
-    truncatedKeys.push(entry.key);
-    // Track the row size arithmetically from the per-key sizes already computed
-    // for the sort, so a run of replacements costs ONE whole-object
-    // serialization rather than one per replaced key. The total is an ESTIMATE
-    // — a key whose value is `undefined` is charged the `"null"` the sort used
-    // but is OMITTED from the serialized row — so it decides only WHEN to
-    // measure. Whether the row FITS is settled by an exact serialization every
-    // time, the last key included, so an exhausted loop falls through to the
-    // whole-object marker on measurement rather than on drift.
-    bytes += utf8Bytes(JSON.stringify(envelope)) - entry.bytes;
-    if (bytes > limitBytes && index < bySizeDesc.length - 1) continue;
-    json = JSON.stringify(clipped);
-    bytes = utf8Bytes(json);
-    if (bytes <= limitBytes) return { json, truncatedKeys };
-  }
-  // Pathological shape (so many keys that even the envelopes overflow): persist
-  // ONE whole-object marker. Still unambiguous, still bounded.
-  return {
-    json: JSON.stringify(truncatedEvidenceValue(JSON.stringify(evidence), "Step evidence", limitBytes, false)),
-    truncatedKeys: Object.keys(evidence),
-  };
-}
-
 export async function completeWorkflowStep(
   input: CompleteWorkflowStepInput,
 ): Promise<WorkflowRunDetail | SummaryValidationFailure> {
@@ -743,7 +612,8 @@ export async function completeWorkflowStep(
     const run = readWorkflowRun(repo, input.runId);
     const storedPlan = requireExecutableWorkflowPlan(run);
     const steps = readWorkflowRunSteps(repo, run.id);
-    assertWorkflowSpineMatchesPlan(storedPlan, run, steps);
+    reconcileWorkflowSpineWithPlan(storedPlan, run, steps);
+    assertRunStatusMatchesSpine(run, steps);
     if (run.status !== "active") {
       throw new UsageError(`Workflow run ${run.id} is ${run.status} and cannot be updated.`);
     }
@@ -822,12 +692,14 @@ export async function completeWorkflowStep(
   return withWorkflowRunsRepo((repo) => {
     let updatedRun: WorkflowRunRow | undefined;
     let refreshedSteps: WorkflowRunStepRow[] = [];
+    let outputWarnings: string[] | undefined;
 
     repo.transaction(() => {
       const run = readWorkflowRun(repo, input.runId);
       const plan = requireExecutableWorkflowPlan(run);
       const spine = readWorkflowRunSteps(repo, run.id);
-      assertWorkflowSpineMatchesPlan(plan, run, spine);
+      reconcileWorkflowSpineWithPlan(plan, run, spine);
+      assertRunStatusMatchesSpine(run, spine);
       if (run.status !== "active") {
         throw new UsageError(`Workflow run ${run.id} is ${run.status} and cannot be updated.`);
       }
@@ -850,28 +722,18 @@ export async function completeWorkflowStep(
       if (input.signal?.aborted) throw interruptionReason(input.signal);
 
       const completedAt = new Date().toISOString();
-      // Bound the single-row cost of the promoted artifact (issue C). The
-      // caller's in-memory evidence object is never mutated — a clipped COPY is
-      // serialized — so the live step result and the gate's artifact judging
-      // keep the complete value. The DOWNSTREAM scope keeps it only because the
-      // engine threads this same in-memory evidence forward (`driveRun` prefers
-      // it over the re-read row): what the clip actually costs is a LATER
-      // invocation, which has nothing but these rows to rebuild the scope from.
-      const persistedEvidence = clipStepEvidenceForPersistence(input.evidence);
-      if (persistedEvidence.truncatedKeys.length > 0) {
-        warn(
-          `Workflow run ${run.id} step "${input.stepId}": evidence exceeded the ` +
-            `${WORKFLOW_MAX_EVIDENCE_JSON_BYTES}-byte persistence cap; ` +
-            `${persistedEvidence.truncatedKeys.map((k) => `"${k}"`).join(", ")} ` +
-            `${persistedEvidence.truncatedKeys.length === 1 ? "was" : "were"} stored as a truncation marker. ` +
-            `The rest of THIS invocation still reads the complete value, but a run resumed from these rows will ` +
-            `fail loudly when a later step references this step's output rather than read partial data.`,
-        );
-      }
+      // The promoted artifact is persisted WHOLE, unclipped (issue C): a
+      // step artifact that does not fit some cap used to be replaced by a
+      // truncation marker at this exact write, and the run looked fine right
+      // up until a LATER invocation (a resume, or any downstream step
+      // referencing it) found the marker instead of the value and failed
+      // permanently, with every prior paid step now unrecoverable. Persisting
+      // the real value here is what makes it readable again on resume.
+      const evidenceJson = input.evidence ? JSON.stringify(input.evidence) : null;
       repo.updateStepCompletion({
         status: input.status,
         notes: input.notes?.trim() || null,
-        evidenceJson: persistedEvidence.json,
+        evidenceJson,
         summary: summary || null,
         completedAt,
         runId: run.id,
@@ -891,15 +753,9 @@ export async function completeWorkflowStep(
       let outputsJson: string | null | undefined; // undefined = untouched, keep the row's existing value
       if (state.status === "completed" && plan.outputs) {
         const resolved = resolveWorkflowRunOutputs(plan, refreshedSteps);
-        if (!resolved.ok) {
-          throw new UsageError(
-            `Workflow run ${run.id} completed its final step but its declared outputs could not be resolved:\n` +
-              resolved.errors.map((e) => `  - ${e}`).join("\n"),
-            "WORKFLOW_OUTPUT_INVALID",
-          );
-        }
         outputsJson = JSON.stringify(resolved.outputs);
         repo.setRunOutputs(run.id, outputsJson);
+        outputWarnings = resolved.errors;
       }
 
       // Re-arm the check-in on every state change: a healthy, progressing run
@@ -925,6 +781,11 @@ export async function completeWorkflowStep(
     });
 
     const detail = buildWorkflowRunDetail(repo, updatedRun as WorkflowRunRow, refreshedSteps);
+    if (outputWarnings?.length) {
+      const messages = outputWarnings.map((e) => `Workflow run ${input.runId} declared ${e}`);
+      for (const message of messages) warn(message);
+      detail.warnings = [...(detail.warnings ?? []), ...messages];
+    }
     // #11: emit `workflow_step_completed` ONLY for a genuine `completed`
     // transition; every other non-pending status (failed/skipped/blocked)
     // carries the honest `workflow_step_updated` name. The status is ALWAYS
@@ -948,10 +809,19 @@ async function resolveRunSpecifier(
   specifier: string,
   params?: Record<string, unknown>,
   parameterFlags?: readonly WorkflowParameterFlag[],
-): Promise<{ run: WorkflowRunRow; autoStarted: boolean; startWarnings?: string[] }> {
+  forceNew?: boolean,
+): Promise<{ run: WorkflowRunRow; autoStarted: boolean; resumed?: true; startWarnings?: string[] }> {
   const hasParameters = (params && Object.keys(params).length > 0) || (parameterFlags?.length ?? 0) > 0;
-  const explicitRun = repo.getRunById(specifier);
+  const explicitRun = findRunByIdOrPrefix(repo, specifier);
   if (explicitRun) {
+    // `--new` starts a fresh run FROM A REF; it never makes sense against a
+    // run id (or an id prefix), which already names the run to act on (#919).
+    if (forceNew) {
+      throw new UsageError(
+        `--new starts a fresh run from a workflow ref; "${specifier}" already names a run id.`,
+        "INVALID_FLAG_VALUE",
+      );
+    }
     if (hasParameters) {
       throw new UsageError(
         `Workflow parameter flags can only be used when starting a new run, not with existing run id "${specifier}".`,
@@ -964,7 +834,7 @@ async function resolveRunSpecifier(
   const exactRef = specifier.trim();
   const parsedExact = parseBundleRef(exactRef);
   const qualifiedExact = parsedExact.bundle !== undefined && parsedExact.fragment === undefined;
-  const detached = qualifiedExact ? repo.getActiveRunRowForScope(exactRef, scopeKey) : undefined;
+  const detached = qualifiedExact && !forceNew ? repo.getActiveRunRowForScope(exactRef, scopeKey) : undefined;
 
   let ref: string;
   try {
@@ -972,25 +842,38 @@ async function resolveRunSpecifier(
   } catch (error) {
     if (detached) {
       if (hasParameters) {
-        throw new UsageError(`Workflow parameter flags can only be set on a new run; ${specifier} is already active.`);
+        throw new UsageError(
+          `Workflow parameter flags can only be set on a new run; ${specifier} is already active.`,
+          "INVALID_FLAG_VALUE",
+          `Pass --new to start a separate run, or run "akm workflow abandon ${detached.id}" to free up ${specifier} first.`,
+        );
       }
-      return { run: detached, autoStarted: false };
+      return { run: detached, autoStarted: false, resumed: true };
     }
     if (error instanceof NotFoundError && !specifier.includes(":") && !specifier.includes("/")) {
       throw new NotFoundError(`Workflow run or workflow "${specifier}" not found.`, "WORKFLOW_NOT_FOUND");
     }
     throw error;
   }
-  const active = repo.getActiveRunRowForScope(await workflowRunRefSet(ref, exactRef), scopeKey);
+  const active = forceNew ? undefined : repo.getActiveRunRowForScope(await workflowRunRefSet(ref, exactRef), scopeKey);
   if (active) {
     if (hasParameters) {
-      throw new UsageError(`Workflow parameter flags can only be set on a new run; ${ref} is already active.`);
+      throw new UsageError(
+        `Workflow parameter flags can only be set on a new run; ${ref} is already active.`,
+        "INVALID_FLAG_VALUE",
+        `Pass --new to start a separate run, or run "akm workflow abandon ${active.id}" to free up ${ref} first.`,
+      );
     }
-    return { run: active, autoStarted: false };
+    return { run: active, autoStarted: false, resumed: true };
   }
 
+  // `force` (#485's own escape hatch) is what lets `--new` create a second
+  // active run for this (ref, scope) pair instead of the concurrency guard
+  // refusing it — the caller explicitly asked for a fresh run, so the guard
+  // that exists to catch an ACCIDENTAL second run does not apply (#919).
   const started = await startWorkflowRun(ref, params ?? {}, {
     ...(parameterFlags !== undefined ? { parameterFlags } : {}),
+    ...(forceNew ? { force: true } : {}),
   });
   return {
     run: readWorkflowRun(repo, started.run.id),
@@ -1021,6 +904,34 @@ async function workflowRunRefSet(canonicalRef: string, exactRef: string): Promis
     }
   }
   return [...refs];
+}
+
+/**
+ * A workflow run id (or an accepted prefix of one, #919) is hex digits and
+ * hyphens, 8+ characters. A workflow ref always contains at least one
+ * character outside that set (a `/` path segment, at minimum), so this
+ * never mistakes a ref for an id — matching input is ALWAYS resolved as an
+ * id/prefix, never falls through to ref resolution.
+ */
+const RUN_ID_PREFIX_PATTERN = /^[0-9a-f-]{8,}$/;
+
+/** The run `specifier` names: by exact id, or by unique id prefix (#919) when it is id-shaped; `undefined` for a workflow ref. */
+function findRunByIdOrPrefix(repo: WorkflowRunsRepository, specifier: string): WorkflowRunRow | undefined {
+  const exact = repo.getRunById(specifier);
+  if (exact || !RUN_ID_PREFIX_PATTERN.test(specifier)) return exact;
+  return repo.getRunById(repo.resolveRunIdPrefix(specifier));
+}
+
+/** For verbs that take a run id/prefix OR a workflow ref (`status`): the run id, or `undefined` to fall through to ref resolution. */
+export async function resolveWorkflowRunTarget(specifier: string): Promise<string | undefined> {
+  return withWorkflowRunsRepo((repo) => findRunByIdOrPrefix(repo, specifier)?.id);
+}
+
+/** User-facing read: accepts an id prefix. Internal reads use {@link readWorkflowRun} with an exact id. */
+function readWorkflowRunOrPrefix(repo: WorkflowRunsRepository, specifier: string): WorkflowRunRow {
+  const run = findRunByIdOrPrefix(repo, specifier);
+  if (!run) throw new NotFoundError(`Workflow run "${specifier}" not found.`, "WORKFLOW_NOT_FOUND");
+  return run;
 }
 
 function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowRunRow {

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { parseBuiltinCommandAction } from "../../commands/command/builtin-action";
-import { applyPortableCommandArguments } from "../../commands/command/portable-template";
+import { PORTABLE_ARGUMENTS_PLACEHOLDER } from "../../commands/command/portable-template";
 import type { ProgramUnit } from "../program/schema";
 import type { SourceRef } from "../schema";
 import type { WorkflowSourceStep } from "./schema";
@@ -34,7 +34,7 @@ export function sourceStepInstructions(source: WorkflowSourceStep): string {
       return `Invoke stored command ${action.ref}${action.arguments === undefined ? "" : " with arguments"}.`;
     }
     if (source.commandMode === "literal") return action.content;
-    return applyPortableCommandArguments(action.content, action.arguments, "inline workflow command").content;
+    return action.content.split(PORTABLE_ARGUMENTS_PLACEHOLDER).join(action.arguments ?? "");
   }
   if (source.uses !== undefined) return `Invoke local target ${source.uses}.`;
   return "";

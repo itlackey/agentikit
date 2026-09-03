@@ -156,6 +156,34 @@ describe("state.db automatic migration boundary", () => {
     expect(fs.existsSync(literalMemoryPath)).toBe(false);
   });
 
+  test("an existing but genuinely empty database (no tables at all) migrates like a fresh file", () => {
+    const file = statePath();
+    openDatabase(file).close(); // creates an empty SQLite file, zero tables
+
+    const db = openStateDatabase(file);
+    const ids = db.prepare("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>;
+    expect(ids.map((row) => row.id)).toEqual(STATE_MIGRATIONS.map((migration) => migration.id));
+    db.close();
+  });
+
+  test("an existing database with an empty akm table (present but zero rows) still requires an explicit upgrade", () => {
+    const file = statePath();
+    const seeded = openDatabase(file);
+    seeded.exec("CREATE TABLE task_history (task_id TEXT PRIMARY KEY, status TEXT NOT NULL, started_at TEXT NOT NULL)");
+    seeded.close();
+    const before = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+
+    let error: unknown;
+    try {
+      openStateDatabase(file).close();
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error instanceof Error ? error.message : "").toMatch(/existing unversioned state\.db.*akm upgrade/i);
+    expect(createHash("sha256").update(fs.readFileSync(file)).digest("hex")).toBe(before);
+  });
+
   test("an existing database without a migration ledger is rejected without writing a byte", () => {
     const file = statePath();
     const seeded = openDatabase(file);
@@ -1023,7 +1051,69 @@ describe("state.db automatic migration boundary", () => {
     }
   });
 
-  test("an unknown ledger is rejected before current schema writes", () => {
+  // #915-adjacent: two akm versions sharing one data directory is a supported
+  // deployment (a bundled CLI beside a newer global install). A database the
+  // newer akm migrated must not brick the older one — its whole registry is
+  // already applied, so it has nothing to run and everything to read.
+  test("a ledger ahead of this akm opens, applies nothing, and leaves the extra rows alone", () => {
+    const file = statePath();
+    const seeded = openDatabase(file);
+    runMigrations(seeded, STATE_MIGRATIONS);
+    seeded.exec(`
+      INSERT INTO schema_migrations (id) VALUES ('999-from-a-newer-akm');
+      CREATE TABLE operator_probe (value TEXT NOT NULL);
+      INSERT INTO operator_probe VALUES ('unchanged');
+    `);
+    seeded.close();
+
+    const db = openStateDatabase(file);
+    try {
+      const ids = (db.prepare("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>).map(
+        (row) => row.id,
+      );
+      expect(ids).toEqual([...STATE_MIGRATIONS.map((migration) => migration.id), "999-from-a-newer-akm"]);
+      expect((db.prepare("SELECT value FROM operator_probe").get() as { value: string }).value).toBe("unchanged");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a ledger that diverges from this akm's registry is still rejected", () => {
+    const file = statePath();
+    const seeded = openDatabase(file);
+    const [first, second] = STATE_MIGRATIONS;
+    if (!first || !second) throw new Error("expected at least two state migrations");
+    seeded.exec(`
+      CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+      INSERT INTO schema_migrations VALUES ('${first.id}', datetime('now'));
+      INSERT INTO schema_migrations VALUES ('someone-elses-migration', datetime('now'));
+    `);
+    seeded.close();
+
+    // This akm's own second migration was never applied and something else was
+    // in its place: running the pending set could conflict with schema it
+    // cannot see, so this one refuses. Applying the missing migration blind
+    // could still land on a schema a later, unrecognized migration already
+    // changed — a real corruption risk, not a "conceivable" one — so the
+    // refusal stays; only its message gained the unexpected id, the full
+    // expected order, and a remedy, so an operator has something to act on.
+    let caught: unknown;
+    try {
+      openStateDatabase(file);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/not an exact ordered prefix/i);
+    expect(message).toContain("someone-elses-migration");
+    expect(message).toContain(first.id);
+    expect(message).toContain(second.id);
+    expect(message.toLowerCase()).toMatch(/backup|restore/);
+    expect(message.toLowerCase()).toContain("delete it and let akm rebuild");
+  });
+
+  test("a ledger whose very first entry is foreign is rejected before current schema writes", () => {
     const file = statePath();
     const seeded = openDatabase(file);
     seeded.exec(`
@@ -1034,7 +1124,7 @@ describe("state.db automatic migration boundary", () => {
     `);
     seeded.close();
 
-    expect(() => openStateDatabase(file)).toThrow(/newer migration ledger|unknown migration ID/i);
+    expect(() => openStateDatabase(file)).toThrow(/not an exact ordered prefix/i);
 
     const inspected = openDatabase(file, { readonly: true });
     expect((inspected.prepare("SELECT value FROM operator_probe").get() as { value: string }).value).toBe("unchanged");

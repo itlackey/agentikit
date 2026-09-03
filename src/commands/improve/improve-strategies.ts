@@ -109,6 +109,12 @@ export interface ResolvedImproveProcess {
   notices?: readonly Readonly<LoweringNotice>[];
 }
 
+export interface EngineUnavailableProcess {
+  process: ImproveProcessName;
+  configKey: string;
+  reason: string;
+}
+
 /** Complete immutable process behavior for one improve invocation. */
 export interface ResolvedImprovePlan {
   /** Immutable config snapshot used to re-enter canonical named-engine lowering. */
@@ -123,6 +129,7 @@ export interface ResolvedImprovePlan {
    * lane is never a silent no-op.
    */
   autonomyGated: readonly GatedLane[];
+  engineUnavailable: readonly EngineUnavailableProcess[];
 }
 
 function cloneAndFreeze<T>(value: T): Readonly<T> {
@@ -157,40 +164,58 @@ function buildImprovePlan(
   options: { repairValidationFailures?: boolean },
 ): Omit<ResolvedImprovePlan, "autonomyGated"> {
   const processes = {} as Record<ImproveProcessName, ResolvedImproveProcess>;
+  const engineUnavailable: EngineUnavailableProcess[] = [];
   for (const processName of Object.keys(IMPROVE_PROCESS_ENGINE_CAPABILITIES) as ImproveProcessName[]) {
-    const processConfig = cloneAndFreeze(strategy.config.processes?.[processName] ?? {});
-    const enabled = processConfig.enabled === true;
+    const sourceProcessConfig = strategy.config.processes?.[processName] ?? {};
+    const enabled = sourceProcessConfig.enabled === true;
     let runner: ImproveLlmRunner | null = null;
     let notices: readonly Readonly<LoweringNotice>[] = [];
     if (IMPROVE_PROCESS_ENGINE_CAPABILITIES[processName] !== "llm" || !enabled) {
-      processes[processName] = Object.freeze({ enabled, config: processConfig, runner });
+      processes[processName] = Object.freeze({ enabled, config: cloneAndFreeze(sourceProcessConfig), runner });
       continue;
     }
     // Validation itself is structural and always runs. Only its optional repair
     // step needs a model, so disabling repair must not create an LLM preflight.
-    if (processName !== "validation" || options.repairValidationFailures !== false) {
+    const skipsRepairEngine = processName === "validation" && options.repairValidationFailures === false;
+    if (!skipsRepairEngine) {
       const resolved = resolveImproveLlmExecution({
         config,
         profile: strategy.config,
-        process: processConfig,
+        process: sourceProcessConfig,
         processName,
       });
       runner = resolved?.runner ?? null;
       notices = resolved?.notices ?? [];
     }
-    if (!runner && !(processName === "validation" && options.repairValidationFailures === false)) {
-      throw new ConfigError(
-        `Enabled improve process "${processName}" requires an LLM engine. Set defaults.llmEngine or improve.strategies.${strategy.name}.processes.${processName}.engine.`,
-        "LLM_NOT_CONFIGURED",
-      );
+    if (!runner && !skipsRepairEngine) {
+      const configKey = `improve.strategies.${strategy.name}.processes.${processName}.engine`;
+      engineUnavailable.push({
+        process: processName,
+        configKey,
+        reason: `requires an LLM engine that is not configured. Set defaults.llmEngine or ${configKey}`,
+      });
+      processes[processName] = Object.freeze({
+        enabled: false,
+        config: cloneAndFreeze({ ...sourceProcessConfig, enabled: false }),
+        runner: null,
+      });
+      continue;
     }
     if (runner) runner = cloneAndFreeze(runner) as ImproveLlmRunner;
     processes[processName] = Object.freeze({
       enabled,
-      config: processConfig,
+      config: cloneAndFreeze(sourceProcessConfig),
       runner,
       ...(notices.length > 0 ? { notices: cloneAndFreeze(notices) } : {}),
     });
+  }
+
+  if (engineUnavailable.length > 0 && !Object.values(processes).some((process) => process.enabled)) {
+    const names = engineUnavailable.map((item) => `"${item.process}"`).join(", ");
+    throw new ConfigError(
+      `No improve process can run: ${names} ${engineUnavailable.length === 1 ? "requires" : "require"} an LLM engine that is not configured. Set defaults.llmEngine, or the per-process engine key named for each.`,
+      "LLM_NOT_CONFIGURED",
+    );
   }
 
   const triage = strategy.config.processes?.triage;
@@ -237,5 +262,6 @@ function buildImprovePlan(
     ...(triageJudgmentResolution?.notices.length
       ? { triageJudgmentNotices: cloneAndFreeze(triageJudgmentResolution.notices) }
       : {}),
+    engineUnavailable: Object.freeze(engineUnavailable),
   });
 }

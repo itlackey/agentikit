@@ -24,6 +24,7 @@ import { parseFrontmatter } from "../../src/core/asset/frontmatter";
 import type { AkmConfig } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
 import { readEvents } from "../../src/core/events";
+import { getDistillRejectedDir } from "../../src/core/paths";
 import { getStateDbPath, openStateDatabase } from "../../src/core/state-db";
 import { deriveEntryProvenance, deriveInstallations, slugForPath } from "../../src/indexer/installations";
 import { LlmFeatureTimeoutError } from "../../src/llm/feature-gate";
@@ -1710,7 +1711,7 @@ describe("akmDistill — pipeline-fix integration", () => {
     expect(listProposals(stash)).toEqual([]);
   });
 
-  test("LLM returns the archived recursive-lesson bad fixture → validation_failed (no broken proposal queued)", async () => {
+  test("LLM returns the archived recursive-lesson bad fixture → routed to review, not discarded", async () => {
     // Synthesised from proposal id 187de1c9-d7eb-47c1-92a2-23ad29f669cc (lesson-of-a-lesson
     // with double frontmatter, placeholder description, and circular when_to_use). The
     // recursive-ref guard fires first, so chat is never called — but to be defensive we
@@ -1729,31 +1730,34 @@ describe("akmDistill — pipeline-fix integration", () => {
       "Some prose that an LLM happened to write.",
     ].join("\n");
 
-    let threw: Error | undefined;
-    try {
-      await akmDistill({
-        ref: "knowledge/foo",
-        config: configEnabled(stash),
-        stashDir: stash,
-        chat: async () => archivedBadContent,
-        lookupFn: noopLookup,
-        readEventsFn: emptyEvents,
-      });
-    } catch (err) {
-      threw = err as Error;
-    }
+    const result = await akmDistill({
+      ref: "knowledge/foo",
+      config: configEnabled(stash),
+      stashDir: stash,
+      chat: async () => archivedBadContent,
+      lookupFn: noopLookup,
+      readEventsFn: emptyEvents,
+    });
 
-    expect(threw).toBeInstanceOf(Error);
-    expect(threw?.message).toMatch(/description|when_to_use|frontmatter/);
+    expect(result.outcome).toBe("review_needed");
+    expect(result.score).toBe(2.0);
+    expect(result.reason).toMatch(/description|when_to_use|frontmatter/);
     expect(listProposals(stash)).toEqual([]);
+    const rejectedDir = getDistillRejectedDir(stash);
+    const rejectedFiles = fs.readdirSync(rejectedDir);
+    expect(rejectedFiles).toHaveLength(1);
+    const rejectedContent = fs.readFileSync(path.join(rejectedDir, rejectedFiles[0]!), "utf8");
+    expect(rejectedContent).toContain("outcome: review_needed");
+    expect(rejectedContent).toContain("Lesson distilled from knowledge:foo");
 
     const { events } = readEvents({ type: "distill_invoked" });
-    expect(events.at(-1)?.metadata?.outcome).toBe("validation_failed");
+    expect(events.at(-1)?.metadata?.outcome).toBe("review_needed");
+    expect(events.at(-1)?.metadata?.reviewNeeded).toBe(true);
     const findingKinds = events.at(-1)?.metadata?.findingKinds as string[] | undefined;
     expect(findingKinds?.some((k) => /description|when_to_use|frontmatter/.test(k))).toBe(true);
   });
 
-  test("LLM returns description='Key pitfalls' → validation_failed (section-heading fragment caught)", async () => {
+  test("LLM returns description='Key pitfalls' → routed to review (section-heading fragment caught)", async () => {
     const stash = makeStashDir();
     const badContent = [
       "---",
@@ -1764,24 +1768,19 @@ describe("akmDistill — pipeline-fix integration", () => {
       "Body explaining the pitfalls of Paged.js usage.",
     ].join("\n");
 
-    let threw: Error | undefined;
-    try {
-      await akmDistill({
-        ref: "knowledge/pagedjs",
-        config: configEnabled(stash),
-        stashDir: stash,
-        chat: async () => badContent,
-        lookupFn: noopLookup,
-        readEventsFn: emptyEvents,
-      });
-    } catch (err) {
-      threw = err as Error;
-    }
+    const result = await akmDistill({
+      ref: "knowledge/pagedjs",
+      config: configEnabled(stash),
+      stashDir: stash,
+      chat: async () => badContent,
+      lookupFn: noopLookup,
+      readEventsFn: emptyEvents,
+    });
 
-    expect(threw).toBeInstanceOf(Error);
+    expect(result.outcome).toBe("review_needed");
     expect(listProposals(stash)).toEqual([]);
     const { events } = readEvents({ type: "distill_invoked" });
-    expect(events.at(-1)?.metadata?.outcome).toBe("validation_failed");
+    expect(events.at(-1)?.metadata?.outcome).toBe("review_needed");
   });
 
   test("memory: source with valid LLM output → proposal queued (happy-path stays green)", async () => {
@@ -1884,7 +1883,7 @@ describe("akmDistill — R3 judge verdict routing + G4 output encoding salience"
     }
   });
 
-  test("07 P0-2 end-to-end: gate ON + unjudgeable verdict → proposal REJECTED, not queued", async () => {
+  test("07 P0-2 end-to-end: gate ON + unjudgeable verdict → routed to review, never auto-queued", async () => {
     const stash = makeStashDir();
     // Distill returns a valid lesson, but the judge's second call receives the
     // same non-JSON text → parse failure → the gate fails CLOSED. This drives
@@ -1898,7 +1897,7 @@ describe("akmDistill — R3 judge verdict routing + G4 output encoding salience"
       lookupFn: noopLookup,
       readEventsFn: emptyEvents,
     });
-    expect(result.outcome).toBe("quality_rejected");
+    expect(result.outcome).toBe("review_needed");
     expect(result.score).toBe(-1);
     expect(listProposals(stash).length).toBe(0);
   });

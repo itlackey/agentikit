@@ -13,7 +13,22 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AkmConfig } from "../src/core/config/config";
 import { saveConfig } from "../src/core/config/config";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "./_helpers/sandbox";
+
+function captureWarnings(fn: () => void): string[] {
+  const warnings: string[] = [];
+  _resetWarnOnceForTests();
+  _setWarnSinkForTests((level, args) => {
+    if (level === "warn") warnings.push(args.map(String).join(" "));
+  });
+  try {
+    fn();
+    return warnings;
+  } finally {
+    _setWarnSinkForTests(undefined);
+  }
+}
 
 let storage: IsolatedAkmStorage;
 let stashDir = "";
@@ -39,8 +54,8 @@ afterEach(() => {
 });
 
 describe("sanitizeConfigForWrite — secret handling (#474)", () => {
-  it("rejects literal embedding.apiKey before defensive sanitization", () => {
-    expect(() =>
+  it("strips a literal embedding.apiKey at the write-time sanitizer, warning instead of rejecting the whole save", () => {
+    const warnings = captureWarnings(() => {
       saveConfig(
         makeConfig({
           embedding: {
@@ -49,9 +64,11 @@ describe("sanitizeConfigForWrite — secret handling (#474)", () => {
             apiKey: "sk-LITERAL-SECRET",
           },
         }),
-      ),
-    ).toThrow(/apiKey must be \$VAR/);
-    expect(fs.existsSync(path.join(configDir, "config.json"))).toBe(false);
+      );
+    });
+    const persisted = fs.readFileSync(path.join(configDir, "config.json"), "utf8");
+    expect(persisted).not.toContain("sk-LITERAL-SECRET");
+    expect(warnings.some((w) => w.includes("embedding.apiKey"))).toBe(true);
   });
 
   // biome-ignore lint/suspicious/noTemplateCurlyInString: literal env-var reference syntax under test
@@ -86,8 +103,8 @@ describe("sanitizeConfigForWrite — secret handling (#474)", () => {
   });
 
   // biome-ignore lint/suspicious/noTemplateCurlyInString: literal env-var reference syntax under test
-  it("rejects unsupported ${VAR:-default} syntax", () => {
-    expect(() =>
+  it("treats unsupported ${VAR:-default} syntax as a literal and strips it at the sanitizer", () => {
+    const warnings = captureWarnings(() => {
       saveConfig(
         makeConfig({
           embedding: {
@@ -97,12 +114,15 @@ describe("sanitizeConfigForWrite — secret handling (#474)", () => {
             apiKey: "${OPENAI_API_KEY:-fallback}",
           },
         }),
-      ),
-    ).toThrow(/apiKey must be \$VAR/);
+      );
+    });
+    const persisted = fs.readFileSync(path.join(configDir, "config.json"), "utf8");
+    expect(persisted).not.toContain("${OPENAI_API_KEY:-fallback}");
+    expect(warnings.some((w) => w.includes("embedding.apiKey"))).toBe(true);
   });
 
-  it("rejects literal apiKey and preserves references across llm engines", () => {
-    expect(() =>
+  it("strips a literal engine apiKey at the sanitizer and preserves references across llm engines", () => {
+    const warnings = captureWarnings(() => {
       saveConfig(
         makeConfig({
           engines: {
@@ -114,8 +134,11 @@ describe("sanitizeConfigForWrite — secret handling (#474)", () => {
             },
           },
         }),
-      ),
-    ).toThrow(/apiKey must be/);
+      );
+    });
+    let persisted = fs.readFileSync(path.join(configDir, "config.json"), "utf8");
+    expect(persisted).not.toContain("sk-openai-literal");
+    expect(warnings.some((w) => w.includes("engines.openai.apiKey"))).toBe(true);
 
     saveConfig(
       makeConfig({
@@ -136,7 +159,7 @@ describe("sanitizeConfigForWrite — secret handling (#474)", () => {
         },
       }),
     );
-    const persisted = fs.readFileSync(path.join(configDir, "config.json"), "utf8");
+    persisted = fs.readFileSync(path.join(configDir, "config.json"), "utf8");
     expect(persisted).toContain("$OPENAI_API_KEY");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal env-var reference under test
     expect(persisted).toContain("${ANTHROPIC_API_KEY}");

@@ -292,7 +292,7 @@ describe("freezeWorkflowEnvironment", () => {
     expect(descriptors[1]?.keys).toEqual(["ALPHA_ONLY", "SHARED"]);
   });
 
-  test("rejects short authoritative refs, duplicate logical refs, and physical cross-owner aliases", async () => {
+  test("rejects a short authoritative ref that does not resolve to a canonical fully-qualified owner", async () => {
     const { freezeWorkflowEnvironment } = await environmentV4();
     const root = sandbox("akm-env-v4-owner-reject");
     const file = write(root, "env/prod.env", "SAFE=yes\n");
@@ -302,11 +302,25 @@ describe("freezeWorkflowEnvironment", () => {
         resolveRef: () => ({ ref: "env/prod", bundle: "alpha", adapter: "akm", root, path: file }),
       }),
     ).toThrow(/qualified|bundle|canonical|ref/i);
-    expect(() =>
-      freezeWorkflowEnvironment(["env/prod", "env/prod"], {
-        resolveRef: () => ({ ref: "alpha//env/prod", bundle: "alpha", adapter: "akm", root, path: file }),
-      }),
-    ).toThrow(/duplicate|ref|identity/i);
+  });
+
+  test("a duplicate logical ref is dropped silently rather than aborting the freeze", async () => {
+    const { freezeWorkflowEnvironment } = await environmentV4();
+    const root = sandbox("akm-env-v4-owner-duplicate");
+    const file = write(root, "env/prod.env", "SAFE=yes\n");
+
+    const descriptors = freezeWorkflowEnvironment(["env/prod", "env/prod"], {
+      resolveRef: () => ({ ref: "alpha//env/prod", bundle: "alpha", adapter: "akm", root, path: file }),
+    }) as Array<{ ref: string }>;
+
+    expect(descriptors.map((d) => d.ref)).toEqual(["alpha//env/prod"]);
+  });
+
+  test("two logical refs aliasing the same physical file still refuse to freeze (shared guarded-source contract, not this module)", async () => {
+    const { freezeWorkflowEnvironment } = await environmentV4();
+    const root = sandbox("akm-env-v4-owner-alias");
+    const file = write(root, "env/prod.env", "SAFE=yes\n");
+
     expect(() =>
       freezeWorkflowEnvironment(["alpha//env/prod", "omega//env/prod"], {
         resolveRef: (ref) => ({

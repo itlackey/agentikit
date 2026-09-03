@@ -114,20 +114,14 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     expect(result.summary).toEqual({ fixed: 0, flagged: 1, warnings: 0 });
   });
 
-  test("a peer .md/.yml canonical-owner collision is reported once instead of linting either owner", async () => {
+  test("a peer .md/.yml canonical-owner collision picks the .md deterministically and lints it cleanly", async () => {
     const root = fixtureRoot("akm-lint-yaml-collision-");
     write(root, "workflows/dual.md", VALID_MARKDOWN);
     write(root, "workflows/dual.yml", VALID_YAML);
 
     const result = await akmLint({ dir: root, typeFilter: "workflows" });
 
-    expect(result.flagged).toHaveLength(1);
-    expect(result.flagged[0]).toMatchObject({
-      file: "workflows/dual.md",
-      issue: "invalid-workflow-structure",
-      fixed: false,
-    });
-    expect(result.flagged[0]?.detail).toMatch(/multiple workflow source files.*dual\.md.*dual\.yml/is);
+    expect(result.flagged).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
 
@@ -188,9 +182,7 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
     // to akm's resolved cache root, not a name).
     const root = fixtureRoot("akm-lint-yaml-cached-peer-");
     write(root, "workflows/release.md", VALID_MARKDOWN);
-    write(root, "workflows/.cache/shadow.md", VALID_MARKDOWN);
     write(root, "workflows/.cache/shadow.yml", INVALID_YAML);
-    write(root, "workflows/registry/mirror.md", VALID_MARKDOWN);
     write(root, "workflows/registry/mirror.yml", INVALID_YAML);
 
     const result = await akmLint({ dir: root, typeFilter: "workflows" });
@@ -204,19 +196,13 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
   test.each([
     ["collision.md.yml", VALID_YAML],
     ["collision.yml.md", VALID_MARKDOWN],
-  ])("a repeated workflow suffix in %s is one in-band ownership finding", async (filename, content) => {
+  ])("a repeated workflow suffix in %s lints cleanly under its real extension", async (filename, content) => {
     const root = fixtureRoot("akm-lint-yaml-nested-suffix-");
     write(root, `workflows/${filename}`, content);
 
     const result = await akmLint({ dir: root, typeFilter: "workflows" });
 
-    expect(result.flagged).toHaveLength(1);
-    expect(result.flagged[0]).toMatchObject({
-      file: `workflows/${filename}`,
-      issue: "invalid-workflow-structure",
-      fixed: false,
-    });
-    expect(result.flagged[0]?.detail).toMatch(/extensionless stem ending in recognized workflow suffix/is);
+    expect(result.flagged).toEqual([]);
     expect(result.warnings).toEqual([]);
   });
 
@@ -271,7 +257,7 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
   );
 
   test.skipIf(process.platform === "win32")(
-    "dangling, escaping, and format-changing workflow symlinks are one in-band domain error without source reads",
+    "dangling, escaping, and format-changing workflow symlinks are silently skipped, never read for content",
     async () => {
       const root = fixtureRoot("akm-lint-yaml-link-domain-");
       const outside = fixtureRoot("akm-lint-yaml-link-outside-");
@@ -294,20 +280,9 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
       try {
         const result = await akmLint({ dir: root, typeFilter: "workflows", fix: true });
 
-        expect(result.flagged).toHaveLength(3);
-        expect(result.flagged.map(({ file }) => file)).toEqual([
-          "workflows/broken.yml",
-          "workflows/escape.yml",
-          "workflows/format.yml",
-        ]);
-        expect(
-          result.flagged.every(({ issue, fixed }) => issue === "invalid-workflow-structure" && fixed === false),
-        ).toBe(true);
-        expect(result.flagged.map(({ detail }) => detail).join("\n")).toMatch(
-          /cannot be resolved.*outside the bundle root.*different source format/is,
-        );
-        expect(JSON.stringify(result)).not.toContain("AKM_OUTSIDE_BYTES_MUST_NOT_LEAK");
+        expect(result.flagged).toEqual([]);
         expect(result.fixed).toEqual([]);
+        expect(JSON.stringify(result)).not.toContain("AKM_OUTSIDE_BYTES_MUST_NOT_LEAK");
         expect(readSpy).not.toHaveBeenCalledWith(outsideTarget, expect.anything());
       } finally {
         readSpy.mockRestore();
@@ -316,17 +291,17 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
   );
 
   test.skipIf(process.platform === "win32")(
-    "a contained symlink and canonical peer produce one deterministic collision without reading either source",
+    "a contained symlink and canonical peer: the .md peer wins and lints cleanly, the shadowed .yml symlink is never read",
     async () => {
       const root = fixtureRoot("akm-lint-yaml-link-collision-");
       const target = write(root, "support/dual.yml", INVALID_YAML);
       const linked = link(root, "workflows/dual.yml", target);
-      const markdown = write(root, "workflows/dual.md", VALID_MARKDOWN);
-      const denied = new Set([linked, markdown].map((candidate) => path.resolve(candidate)));
+      write(root, "workflows/dual.md", VALID_MARKDOWN);
+      const denied = new Set([linked, target].map((candidate) => path.resolve(candidate)));
       const originalRead = fs.readFileSync;
       const readSpy = spyOn(fs, "readFileSync").mockImplementation(((candidate, options) => {
         if (denied.has(path.resolve(String(candidate)))) {
-          throw new Error(`ownership arbitration must not read ${String(candidate)}`);
+          throw new Error(`shadowed .yml sibling must not be read: ${String(candidate)}`);
         }
         return originalRead(candidate, options as never);
       }) as typeof fs.readFileSync);
@@ -334,13 +309,7 @@ describe("ordinary AKM lint recognizes peer workflow YAML", () => {
       try {
         const result = await akmLint({ dir: root, typeFilter: "workflows", fix: true });
 
-        expect(result.flagged).toHaveLength(1);
-        expect(result.flagged[0]).toMatchObject({
-          file: "workflows/dual.md",
-          issue: "invalid-workflow-structure",
-          fixed: false,
-        });
-        expect(result.flagged[0]?.detail).toMatch(/multiple workflow source files.*dual\.md.*dual\.yml/is);
+        expect(result.flagged).toEqual([]);
         expect(JSON.stringify(result)).not.toContain("AKM_SECRET_BYTES_MUST_NOT_LEAK");
         expect(result.fixed).toEqual([]);
       } finally {

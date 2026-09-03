@@ -24,6 +24,8 @@
 import { z } from "zod";
 import { isRecord } from "../common";
 import { UsageError } from "../errors";
+import { hasRegistryUrlCredentials, REGISTRY_CREDENTIALS_UNSUPPORTED } from "../registry-url";
+import { warnOnce } from "../warn";
 import { AkmConfigBaseSchema, type AkmConfigShape, EngineConfigSchema, listTopLevelConfigKeys } from "./config-schema";
 import { deepMergeConfig } from "./deep-merge";
 
@@ -190,13 +192,18 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
 
   // #454: apiKey paths are not persistable. Throw at set time.
   rejectApiKeyPath(path, dotted);
+  rejectLiteralApiKeyInWholeObjectSet(path, raw, dotted);
 
   const schema = resolveSchemaAt(path, config, raw);
   const symbolicApiKey =
     (path[0] === "engines" && path[2] === "apiKey") ||
     (path[0] === "embedding" && path.length === 2 && path[1] === "apiKey");
-  if (!schema && !symbolicApiKey) {
-    throw new UsageError(`Unknown config key: ${dotted}`, "INVALID_FLAG_VALUE", unknownKeyHint(dotted));
+  const isUnknownKey = !schema && !symbolicApiKey;
+  if (isUnknownKey) {
+    warnOnce(
+      `config-set:unknown-key:${dotted}`,
+      `"${dotted}" is not a known config key; storing it anyway. Run \`akm config get ${dotted}\` to confirm it round-trips as expected.`,
+    );
   }
 
   const judgmentObjectPath = isTriageJudgmentPath(path);
@@ -207,7 +214,11 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
         ? parseObjectPatch(raw, dotted)
         : symbolicApiKey
           ? raw
-          : coerceForSchema(schema as z.ZodTypeAny, raw, dotted);
+          : isUnknownKey
+            ? bestEffortJsonValue(raw)
+            : coerceForSchema(schema as z.ZodTypeAny, raw, dotted);
+
+  if (path[0] === "registries") rejectRegistryCredentialValue(value, dotted);
 
   const existing = path.reduce<unknown>((value, key) => {
     if (value && typeof value === "object") return (value as Record<string, unknown>)[key];
@@ -231,7 +242,9 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
         ? /^\$[A-Za-z_][A-Za-z0-9_]*$|^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(raw)
           ? { success: true as const, data: value }
           : { success: false as const, error: { issues: [{ path: [], message: `apiKey must be $VAR or \${VAR}` }] } }
-        : (schema as z.ZodTypeAny).safeParse(candidate);
+        : isUnknownKey
+          ? { success: true as const, data: value }
+          : (schema as z.ZodTypeAny).safeParse(candidate);
   if (!parsed.success) {
     const lines = parsed.error.issues
       .map((i) => {
@@ -311,6 +324,48 @@ function rejectApiKeyPath(path: Path, dotted: string): void {
     "Storing API keys in config.json leaks them through backups, logs, and version control. " +
       "Use the corresponding environment variable. AKM reads it at request time.",
   );
+}
+
+function rejectLiteralApiKeyInWholeObjectSet(path: Path, raw: string, dotted: string): void {
+  const isWholeEngineSet = path[0] === "engines" && path.length === 2;
+  const isWholeEmbeddingSet = path.length === 1 && path[0] === "embedding";
+  if (!isWholeEngineSet && !isWholeEmbeddingSet) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return; // Malformed JSON — the caller's own parse/coercion reports this.
+  }
+  if (!isRecord(parsed) || typeof parsed.apiKey !== "string") return;
+  if (/^\$[A-Za-z_][A-Za-z0-9_]*$|^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(parsed.apiKey)) return;
+  throw new UsageError(
+    `apiKey cannot be persisted in config; export ${recipeForApiKey([...path, "apiKey"], `${dotted}.apiKey`)} instead. (key: ${dotted}.apiKey)`,
+    "INVALID_FLAG_VALUE",
+    "Storing API keys in config.json leaks them through backups, logs, and version control. " +
+      "Use the corresponding environment variable. AKM reads it at request time.",
+  );
+}
+
+function rejectRegistryCredentialValue(value: unknown, dotted: string): void {
+  const entries = Array.isArray(value) ? value : [value];
+  for (const entry of entries) {
+    const url = isRecord(entry) && typeof entry.url === "string" ? entry.url : undefined;
+    if (url && hasRegistryUrlCredentials(url)) {
+      throw new UsageError(
+        `${REGISTRY_CREDENTIALS_UNSUPPORTED} (key: ${dotted})`,
+        "INVALID_FLAG_VALUE",
+        REGISTRY_CREDENTIALS_UNSUPPORTED,
+      );
+    }
+  }
+}
+
+function bestEffortJsonValue(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function parseObjectPatch(raw: string, key: string): Record<string, unknown> {

@@ -113,6 +113,25 @@ describe("workflow CLI", () => {
     expect(fs.existsSync(path.join(storage.stashDir, "workflows", "print-test.md"))).toBe(false);
   });
 
+  test("create --force alone replaces an existing workflow with a fresh template", async () => {
+    await createWorkflow("template-target", ROUTED_WORKFLOW);
+    const assetPath = path.join(storage.stashDir, "workflows", "template-target.md");
+    expect(fs.readFileSync(assetPath, "utf8")).toContain("route:");
+
+    const result = await runCliCapture(["workflow", "create", "template-target", "--force"]);
+    expect(result.code).toBe(0);
+    expect(fs.readFileSync(assetPath, "utf8")).not.toContain("route:");
+  });
+
+  test("create --force --reset still works (deprecated alias, no independent effect)", async () => {
+    await createWorkflow("template-target-reset", ROUTED_WORKFLOW);
+    const assetPath = path.join(storage.stashDir, "workflows", "template-target-reset.md");
+
+    const result = await runCliCapture(["workflow", "create", "template-target-reset", "--force", "--reset"]);
+    expect(result.code).toBe(0);
+    expect(fs.readFileSync(assetPath, "utf8")).not.toContain("route:");
+  });
+
   test("create --from rejects invalid and duplicate-step documents", async () => {
     const invalid = await runCliCapture([
       "workflow",
@@ -180,17 +199,23 @@ describe("workflow CLI", () => {
     await createWorkflow("wedged", execWorkflow(["bun", "-e", "await Bun.sleep(30000)"]));
     const wedged = await runCliCapture(["workflow", "run", "workflows/wedged", "--timeout=150ms"]);
     expect(wedged.code).toBe(1);
+    // #918: `ok` must mirror the same failed/blocked/gateRejection/aborted
+    // predicate that already drives the nonzero exit code — an aborted run
+    // must never read as ok:true.
     expect(JSON.parse(wedged.stdout)).toMatchObject({
       run: { status: "active" },
       aborted: true,
       timedOut: true,
+      ok: false,
     });
 
     await createWorkflow("quick", execWorkflow(["bun", "-e", "process.stdout.write('ok')"]));
     const completed = await runCliCapture(["workflow", "run", "workflows/quick"]);
     expect(completed.code).toBe(0);
-    const finished = (JSON.parse(completed.stdout) as { run: { id: string; status: string } }).run;
+    const completedEnvelope = JSON.parse(completed.stdout) as { run: { id: string; status: string }; ok: boolean };
+    const finished = completedEnvelope.run;
     expect(finished.status).toBe("completed");
+    expect(completedEnvelope.ok).toBe(true);
 
     // Re-running a completed run is a no-op that returns `done`; a deadline
     // that fires around it describes nothing an operator could resume.

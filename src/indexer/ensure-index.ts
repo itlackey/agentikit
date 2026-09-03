@@ -28,6 +28,7 @@ import { classifyPathAccess } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { assertIndexPathReadable, closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { getEntryCount, getIndexedFilePaths } from "../storage/repositories/index-entries-repository";
+import { isCanonicalIndexGeneration } from "../storage/repositories/index-entry-schema";
 import { getMeta } from "../storage/repositories/index-meta-repository";
 import { warnOnBundleRenameDrift } from "./bundle-identity-guard";
 
@@ -122,6 +123,7 @@ export function isIndexStale(stashDir: string): boolean {
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
     db = openExistingDatabase(dbPath);
+    if (!isCanonicalIndexGeneration(db)) return true;
     const entryCount = getEntryCount(db);
     if (entryCount === 0) return true;
 
@@ -164,6 +166,7 @@ function indexCanServeStash(stashDir: string): boolean {
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
     db = openExistingDatabase(dbPath);
+    if (!isCanonicalIndexGeneration(db)) return false;
     if (getEntryCount(db) === 0) return false;
 
     const storedStashDir = getMeta(db, "stashDir");

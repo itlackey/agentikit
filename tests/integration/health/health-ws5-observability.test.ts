@@ -58,7 +58,7 @@ afterEach(() => {
 });
 
 describe("WS-5 perfTelemetry aggregation", () => {
-  test("aggregates perfTelemetry from consolidation result envelopes", () => {
+  test("aggregates perfTelemetry from consolidation result envelopes", async () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -115,7 +115,7 @@ describe("WS-5 perfTelemetry aggregation", () => {
       db.close();
     }
 
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     const perf = result.improve.perfTelemetry;
 
     expect(perf).toBeDefined();
@@ -128,7 +128,7 @@ describe("WS-5 perfTelemetry aggregation", () => {
     expect(perf.overBudgetRuns).toBe(0);
   });
 
-  test("flags overBudgetRuns when estimatedBudgetFractionUsed > 1.0", () => {
+  test("flags overBudgetRuns when estimatedBudgetFractionUsed > 1.0", async () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -184,14 +184,14 @@ describe("WS-5 perfTelemetry aggregation", () => {
       db.close();
     }
 
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     const perf = result.improve.perfTelemetry;
 
     expect(perf.overBudgetRuns).toBe(1);
     expect(perf.runsWithTelemetry).toBe(1);
   });
 
-  test("accumulates perfTelemetry across multiple runs", () => {
+  test("accumulates perfTelemetry across multiple runs", async () => {
     const db = openStateDatabase();
     try {
       const now = Date.now();
@@ -249,7 +249,7 @@ describe("WS-5 perfTelemetry aggregation", () => {
       db.close();
     }
 
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     const perf = result.improve.perfTelemetry;
 
     expect(perf.runsWithTelemetry).toBe(3);
@@ -260,7 +260,7 @@ describe("WS-5 perfTelemetry aggregation", () => {
     expect(perf.overBudgetRuns).toBe(0);
   });
 
-  test("handles runs without perfTelemetry gracefully", () => {
+  test("handles runs without perfTelemetry gracefully", async () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -309,7 +309,7 @@ describe("WS-5 perfTelemetry aggregation", () => {
       db.close();
     }
 
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     const perf = result.improve.perfTelemetry;
 
     // runsWithTelemetry must be 0 for a run with no perfTelemetry.
@@ -320,7 +320,7 @@ describe("WS-5 perfTelemetry aggregation", () => {
 });
 
 describe("WS-5 denominator-fixed coverage", () => {
-  test("computes coverage rate from accepted proposals and total assets", () => {
+  test("computes coverage rate from accepted proposals and total assets", async () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -359,7 +359,7 @@ describe("WS-5 denominator-fixed coverage", () => {
       db.close();
     }
 
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     const cov = result.improve.coverage;
 
     expect(cov).toBeDefined();
@@ -371,9 +371,9 @@ describe("WS-5 denominator-fixed coverage", () => {
     expect(cov.totalAssets).toBe(10);
   });
 
-  test("returns NaN rate when totalAssets is zero", () => {
+  test("returns NaN rate when totalAssets is zero", async () => {
     // No improve run seeded = memorySummary defaults to { eligible: 0, derived: 0 }.
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     const cov = result.improve.coverage;
 
     expect(cov).toBeDefined();
@@ -381,7 +381,7 @@ describe("WS-5 denominator-fixed coverage", () => {
     expect(Number.isNaN(cov.eligibleFraction)).toBe(true);
   });
 
-  test("coverage.acceptedProposals counts only accepted (not pending) proposals", () => {
+  test("coverage.acceptedProposals counts only accepted (not pending) proposals", async () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -427,11 +427,11 @@ describe("WS-5 denominator-fixed coverage", () => {
       db.close();
     }
 
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     expect(result.improve.coverage.acceptedProposals).toBe(2);
   });
 
-  test("coverage.acceptedProposals is window-scoped and excludes proposals outside the window", () => {
+  test("coverage.acceptedProposals is window-scoped and excludes proposals outside the window", async () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -480,13 +480,13 @@ describe("WS-5 denominator-fixed coverage", () => {
     }
 
     // since=1h: only p-in-window should count; p-old is 3 hours ago and outside window.
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     expect(result.improve.coverage.acceptedProposals).toBe(1);
   });
 });
 
 describe("WS-5 degradation metrics", () => {
-  test("computes Gini coefficient and flags entrenchment when > 0.6", () => {
+  test("computes Gini coefficient and flags entrenchment when > 0.6", async () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -534,7 +534,7 @@ describe("WS-5 degradation metrics", () => {
       db.close();
     }
 
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     const deg = result.improve.degradation;
 
     expect(deg).toBeDefined();
@@ -546,7 +546,7 @@ describe("WS-5 degradation metrics", () => {
     expect(deg.entrenchmentFlagged).toBe(true);
   });
 
-  test("does not flag entrenchment for uniform distribution", () => {
+  test("does not flag entrenchment for uniform distribution", async () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -589,7 +589,7 @@ describe("WS-5 degradation metrics", () => {
       db.close();
     }
 
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     const deg = result.improve.degradation;
 
     expect(deg).toBeDefined();
@@ -599,7 +599,7 @@ describe("WS-5 degradation metrics", () => {
     expect(deg.entrenchmentFlagged).toBe(false);
   });
 
-  test("oracle spot-check samples up to 5 recently accepted proposals", () => {
+  test("oracle spot-check samples up to 5 recently accepted proposals", async () => {
     const db = openStateDatabase();
     try {
       const now = new Date();
@@ -637,7 +637,7 @@ describe("WS-5 degradation metrics", () => {
       db.close();
     }
 
-    const result = akmHealth({ since: "1h" });
+    const result = await akmHealth({ since: "1h" });
     const deg = result.improve.degradation;
 
     expect(deg).toBeDefined();
@@ -656,8 +656,8 @@ describe("WS-5 degradation metrics", () => {
 });
 
 describe("WS-5 metrics with no runs in window", () => {
-  test("returns zero/NaN metrics when no runs in window", () => {
-    const result = akmHealth({ since: "1h" });
+  test("returns zero/NaN metrics when no runs in window", async () => {
+    const result = await akmHealth({ since: "1h" });
     const perf = result.improve.perfTelemetry;
     const cov = result.improve.coverage;
 

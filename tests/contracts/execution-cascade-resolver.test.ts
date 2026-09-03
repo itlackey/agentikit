@@ -263,7 +263,7 @@ describe("common execution cascade resolver", () => {
     ).toThrow(/opencode-sdk.*unavailable/i);
   });
 
-  test("fails known-unmapped aliases and invalid engines before authorization", () => {
+  test("fails invalid engines before authorization; a known-unmapped alias now resolves as exact instead", () => {
     let calls = 0;
     const authorizeTools = () => {
       calls += 1;
@@ -292,18 +292,17 @@ describe("common execution cascade resolver", () => {
     ).toThrow(/engine.*missing.*configured/i);
     expect(calls).toBe(1);
 
-    expect(() =>
-      planExecutionCascade({
-        ...input,
-        authorizeTools,
-        layers: { ...input.layers, current: layer("current", { engine: "custom", model: "mapped", tools: ["read"] }) },
-        engines: {
-          ...engines,
-          custom: { selection: { name: "custom", kind: "agent", platform: "gemini" }, defaults: {} },
-        },
-      }),
-    ).toThrow(/known alias.*mapped.*gemini/i);
-    expect(calls).toBe(1);
+    const plan = planExecutionCascade({
+      ...input,
+      authorizeTools,
+      layers: { ...input.layers, current: layer("current", { engine: "custom", model: "mapped", tools: ["read"] }) },
+      engines: {
+        ...engines,
+        custom: { selection: { name: "custom", kind: "agent", platform: "gemini" }, defaults: {} },
+      },
+    });
+    expect(plan.request.model).toEqual({ input: "mapped", interpretation: "exact", resolved: "mapped" });
+    expect(calls).toBe(2);
   });
 
   test("keeps provenance canonical and free of prompt, environment, model, and policy values", () => {

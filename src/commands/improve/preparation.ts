@@ -47,6 +47,7 @@ import {
   isDistillCandidateRef,
   isLessonCandidate,
   isSignalDeltaEligible,
+  resolveImproveScope,
 } from "./eligibility";
 import { type AkmExtractResult, akmExtract, countNewExtractCandidates, type ResolvedExtractPlan } from "./extract";
 import { computeValenceScore, FEEDBACK_WEIGHT, UTILITY_WEIGHT } from "./feedback-valence";
@@ -290,18 +291,22 @@ function evaluateConsolidationEligibility(args: {
   // #553 minPoolSize guard: skip consolidation when the eligible memory pool is
   // below a minimum size, rather than spending an LLM pass on a handful of
   // memories. This is an INDEPENDENT skip condition from #551's mtime pool-delta
-  // gate — either can skip. Default 500; `minPoolSize: 0` disables the guard.
-  // Evaluated against the eligible-pool count BEFORE entering the LLM loop so a
-  // skip costs ZERO LLM calls.
-  const CONSOLIDATE_DEFAULT_MIN_POOL_SIZE = 500;
+  // gate — either can skip. Default 0 (disabled) — every built-in strategy
+  // used to ship 500, which meant `akm improve --strategy consolidate`, typed
+  // by a human, silently did nothing on almost every real install. Evaluated
+  // against the eligible-pool count BEFORE entering the LLM loop so a skip
+  // costs ZERO LLM calls when an operator opts back into a floor.
+  const CONSOLIDATE_DEFAULT_MIN_POOL_SIZE = 0;
   const configuredMinPoolSize = improveProfile?.processes?.consolidate?.minPoolSize;
   const minPoolSize =
     typeof configuredMinPoolSize === "number" ? configuredMinPoolSize : CONSOLIDATE_DEFAULT_MIN_POOL_SIZE;
   const eligiblePoolSize = typeof memorySummary.eligible === "number" ? memorySummary.eligible : 0;
+  const userNamedStrategyOrScope = options.strategy !== undefined || resolveImproveScope(options.scope).mode === "ref";
   // volumeTriggered means the pool already exceeds the volume threshold (100),
   // so a force-triggered run never trips the pool-size guard. The guard only
   // engages when minPoolSize > 0 and the eligible pool is strictly below it.
-  const poolBelowMinSize = !volumeTriggered && minPoolSize > 0 && eligiblePoolSize < minPoolSize;
+  const poolBelowMinSize =
+    !volumeTriggered && !userNamedStrategyOrScope && minPoolSize > 0 && eligiblePoolSize < minPoolSize;
 
   return {
     volumeTriggered,

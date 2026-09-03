@@ -23,40 +23,30 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import { assertSetupSandbox, runSetupFromConfig, runSetupWithDefaults } from "../src/setup/setup";
-import { makeSandboxDir, withEnv, withEnvSync } from "./_helpers/sandbox";
+import { makeSandboxDir, withEnv } from "./_helpers/sandbox";
 
-// ── Layer 1: assertSetupSandbox refuses /tmp/* explicit --dir ───────────────
+function captureWarnings(): { warnings: string[]; restore: () => void } {
+  const warnings: string[] = [];
+  _setWarnSinkForTests((level, args) => {
+    if (level === "warn") warnings.push(args.map(String).join(" "));
+  });
+  return {
+    warnings,
+    restore: () => {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    },
+  };
+}
+
+// ── Layer 1: assertSetupSandbox warns on /tmp/* explicit --dir ─────────────
 
 describe("setup tmp-stash guard (layer 1: assertSetupSandbox)", () => {
-  test("runSetupWithDefaults refuses --dir /tmp/X by default", async () => {
+  test("runSetupWithDefaults warns and proceeds for --dir /tmp/X", async () => {
     const { dir: tmpDir, cleanup } = makeSandboxDir("akm-setup-guard-");
-    try {
-      // Set up the transient stash env so getConfigDir would isolate (layer
-      // 2). Layer 1 should still throw before we reach saveConfig.
-      await withEnv(
-        {
-          AKM_BUNDLE_DIR: tmpDir,
-          AKM_DATA_DIR: path.join(tmpDir, "data"),
-          AKM_STATE_DIR: path.join(tmpDir, "state"),
-          XDG_DATA_HOME: path.join(tmpDir, "data"),
-          XDG_STATE_HOME: path.join(tmpDir, "state"),
-          // Make sure the escape hatch is NOT set.
-          AKM_FORCE_SETUP_TMP_STASH: undefined,
-        },
-        async () => {
-          await expect(runSetupWithDefaults({ dir: tmpDir, noInit: true })).rejects.toThrow(
-            /SETUP_TMP_STASH_REFUSED|transient\/sandbox/,
-          );
-        },
-      );
-    } finally {
-      cleanup();
-    }
-  });
-
-  test("runSetupFromConfig refuses --dir /tmp/X by default", async () => {
-    const { dir: tmpDir, cleanup } = makeSandboxDir("akm-setup-guard-");
+    const { warnings, restore } = captureWarnings();
     try {
       await withEnv(
         {
@@ -65,49 +55,63 @@ describe("setup tmp-stash guard (layer 1: assertSetupSandbox)", () => {
           AKM_STATE_DIR: path.join(tmpDir, "state"),
           XDG_DATA_HOME: path.join(tmpDir, "data"),
           XDG_STATE_HOME: path.join(tmpDir, "state"),
-          AKM_FORCE_SETUP_TMP_STASH: undefined,
         },
         async () => {
-          await expect(runSetupFromConfig({ configJson: "{}", dir: tmpDir, noInit: true })).rejects.toThrow(
-            /SETUP_TMP_STASH_REFUSED|transient\/sandbox/,
-          );
-        },
-      );
-    } finally {
-      cleanup();
-    }
-  });
-
-  test("AKM_FORCE_SETUP_TMP_STASH=1 opts out of the refusal", async () => {
-    const { dir: tmpDir, cleanup } = makeSandboxDir("akm-setup-guard-");
-    try {
-      await withEnv(
-        {
-          AKM_BUNDLE_DIR: tmpDir,
-          AKM_DATA_DIR: path.join(tmpDir, "data"),
-          AKM_STATE_DIR: path.join(tmpDir, "state"),
-          XDG_DATA_HOME: path.join(tmpDir, "data"),
-          XDG_STATE_HOME: path.join(tmpDir, "state"),
-          AKM_FORCE_SETUP_TMP_STASH: "1",
-        },
-        async () => {
-          // Should NOT throw the SETUP_TMP_STASH_REFUSED error. We do not assert
-          // the call fully succeeds (it depends on a lot of subsystems being
-          // available); we just assert the guard doesn't fire.
           await expect(runSetupWithDefaults({ dir: tmpDir, noInit: true })).resolves.toMatchObject({
             bundleDir: tmpDir,
           });
+          expect(warnings.some((w) => w.includes("transient/sandbox"))).toBe(true);
+          expect(warnings.some((w) => w.includes(tmpDir))).toBe(true);
         },
       );
     } finally {
+      restore();
       cleanup();
     }
   });
 
-  test("a persistent --dir is NOT refused", () => {
-    withEnvSync({ AKM_FORCE_SETUP_TMP_STASH: undefined }, () => {
+  test("runSetupFromConfig warns and proceeds for --dir /tmp/X", async () => {
+    const { dir: tmpDir, cleanup } = makeSandboxDir("akm-setup-guard-");
+    const { warnings, restore } = captureWarnings();
+    try {
+      await withEnv(
+        {
+          AKM_BUNDLE_DIR: tmpDir,
+          AKM_DATA_DIR: path.join(tmpDir, "data"),
+          AKM_STATE_DIR: path.join(tmpDir, "state"),
+          XDG_DATA_HOME: path.join(tmpDir, "data"),
+          XDG_STATE_HOME: path.join(tmpDir, "state"),
+        },
+        async () => {
+          await expect(runSetupFromConfig({ configJson: "{}", dir: tmpDir, noInit: true })).resolves.toBeDefined();
+          expect(warnings.some((w) => w.includes("transient/sandbox"))).toBe(true);
+        },
+      );
+    } finally {
+      restore();
+      cleanup();
+    }
+  });
+
+  test("a persistent --dir is NOT refused and does not warn", () => {
+    const { warnings, restore } = captureWarnings();
+    try {
       expect(() => assertSetupSandbox("/home/example/akm", true)).not.toThrow();
-    });
+      expect(warnings).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("assertSetupSandbox warns at most once per stash path per process", () => {
+    const { warnings, restore } = captureWarnings();
+    try {
+      assertSetupSandbox("/tmp/akm-dedupe-example", true);
+      assertSetupSandbox("/tmp/akm-dedupe-example", true);
+      expect(warnings).toHaveLength(1);
+    } finally {
+      restore();
+    }
   });
 });
 
@@ -145,7 +149,6 @@ describe("setup pre-sets AKM_BUNDLE_DIR when --dir is given (so layer 2 fires)",
           XDG_STATE_HOME: path.join(tmpDir, "state"),
           AKM_CONFIG_DIR: undefined,
           XDG_CONFIG_HOME: undefined,
-          AKM_FORCE_SETUP_TMP_STASH: "1", // opt past layer 1
         },
         async () => {
           await runSetupWithDefaults({ dir: tmpDir, noInit: true });
@@ -185,7 +188,6 @@ describe("setup pre-sets AKM_BUNDLE_DIR when --dir is given (so layer 2 fires)",
           AKM_STATE_DIR: path.join(stashDir, "state"),
           XDG_DATA_HOME: path.join(stashDir, "data"),
           XDG_STATE_HOME: path.join(stashDir, "state"),
-          AKM_FORCE_SETUP_TMP_STASH: "1",
         },
         async () => {
           await runSetupWithDefaults({ dir: stashDir, noInit: true });
@@ -204,12 +206,10 @@ describe("setup pre-sets AKM_BUNDLE_DIR when --dir is given (so layer 2 fires)",
 // ── Layer 2: getConfigDir isolation under transient AKM_BUNDLE_DIR ──────────
 
 describe("setup config isolation (layer 2: getConfigDir under transient stash)", () => {
-  test("even with escape hatch, config writes do NOT touch host ~/.config/akm/config.json", async () => {
-    // Verify the second layer: when AKM_FORCE_SETUP_TMP_STASH is set
-    // (operator override), the assertSetupSandbox guard yields — but the
-    // getConfigDir isolation rule still routes config writes into the
-    // stash. The host config file at ~/.config/akm/config.json must not
-    // be modified.
+  test("config writes do NOT touch host ~/.config/akm/config.json", async () => {
+    // Verify the second layer: the getConfigDir isolation rule routes
+    // config writes into the stash regardless of the layer-1 warning. The
+    // host config file at ~/.config/akm/config.json must not be modified.
     const { dir: tmpDir, cleanup: cleanupTmp } = makeSandboxDir("akm-setup-isolation-");
     const hostConfigContent = '{"hostConfigCanary":true,"stashDir":"/home/test/host-akm"}\n';
 
@@ -239,7 +239,6 @@ describe("setup config isolation (layer 2: getConfigDir under transient stash)",
           // unset and AKM_BUNDLE_DIR is transient).
           AKM_CONFIG_DIR: undefined,
           XDG_CONFIG_HOME: undefined,
-          AKM_FORCE_SETUP_TMP_STASH: "1",
         },
         async () => {
           await runSetupWithDefaults({ dir: tmpDir, noInit: true });

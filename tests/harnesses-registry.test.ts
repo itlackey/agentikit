@@ -179,6 +179,29 @@ describe("defaultProfileName — registry-derived headless default (#566)", () =
   });
 });
 
+// #915: harness ids are persisted keys (`extract_sessions_seen.harness`,
+// `workflow_runs.agent_harness`). This literal is deliberately NOT derived from
+// the registry: renaming or removing an id must fail here until a state
+// migration ships for the old key (see 027-extract-sessions-seen-harness-rename).
+const PERSISTED_HARNESS_IDS = [
+  "opencode",
+  "claude",
+  "opencode-sdk",
+  "codex",
+  "copilot",
+  "pi",
+  "gemini",
+  "aider",
+  "amazonq",
+  "openhands",
+];
+
+describe("harness ids are persisted keys (#915)", () => {
+  it("HARNESS_REGISTRY matches the persisted-id list exactly; a rename needs a state migration", () => {
+    expect(HARNESS_REGISTRY.map((h) => h.id as string).sort()).toEqual([...PERSISTED_HARNESS_IDS].sort());
+  });
+});
+
 describe("every currently-valid platform/harness id is present", () => {
   for (const id of ALL_HARNESS_IDS) {
     it(`"${id}" resolves to a registered harness`, () => {

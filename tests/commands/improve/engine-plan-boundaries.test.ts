@@ -50,7 +50,7 @@ describe("improve engine-plan boundaries", () => {
         },
         ensureIndexFn,
       }),
-    ).rejects.toThrow('Enabled improve process "reflect" requires an LLM engine.');
+    ).rejects.toThrow('"reflect" requires an LLM engine that is not configured');
     expect(ensureIndexFn).not.toHaveBeenCalled();
   });
 

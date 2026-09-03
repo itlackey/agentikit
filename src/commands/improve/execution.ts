@@ -4,7 +4,6 @@
 
 import type { AkmConfig, ImproveProcessConfig, ImproveProfileConfig } from "../../core/config/config";
 import { deepMergeConfig } from "../../core/config/deep-merge";
-import { ConfigError } from "../../core/errors";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import type { UnresolvedExecutionDefaults } from "../../execution/source";
 import { lowerResolvedExecutionRequest } from "../../integrations/agent/execution-lowering";
@@ -83,10 +82,7 @@ export function resolveImproveLlmExecution(
   const resolved = resolveImproveExecution(options);
   if (!resolved) return null;
   if (resolved.runner.kind !== "llm") {
-    throw new ConfigError(
-      `Engine ${JSON.stringify(resolved.runner.engine ?? "unknown")} is not an LLM engine.`,
-      "INVALID_CONFIG_FILE",
-    );
+    return null;
   }
   return { runner: resolved.runner, notices: resolved.notices };
 }

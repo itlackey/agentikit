@@ -119,26 +119,36 @@ describe("proposal promotion pre-commit adapter check (advisory)", () => {
     expect(warnings.some((w) => w.includes("pre-commit adapter check"))).toBe(false);
   });
 
-  test("an existing blocking finding (missing-ref via promotionLintBlockers) still rejects exactly as before", async () => {
+  test("a finding promotionLintBlockers' own resolver catches is reported via warn(), not blocked", async () => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
+    const warnings = captureWarnings();
 
     // A qualified ref whose leading segment IS a real AKM placement type
     // (`memories`) but whose target does not exist — the legacy resolver DOES
-    // check this one (typeNameFromConceptId resolves it), so it was already a
-    // blocking `missing-ref` before this change.
-    const blockedContent =
-      "---\ndescription: Points at a real type, missing target\nwhen_to_use: Pinning the still-blocking case\n---\n\n" +
+    // check this one (typeNameFromConceptId resolves it). A proposal author
+    // forward-referencing an asset they have not written yet is a normal
+    // ordering artifact, not malformed data; `validateProposal` already
+    // guards the latter, unaffected.
+    const content =
+      "---\ndescription: Points at a real type, missing target\nwhen_to_use: Pinning the now-advisory case\n---\n\n" +
       "See stash//memories/does-not-exist for context.\n";
     const created = createProposal(stash, {
-      ref: "lessons/still-blocked",
+      ref: "lessons/missing-ref-advisory",
       source: "distill",
       sourceRun: "run-3",
       force: true,
-      payload: { content: blockedContent },
+      payload: { content },
     });
     if (isProposalSkipped(created)) throw new Error("unexpected skip");
 
-    await expect(akmProposalAccept({ stashDir: stash, id: created.id, config })).rejects.toThrow(/failed lint/i);
+    const accepted = await akmProposalAccept({ stashDir: stash, id: created.id, config });
+    expect(accepted.ok).toBe(true);
+    expect(fs.existsSync(accepted.assetPath)).toBe(true);
+
+    const hit = warnings.find((w) => w.includes("promotion lint") && w.includes(created.id));
+    expect(hit).toBeDefined();
+    expect(hit).toContain("missing-ref");
+    expect(hit).toContain("non-blocking");
   });
 });

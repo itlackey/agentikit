@@ -53,6 +53,7 @@ export const STATE_MIGRATION_SAFETY_BY_ID: Readonly<Record<string, StateMigratio
   "024-workflow-run-outputs": "additive",
   "025-task-history-vocabulary-backfill": "data-preserving-rebuild",
   "026-proposals-strip-legacy-fragment-refs": "data-preserving-rebuild",
+  "027-extract-sessions-seen-harness-rename": "data-preserving-rebuild",
 });
 
 export const STATE_MIGRATIONS: readonly Migration[] = [
@@ -1181,6 +1182,34 @@ export const STATE_MIGRATIONS: readonly Migration[] = [
       UPDATE proposals
       SET ref = substr(ref, 1, instr(ref, '#') - 1)
       WHERE ref LIKE '%#%';
+    `,
+  },
+
+  // ── Migration 027 — claude-code -> claude harness rename (#915) ──
+  //
+  // The 0.9.2 rename shipped without a data migration, so rows written under
+  // the old key were invisible to every reader keyed on "claude".
+  //
+  // `extract_sessions_seen` has PRIMARY KEY (harness, session_id), so a
+  // session already recorded under "claude" (written by a run that really
+  // happened post-rename) collides with its "claude-code" counterpart on
+  // rename. `UPDATE OR IGNORE` keeps the newer "claude" row exactly as it
+  // was — the older row's outcome is superseded, not more correct — and the
+  // trailing DELETE drops that now-unreachable duplicate so the "claude-code"
+  // key space is fully empty afterwards, not just mostly-migrated.
+  //
+  // `workflow_runs.agent_harness` (migration 020) has no uniqueness
+  // constraint on that column, so a plain UPDATE is sufficient there. Both
+  // statements are kept in one migration so the rename is a single ledger
+  // event. `improve_runs.result_json` is deliberately untouched: the harness
+  // name embedded in those JSON blobs is reporting data about a past run, not
+  // a lookup key, so rewriting it would not fix anything a reader depends on.
+  {
+    id: "027-extract-sessions-seen-harness-rename",
+    up: `
+      UPDATE OR IGNORE extract_sessions_seen SET harness = 'claude' WHERE harness = 'claude-code';
+      DELETE FROM extract_sessions_seen WHERE harness = 'claude-code';
+      UPDATE workflow_runs SET agent_harness = 'claude' WHERE agent_harness = 'claude-code';
     `,
   },
 ];

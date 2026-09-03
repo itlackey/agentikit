@@ -38,13 +38,7 @@ import {
   resolveReferenceString,
 } from "../program/expressions";
 import { clip, WORKFLOW_UNIT_DIAGNOSTIC_CLIP } from "../resource-limits";
-import {
-  completeWorkflowStep,
-  isTruncatedEvidence,
-  type SummaryValidationFailure,
-  type TruncatedEvidenceValue,
-  type WorkflowNextResult,
-} from "../runtime/runs";
+import { completeWorkflowStep, type SummaryValidationFailure, type WorkflowNextResult } from "../runtime/runs";
 import { GATE_EVALUATION_PHASE } from "../runtime/unit-phases";
 import { type JudgeCallIdentity, parseJudgeVerdict, type SummaryJudge } from "../validate-summary";
 import { gateNodeId } from "./frozen-judge";
@@ -219,19 +213,6 @@ function validateFanOutItems(stepId: string, items: unknown[]): string | undefin
       `Every item must be a concrete value — fix the producing step's output.`
     );
   }
-  const firstIndexByCanonical = new Map<string, number>();
-  for (let i = 0; i < items.length; i++) {
-    const canonical = canonicalJson(items[i]) ?? "null";
-    const firstIndex = firstIndexByCanonical.get(canonical);
-    if (firstIndex !== undefined) {
-      return (
-        `Step "${stepId}" fan-out list contains duplicate items (indices ${firstIndex} and ${i}: ` +
-        `${clip(canonical, 200)}). Content-derived unit identity requires distinct items — ` +
-        `deduplicate the list this workflow fans out over.`
-      );
-    }
-    firstIndexByCanonical.set(canonical, i);
-  }
   return undefined;
 }
 
@@ -239,13 +220,33 @@ function validateFanOutItems(stepId: string, items: unknown[]): string | undefin
  * Resolve one whole-value reference, refusing a value a persisted TRUNCATION
  * ENVELOPE stands in for (`clipStepEvidenceForPersistence`, runtime/runs.ts).
  *
- * The engine threads each step's complete in-memory evidence to the rest of its
- * own invocation, so only a RESUMED run can meet an envelope here. Left to the
- * raw resolver, a path reference into one reports a generic missing property
- * and a whole-value reference at one succeeds — handing the envelope to a unit
- * as if it were the artifact. Both are silent corruption; name the cause
- * instead. Every whole-value position (`inputs[]`, `map.over`, `route.input`)
- * goes through here.
+ * The first occurrence of a given canonical value keeps the byte-identical id
+ * {@link unitIdFor} always produced for it — so a plan with no duplicates (the
+ * overwhelming common case) is completely unaffected, and no prior journal
+ * entry is ever invalidated by this change. Only the SECOND and later
+ * occurrences gain a `#<n>` suffix (`#2`, `#3`, …), computed purely from each
+ * item's position in `items` — deterministic across a fresh run and a
+ * resumed one, since both call this from the same place in
+ * {@link computeStepWorkList} over the same resolved list.
+ */
+function occurrenceSuffixedUnitIds(nodeId: string, items: readonly unknown[]): string[] {
+  const occurrenceByCanonical = new Map<string, number>();
+  return items.map((item) => {
+    const base = unitIdFor(nodeId, item, true, true);
+    const canonical = canonicalJson(item) ?? "null";
+    const occurrence = (occurrenceByCanonical.get(canonical) ?? 0) + 1;
+    occurrenceByCanonical.set(canonical, occurrence);
+    return occurrence === 1 ? base : `${base}#${occurrence}`;
+  });
+}
+
+/**
+ * Resolve one whole-value reference (`inputs[]`, `map.over`, `route.input`).
+ *
+ * Every step artifact is now persisted whole (issue C), so this is a thin
+ * wrapper: source adapters may retain GitHub's whole-value `${{ ... }}`
+ * spelling, and this work-list seam unwraps only an exact whole-value
+ * wrapper — it never interpolates prose.
  */
 function resolveStepReference(reference: string, scope: ExpressionScope): ResolveReferenceResult {
   // Source adapters may retain GitHub's whole-value `${{ ... }}` spelling.
@@ -253,41 +254,7 @@ function resolveStepReference(reference: string, scope: ExpressionScope): Resolv
   // unwraps only an exact whole-value wrapper and never interpolates prose.
   const exactWrapper = /^\$\{\{\s*([^{}]+?)\s*\}\}$/.exec(reference);
   const canonicalReference = exactWrapper?.[1] ?? reference;
-  const resolved = resolveReferenceString(canonicalReference, scope);
-  const truncated = truncatedReferenceTarget(canonicalReference, scope, resolved);
-  if (!truncated) return resolved;
-  return {
-    ok: false,
-    error: {
-      reference,
-      message:
-        `${reference} reads a step artifact that was NOT persisted (${truncated.originalBytes} bytes exceeded the ` +
-        `${truncated.limitBytes}-byte evidence_json cap, so the row stores a truncation marker). This run was ` +
-        `resumed from rows that no longer hold the value — it cannot be recovered. Start a new run, or have the ` +
-        `producing step emit a reference (path, id) instead of inline bulk data.`,
-    },
-  };
-}
-
-/** The envelope a reference lands on or walks through, if any. */
-function truncatedReferenceTarget(
-  reference: string,
-  scope: ExpressionScope,
-  resolved: ResolveReferenceResult,
-): TruncatedEvidenceValue | undefined {
-  if (resolved.ok) return isTruncatedEvidence(resolved.value) ? resolved.value : undefined;
-  // A FAILED resolution is re-walked: the envelope is an object with none of
-  // the original's keys, so the raw failure is whatever property went missing
-  // along the way, several segments past the truncation.
-  const parsed = parseReference(reference);
-  if (!parsed.ok || parsed.expr.kind !== "stepOutput") return undefined;
-  let current: unknown = scope.stepOutputs[parsed.expr.stepId];
-  for (const segment of parsed.expr.path) {
-    if (isTruncatedEvidence(current)) return current;
-    if (typeof current !== "object" || current === null) return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return isTruncatedEvidence(current) ? current : undefined;
+  return resolveReferenceString(canonicalReference, scope);
 }
 
 /** The whole-step failure shape `computeStepWorkList` returns — one field, so a resolver's own failure IS this shape. */
@@ -426,9 +393,13 @@ export function computeStepWorkList(plan: IrStepPlanV4, input: WorkListInput): C
   const fanOutProblem = isFanOut ? validateFanOutItems(plan.stepId, items) : undefined;
   if (fanOutProblem) return { ok: false, error: fanOutProblem };
 
-  // Content-derived unit identity: compute every id up front (duplicate items
-  // were rejected above — identity requires distinct items).
-  const unitIds = items.map((item) => unitIdFor(template.id, item, isFanOut, true));
+  // Content-derived unit identity: compute every id up front. A fan-out's
+  // canonical duplicates are disambiguated by occurrence ordinal rather than
+  // rejected (issue 6); a solo (non-fan-out) step has exactly one item, so
+  // there is nothing to disambiguate.
+  const unitIds = isFanOut
+    ? occurrenceSuffixedUnitIds(template.id, items)
+    : [unitIdFor(template.id, undefined, false, true)];
 
   const gateLoop = input.gateLoop ?? 1;
   const target = template.frozenTarget;

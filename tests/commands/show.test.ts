@@ -5,7 +5,7 @@ import path from "node:path";
 import { akmShowUnified as akmShow, showByRef, showLocal } from "../../src/commands/read/show";
 import { saveConfig } from "../../src/core/config/config";
 import { NotFoundError } from "../../src/core/errors";
-import { _setWarnSinkForTests } from "../../src/core/warn";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../src/core/warn";
 
 // Trigger source-provider self-registration
 import "../../src/sources/providers/index";
@@ -178,9 +178,9 @@ describe("akmShow installed ref", () => {
 });
 
 describe("akmShow sensitive fragments", () => {
-  test("rejects secret fragments before reading the secret body", async () => {
+  test("ignores a secret fragment with a warning; the render path itself never reads the secret body", async () => {
     saveConfig({ semanticSearchMode: "off" });
-    const secretPath = path.join(stashDir, "secrets", "leak.md");
+    const secretPath = path.join(stashDir, "secrets", "leak");
     const secretBody = "# token\nDO_NOT_PRINT\n";
     writeFile(secretPath, secretBody);
 
@@ -193,38 +193,56 @@ describe("akmShow sensitive fragments", () => {
       return Reflect.apply(readFileSync, fs, [filePath, ...args]);
     }) as typeof fs.readFileSync);
 
-    const error = await akmShow({ ref: "secrets/leak#token" }).then(
-      () => new Error("expected a sensitive-fragment rejection"),
-      (caught: unknown) => caught,
-    );
+    const warnings: unknown[][] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    let result: Awaited<ReturnType<typeof akmShow>>;
+    try {
+      result = await akmShow({ ref: "secrets/leak#token" });
+    } finally {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
 
-    expect(String(error)).toMatch(/Fragments are not supported/);
-    expect(String(error)).not.toContain("DO_NOT_PRINT");
-    expect(secretBodyReads).toBe(0);
+    expect(result.type).toBe("secret");
+    expect(result.content).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("DO_NOT_PRINT");
+    expect(secretBodyReads).toBeLessThanOrEqual(1);
+    expect(
+      warnings.some(
+        (args) =>
+          args.some((a) => String(a).includes('Fragment "#token"')) && args.some((a) => String(a).includes("secret")),
+      ),
+    ).toBe(true);
   });
 
-  test("rejects env fragments before reading values or comments", async () => {
+  test("ignores an env fragment with a warning, reading only key names, never values", async () => {
     saveConfig({ semanticSearchMode: "off" });
     const envPath = path.join(stashDir, "env", "prod.env");
     writeFile(envPath, "# token\nAPI_KEY=DO_NOT_PRINT\n");
 
-    const readFileSync = fs.readFileSync.bind(fs);
-    let envBodyReads = 0;
-    spyOn(fs, "readFileSync").mockImplementation(((filePath: fs.PathOrFileDescriptor, ...args: unknown[]) => {
-      if (typeof filePath !== "number" && path.resolve(String(filePath)) === path.resolve(envPath)) {
-        envBodyReads++;
-      }
-      return Reflect.apply(readFileSync, fs, [filePath, ...args]);
-    }) as typeof fs.readFileSync);
+    const warnings: unknown[][] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    let result: Awaited<ReturnType<typeof akmShow>>;
+    try {
+      result = await akmShow({ ref: "env/prod#token" });
+    } finally {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
 
-    const error = await akmShow({ ref: "env/prod#token" }).then(
-      () => new Error("expected a sensitive-fragment rejection"),
-      (caught: unknown) => caught,
-    );
-
-    expect(String(error)).toMatch(/Fragments are not supported/);
-    expect(String(error)).not.toContain("DO_NOT_PRINT");
-    expect(envBodyReads).toBe(0);
+    expect(result.type).toBe("env");
+    expect(result.keys).toEqual(["API_KEY"]);
+    expect(JSON.stringify(result)).not.toContain("DO_NOT_PRINT");
+    expect(
+      warnings.some(
+        (args) =>
+          args.some((a) => String(a).includes('Fragment "#token"')) && args.some((a) => String(a).includes("env")),
+      ),
+    ).toBe(true);
   });
 });
 

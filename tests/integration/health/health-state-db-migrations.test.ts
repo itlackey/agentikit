@@ -55,13 +55,13 @@ function seedBefore018(file: string): void {
   seeded.close();
 }
 
-function findHardCheck(result: ReturnType<typeof akmHealth>, name: string) {
+function findHardCheck(result: Awaited<ReturnType<typeof akmHealth>>, name: string) {
   const found = result.hardChecks.find((check) => check.name === name);
   if (!found) throw new Error(`expected a hard check named ${name}`);
   return found;
 }
 
-test("a pending historical-destructive migration reports as a fail check, not a crash", () => {
+test("a pending historical-destructive migration reports as a fail check, not a crash", async () => {
   const file = getStateDbPath();
   seedBefore018(file);
 
@@ -69,12 +69,9 @@ test("a pending historical-destructive migration reports as a fail check, not a 
   // call throw "Refusing to apply historical destructive state migration
   // 018-drop-dead-lane-schema during an ordinary managed open. Run `akm
   // upgrade`..." straight out of this call — no envelope was ever produced.
-  let result: ReturnType<typeof akmHealth> | undefined;
-  expect(() => {
-    result = akmHealth();
-  }).not.toThrow();
+  const result = await akmHealth();
 
-  const check = findHardCheck(result!, "state-db-migrations");
+  const check = findHardCheck(result, "state-db-migrations");
   expect(check.status).toBe("fail");
   expect((check.evidence?.pending as string[])[0]).toBe("018-drop-dead-lane-schema");
   expect(result!.status).toBe("fail");
@@ -104,16 +101,16 @@ test("applying the pending migration flips the check back to pass", async () => 
 
   await runMigration({ apply: true });
 
-  const result = akmHealth();
+  const result = await akmHealth();
   const check = findHardCheck(result, "state-db-migrations");
   expect(check.status).toBe("pass");
   expect(check.evidence?.pending).toEqual([]);
 });
 
-test("a current, freshly-created state.db reports pass with no pending migrations", () => {
+test("a current, freshly-created state.db reports pass with no pending migrations", async () => {
   openStateDatabase(getStateDbPath()).close();
 
-  const result = akmHealth();
+  const result = await akmHealth();
   const check = findHardCheck(result, "state-db-migrations");
   expect(check.status).toBe("pass");
   expect(check.evidence?.pending).toEqual([]);

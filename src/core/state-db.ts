@@ -69,11 +69,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { sleepSync } from "../runtime";
 import { type Database, openDatabase, type SqlValue } from "../storage/database";
-import { assertMigrationLedger } from "../storage/engines/sqlite-migrations";
+import { assertMigrationLedger, type MigrationLedgerState } from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase, withManagedDb } from "../storage/managed-db";
+import { pkgVersion } from "../version";
 import { acquireMaintenanceActivitySync } from "./maintenance-barrier";
 import { getDataDir } from "./paths";
 import { runMigrations, STATE_MIGRATIONS } from "./state/migrations";
+import { warnOnce } from "./warn";
 
 // ── Path helper ──────────────────────────────────────────────────────────────
 
@@ -415,6 +417,29 @@ function createHistoricalStateSafetyCopy(source: StateDatabaseSource, migrationI
  *     matches the value used in openDatabase() for index.db; 5 s proved too
  *     narrow when a post-inference reindex overlapped a parallel event write.
  */
+/**
+ * Tell the operator once when state.db was migrated by a newer akm than the
+ * one running. The open proceeds: every migration this binary knows is already
+ * applied, so it reads and writes the tables it knows. Commands that depend on
+ * something a later migration changed may still report less than the truth,
+ * which is why this is said out loud rather than swallowed.
+ */
+function warnNewerStateLedger(ledger: MigrationLedgerState): void {
+  if (ledger.status !== "newer") return;
+  warnOnce(
+    "state-db-newer-ledger",
+    `[state.db] This akm (v${pkgVersion}) is older than the state database: ${ledger.detail}. ` +
+      "Continuing with the schema this version knows; upgrade akm if its output looks incomplete.",
+  );
+}
+
+function unversionedDatabaseHasNoTables(db: Database): boolean {
+  const tables = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != ?")
+    .get("schema_migrations");
+  return !tables;
+}
+
 export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOptions): Database {
   const canonicalPath = getStateDbPath();
   const resolvedPath = dbPath ?? canonicalPath;
@@ -437,6 +462,7 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
   let existingSource: StateDatabaseSource | undefined;
   let openedDb: Database | undefined;
   let existingUnversionedDatabase = false;
+  let treatUnversionedAsFresh = false;
   let stateSafetyCopyCreated = false;
   try {
     fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
@@ -449,7 +475,12 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
       try {
         preflight.exec("PRAGMA busy_timeout = 30000");
         const ledger = assertMigrationLedger(preflight, STATE_MIGRATIONS);
+        warnNewerStateLedger(ledger);
         existingUnversionedDatabase = ledger.migrationIds.length === 0;
+        if (existingUnversionedDatabase && unversionedDatabaseHasNoTables(preflight)) {
+          existingUnversionedDatabase = false;
+          treatUnversionedAsFresh = true;
+        }
         if (existingUnversionedDatabase && !options?.allowHistoricalDestructiveStateUpgrade) {
           throw new Error(
             "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
@@ -467,7 +498,7 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
       pragmas: { dataDir: path.dirname(resolvedPath) },
       init: (db) => {
         runMigrations(db, {
-          freshDatabase: !!freshReservation,
+          freshDatabase: !!freshReservation || treatUnversionedAsFresh,
           existingUnversionedDatabase,
           allowHistoricalDestructiveStateUpgrade: options?.allowHistoricalDestructiveStateUpgrade,
           beforeExistingUnversionedStateMigration: options?.allowHistoricalDestructiveStateUpgrade

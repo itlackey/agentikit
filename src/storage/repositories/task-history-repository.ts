@@ -12,6 +12,7 @@
  */
 
 import { isRecord } from "../../core/common";
+import { warnOnce } from "../../core/warn";
 import type { Database, SqlValue } from "../database";
 
 export type TaskHistoryDetail = {
@@ -44,9 +45,6 @@ function metadataError(message: string): never {
 function validateDetail(value: unknown): asserts value is TaskHistoryDetail | null | undefined {
   if (value === undefined || value === null) return;
   if (!isRecord(value)) metadataError("detail must be an object or null");
-  const allowed = new Set(["runId", "reason", "error", "exitCode"]);
-  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
-  if (unknown.length > 0) metadataError(`unknown detail fields: ${unknown.sort().join(", ")}`);
   for (const field of ["runId", "reason", "error"] as const) {
     if (value[field] !== undefined && typeof value[field] !== "string")
       metadataError(`detail.${field} must be a string`);
@@ -85,7 +83,11 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
   if (!isRecord(parsed)) metadataError("root must be an object");
 
   if (parsed.metadataVersion !== undefined && parsed.metadataVersion !== 2) {
-    metadataError(`unsupported metadataVersion: ${String(parsed.metadataVersion)}`);
+    warnOnce(
+      `task-history-metadata-version:${String(parsed.metadataVersion)}`,
+      `task_history row has metadataVersion ${String(parsed.metadataVersion)}, newer than this akm's 2 — ` +
+        "decoding it best-effort as version 2 rather than rejecting the row.",
+    );
   }
   if (typeof parsed.durationMs !== "number") metadataError("durationMs must be a number");
   const detail = "detail" in parsed ? parsed.detail : null;
@@ -93,13 +95,25 @@ export function decodeTaskHistoryMetadata(input: string | unknown): TaskHistoryM
     metadataError("engine must be a string or null");
   }
   if (parsed.targetVocab !== undefined && parsed.targetVocab !== 2) {
-    metadataError("targetVocab must be 2 when present");
+    warnOnce(
+      `task-history-target-vocab:${String(parsed.targetVocab)}`,
+      `task_history row has targetVocab ${String(parsed.targetVocab)}, newer than this akm's 2 — falling back to ` +
+        "the legacy target_kind mapping rather than rejecting the row.",
+    );
   }
   validateDetail(detail);
+  const cleanDetail: TaskHistoryDetail | null = detail
+    ? {
+        ...(detail.runId !== undefined ? { runId: detail.runId } : {}),
+        ...(detail.reason !== undefined ? { reason: detail.reason } : {}),
+        ...(detail.error !== undefined ? { error: detail.error } : {}),
+        ...(detail.exitCode !== undefined ? { exitCode: detail.exitCode } : {}),
+      }
+    : null;
   return {
     metadataVersion: 2,
     durationMs: parsed.durationMs,
-    detail: detail ?? null,
+    detail: cleanDetail,
     ...(parsed.engine !== undefined ? { engine: parsed.engine as string | null } : {}),
     ...(parsed.targetVocab === 2 ? { targetVocab: 2 as const } : {}),
   };

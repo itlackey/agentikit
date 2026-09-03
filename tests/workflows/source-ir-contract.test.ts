@@ -442,18 +442,20 @@ jobs:
     expect(result.ir.jobs[0]?.steps[0]?.commandMode).toBe("portable-template");
   });
 
-  test("validates portable inline command templates at source compile and strict decode boundaries", () => {
-    expectGithubError(
-      `${VALID_HEADER}
-      - id: unsafe
+  test("compiles inline command templates without scanning for native-tool constructs (issue 4) — mode/stored consistency is still enforced", () => {
+    const inline = github(`${VALID_HEADER}
+      - id: safe
         uses: akm/command
         with:
           content: echo $HOME
           arguments: exact input
-`,
-      "builtin-command-inputs",
-      11,
-    );
+`);
+    expect(inline.ok).toBe(true);
+    if (!inline.ok) return;
+    expect(inline.ir.jobs[0]?.steps[0]).toMatchObject({
+      commandMode: "portable-template",
+      with: { content: "echo $HOME", arguments: "exact input" },
+    });
 
     const stored = github(`${VALID_HEADER}
       - id: stored
@@ -476,11 +478,11 @@ jobs:
     requireOnlyDecodedStep(mismatchedStored).commandMode = "literal";
     expect(() => decodeWorkflowSourceIrV1(mismatchedStored)).toThrow(/stored.*commandMode stored-ref/i);
 
-    const hostile = structuredClone(stored.ir);
-    const hostileStep = requireOnlyDecodedStep(hostile);
-    hostileStep.commandMode = "portable-template";
-    hostileStep.with = { content: "echo $HOME", arguments: "exact input" };
-    expect(() => decodeWorkflowSourceIrV1(hostile)).toThrow(/unsupported portable template construct/i);
+    const formerlyHostile = structuredClone(stored.ir);
+    const formerlyHostileStep = requireOnlyDecodedStep(formerlyHostile);
+    formerlyHostileStep.commandMode = "portable-template";
+    formerlyHostileStep.with = { content: "echo $HOME", arguments: "exact input" };
+    expect(decodeWorkflowSourceIrV1(formerlyHostile)).toEqual(formerlyHostile);
   });
 
   test("carries literal and portable-template command semantics explicitly in portable bytes", () => {
@@ -601,24 +603,27 @@ Review $ARGUMENTS and \${{ github.sha }} literally.
     expect(result.ir.jobs[0]?.steps).toHaveLength(1);
   });
 
-  test("accepts token-safe local run with the closed shell table and contained working directories", () => {
+  test("accepts local run with the closed shell table and contained working directories — shell operators and multiline included (issue 3)", () => {
     for (const shell of ["bash", "sh", "zsh", "pwsh", "powershell", "cmd"]) {
       const result = github(
         `${VALID_HEADER}\n      - id: local\n        run: bun run check --filter=unit\n        shell: ${shell}\n        working-directory: packages/cli\n`,
       );
       expect(result.ok, shell).toBe(true);
     }
-    for (const [run, code] of [
-      ["echo ok && curl example.com", "unsafe-run-syntax"],
-      ["echo $HOME", "unsafe-run-syntax"],
-      ["echo %PATH%", "unsafe-run-syntax"],
-      ["echo $" + "{{ github.sha }}", "unsupported-github-expression"],
-    ] as const) {
-      expectGithubError(`${VALID_HEADER}\n      - id: unsafe\n        run: ${run}\n`, code);
+    for (const run of ["echo ok && curl example.com", "echo $HOME", "echo %PATH%", 'echo "quoted"']) {
+      const result = github(`${VALID_HEADER}\n      - id: safe\n        run: ${run}\n`);
+      expect(result.ok, run).toBe(true);
+    }
+    const multiline = github(
+      `${VALID_HEADER}\n      - id: multiline\n        run: |\n          echo one\n          echo two\n`,
+    );
+    expect(multiline.ok).toBe(true);
+    if (multiline.ok) {
+      expect(multiline.ir.jobs[0]?.steps[0]?.run).toBe("echo one\necho two\n");
     }
     expectGithubError(
-      `${VALID_HEADER}\n      - id: multiline\n        run: |\n          echo ok\n`,
-      "unsafe-run-syntax",
+      `${VALID_HEADER}\n      - id: unsafe\n        run: echo $` + "{{ github.sha }}\n",
+      "unsupported-github-expression",
     );
     expectGithubError(
       `${VALID_HEADER}\n      - id: shell\n        run: echo ok\n        shell: fish\n`,
@@ -634,7 +639,7 @@ Review $ARGUMENTS and \${{ github.sha }} literally.
     );
   });
 
-  test("canonicalizes accepted cron, token-safe run, and contained cwd spellings", () => {
+  test("canonicalizes accepted cron and contained cwd spellings — run: is preserved verbatim, not whitespace-collapsed (issue 3)", () => {
     const left = github(`name: Canonical
 on:
   schedule: [{ cron: "0  8\t* * 1" }]
@@ -654,14 +659,14 @@ jobs:
     runs-on: [self-hosted]
     steps:
       - id: run
-        run: bun run check
+        run: "bun\t run   check"
         working-directory: packages/cli
 `);
     expect(left.ok).toBe(true);
     expect(right.ok).toBe(true);
     if (!left.ok || !right.ok) return;
     expect(left.ir.triggers[0]).toMatchObject({ cron: "0 8 * * 1" });
-    expect(left.ir.jobs[0]?.steps[0]).toMatchObject({ run: "bun run check", workingDirectory: "packages/cli" });
+    expect(left.ir.jobs[0]?.steps[0]).toMatchObject({ run: "bun\t run   check", workingDirectory: "packages/cli" });
     expect(canonicalPortableWorkflowSourceBytes(left.ir)).toBe(canonicalPortableWorkflowSourceBytes(right.ir));
   });
 
@@ -1047,9 +1052,13 @@ describe("strict source IR decoder", () => {
     scheduled.triggers = [{ kind: "schedule", cron: "61 25 * * *", ordinal: 0, source: scheduled.source }];
     expect(() => decodeWorkflowSourceIrV1(scheduled)).toThrow(/cron|schedule/i);
 
-    const unsafeRun = structuredClone(valid);
-    requireOnlyDecodedStep(unsafeRun).run = "echo ok && curl example.com";
-    expect(() => decodeWorkflowSourceIrV1(unsafeRun)).toThrow(/safe tokens|unsafe run/i);
+    const acceptedRun = structuredClone(valid);
+    requireOnlyDecodedStep(acceptedRun).run = "echo ok && curl example.com";
+    expect(decodeWorkflowSourceIrV1(acceptedRun)).toEqual(acceptedRun);
+
+    const expressionRun = structuredClone(valid);
+    requireOnlyDecodedStep(expressionRun).run = "echo $" + "{{ github.sha }}";
+    expect(() => decodeWorkflowSourceIrV1(expressionRun)).toThrow(/expression/i);
 
     const escapedCwd = structuredClone(valid);
     requireOnlyDecodedStep(escapedCwd).workingDirectory = "../outside";
@@ -1106,7 +1115,7 @@ describe("strict source IR decoder", () => {
     expect(() => decodeWorkflowSourceIrV1(builtinExpression)).toThrow(/expression|template construct/i);
   });
 
-  test("canonicalizes decoded cron, run, and cwd and physically contains decoded cwd", () => {
+  test("canonicalizes decoded cron and cwd and physically contains decoded cwd — run: is preserved verbatim (issue 3)", () => {
     const canonical = structuredClone(valid);
     canonical.triggers = [{ kind: "schedule", cron: " 0  8\t* * 1 ", ordinal: 0, source: canonical.source }];
     const canonicalStep = requireOnlyDecodedStep(canonical);
@@ -1114,7 +1123,7 @@ describe("strict source IR decoder", () => {
     canonicalStep.workingDirectory = "packages/./cli";
     expect(decodeWorkflowSourceIrV1(canonical)).toMatchObject({
       triggers: [{ cron: "0 8 * * 1" }],
-      jobs: [{ steps: [{ run: "bun run check", workingDirectory: "packages/cli" }] }],
+      jobs: [{ steps: [{ run: " bun\t run   check ", workingDirectory: "packages/cli" }] }],
     });
 
     const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "akm-decoded-cwd-"));

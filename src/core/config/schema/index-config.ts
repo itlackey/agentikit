@@ -8,6 +8,7 @@
  * change.
  */
 import { z } from "zod";
+import { warnOnce } from "../../warn";
 import { engineName, LlmInvocationOverridesSchema, nonEmptyString, positiveInt } from "./primitives";
 
 // ── Index / per-pass ────────────────────────────────────────────────────────
@@ -59,28 +60,28 @@ export const IndexPassConfigSchema = z.preprocess(
       return raw; // let z.object below produce the type error
     }
     const obj = raw as Record<string, unknown>;
+    let cleaned: Record<string, unknown> | undefined;
     for (const key of Object.keys(obj)) {
+      const dotted = [...(ctx.path ?? []), key].join(".");
       if (INDEX_PASS_RETIRED_KEYS.has(key)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            `Retired or misplaced engine setting: \`${[...(ctx.path ?? []), key].join(".")}\` is not allowed. ` +
-            "Select a named engine and use typed invocation fields instead.",
-        });
-        return raw;
-      }
-      if (!INDEX_PASS_KNOWN_KEYS.has(key)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            `Unknown key \`${[...(ctx.path ?? []), key].join(".")}\`. Per-pass entries support ` +
+        warnOnce(
+          `index-pass:retired:${dotted}`,
+          `\`${dotted}\` is a retired engine setting and is ignored; select a named engine and use typed invocation fields instead.`,
+        );
+        cleaned ??= { ...obj };
+        delete cleaned[key];
+      } else if (!INDEX_PASS_KNOWN_KEYS.has(key)) {
+        warnOnce(
+          `index-pass:unknown:${dotted}`,
+          `Unknown key \`${dotted}\` ignored. Per-pass entries support ` +
             "`engine`, `model`, `timeoutMs`, `enabled`, `llm`, `graphExtractionBatchSize`, " +
             "`graphExtractionIncludeTypes`, and `lazyGraphExtraction`.",
-        });
-        return raw;
+        );
+        cleaned ??= { ...obj };
+        delete cleaned[key];
       }
     }
-    return raw;
+    return cleaned ?? raw;
   },
   z
     .object({
@@ -142,13 +143,13 @@ const IndexConfigRuntimeSchema = z.preprocess(
       return raw;
     }
     if (typeof raw !== "object") return raw;
+    let cleaned: Record<string, unknown> | undefined;
     for (const [passName, value] of Object.entries(raw as Record<string, unknown>)) {
       if (passName === "stalenessDetection") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Invalid `index.stalenessDetection`: the removed pass is not supported.",
-        });
-        return raw;
+        warnOnce("index:stalenessDetection", "`index.stalenessDetection` is a retired pass and is ignored.");
+        cleaned ??= { ...(raw as Record<string, unknown>) };
+        delete cleaned.stalenessDetection;
+        continue;
       }
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
         ctx.addIssue({
@@ -158,7 +159,7 @@ const IndexConfigRuntimeSchema = z.preprocess(
         return raw;
       }
     }
-    return raw;
+    return cleaned ?? raw;
   },
   z
     .object({

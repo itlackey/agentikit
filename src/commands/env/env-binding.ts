@@ -46,6 +46,7 @@ export interface ResolveEnvBindingOptions {
   except?: string[];
   /** Callback for non-fatal warnings (defaults to stderr). */
   warn?: (message: string) => void;
+  allowInsecure?: boolean;
 }
 
 /**
@@ -111,16 +112,25 @@ export function resolveEnvBinding(target: string, options: ResolveEnvBindingOpti
   const dangerous = keys.filter(isDangerousEnvKey);
   if (dangerous.length > 0) {
     const detail = `Env "${envRef}" injects process-hijacking variable(s): ${dangerous.join(", ")}.`;
-    const decision = decideDangerousEnvInjection({ dangerousKeys: dangerous, thirdParty: Boolean(source.registryId) });
+    const decision = decideDangerousEnvInjection({
+      dangerousKeys: dangerous,
+      thirdParty: Boolean(source.registryId),
+      allowInsecure: options.allowInsecure,
+    });
     if (decision === "block") {
       throw new UsageError(
         `Refusing to inject env from a third-party stash. ${detail}\n` +
-          `       Review the file, then copy the values into a first-party env if you trust them.`,
+          `       Review the file, then copy the values into a first-party env if you trust them, ` +
+          `or pass --allow-insecure once you have.`,
         "INVALID_FLAG_VALUE",
       );
     }
     if (decision === "warn") {
-      warn(`${detail} Injecting anyway (first-party stash).`);
+      warn(
+        options.allowInsecure && source.registryId
+          ? `${detail} Injecting anyway (--allow-insecure).`
+          : `${detail} Injecting anyway (first-party stash).`,
+      );
     }
   }
 

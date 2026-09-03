@@ -42,6 +42,7 @@ import {
   tryAcquireLockSync,
 } from "../../core/file-lock";
 import type { AkmExtractResult, ExtractedSessionResult } from "../../core/improve-types";
+import { EXTRACT_INFRASTRUCTURE_SKIP_REASONS } from "../../core/improve-types";
 import { tryAcquireMaintenanceBarrier } from "../../core/maintenance-barrier";
 import { redactErrorBody } from "../../core/redaction";
 import { resolveStashStandards } from "../../core/standards/resolve-stash-standards";
@@ -374,7 +375,36 @@ export function resolveStandaloneExtractPlan(
 // so existing import sites (`from "./extract"`) are unchanged.
 export type { AkmExtractResult, ExtractedSessionResult } from "../../core/improve-types";
 
+/** A session result before the run's engine is stamped on it (see {@link accountExtractSessionResult}). */
+type ExtractSessionOutcome = Omit<ExtractedSessionResult, "engine">;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** An extract envelope for a run that processed no sessions; `engine`/`engineKind` only once a runner is resolved. */
+function emptyExtractResult(args: {
+  ok: boolean;
+  dryRun: boolean;
+  type: string;
+  warning: string;
+  startMs: number;
+  llmRunner?: ExtractLlmRunner;
+}): AkmExtractResult {
+  return {
+    schemaVersion: 1,
+    ok: args.ok,
+    shape: "extract-result",
+    dryRun: args.dryRun,
+    type: args.type,
+    sessionsProcessed: 0,
+    sessionsSkipped: 0,
+    candidatesCreated: 0,
+    proposals: [],
+    sessions: [],
+    warnings: [args.warning],
+    durationMs: Date.now() - args.startMs,
+    ...(args.llmRunner ? { engine: args.llmRunner.engine, engineKind: args.llmRunner.kind } : {}),
+  };
+}
 
 /**
  * Parse a since-string into an absolute ms-epoch cutoff. Accepts:
@@ -530,7 +560,7 @@ function runPreLlmSessionGates(args: {
   minContentChars: number;
   triage: { enabled: boolean; minScore: number };
 }):
-  | { skip: ExtractedSessionResult }
+  | { skip: ExtractSessionOutcome }
   | {
       data: ReturnType<SessionLogHarness["readSession"]>;
       filtered: ReturnType<typeof preFilterSession>;
@@ -652,10 +682,10 @@ function runPreLlmSessionGates(args: {
   return { data, filtered, contentHash };
 }
 
-type ExtractEligibleGate = Exclude<ReturnType<typeof runPreLlmSessionGates>, { skip: ExtractedSessionResult }>;
+type ExtractEligibleGate = Exclude<ReturnType<typeof runPreLlmSessionGates>, { skip: ExtractSessionOutcome }>;
 
 type ExtractSessionPlan =
-  | { kind: "skip"; summary: SessionSummary; result: ExtractedSessionResult }
+  | { kind: "skip"; summary: SessionSummary; result: ExtractSessionOutcome }
   | { kind: "model"; summary: SessionSummary; gate: ExtractEligibleGate };
 
 function alreadyExtractedResult(
@@ -663,7 +693,7 @@ function alreadyExtractedResult(
   sessionId: string,
   prior: ExtractedSessionRow | undefined,
   contentHash: string,
-): ExtractedSessionResult {
+): ExtractSessionOutcome {
   return {
     sessionId,
     harness,
@@ -677,7 +707,7 @@ function alreadyExtractedResult(
   };
 }
 
-function lockedConcurrentResult(harness: string, summary: SessionSummary): ExtractedSessionResult {
+function lockedConcurrentResult(harness: string, summary: SessionSummary): ExtractSessionOutcome {
   return {
     sessionId: summary.sessionId,
     harness,
@@ -907,7 +937,7 @@ function malformedExtractionResult(args: {
   preFilter: ExtractedSessionResult["preFilter"];
   contentHash: string;
   notices: Pick<ExtractedSessionResult, "notices">;
-}): ExtractedSessionResult {
+}): ExtractSessionOutcome {
   const { extraction, sessionRef, harness, preFilter, contentHash, notices } = args;
   const diagnostic = `malformed_model_output: ${extraction.failure.message}; attempts=${extraction.attempts}; responseLength=${extraction.raw.length}; responseSha256=${sha256Hex(extraction.raw)}`;
   warnVerbose(
@@ -933,7 +963,7 @@ function unavailableExtractionResult(args: {
   preFilter: ExtractedSessionResult["preFilter"];
   contentHash: string;
   notices: Pick<ExtractedSessionResult, "notices">;
-}): ExtractedSessionResult {
+}): ExtractSessionOutcome {
   return {
     sessionId: args.sessionRef.sessionId,
     harness: args.harness,
@@ -984,7 +1014,7 @@ async function maybeWriteSessionAsset(
 async function processSession(
   runCtx: ExtractSessionRunCtx,
   session: ExtractSessionInput,
-): Promise<ExtractedSessionResult> {
+): Promise<ExtractSessionOutcome> {
   const {
     harness,
     stashDir,
@@ -1199,6 +1229,8 @@ interface ExtractSessionLoopArgs {
 
 /** Accumulated per-run tallies + results produced by {@link runExtractSessionLoop}. */
 interface ExtractSessionLoopResult {
+  /** The run's resolved engine name, stamped onto every session result and ledger row. */
+  engine: string;
   sessions: ExtractedSessionResult[];
   processedCount: number;
   skippedCount: number;
@@ -1257,6 +1289,7 @@ function recordExtractSessionOutcome(args: {
         preFilterInputCount: result.preFilter.inputCount,
         preFilterOutputCount: result.preFilter.outputCount,
         preFilterTruncatedCount: result.preFilter.truncatedCount,
+        engine: result.engine,
         ...(result.skipReason ? { skipReason: result.skipReason } : {}),
         ...(result.sessionLogPath ? { logPath: result.sessionLogPath } : {}),
         ...(result.sessionAssetRef ? { sessionAssetRef: result.sessionAssetRef } : {}),
@@ -1270,11 +1303,12 @@ function recordExtractSessionOutcome(args: {
 }
 
 function accountExtractSessionResult(
-  result: ExtractedSessionResult,
+  result: ExtractSessionOutcome,
   triageEnabled: boolean,
   output: ExtractSessionLoopResult,
-): void {
-  output.sessions.push(result);
+): ExtractedSessionResult {
+  const stamped: ExtractedSessionResult = { ...result, engine: output.engine };
+  output.sessions.push(stamped);
   if (triageEnabled) {
     const preempted =
       result.skipReason === "read_failed" ||
@@ -1290,6 +1324,7 @@ function accountExtractSessionResult(
   if (result.skipped) output.skippedCount += 1;
   else output.processedCount += 1;
   output.allProposalIds.push(...result.proposalIds);
+  return stamped;
 }
 
 /**
@@ -1343,6 +1378,7 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     standardsContext: extractStandardsContext,
   };
   const output: ExtractSessionLoopResult = {
+    engine: llmRunner.engine,
     sessions: [],
     processedCount: 0,
     skippedCount: 0,
@@ -1377,14 +1413,14 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
     if (options.signal?.aborted) break;
     const { summary } = plan;
     if (plan.kind === "skip") {
-      accountExtractSessionResult(plan.result, triage.enabled, output);
+      const accounted = accountExtractSessionResult(plan.result, triage.enabled, output);
       recordExtractSessionOutcome({
         stateDb,
         trackingEnabled,
         dryRun,
         harness: harness.name,
         summary,
-        result: plan.result,
+        result: accounted,
         sourceRun,
       });
       continue;
@@ -1424,14 +1460,14 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
         triage,
       });
       if ("skip" in executionGate) {
-        accountExtractSessionResult(executionGate.skip, triage.enabled, output);
+        const accounted = accountExtractSessionResult(executionGate.skip, triage.enabled, output);
         recordExtractSessionOutcome({
           stateDb,
           trackingEnabled,
           dryRun,
           harness: harness.name,
           summary,
-          result: executionGate.skip,
+          result: accounted,
           sourceRun,
         });
         refillModelSlot();
@@ -1444,14 +1480,14 @@ async function runExtractSessionLoop(args: ExtractSessionLoopArgs): Promise<Extr
       if (result.skipReason === "malformed_model_output") {
         for (const warning of result.warnings) topLevelWarnings.push(`session ${summary.sessionId}: ${warning}`);
       }
-      accountExtractSessionResult(result, triage.enabled, output);
+      const accounted = accountExtractSessionResult(result, triage.enabled, output);
       recordExtractSessionOutcome({
         stateDb,
         trackingEnabled,
         dryRun,
         harness: harness.name,
         summary,
-        result,
+        result: accounted,
         sourceRun,
       });
     } catch (err) {
@@ -1556,8 +1592,9 @@ function resolveExtractRunConfig(
   // Cap on NEW sessions LLM-processed per run; 0 disables. Absent = default.
   // Bounds per-run wall time / LLM cost so a backlog can't push a run past its
   // task timeout — the overflow stays unseen and is picked up by later runs.
-  const maxSessionsPerRun =
-    typeof extractProcess?.maxSessionsPerRun === "number"
+  const maxSessionsPerRun = options.since
+    ? 0
+    : typeof extractProcess?.maxSessionsPerRun === "number"
       ? extractProcess.maxSessionsPerRun
       : DEFAULT_MAX_SESSIONS_PER_RUN;
   // Default discovery window — process config can override the built-in 24h.
@@ -1636,6 +1673,7 @@ function discoverExtractCandidates(
   effectiveSince: string | undefined,
   startMs: number,
   dryRun: boolean,
+  llmRunner: ExtractLlmRunner,
 ): { candidates: SessionSummary[] } | { notFound: AkmExtractResult } {
   if (options.sessionId) {
     const all = harness.listSessions({
@@ -1644,20 +1682,14 @@ function discoverExtractCandidates(
     const target = all.find((s) => s.sessionId === options.sessionId);
     if (!target) {
       return {
-        notFound: {
-          schemaVersion: 1,
+        notFound: emptyExtractResult({
           ok: false,
-          shape: "extract-result",
           dryRun,
           type: options.type,
-          sessionsProcessed: 0,
-          sessionsSkipped: 0,
-          candidatesCreated: 0,
-          proposals: [],
-          sessions: [],
-          warnings: [`session ${options.sessionId} not found for harness ${options.type}`],
-          durationMs: Date.now() - startMs,
-        },
+          warning: `session ${options.sessionId} not found for harness ${options.type}`,
+          startMs,
+          llmRunner,
+        }),
       };
     }
     return { candidates: [target] };
@@ -1785,6 +1817,30 @@ function emitExtractTriageEvent(args: {
   );
 }
 
+/**
+ * Count every session's `skipReason` (#912) and push one warning line per
+ * infrastructure reason in {@link EXTRACT_INFRASTRUCTURE_SKIP_REASONS}.
+ * `undefined` when nothing was skipped, so the envelope carries no key.
+ */
+function buildExtractSkipAggregate(
+  sessions: readonly ExtractedSessionResult[],
+  engine: string,
+  warnings: string[],
+): AkmExtractResult["skipReasons"] {
+  const counts: NonNullable<AkmExtractResult["skipReasons"]> = {};
+  for (const session of sessions) {
+    if (!session.skipReason) continue;
+    counts[session.skipReason] = (counts[session.skipReason] ?? 0) + 1;
+  }
+  if (Object.keys(counts).length === 0) return undefined;
+  const total = sessions.length;
+  for (const reason of EXTRACT_INFRASTRUCTURE_SKIP_REASONS) {
+    const n = counts[reason];
+    if (n) warnings.push(`${n} of ${total} sessions skipped: ${reason} (engine "${engine}")`);
+  }
+  return counts;
+}
+
 export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtractResult> {
   const startMs = Date.now();
   if (!options.type || options.type.trim() === "") {
@@ -1814,20 +1870,13 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
 
   // Feature-gate early so we get a clean "skipped because disabled" envelope.
   if (!extractEnabled) {
-    return {
-      schemaVersion: 1,
+    return emptyExtractResult({
       ok: true,
-      shape: "extract-result",
       dryRun,
       type: options.type,
-      sessionsProcessed: 0,
-      sessionsSkipped: 0,
-      candidatesCreated: 0,
-      proposals: [],
-      sessions: [],
-      warnings: ["extract is disabled by the selected improve strategy"],
-      durationMs: Date.now() - startMs,
-    };
+      warning: "extract is disabled by the selected improve strategy",
+      startMs,
+    });
   }
 
   const {
@@ -1849,40 +1898,28 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
 
   const harness = resolveHarness(options.type, options.harnesses);
   if (!harness) {
-    return {
-      schemaVersion: 1,
+    return emptyExtractResult({
       ok: false,
-      shape: "extract-result",
       dryRun,
       type: options.type,
-      sessionsProcessed: 0,
-      sessionsSkipped: 0,
-      candidatesCreated: 0,
-      proposals: [],
-      sessions: [],
-      warnings: [`no available harness matches type "${options.type}" (check that the platform is installed)`],
-      durationMs: Date.now() - startMs,
-    };
+      warning: `no available harness matches type "${options.type}" (check that the platform is installed)`,
+      startMs,
+      llmRunner,
+    });
   }
   if (!harness.isAvailable()) {
-    return {
-      schemaVersion: 1,
+    return emptyExtractResult({
       ok: false,
-      shape: "extract-result",
       dryRun,
       type: options.type,
-      sessionsProcessed: 0,
-      sessionsSkipped: 0,
-      candidatesCreated: 0,
-      proposals: [],
-      sessions: [],
-      warnings: [`harness ${options.type} is registered but reports not-available (no session data on this machine)`],
-      durationMs: Date.now() - startMs,
-    };
+      warning: `harness ${options.type} is registered but reports not-available (no session data on this machine)`,
+      startMs,
+      llmRunner,
+    });
   }
 
   // Decide which sessions to process: explicit sessionId OR discovery via since.
-  const discovery = discoverExtractCandidates(options, harness, effectiveSince, startMs, dryRun);
+  const discovery = discoverExtractCandidates(options, harness, effectiveSince, startMs, dryRun, llmRunner);
   if ("notFound" in discovery) return discovery.notFound;
   const candidates = discovery.candidates;
 
@@ -1970,6 +2007,7 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
       `Reached maxSessionsPerRun=${maxSessionsPerRun}; ${loopResult.deferred} session(s) deferred to a later run.`,
     );
   }
+  const skipReasons = buildExtractSkipAggregate(sessions, llmRunner.engine, topLevelWarnings);
 
   emitExtractTriageEvent({
     modelPlanCount,
@@ -1998,6 +2036,9 @@ export async function akmExtract(options: AkmExtractOptions): Promise<AkmExtract
     warnings: topLevelWarnings,
     durationMs: Date.now() - startMs,
     ...(getNotices().length > 0 ? { notices: getNotices() } : {}),
+    ...(skipReasons ? { skipReasons } : {}),
+    engine: llmRunner.engine,
+    engineKind: llmRunner.kind,
   };
 }
 

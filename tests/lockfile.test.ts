@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { getLockfileLockPath } from "../src/core/paths";
 import {
+  _setLockAcquireTimeoutMsForTests,
   type LockfileEntry,
   readLockfile,
   removeLockEntry,
@@ -10,6 +11,7 @@ import {
   writeLockfile,
 } from "../src/integrations/lockfile";
 import { type Cleanup, sandboxXdgDataHome } from "./_helpers/sandbox";
+import { overrideSeam } from "./_helpers/seams";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -200,6 +202,7 @@ describe("writeLockfile", () => {
   });
 
   test("fails closed when another live writer owns the sentinel", async () => {
+    overrideSeam(_setLockAcquireTimeoutMsForTests, 50);
     await writeLockfile([validEntry({ id: "original" })]);
     fs.writeFileSync(getLockfileLockPath(), String(process.pid), { flag: "wx" });
 

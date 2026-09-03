@@ -47,15 +47,14 @@ function runEntrypointSpawn(args: string[]) {
   });
 }
 
-describe("entrypoint global --shape=summary pre-execution gate", () => {
-  test("rejects global --shape=summary before non-show commands before they run", () => {
+describe("entrypoint global --shape=summary on a non-show command", () => {
+  test("warns and still performs the write, falling back to the agent shape", () => {
     const storage = useStorage();
 
-    const result = runEntrypointSpawn(["--format=json", "--shape=summary", "remember", "do not write"]);
+    const result = runEntrypointSpawn(["--format=json", "--shape=summary", "remember", "write me anyway"]);
 
-    expect(result.status).toBe(2);
-    const error = JSON.parse(result.stderr) as Record<string, unknown>;
-    expect(error.code).toBe("INVALID_SHAPE_VALUE");
-    expect(fs.readdirSync(path.join(storage.stashDir, "memories"))).toEqual([]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("not supported for 'akm remember'");
+    expect(fs.readdirSync(path.join(storage.stashDir, "memories"))).not.toEqual([]);
   });
 });

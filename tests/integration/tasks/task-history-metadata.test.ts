@@ -4,6 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { openStateDatabase } from "../../../src/core/state-db";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../../src/core/warn";
 import {
   decodeTaskHistoryMetadata,
   upsertTaskHistory,
@@ -23,14 +24,32 @@ describe("decodeTaskHistoryMetadata", () => {
     ).toEqual({ metadataVersion: 2, durationMs: 12, detail: { exitCode: 0 }, engine: "local" });
   });
 
-  test("rejects malformed JSON and genuinely unsupported metadataVersion values", () => {
+  test("rejects malformed JSON but decodes a higher metadataVersion best-effort with one warning", () => {
     expect(() => decodeTaskHistoryMetadata("{not json")).toThrow(/not valid JSON/);
-    // metadataVersion 1 or 3 is a genuinely unknown/future shape, distinct
-    // from the tolerated ABSENT-metadataVersion legacy case below.
-    expect(() => decodeTaskHistoryMetadata({ metadataVersion: 1, durationMs: 12, detail: null })).toThrow(
-      /unsupported metadataVersion/,
-    );
-    expect(() => decodeTaskHistoryMetadata({ metadataVersion: 3 })).toThrow(/unsupported metadataVersion/);
+    // A row a newer akm wrote and stamped with a metadataVersion this binary
+    // doesn't recognize is version skew, not corruption — it decodes
+    // best-effort as version 2 instead of aborting the whole read.
+    const messages: string[] = [];
+    _resetWarnOnceForTests();
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") messages.push(args.map(String).join(" "));
+    });
+    try {
+      expect(decodeTaskHistoryMetadata({ metadataVersion: 3, durationMs: 12, detail: null })).toEqual({
+        metadataVersion: 2,
+        durationMs: 12,
+        detail: null,
+      });
+      expect(messages.some((message) => message.includes("metadataVersion 3"))).toBe(true);
+      messages.length = 0;
+      // Repeating the same value warns at most once per process.
+      decodeTaskHistoryMetadata({ metadataVersion: 3, durationMs: 1, detail: null });
+      expect(messages).toHaveLength(0);
+    } finally {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
+    expect(() => decodeTaskHistoryMetadata({ metadataVersion: 3 })).toThrow(/durationMs must be a number/);
     expect(() => decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1 })).not.toThrow();
   });
 
@@ -73,16 +92,22 @@ describe("decodeTaskHistoryMetadata", () => {
     ).toEqual({ metadataVersion: 2, durationMs: 1, detail: { reason: "repair" } });
   });
 
-  test("still rejects genuine corruption: non-number durationMs and invalid detail", () => {
+  test("still rejects genuine corruption: non-number durationMs and a non-object detail", () => {
     expect(() => decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: "oops", detail: null })).toThrow(
       /durationMs must be a number/,
-    );
-    expect(() => decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: { bogus: true } })).toThrow(
-      /unknown detail fields/,
     );
     expect(() => decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: "not an object" })).toThrow(
       /detail must be an object or null/,
     );
+    expect(() =>
+      decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: { exitCode: "oops" } }),
+    ).toThrow(/detail\.exitCode must be a number or null/);
+  });
+
+  test("decodes a detail object carrying an unknown field, dropping it harmlessly", () => {
+    expect(
+      decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: { exitCode: 0, bogus: true } }),
+    ).toEqual({ metadataVersion: 2, durationMs: 1, detail: { exitCode: 0 } });
   });
 
   // P1b (D8, spec §5.3/§6 F-2): the result-vocabulary marker rides the
@@ -103,13 +128,28 @@ describe("decodeTaskHistoryMetadata", () => {
     });
   });
 
-  test("rejects a non-2 targetVocab (P1b vocabulary marker)", () => {
-    expect(() =>
-      decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: null, targetVocab: 3 }),
-    ).toThrow();
-    expect(() =>
-      decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: null, targetVocab: "2" }),
-    ).toThrow();
+  test("decodes a non-2 targetVocab by dropping it (falls back to the legacy mapping) instead of rejecting", () => {
+    _resetWarnOnceForTests();
+    const messages: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") messages.push(args.map(String).join(" "));
+    });
+    try {
+      expect(decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: null, targetVocab: 3 })).toEqual({
+        metadataVersion: 2,
+        durationMs: 1,
+        detail: null,
+      });
+      expect(messages.some((message) => message.includes("targetVocab 3"))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
+    expect(decodeTaskHistoryMetadata({ metadataVersion: 2, durationMs: 1, detail: null, targetVocab: "2" })).toEqual({
+      metadataVersion: 2,
+      durationMs: 1,
+      detail: null,
+    });
   });
 });
 

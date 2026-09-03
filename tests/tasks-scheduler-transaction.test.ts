@@ -2,10 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmTasksAdd, akmTasksSync } from "../src/commands/tasks/tasks";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import { akmIndex } from "../src/indexer/indexer";
 import type { SchedulerBackend } from "../src/tasks/backends/types";
 import type { ScheduleBackend } from "../src/tasks/schedule";
@@ -247,6 +248,104 @@ describe("whole-set scheduler transaction and coherent inspection", () => {
     expect(backend.splitReadCalls).toBe(0);
     expect(backend.snapshotCalls).toBe(1);
     expect(backend.calls).toEqual(["install:alpha:cas"]);
+  });
+
+  test("task add replaces a hand-edited installed binding (unparseable ordinal) with a warning, skipping only its own CAS", async () => {
+    const handEdited: SchedulerBinding = {
+      id: "hand-edited-id",
+      logicalSource: { kind: "task", ref: "stash//tasks/mytask" },
+      cron: "0 3 * * *",
+      source: "akm.schedule",
+      ordinal: 0,
+      enabled: true,
+      invocation: ["task", "run", "mytask", "--bundle", "stash", "--scheduled"],
+    };
+    const backend = fakeBackend("cron", [handEdited]);
+
+    const warnings: unknown[][] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+    try {
+      await akmTasksAdd({ id: "mytask", schedule: "0 4 * * *", command: "echo mytask" }, { backend });
+    } finally {
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
+
+    expect(backend.calls).toEqual(["remove:hand-edited-id:missing-cas", "install:mytask:cas"]);
+    expect(backend.stored.has("hand-edited-id")).toBe(false);
+    expect(backend.stored.has("mytask")).toBe(true);
+    expect(
+      warnings.some(
+        (args) =>
+          args.some((a) => String(a).includes("hand-edited-id")) &&
+          args.some((a) => String(a).includes("could not be exactly parsed")),
+      ),
+    ).toBe(true);
+  });
+
+  test("task add reads an existing symlinked task source instead of refusing it (containment still enforced)", async () => {
+    const realTarget = path.join(storage.stashDir, "tasks", ".mytask-real.yml");
+    fs.writeFileSync(realTarget, 'version: 4\nrun: echo old\nschedule: "@daily"\n');
+    const assetPath = path.join(storage.stashDir, "tasks", "mytask.yml");
+    fs.symlinkSync(realTarget, assetPath);
+
+    const backend = fakeBackend("cron");
+    const result = await akmTasksAdd(
+      { id: "mytask", schedule: "0 5 * * *", command: "echo new", force: true },
+      { backend },
+    );
+
+    expect(result.id).toBe("mytask");
+    expect(fs.readFileSync(assetPath, "utf8")).toContain("echo new");
+  });
+
+  test("task add retries a torn read once, then warns and proceeds rather than refusing", async () => {
+    const assetPath = path.join(storage.stashDir, "tasks", "mytask.yml");
+    fs.writeFileSync(assetPath, 'version: 4\nrun: echo old\nschedule: "@daily"\n');
+
+    const openedPaths = new Map<number, string>();
+    const realOpenSync = fs.openSync.bind(fs);
+    const openSpy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      const fd = realOpenSync(...args);
+      openedPaths.set(fd, String(args[0]));
+      return fd;
+    }) as typeof fs.openSync);
+    let torn = false;
+    const realReadFileSync = fs.readFileSync.bind(fs);
+    const readSpy = spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+      const real = realReadFileSync(...args);
+      const fd = args[0];
+      if (!torn && typeof fd === "number" && openedPaths.get(fd) === assetPath && Buffer.isBuffer(real)) {
+        torn = true;
+        return real.subarray(0, real.byteLength - 1);
+      }
+      return real;
+    }) as typeof fs.readFileSync);
+
+    const warnings: unknown[][] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args);
+    });
+
+    let result: Awaited<ReturnType<typeof akmTasksAdd>>;
+    try {
+      const backend = fakeBackend("cron");
+      result = await akmTasksAdd(
+        { id: "mytask", schedule: "0 5 * * *", command: "echo new", force: true },
+        { backend },
+      );
+    } finally {
+      openSpy.mockRestore();
+      readSpy.mockRestore();
+      _setWarnSinkForTests(undefined);
+      _resetWarnOnceForTests();
+    }
+
+    expect(result.id).toBe("mytask");
+    expect(torn).toBe(true);
+    expect(warnings.some((args) => args.some((a) => String(a).includes("retried once")))).toBe(true);
   });
 
   test("task add rejects a backend without coherent inspection before source write", async () => {

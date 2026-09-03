@@ -456,6 +456,9 @@ describe("conformance — read candidates and recognition are two-way canonical 
       }) as typeof fs.readFileSync);
       try {
         expect(() => resolveAdapterConceptOwner(root, "akm", "commands/same")).toThrow(AdapterConceptCollisionError);
+
+        const owner = resolveAdapterConceptOwner(root, "akm", "commands/same", { mode: "read" });
+        expect(owner?.path).toBe(canonical);
       } finally {
         readSpy.mockRestore();
       }

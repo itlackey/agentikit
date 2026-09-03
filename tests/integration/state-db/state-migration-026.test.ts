@@ -60,15 +60,16 @@ afterEach(() => {
 });
 
 describe("migration 026-proposals-strip-legacy-fragment-refs — registry position and safety classification", () => {
-  test("is the final entry of STATE_MIGRATIONS, directly after 025-task-history-vocabulary-backfill", () => {
+  test("is registered directly after 025-task-history-vocabulary-backfill", () => {
     const ids = STATE_MIGRATIONS.map((migration) => migration.id);
-    expect(ids.at(-1)).toBe(MIGRATION_ID);
-    expect(ids.at(-2)).toBe(PRECEDING_MIGRATION_ID);
+    const index = ids.indexOf(MIGRATION_ID);
+    expect(index).toBeGreaterThan(-1);
+    expect(ids[index - 1]).toBe(PRECEDING_MIGRATION_ID);
   });
 
-  test("is the final classified id in STATE_MIGRATION_SAFETY_BY_ID, classified data-preserving-rebuild", () => {
+  test("is a classified id in STATE_MIGRATION_SAFETY_BY_ID, classified data-preserving-rebuild", () => {
     const classifiedIds = Object.keys(STATE_MIGRATION_SAFETY_BY_ID);
-    expect(classifiedIds.at(-1)).toBe(MIGRATION_ID);
+    expect(classifiedIds).toContain(MIGRATION_ID);
     expect(getStateMigrationSafety(MIGRATION_ID)).toBe("data-preserving-rebuild");
   });
 

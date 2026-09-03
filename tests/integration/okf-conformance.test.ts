@@ -11,6 +11,7 @@ import { showLocal } from "../../src/commands/read/show";
 import { loadConfig, resetConfigCache } from "../../src/core/config/config";
 import { readEvents } from "../../src/core/events";
 import { getDbPath } from "../../src/core/paths";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../src/core/warn";
 import { akmIndex } from "../../src/indexer/indexer";
 import { resolveSourceEntries } from "../../src/indexer/search/search-source";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
@@ -230,16 +231,25 @@ describe("OKF first-class conformance", () => {
     });
     expect(parseType(native.path)).toBe("memory");
 
-    await expect(
-      writeMarkdownAsset({
+    const warnings: string[] = [];
+    _resetWarnOnceForTests();
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      const reserved = await writeMarkdownAsset({
         type: "memory",
         content: "Reserved.",
         name: "index",
         fallbackPrefix: "memory",
         target: "local",
-      }),
-    ).rejects.toThrow(/reserved concept name/i);
-    expect(fs.existsSync(path.join(storage.stashDir, "memories", "index.md"))).toBe(false);
+      });
+      expect(parseType(reserved.path)).toBe("memory");
+      expect(warnings.some((w) => w.includes("index"))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+    expect(fs.existsSync(path.join(storage.stashDir, "memories", "index.md"))).toBe(true);
   });
 
   test("an adapter change invalidates incremental freshness and updates the canonical row in place", async () => {
@@ -778,7 +788,7 @@ describe("OKF first-class conformance", () => {
       resetConfigCache();
 
       expect((await loadWorkflowAsset("native//upper")).path).toBe(path.join(workflowRoot, "upper.MD"));
-      await expect(loadWorkflowAsset("native//escape")).rejects.toMatchObject({ code: "PATH_ESCAPE_VIOLATION" });
+      await expect(loadWorkflowAsset("native//escape")).rejects.toMatchObject({ code: "ASSET_NOT_FOUND" });
       await expect(loadWorkflowAsset("native//duplicate")).rejects.toMatchObject({
         code: "RESOURCE_ALREADY_EXISTS",
       });

@@ -10,6 +10,7 @@ import type { BundleComponent } from "../../core/adapter/types";
 import { compareCodePoints, hasErrnoCode, isWithin } from "../../core/common";
 import { ConfigError, UsageError } from "../../core/errors";
 import { canonicalizeWorkflowName } from "../../core/recognition-util";
+import { warnOnce } from "../../core/warn";
 import {
   resolveUniqueWorkflowSource,
   type WorkflowSourceFile,
@@ -147,6 +148,10 @@ function claimsWithoutContent(adapter: BundleAdapter, component: BundleComponent
   }
 }
 
+export interface ResolveAdapterConceptOwnerOptions {
+  mode?: "read" | "write";
+}
+
 /**
  * Resolve one adapter/component's exact physical concept owner without reading
  * authored bytes. Native workflow arbitration is reused verbatim; every other
@@ -157,6 +162,7 @@ export function resolveAdapterConceptOwner(
   sourcePath: string,
   adapterId: string,
   conceptId: string,
+  options?: ResolveAdapterConceptOwnerOptions,
 ): AdapterConceptOwner | undefined {
   const adapter = adapterForId(adapterId);
   const normalized = normalizedConceptId(conceptId);
@@ -222,13 +228,26 @@ export function resolveAdapterConceptOwner(
     if (ownersByIdentity.has(identity)) continue;
     if (claimsWithoutContent(adapter, component, candidate)) ownersByIdentity.set(identity, candidate);
   }
-  const owners = [...ownersByIdentity.values()].filter((owner) => owner.conceptId === resolutionConceptId);
+  const owners = [...ownersByIdentity.values()]
+    .filter((owner) => owner.conceptId === resolutionConceptId)
+    .sort((left, right) => compareCodePoints(left.path, right.path));
   if (owners.length > 1) {
-    throw new AdapterConceptCollisionError(
-      adapterId,
-      resolutionConceptId,
-      owners.map((owner) => path.relative(sourcePath, owner.path).replaceAll("\\", "/")),
+    if (options?.mode !== "read") {
+      throw new AdapterConceptCollisionError(
+        adapterId,
+        resolutionConceptId,
+        owners.map((owner) => path.relative(sourcePath, owner.path).replaceAll("\\", "/")),
+      );
+    }
+    const [winner, ...losers] = owners;
+    warnOnce(
+      `adapter-concept-collision:${adapterId}:${resolutionConceptId}`,
+      `Adapter "${adapterId}" has multiple physical owners for "${resolutionConceptId}": ` +
+        `${owners.map((owner) => path.relative(sourcePath, owner.path).replaceAll("\\", "/")).join(", ")}. ` +
+        `Reading "${path.relative(sourcePath, winner!.path).replaceAll("\\", "/")}" and ignoring ` +
+        `${losers.map((owner) => path.relative(sourcePath, owner.path).replaceAll("\\", "/")).join(", ")}.`,
     );
+    return winner;
   }
   return owners[0];
 }

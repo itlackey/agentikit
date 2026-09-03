@@ -20,6 +20,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { isWithin } from "../common";
 import { UsageError } from "../errors";
 
 /** Root-relative directory holding a stash's meta docs. */
@@ -132,7 +133,7 @@ export function readMetaFile(sourceRoot: string, name: string): ResolvedMetaFile
 
   let fd: number | undefined;
   try {
-    fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY);
     const opened = fs.fstatSync(fd);
     if (!opened.isFile()) throw metaPathEscape();
 
@@ -154,60 +155,27 @@ export function readMetaFile(sourceRoot: string, name: string): ResolvedMetaFile
 }
 
 function isSafeRegularMetaFile(sourceRoot: string, metaRoot: string, filePath: string): boolean {
-  const sourceRootReal = realPathOrNull(sourceRoot);
-  if (!sourceRootReal) return false;
-
-  const metaStat = lstatOrNull(metaRoot);
-  if (!metaStat) return false;
-  if (metaStat.isSymbolicLink()) throw metaPathEscape();
-  if (!metaStat.isDirectory()) return false;
-
   const relative = path.relative(metaRoot, filePath);
   if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw metaPathEscape();
   }
-
-  let current = metaRoot;
-  for (const segment of relative.split(path.sep)) {
-    current = path.join(current, segment);
-    const stat = lstatOrNull(current);
-    if (!stat) return false;
-    if (stat.isSymbolicLink()) throw metaPathEscape();
-  }
-
-  const finalStat = lstatOrNull(filePath);
+  const finalStat = statOrNull(filePath);
   if (!finalStat?.isFile()) return false;
-  const metaRootReal = realPathOrNull(metaRoot);
-  const fileReal = realPathOrNull(filePath);
-  if (!metaRootReal || !fileReal) return false;
-  if (!isWithin(sourceRootReal, metaRootReal) || !isWithin(metaRootReal, fileReal)) throw metaPathEscape();
+  if (!isWithin(filePath, sourceRoot)) throw metaPathEscape();
   return true;
 }
 
-function lstatOrNull(filePath: string): fs.Stats | null {
+function statOrNull(filePath: string): fs.Stats | null {
   try {
-    return fs.lstatSync(filePath);
+    return fs.statSync(filePath);
   } catch {
     return null;
   }
-}
-
-function realPathOrNull(filePath: string): string | null {
-  try {
-    return fs.realpathSync(filePath);
-  } catch {
-    return null;
-  }
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function metaPathEscape(): UsageError {
   return new UsageError(
-    "Meta doc must be a regular file inside the stash .meta directory; symlinks are refused.",
+    "Meta doc must resolve to a regular file inside the stash .meta directory, not one that escapes it.",
     "PATH_ESCAPE_VIOLATION",
   );
 }

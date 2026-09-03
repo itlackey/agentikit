@@ -420,6 +420,13 @@ describe("parseTaskSourceV4Document — target union (uses/run exactly one, D2-N
     );
   });
 
+  test("run: containing a GitHub-style ${{ }} expression is accepted verbatim — akm has no expander on this path, and the workflow side passes these bytes through unchanged", () => {
+    const doc = parseTaskSourceV4Document(v4Doc({ run: "echo 'runs-on: ${{ matrix.os }}' >> ci.yml" }), {
+      filePath: "/x.yml",
+    });
+    expect(doc.target).toEqual({ kind: "run", run: "echo 'runs-on: ${{ matrix.os }}' >> ci.yml" });
+  });
+
   test("accepts the closed run/shell/working-directory contract with real physical containment (mirrors v3)", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-task-source-v4-root-"));
     fs.mkdirSync(path.join(root, "packages", "core"), { recursive: true });

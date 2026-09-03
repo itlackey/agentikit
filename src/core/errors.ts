@@ -36,11 +36,6 @@ export type ConfigErrorCode =
   | "LLM_NOT_CONFIGURED"
   | "INVALID_CONFIG_FILE"
   | "UNSUPPORTED_CONFIG_VERSION"
-  // Defense-in-depth sentinel raised by `akm bundle create` under `bun test`
-  // to refuse persisting a temp-dir stashDir to the user's real config.
-  // See src/commands/sources/init.ts.
-  | "INIT_TMP_STASH_REFUSED"
-  | "SETUP_TMP_STASH_REFUSED"
   | "UNKNOWN_IMPROVE_STRATEGY"
   | "DANGEROUS_ENV_AUDIT_FAILED"
   | "EXECUTION_NOT_AUTHORIZED"
@@ -162,8 +157,6 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
     'Run `akm setup` or configure an `engines` entry with `kind: "llm"`, then select it with `defaults.llmEngine`.',
   TEST_ISOLATION_MISSING:
     "Under bun test, when AKM_BUNDLE_DIR is set you MUST also set XDG_DATA_HOME (or AKM_DATA_DIR) and XDG_STATE_HOME (or AKM_STATE_DIR) to temp directories so the test does not touch the developer's real ~/.local/share/akm or ~/.local/state/akm.",
-  SETUP_TMP_STASH_REFUSED:
-    "Use a persistent directory, or set AKM_FORCE_SETUP_TMP_STASH=1 to opt in to a sandboxed setup (setup also pre-sets AKM_BUNDLE_DIR so config and cache writes auto-isolate into $stashDir/.akm/ — host config is preserved).",
   UNSAFE_STASH_DIR:
     "Choose a path inside your home directory (e.g. ~/akm) or another empty workspace. The bundle directory cannot be the filesystem root, your home directory itself, or a sensitive system path like /etc, /var, ~/.config, or ~/.ssh.",
   UNKNOWN_IMPROVE_STRATEGY:
@@ -193,7 +186,8 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   INVALID_SOURCE_VALUE: "Pick one of: local, registry, all, or a configured source name.",
   INVALID_FORMAT_VALUE: "Pick one of: json, jsonl, yaml, text, md, html.",
   INVALID_DETAIL_VALUE: "Pick one of: brief, normal, full. For agent/summary projections use --shape.",
-  INVALID_SHAPE_VALUE: "Pick one of: human, agent, summary (summary is only valid on `akm show`).",
+  INVALID_SHAPE_VALUE:
+    "Pick one of: human, agent, summary (summary falls back to agent, with a warning, on commands with no summary projection).",
   INVALID_JSON_CONFIG_VALUE:
     'Quote JSON values in your shell, for example: akm config set embedding \'{"endpoint":"http://localhost:11434/v1/embeddings","model":"nomic-embed-text"}\'.',
   MISSING_OR_AMBIGUOUS_TARGET:
@@ -236,7 +230,7 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   // P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md §3.2, A-N2): the
   // complete-or-abandon policy for a stored pre-irVersion-5 run.
   WORKFLOW_IR_VERSION_UNSUPPORTED:
-    "Abandon the run with `akm workflow abandon <id>`, then start it again from the workflow source — pre-0.9.2 frozen plans are not re-executable.",
+    "Abandon the run with `akm workflow abandon <id>`, then start it again from the workflow source — a frozen plan this akm cannot execute is not re-executable in place.",
   // P3b (docs/plans/specs/p3b-child-executor.md §4.3).
   WORKFLOW_OUTPUT_INVALID:
     "Check each `outputs:` entry's `from:` against the step artifact it names, and its `schema:` against the value that step actually promotes.",

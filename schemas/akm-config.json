@@ -31,8 +31,7 @@
                 "minLength": 1
               },
               "apiKey": {
-                "type": "string",
-                "pattern": "^\\$[A-Za-z_][A-Za-z0-9_]*$|^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
+                "type": "string"
               },
               "apiKeyFile": {
                 "type": "string",
@@ -197,8 +196,7 @@
           "type": "string"
         },
         "apiKey": {
-          "type": "string",
-          "pattern": "^\\$[A-Za-z_][A-Za-z0-9_]*$|^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
+          "type": "string"
         },
         "dimension": {
           "type": "integer",
@@ -1720,8 +1718,7 @@
                     "minLength": 1
                   },
                   "apiKey": {
-                    "type": "string",
-                    "pattern": "^\\$[A-Za-z_][A-Za-z0-9_]*$|^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
+                    "type": "string"
                   },
                   "apiKeyFile": {
                     "type": "string",
@@ -1886,8 +1883,7 @@
               "type": "string"
             },
             "apiKey": {
-              "type": "string",
-              "pattern": "^\\$[A-Za-z_][A-Za-z0-9_]*$|^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
+              "type": "string"
             },
             "dimension": {
               "type": "integer",
@@ -3456,8 +3452,7 @@
           "type": "string"
         },
         "apiKey": {
-          "type": "string",
-          "pattern": "^\\$[A-Za-z_][A-Za-z0-9_]*$|^\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}$"
+          "type": "string"
         },
         "dimension": {
           "type": "integer",

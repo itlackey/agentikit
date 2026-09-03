@@ -16,6 +16,7 @@ import {
 import { backupExistingConfig } from "../src/core/config/config-io";
 import { ConfigError } from "../src/core/errors";
 import { getCacheDir, getConfigDir, getConfigPath } from "../src/core/paths";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import {
   type Cleanup,
   sandboxHome,
@@ -40,6 +41,20 @@ function writeRawConfig(configPath: string, content: string): void {
 
 function writeCurrentConfig(value: Record<string, unknown>): void {
   writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", ...value }));
+}
+
+function captureWarnings(fn: () => void): string[] {
+  const warnings: string[] = [];
+  _resetWarnOnceForTests();
+  _setWarnSinkForTests((level, args) => {
+    if (level === "warn") warnings.push(args.map(String).join(" "));
+  });
+  try {
+    fn();
+    return warnings;
+  } finally {
+    _setWarnSinkForTests(undefined);
+  }
 }
 
 // XDG_* / HOME / AKM_BUNDLE_DIR / cwd snapshot+restore is provided by
@@ -203,16 +218,18 @@ describe("loadConfig", () => {
     }
   });
 
-  test("rejects the retired `stashes[]` key instead of aliasing it to `sources[]`", () => {
+  test("ignores the retired `stashes[]` key instead of failing config load", () => {
     writeCurrentConfig({
       stashes: [{ type: "filesystem", path: "/legacy-stash", name: "legacy" }],
     });
 
-    expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/stashes is retired in 0\.9/);
+    const warnings = captureWarnings(() => {
+      expect(() => loadConfig()).not.toThrow();
+    });
+    expect(warnings.some((w) => w.includes("stashes") && w.includes("retired"))).toBe(true);
   });
 
-  test("hard-rejects the retired `sources[]` key (0.9.0 cutover) instead of loading it", () => {
+  test("folds the retired `sources[]` key into bundles, dropping entries this shim does not recognize", () => {
     writeRawConfig(
       getConfigPath(),
       JSON.stringify({
@@ -224,12 +241,17 @@ describe("loadConfig", () => {
       }),
     );
 
-    expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/sources is not supported/);
-    expect(() => loadConfig()).toThrow(/configure the current bundles shape/);
+    const warnings = captureWarnings(() => {
+      const config = loadConfig();
+      expect(config.bundles).not.toHaveProperty("my-ov");
+      expect(config.bundles?.keep).toMatchObject({ path: "/keep", writable: true });
+      expect(config.defaultBundle).toBe("keep");
+      expect((config as unknown as Record<string, unknown>).sources).toBeUndefined();
+    });
+    expect(warnings.some((w) => w.includes("sources") && w.includes("akm migrate apply"))).toBe(true);
   });
 
-  test("hard-rejects the retired `installed[]` key (0.9.0 cutover)", () => {
+  test("drops the retired `installed[]` key (no 0.9 equivalent) instead of failing config load", () => {
     writeRawConfig(
       getConfigPath(),
       JSON.stringify({
@@ -249,12 +271,15 @@ describe("loadConfig", () => {
       }),
     );
 
-    expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/installed is not supported/);
+    const warnings = captureWarnings(() => {
+      const config = loadConfig();
+      expect((config as unknown as Record<string, unknown>).installed).toBeUndefined();
+    });
+    expect(warnings.some((w) => w.includes("installed") && w.includes("akm migrate apply"))).toBe(true);
   });
 
-  // `stashDir` gets a per-key message pointing at its current replacement.
-  test("hard-rejects the retired `stashDir` key with a stashDir-specific message", () => {
+  // `stashDir` becomes the `stash` bundle and the default write target.
+  test("folds the retired `stashDir` key into a `stash` bundle instead of failing config load", () => {
     writeRawConfig(
       getConfigPath(),
       JSON.stringify({
@@ -263,10 +288,13 @@ describe("loadConfig", () => {
       }),
     );
 
-    expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/stashDir is not supported/);
-    expect(() => loadConfig()).toThrow(/bundles/);
-    expect(() => loadConfig()).toThrow(/configure `bundles`/);
+    const warnings = captureWarnings(() => {
+      const config = loadConfig();
+      expect(config.bundles?.stash).toMatchObject({ path: "/legacy-stash", writable: true });
+      expect(config.defaultBundle).toBe("stash");
+      expect((config as unknown as Record<string, unknown>).stashDir).toBeUndefined();
+    });
+    expect(warnings.some((w) => w.includes("stashDir") && w.includes("akm migrate apply"))).toBe(true);
   });
 });
 
@@ -855,7 +883,7 @@ describe("0.9 config shape parsing", () => {
     expect(loaded.defaults?.improveStrategy).toBe("my-custom-strategy");
   });
 
-  test("rejects legacy features.improve instead of translating it", () => {
+  test("ignores legacy features.improve instead of failing config load", () => {
     writeCurrentConfig({
       features: {
         improve: {
@@ -865,11 +893,13 @@ describe("0.9 config shape parsing", () => {
         },
       },
     });
-    expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/features is retired in 0\.9/);
+    const warnings = captureWarnings(() => {
+      expect(() => loadConfig()).not.toThrow();
+    });
+    expect(warnings.some((w) => w.includes("features") && w.includes("retired"))).toBe(true);
   });
 
-  test("rejects literal engine apiKey values before persistence", () => {
+  test("loads a literal engine apiKey, warning instead of failing", () => {
     writeCurrentConfig({
       engines: {
         cloud: {
@@ -880,8 +910,11 @@ describe("0.9 config shape parsing", () => {
         },
       },
     });
-    expect(() => loadConfig()).toThrow(ConfigError);
-    expect(() => loadConfig()).toThrow(/apiKey must be \$VAR/);
+    const warnings = captureWarnings(() => {
+      const config = loadConfig();
+      expect(config.engines?.cloud?.apiKey).toBe("sk-secret");
+    });
+    expect(warnings.some((w) => w.includes("engines.<name>.apiKey"))).toBe(true);
   });
 });
 

@@ -33,6 +33,7 @@ import { UsageError } from "../../../src/core/errors";
 import { readEvents } from "../../../src/core/events";
 import { getDbPath, getIndexWriterLockPath } from "../../../src/core/paths";
 import { openStateDatabase } from "../../../src/core/state-db";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { indexWrittenAssets } from "../../../src/indexer/index-written-assets";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { closeDatabase, openExistingDatabase } from "../../../src/storage/repositories/index-connection";
@@ -172,7 +173,7 @@ describe("createProposal / listProposals / getProposal", () => {
       content:
         "---\ndescription: Proposal with a stale path\nwhen_to_use: Testing proposal lint\n---\n\nUse /tmp/akm-proposal-lint-path-that-does-not-exist.\n",
     },
-  ])("blocks $issue findings before publishing", async ({ issue, content }) => {
+  ])("reports $issue findings without blocking publishing", async ({ issue, content }) => {
     const stash = makeStashDir();
     const config = makeConfig(stash);
     const slug = `lint-block-${issue}`;
@@ -184,11 +185,22 @@ describe("createProposal / listProposals / getProposal", () => {
     });
     if (isProposalSkipped(createdResult)) throw new Error("unexpected skip");
 
-    await expect(akmProposalAccept({ stashDir: stash, id: createdResult.id, config })).rejects.toThrow(issue);
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    let acceptResult: Awaited<ReturnType<typeof akmProposalAccept>>;
+    try {
+      acceptResult = await akmProposalAccept({ stashDir: stash, id: createdResult.id, config });
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
 
-    expect(fs.existsSync(path.join(stash, "lessons", `${slug}.md`))).toBe(false);
-    expect(getProposal(stash, createdResult.id).status).toBe("pending");
-    expect(readEvents({ type: "promoted" }).events).toHaveLength(0);
+    expect(acceptResult.ok).toBe(true);
+    expect(fs.existsSync(path.join(stash, "lessons", `${slug}.md`))).toBe(true);
+    expect(getProposal(stash, createdResult.id).status).toBe("accepted");
+    expect(readEvents({ type: "promoted" }).events).toHaveLength(1);
+    expect(warnings.some((line) => line.includes(issue))).toBe(true);
   });
 
   test("promotes a long quoted colon description after provenance serialization wraps it", async () => {

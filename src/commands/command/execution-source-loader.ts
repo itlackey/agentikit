@@ -14,6 +14,7 @@ import { loadConfig } from "../../core/config/config";
 import { bundleComponentConfig, bundlesToSourceEntries } from "../../core/config/config-sources";
 import type { AkmConfig } from "../../core/config/config-types";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
+import { warnOnce } from "../../core/warn";
 import type {
   AdapterRenderedCommandSource,
   AdapterRenderedExecutionSource,
@@ -91,17 +92,15 @@ function implicitComponentForEntry(
     if (!source || !component) continue;
     const canonicalRoot = realDirectory(component.root, `Canonical implicit source root for ${entry.bundleId}`);
     if (canonicalRoot !== realRoot) {
-      throw new ConfigError(
-        `Canonical implicit source root drift for ${JSON.stringify(entry.itemRef)}; the indexed root no longer matches the working bundle source.`,
-        "INVALID_CONFIG_FILE",
-        "Run `akm index --full` after changing AKM_BUNDLE_DIR or the default bundle directory.",
+      warnOnce(
+        `execution-source-root-drift:${entry.itemRef}`,
+        `[command] Indexed root for ${JSON.stringify(entry.itemRef)} no longer matches the working bundle source; re-resolving from live config. Run \`akm index --full\` to refresh it.`,
       );
     }
     if (component.adapter !== entry.adapterId) {
-      throw new ConfigError(
-        `Implicit adapter drift for ${JSON.stringify(entry.itemRef)}: the index records ${JSON.stringify(entry.adapterId)} but the canonical working source selects ${JSON.stringify(component.adapter)}.`,
-        "INVALID_CONFIG_FILE",
-        "Run `akm index --full` after changing the working source adapter.",
+      warnOnce(
+        `execution-source-adapter-drift:${entry.itemRef}`,
+        `[command] Indexed adapter ${JSON.stringify(entry.adapterId)} for ${JSON.stringify(entry.itemRef)} no longer matches the working source's adapter ${JSON.stringify(component.adapter)}; re-resolving from live config. Run \`akm index --full\` to refresh it.`,
       );
     }
     return Object.freeze({
@@ -128,54 +127,52 @@ function componentForEntry(entry: IndexEntry, config: AkmConfig, realRoot: strin
   const component = bundleComponentConfig(configured);
   const configuredAdapter = component?.adapter;
   if (configuredAdapter && configuredAdapter !== entry.adapterId) {
-    throw new ConfigError(
-      `Configured adapter drift for ${JSON.stringify(entry.itemRef)}: the index records ${JSON.stringify(entry.adapterId)} but the bundle config selects ${JSON.stringify(configuredAdapter)}.`,
-      "INVALID_CONFIG_FILE",
-      "Run `akm index --full` after changing a bundle adapter.",
+    warnOnce(
+      `execution-source-adapter-drift:${entry.itemRef}`,
+      `[command] Indexed adapter ${JSON.stringify(entry.adapterId)} for ${JSON.stringify(entry.itemRef)} no longer matches the bundle config's adapter ${JSON.stringify(configuredAdapter)}; re-resolving from live config. Run \`akm index --full\` to refresh it.`,
     );
   }
   const configuredSource = bundlesToSourceEntries(config)?.find((source) => source.name === entry.bundleId);
   const configuredContentRoot = configuredSource ? resolveEntryContentDir(configuredSource) : undefined;
   if (!configuredSource || !configuredContentRoot) {
-    throw new ConfigError(
-      `Configured source for ${JSON.stringify(entry.itemRef)} no longer resolves to materialized content.`,
-      "INVALID_CONFIG_FILE",
-      "Restore or update the bundle, then run `akm index --full` before dispatching this asset.",
+    warnOnce(
+      `execution-source-unresolved:${entry.itemRef}`,
+      `[command] Configured source for ${JSON.stringify(entry.itemRef)} no longer resolves to materialized content; dispatching from the indexed location instead. Run \`akm index --full\` after restoring or updating the bundle.`,
     );
-  }
-  const lexicalSourceRoot = path.resolve(configuredContentRoot);
-  const lexicalConfiguredRoot = path.resolve(configuredContentRoot, component?.root ?? ".");
-  if (!isLexicallyWithin(lexicalConfiguredRoot, lexicalSourceRoot)) {
-    throw new ConfigError(
-      `Configured component root for ${JSON.stringify(entry.itemRef)} resolves outside its materialized bundle source.`,
-      "INVALID_CONFIG_FILE",
-      "Keep component roots inside their owning bundle source, then run `akm index --full`.",
-    );
-  }
-  const configuredSourceRoot = realDirectory(lexicalSourceRoot, `Configured source root for ${entry.bundleId}`);
-  let configuredRoot: string;
-  try {
-    configuredRoot = realDirectory(lexicalConfiguredRoot, `Configured component root for ${entry.bundleId}`);
-  } catch {
-    throw new ConfigError(
-      `Configured ${JSON.stringify(configuredSource.type)} source for ${JSON.stringify(entry.itemRef)} is not materialized at its current component root.`,
-      "INVALID_CONFIG_FILE",
-      "Restore or update the bundle, then run `akm index --full` before dispatching this asset.",
-    );
-  }
-  if (!isWithin(configuredRoot, configuredSourceRoot)) {
-    throw new ConfigError(
-      `Configured component root for ${JSON.stringify(entry.itemRef)} resolves outside its materialized bundle source.`,
-      "INVALID_CONFIG_FILE",
-      "Remove the escaping symlink or component path, then run `akm index --full`.",
-    );
-  }
-  if (configuredRoot !== realRoot) {
-    throw new ConfigError(
-      `Configured source or component root drift for ${JSON.stringify(entry.itemRef)}; the indexed root no longer matches the ${JSON.stringify(configuredSource.type)} bundle source.`,
-      "INVALID_CONFIG_FILE",
-      "Run `akm index --full` after changing a bundle source or component root.",
-    );
+  } else {
+    const lexicalSourceRoot = path.resolve(configuredContentRoot);
+    const lexicalConfiguredRoot = path.resolve(configuredContentRoot, component?.root ?? ".");
+    if (!isLexicallyWithin(lexicalConfiguredRoot, lexicalSourceRoot)) {
+      throw new ConfigError(
+        `Configured component root for ${JSON.stringify(entry.itemRef)} resolves outside its materialized bundle source.`,
+        "INVALID_CONFIG_FILE",
+        "Keep component roots inside their owning bundle source, then run `akm index --full`.",
+      );
+    }
+    const configuredSourceRoot = realDirectory(lexicalSourceRoot, `Configured source root for ${entry.bundleId}`);
+    let configuredRoot: string;
+    try {
+      configuredRoot = realDirectory(lexicalConfiguredRoot, `Configured component root for ${entry.bundleId}`);
+    } catch {
+      throw new ConfigError(
+        `Configured ${JSON.stringify(configuredSource.type)} source for ${JSON.stringify(entry.itemRef)} is not materialized at its current component root.`,
+        "INVALID_CONFIG_FILE",
+        "Restore or update the bundle, then run `akm index --full` before dispatching this asset.",
+      );
+    }
+    if (!isWithin(configuredRoot, configuredSourceRoot)) {
+      throw new ConfigError(
+        `Configured component root for ${JSON.stringify(entry.itemRef)} resolves outside its materialized bundle source.`,
+        "INVALID_CONFIG_FILE",
+        "Remove the escaping symlink or component path, then run `akm index --full`.",
+      );
+    }
+    if (configuredRoot !== realRoot) {
+      warnOnce(
+        `execution-source-root-drift:${entry.itemRef}`,
+        `[command] Indexed root for ${JSON.stringify(entry.itemRef)} no longer matches the ${JSON.stringify(configuredSource.type)} bundle source; re-resolving from live config. Run \`akm index --full\` to refresh it.`,
+      );
+    }
   }
   const writable = component?.writable ?? configured.writable ?? configured.path !== undefined;
   return Object.freeze({

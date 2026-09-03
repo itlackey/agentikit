@@ -9,6 +9,7 @@
  */
 import { z } from "zod";
 import { validateExtraParams } from "../../extra-params";
+import { warnOnce } from "../../warn";
 import { ENGINE_NAME_PATTERN_SOURCE } from "../engine-semantics";
 
 /** Persisted config schema version. Package prerelease/patch versions do not change this value. */
@@ -41,20 +42,39 @@ export const engineName = z
   .max(63)
   .regex(ENGINE_NAME_PATTERN, "names must be lowercase kebab-case and must not begin with reserved akm-");
 
+export function symbolicOrWarnApiKey(label: string) {
+  return z.string().superRefine((value) => {
+    if (ENV_REFERENCE_PATTERN.test(value)) return;
+    warnOnce(
+      `config:literal-api-key:${label}`,
+      `A ${label} in config.json is a literal API key, not a $VAR/\${VAR} reference; using it as configured. Prefer \`akm config set ...apiKey '$VAR'\` (with the corresponding env var set) — see docs/reference/data-and-telemetry.md.`,
+    );
+  });
+}
+
 export const chatCompletionsEndpoint = z.string().superRefine((value, ctx) => {
+  let url: URL;
   try {
-    const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "endpoint must use http:// or https://" });
-    }
-    if (url.username || url.password || url.search || url.hash || !url.pathname.endsWith("/chat/completions")) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "endpoint must be a credential-free OpenAI chat-completions URL without query or fragment",
-      });
-    }
+    url = new URL(value);
   } catch {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "endpoint must be a complete URL" });
+    return;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "endpoint must use http:// or https://" });
+    return;
+  }
+  if (url.username || url.password) {
+    warnOnce(
+      `chatCompletionsEndpoint:userinfo:${value}`,
+      `Config endpoint "${value}" embeds a username/password; consider moving the credential to the engine's apiKey field instead.`,
+    );
+  }
+  if (!url.pathname.endsWith("/chat/completions")) {
+    warnOnce(
+      `chatCompletionsEndpoint:path:${value}`,
+      `Config endpoint "${value}" does not end in /chat/completions; using it as configured.`,
+    );
   }
 });
 

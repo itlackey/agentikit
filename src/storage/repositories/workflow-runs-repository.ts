@@ -3,11 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { randomUUID } from "node:crypto";
-import { UsageError } from "../../core/errors";
+import { NotFoundError, UsageError } from "../../core/errors";
 import { openStateDatabase, withImmediateTransaction } from "../../core/state-db";
 import { borrowScopedStateDb, withStateDbScope } from "../../core/state-db-scope";
 import type { WorkflowRunStatus, WorkflowRunStepStatus } from "../../sources/types";
 import type { Database } from "../database";
+import { escapeLikePattern } from "../like-pattern";
 import { resolveStorageLocations } from "../locations";
 import { insertEventOnce, insertEventStrict } from "./events-repository";
 
@@ -415,6 +416,22 @@ export class WorkflowRunsRepository {
       | { 1: number }
       | undefined;
     return !!row;
+  }
+
+  /** The one run id starting with `prefix` (#919); `UsageError` on several, `NotFoundError` on none. */
+  resolveRunIdPrefix(prefix: string): string {
+    const escaped = escapeLikePattern(prefix);
+    const rows = this.db
+      .prepare("SELECT id FROM workflow_runs WHERE id LIKE ? ESCAPE '\\' ORDER BY id ASC")
+      .all(`${escaped}%`) as Array<{ id: string }>;
+    if (rows.length === 1) return rows[0]!.id;
+    if (rows.length > 1) {
+      throw new UsageError(
+        `Ambiguous workflow run id prefix "${prefix}" — matches: ${rows.map((r) => r.id).join(", ")}`,
+        "INVALID_FLAG_VALUE",
+      );
+    }
+    throw new NotFoundError(`Workflow run "${prefix}" not found.`, "WORKFLOW_NOT_FOUND");
   }
 
   listRuns(filter: ListRunsFilter): WorkflowRunRow[] {

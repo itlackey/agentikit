@@ -5,6 +5,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { migrateLegacySourceShape } from "./config/legacy-source-shape-shim";
 import { ConfigError } from "./errors";
 import { getConfigPath, getDefaultStashDir, getRegistryCacheDir, getRegistryIndexCacheDir } from "./paths";
 
@@ -306,24 +307,19 @@ function readStashDirFromConfig(): string | undefined {
     // in use. Parsing it raw here threw, the catch swallowed it, and every
     // caller silently fell back — operating on the wrong bundle or failing with
     // STASH_DIR_NOT_FOUND despite a perfectly good config.
-    const raw = JSON.parse(stripJsonComments(text));
-    if (typeof raw !== "object" || raw === null) return undefined;
+    const parsed = JSON.parse(stripJsonComments(text));
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const raw = migrateLegacySourceShape(parsed as Record<string, unknown>, configPath);
     // 0.9.0 config-shape cutover (spec §10.1): the primary stash is the
     // `defaultBundle`'s filesystem `path`. Read it directly (no config module
     // import) so the primary-stash location survives the stashDir → bundles
     // migration without a runtime rewire.
-    const bundles = raw.bundles;
+    const bundles = raw.bundles as Record<string, { path?: string; components?: unknown }> | undefined;
     const defaultBundle = raw.defaultBundle;
-    if (
-      bundles &&
-      typeof bundles === "object" &&
-      typeof defaultBundle === "string" &&
-      bundles[defaultBundle] &&
-      typeof bundles[defaultBundle] === "object" &&
-      typeof bundles[defaultBundle].path === "string" &&
-      bundles[defaultBundle].path.trim()
-    ) {
-      const bundle = bundles[defaultBundle];
+    const selectedBundle = typeof defaultBundle === "string" ? bundles?.[defaultBundle] : undefined;
+    const selectedBundlePath = typeof selectedBundle?.path === "string" ? selectedBundle.path : undefined;
+    if (bundles && typeof bundles === "object" && typeof defaultBundle === "string" && selectedBundlePath?.trim()) {
+      const bundle = selectedBundle as { path: string; components?: unknown };
       const bundlePath = bundle.path.trim();
       if (bundle.components !== undefined) {
         if (typeof bundle.components !== "object" || bundle.components === null) {
@@ -349,13 +345,6 @@ function readStashDirFromConfig(): string | undefined {
         }
       }
       return bundlePath;
-    }
-    // Retired pre-cutover shapes are not runtime inputs. Refuse them instead
-    // of silently resolving old keys.
-    for (const key of ["stashDir", "sources", "installed"]) {
-      if (key in raw && raw[key] !== undefined) {
-        throw new ConfigError(`${key} is not supported; configure the current bundles shape`, "INVALID_CONFIG_FILE");
-      }
     }
   } catch (err) {
     // An unsupported-shape refusal must reach the caller; genuine missing/invalid

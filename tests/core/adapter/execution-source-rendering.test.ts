@@ -7,9 +7,11 @@ import { opencodeAdapter } from "../../../src/core/adapter/adapters/opencode-ada
 import type { BundleAdapter } from "../../../src/core/adapter/bundle-adapter";
 import {
   executionDefaultsFromFrontmatter,
+  parseExecutionMarkdown,
   renderMarkdownExecutionSource,
 } from "../../../src/core/adapter/execution-source";
 import type { BundleComponent } from "../../../src/core/adapter/types";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../../src/core/warn";
 import { createResolvedCommand } from "../../../src/execution/resolved-request";
 import { createAdapterRenderedExecutionSource } from "../../../src/execution/source";
 import { buildFileContext } from "../../../src/indexer/walk/file-context";
@@ -332,8 +334,31 @@ describe("adapter-rendered execution sources", () => {
     expect(() => renderRaw("---\nmodel: [one,\n---\nDo work.\n")).toThrow(/invalid.*YAML|YAML.*error/i);
     expect(() => renderRaw("---\n- model\n- one\n---\nDo work.\n")).toThrow(/mapping/i);
     expect(() => renderRaw("---\nmodel: one\nmodel: two\n---\nDo work.\n")).toThrow(/duplicate|YAML/i);
-    expect(() => renderRaw("---\nmodel: &chosen one\nengine: *chosen\n---\nDo work.\n")).toThrow(/anchor|alias/i);
-    expect(() => renderRaw("---\nmodel: !engine one\n---\nDo work.\n")).toThrow(/tag/i);
+  });
+
+  test("warns (does not throw) on a frontmatter anchor with no alias reference, and an explicit tag, and still parses", () => {
+    const warnings: string[] = [];
+    _resetWarnOnceForTests();
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      const anchored = parseExecutionMarkdown("---\nmodel: &chosen one\n---\nDo work.\n", "commands/anchored.md");
+      expect(anchored.data.model).toBe("one");
+      expect(warnings.some((w) => w.includes("commands/anchored.md") && /anchor/i.test(w))).toBe(true);
+
+      const tagged = parseExecutionMarkdown("---\nmodel: !engine one\n---\nDo work.\n", "commands/tagged.md");
+      expect(tagged.data.model).toBe("one");
+      expect(warnings.some((w) => w.includes("commands/tagged.md") && /tag/i.test(w))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+  });
+
+  test("an alias reference still fails via toJS's own maxAliasCount bound, now as a UsageError naming the file", () => {
+    expect(() =>
+      parseExecutionMarkdown("---\nmodel: &chosen one\nengine: *chosen\n---\nDo work.\n", "commands/aliased.md"),
+    ).toThrow(/commands\/aliased\.md.*alias/is);
   });
 
   test("rejects wrong recognized metadata types and preserves explicit null inference", () => {

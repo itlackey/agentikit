@@ -3,7 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { createHash } from "node:crypto";
+import { parseBuiltinCommandAction } from "../../../commands/command/builtin-action";
 import { type PreparedCommandInvocation, prepareCommandInvocation } from "../../../commands/command/command-execution";
+import { PORTABLE_ARGUMENTS_PLACEHOLDER } from "../../../commands/command/portable-template";
 import { captureFrozenDirectoryIdentity } from "../../../execution/directory-identity";
 import { type FrozenExecutableIdentity, freezeExecutableIdentity } from "../../../execution/executable-identity";
 import {
@@ -29,6 +31,13 @@ import {
   targetConcurrency,
 } from "../step-values";
 
+function inlineWorkflowCommandAction(action: unknown, commandMode: WorkflowSourceStep["commandMode"]): unknown {
+  if (commandMode !== "portable-template") return action;
+  const parsed = parseBuiltinCommandAction(action);
+  if (parsed.kind !== "inline") return action;
+  return { content: parsed.content.split(PORTABLE_ARGUMENTS_PLACEHOLDER).join(parsed.arguments ?? "") };
+}
+
 export async function commandDispatch(
   source: WorkflowSourceStep,
   baseUnit: ProgramUnit,
@@ -36,13 +45,15 @@ export async function commandDispatch(
   context: ResolutionContext,
 ): Promise<ResolvedDispatch> {
   const prepared = await prepareCommandInvocation({
-    action,
+    action: inlineWorkflowCommandAction(action, source.commandMode),
     config: context.config,
     invocationKind: "workflow",
     ...(context.sourceIr.defaults
       ? { invocationDefaults: executionUnitValues(context.sourceIr.defaults, context.asset.sourcePath) }
       : {}),
-    ...(source.commandMode === "literal" ? { inlineContentMode: "literal" as const } : {}),
+    ...(source.commandMode === "literal" || source.commandMode === "portable-template"
+      ? { inlineContentMode: "literal" as const }
+      : {}),
     current: executionValues(source, context.asset.sourcePath),
     sourceLoader: (ref, kind) => guardedExecutionSource(ref, kind, context),
   });

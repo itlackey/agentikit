@@ -31,6 +31,7 @@
 // Tests inject a fake exec so unit tests don't touch the real crontab.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { ConfigError } from "../../core/errors";
 import { getTaskLogDir } from "../../core/paths";
@@ -84,7 +85,7 @@ export interface CronExec {
   write(content: string): CronExecResult;
 }
 
-export type CronFs = Pick<NodeFs, "ensureDir">;
+export type CronFs = Pick<NodeFs, "ensureDir"> & Partial<Pick<NodeFs, "writeFile">>;
 
 export interface CronBackendOptions {
   exec?: CronExec;
@@ -130,15 +131,25 @@ export function CRON_BACKEND(options: CronBackendOptions = {}): SchedulerBackend
       // Create the log directory before writing the crontab line — cron
       // appends with `>>` and the surrounding shell will fail the entire
       // entry if the parent directory doesn't exist.
-      const cronLine = buildCronLine(
+      const cronLineParts = buildCronLineParts(
         task,
         [...(opts?.binding ?? akmArgv)],
         logDir,
         opts?.contextPath ?? defaultContextPath,
         opts?.target,
       );
+      const cronLine = cronLineParts.line;
       assertPortableCronLine(cronLine);
       fsLike.ensureDir(logDir);
+      if (cronLineParts.wrapper) {
+        if (!fsLike.writeFile) {
+          throw new ConfigError(
+            "Cron backend needs to write a wrapper script for this task's long invocation, but the configured filesystem cannot write files.",
+            "INVALID_CONFIG_FILE",
+          );
+        }
+        fsLike.writeFile(cronLineParts.wrapper.path, cronLineParts.wrapper.content);
+      }
       const existing = readCrontab(exec);
       const nativeId = schedulerBindingNativeId(task);
       const blocks = listBlocks(existing);
@@ -345,6 +356,52 @@ function isCronBindingSnapshot(value: unknown): value is CronBindingSnapshot {
 
 // ── helpers (exported for tests) ────────────────────────────────────────────
 
+export interface CronWrapperScript {
+  readonly path: string;
+  readonly content: string;
+}
+
+export interface CronLineResult {
+  readonly line: string;
+  readonly wrapper?: CronWrapperScript;
+}
+
+function buildCronLineParts(
+  task: SchedulerBinding,
+  akmArgv: string[],
+  logDir: string,
+  contextPath: string,
+  _target?: string,
+): CronLineResult {
+  const spec = parseSchedule(task.cron, "cron");
+  const cronExpr = translateToCron(spec);
+  const nativeId = schedulerBindingNativeId(task);
+  const logPath = path.join(logDir, `${nativeId}.log`);
+  const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
+  const cmd = invocation.argv.map((part) => quoteForCron(part)).join(" ");
+  const directLine = `${cronExpr} ${cmd} >> ${quoteForCron(logPath)} 2>&1`;
+  if (Buffer.byteLength(directLine, "utf8") <= PORTABLE_CRON_LINE_LIMIT) {
+    return { line: directLine };
+  }
+  const content = cronWrapperScriptContent(invocation.argv);
+  const contentHash = createHash("sha256").update(content).digest("hex").slice(0, 16);
+  const wrapperPath = path.join(logDir, `${CRON_WRAPPER_PREFIX}${nativeId}-${contentHash}.sh`);
+  const line = `${cronExpr} sh ${quoteForCron(wrapperPath)} >> ${quoteForCron(logPath)} 2>&1`;
+  return { line, wrapper: { path: wrapperPath, content } };
+}
+
+const CRON_WRAPPER_PREFIX = ".akm-cron-wrapper-";
+
+function quoteForShellScript(part: string): string {
+  if (/^[A-Za-z0-9_\-./@:=+,]+$/.test(part)) return part;
+  return `'${part.replace(/'/g, `'\\''`)}'`;
+}
+
+function cronWrapperScriptContent(argv: string[]): string {
+  const cmd = argv.map(quoteForShellScript).join(" ");
+  return `#!/bin/sh\nexec ${cmd}\n`;
+}
+
 export function buildCronLine(
   task: SchedulerBinding,
   akmArgv: string[],
@@ -352,12 +409,7 @@ export function buildCronLine(
   contextPath: string,
   _target?: string,
 ): string {
-  const spec = parseSchedule(task.cron, "cron");
-  const cronExpr = translateToCron(spec);
-  const logPath = path.join(logDir, `${schedulerBindingNativeId(task)}.log`);
-  const invocation = buildScheduledBindingInvocation(akmArgv, contextPath, task.invocation);
-  const cmd = invocation.argv.map((part) => quoteForCron(part)).join(" ");
-  return `${cronExpr} ${cmd} >> ${quoteForCron(logPath)} 2>&1`;
+  return buildCronLineParts(task, akmArgv, logDir, contextPath, _target).line;
 }
 
 /** The crontab line as it appears inside a block — commented when disabled. */

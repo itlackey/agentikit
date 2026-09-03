@@ -49,10 +49,34 @@ describe("passthrough envelope stamping (#484)", () => {
   });
 
   it("respects existing schemaVersion / shape fields (idempotent)", () => {
-    const result = { schemaVersion: 7, shape: "custom-shape", payload: 42 };
+    const result = { schemaVersion: 7, shape: "custom-shape", ok: true, payload: 42 };
     const shaped = shapeForCommand("clone", result, "normal") as Record<string, unknown>;
     expect(shaped.shape).toBe("custom-shape");
     expect(shaped.schemaVersion).toBe(7);
+    expect(shaped.ok).toBe(true);
+  });
+
+  // #918: `ok` is absent on most passthrough results (config set/unset,
+  // clone, ...) because the caller only reaches `output()` on success — the
+  // failure path throws before this handler ever runs. Stamp `ok: true` so a
+  // caller branching on `.ok` sees the same field it sees on the
+  // `{ok:false,...}` envelope thrown on failure.
+  it("stamps ok:true when the result has no ok field", () => {
+    const shaped = shapeForCommand("clone", { ref: "skills/foo", cloned: true }, "normal") as Record<string, unknown>;
+    expect(shaped.ok).toBe(true);
+  });
+
+  // A command that computes its own `ok` (e.g. `task-run`, which derives it
+  // from the task's exit code) must keep that value — including `false` —
+  // rather than have the generic stamp silently overwrite it with `true`.
+  it("preserves an existing ok:false rather than overwriting it with true", () => {
+    const shaped = shapeForCommand("task-run", { ok: false, exitCode: 1 }, "normal") as Record<string, unknown>;
+    expect(shaped.ok).toBe(false);
+  });
+
+  it("preserves an existing ok:true untouched", () => {
+    const shaped = shapeForCommand("task-run", { ok: true, exitCode: 0 }, "normal") as Record<string, unknown>;
+    expect(shaped.ok).toBe(true);
   });
 
   // Regression for the `akm task sync --dry-run` crash: `renderSchedulerPlanPreview`
@@ -78,6 +102,7 @@ describe("passthrough envelope stamping (#484)", () => {
     const shaped = shapeForCommand("task-sync-dry-run", preview, "normal") as Record<string, unknown>;
     expect(shaped.shape).toBe("task-sync-dry-run");
     expect(shaped.schemaVersion).toBe(1);
+    expect(shaped.ok).toBe(true);
     expect(shaped.backend).toBe("cron");
     // The original object must stay untouched — the fix copies rather than mutates.
     expect(Object.isFrozen(preview)).toBe(true);
@@ -94,11 +119,13 @@ describe("passthrough envelope stamping (#484)", () => {
   });
 
   // Stable-keys regression net for the `workflow run` envelope that scripts
-  // pin: the stamp is purely additive (adds shape + schemaVersion), and the
-  // full top-level key set is frozen so a rename/drop is caught here.
-  it("workflow-run: preserves run + executed top-level keys; adds shape + schemaVersion", () => {
-    // The run envelope carries no `ok` flag — its shape is `{ run, executed }`
-    // (plus optional `done`/`gateRejection`). Pin the required keys.
+  // pin: the stamp is purely additive (adds shape + schemaVersion + ok), and
+  // the full top-level key set is frozen so a rename/drop is caught here.
+  it("workflow-run: preserves run + executed top-level keys; adds shape + schemaVersion + ok", () => {
+    // The run envelope itself carries no top-level `ok` flag — its shape is
+    // `{ run, executed }` (plus optional `done`/`gateRejection`); only the
+    // per-step entries under `executed` carry their own `ok`. #918: since the
+    // top level has none, the generic stamp now adds `ok: true` here too.
     const runResult = {
       run: { id: "r1", status: "active" },
       executed: [{ stepId: "s1", ok: true, unitCount: 1, failedUnits: 0, summary: "done" }],
@@ -106,7 +133,8 @@ describe("passthrough envelope stamping (#484)", () => {
     const shaped = shapeForCommand("workflow-run", runResult, "normal") as Record<string, unknown>;
     expect(shaped.shape).toBe("workflow-run");
     expect(shaped.schemaVersion).toBe(1);
-    expect(Object.keys(shaped).sort()).toEqual(["executed", "run", "schemaVersion", "shape"].sort());
+    expect(shaped.ok).toBe(true);
+    expect(Object.keys(shaped).sort()).toEqual(["executed", "ok", "run", "schemaVersion", "shape"].sort());
   });
 
   it("does NOT change shaped commands' brief-detail contract", () => {

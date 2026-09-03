@@ -39,7 +39,7 @@ import { lintLessonContent } from "../../core/lesson-lint";
 import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
-import { warn } from "../../core/warn";
+import { warn, warnOnce } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import { lookup } from "../../indexer/indexer";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
@@ -80,6 +80,7 @@ import {
   type Proposal,
   type ProposalsContext,
   proposalContent,
+  recordGateDecision,
 } from "../proposal/repository";
 import { checkReflectSize, isValidDescription } from "../proposal/validators/proposal-quality-validators";
 import { deriveLessonRef } from "./distill";
@@ -263,6 +264,12 @@ export const REFLECT_ALLOWED_TYPES: ReadonlySet<string> = new Set([
   "command",
   "workflow",
 ]);
+
+const REFLECT_REFUSED_TYPES: ReadonlySet<string> = new Set(["secret"]);
+
+function isReflectableSourceShape(content: string): boolean {
+  return parseFrontmatter(content).frontmatter !== null;
+}
 
 /**
  * Identity / structural frontmatter fields the LLM is NEVER allowed to change.
@@ -504,6 +511,7 @@ export interface ReflectSanitizeResult {
   warnings: string[];
   /** When set, the proposal must be rejected with this reason / error. */
   reject?: { reason: AgentFailureReason; error: string };
+  sizeGuardRatio?: { code: "EXCESSIVE_SHRINKAGE" | "EXCESSIVE_EXPANSION"; ratio: number };
 }
 
 /**
@@ -728,6 +736,7 @@ export function sanitizeReflectPayload(
   // predicate lives in `core/proposal-quality-validators` so the same check
   // also runs inside `runProposalValidators` on `proposal accept`.
   const sizeOutcome = checkReflectSize(sourceBody, cleanedBody);
+  let sizeGuardRatio: ReflectSanitizeResult["sizeGuardRatio"];
   if (!sizeOutcome.ok) {
     const pct = (sizeOutcome.ratio * 100).toFixed(0);
     const limit = sizeOutcome.code === "EXCESSIVE_SHRINKAGE" ? "minimum 50%" : "maximum 250%";
@@ -735,18 +744,10 @@ export function sanitizeReflectPayload(
       sizeOutcome.code === "EXCESSIVE_SHRINKAGE"
         ? "Concrete content was likely deleted."
         : "Speculative material was likely added.";
-    return {
-      content: payload.content,
-      warnings,
-      reject: {
-        // Content-policy guard hit (EXCESSIVE_SHRINKAGE / EXCESSIVE_EXPANSION).
-        // This is the guard working as designed — the LLM responded fine, we
-        // blocked the output. Routed through `content_policy_reject` so the
-        // health aggregator can split guard hits out of true LLM faults.
-        reason: "content_policy_reject" as AgentFailureReason,
-        error: `Reflect rejected: ${sizeOutcome.code} — proposed body is ${pct}% of source (${limit}) for ref ${targetRef}. ${cause}`,
-      },
-    };
+    warnings.push(
+      `${sizeOutcome.code} — proposed body is ${pct}% of source (${limit}) for ref ${targetRef}. ${cause} Flagged for review.`,
+    );
+    sizeGuardRatio = { code: sizeOutcome.code, ratio: sizeOutcome.ratio };
   }
 
   // Reassemble final content: merged frontmatter + cleaned body.
@@ -762,6 +763,7 @@ export function sanitizeReflectPayload(
     content: reassembled,
     ...(hasFrontmatter ? { frontmatter: mergedFm } : {}),
     warnings,
+    ...(sizeGuardRatio ? { sizeGuardRatio } : {}),
   };
 }
 
@@ -836,29 +838,17 @@ function wantsJsonSchemaOutput(connection: { endpoint: string; model: string; su
 const REFLECT_CRITIQUE_PROMPT =
   "Your previous proposal is shown above. Review it critically and provide an improved version that is more specific, actionable, and avoids any issues with the previous attempt. Return only the improved response using the output contract from the original prompt.";
 
-/**
- * OpenAI-compatible thinking models charge hidden reasoning against
- * `max_tokens` before they emit the visible response. Reflect asks for a
- * machine-readable payload and requests `enableThinking: false`, but local
- * servers do not uniformly honour that flag. Keep visible-content sizing
- * separate from the allowance that lets an uncooperative thinking model reach
- * its JSON/frame envelope.
- *
- * The 2,048-token allowance exceeds the observed 1,798-token peak that
- * previously cut direct reflect responses off mid-envelope. It applies to all
- * bounded direct-LLM calls because a server's thinking behavior is not a
- * reliable capability signal; the post-processor still enforces the original
- * content-size policy.
- */
-const REFLECT_REASONING_TOKEN_HEADROOM = 2_048;
-const REFLECT_RESPONSE_ENVELOPE_CHARS = 500;
-
-function reflectMaxTokensForOutput(maxOutputChars: number | undefined): number | undefined {
-  if (maxOutputChars === undefined) return undefined;
-  // Divide by 3 chars/token (conservative — most models are 3.5–4), retain
-  // space for the JSON/frame wrapper, then reserve independent reasoning room.
-  return Math.ceil((maxOutputChars + REFLECT_RESPONSE_ENVELOPE_CHARS) / 3) + REFLECT_REASONING_TOKEN_HEADROOM;
-}
+// Reflect no longer
+// derives a `max_tokens` cap from the prompt's character-based size policy.
+// llm/client.ts does not send `max_tokens` by default for exactly this
+// reason — the model/API already knows its own limits, and a character-to-
+// token conversion is inherently approximate (the very history this
+// function's old doc comment recorded: it had already cut a real response
+// off mid-envelope once and needed a 2,048-token fudge factor bolted on to
+// compensate). The content-size policy is still enforced twice over — the
+// prompt rules the model reads, and the post-processor's own size check —
+// so nothing is lost by not adding a third, byte-derived cap whose only
+// possible effect is truncating a response early.
 
 /** Options for the direct-LLM reflect runner selected by the current execution path. */
 export interface RunReflectViaLlmOptions {
@@ -1189,6 +1179,7 @@ async function finalizeReflectProposal(args: {
   engineName: string;
   config: import("../../core/config/config").AkmConfig;
   qualityGateEnabled: boolean;
+  qualityGateSkippedNoJudge: boolean;
   qualityJudgeRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
   qualityJudgeLease: LoweredExecutionDispatchLease | undefined;
   feedback: Parameters<typeof runReflectQualityJudge>[3];
@@ -1208,6 +1199,7 @@ async function finalizeReflectProposal(args: {
     engineName,
     config,
     qualityGateEnabled,
+    qualityGateSkippedNoJudge,
     qualityJudgeRunner,
     qualityJudgeLease,
     feedback,
@@ -1307,7 +1299,7 @@ async function finalizeReflectProposal(args: {
 
   // 7c. Judge the exact sanitized content that can be persisted. Fail closed
   // on cancellation, transport failure, malformed output, or an invalid score.
-  if (qualityGateEnabled) {
+  if (qualityGateEnabled && !sanitizeOutcome.sizeGuardRatio) {
     const judgeResult = await runReflectQualityJudge(
       config,
       payload.content,
@@ -1358,6 +1350,8 @@ async function finalizeReflectProposal(args: {
     durationMs: result.durationMs,
     emitReflectFailed,
     outputTelemetry,
+    qualityGateSkippedNoJudge,
+    sizeGuardRatio: sanitizeOutcome.sizeGuardRatio,
   });
 }
 
@@ -1374,6 +1368,8 @@ function createReflectProposal(args: {
   engineName: string;
   durationMs: number;
   outputTelemetry?: ReflectLlmTelemetry;
+  qualityGateSkippedNoJudge: boolean;
+  sizeGuardRatio?: { code: "EXCESSIVE_SHRINKAGE" | "EXCESSIVE_EXPANSION"; ratio: number };
   emitReflectFailed: (
     reason: AgentFailureReason,
     subreason: string,
@@ -1381,7 +1377,17 @@ function createReflectProposal(args: {
     extra?: Record<string, unknown>,
   ) => void;
 }): AkmReflectResult {
-  const { payload, options, stash, engineName, durationMs, emitReflectFailed, outputTelemetry } = args;
+  const {
+    payload,
+    options,
+    stash,
+    engineName,
+    durationMs,
+    emitReflectFailed,
+    outputTelemetry,
+    qualityGateSkippedNoJudge,
+    sizeGuardRatio,
+  } = args;
   // 8. Create the proposal. The proposal queue is the ONLY thing reflect
   // writes — promotion to a real asset is gated by `akm proposal accept`.
   //
@@ -1446,7 +1452,25 @@ function createReflectProposal(args: {
     };
   }
 
-  const proposal: Proposal = proposalResult;
+  let proposal: Proposal = proposalResult;
+
+  const reviewReasons: string[] = [];
+  if (qualityGateSkippedNoJudge) reviewReasons.push("no-judge-configured");
+  if (sizeGuardRatio) reviewReasons.push("reflect-size-ratio");
+  if (reviewReasons.length > 0) {
+    proposal =
+      recordGateDecision(
+        stash,
+        proposal.id,
+        {
+          outcome: "deferred",
+          reason: reviewReasons.join("+"),
+          gate: "reflect",
+          ...(sizeGuardRatio ? { measured: Math.round(sizeGuardRatio.ratio * 100) } : {}),
+        },
+        options.ctx,
+      ) ?? proposal;
+  }
 
   appendEvent(
     {
@@ -1456,6 +1480,8 @@ function createReflectProposal(args: {
         proposalId: proposal.id,
         source: "reflect",
         engine: engineName,
+        ...(qualityGateSkippedNoJudge ? { qualityGateSkippedNoJudge: true } : {}),
+        ...(sizeGuardRatio ? { sizeGuardRatio: sizeGuardRatio.code, sizeGuardRatioValue: sizeGuardRatio.ratio } : {}),
         ...(outputTelemetry ?? {}),
       },
     },
@@ -1694,6 +1720,30 @@ function resolveReflectRunner(options: AkmReflectOptions): {
   return { config, activeStrategy, runnerSpec, engineName, notices };
 }
 
+function unsupportedTypeFailure(
+  ref: string,
+  type: string,
+  detail: string,
+  emitReflectFailed: (
+    reason: AgentFailureReason,
+    subreason: string,
+    ref?: string,
+    extra?: Record<string, unknown>,
+  ) => void,
+): { failure: AkmReflectResult } {
+  emitReflectFailed("unsupported_type", "unsupported_type", ref, { type });
+  return {
+    failure: {
+      schemaVersion: 2,
+      ok: false,
+      reason: "unsupported_type" as AgentFailureReason,
+      error: `Reflect refused: asset type "${type}" is not supported by reflect (${detail}). Use \`akm proposal new\` or edit the file directly.`,
+      ref,
+      exitCode: null,
+    },
+  };
+}
+
 /**
  * Resolve the reflect target's parsed ref + current on-disk content: enforce the
  * REFLECT_ALLOWED_TYPES markdown-canonical type guard (returning a terminal
@@ -1716,27 +1766,15 @@ async function resolveReflectSource(
   if (options.ref) {
     parsedRef = parseRefInput(options.ref);
 
-    // 2a. Type guard — reflect only operates on asset types whose canonical
-    // shape is `frontmatter + markdown body`. Refuse non-markdown types
-    // (script / env / task) up-front so reflect never prepends YAML to a
-    // `.ts` file or rewrites a `.env` blob as prose. See REFLECT_ALLOWED_TYPES.
-    if (!REFLECT_ALLOWED_TYPES.has(parsedRef.type)) {
-      // Deterministic type-guard rejection — the LLM is never invoked. Emit
-      // with reason `unsupported_type` so the improve loop can route this to
-      // the `reflect-skipped` action bucket instead of `reflect-failed`. See
-      // `/tmp/akm-health-investigations/metrics-taxonomy-review.md` §1a
-      // ("Reflect refused asset type" — ~9% of reflect-failed events).
-      emitReflectFailed("unsupported_type", "unsupported_type", options.ref, { type: parsedRef.type });
-      return {
-        failure: {
-          schemaVersion: 2,
-          ok: false,
-          reason: "unsupported_type" as AgentFailureReason,
-          error: `Reflect refused: asset type "${parsedRef.type}" is not supported by reflect (only markdown-canonical types are allowed: ${[...REFLECT_ALLOWED_TYPES].sort().join(", ")}). Use \`akm proposal new\` or edit the file directly.`,
-          ref: options.ref,
-          exitCode: null,
-        },
-      };
+    // 2a. Refuse `secret` before any content is read — a secret's content is
+    // never touched by reflect, regardless of what it happens to look like.
+    if (REFLECT_REFUSED_TYPES.has(parsedRef.type)) {
+      return unsupportedTypeFailure(
+        options.ref,
+        parsedRef.type,
+        "secret material is never read or sent to an LLM",
+        emitReflectFailed,
+      );
     }
 
     if (options.assetContent !== undefined) {
@@ -1758,6 +1796,17 @@ async function resolveReflectSource(
         }
       } catch {
         // Index miss is non-fatal — the agent can still propose a fresh asset.
+      }
+    }
+
+    if (!REFLECT_ALLOWED_TYPES.has(parsedRef.type)) {
+      if (assetContent === undefined || !isReflectableSourceShape(assetContent)) {
+        return unsupportedTypeFailure(
+          options.ref,
+          parsedRef.type,
+          "its content is not frontmatter + markdown",
+          emitReflectFailed,
+        );
       }
     }
   }
@@ -1827,7 +1876,7 @@ async function runReflectRefineIterations(args: {
       lastDraftPath = iterDraftPath;
     }
 
-    const { prompt, maxOutputChars } = buildReflectPrompt({
+    const { prompt } = buildReflectPrompt({
       ...(options.ref ? { ref: options.ref } : {}),
       ...(parsedRef?.type ? { type: parsedRef.type } : {}),
       ...(parsedRef?.name ? { name: parsedRef.name } : {}),
@@ -1848,8 +1897,6 @@ async function runReflectRefineIterations(args: {
       ...(iterDraftPath ? { draftFilePath: iterDraftPath } : {}),
       ...(outputMode ? { outputMode } : {}),
     });
-    const maxTokensForLlm = reflectMaxTokensForOutput(maxOutputChars);
-
     let iterResult: AgentRunResult;
     if (runnerIsLlm(runnerSpec)) {
       // LLM HTTP runners cannot honor the file-write contract, so they return
@@ -1870,7 +1917,6 @@ async function runReflectRefineIterations(args: {
         ...(options.ref ? { targetRef: options.ref } : {}),
         allowRepair: repairAttempts === 0,
         ...(options.chat ? { chat: options.chat } : {}),
-        ...(maxTokensForLlm !== undefined ? { maxTokens: maxTokensForLlm } : {}),
         onNotices,
       });
     } else {
@@ -2098,24 +2144,19 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
   collectLoweringNotices(executionNotices, resolutionNotices);
   const collectExecutionNotices = (notices: readonly Readonly<LoweringNotice>[]): void =>
     collectLoweringNotices(executionNotices, notices);
-  const qualityJudgeSelection = resolveReflectQualityJudgeRunner(
+  let qualityJudgeSelection = resolveReflectQualityJudgeRunner(
     config,
     runnerSpec,
     isReflectQualityGateEnabled(activeStrategy),
     collectExecutionNotices,
   );
-  if (qualityJudgeSelection.enabled && !qualityJudgeSelection.runner) {
-    return {
-      schemaVersion: 2,
-      ok: false,
-      reason: "parse_error",
-      error:
-        'Reflect proposal quality gate rejected: score=-1, reason="no LLM configured — cannot judge, failing closed"',
-      ...(options.ref ? { ref: options.ref } : {}),
-      engine: engineName,
-      exitCode: null,
-      ...reflectNoticeFields(executionNotices),
-    };
+  const qualityGateSkippedNoJudge = qualityJudgeSelection.enabled && !qualityJudgeSelection.runner;
+  if (qualityGateSkippedNoJudge) {
+    warnOnce(
+      "reflect-quality-gate-no-judge",
+      "Reflect proposal quality gate has no LLM configured to judge proposals (set defaults.llmEngine, or improve.strategies.<name>.processes.reflect.qualityGate.engine). Skipping the gate for this run; the proposal is queued for human review instead.",
+    );
+    qualityJudgeSelection = Object.freeze({ enabled: false, runner: undefined });
   }
   const qualityJudgeRunner = qualityJudgeSelection.runner;
   let generationLease: LoweredExecutionDispatchLease | undefined;
@@ -2266,6 +2307,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
       engineName,
       config,
       qualityGateEnabled: qualityJudgeSelection.enabled,
+      qualityGateSkippedNoJudge,
       qualityJudgeRunner,
       qualityJudgeLease,
       feedback,

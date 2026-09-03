@@ -23,6 +23,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { akmReflect, REFLECT_JSON_SCHEMA, runReflectViaLlm } from "../../../src/commands/improve/reflect";
+import { listProposals } from "../../../src/commands/proposal/repository";
 import { validateProposal } from "../../../src/commands/proposal/validators/proposals";
 import type { AkmConfig, LlmProfileConfig } from "../../../src/core/config/config";
 import { ConfigError } from "../../../src/core/errors";
@@ -357,9 +358,9 @@ describe("runReflectViaLlm — responseSchema is plumbed to chatCompletion", () 
 });
 
 describe("akmReflect — passes REFLECT_JSON_SCHEMA for the selected LLM engine", () => {
-  test("reserves reasoning-token headroom beyond the content-derived output cap", async () => {
+  test("does not send a content-derived max_tokens cap", async () => {
     const stash = makeStashDir();
-    const observedMaxTokens: number[] = [];
+    const observedMaxTokens: Array<number | undefined> = [];
     const sourceBody = "x".repeat(1_000);
 
     const result = await akmReflect({
@@ -368,7 +369,7 @@ describe("akmReflect — passes REFLECT_JSON_SCHEMA for the selected LLM engine"
       config: reflectLlmConfig(),
       assetContent: `---\ndescription: Reserve enough response capacity for thinking models\nwhen_to_use: When direct reflection sends a content-derived output ceiling\n---\n\n${sourceBody}`,
       chat: async (connection) => {
-        observedMaxTokens.push(connection.maxTokens ?? -1);
+        observedMaxTokens.push(connection.maxTokens);
         return JSON.stringify({
           content: `# Completed response\n\n${"y".repeat(600)}`,
           confidence: 0.9,
@@ -378,10 +379,7 @@ describe("akmReflect — passes REFLECT_JSON_SCHEMA for the selected LLM engine"
     });
 
     expect(result.ok).toBe(true);
-    // 2,500 content chars + 500 response-envelope chars -> 1,000 tokens;
-    // reflect must reserve another 2,048 tokens for servers that ignore
-    // `enable_thinking: false` and bill hidden reasoning against max_tokens.
-    expect(observedMaxTokens).toEqual([3_048]);
+    expect(observedMaxTokens).toEqual([undefined]);
   });
 
   test("selected LLM engine wires REFLECT_JSON_SCHEMA into the underlying chatCompletion call", async () => {
@@ -853,7 +851,7 @@ describe("akmReflect — direct LLM output recovery", () => {
     expect(calls).toBe(1);
   });
 
-  test("does not repair a valid response rejected by content policy", async () => {
+  test("does not repair a valid response flagged by the size guard", async () => {
     const stash = makeStashDir();
     let calls = 0;
     const sourceBody = "Preserve this concrete sentence. ".repeat(20);
@@ -868,10 +866,10 @@ describe("akmReflect — direct LLM output recovery", () => {
       },
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected content policy rejection");
-    expect(result.reason).toBe("content_policy_reject");
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
     expect(calls).toBe(1);
+    expect(listProposals(stash)[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-size-ratio" });
     const completed = readEvents({ type: "reflect_completed" }).events.at(-1);
     expect(completed?.metadata?.repairAttempts).toBe(0);
   });

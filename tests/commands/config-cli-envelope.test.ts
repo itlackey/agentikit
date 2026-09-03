@@ -45,6 +45,9 @@ describe("akm config — JSON envelope snapshot (WS6)", () => {
     expect(env.semanticSearchMode).toBe("off");
     expect(env.configVersion).toBe("0.9.0");
     expect(env.profiles).toBeUndefined();
+    // #918: every success envelope carries ok:true, matching the {ok:false,...}
+    // shape a failure throws before output() is reached.
+    expect(env.ok).toBe(true);
   });
 
   test("config get: returns the requested key value", async () => {
@@ -59,10 +62,29 @@ describe("akm config — JSON envelope snapshot (WS6)", () => {
     expect(status).toBe(0);
     const env = JSON.parse(stdout);
     expect(env.semanticSearchMode).toBe("auto");
+    // #918: `ok: true` alongside the config dump so a caller branching on
+    // `.ok` no longer reads a successful set as a failure.
+    expect(env.ok).toBe(true);
   });
 
-  test("config set --silent: suppresses the post-write dump (empty stdout, exit 0)", async () => {
+  test("config unset: persists and dumps the merged config with ok:true", async () => {
+    await runCli(["config", "set", "--silent", "semanticSearchMode", "auto"]);
+    const { stdout, status } = await runCli(["config", "unset", "semanticSearchMode"]);
+    expect(status).toBe(0);
+    const env = JSON.parse(stdout);
+    expect(env.ok).toBe(true);
+    expect(env.semanticSearchMode).toBe("off"); // falls back to DEFAULT_CONFIG
+  });
+
+  test("config set --silent: suppresses the post-write dump entirely (empty stdout, exit 0)", async () => {
     const { stdout, status } = await runCli(["config", "set", "semanticSearchMode", "auto", "--silent"]);
+    expect(status).toBe(0);
+    expect(stdout.trim()).toBe("");
+  });
+
+  test("config unset --silent: suppresses the post-write dump entirely (empty stdout, exit 0)", async () => {
+    await runCli(["config", "set", "--silent", "semanticSearchMode", "auto"]);
+    const { stdout, status } = await runCli(["config", "unset", "semanticSearchMode", "--silent"]);
     expect(status).toBe(0);
     expect(stdout.trim()).toBe("");
   });
@@ -75,5 +97,6 @@ describe("akm config — JSON envelope snapshot (WS6)", () => {
     expect(typeof env.bundle).toBe("string");
     expect(typeof env.cache).toBe("string");
     expect(typeof env.index).toBe("string");
+    expect(env.ok).toBe(true);
   });
 });

@@ -160,9 +160,14 @@ describe("versioned installed/user model-map contract", () => {
     expect(resolveModelMapAlias("balanced", "Claude", map).model).toBe("claude-sonnet-exact");
   });
 
-  test("fails when a known alias lacks the selected engine mapping", () => {
+  test("passes a known alias through as exact when it lacks the selected engine mapping", () => {
     const map = mergeModelMapLayers(parseModelMapLayer(installedText, "installed models.json"));
-    expect(() => resolveModelMapAlias("balanced", "gemini", map)).toThrow(/known alias.*balanced.*gemini/i);
+    expect(resolveModelMapAlias("balanced", "gemini", map)).toEqual({
+      input: "balanced",
+      interpretation: "exact",
+      model: "balanced",
+      unmappedForEngine: true,
+    });
   });
 
   test("normalizes alias and engine keys while rejecting case collisions", () => {

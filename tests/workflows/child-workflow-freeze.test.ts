@@ -36,16 +36,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadConfig, resetConfigCache } from "../../src/core/config/config";
 import { UsageError } from "../../src/core/errors";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import type { TaskInputBinding } from "../../src/execution/input-contract";
 import { akmIndex } from "../../src/indexer/indexer";
 import { withWorkflowRunsRepo } from "../../src/storage/repositories/workflow-runs-repository";
 import { compileResolveFreezeWorkflowV4 } from "../../src/workflows/ir/freeze-v4";
 import { computePlanHash } from "../../src/workflows/ir/plan-hash";
 import { decodeWorkflowPlanV4, type FrozenWorkflowTarget } from "../../src/workflows/ir/schema-v4";
-import { WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES } from "../../src/workflows/resource-limits";
 import { listWorkflowRuns, startWorkflowRun } from "../../src/workflows/runtime/runs";
 import { loadWorkflowAsset } from "../../src/workflows/runtime/workflow-asset-loader";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeWorkflowTestConfig } from "../_helpers/sandbox";
+import { withSeam } from "../_helpers/seams";
 
 let storage: IsolatedAkmStorage;
 
@@ -333,7 +334,7 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
     expect(fields.inputBindings).toEqual([{ kind: "literal", name: "scope", value: "from-v4-task" }]);
   });
 
-  test("B-15: a task with env: on a workflow target still rejects, byte-unchanged (PRESERVE)", async () => {
+  test("B-15: a task with env: on a workflow target runs anyway, ignoring env:", async () => {
     writeChild();
     write(
       "tasks/v4-env-wrapper.yml",
@@ -342,14 +343,14 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
     writeParent("v4-env-wrapped", ["      - id: dispatch", "        uses: tasks/v4-env-wrapper"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await captureRejection("workflows/v4-env-wrapped");
-    expect(error).toBeInstanceOf(UsageError);
-    if (!(error instanceof UsageError)) throw new Error("unreachable");
-    expect(error.code).toBe("INVALID_FLAG_VALUE");
-    expect(error.message).toBe(
-      "Task workflow env cannot be consumed by the durable workflow runtime in 0.9.2; remove env or use a command target.",
-    );
-    await expectNoRunRowWritten();
+    const started = await startWorkflowRun("workflows/v4-env-wrapped");
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    const target = stepTarget(plan, 0);
+
+    expect(target).toMatchObject({ kind: "child-workflow", via: "task" });
+    const fields = childWorkflowFields(target);
+    expect(fields.taskRef).toMatch(/\/\/tasks\/v4-env-wrapper$/);
   });
 });
 
@@ -360,12 +361,12 @@ describe("task-wrapped child workflows — uses: tasks/<t> where t targets a wor
 // ── task DOCUMENT's own top-level env:; this is env: authored on the ───────
 // ── WORKFLOW STEP that composes a child, direct or task-wrapped. ───────────
 
-describe("a step composing a child workflow that also authors env: rejects instead of silently dropping it", () => {
+describe("a step composing a child workflow that also authors env: warns instead of refusing to freeze", () => {
   function writeChild(): void {
     write("workflows/child.md", paramWorkflowDoc());
   }
 
-  test("a direct uses: workflows/<ref> step with env: rejects COMPOSITION_INVALID naming the step and the child ref", async () => {
+  test("a direct uses: workflows/<ref> step with env: freezes fine, warning names the step and the child ref", async () => {
     writeChild();
     writeParent("direct-env", [
       "      - id: dispatch",
@@ -375,14 +376,22 @@ describe("a step composing a child workflow that also authors env: rejects inste
     ]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await expectCompositionInvalid("workflows/direct-env");
-    expect(error.message).toContain("Workflow step dispatch cannot pass env:");
-    expect(error.message).toContain("//workflows/child");
-    expect(error.hint()).not.toContain("with:");
-    await expectNoRunRowWritten();
+    const warnCalls: string[] = [];
+    const started = await withSeam(
+      _setWarnSinkForTests,
+      (level, args) => {
+        if (level !== "warn") return;
+        warnCalls.push(args.map((value) => (typeof value === "string" ? value : JSON.stringify(value))).join(" "));
+      },
+      () => startWorkflowRun("workflows/direct-env"),
+    );
+    expect(warnCalls.some((w) => w.includes("dispatch") && w.includes("//workflows/child"))).toBe(true);
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    expect(stepTarget(plan, 0)).toMatchObject({ kind: "child-workflow", via: "direct" });
   });
 
-  test("a task-wrapped uses: tasks/<t> step (t targets a workflow) with env: on the COMPOSING STEP rejects COMPOSITION_INVALID the same way", async () => {
+  test("a task-wrapped uses: tasks/<t> step (t targets a workflow) with env: on the COMPOSING STEP freezes fine the same way", async () => {
     writeChild();
     write("tasks/wrapper.yml", ["version: 4", "uses: workflows/child", 'schedule: "@daily"', ""].join("\n"));
     writeParent("task-env", [
@@ -393,17 +402,36 @@ describe("a step composing a child workflow that also authors env: rejects inste
     ]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await expectCompositionInvalid("workflows/task-env");
-    expect(error.message).toContain("Workflow step dispatch cannot pass env:");
-    await expectNoRunRowWritten();
+    const warnCalls: string[] = [];
+    const started = await withSeam(
+      _setWarnSinkForTests,
+      (level, args) => {
+        if (level !== "warn") return;
+        warnCalls.push(args.map((value) => (typeof value === "string" ? value : JSON.stringify(value))).join(" "));
+      },
+      () => startWorkflowRun("workflows/task-env"),
+    );
+    expect(warnCalls.some((w) => w.includes("dispatch"))).toBe(true);
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    expect(stepTarget(plan, 0)).toMatchObject({ kind: "child-workflow", via: "task" });
   });
 
-  test("a direct uses: workflows/<ref> step with NO env: still freezes fine (regression guard)", async () => {
+  test("a direct uses: workflows/<ref> step with NO env: still freezes fine, no warning (regression guard)", async () => {
     writeChild();
     writeParent("direct-no-env", ["      - id: dispatch", "        uses: workflows/child"]);
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const started = await startWorkflowRun("workflows/direct-no-env");
+    const warnCalls: string[] = [];
+    const started = await withSeam(
+      _setWarnSinkForTests,
+      (level, args) => {
+        if (level !== "warn") return;
+        warnCalls.push(args.map((value) => (typeof value === "string" ? value : JSON.stringify(value))).join(" "));
+      },
+      () => startWorkflowRun("workflows/direct-no-env"),
+    );
+    expect(warnCalls).toEqual([]);
     const row = await planRow(started.run.id);
     const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
     expect(stepTarget(plan, 0)).toMatchObject({ kind: "child-workflow", via: "direct" });
@@ -569,7 +597,7 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
     expect(fields1.frozenPlanIrVersion).toBe(fields2.frozenPlanIrVersion);
   });
 
-  test("B-24: aggregate embedded child plan bytes over the 1 MiB cap fails COMPOSITION_INVALID naming the cap, the running total, and the child that crossed it", async () => {
+  test("B-24: aggregate embedded child plan bytes once over the former 1 MiB cap now freezes fine (a large plan is not a wrong plan)", async () => {
     // Five children at 250,000 'x' bytes each (well under the 256 KiB
     // per-instruction cap and the 1 MiB per-source-file cap individually)
     // sum to 1,250,000 bytes — comfortably over the 1,048,576-byte
@@ -584,15 +612,12 @@ describe("composition bounds — depth, cycle, aggregate embedded size (rows B-1
     );
     await akmIndex({ stashDir: storage.stashDir, full: true });
 
-    const error = await expectCompositionInvalid("workflows/aggregate-root");
-    expect(error.message.toLowerCase()).toContain("byte");
-    // The title promises the cap, the running total, and the child that
-    // crossed it all appear — not just SOME mention of "byte".
-    expect(error.message).toContain(String(WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES));
-    const totalMatch = error.message.match(/total (\d+) bytes/);
-    expect(totalMatch).not.toBeNull();
-    expect(Number(totalMatch?.[1])).toBeGreaterThan(WORKFLOW_MAX_EMBEDDED_CHILD_PLAN_BYTES);
-    expect(error.message).toMatch(/workflows\/big-\d/);
-    await expectNoRunRowWritten();
+    const started = await startWorkflowRun("workflows/aggregate-root");
+    const row = await planRow(started.run.id);
+    const plan = decodeWorkflowPlanV4(JSON.parse(row?.plan_json ?? "null"));
+    for (let i = 0; i < 5; i++) {
+      const fields = childWorkflowFields(stepTarget(plan, i));
+      expect(fields.ref).toMatch(new RegExp(`//workflows/big-${i}$`));
+    }
   });
 });

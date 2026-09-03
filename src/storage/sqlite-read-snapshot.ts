@@ -15,8 +15,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { sleepSync } from "../runtime";
 import type { Database } from "./database";
 import { openDatabaseFinalizing } from "./database";
+
+const SNAPSHOT_MAX_ATTEMPTS = 8;
+const SNAPSHOT_BACKOFF_MS = 25;
 
 export class SqliteReadSnapshotUnavailableError extends Error {
   constructor(message: string) {
@@ -83,30 +87,22 @@ function fingerprintsEqual(left: DatabaseFingerprint, right: DatabaseFingerprint
  */
 export function openSqliteReadSnapshot(dbPath: string): Database | undefined {
   if (!pathExists(dbPath)) return undefined;
-  if (pathExists(`${dbPath}-journal`)) {
-    throw new SqliteReadSnapshotUnavailableError(
-      "an active SQLite rollback journal is present; a non-mutating point-in-time snapshot is unavailable",
-    );
-  }
 
   const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-sqlite-read-"));
   const snapshotPath = path.join(snapshotDir, "snapshot.db");
   let db: Database | undefined;
   try {
     let copied = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < SNAPSHOT_MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) sleepSync(SNAPSHOT_BACKOFF_MS * attempt);
       try {
-        if (pathExists(`${dbPath}-journal`)) {
-          throw new SqliteReadSnapshotUnavailableError(
-            "an active SQLite rollback journal appeared while taking the non-mutating snapshot",
-          );
-        }
+        if (pathExists(`${dbPath}-journal`)) continue;
         const before = databaseFingerprint(dbPath);
         fs.copyFileSync(dbPath, snapshotPath);
         if (before.wal) fs.copyFileSync(`${dbPath}-wal`, `${snapshotPath}-wal`);
         else fs.rmSync(`${snapshotPath}-wal`, { force: true });
         const after = databaseFingerprint(dbPath);
-        if (fingerprintsEqual(before, after)) {
+        if (fingerprintsEqual(before, after) && !pathExists(`${dbPath}-journal`)) {
           copied = true;
           break;
         }
@@ -117,7 +113,8 @@ export function openSqliteReadSnapshot(dbPath: string): Database | undefined {
     }
     if (!copied) {
       throw new SqliteReadSnapshotUnavailableError(
-        "SQLite main/WAL files kept changing while taking the non-mutating snapshot",
+        `SQLite main/WAL files did not settle after ${SNAPSHOT_MAX_ATTEMPTS} attempts with backoff — ` +
+          "a writer may be continuously active, or a hot rollback journal never cleared",
       );
     }
     db = openDatabaseFinalizing(snapshotPath, { readonly: true, create: false });

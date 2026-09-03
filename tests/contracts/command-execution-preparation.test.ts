@@ -361,23 +361,22 @@ describe("common command invocation preparation", () => {
     expect(prepared.request.persona).toBeNull();
   });
 
-  test("unsupported templates and denied tools fail before runner dispatch", async () => {
+  test("prose resembling a native construct authorizes normally; denied tools fail before runner dispatch", async () => {
     let authorizationCalls = 0;
     let dispatchCalls = 0;
-    const unsafe = rendered("command", "fixture//commands/unsafe", "Review $1.", { tools: ["shell"] });
-    await expect(
-      prepareCommandInvocation({
-        action: { ref: "fixture//commands/unsafe" },
-        config,
-        modelMap,
-        sourceLoader: loaderFor(unsafe).loader,
-        authorizeTools() {
-          authorizationCalls += 1;
-          return { status: "allowed", policy: "unexpected" };
-        },
-      }),
-    ).rejects.toThrow(/unsupported.*template/i);
-    expect(authorizationCalls).toBe(0);
+    const prose = rendered("command", "fixture//commands/prose", "Review $1.", { tools: ["shell"] });
+    const prepared = await prepareCommandInvocation({
+      action: { ref: "fixture//commands/prose" },
+      config,
+      modelMap,
+      sourceLoader: loaderFor(prose).loader,
+      authorizeTools() {
+        authorizationCalls += 1;
+        return { status: "allowed", policy: "fixture-policy" };
+      },
+    });
+    expect(prepared.request.command.content).toBe("Review $1.");
+    expect(authorizationCalls).toBe(1);
 
     const safe = rendered("command", "fixture//commands/denied", "Review this.", { tools: ["shell"] });
     const denied = await prepareCommandInvocation({

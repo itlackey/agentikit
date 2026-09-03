@@ -42,6 +42,30 @@ describe("activation-policy — rule 1: dangerous env-key injection", () => {
   test("first-party stash with a dangerous key → warn but inject", () => {
     expect(decideDangerousEnvInjection({ dangerousKeys: ["EDITOR"], thirdParty: false })).toBe("warn");
   });
+
+  test("third-party stash whose ONLY findings are the interactive-tool group → warn, not block", () => {
+    expect(decideDangerousEnvInjection({ dangerousKeys: ["EDITOR"], thirdParty: true })).toBe("warn");
+    expect(decideDangerousEnvInjection({ dangerousKeys: ["VISUAL"], thirdParty: true })).toBe("warn");
+    expect(decideDangerousEnvInjection({ dangerousKeys: ["PAGER"], thirdParty: true })).toBe("warn");
+    expect(decideDangerousEnvInjection({ dangerousKeys: ["EDITOR", "PAGER"], thirdParty: true })).toBe("warn");
+  });
+
+  test("third-party stash mixing an interactive-tool key with a genuine RCE key → still block", () => {
+    expect(decideDangerousEnvInjection({ dangerousKeys: ["EDITOR", "LD_PRELOAD"], thirdParty: true })).toBe("block");
+  });
+
+  test("--allow-insecure downgrades a third-party RCE-class block to warn", () => {
+    expect(decideDangerousEnvInjection({ dangerousKeys: ["LD_PRELOAD"], thirdParty: true, allowInsecure: true })).toBe(
+      "warn",
+    );
+  });
+
+  test("--allow-insecure is irrelevant to a first-party stash (already warn) or an allow-list", () => {
+    expect(
+      decideDangerousEnvInjection({ dangerousKeys: ["LD_PRELOAD"], thirdParty: false, allowInsecure: false }),
+    ).toBe("warn");
+    expect(decideDangerousEnvInjection({ dangerousKeys: [], thirdParty: true, allowInsecure: true })).toBe("allow");
+  });
 });
 
 describe("activation-policy — rule 2: freshly-installed stash dangerous-key scan", () => {
