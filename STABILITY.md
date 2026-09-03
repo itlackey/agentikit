@@ -112,6 +112,7 @@ enumeration of the whole `proposal` noun group.
 | `akm task sync` | Evolving | |
 | `akm task doctor` | Evolving | |
 | `akm task explain` | Evolving | New in 0.9.2; secret-shaped values in provenance output are redacted on a best-effort heuristic basis (not a guarantee). |
+| `akm task validate` | Evolving | New in 0.9.11; read-only, and the only `task` subcommand that takes a bare filesystem path instead of a ref — the file need not belong to any configured bundle. |
 
 ## Stable
 
@@ -256,21 +257,28 @@ CHANGELOG with a migration note.
   `akm improve && akm proposal drain --promote --yes`, or a `triage` block
   with `applyMode: "promote"` in your strategy.
 - **Tasks** — `akm task` subcommand surface (`add | run | sync | doctor |
-  history | explain`; no alias, no `list`/`remove`/`init`/`enable`/`disable`);
-  task source v4 YAML (typed `inputs:`, optional `schedule:`) is the only
-  accepted version — task v3 and task v2 sources are converted by
-  `akm migrate apply`. Command tasks use named engines and task history
-  metadata is versioned. Schema additions in patch releases; removals only at
-  minor. Bare `akm task` is a usage error naming the subcommands
-  (`akm task doctor` reports scheduler diagnostics). `akm task explain <ref>`
-  (new in 0.9.2) and `akm workflow plan <ref>` are both zero-write
-  provenance surfaces: they show what a task or workflow would do —
-  resolved target, input bindings, child expansion — without starting or
-  publishing a run. `akm workflow plan` is secret-free **by construction**
-  (the excluded data never reaches the command). `akm task explain`
-  instead **redacts** secret-shaped input values on a best-effort
+  history | explain | validate`; no alias, no
+  `list`/`remove`/`init`/`enable`/`disable`); task source v4 YAML (typed
+  `inputs:`, optional `schedule:`) is the only accepted version — task v3 and
+  task v2 sources are converted by `akm migrate apply`. Command tasks use
+  named engines and task history metadata is versioned. Schema additions in
+  patch releases; removals only at minor. Bare `akm task` is a usage error
+  naming the subcommands (`akm task doctor` reports scheduler diagnostics).
+  `akm task explain <ref>` (new in 0.9.2) and `akm workflow plan <ref>` are
+  both zero-write provenance surfaces: they show what a task or workflow
+  would do — resolved target, input bindings, child expansion — without
+  starting or publishing a run. `akm workflow plan` is secret-free **by
+  construction** (the excluded data never reaches the command). `akm task
+  explain` instead **redacts** secret-shaped input values on a best-effort
   heuristic basis — a value that doesn't match the heuristic can still
-  print unredacted.
+  print unredacted. `akm task validate <path>` (new in 0.9.11) is the same
+  kind of zero-write introspection as `explain`, but takes a bare filesystem
+  path rather than a bundle-qualified ref — it reports whether that ONE file
+  would parse cleanly (`valid`), auto-convert from task v2/v3 (`converts`),
+  need a human decision the deterministic migrator can't make (`blocked`),
+  fail schema validation (`invalid`), or isn't a task source at all
+  (`not-a-task`) — exactly the diagnostic `akm task sync` would produce for
+  it, before the file is ever wired into a bundle or the scheduler.
 - **Workflow plan** — `akm workflow plan <ref>`, new in 0.9.2: zero-write
   compile+freeze introspection (the canonical step graph, task/child
   expansion, input bindings, and lowering notices for a workflow, without

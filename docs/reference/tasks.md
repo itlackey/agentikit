@@ -385,6 +385,14 @@ for full before/after examples and recovery guidance.
 - `akm task explain <ref>` prints a task's declared inputs, resolved target,
   effective execution settings, and schedule bindings without running
   anything — see [`akm task explain`](#akm-task-explain) above.
+- `akm task validate <path>` parses one task file by filesystem path (the
+  file need not live in a configured bundle) and reports the same
+  `valid`/`converts`/`blocked`/`invalid`/`not-a-task` diagnostic
+  `akm task sync` would produce for it — including sync's own cron-dialect
+  check and its per-schedule-entry input-contract check — without touching
+  the scheduler and without requiring a configured engine, even for a
+  command-kind task. The envelope's own `sourceVersion` field names the
+  file's originally declared schema version (2, 3, or 4).
 - `akm task add` writes a task source v4 document and installs it after
   validation. `--params` renders typed `inputs:` declarations instead of a
   `with:` bag; `--schedule` is required on every invocation, and

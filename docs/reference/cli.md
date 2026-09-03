@@ -2457,10 +2457,10 @@ shell commands. It manages on-disk task definitions under
 (cron / launchd / schtasks). Task source v4 YAML (`version: 4`) is the only
 executable source contract this release accepts; `akm task add` writes v4 —
 see the canonical [Tasks reference](tasks.md). The
-group is `add | run | explain | sync | doctor | history | prune` — there is
-no `list` or `remove`; use `akm search --type task` / `akm show tasks/<id>`
-to inspect, and edit the file + `akm task sync` to change or remove a
-schedule.
+group is `add | run | explain | validate | sync | doctor | history | prune`
+— there is no `list` or `remove`; use `akm search --type task` /
+`akm show tasks/<id>` to inspect, and edit the file + `akm task sync` to
+change or remove a schedule.
 
 ```sh
 akm search --type task                      # List tasks (cross-bundle)
@@ -2472,6 +2472,7 @@ akm task add nightly --schedule "@daily" --command "akm improve" --disabled  # r
 akm task add nightly --schedule "@daily" --command "akm improve" --force    # overwrite an existing task id
 akm task run <id>                           # Execute now (what the scheduler calls)
 akm task explain <ref>                      # Read-only: declared inputs, target, schedule — spawns nothing
+akm task validate <path>                    # Read-only: parse one task file by path, report sync's diagnostic
 akm task history [<id>] [--id <id>] [--limit <n>]  # Recent runs from state.db (positional id == --id)
 akm task sync                               # Reconcile on-disk YAML with scheduler
 akm task sync --dry-run                     # Preview the reconcile — zero scheduler writes
@@ -2493,6 +2494,30 @@ target, effective execution settings, and schedule bindings — **read-only**:
 it never spawns anything, writes history, or touches the scheduler. A
 secret-shaped value prints as `<redacted>`. See
 [`akm task explain`](tasks.md#akm-task-explain).
+
+`akm task validate <path>` parses ONE task file by filesystem path — not a
+concept ref or id, and the file need not live in any configured bundle —
+and reports the same diagnostic `akm task sync` would produce for it,
+INCLUDING sync's own cron-dialect check and its per-schedule-entry
+input-contract check (so a file `sync` would reject can never be reported
+`valid`/`converts` here): `{ok, path, sourceVersion, outcome, reason?,
+resolved?}` where `outcome` is `valid` (parses as task source v4 directly
+and passes both sync checks), `converts` (task v2/v3 that the deterministic
+migrator converts in memory and which then also passes both sync checks),
+`blocked` (task v2/v3 the migrator itself cannot convert — needs a human
+decision), `invalid` (the YAML doesn't parse, or the document fails schema
+validation, or it parsed but fails one of the two sync checks), or
+`not-a-task` (the YAML parses but never declares a `version:` field — not
+shaped like a task source). `resolved` is the compiled task shape
+`akm task sync` itself would build a scheduler binding from — id, the
+compiled schema version, resolved `uses`/`run` target, declared `inputs`
+contract, and `schedule` bindings — present only on `valid`/`converts`.
+Unlike `akm task explain`, it never runs execution lowering: a command-kind
+task validates the same whether or not the local config has an engine
+configured. Exits 0 for `valid`/`converts`, 1 for
+`blocked`/`invalid`/`not-a-task`, 2 for a missing or unreadable path.
+**Read-only**: it never touches the scheduler and never requires the file to
+be indexed or wired into a bundle.
 
 `akm task run` is what cron / launchd / schtasks invoke at the scheduled
 time. Each run is recorded as a row in the durable `task_history` table
@@ -2539,7 +2564,8 @@ the AKM storage path or installed runtime path therefore requires an explicit
 operates on the primary/default bundle. `add`, `history`, `sync`, `run`, and
 `explain` all accept `--bundle <bundle>` to schedule, reconcile, or inspect
 tasks that live in another configured bundle (`doctor` reports scheduler-wide
-state and takes no `--bundle`):
+state and takes no `--bundle`; `validate` takes a bare filesystem path
+instead of a ref, so it has no bundle to target either):
 
 ```sh
 akm task add nightly --schedule "@daily" --command "akm improve" --bundle team-bundle

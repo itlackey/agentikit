@@ -53,7 +53,7 @@ import {
   schedulerNativeArtifactOwner,
   schedulerNativeBindingId,
 } from "./scheduler-binding";
-import { parseTaskSource } from "./source/parse-task-source";
+import { type ParsedTaskSource, parseTaskSource } from "./source/parse-task-source";
 import { projectTaskSourceV4 } from "./source/project-v4";
 import { taskSourceErrorDetail } from "./source-v3";
 
@@ -561,30 +561,9 @@ async function compileTaskSources(
       });
       const document = projectTaskSourceV4(parsed.v4);
       const qualifiedRef = makeBundleRef(input.bundleName, conceptId);
-      // P2b Lane B (spec docs/plans/specs/p2b-input-bindings.md §4.4, rows
-      // B-50/F-B2): validate each v4 schedule entry's inputs against the
-      // task's OWN declared contract WITH DEFAULTS APPLIED — the same
-      // applyInputDefaults + validateInputs pair akm task run uses
-      // (src/tasks/run/load-task.ts). parseTaskSource's own parse-time check
-      // (task-source-v4.ts's parseScheduleEntry) already rejects an
-      // unknown/malformed entry against the RAW supplied values; this is a
-      // deliberate second, independent gate over the DEFAULTED view — the
-      // exact set of values the compiled invocation below actually delivers
-      // — so a violation fails HERE, recorded as a task failure at sync,
-      // rather than surfacing for the first time when the scheduler fires
-      // the compiled invocation.
-      const contract = parsed.v4.inputs ?? {};
-      for (const scheduleEntry of parsed.v4.schedule) {
-        const defaultedInputs = applyInputDefaults(contract, { ...scheduleEntry.inputs });
-        const errors = validateInputs(contract, defaultedInputs);
-        if (errors.length > 0) {
-          throw new UsageError(
-            `Task ${JSON.stringify(qualifiedRef)} schedule[${scheduleEntry.ordinal}].inputs does not satisfy ` +
-              `its declared inputs once defaults are applied: ${errors.join("; ")}`,
-            "TASK_SOURCE_INVALID",
-          );
-        }
-      }
+      // See assertTaskScheduleInputsSatisfyContract's own docblock (below in
+      // this file) for why this second, defaults-applied gate exists.
+      assertTaskScheduleInputsSatisfyContract(parsed.v4, qualifiedRef);
       await prepareTaskV3Execution(document, {
         taskId: id,
         taskRef: qualifiedRef,
@@ -621,13 +600,68 @@ async function compileTaskSources(
           inputs: schedule.inputs,
         })),
       });
-      for (const binding of sourceBindings) {
-        parseSchedule(binding.cron, input.backend);
-        out.push(binding);
-      }
+      assertTaskScheduleCronValid(parsed.v4, input.backend);
+      out.push(...sourceBindings);
     } catch (cause) {
       failures.push(taskFailure(sourcePath, qualifiedRefForFailure, cause));
     }
+  }
+}
+
+/**
+ * P2b Lane B (spec §4.4, rows B-50/F-B2): validate every v4 `schedule:`
+ * entry's `inputs` against the task's OWN declared contract WITH DEFAULTS
+ * APPLIED — the same `applyInputDefaults` + `validateInputs` pair
+ * `akm task run` uses (`src/tasks/run/load-task.ts`). `parseTaskSource`'s
+ * own parse-time check (`task-source-v4.ts`'s `parseScheduleEntry`) already
+ * rejects an unknown/malformed entry against the RAW supplied values; this
+ * is a deliberate second, independent gate over the DEFAULTED view — the
+ * exact set of values a compiled invocation actually delivers — so a
+ * violation fails HERE, recorded as a task failure at sync, rather than
+ * surfacing for the first time when the scheduler fires the invocation.
+ *
+ * Extracted (#907 review) so `akm task validate` can run the IDENTICAL gate
+ * over a bare file path without a second, potentially-diverging copy of
+ * this check. `refLabel` is only the text embedded in the thrown message —
+ * `compileTaskSources` passes its bundle-qualified ref; `akm task validate`,
+ * which never resolves a bundle for a bare file, passes the file path.
+ */
+export function assertTaskScheduleInputsSatisfyContract(
+  v4: Pick<ParsedTaskSource["v4"], "inputs" | "schedule">,
+  refLabel: string,
+): void {
+  const contract = v4.inputs ?? {};
+  for (const scheduleEntry of v4.schedule) {
+    const defaultedInputs = applyInputDefaults(contract, { ...scheduleEntry.inputs });
+    const errors = validateInputs(contract, defaultedInputs);
+    if (errors.length > 0) {
+      throw new UsageError(
+        `Task ${JSON.stringify(refLabel)} schedule[${scheduleEntry.ordinal}].inputs does not satisfy ` +
+          `its declared inputs once defaults are applied: ${errors.join("; ")}`,
+        "TASK_SOURCE_INVALID",
+      );
+    }
+  }
+}
+
+/**
+ * Validate every v4 `schedule:` entry's `cron` against the active scheduler
+ * backend's dialect (`parseSchedule`, `./schedule.ts`) — cron is the most
+ * permissive of the three backends, so a task authored on Linux can carry a
+ * cron expression launchd/schtasks cannot translate; `compileTaskSources`
+ * re-checks against the LOCAL backend on every sync rather than trusting
+ * whatever backend the file was authored against.
+ *
+ * Extracted (#907 review) alongside {@link assertTaskScheduleInputsSatisfyContract}
+ * so `akm task validate` shares this exact gate instead of a second copy
+ * that could silently drift from what `akm task sync` actually enforces.
+ */
+export function assertTaskScheduleCronValid(
+  v4: Pick<ParsedTaskSource["v4"], "schedule">,
+  backend: ScheduleBackend,
+): void {
+  for (const scheduleEntry of v4.schedule) {
+    parseSchedule(scheduleEntry.cron, backend);
   }
 }
 
