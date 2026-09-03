@@ -54,7 +54,7 @@ import {
   stampAssetSalienceMissing,
 } from "../../storage/repositories/salience-repository";
 import { expireStaleProposals, listProposals, purgeOrphanProposals } from "../proposal/repository";
-import { checkDeadUrls, type DeadUrl } from "../url-checker";
+import { checkDeadUrls, type DeadUrl, type DeadUrlCoverage } from "../url-checker";
 import { DEFAULT_RETENTION_DAYS as CYCLE_METRICS_RETENTION_DAYS, runCollapseDetector } from "./collapse-detector";
 import { deriveLessonRef } from "./distill";
 import { deriveKnowledgeRef } from "./distill-promotion-policy";
@@ -789,8 +789,16 @@ export async function runImprovePostLoopStage(args: {
   });
 
   let deadUrls: DeadUrl[] | undefined;
+  let deadUrlCoverage: DeadUrlCoverage | undefined;
   if (scope.mode === "all" && primaryStashDir && actionableRefs.length > 0) {
     try {
+      // Every actionable knowledge ref is scanned for URLs — there used to be
+      // a `.slice(0, 10)` here, capping the scan to the first ten refs while
+      // `deadUrlCoverage.total` counted only those, so a real bundle reported
+      // checked === total while most refs were never looked at (#892). URL
+      // extraction (a regex over already-loaded text) is cheap; it is the
+      // network requests that are expensive, and those are bounded by
+      // `checkDeadUrls`'s concurrency limit, not by trimming what gets scanned.
       const knowledgeEntries = actionableRefs
         .filter((r) => {
           try {
@@ -799,7 +807,6 @@ export async function runImprovePostLoopStage(args: {
             return false;
           }
         })
-        .slice(0, 10)
         .map((r) => {
           // The URL scan needs the document body; filePath is pre-resolved on
           // eligible refs at planning time (#591). Best-effort — an unreadable
@@ -816,8 +823,12 @@ export async function runImprovePostLoopStage(args: {
         });
       if (knowledgeEntries.length > 0) {
         info(`[improve] checking URLs in ${knowledgeEntries.length} knowledge refs`);
-        deadUrls = await checkDeadUrls(primaryStashDir, knowledgeEntries);
-        info(`[improve] URL check complete (${deadUrls.length} dead/timeout URLs)`);
+        const urlCheck = await checkDeadUrls(primaryStashDir, knowledgeEntries);
+        deadUrls = urlCheck.deadUrls;
+        deadUrlCoverage = urlCheck.coverage;
+        info(
+          `[improve] URL check complete (${deadUrls.length} dead/timeout URLs; checked ${urlCheck.coverage.checked} of ${urlCheck.coverage.total})`,
+        );
       }
     } catch {
       // best-effort
@@ -844,6 +855,7 @@ export async function runImprovePostLoopStage(args: {
   return {
     allWarnings,
     deadUrls,
+    ...(deadUrlCoverage ? { deadUrlCoverage } : {}),
     ...(cycleMetrics ? { cycleMetrics } : {}),
     ...(maintenanceResult.memoryInference ? { memoryInference: maintenanceResult.memoryInference } : {}),
     ...(maintenanceResult.graphExtraction ? { graphExtraction: maintenanceResult.graphExtraction } : {}),

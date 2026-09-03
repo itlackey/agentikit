@@ -149,6 +149,18 @@ export interface ImproveHealthMetrics {
   coverageGapCount: number;
   evalCasesWritten: number;
   deadUrlCount: number;
+  /**
+   * Coverage of the dead-link check across the window (#892): every
+   * actionable knowledge ref is scanned for URLs (no bundle-size cap), so
+   * `deadUrlsTotal` is the true count found. `deadUrlsChecked` can still fall
+   * short of it — a URL whose request hit a DNS/connection-level failure
+   * (see `checkDeadUrls` in commands/url-checker.ts) is indeterminate rather
+   * than confirmed dead, so it lands in `deadUrlsSkipped` instead.
+   * `deadUrlsChecked + deadUrlsSkipped === deadUrlsTotal`.
+   */
+  deadUrlsChecked: number;
+  deadUrlsTotal: number;
+  deadUrlsSkipped: number;
   memorySummary: {
     eligible: number;
     derived: number;

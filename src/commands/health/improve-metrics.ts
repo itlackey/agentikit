@@ -96,6 +96,9 @@ function createUnknownImproveMetrics(): ImproveHealthMetrics {
     coverageGapCount: 0,
     evalCasesWritten: 0,
     deadUrlCount: 0,
+    deadUrlsChecked: 0,
+    deadUrlsTotal: 0,
+    deadUrlsSkipped: 0,
     memorySummary: { eligible: 0, derived: 0 },
     memoryCleanup: {
       pruneCandidates: 0,
@@ -355,6 +358,14 @@ function applyMiscCounters(metrics: ImproveHealthMetrics, result: Record<string,
   if (Array.isArray(result.coverageGaps)) metrics.coverageGapCount += result.coverageGaps.length;
   metrics.evalCasesWritten += toFiniteNumber(result.evalCasesWritten);
   if (Array.isArray(result.deadUrls)) metrics.deadUrlCount += result.deadUrls.length;
+  const deadUrlCoverage = result.deadUrlCoverage as
+    | { checked?: unknown; total?: unknown; skipped?: unknown }
+    | undefined;
+  if (deadUrlCoverage && typeof deadUrlCoverage === "object") {
+    metrics.deadUrlsChecked += toFiniteNumber(deadUrlCoverage.checked);
+    metrics.deadUrlsTotal += toFiniteNumber(deadUrlCoverage.total);
+    metrics.deadUrlsSkipped += toFiniteNumber(deadUrlCoverage.skipped);
+  }
 }
 
 function applyMemorySummary(metrics: ImproveHealthMetrics, result: Record<string, unknown>): void {
@@ -592,6 +603,9 @@ function mergeImproveMetrics(dst: ImproveHealthMetrics, src: ImproveHealthMetric
   dst.coverageGapCount += src.coverageGapCount;
   dst.evalCasesWritten += src.evalCasesWritten;
   dst.deadUrlCount += src.deadUrlCount;
+  dst.deadUrlsChecked += src.deadUrlsChecked;
+  dst.deadUrlsTotal += src.deadUrlsTotal;
+  dst.deadUrlsSkipped += src.deadUrlsSkipped;
   // NOTE: memorySummary (derived/eligible) is a WHOLE-STASH snapshot recorded on
   // every run, NOT a per-run increment — summing it across the window inflates
   // it ~N× (the 1.2M-eligible bug). It is set from the most recent run in

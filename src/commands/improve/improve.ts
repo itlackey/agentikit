@@ -1445,6 +1445,7 @@ async function runImproveStageSequence(args: {
   // Concatenated arrays.
   const allWarnings: string[] = [];
   let deadUrls: ImprovePostLoopResult["deadUrls"];
+  let deadUrlCoverage: ImprovePostLoopResult["deadUrlCoverage"];
   const finalActions: ImproveActionResult[] = [];
 
   {
@@ -1533,6 +1534,9 @@ async function runImproveStageSequence(args: {
     if (postLoopResult.deadUrls !== undefined) {
       deadUrls = [...(deadUrls ?? []), ...postLoopResult.deadUrls];
     }
+    if (postLoopResult.deadUrlCoverage !== undefined) {
+      deadUrlCoverage = postLoopResult.deadUrlCoverage;
+    }
     const maintenanceActions = postLoopResult.maintenanceActions;
     if (maintenanceActions && maintenanceActions.length > 0) {
       finalActions.push(...preparation.actions, ...maintenanceActions);
@@ -1555,6 +1559,7 @@ async function runImproveStageSequence(args: {
     proposalsExpired,
     allWarnings,
     deadUrls,
+    deadUrlCoverage,
     finalActions,
   };
 }
@@ -1600,6 +1605,7 @@ function finalizeImproveResult(args: {
     proposalsExpired,
     allWarnings,
     deadUrls,
+    deadUrlCoverage,
     finalActions,
   } = args.seq;
   // C1 (13-bus-factor): fold the per-ref `distill-skipped` rows (~13k/run,
@@ -1674,6 +1680,10 @@ function finalizeImproveResult(args: {
     ...(preparation.extract && preparation.extract.length > 0 ? { extract: preparation.extract } : {}),
     ...(primaryStashDir !== undefined ? { evalCasesWritten: countEvalCases(primaryStashDir) } : {}),
     ...(deadUrls !== undefined && deadUrls.length > 0 ? { deadUrls } : {}),
+    // Present whenever the check ran, unlike `deadUrls` above — a clean run
+    // (zero dead links) still needs to tell the health report how much of
+    // the bundle it actually covered (#892).
+    ...(deadUrlCoverage !== undefined ? { deadUrlCoverage } : {}),
     ...(reflectsWithErrorContext > 0 ? { reflectsWithErrorContext } : {}),
     ...(memoryInference ? { memoryInference } : {}),
     ...(graphExtraction ? { graphExtraction } : {}),
@@ -1876,6 +1886,9 @@ function emitImproveCompletedEvent(
         coverageGapCount: result.coverageGaps?.length ?? 0,
         evalCasesWritten: result.evalCasesWritten ?? 0,
         deadUrlCount: result.deadUrls?.length ?? 0,
+        deadUrlsChecked: result.deadUrlCoverage?.checked ?? 0,
+        deadUrlsTotal: result.deadUrlCoverage?.total ?? 0,
+        deadUrlsSkipped: result.deadUrlCoverage?.skipped ?? 0,
         memoryEligible: result.memorySummary.eligible,
         memoryDerived: result.memorySummary.derived,
         memoryCleanupPruneCandidates: result.memoryCleanup?.pruneCandidates.length ?? 0,

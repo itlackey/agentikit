@@ -296,4 +296,34 @@ describe("decodeImproveResult", () => {
     );
     expect(() => decodeImproveResult("not json")).toThrow(/not valid JSON/);
   });
+
+  test("accepts deadUrlCoverage with exact non-negative integer fields, rejects malformed ones (#892)", () => {
+    const decoded = decodeImproveResult({
+      schemaVersion: 2,
+      strategy: "default",
+      ...common,
+      deadUrlCoverage: { checked: 3, total: 3, skipped: 0 },
+    });
+    expect(decoded.envelope.deadUrlCoverage).toEqual({ checked: 3, total: 3, skipped: 0 });
+
+    expect(() =>
+      decodeImproveResult({
+        schemaVersion: 2,
+        strategy: "default",
+        ...common,
+        deadUrlCoverage: { checked: 3, total: 3, skipped: 0, extra: 1 },
+      }),
+    ).toThrow(/unknown field/);
+    expect(() =>
+      decodeImproveResult({
+        schemaVersion: 2,
+        strategy: "default",
+        ...common,
+        deadUrlCoverage: { checked: -1, total: 3, skipped: 0 },
+      }),
+    ).toThrow(/deadUrlCoverage.checked/);
+    expect(() =>
+      decodeImproveResult({ schemaVersion: 2, strategy: "default", ...common, deadUrlCoverage: [] }),
+    ).toThrow(/deadUrlCoverage must be an object/);
+  });
 });

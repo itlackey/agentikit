@@ -37,6 +37,7 @@ const COMMON_FIELDS = [
   "coverageGaps",
   "evalCasesWritten",
   "deadUrls",
+  "deadUrlCoverage",
   "reflectsWithErrorContext",
   "memoryInference",
   "graphExtraction",
@@ -431,6 +432,7 @@ function validateCommon(value: Record<string, unknown>): void {
     "sync",
     "terminated",
     "plan",
+    "deadUrlCoverage",
   ] as const) {
     if (value[field] !== undefined && !isRecord(value[field])) fail(`${field} must be an object`);
   }
@@ -441,6 +443,12 @@ function validateCommon(value: Record<string, unknown>): void {
     }
     if (value.terminated.errorMessage !== undefined && typeof value.terminated.errorMessage !== "string") {
       fail("terminated.errorMessage must be a string when present");
+    }
+  }
+  if (isRecord(value.deadUrlCoverage)) {
+    requireExactFields(value.deadUrlCoverage, new Set(["checked", "total", "skipped"]));
+    for (const field of ["checked", "total", "skipped"] as const) {
+      requireCount(value.deadUrlCoverage, field, "deadUrlCoverage");
     }
   }
 }

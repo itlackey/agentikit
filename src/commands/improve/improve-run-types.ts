@@ -60,7 +60,7 @@ import type { MemoryInferenceResult, runMemoryInferencePass } from "../../indexe
 import type { SessionLogHarness } from "../../integrations/session-logs/types";
 import type { saveGitStash } from "../../sources/providers/git";
 import type { drainProposals } from "../proposal/drain";
-import type { DeadUrl } from "../url-checker";
+import type { DeadUrl, DeadUrlCoverage } from "../url-checker";
 import type { AkmConsolidateOptions } from "./consolidate";
 import type { akmDistill } from "./distill";
 import type { collectEligibleRefs, resolveImproveScope } from "./eligibility";
@@ -244,6 +244,7 @@ export interface ImproveLoopResult {
 export interface ImprovePostLoopResult {
   allWarnings: string[];
   deadUrls?: DeadUrl[];
+  deadUrlCoverage?: DeadUrlCoverage;
   memoryInference?: MemoryInferenceResult;
   graphExtraction?: GraphExtractionResult;
   maintenanceActions?: ImproveActionResult[];

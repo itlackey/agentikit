@@ -56,11 +56,35 @@ export interface RelativeDateCandidate {
   matches: string[];
 }
 
-/** A URL found dead by `checkDeadUrls` (commands/url-checker.ts). Plain data, no dependencies — owned here. */
+/**
+ * A URL found dead by `checkDeadUrls` (commands/url-checker.ts). `"timeout"`
+ * means the request exceeded `DEAD_URL_TIMEOUT_MS` without a response;
+ * `"error"` covers any other thrown failure that isn't a recognized
+ * DNS/connection-level error (those are counted in `DeadUrlCoverage.skipped`
+ * instead — see that type). Plain data, no dependencies — owned here.
+ */
 export interface DeadUrl {
   ref: string;
   url: string;
-  status: number | "error";
+  status: number | "error" | "timeout";
+}
+
+/**
+ * Coverage of a `checkDeadUrls` run: how many of the URLs found across the
+ * entries it was given got a definitive answer. `total` is every URL those
+ * entries contain — `checkDeadUrls` itself applies no cap or slice, and its
+ * one caller (`runImprovePostLoopStage`) hands it every actionable knowledge
+ * ref, not a subset (#892). `checked` can still fall short of `total`: a URL
+ * whose request fails with a DNS/connection-level error (host unreachable,
+ * DNS lookup failed, and similar) is indeterminate — that failure says
+ * something about reaching the host from here, not about whether the URL is
+ * dead — so it is counted in `skipped` rather than reported as a `DeadUrl` or
+ * silently treated as healthy. `checked + skipped === total` always.
+ */
+export interface DeadUrlCoverage {
+  checked: number;
+  total: number;
+  skipped: number;
 }
 
 export interface ArchivedMemoryCleanupRecord {
@@ -741,6 +765,12 @@ export interface AkmImproveResult {
   coverageGaps?: string[];
   evalCasesWritten?: number;
   deadUrls?: DeadUrl[];
+  /**
+   * Coverage of the dead-link check (#892): present whenever `checkDeadUrls`
+   * ran, independent of whether it found any dead URLs — so a clean run
+   * still tells `akm health` how much of the bundle it actually covered.
+   */
+  deadUrlCoverage?: DeadUrlCoverage;
   /** Number of reflect calls that had at least one error in the rolling window at call time. */
   reflectsWithErrorContext?: number;
   memoryInference?: MemoryInferenceResult;

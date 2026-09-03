@@ -38,6 +38,9 @@ function zeroImprove(): ImproveHealthMetrics {
     coverageGapCount: 0,
     evalCasesWritten: 0,
     deadUrlCount: 0,
+    deadUrlsChecked: 0,
+    deadUrlsTotal: 0,
+    deadUrlsSkipped: 0,
     memorySummary: { eligible: 0, derived: 0 },
     memoryCleanup: {
       pruneCandidates: 0,
