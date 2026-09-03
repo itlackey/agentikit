@@ -17,8 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--no-probe` on an offline or air-gapped host to keep the credential-only
   verdict; the message then says reachability was not probed.
 - **`akm proposal extract` reports the engine it resolved (#913).** The
-  envelope carries `engine`, every `sessions[]` entry carries `engine`, and
-  the `extract_sessions_seen` ledger
+  envelope carries `engine` and `engineKind` (`llm`, `sdk`, or `agent`), every
+  `sessions[]` entry carries `engine`, and the `extract_sessions_seen` ledger
   metadata records it, so "which engine did that run actually use" is one
   field instead of config archaeology. `akm health`'s `active-improve-strategy`
   check names the engine each improve process resolved to, which makes a

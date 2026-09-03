@@ -624,7 +624,7 @@ export interface AkmExtractResult {
    */
   skipReasons?: Partial<Record<NonNullable<ExtractedSessionResult["skipReason"]>, number>>;
   /**
-   * #913 — resolved engine name for this run, sourced from the same
+   * #913 — resolved engine name / kind for this run, sourced from the same
    * `llmRunner` stamped onto each `sessions[].engine`. Optional because the
    * feature-disabled early return (`extract is disabled by the selected
    * improve strategy`) returns before any engine is resolved; every other
@@ -633,6 +633,15 @@ export interface AkmExtractResult {
    * looking up the harness — has a real value here.
    */
   engine?: string;
+  /**
+   * #913 — kind of the runner `engine` resolved to: `"llm"` (a direct
+   * OpenAI-compatible connection), `"sdk"` (an SDK harness, executing through
+   * its LLM fallback connection), or `"agent"` (a dispatched agent harness).
+   * Absent under the same condition as `engine`. Consumers must not assume a
+   * single value: which kinds a process accepts is a per-process capability
+   * (`IMPROVE_PROCESS_ENGINE_CAPABILITIES`), not a property of the envelope.
+   */
+  engineKind?: "llm" | "sdk" | "agent";
 }
 
 export interface AkmReflectFailure {
