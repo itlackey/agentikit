@@ -456,9 +456,12 @@ describe("registry credential-bearing URL mutation boundaries", () => {
     expect(fs.existsSync(configPath())).toBe(false);
   });
 
-  test("registry add and config set reject representative credential classes before persistence", async () => {
+  test("config set rejects representative credential classes before persistence", async () => {
+    // `config set registries` validates through the same config schema
+    // (core/config/schema/sources-bundles.ts) as a startup config load, and
+    // config-cli.ts reclassifies that failure into a usage error (exit 2) —
+    // unaffected by the registry-cli.ts change below.
     const invocations = [
-      ["registry", "add", CREDENTIAL_URL, "--verbose", "--format=json"],
       [
         "config",
         "set",
@@ -466,7 +469,6 @@ describe("registry credential-bearing URL mutation boundaries", () => {
         JSON.stringify([{ url: EXACT_NESTED_SCHEME_CONTROL_URL, name: "private" }]),
         "--format=json",
       ],
-      ["registry", "add", STRICT_NESTED_USERINFO_URLS[0], "--format=json"],
       [
         "config",
         "set",
@@ -474,13 +476,42 @@ describe("registry credential-bearing URL mutation boundaries", () => {
         JSON.stringify([{ url: fixtureAt(STRICT_ENCODED_URLS, 0), name: "private" }]),
         "--format=json",
       ],
+    ];
+
+    for (const argv of invocations) {
+      const result = await runCliCapture(argv);
+      expect(result.code).toBe(2);
+      expect(result.stderr.toLowerCase()).toContain("credential");
+      expectCredentialsAbsent(result.stdout);
+      expectCredentialsAbsent(result.stderr);
+      expectNoPersistedCredentials();
+    }
+  });
+
+  test("registry add no longer refuses at the CLI layer for a credentialed URL (0.9.12)", async () => {
+    // registry-cli.ts's own guard is gone: the built-in static-index and
+    // skills-sh providers ignore URL userinfo, so `registry add` no longer
+    // throws its own usage error (exit 2, INVALID_FLAG_VALUE) for one.
+    //
+    // `registry add` still calls the shared `mutateConfig`, whose
+    // `validateCompleteConfig` runs the SAME config-schema credential check
+    // `config set` above hits — a separate guard (core/config/schema/
+    // sources-bundles.ts) not owned by this change and not yet removed in
+    // this branch, so these calls still fail today, but with a config error
+    // (exit 78) rather than the removed CLI usage error (exit 2). Once that
+    // guard is also removed, this assertion should read `.toBe(0)` and these
+    // calls should succeed with a warning instead.
+    const invocations = [
+      ["registry", "add", CREDENTIAL_URL, "--verbose", "--format=json"],
+      ["registry", "add", STRICT_NESTED_USERINFO_URLS[0], "--format=json"],
       ["registry", "add", fixtureAt(STRICT_MIXED_LAYER_URLS, 0), "--format=json"],
       ["registry", "add", fixtureAt(STRICT_INVALID_UTF8_CREDENTIAL_URLS, 0), "--format=json"],
     ];
 
     for (const argv of invocations) {
       const result = await runCliCapture(argv);
-      expect(result.code).toBe(2);
+      expect(result.code).not.toBe(2);
+      expect(result.code).toBe(78);
       expect(result.stderr.toLowerCase()).toContain("credential");
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
