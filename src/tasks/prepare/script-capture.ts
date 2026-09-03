@@ -38,8 +38,59 @@ const SCRIPT_INTERPRETERS: Readonly<Record<string, TaskV3ScriptInterpreter>> = O
   ".kts": "kotlin",
 });
 
-export function scriptInterpreter(extension: string, ref: string): TaskV3ScriptInterpreter {
-  const interpreter = SCRIPT_INTERPRETERS[extension];
+/**
+ * Interpreters a `#!` shebang line can name, for a script with no extension
+ * at all. Matched against the shebang's final path segment (so both
+ * `#!/bin/bash` and `#!/usr/bin/env bash` resolve the same way) — same
+ * generic-family collapsing the closed extension table above already applies
+ * (`.sh` always runs as plain `sh`, regardless of which shell it names).
+ */
+const SHEBANG_INTERPRETERS: ReadonlyArray<readonly [RegExp, TaskV3ScriptInterpreter]> = [
+  [/^(bash|sh|zsh|dash|ksh)$/, "sh"],
+  [/^python[0-9.]*$/, "python"],
+  [/^ruby$/, "ruby"],
+  [/^perl$/, "perl"],
+  [/^php$/, "php"],
+  [/^lua$/, "lua"],
+  [/^node$/, "node"],
+];
+
+/**
+ * Read the interpreter named by a `#!` shebang line, if any. Handles both
+ * `#!/path/to/interpreter` and `#!/usr/bin/env interpreter` forms. Returns
+ * `undefined` when there is no shebang, or it names something outside the
+ * closed set above — callers fall back to their existing "no interpreter"
+ * rejection rather than guessing.
+ */
+function interpreterFromShebang(bytes: Uint8Array | undefined): TaskV3ScriptInterpreter | undefined {
+  if (!bytes || bytes.length < 2 || bytes[0] !== 0x23 || bytes[1] !== 0x21) return undefined;
+  const newline = bytes.indexOf(0x0a);
+  const lineBytes = newline === -1 ? bytes.subarray(2) : bytes.subarray(2, newline);
+  const tokens = Buffer.from(lineBytes).toString("utf8").trim().split(/\s+/).filter(Boolean);
+  const [first, second] = tokens;
+  const named = first?.split("/").pop() === "env" ? second : first?.split("/").pop();
+  if (!named) return undefined;
+  for (const [pattern, interpreter] of SHEBANG_INTERPRETERS) {
+    if (pattern.test(named)) return interpreter;
+  }
+  return undefined;
+}
+
+/**
+ * Does the running Node build strip TypeScript syntax natively? Checked via
+ * the runtime's own feature flag rather than a hardcoded version threshold,
+ * so this stays correct as Node's native-TS support graduates from
+ * experimental/flagged to on-by-default across releases. `false`/absent on
+ * Bun too, which is harmless — Bun callers never reach this check (they take
+ * the `process.versions.bun` branch below instead).
+ */
+function nodeStripsTypeScript(): boolean {
+  const features = (process as unknown as { features?: { typescript?: string | boolean } }).features;
+  return Boolean(features?.typescript);
+}
+
+export function scriptInterpreter(extension: string, ref: string, bytes?: Uint8Array): TaskV3ScriptInterpreter {
+  const interpreter = SCRIPT_INTERPRETERS[extension] ?? (extension === "" ? interpreterFromShebang(bytes) : undefined);
   if (!interpreter) {
     throw new UsageError(
       `Task v3 script target ${JSON.stringify(ref)} has no closed runtime interpreter for extension ${JSON.stringify(extension)}.`,
@@ -47,13 +98,21 @@ export function scriptInterpreter(extension: string, ref: string): TaskV3ScriptI
     );
   }
   if (interpreter !== "bun") return interpreter;
-  if (!process.versions.bun) {
-    throw new UsageError(
-      `Task v3 script target ${JSON.stringify(ref)} requires Bun for ${extension} execution, but this runtime cannot provide it.`,
-      "TASK_TARGET_UNSUPPORTED",
-    );
+  if (process.versions.bun) {
+    return isBunStandaloneMain() ? "bun-standalone" : "bun";
   }
-  return isBunStandaloneMain() ? "bun-standalone" : "bun";
+  // Bun is absent — the npm-global install akm's own `resolve-akm-bin` treats
+  // as eligible. Plain JavaScript runs directly under the Node that is
+  // already running akm; TypeScript only when this Node build strips types
+  // natively (otherwise there is genuinely no way to run it without a
+  // separately-installed loader).
+  if (extension === ".js" || (extension === ".ts" && nodeStripsTypeScript())) {
+    return "node";
+  }
+  throw new UsageError(
+    `Task v3 script target ${JSON.stringify(ref)} requires Bun for ${extension} execution, but this runtime cannot provide it.`,
+    "TASK_TARGET_UNSUPPORTED",
+  );
 }
 
 export function captureDirectoryIdentity(
@@ -102,7 +161,7 @@ export function captureScriptTarget(
   const bytes = Uint8Array.from(raw);
   const cwdIdentity = captureDirectoryIdentity(bundleRoot);
   return Object.freeze({
-    interpreter: scriptInterpreter(extension, ref),
+    interpreter: scriptInterpreter(extension, ref, bytes),
     extension,
     bytesBase64: Buffer.from(bytes).toString("base64"),
     byteLength: bytes.byteLength,

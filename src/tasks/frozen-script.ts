@@ -42,6 +42,8 @@ export function frozenScriptCommand(script: FrozenScriptSnapshot, materializedPa
       return [process.execPath, materializedPath];
     case "bun-standalone":
       return [process.execPath, STANDALONE_FROZEN_SCRIPT_ARG, materializedPath];
+    case "node":
+      return ["node", materializedPath];
     case "powershell":
       return ["powershell", "-NoProfile", "-NonInteractive", "-File", materializedPath];
     case "cmd":
