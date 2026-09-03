@@ -679,9 +679,13 @@ async function resolveCrawlRobotsDecision(
 
 /**
  * C-02/C-03: fail fast, before any page fetch, when the start URL itself is
- * off-limits. A 5xx robots.txt (RobotsPolicy caches `DISALLOW_ALL_RULES` for
- * that case) gets a distinct message calling out the server error, per spec
- * §4.6.
+ * off-limits per an actually-parsed robots.txt rule. A 5xx on robots.txt
+ * itself no longer reaches this as `disallowAll` (finding 12,
+ * docs/plans/guard-audit.md) — `loadRobotsTxt` reports it the same way a
+ * 4xx is reported (`ALLOW_ALL_RULES`), with its own warning, rather than
+ * treating the site's own transient error as a Disallow. The check below
+ * stays as defense-in-depth for a `RobotsPolicy` built over some other
+ * loader that does still report `disallowAll`.
  *
  * Checks both `start`'s (normalized) URL and `rawStartUrl` — the URL exactly
  * as the user supplied it in config, before `validateWebsiteUrl` ->
@@ -1177,16 +1181,22 @@ export async function loadRobotsTxt(
 
     if (response.status >= 500 && response.status < 600) {
       await response.body?.cancel().catch(() => undefined);
-      // RFC 9309 §2.3.1.4: an unreachable robots.txt is a full disallow, not
-      // an allow-all. `fetchWithRetry` already retried this once, so a
-      // transient blip does not trip it.
+      // Guard-audit finding 12: RFC 9309 §2.3.1.4 recommends treating an
+      // unreachable robots.txt as a full disallow, but for a personal tool
+      // crawling a site the operator explicitly chose, a transient 5xx on
+      // the site's OWN robots.txt is not a site owner's Disallow — it is the
+      // site being flaky. `fetchWithRetry` already retried this once, so
+      // this is not a single blip; still, blocking the crawl outright over
+      // it serves the operator worse than proceeding unrestricted. Reported
+      // as "unavailable" (the same outcome a 4xx gets), which resolves to
+      // ALLOW_ALL_RULES rather than DISALLOW_ALL_RULES.
       warn(
-        "[akm] robots.txt at %s returned %d; treating the crawl as fully disallowed until it recovers. " +
-          "Set respectRobots: false on this website source to bypass robots.txt.",
+        "[akm] robots.txt at %s returned %d; proceeding as if no robots.txt were published, rather than treating " +
+          "the crawl as fully disallowed. Set respectRobots: false on this website source to silence this warning.",
         robotsUrl,
         response.status,
       );
-      return { kind: "unreachable" };
+      return { kind: "unavailable" };
     }
 
     // 4xx (404 is the common, silent case), and any other non-2xx/5xx status.
