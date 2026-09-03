@@ -65,20 +65,36 @@ export function searchFts(
   const plan = buildLexicalQueryPlan(query);
   if (!plan.exact) return [];
 
-  // Try the exact AND query first
-  const exactResults = runFtsQuery(db, plan.exact, "exact", limit, entryType, excludeTypes);
-  if (exactResults.length > 0) return exactResults;
+  // The tiers top up a shared candidate pool up to `limit` rather than
+  // standing in for one another: a stricter tier that returns some rows but
+  // fewer than `limit` no longer starves the caller of the looser tiers'
+  // genuinely relevant matches. Tier precedence is preserved in the output
+  // order (exact, then prefix, then relaxed) so the strict hits still sort
+  // first for the downstream ranker; a row already collected by a stricter
+  // tier is not re-added when a looser tier also matches it.
+  const results: DbSearchResult[] = [];
+  const seenIds = new Set<number>();
 
-  if (plan.exactPrefix) {
-    const prefixResults = runFtsQuery(db, plan.exactPrefix, "prefix", limit, entryType, excludeTypes);
-    if (prefixResults.length > 0) return prefixResults;
+  const collect = (tierResults: DbSearchResult[]): void => {
+    for (const result of tierResults) {
+      if (results.length >= limit) return;
+      if (seenIds.has(result.id)) continue;
+      seenIds.add(result.id);
+      results.push(result);
+    }
+  };
+
+  collect(runFtsQuery(db, plan.exact, "exact", limit, entryType, excludeTypes));
+
+  if (results.length < limit && plan.exactPrefix) {
+    collect(runFtsQuery(db, plan.exactPrefix, "prefix", limit, entryType, excludeTypes));
   }
 
-  // One measured relaxation only after both conjunctive forms miss. This is
-  // still the same FTS table, BM25 weights, candidate collection, and
-  // downstream ranker — merely an OR candidate query for sentence-shaped
-  // input whose filler terms prevented a strict hit.
-  return plan.relaxed ? runFtsQuery(db, plan.relaxed, "relaxed", limit, entryType, excludeTypes) : [];
+  if (results.length < limit && plan.relaxed) {
+    collect(runFtsQuery(db, plan.relaxed, "relaxed", limit, entryType, excludeTypes));
+  }
+
+  return results;
 }
 
 function runFtsQuery(

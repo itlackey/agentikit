@@ -177,6 +177,72 @@ describe("progressive lexical query planning (#819)", () => {
       db.close();
     }
   });
+
+  test("tops up the candidate pool from looser tiers instead of stopping at the first hit", () => {
+    const db = makeDb();
+    try {
+      insert(db, "exact-hit", {
+        type: "knowledge",
+        name: "exact-hit",
+        description: "zeltron quixor primary reference",
+      });
+      insert(db, "prefix-hit", {
+        type: "knowledge",
+        name: "prefix-hit",
+        description: "zeltron9 quixor9 secondary reference",
+      });
+      insert(db, "relaxed-hit", {
+        type: "knowledge",
+        name: "relaxed-hit",
+        description: "zeltron only, tertiary reference with no partner term",
+      });
+
+      const results = searchFts(db, "zeltron quixor", 3);
+
+      expect(results.map((result) => result.entry.name)).toEqual(["exact-hit", "prefix-hit", "relaxed-hit"]);
+      expect(results.map((result) => result.lexicalMatch)).toEqual(["exact", "prefix", "relaxed"]);
+      // "exact-hit" also matches the looser prefix/relaxed queries; it must
+      // still surface exactly once, carrying the tier it was first collected under.
+      expect(results.filter((result) => result.entry.name === "exact-hit")).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("does not run looser tiers once the exact tier already fills the limit", () => {
+    const db = makeDb();
+    try {
+      insert(db, "borrelia-first", {
+        type: "knowledge",
+        name: "borrelia-first",
+        description: "borrelia trantor first entry",
+      });
+      insert(db, "borrelia-second", {
+        type: "knowledge",
+        name: "borrelia-second",
+        description: "borrelia trantor second entry",
+      });
+      insert(db, "borrelia-prefix-only", {
+        type: "knowledge",
+        name: "borrelia-prefix-only",
+        description: "borrelian trantorian prefix-only entry",
+      });
+      insert(db, "borrelia-relaxed-only", {
+        type: "knowledge",
+        name: "borrelia-relaxed-only",
+        description: "borrelia solo, relaxed-only entry with no partner term",
+      });
+
+      const results = searchFts(db, "borrelia trantor", 2);
+
+      expect(results).toHaveLength(2);
+      expect(results.every((result) => result.lexicalMatch === "exact")).toBe(true);
+      const names = results.map((result) => result.entry.name).sort();
+      expect(names).toEqual(["borrelia-first", "borrelia-second"]);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("native Markdown content projection (#819)", () => {
