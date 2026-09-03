@@ -119,7 +119,7 @@ describe("resolveAdapterConceptOwner — closed-form candidates (#857)", () => {
     }
   });
 
-  test("canonical and loose placements for the same conceptId collide", () => {
+  test("canonical and loose placements for the same conceptId collide (default: write)", () => {
     const sandbox = sandboxStashDir();
     try {
       const root = path.join(sandbox.dir, "akm");
@@ -129,6 +129,30 @@ describe("resolveAdapterConceptOwner — closed-form candidates (#857)", () => {
       fs.writeFileSync(loose, "Use $ARGUMENTS exactly.\n");
       fs.writeFileSync(canonical, "# Same command\n");
       expect(() => resolveAdapterConceptOwner(root, "akm", "commands/same")).toThrow(AdapterConceptCollisionError);
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+
+  test("an explicit read resolves the same collision to the first owner instead of aborting", () => {
+    const sandbox = sandboxStashDir();
+    try {
+      const root = path.join(sandbox.dir, "akm");
+      const loose = path.join(root, "same.md");
+      const canonical = path.join(root, "commands", "same.md");
+      fs.mkdirSync(path.dirname(canonical), { recursive: true });
+      fs.writeFileSync(loose, "Use $ARGUMENTS exactly.\n");
+      fs.writeFileSync(canonical, "# Same command\n");
+
+      // Two spellings of one concept must not break an informational lookup
+      // for every ref that merely touches it, including refs the caller
+      // never asked about — an explicit read opts into the deterministic
+      // first owner instead. The default stays "write" (unchanged, above):
+      // this engine cannot tell a display-only caller from one about to
+      // dispatch/execute the resolved file, and picking the wrong physical
+      // source to run is not a passive read.
+      const owner = resolveAdapterConceptOwner(root, "akm", "commands/same", { mode: "read" });
+      expect(owner?.path).toBe(canonical);
     } finally {
       sandbox.cleanup();
     }
@@ -162,7 +186,7 @@ describe("resolveAdapterConceptOwner — closed-form candidates (#857)", () => {
     }
   });
 
-  test("env duality collides when both '.env' and 'default.env' are authored together (dotenv adapter)", () => {
+  test("env duality collides when both '.env' and 'default.env' are authored together (default: write)", () => {
     const sandbox = sandboxStashDir();
     try {
       const root = path.join(sandbox.dir, "dotenv");
@@ -171,6 +195,23 @@ describe("resolveAdapterConceptOwner — closed-form candidates (#857)", () => {
       fs.writeFileSync(path.join(envDir, ".env"), "TOKEN=hidden\n");
       fs.writeFileSync(path.join(envDir, "default.env"), "TOKEN=hidden\n");
       expect(() => resolveAdapterConceptOwner(root, "dotenv", "env/default")).toThrow(AdapterConceptCollisionError);
+    } finally {
+      sandbox.cleanup();
+    }
+  });
+
+  test("an explicit read resolves the same env-duality collision to the first owner", () => {
+    const sandbox = sandboxStashDir();
+    try {
+      const root = path.join(sandbox.dir, "dotenv");
+      const envDir = path.join(root, "env");
+      fs.mkdirSync(envDir, { recursive: true });
+      const dotEnv = path.join(envDir, ".env");
+      const namedEnv = path.join(envDir, "default.env");
+      fs.writeFileSync(dotEnv, "TOKEN=hidden\n");
+      fs.writeFileSync(namedEnv, "TOKEN=hidden\n");
+      const owner = resolveAdapterConceptOwner(root, "dotenv", "env/default", { mode: "read" });
+      expect(owner?.path).toBe(dotEnv);
     } finally {
       sandbox.cleanup();
     }
