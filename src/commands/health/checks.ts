@@ -984,21 +984,10 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
     // --session-id ...` (the standard Claude Code plugin setup) never writes
     // an `improve_runs` row, so the old improve_runs-only source reported
     // "not active" as `pass` unconditionally on a plugin-driven machine, no
-    // matter how healthy or broken extraction actually was. The
-    // `improve_runs`-derived numbers (`ctx.sessionExtraction`) are kept in
-    // evidence for continuity, but the status/message come from the ledger.
+    // matter how healthy or broken extraction actually was.
     name: "session-extraction",
     channel: "advisory",
     run: (ctx) => {
-      const sx = ctx.sessionExtraction;
-      const legacyEvidence = {
-        sessionsScanned: sx.sessionsScanned,
-        sessionsExtracted: sx.sessionsExtracted,
-        sessionsSkipped: sx.sessionsSkipped,
-        proposalsCreated: sx.proposalsCreated,
-        warnings: sx.warnings,
-        durationMs: sx.durationMs,
-      };
       const { since: ledgerSince, rows } = ctx.sessionExtractionLedger;
       const totalRows = rows.reduce((sum, row) => sum + row.count, 0);
 
@@ -1009,7 +998,7 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
           status: "unknown",
           confidence: "medium",
           message: "No extraction recorded in the last 7 days.",
-          evidence: { ran: sx.ran, ledgerSince, ledgerRows: rows, ...legacyEvidence },
+          evidence: { ledgerSince, ledgerRows: rows },
         };
       }
 
@@ -1044,7 +1033,7 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
           status: "warn",
           confidence: "medium",
           message: `${totalRows} of ${totalRows} sessions in the last 7 days ${verb}: ${reasonClauses.join(", ")}.`,
-          evidence: { ran: sx.ran, ledgerSince, ledgerRows: rows, ...legacyEvidence },
+          evidence: { ledgerSince, ledgerRows: rows },
         };
       }
 
@@ -1060,7 +1049,7 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
         status: "pass",
         confidence: "medium",
         message: `Session extraction active in the last 7 days (${outcomeSummary}).`,
-        evidence: { ran: sx.ran, ledgerSince, ledgerRows: rows, ...legacyEvidence },
+        evidence: { ledgerSince, ledgerRows: rows },
       };
     },
   },

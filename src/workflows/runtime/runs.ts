@@ -422,10 +422,6 @@ export async function getWorkflowStatus(
   });
 }
 
-export async function hasWorkflowRun(runId: string): Promise<boolean> {
-  return withWorkflowRunsRepo((repo) => repo.hasRun(runId));
-}
-
 export async function listWorkflowRuns(input?: {
   workflowRef?: string;
   activeOnly?: boolean;
@@ -1075,9 +1071,10 @@ function resolveRunIdOrPrefix(repo: WorkflowRunsRepository, specifier: string): 
  * the signal callers use to fall through to ref-based resolution.
  */
 export async function resolveWorkflowRunTarget(specifier: string): Promise<string | undefined> {
-  if (await hasWorkflowRun(specifier)) return specifier;
-  if (!RUN_ID_PREFIX_PATTERN.test(specifier)) return undefined;
-  return withWorkflowRunsRepo((repo) => repo.resolveRunIdPrefix(specifier));
+  return withWorkflowRunsRepo((repo) => {
+    const runId = resolveRunIdOrPrefix(repo, specifier);
+    return repo.hasRun(runId) ? runId : undefined;
+  });
 }
 
 function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowRunRow {
