@@ -68,6 +68,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **akm no longer refuses to open a state database migrated by a newer akm.**
+  Two akm versions sharing one data directory is a supported deployment — a
+  bundled CLI beside a newer global install — and the old binary was bricked
+  for every command that touches `state.db`, not degraded. It protected
+  nothing: an older binary's entire migration registry is already applied, so
+  it has no pending migration to run. It now opens, warns once naming the
+  migrations it does not know, and reads and writes the tables it knows. A
+  ledger that genuinely diverges (a migration this akm has was never applied
+  and something else was applied in its place) is still refused.
+- **`akm agent --prompt` no longer rejects prose that looks like a template.**
+  A prompt was validated as if it were a portable command template, so any
+  prompt containing `}}` from compact JSON, a `$VAR`, a `${...}`, a `$(...)`
+  shell snippet, an `@path`, or a `` !` `` was rejected with "unsupported
+  portable template construct" before the agent started. akm substitutes
+  nothing into a prompt, so it is now sent verbatim. The template language is
+  unchanged for stored command files, which are templates.
+
 - **The 0.9.2 `claude-code` -> `claude` harness rename left the ledgers split
   (#915).** State migration `027-extract-sessions-seen-harness-rename` moves
   `extract_sessions_seen` and `workflow_runs.agent_harness` rows off the old
