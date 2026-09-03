@@ -433,6 +433,32 @@ function warnNewerStateLedger(ledger: MigrationLedgerState): void {
   );
 }
 
+/**
+ * An unversioned state.db (no `schema_migrations` ledger, or an empty one)
+ * that also carries no other table at all has nothing a pre-migration
+ * snapshot could protect — it is indistinguishable from a database this same
+ * open just created. Treat it the same as a brand-new file rather than
+ * routing it through the historical-destructive snapshot requirement, which
+ * exists to protect real operator data (task history, proposals, events)
+ * from an in-place migration bug, not to gate a file that merely lacks a
+ * ledger row (e.g. `touch state.db`, or a process that created the file and
+ * exited before the first migration ran).
+ *
+ * A table that already exists but happens to hold zero rows is deliberately
+ * NOT included here: every migration's DDL is `CREATE TABLE IF NOT EXISTS`,
+ * so an existing table with an unexpected (older, or hand-crafted) shape
+ * would silently keep that shape instead of being brought current, and a
+ * later migration expecting a column that table doesn't have would fail
+ * outright — the exact ambiguity the snapshot-and-apply-deliberately path
+ * exists to force a human to look at.
+ */
+function unversionedDatabaseHasNoTables(db: Database): boolean {
+  const tables = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != ?")
+    .get("schema_migrations");
+  return !tables;
+}
+
 export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOptions): Database {
   const canonicalPath = getStateDbPath();
   const resolvedPath = dbPath ?? canonicalPath;
@@ -455,6 +481,7 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
   let existingSource: StateDatabaseSource | undefined;
   let openedDb: Database | undefined;
   let existingUnversionedDatabase = false;
+  let treatUnversionedAsFresh = false;
   let stateSafetyCopyCreated = false;
   try {
     fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
@@ -469,6 +496,11 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
         const ledger = assertMigrationLedger(preflight, STATE_MIGRATIONS);
         warnNewerStateLedger(ledger);
         existingUnversionedDatabase = ledger.migrationIds.length === 0;
+        if (existingUnversionedDatabase && unversionedDatabaseHasNoTables(preflight)) {
+          // Nothing a snapshot could protect — migrate it like a fresh file.
+          existingUnversionedDatabase = false;
+          treatUnversionedAsFresh = true;
+        }
         if (existingUnversionedDatabase && !options?.allowHistoricalDestructiveStateUpgrade) {
           throw new Error(
             "Refusing to migrate an existing unversioned state.db during an ordinary managed open. " +
@@ -486,7 +518,7 @@ export function openStateDatabase(dbPath?: string, options?: OpenStateDatabaseOp
       pragmas: { dataDir: path.dirname(resolvedPath) },
       init: (db) => {
         runMigrations(db, {
-          freshDatabase: !!freshReservation,
+          freshDatabase: !!freshReservation || treatUnversionedAsFresh,
           existingUnversionedDatabase,
           allowHistoricalDestructiveStateUpgrade: options?.allowHistoricalDestructiveStateUpgrade,
           beforeExistingUnversionedStateMigration: options?.allowHistoricalDestructiveStateUpgrade

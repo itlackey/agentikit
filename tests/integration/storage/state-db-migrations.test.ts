@@ -156,6 +156,44 @@ describe("state.db automatic migration boundary", () => {
     expect(fs.existsSync(literalMemoryPath)).toBe(false);
   });
 
+  // An existing file with no ledger AND no table at all has nothing a
+  // pre-migration snapshot could protect (#8): the historical-destructive
+  // snapshot requirement below exists to protect real operator rows from an
+  // in-place migration bug, not to gate a file that merely lacks a ledger row
+  // (e.g. `touch state.db`, or a process that created the file and crashed
+  // before the first migration ran). It migrates the same as a brand-new
+  // file, with no `akm upgrade` step required. A table that already exists
+  // (even with zero rows) still requires the snapshot path — see
+  // `unversionedDatabaseHasNoTables`'s doc comment for why an empty-but-
+  // present table isn't safe to fold into this case.
+  test("an existing but genuinely empty database (no tables at all) migrates like a fresh file", () => {
+    const file = statePath();
+    openDatabase(file).close(); // creates an empty SQLite file, zero tables
+
+    const db = openStateDatabase(file);
+    const ids = db.prepare("SELECT id FROM schema_migrations ORDER BY rowid").all() as Array<{ id: string }>;
+    expect(ids.map((row) => row.id)).toEqual(STATE_MIGRATIONS.map((migration) => migration.id));
+    db.close();
+  });
+
+  test("an existing database with an empty akm table (present but zero rows) still requires an explicit upgrade", () => {
+    const file = statePath();
+    const seeded = openDatabase(file);
+    seeded.exec("CREATE TABLE task_history (task_id TEXT PRIMARY KEY, status TEXT NOT NULL, started_at TEXT NOT NULL)");
+    seeded.close();
+    const before = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+
+    let error: unknown;
+    try {
+      openStateDatabase(file).close();
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error instanceof Error ? error.message : "").toMatch(/existing unversioned state\.db.*akm upgrade/i);
+    expect(createHash("sha256").update(fs.readFileSync(file)).digest("hex")).toBe(before);
+  });
+
   test("an existing database without a migration ledger is rejected without writing a byte", () => {
     const file = statePath();
     const seeded = openDatabase(file);
