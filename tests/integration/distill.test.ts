@@ -1884,12 +1884,16 @@ describe("akmDistill — R3 judge verdict routing + G4 output encoding salience"
     }
   });
 
-  test("07 P0-2 end-to-end: gate ON + unjudgeable verdict → proposal REJECTED, not queued", async () => {
+  test("07 P0-2 end-to-end: gate ON + unjudgeable verdict → routed to review, never auto-queued", async () => {
     const stash = makeStashDir();
     // Distill returns a valid lesson, but the judge's second call receives the
-    // same non-JSON text → parse failure → the gate fails CLOSED. This drives
-    // the whole akmDistill path (not just runLessonQualityJudge in isolation)
-    // to prove unjudgeable minted content is rejected, never queued.
+    // same non-JSON text → parse failure. An unparseable verdict says nothing
+    // about the content's own quality, and the generation that produced it
+    // already cost real money, so this drives the whole akmDistill path (not
+    // just runLessonQualityJudge in isolation) to prove unjudgeable minted
+    // content is routed to human review — never silently auto-queued, but
+    // also never discarded where the score alone (-1) would make it
+    // indistinguishable from genuinely bad content.
     const result = await akmDistill({
       ref: "skills/deploy",
       config: configJudgeEnabled(stash),
@@ -1898,7 +1902,7 @@ describe("akmDistill — R3 judge verdict routing + G4 output encoding salience"
       lookupFn: noopLookup,
       readEventsFn: emptyEvents,
     });
-    expect(result.outcome).toBe("quality_rejected");
+    expect(result.outcome).toBe("review_needed");
     expect(result.score).toBe(-1);
     expect(listProposals(stash).length).toBe(0);
   });
