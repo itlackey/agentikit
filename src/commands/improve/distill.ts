@@ -1031,7 +1031,7 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
       );
     }
 
-    const { content, descriptionSwapped } = assembleAndValidateDistillContent({
+    const assembled = assembleAndValidateDistillContent({
       raw,
       effectiveProposalKind,
       inputRef,
@@ -1042,7 +1042,10 @@ export async function akmDistill(options: AkmDistillOptions): Promise<AkmDistill
       filteredFeedbackCount,
       eligMeta,
       eventsCtx: options.eventsCtx,
+      stash,
     });
+    if ("rejection" in assembled) return withNotices(assembled.rejection);
+    const { content, descriptionSwapped } = assembled;
 
     const gate = await applyDistillQualityGate({
       config,
@@ -1299,7 +1302,9 @@ function assembleAndValidateDistillContent(args: {
   filteredFeedbackCount: number;
   eligMeta: { eligibilitySource?: EligibilitySource };
   eventsCtx?: EventsContext;
-}): { content: string; descriptionSwapped: number } {
+  /** Needed only for the review_needed persistence path below. */
+  stash: string;
+}): { content: string; descriptionSwapped: number } | { rejection: AkmDistillResult } {
   const {
     raw,
     effectiveProposalKind,
@@ -1311,6 +1316,7 @@ function assembleAndValidateDistillContent(args: {
     filteredFeedbackCount,
     eligMeta,
     eventsCtx,
+    stash,
   } = args;
   // Structured-output path: when the provider honoured the JSON schema, `raw`
   // is a JSON object string (not a markdown blob). Try to parse it and assemble
@@ -1350,21 +1356,27 @@ function assembleAndValidateDistillContent(args: {
   }
 
   // Parse + lint the lesson before creating the proposal. The lint is the
-  // canonical gate for required frontmatter (v1 spec §13). On failure we
-  // surface a structured error and exit non-zero — but still emit
-  // `distill_invoked` so the failure is observable.
-  const findings: DistillValidationFinding[] =
+  // canonical gate for required frontmatter (v1 spec §13): a field that is
+  // genuinely missing or empty means there is no valid asset to write, so
+  // that failure stays a hard reject — but still emit `distill_invoked` so
+  // the failure is observable.
+  const structuralFindings: DistillValidationFinding[] =
     effectiveProposalKind === "knowledge"
       ? validateKnowledgeContent(content, inputRef)
       : lintLessonContent(content, `distill:${inputRef}`).findings;
 
-  // Additional lesson-only quality validators — reject the systematic failure
+  // Additional lesson-only quality validators — flag the systematic failure
   // modes seen across 323 archived rejected proposals (see distill/content-repair).
-  if (effectiveProposalKind !== "knowledge" && findings.length === 0) {
-    findings.push(...collectLessonQualityFindings(content, inputRef));
-  }
+  // These run only when the structural lint above is already clean (the
+  // required fields are present and non-empty); a finding here is a PROSE
+  // heuristic ("looks like a section heading", "identical to when_to_use"),
+  // not a missing field, so it is never mixed with a structural finding.
+  const qualityFindings =
+    effectiveProposalKind !== "knowledge" && structuralFindings.length === 0
+      ? collectLessonQualityFindings(content, inputRef)
+      : [];
 
-  if (findings.length > 0) {
+  if (structuralFindings.length > 0) {
     appendEvent(
       {
         eventType: "distill_invoked",
@@ -1374,14 +1386,14 @@ function assembleAndValidateDistillContent(args: {
           outcome: "validation_failed" as const,
           proposalRef: effectiveLessonRef,
           proposalKind: effectiveProposalKind,
-          findingKinds: findings.map((f) => f.kind),
+          findingKinds: structuralFindings.map((f) => f.kind),
           ...(exclusionSet.size > 0 ? { filteredFeedbackCount } : {}),
           ...eligMeta,
         },
       },
       eventsCtx,
     );
-    const message = findings.map((f) => f.message).join("\n");
+    const message = structuralFindings.map((f) => f.message).join("\n");
     throw new UsageError(
       `Distilled ${effectiveProposalKind} failed validation:\n${message}`,
       "MISSING_REQUIRED_ARGUMENT",
@@ -1389,6 +1401,33 @@ function assembleAndValidateDistillContent(args: {
         ? "Knowledge proposals require a non-empty markdown body."
         : "Lessons require non-empty `description` and `when_to_use` frontmatter fields. See v1 spec §13.",
     );
+  }
+
+  if (qualityFindings.length > 0) {
+    // A prose-quality finding on an otherwise-complete lesson used to discard
+    // the generated (and already paid-for) content entirely — the only trace
+    // left behind was the finding kinds in an event, not the content itself.
+    // Route it to review instead, the same reviewNeeded mechanism the
+    // LLM-as-judge quality gate uses (quality-gate.ts) for its own uncertainty
+    // band, so a human can still act on it.
+    return {
+      rejection: writeQualityRejection(
+        stash,
+        inputRef,
+        effectiveLessonRef,
+        content,
+        2.0, // below auto-accept threshold, signals review needed — no judge score exists for a structural/heuristic finding
+        qualityFindings.map((f) => f.message).join("\n"),
+        {
+          reviewNeeded: true,
+          proposalKind: effectiveProposalKind,
+          findingKinds: qualityFindings.map((f) => f.kind),
+          ...(exclusionSet.size > 0 ? { filteredFeedbackCount } : {}),
+        },
+        eligMeta.eligibilitySource,
+        eventsCtx,
+      ),
+    };
   }
 
   return { content, descriptionSwapped };
