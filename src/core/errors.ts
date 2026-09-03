@@ -236,7 +236,7 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   // P3a (docs/plans/specs/p3a-plan-v5-child-freeze.md §3.2, A-N2): the
   // complete-or-abandon policy for a stored pre-irVersion-5 run.
   WORKFLOW_IR_VERSION_UNSUPPORTED:
-    "Abandon the run with `akm workflow abandon <id>`, then start it again from the workflow source — pre-0.9.2 frozen plans are not re-executable.",
+    "Abandon the run with `akm workflow abandon <id>`, then start it again from the workflow source — a frozen plan this akm cannot execute is not re-executable in place.",
   // P3b (docs/plans/specs/p3b-child-executor.md §4.3).
   WORKFLOW_OUTPUT_INVALID:
     "Check each `outputs:` entry's `from:` against the step artifact it names, and its `schema:` against the value that step actually promotes.",

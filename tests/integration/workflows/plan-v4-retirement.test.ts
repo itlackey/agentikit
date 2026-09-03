@@ -226,7 +226,7 @@ describe("A-09 — the WORKFLOW_IR_VERSION_UNSUPPORTED hint", () => {
     const error = new UsageError("irrelevant message", "WORKFLOW_IR_VERSION_UNSUPPORTED");
     expect(error.hint()).toBe(
       "Abandon the run with `akm workflow abandon <id>`, then start it again from the " +
-        "workflow source — pre-0.9.2 frozen plans are not re-executable.",
+        "workflow source — a frozen plan this akm cannot execute is not re-executable in place.",
     );
   });
 });

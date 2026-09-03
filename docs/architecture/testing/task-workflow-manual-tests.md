@@ -1042,7 +1042,7 @@ akm workflow abandon "$RUNID" --format json    # abandon must still work
   unchanged (`"active"`) — reading the run does not itself fail.
 - `resume` fails, exit **`2`**:
   ```json
-  {"ok": false, "error": "Workflow run <RUNID> was frozen as workflow plan irVersion 4; pre-irVersion-5 plans cannot execute after the 0.9.2 upgrade. Complete them before upgrading, or run 'akm workflow abandon <RUNID>' and start a new run from the authored workflow. 'akm workflow status' and 'akm workflow list' still work on this run.", "code": "WORKFLOW_IR_VERSION_UNSUPPORTED", "hint": "Abandon the run with `akm workflow abandon <id>`, then start it again from the workflow source — pre-0.9.2 frozen plans are not re-executable."}
+  {"ok": false, "error": "Workflow run <RUNID> was frozen as workflow plan irVersion 4; pre-irVersion-5 plans cannot execute after the 0.9.2 upgrade. Complete them before upgrading, or run 'akm workflow abandon <RUNID>' and start a new run from the authored workflow. 'akm workflow status' and 'akm workflow list' still work on this run.", "code": "WORKFLOW_IR_VERSION_UNSUPPORTED", "hint": "Abandon the run with `akm workflow abandon <id>`, then start it again from the workflow source — a frozen plan this akm cannot execute is not re-executable in place."}
   ```
   This message names the run id twice, the exact `abandon` command, and
   states the only path forward — the strongest error message found across

@@ -423,7 +423,7 @@ export class WorkflowRunsRepository {
    * (`commands/proposal/repository.ts`): exactly one match wins, several
    * matches is a `UsageError` naming every candidate, none is a
    * `NotFoundError`. Callers are expected to have already checked the input
-   * looks id-shaped (see `WORKFLOW_RUN_ID_PREFIX_PATTERN` in `runtime/runs.ts`)
+   * looks id-shaped (see `RUN_ID_PREFIX_PATTERN` in `runtime/runs.ts`)
    * — this method itself does not require it, it just matches by SQL prefix.
    */
   resolveRunIdPrefix(prefix: string): string {
