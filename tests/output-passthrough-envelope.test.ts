@@ -13,6 +13,7 @@
 // `clone` (still a passthrough) as the representative command.
 
 import { describe, expect, it } from "bun:test";
+import { taskPruneExitCode, taskSyncDryRunExitCode } from "../src/commands/tasks/tasks-cli";
 import { shapeForCommand } from "../src/output/shapes";
 
 describe("passthrough envelope stamping (#484)", () => {
@@ -49,10 +50,34 @@ describe("passthrough envelope stamping (#484)", () => {
   });
 
   it("respects existing schemaVersion / shape fields (idempotent)", () => {
-    const result = { schemaVersion: 7, shape: "custom-shape", payload: 42 };
+    const result = { schemaVersion: 7, shape: "custom-shape", ok: true, payload: 42 };
     const shaped = shapeForCommand("clone", result, "normal") as Record<string, unknown>;
     expect(shaped.shape).toBe("custom-shape");
     expect(shaped.schemaVersion).toBe(7);
+    expect(shaped.ok).toBe(true);
+  });
+
+  // #918: `ok` is absent on most passthrough results (config set/unset,
+  // clone, ...) because the caller only reaches `output()` on success — the
+  // failure path throws before this handler ever runs. Stamp `ok: true` so a
+  // caller branching on `.ok` sees the same field it sees on the
+  // `{ok:false,...}` envelope thrown on failure.
+  it("stamps ok:true when the result has no ok field", () => {
+    const shaped = shapeForCommand("clone", { ref: "skills/foo", cloned: true }, "normal") as Record<string, unknown>;
+    expect(shaped.ok).toBe(true);
+  });
+
+  // A command that computes its own `ok` (e.g. `task-run`, which derives it
+  // from the task's exit code) must keep that value — including `false` —
+  // rather than have the generic stamp silently overwrite it with `true`.
+  it("preserves an existing ok:false rather than overwriting it with true", () => {
+    const shaped = shapeForCommand("task-run", { ok: false, exitCode: 1 }, "normal") as Record<string, unknown>;
+    expect(shaped.ok).toBe(false);
+  });
+
+  it("preserves an existing ok:true untouched", () => {
+    const shaped = shapeForCommand("task-run", { ok: true, exitCode: 0 }, "normal") as Record<string, unknown>;
+    expect(shaped.ok).toBe(true);
   });
 
   // Regression for the `akm task sync --dry-run` crash: `renderSchedulerPlanPreview`
@@ -78,6 +103,7 @@ describe("passthrough envelope stamping (#484)", () => {
     const shaped = shapeForCommand("task-sync-dry-run", preview, "normal") as Record<string, unknown>;
     expect(shaped.shape).toBe("task-sync-dry-run");
     expect(shaped.schemaVersion).toBe(1);
+    expect(shaped.ok).toBe(true);
     expect(shaped.backend).toBe("cron");
     // The original object must stay untouched — the fix copies rather than mutates.
     expect(Object.isFrozen(preview)).toBe(true);
@@ -94,11 +120,13 @@ describe("passthrough envelope stamping (#484)", () => {
   });
 
   // Stable-keys regression net for the `workflow run` envelope that scripts
-  // pin: the stamp is purely additive (adds shape + schemaVersion), and the
-  // full top-level key set is frozen so a rename/drop is caught here.
-  it("workflow-run: preserves run + executed top-level keys; adds shape + schemaVersion", () => {
-    // The run envelope carries no `ok` flag — its shape is `{ run, executed }`
-    // (plus optional `done`/`gateRejection`). Pin the required keys.
+  // pin: the stamp is purely additive (adds shape + schemaVersion + ok), and
+  // the full top-level key set is frozen so a rename/drop is caught here.
+  it("workflow-run: preserves run + executed top-level keys; adds shape + schemaVersion + ok", () => {
+    // The run envelope itself carries no top-level `ok` flag — its shape is
+    // `{ run, executed }` (plus optional `done`/`gateRejection`); only the
+    // per-step entries under `executed` carry their own `ok`. #918: since the
+    // top level has none, the generic stamp now adds `ok: true` here too.
     const runResult = {
       run: { id: "r1", status: "active" },
       executed: [{ stepId: "s1", ok: true, unitCount: 1, failedUnits: 0, summary: "done" }],
@@ -106,7 +134,8 @@ describe("passthrough envelope stamping (#484)", () => {
     const shaped = shapeForCommand("workflow-run", runResult, "normal") as Record<string, unknown>;
     expect(shaped.shape).toBe("workflow-run");
     expect(shaped.schemaVersion).toBe(1);
-    expect(Object.keys(shaped).sort()).toEqual(["executed", "run", "schemaVersion", "shape"].sort());
+    expect(shaped.ok).toBe(true);
+    expect(Object.keys(shaped).sort()).toEqual(["executed", "ok", "run", "schemaVersion", "shape"].sort());
   });
 
   it("does NOT change shaped commands' brief-detail contract", () => {
@@ -118,5 +147,81 @@ describe("passthrough envelope stamping (#484)", () => {
     };
     const shaped = shapeForCommand("search", result, "brief") as Record<string, unknown>;
     expect(shaped).not.toHaveProperty("schemaVersion");
+  });
+
+  // #918 follow-up: `task-sync`, `task-sync-dry-run`, `task-prune`,
+  // `workflow-run`, and `upgrade` carry no top-level `ok` of their own, so
+  // the blanket passthrough stamp used to print `ok: true` even when the
+  // command already sets a nonzero `process.exitCode` from a predicate the
+  // JSON body never reflected. Each call site (src/commands/tasks/tasks-cli.ts,
+  // src/commands/workflow-cli.ts, src/commands/sources/sources-cli.ts) now
+  // computes `ok` from that exact predicate before calling `output()`, so the
+  // `??` default in makeStampHandler preserves it. These tests exercise the
+  // same predicate helpers / expressions the call sites use, on a failing
+  // fixture, to prove `ok: false` reaches the shaped envelope alongside the
+  // condition that drives the nonzero exit code.
+  describe("#918: command-computed ok mirrors the exit-code predicate on failure", () => {
+    it("task-sync-dry-run: ok:false when the plan has removals", () => {
+      const preview = Object.freeze({
+        backend: "cron",
+        dryRun: true,
+        adds: Object.freeze([]),
+        updates: Object.freeze([]),
+        removes: Object.freeze([{ id: "gamma", kind: "remove" }]),
+        unchanged: Object.freeze([]),
+        hasRemovals: true,
+        failures: Object.freeze([]),
+      });
+      const exitCode = taskSyncDryRunExitCode(preview);
+      expect(exitCode).toBeDefined();
+      const shaped = shapeForCommand(
+        "task-sync-dry-run",
+        { ...preview, ok: exitCode === undefined },
+        "normal",
+      ) as Record<string, unknown>;
+      expect(shaped.ok).toBe(false);
+      expect(shaped.hasRemovals).toBe(true);
+    });
+
+    it("task-sync: ok:false when failures is non-empty", () => {
+      const result = {
+        installed: [],
+        updated: [],
+        removed: [],
+        failures: [{ id: "legacy", reason: "version is required and must be 4" }],
+      };
+      const ok = result.failures.length === 0;
+      expect(ok).toBe(false);
+      const shaped = shapeForCommand("task-sync", { ...result, ok }, "normal") as Record<string, unknown>;
+      expect(shaped.ok).toBe(false);
+    });
+
+    it("task-prune: ok:false on a dry-run that found removals", () => {
+      const result = { dryRun: true, preview: { hasRemovals: true } };
+      const exitCode = taskPruneExitCode(result);
+      expect(exitCode).toBeDefined();
+      const shaped = shapeForCommand("task-prune", { ...result, ok: exitCode === undefined }, "normal") as Record<
+        string,
+        unknown
+      >;
+      expect(shaped.ok).toBe(false);
+    });
+
+    it("upgrade: ok:false when the post-install migration is blocked", () => {
+      const result = {
+        currentVersion: "0.9.11",
+        newVersion: "0.9.12",
+        upgraded: true,
+        installMethod: "npm" as const,
+        migration: { status: "blocked" as const, error: "pending confirmation" },
+      };
+      const migrationFailed = result.migration.status === "blocked" || (result.migration.status as string) === "failed";
+      expect(migrationFailed).toBe(true);
+      const shaped = shapeForCommand("upgrade", { ...result, ok: !migrationFailed }, "normal") as Record<
+        string,
+        unknown
+      >;
+      expect(shaped.ok).toBe(false);
+    });
   });
 });

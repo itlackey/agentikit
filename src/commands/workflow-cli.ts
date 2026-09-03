@@ -212,12 +212,17 @@ const workflowRunCommand = defineJsonCommand({
       // timed out would send an operator to resume a run with nothing left to
       // resume — `tasks/runner.ts` suppresses the same case.
       const timedOut = deadline.timedOut() && result.run.status !== "completed";
-      const rendered = { ...result, ...(timedOut ? { timedOut: true as const } : {}) };
-      output("workflow-run", rendered);
       // `blocked` is a stopped, unverified run — a verification-judge failure
       // leaves it there for `akm workflow resume` — so it must not exit 0 and
       // read as success to a script (it maps to 1 for scheduled tasks too).
-      if (result.run.status === "failed" || result.run.status === "blocked" || result.gateRejection || result.aborted) {
+      // #918: `ok` is derived from this exact predicate (computed once, used
+      // for both the envelope and the exit code) so it can never disagree
+      // with the exit code the way the blanket passthrough default would.
+      const failed =
+        result.run.status === "failed" || result.run.status === "blocked" || result.gateRejection || result.aborted;
+      const rendered = { ...result, ...(timedOut ? { timedOut: true as const } : {}), ok: !failed };
+      output("workflow-run", rendered);
+      if (failed) {
         process.exitCode = signalExitCode ?? EXIT_CODES.GENERAL;
       }
     } finally {

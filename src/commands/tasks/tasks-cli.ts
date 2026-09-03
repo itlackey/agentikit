@@ -389,20 +389,27 @@ const tasksSyncCommand = defineJsonCommand({
     rejectRetiredTaskTargetFlag();
     const rebind = args.rebind === true;
     if (args["dry-run"] === true) {
+      // `preview` is Object.freeze()d by its producer — spread into a fresh
+      // object rather than mutating it, matching the makeStampHandler
+      // idempotence contract (#918: ok must reflect the same predicate as
+      // the exit code, never the blanket-true default).
       const preview = await akmTasksSyncPlan({}, args.bundle, { rebind });
-      output("task-sync-dry-run", preview);
       const exitCode = taskSyncDryRunExitCode(preview);
+      output("task-sync-dry-run", { ...preview, ok: exitCode === undefined });
       if (exitCode !== undefined) process.exitCode = exitCode;
       return;
     }
     const result = await akmTasksSync({}, args.bundle, { rebind });
-    output("task-sync", result);
     // #867: sync degrades — sources that failed to parse/prepare are
     // excluded from reconciliation and reported in `result.failures` rather
     // than poisoning the whole sync, but their presence must still fail
     // the command's exit code so the breakage stays visible. (#906: this key
     // matches the `--dry-run` preview's `failures` field — no separate name.)
-    if (result.failures.length > 0) process.exitCode = EXIT_CODES.GENERAL;
+    // #918: `ok` mirrors this same predicate so it never disagrees with the
+    // exit code the way the blanket passthrough default would.
+    const ok = result.failures.length === 0;
+    output("task-sync", { ...result, ok });
+    if (!ok) process.exitCode = EXIT_CODES.GENERAL;
   },
 });
 
@@ -523,8 +530,11 @@ const tasksPruneCommand = defineJsonCommand({
           .filter(Boolean)
       : undefined;
     const result = await akmTasksPrune({}, { yes: args.yes === true, id });
-    output("task-prune", result);
+    // #918: ok mirrors the same predicate that drives the exit code, so a
+    // dry-run that found removals to make (still nonzero exit) never reads
+    // as ok:true.
     const exitCode = taskPruneExitCode(result);
+    output("task-prune", { ...result, ok: exitCode === undefined });
     if (exitCode !== undefined) process.exitCode = exitCode;
   },
 });

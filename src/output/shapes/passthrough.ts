@@ -10,7 +10,13 @@ import type { OutputShapeEntry } from "./registry";
 
 // #484: stamp schemaVersion + shape discriminator on passthrough envelopes so
 // third-party consumers can pin a schema version and dispatch on shape uniformly.
-// Idempotent — never overwrites an existing schemaVersion or shape field.
+// #918: also stamp `ok: true` so a caller branching on `.ok` sees the same
+// field on every success envelope that it sees on the `{ok:false,...}` error
+// envelope thrown before `output()` is reached. Idempotent — never overwrites
+// an existing `shape`, `schemaVersion`, or `ok` field: a result that already
+// carries its own `ok` (e.g. `task-run`, which derives it from the task's
+// exit code, or `extract`/`health`/`lint`, which compute it from their own
+// outcome) keeps that value, `false` included.
 //
 // Builds a shallow copy rather than mutating `result` in place: several
 // command results (e.g. `akm task sync --dry-run`'s `SchedulerPlanPreview`,
@@ -25,8 +31,12 @@ function makeStampHandler(command: string) {
     if (result === null || result === undefined) return result;
     if (typeof result !== "object" || Array.isArray(result)) return result;
     const obj = result as Record<string, unknown>;
-    if (obj.shape !== undefined && obj.schemaVersion !== undefined) return obj;
+    if (obj.shape !== undefined && obj.schemaVersion !== undefined && obj.ok !== undefined) return obj;
     return {
+      // `ok` first so it heads the printed envelope instead of trailing a
+      // (possibly large) dump — the spread below still wins with `obj`'s own
+      // `ok` value when present, only its position is fixed here.
+      ok: obj.ok ?? true,
       ...obj,
       shape: obj.shape ?? command,
       schemaVersion: obj.schemaVersion ?? 1,
