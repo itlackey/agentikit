@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.11] - 2026-09-03
+
+### Added
+
+- **`akm task validate <path>` reports what `akm task sync` would say about one
+  task file (#907).** It parses a single file by filesystem path, without a
+  bundle, a concept ref, or a configured engine, and reports `valid`,
+  `converts` (a v2/v3 source the migrator converts deterministically),
+  `blocked` (needs a human decision), `invalid`, or `not-a-task`, with the
+  reason sync would give. It runs the same two gates sync runs before
+  installing a schedule, the defaults-applied schedule input contract and
+  the cron dialect check, which are now shared with `compileTaskSources` so
+  the two commands cannot drift. Exit 0 for valid/converts, 1 for the rest,
+  2 for a missing or unreadable path. `resolved` on success is the compiled
+  task shape (id, version, target, inputs, schedule), never an
+  execution-lowered plan.
+- **`engines.<name>.apiKeyFile` supplies an LLM engine credential from a file
+  (#905).** A host that refuses secrets in the process environment can point
+  an engine at a path instead of a `$VAR` reference: `~` expands, one
+  trailing newline is trimmed, the file is read only at dispatch, and a
+  missing or empty file is a config error naming the engine and path but
+  never the value. Setting both `apiKey` and `apiKeyFile` is rejected;
+  setting neither still falls through to the implicit
+  `AKM_ENGINE_<NAME>_API_KEY` convention. The value is redacted from
+  dispatch output the same way an env-backed credential is, and `akm health`
+  checks the file is present and non-empty.
+
+### Changed
+
+- **`akm improve`'s machine-local writers moved out of `$STASH/.akm` into
+  `$STATE` and `$CACHE` (#890).** `distill-rejected/`, `eval-cases/`,
+  `measurement/verdicts/`, the synthetic `unresolved-sources/` placeholder,
+  and the improve-pipeline lock files never met the "must travel with the
+  content" rule; they now live under `$STATE/improve/…/<stash>/`,
+  `$CACHE/index/unresolved-sources/<stash>/`, and `$STATE/locks/<stash>/`,
+  namespaced by a short hash of the resolved stash path. `akm migrate
+  status` and `apply` gain a relocation step that covers the default stash
+  and every other filesystem-backed bundle (remote sources are skipped
+  without a network call), moves files by rename or copy-then-delete, and
+  deletes an old lock only when the same staleness check `akm improve` uses
+  says its holder is dead; a live lock is left in place and reported. The
+  step is idempotent and `--dry-run` moves nothing. Scripts that read the
+  old paths should switch to the new locations named in
+  `docs/architecture/internals/storage-locations.md`.
+
+### Fixed
+
+- **The dead-link check states its coverage and no longer lies about it
+  (#892).** `akm improve`'s post-loop check scanned at most ten knowledge
+  refs and fired every HEAD request at once with no timeout. It now scans
+  every actionable ref, checks at a bounded concurrency, bounds each request
+  at five seconds and reports a timeout as a dead entry, and counts a DNS or
+  connection failure as skipped rather than as dead or as fine. The result
+  carries `checked`, `total`, and `skipped`, threaded into the improve
+  result, the `improve_completed` event, and `akm health`'s improve summary.
+  The other constants the issue names (`MAX_URLS`, the per-entry slice,
+  `MAX_BODY_CHARS`, the duplicated `MAX_CONTENT_CHARS`) were already removed
+  in 0.9.8, and the curate score floors only decide whether a second search
+  pass runs; they never filter returned results.
+
 ## [0.9.10] - 2026-09-02
 
 ### Fixed

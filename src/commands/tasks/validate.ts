@@ -25,7 +25,7 @@
  * `akm task sync`'s `compileTaskSources` runs before it ever installs a
  * schedule — `assertTaskScheduleInputsSatisfyContract` and
  * `assertTaskScheduleCronValid` (both extracted from `scheduler-sync.ts` for
- * exactly this reuse, #907 review) — so a file `sync` would reject can never
+ * exactly this reuse) — so a file `sync` would reject can never
  * be reported `valid`/`converts` here. Cron dialect is checked against
  * `backendNameForPlatform()`, the same platform default `sync` falls back
  * to whenever it has no injected/native-inspected backend to hand (see
@@ -39,7 +39,7 @@
  * engine/model — both of which assume a real, indexed bundle and a
  * configured engine. A bare file passed to `validate` has neither, so
  * running that step would make an otherwise-valid command-kind task report
- * `invalid` on any machine with no engine configured (#907 review). `resolved`
+ * `invalid` on any machine with no engine configured. `resolved`
  * is therefore the compiled task shape `sync` itself would build a
  * scheduler binding from — id, the compiled v4 `version`, `target`
  * (`uses`/`run`), the declared `inputs` contract, and `schedule` bindings —
@@ -168,7 +168,7 @@ export async function akmTaskValidate(filePath: string): Promise<TaskValidateRes
   // second/looser YAML reader. A front-end failure here (unparseable YAML,
   // not a mapping, exceeds a resource bound) means the document itself does
   // not parse at all — tracked as `peekFailed` so that case reports
-  // `invalid`, never `not-a-task` (#907 review: `not-a-task` is reserved for
+  // `invalid`, never `not-a-task` (`not-a-task` is reserved for
   // YAML that DOES parse but never declared a task shape). The real parse
   // below throws the identical error either way, so nothing is lost by
   // swallowing it here.

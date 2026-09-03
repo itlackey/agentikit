@@ -82,8 +82,7 @@ function stashDirIfConfigured(): string | undefined {
  * default stash first (if one is configured or the platform default exists),
  * then every other bundle in the `bundles` map backed by a plain filesystem
  * `path` — each exactly once, even when two bundle entries resolve to the
- * same directory (itlackey/akm#890, MAJOR review fix: the original patch
- * only ever touched the default stash).
+ * same directory (itlackey/akm#890).
  *
  * A `git`/`website`/`npm` bundle source is a REMOTE fetched into `$CACHE`,
  * not a directory the user (or an old akm) could have written `.akm/*`

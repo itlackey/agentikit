@@ -367,9 +367,7 @@ export function getStateDir(env: NodeJS.ProcessEnv = process.env, platform = pro
  * re-disambiguates. Here there is no such retry loop, but a machine
  * realistically has, at most, a handful to a few dozen distinct stash
  * directories ever registered — 32 bits of digest space makes an accidental
- * collision between two of them astronomically unlikely, and this key
- * format shipped nowhere before this release, so shortening it from the 16
- * hex chars an earlier draft used costs nothing.
+ * collision between two of them astronomically unlikely.
  */
 export function getStashStateKey(stashDir: string): string {
   const resolved = path.resolve(stashDir).replace(/\\/g, "/");

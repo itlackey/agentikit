@@ -620,7 +620,7 @@ async function compileTaskSources(
  * violation fails HERE, recorded as a task failure at sync, rather than
  * surfacing for the first time when the scheduler fires the invocation.
  *
- * Extracted (#907 review) so `akm task validate` can run the IDENTICAL gate
+ * Extracted so `akm task validate` can run the IDENTICAL gate
  * over a bare file path without a second, potentially-diverging copy of
  * this check. `refLabel` is only the text embedded in the thrown message —
  * `compileTaskSources` passes its bundle-qualified ref; `akm task validate`,
@@ -652,7 +652,7 @@ export function assertTaskScheduleInputsSatisfyContract(
  * re-checks against the LOCAL backend on every sync rather than trusting
  * whatever backend the file was authored against.
  *
- * Extracted (#907 review) alongside {@link assertTaskScheduleInputsSatisfyContract}
+ * Extracted alongside {@link assertTaskScheduleInputsSatisfyContract}
  * so `akm task validate` shares this exact gate instead of a second copy
  * that could silently drift from what `akm task sync` actually enforces.
  */
