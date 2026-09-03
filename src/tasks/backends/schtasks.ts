@@ -738,7 +738,15 @@ interface NativeWeeklyTrigger {
   daysOfWeek: number[];
 }
 
-type NativeSchtasksTrigger = NativeDailyTrigger | NativeWeeklyTrigger;
+interface NativeMonthlyTrigger {
+  kind: "monthly";
+  atHour: number;
+  atMinute: number;
+  daysOfMonth: number[];
+  months: number[];
+}
+
+type NativeSchtasksTrigger = NativeDailyTrigger | NativeWeeklyTrigger | NativeMonthlyTrigger;
 
 function renderSchtasksTrigger(trigger: SchtasksTrigger, now: Date): string {
   return expandNativeTriggers(trigger)
@@ -767,6 +775,8 @@ function expandNativeTriggers(trigger: SchtasksTrigger): NativeSchtasksTrigger[]
       return [{ kind: "daily", atHour: trigger.atHour, atMinute: trigger.atMinute }];
     case "weekly":
       return [trigger];
+    case "monthly":
+      return [trigger];
   }
 }
 
@@ -788,9 +798,10 @@ ${repetition}      <StartBoundary>${startBoundary}</StartBoundary>
     </CalendarTrigger>`;
   }
 
-  const dayMap = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const days = trigger.daysOfWeek.map((d) => `        <${dayMap[d]} />`).join("\n");
-  return `    <CalendarTrigger>
+  if (trigger.kind === "weekly") {
+    const dayMap = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const days = trigger.daysOfWeek.map((d) => `        <${dayMap[d]} />`).join("\n");
+    return `    <CalendarTrigger>
       <StartBoundary>${startBoundary}</StartBoundary>
       <Enabled>true</Enabled>
       <ScheduleByWeek>
@@ -799,6 +810,36 @@ ${days}
         </DaysOfWeek>
         <WeeksInterval>1</WeeksInterval>
       </ScheduleByWeek>
+    </CalendarTrigger>`;
+  }
+
+  const monthMap = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  const days = trigger.daysOfMonth.map((d) => `          <Day>${d}</Day>`).join("\n");
+  const months = trigger.months.map((m) => `        <${monthMap[m - 1]} />`).join("\n");
+  return `    <CalendarTrigger>
+      <StartBoundary>${startBoundary}</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByMonth>
+        <DaysOfMonth>
+${days}
+        </DaysOfMonth>
+        <Months>
+${months}
+        </Months>
+      </ScheduleByMonth>
     </CalendarTrigger>`;
 }
 
@@ -838,6 +879,29 @@ function nextStartBoundary(trigger: NativeSchtasksTrigger, now: Date): Date {
         boundary.setHours(trigger.atHour, trigger.atMinute, 0, 0);
       }
       return boundary;
+    case "monthly": {
+      boundary.setHours(trigger.atHour, trigger.atMinute, 0, 0);
+      const daysOfMonth = new Set(trigger.daysOfMonth);
+      const months = new Set(trigger.months);
+      // Bounded to ~11 years of days: every day-of-month value that occurs at
+      // all recurs within a year, so this always converges quickly for a
+      // schedule that can ever fire — a day/month combination that can NEVER
+      // occur (day 31 restricted to February) just exhausts the bound and
+      // returns whatever boundary it lands on, matching Task Scheduler's own
+      // behavior of a trigger that structurally never matches.
+      for (let guard = 0; guard < 4000; guard++) {
+        if (
+          daysOfMonth.has(boundary.getDate()) &&
+          months.has(boundary.getMonth() + 1) &&
+          boundary.getTime() > now.getTime()
+        ) {
+          break;
+        }
+        boundary.setDate(boundary.getDate() + 1);
+        boundary.setHours(trigger.atHour, trigger.atMinute, 0, 0);
+      }
+      return boundary;
+    }
   }
 }
 

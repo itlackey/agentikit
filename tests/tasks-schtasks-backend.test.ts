@@ -202,6 +202,48 @@ describe("buildSchtasksXml", () => {
     expect(xml).toContain("T08:00:00");
   });
 
+  test("weekdays at 9am (a day-of-week range) -> one CalendarTrigger naming every weekday", () => {
+    const xml = buildSchtasksXml(makeTask("0 9 * * 1-5"), ["C:/akm.exe"], "C:/log", xmlOptions());
+    expect(xml).toContain("<ScheduleByWeek>");
+    for (const day of ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]) {
+      expect(xml).toContain(`<${day} />`);
+    }
+    expect(xml).not.toContain("<Sunday />");
+    expect(xml).not.toContain("<Saturday />");
+    expect(xml).toContain("T09:00:00");
+  });
+
+  test("@monthly -> CalendarTrigger ScheduleByMonth on day 1 of every month", () => {
+    const xml = buildSchtasksXml(makeTask("@monthly"), ["C:/akm.exe"], "C:/log", xmlOptions());
+    expect(xml).toContain("<ScheduleByMonth>");
+    expect(xml).toContain("<Day>1</Day>");
+    for (const month of [
+      "January",
+      "February",
+      "March",
+      "April",
+      "May",
+      "June",
+      "July",
+      "August",
+      "September",
+      "October",
+      "November",
+      "December",
+    ]) {
+      expect(xml).toContain(`<${month} />`);
+    }
+    expect(xml).toContain("T00:00:00");
+  });
+
+  test("@yearly -> CalendarTrigger ScheduleByMonth restricted to January", () => {
+    const xml = buildSchtasksXml(makeTask("@yearly"), ["C:/akm.exe"], "C:/log", xmlOptions());
+    expect(xml).toContain("<ScheduleByMonth>");
+    expect(xml).toContain("<Day>1</Day>");
+    expect(xml).toContain("<January />");
+    expect(xml).not.toContain("<February />");
+  });
+
   test("disabled task encodes Enabled=false", () => {
     const t = makeTask("*/5 * * * *");
     const xml = buildSchtasksXml({ ...t, enabled: false }, ["C:/akm.exe"], "C:/log", xmlOptions());

@@ -47,8 +47,56 @@ describe("parseSchedule", () => {
     expect(() => parseSchedule("7,99 * * * *", "cron")).toThrow(UsageError);
   });
 
-  test("still rejects range syntax", () => {
-    expect(() => parseSchedule("0-30 * * * *", "cron")).toThrow(UsageError);
+  // Finding 3 (guard audit): the cron backend was rejecting plain ranges even
+  // though it emits the expression to a real crontab verbatim, and vixie/cronie
+  // accept "0-30" natively. A plain range is a `rangeStep` with `step: 1` so
+  // it reuses the exact same downstream handling a stepped range already has.
+  test("accepts plain range syntax, representing it as a step-1 range-step", () => {
+    const spec = parseSchedule("0-30 * * * *", "cron");
+    expect(spec.fields.minute).toEqual({ kind: "rangeStep", start: 0, end: 30, step: 1 });
+    expect(translateToCron(spec)).toBe("0-30 * * * *");
+  });
+
+  test("rejects a plain range outside the field's bounds", () => {
+    expect(() => parseSchedule("0 9 * * 1-9", "cron")).toThrow(UsageError);
+  });
+
+  test("weekdays at 9am (the guard-audit report's own example) is accepted verbatim on cron", () => {
+    const spec = parseSchedule("0 9 * * 1-5", "cron");
+    expect(spec.fields.dow).toEqual({ kind: "rangeStep", start: 1, end: 5, step: 1 });
+    expect(translateToCron(spec)).toBe("0 9 * * 1-5");
+  });
+
+  test("accepts three-letter day-of-week and month names, case-insensitively", () => {
+    expect(parseSchedule("0 9 * * mon", "cron").fields.dow).toEqual({ kind: "value", value: 1 });
+    expect(parseSchedule("0 9 * * SUN", "cron").fields.dow).toEqual({ kind: "value", value: 0 });
+    expect(parseSchedule("0 0 1 JAN *", "cron").fields.month).toEqual({ kind: "value", value: 1 });
+  });
+
+  test("accepts a name range (MON-FRI) the same way as its numeric equivalent", () => {
+    expect(parseSchedule("0 9 * * MON-FRI", "cron").fields.dow).toEqual(
+      parseSchedule("0 9 * * 1-5", "cron").fields.dow,
+    );
+  });
+
+  test("accepts a comma list of names", () => {
+    expect(parseSchedule("0 9 * * mon,wed,fri", "cron").fields.dow).toEqual({ kind: "list", values: [1, 3, 5] });
+  });
+
+  test("expands @yearly / @annually to the same 5-field cron as vixie-cron", () => {
+    expect(parseSchedule("@yearly", "cron").cron).toBe("0 0 1 1 *");
+    expect(parseSchedule("@annually", "cron").cron).toBe("0 0 1 1 *");
+  });
+
+  test("passes @reboot through verbatim on the cron backend", () => {
+    const spec = parseSchedule("@reboot", "cron");
+    expect(spec.cron).toBe("@reboot");
+    expect(translateToCron(spec)).toBe("@reboot");
+  });
+
+  test("@reboot has no launchd or schtasks equivalent this release expresses", () => {
+    expect(() => parseSchedule("@reboot", "launchd")).toThrow(UsageError);
+    expect(() => parseSchedule("@reboot", "schtasks")).toThrow(UsageError);
   });
 });
 
@@ -89,8 +137,26 @@ describe("translateToLaunchd", () => {
     expect(() => parseSchedule("*/5 */5 * * *", "launchd")).toThrow(UsageError);
   });
 
-  test("rejects comma list — launchd has no single multi-trigger primitive", () => {
+  test("rejects a minute comma list — launchd has no single multi-trigger primitive there", () => {
     expect(() => translateToLaunchd(parseSchedule("7,37 * * * *", "launchd"))).toThrow(UsageError);
+  });
+
+  // Finding 3: a day-of-week (or month) range/list DOES have a launchd
+  // primitive — one calendar dict per named day, the same "calendars" array
+  // trick already used for minute/hour steps above.
+  test("expands a weekdays-at-9am range (the guard-audit report's own example) into one calendar dict per day", () => {
+    const t = translateToLaunchd(parseSchedule("0 9 * * 1-5", "launchd"));
+    expect(t.calendars).toEqual([1, 2, 3, 4, 5].map((Weekday) => ({ Minute: 0, Hour: 9, Weekday })));
+  });
+
+  test("expands a day-of-week comma list into one calendar dict per named day", () => {
+    const t = translateToLaunchd(parseSchedule("0 9 * * 1,3,5", "launchd"));
+    expect(t.calendars).toEqual([1, 3, 5].map((Weekday) => ({ Minute: 0, Hour: 9, Weekday })));
+  });
+
+  test("expands a month range into one calendar dict per month", () => {
+    const t = translateToLaunchd(parseSchedule("0 0 1 1-3 *", "launchd"));
+    expect(t.calendars).toEqual([1, 2, 3].map((Month) => ({ Minute: 0, Hour: 0, Day: 1, Month })));
   });
 
   test("rejects restricted DOM and DOW instead of changing cron OR semantics to AND", () => {
@@ -156,8 +222,44 @@ describe("translateToSchtasks", () => {
     expect(t).toEqual({ kind: "weekly", atHour: 8, atMinute: 0, daysOfWeek: [1] });
   });
 
-  test("rejects unsupported combinations", () => {
-    expect(() => parseSchedule("0 0 1 * *", "schtasks")).toThrow(UsageError);
+  // Finding 3: "weekdays at 9am" is a plain day-of-week range, which Task
+  // Scheduler's native <DaysOfWeek> already takes as a set — no native
+  // trigger limit applies, unlike the minute/hour list expansions above.
+  test("M H * * A-B (a day-of-week range) -> weekly on every day in the range", () => {
+    const t = translateToSchtasks(parseSchedule("0 9 * * 1-5", "schtasks"));
+    expect(t).toEqual({ kind: "weekly", atHour: 9, atMinute: 0, daysOfWeek: [1, 2, 3, 4, 5] });
+  });
+
+  test("M H * * a,b,c (a day-of-week list) -> weekly on exactly those days", () => {
+    const t = translateToSchtasks(parseSchedule("0 9 * * 1,3,5", "schtasks"));
+    expect(t).toEqual({ kind: "weekly", atHour: 9, atMinute: 0, daysOfWeek: [1, 3, 5] });
+  });
+
+  // Finding 3: @monthly ("0 0 1 * *") was advertised as supported but had no
+  // schtasks branch at all — it fell straight through to the generic refusal.
+  test("M H D * * (@monthly's shape) -> monthly on every month", () => {
+    const t = translateToSchtasks(parseSchedule("@monthly", "schtasks"));
+    expect(t).toEqual({
+      kind: "monthly",
+      atHour: 0,
+      atMinute: 0,
+      daysOfMonth: [1],
+      months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    });
+  });
+
+  test("M H D m * -> monthly restricted to one month (@yearly's shape)", () => {
+    const t = translateToSchtasks(parseSchedule("@yearly", "schtasks"));
+    expect(t).toEqual({ kind: "monthly", atHour: 0, atMinute: 0, daysOfMonth: [1], months: [1] });
+  });
+
+  test("M H D,D m,m * -> monthly accepts day-of-month and month lists", () => {
+    const t = translateToSchtasks(parseSchedule("0 6 1,15 3,9 *", "schtasks"));
+    expect(t).toEqual({ kind: "monthly", atHour: 6, atMinute: 0, daysOfMonth: [1, 15], months: [3, 9] });
+  });
+
+  test("still rejects a genuinely unexpressable combination (day-of-month AND day-of-week together)", () => {
+    expect(() => parseSchedule("0 0 1 * 1", "schtasks")).toThrow(UsageError);
   });
 
   test("rejects expansions beyond Task Scheduler's native trigger limit", () => {
