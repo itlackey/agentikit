@@ -34,12 +34,14 @@
  *
  * ## Totality and bounds
  *
- * Evaluation is TOTAL and BOUNDED. Recursion is capped at
- * {@link MAX_DEFINITION_DEPTH} and the whole evaluation shares a single
- * node-visit budget ({@link MAX_VALIDATION_NODES}); exhausting either emits an
- * explicit error rather than silently accepting the value — the subset never
- * fails open. The schema tree is finite and acyclic (no `$ref`), so combinator
- * branching multiplies work by schema size, never exponentially.
+ * Evaluation is TOTAL. Recursion is capped at {@link MAX_DEFINITION_DEPTH};
+ * exhausting it emits an explicit error rather than silently accepting the
+ * value — the subset never fails open. The schema tree is finite and acyclic
+ * (no `$ref`), so combinator branching multiplies work by schema size, never
+ * exponentially — there is no separate node-visit budget, since the schema is
+ * author-supplied structured-output config, not adversarial input, and a
+ * large-but-valid result being invalidated after the LLM call that produced
+ * it was already paid for made the budget strictly worse than no bound at all.
  *
  * Returns a flat list of human-readable error strings (empty = valid), each
  * prefixed with a JSON-pointer-ish path — the shape `runStructured`'s
@@ -65,20 +67,13 @@ import { isRecord } from "./common";
  */
 const MAX_DEFINITION_DEPTH = 64;
 
-/** Total (schema node × value node) visits one {@link validateJsonSchemaSubset} call may make. */
-const MAX_VALIDATION_NODES = 100_000;
-
 export function validateJsonSchemaSubset(
   value: unknown,
   schema: Record<string, unknown>,
   options?: { readonly redactValues?: boolean },
 ): string[] {
   const errors: string[] = [];
-  const budget = { nodes: MAX_VALIDATION_NODES };
-  validateNode(value, schema, "$", { errors, budget, depth: 0, redactValues: options?.redactValues ?? false });
-  if (budget.nodes < 0) {
-    errors.push(`$: schema evaluation exceeded the limit of ${MAX_VALIDATION_NODES} checks and was stopped`);
-  }
+  validateNode(value, schema, "$", { errors, depth: 0, redactValues: options?.redactValues ?? false });
   return errors;
 }
 
@@ -442,14 +437,11 @@ function matchesType(actual: JsonTypeName, expected: string): boolean {
 }
 
 /**
- * Evaluation state. `budget` is SHARED by every nested/branch evaluation of one
- * {@link validateJsonSchemaSubset} call, so combinator branching cannot buy
- * more work than the whole call is allowed; `errors` is per-branch (a
- * combinator evaluates its branches into a scratch list).
+ * Evaluation state. `errors` is per-branch (a combinator evaluates its
+ * branches into a scratch list).
  */
 interface EvalCtx {
   errors: string[];
-  budget: { nodes: number };
   depth: number;
   /**
    * When true, value-echoing branches (`enum`, `minimum`, `maximum`) omit the
@@ -460,7 +452,7 @@ interface EvalCtx {
   redactValues: boolean;
 }
 
-/** Evaluate `schema` against `value` in a scratch error list, sharing the caller's budget. */
+/** Evaluate `schema` against `value` in a scratch error list. */
 function branchErrors(value: unknown, schema: Record<string, unknown>, path: string, ctx: EvalCtx): string[] {
   const errors: string[] = [];
   validateNode(value, schema, path, { ...ctx, errors, depth: ctx.depth + 1 });
@@ -520,9 +512,6 @@ function validateNode(value: unknown, schema: Record<string, unknown>, path: str
     errors.push(`${path}: schema nesting exceeds the depth limit of ${MAX_DEFINITION_DEPTH}`);
     return;
   }
-  // Fail CLOSED: a truncated evaluation never returns "valid" — the counter
-  // going negative is what the wrapper turns into a top-level error.
-  if (--ctx.budget.nodes < 0) return;
 
   const actual = typeOf(value);
 

@@ -17,8 +17,12 @@
  * (see `tests/workflows/schema-definition.test.ts`) and ignored at evaluation.
  *
  * Also pins the evaluation bounds documented in that module's header —
- * exhausting the depth or node budget is an ERROR, not a silent acceptance:
- * the subset never fails open.
+ * exhausting the depth limit is an ERROR, not a silent acceptance: the
+ * subset never fails open. There is deliberately no separate node-visit
+ * budget (removed per guard-audit finding #12): the schema tree is
+ * author-supplied, finite, and acyclic, so a large but entirely valid value
+ * must evaluate cleanly rather than being invalidated after the LLM call
+ * that produced it was already paid for.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -133,16 +137,30 @@ describe("validateJsonSchemaSubset — totality", () => {
     expect(errors.some((e) => e.includes("depth limit"))).toBe(true);
   });
 
-  test("a large array against a combinator schema stays bounded and fails closed", () => {
+  // #12 (guard-audit): a node-visit budget used to invalidate a large but
+  // VALID structured output after the LLM call that produced it was already
+  // paid for. The schema is author-supplied structured-output config, not
+  // adversarial input, and the schema tree is finite and acyclic (no `$ref`),
+  // so there is nothing unbounded left to guard against once the depth limit
+  // stays in place. A large, entirely valid array now evaluates cleanly.
+  test("a large, entirely valid array against a combinator schema evaluates cleanly (no node budget)", () => {
     const schema = {
       type: "array",
       items: { anyOf: [{ type: "string" }, { type: "integer" }, { type: "null" }] },
     };
     const value = Array.from({ length: 200_000 }, (_, i) => i);
+    expect(validateJsonSchemaSubset(value, schema)).toEqual([]);
+  });
+
+  test("a large array with one invalid element still reports it (no node budget masks a real failure)", () => {
+    const schema = {
+      type: "array",
+      items: { anyOf: [{ type: "string" }, { type: "integer" }] },
+    };
+    const value: unknown[] = Array.from({ length: 200_000 }, (_, i) => i);
+    value[199_999] = { not: "a string or integer" };
     const errors = validateJsonSchemaSubset(value, schema);
-    // The evaluation is stopped by the node budget rather than running forever,
-    // and says so instead of returning a clean (i.e. "valid") result.
-    expect(errors.some((e) => e.includes("exceeded the limit"))).toBe(true);
+    expect(errors.some((e) => e.includes("199999"))).toBe(true);
   });
 
   test("the advertised supported-keyword list names the enforced keywords and omits `pattern`", () => {

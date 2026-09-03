@@ -11,6 +11,7 @@ import { showLocal } from "../../src/commands/read/show";
 import { loadConfig, resetConfigCache } from "../../src/core/config/config";
 import { readEvents } from "../../src/core/events";
 import { getDbPath } from "../../src/core/paths";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../src/core/warn";
 import { akmIndex } from "../../src/indexer/indexer";
 import { resolveSourceEntries } from "../../src/indexer/search/search-source";
 import { closeDatabase, openExistingDatabase } from "../../src/storage/repositories/index-connection";
@@ -230,16 +231,29 @@ describe("OKF first-class conformance", () => {
     });
     expect(parseType(native.path)).toBe("memory");
 
-    await expect(
-      writeMarkdownAsset({
+    // A reserved concept name (#15, guard-audit) used to refuse the write
+    // outright on every platform. It now warns and still writes — nothing
+    // about `index`/`log` is unsafe to write on POSIX; only the MS-DOS
+    // device names are a genuine (Windows-only) portability concern.
+    const warnings: string[] = [];
+    _resetWarnOnceForTests();
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      const reserved = await writeMarkdownAsset({
         type: "memory",
         content: "Reserved.",
         name: "index",
         fallbackPrefix: "memory",
         target: "local",
-      }),
-    ).rejects.toThrow(/reserved concept name/i);
-    expect(fs.existsSync(path.join(storage.stashDir, "memories", "index.md"))).toBe(false);
+      });
+      expect(parseType(reserved.path)).toBe("memory");
+      expect(warnings.some((w) => w.includes("index"))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+    expect(fs.existsSync(path.join(storage.stashDir, "memories", "index.md"))).toBe(true);
   });
 
   test("an adapter change invalidates incremental freshness and updates the canonical row in place", async () => {
