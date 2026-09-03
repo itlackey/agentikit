@@ -8,6 +8,7 @@ import path from "node:path";
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { isBundleSlug } from "../../core/asset/asset-ref";
 import { displayRef, parseQualifiedRefInput } from "../../core/asset/resolve-ref";
+import { isWithin } from "../../core/common";
 import { loadConfig } from "../../core/config/config";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { defaultBundleForTarget } from "../../core/mutation-target";
@@ -291,21 +292,24 @@ function lstatIfExists(filePath: string): fs.Stats | undefined {
 
 function assertNoDestinationSymlinkParent(root: string, destination: string): void {
   const resolvedRoot = path.resolve(root);
-  const relativeParent = path.relative(resolvedRoot, path.dirname(path.resolve(destination)));
+  const parentDir = path.dirname(path.resolve(destination));
+  const relativeParent = path.relative(resolvedRoot, parentDir);
   if (relativeParent === "" || relativeParent === ".") return;
   if (relativeParent.startsWith("..") || path.isAbsolute(relativeParent)) {
     throw new UsageError(`Clone destination escapes the selected target: ${destination}.`, "PATH_ESCAPE_VIOLATION");
   }
 
-  let current = resolvedRoot;
-  for (const segment of relativeParent.split(path.sep)) {
-    current = path.join(current, segment);
-    if (lstatIfExists(current)?.isSymbolicLink()) {
-      throw new UsageError(
-        `Clone destination has a symbolic-link parent outside the selected target boundary: ${current}.`,
-        "PATH_ESCAPE_VIOLATION",
-      );
-    }
+  // A dotfiles-managed bundle commonly symlinks a whole per-type directory
+  // (e.g. `skills/`) into a separately managed location — `~/akm/skills`
+  // symlinked into a dotfiles repo used to trip here on that first path
+  // segment alone. Resolve the parent's REALPATH and containment-check
+  // THAT instead of banning any intermediate symlink outright; refuse only
+  // when it genuinely resolves outside the bundle root.
+  if (!isWithin(parentDir, resolvedRoot)) {
+    throw new UsageError(
+      `Clone destination has a symbolic-link parent outside the selected target boundary: ${parentDir}.`,
+      "PATH_ESCAPE_VIOLATION",
+    );
   }
 }
 

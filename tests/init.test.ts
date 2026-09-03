@@ -32,7 +32,6 @@ function makeTempDir(prefix: string): string {
 let cleanup: Cleanup = () => {};
 
 beforeEach(() => {
-  process.env.AKM_FORCE_INIT_TMP_STASH = "1";
   const cacheResult = sandboxXdgCacheHome();
   const cfgResult = sandboxXdgConfigHome(cacheResult.cleanup);
   const homeResult = sandboxHome(cfgResult.cleanup);
@@ -40,7 +39,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.AKM_FORCE_INIT_TMP_STASH;
   cleanup();
   cleanup = () => {};
 });

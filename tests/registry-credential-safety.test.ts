@@ -472,9 +472,12 @@ describe("registry credential-bearing URL mutation boundaries", () => {
     }
   });
 
-  test("registry add and config set reject representative credential classes before persistence", async () => {
+  test("config set rejects representative credential classes before persistence", async () => {
+    // `config set registries` validates through the same config schema
+    // (core/config/schema/sources-bundles.ts) as a startup config load, and
+    // config-cli.ts reclassifies that failure into a usage error (exit 2) —
+    // unaffected by the registry-cli.ts change below.
     const invocations = [
-      ["registry", "add", CREDENTIAL_URL, "--verbose", "--format=json"],
       [
         "config",
         "set",
@@ -482,7 +485,6 @@ describe("registry credential-bearing URL mutation boundaries", () => {
         JSON.stringify([{ url: EXACT_NESTED_SCHEME_CONTROL_URL, name: "private" }]),
         "--format=json",
       ],
-      ["registry", "add", STRICT_NESTED_USERINFO_URLS[0], "--format=json"],
       [
         "config",
         "set",
@@ -490,8 +492,6 @@ describe("registry credential-bearing URL mutation boundaries", () => {
         JSON.stringify([{ url: fixtureAt(STRICT_ENCODED_URLS, 0), name: "private" }]),
         "--format=json",
       ],
-      ["registry", "add", fixtureAt(STRICT_MIXED_LAYER_URLS, 0), "--format=json"],
-      ["registry", "add", fixtureAt(STRICT_INVALID_UTF8_CREDENTIAL_URLS, 0), "--format=json"],
     ];
 
     for (const argv of invocations) {
@@ -501,6 +501,50 @@ describe("registry credential-bearing URL mutation boundaries", () => {
       expectCredentialsAbsent(result.stdout);
       expectCredentialsAbsent(result.stderr);
       expectNoPersistedCredentials();
+    }
+  });
+
+  test("registry add accepts a credentialed URL, warning with the credential redacted (0.9.12)", async () => {
+    // registry-cli.ts's own guard is gone: the built-in static-index and
+    // skills-sh providers ignore URL userinfo, so `registry add` no longer
+    // throws its own usage error for one. The config-schema check
+    // `RegistryConfigEntrySchema` used to run (core/config/schema/
+    // sources-bundles.ts) is also gone — a registry URL with credentials is
+    // not a config-load hazard, since it never reaches every command the
+    // way a config-wide parse failure would; the registry/search call sites
+    // that actually dial out already check `hasRegistryUrlCredentials` and
+    // skip the one bad entry on their own. So the registry is now added
+    // (exit 0) and a warning is emitted instead.
+    //
+    // The property that makes warning-instead-of-refusing safe here:
+    // `formatRegistryUrl` structurally clears the URL's username/password
+    // before it is ever echoed — in the warning below, in `registry list`,
+    // anywhere. Persisted config.json is the one place the raw URL (as
+    // typed) legitimately lives, matching every other value a human passed
+    // as a CLI argument themselves.
+    const invocations = [
+      ["registry", "add", CREDENTIAL_URL, "--verbose", "--format=json"],
+      ["registry", "add", STRICT_NESTED_USERINFO_URLS[0], "--format=json"],
+      ["registry", "add", fixtureAt(STRICT_MIXED_LAYER_URLS, 0), "--format=json"],
+      ["registry", "add", fixtureAt(STRICT_INVALID_UTF8_CREDENTIAL_URLS, 0), "--format=json"],
+    ];
+
+    for (const argv of invocations) {
+      const url = argv[2] as string;
+      // The property that makes it safe to warn instead of refuse: display
+      // never carries the raw credential, regardless of how it's detected.
+      expect(formatRegistryUrl(url)).not.toContain(url);
+      expectCredentialsAbsent(formatRegistryUrl(url));
+
+      const result = await runCliCapture(argv);
+      expect(result.code).toBe(0);
+      expect(result.stderr.toLowerCase()).toContain("credential");
+      expectCredentialsAbsent(result.stdout);
+      expectCredentialsAbsent(result.stderr);
+
+      const parsed = JSON.parse(result.stdout) as { added: boolean; registries: Array<{ url: string }> };
+      expect(parsed.added).toBe(true);
+      expect(parsed.registries.some((r) => r.url === formatRegistryUrl(url))).toBe(true);
     }
   });
 

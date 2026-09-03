@@ -45,7 +45,7 @@ import { listTopLevelConfigKeys } from "../core/config/config-schema";
 import { deepMergeConfig, isPlainObject } from "../core/config/deep-merge";
 import { ConfigError, UsageError } from "../core/errors";
 import { getConfigPath, getDefaultStashDir, isTransientStashPath } from "../core/paths";
-import { warn } from "../core/warn";
+import { warn, warnOnce } from "../core/warn";
 import { akmIndex } from "../indexer/indexer";
 import { detectAgentCliProfiles, pickDefaultAgentProfile } from "../integrations/agent";
 import { defaultProfileName } from "../integrations/harnesses";
@@ -82,31 +82,25 @@ import { stepScheduledTasks } from "./steps/tasks";
 // ── Setup sandbox guard ─────────────────────────────────────────────────────
 
 /**
- * Refuse to persist an explicit `--dir /tmp/...` as the default bundle path.
- * The OS may reap the directory at any time, leaving the next run with a
- * default bundle that points at a deleted path. Mirrors the
- * `assertInitSandbox` check in commands/init.ts, but
- * fires under all runtimes (not just `bun test`) because `akm setup --dir
- * /tmp/X` is a documented isolation pattern that has been observed to
- * silently clobber the host config (the 2026-05-23 setup-clobbers-user-config
- * incident).
- *
- * Escape hatch: set `AKM_FORCE_SETUP_TMP_STASH=1` to override. When the
- * escape hatch is on, `applyStashIsolationToEnv` below also pre-sets
- * `AKM_BUNDLE_DIR` so that the `getConfigDir` / `getCacheDir` isolation
- * rules fire and config + cache writes route into `$stashDir/.akm/`
- * instead of the user's host `~/.config/akm`.
+ * Warn when an explicit `--dir /tmp/...` is persisted as the default bundle
+ * path — `akm setup --dir $(mktemp -d)` resolves under this family on every
+ * macOS machine (`/var/folders/...`), and used to be refused outright with
+ * no discoverable remedy. The OS may reap the directory at any time, so the
+ * operator is told up front; `applyStashIsolationToEnv` below still pre-sets
+ * `AKM_BUNDLE_DIR` so the `getConfigDir` / `getCacheDir` isolation rules
+ * (`core/paths.ts`) route config + cache writes into `$stashDir/.akm/`
+ * instead of the user's host `~/.config/akm`, which is what actually
+ * protects the host config (the 2026-05-23 setup-clobbers-user-config
+ * incident this guard traces to).
  */
 export function assertSetupSandbox(stashDir: string, dirExplicitlyProvided: boolean): void {
   if (!dirExplicitlyProvided) return;
-  if (process.env.AKM_FORCE_SETUP_TMP_STASH === "1") return;
   if (!isTransientStashPath(stashDir)) return;
-  throw new ConfigError(
-    `refusing to run \`akm setup --dir ${stashDir}\`: the path is in a transient/sandbox directory family the OS may reap. ` +
-      "Persisting it as the default bundle would leave the next run pointing at a deleted path. " +
-      "Use a persistent directory, OR set AKM_FORCE_SETUP_TMP_STASH=1 if you intentionally want a sandbox setup " +
-      "(setup will also auto-isolate config + cache writes into $stashDir/.akm/ so the host config is preserved).",
-    "SETUP_TMP_STASH_REFUSED",
+  warnOnce(
+    `setup-tmp-stash:${stashDir}`,
+    `\`akm setup --dir ${stashDir}\` targets a transient/sandbox directory the OS may reap at any time; ` +
+      `the next run would then point at a deleted bundle. Config and cache writes are isolated into ` +
+      `${stashDir}/.akm/ so the host config is unaffected, but treat this stash as disposable.`,
   );
 }
 

@@ -136,13 +136,11 @@ describe("resolveMetaFilePath", () => {
 describe("akm bundle create .meta scaffold", () => {
   let cleanup: Cleanup = () => {};
   beforeEach(() => {
-    process.env.AKM_FORCE_INIT_TMP_STASH = "1";
     const cache = sandboxXdgCacheHome();
     const cfg = sandboxXdgConfigHome(cache.cleanup);
     cleanup = sandboxHome(cfg.cleanup).cleanup;
   });
   afterEach(() => {
-    delete process.env.AKM_FORCE_INIT_TMP_STASH;
     cleanup();
     cleanup = () => {};
   });

@@ -221,12 +221,8 @@ describe("curate command", () => {
     expect(String(stashItem?.followUp)).toContain("akm show");
   });
 
-  test("--shape summary is rejected on curate (only valid on show)", async () => {
+  test("--shape summary on curate warns and falls back to the agent shape (only 'show' has a summary projection)", async () => {
     const stashDir = makeStash();
-    // Semantic off keeps stderr limited to the error envelope this test
-    // parses: with the default ("auto") the local embedder fetches its model
-    // from huggingface.co during auto-index, and an offline/blocked fetch
-    // prepends an "Embedding generation failed" warning to stderr.
     const xdgConfig = makeTempDir("akm-curate-config-");
     const res = await withEnv(
       {
@@ -241,10 +237,13 @@ describe("curate command", () => {
         return runCliCapture(["curate", "release", "--format=json", "--shape=summary"]);
       },
     );
-    expect(res.code).toBe(2);
-    // The error envelope is pretty-printed JSON on stderr.
-    const parsed = JSON.parse(res.stderr.trim());
-    expect(parsed.code).toBe("INVALID_SHAPE_VALUE");
+    expect(res.code).toBe(0);
+    expect(res.stderr).toContain("not supported for 'akm curate'");
+    const json = JSON.parse(res.stdout) as { items: Array<Record<string, unknown>> };
+    const stashItem = json.items.find((i) => i.source === "local");
+    // Same shape as an explicit --shape=agent (agent shape never carries the
+    // heavyweight `preview` field).
+    expect(stashItem).not.toHaveProperty("preview");
   });
 
   test("docker homelab collapses family duplicates into one top-level result", async () => {

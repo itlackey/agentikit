@@ -74,7 +74,6 @@ import fs from "node:fs";
 import { type ArgsDef, type CommandDef, defineCommand, parseArgs, renderUsage, runCommand, showUsage } from "citty";
 import {
   type CittyArgsDefinitionForScan,
-  findCittyTopLevelCommand,
   findCittyTopLevelCommandIndex,
   getParsedInvocation,
   parseAllFlagValues,
@@ -1040,18 +1039,7 @@ async function runCli(): Promise<void> {
     return;
   }
 
-  // `--shape summary` is only meaningful on `akm show`. Reject it up front for
-  // every other command so a write command (e.g. `akm proposal accept …`)
-  // fails fast BEFORE performing its mutation, rather than throwing at
-  // output-shaping time after the side effect has already happened. The
-  // shape-registry gate in shapeForCommand() remains as defense-in-depth (and
-  // covers the in-process test harness, which skips this startup block).
   const commandPath = resolveCittyCommandPath(main, process.argv.slice(2));
-  const topLevelCommand = commandPath[0] ?? findCittyTopLevelCommand(process.argv.slice(2), MAIN_TOP_LEVEL_ARGS);
-  if (getOutputMode().shape === "summary" && topLevelCommand !== "show") {
-    emitJsonError(new UsageError("'--shape summary' is only valid on 'akm show'.", "INVALID_SHAPE_VALUE"));
-    return;
-  }
 
   // D7 — every command that renders through output() honours all six --format
   // values. The declared exempt set (src/output/format-exempt.ts) does not

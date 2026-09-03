@@ -443,7 +443,6 @@ on them.
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode (network filesystems) |
 | `AKM_BIN` | Absolute `akm` path for scheduler registration |
 | `AKM_INSTALL_DIR` | Install-script prefix |
-| `AKM_FORCE_SETUP_TMP_STASH` | Documented escape hatch for intentional temp-directory bundles |
 | `AKM_UPGRADE_SKIP_CHECKSUM` | Recovery hatch for a broken upgrade checksum |
 
 **Internal** — no compatibility guarantee, may vanish without notice:

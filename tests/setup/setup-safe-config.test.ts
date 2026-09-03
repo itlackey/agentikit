@@ -375,7 +375,7 @@ describe("runSetupWithDefaults — idempotency", () => {
   });
 
   test("full initialization still performs only setup's one final config write", async () => {
-    const result = await withEnv({ AKM_FORCE_INIT_TMP_STASH: "1" }, () => runSetupWithDefaults({ noInit: false }));
+    const result = await runSetupWithDefaults({ noInit: false });
     expect(result.stashCreated).toBe(true);
     expect(fs.existsSync(getConfigPath())).toBe(true);
     expect(fs.existsSync(backupDir())).toBe(false);
@@ -403,8 +403,6 @@ describe("runSetupWithDefaults — idempotency", () => {
     await withEnv(
       {
         AKM_BUNDLE_DIR: stashDir,
-        AKM_FORCE_SETUP_TMP_STASH: "1",
-        AKM_FORCE_INIT_TMP_STASH: "1",
       },
       async () => {
         fs.mkdirSync(path.dirname(getConfigLockPath()), { recursive: true });

@@ -133,11 +133,6 @@ function setupStorage(): void {
     XDG_DATA_HOME: storage.dataDir,
     XDG_CACHE_HOME: storage.cacheDir,
     XDG_STATE_HOME: storage.stateDir,
-    // The Node child inherits BUN_TEST=1 from the bun-test parent, so bundle create's
-    // `assertInitSandbox` guard (which refuses to persist a /tmp --dir stash
-    // under a test runner) fires. This suite legitimately scaffolds a stash in
-    // an isolated tmp dir, so opt into the guard's documented escape hatch.
-    AKM_FORCE_INIT_TMP_STASH: "1",
   };
   cleanup = storage.cleanup;
 }
