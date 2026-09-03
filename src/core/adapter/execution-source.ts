@@ -21,6 +21,8 @@ import {
   type ExecutionSourceIdentity,
   type UnresolvedExecutionDefaults,
 } from "../../execution/source";
+import { UsageError } from "../errors";
+import { warnOnce } from "../warn";
 
 interface ParsedExecutionMarkdown {
   readonly content: string;
@@ -34,14 +36,37 @@ function nextLine(text: string, start: number): { line: string; next: number } {
   return { line: text.slice(start, end), next: lf + 1 };
 }
 
-/** Strict execution-only frontmatter parser; indexing's tolerant parser is deliberately not reused. */
-export function parseExecutionMarkdown(raw: string): ParsedExecutionMarkdown {
+/**
+ * Strict execution-only frontmatter parser; indexing's tolerant parser is
+ * deliberately not reused.
+ *
+ * `filePath`, when given, names the offending asset in a thrown error so an
+ * operator (or CI) sees which file to fix instead of a bare message.
+ *
+ * A third party's markdown that genuinely cannot be parsed into a mapping
+ * (unterminated frontmatter, broken YAML syntax, a non-mapping document)
+ * throws {@link UsageError} \u2014 exit 2, an actionable usage problem, not exit
+ * 70 (`TypeError`'s "unclassified internal error" code, which is what a
+ * `throw new TypeError(...)` here used to surface as). Anchors, explicit
+ * tags, and non-string mapping keys are recognized-but-unsupported
+ * constructs rather than parse failures on their own \u2014 an anchor nobody
+ * aliases, or a tag `toJS` converts to a plain value, is harmless \u2014 so they
+ * warn once (naming the file) and fall through to conversion instead of
+ * being pre-emptively rejected by a second, stricter gate in front of it.
+ * `toJS({ maxAliasCount: 0 })` is the real, UNCHANGED safety bound against
+ * alias-expansion abuse \u2014 it disables alias RESOLUTION outright, so a value
+ * that actually references an anchor via `*name` still fails, now as a
+ * {@link UsageError} from this same conversion step rather than the removed
+ * duplicate pre-check.
+ */
+export function parseExecutionMarkdown(raw: string, filePath?: string): ParsedExecutionMarkdown {
   if (typeof raw !== "string") throw new TypeError("execution source raw content must be a string");
+  const where = filePath ? ` (${filePath})` : "";
   const withoutBom = raw.startsWith("\uFEFF") ? raw.slice(1) : raw;
   const opening = nextLine(withoutBom, 0);
   if (opening.line !== "---") return { content: withoutBom, data: Object.freeze({}) };
   if (opening.next === withoutBom.length) {
-    throw new TypeError("execution source has unterminated frontmatter");
+    throw new UsageError(`execution source${where} has unterminated frontmatter`);
   }
 
   let cursor = opening.next;
@@ -59,23 +84,24 @@ export function parseExecutionMarkdown(raw: string): ParsedExecutionMarkdown {
     cursor = current.next;
   }
   if (frontmatterEnd < 0 || bodyStart < 0) {
-    throw new TypeError("execution source has unterminated frontmatter");
+    throw new UsageError(`execution source${where} has unterminated frontmatter`);
   }
 
   const yaml = withoutBom.slice(opening.next, frontmatterEnd);
   const document = parseDocument(yaml, { uniqueKeys: true });
   if (document.errors.length > 0) {
-    throw new TypeError(
-      `execution source has invalid YAML frontmatter: ${document.errors[0]?.message ?? "parse error"}`,
+    throw new UsageError(
+      `execution source${where} has invalid YAML frontmatter: ${document.errors[0]?.message ?? "parse error"}`,
     );
   }
   if (document.warnings.length > 0) {
-    throw new TypeError(
-      `execution source YAML frontmatter uses an unsupported tag or construct: ${document.warnings[0]?.message}`,
+    warnOnce(
+      `execution-source:yaml-warning:${filePath ?? "<inline>"}`,
+      `execution source${where} YAML frontmatter uses an unsupported tag or construct: ${document.warnings[0]?.message}. Using it as parsed.`,
     );
   }
   if (!isMap(document.contents)) {
-    throw new TypeError("execution source YAML frontmatter must be a mapping");
+    throw new UsageError(`execution source${where} YAML frontmatter must be a mapping`);
   }
 
   let unsupported: string | undefined;
@@ -91,13 +117,19 @@ export function parseExecutionMarkdown(raw: string): ParsedExecutionMarkdown {
       if (!isScalar(pair.key) || typeof pair.key.value !== "string") unsupported ??= "non-string mapping keys";
     },
   });
-  if (unsupported) throw new TypeError(`execution source YAML frontmatter does not support ${unsupported}`);
+  if (unsupported) {
+    warnOnce(
+      `execution-source:unsupported:${filePath ?? "<inline>"}`,
+      `execution source${where} YAML frontmatter uses ${unsupported}, which akm does not fully support; using the bounded conversion's result as-is.`,
+    );
+  }
 
   let root: unknown;
   try {
     root = document.toJS({ maxAliasCount: 0 });
   } catch (cause) {
-    throw new TypeError("execution source YAML frontmatter could not be converted safely", { cause });
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new UsageError(`execution source${where} YAML frontmatter could not be converted safely: ${detail}`);
   }
   const data = cloneExecutionJsonObject(root, "execution source YAML frontmatter");
   return { content: withoutBom.slice(bodyStart), data: Object.freeze(data) };
@@ -342,7 +374,8 @@ export function renderMarkdownExecutionSource(
   if (typeof raw !== "string") throw new TypeError("adapter execution source.raw must be a string");
   const kind = snapshots.input.kind;
   if (kind !== "command" && kind !== "persona") throw new TypeError("adapter execution source.kind is invalid");
-  const parsed = parseExecutionMarkdown(raw);
+  const identityFile = snapshots.identity.file;
+  const parsed = parseExecutionMarkdown(raw, typeof identityFile === "string" ? identityFile : undefined);
   const hasDefaults = Object.hasOwn(snapshots.input, "defaults");
   const defaultsProjection = snapshots.input.defaults;
   const defaults = typeof defaultsProjection === "function" ? defaultsProjection(parsed.data) : defaultsProjection;

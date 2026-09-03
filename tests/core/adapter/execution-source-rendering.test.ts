@@ -7,9 +7,11 @@ import { opencodeAdapter } from "../../../src/core/adapter/adapters/opencode-ada
 import type { BundleAdapter } from "../../../src/core/adapter/bundle-adapter";
 import {
   executionDefaultsFromFrontmatter,
+  parseExecutionMarkdown,
   renderMarkdownExecutionSource,
 } from "../../../src/core/adapter/execution-source";
 import type { BundleComponent } from "../../../src/core/adapter/types";
+import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../../../src/core/warn";
 import { createResolvedCommand } from "../../../src/execution/resolved-request";
 import { createAdapterRenderedExecutionSource } from "../../../src/execution/source";
 import { buildFileContext } from "../../../src/indexer/walk/file-context";
@@ -328,12 +330,50 @@ describe("adapter-rendered execution sources", () => {
       });
 
     expect(renderRaw("Do work without metadata.\n").content).toBe("Do work without metadata.\n");
+    // Genuinely unparseable frontmatter still rejects (now UsageError, exit
+    // 2, instead of an unclassified TypeError, exit 70 — #14 guard-audit).
     expect(() => renderRaw("---\nmodel: one\nDo work.\n")).toThrow(/unterminated.*frontmatter/i);
     expect(() => renderRaw("---\nmodel: [one,\n---\nDo work.\n")).toThrow(/invalid.*YAML|YAML.*error/i);
     expect(() => renderRaw("---\n- model\n- one\n---\nDo work.\n")).toThrow(/mapping/i);
     expect(() => renderRaw("---\nmodel: one\nmodel: two\n---\nDo work.\n")).toThrow(/duplicate|YAML/i);
-    expect(() => renderRaw("---\nmodel: &chosen one\nengine: *chosen\n---\nDo work.\n")).toThrow(/anchor|alias/i);
-    expect(() => renderRaw("---\nmodel: !engine one\n---\nDo work.\n")).toThrow(/tag/i);
+  });
+
+  // #14 (guard-audit): anchors and explicit tags are recognized but
+  // unsupported YAML constructs, not parse failures on their own — akm's own
+  // duplicate pre-check used to reject a document merely for CONTAINING one,
+  // even when nothing about it was unsafe (an anchor nobody aliases, a tag
+  // `toJS` converts to a plain value). A third party's markdown using them
+  // used to surface as an unclassified exit-70 TypeError; it now warns once
+  // (naming the file) and parses through.
+  test("warns (does not throw) on a frontmatter anchor with no alias reference, and an explicit tag, and still parses", () => {
+    const warnings: string[] = [];
+    _resetWarnOnceForTests();
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      const anchored = parseExecutionMarkdown("---\nmodel: &chosen one\n---\nDo work.\n", "commands/anchored.md");
+      expect(anchored.data.model).toBe("one");
+      expect(warnings.some((w) => w.includes("commands/anchored.md") && /anchor/i.test(w))).toBe(true);
+
+      const tagged = parseExecutionMarkdown("---\nmodel: !engine one\n---\nDo work.\n", "commands/tagged.md");
+      expect(tagged.data.model).toBe("one");
+      expect(warnings.some((w) => w.includes("commands/tagged.md") && /tag/i.test(w))).toBe(true);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+  });
+
+  // An actually-aliased value still cannot round-trip: `toJS`'s own
+  // `maxAliasCount: 0` disables alias RESOLUTION outright (unchanged — this
+  // module doc calls it out as "the real bound" and this pass does not
+  // touch it), so referencing an anchor via `*chosen` still fails. It fails
+  // via that bound now, though, not the removed duplicate pre-check — still
+  // a UsageError (exit 2) naming the file, not the old exit-70 TypeError.
+  test("an alias reference still fails via toJS's own maxAliasCount bound, now as a UsageError naming the file", () => {
+    expect(() =>
+      parseExecutionMarkdown("---\nmodel: &chosen one\nengine: *chosen\n---\nDo work.\n", "commands/aliased.md"),
+    ).toThrow(/commands\/aliased\.md.*alias/is);
   });
 
   test("rejects wrong recognized metadata types and preserves explicit null inference", () => {
