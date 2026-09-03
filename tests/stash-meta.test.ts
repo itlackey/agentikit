@@ -9,7 +9,7 @@ import path from "node:path";
 
 import { akmInit } from "../src/commands/sources/init";
 import { scaffoldStashMeta } from "../src/commands/sources/stash-skeleton";
-import { META_DEFAULT_NAME, parseMetaRef, resolveMetaFilePath } from "../src/core/asset/stash-meta";
+import { META_DEFAULT_NAME, parseMetaRef, readMetaFile, resolveMetaFilePath } from "../src/core/asset/stash-meta";
 import { UsageError } from "../src/core/errors";
 import { type Cleanup, sandboxHome, sandboxXdgCacheHome, sandboxXdgConfigHome } from "./_helpers/sandbox";
 
@@ -78,7 +78,7 @@ describe("resolveMetaFilePath", () => {
     }
   });
 
-  testSymlink("rejects symlinked meta roots and intermediate directories", () => {
+  testSymlink("rejects symlinked meta roots and intermediate directories that escape the bundle", () => {
     const outsideDir = makeTempDir("akm-meta-outside-tree-");
     try {
       fs.writeFileSync(path.join(outsideDir, "about.md"), "OUTSIDE_META_TREE");
@@ -92,6 +92,43 @@ describe("resolveMetaFilePath", () => {
       expect(() => resolveMetaFilePath(root, "nested/about")).toThrow(UsageError);
     } finally {
       fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  // #11: a symlink is only a hazard when it ESCAPES the bundle. Refusing any
+  // symlink at all — even one that resolves back inside the very same
+  // bundle — broke every stow/chezmoi-managed dotfile stash, since both tools
+  // commonly make `.meta/` itself, or individual files inside it, symlinks.
+  testSymlink("reads a meta file symlinked to another location inside the same bundle", () => {
+    fs.mkdirSync(path.join(root, "real-content"), { recursive: true });
+    fs.writeFileSync(path.join(root, "real-content", "about.md"), "# real content, symlinked in\n");
+    fs.symlinkSync(path.join(root, "real-content", "about.md"), path.join(root, ".meta", "about.md"));
+
+    const resolved = resolveMetaFilePath(root, "about");
+    expect(resolved).toBe(path.join(root, ".meta", "about.md"));
+    expect(readMetaFile(root, "about")?.content).toBe("# real content, symlinked in\n");
+  });
+
+  testSymlink("reads a meta doc when .meta itself is a symlink into the same bundle (stow-style)", () => {
+    fs.mkdirSync(path.join(root, "real-meta"), { recursive: true });
+    fs.writeFileSync(path.join(root, "real-meta", "index.md"), "# stow-managed meta\n");
+    fs.rmSync(path.join(root, ".meta"), { recursive: true, force: true });
+    fs.symlinkSync(path.join(root, "real-meta"), path.join(root, ".meta"), "dir");
+
+    expect(readMetaFile(root, "index")?.content).toBe("# stow-managed meta\n");
+  });
+
+  testSymlink("reads a meta doc when the bundle root itself sits behind a symlinked ancestor", () => {
+    const realRoot = makeTempDir("akm-meta-real-root-");
+    try {
+      fs.mkdirSync(path.join(realRoot, ".meta"), { recursive: true });
+      fs.writeFileSync(path.join(realRoot, ".meta", "index.md"), "# behind a symlinked ancestor\n");
+      const linkedRoot = path.join(makeTempDir("akm-meta-link-parent-"), "stash");
+      fs.symlinkSync(realRoot, linkedRoot, "dir");
+
+      expect(readMetaFile(linkedRoot, "index")?.content).toBe("# behind a symlinked ancestor\n");
+    } finally {
+      fs.rmSync(realRoot, { recursive: true, force: true });
     }
   });
 });
