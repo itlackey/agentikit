@@ -23,7 +23,7 @@ import { saveConfig } from "../../../../src/core/config/config";
 import { appendEvent, readEvents } from "../../../../src/core/events";
 import { decodeImproveResult } from "../../../../src/core/improve-result";
 import type { AkmDistillResult, AkmReflectResult, ImproveEligibleRef } from "../../../../src/core/improve-types";
-import { getDbPath } from "../../../../src/core/paths";
+import { getDbPath, getStashLocksDir } from "../../../../src/core/paths";
 import { getStateDbPath, openStateDatabase } from "../../../../src/core/state-db";
 import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { akmIndex } from "../../../../src/indexer/indexer";
@@ -1146,7 +1146,7 @@ describe("#800 effective dry-run planner", () => {
     expect(reflectFn).not.toHaveBeenCalled();
     expect(drainProposalsFn).not.toHaveBeenCalled();
     expect(modelCalls).toBe(0);
-    expect(fs.existsSync(path.join(stashDir, ".akm", "improve.lock"))).toBe(false);
+    expect(fs.existsSync(path.join(getStashLocksDir(stashDir), "improve.lock"))).toBe(false);
     for (const [name, root] of Object.entries(roots)) {
       expect(snapshotTree(root), `${name} changed during dry planning`).toEqual(before[name]!);
     }

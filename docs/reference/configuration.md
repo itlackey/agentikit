@@ -495,7 +495,7 @@ generic walker.
 | `AKM_BUNDLE_DIR` | Override the bundle directory |
 | `AKM_DATA_DIR` | Override the data directory — `index.db`, durable `state.db`, and `akm.lock` (or set `XDG_DATA_HOME`) |
 | `AKM_CACHE_DIR` | Override the cache directory — regenerable caches (or set `XDG_CACHE_HOME`) |
-| `AKM_STATE_DIR` | Override the state directory — task-scheduler invocation state (or set `XDG_STATE_HOME`) |
+| `AKM_STATE_DIR` | Override the state directory — task-scheduler invocation state, and (per stash) `akm improve`'s machine-local writers and whole-run lock (or set `XDG_STATE_HOME`) |
 | `AKM_SQLITE_JOURNAL_MODE` | SQLite journal mode: `WAL` (default), `DELETE`, or `TRUNCATE` |
 | `AKM_VERBOSE` | Truthy value enables the same diagnostics as `--verbose` |
 | `AKM_DEBUG` | `1` prints a stack trace on unexpected internal errors |

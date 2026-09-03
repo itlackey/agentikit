@@ -27,6 +27,7 @@ import { isProcessAlive } from "../../../../src/core/common";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { saveConfig } from "../../../../src/core/config/config";
 import { readEvents } from "../../../../src/core/events";
+import { getStashLocksDir } from "../../../../src/core/paths";
 import { type Cleanup, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 const TIMEOUT_MS = 20_000;
@@ -39,7 +40,7 @@ const TIMEOUT_MS = 20_000;
  * `ageMs` — `ageMs` exists only to prove age is irrelevant.
  */
 function plantLiveHolderImproveLock(lockDir: string, ageMs: number): { lockPath: string; holderPid: number } {
-  const lockPath = path.join(lockDir, ".akm", "improve.lock");
+  const lockPath = path.join(getStashLocksDir(lockDir), "improve.lock");
   const holderPid = process.ppid;
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   const lockedAt = new Date(Date.now() - ageMs);
@@ -78,7 +79,7 @@ function quietConfig(): AkmConfig {
 }
 
 function lockFilesOnDisk(): string[] {
-  const dir = path.join(stashDir, ".akm");
+  const dir = getStashLocksDir(stashDir);
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir).filter((f) => f.endsWith(".lock"));
 }
@@ -124,7 +125,7 @@ describe("akm improve — whole-run lock invariants", () => {
       // Plant a lock owned by a pid that cannot be alive → probeLock reports
       // state "stale" (reason pid_dead) regardless of mtime.
       const deadPid = 2_147_483_646;
-      const lockPath = path.join(stashDir, ".akm", "improve.lock");
+      const lockPath = path.join(getStashLocksDir(stashDir), "improve.lock");
       fs.mkdirSync(path.dirname(lockPath), { recursive: true });
       fs.writeFileSync(lockPath, JSON.stringify({ pid: deadPid, startedAt: new Date().toISOString() }), "utf8");
 

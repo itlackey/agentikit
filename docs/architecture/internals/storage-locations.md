@@ -65,14 +65,33 @@ are all superseded pre-0.9.0 layouts with no live reader or writer in `src/`.
 `akm migrate status` report; `akm migrate apply` deletes them
 on request. Nothing deletes this user data without that explicit opt-in.
 
-**Known misplaced live writers (Tier 2 — tracked separately, itlackey/akm#890,
-0.10.0):** `distill-rejected/`, `eval-cases/`, `measurement/`,
-`unresolved-sources/`, and the `.lock` files are currently written under
-`$STASH/.akm` but do not meet the "must travel with the content" rule above
-— none of them are read to resolve anything about the bundle content itself.
-Moving them changes user-visible paths and needs a migration note, so that
-move is deferred; do not treat their current location as sanctioned by the
-rule above.
+**Formerly-misplaced live writers (Tier 2 — relocated by itlackey/akm#890):**
+`distill-rejected/`, `eval-cases/`, `measurement/verdicts/`,
+`unresolved-sources/`, and the improve-pipeline `.lock` files used to be
+written under `$STASH/.akm` but never met the "must travel with the content"
+rule above — none of them are read to resolve anything about the bundle
+content itself. They now live under `$STATE`/`$CACHE`, namespaced per stash
+by `getStashStateKey()` (`src/core/paths.ts`) so two stashes on one machine
+never collide:
+
+| Old path | New path |
+|---|---|
+| `$STASH/.akm/distill-rejected/` | `$STATE/improve/distill-rejected/<stash>/` |
+| `$STASH/.akm/eval-cases/` | `$STATE/improve/eval-cases/<stash>/` |
+| `$STASH/.akm/measurement/verdicts/` | `$STATE/improve/measurement/verdicts/<stash>/` |
+| `$STASH/.akm/unresolved-sources/` | `$CACHE/index/unresolved-sources/<stash>/` |
+| `$STASH/.akm/improve.lock` (+ `.improve.lock.operations.sensitive` mutex) | `$STATE/locks/<stash>/improve.lock` (+ `.improve.lock.operations.sensitive`) |
+
+`akm migrate status`/`apply` covers every configured LOCAL bundle (the
+default stash first, then every other filesystem-backed bundle — a
+`git`/`website`/`npm` bundle is cache-backed, never touched) and reports and
+relocates any pre-0.9.11 files still sitting at the old paths (see
+`docs/migration/`); a lock file only moves out of the way (is deleted) once
+`probeLock` — the same staleness check `akm improve` itself uses — says its
+holder is dead, so a lock a live run holds is left alone and reported
+instead. The pilot treatment file at `$STASH/.akm/measurement/` (sibling to
+`verdicts/`) is manually-authored measurement input, not a writer output,
+and did not move.
 
 ---
 
@@ -625,7 +644,9 @@ adapter recognizes — `schema.md` + `pages/` is the probe) contains:
 | `$STASH/.akm/archive/<ts>-<i>-<name>.md` | Legacy consolidation archive. Current advisory consolidation does not create or manage these files. | Dead residue (itlackey/akm#889); reported by `akm migrate status`, removed by `akm migrate apply` |
 | `$STASH/.akm/consolidate-backup/<ts>/<name>.md` | Legacy pre-0.9 consolidation backups; current advisory consolidation does not create them. | Safe to remove after review |
 | `$STASH/.akm/memory-cleanup/archive/<ts>-<ref>/` | Belief-state archived memory files + `cleanup.md` audit record | No cleanup |
-| `$STASH/.akm/distill-rejected/<ts>-<lessonRef>.md` | Lessons that failed the LLM-as-judge quality gate. Frontmatter: `{ score, reason }`. | No cleanup |
+| `$STATE/improve/distill-rejected/<stash>/<ts>-<lessonRef>.md` | Lessons that failed the LLM-as-judge quality gate. Frontmatter: `{ score, reason }`. Moved out of `$STASH/.akm/distill-rejected/` (itlackey/akm#890). | No cleanup |
+| `$STATE/improve/eval-cases/<stash>/<slug>.md` | Regression eval cases captured from rejected distill/proposal output. Moved out of `$STASH/.akm/eval-cases/` (itlackey/akm#890). | No cleanup |
+| `$STATE/improve/measurement/verdicts/<stash>/verdict-<ts>.{json,md}` | `akm-eval-proactive-verdict` reports. Moved out of `$STASH/.akm/measurement/verdicts/` (itlackey/akm#890); the pilot treatment file stays at `$STASH/.akm/measurement/` (manually-authored input, not a writer output). | No cleanup |
 | `$STASH/memories/MEMORY.md` | Human-maintained memory index. Budget: warn at 180 lines, hard cap at 200. Read-only for akm (not written by current code). | Manual |
 | `<dir>/.stash.json` | Legacy per-directory metadata manifest (pre-0.9.0). The live indexer no longer reads it; only the storage migrator reads and folds it into inline asset metadata before deleting it. | Manual |
 
@@ -636,7 +657,7 @@ adapter recognizes — `schema.md` + `pages/` is the probe) contains:
 | Path | Format | Purpose |
 |---|---|---|
 | `$DATA/akm.lock.lck` | Plain text (PID) | Advisory write-lock for `akm.lock` mutations. Created with `O_EXCL`; stale locks (dead PIDs) auto-reclaimed. Best-effort: 3 retries × 100ms. |
-| `$STASH/.akm/improve.lock` | JSON `{ pid, startedAt, lockId }` | Serializes the complete live `akm improve` mutation window from triage through final sync. Exact ownership protects successor locks during release. Stale locks are reclaimed when the PID is dead or after the larger of four hours and the configured run budget plus ten minutes. |
+| `$STATE/locks/<stash>/improve.lock` | JSON `{ pid, startedAt, lockId }` | Serializes the complete live `akm improve` mutation window from triage through final sync. Exact ownership protects successor locks during release. Stale locks are reclaimed when the PID is dead or after the larger of four hours and the configured run budget plus ten minutes. Moved out of `$STASH/.akm/improve.lock` (itlackey/akm#890); its `.improve.lock.operations.sensitive` mutex sibling (see `operationMutexPath()` in `src/core/file-lock.ts`) moved with it. |
 
 ---
 
@@ -650,6 +671,7 @@ adapter recognizes — `schema.md` + `pages/` is the probe) contains:
 | `$CACHE/registry-build/build-<random>/` | Temp archive extraction for registry index building | Deleted in `finally` after each run |
 | `$CACHE/tasks/logs/<task-id>/` | Per-run stdout/stderr log files (`<ISO-ts>.log`) | No cleanup |
 | `$CACHE/bin/rg` | Auto-downloaded ripgrep binary | Permanent |
+| `$CACHE/index/unresolved-sources/<stash>/<name>` | Synthetic placeholder path for a configured source whose content root did not resolve this run; never written to disk, only reported as a `SearchSource.path`. Moved out of `$STASH/.akm/unresolved-sources/` (itlackey/akm#890). | N/A (not a real directory) |
 
 Cache-backed bundles (`git`, `website`, `npm`) are materialised into `$CACHE`
 before indexing — each provider's `sync()` method (`src/sources/providers/`)
@@ -782,8 +804,8 @@ not affect ranking, salience, real-query labels, or GRR.
 | 12 | `$DATA/state.db` (`proposals` table) | SQLite | Proposal queue; archival is a `status` change, not a separate directory |
 | 19 | `$STASH/.akm/consolidate-backup/<ts>/<name>.md` | Markdown | Legacy consolidation backups; no longer created |
 | 20 | `$STASH/.akm/memory-cleanup/archive/<ts>-<ref>/` | Markdown | Belief-state archived memories |
-| 21 | `$STASH/.akm/distill-rejected/<ts>-<ref>.md` | FM+Markdown | Quality-gate rejected lessons |
-| 22 | `$STASH/.akm/improve.lock` | JSON | Improve run mutex |
+| 21 | `$STATE/improve/distill-rejected/<stash>/<ts>-<ref>.md` | FM+Markdown | Quality-gate rejected lessons |
+| 22 | `$STATE/locks/<stash>/improve.lock` | JSON | Improve run mutex |
 | 23 | `$STASH/{skills,commands,agents,...}/` | FM+Markdown | Asset files (working bundle) |
 | 24 | `$STASH/wikis/<name>/` | Markdown | `llm-wiki`-adapter bundle content (schema/index/log + `raw/` + `pages/`) |
 | 25 | `<dir>/.stash.json` | JSON | Legacy metadata (read-only) |
@@ -802,7 +824,10 @@ not affect ranking, salience, real-query labels, or GRR.
 | 38 | `$DATA/logs.db` | SQLite 3 (WAL) | Task/run log lines (`task_logs`); observed ~1 GB on live installs; 90d age-based purge only, not size-capped |
 | 39 | `$XDG_STATE_HOME/akm-claude/` | JSONL+Markdown+text | Claude Code plugin hook state (events, memory candidates, curated prompts, logs); written by akm-plugins, not core akm; no retention policy today |
 | 40 | `$XDG_STATE_HOME/akm-opencode/` | JSONL | OpenCode plugin hook state (events, memory candidates); written by akm-plugins, not core akm; no retention policy today |
+| 41 | `$STATE/improve/eval-cases/<stash>/<slug>.md` | FM+Markdown | Improve regression eval cases |
+| 42 | `$STATE/improve/measurement/verdicts/<stash>/verdict-<ts>.{json,md}` | JSON+Markdown | `akm-eval-proactive-verdict` reports |
+| 43 | `$CACHE/index/unresolved-sources/<stash>/<name>` | N/A | Synthetic unresolved-source placeholder path (never written to disk) |
 
 ---
 
-Check `src/core/paths.ts` for the canonical path resolution functions (`getCacheDir`, `getConfigDir`, `getDataDir`, `getDbPath`, `getStateDbPathInDataDir`, `getSemanticStatusPath`).
+Check `src/core/paths.ts` for the canonical path resolution functions (`getCacheDir`, `getConfigDir`, `getDataDir`, `getDbPath`, `getStateDbPathInDataDir`, `getSemanticStatusPath`, `getStateDir`, `getStashStateKey`, and the per-stash `$STATE`/`$CACHE` writer helpers `getDistillRejectedDir`, `getEvalCasesDir`, `getMeasurementVerdictsDir`, `getUnresolvedSourcesDir`, `getStashLocksDir`).

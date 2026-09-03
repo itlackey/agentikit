@@ -12,7 +12,7 @@
  */
 
 import { resolveStashDir } from "../../src/core/common";
-import { resetConfigCache } from "../../src/core/config/config";
+import { bundleContentRoots, bundleKeyForContentRoot, loadConfig, resetConfigCache } from "../../src/core/config/config";
 import { ConfigError } from "../../src/core/errors";
 import { getConfigPath } from "../../src/core/paths";
 import { listPendingStateMigrations, upgradeHistoricalStateDatabase } from "../../src/core/state-db";
@@ -24,6 +24,12 @@ import {
 } from "./migrate/config-extra-params";
 import { type DeadResidueEntry, type DeadResidueRemoval, findDeadResidueEntries, removeDeadResidue } from "./migrate/dead-residue";
 import { findStaleTxnEntries, recoverStaleTxns, type StaleTxnEntry } from "./migrate/stale-txn";
+import {
+  applyWriterRelocation,
+  findWriterRelocationEntries,
+  type WriterRelocationApplyResult,
+  type WriterRelocationPlan,
+} from "./migrate/writer-relocation";
 import {
   applyTaskV3Migration,
   applyTaskV4Migration,
@@ -49,6 +55,10 @@ export interface CombinedMigrationPlan {
   taskV4Applied?: number;
   deadResidue?: { pending: DeadResidueEntry[] } | { removed: DeadResidueRemoval[] };
   staleTxns?: { pending: StaleTxnEntry[] } | { recovered: StaleTxnEntry[] };
+  // Keyed by bundle id (the default stash first, then every other
+  // filesystem-backed bundle) — one filesystem bundle can trail live writer
+  // residue as easily as another (itlackey/akm#890).
+  writerRelocation?: { pending: Record<string, WriterRelocationPlan> } | { relocated: Record<string, WriterRelocationApplyResult> };
 }
 
 function worstStatus(left: MigrationStatus, right: MigrationStatus): MigrationStatus {
@@ -65,6 +75,36 @@ function stashDirIfConfigured(): string | undefined {
     if (error instanceof ConfigError && error.code === "STASH_DIR_NOT_FOUND") return undefined;
     throw error;
   }
+}
+
+/**
+ * Every LOCAL bundle directory the writer-relocation step must cover: the
+ * default stash first (if one is configured or the platform default exists),
+ * then every other bundle in the `bundles` map backed by a plain filesystem
+ * `path` — each exactly once, even when two bundle entries resolve to the
+ * same directory (itlackey/akm#890, MAJOR review fix: the original patch
+ * only ever touched the default stash).
+ *
+ * A `git`/`website`/`npm` bundle source is a REMOTE fetched into `$CACHE`,
+ * not a directory the user (or an old akm) could have written `.akm/*`
+ * residue into directly — `bundleContentRoots` already only returns entries
+ * carrying a `path`, so those bundles are skipped here with no network call
+ * and no `ensureSourceCaches` (which would make one to materialize them).
+ */
+function writerRelocationTargets(defaultStashDir: string | undefined): { id: string; dir: string }[] {
+  const config = loadConfig();
+  const seen = new Set<string>();
+  const targets: { id: string; dir: string }[] = [];
+  if (defaultStashDir !== undefined) {
+    targets.push({ id: bundleKeyForContentRoot(config, defaultStashDir) ?? "default", dir: defaultStashDir });
+    seen.add(defaultStashDir);
+  }
+  for (const { id, contentRoot } of bundleContentRoots(config)) {
+    if (seen.has(contentRoot)) continue;
+    seen.add(contentRoot);
+    targets.push({ id, dir: contentRoot });
+  }
+  return targets;
 }
 
 /**
@@ -106,13 +146,21 @@ export async function runMigration(options: { apply: boolean }): Promise<Combine
   const stashDir = stashDirIfConfigured();
   const taskV3 = apply ? applyTaskV3Migration() : inspectMigrationPlan();
   const taskV4 = apply ? applyTaskV4Migration() : inspectTaskV4MigrationStatus();
-  const stashSections =
-    stashDir === undefined
-      ? {}
-      : {
-          deadResidue: apply ? { removed: removeDeadResidue(stashDir) } : { pending: findDeadResidueEntries(stashDir) },
-          staleTxns: apply ? { recovered: await recoverStaleTxns(stashDir) } : { pending: findStaleTxnEntries(stashDir) },
-        };
+  const stashSections: Pick<CombinedMigrationPlan, "deadResidue" | "staleTxns" | "writerRelocation"> = {};
+  if (stashDir !== undefined) {
+    stashSections.deadResidue = apply
+      ? { removed: removeDeadResidue(stashDir) }
+      : { pending: findDeadResidueEntries(stashDir) };
+    stashSections.staleTxns = apply
+      ? { recovered: await recoverStaleTxns(stashDir) }
+      : { pending: findStaleTxnEntries(stashDir) };
+  }
+  const relocationTargets = writerRelocationTargets(stashDir);
+  if (relocationTargets.length > 0) {
+    stashSections.writerRelocation = apply
+      ? { relocated: Object.fromEntries(relocationTargets.map(({ id, dir }) => [id, applyWriterRelocation(dir)])) }
+      : { pending: Object.fromEntries(relocationTargets.map(({ id, dir }) => [id, findWriterRelocationEntries(dir)])) };
+  }
 
   // A pending state migration reads as "ready" under status/--dry-run, so the
   // preview says what apply will do; after a real apply it has been applied.

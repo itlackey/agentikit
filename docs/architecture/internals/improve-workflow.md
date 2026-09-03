@@ -23,7 +23,7 @@ Injected function seams (`reflectFn`, `distillFn`, `ensureIndexFn`, `reindexFn`)
 flowchart TD
     A([akm improve invoked]) --> B[resolveImproveScope\nscope mode: all / type / ref]
     B --> C{dryRun?}
-    C -- no --> E[Acquire whole-run lock\n.akm/improve.lock]
+    C -- no --> E[Acquire whole-run lock\n$STATE/locks/&lt;stash&gt;/improve.lock]
     C -- yes --> COLLECT[collectEligibleRefs\nquery existing SQLite index, filter to stashDir]
     E --> E1{lock file or maintenance barrier held?}
     E1 -- yes, skip-if-locked --> SKIP[Return exit-0 no-op\nno triage, index, events, or sync]

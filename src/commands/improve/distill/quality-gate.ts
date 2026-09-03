@@ -19,6 +19,7 @@ import { ConfigError } from "../../../core/errors";
 import { appendEvent, type EventsContext } from "../../../core/events";
 import type { AkmDistillResult, DistillOutcome } from "../../../core/improve-types";
 import { parseEmbeddedJsonResponse } from "../../../core/parse";
+import { getDistillRejectedDir } from "../../../core/paths";
 import { withStateDb } from "../../../core/state-db";
 import { recordWrittenPath } from "../../../core/write-provenance";
 import type { LoweringNotice } from "../../../execution/resolved-request";
@@ -322,8 +323,9 @@ export async function runReflectQualityJudge(
 // ── Quality-rejection helper ─────────────────────────────────────────────────
 
 /**
- * Write a rejected lesson to `.akm/distill-rejected/`, append a `distill_invoked`
- * quality-rejected event, and return the `quality_rejected` envelope.
+ * Write a rejected lesson to `$STATE/improve/distill-rejected/<stash>/`
+ * (itlackey/akm#890), append a `distill_invoked` quality-rejected event, and
+ * return the `quality_rejected` envelope.
  *
  * @param stash     - Root stash directory.
  * @param inputRef  - The original input ref (for the event).
@@ -347,7 +349,7 @@ export function writeQualityRejection(
 ): AkmDistillResult {
   // D-5 / #388: reviewNeeded flag selects "review_needed" vs "quality_rejected" outcome.
   const outcome: DistillOutcome = extraMeta.reviewNeeded ? "review_needed" : "quality_rejected";
-  const rejectDir = path.join(stash, ".akm", "distill-rejected");
+  const rejectDir = getDistillRejectedDir(stash);
   fs.mkdirSync(rejectDir, { recursive: true });
   const ts = timestampForFilename();
   const rejectPath = path.join(rejectDir, `${ts}-${proposalRef.replace(/[:/\\]/g, "-")}.md`);
@@ -356,8 +358,14 @@ export function writeQualityRejection(
     `---\nscore: ${score}\nreason: ${reason}\noutcome: ${outcome}\n---\n\n${content}`,
     "utf8",
   );
-  // #652: the rejection envelope lands under the managed `.akm/` tree, which
-  // the pre-provenance sync swept up by pathspec — journal it explicitly.
+  // #652 / itlackey/akm#890: journal it even though it now lands under
+  // `$STATE`, outside the stash's git repo — `result.writtenPaths` reports
+  // every path a run touched, in or out of the stash (describeRunWrittenPaths
+  // in improve.ts falls back to the absolute path for anything outside the
+  // stash root), and the auto-sync commit's own containment check
+  // (resolveSyncPathSet's `relativeWrittenPath`) already drops anything
+  // outside `repoDir` from what gets staged — recording it here cannot cause
+  // it to be committed.
   recordWrittenPath(rejectPath);
   appendEvent(
     {

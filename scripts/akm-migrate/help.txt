@@ -10,6 +10,9 @@ plan (exit 1 when any step is blocked):
      with a verified sibling safety copy (the only path that admits them)
   3. task-v2 files to task v3, then task-v3 files to task source v4
   4. superseded pre-0.9.0 `.akm` residue and stale filesystem transactions
+  5. live `.akm` writers relocated to `$STATE`/`$CACHE`, for every local
+     bundle (distill-rejected, eval-cases, measurement verdicts, and stale
+     improve-pipeline locks — a lock a live run still holds is left alone)
 
 `akm migrate status|apply` wraps this executable; `akm upgrade` runs
 `apply` after its install step, so an image that ships akm can put either

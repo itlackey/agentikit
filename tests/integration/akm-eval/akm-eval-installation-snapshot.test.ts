@@ -13,6 +13,7 @@ import {
   normalizedMaterializedDatabaseFingerprint,
   verifyInstallationSnapshot,
 } from "../../../scripts/akm-eval/src/sources/installation-snapshot";
+import { getStashLocksDir } from "../../../src/core/paths";
 import { openStateDatabase } from "../../../src/core/state-db";
 import type { Database as StorageDatabase } from "../../../src/storage/database";
 import { openIndexDatabase } from "../../../src/storage/repositories/index-connection";
@@ -825,6 +826,22 @@ describePosix("akm-eval installation snapshots", () => {
     const fixture = createFixture(sandbox.dir);
     try {
       fs.writeFileSync(path.join(fixture.dataDir, "improve.lock"), JSON.stringify({ pid: process.pid }));
+      expect(() => capture(fixture, path.join(sandbox.dir, "snapshot"))).toThrow(/active AKM process lock/);
+    } finally {
+      closeFixture(fixture);
+      sandbox.cleanup();
+    }
+  });
+
+  // itlackey/akm#890: the improve-pipeline lock moved out of
+  // `<bundle>/.akm/improve.lock` to `$STATE/locks/<bundle>/improve.lock`.
+  test("rejects capture while the relocated improve lock is held under $STATE/locks", () => {
+    const sandbox = makeSandboxDir("akm-eval-snapshot-relocated-lock");
+    const fixture = createFixture(sandbox.dir);
+    try {
+      const lockDir = getStashLocksDir(fixture.bundleRoots.personal ?? "");
+      fs.mkdirSync(lockDir, { recursive: true });
+      fs.writeFileSync(path.join(lockDir, "improve.lock"), JSON.stringify({ pid: process.pid }));
       expect(() => capture(fixture, path.join(sandbox.dir, "snapshot"))).toThrow(/active AKM process lock/);
     } finally {
       closeFixture(fixture);

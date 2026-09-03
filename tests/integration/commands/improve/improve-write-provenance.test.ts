@@ -30,6 +30,7 @@ import { writeEvalCase } from "../../../../src/commands/improve/eval-cases";
 import { akmImprove, resolveSyncPathSet } from "../../../../src/commands/improve/improve";
 import { parseRefInput } from "../../../../src/core/asset/resolve-ref";
 import type { AkmConfig, SourceConfigEntry } from "../../../../src/core/config/config";
+import { getEvalCasesDir } from "../../../../src/core/paths";
 import { deleteAssetFromSource, type WriteTargetSource, writeAssetToSource } from "../../../../src/core/write-source";
 import { saveGitStash } from "../../../../src/sources/providers/git";
 import { type Cleanup, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
@@ -267,8 +268,9 @@ test("auto-sync stages a deletion the run performed", async () => {
   expect(result.writtenPaths).toEqual(["memories/human.md"]);
 });
 
-test("auto-sync includes an eval case captured by the run", async () => {
+test("an eval case captured by the run lands under $STATE, not the stash, is still reported as written, and is never auto-synced (itlackey/akm#890)", async () => {
   initRepo();
+  const before = headCount();
 
   const result = await runImprove(() => {
     writeEvalCase(stashDir, {
@@ -281,9 +283,18 @@ test("auto-sync includes an eval case captured by the run", async () => {
     });
   });
 
-  expect(result.sync?.committed).toBe(true);
-  expect(lastCommitPaths()).toEqual([".akm/eval-cases/human-rejected.md"]);
-  expect(result.writtenPaths).toEqual([".akm/eval-cases/human-rejected.md"]);
+  // Written under $STATE/improve/eval-cases/<stash>/, never under $STASH/.akm/.
+  const evalCasePath = path.join(getEvalCasesDir(stashDir), "human-rejected.md");
+  expect(fs.existsSync(evalCasePath)).toBe(true);
+  expect(fs.existsSync(path.join(stashDir, ".akm", "eval-cases"))).toBe(false);
+  // Still journaled and reported on the result — writeEvalCase records it —
+  // but as an absolute path, since describeRunWrittenPaths only reports a
+  // stash-relative path for a write that landed INSIDE the stash.
+  expect(result.writtenPaths).toEqual([evalCasePath]);
+  // It lives outside the stash's git repo entirely, so auto-sync's own
+  // containment check drops it and there is nothing to commit.
+  expect(result.sync?.committed).toBe(false);
+  expect(headCount()).toBe(before);
 });
 
 test("a path written then removed again during the run produces no commit", async () => {

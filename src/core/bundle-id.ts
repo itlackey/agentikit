@@ -52,6 +52,12 @@ function ensureUniqueId(preferred: string, sourcePath: string, used: Set<string>
   return `${suffixed}-${n}`;
 }
 
-function shortHash(input: string): string {
+/**
+ * First 8 hex chars of `input`'s sha256 — deterministic and short enough to
+ * suffix a slug or a path key. Exported so callers needing the same
+ * short-hash-of-a-resolved-path primitive (e.g. `getStashStateKey` in
+ * `paths.ts`) don't grow their own duplicate.
+ */
+export function shortHash(input: string): string {
   return crypto.createHash("sha256").update(input).digest("hex").slice(0, 8);
 }

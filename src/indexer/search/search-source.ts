@@ -7,6 +7,7 @@ import path from "node:path";
 import { isWithin, resolveStashDir } from "../../core/common";
 import type { AkmConfig, SourceConfigEntry } from "../../core/config/config";
 import { bundleComponentConfig, bundlesToSourceEntries, getSources, loadConfig } from "../../core/config/config";
+import { getUnresolvedSourcesDir } from "../../core/paths";
 import { resolveGitContentRoot, resolveWritable } from "../../core/write-source";
 import { lockContentRootFor } from "../../integrations/lockfile";
 import { resolveSourceProviderFactory } from "../../sources/provider-factory";
@@ -115,9 +116,7 @@ export function resolveSourceEntries(overrideStashDir?: string, existingConfig?:
     const contentRoot = resolveEntryContentDir(entry);
     if (contentRoot == null) {
       const unresolvedPath = path.join(
-        implicitStashDir ?? process.cwd(),
-        ".akm",
-        "unresolved-sources",
+        getUnresolvedSourcesDir(implicitStashDir ?? process.cwd()),
         entry.name ?? entry.type,
       );
       addSource(
@@ -133,7 +132,7 @@ export function resolveSourceEntries(overrideStashDir?: string, existingConfig?:
     const dir = path.resolve(contentRoot, component?.root ?? ".");
     if (!isWithin(dir, contentRoot)) {
       warn(`Warning: component root "${component?.root}" escapes bundle "${entry.name}"; skipping source.`);
-      const unresolvedPath = path.join(contentRoot, ".akm", "unresolved-sources", entry.name ?? entry.type);
+      const unresolvedPath = path.join(getUnresolvedSourcesDir(contentRoot), entry.name ?? entry.type);
       addSource(
         unresolvedPath,
         entry.name,

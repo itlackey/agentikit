@@ -12,6 +12,7 @@
 
 import os from "node:os";
 import path from "node:path";
+import { shortHash } from "./bundle-id";
 import { ConfigError } from "./errors";
 import { IS_WINDOWS } from "./platform";
 
@@ -298,6 +299,133 @@ export function getRegistryCacheDir(): string {
 
 export function getRegistryIndexCacheDir(): string {
   return path.join(getCacheDir(), "registry-index");
+}
+
+// ── State directory ──────────────────────────────────────────────────────────
+
+/**
+ * Returns the XDG state directory for akm (`~/.local/state/akm` on
+ * Linux/macOS, `%LOCALAPPDATA%\akm\state` on Windows).
+ *
+ * Per-machine runtime state that is neither durable application data
+ * (`$DATA`), a purely regenerable cache (`$CACHE`), nor state that must
+ * travel with a bundle's own content (`$STASH/.akm`; see "What May Live in
+ * $STASH/.akm" in docs/architecture/internals/storage-locations.md).
+ *
+ * Env overrides (in priority order):
+ *   AKM_STATE_DIR  — point to any directory
+ *   XDG_STATE_HOME — (Linux/macOS) override the XDG base; akm subdir is appended
+ */
+export function getStateDir(env: NodeJS.ProcessEnv = process.env, platform = process.platform): string {
+  const override = env.AKM_STATE_DIR?.trim();
+  if (override) return override;
+
+  if (platform === "win32") {
+    const localAppData = env.LOCALAPPDATA?.trim();
+    if (localAppData) return path.join(localAppData, "akm", "state");
+
+    const userProfile = env.USERPROFILE?.trim();
+    if (userProfile) return path.join(userProfile, "AppData", "Local", "akm", "state");
+
+    const appData = env.APPDATA?.trim();
+    if (!appData) {
+      throw new ConfigError(
+        "Unable to determine state directory. Set LOCALAPPDATA, USERPROFILE, or APPDATA.",
+        "CONFIG_DIR_UNRESOLVABLE",
+      );
+    }
+    return path.join(appData, "..", "Local", "akm", "state");
+  }
+
+  const xdgStateHome = env.XDG_STATE_HOME?.trim();
+  if (xdgStateHome) return path.join(xdgStateHome, "akm");
+
+  const home = env.HOME?.trim();
+  if (!home) return homelessFallbackDir("akm-state");
+
+  return path.join(home, ".local", "state", "akm");
+}
+
+// ── Per-stash state under $STATE / $CACHE (itlackey/akm#890) ─────────────────
+
+/**
+ * Deterministic, filesystem-safe key for machine-local state that belongs to
+ * one stash but must not live under `$STASH` itself. Namespaces `$STATE`/
+ * `$CACHE` writers by the resolved absolute stash directory — the filesystem
+ * counterpart of how `state.db`'s `proposals` table keys per-stash rows by
+ * its `stash_dir` column — so two stashes on one machine never collide.
+ *
+ * Reuses {@link shortHash} (bundle-id.ts) rather than growing a second
+ * sha256-truncated-hex helper. (The other existing option,
+ * `getCurrentWorkflowScopeKey`'s `dir:v1:<sha256>` in
+ * `src/workflows/authoring/scope-key.ts`, is a state.db column value for a
+ * different subsystem — full untruncated hex plus a `dir:v1:` prefix, which
+ * is neither filesystem-safe as a directory segment on Windows (`:`) nor
+ * short, so it is not a fit here.) `shortHash` trims to 8 hex chars (32
+ * bits) — fine at its original call site because a collision only ever
+ * shortens a batch-unique slug suffix that a retry loop immediately
+ * re-disambiguates. Here there is no such retry loop, but a machine
+ * realistically has, at most, a handful to a few dozen distinct stash
+ * directories ever registered — 32 bits of digest space makes an accidental
+ * collision between two of them astronomically unlikely, and this key
+ * format shipped nowhere before this release, so shortening it from the 16
+ * hex chars an earlier draft used costs nothing.
+ */
+export function getStashStateKey(stashDir: string): string {
+  const resolved = path.resolve(stashDir).replace(/\\/g, "/");
+  const normalized = IS_WINDOWS ? resolved.toLowerCase() : resolved;
+  return shortHash(normalized);
+}
+
+function stashScopedDir(base: string, stashDir: string): string {
+  return path.join(base, getStashStateKey(stashDir));
+}
+
+/**
+ * `$STATE/improve/distill-rejected/<stash>/` — lessons that failed the
+ * distill quality gate. Moved out of `$STASH/.akm/distill-rejected/`
+ * (itlackey/akm#890): nothing reads it to resolve bundle content, so it does
+ * not meet the "must travel with the content" rule.
+ */
+export function getDistillRejectedDir(stashDir: string): string {
+  return stashScopedDir(path.join(getStateDir(), "improve", "distill-rejected"), stashDir);
+}
+
+/**
+ * `$STATE/improve/eval-cases/<stash>/` — regression eval cases captured from
+ * rejected distill/proposal output. Moved out of `$STASH/.akm/eval-cases/`
+ * (itlackey/akm#890).
+ */
+export function getEvalCasesDir(stashDir: string): string {
+  return stashScopedDir(path.join(getStateDir(), "improve", "eval-cases"), stashDir);
+}
+
+/**
+ * `$STATE/improve/measurement/verdicts/<stash>/` — `akm-eval-proactive-verdict`
+ * reports. Moved out of `$STASH/.akm/measurement/verdicts/` (itlackey/akm#890);
+ * the pilot treatment file at `$STASH/.akm/measurement/` is manually-authored
+ * measurement input and stays put.
+ */
+export function getMeasurementVerdictsDir(stashDir: string): string {
+  return stashScopedDir(path.join(getStateDir(), "improve", "measurement", "verdicts"), stashDir);
+}
+
+/**
+ * `$CACHE/index/unresolved-sources/<stash>/` — synthetic placeholder path for
+ * a configured source whose content root did not resolve this run. Never
+ * written to disk; only used as a stable, reportable `SearchSource.path`.
+ * Moved out of `$STASH/.akm/unresolved-sources/` (itlackey/akm#890).
+ */
+export function getUnresolvedSourcesDir(stashDir: string): string {
+  return stashScopedDir(path.join(getCacheDir(), "index", "unresolved-sources"), stashDir);
+}
+
+/**
+ * `$STATE/locks/<stash>/` — per-stash operational lock files for the improve
+ * pipeline (e.g. `improve.lock`). Moved out of `$STASH/.akm/` (itlackey/akm#890).
+ */
+export function getStashLocksDir(stashDir: string): string {
+  return stashScopedDir(path.join(getStateDir(), "locks"), stashDir);
 }
 
 // ── Scheduled-task runtime directories (logs + history) ──────────────────────

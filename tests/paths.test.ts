@@ -8,10 +8,17 @@ import {
   getDataDir,
   getDbPath,
   getDefaultStashDir,
+  getDistillRejectedDir,
+  getEvalCasesDir,
   getLockfileLockPath,
   getLockfilePath,
+  getMeasurementVerdictsDir,
   getRegistryCacheDir,
   getRegistryIndexCacheDir,
+  getStashLocksDir,
+  getStashStateKey,
+  getStateDir,
+  getUnresolvedSourcesDir,
 } from "../src/core/paths";
 
 // ── Environment helpers ─────────────────────────────────────────────────────
@@ -422,6 +429,91 @@ describe("getRegistryIndexCacheDir", () => {
   test("returns registry-index subdir under cache dir", () => {
     process.env.XDG_CACHE_HOME = "/cache";
     expect(getRegistryIndexCacheDir()).toBe(path.join("/cache", "akm", "registry-index"));
+  });
+});
+
+// ── getStateDir ──────────────────────────────────────────────────────────────
+
+describe("getStateDir", () => {
+  test("uses XDG_STATE_HOME on Unix", () => {
+    delete process.env.AKM_STATE_DIR;
+    const result = getStateDir({ XDG_STATE_HOME: "/custom/state" }, "linux");
+    expect(result).toBe(path.join("/custom/state", "akm"));
+  });
+
+  test("falls back to HOME/.local/state on Unix when XDG_STATE_HOME is unset", () => {
+    const result = getStateDir({ HOME: "/home/user" }, "linux");
+    expect(result).toBe(path.join("/home/user", ".local", "state", "akm"));
+  });
+
+  test("falls back to a UID-scoped tmp state dir when HOME is also unset", () => {
+    const result = getStateDir({}, "linux");
+    const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+    expect(result).toBe(path.join(os.tmpdir(), uid === undefined ? "akm-state" : `akm-state-${uid}`));
+  });
+
+  test("AKM_STATE_DIR overrides all other paths", () => {
+    const result = getStateDir({ AKM_STATE_DIR: "/override/state", XDG_STATE_HOME: "/ignored" }, "linux");
+    expect(result).toBe("/override/state");
+  });
+
+  test("uses LOCALAPPDATA on Windows", () => {
+    const result = getStateDir({ LOCALAPPDATA: String.raw`C:\Users\user\AppData\Local` }, "win32");
+    expect(result).toBe(path.join(String.raw`C:\Users\user\AppData\Local`, "akm", "state"));
+  });
+
+  test("honors an injected env without reading or mutating process.env", () => {
+    process.env.AKM_STATE_DIR = "/host/should-be-ignored";
+    const before = JSON.stringify(process.env);
+    const result = getStateDir({ XDG_STATE_HOME: "/injected/state" }, "linux");
+    expect(result).toBe(path.join("/injected/state", "akm"));
+    expect(JSON.stringify(process.env)).toBe(before);
+  });
+});
+
+// ── getStashStateKey / per-stash $STATE and $CACHE writers (itlackey/akm#890) ─
+
+describe("getStashStateKey", () => {
+  test("is deterministic for the same resolved absolute path", () => {
+    expect(getStashStateKey("/a/b/stash")).toBe(getStashStateKey("/a/b/stash"));
+  });
+
+  test("differs between two distinct stash directories", () => {
+    expect(getStashStateKey("/a/b/stash-one")).not.toBe(getStashStateKey("/a/b/stash-two"));
+  });
+
+  test("resolves a relative path the same as its absolute form", () => {
+    const cwdRelative = path.relative(process.cwd(), "/a/b/stash");
+    expect(getStashStateKey(cwdRelative)).toBe(getStashStateKey("/a/b/stash"));
+  });
+
+  test("is a fixed-length lowercase hex string (bundle-id.ts's shortHash format)", () => {
+    expect(getStashStateKey("/a/b/stash")).toMatch(/^[0-9a-f]{8}$/);
+  });
+});
+
+describe("per-stash $STATE/$CACHE writer dirs", () => {
+  test("namespace two different stashes to two different directories", () => {
+    process.env.XDG_STATE_HOME = "/state";
+    process.env.XDG_CACHE_HOME = "/cache";
+    expect(getDistillRejectedDir("/stash-a")).not.toBe(getDistillRejectedDir("/stash-b"));
+    expect(getEvalCasesDir("/stash-a")).not.toBe(getEvalCasesDir("/stash-b"));
+    expect(getMeasurementVerdictsDir("/stash-a")).not.toBe(getMeasurementVerdictsDir("/stash-b"));
+    expect(getUnresolvedSourcesDir("/stash-a")).not.toBe(getUnresolvedSourcesDir("/stash-b"));
+    expect(getStashLocksDir("/stash-a")).not.toBe(getStashLocksDir("/stash-b"));
+  });
+
+  test("are rooted at $STATE/improve/*, $STATE/locks/*, or $CACHE/index/* respectively", () => {
+    process.env.XDG_STATE_HOME = "/state";
+    process.env.XDG_CACHE_HOME = "/cache";
+    const key = getStashStateKey("/stash-a");
+    expect(getDistillRejectedDir("/stash-a")).toBe(path.join("/state", "akm", "improve", "distill-rejected", key));
+    expect(getEvalCasesDir("/stash-a")).toBe(path.join("/state", "akm", "improve", "eval-cases", key));
+    expect(getMeasurementVerdictsDir("/stash-a")).toBe(
+      path.join("/state", "akm", "improve", "measurement", "verdicts", key),
+    );
+    expect(getUnresolvedSourcesDir("/stash-a")).toBe(path.join("/cache", "akm", "index", "unresolved-sources", key));
+    expect(getStashLocksDir("/stash-a")).toBe(path.join("/state", "akm", "locks", key));
   });
 });
 

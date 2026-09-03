@@ -22,6 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmImprove } from "../../../src/commands/improve/improve";
 import { saveConfig } from "../../../src/core/config/config";
+import { getStashLocksDir } from "../../../src/core/paths";
 import { getStateDbPath } from "../../../src/core/state-db";
 import { akmIndex } from "../../../src/indexer/indexer";
 import {
@@ -215,7 +216,7 @@ describe("akm improve --dry-run writes no AKM artifacts", () => {
     expect(fetchCalls).toEqual([]);
     expect(ensureIndexFn).not.toHaveBeenCalled();
     expect(fs.existsSync(getStateDbPath())).toBe(false);
-    expect(fs.existsSync(path.join(stashDir, ".akm", "improve.lock"))).toBe(false);
+    expect(fs.existsSync(path.join(getStashLocksDir(stashDir), "improve.lock"))).toBe(false);
     expectSandboxRootsUnchanged(before, stashDir);
   });
 

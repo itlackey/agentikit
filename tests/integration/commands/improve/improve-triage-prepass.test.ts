@@ -24,6 +24,7 @@ import type { DrainResult } from "../../../../src/commands/proposal/drain";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { saveConfig } from "../../../../src/core/config/config";
 import { readEvents } from "../../../../src/core/events";
+import { getStashLocksDir } from "../../../../src/core/paths";
 import { resolveWriteTarget } from "../../../../src/core/write-source";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { LLM_USAGE_EVENT, LLM_USAGE_SUMMARY_EVENT } from "../../../../src/llm/usage-persist";
@@ -370,7 +371,7 @@ describe("akm improve — triage pre-pass", () => {
       writeMemory("alpha", "Remember alpha details.");
       await akmIndex({ stashDir, full: true });
 
-      const lockPath = path.join(stashDir, ".akm", "improve.lock");
+      const lockPath = path.join(getStashLocksDir(stashDir), "improve.lock");
 
       const result1 = await akmImprove({
         scope: "memory",
@@ -407,7 +408,7 @@ describe("akm improve — triage pre-pass", () => {
       writeMemory("alpha", "Remember alpha details.");
       await akmIndex({ stashDir, full: true });
 
-      const lockPath = path.join(stashDir, ".akm", "improve.lock");
+      const lockPath = path.join(getStashLocksDir(stashDir), "improve.lock");
 
       // Make the primary stash git-backed so the end-of-run sync gate fires, then
       // inject a throwing saveGitStashFn to exercise the sync error path inside

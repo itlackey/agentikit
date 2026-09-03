@@ -12,6 +12,7 @@ import type { AkmConfig } from "../../../../src/core/config/config";
 import { saveConfig } from "../../../../src/core/config/config";
 import { readEvents } from "../../../../src/core/events";
 import { acquireMaintenanceBarrier } from "../../../../src/core/maintenance-barrier";
+import { getStashLocksDir } from "../../../../src/core/paths";
 import { LLM_USAGE_SUMMARY_EVENT } from "../../../../src/llm/usage-persist";
 import { hasLlmUsageSink } from "../../../../src/llm/usage-telemetry";
 import { type Cleanup, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
@@ -48,7 +49,7 @@ function quietConfig(): AkmConfig {
 }
 
 function plantHeldImproveLock(): string {
-  const lockPath = path.join(stashDir, ".akm", "improve.lock");
+  const lockPath = path.join(getStashLocksDir(stashDir), "improve.lock");
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), "utf8");
   return lockPath;
@@ -94,7 +95,7 @@ describe("akm improve — skip-if-locked", () => {
   });
 
   test("returns the same no-op when the maintenance barrier is held", async () => {
-    const lockPath = path.join(stashDir, ".akm", "improve.lock");
+    const lockPath = path.join(getStashLocksDir(stashDir), "improve.lock");
     const releaseBarrier = acquireMaintenanceBarrier();
 
     try {

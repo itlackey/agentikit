@@ -14,7 +14,10 @@
  * READ-ONLY: reads state.db (usage_events + events + proposals), index.db
  * (the current entries catalog for control selection),
  * the stored retrieval baseline eval-run, and the pilot treatment files.
- * Writes only its own report under <stash>/.akm/measurement/verdicts/.
+ * Writes only its own report under $STATE/improve/measurement/verdicts/<stash>/
+ * (moved out of <stash>/.akm/measurement/verdicts/ in itlackey/akm#890 — the
+ * pilot treatment file it reads is unaffected and still lives under
+ * <stash>/.akm/measurement/).
  *
  * Metrics:
  *   (a) retrieval-quality delta — rerun (or load latest) of the real-query
@@ -44,6 +47,7 @@
 import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import path from "node:path";
+import { getMeasurementVerdictsDir } from "../../../src/core/paths";
 import { isCanonicalIndexGeneration } from "../../../src/storage/repositories/index-entry-schema";
 import { resolveDataDir, resolveEvalsRoot, resolveStashDir } from "./sources/paths";
 import {
@@ -721,10 +725,16 @@ function main(): number {
     },
   };
 
-  const outDir = path.join(measurementDir, "verdicts");
-  fs.mkdirSync(outDir, { recursive: true });
+  // Resolved lazily: an explicit `--out` never touches `$STATE`, so a caller
+  // that always names its output path (every test call site included) stays
+  // hermetic without needing `AKM_STATE_DIR`/`XDG_STATE_HOME` set.
   const stamp = now.toISOString().replace(/[:.]/g, "-");
-  const requestedPath = opts.out ?? path.join(outDir, `verdict-${stamp}.json`);
+  let requestedPath = opts.out;
+  if (requestedPath === undefined) {
+    const outDir = getMeasurementVerdictsDir(opts.stash);
+    fs.mkdirSync(outDir, { recursive: true });
+    requestedPath = path.join(outDir, `verdict-${stamp}.json`);
+  }
   const ext = path.extname(requestedPath);
   const basePath = ext === ".json" || ext === ".md" ? requestedPath.slice(0, -ext.length) : requestedPath;
   const jsonPath = ext === ".json" ? requestedPath : `${basePath}.json`;

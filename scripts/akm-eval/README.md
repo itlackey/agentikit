@@ -69,9 +69,10 @@ Outputs land in `<stash>/.akm/evals/runs/<eval-run-id>/`:
   latest                 — symlink to most recent run
 ```
 
-`<stash>/.akm/evals/` is owned by this toolkit. The existing
-`<stash>/.akm/eval-cases/` directory is owned by `akm improve` and is
-left untouched.
+`<stash>/.akm/evals/` is owned by this toolkit. `akm improve`'s eval-case
+capture lives at `$STATE/improve/eval-cases/<stash>/` (moved out of
+`<stash>/.akm/eval-cases/` in itlackey/akm#890) and is left untouched by
+this toolkit either way.
 
 ## Requirements
 

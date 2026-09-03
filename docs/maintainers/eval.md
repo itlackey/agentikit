@@ -559,7 +559,10 @@ scripts/akm-eval/bin/akm-eval-proactive-verdict [--format md]
 ```
 
 Read-only against `index.db`, `state.db`, and the stored eval runs; writes
-only its own report to `<stash>/.akm/measurement/verdicts/verdict-<ts>.{json,md}`.
+only its own report to `$STATE/improve/measurement/verdicts/<stash>/verdict-<ts>.{json,md}`
+(moved out of `<stash>/.akm/measurement/verdicts/` in itlackey/akm#890 — the
+pilot treatment file below is unaffected, it still lives under
+`<stash>/.akm/measurement/`).
 Computes:
 
 - **(a) retrieval-quality delta** — newest real-query run minus the oldest run

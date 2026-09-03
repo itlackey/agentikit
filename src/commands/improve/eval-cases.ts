@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../../core/common";
+import { getEvalCasesDir } from "../../core/paths";
 import { recordWrittenPath } from "../../core/write-provenance";
 
 export interface EvalCase {
@@ -18,7 +19,7 @@ export interface EvalCase {
 }
 
 export function writeEvalCase(stashDir: string, evalCase: EvalCase): string {
-  const evalDir = path.join(stashDir, ".akm", "eval-cases");
+  const evalDir = getEvalCasesDir(stashDir);
   fs.mkdirSync(evalDir, { recursive: true });
   const fileName = `${evalCase.slug}.md`;
   const filePath = path.join(evalDir, fileName);
@@ -41,12 +42,18 @@ Use it as a regression test: future improve runs on this ref should not produce
 output that would be rejected for the same reason.
 `;
   writeFileAtomic(filePath, content);
+  // itlackey/akm#890: journal it even though it now lands under `$STATE`,
+  // outside the stash's git repo — `result.writtenPaths` still reports it
+  // (as an absolute path; see describeRunWrittenPaths in improve.ts), and
+  // the auto-sync commit's own containment check already excludes anything
+  // outside the stash from what gets staged, so recording it here cannot
+  // cause it to be committed.
   recordWrittenPath(filePath);
   return filePath;
 }
 
 export function countEvalCases(stashDir: string): number {
-  const evalDir = path.join(stashDir, ".akm", "eval-cases");
+  const evalDir = getEvalCasesDir(stashDir);
   if (!fs.existsSync(evalDir)) return 0;
   try {
     return fs.readdirSync(evalDir).filter((f) => f.endsWith(".md")).length;

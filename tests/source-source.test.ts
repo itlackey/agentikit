@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AkmConfig, BundleConfigEntry } from "../src/core/config/config";
 import { saveConfig } from "../src/core/config/config";
+import { getUnresolvedSourcesDir } from "../src/core/paths";
 import { resolveWritable } from "../src/core/write-source";
 import { buildDbHit } from "../src/indexer/search/db-search";
 import {
@@ -240,7 +241,10 @@ describe("resolveSourceEntries", () => {
       const unresolved = sources.find((source) => source.registryId === "escaping");
       expect(sources[0]?.path).toBe(stashDir);
       expect(unresolved).toMatchObject({ unresolved: true, registryId: "escaping" });
-      expect(unresolved?.path.startsWith(`${bundleRoot}${path.sep}`)).toBe(true);
+      // itlackey/akm#890: the placeholder now lives under $CACHE, keyed by the
+      // bundle root, never under the bundle root (or the escaped root) itself.
+      expect(unresolved?.path.startsWith(`${getUnresolvedSourcesDir(bundleRoot)}${path.sep}`)).toBe(true);
+      expect(unresolved?.path.startsWith(`${bundleRoot}${path.sep}`)).toBe(false);
       expect(sources.some((source) => source.path === path.dirname(bundleRoot))).toBe(false);
       if (!unresolved) throw new Error("expected unresolved source");
       fs.mkdirSync(unresolved.path, { recursive: true });

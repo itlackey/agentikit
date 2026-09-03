@@ -14,6 +14,7 @@ import {
   releaseLock,
   tryAcquireLockSync,
 } from "../../../../src/core/file-lock";
+import { getStashLocksDir } from "../../../../src/core/paths";
 import { resolveWritable } from "../../../../src/core/write-source";
 import { type Database, openDatabaseFinalizing } from "../../../../src/storage/database";
 import { isCanonicalIndexGeneration } from "../../../../src/storage/repositories/index-entry-schema";
@@ -1294,7 +1295,15 @@ function assertNoActiveProcessLocks(dataDir: string, configPath: string, bundleR
   for (const directory of [
     path.join(dataDir, "maintenance-activities"),
     path.join(dataDir, "extract-locks"),
-    ...bundleRoots.flatMap(({ root }) => [path.join(root, ".akm", "extract-locks"), path.join(root, ".akm")]),
+    ...bundleRoots.flatMap(({ root }) => [
+      path.join(root, ".akm", "extract-locks"),
+      path.join(root, ".akm"),
+      // itlackey/akm#890: the improve-pipeline whole-run lock (and its
+      // `.operations.sensitive` mutex sibling) moved out of `root/.akm` to
+      // `$STATE/locks/<root>/` — scan there too so a live `akm improve` run
+      // still blocks snapshot capture.
+      getStashLocksDir(root),
+    ]),
   ]) {
     const stat = lstatIfExists(directory);
     if (!stat) continue;

@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { akmImprove, armBudgetWatchdog } from "../../../src/commands/improve/improve";
 import type { AkmConfig } from "../../../src/core/config/config";
+import { getStashLocksDir } from "../../../src/core/paths";
 import { withIsolatedAkmStorage } from "../../_helpers/sandbox";
 
 // A deterministic, controllable fake timer so we can exercise the
@@ -216,7 +217,7 @@ describe("akmImprove whole-run deadline", () => {
         ensureIndexFn: async (_stashDir, options) => {
           receivedSignal = options?.signal;
           remainingAtIndex = (options?.signal as AbortSignal & { remainingBudgetMs?: number }).remainingBudgetMs;
-          expect(fs.existsSync(path.join(storage.stashDir, ".akm", "improve.lock"))).toBe(true);
+          expect(fs.existsSync(path.join(getStashLocksDir(storage.stashDir), "improve.lock"))).toBe(true);
           return false;
         },
         collectEligibleRefsFn: async () => ({

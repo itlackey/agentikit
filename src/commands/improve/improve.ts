@@ -22,7 +22,7 @@ import type {
 } from "../../core/improve-types";
 import { classifyImproveAction, foldDistillSkipped } from "../../core/improve-types";
 import { resolveMutationTarget } from "../../core/mutation-target";
-import { getDbPath, getStateDbPathInDataDir } from "../../core/paths";
+import { getDbPath, getStashLocksDir, getStateDbPathInDataDir } from "../../core/paths";
 import { redactSensitiveText } from "../../core/redaction";
 import { openStateDatabase } from "../../core/state-db";
 import { info, warn, warnVerbose } from "../../core/warn";
@@ -615,8 +615,11 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
   const resolvedStateDbPath = getStateDbPathInDataDir();
 
   // One conservative run lock protects the complete mutation window, including
-  // triage, indexing, proposal work, maintenance, and final stash sync.
-  const lockBaseDir = primaryStashDir ? path.join(primaryStashDir, ".akm") : path.join(options.stashDir ?? ".", ".akm");
+  // triage, indexing, proposal work, maintenance, and final stash sync. Moved
+  // out of `$STASH/.akm` to `$STATE/locks/<stash>/` (itlackey/akm#890): a lock
+  // file is machine-local coordination state, not content that must travel
+  // with the bundle.
+  const lockBaseDir = getStashLocksDir(primaryStashDir ?? options.stashDir ?? ".");
   const resolvedLockPath = improveLockPath(lockBaseDir);
   const effectiveSync = { ...improveProfile.sync, ...options.sync };
 

@@ -4,7 +4,8 @@
 # Thin wrapper around scripts/akm-eval/src/proactive-verdict.ts. Forwards
 # every argument unchanged; proactive-verdict.ts owns argument parsing
 # (including its own --stash flag). READ-ONLY against index.db / state.db /
-# eval runs; writes only its report under <stash>/.akm/measurement/verdicts/.
+# eval runs; writes only its report under
+# $STATE/improve/measurement/verdicts/<stash>/ (itlackey/akm#890).
 
 set -euo pipefail
 
