@@ -440,10 +440,10 @@ jobs:
   main:
     runs-on: [self-hosted]
     steps:
-      - id: invalid
-        uses: akm/command
-        with:
-          content: echo $HOME
+      - id: dup
+        run: echo one
+      - id: dup
+        run: echo two
 `,
     );
     await akmIndex({ stashDir, full: true });
