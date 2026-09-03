@@ -420,15 +420,18 @@ describe("workflow source canonical-ref collisions", () => {
 
   // Targeted single-file indexing has no notion of siblings — it naively
   // caches whatever file it was told to (re)index, so adding a .yml sibling
-  // and targeting JUST it still evicts the .md entry from the cache, same as
-  // before. What issue 9 changes is what happens NEXT: the pre-existing
-  // read-time identity check (`assertIndexedWorkflowSourceIdentity`,
-  // unrelated to this fix) notices the cached `.yml` no longer matches the
-  // LIVE authoritative source (which now resolves to `.md`, deterministically,
-  // instead of throwing a collision) and reports the cache as stale rather
-  // than silently serving the wrong file — `akm index --full` (proven above)
-  // reconciles it back to `.md`.
-  test("ordinary: a targeted reindex of a new .yml sibling stales the cache, and the read path reports it instead of serving the wrong file", async () => {
+  // and targeting JUST it still evicts the .md entry from the cache.
+  //
+  // Two guard-audit changes meet here. Issue 9 makes the LIVE authoritative
+  // source resolve deterministically to `.md` instead of throwing a
+  // collision. Finding 7 (indexer) makes a stale indexed identity fall back
+  // to the physical owner with a warning instead of throwing
+  // WORKFLOW_SOURCE_INVALID. Together they mean the stale cache neither
+  // blocks the read NOR serves the wrong file: `lookupBundleRef` reports no
+  // valid INDEX ENTRY (true — the cached row is stale), and the resolution
+  // path behind `runWorkflowSteps` falls back to the physical owner and runs
+  // the `.md` winner. `akm index --full` (proven above) reconciles the cache.
+  test("ordinary: a targeted reindex of a new .yml sibling stales the cache, and the read path falls back to the .md winner instead of serving the wrong file", async () => {
     const fixture = configure("ordinary");
     const markdownPath = path.join(fixture.ownedDir, "collision.md");
     const yamlPath = path.join(fixture.ownedDir, "collision.yml");
@@ -440,10 +443,22 @@ describe("workflow source canonical-ref collisions", () => {
     await indexWrittenAssets(fixture.root, [yamlPath], { bundleId: "ordinary-bundle" });
     expect(indexSnapshot()).toBe(1);
 
-    await expect(lookupBundleRef(parseBundleRef(fixture.canonicalRef))).rejects.toMatchObject({
-      code: "WORKFLOW_SOURCE_INVALID",
-      message: expect.stringMatching(/stale index\/cache identity/i),
+    // The cached row is stale, so there is no valid index entry to return...
+    expect(await lookupBundleRef(parseBundleRef(fixture.canonicalRef))).toBeNull();
+
+    // ...but resolution falls back to the physical owner, so the run executes
+    // the `.md` winner ("first"), never the stale `.yml` sibling ("second").
+    const dispatched: string[] = [];
+    await runWorkflowSteps({
+      target: fixture.canonicalRef,
+      summaryJudge: null,
+      dispatcher: async (request) => {
+        dispatched.push(JSON.stringify(request));
+        return { ok: true, text: "done" };
+      },
     });
+    expect(dispatched.join(" ")).toContain("printf first");
+    expect(dispatched.join(" ")).not.toContain("printf second");
 
     // `akm index --full` reconciles the cache back to the deterministic
     // winner.
