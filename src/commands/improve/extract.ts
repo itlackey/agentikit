@@ -114,6 +114,11 @@ const DEFAULT_MIN_CONTENT_CHARS = 10;
  * wall time + token spend so a backlog of accumulated sessions can't run a single
  * pass past its scheduled-task timeout. Overflow sessions stay unseen and are
  * processed by subsequent runs, so coverage is preserved — just spread out.
+ *
+ * Bypassed (same as `--force`) when the caller passes an explicit `--since`:
+ * a human naming exactly the window they want processed this run has already
+ * decided; the cap exists to bound an unattended DEFAULT-window run, not to
+ * second-guess an explicit ask.
  */
 const DEFAULT_MAX_SESSIONS_PER_RUN = 25;
 
@@ -1592,8 +1597,13 @@ function resolveExtractRunConfig(
   // Cap on NEW sessions LLM-processed per run; 0 disables. Absent = default.
   // Bounds per-run wall time / LLM cost so a backlog can't push a run past its
   // task timeout — the overflow stays unseen and is picked up by later runs.
-  const maxSessionsPerRun =
-    typeof extractProcess?.maxSessionsPerRun === "number"
+  // An explicit `--since` names exactly the window a human wants processed
+  // this run — the same deliberate-command exemption `--force` already gets
+  // (AGENTS.md Defensive Code test 3). Only the DEFAULT discovery window (no
+  // --since) is capped to bound an unattended run's wall time / LLM spend.
+  const maxSessionsPerRun = options.since
+    ? 0
+    : typeof extractProcess?.maxSessionsPerRun === "number"
       ? extractProcess.maxSessionsPerRun
       : DEFAULT_MAX_SESSIONS_PER_RUN;
   // Default discovery window — process config can override the built-in 24h.
