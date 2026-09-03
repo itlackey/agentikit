@@ -1758,10 +1758,14 @@ function assertInlineTaskPrompt(input: string): void {
   const pathShaped =
     /^(?:\.{1,2}[\\/]|~[\\/]|[\\/]|[A-Za-z]:[\\/])/.test(value) ||
     (!/\s/.test(value) && /[\\/]/.test(value) && path.extname(value) !== "");
+  // Nothing expands --prompt's value; it is written verbatim into the task's
+  // `with: {content}`. A slash-command ref ("/daily-standup" — how Claude
+  // Code, OpenCode and Cursor users invoke their own commands) or a path
+  // ("src/api/handler.ts") is very likely a mistake, but guessing intent
+  // from free text can only warn, never refuse a value the operator typed.
   if (!isFullRefInput(value) && !pathShaped) return;
-  throw new UsageError(
-    "--prompt accepts inline text only; asset refs and file paths are not prompt content. Use --workflow or an authored command ref where appropriate.",
-    "INVALID_FLAG_VALUE",
+  warn(
+    `--prompt "${input}" looks like an asset ref or file path; --prompt sends it as literal text, not a reference. Did you mean --workflow?`,
   );
 }
 
