@@ -7,7 +7,7 @@
       "allowedTypes": ["agent", "command", "knowledge", "lesson", "memory", "skill", "workflow"]
     },
     "distill": { "enabled": true, "allowedTypes": ["memory"], "requirePlannedRefs": true },
-    "consolidate": { "enabled": true, "allowedTypes": ["memory"], "minPoolSize": 500 },
+    "consolidate": { "enabled": true, "allowedTypes": ["memory"] },
     "memoryInference": { "enabled": true },
     "graphExtraction": { "enabled": true },
     "extract": { "enabled": false, "triage": { "enabled": true, "minScore": 2 } },

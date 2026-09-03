@@ -108,10 +108,12 @@ function durableRef(ref: string): string {
 }
 
 // #553: these pool-delta / #551-gate tests use single-memory sandboxed pools.
-// The default consolidate minPoolSize guard (500) would otherwise short-circuit
-// the consolidation pass before the mtime-delta gate runs. Disable the pool-size
-// guard (minPoolSize: 0) so these tests exercise the gate they pin, not the new
-// guard. (A dedicated suite covers the minPoolSize guard itself.)
+// A configured consolidate minPoolSize guard would otherwise short-circuit the
+// consolidation pass before the mtime-delta gate runs (the runtime default is
+// 0/disabled since the guard-audit removed the built-in strategies' shipped
+// 500, but this suite sets it explicitly for clarity). Disable the pool-size
+// guard (minPoolSize: 0) so these tests exercise the gate they pin, not the
+// other guard. (A dedicated suite covers the minPoolSize guard itself.)
 //
 // proactiveMaintenance is ALSO disabled explicitly because these tests pin the
 // signal-delta / high-salience SELECTION gates in isolation. The opt-in lane

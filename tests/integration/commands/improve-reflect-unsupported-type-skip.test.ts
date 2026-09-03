@@ -115,6 +115,12 @@ afterEach(() => {
   for (const cleanup of dirCleanups.splice(0)) cleanup();
 });
 
+// REFLECT_ALLOWED_TYPES is now a fast-path allowlist, not a hard block: a
+// type outside it falls through to a structural check on the file's actual
+// content (frontmatter + markdown?) instead of being refused outright for
+// being unlisted — see reflect.ts's `isReflectableSourceShape` and the
+// positive/negative coverage in reflect-pipeline-fixes.test.ts. This set
+// still names the built-ins that always take that shape and skip the check.
 describe("REFLECT_ALLOWED_TYPES export", () => {
   test("does not include 'script'", () => {
     expect(REFLECT_ALLOWED_TYPES.has("script")).toBe(false);

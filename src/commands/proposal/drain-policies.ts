@@ -19,6 +19,7 @@
 import fs from "node:fs";
 import { z } from "zod";
 import { UsageError } from "../../core/errors";
+import { warnOnce } from "../../core/warn";
 import type { DrainPolicy } from "./drain";
 import { PROPOSAL_SOURCES } from "./repository";
 
@@ -92,6 +93,14 @@ export const BUILTIN_POLICY_NAMES = Object.keys(BUILTIN_POLICIES);
 // Custom policy file schema (`--policy <path>`)
 // ---------------------------------------------------------------------------
 
+// `.passthrough()`, not `.strict()`: a policy file carrying a `_comment` key,
+// or one written for a newer akm version with a field this version does not
+// know yet, used to fail closed with no escape hatch other than hand-editing
+// the file back to a shape this exact version accepts. Unknown keys are kept
+// (ignored, not acted on) and named in a one-time warning instead — the
+// `extra-params` (#815/#816) template: the engine itself never reads them
+// (rules are matched by the known fields only), so passing them through is
+// inert, not silently wrong.
 const DrainAcceptRuleSchema = z
   .object({
     generator: GeneratorSchema,
@@ -99,7 +108,7 @@ const DrainAcceptRuleSchema = z
     minContentLines: z.number().int().nonnegative().optional(),
     requireType: z.string().optional(),
   })
-  .strict();
+  .passthrough();
 
 const DrainPolicySchema = z
   .object({
@@ -108,7 +117,21 @@ const DrainPolicySchema = z
     rejectEmpty: z.boolean(),
     defer: z.array(GeneratorSchema),
   })
-  .strict();
+  .passthrough();
+
+/** Warn once (per file + field set) about policy keys akm parsed but ignored. */
+function warnIgnoredPolicyKeys(filePath: string, label: string, raw: unknown, knownKeys: readonly string[]): void {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  const extra = Object.keys(raw as Record<string, unknown>).filter((key) => !knownKeys.includes(key));
+  if (extra.length === 0) return;
+  warnOnce(
+    `drain-policy-ignored-keys:${filePath}:${label}:${extra.join(",")}`,
+    `[proposal] Policy file "${filePath}" has ${label} field(s) akm does not recognize and ignores: ${extra.join(", ")}. Check for a typo, or the file may be written for a newer akm version.`,
+  );
+}
+
+const DRAIN_POLICY_KNOWN_KEYS = Object.keys(DrainPolicySchema.shape);
+const DRAIN_ACCEPT_RULE_KNOWN_KEYS = Object.keys(DrainAcceptRuleSchema.shape);
 
 /**
  * Resolve a `--policy <preset|path>` argument into a {@link DrainPolicy}.
@@ -148,6 +171,17 @@ export function resolveDrainPolicy(arg: string | undefined): DrainPolicy {
       `Invalid policy file "${value}": ${validated.error.issues.map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`).join("; ")}`,
       "INVALID_FLAG_VALUE",
     );
+  }
+  warnIgnoredPolicyKeys(value, "top-level", parsed, DRAIN_POLICY_KNOWN_KEYS);
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    !Array.isArray(parsed) &&
+    Array.isArray((parsed as { accept?: unknown }).accept)
+  ) {
+    (parsed as { accept: unknown[] }).accept.forEach((rule, index) => {
+      warnIgnoredPolicyKeys(value, `accept[${index}]`, rule, DRAIN_ACCEPT_RULE_KNOWN_KEYS);
+    });
   }
   return validated.data;
 }

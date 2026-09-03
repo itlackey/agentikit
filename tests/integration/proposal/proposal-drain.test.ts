@@ -29,6 +29,7 @@ import type { AkmConfig } from "../../../src/core/config/config";
 import { ConfigError } from "../../../src/core/errors";
 import type { EventsContext } from "../../../src/core/events";
 import { getStateDbPath } from "../../../src/core/state-db";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
 import type { AgentRunResult } from "../../../src/integrations/agent";
 import type { RunnerSpec } from "../../../src/integrations/agent/runner";
 import { makeConfig } from "../../_helpers/factories";
@@ -188,6 +189,38 @@ describe("resolveDrainPolicy", () => {
     const file = path.join(dir, "bad.json");
     fs.writeFileSync(file, JSON.stringify({ name: "x", accept: "nope", rejectEmpty: true, defer: [] }));
     expect(() => resolveDrainPolicy(file)).toThrow(/Invalid policy file/);
+  });
+
+  test("a `_comment` or newer-akm field is ignored and warned about, not rejected", () => {
+    const dir = makeTempDir("akm-drain-policy-extra-");
+    const file = path.join(dir, "commented.json");
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        name: "custom",
+        _comment: "this policy pins the personal-stash defaults",
+        accept: [{ generator: "extract", futureField: "written-for-a-newer-akm" }],
+        rejectEmpty: true,
+        defer: [],
+      }),
+    );
+
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    let policy: ReturnType<typeof resolveDrainPolicy>;
+    try {
+      policy = resolveDrainPolicy(file);
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+
+    expect(policy.name).toBe("custom");
+    expect(policy.accept).toMatchObject([{ generator: "extract" }]);
+    expect((policy.accept[0] as unknown as { futureField?: string }).futureField).toBe("written-for-a-newer-akm");
+    expect(warnings.some((w) => w.includes(file) && w.includes("_comment"))).toBe(true);
+    expect(warnings.some((w) => w.includes("accept[0]") && w.includes("futureField"))).toBe(true);
   });
 });
 
@@ -408,11 +441,15 @@ describe("drainProposals — dry-run", () => {
     expect(stillPending.map((p) => p.id).sort()).toEqual([accepted.id, empty.id].sort());
   });
 
-  test("reports only candidates that pass the real stamped promotion preflight", async () => {
+  test("reports a candidate the real preflight only flags advisorily as promotable", async () => {
+    // `promotionLintBlockers` findings (unquoted-colon, missing-ref,
+    // stale-path) are advisory now — they read oddly but keep no malformed
+    // data out of the write, so dry-run reporting must not treat this
+    // candidate as unpromotable.
     const stash = makeStashDir();
-    const blocked = seed(
+    const advisoryOnly = seed(
       stash,
-      "lessons/preflight-blocked",
+      "lessons/preflight-advisory",
       "extract",
       "---\ndescription: Proposal lint:blocks invalid output.\nwhen_to_use: Testing drain preflight\n---\n\nUseful body.\n",
     );
@@ -423,8 +460,8 @@ describe("drainProposals — dry-run", () => {
       fakeReject(),
     );
 
-    expect(result.promoted).toEqual([]);
-    expect(getProposal(stash, blocked.id).status).toBe("pending");
+    expect(result.promoted).toEqual([advisoryOnly.id]);
+    expect(getProposal(stash, advisoryOnly.id).status).toBe("pending");
   });
 });
 

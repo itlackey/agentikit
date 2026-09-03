@@ -289,13 +289,17 @@ describe("resolveImprovePlan", () => {
   });
 
   test("rejects model-only and incompatible fallbacks before dispatch", () => {
+    // "quick" enables only reflect, so disabling it for lack of a usable LLM
+    // engine leaves the plan with nothing enabled at all — the one case that
+    // still aborts (AGENTS.md Defensive Code: abort only if zero processes
+    // remain).
     expect(() =>
       resolveImprovePlan("quick", {
         configVersion: "0.9.0",
         semanticSearchMode: "auto",
         improve: { strategies: { quick: { processes: { reflect: { model: "model-without-engine" } } } } },
       }),
-    ).toThrow('Enabled improve process "reflect" requires an LLM engine.');
+    ).toThrow('"reflect" requires an LLM engine that is not configured');
     expect(() =>
       resolveImprovePlan("quick", {
         configVersion: "0.9.0",
@@ -303,7 +307,7 @@ describe("resolveImprovePlan", () => {
         engines: { wrong: { kind: "agent", platform: "pi" } },
         defaults: { llmEngine: "wrong" },
       }),
-    ).toThrow('Engine "wrong" is not an LLM engine.');
+    ).toThrow('"reflect" requires an LLM engine that is not configured');
   });
 
   test("rejects an enabled model-backed process with no runner even when no model fields express intent", () => {
@@ -312,7 +316,56 @@ describe("resolveImprovePlan", () => {
         configVersion: "0.9.0",
         semanticSearchMode: "auto",
       }),
-    ).toThrow('Enabled improve process "reflect" requires an LLM engine.');
+    ).toThrow('"reflect" requires an LLM engine that is not configured');
+  });
+
+  test("disables just the processes with no usable LLM engine, instead of aborting the whole plan", () => {
+    // A user with only an agent engine used to get NOTHING — not reflect, not
+    // graph extraction, not validation, not proactive maintenance — because
+    // the loop aborted on the FIRST llm-only process it hit, taking every
+    // other process down with it (including proactiveMaintenance, which
+    // needs no engine at all). Each is now disabled individually.
+    const plan = resolveImprovePlan("default", {
+      configVersion: "0.9.0",
+      semanticSearchMode: "auto",
+      engines: { "only-agent": { kind: "agent", platform: "claude", bin: "/bin/true" } },
+      defaults: { engine: "only-agent" },
+      // Autonomy on so memoryInference reaches this fix's LLM check instead
+      // of being disabled earlier by the (unrelated) D8 autonomy gate.
+      experimental: { improveAutonomy: true },
+      improve: {
+        strategies: {
+          default: { processes: { proactiveMaintenance: { enabled: true } } },
+        },
+      },
+    } as AkmConfig);
+
+    for (const name of [
+      "reflect",
+      "distill",
+      "consolidate",
+      "memoryInference",
+      "graphExtraction",
+      "validation",
+    ] as const) {
+      expect(plan.processes[name].enabled).toBe(false);
+      expect(plan.processes[name].runner).toBeNull();
+      // The disablement is visible on the strategy config too, so every
+      // downstream consumer that reads `improveProfile.processes.<name>` (not
+      // just `plan.processes`) sees the same answer — e.g. `shouldSkipRef`.
+      expect(plan.strategy.config.processes?.[name]?.enabled).toBe(false);
+    }
+    // Needs no engine at all — survives untouched, unlike before this fix.
+    expect(plan.processes.proactiveMaintenance.enabled).toBe(true);
+
+    const disabledNames: string[] = plan.engineUnavailable.map((item) => item.process).sort();
+    expect(disabledNames).toEqual(
+      (["consolidate", "distill", "graphExtraction", "memoryInference", "reflect", "validation"] as string[]).sort(),
+    );
+    for (const item of plan.engineUnavailable) {
+      expect(item.configKey).toBe(`improve.strategies.default.processes.${item.process}.engine`);
+      expect(item.reason).toContain("Set defaults.llmEngine or improve.strategies.default.processes");
+    }
   });
 
   test("does not require a validation engine when repair is disabled", () => {

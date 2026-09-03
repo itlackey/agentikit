@@ -9,7 +9,11 @@
  * memory pool is below `processes.consolidate.minPoolSize`. The skip is emitted
  * as an `improve_skipped` event with `reason: "pool_below_min_size"` (reusing
  * the #551 emission path), which the health command's dynamic skip-reason
- * aggregation surfaces. `minPoolSize: 0` disables the guard; the default is 500.
+ * aggregation surfaces. `minPoolSize` defaults to 0 (disabled) — none of the
+ * built-in strategies set it any more (a shipped default of 500 meant
+ * `akm improve --strategy consolidate`, typed by a human, silently did
+ * nothing on almost every real install); an operator opts back into a floor
+ * by setting it explicitly, as these tests do.
  *
  * These tests pin: skip-below-threshold (+event, +zero LLM), runs-at-threshold
  * (guard does not preempt the run), disable-with-0, and health visibility. They
@@ -63,6 +67,7 @@ function configWithMinPoolSize(minPoolSize: number): AkmConfig {
 async function runImprove(
   config: AkmConfig,
   consolidateOptions?: AkmConsolidateOptions,
+  overrides?: { scope?: string; strategy?: string },
 ): Promise<Awaited<ReturnType<typeof akmImprove>>> {
   return akmImprove({
     scope: "memory",
@@ -71,6 +76,7 @@ async function runImprove(
     consolidateOptions,
     ensureIndexFn: async () => false,
     reindexFn: async () => ({ schemaVersion: 1, ok: true, indexed: 0, warnings: [], errors: [], durationMs: 0 }),
+    ...overrides,
   });
 }
 
@@ -148,6 +154,39 @@ describe("#553 consolidate minPoolSize guard", () => {
       await akmIndex({ stashDir, full: true });
 
       await runImprove(configWithMinPoolSize(0));
+
+      expect(poolBelowMinSizeEvents().length).toBe(0);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "an explicitly named --strategy bypasses the guard even below minPoolSize",
+    async () => {
+      writeMemory("only-mem", "A single memory — well below the guard.");
+      await akmIndex({ stashDir, full: true });
+
+      // A human who typed `--strategy default` (or any named strategy) has
+      // already decided this run should do its job; the pool-size guard does
+      // not get a second say over that explicit command.
+      await runImprove(configWithMinPoolSize(3), undefined, { strategy: "default" });
+
+      expect(poolBelowMinSizeEvents().length).toBe(0);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "an explicit ref --scope bypasses the guard even below minPoolSize",
+    async () => {
+      writeMemory("only-mem", "A single memory — well below the guard.");
+      await akmIndex({ stashDir, full: true });
+
+      // `--scope memories/only-mem` targets one specific asset, which is a
+      // different kind of "explicit" than a bare `--scope memory` type
+      // filter (used by every other test in this file, which must still
+      // observe the guard).
+      await runImprove(configWithMinPoolSize(3), undefined, { scope: "memories/only-mem" });
 
       expect(poolBelowMinSizeEvents().length).toBe(0);
     },

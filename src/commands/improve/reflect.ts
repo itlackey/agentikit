@@ -39,7 +39,7 @@ import { lintLessonContent } from "../../core/lesson-lint";
 import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { redactSensitiveText } from "../../core/redaction";
 import { resolveStandardsContext } from "../../core/standards/resolve-standards-context";
-import { warn } from "../../core/warn";
+import { warn, warnOnce } from "../../core/warn";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import { lookup } from "../../indexer/indexer";
 import type { AgentFailureReason, AgentRunResult, RunAgentOptions } from "../../integrations/agent";
@@ -80,6 +80,7 @@ import {
   type Proposal,
   type ProposalsContext,
   proposalContent,
+  recordGateDecision,
 } from "../proposal/repository";
 import { checkReflectSize, isValidDescription } from "../proposal/validators/proposal-quality-validators";
 import { deriveLessonRef } from "./distill";
@@ -239,20 +240,24 @@ function readRecentFeedback(ref?: string, eventsCtx?: EventsContext): string[] {
 }
 
 /**
- * Asset types that reflect is allowed to operate on.
+ * Asset types reflect always operates on without checking the file itself.
  *
- * Reflect's canonical output shape is `frontmatter + markdown body`. Running it
- * against types whose on-disk form is NOT markdown (executable scripts, env files
- * env files, YAML tasks) blindly prepends `---\n…\n---\n` to the asset and
- * breaks the runtime contract — for example a `.ts` script with a YAML preamble
- * is a TypeScript syntax error.
+ * Reflect's canonical output shape is `frontmatter + markdown body`. These are
+ * akm's own built-in types whose on-disk form is always exactly that shape, so
+ * checking them structurally on every call would be pure overhead.
  *
- * Whitelisting (rather than blacklisting) keeps the door closed by default as
- * new asset types are registered. To allow a custom registered type, extend
- * this set explicitly.
+ * A type NOT in this set is not refused outright any more — the fixed list
+ * used to also gate every custom/adapter-registered type, and the only remedy
+ * ("extend this set") meant editing akm's own source. It falls through to
+ * {@link isReflectableSourceShape} instead, which checks the ACTUAL file: a
+ * custom type whose files are genuinely `frontmatter + markdown` (e.g. a
+ * website-scraped doc, or an adapter's own markdown-canonical type) is
+ * reflectable regardless of its type name; an executable script, a `.env`
+ * blob, or a YAML task — none of which ever take this shape — still is not.
  *
  * Observed regression: proposal `8737ab63` (May 2026) prepended frontmatter to
- * a `.ts` script file via reflect. This whitelist prevents that.
+ * a `.ts` script file via reflect. The structural check prevents that the same
+ * way the fixed list did, without also blocking types nobody anticipated.
  */
 export const REFLECT_ALLOWED_TYPES: ReadonlySet<string> = new Set([
   "knowledge",
@@ -263,6 +268,30 @@ export const REFLECT_ALLOWED_TYPES: ReadonlySet<string> = new Set([
   "command",
   "workflow",
 ]);
+
+/**
+ * Asset types reflect refuses regardless of what their content looks like.
+ *
+ * `secret` is the one type a structural check must never wave through: a
+ * secret's VALUE is arbitrary bytes the operator chose, so nothing rules out
+ * it coincidentally parsing as `frontmatter + markdown` — and reflect must
+ * never so much as read a secret's content into memory, let alone send it to
+ * an LLM (08-F2: secret material must never reach reflect's LLM).
+ */
+const REFLECT_REFUSED_TYPES: ReadonlySet<string> = new Set(["secret"]);
+
+/**
+ * Structural test replacing a type-name allowlist: does `content` actually
+ * look like reflect's canonical `frontmatter + markdown` shape (a leading
+ * `---\n…\n---\n` block)? An executable script, a `.env` blob, or a bare YAML
+ * task file never parse this way regardless of their registered type name, so
+ * this alone is what keeps reflect from prepending frontmatter to them
+ * (the `8737ab63` regression) — while a custom/adapter type whose files
+ * genuinely take this shape is no longer blocked just for being unlisted.
+ */
+function isReflectableSourceShape(content: string): boolean {
+  return parseFrontmatter(content).frontmatter !== null;
+}
 
 /**
  * Identity / structural frontmatter fields the LLM is NEVER allowed to change.
@@ -504,6 +533,15 @@ export interface ReflectSanitizeResult {
   warnings: string[];
   /** When set, the proposal must be rejected with this reason / error. */
   reject?: { reason: AgentFailureReason; error: string };
+  /**
+   * Set when the proposed body fell outside the reflect size-guard ratio
+   * (excessive shrinkage/expansion vs. the source). The revision is no
+   * longer discarded for this alone (the validator half of this guard is
+   * already advisory on `proposal accept` — see reflect-size-guard in
+   * proposal-quality-validators.ts); the caller attaches it to the created
+   * proposal as a review flag instead.
+   */
+  sizeGuardRatio?: { code: "EXCESSIVE_SHRINKAGE" | "EXCESSIVE_EXPANSION"; ratio: number };
 }
 
 /**
@@ -726,8 +764,14 @@ export function sanitizeReflectPayload(
 
   // Size guard — only when source body is meaningfully large. The pure
   // predicate lives in `core/proposal-quality-validators` so the same check
-  // also runs inside `runProposalValidators` on `proposal accept`.
+  // also runs inside `runProposalValidators` on `proposal accept` (already
+  // advisory there — see reflect-size-guard). A ratio outside the guard says
+  // nothing about whether the revision is WRONG, only that it is unusual;
+  // discarding it here duplicated the accept-time judgment call with a worse
+  // failure mode (the human reviewer never even sees it). Attach it as a
+  // review flag on the created proposal instead of rejecting the revision.
   const sizeOutcome = checkReflectSize(sourceBody, cleanedBody);
+  let sizeGuardRatio: ReflectSanitizeResult["sizeGuardRatio"];
   if (!sizeOutcome.ok) {
     const pct = (sizeOutcome.ratio * 100).toFixed(0);
     const limit = sizeOutcome.code === "EXCESSIVE_SHRINKAGE" ? "minimum 50%" : "maximum 250%";
@@ -735,18 +779,10 @@ export function sanitizeReflectPayload(
       sizeOutcome.code === "EXCESSIVE_SHRINKAGE"
         ? "Concrete content was likely deleted."
         : "Speculative material was likely added.";
-    return {
-      content: payload.content,
-      warnings,
-      reject: {
-        // Content-policy guard hit (EXCESSIVE_SHRINKAGE / EXCESSIVE_EXPANSION).
-        // This is the guard working as designed — the LLM responded fine, we
-        // blocked the output. Routed through `content_policy_reject` so the
-        // health aggregator can split guard hits out of true LLM faults.
-        reason: "content_policy_reject" as AgentFailureReason,
-        error: `Reflect rejected: ${sizeOutcome.code} — proposed body is ${pct}% of source (${limit}) for ref ${targetRef}. ${cause}`,
-      },
-    };
+    warnings.push(
+      `${sizeOutcome.code} — proposed body is ${pct}% of source (${limit}) for ref ${targetRef}. ${cause} Flagged for review.`,
+    );
+    sizeGuardRatio = { code: sizeOutcome.code, ratio: sizeOutcome.ratio };
   }
 
   // Reassemble final content: merged frontmatter + cleaned body.
@@ -762,6 +798,7 @@ export function sanitizeReflectPayload(
     content: reassembled,
     ...(hasFrontmatter ? { frontmatter: mergedFm } : {}),
     warnings,
+    ...(sizeGuardRatio ? { sizeGuardRatio } : {}),
   };
 }
 
@@ -1177,6 +1214,8 @@ async function finalizeReflectProposal(args: {
   engineName: string;
   config: import("../../core/config/config").AkmConfig;
   qualityGateEnabled: boolean;
+  /** True when the gate is enabled but no judge resolved (skipped, not refused). See `akmReflect`. */
+  qualityGateSkippedNoJudge: boolean;
   qualityJudgeRunner: Extract<RunnerSpec, { kind: "llm" }> | undefined;
   qualityJudgeLease: LoweredExecutionDispatchLease | undefined;
   feedback: Parameters<typeof runReflectQualityJudge>[3];
@@ -1196,6 +1235,7 @@ async function finalizeReflectProposal(args: {
     engineName,
     config,
     qualityGateEnabled,
+    qualityGateSkippedNoJudge,
     qualityJudgeRunner,
     qualityJudgeLease,
     feedback,
@@ -1211,7 +1251,8 @@ async function finalizeReflectProposal(args: {
   //       fields (`description`, `when_to_use`, `tags`, ...).
   //     - Reset protected identity fields (`name`, `ref`, `id`, `slug`,
   //       `type`) the LLM tried to change.
-  //     - Reject proposals that shrink/expand the body past safe ratios.
+  //     - Flag proposals that shrink/expand the body past safe ratios for
+  //       human review, rather than discarding the revision.
   //
   // See REFLECT_ALLOWED_TYPES / sanitizeReflectPayload for the underlying
   // hypotheses + observed regressions (`8737ab63`, `26941510`, and the
@@ -1295,7 +1336,10 @@ async function finalizeReflectProposal(args: {
 
   // 7c. Judge the exact sanitized content that can be persisted. Fail closed
   // on cancellation, transport failure, malformed output, or an invalid score.
-  if (qualityGateEnabled) {
+  // Skipped when the size guard already flagged this revision: it is going to
+  // the review queue regardless of what a judge would say, so there is no
+  // reason to pay for a judge call whose verdict cannot change the outcome.
+  if (qualityGateEnabled && !sanitizeOutcome.sizeGuardRatio) {
     const judgeResult = await runReflectQualityJudge(
       config,
       payload.content,
@@ -1346,6 +1390,8 @@ async function finalizeReflectProposal(args: {
     durationMs: result.durationMs,
     emitReflectFailed,
     outputTelemetry,
+    qualityGateSkippedNoJudge,
+    sizeGuardRatio: sanitizeOutcome.sizeGuardRatio,
   });
 }
 
@@ -1362,6 +1408,10 @@ function createReflectProposal(args: {
   engineName: string;
   durationMs: number;
   outputTelemetry?: ReflectLlmTelemetry;
+  /** True when the quality gate was skipped for lack of a configured judge; flags the created proposal for human review. */
+  qualityGateSkippedNoJudge: boolean;
+  /** Set when the proposed body fell outside the reflect size-guard ratio; flags the created proposal for human review. */
+  sizeGuardRatio?: { code: "EXCESSIVE_SHRINKAGE" | "EXCESSIVE_EXPANSION"; ratio: number };
   emitReflectFailed: (
     reason: AgentFailureReason,
     subreason: string,
@@ -1369,7 +1419,17 @@ function createReflectProposal(args: {
     extra?: Record<string, unknown>,
   ) => void;
 }): AkmReflectResult {
-  const { payload, options, stash, engineName, durationMs, emitReflectFailed, outputTelemetry } = args;
+  const {
+    payload,
+    options,
+    stash,
+    engineName,
+    durationMs,
+    emitReflectFailed,
+    outputTelemetry,
+    qualityGateSkippedNoJudge,
+    sizeGuardRatio,
+  } = args;
   // 8. Create the proposal. The proposal queue is the ONLY thing reflect
   // writes — promotion to a real asset is gated by `akm proposal accept`.
   //
@@ -1434,7 +1494,36 @@ function createReflectProposal(args: {
     };
   }
 
-  const proposal: Proposal = proposalResult;
+  let proposal: Proposal = proposalResult;
+
+  // Reasons this proposal needs a human look before it can be trusted as
+  // auto-judged: no LLM judge resolved to score it, and/or the body's size
+  // ratio against source fell outside the reflect size-guard band (a ratio
+  // that used to discard the whole revision — content_policy_reject — even
+  // though the LLM responded fine; the accept-time validator half of this
+  // same guard is already advisory). Both stamp the SAME gateDecision field,
+  // so a proposal hit by both still gets exactly one combined record rather
+  // than the second overwriting the first.
+  const reviewReasons: string[] = [];
+  if (qualityGateSkippedNoJudge) reviewReasons.push("no-judge-configured");
+  if (sizeGuardRatio) reviewReasons.push("reflect-size-ratio");
+  if (reviewReasons.length > 0) {
+    // Reuses the drain/triage engine's gate-decision vocabulary and shape
+    // (see `src/commands/proposal/drain.ts`) so `akm proposal show`/`list`
+    // explain this the same way they explain any other deferred proposal.
+    proposal =
+      recordGateDecision(
+        stash,
+        proposal.id,
+        {
+          outcome: "deferred",
+          reason: reviewReasons.join("+"),
+          gate: "reflect",
+          ...(sizeGuardRatio ? { measured: Math.round(sizeGuardRatio.ratio * 100) } : {}),
+        },
+        options.ctx,
+      ) ?? proposal;
+  }
 
   appendEvent(
     {
@@ -1444,6 +1533,8 @@ function createReflectProposal(args: {
         proposalId: proposal.id,
         source: "reflect",
         engine: engineName,
+        ...(qualityGateSkippedNoJudge ? { qualityGateSkippedNoJudge: true } : {}),
+        ...(sizeGuardRatio ? { sizeGuardRatio: sizeGuardRatio.code, sizeGuardRatioValue: sizeGuardRatio.ratio } : {}),
         ...(outputTelemetry ?? {}),
       },
     },
@@ -1682,12 +1773,44 @@ function resolveReflectRunner(options: AkmReflectOptions): {
   return { config, activeStrategy, runnerSpec, engineName, notices };
 }
 
+/** Build the terminal `unsupported_type` failure `resolveReflectSource` returns for a refused ref. */
+function unsupportedTypeFailure(
+  ref: string,
+  type: string,
+  detail: string,
+  emitReflectFailed: (
+    reason: AgentFailureReason,
+    subreason: string,
+    ref?: string,
+    extra?: Record<string, unknown>,
+  ) => void,
+): { failure: AkmReflectResult } {
+  // Deterministic type-guard rejection — the LLM is never invoked. Emit with
+  // reason `unsupported_type` so the improve loop can route this to the
+  // `reflect-skipped` action bucket instead of `reflect-failed`. See
+  // `/tmp/akm-health-investigations/metrics-taxonomy-review.md` §1a
+  // ("Reflect refused asset type" — ~9% of reflect-failed events).
+  emitReflectFailed("unsupported_type", "unsupported_type", ref, { type });
+  return {
+    failure: {
+      schemaVersion: 2,
+      ok: false,
+      reason: "unsupported_type" as AgentFailureReason,
+      error: `Reflect refused: asset type "${type}" is not supported by reflect (${detail}). Use \`akm proposal new\` or edit the file directly.`,
+      ref,
+      exitCode: null,
+    },
+  };
+}
+
 /**
- * Resolve the reflect target's parsed ref + current on-disk content: enforce the
- * REFLECT_ALLOWED_TYPES markdown-canonical type guard (returning a terminal
- * `unsupported_type` failure), honour the `options.assetContent` test seam, else
- * best-effort load via the local file path / index lookup. Extracted verbatim
- * from `akmReflect`.
+ * Resolve the reflect target's parsed ref + current on-disk content: refuse
+ * `secret` outright (no I/O — see {@link REFLECT_REFUSED_TYPES}), honour the
+ * `options.assetContent` test seam or best-effort load via the local file
+ * path / index lookup for everything else, then require the loaded content to
+ * be structurally reflectable (see {@link isReflectableSourceShape}) unless
+ * the type is one of akm's own built-ins that always take that shape.
+ * Extracted verbatim from `akmReflect`, restructured for the D-4 finding.
  */
 async function resolveReflectSource(
   options: AkmReflectOptions,
@@ -1704,27 +1827,15 @@ async function resolveReflectSource(
   if (options.ref) {
     parsedRef = parseRefInput(options.ref);
 
-    // 2a. Type guard — reflect only operates on asset types whose canonical
-    // shape is `frontmatter + markdown body`. Refuse non-markdown types
-    // (script / env / task) up-front so reflect never prepends YAML to a
-    // `.ts` file or rewrites a `.env` blob as prose. See REFLECT_ALLOWED_TYPES.
-    if (!REFLECT_ALLOWED_TYPES.has(parsedRef.type)) {
-      // Deterministic type-guard rejection — the LLM is never invoked. Emit
-      // with reason `unsupported_type` so the improve loop can route this to
-      // the `reflect-skipped` action bucket instead of `reflect-failed`. See
-      // `/tmp/akm-health-investigations/metrics-taxonomy-review.md` §1a
-      // ("Reflect refused asset type" — ~9% of reflect-failed events).
-      emitReflectFailed("unsupported_type", "unsupported_type", options.ref, { type: parsedRef.type });
-      return {
-        failure: {
-          schemaVersion: 2,
-          ok: false,
-          reason: "unsupported_type" as AgentFailureReason,
-          error: `Reflect refused: asset type "${parsedRef.type}" is not supported by reflect (only markdown-canonical types are allowed: ${[...REFLECT_ALLOWED_TYPES].sort().join(", ")}). Use \`akm proposal new\` or edit the file directly.`,
-          ref: options.ref,
-          exitCode: null,
-        },
-      };
+    // 2a. Refuse `secret` before any content is read — a secret's content is
+    // never touched by reflect, regardless of what it happens to look like.
+    if (REFLECT_REFUSED_TYPES.has(parsedRef.type)) {
+      return unsupportedTypeFailure(
+        options.ref,
+        parsedRef.type,
+        "secret material is never read or sent to an LLM",
+        emitReflectFailed,
+      );
     }
 
     if (options.assetContent !== undefined) {
@@ -1746,6 +1857,24 @@ async function resolveReflectSource(
         }
       } catch {
         // Index miss is non-fatal — the agent can still propose a fresh asset.
+      }
+    }
+
+    // 2b. Structural type guard — akm's own built-in markdown-canonical types
+    // always take reflect's `frontmatter + markdown` shape and skip straight
+    // through. Everything else (a custom/adapter type, or one of akm's own
+    // non-markdown types — script, env, task) must actually look that way on
+    // disk, and a brand-new asset with nothing to check yet defaults to
+    // refused rather than risk minting a wrongly-shaped file (the `8737ab63`
+    // regression this guard exists to prevent).
+    if (!REFLECT_ALLOWED_TYPES.has(parsedRef.type)) {
+      if (assetContent === undefined || !isReflectableSourceShape(assetContent)) {
+        return unsupportedTypeFailure(
+          options.ref,
+          parsedRef.type,
+          "its content is not frontmatter + markdown",
+          emitReflectFailed,
+        );
       }
     }
   }
@@ -2083,24 +2212,24 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
   collectLoweringNotices(executionNotices, resolutionNotices);
   const collectExecutionNotices = (notices: readonly Readonly<LoweringNotice>[]): void =>
     collectLoweringNotices(executionNotices, notices);
-  const qualityJudgeSelection = resolveReflectQualityJudgeRunner(
+  let qualityJudgeSelection = resolveReflectQualityJudgeRunner(
     config,
     runnerSpec,
     isReflectQualityGateEnabled(activeStrategy),
     collectExecutionNotices,
   );
-  if (qualityJudgeSelection.enabled && !qualityJudgeSelection.runner) {
-    return {
-      schemaVersion: 2,
-      ok: false,
-      reason: "parse_error",
-      error:
-        'Reflect proposal quality gate rejected: score=-1, reason="no LLM configured — cannot judge, failing closed"',
-      ...(options.ref ? { ref: options.ref } : {}),
-      engine: engineName,
-      exitCode: null,
-      ...reflectNoticeFields(executionNotices),
-    };
+  // The quality gate is on by default; a config without an LLM engine for the
+  // judge (e.g. `--engine claude` with no defaults.llmEngine) has no judge to
+  // resolve. Refusing here would block generation entirely over a gate the
+  // user never configured. Skip the gate instead: the proposal still lands in
+  // the queue, flagged for human review via its gateDecision.
+  const qualityGateSkippedNoJudge = qualityJudgeSelection.enabled && !qualityJudgeSelection.runner;
+  if (qualityGateSkippedNoJudge) {
+    warnOnce(
+      "reflect-quality-gate-no-judge",
+      "Reflect proposal quality gate has no LLM configured to judge proposals (set defaults.llmEngine, or improve.strategies.<name>.processes.reflect.qualityGate.engine). Skipping the gate for this run; the proposal is queued for human review instead.",
+    );
+    qualityJudgeSelection = Object.freeze({ enabled: false, runner: undefined });
   }
   const qualityJudgeRunner = qualityJudgeSelection.runner;
   let generationLease: LoweredExecutionDispatchLease | undefined;
@@ -2251,6 +2380,7 @@ export async function akmReflect(options: AkmReflectOptions = {}): Promise<AkmRe
       engineName,
       config,
       qualityGateEnabled: qualityJudgeSelection.enabled,
+      qualityGateSkippedNoJudge,
       qualityJudgeRunner,
       qualityJudgeLease,
       feedback,

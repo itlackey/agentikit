@@ -8,6 +8,7 @@ import {
   applyPortableCommandArguments,
   validatePortableCommandTemplate,
 } from "../../src/commands/command/portable-template";
+import { _setWarnSinkForTests } from "../../src/core/warn";
 import {
   composePersonaFallbackPrompt,
   PERSONA_FALLBACK_NOTICE_CODE,
@@ -57,33 +58,68 @@ describe("portable command arguments", () => {
     expect(applyPortableCommandArguments(template, undefined, "inline").content).toBe(template);
   });
 
+  // akm expands exactly one token, the literal `$ARGUMENTS` placeholder, and
+  // never rescans or interprets anything else. Every construct below reads as
+  // prose to akm and must survive untouched — these used to be rejected and
+  // produced verified false positives ("Budget is $5 per run", "$HOME/.config
+  // /akm exists", "mention @alice", "install @anthropic-ai/sdk").
   test.each([
     ["positional", "Review $1 and $0"],
-    ["indexed portable placeholder", "Review $ARGUMENTS[0]"],
     ["named", "Review $TARGET"],
-    ["portable-prefix named", "Review $ARGUMENTS_SUFFIX"],
     ["expression", "Review ${TARGET}"],
     ["legacy", "Review {{0}}"],
     ["native expression", "Review ${{ inputs.target }}"],
     ["native shell interpolation", "Review !`git status`"],
     ["native fenced shell interpolation", "Review\n```!\ngit status\n```"],
     ["native file interpolation", "Review @secrets.env"],
-  ])("rejects %s constructs before substitution", (_label, template) => {
-    expect(() => validatePortableCommandTemplate(template, "fixture//commands/unsafe")).toThrow(
-      /fixture\/\/commands\/unsafe.*unsupported.*template/i,
-    );
+    ["command substitution", "run $(git rev-parse HEAD)"],
+    ["dollar amount", "Budget is $5 per run"],
+    ["home-relative path", "Check that $HOME/.config/akm exists"],
+    ["mention", "mention @alice"],
+    ["scoped package", "install @anthropic-ai/sdk"],
+  ])("passes %s constructs through unchanged", (_label, template) => {
+    validatePortableCommandTemplate(template, "fixture//commands/unsafe");
+    expect(applyPortableCommandArguments(template, undefined, "fixture//commands/unsafe").content).toBe(template);
   });
 
-  test("errors identify the source and construct class without exposing command or argument content", () => {
-    const secretTemplate = "private sentinel $1";
+  test("still expands the literal $ARGUMENTS prefix inside a portable-prefix-named construct", () => {
+    // `$ARGUMENTS_SUFFIX` is not the supported placeholder, but akm's expansion
+    // is a plain substring split/join on "$ARGUMENTS" with no construct
+    // awareness, so the shared prefix is replaced regardless of what follows it.
+    expect(
+      applyPortableCommandArguments("Review $ARGUMENTS_SUFFIX", undefined, "fixture//commands/unsafe").content,
+    ).toBe("Review _SUFFIX");
+  });
+
+  test("warns once on the indexed $ARGUMENTS[N] spelling and still runs the template", () => {
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
     try {
-      applyPortableCommandArguments(secretTemplate, "argument secret", "fixture//commands/private");
-      throw new Error("expected template rejection");
-    } catch (error) {
-      expect(String(error)).toContain("fixture//commands/private");
-      expect(String(error)).toContain("$N");
-      expect(String(error)).not.toContain("private sentinel");
-      expect(String(error)).not.toContain("argument secret");
+      const applied = applyPortableCommandArguments("Review $ARGUMENTS[0]", undefined, "fixture//commands/unsafe");
+      expect(applied.content).toBe("Review [0]");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("fixture//commands/unsafe");
+      expect(warnings[0]).toContain("$ARGUMENTS[N]");
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+  });
+
+  test("the indexed-placeholder warning identifies the source without exposing command or argument content", () => {
+    const warnings: string[] = [];
+    _setWarnSinkForTests((level, args) => {
+      if (level === "warn") warnings.push(args.map(String).join(" "));
+    });
+    try {
+      applyPortableCommandArguments("private sentinel $ARGUMENTS[1]", "argument secret", "fixture//commands/private");
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("fixture//commands/private");
+      expect(warnings[0]).not.toContain("private sentinel");
+      expect(warnings[0]).not.toContain("argument secret");
+    } finally {
+      _setWarnSinkForTests(undefined);
     }
   });
 });

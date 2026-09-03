@@ -109,6 +109,21 @@ export interface ResolvedImproveProcess {
   notices?: readonly Readonly<LoweringNotice>[];
 }
 
+/**
+ * One LLM-requiring process the plan disabled because no usable engine
+ * resolved for it — either nothing was configured, or what resolved was not
+ * an LLM engine. Same shape as {@link GatedLane} (autonomy-gate.ts) for the
+ * same reason: the warning line and the `improve_skipped` event must not
+ * drift from each other.
+ */
+export interface EngineUnavailableProcess {
+  process: ImproveProcessName;
+  /** The config key that would fix it — user-facing, so it comes from one place. */
+  configKey: string;
+  /** Why it was disabled, phrased for an operator reading the warning. */
+  reason: string;
+}
+
 /** Complete immutable process behavior for one improve invocation. */
 export interface ResolvedImprovePlan {
   /** Immutable config snapshot used to re-enter canonical named-engine lowering. */
@@ -123,6 +138,14 @@ export interface ResolvedImprovePlan {
    * lane is never a silent no-op.
    */
   autonomyGated: readonly GatedLane[];
+  /**
+   * Processes disabled because no usable LLM engine resolved for them. A
+   * process without a usable engine used to abort the ENTIRE plan — including
+   * processes needing no engine at all (proactiveMaintenance) or a different
+   * one (triage). Each is now disabled individually and reported here so the
+   * run can warn + emit `improve_skipped` naming it, never a silent no-op.
+   */
+  engineUnavailable: readonly EngineUnavailableProcess[];
 }
 
 function cloneAndFreeze<T>(value: T): Readonly<T> {
@@ -157,40 +180,67 @@ function buildImprovePlan(
   options: { repairValidationFailures?: boolean },
 ): Omit<ResolvedImprovePlan, "autonomyGated"> {
   const processes = {} as Record<ImproveProcessName, ResolvedImproveProcess>;
+  const engineUnavailable: EngineUnavailableProcess[] = [];
   for (const processName of Object.keys(IMPROVE_PROCESS_ENGINE_CAPABILITIES) as ImproveProcessName[]) {
-    const processConfig = cloneAndFreeze(strategy.config.processes?.[processName] ?? {});
-    const enabled = processConfig.enabled === true;
+    const sourceProcessConfig = strategy.config.processes?.[processName] ?? {};
+    const enabled = sourceProcessConfig.enabled === true;
     let runner: ImproveLlmRunner | null = null;
     let notices: readonly Readonly<LoweringNotice>[] = [];
     if (IMPROVE_PROCESS_ENGINE_CAPABILITIES[processName] !== "llm" || !enabled) {
-      processes[processName] = Object.freeze({ enabled, config: processConfig, runner });
+      processes[processName] = Object.freeze({ enabled, config: cloneAndFreeze(sourceProcessConfig), runner });
       continue;
     }
     // Validation itself is structural and always runs. Only its optional repair
     // step needs a model, so disabling repair must not create an LLM preflight.
-    if (processName !== "validation" || options.repairValidationFailures !== false) {
+    const skipsRepairEngine = processName === "validation" && options.repairValidationFailures === false;
+    if (!skipsRepairEngine) {
       const resolved = resolveImproveLlmExecution({
         config,
         profile: strategy.config,
-        process: processConfig,
+        process: sourceProcessConfig,
         processName,
       });
       runner = resolved?.runner ?? null;
       notices = resolved?.notices ?? [];
     }
-    if (!runner && !(processName === "validation" && options.repairValidationFailures === false)) {
-      throw new ConfigError(
-        `Enabled improve process "${processName}" requires an LLM engine. Set defaults.llmEngine or improve.strategies.${strategy.name}.processes.${processName}.engine.`,
-        "LLM_NOT_CONFIGURED",
-      );
+    if (!runner && !skipsRepairEngine) {
+      // A process with no usable LLM engine — nothing configured, or what
+      // resolved was not an LLM engine — used to throw here and abort the
+      // WHOLE plan, taking down every other process too (including ones that
+      // need no engine at all, like proactiveMaintenance). Disable only this
+      // process; the run reports it (warn + `improve_skipped`) rather than
+      // silently doing nothing, and aborts only if nothing is left enabled.
+      const configKey = `improve.strategies.${strategy.name}.processes.${processName}.engine`;
+      engineUnavailable.push({
+        process: processName,
+        configKey,
+        reason: `requires an LLM engine that is not configured. Set defaults.llmEngine or ${configKey}`,
+      });
+      processes[processName] = Object.freeze({
+        enabled: false,
+        config: cloneAndFreeze({ ...sourceProcessConfig, enabled: false }),
+        runner: null,
+      });
+      continue;
     }
     if (runner) runner = cloneAndFreeze(runner) as ImproveLlmRunner;
     processes[processName] = Object.freeze({
       enabled,
-      config: processConfig,
+      config: cloneAndFreeze(sourceProcessConfig),
       runner,
       ...(notices.length > 0 ? { notices: cloneAndFreeze(notices) } : {}),
     });
+  }
+
+  // Abort only if disabling engine-less processes left literally nothing
+  // enabled — the "aborts the whole run" failure mode this replaces, kept for
+  // the genuinely-nothing-to-do case, not for one process among several.
+  if (engineUnavailable.length > 0 && !Object.values(processes).some((process) => process.enabled)) {
+    const names = engineUnavailable.map((item) => `"${item.process}"`).join(", ");
+    throw new ConfigError(
+      `No improve process can run: ${names} ${engineUnavailable.length === 1 ? "requires" : "require"} an LLM engine that is not configured. Set defaults.llmEngine, or the per-process engine key named for each.`,
+      "LLM_NOT_CONFIGURED",
+    );
   }
 
   const triage = strategy.config.processes?.triage;
@@ -237,5 +287,6 @@ function buildImprovePlan(
     ...(triageJudgmentResolution?.notices.length
       ? { triageJudgmentNotices: cloneAndFreeze(triageJudgmentResolution.notices) }
       : {}),
+    engineUnavailable: Object.freeze(engineUnavailable),
   });
 }

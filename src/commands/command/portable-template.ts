@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-import { UsageError } from "../../core/errors";
+import { warn } from "../../core/warn";
 
 export const PORTABLE_ARGUMENTS_PLACEHOLDER = "$ARGUMENTS" as const;
 
@@ -12,51 +12,34 @@ export interface AppliedPortableCommandArguments {
   readonly content: string;
 }
 
-interface UnsupportedTemplateConstruct {
-  readonly label: string;
-  readonly pattern: RegExp;
-}
-
-const UNSUPPORTED_TEMPLATE_CONSTRUCTS: readonly UnsupportedTemplateConstruct[] = Object.freeze([
-  { label: "$ARGUMENTS[N]", pattern: /\$ARGUMENTS\s*\[/u },
-  { label: "```! ... ```", pattern: /(?:^|\r?\n)[\t ]*```!/u },
-  { label: "!`...`", pattern: /!`/u },
-  { label: "@file", pattern: /(?<![A-Za-z0-9._%+-])@(?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*/u },
-  { label: "$" + "{...}", pattern: /\$\{/u },
-  { label: "$(...)", pattern: /\$\(/u },
-  { label: "$N", pattern: /\$\d/u },
-  { label: "$NAME", pattern: /\$[A-Za-z_][A-Za-z0-9_]*/u },
-  { label: "{{...}}", pattern: /\{\{|\}\}/u },
-]);
-
-function unsupportedTemplate(source: string, label: string): UsageError {
-  return new UsageError(
-    `Command ${JSON.stringify(source)} uses unsupported portable template construct ${label}.`,
-    "INVALID_FLAG_VALUE",
-    `AKM command execution supports only the literal ${PORTABLE_ARGUMENTS_PLACEHOLDER} placeholder. Invoke native-only templates through their owning tool instead.`,
-  );
-}
+// akm expands exactly one token, the literal `$ARGUMENTS` placeholder, by a
+// single split/join pass; it never rescans or interprets anything else in the
+// template. Every other construct that used to be rejected here (`$NAME`,
+// `$N`, `${...}`, `$(...)`, `@file`, `{{...}}`, native shell/file
+// interpolation) is ordinary prose to akm and was producing false positives
+// ("Budget is $5 per run", "$HOME/.config/akm", "mention @alice"). Only
+// `$ARGUMENTS[N]` — the one spelling that looks like the supported
+// placeholder but isn't — is worth flagging, and only as a warning: akm still
+// runs the template with the literal text left in place.
+const INDEXED_ARGUMENTS_PATTERN = /\$ARGUMENTS\s*\[/u;
 
 /**
- * Validate the deliberately small portable command-template language.
+ * Warn when a template uses `$ARGUMENTS[N]`-style indexed placeholders, which
+ * akm does not support or expand (it only ever replaces the bare literal
+ * `$ARGUMENTS`). The construct is left in the template untouched; this never
+ * blocks execution.
  *
  * The source identifier is safe to surface; template and argument bytes never
- * enter the error because they may contain user or secret material.
+ * enter the warning because they may contain user or secret material.
  */
 export function validatePortableCommandTemplate(template: string, source: string): void {
   if (typeof template !== "string") throw new TypeError("command template must be a string");
   if (typeof source !== "string" || source.length === 0) throw new TypeError("command source must be a string");
 
-  // Check native extensions of the portable spelling before masking the one
-  // supported token. AKM never interprets indexed native placeholders.
-  const indexedArguments = UNSUPPORTED_TEMPLATE_CONSTRUCTS[0];
-  if (indexedArguments?.pattern.test(template)) throw unsupportedTemplate(source, indexedArguments.label);
-
-  // Mask only the exact portable token. Everything else remains visible to the
-  // unsupported-construct detectors, including `$ARGUMENTS_SUFFIX`.
-  const portableMasked = template.replace(/\$ARGUMENTS(?![A-Za-z0-9_])/gu, "");
-  for (const construct of UNSUPPORTED_TEMPLATE_CONSTRUCTS.slice(1)) {
-    if (construct.pattern.test(portableMasked)) throw unsupportedTemplate(source, construct.label);
+  if (INDEXED_ARGUMENTS_PATTERN.test(template)) {
+    warn(
+      `Command ${JSON.stringify(source)} uses "$ARGUMENTS[N]", which akm does not support. Only the literal $ARGUMENTS placeholder is expanded; the indexed form is left as-is.`,
+    );
   }
 }
 

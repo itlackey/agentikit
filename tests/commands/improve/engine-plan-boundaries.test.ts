@@ -40,6 +40,11 @@ function disabledProcesses(overrides: Record<string, unknown> = {}): ImproveProf
 
 describe("improve engine-plan boundaries", () => {
   test("a missing fallback fails before index or stash side effects", async () => {
+    // "quick" enables only reflect, so disabling it for lack of a usable LLM
+    // engine leaves the plan with nothing enabled at all — the one case that
+    // still aborts (AGENTS.md Defensive Code: abort only if zero processes
+    // remain). A strategy with other enabled processes would instead disable
+    // just reflect and continue — see improve-strategies.test.ts.
     const ensureIndexFn = mock(async () => undefined);
     await expect(
       akmImprove({
@@ -50,7 +55,7 @@ describe("improve engine-plan boundaries", () => {
         },
         ensureIndexFn,
       }),
-    ).rejects.toThrow('Enabled improve process "reflect" requires an LLM engine.');
+    ).rejects.toThrow('"reflect" requires an LLM engine that is not configured');
     expect(ensureIndexFn).not.toHaveBeenCalled();
   });
 

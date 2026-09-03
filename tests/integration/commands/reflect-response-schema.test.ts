@@ -23,6 +23,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { akmReflect, REFLECT_JSON_SCHEMA, runReflectViaLlm } from "../../../src/commands/improve/reflect";
+import { listProposals } from "../../../src/commands/proposal/repository";
 import { validateProposal } from "../../../src/commands/proposal/validators/proposals";
 import type { AkmConfig, LlmProfileConfig } from "../../../src/core/config/config";
 import { ConfigError } from "../../../src/core/errors";
@@ -859,7 +860,7 @@ describe("akmReflect — direct LLM output recovery", () => {
     expect(calls).toBe(1);
   });
 
-  test("does not repair a valid response rejected by content policy", async () => {
+  test("does not repair a valid response flagged by the size guard", async () => {
     const stash = makeStashDir();
     let calls = 0;
     const sourceBody = "Preserve this concrete sentence. ".repeat(20);
@@ -874,10 +875,13 @@ describe("akmReflect — direct LLM output recovery", () => {
       },
     });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected content policy rejection");
-    expect(result.reason).toBe("content_policy_reject");
+    // A well-formed response the size guard flags is not a parse failure —
+    // there is nothing to repair, and the guard no longer discards the
+    // revision (content_policy_reject); it queues, flagged for review.
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
     expect(calls).toBe(1);
+    expect(listProposals(stash)[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-size-ratio" });
     const completed = readEvents({ type: "reflect_completed" }).events.at(-1);
     expect(completed?.metadata?.repairAttempts).toBe(0);
   });

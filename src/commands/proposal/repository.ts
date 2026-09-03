@@ -119,7 +119,7 @@ import {
 import { hasCanonicalProposalValidator } from "./validators/proposal-validators";
 import { repairProposalContent, validateProposal } from "./validators/proposals";
 
-const PROMOTION_LINT_BLOCKERS = new Set<LintIssueType>(["unquoted-colon", "missing-ref", "stale-path"]);
+const PROMOTION_LINT_ISSUE_TYPES = new Set<LintIssueType>(["unquoted-colon", "missing-ref", "stale-path"]);
 
 // ── Proposal domain types (moved to ./proposal-types.ts, WI-9.8 KILL 1) ─────
 //
@@ -2091,7 +2091,7 @@ function promotionLintBlockers(
     fix: false,
     stashRoot: targetRoot,
     extraStashRoots,
-  }).filter((finding) => PROMOTION_LINT_BLOCKERS.has(finding.issue));
+  }).filter((finding) => PROMOTION_LINT_ISSUE_TYPES.has(finding.issue));
 }
 
 export interface ProposalPromotionPreflight {
@@ -2139,14 +2139,20 @@ export function preflightProposalPromotion(
   const stampedContent = assetPath.toLowerCase().endsWith(".md")
     ? stampProposalProvenance(repairedContent, preparedProposal, options.gateDecision, ctx, nowIso(ctx))
     : repairedContent;
+  // Same shape as the accept-time prose-quality gate: `missing-ref` blocked
+  // accepting a proposal whose prose forward-references an asset that does
+  // not exist YET (a normal ordering artifact — nothing stops a human from
+  // authoring the referenced asset next), and `unquoted-colon` /
+  // `stale-path` are the same kind of "reads oddly" heuristic already
+  // advisory everywhere else lint runs. None keep malformed data out of the
+  // written file — `validateProposal` above already did that — so a hit
+  // here is reported, not blocking. There is no `akm proposal edit` and
+  // `accept` takes no `--force`, so a blocking finding here had no remedy
+  // reachable from the proposal surface.
   const lintBlockers = promotionLintBlockers(stampedContent, assetPath, target.source.path, ref.type, config);
   if (lintBlockers.length > 0) {
-    const message = lintBlockers.map((finding) => `[${finding.issue}] ${finding.detail}`).join("\n");
-    throw new UsageError(
-      `Proposal ${proposal.id} failed lint:\n${message}`,
-      "INVALID_PROPOSAL",
-      "Fix or explicitly suppress the reported lint findings, then retry.",
-    );
+    const summary = lintBlockers.map((finding) => `[${finding.issue}] ${finding.detail}`).join("; ");
+    warn(`[proposal] promotion lint for ${proposal.id} found (non-blocking): ${summary}`);
   }
 
   return { proposal: preparedProposal, repairedContent, ref, target, assetPath, stampedContent };

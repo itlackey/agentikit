@@ -1431,6 +1431,29 @@ async function runImproveStageSequence(args: {
     );
   }
 
+  // One event per process disabled for lack of a usable LLM engine — naming
+  // the process AND the config key that would fix it. This process no longer
+  // aborts the whole run (a user with only an agent engine used to get
+  // nothing: not reflect, not graph extraction, not validation, not proactive
+  // maintenance); each disabled process is now reported instead of silently
+  // vanishing from what the run does.
+  for (const item of resolvedPlan.engineUnavailable) {
+    warn(`[improve] ${item.process} skipped — it ${item.reason}.`);
+    appendEvent(
+      {
+        eventType: "improve_skipped",
+        ref: undefined,
+        metadata: {
+          strategy: selectedStrategy.name,
+          reason: "engine_unavailable",
+          process: item.process,
+          configKey: item.configKey,
+        },
+      },
+      eventsCtx,
+    );
+  }
+
   // Single prep->loop->post-loop pass, run under the invocation's lock.
   // Accumulators are direct assignments from the single pass's results.
   let preparation!: ImprovePreparationResult;

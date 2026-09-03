@@ -317,6 +317,38 @@ describe("akmExtract — discovery mode", () => {
     cfg.improve.strategies.extract.processes.extract.maxSessionsPerRun = 3;
 
     let chatCalls = 0;
+    // No explicit --since: the default discovery window applies, and so does
+    // the cap.
+    const result = await akmExtract({
+      type: "claude",
+      stashDir: stash,
+      config: cfg,
+      harnesses: [makeFakeHarness(sessions)],
+      chat: async () => {
+        chatCalls += 1;
+        return JSON.stringify({ candidates: [] });
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(chatCalls).toBe(3); // capped at 3, not all 5
+    expect(result.sessionsProcessed).toBe(3);
+    expect(result.warnings.join(" ")).toMatch(/maxSessionsPerRun=3.*deferred/);
+  });
+
+  test("an explicit --since bypasses maxSessionsPerRun", async () => {
+    // A human naming exactly the window they want processed this run gets
+    // the same deliberate-command exemption --force already has — the cap
+    // exists to bound an UNATTENDED default-window run's wall time/LLM
+    // spend, not to second-guess an explicit ask.
+    const stash = makeStashDir();
+    const now = Date.now();
+    const sessions = Array.from({ length: 5 }, (_, i) => fakeSession(`s${i}`, now - (i + 1) * 60_000));
+    const cfg = configEnabled(stash) as AkmConfig & {
+      improve: { strategies: { extract: { processes: { extract: Record<string, unknown> } } } };
+    };
+    cfg.improve.strategies.extract.processes.extract.maxSessionsPerRun = 3;
+
+    let chatCalls = 0;
     const result = await akmExtract({
       type: "claude",
       stashDir: stash,
@@ -329,9 +361,9 @@ describe("akmExtract — discovery mode", () => {
       },
     });
     expect(result.ok).toBe(true);
-    expect(chatCalls).toBe(3); // capped at 3, not all 5
-    expect(result.sessionsProcessed).toBe(3);
-    expect(result.warnings.join(" ")).toMatch(/maxSessionsPerRun=3.*deferred/);
+    expect(chatCalls).toBe(5); // cap bypassed — all 5 processed
+    expect(result.sessionsProcessed).toBe(5);
+    expect(result.warnings.join(" ")).not.toMatch(/maxSessionsPerRun/);
   });
 });
 
@@ -1764,8 +1796,11 @@ describe("akmExtract — engine + strategy config resolution", () => {
     const stash = makeStashDir();
     const session = fakeSession("ses_bad_mode", Date.now() - 60_000);
     // Build a config where the agent profile EXISTS so the runner resolver
-    // succeeds and akmExtract's own kind-check fires (not the resolver's
-    // missing-profile guard).
+    // successfully resolves to it, but the resolved engine is not an LLM —
+    // akmExtract's own "no LLM configured" guard fires either way (the
+    // resolver now returns null uniformly for "nothing resolved" and
+    // "resolved to the wrong kind", so one process pointed at an agent engine
+    // doesn't need a separate abort path).
     const config = configWithStrategy(stash, { engine: "fake-agent" });
     config.engines = {
       ...config.engines,
@@ -1780,7 +1815,7 @@ describe("akmExtract — engine + strategy config resolution", () => {
         harnesses: [makeFakeHarness([session])],
         chat: async () => JSON.stringify({ candidates: [] }),
       }),
-    ).rejects.toThrow(/is not an LLM engine/);
+    ).rejects.toThrow(/no llm engine configured for extract/i);
   });
 
   test("honors process timeoutMs override", async () => {

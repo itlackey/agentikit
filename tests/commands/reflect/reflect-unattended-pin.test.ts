@@ -101,7 +101,12 @@ describe("unattended-improve reflect pin (07 Chain-G / P1.3)", () => {
           throw new Error("must-not-run");
         },
       }),
-    ).rejects.toThrow('Engine "fake-agent" is not an LLM engine.');
+      // The resolver now returns null uniformly for "nothing configured" and
+      // "resolved to the wrong kind of engine", so reflect's own "no LLM
+      // engine" message fires either way — this direct call bypasses the
+      // improve orchestrator (which would instead have disabled reflect for
+      // this run rather than failing this one call; see improve-strategies.ts).
+    ).rejects.toThrow("Reflect requires an LLM engine for the active improve strategy.");
 
     expect(chatCalled).toBe(false);
   });
