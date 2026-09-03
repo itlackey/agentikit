@@ -28,6 +28,7 @@ import { classifyPathAccess } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { assertIndexPathReadable, closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { getEntryCount, getIndexedFilePaths } from "../storage/repositories/index-entries-repository";
+import { isCanonicalIndexGeneration } from "../storage/repositories/index-entry-schema";
 import { getMeta } from "../storage/repositories/index-meta-repository";
 import { warnOnBundleRenameDrift } from "./bundle-identity-guard";
 
@@ -122,6 +123,12 @@ export function isIndexStale(stashDir: string): boolean {
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
     db = openExistingDatabase(dbPath);
+    // openExistingDatabase no longer throws on a non-canonical generation
+    // (#895) — it warns and hands back the connection so a caller with its
+    // own recovery, like this one, can decide. A stale/foreign generation's
+    // `entries` table can still satisfy a schema-agnostic COUNT(*), so this
+    // check has to be explicit rather than inferred from a query failure.
+    if (!isCanonicalIndexGeneration(db)) return true;
     const entryCount = getEntryCount(db);
     if (entryCount === 0) return true;
 
@@ -164,6 +171,10 @@ function indexCanServeStash(stashDir: string): boolean {
   let db: ReturnType<typeof openExistingDatabase> | undefined;
   try {
     db = openExistingDatabase(dbPath);
+    // See the matching comment in isIndexStale: a non-canonical generation's
+    // `entries` table can still answer COUNT(*), so this can no longer rely
+    // on the opener throwing to detect it.
+    if (!isCanonicalIndexGeneration(db)) return false;
     if (getEntryCount(db) === 0) return false;
 
     const storedStashDir = getMeta(db, "stashDir");

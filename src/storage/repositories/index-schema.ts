@@ -386,12 +386,25 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   //   - When `embeddingDim` is a number, the caller explicitly asked for
   //     that dim and owns the dim-change/backup/wipe semantics.
   const dimExplicit = embeddingDim !== undefined;
-  const effectiveDim = embeddingDim ?? (Number(getMeta(db, "embeddingDim")) || EMBEDDING_DIM);
+  const requestedDim = embeddingDim ?? (Number(getMeta(db, "embeddingDim")) || EMBEDDING_DIM);
+  // A non-integer or non-positive dimension cannot back a vec0 column at
+  // all — that stays rejected, but by warning and falling back to the
+  // static default (matching resolveConfiguredEmbeddingDim's behavior for
+  // the same bad-value case) rather than throwing a bare Error that
+  // aborted the whole index open at exit 70 mid-run. There is no upper
+  // bound any more: a real embedding model's width is not this layer's
+  // business to cap, and index-connection.ts already handles an
+  // oversized/invalid configured value by falling back instead of
+  // refusing the whole database.
+  const effectiveDim = Number.isInteger(requestedDim) && requestedDim > 0 ? requestedDim : EMBEDDING_DIM;
+  if (effectiveDim !== requestedDim) {
+    warn(`Invalid embedding dimension ${requestedDim} — falling back to the default (${EMBEDDING_DIM}).`);
+  }
   if (isVecAvailable(db)) {
     // Check if stored embedding dimension differs from configured one
     if (dimExplicit) {
       const storedDim = getMeta(db, "embeddingDim");
-      if (storedDim && storedDim !== String(embeddingDim)) {
+      if (storedDim && storedDim !== String(effectiveDim)) {
         // Stored vectors are incompatible with the new dimension. Drop the vec
         // table so the block below recreates it at the new width; the BLOB rows
         // go too. Regenerable from markdown — re-embedded by the next index.
@@ -401,9 +414,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
 
     const vecExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entries_vec'").get();
     if (!vecExists) {
-      if (!Number.isInteger(effectiveDim) || effectiveDim <= 0 || effectiveDim > 4096) {
-        throw new Error(`Invalid embedding dimension: ${effectiveDim}`);
-      }
       db.exec(`
         CREATE VIRTUAL TABLE entries_vec USING vec0(
           id       INTEGER PRIMARY KEY,
@@ -412,7 +422,7 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
       `);
     }
     if (dimExplicit) {
-      setMeta(db, "embeddingDim", String(embeddingDim));
+      setMeta(db, "embeddingDim", String(effectiveDim));
     }
   } else {
     // Also purge BLOB embeddings on dimension change (JS fallback path).
@@ -421,11 +431,11 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
     // changes, those stored BLOBs become silently incompatible.
     if (dimExplicit) {
       const storedDim = getMeta(db, "embeddingDim");
-      if (storedDim && storedDim !== String(embeddingDim)) {
+      if (storedDim && storedDim !== String(effectiveDim)) {
         // JS-fallback path: no vec table, just clear the stale BLOB vectors.
         purgeEmbeddings(db);
       }
-      setMeta(db, "embeddingDim", String(embeddingDim));
+      setMeta(db, "embeddingDim", String(effectiveDim));
     }
   }
 
