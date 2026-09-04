@@ -12,7 +12,7 @@ import path from "node:path";
 import { akmSearch } from "../src/commands/read/search";
 import { saveConfig } from "../src/core/config/config";
 import { akmIndex } from "../src/indexer/indexer";
-import { buildDbHit, buildWhyMatched } from "../src/indexer/search/db-search";
+import { buildDbHit, buildWhyMatched, canonicalContentTieKey } from "../src/indexer/search/db-search";
 import type { SourceSearchHit } from "../src/sources/types";
 import {
   type Cleanup,
@@ -622,6 +622,19 @@ describe("Issue #940: relaxed non-name ceilings preserve body relevance", () => 
 });
 
 describe("Identity-independent final ranking ties", () => {
+  test("uses an explicit byte-level title/body canonicalization", () => {
+    const bodyKey = canonicalContentTieKey({ content: "# opaque-id\r\n\n  Alpha\u00a0BETA  " });
+    // Only ASCII case folds and ASCII spaces trim. NBSP remains content; this
+    // is the portable contract shared with SQLite lower/trim/ltrim.
+    expect(bodyKey).toBe(Buffer.from("alpha\u00a0beta", "utf8").toString("hex"));
+    expect(canonicalContentTieKey({ content: " \n# opaque-id\nAlpha" })).toBe(
+      Buffer.from("\n# opaque-id\nalpha", "utf8").toString("hex"),
+    );
+    expect(canonicalContentTieKey({ content: "", description: "  Alpha  " })).toBe(
+      Buffer.from("alpha", "utf8").toString("hex"),
+    );
+  });
+
   test("permuting opaque filenames preserves the ordering of distinct document bodies", async () => {
     const baselineStash = tmpStash();
     const permutedStash = tmpStash();

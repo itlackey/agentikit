@@ -337,13 +337,16 @@ function asciiCaseFold(value: string): string {
   return value.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
 }
 
-function contentTieKey(entry: IndexDocument): string {
-  const withoutLeadingTitle = (entry.content ?? "").replace(/^\s*#(?!#)\s+[^\r\n]*(?:\r?\n|$)/, "");
-  const body = withoutLeadingTitle.trim();
-  // Hex-encode UTF-8 after the shared ASCII fold. SQLite uses the same
-  // `hex(lower(...))` expression before its candidate LIMIT, so both stages
-  // compare an ASCII key byte-for-byte even for non-ASCII document bodies.
-  return Buffer.from(asciiCaseFold(body || (entry.description ?? "").trim()), "utf8").toString("hex");
+/** The portable byte-level title/body rule mirrored in index-fts-repository. */
+export function canonicalContentTieKey(entry: Pick<IndexDocument, "content" | "description">): string {
+  const content = entry.content ?? "";
+  const newline = content.startsWith("# ") ? content.indexOf("\n") : -1;
+  // SQLite uses ltrim(value, char(13) || char(10) || ' ') after an exact '# '
+  // title and trim(value, ' ') otherwise. Keep exactly that deliberately
+  // narrow byte contract; do not use locale or Unicode-whitespace helpers.
+  const body = newline >= 0 ? content.slice(newline + 1).replace(/^[\r\n ]+/, "") : content;
+  const source = (body || entry.description || "").replace(/^ +| +$/g, "");
+  return Buffer.from(asciiCaseFold(source), "utf8").toString("hex");
 }
 
 function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: RankedEntryInput) => number {
@@ -378,7 +381,7 @@ function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: Ra
     // Keep opaque generated IDs out of the final relevance tie-break.  This
     // runs only after every ranking contributor (including the #940 preserved
     // pre-ceiling evidence), exact-name, and type comparison has tied.
-    const contentDiff = compareCodePoints(contentTieKey(a.entry), contentTieKey(b.entry));
+    const contentDiff = compareCodePoints(canonicalContentTieKey(a.entry), canonicalContentTieKey(b.entry));
     if (contentDiff !== 0) return contentDiff;
     return a.filePath.localeCompare(b.filePath);
   };

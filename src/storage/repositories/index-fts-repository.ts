@@ -136,7 +136,7 @@ function runFtsQuery(
                 THEN ltrim(substr(
                   coalesce(json_extract(e.document_json, '$.content'), ''),
                   instr(coalesce(json_extract(e.document_json, '$.content'), ''), char(10)) + 1
-                ))
+                ), char(13) || char(10) || ' ')
               ELSE coalesce(json_extract(e.document_json, '$.content'), '')
             END,
             ''
