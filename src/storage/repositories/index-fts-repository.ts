@@ -115,6 +115,24 @@ export function searchFts(
   return plan.relaxed ? runFtsQuery(db, plan.relaxed, "relaxed", limit, entryType, excludeTypes) : [];
 }
 
+/**
+ * Resolve an opaque fragment selector from the indexed safe projection, not
+ * from current disk. A search result remains self-consistent across a later
+ * file edit; the next index refresh atomically publishes the new revision.
+ */
+export function getIndexedMarkdownFragment(
+  db: Database,
+  itemRef: string,
+  fragmentId: string,
+): { content: string } | undefined {
+  const row = db
+    .prepare(
+      "SELECT f.content AS content FROM entry_fragments_fts f JOIN entries e ON e.id = f.entry_id WHERE e.item_ref = ? AND f.fragment_id = ?",
+    )
+    .get(itemRef, fragmentId) as { content: string } | undefined;
+  return row;
+}
+
 function runFtsQuery(
   db: Database,
   ftsQuery: string,
@@ -264,46 +282,48 @@ function runFragmentQuery(
         ? `AND e.type NOT IN (${excludes.map(() => "?").join(",")})`
         : "";
   const filterParams = entryType && entryType !== "any" ? [entryType] : excludes;
-  const batchSize = Math.max(32, limit * 4);
-  const winners = new Map<number, DbSearchResult>();
-  // This is deliberately an adaptive scan, not `LIMIT limit` fragment rows.
-  // It stops only once K parents are found or FTS has no further rows, so a
-  // long document cannot permanently monopolize a parent result page.
-  for (let offset = 0; ; offset += batchSize) {
-    const sql = `
+  // Select the winning child per parent inside SQLite before the top-K limit.
+  // This has one FTS query and no OFFSET walk: a pathological long document
+  // cannot cause unbounded client work or occupy K result slots. SQLite still
+  // ranks the MATCH set (necessary to prove the best parent child), but only
+  // materializes K distinct parents across the repository boundary.
+  const sql = `
+    WITH matches AS (
       SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
              e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
-             f.fragment_id AS fragmentId, bm25(entry_fragments_fts) AS bm25Score
+             f.fragment_id AS fragmentId, f.fragment_ordinal AS fragmentOrdinal,
+             bm25(entry_fragments_fts) AS bm25Score
       FROM entry_fragments_fts f JOIN entries e ON e.id = f.entry_id
       WHERE entry_fragments_fts MATCH ? ${filter}
-      ORDER BY bm25Score ASC, e.id ASC, f.fragment_ordinal ASC
-      LIMIT ? OFFSET ?`;
-    const rows = db.prepare(sql).all(ftsQuery, ...filterParams, batchSize, offset) as Array<{
-      id: number;
-      filePath: string;
-      documentJson: string;
-      searchText: string;
-      itemRef: string;
-      bundleId: string;
-      conceptId: string;
-      adapterId: string;
-      fragmentId: string;
-      bm25Score: number;
-    }>;
-    for (const row of rows) {
-      if (winners.has(row.id)) continue;
-      const [result] = materializeRows([row], lexicalMatch);
-      if (result)
-        winners.set(row.id, {
-          ...result,
-          fragmentId: row.fragmentId,
-          lexicalScore: stableFtsScore(row.bm25Score, "fragment"),
-        });
-      if (winners.size >= limit) break;
+    ), ranked AS (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY bm25Score ASC, fragmentOrdinal ASC, fragmentId ASC) AS parentRank
+      FROM matches
+    )
+    SELECT * FROM ranked WHERE parentRank = 1 ORDER BY bm25Score ASC, id ASC LIMIT ?`;
+  const rows = db.prepare(sql).all(ftsQuery, ...filterParams, limit) as Array<{
+    id: number;
+    filePath: string;
+    documentJson: string;
+    searchText: string;
+    itemRef: string;
+    bundleId: string;
+    conceptId: string;
+    adapterId: string;
+    fragmentId: string;
+    bm25Score: number;
+  }>;
+  const results: DbSearchResult[] = [];
+  for (const row of rows) {
+    const [result] = materializeRows([row], lexicalMatch);
+    if (result) {
+      results.push({
+        ...result,
+        fragmentId: row.fragmentId,
+        lexicalScore: stableFtsScore(result.bm25Score, "fragment"),
+      });
     }
-    if (winners.size >= limit || rows.length < batchSize) break;
   }
-  return [...winners.values()];
+  return results;
 }
 
 function mergeParentAndFragmentResults(
