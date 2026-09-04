@@ -97,7 +97,7 @@ const FTS_LOG_SHAPE = 3;
  * hands us an invalid value: `-Infinity` is the strongest possible match,
  * while NaN, +Infinity, and positive scores contribute no lexical evidence.
  */
-function stableFtsScore(bm25Score: number): number {
+export function stableFtsScore(bm25Score: number): number {
   if (bm25Score === Number.NEGATIVE_INFINITY) return FTS_SCORE_CEILING;
   if (!Number.isFinite(bm25Score) || bm25Score >= 0) return FTS_SCORE_FLOOR;
 
@@ -112,7 +112,7 @@ export function normalizeFtsScores(results: DbSearchResult[]): Map<number, { sco
   const ftsScoreMap = new Map<number, { score: number; result: DbSearchResult }>();
 
   for (const result of results) {
-    ftsScoreMap.set(result.id, { score: stableFtsScore(result.bm25Score), result });
+    ftsScoreMap.set(result.id, { score: result.lexicalScore ?? stableFtsScore(result.bm25Score), result });
   }
 
   return ftsScoreMap;
@@ -162,6 +162,7 @@ export function combineSearchScores(options: {
       itemRef: result.itemRef,
       bundleId: result.bundleId,
       conceptId: result.conceptId,
+      fragmentId: result.fragmentId,
     });
   }
 

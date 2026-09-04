@@ -599,6 +599,7 @@ async function searchDatabase(
         query,
         rankingMode,
         lexicalMatch: ranked.lexicalMatch,
+        fragmentId: ranked.fragmentId,
         defaultStashDir: stashDir,
         allSourceDirs,
         sources,
@@ -978,6 +979,7 @@ export async function buildDbHit(input: {
   query: string;
   rankingMode: "hybrid" | "semantic" | "fts";
   lexicalMatch?: LexicalQueryExecution;
+  fragmentId?: string;
   defaultStashDir: string;
   allSourceDirs: string[];
   sources: SearchSource[];
@@ -1032,7 +1034,8 @@ export async function buildDbHit(input: {
     (source && path.resolve(source.path) === path.resolve(input.defaultStashDir)
       ? (input.bundleId ?? undefined)
       : undefined);
-  const ref = resolveSearchHitRef(input.entry, input, defaultBundleId);
+  const parentRef = resolveSearchHitRef(input.entry, input, defaultBundleId);
+  const ref = input.fragmentId ? `${parentRef}#${input.fragmentId}` : parentRef;
 
   const editable = isEditable(absolutePath, input.config, input.sources);
   const estimatedTokens = typeof input.entry.fileSize === "number" ? Math.round(input.entry.fileSize / 4) : undefined;

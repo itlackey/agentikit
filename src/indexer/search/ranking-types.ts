@@ -28,6 +28,8 @@ export interface RankedEntryInput {
   itemRef?: string | null;
   bundleId?: string | null;
   conceptId?: string | null;
+  /** Safe selector returned only for a fragment-supported lexical hit. */
+  fragmentId?: string;
   utilityBoosted?: boolean;
   /**
    * Set by `applyBeliefStateScoreCeiling` when a demoting belief state's

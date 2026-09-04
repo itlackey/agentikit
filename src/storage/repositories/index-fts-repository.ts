@@ -9,9 +9,11 @@
  * explicit full recovery rebuild.
  */
 
+import { splitMarkdownFragments } from "../../core/asset/markdown-fragments";
 import { warn } from "../../core/warn";
 import type { IndexDocument } from "../../indexer/passes/metadata";
 import { buildLexicalQueryPlan, type LexicalQueryExecution } from "../../indexer/search/fts-query";
+import { stableFtsScore } from "../../indexer/search/ranking";
 import { buildSearchFields } from "../../indexer/search/search-fields";
 import type { Database, SqlValue } from "../database";
 import type { DbSearchResult } from "./index-entry-types";
@@ -19,10 +21,16 @@ import { SQLITE_CHUNK_SIZE } from "./index-sql";
 
 const INSERT_FTS_SQL =
   "INSERT INTO entries_fts (entry_id, name, description, tags, hints, content) VALUES (?, ?, ?, ?, ?, ?)";
+const INSERT_FRAGMENT_SQL =
+  "INSERT INTO entry_fragments_fts (entry_id, fragment_id, fragment_ordinal, content) VALUES (?, ?, ?, ?)";
 
 interface FtsMutationStatements {
   deleteOne: ReturnType<Database["prepare"]>;
   insert: ReturnType<Database["prepare"]>;
+  deleteFragments: ReturnType<Database["prepare"]>;
+  upsertFragmentSource: ReturnType<Database["prepare"]>;
+  deleteFragmentSource: ReturnType<Database["prepare"]>;
+  insertFragment: ReturnType<Database["prepare"]>;
 }
 
 const ftsMutationStatementsByDb = new WeakMap<Database, FtsMutationStatements>();
@@ -33,17 +41,36 @@ function getFtsMutationStatements(db: Database): FtsMutationStatements {
   const statements = {
     deleteOne: db.prepare("DELETE FROM entries_fts WHERE entry_id = ?"),
     insert: db.prepare(INSERT_FTS_SQL),
+    deleteFragments: db.prepare("DELETE FROM entry_fragments_fts WHERE entry_id = ?"),
+    upsertFragmentSource: db.prepare(
+      "INSERT INTO entry_fragments (entry_id, safe_markdown) VALUES (?, ?) ON CONFLICT(entry_id) DO UPDATE SET safe_markdown = excluded.safe_markdown",
+    ),
+    deleteFragmentSource: db.prepare("DELETE FROM entry_fragments WHERE entry_id = ?"),
+    insertFragment: db.prepare(INSERT_FRAGMENT_SQL),
   };
   ftsMutationStatementsByDb.set(db, statements);
   return statements;
 }
 
 /** Replace one entry's derived FTS projection inside the caller's transaction. */
-export function replaceFtsEntry(db: Database, entryId: number, entry: IndexDocument): void {
+export function replaceFtsEntry(db: Database, entryId: number, entry: IndexDocument, fragmentContent?: string): void {
   const fields = buildSearchFields(entry);
   const statements = getFtsMutationStatements(db);
   statements.deleteOne.run(entryId);
   statements.insert.run(entryId, fields.name, fields.description, fields.tags, fields.hints, fields.content);
+  statements.deleteFragments.run(entryId);
+  if (fragmentContent === undefined) {
+    // Metadata-only re-upserts and re-keys deserialize the public document
+    // without the internal substrate. Leave the persisted source untouched.
+    // A scan that did read Markdown always supplies a value below.
+    return;
+  }
+  statements.deleteFragmentSource.run(entryId);
+  if (!fragmentContent) return;
+  statements.upsertFragmentSource.run(entryId, fragmentContent);
+  for (const fragment of splitMarkdownFragments(fragmentContent)) {
+    statements.insertFragment.run(entryId, fragment.fragmentId, fragment.ordinal, fragment.text.toLowerCase());
+  }
 }
 
 /** Delete derived FTS projections for canonical entries that are being removed. */
@@ -52,6 +79,8 @@ export function deleteFtsEntries(db: Database, entryIds: readonly number[]): voi
     const chunk = entryIds.slice(i, i + SQLITE_CHUNK_SIZE);
     const placeholders = chunk.map(() => "?").join(",");
     db.prepare(`DELETE FROM entries_fts WHERE entry_id IN (${placeholders})`).run(...chunk);
+    db.prepare(`DELETE FROM entry_fragments_fts WHERE entry_id IN (${placeholders})`).run(...chunk);
+    db.prepare(`DELETE FROM entry_fragments WHERE entry_id IN (${placeholders})`).run(...chunk);
   }
 }
 
@@ -135,7 +164,30 @@ function runFtsQuery(
     bm25Score: number;
   }>;
 
-  // Guard against corrupt JSON — skip the row rather than crashing
+  const results = materializeRows(rows, lexicalMatch);
+  // Fragments are a separate, intentionally calibrated evidence population:
+  // parent FTS remains the sole implementation of metadata/body conjunction.
+  // A selector is emitted only for one fragment that independently satisfies
+  // this query. Raw BM25 values are never claimed comparable across tables;
+  // each is passed through #933's stable mapping before merge.
+  const fragmentResults = runFragmentQuery(db, ftsQuery, lexicalMatch, limit, entryType, excludes);
+  return mergeParentAndFragmentResults(results, fragmentResults, limit);
+}
+
+function materializeRows(
+  rows: Array<{
+    id: number;
+    filePath: string;
+    documentJson: string;
+    searchText: string;
+    itemRef: string;
+    bundleId: string;
+    conceptId: string;
+    adapterId: string;
+    bm25Score: number;
+  }>,
+  lexicalMatch: LexicalQueryExecution,
+): DbSearchResult[] {
   const results: DbSearchResult[] = [];
   for (const row of rows) {
     let entry: IndexDocument;
@@ -161,6 +213,75 @@ function runFtsQuery(
   return results;
 }
 
+function runFragmentQuery(
+  db: Database,
+  ftsQuery: string,
+  lexicalMatch: LexicalQueryExecution,
+  limit: number,
+  entryType: string | undefined,
+  excludes: string[],
+): DbSearchResult[] {
+  const filter =
+    entryType && entryType !== "any"
+      ? "AND e.type = ?"
+      : excludes.length
+        ? `AND e.type NOT IN (${excludes.map(() => "?").join(",")})`
+        : "";
+  const filterParams = entryType && entryType !== "any" ? [entryType] : excludes;
+  const batchSize = Math.max(32, limit * 4);
+  const winners = new Map<number, DbSearchResult>();
+  // This is deliberately an adaptive scan, not `LIMIT limit` fragment rows.
+  // It stops only once K parents are found or FTS has no further rows, so a
+  // long document cannot permanently monopolize a parent result page.
+  for (let offset = 0; ; offset += batchSize) {
+    const sql = `
+      SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
+             e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
+             f.fragment_id AS fragmentId, bm25(entry_fragments_fts) AS bm25Score
+      FROM entry_fragments_fts f JOIN entries e ON e.id = f.entry_id
+      WHERE entry_fragments_fts MATCH ? ${filter}
+      ORDER BY bm25Score ASC, e.id ASC, f.fragment_ordinal ASC
+      LIMIT ? OFFSET ?`;
+    const rows = db.prepare(sql).all(ftsQuery, ...filterParams, batchSize, offset) as Array<{
+      id: number;
+      filePath: string;
+      documentJson: string;
+      searchText: string;
+      itemRef: string;
+      bundleId: string;
+      conceptId: string;
+      adapterId: string;
+      fragmentId: string;
+      bm25Score: number;
+    }>;
+    for (const row of rows) {
+      if (winners.has(row.id)) continue;
+      const [result] = materializeRows([row], lexicalMatch);
+      if (result)
+        winners.set(row.id, { ...result, fragmentId: row.fragmentId, lexicalScore: stableFtsScore(row.bm25Score) });
+      if (winners.size >= limit) break;
+    }
+    if (winners.size >= limit || rows.length < batchSize) break;
+  }
+  return [...winners.values()];
+}
+
+function mergeParentAndFragmentResults(
+  parents: DbSearchResult[],
+  fragments: DbSearchResult[],
+  limit: number,
+): DbSearchResult[] {
+  const winners = new Map<number, DbSearchResult>();
+  for (const parent of parents) winners.set(parent.id, { ...parent, lexicalScore: stableFtsScore(parent.bm25Score) });
+  for (const fragment of fragments) {
+    const existing = winners.get(fragment.id);
+    if (!existing || (fragment.lexicalScore ?? 0) > (existing.lexicalScore ?? 0)) winners.set(fragment.id, fragment);
+  }
+  return [...winners.values()]
+    .sort((left, right) => (right.lexicalScore ?? 0) - (left.lexicalScore ?? 0) || left.id - right.id)
+    .slice(0, limit);
+}
+
 /**
  * Explicitly rebuild the complete FTS5 projection from canonical entries.
  * Ordinary entry mutations do not call this: `upsertEntry` and the delete
@@ -174,11 +295,18 @@ function runFtsQuery(
 export function rebuildFts(db: Database): void {
   db.transaction(() => {
     db.exec("DELETE FROM entries_fts");
-    const rows = db.prepare("SELECT id, document_json FROM entries").all() as Array<{
+    db.exec("DELETE FROM entry_fragments_fts");
+    const rows = db
+      .prepare(
+        "SELECT e.id, e.document_json, f.safe_markdown FROM entries e LEFT JOIN entry_fragments f ON f.entry_id = e.id",
+      )
+      .all() as Array<{
       id: number;
       document_json: string;
+      safe_markdown: string | null;
     }>;
     const insertStmt = db.prepare(INSERT_FTS_SQL);
+    const fragmentStmt = db.prepare(INSERT_FRAGMENT_SQL);
 
     let skipped = 0;
     for (const row of rows) {
@@ -192,6 +320,11 @@ export function rebuildFts(db: Database): void {
         continue;
       }
       insertStmt.run(row.id, fields.name, fields.description, fields.tags, fields.hints, fields.content);
+      if (row.safe_markdown) {
+        for (const fragment of splitMarkdownFragments(row.safe_markdown)) {
+          fragmentStmt.run(row.id, fragment.fragmentId, fragment.ordinal, fragment.text.toLowerCase());
+        }
+      }
     }
 
     if (skipped > 0) {

@@ -12,7 +12,9 @@
  * separate definitions of "current".
  */
 
-export const CANONICAL_INDEX_DB_VERSION = 22;
+// v23 adds an isolated fragment FTS population. v22 is the last shipped
+// generation and is intentionally rebuilt rather than migrated in place.
+export const CANONICAL_INDEX_DB_VERSION = 23;
 
 export const CANONICAL_ENTRY_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS entries (
