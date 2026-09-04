@@ -266,41 +266,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
     );
   `);
 
-  // FTS5 table — multi-column with per-field weighting via bm25()
-  const ftsExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entries_fts'").get();
-  if (!ftsExists) {
-    db.exec(`
-      CREATE VIRTUAL TABLE entries_fts USING fts5(
-        entry_id UNINDEXED,
-        name,
-        description,
-        tags,
-        hints,
-        content,
-        tokenize='porter unicode61'
-      );
-    `);
-  }
-
-  // Body fragments deliberately live outside entries_fts. Copying metadata
-  // onto child rows changes its IDF as documents grow; mixing fragment rows
-  // into the parent table also changes the long-standing parent conjunction
-  // semantics. Their scores are merged by the repository, not by a shared
-  // BM25 corpus claim.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS entry_fragments (
-      entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
-      safe_markdown TEXT NOT NULL
-    );
-    CREATE VIRTUAL TABLE IF NOT EXISTS entry_fragments_fts USING fts5(
-      entry_id UNINDEXED,
-      fragment_id UNINDEXED,
-      fragment_ordinal UNINDEXED,
-      content,
-      tokenize='porter unicode61'
-    );
-  `);
-
   // usage_events lives in state.db. utility_scores remains a regenerable
   // index.db cache.
 

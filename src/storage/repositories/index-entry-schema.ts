@@ -36,6 +36,31 @@ export const CANONICAL_ENTRY_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(type);
   CREATE INDEX IF NOT EXISTS idx_entries_file_path ON entries(file_path);
   CREATE INDEX IF NOT EXISTS idx_entries_derived_from ON entries(derived_from);
+
+  -- Keep parent metadata and body fragments in separate FTS populations.
+  -- Combining them changes parent-document IDF and conjunction semantics.
+  CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+    entry_id UNINDEXED,
+    name,
+    description,
+    tags,
+    hints,
+    content,
+    tokenize='porter unicode61'
+  );
+
+  CREATE TABLE IF NOT EXISTS entry_fragments (
+    entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+    safe_markdown TEXT NOT NULL
+  );
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS entry_fragments_fts USING fts5(
+    entry_id UNINDEXED,
+    fragment_id UNINDEXED,
+    fragment_ordinal UNINDEXED,
+    content,
+    tokenize='porter unicode61'
+  );
 `;
 
 interface ColumnFingerprint {
