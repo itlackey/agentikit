@@ -6,7 +6,11 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { openReadonlyExistingDatabase } from "../../../src/storage/repositories/index-connection";
+import {
+  closeDatabase,
+  openIndexDatabase,
+  openReadonlyExistingDatabase,
+} from "../../../src/storage/repositories/index-connection";
 import { openSqliteReadSnapshot, SqliteReadSnapshotUnavailableError } from "../../../src/storage/sqlite-read-snapshot";
 import { makeSandboxDir } from "../../_helpers/sandbox";
 
@@ -63,8 +67,18 @@ describe("SQLite read snapshot lifecycle", () => {
   test("openReadonlyExistingDatabase falls back to a plain read-only open when the snapshot is unavailable", () => {
     const fixture = makeSandboxDir("akm-sqlite-read-fallback");
     const sourcePath = path.join(fixture.dir, "source.db");
+    // The fallback path is an index reader and therefore needs a canonical
+    // index fixture. A bare SQLite table is correctly rejected at the #934
+    // boundary before the test can exercise its snapshot fallback.
+    const seeded = openIndexDatabase(sourcePath, {
+      beforeSchema: (db) => db.exec("PRAGMA journal_mode=DELETE"),
+    });
+    closeDatabase(seeded);
     const holder = new Database(sourcePath);
     try {
+      // The canonical fixture is initialized in rollback-journal mode, so
+      // BEGIN IMMEDIATE leaves the journal that makes the disposable-copy
+      // snapshot unavailable.
       holder.exec("CREATE TABLE held(value TEXT)");
       holder.exec("BEGIN IMMEDIATE");
       holder.exec("INSERT INTO held VALUES ('uncommitted')");
@@ -74,7 +88,10 @@ describe("SQLite read snapshot lifecycle", () => {
       expect(db).toBeDefined();
       db?.close();
     } finally {
-      holder.exec("ROLLBACK");
+      // On some SQLite builds the plain read-only fallback resolves this
+      // same-process held rollback journal as it opens. Only roll back when
+      // the writer still owns the transaction.
+      if (holder.inTransaction) holder.exec("ROLLBACK");
       holder.close();
       fixture.cleanup();
     }

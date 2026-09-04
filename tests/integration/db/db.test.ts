@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:tes
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ConfigError } from "../../../src/core/errors";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { deriveEntryProvenance } from "../../../src/indexer/installations";
@@ -983,17 +984,18 @@ describe("Vector / Embedding integration", () => {
     }
   });
 
-  test("openExistingDatabase opens a non-canonical generation instead of refusing it outright", () => {
+  test("openExistingDatabase rejects a non-canonical generation before returning a handle", () => {
     const dbPath = tmpDbPath();
     const seed = openIndexDatabase(dbPath);
     setMeta(seed, "version", "0");
     closeDatabase(seed);
 
-    const db = openExistingDatabase(dbPath);
+    expect(() => openExistingDatabase(dbPath)).toThrow(ConfigError);
     try {
-      expect(() => db.prepare("SELECT COUNT(*) AS count FROM entries").get()).not.toThrow();
-    } finally {
-      closeDatabase(db);
+      openExistingDatabase(dbPath);
+    } catch (error) {
+      expect((error as ConfigError).code).toBe("INDEX_SCHEMA_INCOMPATIBLE");
+      expect((error as Error).message).not.toMatch(/no such table|SQLITE/i);
     }
   });
 });

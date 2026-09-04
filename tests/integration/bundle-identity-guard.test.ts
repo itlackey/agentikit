@@ -91,9 +91,10 @@ describe("§11.5 bundle-rename startup guard", () => {
 
     warnOnBundleRenameDrift(bundlesConfig("newname"));
 
-    expect(warnCalls).toHaveLength(1);
-    expect(warnCalls[0]).toContain("does not match this akm's derived schema");
-    expect(warnCalls.some((message) => message.includes("bundle identity drift"))).toBe(false);
+    // The read boundary rejects the non-canonical index before the guard can
+    // query it. This best-effort heuristic stays quiet; the command-level
+    // INDEX_SCHEMA_INCOMPATIBLE error is the one actionable diagnostic.
+    expect(warnCalls).toHaveLength(0);
   });
 
   test("stays silent when a configured bundle is simply not yet indexed (all index ids configured)", () => {
