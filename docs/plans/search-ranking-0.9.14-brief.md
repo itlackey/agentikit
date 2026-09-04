@@ -228,9 +228,38 @@ measured:
 | #933 only (`11fb1f21`) | .333 / .182917 / .260417 | .850 / .656667 / .850 |
 | #933 + compound-safe #940 (`d1b88cb3`) | .667 / .262917 / .591667 | .900 / .666667 / .900 |
 
-#940 recovers and improves LoCoMo, but #933's calibration remains a hard
-LongMemEval regression. Reopen #933's calibration decision; do not waive the
-no-regression gate or publish PR #941's isolated result as the release result.
+That table records the **rejected first calibration**, not the current release
+candidate. Contributor-level attribution subsequently found that the raw FTS
+candidate set and BM25 values were byte-identical: the fixed transform compressed
+the strongest bases into a narrow band, then the flat `description-ranking`
+`+0.1` double-counted a one-token description coincidence inside the relaxed OR
+pool and displaced materially stronger body evidence. The accepted correction
+keeps the description contributor on strict and prefix matches, keeps the FTS5
+description weight on every path, and removes only that secondary flat boost on
+relaxed candidates.
+
+The reviewed result is integrated at `f6a47bdf`. A same-runtime preliminary
+pair (final artifact-bound gate still pending) measured:
+
+| pack | build | ev@5 | P@5 | R@5 | MRR | nDCG@5 |
+|---|---|---:|---:|---:|---:|---:|
+| LoCoMo | control | .564 | .227917 | .485417 | .36625 | .380024 |
+| LoCoMo | candidate | **.641** | **.257917** | **.566667** | **.4925** | **.493421** |
+| LongMemEval | control | .950 | .676667 | .950 | .835 | .863982 |
+| LongMemEval | candidate | .950 | .676667 | .950 | **.916667** | **.925** |
+
+Both sides had `guardTripped=0`. Treat these as attribution evidence only until
+the final corrected evaluator records the pinned Bun version, published control
+version, clean candidate SHA, corpus hashes, and storage-name diagnostic.
+
+The identity fix also extends before the final comparator. `searchFts` now
+materializes only entry id plus BM25, finds the Nth score, admits the complete
+exact-score boundary, and hydrates full entry JSON only after that filter. The
+type/exclusion predicates run before boundary selection. This preserves every
+downstream contributor without the rejected SQL content pre-sort. Independent
+measurement on a 2,000-row non-tied broad query was 8.22ms → 8.68ms median; a
+3,000-way exact tie deliberately returns all 3,000 rows because silently capping
+that set would restore the correctness defect.
 
 ### 3.3 #930 — the weights gate recall, not order
 
@@ -355,8 +384,24 @@ The original issue title read the literal `10.0:1.0` ratio as a 10x effect,
 which the measurement disproves, and no measured candidate weight set exists
 yet.
 
-- Sweep a small pre-declared matrix after #933, including the unchanged control.
-  A set like `(4,3,2,2,1.5)` is a candidate, not a recommendation.
+- Sweep this exact pre-declared matrix after #933/#940 and before #937. Tuple
+  order is `(name, description, tags, hints, content)`; the unindexed entry-id
+  weight remains zero:
+
+  | arm | weights | intent |
+  |---|---|---|
+  | W0 | `(10, 5, 3, 2, 1)` | unchanged control |
+  | W1 | `(4, 3, 2, 2, 1.5)` | least-aggressive rebalance |
+  | W2 | `(4, 3, 2, 2, 3)` | bounded content-forward arm |
+
+  Run every arm. Select the least aggressive arm that improves
+  `evidenceRecallAt5` or `recallAtK` by more than `0.005` on at least one pack,
+  has no regression beyond tolerance in any of the six paired metrics on either
+  pack, keeps zero-hit unchanged or better, has zero guards and no storage-name
+  dependence, and preserves the exact-name fixtures. That means W1 wins if it
+  qualifies; otherwise W2 may win if it qualifies; otherwise retain W0 and
+  close #930 as a measured rejection. This ordering rule is fixed before seeing
+  the results.
 - Treat the outcome as recall-sensitive because the weights act before `LIMIT`,
   but report precision and name-lookup behavior at the same time.
 - Ship a new set only if a frozen probe improves beyond tolerance without a
@@ -555,24 +600,22 @@ before any query. Older/unknown generations take one “no usable index; run
 an older binary to rebuild a newer index, and do not conflate unreadable paths
 with absent ones. No known-incompatible handle reaches a query.
 
-**Phase 2 — #933: stable lexical scoring.** Design and implement the mapping in
-one PR with the invariants from §3.1. The endpoint/min-max cleanup is part of
-that PR, not an independently shipped pseudo-fix. Leave #929 out. Re-probe and
-require the untouched graph-hop canary to regain headroom. The first fixed-log
-calibration (`a33b569c` through `11fb1f21`) failed the paired corpus gate above;
-it is implementation evidence, not an accepted calibration.
+**Phase 2 — #933: stable lexical scoring.** The fixed monotone mapping and
+public projection satisfy the invariants from §3.1. The first calibration
+(`a33b569c` through `11fb1f21`) failed the paired corpus gate; attribution and
+the relaxed-description correction are now integrated at `f6a47bdf`. The
+untouched graph-hop canary and focused scoring suite pass, and preliminary
+paired metrics clear the gate. Freeze this only after the artifact-bound
+evaluator reproduces the result.
 
-**Phase 3 — #940: relaxed-ceiling relevance.** Keep the existing ceiling but
-order tied relaxed results by their pre-clamp relevance. Preserve that signal
-separately from belief-state ceiling evidence and re-probe the reported LoCoMo
-gain before moving the acceptance baseline. The release diagnostic exposed a
-second identity boundary before the comparator: `searchFts` applies its
-candidate limit before type, graph, project, utility, and belief contributors.
-If the limit cuts through an exact BM25 tie, return the whole boundary-tied set
-and let the one final comparator apply every contributor. Do not replace the
-SQLite row-id fallback with a content sort before `LIMIT`; that can discard a
-type-boosted result before the type contributor sees it. The expansion is
-intentionally data-bound for a dense exact tie and needs a stress measurement.
+**Phase 3 — #940: relaxed-ceiling relevance.** Integrated at `f6a47bdf`: the
+relaxed and belief ceilings retain separate pre-clamp evidence; content, not an
+opaque path, resolves final content-distinguishable ties; and `searchFts`
+returns the complete exact-BM25 candidate boundary before type, graph, project,
+utility, and belief contributors run. The scored CTE stays narrow and only
+hydrates admitted entries. Mixed-boundary, typed/exclusion, type-winner, and
+3,000-way dense-tie tests pass; the ordinary broad-query overhead is sub-
+millisecond in the independent 2,000-row measurement above.
 
 **Phase 4 — #930: bounded weight experiment.** Run the pre-declared matrix from
 an isolated branch anchored after #940 and before #937. Merge a weight change
@@ -747,9 +790,12 @@ the SHA and run URL in the milestone description before release.
     shortcut. Every returned selector must round-trip through `show`.
 16. **Deduping after `LIMIT` is starvation in a new form.** Fragment search must
     select top-K distinct parents before the candidate budget is exhausted.
-17. **Pin the evaluator, not just the product.** The `bin/probe` named here lives
-    in a separate repository and changes independently. Use `--cmd` for local
-    candidates, record its SHA, and treat `guardTripped` as a failure manually.
+17. **Pin the evaluator, runtime, control, and product.** The `bin/probe` named
+    here lives in a separate repository and changes independently. Use `--cmd`
+    for local candidates; require the paired gate to bind published control
+    version, candidate SHA, evaluator SHA, Bun version, corpus hashes, and clean
+    state. A guard trip or malformed/missing identity diagnostic is a failed
+    release gate, not a warning to interpret manually.
 
 ---
 
