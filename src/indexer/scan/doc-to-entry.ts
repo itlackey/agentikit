@@ -37,7 +37,7 @@
 
 import path from "node:path";
 import type { IndexDocument } from "../../core/adapter/types";
-import type { StashIntent } from "../passes/metadata";
+import { getMarkdownFragmentContent, type StashIntent, setMarkdownFragmentContent } from "../passes/metadata";
 
 /**
  * Reconstruct the `IndexDocument` an `IndexDocument` was mapped from. First-class
@@ -63,6 +63,7 @@ export function indexDocumentToStashEntry(doc: IndexDocument): IndexDocument {
   if (doc.tags !== undefined) entry.tags = doc.tags;
   if (doc.content !== undefined) entry.content = doc.content;
   if (doc.contentTruncated !== undefined) entry.contentTruncated = doc.contentTruncated;
+  setMarkdownFragmentContent(entry, getMarkdownFragmentContent(doc));
   if (doc.ownsPresentation !== undefined) entry.ownsPresentation = doc.ownsPresentation;
   if (doc.updated !== undefined) entry.updated = doc.updated;
   if (doc.links !== undefined) entry.links = doc.links;

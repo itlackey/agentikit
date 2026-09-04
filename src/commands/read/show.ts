@@ -25,6 +25,7 @@ import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement"
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
+import { fragmentForSelector } from "../../core/asset/markdown-fragments";
 import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { META_DIR, type MetaRef, parseMetaRef, readMetaFile } from "../../core/asset/stash-meta";
 import { asNonEmptyString, isWithin } from "../../core/common";
@@ -40,6 +41,7 @@ import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
 import { lookupBundleRef, lookupBundleRefWithResolution } from "../../indexer/indexer";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
+import { projectMarkdownFragmentContent } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
 import {
   buildEditHint,
@@ -645,9 +647,14 @@ function requireMarkdownSection(
   content: string,
   fragment: string,
   name: string,
-): NonNullable<ReturnType<typeof extractSection>> {
+): { content: string; startLine: number; endLine: number } {
   const section = extractSection(content, fragment);
   if (section) return section;
+  const indexed = projectMarkdownFragmentContent(content);
+  const safeFragment = indexed ? fragmentForSelector(indexed, fragment) : undefined;
+  if (safeFragment) {
+    return { content: safeFragment.text, startLine: safeFragment.startLine, endLine: safeFragment.endLine };
+  }
   const available = markdownFragmentSlugs(content);
   throw new NotFoundError(
     `Fragment "#${fragment}" not found in ${name}.` +

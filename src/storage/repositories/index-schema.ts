@@ -223,6 +223,8 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
     db.exec("DROP TABLE IF EXISTS graph_extraction_queue");
     db.exec("DROP TABLE IF EXISTS graph_meta");
     db.exec("DROP TABLE IF EXISTS entries_fts_dirty");
+    db.exec("DROP TABLE IF EXISTS entry_fragments_fts");
+    db.exec("DROP TABLE IF EXISTS entry_fragments");
     db.exec("DROP TABLE IF EXISTS entries_fts");
     db.exec("DROP TABLE IF EXISTS embeddings");
     db.exec("DROP TABLE IF EXISTS utility_scores_scoped");
@@ -281,6 +283,25 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
       );
     `);
   }
+
+  // Body fragments deliberately live outside entries_fts. Copying metadata
+  // onto child rows changes its IDF as documents grow; mixing fragment rows
+  // into the parent table also changes the long-standing parent conjunction
+  // semantics. Their scores are merged by the repository, not by a shared
+  // BM25 corpus claim.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS entry_fragments (
+      entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+      safe_markdown TEXT NOT NULL
+    );
+    CREATE VIRTUAL TABLE IF NOT EXISTS entry_fragments_fts USING fts5(
+      entry_id UNINDEXED,
+      fragment_id UNINDEXED,
+      fragment_ordinal UNINDEXED,
+      content,
+      tokenize='porter unicode61'
+    );
+  `);
 
   // usage_events lives in state.db. utility_scores remains a regenerable
   // index.db cache.

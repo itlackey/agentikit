@@ -60,6 +60,11 @@ export interface DbSearchResult {
   entry: IndexDocument;
   searchText: string;
   bm25Score: number;
+  /** Fixed-calibrated lexical contribution; fragment and parent FTS tables are
+   * not asserted to have directly comparable raw BM25 magnitudes. */
+  lexicalScore?: number;
+  /** Present only when a single safe Markdown fragment independently matched. */
+  fragmentId?: string;
   /**
    * Chunk-5 flip F5d (Step 2): the durable fully-qualified `<bundle>//<concept-id>`
    * stored spelling from the `entries.item_ref` column, surfaced onto the search
