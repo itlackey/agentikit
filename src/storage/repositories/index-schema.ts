@@ -193,9 +193,10 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
   if (classification.status === "newer") {
     throw new ConfigError(
       `Index database was built by a newer akm (stored generation ${classification.storedVersion ?? "unknown"}; ` +
-        `this binary understands generation ${CANONICAL_INDEX_DB_VERSION}). Refusing to modify it — upgrade akm to ` +
-        "write to this index, or delete index.db to rebuild it from scratch with this binary.",
+        `this binary understands generation ${CANONICAL_INDEX_DB_VERSION}). Refusing to modify it — upgrade akm ` +
+        "to use this index.",
       "INDEX_SCHEMA_INCOMPATIBLE",
+      "Upgrade akm to a version that understands this index generation.",
     );
   }
 
