@@ -428,18 +428,24 @@ describe("graph boost — search-time integration (#207)", () => {
     expect(without2.map((h) => h.score)).toEqual(without.map((h) => h.score));
   });
 
-  test("score is clamped to [0,1] even when boosts would push above 1.0", async () => {
+  test("score stays bounded without hard-clamp saturation when graph boosts are strong", async () => {
     // Fixes a pre-existing breach of the CLAUDE.md / spec §9 contract that
     // locks `SearchHit.score` to [0,1]: the boost loop in db-search.ts can
     // accumulate FTS-base + multiple additive boosts whose product exceeds
     // 1.0, and the addition of #207's graph boost (up to ~1.05 additive)
-    // makes the breach detectable in practice. The runbook fixture above
-    // matches an exact-name query (boost +2.0) AND has a full graph hit,
-    // which combined push the raw computed score above 1.0. The clamp
-    // (`Math.min(1, Math.max(0, score))` near `Math.round(score * 10000)`
-    // in `searchDatabase`) guarantees the final SearchHit.score is exactly
-    // 1 in that case rather than overflowing.
+    // makes the breach detectable in practice. The runbook fixture below
+    // matches an exact-name query AND has a full graph hit, which pushes the
+    // raw computed score above 1.0. The final monotone projection must keep
+    // the public score bounded while preserving headroom and the measurable
+    // graph contribution.
+    uninstallGraph();
+    resetUtilityScores();
+    const baseline = await searchHits("database-runbook");
+    const baselineTarget = baseline.find((h) => h.name === "database-runbook");
+    expect(baselineTarget).toBeDefined();
+
     installGraph();
+    resetUtilityScores();
     const hits = await searchHits("database-runbook");
     const target = hits.find((h) => h.name === "database-runbook");
     expect(target).toBeDefined();
@@ -449,8 +455,9 @@ describe("graph boost — search-time integration (#207)", () => {
       expect(h.score ?? 0).toBeLessThanOrEqual(1);
       expect(h.score ?? 0).toBeGreaterThanOrEqual(0);
     }
-    // The exact-name + graph-boosted case clamps to the ceiling.
-    expect(target?.score).toBe(1);
+    expect(target?.score).toBeGreaterThan(baselineTarget?.score ?? 0);
+    expect(target?.score).toBeGreaterThan(0.8);
+    expect(target?.score).toBeLessThan(1);
   });
 
   test("graph signal feeds the same SearchHit.score field — no second scorer", async () => {
