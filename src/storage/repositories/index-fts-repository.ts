@@ -94,58 +94,51 @@ function runFtsQuery(
   // exclusion is redundant there. An empty list skips the clause entirely
   // (never emit `NOT IN ()`, which is a SQL error / always-false).
   const excludes = excludeTypes && excludeTypes.length > 0 ? excludeTypes : [];
+  const candidateBoundaryOffset = Math.max(0, limit - 1);
 
   // The typed and untyped paths differ only by one `type` WHERE clause
-  // equality vs. an optional NOT IN exclusion) and their param order — the
-  // SELECT/JOIN/ORDER/LIMIT is shared, so build it once. Join on integer
-  // entry_id directly (no CAST; we store integer). bm25() per-column weights:
+  // equality vs. an optional NOT IN exclusion) and their parameter order.
+  // Join on integer entry_id directly (no CAST; we store integer). bm25()
+  // per-column weights:
   // entry_id(0), name(10), description(5), tags(3), hints(2), content(1).
   let filterClause: string;
   let params: unknown[];
   if (entryType && entryType !== "any") {
     filterClause = "AND e.type = ?";
-    params = [ftsQuery, entryType, limit];
+    params = [ftsQuery, entryType, candidateBoundaryOffset];
   } else {
     filterClause = excludes.length > 0 ? `AND e.type NOT IN (${excludes.map(() => "?").join(", ")})` : "";
-    // Param order: MATCH, then the NOT IN values, then LIMIT.
-    params = [ftsQuery, ...excludes, limit];
+    // Param order: MATCH, then the NOT IN values, then the zero-based
+    // candidate-boundary offset.
+    params = [ftsQuery, ...excludes, candidateBoundaryOffset];
   }
 
   const sql = `
-    SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
-           e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
-           bm25(entries_fts, 0, 10.0, 5.0, 3.0, 2.0, 1.0) AS bm25Score
+    -- Do not make a SQL-only relevance decision inside a tied BM25 boundary:
+    -- the TypeScript ranker adds exact-name, type, and other contributors
+    -- afterwards.  Materialize BM25 once, locate the Nth score, and admit
+    -- every row tied with it.  This deliberately makes the result set
+    -- data-bound for a pathological all-tied query; that is the only way to
+    -- avoid silently dropping a legitimate later ranking winner.
+    WITH scored AS MATERIALIZED (
+      SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
+             e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
+             bm25(entries_fts, 0, 10.0, 5.0, 3.0, 2.0, 1.0) AS bm25Score
     FROM entries_fts f
     JOIN entries e ON e.id = f.entry_id
     WHERE entries_fts MATCH ?
       ${filterClause}
-    -- The candidate limit is applied before the TypeScript ranker gets a
-    -- chance to resolve ties.  Do not let SQLite's opaque row id choose which
-    -- equally relevant rows survive that limit: it is generated from an asset
-    -- identity and can change when a caller merely renames opaque documents.
-    -- Match db-search's final content key by excluding the generated H1 title
-    -- from the adapter body.  When bodies truly match, the final e.id
-    -- fallback is harmless because they are indistinguishable at this stage.
-    ORDER BY bm25Score,
-      hex(lower(trim(
-        coalesce(
-          nullif(
-            CASE
-              WHEN substr(coalesce(json_extract(e.document_json, '$.content'), ''), 1, 2) = '# '
-                   AND instr(coalesce(json_extract(e.document_json, '$.content'), ''), char(10)) > 0
-                THEN ltrim(substr(
-                  coalesce(json_extract(e.document_json, '$.content'), ''),
-                  instr(coalesce(json_extract(e.document_json, '$.content'), ''), char(10)) + 1
-                ), char(13) || char(10) || ' ')
-              ELSE coalesce(json_extract(e.document_json, '$.content'), '')
-            END,
-            ''
-          ),
-          coalesce(json_extract(e.document_json, '$.description'), '')
-        )
-      ))) COLLATE BINARY,
-      e.id ASC
-    LIMIT ?
+    ), boundary AS (
+      SELECT bm25Score
+      FROM scored
+      ORDER BY bm25Score
+      LIMIT 1 OFFSET ?
+    )
+    SELECT *
+    FROM scored
+    WHERE NOT EXISTS (SELECT 1 FROM boundary)
+       OR bm25Score <= (SELECT bm25Score FROM boundary)
+    ORDER BY bm25Score, id ASC
   `;
 
   const rows = db.prepare(sql).all(...(params as SqlValue[])) as Array<{

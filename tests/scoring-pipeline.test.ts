@@ -709,6 +709,33 @@ describe("Identity-independent final ranking ties", () => {
     expect(await firstContent(permutedStash, permuted)).toBe("needle alpha");
   });
 
+  test("expands an exact BM25 boundary before applying the type contributor", async () => {
+    const stashDir = tmpStash();
+    // `akmSearch(limit: 1)` requests three lexical candidates.  These four
+    // rows intentionally tie in the matched field; the skill sorts after the
+    // knowledge bodies by content, but its type contributor must still be
+    // allowed to win the final rank.  A SQL-only content-key LIMIT loses it
+    // before TypeScript can run that contributor.
+    for (const [name, description] of [
+      ["aaa-knowledge", "needle"],
+      ["bbb-knowledge", "needle"],
+      ["ccc-knowledge", "needle"],
+    ] as const) {
+      writeFile(path.join(stashDir, "knowledge", `${name}.md`), `---\ndescription: ${description}\n---\n`);
+    }
+    writeFile(
+      path.join(stashDir, "skills", "zzz-skill", "SKILL.md"),
+      "---\ndescription: needle\n---\n",
+    );
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "needle", source: "local", limit: 1, skipLogging: true });
+      const hit = result.hits.find((candidate): candidate is SourceSearchHit => candidate.type !== "registry");
+      expect(hit?.name).toBe("zzz-skill");
+      expect(hit?.type).toBe("skill");
+    });
+  });
+
   test("identical content remains a deterministic local presentation tie", async () => {
     const stashDir = tmpStash();
     // No content-derived key can distinguish byte-identical documents without

@@ -134,6 +134,38 @@ describe("searchFts — hyphenated identifier search (Issue #2)", () => {
   });
 });
 
+describe("searchFts candidate boundary expansion (#940)", () => {
+  test("retains a large exact-BM25 boundary instead of silently choosing opaque row ids", () => {
+    const db = openIndexDatabase(tmpDbPath("fts-boundary"));
+    try {
+      // The caller's final ranker owns contributor-aware tie resolution. A
+      // lexical limit of 10 must therefore return all 3,000 exact BM25 ties,
+      // not an arbitrary prefix selected by SQLite's generated entry id.
+      // This is intentionally data-bound behavior, so the assertion records
+      // the contract rather than treating it as an accidental overshoot.
+      for (let index = 0; index < 3_000; index += 1) {
+        insertTestEntry(db, `opaque-${index.toString().padStart(4, "0")}`, {
+          description: "needle",
+          searchText: "needle",
+        });
+      }
+      rebuildFts(db);
+
+      const started = performance.now();
+      const results = searchFts(db, "needle", 10);
+      const elapsedMs = performance.now() - started;
+
+      expect(results).toHaveLength(3_000);
+      // Guard against a query-plan regression to repeated correlated scans;
+      // leave generous room for slower CI runners while keeping this a real
+      // indexed lookup rather than an accidental multi-second walk.
+      expect(elapsedMs).toBeLessThan(5_000);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+});
+
 // ── Issue #9: Single-character queries ──────────────────────────────────────
 
 describe("single-character lexical queries (Issue #9)", () => {
