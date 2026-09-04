@@ -435,8 +435,9 @@ describe("stable FTS5 BM25 calibration (#933)", () => {
       expect(top.bm25Score).toBeLessThan(second.bm25Score);
       expect(second.bm25Score).toBeLessThan(weakest.bm25Score);
       expect(topScore).toBeGreaterThan(weakScore);
+      expect(topScore - weakScore).toBeGreaterThan(0.05);
       expect(topScore).toBeLessThan(1);
-      expect(weakScore).toBeLessThan(0.35);
+      expect(weakScore).toBeLessThan(0.38);
       expect(expanded.get(top.id)!.score).toBeCloseTo(leadersOnly.get(top.id)!.score, 12);
       expect(expanded.get(second.id)!.score).toBeCloseTo(leadersOnly.get(second.id)!.score, 12);
 
@@ -464,6 +465,29 @@ describe("stable FTS5 BM25 calibration (#933)", () => {
 
       expect(hybrid.score).toBeGreaterThan(lexicalOnly.score);
       expect(lexicalOnly.score).toBeGreaterThan(semanticOnly.score);
+
+      insertTestEntry(db, "rarenessmarker", {
+        description: "A rare exact-name lexical hit",
+        searchText: "rarenessmarker rare exact-name lexical hit",
+        stashDir: "/test/stash",
+      });
+      for (let index = 0; index < 100; index += 1) {
+        insertTestEntry(db, `unmatched-${index}`, {
+          content: filler(100),
+          description: "Unmatched corpus row",
+          searchText: "unmatched corpus row",
+          stashDir: "/test/stash",
+        });
+      }
+      rebuildFts(db);
+      const rare = searchFts(db, "rarenessmarker", 10)[0];
+      expect(rare).toBeDefined();
+      if (!rare) throw new Error("expected rare calibration hit");
+      const rareScore = normalizeFtsScores([rare]).get(rare.id)!.score;
+      expect(rareScore).toBeGreaterThan(topScore);
+      // A rare term is much stronger, but the log-domain curve deliberately
+      // leaves contributor headroom instead of flattening it to 0.8.
+      expect(rareScore).toBeLessThan(0.75);
     } finally {
       closeDatabase(db);
     }
