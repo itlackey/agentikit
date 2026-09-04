@@ -314,10 +314,10 @@ const descriptionRankingContributor: RankingContributor = {
   name: "description-ranking",
   appliesTo(item) {
     // A relaxed FTS query admits an OR pool. Awarding a flat +0.1 merely
-    // because one broad query word appears in the synthesized description
-    // makes that weak metadata coincidence outrank materially stronger BM25
-    // body evidence. The FTS score already accounts for descriptions; retain
-    // this secondary boost only for conjunctive candidates.
+    // because of a partial description coincidence double-counts a weak
+    // signal and can outrank materially stronger BM25 body evidence. The FTS
+    // score already accounts for descriptions; retain this secondary boost
+    // only for conjunctive candidates.
     return (
       item.lexicalMatch !== "relaxed" && typeof item.entry.description === "string" && item.entry.description.length > 0
     );

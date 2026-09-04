@@ -13,6 +13,8 @@ import { akmSearch } from "../src/commands/read/search";
 import { saveConfig } from "../src/core/config/config";
 import { akmIndex } from "../src/indexer/indexer";
 import { buildDbHit, buildWhyMatched, canonicalContentTieKey } from "../src/indexer/search/db-search";
+import { applyScoreContributors } from "../src/indexer/search/ranking-contributors";
+import type { RankedEntryInput } from "../src/indexer/search/ranking-types";
 import type { SourceSearchHit } from "../src/sources/types";
 import {
   type Cleanup,
@@ -562,11 +564,39 @@ describe("Issue #14: Deterministic sort on tied scores", () => {
 });
 
 describe("Issue #940: relaxed non-name ceilings preserve body relevance", () => {
+  test("retains the description contributor for strict and prefix lexical matches", () => {
+    const rank = (lexicalMatch: "exact" | "prefix" | "relaxed") => {
+      const item: RankedEntryInput = {
+        id: 1,
+        entry: { name: "opaque", type: "knowledge", description: "alpha detail" },
+        filePath: "/tmp/opaque.md",
+        score: 1,
+        rankingMode: "fts",
+        lexicalMatch,
+      };
+      applyScoreContributors(item, {
+        db: {} as never,
+        query: "alpha beta",
+        queryLower: "alpha beta",
+        queryTokens: ["alpha", "beta"],
+        graphContext: null,
+      });
+      return item.score;
+    };
+
+    // The type contributor (+.22) applies in every mode. The additional
+    // partial-description +.1 remains on strict/prefix candidates, but not
+    // on the relaxed OR recovery pool where FTS already supplied that signal.
+    expect(rank("exact")).toBeCloseTo(1.32);
+    expect(rank("prefix")).toBeCloseTo(1.32);
+    expect(rank("relaxed")).toBeCloseTo(1.22);
+  });
+
   test("does not promote a one-token description coincidence within a relaxed OR pool", async () => {
     const stashDir = tmpStash();
     // Neither row contains all four query terms, so retrieval deliberately
     // falls back to relaxed OR. The evidence row has stronger body evidence;
-    // the distractor's one matching synthesized-description word must not
+    // the distractor's one partial-description coincidence must not
     // add a second flat metadata boost on top of the FTS description weight.
     writeFile(
       path.join(stashDir, "knowledge", "evidence.md"),
@@ -697,12 +727,13 @@ describe("Identity-independent final ranking ties", () => {
     expect(await contentOrder(permutedStash, permuted)).toEqual(["needle alpha", "needle bravo"]);
   });
 
-  test("the FTS candidate limit uses the same content tie-break before ranking", async () => {
+  test("the FTS candidate boundary leaves content tie-breaking to final ranking", async () => {
     const baselineStash = tmpStash();
     const permutedStash = tmpStash();
     // `searchDatabase` asks FTS for limit * 3 candidates.  Four exact BM25
-    // ties therefore expose whether the SQL-side LIMIT picked by generated
-    // identity before the final TypeScript comparator could correct it.
+    // ties therefore expose whether the candidate boundary preserves all
+    // rows for the final TypeScript comparator instead of picking by a
+    // generated identity inside SQL.
     const baseline = [
       ["aaa-opaque", "needle delta"],
       ["bbb-opaque", "needle gamma"],
@@ -737,7 +768,7 @@ describe("Identity-independent final ranking ties", () => {
     // `akmSearch(limit: 1)` requests three lexical candidates.  These four
     // rows intentionally tie in the matched field; the skill sorts after the
     // knowledge bodies by content, but its type contributor must still be
-    // allowed to win the final rank.  A SQL-only content-key LIMIT loses it
+    // allowed to win the final rank. A SQL-only fixed LIMIT loses it
     // before TypeScript can run that contributor.
     for (const [name, description] of [
       ["aaa-knowledge", "needle"],
