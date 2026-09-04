@@ -91,7 +91,7 @@ export type OutputCommandName = string;
  */
 const SHAPE_SUMMARY_COMMANDS = new Set(["show"]);
 
-// ── `results` collection alias (#922) ───────────────────────────────────────
+// ── `results` collection alias ──────────────────────────────────────────────
 //
 // Every list-returning command names its collection differently (`hits`,
 // `items`, `proposals`, `sources`, ...) — a caller cannot write one accessor
