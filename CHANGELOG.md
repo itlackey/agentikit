@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.14] - 2026-09-04
+
+### Added
+
+- **Long Markdown bodies can return the matching lexical fragment (#937).**
+  The derived index now keeps a separate, safe fragment population for lexical
+  retrieval. Search can return an addressable `#akm-fragment-…` ref, and `akm
+  show` resolves that ref to the exact indexed projection. Headingless and
+  oversized documents split at paragraph or word boundaries, so a fact in the
+  middle of a long body is no longer represented only by its parent document.
+
+### Changed
+
+- **Index generations are checked before use (#934).** A newer index is never
+  queried or rebuilt by an older binary; it reports that akm must be upgraded.
+  An older derived index is rebuilt from the materialized sources by the current
+  binary. This release advances the derived index from v22 to v23 for fragment
+  retrieval.
+- **Lexical relevance remains stable through scoring and relaxed-query ties
+  (#933, #940).** Lexical scores use a fixed monotone calibration rather than a
+  result-set-relative scale, preserving score headroom. Relaxed matches retain
+  body relevance as tie evidence, including when a belief-state ceiling also
+  applies. This compound-safe implementation supersedes PR #941.
+- **The frozen W0 lexical weight matrix remains the shipped policy (#930).**
+  The W1 and W2 alternatives were measured and rejected; no unvalidated weight
+  change is included in this release.
+
+### Fixed
+
+- **Fuzzy name matches require structural identity.** Short or opaque name
+  fragments no longer create a false identity match merely because their text
+  overlaps a stored name.
+
 ## [0.9.13] - 2026-09-04
 
 ### Added
