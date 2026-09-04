@@ -621,6 +621,47 @@ describe("Issue #940: relaxed non-name ceilings preserve body relevance", () => 
   });
 });
 
+describe("Identity-independent final ranking ties", () => {
+  test("permuting opaque filenames preserves the ordering of distinct document bodies", async () => {
+    const baselineStash = tmpStash();
+    const permutedStash = tmpStash();
+    // The matched field and its length are identical, so these candidates tie
+    // through all relevance contributors.  Their filenames are deliberately
+    // reversed between corpora; only the non-identity body/description is a
+    // legitimate final ordering key.
+    const baseline = [
+      ["aaa-opaque", "needle alpha"],
+      ["zzz-opaque", "needle bravo"],
+    ] as const;
+    const permuted = [
+      ["zzz-opaque", "needle alpha"],
+      ["aaa-opaque", "needle bravo"],
+    ] as const;
+
+    const writeCorpus = (stashDir: string, corpus: readonly (readonly [string, string])[]) => {
+      for (const [name, description] of corpus) {
+        writeFile(path.join(stashDir, "knowledge", `${name}.md`), `---\ndescription: ${description}\n---\n`);
+      }
+    };
+    const contentOrder = async (stashDir: string, corpus: readonly (readonly [string, string])[]) => {
+      const descriptionByName = new Map(corpus.map(([name, description]) => [name, description]));
+      return withTestIndex(stashDir, async () => {
+        const result = await akmSearch({ query: "needle", source: "local", skipLogging: true });
+        return result.hits
+          .filter((hit): hit is SourceSearchHit => hit.type !== "registry")
+          .map((hit) => descriptionByName.get(hit.name))
+          .filter((description): description is string => description !== undefined);
+      });
+    };
+
+    writeCorpus(baselineStash, baseline);
+    writeCorpus(permutedStash, permuted);
+
+    expect(await contentOrder(baselineStash, baseline)).toEqual(["needle alpha", "needle bravo"]);
+    expect(await contentOrder(permutedStash, permuted)).toEqual(["needle alpha", "needle bravo"]);
+  });
+});
+
 // ── Issue #15: "semantic" label for hybrid results ──────────────────────────
 
 describe("Issue #15: Hybrid ranking mode label", () => {

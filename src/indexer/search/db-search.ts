@@ -317,6 +317,25 @@ function displaySearchScore(score: number): number {
   return 1 - Math.exp(-Math.max(0, score));
 }
 
+/**
+ * A final deterministic key for genuinely tied candidates.  It deliberately
+ * excludes the asset name, filename, path, durable ref, and SQLite id: callers
+ * such as the memory-pack adapter generate each of those from an opaque source
+ * id, so using one here makes an otherwise equal search depend on that id.
+ *
+ * The normal AKM Markdown adapter keeps an H1 title in `content`; strip that
+ * one synthetic title too, because the adapter may derive it from the opaque
+ * filename.  Identical remaining bodies are semantically indistinguishable at
+ * this ranking stage and intentionally continue to the existing name/path
+ * fallback for repeatable local presentation.
+ */
+function contentTieKey(entry: IndexDocument): string {
+  const withoutLeadingTitle = (entry.content ?? "").replace(/^\s*#(?!#)\s+[^\r\n]*(?:\r?\n|$)/, "");
+  const body = withoutLeadingTitle.trim().toLocaleLowerCase();
+  if (body) return body;
+  return (entry.description ?? "").trim().toLocaleLowerCase();
+}
+
 function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: RankedEntryInput) => number {
   const queryTokens = buildLexicalQueryPlan(query).tokens.map((token) => token.toLowerCase());
   const displayScore = (score: number): number => Math.round(displaySearchScore(score) * 10000) / 10000;
@@ -345,7 +364,13 @@ function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: Ra
     const nameDiff = bNameTier - aNameTier;
     if (nameDiff !== 0) return nameDiff;
     const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);
-    return typeDiff || a.filePath.localeCompare(b.filePath);
+    if (typeDiff !== 0) return typeDiff;
+    // Keep opaque generated IDs out of the final relevance tie-break.  This
+    // runs only after every ranking contributor (including the #940 preserved
+    // pre-ceiling evidence), exact-name, and type comparison has tied.
+    const contentDiff = contentTieKey(a.entry).localeCompare(contentTieKey(b.entry));
+    if (contentDiff !== 0) return contentDiff;
+    return a.filePath.localeCompare(b.filePath);
   };
 }
 
