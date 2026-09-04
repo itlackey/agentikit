@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { UsageError } from "../../../src/core/errors";
 import { openStateDatabase } from "../../../src/core/state-db";
 import { resolveStorageLocations } from "../../../src/storage/locations";
 import {
@@ -812,5 +813,209 @@ describe("engine lease heartbeat (long-running steps)", () => {
     // Refused, and the refusal names the engine holder the heartbeat kept alive.
     expect(manualRefusal).toMatch(/is being driven by engine/);
     expect(manualRefusal).toMatch(/run lease expires/);
+  });
+});
+
+/**
+ * A driver-level throw from the lease UPDATE (SQLITE_BUSY/SQLITE_LOCKED, or
+ * the "database is locked" / "disk I/O error" / "database disk image is
+ * malformed" message text a real cross-process race can surface) must never
+ * reach a caller as raw corruption-shaped text when the row itself is fine.
+ * `runLeaseErrorAfter` makes the acquire statement throw for the next `throwCount`
+ * attempts against the SAME open connection, then behave normally.
+ */
+function runLeaseErrorAfter(
+  db: ReturnType<typeof openStateDatabase>,
+  throwCount: number,
+  build: () => Error & { code?: string },
+): () => void {
+  const originalPrepare = db.prepare.bind(db);
+  let remaining = throwCount;
+  const spy = spyOn(db, "prepare").mockImplementation((sql: string, ...rest: unknown[]) => {
+    // biome-ignore lint/suspicious/noExplicitAny: forwarding prepare's own rest args across both drivers
+    const stmt = (originalPrepare as any)(sql, ...rest);
+    if (sql.includes("engine_lease_until < ?")) {
+      const originalRun = stmt.run.bind(stmt);
+      stmt.run = (...args: unknown[]) => {
+        if (remaining > 0) {
+          remaining -= 1;
+          throw build();
+        }
+        return originalRun(...args);
+      };
+    }
+    return stmt;
+  });
+  return () => spy.mockRestore();
+}
+
+describe("lease-acquire resilience against transient SQLite errors", () => {
+  test("a transient SQLITE_BUSY on the acquire statement is retried and resolved — no exception escapes", async () => {
+    writeWorkflow("lease-retry-busy");
+    const started = await startWorkflowRun("workflows/lease-retry-busy", {});
+    const runId = started.run.id;
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      const restore = runLeaseErrorAfter(db, 2, () =>
+        Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }),
+      );
+      try {
+        const repo = new WorkflowRunsRepository(db);
+        expect(repo.acquireEngineLease(runId, "engine-A", isoIn(90_000), new Date().toISOString())).toBe(true);
+      } finally {
+        restore();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a persistent SQLITE_BUSY that survives every retry, with a confirmed live lease, reports the lease-held message under RUN_LEASE_HELD", async () => {
+    writeWorkflow("lease-retry-confirmed");
+    const started = await startWorkflowRun("workflows/lease-retry-confirmed", {});
+    const runId = started.run.id;
+    await plantLease(runId, "engine-A", isoIn(90_000));
+
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      const restore = runLeaseErrorAfter(db, 99, () =>
+        Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }),
+      );
+      try {
+        const repo = new WorkflowRunsRepository(db);
+        let caught: unknown;
+        try {
+          repo.acquireEngineLease(runId, "engine-B", isoIn(90_000), new Date().toISOString());
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBeInstanceOf(UsageError);
+        expect((caught as UsageError).code).toBe("RUN_LEASE_HELD");
+        expect((caught as Error).message).toMatch(/is already being driven by engine engine-A/);
+        expect((caught as Error).message).toMatch(/run lease expires/);
+      } finally {
+        restore();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a persistent 'disk image is malformed' with NO confirmed live lease is rethrown exactly as raised, never suppressed or reclassified", async () => {
+    writeWorkflow("lease-retry-unconfirmed");
+    const started = await startWorkflowRun("workflows/lease-retry-unconfirmed", {});
+    const runId = started.run.id; // never leased
+
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      const restore = runLeaseErrorAfter(db, 99, () => new Error("database disk image is malformed"));
+      try {
+        const repo = new WorkflowRunsRepository(db);
+        let caught: unknown;
+        try {
+          repo.acquireEngineLease(runId, "engine-A", isoIn(90_000), new Date().toISOString());
+        } catch (error) {
+          caught = error;
+        }
+        // The original driver error, untouched — not a UsageError, not RUN_LEASE_HELD.
+        expect(caught).not.toBeInstanceOf(UsageError);
+        expect((caught as Error).message).toBe("database disk image is malformed");
+      } finally {
+        restore();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a non-lease-shaped error (e.g. a constraint violation) is never retried or reclassified", async () => {
+    writeWorkflow("lease-retry-unrelated");
+    const started = await startWorkflowRun("workflows/lease-retry-unrelated", {});
+    const runId = started.run.id;
+
+    const db = openStateDatabase(resolveStorageLocations().stateDb);
+    try {
+      const restore = runLeaseErrorAfter(db, 1, () => new Error("SQLITE_CONSTRAINT: NOT NULL constraint failed"));
+      try {
+        const repo = new WorkflowRunsRepository(db);
+        expect(() => repo.acquireEngineLease(runId, "engine-A", isoIn(90_000), new Date().toISOString())).toThrow(
+          /NOT NULL constraint failed/,
+        );
+      } finally {
+        restore();
+      }
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("orphaned engine lease reclaim (crashed engine, self-heal on read)", () => {
+  test("reclaimExpiredEngineLease clears only a lease matching the exact expired snapshot passed in", async () => {
+    writeWorkflow("lease-reclaim-cas");
+    const started = await startWorkflowRun("workflows/lease-reclaim-cas", {});
+    const runId = started.run.id;
+
+    await withWorkflowRunsRepo((repo) => {
+      expect(repo.acquireEngineLease(runId, "engine-A", isoIn(90_000), new Date().toISOString())).toBe(true);
+      // Backdate it, simulating a crashed engine whose lease has since expired.
+      const expiredUntil = isoIn(-5_000);
+      expect(repo.renewEngineLease(runId, "engine-A", expiredUntil)).toBe(true);
+
+      // A stale snapshot naming a lease another engine has since replaced with a
+      // LIVE one must never be reclaimed out from under it (compare-and-swap).
+      expect(repo.acquireEngineLease(runId, "engine-B", isoIn(90_000), new Date().toISOString())).toBe(true);
+      expect(repo.reclaimExpiredEngineLease(runId, "engine-A", expiredUntil, new Date().toISOString())).toBe(false);
+      expect(repo.getRunById(runId)?.engine_lease_holder).toBe("engine-B");
+
+      // A genuinely still-live lease is never reclaimed, whatever snapshot is passed.
+      const live = repo.getRunById(runId);
+      expect(
+        repo.reclaimExpiredEngineLease(runId, "engine-B", live?.engine_lease_until as string, new Date().toISOString()),
+      ).toBe(false);
+
+      // Expire engine-B's own lease for real, then reclaim it against its exact snapshot.
+      const nowExpiredUntil = isoIn(-1_000);
+      expect(repo.renewEngineLease(runId, "engine-B", nowExpiredUntil)).toBe(true);
+      expect(repo.reclaimExpiredEngineLease(runId, "engine-B", nowExpiredUntil, new Date().toISOString())).toBe(true);
+      const cleared = repo.getRunById(runId);
+      expect(cleared?.engine_lease_holder).toBeNull();
+      expect(cleared?.engine_lease_until).toBeNull();
+
+      // Reclaiming again against the same (now-absent) snapshot is a no-op.
+      expect(repo.reclaimExpiredEngineLease(runId, "engine-B", nowExpiredUntil, new Date().toISOString())).toBe(false);
+    });
+  });
+
+  test("workflow status self-heals an orphaned (expired) lease: engineLease disappears AND the DB columns clear", async () => {
+    writeWorkflow("lease-reclaim-status");
+    const started = await startWorkflowRun("workflows/lease-reclaim-status", {});
+    const runId = started.run.id;
+    await withWorkflowRunsRepo((repo) => {
+      expect(repo.acquireEngineLease(runId, "dead-engine", isoIn(90_000), new Date().toISOString())).toBe(true);
+      expect(repo.renewEngineLease(runId, "dead-engine", isoIn(-1_000))).toBe(true); // crashed, never released
+    });
+
+    const status = await getWorkflowStatus(runId);
+    expect(status.run.engineLease).toBeUndefined();
+
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(runId));
+    expect(row?.engine_lease_holder).toBeNull();
+    expect(row?.engine_lease_until).toBeNull();
+  });
+
+  test("workflow status leaves a genuinely LIVE lease untouched", async () => {
+    writeWorkflow("lease-reclaim-live");
+    const started = await startWorkflowRun("workflows/lease-reclaim-live", {});
+    const runId = started.run.id;
+    const until = isoIn(90_000);
+    await plantLease(runId, "live-engine", until);
+
+    const status = await getWorkflowStatus(runId);
+    expect(status.run.engineLease).toEqual({ holder: "live-engine", until });
+
+    const row = await withWorkflowRunsRepo((repo) => repo.getRunById(runId));
+    expect(row?.engine_lease_holder).toBe("live-engine");
+    expect(row?.engine_lease_until).toBe(until);
   });
 });

@@ -127,7 +127,14 @@ export type UsageErrorCode =
   // from `completeWorkflowStep`'s write transaction, which SQLite rolls back
   // whole: the step stays pending, the run stays active, fail-before-mutation
   // preserved.
-  | "WORKFLOW_OUTPUT_INVALID";
+  | "WORKFLOW_OUTPUT_INVALID"
+  // A run's single-driver engine lease (R2) is live and held by another
+  // engine invocation — refusing to acquire it (`akm workflow run` racing an
+  // in-flight one) or to advance its step spine manually (`akm workflow
+  // complete` racing the engine). Distinct from every other UsageError code:
+  // a caller branching on `code` can retry this one once the named expiry
+  // passes, which is never true of a bad flag or malformed input.
+  | "RUN_LEASE_HELD";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -234,6 +241,8 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
   // P3b (docs/plans/specs/p3b-child-executor.md §4.3).
   WORKFLOW_OUTPUT_INVALID:
     "Check each `outputs:` entry's `from:` against the step artifact it names, and its `schema:` against the value that step actually promotes.",
+  RUN_LEASE_HELD:
+    "Wait for the named engine invocation to finish or for the lease to expire, then retry. `akm workflow status <id>` shows the current lease.",
 };
 
 /** Default hint for each NotFoundError code. */
