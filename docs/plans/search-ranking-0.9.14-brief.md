@@ -1,9 +1,9 @@
 # Search ranking and fragment indexing: brief for 0.9.14
 
 **Status:** critically reviewed against `main` and the live milestone on
-2026-09-04; no product code changed. Written after #929 was implemented,
-measured, and held out of 0.9.13.
-**0.9.14 scope:** #934, #933, #930, and #937. #929 is resolved by rejection
+2026-09-04; execution is in progress on `release/0.9.14` via PR #939. Written
+after #929 was implemented, measured, and held out of 0.9.13.
+**0.9.14 scope:** #934, #933, #940, #930, and #937. #929 is resolved by rejection
 after its measured zero-recall/large-precision regression. Semantic fragments
 (#748) and graph expansion (#935/#936) move to 0.10.0.
 **Companions:** [`benchmark-tuning-findings.md`](./benchmark-tuning-findings.md)
@@ -37,9 +37,11 @@ decision only with a new failing user contract and an A/B that improves it.
 ## 2. The measured regression
 
 Probed on `akm-eval`'s deterministic, LLM-free harness (`bin/probe <version>`),
-`#931` branch against stock `release/0.9.12` as control. The control matched
-committed reference values on all 8 metrics, so every delta is attributable to
-the change alone.
+`#931` branch against stock `release/0.9.12` as control. The pair matched on
+recall and exposed the precision regression below. The absolute control values
+also matched the then-committed reference, but #940/akm-eval PR #16 later proved
+that saturated filename tie order made that historical reference unstable.
+Preserve this as a paired result, not as the baseline for 0.9.14.
 
 | metric | stock | with the #929 union | change |
 |---|---|---|---|
@@ -81,7 +83,7 @@ rejected on corpus results and the main-branch assertion should remain unchanged
 
 ## 3. Root cause and milestone disposition
 
-#933, #930, and #937 address different parts of a retrieval pipeline that cannot
+#933, #940, #930, and #937 address different parts of a retrieval pipeline that cannot
 reliably surface a fact stated in the middle of a long document. #934 is an
 independent read-path correctness fix. #929 was a plausible but falsified
 mechanism and is not implementation work.
@@ -90,7 +92,8 @@ mechanism and is not implementation work.
 #934  classify incompatible read generations → independent, small, ship first
 
 #933  stable lexical scoring                 → blocks every candidate-population change
-  └─ #930  bounded weight experiment         → ship only if the probe improves
+  └─ #940  preserve relevance through the relaxed ceiling
+       ├─ #930  bounded weight experiment    → ship only if the probe improves
        └─ #937  lexical fragment indexing    → fixes the measured length penalty
 
 #929  tier union                             → close rejected; zero recall gain
@@ -107,6 +110,7 @@ Live tracker after this review:
 |---|---|
 | #934 | 0.9.14, open — incompatible read generations |
 | #933 | 0.9.14, open — stable lexical scoring prerequisite |
+| #940 / PR #941 | 0.9.14, open — preserve body relevance inside relaxed-score ties; PR #941 superseded by the compound-safe adaptation in PR #939 |
 | #930 | 0.9.14, open — measured experiment with rejection path |
 | #937 | 0.9.14, open — lexical fragment retrieval |
 | #929 / PR #931 | closed — measured rejection; branch retained |
@@ -197,7 +201,38 @@ Only after those pass should `BELIEF_STATE_SCORE_CEILINGS` be evaluated. Keep
 or delete them from behavior evidence; do not assume a new base scale makes the
 demotion contract unnecessary.
 
-### 3.2 #930 — the weights gate recall, not order
+### 3.2 #940 — preserve relevance through the relaxed ceiling
+
+The relaxed OR path clamps every body-only candidate whose name has no query
+token to the same raw ceiling. On LoCoMo's opaque turn names, 24 of 40 questions
+had a fully tied returned top five, so the final filename fallback selected the
+pool that survived top-K. This is a recall bug as well as an ordering bug.
+
+Retain the pre-clamp body score as ordering evidence while keeping the ceiling's
+visibility policy. Do not reuse the belief-state `preCeilingScore`: a candidate
+can be both relaxed and archived/superseded, and the later belief ceiling must
+not overwrite the relevance signal. The implementation in PR #939 therefore
+uses a separate relaxed-ceiling field and covers the compound case. The public
+score is still the bounded projection introduced by #933; `0.65` is an internal
+raw ceiling, not the displayed score.
+
+PR #941's isolated branch reported `evidenceRecall@5` 0.564 → 0.692,
+`recall@5` 0.485417 → 0.591667, and `precision@5` 0.227917 → 0.257917, with
+LongMemEval unchanged. That result does **not** reproduce after composition with
+#933. A same-environment paired attribution at evaluator commit `ddb3624e`
+measured:
+
+| build | LoCoMo ev@5 / P@5 / R@5 | LongMemEval ev@5 / P@5 / R@5 |
+|---|---|---|
+| published 0.9.13 / pre-#933 control | .564 / .227917 / .485417 | .950 / .676667 / .950 |
+| #933 only (`11fb1f21`) | .333 / .182917 / .260417 | .850 / .656667 / .850 |
+| #933 + compound-safe #940 (`d1b88cb3`) | .667 / .262917 / .591667 | .900 / .666667 / .900 |
+
+#940 recovers and improves LoCoMo, but #933's calibration remains a hard
+LongMemEval regression. Reopen #933's calibration decision; do not waive the
+no-regression gate or publish PR #941's isolated result as the release result.
+
+### 3.3 #930 — the weights gate recall, not order
 
 `runFtsQuery` ends in:
 
@@ -507,12 +542,12 @@ is not doing anything and any retrieval number you take is measuring noise.
 Keep each retrieval change independently measurable. The prior plan mixed a
 falsified union, an uncalibrated weight recommendation, and the real length fix.
 
-**Phase 0 — tracker/evidence triage (complete in this review).** The `akm-eval`
-comparator SHA is pinned below. #929 and draft PR #931 are closed with their
-measured result and the branch retained. #748/#935/#936 are on 0.10.0. #937 is
-the only fragment-indexing deliverable in 0.9.14. The implementation owner must
-still probe current `main` immediately before Phase 1 so the control matches the
-actual coding base.
+**Phase 0 — tracker/evidence triage (complete in this review).** #929 and draft
+PR #931 are closed with their measured result and the branch retained.
+#748/#935/#936 are on 0.10.0. #937 is the only fragment-indexing deliverable in
+0.9.14. The paired 0.9.13 control has been reproduced at evaluator PR #16's
+head; the final comparator SHA remains pending the diagnostic corrections in
+§7. Re-run that control beside every candidate measurement.
 
 **Phase 1 — #934: incompatible read generations.** Classify the generation
 before any query. Older/unknown generations take one “no usable index; run
@@ -523,21 +558,29 @@ with absent ones. No known-incompatible handle reaches a query.
 **Phase 2 — #933: stable lexical scoring.** Design and implement the mapping in
 one PR with the invariants from §3.1. The endpoint/min-max cleanup is part of
 that PR, not an independently shipped pseudo-fix. Leave #929 out. Re-probe and
-require the untouched graph-hop canary to regain headroom.
+require the untouched graph-hop canary to regain headroom. The first fixed-log
+calibration (`a33b569c` through `11fb1f21`) failed the paired corpus gate above;
+it is implementation evidence, not an accepted calibration.
 
-**Phase 3 — #930: bounded weight experiment.** Run the pre-declared matrix on
-top of #933. Merge a weight change only if it clears the gate in §4; otherwise
-close the issue as rejected with the results. Do not tune weights and fragments
-in the same measurement round.
+**Phase 3 — #940: relaxed-ceiling relevance.** Keep the existing ceiling but
+order tied relaxed results by their pre-clamp relevance. Preserve that signal
+separately from belief-state ceiling evidence and re-probe the reported LoCoMo
+gain before moving the acceptance baseline.
 
-**Phase 4 — #937: lexical fragments.** In reviewable commits: extract the
+**Phase 4 — #930: bounded weight experiment.** Run the pre-declared matrix from
+an isolated branch anchored after #940 and before #937. Merge a weight change
+only if it clears the gate in §4, then verify the winner again in combination
+with #937; otherwise close the issue as rejected. Do not attribute a combined
+weights-plus-fragments result to either change.
+
+**Phase 5 — #937: lexical fragments.** In reviewable commits: extract the
 shared fragment model; define fallback selectors and `show` round-trip; add
 regenerable fragment/FTS storage; atomically maintain it; return distinct parent
 assets with one winning fragment; then measure quality, latency, index size, and
 fragment distribution. Bump the index generation and add the prior-release
 fixture in the same change.
 
-**Phase 5 — release closeout.** Re-mint collapse-detector canaries for the
+**Phase 6 — release closeout.** Re-mint collapse-detector canaries for the
 test/evaluation installation and add an operator-facing release note explaining
 why existing installations should do the same. Freeze one candidate commit,
 run release acceptance, dispatch gated CI against that exact 40-character SHA,
@@ -546,9 +589,11 @@ and add no commits after evidence is collected.
 ## 7. Testing and measurement
 
 **Pin the external harness.** The probe is in `itlackey/akm-eval`, not this
-repository's `scripts/akm-eval`. Record the comparator commit for every result;
-the reviewed baseline is
-`4f373223f0722ec2393ebf9195604de1297ea8ef`.
+repository's `scripts/akm-eval`. Record the comparator commit for every result.
+PR #16 at `ddb3624e5feb63deece09b85cf59112ce6e446db` adds
+`tiedTopKRate`, which makes exact score-ceiling saturation visible. Its CI must
+be green and its semantics independently verified before that commit becomes
+the release comparator.
 
 **Use the pre-release command form.** `bin/probe <version>` installs a published
 npm version and cannot test an unshipped checkout. From the pinned `akm-eval`
@@ -559,15 +604,25 @@ bin/probe --cmd '["bun","/absolute/path/to/akm/src/cli.ts"]'
 ```
 
 The script grades four metrics per pack: `zeroHitRate`, `evidenceRecallAt5`,
-`precisionAtK`, and `recallAtK`. It does **not** grade MRR/nDCG. It exits nonzero
-for a metric regression, but currently only warns for `guardTripped`; require
+`precisionAtK`, and `recallAtK`. It does **not** grade MRR/nDCG. PR #16's
+`tiedTopKRate` observes only equality of public scores; it cannot see #940's
+hidden pre-ceiling relevance tie-break, and it currently counts underfilled
+result sets as “top-K.” Treat it as disclosure, not correctness. Before using
+it for release, rename it to state that it measures score saturation, require a
+full K, and add direct tests. Add a separate deterministic identity-permutation
+probe: reindex the same content under permuted opaque document ids, map results
+back, and fail if ranks or retrieval metrics change. It exits nonzero for a
+metric regression, but currently only warns for `guardTripped`; require
 `guardTripped=0` explicitly.
 
-**Establish the control every time.** The #929 measurement was trustworthy
-because stock `release/0.9.12` was probed first and matched committed reference
-values on all 8 metrics. Without that, a delta is not attributable. Re-probe the
-control on current `main` at the start of each step and record both artifact
-directories.
+**Establish a paired control every time.** The committed LoCoMo reference no
+longer reproduces even from the same cached 0.9.10 binary: the saturated result
+was partly selecting by filename. Do not grade 0.9.14 against that historical
+JSON. Run published 0.9.13 and the candidate under the same pinned evaluator
+commit, runtime, corpus bytes, environment, and clean data directories; record
+both artifact directories and compare that pair. A control/candidate delta is
+attributable only when repeated runs are deterministic and the control itself
+is recorded.
 
 **Probe changes independently.** If scoring, weights, and fragments ship in one
 measurement round, no delta is attributable. Probe after #933, after the #930
@@ -693,4 +748,4 @@ the SHA and run URL in the milestone description before release.
 | declared relations not fed into graph (#935) | `scan/doc-to-entry.ts:68` (`links`), `metadata.ts:474`, `:169-172`, `:193`, `lint/base-linter.ts:479` |
 | lexical fragment implementation (#937) | shared splitter, `index-fts-repository.ts`, `show.ts`, index schema |
 | rejected #929 experiment | branch `issue/0.9.13-search` @ `8c61f1f0`, draft PR #931 |
-| frozen retrieval probe | `itlackey/akm-eval` @ `4f373223f0722ec2393ebf9195604de1297ea8ef` |
+| retrieval probe | paired attribution audited at `itlackey/akm-eval` PR #16 `ddb3624e`; final comparator pending saturation-test and identity-permutation corrections |
