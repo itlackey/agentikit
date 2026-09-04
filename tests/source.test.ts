@@ -352,8 +352,15 @@ Creates a user.
       const hit = searched.hits[0];
       expect(hit && isLocalHit(hit) ? hit.ref : undefined).toMatch(/#akm-fragment-/);
       if (!hit || !isLocalHit(hit)) throw new Error("expected a local fragment hit");
+      // Search refs address the indexed safe revision. A concurrent disk edit
+      // must not make the opaque selector disappear or show different bytes.
+      writeFile(
+        path.join(stashDir, "knowledge", "fragment-roundtrip.md"),
+        "---\ndescription: changed\n---\nnew disk bytes",
+      );
       const shown = await akmShow({ ref: hit.ref });
       expect(shown.content).toContain("needlefragment proof");
+      expect(shown.content).not.toContain("new disk bytes");
     });
   });
 

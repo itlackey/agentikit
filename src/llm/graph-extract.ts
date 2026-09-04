@@ -22,6 +22,7 @@
 
 import systemPromptTemplate from "../assets/prompts/graph-extract-system.md" with { type: "text" };
 import userPromptTemplate from "../assets/prompts/graph-extract-user-prompt.md" with { type: "text" };
+import { splitMarkdownFragmentStats } from "../core/asset/markdown-fragments";
 import { toErrorMessage } from "../core/common";
 import type { AkmConfig } from "../core/config/config";
 import { ConfigError } from "../core/errors";
@@ -195,79 +196,12 @@ function normalizeBatchState(state?: GraphBatchState): GraphBatchState | undefin
   return state;
 }
 
-function splitParagraph(text: string, maxChars: number): { chunks: string[]; truncationCount: number } {
-  if (text.length <= maxChars) return { chunks: [text], truncationCount: 0 };
-  const chunks: string[] = [];
-  let truncationCount = 0;
-  let remaining = text;
-  while (remaining.length > maxChars) {
-    let splitAt = remaining.lastIndexOf(" ", maxChars);
-    if (splitAt < Math.floor(maxChars * 0.6)) splitAt = maxChars;
-    const piece = remaining.slice(0, splitAt).trim();
-    if (piece) chunks.push(piece);
-    remaining = remaining.slice(splitAt).trim();
-    truncationCount += 1;
-  }
-  if (remaining) chunks.push(remaining);
-  return { chunks, truncationCount };
-}
-
 function splitBodyIntoChunks(
   body: string,
   maxChars = MAX_CHUNK_BODY_CHARS,
 ): { chunks: string[]; truncationCount: number } {
-  const sections = body
-    .split(/\n(?=#{1,6}\s)/)
-    .map((section) => section.trim())
-    .filter(Boolean);
-  if (sections.length === 0) return { chunks: [body.trim()].filter(Boolean), truncationCount: 0 };
-
-  const chunks: string[] = [];
-  let current = "";
-  let truncationCount = 0;
-
-  const flush = () => {
-    const trimmed = current.trim();
-    if (trimmed) chunks.push(trimmed);
-    current = "";
-  };
-
-  for (const section of sections) {
-    if (section.length <= maxChars) {
-      const candidate = current ? `${current}\n\n${section}` : section;
-      if (candidate.length <= maxChars) current = candidate;
-      else {
-        flush();
-        current = section;
-      }
-      continue;
-    }
-
-    const paragraphs = section
-      .split(/\n\s*\n/)
-      .map((part) => part.trim())
-      .filter(Boolean);
-    for (const paragraph of paragraphs) {
-      if (paragraph.length <= maxChars) {
-        const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
-        if (candidate.length <= maxChars) current = candidate;
-        else {
-          flush();
-          current = paragraph;
-        }
-        continue;
-      }
-      flush();
-      const split = splitParagraph(paragraph, maxChars);
-      truncationCount += split.truncationCount;
-      for (const piece of split.chunks) {
-        if (piece.length <= maxChars) chunks.push(piece);
-      }
-    }
-  }
-
-  flush();
-  return { chunks, truncationCount };
+  const split = splitMarkdownFragmentStats(body, maxChars);
+  return { chunks: split.fragments.map((fragment) => fragment.text), truncationCount: split.hardSplitCount };
 }
 
 /** Consistency weight for blending chunk-agreement with LLM confidence. */

@@ -106,7 +106,10 @@ function splitPiece(piece: Piece, maxChars: number): Piece[] {
  * always refer to the authored file's line numbers because the projection
  * preserves one line per source line (with excluded bytes blanked out).
  */
-export function splitMarkdownFragments(body: string, maxChars = MARKDOWN_FRAGMENT_MAX_CHARS): MarkdownFragment[] {
+export function splitMarkdownFragmentStats(
+  body: string,
+  maxChars = MARKDOWN_FRAGMENT_MAX_CHARS,
+): { fragments: MarkdownFragment[]; hardSplitCount: number } {
   const lines = body.split(/\r?\n/);
   const headings = parseMarkdownToc(body).headings;
   const boundaries = [1, ...headings.map((heading) => heading.line), lines.length + 1]
@@ -114,13 +117,17 @@ export function splitMarkdownFragments(body: string, maxChars = MARKDOWN_FRAGMEN
     .sort((left, right) => left - right);
   const slugs = uniqueSlugs(body);
   const pieces: Piece[] = [];
+  let sectionCount = 0;
   for (let i = 0; i < boundaries.length - 1; i++) {
     const startLine = boundaries[i]!;
     const end = boundaries[i + 1]! - 1;
     const section = { lines: lines.slice(startLine - 1, end), startLine, headingSlug: slugs.get(startLine) };
-    if (textOf(section.lines)) pieces.push(...splitPiece(section, maxChars));
+    if (textOf(section.lines)) {
+      sectionCount++;
+      pieces.push(...splitPiece(section, maxChars));
+    }
   }
-  return pieces.map((piece, ordinal) => {
+  const fragments = pieces.map((piece, ordinal) => {
     const text = textOf(piece.lines);
     const contentLines = piece.lines.map((line, index) => ({ line, index })).filter(({ line }) => line.trim());
     const first = contentLines[0]?.index ?? 0;
@@ -138,6 +145,11 @@ export function splitMarkdownFragments(body: string, maxChars = MARKDOWN_FRAGMEN
       hash: digest,
     };
   });
+  return { fragments, hardSplitCount: Math.max(0, pieces.length - sectionCount) };
+}
+
+export function splitMarkdownFragments(body: string, maxChars = MARKDOWN_FRAGMENT_MAX_CHARS): MarkdownFragment[] {
+  return splitMarkdownFragmentStats(body, maxChars).fragments;
 }
 
 export function fragmentForSelector(body: string, selector: string): MarkdownFragment | undefined {

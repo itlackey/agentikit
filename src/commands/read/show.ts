@@ -64,6 +64,7 @@ import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { resolveStorageLocations } from "../../storage/locations";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
 import { TELEMETRY_BUSY_TIMEOUT_MS, withIndexDb } from "../../storage/repositories/index-db";
+import { getIndexedMarkdownFragment } from "../../storage/repositories/index-fts-repository";
 import { computeBodyHash } from "../../storage/repositories/index-llm-cache-repository";
 // Eagerly import source providers to trigger self-registration.
 import "../../sources/providers/index";
@@ -118,9 +119,15 @@ export async function akmShowUnified(input: {
   // and ignore the fragment rather than refusing the whole show.
   warnSensitiveFragmentUnsupported(parseBundleRef(ref));
 
-  // Auto-index when stale so the index is current before lookup.
-  const { primarySource } = resolveReadSources();
-  await ensurePrimaryIndexForRead(primarySource);
+  // An opaque fragment selector is an indexed revision handle. Do not refresh
+  // it away between search and show if disk changed concurrently; the stored
+  // safe substrate below is its source of truth. Friendly heading selectors
+  // intentionally retain the normal source-live read behavior.
+  const parsedRef = parseBundleRef(ref);
+  if (!parsedRef.fragment?.startsWith("akm-fragment-")) {
+    const { primarySource } = resolveReadSources();
+    await ensurePrimaryIndexForRead(primarySource);
+  }
 
   // Try local filesystem (FTS5 index lookup)
   const result = await showLocal(input);
@@ -296,11 +303,14 @@ export async function showLocal(input: {
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
   const presentedName = indexedEntry.name;
+  const indexedFragment = parsed.fragment?.startsWith("akm-fragment-")
+    ? withIndexDb((db) => getIndexedMarkdownFragment(db, indexedEntry.itemRef, parsed.fragment!))
+    : undefined;
   const indexedRenderer = rendererForIndexedEntry(indexedEntry, fileCtx);
   let response: ShowResponse;
   try {
     if (indexedRenderer === null) {
-      response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment);
+      response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment, indexedFragment?.content);
     } else {
       const match =
         typeof indexedRenderer === "string" ? indexedMatch(indexedEntry, indexedRenderer) : recognizeMatch(fileCtx);
@@ -329,7 +339,7 @@ export async function showLocal(input: {
             `Fragment "#${parsed.fragment}" was ignored: ${makeBundleRef(parsed.bundle, parsed.conceptId)} is not a Markdown document, so heading fragments do not apply. Showing the whole asset.`,
           );
         } else {
-          applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, presentedName);
+          applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, presentedName, indexedFragment?.content);
         }
       }
     }
@@ -606,6 +616,7 @@ function buildIndexedProjectionResponse(
   entry: IndexedEntry,
   assetPath: string,
   fragment: string | undefined,
+  indexedFragmentContent?: string,
 ): ShowResponse {
   const isMarkdown = path.extname(assetPath).toLowerCase() === ".md";
   if (fragment !== undefined && !isMarkdown) {
@@ -616,7 +627,9 @@ function buildIndexedProjectionResponse(
   const raw = fs.readFileSync(assetPath, "utf8");
   const parsed = parseFrontmatter(raw);
   const content =
-    fragment !== undefined && isMarkdown ? requireMarkdownSection(raw, fragment, entry.name).content : parsed.content;
+    fragment !== undefined && isMarkdown
+      ? (indexedFragmentContent ?? requireMarkdownSection(raw, fragment, entry.name).content)
+      : parsed.content;
   const description = entry.document?.description ?? asNonEmptyString(parsed.data.description);
   const tags =
     entry.document?.tags ??
@@ -634,8 +647,14 @@ function buildIndexedProjectionResponse(
   };
 }
 
-function applyMarkdownFragment(response: ShowResponse, raw: string, fragment: string, name: string): void {
-  const section = requireMarkdownSection(raw, fragment, name).content;
+function applyMarkdownFragment(
+  response: ShowResponse,
+  raw: string,
+  fragment: string,
+  name: string,
+  indexedFragmentContent?: string,
+): void {
+  const section = indexedFragmentContent ?? requireMarkdownSection(raw, fragment, name).content;
   if (response.template !== undefined) response.template = section;
   else if (response.prompt !== undefined) response.prompt = section;
   else response.content = section;
