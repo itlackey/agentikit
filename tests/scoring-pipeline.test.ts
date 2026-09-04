@@ -660,6 +660,41 @@ describe("Identity-independent final ranking ties", () => {
     expect(await contentOrder(baselineStash, baseline)).toEqual(["needle alpha", "needle bravo"]);
     expect(await contentOrder(permutedStash, permuted)).toEqual(["needle alpha", "needle bravo"]);
   });
+
+  test("the FTS candidate limit uses the same content tie-break before ranking", async () => {
+    const baselineStash = tmpStash();
+    const permutedStash = tmpStash();
+    // `searchDatabase` asks FTS for limit * 3 candidates.  Four exact BM25
+    // ties therefore expose whether the SQL-side LIMIT picked by generated
+    // identity before the final TypeScript comparator could correct it.
+    const baseline = [
+      ["aaa-opaque", "needle delta"],
+      ["bbb-opaque", "needle gamma"],
+      ["ccc-opaque", "needle bravo"],
+      ["zzz-opaque", "needle alpha"],
+    ] as const;
+    const permuted = [
+      ["zzz-opaque", "needle delta"],
+      ["ccc-opaque", "needle gamma"],
+      ["bbb-opaque", "needle bravo"],
+      ["aaa-opaque", "needle alpha"],
+    ] as const;
+
+    const firstContent = async (stashDir: string, corpus: readonly (readonly [string, string])[]) => {
+      const descriptionByName = new Map(corpus.map(([name, description]) => [name, description]));
+      for (const [name, description] of corpus) {
+        writeFile(path.join(stashDir, "knowledge", `${name}.md`), `---\ndescription: ${description}\n---\n`);
+      }
+      return withTestIndex(stashDir, async () => {
+        const result = await akmSearch({ query: "needle", source: "local", limit: 1, skipLogging: true });
+        const hit = result.hits.find((candidate): candidate is SourceSearchHit => candidate.type !== "registry");
+        return hit ? descriptionByName.get(hit.name) : undefined;
+      });
+    };
+
+    expect(await firstContent(baselineStash, baseline)).toBe("needle alpha");
+    expect(await firstContent(permutedStash, permuted)).toBe("needle alpha");
+  });
 });
 
 // ── Issue #15: "semantic" label for hybrid results ──────────────────────────

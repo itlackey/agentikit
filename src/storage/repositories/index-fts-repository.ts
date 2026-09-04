@@ -119,7 +119,32 @@ function runFtsQuery(
     JOIN entries e ON e.id = f.entry_id
     WHERE entries_fts MATCH ?
       ${filterClause}
-    ORDER BY bm25Score, e.id ASC
+    -- The candidate limit is applied before the TypeScript ranker gets a
+    -- chance to resolve ties.  Do not let SQLite's opaque row id choose which
+    -- equally relevant rows survive that limit: it is generated from an asset
+    -- identity and can change when a caller merely renames opaque documents.
+    -- Match db-search's final content key by excluding the generated H1 title
+    -- from the adapter body.  When bodies truly match, the final e.id
+    -- fallback is harmless because they are indistinguishable at this stage.
+    ORDER BY bm25Score,
+      lower(trim(
+        coalesce(
+          nullif(
+            CASE
+              WHEN substr(coalesce(json_extract(e.document_json, '$.content'), ''), 1, 2) = '# '
+                   AND instr(coalesce(json_extract(e.document_json, '$.content'), ''), char(10)) > 0
+                THEN ltrim(substr(
+                  coalesce(json_extract(e.document_json, '$.content'), ''),
+                  instr(coalesce(json_extract(e.document_json, '$.content'), ''), char(10)) + 1
+                ))
+              ELSE coalesce(json_extract(e.document_json, '$.content'), '')
+            END,
+            ''
+          ),
+          coalesce(json_extract(e.document_json, '$.description'), '')
+        )
+      )) COLLATE BINARY,
+      e.id ASC
     LIMIT ?
   `;
 
