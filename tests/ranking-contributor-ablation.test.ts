@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import type { IndexDocument } from "../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../src/indexer/scan/drain-dir";
+import { lexicalNameMatchTier } from "../src/indexer/search/ranking";
 import {
   applyBeliefStateScoreCeiling,
   defaultRankingContributors,
@@ -156,6 +157,17 @@ describe("exact-name ranking contributor identity isolation (#930)", () => {
         makeCtx("deploy production", ["deploy", "production"]),
       ),
     ).toBe(1);
+  });
+
+  test("keeps the contributor and final tier on the same structural evidence", () => {
+    const opaque = { name: "z9xq000", type: "memory" } as IndexDocument;
+    const deployment = { name: "deployment", type: "knowledge" } as IndexDocument;
+    const multiToken = { name: "deployment-production-plan", type: "knowledge" } as IndexDocument;
+
+    expect(lexicalNameMatchTier(opaque, ["000"])).toBe(0);
+    expect(lexicalNameMatchTier(opaque, ["xq000"])).toBe(0);
+    expect(lexicalNameMatchTier(deployment, ["deploy"])).toBeGreaterThanOrEqual(2);
+    expect(lexicalNameMatchTier(multiToken, ["deploy", "production"])).toBeGreaterThanOrEqual(2);
   });
 });
 
