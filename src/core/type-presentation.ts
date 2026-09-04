@@ -78,7 +78,12 @@ function buildWorkflowAction(ref: string): string {
  * see the file header.
  */
 export const TYPE_PRESENTATION: Record<KnownType, Presentation> = {
-  skill: { label: "Skill", renderer: "skill-md", action: (ref) => `akm show ${ref} -> follow the instructions` },
+  skill: {
+    label: "Skill",
+    renderer: "skill-md",
+    action: (ref) => `akm show ${ref} -> follow the instructions`,
+    fragmentRef: false,
+  },
   command: {
     label: "Command",
     renderer: "command-md",
@@ -153,6 +158,7 @@ export const TYPE_PRESENTATION: Record<KnownType, Presentation> = {
     label: "Instruction",
     renderer: "knowledge-md",
     action: (ref) => `akm show ${ref} -> read the project instructions`,
+    fragmentRef: false,
   },
 };
 
@@ -171,9 +177,10 @@ export function presentationFor(type: string | undefined): Presentation {
 }
 
 /**
- * A missing declaration means a read-like or foreign type can expose a safe
- * selector. Built-in executable types opt out explicitly above, alongside the
- * action that requires their parent canonical ref.
+ * A missing declaration means a read-like reference or foreign type can expose
+ * a safe selector. Built-in executable and instruction-bearing types opt out
+ * explicitly above: their search match can be a fragment, but the advertised
+ * action needs the parent canonical ref and its complete context.
  */
 export function allowsFragmentRef(type: string): boolean {
   return presentationFor(type).fragmentRef !== false;

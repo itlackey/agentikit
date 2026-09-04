@@ -146,11 +146,11 @@ describe("TYPE_PRESENTATION — action builders reproduce ACTION_BUILDERS verbat
 });
 
 describe("TYPE_PRESENTATION — fragment refs follow the parent-action contract", () => {
-  test("executable parent actions never receive an opaque Markdown selector", () => {
-    for (const type of ["workflow", "command", "agent", "script", "task"]) {
-      expect(allowsFragmentRef(type), `${type} must keep its executable parent ref`).toBe(false);
+  test("executable and instruction-bearing actions never receive an opaque Markdown selector", () => {
+    for (const type of ["workflow", "command", "agent", "script", "task", "skill", "instruction"]) {
+      expect(allowsFragmentRef(type), `${type} must keep its complete parent ref`).toBe(false);
     }
-    for (const type of ["knowledge", "skill", "memory", "lesson", "fact", "instruction"]) {
+    for (const type of ["knowledge", "memory", "lesson", "fact", "session"]) {
       expect(allowsFragmentRef(type), `${type} can expose a read selector`).toBe(true);
     }
   });

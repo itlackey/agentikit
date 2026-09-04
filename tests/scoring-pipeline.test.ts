@@ -189,6 +189,34 @@ describe("Issue #1: Two-phase boost — score/rank consistency", () => {
     expect(hit.score).toBe(0.0234);
   });
 
+  test("fragment matches keep skills and project instructions on their complete parent refs", async () => {
+    const stashDir = tmpStash();
+    for (const [type, conceptId, action] of [
+      ["skill", "skills/release", "follow the instructions"],
+      ["instruction", "AGENTS", "read the project instructions"],
+    ] as const) {
+      const hit = await buildDbHit({
+        entry: { name: conceptId.split("/").at(-1)!, type },
+        path: path.join(stashDir, `${conceptId}.md`),
+        itemRef: `stash//${conceptId}`,
+        bundleId: "stash",
+        conceptId,
+        score: 0.5,
+        query: "matched heading",
+        rankingMode: "fts",
+        fragmentId: "akm-fragment-matched-heading",
+        defaultStashDir: stashDir,
+        allSourceDirs: [stashDir],
+        sources: [{ path: stashDir }],
+        config: { semanticSearchMode: "off" },
+      });
+
+      expect(hit.ref).not.toContain("#akm-fragment-matched-heading");
+      expect(hit.action).toContain(`akm show ${hit.ref}`);
+      expect(hit.action).toContain(action);
+    }
+  });
+
   // Issue #856: the lexical ladder stage computed during FTS search must
   // survive into the serializable hit as `matchStage`, not just live on the
   // internal Symbol-keyed attribution.
