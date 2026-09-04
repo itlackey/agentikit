@@ -1,9 +1,10 @@
 # Search ranking and fragment indexing: brief for 0.9.14
 
-**Status:** critically reviewed against `main` and the live milestone on
-2026-09-04; implementation is integrated on `release/0.9.14` via PR #939 and
-final release verification is in progress. Written
-after #929 was implemented, measured, and held out of 0.9.13.
+**Status:** shipped. 0.9.14 released 2026-09-04 from `3ab7684d` (PR #939),
+published to npm as `akm-cli@0.9.14` (`latest`), with every 0.9.14 milestone
+issue closed. Written after #929 was implemented, measured, and held out of
+0.9.13; kept as the record of why the retrieval work took the shape it did and
+as the standing brief for the 0.10.0 follow-through.
 **0.9.14 scope:** #934, #933, #940, #930, and #937. #929 is resolved by rejection
 after its measured zero-recall/large-precision regression. Semantic fragments
 (#748) and graph expansion (#935/#936) move to 0.10.0.
@@ -105,17 +106,17 @@ mechanism and is not implementation work.
 #936  fragment-aware graph                   → requires #937 identity; follows #935's graph decision
 ```
 
-Live tracker after this review:
+Final disposition:
 
 | issue | disposition |
 |---|---|
-| #934 | 0.9.14, integrated — incompatible read generations; final release verification pending |
-| #933 | 0.9.14, integrated — stable lexical scoring; final release verification pending |
-| #940 / PR #941 | 0.9.14, integrated — compound-safe relaxed relevance in PR #939; PR #941 closed unmerged as superseded |
-| #930 | 0.9.14, resolved — W1/W2 measured and rejected; W0 retained |
-| #937 | 0.9.14, integrated — paired quality and identity gate passed; final release verification pending |
-| #929 / PR #931 | closed — measured rejection; branch retained |
-| #748 / #935 / #936 | 0.10.0, open — non-blocking follow-through |
+| #934 | **Shipped in 0.9.14** — incompatible read generations |
+| #933 | **Shipped in 0.9.14** — stable lexical scoring |
+| #940 / PR #941 | **Shipped in 0.9.14** — compound-safe relaxed relevance, via PR #939; PR #941 closed unmerged as superseded |
+| #930 | **Closed in 0.9.14** — W1/W2 measured and rejected; frozen W0 matrix retained, no unvalidated weight change shipped |
+| #937 | **Shipped in 0.9.14** — lexical fragment indexing; derived index advanced v22 → v23 |
+| #929 / PR #931 | **Closed `not_planned`** — measured rejection; branch retained as evidence |
+| #748 / #935 / #936 | **Open on 0.10.0** — the remaining work; see §6 |
 
 ### 3.0 #934 — do not hand a known-incompatible schema to callers
 
@@ -611,10 +612,12 @@ Verify the fragment-count distribution on both corpora **before** measuring
 retrieval. If the mean fragments-per-document on LongMemEval is ~1, the chunker
 is not doing anything and any retrieval number you take is measuring noise.
 
-## 6. Recommended order of work
+## 6. Order of work, as executed
 
-Keep each retrieval change independently measurable. The prior plan mixed a
-falsified union, an uncalibrated weight recommendation, and the real length fix.
+Phases 0–6 are complete and shipped in 0.9.14. Phase 7 is the remaining work.
+The principle that shaped the sequence still applies to it: keep each retrieval
+change independently measurable. The prior plan mixed a falsified union, an
+uncalibrated weight recommendation, and the real length fix.
 
 **Phase 0 — tracker/evidence triage (complete in this review).** #929 and draft
 PR #931 are closed with their measured result and the branch retained.
@@ -694,11 +697,32 @@ p50/p95 0.817/1.887ms → 1.456/2.960ms. Canary-cycle p50/p95 changed
 recorded; the absolute interactive and canary latency remains within the
 predeclared release plan, which set no numeric regression budget.
 
-**Phase 6 — release closeout.** Re-mint collapse-detector canaries for the
-test/evaluation installation and add an operator-facing release note explaining
-why existing installations should do the same. Freeze one candidate commit,
-run release acceptance, dispatch gated CI against that exact 40-character SHA,
-and add no commits after evidence is collected.
+**Phase 6 — release closeout (complete).** Candidate frozen at `cdf7f4b5`;
+Gated CI dispatched against that exact 40-character SHA and passed
+([run 50](https://github.com/itlackey/akm/actions/runs/33888762597)) with no
+commits added afterwards. Merged to `main` as `3ab7684d` via PR #939, tagged
+`v0.9.14`, published to npm as `akm-cli@0.9.14` (`latest`) with all six
+platform binaries, checksums and installers attached. Every 0.9.14 milestone
+issue is closed and no 0.9.14 PRs remain open.
+
+**Phase 7 — 0.10.0 follow-through (open).** Three issues, in this order:
+
+1. **#935 — deterministic graph.** Independent of everything above; can start
+   immediately. It must specify typed node/edge semantics before choosing
+   storage: asset refs are not interchangeable with the graph's free-text
+   entities (trap 11).
+2. **#936 — fragment-aware graph.** Needs #937's fragment identity, which now
+   exists, and should follow #935's node/edge decision rather than pre-empt it.
+   Reuse #937's fragment key; do not define a second one.
+3. **#748 — semantic fragments.** Reuse the #937 substrate rather than defining
+   a competing chunk model. The lexical half is done, so this is now scoped to
+   the vector path it always claimed to be — but on shared foundations.
+
+Two carried-forward measurement rules. Re-run the control beside every candidate
+at evaluator revision `d8db7e8c` (`itlackey/akm-eval` PR #18), and note that
+#937's index cost is already material (cold-index p50 +145%, `index.db` +77%) —
+the vector half adds to the same budget, so measure it rather than assume
+headroom.
 
 ## 7. Testing and measurement
 
