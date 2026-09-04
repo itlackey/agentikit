@@ -1,12 +1,16 @@
 # Search ranking and fragment indexing: brief for 0.9.14
 
-**Status:** investigation complete, no code changed. Written after #929 was
-implemented, measured, and held out of 0.9.13.
-**Scope:** #933, #929, #930, #748, and the two graph gaps it exposed (#935, #936).
+**Status:** critically reviewed against `main` and the live milestone on
+2026-09-04; no product code changed. Written after #929 was implemented,
+measured, and held out of 0.9.13.
+**0.9.14 scope:** #934, #933, #930, and #937. #929 is resolved by rejection
+after its measured zero-recall/large-precision regression. Semantic fragments
+(#748) and graph expansion (#935/#936) move to 0.10.0.
 **Companions:** [`benchmark-tuning-findings.md`](./benchmark-tuning-findings.md)
 is the source of truth for every benchmark figure not measured here.
-**Preserved work:** `issue/0.9.13-search` at `8c61f1f0` — correct in isolation,
-reuse it, do not rewrite it.
+**Preserved negative result:** `issue/0.9.13-search` at `8c61f1f0` and draft
+PR #931. Keep the branch as evidence; do not merge or reuse the union unless a
+new measurement overturns the result below.
 
 ---
 
@@ -23,10 +27,12 @@ cutoff, and they rank below the cutoff because the fact lives mid-body in a long
 document. Widening the pool admits more non-evidence; it cannot promote evidence
 that BM25 has already buried.
 
-**Do not re-attempt #929 as a recall fix.** It is a correctness fix (the tiers
-genuinely are alternatives today, which is wrong) with a measured precision cost
-and no measured benefit. It becomes worth shipping only after the two defects
-underneath it are fixed, and it must be re-measured then.
+**Do not re-attempt #929 as a recall fix.** The cascade is an intentional
+precision gate: strict conjunction first, relaxed OR only when strict retrieval
+misses. Calling a progressive union “more correct” is a preference, not a
+contract, and the only implementation tested produced no recall benefit. Close
+#929 and PR #931 as a measured rejection. A future proposal may reopen the
+decision only with a new failing user contract and an A/B that improves it.
 
 ## 2. The measured regression
 
@@ -70,24 +76,62 @@ mischaracterised once already:
 `tests/integration/commands/improve-memory.test.ts` "prefers the current derived
 memory" still passes its headline assertion at position 0. Only the runner-up
 changed, because a parent memory that the starvation bug used to hide now
-legitimately surfaces. That assertion encodes the bug; rewrite it when #929
-lands. Do not treat it as evidence against the change.
+legitimately surfaces. It is not evidence against the experiment, but #929 is
+rejected on corpus results and the main-branch assertion should remain unchanged.
 
-## 3. Root cause: three issues, one failure
+## 3. Root cause and milestone disposition
 
-#933, #929 and #930 are three views of a single retrieval pipeline that cannot
-surface a fact stated in the middle of a long document. They must be worked in
-dependency order, not in issue-number order.
+#933, #930, and #937 address different parts of a retrieval pipeline that cannot
+reliably surface a fact stated in the middle of a long document. #934 is an
+independent read-path correctness fix. #929 was a plausible but falsified
+mechanism and is not implementation work.
 
 ```
-#933  normalizeFtsScores is set-dependent   →  blocks everything that widens the pool
-  └─ #929  tier union (recall plumbing)     →  safe only after #933; measure again
-       └─ #930  bm25 column weights         →  a recall lever, not an ordering lever
-            └─ #748  fragment indexing      →  the only fix for the actual burial mechanism
-                 └─ #936  fragment-level graph nodes and edges
+#934  classify incompatible read generations → independent, small, ship first
 
-#935  deterministic graph (no LLM)          →  independent; land before #936
+#933  stable lexical scoring                 → blocks every candidate-population change
+  └─ #930  bounded weight experiment         → ship only if the probe improves
+       └─ #937  lexical fragment indexing    → fixes the measured length penalty
+
+#929  tier union                             → close rejected; zero recall gain
+
+0.10.0 follow-through:
+#748  semantic fragments                     → reuse #937's fragment substrate
+#935  deterministic graph design             → independent of retrieval closeout
+#936  fragment-aware graph                   → requires #937 identity; follows #935's graph decision
 ```
+
+Live tracker after this review:
+
+| issue | disposition |
+|---|---|
+| #934 | 0.9.14, open — incompatible read generations |
+| #933 | 0.9.14, open — stable lexical scoring prerequisite |
+| #930 | 0.9.14, open — measured experiment with rejection path |
+| #937 | 0.9.14, open — lexical fragment retrieval |
+| #929 / PR #931 | closed — measured rejection; branch retained |
+| #748 / #935 / #936 | 0.10.0, open — non-blocking follow-through |
+
+### 3.0 #934 — do not hand a known-incompatible schema to callers
+
+The current opener warns and returns the database handle anyway. The issue's
+direction is correct—classify once and skip queries—but “return the same signal
+as missing” is too imprecise for the current APIs and wrong for a newer
+generation. `openExistingDatabase` returns a database or throws;
+`openReadonlyExistingDatabase` alone uses `undefined` for absence, and many
+callers use these low-level functions directly.
+
+Preserve three distinct states:
+
+- **absent:** existing missing-index behavior;
+- **older/unknown:** one actionable “index not usable; run `akm index`” result;
+- **newer:** one actionable “this akm is older; upgrade akm” result, never advice
+  to rebuild the newer index with the older binary.
+
+Use a typed classification/result at the command boundary or a typed error that
+commands map once. Do not key behavior on SQLite message text and do not return
+a handle after the generation is known to be incompatible. Unreadable and
+corrupt-path behavior is separate and must stay unchanged.
 
 ### 3.1 #933 — a document's score depends on what else matched
 
@@ -104,12 +148,11 @@ Two defects.
 
 **(a) It reads the endpoints instead of deriving min/max.** Nothing in the type
 or signature enforces sorted input. It holds today only because `searchFts`
-returns a single tier. The moment two tiers contribute it breaks, because each
-tier's bm25 values are on their own scale — which is exactly why the #929 branch
-had to **fabricate score offsets**, nudging each looser tier's rows past the
-worst collected so far. The ranker then consumes partly synthetic bm25 values.
-That workaround is not shippable and must be **deleted, not adapted**, once (a)
-is fixed.
+returns a single BM25-sorted tier. The #929 branch exposed the invariant and
+worked around it with fabricated cross-tier offsets. Since #929 is rejected,
+there is no reason to land that workaround. Cover unsorted input while replacing
+the normalization in (b); a standalone endpoint-to-min/max edit would retain the
+set-dependence and has no user-visible value.
 
 **(b) Min-max makes the score set-dependent.** Best maps to `1.0` and worst to
 `0.3` regardless of absolute quality, so adding a weak candidate rewrites every
@@ -131,6 +174,28 @@ pathology, and `BELIEF_STATE_SCORE_CEILINGS` (`deprecated: 0.28`,
 `superseded: 0.25`, …) exists solely to force demotions the additive penalties
 cannot achieve against a clamp-pinned base. Those constants are a symptom.
 After (b) lands they should be **reconsidered for removal**, not retuned.
+
+**Do not over-claim the replacement.** Raw FTS5 BM25 magnitude depends on the
+query and corpus statistics (`idf`, `avgdl`), so a fixed monotone transform can
+make a score stable when weaker candidates are added to the *same query*, but it
+does not automatically make scores comparable across unrelated queries or FTS
+tables. Cross-query comparability is not a 0.9.14 requirement.
+
+The #933 PR must choose and justify a calibration against the existing cosine
+path (`FTS_WEIGHT = 0.7`, `VEC_WEIGHT = 0.3`) and pin these invariants:
+
+- monotonicity: a better BM25 hit never receives a lower lexical score;
+- append stability: adding strictly weaker candidates leaves existing scores
+  unchanged within tolerance;
+- finite bounded output for empty, singleton, tied, and extreme BM25 inputs;
+- headroom: the untouched `maxHops=2` graph canary observes a larger score than
+  `maxHops=1`; and
+- hybrid balance: lexical-only, semantic-only, and hybrid fixtures retain a
+  deliberate, documented ordering.
+
+Only after those pass should `BELIEF_STATE_SCORE_CEILINGS` be evaluated. Keep
+or delete them from behavior evidence; do not assume a new base scale makes the
+demotion contract unnecessary.
 
 ### 3.2 #930 — the weights gate recall, not order
 
@@ -250,22 +315,26 @@ penalty by making `D` roughly `avgdl`.
 
 ### What this means for #930
 
-Ship #930 as a **modest** rebalance, expect a **modest** effect, and do not
-expect it to fix the burial. Concretely:
+#930 is an **experiment with a rejection path**, not a promised weight change.
+The original issue title read the literal `10.0:1.0` ratio as a 10x effect,
+which the measurement disproves, and no measured candidate weight set exists
+yet.
 
-- Compress the spread (something like `4, 3, 2, 2, 1.5`) rather than inverting
-  it. The current top end is past the saturation knee and is buying almost
-  nothing.
-- Treat the win as *recall*: measure `evidenceRecall@5` and `recallAtK`, because
-  the weights gate the `LIMIT` (§3.2).
-- **`description` is not a trustworthy signal at 5x.** When frontmatter carries
-  no description, `applyPostContributorFields` (`metadata.ts:1315`) synthesizes
-  one from the filename and drops `confidence` to 0.55. For the memory corpora
-  it is effectively the document's opening — which is precisely the "a document's
-  opening should not be a proxy for its relevance" complaint in #930. A
-  synthesized description should not carry the same weight as an authored one;
-  the entry already records `source: "filename"` and a lowered `confidence`, so
-  the information needed to distinguish them is already in the index.
+- Sweep a small pre-declared matrix after #933, including the unchanged control.
+  A set like `(4,3,2,2,1.5)` is a candidate, not a recommendation.
+- Treat the outcome as recall-sensitive because the weights act before `LIMIT`,
+  but report precision and name-lookup behavior at the same time.
+- Ship a new set only if a frozen probe improves beyond tolerance without a
+  regression on the other pack/metrics or the exact-name contract. Otherwise
+  close #930 as rejected and leave the weights unchanged.
+- Test authored and synthesized descriptions separately. The brief previously
+  claimed synthesized descriptions are “effectively the document opening,” but
+  current `main` records a filename-derived fallback with lower confidence. Do
+  not design around the opening-text claim without a corpus-level provenance
+  check.
+
+Even a winning weight set is only a modest complement to #937. It cannot remove
+whole-row length normalization and is not allowed to delay the fragment fix.
 
 ## 5. Fragment indexing, and whether the graph can join fragments
 
@@ -277,7 +346,7 @@ expect it to fix the burial. Concretely:
 | embedding vectors per entry | **exactly one** — `embeddings(id INTEGER PRIMARY KEY REFERENCES entries(id))` |
 | body length bound | `MARKDOWN_CONTENT_MAX_CHARS = 1_000_000` — effectively unbounded; a 1 MB body is one FTS row |
 | heading boundaries | **already computed and stored** — `parseMarkdownToc` (`core/asset/markdown.ts:51`) returns `{level, text, line}`, persisted as `entry.toc` |
-| fragment addressing | **already implemented** — `akm show <ref>#<slug>`, via `extractSection` and `markdownHeadingSlug` |
+| fragment addressing | **heading-only** — `akm show <ref>#<slug>` cannot address fallback chunks |
 | a body chunker | **already implemented** — `splitBodyIntoChunks` (`llm/graph-extract.ts:215`) |
 | graph position anchors | **none** |
 
@@ -294,9 +363,14 @@ per-file — using chunk agreement only as a confidence signal
 So do **not** write a third chunker. #748 already warns against adding a second
 heading parser; there are now two half-implementations of this in the tree
 (`parseMarkdownToc` + `extractSection` for addressing, `splitBodyIntoChunks` for
-splitting). Reconciling them into one splitter that returns
-`{ slug, startLine, endLine, text }` is a prerequisite step, and it is mostly
-deletion.
+splitting). Reconcile them into one core splitter.
+
+The result cannot be only `{slug,startLine,endLine,text}`. A headingless
+transcript has no slug, content before the first heading has no slug, and one
+oversized heading section produces multiple chunks with the same slug. The
+shared model needs a deterministic, unique within-revision `fragmentId`,
+ordinal, range, optional heading slug, text, and hash. `#heading-slug` remains a
+friendly alias for an unsplit heading, not the universal storage identity.
 
 ### 5.1a #748's stated scope is backwards, and the measurement says so
 
@@ -316,7 +390,33 @@ Scope the FTS fragments first and treat the vector half as the follow-on. The
 blast-radius argument was reasonable when #748 was written; it is not what the
 numbers say now.
 
-### 5.2 Can the graph join fragments? Not as it stands. (#936)
+That means issue ownership changes: #937 owns the shared identity plus lexical
+FTS path in 0.9.14; #748 keeps its original semantic/vector purpose and moves to
+0.10.0, reusing the substrate rather than defining a competing chunk model.
+
+### 5.1b Parent roll-up must happen before top-K
+
+A naive child-row design has a second starvation bug: if `LIMIT ?` applies to
+fragment rows, ten matching fragments from one document can consume all ten
+slots before results are deduped to their parent. Parent roll-up after ranking
+is too late.
+
+#937 must return top-K **distinct parent assets**, carrying one deterministic
+winning fragment per parent. Roll up before the candidate limit and before
+`normalizeFtsScores`; its map is keyed by parent entry id, so duplicate fragment
+rows would otherwise overwrite each other. Default to the best fragment score,
+not a sum that rewards repetition, unless corpus measurements justify another
+aggregation.
+
+The FTS layout also needs an explicit answer for metadata duplication. Copying
+the same weighted name/description/tags onto every fragment changes document
+frequency and can penalize long documents merely because they have more chunks.
+Keeping parent metadata and fragment bodies in separate scoring populations
+creates a different calibration problem because raw BM25 magnitudes are not
+comparable across FTS tables. Evaluate the layout deliberately; do not let the
+DDL make the ranking policy accidentally.
+
+### 5.2 Can the graph join fragments? Not as it stands. (#936, 0.10.0)
 
 ```sql
 CREATE TABLE graph_file_entities (
@@ -342,17 +442,19 @@ later:
   entities that appear somewhere in its file". Every fragment of a document
   would receive the identical graph boost, which makes the graph useless as a
   *fragment* discriminator even though it stays useful as a document-level prior.
-- Adding the anchor is cheap **at extract time and free at migration time**:
+- Capturing an anchor is cheap **at extract time and free at migration time**:
   `splitBodyIntoChunks` already knows which chunk each entity came from, and it
   is thrown away in `mergeGraphExtractions`. Carrying a `chunk_index` (or a line
-  range) through to `graph_file_entities` is a few lines plus a column.
+  range) through extraction is straightforward. Making that anchor a durable,
+  resolvable fragment identity is not “a few lines”: it depends on #937's
+  headingless/oversized selector contract and must not invent a second key.
 - **`index.db` is a regenerable cache with generation-based invalidation.**
   `rebuildIncompatibleIndexGeneration` drops and rebuilds every derived table
   when the stored generation is older than `CANONICAL_INDEX_DB_VERSION`. Schema
   changes here need a generation bump, **not** a hand-written migration. Say this
   out loud in the PR so nobody writes one.
 
-### 5.3 The honest limits of a graph join (#935)
+### 5.3 The honest limits of a graph join (#935, 0.10.0)
 
 Three constraints that make "join fragments via graph connections" a weaker lever
 than it sounds, and none of them are fixable inside this work:
@@ -369,13 +471,17 @@ than it sounds, and none of them are fixable inside this work:
    And per §3.1 those boosts currently cannot be observed at all once the score
    saturates.
 
-**The realistic role for the graph is document-level reassembly, not fragment
-discovery.** When a fragment wins, its parent document's other fragments and its
-graph-connected documents become *cheap, ranked context* rather than additional
-independent hits. That is genuinely valuable — it is how you answer a multi-fact
-question from fragment hits — but it is a packing and presentation change, not a
-retrieval change, and it should be scoped and measured separately from the
-chunked index itself. Do not bundle it into the first chunking PR.
+**The realistic role for the graph in this milestone is document-level prior,
+not fragment discovery.** When a fragment wins, sibling/connected fragments may
+later become ranked context, but that is a packing and presentation change, not
+the lexical retrieval fix. Do not bundle it into #937.
+
+#935 also should not assume asset refs can simply be inserted as free-text
+entities in the existing tables. The current query path token-matches extracted
+entity names, and the related-file path self-joins shared entities. A typed
+asset-to-asset link graph has different identity and traversal semantics. Its
+design must either model those edges separately or add explicit node kind and
+provenance with tests proving the existing LLM graph behavior is unchanged.
 
 ### 5.4 The trap that would sink a naive chunking PR
 
@@ -386,109 +492,112 @@ problem was measured. `splitBodyIntoChunks` already handles this (it falls
 through to paragraph and then word-boundary splits), which is another reason to
 reuse it rather than write a heading-only splitter from #748's description.
 
+The existing `show <ref>#slug` path does **not** handle those fallback chunks.
+Every search-returned fragment selector must round-trip through `show` to the
+exact indexed text. Verify this for headingless bodies, duplicate headings,
+preamble text, and multiple chunks under one oversized heading before treating
+fragment addressing as complete.
+
 Verify the fragment-count distribution on both corpora **before** measuring
 retrieval. If the mean fragments-per-document on LongMemEval is ~1, the chunker
 is not doing anything and any retrieval number you take is measuring noise.
 
 ## 6. Recommended order of work
 
-Each step is independently measurable. Do not merge two of them into one probe
-round — the whole reason this investigation exists is that #929 and #930 were
-ranked the wrong way round and their effects were never separated.
+Keep each retrieval change independently measurable. The prior plan mixed a
+falsified union, an uncalibrated weight recommendation, and the real length fix.
 
-**Step 1 — #933(a): derive real min/max.** Replace the endpoint reads in
-`normalizeFtsScores` with an actual min/max over the array. Small, safe,
-independently correct. Expected probe delta: zero (it holds today by accident).
-Ship on its own.
+**Phase 0 — tracker/evidence triage (complete in this review).** The `akm-eval`
+comparator SHA is pinned below. #929 and draft PR #931 are closed with their
+measured result and the branch retained. #748/#935/#936 are on 0.10.0. #937 is
+the only fragment-indexing deliverable in 0.9.14. The implementation owner must
+still probe current `main` immediately before Phase 1 so the control matches the
+actual coding base.
 
-**Step 2 — #933(b): set-independent lexical scoring.** Replace min-max with a
-stable monotone map from bm25 into the score range, so a document's lexical score
-means the same thing regardless of what else matched — and is comparable across
-queries, which min-max never was. This is the load-bearing change. It should
-resolve the graph-boost saturation in §2 by construction. Re-examine
-`BELIEF_STATE_SCORE_CEILINGS` **after** it lands; the goal is deleting those
-constants, not retuning them.
+**Phase 1 — #934: incompatible read generations.** Classify the generation
+before any query. Older/unknown generations take one “no usable index; run
+`akm index`” path; newer generations take one “upgrade akm” path. Do not advise
+an older binary to rebuild a newer index, and do not conflate unreadable paths
+with absent ones. No known-incompatible handle reaches a query.
 
-**Step 3 — #929: land the preserved union.** Cherry-pick `8c61f1f0` from
-`issue/0.9.13-search`, then **delete the synthetic bm25 offsets outright** — they
-exist only to satisfy the assumption Step 1 removed. Rewrite `improve-memory`'s
-runner-up assertion (§2). Re-probe: with Steps 1–2 in place, the precision loss
-should shrink; if `recallAtK` is still flat, say so plainly in the PR rather than
-shipping on the correctness argument alone.
+**Phase 2 — #933: stable lexical scoring.** Design and implement the mapping in
+one PR with the invariants from §3.1. The endpoint/min-max cleanup is part of
+that PR, not an independently shipped pseudo-fix. Leave #929 out. Re-probe and
+require the untouched graph-hop canary to regain headroom.
 
-**Step 4 — #930: rebalance the weights, measured as recall.** Sweep with
-`bin/probe`, which is free. Watch `evidenceRecall@5` and `recallAtK` first,
-`precisionAtK` second. Expect a modest effect (§4) and do not chase a large one
-by pushing `content` past the point where body mentions beat title matches.
+**Phase 3 — #930: bounded weight experiment.** Run the pre-declared matrix on
+top of #933. Merge a weight change only if it clears the gate in §4; otherwise
+close the issue as rejected with the results. Do not tune weights and fragments
+in the same measurement round.
 
-**Step 5 — fragment indexing.** The actual fix for §4's Finding 3, and the
-largest change here. Sequence it as:
+**Phase 4 — #937: lexical fragments.** In reviewable commits: extract the
+shared fragment model; define fallback selectors and `show` round-trip; add
+regenerable fragment/FTS storage; atomically maintain it; return distinct parent
+assets with one winning fragment; then measure quality, latency, index size, and
+fragment distribution. Bump the index generation and add the prior-release
+fixture in the same change.
 
-  a. Reconcile the two existing splitters into one that returns
-     `{ slug, startLine, endLine, text }`. Mostly deletion.
-  b. Add fragment rows to the FTS path only, keeping one `entries` row per asset
-     (a child `entry_fragments` table feeding `entries_fts`, parent id carried on
-     each row). Generation bump, no migration.
-  c. Roll fragment hits up to their parent asset before ranking, so the existing
-     type/utility/recency/graph boosts still apply at asset level — #748 calls
-     this out and it is right: a highly-used document must not lose its utility
-     boost because the match landed mid-body.
-  d. Resolve a winning fragment to `bundle//conceptId#heading-slug` through the
-     existing `show` fragment path.
-  e. **Only then** consider the semantic half (#748's original scope) and the
-     graph-anchored reassembly of §5.3 (#936).
-
-**Step 6 — the graph gaps, filed separately.** #935 (populate the graph
-deterministically from declared refs, so it exists without an LLM engine) is
-independent of everything above and can run in parallel; it should land before
-#936 (anchor graph entities and relations to fragments), which additionally
-needs #933 for its boosts to be observable and #748 for fragment identity to
-exist at all.
-
-  Re-mint the collapse detector's canary sets (`bun scripts/refresh-canary-set.ts
-  --refresh`) — `search-fields.ts` carries an explicit warning that changing what
-  is indexed shifts the detector's recall baseline for every existing canary set.
+**Phase 5 — release closeout.** Re-mint collapse-detector canaries for the
+test/evaluation installation and add an operator-facing release note explaining
+why existing installations should do the same. Freeze one candidate commit,
+run release acceptance, dispatch gated CI against that exact 40-character SHA,
+and add no commits after evidence is collected.
 
 ## 7. Testing and measurement
 
-**Free and deterministic, run on every step:** `bin/probe <version>` in
-`akm-eval`. LLM-free, minutes, grades `recallAtK` / `precisionAtK` / `mrr` /
-`ndcgAtK` on two frozen corpora against committed reference values and exits
-nonzero on regression. There is no excuse for shipping a retrieval change
-unmeasured.
+**Pin the external harness.** The probe is in `itlackey/akm-eval`, not this
+repository's `scripts/akm-eval`. Record the comparator commit for every result;
+the reviewed baseline is
+`4f373223f0722ec2393ebf9195604de1297ea8ef`.
+
+**Use the pre-release command form.** `bin/probe <version>` installs a published
+npm version and cannot test an unshipped checkout. From the pinned `akm-eval`
+checkout use:
+
+```sh
+bin/probe --cmd '["bun","/absolute/path/to/akm/src/cli.ts"]'
+```
+
+The script grades four metrics per pack: `zeroHitRate`, `evidenceRecallAt5`,
+`precisionAtK`, and `recallAtK`. It does **not** grade MRR/nDCG. It exits nonzero
+for a metric regression, but currently only warns for `guardTripped`; require
+`guardTripped=0` explicitly.
 
 **Establish the control every time.** The #929 measurement was trustworthy
 because stock `release/0.9.12` was probed first and matched committed reference
 values on all 8 metrics. Without that, a delta is not attributable. Re-probe the
-control on the current base at the start of each step.
+control on current `main` at the start of each step and record both artifact
+directories.
 
-**Probe changes independently.** #930's own text says it: if two candidate-
-generation changes ship together, any judged round attributes to "retrieval
-changes" rather than to either one.
+**Probe changes independently.** If scoring, weights, and fragments ship in one
+measurement round, no delta is attributable. Probe after #933, after the #930
+experiment, and after #937.
 
 **Unit-level regressions to keep green:**
 
 - `tests/integration/graph/graph-boost-ranking.test.ts` — the maxHops=2 assertion
-  is the canary for score saturation. It should go green *without being touched*
-  when Step 2 lands. If you find yourself editing it, Step 2 is not done.
-- `tests/integration/fts/fts-progressive-retrieval.test.ts` — tier attribution
-  and dedupe for the union.
-- `tests/integration/fuzzy-search.test.ts` — the `"deploy kube"` precision case.
-  This is the test that caught the naive union appending a *deploy docker*
-  document on the shared word "deploy". It is the cheapest precision tripwire in
-  the tree.
-- `tests/integration/commands/improve-memory.test.ts` — rewrite the runner-up
-  assertion in Step 3, do not weaken the position-0 assertion.
-- `tests/curate-relevance-eval.test.ts`, `tests/curate-search-for-curation.test.ts`
-  — both encode the old candidate-starved recall as intentional; `8c61f1f0`
-  already updated them, reuse those edits.
+  is the canary for score saturation. It should regain headroom *without being
+  touched* when #933 lands.
+- `tests/integration/fuzzy-search.test.ts` — keep the `"deploy kube"` precision
+  case unchanged; it is the cheapest tripwire against reintroducing #929.
+- #937's focused suite must cover headingless, preamble, duplicate-heading,
+  oversized-section, distinct-parent top-K, fragment round-trip, incremental
+  replacement, and parent-level ranking behavior.
+- `tests/integration/previous-release-corpus.test.ts` must include the released
+  0.9.13 index shape before the generation bump ships.
 
-**Performance:** `searchFts` has exactly two callers — `db-search.ts:612` (the
-per-query path) and `collapse-detector.ts:249` (`scoreCanary`, a bounded loop,
-`DEFAULT_CANARY_COUNT = 40`, once per `akm improve` consolidate cycle). No
-indexer-time or per-entry path calls it. This is not a hot path; it needs no
-cache and no knob. Fragment indexing does change indexer-time cost — measure
-`akm index` wall time on a large stash before and after Step 5.
+**Performance:** `searchFts` has two callers — the user query path and a bounded
+collapse-detector loop. #937 changes both query work and indexer work. Measure
+index wall time, index bytes, user-query p50/p95, canary-cycle wall time, and
+fragment-count p50/p95/max. Avoid adding an operator knob unless the measured
+cost requires one.
+
+**Repository and release gates:** run focused tests during each phase, then
+`bun run check`. On the frozen candidate run
+`./tests/release-check.sh --skip-docker`, then dispatch `.github/workflows/gated-ci.yml`
+with the candidate's exact 40-character SHA and require semantic search, Docker
+install, native scheduler, and `release-candidate-evidence` to succeed. Record
+the SHA and run URL in the milestone description before release.
 
 ## 8. Lessons learned, and traps
 
@@ -516,10 +625,9 @@ cache and no knob. Fragment indexing does change indexer-time cost — measure
 **On the code:**
 
 5. **`normalizeFtsScores` requires a bm25-sorted array and nothing says so.** It
-   is the single most dangerous undocumented invariant in the search path. It
-   cost the #929 branch a whole fabricated-offset mechanism. Step 1 removes it;
-   until then, assume any change to `searchFts`'s output ordering silently
-   corrupts every score.
+   cost the #929 branch a fabricated-offset mechanism. #933 removes it; until
+   then, assume any change to `searchFts` output ordering can silently corrupt
+   every score.
 6. **`ORDER BY bm25Score … LIMIT ?` makes every ranking knob a recall knob.**
    Nothing in the search path can promote a document that the `LIMIT` excluded.
    Treat "ranking" and "candidate generation" as the same subsystem here.
@@ -534,16 +642,16 @@ cache and no knob. Fragment indexing does change indexer-time cost — measure
    perturbs every normalized score until #933(b) lands. This gates a `topK`
    increase too, which is worth remembering the next time one looks like an easy
    win.
-10. **The graph cannot be load-bearing.** It is LLM-gated, covers two asset types,
-    and is capped at 32 entities / 32 relations / 1 hop. Design fragment
-    retrieval to work with no graph at all, then let the graph improve it
-    (#935 removes the LLM gate; #936 adds the fragment anchors).
-11. **akm parses typed relations and discards every one of them.** `xrefs`,
+10. **The graph cannot be load-bearing for #937.** It is LLM-gated, covers two
+    asset types, and is capped at 32 entities / 32 relations / 1 hop. Design
+    fragment retrieval with no graph dependency; #935/#936 are 0.10.0 work.
+11. **akm parses typed relations and does not feed them to graph ranking.** `xrefs`,
     `links`, `supersededBy`, `contradictedBy`, `derivedFrom`, memory `refs:` and
     `sources:` are all parsed at index time and none reach the graph tables —
     `entry.links` is computed, assigned at `scan/doc-to-entry.ts:68`, serialized
-    into `document_json`, and read by nothing. Before adding a signal, check
-    whether the codebase already extracts it and throws it away. (#935)
+    into `document_json`, and has no graph reader. That does not mean asset refs
+    are interchangeable with the graph's free-text entities; #935 must specify
+    typed node/edge semantics before choosing storage.
 12. **Chat transcripts have no headings.** A heading-boundary chunker is a no-op
     on the corpus this work is being measured against (§5.4). Check the
     fragment-count distribution before you check retrieval.
@@ -551,6 +659,14 @@ cache and no knob. Fragment indexing does change indexer-time cost — measure
     rebuild, never a hand-written migration. `rebuildIncompatibleIndexGeneration`
     already drops and recreates every derived table.
 14. **Don't write a third chunker.** Two exist. Reconcile them.
+15. **Fragment identity is not a heading slug.** Headingless transcripts,
+    preamble text, duplicate headings, and oversized sections all disprove that
+    shortcut. Every returned selector must round-trip through `show`.
+16. **Deduping after `LIMIT` is starvation in a new form.** Fragment search must
+    select top-K distinct parents before the candidate budget is exhausted.
+17. **Pin the evaluator, not just the product.** The `bin/probe` named here lives
+    in a separate repository and changes independently. Use `--cmd` for local
+    candidates, record its SHA, and treat `guardTripped` as a failure manually.
 
 ---
 
@@ -558,6 +674,7 @@ cache and no knob. Fragment indexing does change indexer-time cost — measure
 
 | concern | file |
 |---|---|
+| incompatible read generation (#934) | `src/storage/repositories/index-connection.ts:119-230` |
 | min-max normalization (#933) | `src/indexer/search/ranking.ts:71-86` |
 | its consumer | `src/indexer/search/db-search.ts:440` |
 | the score clamp | `src/indexer/search/db-search.ts:577` |
@@ -568,10 +685,12 @@ cache and no knob. Fragment indexing does change indexer-time cost — measure
 | per-field indexing projection | `src/indexer/search/search-fields.ts` |
 | body projection + its 1 MB bound | `src/indexer/passes/metadata.ts:882-893` |
 | synthesized filename description | `src/indexer/passes/metadata.ts:1315` |
-| heading parse / section extract | `src/core/asset/markdown.ts:51`, `:82` |
+| heading parse / section extract | `src/core/asset/markdown.ts` |
 | the existing body chunker | `src/llm/graph-extract.ts:215` |
 | chunk→file collapse | `src/llm/graph-extract.ts:276` (`mergeGraphExtractions`) |
 | graph tables (no position anchor) | `src/storage/repositories/index-schema.ts:131-160` |
 | per-file graph boost | `src/indexer/graph/graph-boost.ts:276` |
-| declared relations nothing reads (#935) | `scan/doc-to-entry.ts:68` (`links`), `metadata.ts:474`, `:169-172`, `:193`, `lint/base-linter.ts:479` |
-| preserved #929 work | branch `issue/0.9.13-search` @ `8c61f1f0` |
+| declared relations not fed into graph (#935) | `scan/doc-to-entry.ts:68` (`links`), `metadata.ts:474`, `:169-172`, `:193`, `lint/base-linter.ts:479` |
+| lexical fragment implementation (#937) | shared splitter, `index-fts-repository.ts`, `show.ts`, index schema |
+| rejected #929 experiment | branch `issue/0.9.13-search` @ `8c61f1f0`, draft PR #931 |
+| frozen retrieval probe | `itlackey/akm-eval` @ `4f373223f0722ec2393ebf9195604de1297ea8ef` |
