@@ -88,6 +88,9 @@ import {
   applyPostContributorFields,
   applyPreContributorFields,
   extractPackageMetadata,
+  getMarkdownFragmentContent,
+  hasMarkdownFragmentContent,
+  setMarkdownFragmentContent,
 } from "../../../indexer/passes/metadata";
 import type { FileContext } from "../../../indexer/walk/file-context";
 import {
@@ -256,6 +259,9 @@ function indexDocumentFromEntry(
   if (entry.captureMode !== undefined) doc.captureMode = entry.captureMode;
   if (entry.lessonStrength !== undefined) doc.lessonStrength = entry.lessonStrength;
   if (entry.derivedFrom !== undefined) doc.derivedFrom = entry.derivedFrom;
+  // Internal fragment substrate follows the recognition projection without
+  // becoming an IndexDocument field or serialized search payload.
+  if (hasMarkdownFragmentContent(entry)) setMarkdownFragmentContent(doc, getMarkdownFragmentContent(entry));
   return doc;
 }
 

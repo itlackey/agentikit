@@ -5,9 +5,12 @@
 /** Dependency-safe fixed FTS5 calibration shared by storage and ranking. */
 const SCORE_FLOOR = 0.3;
 const PARENT_CEILING = 0.8;
-// Fragment BM25 is from a distinct FTS population. A small conservative
-// ceiling is an explicit merge policy, not a cross-table comparability claim.
-const FRAGMENT_CEILING = 0.76;
+// Fragment BM25 is from a distinct FTS population. Its slightly higher ceiling
+// is an explicit evidence policy, not a cross-table comparability claim: when
+// a body fragment independently proves the query, prefer that actionable
+// selector over the same parent's length-penalized whole-body row. Metadata
+// and cross-fragment conjunctions cannot enter this population.
+const FRAGMENT_CEILING = 0.84;
 const BM25_REFERENCE = 0.000001;
 const LOG_SHAPE = 3;
 
