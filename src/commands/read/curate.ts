@@ -721,8 +721,9 @@ function getCurateFamily(ref: string): CurateFamily | undefined {
   try {
     // F4b: `ref` is a search-hit ref in the 0.9.0 conceptId grammar — parse via
     // the new-grammar `parseRefInput` so skill/reference family grouping still
-    // recognizes it.
-    const parsed = parseRefInput(ref);
+    // recognizes it. Search may add an opaque Markdown selector; identity and
+    // family ownership are on the parent asset, not that selector.
+    const parsed = parseRefInput(ref.split("#", 1)[0]!);
     if (parsed.type === "skill") {
       return { key: parsed.name, role: "root" };
     }
