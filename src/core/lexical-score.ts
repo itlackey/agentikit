@@ -10,7 +10,7 @@ const PARENT_CEILING = 0.8;
 // a body fragment independently proves the query, prefer that actionable
 // selector over the same parent's length-penalized whole-body row. Metadata
 // and cross-fragment conjunctions cannot enter this population.
-const FRAGMENT_CEILING = 0.84;
+const FRAGMENT_CEILING = 0.82;
 const BM25_REFERENCE = 0.000001;
 const LOG_SHAPE = 3;
 
