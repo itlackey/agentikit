@@ -111,7 +111,7 @@ Live tracker after this review:
 | #934 | 0.9.14, open — incompatible read generations |
 | #933 | 0.9.14, open — stable lexical scoring prerequisite |
 | #940 / PR #941 | 0.9.14, open — preserve body relevance inside relaxed-score ties; PR #941 superseded by the compound-safe adaptation in PR #939 |
-| #930 | 0.9.14, open — measured experiment with rejection path |
+| #930 | 0.9.14, resolved — W1/W2 measured and rejected; W0 retained |
 | #937 | 0.9.14, open — lexical fragment retrieval |
 | #929 / PR #931 | closed — measured rejection; branch retained |
 | #748 / #935 / #936 | 0.10.0, open — non-blocking follow-through |
@@ -416,6 +416,34 @@ yet.
 Even a winning weight set is only a modest complement to #937. It cannot remove
 whole-row length normalization and is not allowed to delay the fragment fix.
 
+### 4.1 Frozen #930 result — retain W0
+
+The pre-declared matrix was run at evaluator
+`d520c6dec1f34dc3f8d4e4d2675186566b158437` with Bun 1.3.13, pinned corpus
+hashes, clean evaluator and target revisions, `guardTripped=0`, and a clean
+storage-name permutation diagnostic. The values below are the candidate values;
+W1 and W2 were each paired against W0 in the same environment.
+
+| arm / target | LoCoMo ev@5 / P@5 / R@5 / MRR / nDCG@5 | LongMemEval ev@5 / P@5 / R@5 / MRR / nDCG@5 | verdict |
+|---|---|---|---|
+| W0 / `d36f9358` | .641 / .257917 / .566667 / .4925 / .493421 | .950 / .676667 / .950 / .916667 / .925 | retain |
+| W1 / `11c482a0` | .641 / .257917 / .566667 / .49375 / .496561 | .950 / .676667 / .950 / .925 / .931546 | reject: no ev@5 or recall gain > .005 |
+| W2 / `bed8fc78` | .641 / .252917 / .560417 / .495833 / .493334 | .950 / .676667 / .950 / .950 / .950 | reject: LoCoMo recall −.00625 |
+
+W1's ranking-only improvement is real but cannot override the selection rule
+fixed before the run. W2 fails both the required recall-improvement condition
+and the no-regression condition. The release therefore keeps W0
+`(10, 5, 3, 2, 1)` and closes #930 as a measured rejection.
+
+The matrix also exposed an identity bug outside the weights themselves: a short
+query token could match an arbitrary substring in an opaque storage filename,
+changing top-K membership without changing BM25 rows or values. The release fix
+at `fbd7bab0` uses one structural whole-token/contiguous-phrase matcher in both
+the exact-name contributor and final name tier. It rejects arbitrary infixes and
+short opaque fragments while retaining exact names and deliberate leading
+prefixes. That fix is shared release correctness work, not evidence for choosing
+a weight arm.
+
 ## 5. Fragment indexing, and whether the graph can join fragments
 
 ### 5.1 Current state, verified
@@ -619,11 +647,11 @@ hydrates admitted entries. Mixed-boundary, typed/exclusion, type-winner, and
 3,000-way dense-tie tests pass; the ordinary broad-query overhead is sub-
 millisecond in the independent 2,000-row measurement above.
 
-**Phase 4 — #930: bounded weight experiment.** Run the pre-declared matrix from
-an isolated branch anchored after #940 and before #937. Merge a weight change
-only if it clears the gate in §4, then verify the winner again in combination
-with #937; otherwise close the issue as rejected. Do not attribute a combined
-weights-plus-fragments result to either change.
+**Phase 4 — #930: bounded weight experiment (complete).** The frozen matrix was
+run after #940 and before #937. W1 failed the required recall-improvement gate;
+W2 also regressed LoCoMo recall. W0 is retained and #930 is closed as a measured
+rejection. The storage-name bug discovered by the gate is corrected separately
+at release commit `fbd7bab0`.
 
 **Phase 5 — #937: lexical fragments.** In reviewable commits: extract the
 shared fragment model; define fallback selectors and `show` round-trip; add
