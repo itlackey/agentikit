@@ -19,6 +19,7 @@ import path from "node:path";
 import { buildActionFromContributors, defaultActionContributors } from "../../core/action-contributors";
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { displayRef } from "../../core/asset/resolve-ref";
+import { compareCodePoints } from "../../core/common";
 import type { AkmConfig, ImproveConfig } from "../../core/config/config";
 import { classifyPathAccess } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
@@ -329,11 +330,20 @@ function displaySearchScore(score: number): number {
  * this ranking stage and intentionally continue to the existing name/path
  * fallback for repeatable local presentation.
  */
+function asciiCaseFold(value: string): string {
+  // SQLite's built-in lower() folds ASCII only unless a build opts into ICU.
+  // Keep this key deliberately in that portable shared subset instead of
+  // introducing locale-dependent JavaScript ordering for non-ASCII content.
+  return value.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
+}
+
 function contentTieKey(entry: IndexDocument): string {
   const withoutLeadingTitle = (entry.content ?? "").replace(/^\s*#(?!#)\s+[^\r\n]*(?:\r?\n|$)/, "");
-  const body = withoutLeadingTitle.trim().toLocaleLowerCase();
-  if (body) return body;
-  return (entry.description ?? "").trim().toLocaleLowerCase();
+  const body = withoutLeadingTitle.trim();
+  // Hex-encode UTF-8 after the shared ASCII fold. SQLite uses the same
+  // `hex(lower(...))` expression before its candidate LIMIT, so both stages
+  // compare an ASCII key byte-for-byte even for non-ASCII document bodies.
+  return Buffer.from(asciiCaseFold(body || (entry.description ?? "").trim()), "utf8").toString("hex");
 }
 
 function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: RankedEntryInput) => number {
@@ -368,7 +378,7 @@ function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: Ra
     // Keep opaque generated IDs out of the final relevance tie-break.  This
     // runs only after every ranking contributor (including the #940 preserved
     // pre-ceiling evidence), exact-name, and type comparison has tied.
-    const contentDiff = contentTieKey(a.entry).localeCompare(contentTieKey(b.entry));
+    const contentDiff = compareCodePoints(contentTieKey(a.entry), contentTieKey(b.entry));
     if (contentDiff !== 0) return contentDiff;
     return a.filePath.localeCompare(b.filePath);
   };

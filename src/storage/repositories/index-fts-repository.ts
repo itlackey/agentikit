@@ -127,7 +127,7 @@ function runFtsQuery(
     -- from the adapter body.  When bodies truly match, the final e.id
     -- fallback is harmless because they are indistinguishable at this stage.
     ORDER BY bm25Score,
-      lower(trim(
+      hex(lower(trim(
         coalesce(
           nullif(
             CASE
@@ -143,7 +143,7 @@ function runFtsQuery(
           ),
           coalesce(json_extract(e.document_json, '$.description'), '')
         )
-      )) COLLATE BINARY,
+      ))) COLLATE BINARY,
       e.id ASC
     LIMIT ?
   `;

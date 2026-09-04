@@ -695,6 +695,24 @@ describe("Identity-independent final ranking ties", () => {
     expect(await firstContent(baselineStash, baseline)).toBe("needle alpha");
     expect(await firstContent(permutedStash, permuted)).toBe("needle alpha");
   });
+
+  test("identical content remains a deterministic local presentation tie", async () => {
+    const stashDir = tmpStash();
+    // No content-derived key can distinguish byte-identical documents without
+    // inventing relevance from their opaque identities.  The product contract
+    // is deterministic local presentation here; identity-permutation probes
+    // must compare such rows as one content-equivalence class.
+    for (const name of ["zzz-opaque", "aaa-opaque"]) {
+      writeFile(path.join(stashDir, "knowledge", `${name}.md`), "---\ndescription: needle samex\n---\n");
+    }
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "needle", source: "local", skipLogging: true });
+      expect(
+        result.hits.filter((hit): hit is SourceSearchHit => hit.type !== "registry").map((hit) => hit.name),
+      ).toEqual(["aaa-opaque", "zzz-opaque"]);
+    });
+  });
 });
 
 // ── Issue #15: "semantic" label for hybrid results ──────────────────────────
