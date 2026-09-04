@@ -134,12 +134,28 @@ describe("exact-name ranking contributor identity isolation (#930)", () => {
     };
   }
 
-  test("does not treat a one-character numeric query token inside an opaque storage name as name evidence", () => {
+  test("does not treat short or infix opaque storage-name fragments as name evidence", () => {
     // The evaluator projects the same document onto opaque storage filenames.
     // A query can legitimately contain a numeric token such as "4"; that
     // token must not award an exact-name boost merely because one projection
     // happened to receive an opaque name containing the same digit.
+    const opaque = makeItem("z9xq000");
     expect(exactNameRanking?.adjust(makeItem("z9xq4m"), makeCtx("4", ["4"]))).toBe(0);
+    expect(exactNameRanking?.adjust(opaque, makeCtx("000", ["000"]))).toBe(0);
+    expect(exactNameRanking?.adjust(opaque, makeCtx("xq000", ["xq000"]))).toBe(0);
+  });
+
+  test("shares structural phrase matching with final name tiers", () => {
+    // Exact full names remain the strongest signal. Leading three-character
+    // prefixes are still useful user-authored name evidence, unlike an infix.
+    expect(exactNameRanking?.adjust(makeItem("z9xq000"), makeCtx("z9xq000", ["z9xq000"]))).toBe(2);
+    expect(exactNameRanking?.adjust(makeItem("deployment"), makeCtx("deploy", ["deploy"]))).toBe(1);
+    expect(
+      exactNameRanking?.adjust(
+        makeItem("deployment-production-plan"),
+        makeCtx("deploy production", ["deploy", "production"]),
+      ),
+    ).toBe(1);
   });
 });
 
