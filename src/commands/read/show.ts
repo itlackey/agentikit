@@ -616,9 +616,7 @@ function buildIndexedProjectionResponse(
   const raw = fs.readFileSync(assetPath, "utf8");
   const parsed = parseFrontmatter(raw);
   const content =
-    fragment !== undefined && isMarkdown
-      ? requireMarkdownSection(parsed.content, fragment, entry.name).content
-      : parsed.content;
+    fragment !== undefined && isMarkdown ? requireMarkdownSection(raw, fragment, entry.name).content : parsed.content;
   const description = entry.document?.description ?? asNonEmptyString(parsed.data.description);
   const tags =
     entry.document?.tags ??
@@ -637,7 +635,7 @@ function buildIndexedProjectionResponse(
 }
 
 function applyMarkdownFragment(response: ShowResponse, raw: string, fragment: string, name: string): void {
-  const section = requireMarkdownSection(parseFrontmatter(raw).content, fragment, name).content;
+  const section = requireMarkdownSection(raw, fragment, name).content;
   if (response.template !== undefined) response.template = section;
   else if (response.prompt !== undefined) response.prompt = section;
   else response.content = section;

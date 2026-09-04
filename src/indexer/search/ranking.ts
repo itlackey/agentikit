@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { stableFtsScore } from "../../core/lexical-score";
 import type { Database } from "../../storage/database";
 import type { DbSearchResult } from "../../storage/repositories/index-entry-types";
 import { getUtilityScoresByIds } from "../../storage/repositories/index-utility-repository";
@@ -75,13 +76,6 @@ export interface RankEntriesOptions {
  * calibration for the one search pipeline, not a claim that BM25 is
  * comparable across different queries or FTS tables.
  */
-const FTS_SCORE_FLOOR = 0.3;
-const FTS_SCORE_CEILING = 0.8;
-// Broad FTS5 queries in the SQLite calibration fixture land around 1e-6.
-// Keep this fixed: it calibrates one score, never the result set.
-const FTS_BM25_REFERENCE = 0.000001;
-// A slow log curve preserves rare-term separation and contributor headroom.
-const FTS_LOG_SHAPE = 3;
 
 /**
  * Convert FTS5's negative BM25 value into the lexical contribution used by
@@ -97,17 +91,6 @@ const FTS_LOG_SHAPE = 3;
  * hands us an invalid value: `-Infinity` is the strongest possible match,
  * while NaN, +Infinity, and positive scores contribute no lexical evidence.
  */
-export function stableFtsScore(bm25Score: number): number {
-  if (bm25Score === Number.NEGATIVE_INFINITY) return FTS_SCORE_CEILING;
-  if (!Number.isFinite(bm25Score) || bm25Score >= 0) return FTS_SCORE_FLOOR;
-
-  const relevance = -bm25Score;
-  const scaledLogRelevance = Math.log1p(relevance / FTS_BM25_REFERENCE);
-  if (!Number.isFinite(scaledLogRelevance)) return FTS_SCORE_CEILING;
-  const normalized = scaledLogRelevance / (scaledLogRelevance + FTS_LOG_SHAPE);
-  return FTS_SCORE_FLOOR + (FTS_SCORE_CEILING - FTS_SCORE_FLOOR) * normalized;
-}
-
 export function normalizeFtsScores(results: DbSearchResult[]): Map<number, { score: number; result: DbSearchResult }> {
   const ftsScoreMap = new Map<number, { score: number; result: DbSearchResult }>();
 
