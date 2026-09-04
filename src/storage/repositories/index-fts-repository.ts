@@ -9,7 +9,7 @@
  * explicit full recovery rebuild.
  */
 
-import { splitMarkdownFragments } from "../../core/asset/markdown-fragments";
+import { fragmentForSelector, splitMarkdownFragments } from "../../core/asset/markdown-fragments";
 import { stableFtsScore } from "../../core/lexical-score";
 import { warn } from "../../core/warn";
 import type { IndexDocument } from "../../indexer/passes/metadata";
@@ -127,10 +127,11 @@ export function getIndexedMarkdownFragment(
 ): { content: string } | undefined {
   const row = db
     .prepare(
-      "SELECT f.content AS content FROM entry_fragments_fts f JOIN entries e ON e.id = f.entry_id WHERE e.item_ref = ? AND f.fragment_id = ?",
+      "SELECT s.safe_markdown FROM entry_fragments_fts f JOIN entry_fragments s ON s.entry_id = f.entry_id JOIN entries e ON e.id = f.entry_id WHERE e.item_ref = ? AND f.fragment_id = ?",
     )
-    .get(itemRef, fragmentId) as { content: string } | undefined;
-  return row;
+    .get(itemRef, fragmentId) as { safe_markdown: string } | undefined;
+  const fragment = row ? fragmentForSelector(row.safe_markdown, fragmentId) : undefined;
+  return fragment ? { content: fragment.text } : undefined;
 }
 
 function runFtsQuery(
