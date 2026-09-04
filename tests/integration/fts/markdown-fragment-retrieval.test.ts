@@ -118,6 +118,36 @@ describe("isolated lexical Markdown fragments (#937)", () => {
     }
   });
 
+  test("uses a single SQLite parent-window plan under broad monopoly pressure", () => {
+    const db = open();
+    try {
+      const longParagraph = `broadneedle ${"filler ".repeat(260)}`;
+      put(db, "monopoly-window", Array.from({ length: 90 }, () => longParagraph).join("\n\n"));
+      for (let index = 0; index < 40; index++) put(db, `parent-${index}`, `broadneedle parent ${index}`);
+      const plan = db
+        .prepare(
+          `EXPLAIN QUERY PLAN WITH matches AS (
+             SELECT e.id, f.fragment_id, f.fragment_ordinal, bm25(entry_fragments_fts) AS bm25Score
+             FROM entry_fragments_fts f JOIN entries e ON e.id = f.entry_id
+             WHERE entry_fragments_fts MATCH ?
+           ), ranked AS (
+             SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY bm25Score, fragment_ordinal, fragment_id) AS parentRank FROM matches
+           ) SELECT * FROM ranked WHERE parentRank = 1 ORDER BY bm25Score, id LIMIT ?`,
+        )
+        .all("broadneedle", 10) as Array<{ detail: string }>;
+      expect(plan.some((row) => /VIRTUAL TABLE|entry_fragments_fts/i.test(row.detail))).toBe(true);
+      const started = performance.now();
+      const hits = searchFts(db, "broadneedle", 10);
+      const elapsedMs = performance.now() - started;
+      expect(new Set(hits.map((hit) => hit.id)).size).toBe(10);
+      // CI budget, deliberately roomy; this catches a return to client OFFSET
+      // pagination without encoding machine-specific microbenchmarks.
+      expect(elapsedMs).toBeLessThan(1000);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   test("replaces parent and fragment rows atomically on incremental update", () => {
     const db = open();
     try {
@@ -129,7 +159,109 @@ describe("isolated lexical Markdown fragments (#937)", () => {
       closeDatabase(db);
     }
   });
+
+  test("rolls back entry, parent FTS, fragment source, and fragment FTS together on a fragment write failure", () => {
+    const db = open();
+    try {
+      put(db, "atomic", "oldatomicmarker");
+      const before = ["entries", "entries_fts", "entry_fragments", "entry_fragments_fts"].map((table) =>
+        rowCount(db, table),
+      );
+      const [beforeEntries, beforeParentFts, beforeFragmentSource] = before;
+      db.exec("DROP TABLE entry_fragments_fts");
+      expect(() => put(db, "atomic", "newatomicmarker")).toThrow();
+      // The failed replacement is isolated in upsertEntry's savepoint: the
+      // parent row and its old derived surfaces remain mutually consistent.
+      expect(rowCount(db, "entries")).toBe(beforeEntries!);
+      expect(rowCount(db, "entries_fts")).toBe(beforeParentFts!);
+      expect(rowCount(db, "entry_fragments")).toBe(beforeFragmentSource!);
+      expect(searchFts(db, "oldatomicmarker", 5)[0]?.entry.name).toBe("atomic");
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("clears Markdown fragments deliberately and keeps non-Markdown parent search unchanged", () => {
+    const db = open();
+    try {
+      put(db, "transition", "oldtransitionmarker");
+      const cleared: IndexDocument = { name: "transition", type: "knowledge", content: "parentonlymarker" };
+      // An observed Markdown scan with no safe body is explicit null/clear,
+      // unlike a metadata-only re-upsert which leaves stored fragments alone.
+      setMarkdownFragmentContent(cleared, undefined);
+      upsertEntry(
+        db,
+        "/fixture/knowledge/transition.md",
+        cleared,
+        buildSearchText(cleared),
+        deriveEntryProvenance(
+          { bundleId: "fixture", componentId: "fixture", adapterId: "akm" },
+          "knowledge",
+          "transition",
+        ),
+      );
+      expect(rowCount(db, "entry_fragments")).toBe(0);
+      expect(searchFts(db, "oldtransitionmarker", 5)).toHaveLength(0);
+      expect(searchFts(db, "parentonlymarker", 5)[0]?.fragmentId).toBeUndefined();
+
+      const script: IndexDocument = { name: "plain-script", type: "script", content: "nativemarkernonmarkdown" };
+      upsertEntry(
+        db,
+        "/fixture/scripts/plain-script.ts",
+        script,
+        buildSearchText(script),
+        deriveEntryProvenance(
+          { bundleId: "fixture", componentId: "fixture", adapterId: "akm" },
+          "script",
+          "plain-script",
+        ),
+      );
+      expect(searchFts(db, "nativemarkernonmarkdown", 5)[0]?.fragmentId).toBeUndefined();
+      expect(rowCount(db, "entry_fragments")).toBe(0);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("keeps the same winning selector across identical reindexes and preserves structured parent fields once", () => {
+    const db = open();
+    try {
+      const body = `${Array.from({ length: 400 }, () => "background").join(" ")}\n\ndeterministicmarker proof`;
+      const entry: IndexDocument = {
+        name: "structured",
+        type: "knowledge",
+        content: body,
+        toc: [{ level: 1, text: "Stable", line: 1 }],
+        parameters: [{ name: "region", description: "deployment region" }],
+      };
+      const provenance = deriveEntryProvenance(
+        { bundleId: "fixture", componentId: "fixture", adapterId: "akm" },
+        "knowledge",
+        "structured",
+      );
+      let firstSelector: string | undefined;
+      for (let run = 0; run < 2; run++) {
+        setMarkdownFragmentContent(entry, projectMarkdownFragmentContent(body));
+        upsertEntry(db, "/fixture/knowledge/structured.md", entry, buildSearchText(entry), provenance);
+        const hit = searchFts(db, "deterministicmarker", 5)[0];
+        if (run === 0) expect(hit?.fragmentId).toBeDefined();
+        else expect(hit?.fragmentId).toBe(firstSelector);
+        if (run === 0) firstSelector = hit?.fragmentId;
+      }
+      expect(rowCount(db, "entries_fts")).toBe(1);
+      const parent = db
+        .prepare("SELECT document_json FROM entries WHERE item_ref = ?")
+        .get("fixture//knowledge/structured") as { document_json: string };
+      expect(JSON.parse(parent.document_json)).toMatchObject({ toc: entry.toc, parameters: entry.parameters });
+    } finally {
+      closeDatabase(db);
+    }
+  });
 });
+
+function rowCount(db: Database, table: string): number {
+  return (db.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number }).count;
+}
 
 describe("Markdown fragment substrate", () => {
   test("preserves preamble/duplicate headings and real source lines while removing unsafe bytes", () => {
