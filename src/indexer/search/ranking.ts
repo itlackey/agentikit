@@ -263,9 +263,19 @@ export function lexicalNameMatchTier(entry: IndexDocument, queryTokens: string[]
 /**
  * A relaxed OR query admits intentionally weak candidates. Candidates with no
  * query token in their name remain visible for body-only recall, but cannot
- * saturate at the same displayed score as stronger name-bearing recoveries.
+ * share the same bounded displayed score as stronger name-bearing recoveries.
+ * The raw ceiling is 0.65; the public score projection is applied later, so
+ * callers never literally receive `0.65` just because this ceiling bound.
+ *
+ * Preserve the pre-ceiling relevance separately from `preCeilingScore`, which
+ * belongs to belief-state demotion and may be written afterwards. A relaxed,
+ * belief-demoted candidate otherwise loses both its body relevance and its
+ * ordering signal when the second ceiling overwrites the first.
  */
 function applyRelaxedLexicalScoreCeiling(item: RankedEntryInput, queryTokens: string[]): void {
   if (item.lexicalMatch !== "relaxed" || lexicalNameMatchTier(item.entry, queryTokens) > 0) return;
-  item.score = Math.min(item.score, RELAXED_NON_NAME_SCORE_CEILING);
+  if (item.score > RELAXED_NON_NAME_SCORE_CEILING) {
+    item.preRelaxedCeilingScore = item.score;
+    item.score = RELAXED_NON_NAME_SCORE_CEILING;
+  }
 }
