@@ -4,6 +4,67 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.13] - 2026-09-04
+
+### Added
+
+- **A stable `results` alias on every list-returning command (#922).** `search`,
+  `curate`, `proposal list`, `bundle list`, `env list`, `secret list`,
+  `registry search`, `registry list`, `workflow list`, `task history` and
+  `log list` each keep their existing semantic key (`hits`, `items`,
+  `proposals`, …) and now also expose the same array as `results`, in every
+  shape including `--shape agent`. It is the same array, not a copy. A caller
+  reading `hits` from a `curate` response previously got nothing back and could
+  reasonably read that as "no results" — there was no error and the `summary`
+  alongside it still reported that results were selected. Commands carrying
+  several heterogeneous collections (`health`, `task doctor`) are deliberately
+  excluded.
+- **Engine and embedding credentials can resolve from the secret store
+  (#917).** `apiKey` accepts `secret://<name>` alongside `$VAR` / `${VAR}`,
+  resolved through the existing store-backed resolver. A detached SessionEnd
+  hook or a cron job — the two contexts least able to supply an environment
+  variable and most likely to need extraction — no longer requires editing the
+  login environment for a value akm already stores. Literal keys in
+  `config.json` are still refused, and an unresolvable reference fails loudly,
+  naming the reference and never the secret.
+- **`akm proposal drain` reports what failed (#921).** The envelope carries a
+  `failed[]` naming each proposal and why it was refused (stale target,
+  validation), instead of reporting `failed: 0` while the same run printed five
+  failures to stderr. `--dry-run` now applies the same stale-target check the
+  real run does, so its prediction stops disagreeing with the outcome. The
+  refusals themselves are correct and unchanged: declining to overwrite a target
+  modified since the proposal was created is the desired behaviour. `akm
+  improve`'s triage pre-pass reports the same count.
+- **Workflow step output is checked against its declared schema (#923).** A step
+  whose returned object does not match its `outputSchema` now says so, naming
+  the step and the specific problem (a missing required field, say). This is a
+  warning: the run continues and its status is unchanged, because a workflow is
+  a guide rather than a contract. Previously an author got neither enforcement
+  nor feedback — the only signal was a notice saying akm was not checking, which
+  is a different fact from whether the output matched.
+
+### Changed
+
+- **A held run lease no longer reports as database corruption (#924).** `akm
+  workflow run` surfaced raw SQLite text — `database is locked`, `database disk
+  image is malformed`, `disk I/O error` — for what was simply another
+  invocation holding the lease. `disk image is malformed` in particular reads as
+  data loss and sent one reporter through integrity checks and a WAL review
+  before finding the real cause. The lease message now appears at default
+  verbosity and carries a dedicated `RUN_LEASE_HELD` code, so a wrapper can tell
+  "retry shortly" from "you passed bad input". Genuine SQLite errors still
+  report as themselves.
+- **`akm lint` stops flagging templated output paths (#927).** A documented
+  run-time filename such as `reports/review-<timestamp>.md` is no longer
+  reported as a `stale-path` broken reference. Angle-bracket and brace
+  placeholders, `${VAR}`, date-format runs like `YYYYMMDD`, and glob characters
+  are all recognised as parameterised rather than missing. Genuinely broken
+  literal paths are still reported.
+- **The workflow level-2 heading rule is discoverable before you trip it
+  (#926).** The `workflow create` template states that `##` headings are step
+  ids and points at `###` for cross-cutting notes, and the compiler's rejection
+  now carries the remedy rather than only the diagnosis.
+
 ## [0.9.12] - 2026-09-03
 
 ### Added
