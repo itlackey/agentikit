@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { NotFoundError, UsageError } from "../../core/errors";
 import { openStateDatabase, withImmediateTransaction } from "../../core/state-db";
 import { borrowScopedStateDb, withStateDbScope } from "../../core/state-db-scope";
+import { sleepSync } from "../../runtime";
 import type { WorkflowRunStatus, WorkflowRunStepStatus } from "../../sources/types";
 import type { Database } from "../database";
 import { escapeLikePattern } from "../like-pattern";
@@ -321,6 +322,52 @@ export interface ListRunsFilter {
    * is byte-identical regardless of this flag.
    */
   includeChildren?: boolean;
+}
+
+/**
+ * Whether `error` is one of the specific SQLite conditions a run-lease
+ * statement can throw under real cross-process contention on the same row:
+ * `SQLITE_BUSY`/`SQLITE_LOCKED` (both drivers), or the message text a
+ * transient contention blip has been observed producing, "database is
+ * locked", "disk I/O error", or "database disk image is malformed".
+ * Matching on this set alone is never sufficient to call something lease
+ * contention — see {@link WorkflowRunsRepository.acquireEngineLease}, which
+ * additionally requires a fresh read confirming a live lease before
+ * substituting the lease-held message for the original error.
+ */
+function isLeaseContentionSqliteError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("database is locked") ||
+    message.includes("disk I/O error") ||
+    message.includes("database disk image is malformed")
+  );
+}
+
+const LEASE_RETRY_ATTEMPTS = 4;
+const LEASE_RETRY_BASE_DELAY_MS = 15;
+
+/**
+ * Retry a single lease statement across a short, bounded set of attempts when
+ * it throws one of {@link isLeaseContentionSqliteError}'s conditions —
+ * absorbing a blip that a fresh attempt on the same connection clears on its
+ * own. Any other error, or the same error surviving every attempt, propagates
+ * unchanged; this never converts a persistent failure into a false success.
+ */
+function runLeaseStatementWithRetry<T>(fn: () => T): T {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < LEASE_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return fn();
+    } catch (error) {
+      if (!isLeaseContentionSqliteError(error)) throw error;
+      lastError = error;
+      if (attempt < LEASE_RETRY_ATTEMPTS - 1) sleepSync(LEASE_RETRY_BASE_DELAY_MS * 2 ** attempt);
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -797,30 +844,67 @@ export class WorkflowRunsRepository {
    * A live lease held by anyone (including a stale copy of the same holder)
    * is NOT reclaimable through this method; the single UPDATE is the whole
    * claim, so two racing invocations cannot both win.
+   *
+   * The UPDATE can throw instead of cleanly returning `changes: 0` under real
+   * cross-process contention on this row: a `SQLITE_BUSY`/`SQLITE_LOCKED`
+   * from two engines racing the same statement, occasionally surfacing as
+   * "database is locked" or even "database disk image is malformed" text that
+   * reads as corruption but is not. `runLeaseStatementWithRetry` absorbs a
+   * blip that a fresh attempt clears on its own. If it is still failing after
+   * every retry, the row is read fresh (a plain SELECT, far less likely to
+   * trip whatever the write hit) to get independent evidence of what is
+   * actually going on: a live lease there means this really was contention,
+   * so the caller gets the same lease-held message `akm workflow run` already
+   * shows for the clean (non-throwing) case, now with `RUN_LEASE_HELD`. No
+   * live lease — or the verifying read itself fails — means the error was
+   * never actually about the lease, so it is rethrown exactly as raised.
+   * Nothing here invents a diagnosis from error text alone or suppresses a
+   * genuine SQLite failure.
    */
   acquireEngineLease(runId: string, holder: string, until: string, now: string): boolean {
-    const result = this.db
-      .prepare(
-        `UPDATE workflow_runs
-           SET engine_lease_holder = ?, engine_lease_until = ?
-           WHERE id = ? AND status = 'active'
-             AND (engine_lease_holder IS NULL OR engine_lease_until IS NULL OR engine_lease_until < ?)`,
-      )
-      .run(holder, until, runId, now);
-    return Number(result.changes) > 0;
+    try {
+      const result = runLeaseStatementWithRetry(() =>
+        this.db
+          .prepare(
+            `UPDATE workflow_runs
+               SET engine_lease_holder = ?, engine_lease_until = ?
+               WHERE id = ? AND status = 'active'
+                 AND (engine_lease_holder IS NULL OR engine_lease_until IS NULL OR engine_lease_until < ?)`,
+          )
+          .run(holder, until, runId, now),
+      );
+      return Number(result.changes) > 0;
+    } catch (error) {
+      if (!isLeaseContentionSqliteError(error)) throw error;
+      const row = this.tryReadLeaseColumns(runId);
+      if (row?.engine_lease_holder && row.engine_lease_until && row.engine_lease_until >= now) {
+        throw new UsageError(
+          `Workflow run ${runId} is already being driven by engine ${row.engine_lease_holder} ` +
+            `(run lease expires ${row.engine_lease_until}). A second \`akm workflow run\` would race it — ` +
+            `wait for that invocation to finish or for the lease to expire.`,
+          "RUN_LEASE_HELD",
+        );
+      }
+      throw error;
+    }
   }
 
   /**
    * Extend the lease expiry — only while `holder` still owns it. Returns
    * false when the lease was lost (expired and claimed by another engine),
-   * so the caller can stop driving instead of racing the new owner.
+   * so the caller can stop driving instead of racing the new owner. Wrapped
+   * in the same transient-error retry as {@link acquireEngineLease}; a
+   * renewal that still fails after retries is rethrown as-is (no confirmed
+   * "lost lease" diagnosis to substitute, unlike the acquire case above).
    */
   renewEngineLease(runId: string, holder: string, until: string): boolean {
-    const result = this.db
-      .prepare(
-        "UPDATE workflow_runs SET engine_lease_until = ? WHERE id = ? AND engine_lease_holder = ? AND status = 'active'",
-      )
-      .run(until, runId, holder);
+    const result = runLeaseStatementWithRetry(() =>
+      this.db
+        .prepare(
+          "UPDATE workflow_runs SET engine_lease_until = ? WHERE id = ? AND engine_lease_holder = ? AND status = 'active'",
+        )
+        .run(until, runId, holder),
+    );
     return Number(result.changes) > 0;
   }
 
@@ -835,6 +919,44 @@ export class WorkflowRunsRepository {
         "UPDATE workflow_runs SET engine_lease_holder = NULL, engine_lease_until = NULL WHERE id = ? AND engine_lease_holder = ? AND status <> 'failed'",
       )
       .run(runId, holder);
+  }
+
+  /**
+   * Self-heal an engine lease its holder crashed without releasing: once
+   * `engine_lease_until` has passed, clear it so a read (`workflow status`,
+   * `workflow list`) stops reporting a run as engine-driven when the engine is
+   * long gone — mirroring the maintenance barrier's self-reclaim of a wedged
+   * sentinel (`tryAcquireMaintenanceBarrier`) rather than a bespoke mechanism.
+   * The WHERE clause repeats the exact (holder, until) snapshot the caller
+   * read, so a lease renewed or re-acquired in between never gets clobbered —
+   * same compare-and-swap shape as the claim above. Never touches a lease
+   * that is still live.
+   */
+  reclaimExpiredEngineLease(runId: string, holder: string, until: string, now: string): boolean {
+    if (until >= now) return false;
+    const result = this.db
+      .prepare(
+        `UPDATE workflow_runs
+           SET engine_lease_holder = NULL, engine_lease_until = NULL
+           WHERE id = ? AND engine_lease_holder = ? AND engine_lease_until = ? AND engine_lease_until < ?`,
+      )
+      .run(runId, holder, until, now);
+    return Number(result.changes) > 0;
+  }
+
+  /** Best-effort lease-column read used only to confirm genuine contention after {@link acquireEngineLease} exhausts its retries. `undefined` on any failure — never a diagnosis, just "couldn't confirm". */
+  private tryReadLeaseColumns(
+    runId: string,
+  ): Pick<WorkflowRunRow, "engine_lease_holder" | "engine_lease_until"> | undefined {
+    try {
+      return (
+        (this.db.prepare("SELECT engine_lease_holder, engine_lease_until FROM workflow_runs WHERE id = ?").get(runId) as
+          | Pick<WorkflowRunRow, "engine_lease_holder" | "engine_lease_until">
+          | undefined) ?? undefined
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   // ── durable v4 append-only dispatch attempts (migration 022) ─────────────
