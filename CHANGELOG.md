@@ -38,6 +38,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Fuzzy name matches require structural identity.** Short or opaque name
   fragments no longer create a false identity match merely because their text
   overlaps a stored name.
+- **Full indexing honors canonical workflow-source ownership.** When peer `.md`
+  and `.yml` sources map to one workflow ref, the index now persists the same
+  deterministic `.md` winner used by lookup and execution instead of allowing
+  filesystem enumeration order to select the stored row.
 
 ## [0.9.13] - 2026-09-04
 

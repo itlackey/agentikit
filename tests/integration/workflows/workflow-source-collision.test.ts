@@ -295,13 +295,17 @@ describe("workflow source canonical-ref collisions", () => {
     writeCollision(fixture);
     const mdPath = path.join(fixture.ownedDir, "collision.md");
 
-    const indexed = await akmIndex({ stashDir: fixture.root, full: true });
-    expect(indexed.warnings ?? []).toEqual([]);
-    expect(indexSnapshot()).toBe(1);
+    // Repeat the full scan: filesystem enumeration is not a precedence rule.
+    // Every pass must persist only the `.md` source for this canonical ref.
+    for (let run = 0; run < 3; run++) {
+      const indexed = await akmIndex({ stashDir: fixture.root, full: true });
+      expect(indexed.warnings ?? []).toEqual([]);
+      expect(indexSnapshot()).toBe(1);
+      await expect(lookupBundleRef(parseBundleRef(fixture.canonicalRef))).resolves.toMatchObject({
+        filePath: mdPath,
+      });
+    }
 
-    await expect(lookupBundleRef(parseBundleRef(fixture.canonicalRef))).resolves.toMatchObject({
-      filePath: mdPath,
-    });
     await expect(akmShowUnified({ ref: fixture.canonicalRef, skipLogging: true })).resolves.toMatchObject({
       path: mdPath,
     });
