@@ -188,6 +188,7 @@ export function formatProposalDrainPlain(r: Record<string, unknown>): string {
   const deferred = Array.isArray(r.deferred) ? (r.deferred as Array<Record<string, unknown>>) : [];
   const skippedByCap = Array.isArray(r.skippedByCap) ? (r.skippedByCap as unknown[]) : [];
   const staged = Array.isArray(r.staged) ? (r.staged as unknown[]) : [];
+  const failed = Array.isArray(r.failed) ? (r.failed as Array<Record<string, unknown>>) : [];
   const prefix = r.dryRun === true ? "[dry-run] " : "";
   const lines = [
     `${prefix}Drained proposal queue (strategy=${String(r.strategy ?? "?")}, policy=${policy}, applyMode=${applyMode})`,
@@ -196,9 +197,13 @@ export function formatProposalDrainPlain(r: Record<string, unknown>): string {
     `  deferred: ${deferred.length}`,
     `  skippedByCap: ${skippedByCap.length}`,
     `  staged: ${staged.length}`,
+    `  failed: ${failed.length}`,
   ];
   for (const d of deferred) {
     lines.push(`    - ${String(d.id ?? "?")} (${String(d.reason ?? "?")})`);
+  }
+  for (const f of failed) {
+    lines.push(`    ! ${String(f.id ?? "?")} (${String(f.reason ?? "?")}): ${String(f.detail ?? "?")}`);
   }
   appendLoweringNotices(lines, r);
   return lines.join("\n").trimEnd();

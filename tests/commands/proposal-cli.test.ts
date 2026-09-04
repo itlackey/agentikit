@@ -136,6 +136,36 @@ describe("akm proposal drain strategy selector", () => {
     expect(explicit.status).toBe(0);
     expect(JSON.parse(explicit.stdout)).toMatchObject({ judgmentEngine: "reviewer", judgmentKind: "agent" });
   });
+
+  test("reports a stale-target refusal under `failed` instead of failed:0 (#921)", async () => {
+    const stashDir = makeStashDir();
+    const assetPath = path.join(stashDir, "lessons", "cli-stale.md");
+    fs.writeFileSync(
+      assetPath,
+      "---\ndescription: Original on-disk content.\nwhen_to_use: Testing.\n---\n\nOriginal.\n",
+      "utf8",
+    );
+    const created = createProposal(stashDir, {
+      ref: "lessons/cli-stale",
+      source: "extract",
+      force: true,
+      sourceRun: "run-x",
+      target: { source: slugForPath(stashDir), root: stashDir },
+      payload: { content: VALID_LESSON, frontmatter: { description: "cli-stale fixture" } },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+    fs.writeFileSync(
+      assetPath,
+      "---\ndescription: Someone else edited this.\nwhen_to_use: Testing.\n---\n\nNewer.\n",
+      "utf8",
+    );
+
+    const result = await runCli(["proposal", "drain", "--promote", "-y", "--format=json"], { stashDir });
+    expect(result.status).toBe(0);
+    const envelope = JSON.parse(result.stdout);
+    expect(envelope.promoted).toEqual([]);
+    expect(envelope.failed).toEqual([expect.objectContaining({ id: created.id, reason: "stale-target" })]);
+  });
 });
 
 function seedProposal(stash: string, ref = "lessons/rg-over-grep") {
