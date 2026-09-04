@@ -887,7 +887,7 @@ export interface AkmImproveResult {
    * (non-dry-run, triage process enabled, whole-stash / type-scoped run);
    * omitted entirely otherwise to keep the envelope tidy.
    */
-  triage?: { promoted: number; rejected: number; deferred: number; skippedByCap: number };
+  triage?: { promoted: number; rejected: number; deferred: number; failed: number; skippedByCap: number };
   /**
    * Layer 2 proactive-maintenance selector outcome. Present only when the
    * `proactiveMaintenance` process is enabled and the run was whole-stash / type

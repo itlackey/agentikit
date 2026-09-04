@@ -19,7 +19,7 @@ function fakeResult(
     scope: { mode: string; value?: string };
     plannedRefs: unknown[];
     gateAutoAcceptedCount?: number;
-    triage?: { promoted: number; rejected: number; deferred: number; skippedByCap: number };
+    triage?: { promoted: number; rejected: number; deferred: number; failed: number; skippedByCap: number };
     runId?: string;
   }> = {},
 ) {
@@ -62,7 +62,7 @@ describe("renderSyncCommitMessage", () => {
       "akm improve {runId}: +{triage_promoted} triaged, -{triage_rejected}, {accepted} accepted @ {timestamp}",
       fakeResult({
         gateAutoAcceptedCount: 4,
-        triage: { promoted: 5, rejected: 2, deferred: 1, skippedByCap: 0 },
+        triage: { promoted: 5, rejected: 2, deferred: 1, failed: 0, skippedByCap: 0 },
         runId: "run-abc123",
       }),
       NOW,
