@@ -167,14 +167,21 @@ describe("isolated lexical Markdown fragments (#937)", () => {
       const before = ["entries", "entries_fts", "entry_fragments", "entry_fragments_fts"].map((table) =>
         rowCount(db, table),
       );
-      const [beforeEntries, beforeParentFts, beforeFragmentSource] = before;
-      db.exec("DROP TABLE entry_fragments_fts");
+      const [beforeEntries, beforeParentFts, beforeFragmentSource, beforeFragmentFts] = before;
+      // Fail after replacement removed old FTS rows, while all four surfaces
+      // still exist, so the savepoint rollback is observable end to end.
+      db.exec(`
+        CREATE TRIGGER abort_fragment_source BEFORE INSERT ON entry_fragments
+        WHEN NEW.safe_markdown LIKE '%newatomicmarker%'
+        BEGIN SELECT RAISE(ABORT, 'injected fragment publication failure'); END;
+      `);
       expect(() => put(db, "atomic", "newatomicmarker")).toThrow();
       // The failed replacement is isolated in upsertEntry's savepoint: the
       // parent row and its old derived surfaces remain mutually consistent.
       expect(rowCount(db, "entries")).toBe(beforeEntries!);
       expect(rowCount(db, "entries_fts")).toBe(beforeParentFts!);
       expect(rowCount(db, "entry_fragments")).toBe(beforeFragmentSource!);
+      expect(rowCount(db, "entry_fragments_fts")).toBe(beforeFragmentFts!);
       expect(searchFts(db, "oldatomicmarker", 5)[0]?.entry.name).toBe("atomic");
     } finally {
       closeDatabase(db);
