@@ -50,26 +50,18 @@ function openEligibilityDb(readOnly: boolean): Database | undefined {
   return isPathAbsent(getDbPath()) ? undefined : openExistingDatabase();
 }
 
-function describeIndexSnapshot(readOnly: boolean, status: "ready" | "missing" | "incompatible"): ImproveIndexSnapshot {
+function describeIndexSnapshot(readOnly: boolean, status: "ready" | "missing"): ImproveIndexSnapshot {
   if (status === "ready") {
     return {
       status,
       reason: readOnly ? "loaded a non-mutating point-in-time copy of the existing index" : "loaded the prepared index",
     };
   }
-  if (status === "missing") {
-    return {
-      status,
-      reason: readOnly
-        ? "index.db is missing; dry-run uses an empty snapshot and does not create it"
-        : "index.db is missing after index preparation; the selector uses an empty snapshot",
-    };
-  }
   return {
     status,
     reason: readOnly
-      ? "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it"
-      : "index.db has no entries table; the selector uses an empty snapshot",
+      ? "index.db is missing; dry-run uses an empty snapshot and does not create it"
+      : "index.db is missing after index preparation; the selector uses an empty snapshot",
   };
 }
 
@@ -89,6 +81,17 @@ function describeUnavailableSnapshot(error: SqliteReadSnapshotUnavailableError):
  */
 function isIncompatibleIndexError(error: unknown): error is ConfigError {
   return error instanceof ConfigError && error.code === "INDEX_SCHEMA_INCOMPATIBLE";
+}
+
+function describeIncompatibleIndexSnapshot(error: ConfigError): ImproveIndexSnapshot {
+  // `INDEX_SCHEMA_INCOMPATIBLE` establishes that this is the derived-index
+  // boundary, and the error's hint preserves whether this binary should
+  // rebuild an older/unknown generation or upgrade for a newer one.
+  const action = error.hint() ?? error.message;
+  return {
+    status: "incompatible",
+    reason: `index.db is incompatible; ${action} Dry-run uses an empty snapshot and does not migrate it.`,
+  };
 }
 
 export function resolveImproveScope(scope: string | undefined): { mode: "all" | "type" | "ref"; value?: string } {
@@ -261,7 +264,7 @@ async function collectEligibleRefsFromIndex(
           plannedRefs: [],
           memorySummary: { eligible: 0, derived: 0 },
           strategyFilteredRefs: [],
-          indexSnapshot: describeIndexSnapshot(readOnly, "incompatible"),
+          indexSnapshot: describeIncompatibleIndexSnapshot(error),
         };
       }
       throw error;
@@ -364,7 +367,7 @@ async function collectEligibleRefsFromIndex(
         plannedRefs: [],
         memorySummary: { eligible: 0, derived: 0 },
         strategyFilteredRefs: [],
-        indexSnapshot: describeIndexSnapshot(readOnly, "incompatible"),
+        indexSnapshot: describeIncompatibleIndexSnapshot(error),
       };
     }
     throw error;
