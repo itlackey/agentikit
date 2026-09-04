@@ -340,6 +340,23 @@ Creates a user.
     });
   });
 
+  test("search-emitted Markdown fragment selectors round-trip through show with frontmatter offsets", async () => {
+    const stashDir = createTmpDir("akm-stash-");
+    const body = Array.from({ length: 500 }, () => "background transcript material").join(" ");
+    writeFile(
+      path.join(stashDir, "knowledge", "fragment-roundtrip.md"),
+      `---\ndescription: fragment fixture\n---\n\n${body}\n\nneedlefragment proof appears here`,
+    );
+    await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
+      const searched = await akmSearch({ query: "needlefragment", type: "knowledge" });
+      const hit = searched.hits[0];
+      expect(hit && isLocalHit(hit) ? hit.ref : undefined).toMatch(/#akm-fragment-/);
+      if (!hit || !isLocalHit(hit)) throw new Error("expected a local fragment hit");
+      const shown = await akmShow({ ref: hit.ref });
+      expect(shown.content).toContain("needlefragment proof");
+    });
+  });
+
   test("akmShow lists the available slugs when the fragment does not match", async () => {
     const stashDir = createTmpDir("akm-stash-");
     writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
