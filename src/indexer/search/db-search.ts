@@ -307,13 +307,19 @@ export async function searchLocal(input: {
 // ── Database search ─────────────────────────────────────────────────────────
 
 /**
- * Keep one deterministic ranking order before stable path deduplication. Exact
- * names survive the public score ceiling, while raw contributor differences
- * are quantized so utility-recency epsilon cannot reorder visible ties.
+ * Keep public scores in [0, 1] without flattening every boosted result to the
+ * same hard-clamped value. The ranking pipeline deliberately keeps its raw
+ * score for deterministic ordering before stable path deduplication; this
+ * monotone display projection preserves that order and leaves visible
+ * separation for graph, type, and project-context signals.
  */
+function displaySearchScore(score: number): number {
+  return 1 - Math.exp(-Math.max(0, score));
+}
+
 function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: RankedEntryInput) => number {
   const queryTokens = buildLexicalQueryPlan(query).tokens.map((token) => token.toLowerCase());
-  const displayScore = (score: number): number => Math.round(Math.min(1, Math.max(0, score)) * 10000) / 10000;
+  const displayScore = (score: number): number => Math.round(displaySearchScore(score) * 10000) / 10000;
   const stableRankScore = (score: number): number => Math.round(score * 10000) / 10000;
 
   return (a, b) => {
@@ -571,11 +577,11 @@ async function searchDatabase(
   const hits = await Promise.all(
     selected.map((ranked) => {
       const { entry, filePath, score, rankingMode, utilityBoosted } = ranked;
-      // CLAUDE.md locks SearchHit.score in [0,1]. The boost loop above can
-      // exceed 1.0 (this was a pre-existing breach that #207's graph boost
-      // — up to ~1.05 additive contribution — made detectable); clamp here
-      // so the score handed to buildDbHit always satisfies the spec.
-      const finalScore = Math.min(1, Math.max(0, score));
+      // CLAUDE.md locks SearchHit.score in [0,1]. The boost loop deliberately
+      // remains raw for ranking, then takes a monotone bounded projection at
+      // the public boundary so contributors do not collapse into hard-clamped
+      // ties.
+      const finalScore = displaySearchScore(score);
       return buildDbHit({
         entry,
         path: filePath,
