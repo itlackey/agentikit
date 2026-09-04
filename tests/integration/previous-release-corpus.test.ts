@@ -71,6 +71,7 @@
  *     and colliding with the still-present artifact.
  */
 
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -83,6 +84,9 @@ import { loadConfig, loadUserConfig, parseAndValidateConfigText, resetConfigCach
 import { getConfigPath } from "../../src/core/paths";
 import { openStateDatabase } from "../../src/core/state-db";
 import { resetQuiet, setQuiet } from "../../src/core/warn";
+import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
+import { CANONICAL_INDEX_DB_VERSION } from "../../src/storage/repositories/index-entry-schema";
+import { getMeta } from "../../src/storage/repositories/index-meta-repository";
 import { listStateProposals } from "../../src/storage/repositories/proposals-repository";
 import { upsertTaskHistory } from "../../src/storage/repositories/task-history-repository";
 import { CRON_BACKEND, type CronExec, type CronExecResult } from "../../src/tasks/backends/cron";
@@ -109,6 +113,29 @@ function readFixture(name: string): string {
 }
 
 describe("previous-release corpus — upgrade must not break reads", () => {
+  test("v22 parent-only index is rebuilt as v23 fragment-capable derived state", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-v22-index-"));
+    try {
+      const dbPath = path.join(root, "index.db");
+      const legacy = new Database(dbPath);
+      legacy.exec(readFixture("index-v22.sql"));
+      legacy.close();
+      const upgraded = openIndexDatabase(dbPath);
+      try {
+        expect(getMeta(upgraded, "version")).toBe(String(CANONICAL_INDEX_DB_VERSION));
+        expect(
+          upgraded.prepare("SELECT name FROM sqlite_master WHERE name = 'entry_fragments_fts'").get(),
+        ).toBeDefined();
+        // index.db is regenerable: no v22 parent row survives to be queried
+        // under a mixed schema; the following index walk re-populates both.
+        expect(upgraded.prepare("SELECT count(*) AS count FROM entries").get()).toEqual({ count: 0 });
+      } finally {
+        closeDatabase(upgraded);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
   describe("task source v2/v3 (auto-shimmed to v4)", () => {
     let warnSpy: ReturnType<typeof spyOn>;
 
