@@ -9,6 +9,7 @@ import type { GraphBoostContext } from "../graph/graph-boost";
 import type { IndexDocument } from "../passes/metadata";
 import type { ProjectContext } from "../walk/project-context";
 import { buildLexicalQueryPlan } from "./fts-query";
+import { lexicalNameTokens, structuralNameTokenMatch } from "./name-match";
 import {
   applyBeliefStateScoreCeiling,
   applyScoreContributors,
@@ -245,17 +246,16 @@ const RELAXED_NON_NAME_SCORE_CEILING = 0.65;
 export function lexicalNameMatchTier(entry: IndexDocument, queryTokens: string[]): number {
   if (queryTokens.length === 0) return 0;
   const nameBase = entry.name.toLowerCase().split("/").pop() ?? entry.name.toLowerCase();
-  const nameTokens = buildLexicalQueryPlan(nameBase).tokens.map((token) => token.toLowerCase());
-  const tokenMatches = (left: string, right: string): boolean =>
-    left === right ||
-    (Math.min([...left].length, [...right].length) >= 3 && (left.startsWith(right) || right.startsWith(left)));
+  const nameTokens = lexicalNameTokens(nameBase);
   if (
     nameTokens.length === queryTokens.length &&
-    nameTokens.every((token, index) => tokenMatches(token, queryTokens[index]!))
+    nameTokens.every((token, index) => structuralNameTokenMatch(token, queryTokens[index]!))
   ) {
     return 3;
   }
-  const matched = queryTokens.filter((token) => nameTokens.some((nameToken) => tokenMatches(nameToken, token))).length;
+  const matched = queryTokens.filter((token) =>
+    nameTokens.some((nameToken) => structuralNameTokenMatch(nameToken, token)),
+  ).length;
   if (matched === queryTokens.length) return 2;
   return matched > 0 ? 1 : 0;
 }
