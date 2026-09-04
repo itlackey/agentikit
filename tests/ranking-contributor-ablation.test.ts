@@ -109,6 +109,40 @@ describe("tag-ranking boost for path-derived scope tokens (SPEC-2)", () => {
   });
 });
 
+// ── Storage-name identity is not name evidence (#930) ─────────────────────
+
+describe("exact-name ranking contributor identity isolation (#930)", () => {
+  const exactNameRanking = defaultRankingContributors.find((contributor) => contributor.name === "exact-name-ranking");
+
+  function makeCtx(query: string, queryTokens: string[]): RankingContext {
+    return {
+      db: null as unknown as RankingContext["db"],
+      query,
+      queryLower: query.toLowerCase(),
+      queryTokens,
+      graphContext: null,
+    };
+  }
+
+  function makeItem(name: string): RankedEntryInput {
+    return {
+      id: 1,
+      entry: { name, type: "memory", description: "fixture", filename: `${name}.md` },
+      filePath: `/stash/memories/${name}.md`,
+      score: 1,
+      rankingMode: "fts",
+    };
+  }
+
+  test("does not treat a one-character numeric query token inside an opaque storage name as name evidence", () => {
+    // The evaluator projects the same document onto opaque storage filenames.
+    // A query can legitimately contain a numeric token such as "4"; that
+    // token must not award an exact-name boost merely because one projection
+    // happened to receive an opaque name containing the same digit.
+    expect(exactNameRanking?.adjust(makeItem("z9xq4m"), makeCtx("4", ["4"]))).toBe(0);
+  });
+});
+
 // ── SPEC-5: demoting-belief-state final-score ceilings ──────────────────────
 //
 // The additive beliefStateBoost penalties multiply the bounded FTS base, so a
