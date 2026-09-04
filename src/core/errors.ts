@@ -55,7 +55,11 @@ export type ConfigErrorCode =
   // `akm upgrade` refused: the environment blocks the upgrade (version
   // contract, filesystem permissions, or leftover upgrade state). The error
   // message carries the specific remediation.
-  | "UPGRADE_BLOCKED";
+  | "UPGRADE_BLOCKED"
+  // A `secret://<name>` apiKey reference did not resolve to a stored value —
+  // the named secret does not exist, or no store-backed resolver was wired at
+  // the call site.
+  | "SECRET_REFERENCE_UNRESOLVED";
 
 /** Stable, machine-readable codes for UsageError. */
 export type UsageErrorCode =
@@ -169,6 +173,8 @@ const CONFIG_HINTS: Partial<Record<ConfigErrorCode, string>> = {
   UNKNOWN_IMPROVE_STRATEGY:
     "Pass one of the listed strategy names to `--strategy`, or define it under `improve.strategies`. Names are case-sensitive.",
   EXECUTION_NOT_AUTHORIZED: "Change the selected tools or update the machine/user execution policy, then retry.",
+  SECRET_REFERENCE_UNRESOLVED:
+    "Check the secret exists (`akm secret list`) and the name after `secret://` matches, or run `akm secret set <name> <value>` to store it.",
 };
 
 // Code-review finding: COMPOSITION_INVALID covers several unrelated causes
