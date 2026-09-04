@@ -89,38 +89,63 @@ function runFtsQuery(
   entryType?: string,
   excludeTypes?: string[],
 ): DbSearchResult[] {
+  // Preserve the repository's ordinary limit contract for direct callers.
+  // The boundary-expansion rule applies only to a positive candidate pool.
+  if (limit <= 0) return [];
+
   // #627 — exclude-type clause. Only applies on the untyped ('any') path; an
   // explicit include filter (entryType) already narrows to a single type, so
   // exclusion is redundant there. An empty list skips the clause entirely
   // (never emit `NOT IN ()`, which is a SQL error / always-false).
   const excludes = excludeTypes && excludeTypes.length > 0 ? excludeTypes : [];
+  const candidateBoundaryOffset = Math.max(0, limit - 1);
 
   // The typed and untyped paths differ only by one `type` WHERE clause
-  // equality vs. an optional NOT IN exclusion) and their param order — the
-  // SELECT/JOIN/ORDER/LIMIT is shared, so build it once. Join on integer
-  // entry_id directly (no CAST; we store integer). bm25() per-column weights:
+  // equality vs. an optional NOT IN exclusion) and their parameter order.
+  // Join on integer entry_id directly (no CAST; we store integer). bm25()
+  // per-column weights:
   // entry_id(0), name(10), description(5), tags(3), hints(2), content(1).
   let filterClause: string;
   let params: unknown[];
   if (entryType && entryType !== "any") {
     filterClause = "AND e.type = ?";
-    params = [ftsQuery, entryType, limit];
+    params = [ftsQuery, entryType, candidateBoundaryOffset];
   } else {
     filterClause = excludes.length > 0 ? `AND e.type NOT IN (${excludes.map(() => "?").join(", ")})` : "";
-    // Param order: MATCH, then the NOT IN values, then LIMIT.
-    params = [ftsQuery, ...excludes, limit];
+    // Param order: MATCH, then the NOT IN values, then the zero-based
+    // candidate-boundary offset.
+    params = [ftsQuery, ...excludes, candidateBoundaryOffset];
   }
 
   const sql = `
-    SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
-           e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
-           bm25(entries_fts, 0, 10.0, 5.0, 3.0, 2.0, 1.0) AS bm25Score
+    -- Do not make a SQL-only relevance decision inside a tied BM25 boundary:
+    -- the TypeScript ranker adds exact-name, type, and other contributors
+    -- afterwards.  Materialize BM25 once, locate the Nth score, and admit
+    -- every row tied with it.  This deliberately makes the result set
+    -- data-bound for a pathological all-tied query; that is the only way to
+    -- avoid silently dropping a legitimate later ranking winner.
+    WITH scored AS MATERIALIZED (
+      -- Keep this materialized set deliberately narrow. document_json can be
+      -- large, and only rows admitted through the BM25 boundary need it.
+      SELECT e.id, bm25(entries_fts, 0, 10.0, 5.0, 3.0, 2.0, 1.0) AS bm25Score
     FROM entries_fts f
     JOIN entries e ON e.id = f.entry_id
     WHERE entries_fts MATCH ?
       ${filterClause}
-    ORDER BY bm25Score, e.id ASC
-    LIMIT ?
+    ), boundary AS (
+      SELECT bm25Score
+      FROM scored
+      ORDER BY bm25Score
+      LIMIT 1 OFFSET ?
+    )
+    SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
+           e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
+           scored.bm25Score
+    FROM scored
+    JOIN entries e ON e.id = scored.id
+    WHERE NOT EXISTS (SELECT 1 FROM boundary)
+       OR scored.bm25Score <= (SELECT bm25Score FROM boundary)
+    ORDER BY scored.bm25Score, e.id ASC
   `;
 
   const rows = db.prepare(sql).all(...(params as SqlValue[])) as Array<{

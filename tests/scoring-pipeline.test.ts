@@ -12,7 +12,9 @@ import path from "node:path";
 import { akmSearch } from "../src/commands/read/search";
 import { saveConfig } from "../src/core/config/config";
 import { akmIndex } from "../src/indexer/indexer";
-import { buildDbHit, buildWhyMatched } from "../src/indexer/search/db-search";
+import { buildDbHit, buildWhyMatched, canonicalContentTieKey } from "../src/indexer/search/db-search";
+import { applyScoreContributors } from "../src/indexer/search/ranking-contributors";
+import type { RankedEntryInput } from "../src/indexer/search/ranking-types";
 import type { SourceSearchHit } from "../src/sources/types";
 import {
   type Cleanup,
@@ -562,6 +564,57 @@ describe("Issue #14: Deterministic sort on tied scores", () => {
 });
 
 describe("Issue #940: relaxed non-name ceilings preserve body relevance", () => {
+  test("retains the description contributor for strict and prefix lexical matches", () => {
+    const rank = (lexicalMatch: "exact" | "prefix" | "relaxed") => {
+      const item: RankedEntryInput = {
+        id: 1,
+        entry: { name: "opaque", type: "knowledge", description: "alpha detail" },
+        filePath: "/tmp/opaque.md",
+        score: 1,
+        rankingMode: "fts",
+        lexicalMatch,
+      };
+      applyScoreContributors(item, {
+        db: {} as never,
+        query: "alpha beta",
+        queryLower: "alpha beta",
+        queryTokens: ["alpha", "beta"],
+        graphContext: null,
+      });
+      return item.score;
+    };
+
+    // The type contributor (+.22) applies in every mode. The additional
+    // partial-description +.1 remains on strict/prefix candidates, but not
+    // on the relaxed OR recovery pool where FTS already supplied that signal.
+    expect(rank("exact")).toBeCloseTo(1.32);
+    expect(rank("prefix")).toBeCloseTo(1.32);
+    expect(rank("relaxed")).toBeCloseTo(1.22);
+  });
+
+  test("does not promote a one-token description coincidence within a relaxed OR pool", async () => {
+    const stashDir = tmpStash();
+    // Neither row contains all four query terms, so retrieval deliberately
+    // falls back to relaxed OR. The evidence row has stronger body evidence;
+    // the distractor's one partial-description coincidence must not
+    // add a second flat metadata boost on top of the FTS description weight.
+    writeFile(
+      path.join(stashDir, "knowledge", "evidence.md"),
+      "---\ndescription: unrelated summary\n---\nalpha beta gamma alpha beta gamma\n",
+    );
+    writeFile(
+      path.join(stashDir, "knowledge", "distractor.md"),
+      "---\ndescription: alpha detail\n---\nalpha beta alpha beta\n",
+    );
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "alpha beta gamma delta", source: "local", skipLogging: true });
+      const localHits = result.hits.filter((hit): hit is SourceSearchHit => hit.type !== "registry");
+      expect(localHits.map((hit) => hit.name)).toEqual(["evidence", "distractor"]);
+      expect(localHits.every((hit) => hit.matchStage === "relaxed")).toBe(true);
+    });
+  });
+
   test("body relevance, not filename, orders relaxed candidates with opaque names", async () => {
     const stashDir = tmpStash();
 
@@ -617,6 +670,138 @@ describe("Issue #940: relaxed non-name ceilings preserve body relevance", () => 
       expect(archived).toHaveLength(3);
       expect(new Set(archived.map((hit) => hit.score)).size).toBe(1);
       expect(archived.map((hit) => hit.name)).toEqual(["zzz-archived", "mmm-archived", "aaa-archived"]);
+    });
+  });
+});
+
+describe("Identity-independent final ranking ties", () => {
+  test("uses an explicit byte-level title/body canonicalization", () => {
+    const bodyKey = canonicalContentTieKey({ content: "# opaque-id\r\n\n  Alpha\u00a0BETA  " });
+    // Only ASCII case folds and ASCII spaces trim. NBSP remains content; this
+    // is the portable contract shared with SQLite lower/trim/ltrim.
+    expect(bodyKey).toBe(Buffer.from("alpha\u00a0beta", "utf8").toString("hex"));
+    expect(canonicalContentTieKey({ content: " \n# opaque-id\nAlpha" })).toBe(
+      Buffer.from("\n# opaque-id\nalpha", "utf8").toString("hex"),
+    );
+    expect(canonicalContentTieKey({ content: "", description: "  Alpha  " })).toBe(
+      Buffer.from("alpha", "utf8").toString("hex"),
+    );
+  });
+
+  test("permuting opaque filenames preserves the ordering of distinct document bodies", async () => {
+    const baselineStash = tmpStash();
+    const permutedStash = tmpStash();
+    // The matched field and its length are identical, so these candidates tie
+    // through all relevance contributors.  Their filenames are deliberately
+    // reversed between corpora; only the non-identity body/description is a
+    // legitimate final ordering key.
+    const baseline = [
+      ["aaa-opaque", "needle alpha"],
+      ["zzz-opaque", "needle bravo"],
+    ] as const;
+    const permuted = [
+      ["zzz-opaque", "needle alpha"],
+      ["aaa-opaque", "needle bravo"],
+    ] as const;
+
+    const writeCorpus = (stashDir: string, corpus: readonly (readonly [string, string])[]) => {
+      for (const [name, description] of corpus) {
+        writeFile(path.join(stashDir, "knowledge", `${name}.md`), `---\ndescription: ${description}\n---\n`);
+      }
+    };
+    const contentOrder = async (stashDir: string, corpus: readonly (readonly [string, string])[]) => {
+      const descriptionByName = new Map(corpus.map(([name, description]) => [name, description]));
+      return withTestIndex(stashDir, async () => {
+        const result = await akmSearch({ query: "needle", source: "local", skipLogging: true });
+        return result.hits
+          .filter((hit): hit is SourceSearchHit => hit.type !== "registry")
+          .map((hit) => descriptionByName.get(hit.name))
+          .filter((description): description is string => description !== undefined);
+      });
+    };
+
+    writeCorpus(baselineStash, baseline);
+    writeCorpus(permutedStash, permuted);
+
+    expect(await contentOrder(baselineStash, baseline)).toEqual(["needle alpha", "needle bravo"]);
+    expect(await contentOrder(permutedStash, permuted)).toEqual(["needle alpha", "needle bravo"]);
+  });
+
+  test("the FTS candidate boundary leaves content tie-breaking to final ranking", async () => {
+    const baselineStash = tmpStash();
+    const permutedStash = tmpStash();
+    // `searchDatabase` asks FTS for limit * 3 candidates.  Four exact BM25
+    // ties therefore expose whether the candidate boundary preserves all
+    // rows for the final TypeScript comparator instead of picking by a
+    // generated identity inside SQL.
+    const baseline = [
+      ["aaa-opaque", "needle delta"],
+      ["bbb-opaque", "needle gamma"],
+      ["ccc-opaque", "needle bravo"],
+      ["zzz-opaque", "needle alpha"],
+    ] as const;
+    const permuted = [
+      ["zzz-opaque", "needle delta"],
+      ["ccc-opaque", "needle gamma"],
+      ["bbb-opaque", "needle bravo"],
+      ["aaa-opaque", "needle alpha"],
+    ] as const;
+
+    const firstContent = async (stashDir: string, corpus: readonly (readonly [string, string])[]) => {
+      const descriptionByName = new Map(corpus.map(([name, description]) => [name, description]));
+      for (const [name, description] of corpus) {
+        writeFile(path.join(stashDir, "knowledge", `${name}.md`), `---\ndescription: ${description}\n---\n`);
+      }
+      return withTestIndex(stashDir, async () => {
+        const result = await akmSearch({ query: "needle", source: "local", limit: 1, skipLogging: true });
+        const hit = result.hits.find((candidate): candidate is SourceSearchHit => candidate.type !== "registry");
+        return hit ? descriptionByName.get(hit.name) : undefined;
+      });
+    };
+
+    expect(await firstContent(baselineStash, baseline)).toBe("needle alpha");
+    expect(await firstContent(permutedStash, permuted)).toBe("needle alpha");
+  });
+
+  test("expands an exact BM25 boundary before applying the type contributor", async () => {
+    const stashDir = tmpStash();
+    // `akmSearch(limit: 1)` requests three lexical candidates.  These four
+    // rows intentionally tie in the matched field; the skill sorts after the
+    // knowledge bodies by content, but its type contributor must still be
+    // allowed to win the final rank. A SQL-only fixed LIMIT loses it
+    // before TypeScript can run that contributor.
+    for (const [name, description] of [
+      ["aaa-knowledge", "needle"],
+      ["bbb-knowledge", "needle"],
+      ["ccc-knowledge", "needle"],
+    ] as const) {
+      writeFile(path.join(stashDir, "knowledge", `${name}.md`), `---\ndescription: ${description}\n---\n`);
+    }
+    writeFile(path.join(stashDir, "skills", "zzz-skill", "SKILL.md"), "---\ndescription: needle\n---\n");
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "needle", source: "local", limit: 1, skipLogging: true });
+      const hit = result.hits.find((candidate): candidate is SourceSearchHit => candidate.type !== "registry");
+      expect(hit?.name).toBe("zzz-skill");
+      expect(hit?.type).toBe("skill");
+    });
+  });
+
+  test("identical content remains a deterministic local presentation tie", async () => {
+    const stashDir = tmpStash();
+    // No content-derived key can distinguish byte-identical documents without
+    // inventing relevance from their opaque identities.  The product contract
+    // is deterministic local presentation here; identity-permutation probes
+    // must compare such rows as one content-equivalence class.
+    for (const name of ["zzz-opaque", "aaa-opaque"]) {
+      writeFile(path.join(stashDir, "knowledge", `${name}.md`), "---\ndescription: needle samex\n---\n");
+    }
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "needle", source: "local", skipLogging: true });
+      expect(
+        result.hits.filter((hit): hit is SourceSearchHit => hit.type !== "registry").map((hit) => hit.name),
+      ).toEqual(["aaa-opaque", "zzz-opaque"]);
     });
   });
 });

@@ -134,6 +134,87 @@ describe("searchFts — hyphenated identifier search (Issue #2)", () => {
   });
 });
 
+describe("searchFts candidate boundary expansion (#940)", () => {
+  test("includes every row at the boundary but excludes strictly weaker rows", () => {
+    const db = openIndexDatabase(tmpDbPath("fts-mixed-boundary"));
+    try {
+      for (const name of ["better-a", "better-b"]) {
+        insertTestEntry(db, name, {
+          description: "needle needle needle needle",
+          searchText: "needle needle needle needle",
+        });
+      }
+      for (const name of ["boundary-a", "boundary-b", "boundary-c"]) {
+        insertTestEntry(db, name, { description: "needle", searchText: "needle" });
+      }
+      for (const name of ["worse-a", "worse-b"]) {
+        const text = `needle ${"filler ".repeat(80)}`;
+        insertTestEntry(db, name, { description: text, searchText: text });
+      }
+      rebuildFts(db);
+
+      // N=3: two stronger rows plus the three-way boundary tie. The latter
+      // must be complete; the strictly weaker rows remain outside the pool.
+      expect(searchFts(db, "needle", 3).map((row) => row.entry.name)).toEqual([
+        "better-a",
+        "better-b",
+        "boundary-a",
+        "boundary-b",
+        "boundary-c",
+      ]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("applies typed and exclusion filters before finding the boundary", () => {
+    const db = openIndexDatabase(tmpDbPath("fts-filtered-boundary"));
+    try {
+      insertTestEntry(db, "skill-a", { type: "skill", description: "needle", searchText: "needle" });
+      insertTestEntry(db, "skill-b", { type: "skill", description: "needle", searchText: "needle" });
+      insertTestEntry(db, "knowledge-a", { type: "knowledge", description: "needle", searchText: "needle" });
+      rebuildFts(db);
+
+      expect(searchFts(db, "needle", 1, "skill").map((row) => row.entry.name)).toEqual(["skill-a", "skill-b"]);
+      expect(searchFts(db, "needle", 1, undefined, ["skill"]).map((row) => row.entry.name)).toEqual(["knowledge-a"]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("retains a large exact-BM25 boundary instead of silently choosing opaque row ids", () => {
+    const db = openIndexDatabase(tmpDbPath("fts-boundary"));
+    try {
+      // The caller's final ranker owns contributor-aware tie resolution. A
+      // lexical limit of 10 must therefore return all 3,000 exact BM25 ties,
+      // not an arbitrary prefix selected by SQLite's generated entry id.
+      // This is intentionally data-bound behavior, so the assertion records
+      // the contract rather than treating it as an accidental overshoot.
+      for (let index = 0; index < 3_000; index += 1) {
+        insertTestEntry(db, `opaque-${index.toString().padStart(4, "0")}`, {
+          description: "needle",
+          searchText: "needle",
+        });
+      }
+      rebuildFts(db);
+
+      expect(searchFts(db, "needle", 0)).toEqual([]);
+
+      const started = performance.now();
+      const results = searchFts(db, "needle", 10);
+      const elapsedMs = performance.now() - started;
+
+      expect(results).toHaveLength(3_000);
+      // Guard against a query-plan regression to repeated correlated scans;
+      // leave generous room for slower CI runners while keeping this a real
+      // indexed lookup rather than an accidental multi-second walk.
+      expect(elapsedMs).toBeLessThan(5_000);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+});
+
 // ── Issue #9: Single-character queries ──────────────────────────────────────
 
 describe("single-character lexical queries (Issue #9)", () => {

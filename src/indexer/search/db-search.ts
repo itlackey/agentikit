@@ -19,6 +19,7 @@ import path from "node:path";
 import { buildActionFromContributors, defaultActionContributors } from "../../core/action-contributors";
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { displayRef } from "../../core/asset/resolve-ref";
+import { compareCodePoints } from "../../core/common";
 import type { AkmConfig, ImproveConfig } from "../../core/config/config";
 import { classifyPathAccess } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
@@ -317,6 +318,37 @@ function displaySearchScore(score: number): number {
   return 1 - Math.exp(-Math.max(0, score));
 }
 
+/**
+ * A final deterministic key for genuinely tied candidates.  It deliberately
+ * excludes the asset name, filename, path, durable ref, and SQLite id: callers
+ * such as the memory-pack adapter generate each of those from an opaque source
+ * id, so using one here makes an otherwise equal search depend on that id.
+ *
+ * The normal AKM Markdown adapter keeps an H1 title in `content`; strip that
+ * one synthetic title too, because the adapter may derive it from the opaque
+ * filename.  Identical remaining bodies are semantically indistinguishable at
+ * this ranking stage and intentionally continue to the existing name/path
+ * fallback for repeatable local presentation.
+ */
+function asciiCaseFold(value: string): string {
+  // SQLite's built-in lower() folds ASCII only unless a build opts into ICU.
+  // Keep this key deliberately in that portable shared subset instead of
+  // introducing locale-dependent JavaScript ordering for non-ASCII content.
+  return value.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
+}
+
+/** The portable byte-level title/body rule mirrored in index-fts-repository. */
+export function canonicalContentTieKey(entry: Pick<IndexDocument, "content" | "description">): string {
+  const content = entry.content ?? "";
+  const newline = content.startsWith("# ") ? content.indexOf("\n") : -1;
+  // SQLite uses ltrim(value, char(13) || char(10) || ' ') after an exact '# '
+  // title and trim(value, ' ') otherwise. Keep exactly that deliberately
+  // narrow byte contract; do not use locale or Unicode-whitespace helpers.
+  const body = newline >= 0 ? content.slice(newline + 1).replace(/^[\r\n ]+/, "") : content;
+  const source = (body || entry.description || "").replace(/^ +| +$/g, "");
+  return Buffer.from(asciiCaseFold(source), "utf8").toString("hex");
+}
+
 function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: RankedEntryInput) => number {
   const queryTokens = buildLexicalQueryPlan(query).tokens.map((token) => token.toLowerCase());
   const displayScore = (score: number): number => Math.round(displaySearchScore(score) * 10000) / 10000;
@@ -345,7 +377,13 @@ function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: Ra
     const nameDiff = bNameTier - aNameTier;
     if (nameDiff !== 0) return nameDiff;
     const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);
-    return typeDiff || a.filePath.localeCompare(b.filePath);
+    if (typeDiff !== 0) return typeDiff;
+    // Keep opaque generated IDs out of the final relevance tie-break.  This
+    // runs only after every ranking contributor (including the #940 preserved
+    // pre-ceiling evidence), exact-name, and type comparison has tied.
+    const contentDiff = compareCodePoints(canonicalContentTieKey(a.entry), canonicalContentTieKey(b.entry));
+    if (contentDiff !== 0) return contentDiff;
+    return a.filePath.localeCompare(b.filePath);
   };
 }
 
