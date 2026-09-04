@@ -8,7 +8,7 @@ import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { conceptIdFromTypeName, parseRefInput, resolveRef } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveProfileConfig } from "../../core/config/config";
 import { loadConfig } from "../../core/config/config";
-import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
+import { ConfigError, NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { type EventsContext, readEvents } from "../../core/events";
 import type { ImproveEligibleRef, ImproveIndexSnapshot } from "../../core/improve-types";
 import { isPathAbsent } from "../../core/path-access";
@@ -78,6 +78,17 @@ function describeUnavailableSnapshot(error: SqliteReadSnapshotUnavailableError):
     status: "incompatible",
     reason: `index.db cannot provide a stable non-mutating snapshot (${error.message}); dry-run uses an empty snapshot`,
   };
+}
+
+/**
+ * A dry-run is explicitly a non-mutating planning operation, so it may report
+ * an unusable derived index as an empty snapshot.  This is deliberately a
+ * typed boundary mapping: readers otherwise receive no incompatible handle,
+ * and we must not turn an arbitrary SQLite error into a successful plan by
+ * matching its text.
+ */
+function isIncompatibleIndexError(error: unknown): error is ConfigError {
+  return error instanceof ConfigError && error.code === "INDEX_SCHEMA_INCOMPATIBLE";
 }
 
 export function resolveImproveScope(scope: string | undefined): { mode: "all" | "type" | "ref"; value?: string } {
@@ -245,7 +256,7 @@ async function collectEligibleRefsFromIndex(
           indexSnapshot: describeUnavailableSnapshot(error),
         };
       }
-      if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
+      if (readOnly && isIncompatibleIndexError(error)) {
         return {
           plannedRefs: [],
           memorySummary: { eligible: 0, derived: 0 },
@@ -348,7 +359,7 @@ async function collectEligibleRefsFromIndex(
         indexSnapshot: describeUnavailableSnapshot(error),
       };
     }
-    if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
+    if (readOnly && isIncompatibleIndexError(error)) {
       return {
         plannedRefs: [],
         memorySummary: { eligible: 0, derived: 0 },
