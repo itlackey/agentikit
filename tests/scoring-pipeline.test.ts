@@ -562,6 +562,29 @@ describe("Issue #14: Deterministic sort on tied scores", () => {
 });
 
 describe("Issue #940: relaxed non-name ceilings preserve body relevance", () => {
+  test("does not promote a one-token description coincidence within a relaxed OR pool", async () => {
+    const stashDir = tmpStash();
+    // Neither row contains all four query terms, so retrieval deliberately
+    // falls back to relaxed OR. The evidence row has stronger body evidence;
+    // the distractor's one matching synthesized-description word must not
+    // add a second flat metadata boost on top of the FTS description weight.
+    writeFile(
+      path.join(stashDir, "knowledge", "evidence.md"),
+      "---\ndescription: unrelated summary\n---\nalpha beta gamma alpha beta gamma\n",
+    );
+    writeFile(
+      path.join(stashDir, "knowledge", "distractor.md"),
+      "---\ndescription: alpha detail\n---\nalpha beta alpha beta\n",
+    );
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "alpha beta gamma delta", source: "local", skipLogging: true });
+      const localHits = result.hits.filter((hit): hit is SourceSearchHit => hit.type !== "registry");
+      expect(localHits.map((hit) => hit.name)).toEqual(["evidence", "distractor"]);
+      expect(localHits.every((hit) => hit.matchStage === "relaxed")).toBe(true);
+    });
+  });
+
   test("body relevance, not filename, orders relaxed candidates with opaque names", async () => {
     const stashDir = tmpStash();
 
@@ -723,10 +746,7 @@ describe("Identity-independent final ranking ties", () => {
     ] as const) {
       writeFile(path.join(stashDir, "knowledge", `${name}.md`), `---\ndescription: ${description}\n---\n`);
     }
-    writeFile(
-      path.join(stashDir, "skills", "zzz-skill", "SKILL.md"),
-      "---\ndescription: needle\n---\n",
-    );
+    writeFile(path.join(stashDir, "skills", "zzz-skill", "SKILL.md"), "---\ndescription: needle\n---\n");
 
     await withTestIndex(stashDir, async () => {
       const result = await akmSearch({ query: "needle", source: "local", limit: 1, skipLogging: true });
