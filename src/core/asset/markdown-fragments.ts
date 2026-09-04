@@ -64,6 +64,10 @@ function splitPiece(piece: Piece, maxChars: number): Piece[] {
     let chars = 0;
     while (end < piece.lines.length) {
       const next = piece.lines[end]!;
+      // Let the single-line word-window path below own an oversized first
+      // line. Without this guard it is consumed whole before that path can
+      // run, silently defeating the fragment bound for transcripts/logs.
+      if (end === start && next.length > maxChars) break;
       if (end > start && chars + next.length + 1 > maxChars) break;
       chars += next.length + (end > start ? 1 : 0);
       end++;

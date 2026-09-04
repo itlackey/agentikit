@@ -1218,13 +1218,19 @@ export function projectMarkdownContent(body: string, truncationInfo?: { truncate
 // rebuilds. The WeakMap follows the already-read document through recognition
 // without making safe body bytes observable through public payloads.
 const markdownFragmentContentByEntry = new WeakMap<IndexDocument, string>();
+const markdownFragmentProjectionEntries = new WeakSet<IndexDocument>();
 
 export function setMarkdownFragmentContent(entry: IndexDocument, content: string | undefined): void {
+  markdownFragmentProjectionEntries.add(entry);
   if (content) markdownFragmentContentByEntry.set(entry, content);
 }
 
 export function getMarkdownFragmentContent(entry: IndexDocument): string | undefined {
   return markdownFragmentContentByEntry.get(entry);
+}
+
+export function hasMarkdownFragmentContent(entry: IndexDocument): boolean {
+  return markdownFragmentProjectionEntries.has(entry);
 }
 
 /**
@@ -1316,10 +1322,12 @@ export function applyPreContributorFields(
     applyProvenanceFrontmatter(entry, parsed.data);
     // Native Markdown has one bounded low-weight body projection. Sensitive
     // types and raw session/checkpoint material never cross this boundary.
-    if (entry.type !== "env" && entry.type !== "session" && !hasSessionMemoryMarker(parsed.data, parsed.content)) {
+    const safeForFragments =
+      entry.type !== "env" && entry.type !== "session" && !hasSessionMemoryMarker(parsed.data, parsed.content);
+    setMarkdownFragmentContent(entry, safeForFragments ? projectMarkdownFragmentContent(content) : undefined);
+    if (safeForFragments) {
       const truncationInfo = { truncated: false };
       const contentProjection = projectMarkdownContent(parsed.content, truncationInfo);
-      setMarkdownFragmentContent(entry, projectMarkdownFragmentContent(content));
       if (contentProjection) {
         entry.content = contentProjection;
         if (truncationInfo.truncated) {

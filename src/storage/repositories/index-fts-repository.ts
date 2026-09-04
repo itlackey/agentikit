@@ -10,10 +10,10 @@
  */
 
 import { splitMarkdownFragments } from "../../core/asset/markdown-fragments";
+import { stableFtsScore } from "../../core/lexical-score";
 import { warn } from "../../core/warn";
 import type { IndexDocument } from "../../indexer/passes/metadata";
 import { buildLexicalQueryPlan, type LexicalQueryExecution } from "../../indexer/search/fts-query";
-import { stableFtsScore } from "../../indexer/search/ranking";
 import { buildSearchFields } from "../../indexer/search/search-fields";
 import type { Database, SqlValue } from "../database";
 import type { DbSearchResult } from "./index-entry-types";
@@ -53,18 +53,23 @@ function getFtsMutationStatements(db: Database): FtsMutationStatements {
 }
 
 /** Replace one entry's derived FTS projection inside the caller's transaction. */
-export function replaceFtsEntry(db: Database, entryId: number, entry: IndexDocument, fragmentContent?: string): void {
+export function replaceFtsEntry(
+  db: Database,
+  entryId: number,
+  entry: IndexDocument,
+  fragmentContent?: string | null,
+): void {
   const fields = buildSearchFields(entry);
   const statements = getFtsMutationStatements(db);
   statements.deleteOne.run(entryId);
   statements.insert.run(entryId, fields.name, fields.description, fields.tags, fields.hints, fields.content);
-  statements.deleteFragments.run(entryId);
   if (fragmentContent === undefined) {
     // Metadata-only re-upserts and re-keys deserialize the public document
     // without the internal substrate. Leave the persisted source untouched.
     // A scan that did read Markdown always supplies a value below.
     return;
   }
+  statements.deleteFragments.run(entryId);
   statements.deleteFragmentSource.run(entryId);
   if (!fragmentContent) return;
   statements.upsertFragmentSource.run(entryId, fragmentContent);
@@ -195,8 +200,14 @@ function runFtsQuery(
   // A selector is emitted only for one fragment that independently satisfies
   // this query. Raw BM25 values are never claimed comparable across tables;
   // each is passed through #933's stable mapping before merge.
-  const fragmentResults = runFragmentQuery(db, ftsQuery, lexicalMatch, limit, entryType, excludes);
+  const fragmentResults = hasFragmentFts(db)
+    ? runFragmentQuery(db, ftsQuery, lexicalMatch, limit, entryType, excludes)
+    : [];
   return mergeParentAndFragmentResults(results, fragmentResults, limit);
+}
+
+function hasFragmentFts(db: Database): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_fragments_fts'").get());
 }
 
 function materializeRows(
@@ -283,7 +294,11 @@ function runFragmentQuery(
       if (winners.has(row.id)) continue;
       const [result] = materializeRows([row], lexicalMatch);
       if (result)
-        winners.set(row.id, { ...result, fragmentId: row.fragmentId, lexicalScore: stableFtsScore(row.bm25Score) });
+        winners.set(row.id, {
+          ...result,
+          fragmentId: row.fragmentId,
+          lexicalScore: stableFtsScore(row.bm25Score, "fragment"),
+        });
       if (winners.size >= limit) break;
     }
     if (winners.size >= limit || rows.length < batchSize) break;
