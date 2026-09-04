@@ -561,6 +561,50 @@ describe("Issue #14: Deterministic sort on tied scores", () => {
   });
 });
 
+describe("Issue #930: the relaxed non-name ceiling must not flatten body ranking", () => {
+  test("clamped candidates order by body relevance, not by filename", async () => {
+    const stashDir = tmpStash();
+
+    // Every name here is an opaque id carrying NO query token, so
+    // `applyRelaxedLexicalScoreCeiling` clamps all three to the SAME ceiling.
+    // Before the pre-clamp tie-break, every comparison then fell through to
+    // the alphabetical filePath compare and "aaa" won regardless of content —
+    // which is how a corpus of dialogue turns (LoCoMo, LongMemEval) lost its
+    // ranking entirely: 24 of 40 probe questions came back fully tied.
+    //
+    // No document carries all three query tokens, so the exact and prefix
+    // tiers come back empty and every candidate is admitted on the relaxed
+    // tier — the one the ceiling applies to. Alphabetical order is
+    // aaa < mmm < zzz; body relevance is the exact reverse.
+    writeFile(
+      path.join(stashDir, "knowledge", "aaa-id.md"),
+      "---\ndescription: A note that mentions kestrel once and nothing more\n---\n",
+    );
+    writeFile(
+      path.join(stashDir, "knowledge", "mmm-id.md"),
+      "---\ndescription: A note about kestrel migration over open water\n---\n",
+    );
+    writeFile(
+      path.join(stashDir, "knowledge", "zzz-id.md"),
+      "---\ndescription: kestrel migration and kestrel migration and kestrel migration again\n---\n",
+    );
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "kestrel migration ecology", source: "local", skipLogging: true });
+      const order = result.hits
+        .filter((h): h is SourceSearchHit => h.type !== "registry")
+        .map((h) => h.name)
+        .filter((n) => n.endsWith("-id"));
+
+      expect(order.length).toBe(3);
+      // The densest body match must lead. Asserting the exact inverse of
+      // alphabetical order is the point: if the ceiling ever flattens the
+      // ranking again, this comes back as ["aaa-id", ...].
+      expect(order).toEqual(["zzz-id", "mmm-id", "aaa-id"]);
+    });
+  });
+});
+
 // ── Issue #15: "semantic" label for hybrid results ──────────────────────────
 
 describe("Issue #15: Hybrid ranking mode label", () => {

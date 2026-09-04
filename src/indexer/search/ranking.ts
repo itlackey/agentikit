@@ -232,8 +232,21 @@ export function lexicalNameMatchTier(entry: IndexDocument, queryTokens: string[]
  * A relaxed OR query admits intentionally weak candidates. Candidates with no
  * query token in their name remain visible for body-only recall, but cannot
  * saturate at the same displayed score as stronger name-bearing recoveries.
+ *
+ * The pre-clamp score is recorded as `preCeilingScore` (the same idiom
+ * `applyBeliefStateScoreCeiling` uses) so the clamp demotes without also
+ * DESTROYING the relative order of what it demotes. On a corpus whose names
+ * carry no query tokens at all — any conversational or memory corpus, where
+ * `name` is an opaque id — every candidate clamps to the identical ceiling,
+ * every comparison inside the clamped set falls through to the alphabetical
+ * `filePath` tie-break, and the ranking stops measuring relevance entirely.
+ * Measured on the LoCoMo probe before this fix: 109 of 200 returned hits
+ * scored exactly 0.65 and 24 of 40 questions had a fully tied top-5.
  */
 function applyRelaxedLexicalScoreCeiling(item: RankedEntryInput, queryTokens: string[]): void {
   if (item.lexicalMatch !== "relaxed" || lexicalNameMatchTier(item.entry, queryTokens) > 0) return;
-  item.score = Math.min(item.score, RELAXED_NON_NAME_SCORE_CEILING);
+  if (item.score > RELAXED_NON_NAME_SCORE_CEILING) {
+    item.preCeilingScore = item.score;
+    item.score = RELAXED_NON_NAME_SCORE_CEILING;
+  }
 }

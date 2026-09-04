@@ -327,6 +327,11 @@ function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: Ra
     if (scoreDiff !== 0) return scoreDiff;
     const rawScoreDiff = stableRankScore(b.score) - stableRankScore(a.score);
     if (rawScoreDiff !== 0) return rawScoreDiff;
+    // Both scores were clamped to the same ceiling. Order by what they scored
+    // BEFORE the clamp rather than falling through to the alphabetical
+    // filePath tie-break, which is not a relevance signal at all.
+    const ceilingDiff = stableRankScore(b.preCeilingScore ?? b.score) - stableRankScore(a.preCeilingScore ?? a.score);
+    if (ceilingDiff !== 0) return ceilingDiff;
     const nameDiff = bNameTier - aNameTier;
     if (nameDiff !== 0) return nameDiff;
     const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);
