@@ -135,6 +135,53 @@ describe("searchFts — hyphenated identifier search (Issue #2)", () => {
 });
 
 describe("searchFts candidate boundary expansion (#940)", () => {
+  test("includes every row at the boundary but excludes strictly weaker rows", () => {
+    const db = openIndexDatabase(tmpDbPath("fts-mixed-boundary"));
+    try {
+      for (const name of ["better-a", "better-b"]) {
+        insertTestEntry(db, name, {
+          description: "needle needle needle needle",
+          searchText: "needle needle needle needle",
+        });
+      }
+      for (const name of ["boundary-a", "boundary-b", "boundary-c"]) {
+        insertTestEntry(db, name, { description: "needle", searchText: "needle" });
+      }
+      for (const name of ["worse-a", "worse-b"]) {
+        const text = `needle ${"filler ".repeat(80)}`;
+        insertTestEntry(db, name, { description: text, searchText: text });
+      }
+      rebuildFts(db);
+
+      // N=3: two stronger rows plus the three-way boundary tie. The latter
+      // must be complete; the strictly weaker rows remain outside the pool.
+      expect(searchFts(db, "needle", 3).map((row) => row.entry.name)).toEqual([
+        "better-a",
+        "better-b",
+        "boundary-a",
+        "boundary-b",
+        "boundary-c",
+      ]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("applies typed and exclusion filters before finding the boundary", () => {
+    const db = openIndexDatabase(tmpDbPath("fts-filtered-boundary"));
+    try {
+      insertTestEntry(db, "skill-a", { type: "skill", description: "needle", searchText: "needle" });
+      insertTestEntry(db, "skill-b", { type: "skill", description: "needle", searchText: "needle" });
+      insertTestEntry(db, "knowledge-a", { type: "knowledge", description: "needle", searchText: "needle" });
+      rebuildFts(db);
+
+      expect(searchFts(db, "needle", 1, "skill").map((row) => row.entry.name)).toEqual(["skill-a", "skill-b"]);
+      expect(searchFts(db, "needle", 1, undefined, ["skill"]).map((row) => row.entry.name)).toEqual(["knowledge-a"]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   test("retains a large exact-BM25 boundary instead of silently choosing opaque row ids", () => {
     const db = openIndexDatabase(tmpDbPath("fts-boundary"));
     try {
@@ -150,6 +197,8 @@ describe("searchFts candidate boundary expansion (#940)", () => {
         });
       }
       rebuildFts(db);
+
+      expect(searchFts(db, "needle", 0)).toEqual([]);
 
       const started = performance.now();
       const results = searchFts(db, "needle", 10);
