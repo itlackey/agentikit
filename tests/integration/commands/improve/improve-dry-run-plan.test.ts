@@ -29,6 +29,7 @@ import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { OpenCodeProvider } from "../../../../src/integrations/harnesses/opencode/session-log";
 import type { SessionLogHarness } from "../../../../src/integrations/session-logs/types";
+import { CANONICAL_INDEX_DB_VERSION } from "../../../../src/storage/repositories/index-entry-schema";
 import { writeSkill } from "../../../_helpers/assets";
 import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
 import { type Cleanup, withEnv, withIsolatedAkmStorage, withMockedFetch } from "../../../_helpers/sandbox";
@@ -262,7 +263,9 @@ describe("#800 effective dry-run planner", () => {
     const dbPath = getDbPath();
     const newerDb = new Database(dbPath);
     try {
-      newerDb.prepare("UPDATE index_meta SET value = ? WHERE key = 'version'").run("23");
+      newerDb
+        .prepare("UPDATE index_meta SET value = ? WHERE key = 'version'")
+        .run(String(CANONICAL_INDEX_DB_VERSION + 1));
     } finally {
       newerDb.close();
     }
