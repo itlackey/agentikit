@@ -34,6 +34,7 @@ import {
 } from "../../../../src/commands/improve/salience";
 import { improveStateReadRefs } from "../../../../src/commands/improve/source-identity";
 import { saveConfig } from "../../../../src/core/config/config";
+import type { ConfigError } from "../../../../src/core/errors";
 import { appendEvent, readEvents } from "../../../../src/core/events";
 import type { AkmDistillResult, AkmReflectResult } from "../../../../src/core/improve-types";
 import { openStateDatabase } from "../../../../src/core/state-db";
@@ -244,7 +245,7 @@ test("a read-only nested bundle is never eligible through its writable ancestor"
   });
 });
 
-test("degrades an index without an entries table to an empty incompatible snapshot instead of rejecting", async () => {
+test("live eligibility rejects an index without entries instead of receiving an incompatible handle", async () => {
   const stash = makeTempDir("akm-elig-empty-index-");
   writeMemory(stash, "valid", "Valid memory.");
   await buildIndex(stash);
@@ -253,12 +254,9 @@ test("degrades an index without an entries table to an empty incompatible snapsh
   db.exec("DROP TABLE entries");
   closeDatabase(db);
 
-  const result = await collectEligibleRefs({ mode: "all" }, stash, {});
-  expect(result.plannedRefs).toEqual([]);
-  expect(result.indexSnapshot).toEqual({
-    status: "incompatible",
-    reason: "index.db has no entries table; the selector uses an empty snapshot",
-  });
+  await expect(collectEligibleRefs({ mode: "all" }, stash, {})).rejects.toMatchObject({
+    code: "INDEX_SCHEMA_INCOMPATIBLE",
+  } satisfies Partial<ConfigError>);
 });
 
 // ── Reflect signal-delta ────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import { stableFtsScore } from "../../core/lexical-score";
 import type { Database } from "../../storage/database";
 import type { DbSearchResult } from "../../storage/repositories/index-entry-types";
 import { getUtilityScoresByIds } from "../../storage/repositories/index-utility-repository";
@@ -9,6 +10,7 @@ import type { GraphBoostContext } from "../graph/graph-boost";
 import type { IndexDocument } from "../passes/metadata";
 import type { ProjectContext } from "../walk/project-context";
 import { buildLexicalQueryPlan } from "./fts-query";
+import { lexicalNameTokens, structuralNameTokenMatch } from "./name-match";
 import {
   applyBeliefStateScoreCeiling,
   applyScoreContributors,
@@ -68,18 +70,33 @@ export interface RankEntriesOptions {
   salienceRankScores?: Map<number, number> | null;
 }
 
+/**
+ * Lower bounds keep a lexical hit competitive with a vector-only neighbour;
+ * the upper bound deliberately leaves room for the ranking contributors that
+ * run after retrieval (notably the bounded graph boost).  This is a
+ * calibration for the one search pipeline, not a claim that BM25 is
+ * comparable across different queries or FTS tables.
+ */
+
+/**
+ * Convert FTS5's negative BM25 value into the lexical contribution used by
+ * this pipeline.  The transform is fixed and monotone: it depends only on a
+ * row's own BM25 value, so appending weaker candidates cannot rewrite an
+ * existing row's score. FTS5 commonly emits relevance near 1e-6 for broad
+ * queries, so first put relevance on a log scale around that observed value.
+ * The shape constant intentionally makes the curve approach its ceiling
+ * slowly: rare-term scores retain separation instead of all reading as 0.8.
+ *
+ * FTS5 produces finite non-positive values in normal operation.  Keeping the
+ * defensive cases here finite makes this boundary safe if a driver or fixture
+ * hands us an invalid value: `-Infinity` is the strongest possible match,
+ * while NaN, +Infinity, and positive scores contribute no lexical evidence.
+ */
 export function normalizeFtsScores(results: DbSearchResult[]): Map<number, { score: number; result: DbSearchResult }> {
   const ftsScoreMap = new Map<number, { score: number; result: DbSearchResult }>();
-  if (results.length === 0) return ftsScoreMap;
-
-  const bestBm25 = results[0]!.bm25Score;
-  const worstBm25 = results[results.length - 1]!.bm25Score;
-  const range = bestBm25 - worstBm25;
 
   for (const result of results) {
-    const normalized = range !== 0 ? (result.bm25Score - worstBm25) / range : 1.0;
-    const ftsScore = 0.3 + normalized * 0.7;
-    ftsScoreMap.set(result.id, { score: ftsScore, result });
+    ftsScoreMap.set(result.id, { score: result.lexicalScore ?? stableFtsScore(result.bm25Score), result });
   }
 
   return ftsScoreMap;
@@ -129,6 +146,7 @@ export function combineSearchScores(options: {
       itemRef: result.itemRef,
       bundleId: result.bundleId,
       conceptId: result.conceptId,
+      fragmentId: result.fragmentId,
     });
   }
 
@@ -194,9 +212,8 @@ export function applyRankingRules(options: RankEntriesOptions): RankedEntryInput
     applyRelaxedLexicalScoreCeiling(item, queryTokens);
     // SPEC-5: demoting belief states (superseded/contradicted/archived/
     // deprecated) cap the FINAL score. The additive belief penalty inside the
-    // multiplicative boost sum cannot overcome the FTS min-max normalization
-    // spread, so without the ceiling a superseded incumbent that is the best
-    // keyword match outranks its own correction forever.
+    // multiplicative boost sum can still overwhelm an additive belief penalty,
+    // so without the ceiling a superseded incumbent can outrank its correction.
     applyBeliefStateScoreCeiling(item);
   }
 
@@ -213,17 +230,16 @@ const RELAXED_NON_NAME_SCORE_CEILING = 0.65;
 export function lexicalNameMatchTier(entry: IndexDocument, queryTokens: string[]): number {
   if (queryTokens.length === 0) return 0;
   const nameBase = entry.name.toLowerCase().split("/").pop() ?? entry.name.toLowerCase();
-  const nameTokens = buildLexicalQueryPlan(nameBase).tokens.map((token) => token.toLowerCase());
-  const tokenMatches = (left: string, right: string): boolean =>
-    left === right ||
-    (Math.min([...left].length, [...right].length) >= 3 && (left.startsWith(right) || right.startsWith(left)));
+  const nameTokens = lexicalNameTokens(nameBase);
   if (
     nameTokens.length === queryTokens.length &&
-    nameTokens.every((token, index) => tokenMatches(token, queryTokens[index]!))
+    nameTokens.every((token, index) => structuralNameTokenMatch(token, queryTokens[index]!))
   ) {
     return 3;
   }
-  const matched = queryTokens.filter((token) => nameTokens.some((nameToken) => tokenMatches(nameToken, token))).length;
+  const matched = queryTokens.filter((token) =>
+    nameTokens.some((nameToken) => structuralNameTokenMatch(nameToken, token)),
+  ).length;
   if (matched === queryTokens.length) return 2;
   return matched > 0 ? 1 : 0;
 }
@@ -231,9 +247,19 @@ export function lexicalNameMatchTier(entry: IndexDocument, queryTokens: string[]
 /**
  * A relaxed OR query admits intentionally weak candidates. Candidates with no
  * query token in their name remain visible for body-only recall, but cannot
- * saturate at the same displayed score as stronger name-bearing recoveries.
+ * share the same bounded displayed score as stronger name-bearing recoveries.
+ * The raw ceiling is 0.65; the public score projection is applied later, so
+ * callers never literally receive `0.65` just because this ceiling bound.
+ *
+ * Preserve the pre-ceiling relevance separately from `preCeilingScore`, which
+ * belongs to belief-state demotion and may be written afterwards. A relaxed,
+ * belief-demoted candidate otherwise loses both its body relevance and its
+ * ordering signal when the second ceiling overwrites the first.
  */
 function applyRelaxedLexicalScoreCeiling(item: RankedEntryInput, queryTokens: string[]): void {
   if (item.lexicalMatch !== "relaxed" || lexicalNameMatchTier(item.entry, queryTokens) > 0) return;
-  item.score = Math.min(item.score, RELAXED_NON_NAME_SCORE_CEILING);
+  if (item.score > RELAXED_NON_NAME_SCORE_CEILING) {
+    item.preRelaxedCeilingScore = item.score;
+    item.score = RELAXED_NON_NAME_SCORE_CEILING;
+  }
 }

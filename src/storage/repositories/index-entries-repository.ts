@@ -18,7 +18,11 @@ import { bestEffort } from "../../core/best-effort";
 import { isPathAbsent } from "../../core/path-access";
 import { getStateDbPath, withStateDb } from "../../core/state-db";
 import { warn } from "../../core/warn";
-import type { IndexDocument } from "../../indexer/passes/metadata";
+import {
+  getMarkdownFragmentContent,
+  hasMarkdownFragmentContent,
+  type IndexDocument,
+} from "../../indexer/passes/metadata";
 import { buildSearchText } from "../../indexer/search/search-fields";
 import type { Database, SqlValue } from "../database";
 import { ENTRY_COLUMNS, type EntryRow, rowToIndexedEntry } from "./index-entry-mapper";
@@ -73,7 +77,12 @@ export function upsertEntry(
     if (!result) throw new Error("upsertEntry: item_ref not found after upsert");
 
     if (previous?.id === result.id && previous.search_text !== searchText) deleteEntryVectors(db, result.id);
-    replaceFtsEntry(db, result.id, entry);
+    replaceFtsEntry(
+      db,
+      result.id,
+      entry,
+      hasMarkdownFragmentContent(entry) ? (getMarkdownFragmentContent(entry) ?? null) : undefined,
+    );
     return result.id;
   };
   // Always enter the driver's transaction wrapper. Both supported SQLite
@@ -301,7 +310,13 @@ export function rekeyEntryInPlace(db: Database, opts: RekeyEntryOptions): number
       db.prepare("UPDATE entries SET derived_from = ? WHERE id = ?").run(opts.newDerivedFrom, row.id);
     }
     if (row.search_text !== searchText) deleteEntryVectors(db, row.id);
-    if (document) replaceFtsEntry(db, row.id, document);
+    if (document)
+      replaceFtsEntry(
+        db,
+        row.id,
+        document,
+        hasMarkdownFragmentContent(document) ? (getMarkdownFragmentContent(document) ?? null) : undefined,
+      );
     else deleteFtsEntries(db, [row.id]);
   })();
 

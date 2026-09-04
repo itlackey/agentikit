@@ -317,10 +317,10 @@ describe("#624-P1 graph re-key on (stash_root, file_path, body_hash)", () => {
   });
 
   // AC#5 — version + graph-schema lock --------------------------------------
-  // DB_VERSION 22 is the canonical entries generation boundary; graph schema
+  // DB_VERSION 23 adds the isolated fragment FTS population; graph schema
   // version 4 remains the current independently keyed graph shape.
-  test("AC#5: DB_VERSION is 22, GRAPH_SCHEMA_VERSION is 4, graph DDL is the current shape", () => {
-    expect(DB_VERSION).toBe(22);
+  test("AC#5: DB_VERSION is 23, GRAPH_SCHEMA_VERSION is 4, graph DDL is the current shape", () => {
+    expect(DB_VERSION).toBe(23);
     expect(GRAPH_SCHEMA_VERSION).toBe(4);
 
     const db = openIndexDatabase(tmpDbPath());

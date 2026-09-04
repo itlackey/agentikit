@@ -107,11 +107,12 @@ journal mode. Foreign-key policy is called out per database below.
 ### `$DATA/index.db` — Main Search Index
 
 Schema managed by `ensureSchema()` (`src/storage/repositories/index-schema.ts`).
-The current derived generation is exactly v22: `index_meta.version` and the
-complete canonical `entries` fingerprint must both match. It uses the shared
-opening pragma policy above with foreign keys ON and optionally loads the
-`sqlite-vec` extension for fast ANN (approximate nearest-neighbour) vector
-search.
+The current derived generation is exactly v23: `index_meta.version`, the
+complete canonical `entries` fingerprint, and the exact logical
+`entries_fts`/`entry_fragments`/`entry_fragments_fts` surfaces must all match.
+It uses the shared opening pragma policy above with foreign keys ON and
+optionally loads the `sqlite-vec` extension for fast ANN (approximate
+nearest-neighbour) vector search.
 
 Opened by:
 - `openIndexDatabase()` — managed schema initialization and generation rebuild,
@@ -120,12 +121,13 @@ Opened by:
   generation before returning a handle to search/show/curate and other readers
 
 **Retention:** `index.db` is a fully regenerable derived cache. A missing or
-noncanonical v22 `entries` fingerprint causes the managed opener to discard the
-entry-dependent derived generation and create the exact current schema; the
-indexer then repopulates it from current sources and durable usage state.
-Existing/read-only openers reject a noncanonical generation. This path never
-modifies `state.db`. `clearStaleCacheEntries()` removes orphaned LLM cache rows
-within a current generation.
+noncanonical v23 `entries` fingerprint or required logical search surface
+causes the managed opener to discard the entry-dependent derived generation and
+create the exact current schema; the indexer then repopulates it from current
+sources and durable usage state. Existing/read-only openers reject a
+noncanonical generation. This path never modifies `state.db`.
+`clearStaleCacheEntries()` removes orphaned LLM cache rows within a current
+generation.
 
 #### Table: `index_meta`
 
@@ -173,6 +175,27 @@ The canonical entry repository replaces this projection in the same SQLite
 transaction as its `entries` upsert. Deletes remove the FTS row before the
 parent entry. There is no caller-managed FTS dirty queue; a full FTS rebuild is
 reserved for explicit recovery of regenerable index state.
+
+#### Table: `entry_fragments`
+
+| Column | Type | Notes |
+|---|---|---|
+| `entry_id` | INTEGER PRIMARY KEY | FK → `entries(id)` ON DELETE CASCADE; one safe source projection per parent entry |
+| `safe_markdown` | TEXT NOT NULL | Line-preserving, retrieval-safe Markdown projection used to resolve a returned fragment selector |
+
+This table keeps the parent-owned source for lexical fragment retrieval. It is
+derived state and is replaced or removed in the same transaction as the
+parent's FTS projections.
+
+#### Virtual Table: `entry_fragments_fts` (FTS5)
+
+Separate lexical body-fragment population. Tokenizer: `porter unicode61`.
+Its rows carry `entry_id UNINDEXED`, `fragment_id UNINDEXED`,
+`fragment_ordinal UNINDEXED`, and searchable `content`. Parent metadata is not
+copied onto fragment rows, preserving the parent FTS conjunction semantics and
+keeping the two BM25 populations independently calibrated. Search selects one
+fragment per matching parent and merges it with parent results; `fragment_id`
+is the selector returned in the hit ref.
 
 #### Table: `embeddings`
 

@@ -7,6 +7,7 @@ import type { Database } from "../../storage/database";
 import type { ScopedUtilityRow, UtilityScoreRow } from "../../storage/repositories/index-entry-types";
 import { computeGraphBoost, type GraphBoostContext } from "../graph/graph-boost";
 import type { ProjectContext } from "../walk/project-context";
+import { lexicalNameTokens, structuralNamePhraseMatch, structuralNameTokenMatch } from "./name-match";
 import type { RankedEntryInput } from "./ranking-types";
 import { attachSearchHitAttribution } from "./search-attribution";
 
@@ -168,13 +169,11 @@ function beliefStateBoost(item: RankedEntryInput): number {
  * stash-conventions-code-spec.md — corrections demotion).
  *
  * Why the additive {@link beliefStateBoost} penalties alone are not enough:
- * keyword base scores are min-max normalized into [0.3, 1.0]
- * (`normalizeFtsScores`), so the spread between the best FTS hit and its
- * runner-up can be as large as 0.7 — and the boost sum then MULTIPLIES the
- * base (`score *= 1 + boostSum`, {@link applyScoreContributors}). A
- * superseded incumbent that is the best keyword match for a query therefore
- * stays clamp-pinned at 1.0 above its own correction no matter what additive
- * penalty it receives — defeating the corrections pattern's point ("so the
+ * keyword base scores have a bounded lexical floor (`normalizeFtsScores`),
+ * while the boost sum then MULTIPLIES the base (`score *= 1 + boostSum`,
+ * {@link applyScoreContributors}). A superseded incumbent can still earn
+ * enough independent boosts to outrank its own correction, so additive
+ * penalties alone cannot guarantee the corrections pattern's point ("so the
  * ranker demotes the stale version instead of letting it outrank your fix").
  *
  * The ceilings guarantee the demotion while keeping flagged entries VISIBLE:
@@ -227,11 +226,9 @@ const exactNameRankingContributor: RankingContributor = {
     if (nameBase === ctx.queryLower || nameLower === ctx.queryLower) {
       return 2.0;
     }
-    if (nameBase.includes(ctx.queryLower) || ctx.queryLower.includes(nameBase)) {
-      return 1.0;
-    }
-    const nameTokens = nameBase.split(/[-_\s]+/).filter(Boolean);
-    const matchCount = ctx.queryTokens.filter((qt) => nameTokens.some((nt) => nt === qt || nt.includes(qt))).length;
+    const nameTokens = lexicalNameTokens(nameBase);
+    if (structuralNamePhraseMatch(nameTokens, ctx.queryTokens)) return 1.0;
+    const matchCount = ctx.queryTokens.filter((qt) => nameTokens.some((nt) => structuralNameTokenMatch(nt, qt))).length;
     return matchCount > 0 ? Math.min(0.9, matchCount * 0.3) : 0;
   },
 };
@@ -315,7 +312,14 @@ const aliasRankingContributor: RankingContributor = {
 const descriptionRankingContributor: RankingContributor = {
   name: "description-ranking",
   appliesTo(item) {
-    return typeof item.entry.description === "string" && item.entry.description.length > 0;
+    // A relaxed FTS query admits an OR pool. Awarding a flat +0.1 merely
+    // because of a partial description coincidence double-counts a weak
+    // signal and can outrank materially stronger BM25 body evidence. The FTS
+    // score already accounts for descriptions; retain this secondary boost
+    // only for conjunctive candidates.
+    return (
+      item.lexicalMatch !== "relaxed" && typeof item.entry.description === "string" && item.entry.description.length > 0
+    );
   },
   adjust(item, ctx) {
     const descLower = item.entry.description?.toLowerCase() ?? "";

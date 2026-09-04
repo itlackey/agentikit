@@ -235,13 +235,21 @@ describe("full-index bundle identity", () => {
         await akmIndex({ stashDir: storage.stashDir, ...(full ? { full: true } : {}) });
 
         const updated = await akmSearch({ query: "healthyupdatedmarker", skipLogging: true });
-        expect(updated.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("knowledge/healthy");
+        expect(
+          updated.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0])),
+        ).toContain("knowledge/healthy");
         const added = await akmSearch({ query: "newhealthysourcemarker", skipLogging: true });
-        expect(added.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("fresh//knowledge/new-source");
+        expect(
+          added.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0])),
+        ).toContain("fresh//knowledge/new-source");
         const preserved = await akmSearch({ query: "crossbundlemarker from team", skipLogging: true });
-        expect(preserved.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("team//knowledge/shared");
+        expect(
+          preserved.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0])),
+        ).toContain("team//knowledge/shared");
         const removed = await akmSearch({ query: "removedhealthymarker", skipLogging: true });
-        expect(removed.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).not.toContain("knowledge/removed");
+        expect(
+          removed.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0])),
+        ).not.toContain("knowledge/removed");
       } finally {
         registerSourceProvider("website", originalWebsite);
         fresh.cleanup();
@@ -274,22 +282,32 @@ describe("full-index bundle identity", () => {
     }
 
     const healthy = await akmSearch({ query: "healthywhileincompletemarker", skipLogging: true });
-    expect(healthy.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("knowledge/healthy");
+    expect(healthy.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0]))).toContain(
+      "knowledge/healthy",
+    );
     const old = await akmSearch({ query: "incompletesourceoldmarker", skipLogging: true });
-    expect(old.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("team//knowledge/good");
-    const notPartiallyUpdated = await akmSearch({ query: "incompletesourcenewmarker", skipLogging: true });
-    expect(notPartiallyUpdated.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).not.toContain(
+    expect(old.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0]))).toContain(
       "team//knowledge/good",
     );
+    const notPartiallyUpdated = await akmSearch({ query: "incompletesourcenewmarker", skipLogging: true });
+    expect(
+      notPartiallyUpdated.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0])),
+    ).not.toContain("team//knowledge/good");
     const deferredRemoval = await akmSearch({ query: "incompleteremovedmarker", skipLogging: true });
-    expect(deferredRemoval.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("team//knowledge/removed");
+    expect(
+      deferredRemoval.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0])),
+    ).toContain("team//knowledge/removed");
 
     await akmIndex({ stashDir: storage.stashDir });
 
     const updated = await akmSearch({ query: "incompletesourcenewmarker", skipLogging: true });
-    expect(updated.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).toContain("team//knowledge/good");
+    expect(updated.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0]))).toContain(
+      "team//knowledge/good",
+    );
     const removed = await akmSearch({ query: "incompleteremovedmarker", skipLogging: true });
-    expect(removed.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []))).not.toContain("team//knowledge/removed");
+    expect(
+      removed.hits.flatMap((hit) => ("ref" in hit ? [hit.ref] : []).map((ref) => ref.split("#", 1)[0])),
+    ).not.toContain("team//knowledge/removed");
   });
 
   test("an escaping default component root is unresolved and never scanned", async () => {

@@ -29,6 +29,7 @@ import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { akmIndex } from "../../../../src/indexer/indexer";
 import { OpenCodeProvider } from "../../../../src/integrations/harnesses/opencode/session-log";
 import type { SessionLogHarness } from "../../../../src/integrations/session-logs/types";
+import { CANONICAL_INDEX_DB_VERSION } from "../../../../src/storage/repositories/index-entry-schema";
 import { writeSkill } from "../../../_helpers/assets";
 import { withImproveAutonomy, withTestImproveLlm } from "../../../_helpers/improve-config";
 import { type Cleanup, withEnv, withIsolatedAkmStorage, withMockedFetch } from "../../../_helpers/sandbox";
@@ -216,7 +217,9 @@ describe("#800 effective dry-run planner", () => {
 
     expect(result.plan?.snapshot).toEqual({
       status: "incompatible",
-      reason: "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it",
+      reason:
+        "index.db is incompatible; Run `akm index` to rebuild the derived index from the currently materialized sources. " +
+        "Dry-run uses an empty snapshot and does not migrate it.",
     });
     expect(result.plannedRefs).toEqual([]);
     expect(snapshotTree(storage.root)).toEqual(before);
@@ -242,13 +245,40 @@ describe("#800 effective dry-run planner", () => {
 
       expect(result.plan?.snapshot).toEqual({
         status: "incompatible",
-        reason: "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it",
+        reason:
+          "index.db is incompatible; Run `akm index` to rebuild the derived index from the currently materialized sources. " +
+          "Dry-run uses an empty snapshot and does not migrate it.",
       });
       expect(result.plannedRefs).toEqual([]);
       expect(snapshotTree(storage.root)).toEqual(before);
     } finally {
       legacyDb.close();
     }
+  });
+
+  test("newer index generation keeps its upgrade action in the empty dry-run snapshot", async () => {
+    const storage = isolatedStorage();
+    const config = plannerConfig();
+    await indexSkills(storage.stashDir, 1, config);
+    const dbPath = getDbPath();
+    const newerDb = new Database(dbPath);
+    try {
+      newerDb
+        .prepare("UPDATE index_meta SET value = ? WHERE key = 'version'")
+        .run(String(CANONICAL_INDEX_DB_VERSION + 1));
+    } finally {
+      newerDb.close();
+    }
+
+    const result = await akmImprove({ scope: "skill", stashDir: storage.stashDir, config, dryRun: true });
+
+    expect(result.plan?.snapshot).toEqual({
+      status: "incompatible",
+      reason:
+        "index.db is incompatible; Upgrade akm to a version that understands this index generation. " +
+        "Dry-run uses an empty snapshot and does not migrate it.",
+    });
+    expect(result.plannedRefs).toEqual([]);
   });
 
   test("held WAL current index stays byte-identical across every dry planning read", async () => {

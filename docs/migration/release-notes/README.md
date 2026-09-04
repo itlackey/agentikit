@@ -7,6 +7,8 @@ live one level up in `docs/migration/`.
 
 ## Available notes
 
+- [0.9.14](0.9.14.md) — index v22-to-v23 derived-cache rebuild, lexical
+  fragments, and collapse-detector canary re-minting
 - [0.9.2](0.9.2.md) — task source v4 migration, workflow source IR v1 and
   durable-v4-family `irVersion: 5`, command diagnostics, and strategy judgment
   migration

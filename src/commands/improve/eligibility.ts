@@ -8,7 +8,7 @@ import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { conceptIdFromTypeName, parseRefInput, resolveRef } from "../../core/asset/resolve-ref";
 import type { AkmConfig, ImproveProfileConfig } from "../../core/config/config";
 import { loadConfig } from "../../core/config/config";
-import { NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
+import { ConfigError, NotFoundError, rethrowIfTestIsolationError, UsageError } from "../../core/errors";
 import { type EventsContext, readEvents } from "../../core/events";
 import type { ImproveEligibleRef, ImproveIndexSnapshot } from "../../core/improve-types";
 import { isPathAbsent } from "../../core/path-access";
@@ -50,26 +50,18 @@ function openEligibilityDb(readOnly: boolean): Database | undefined {
   return isPathAbsent(getDbPath()) ? undefined : openExistingDatabase();
 }
 
-function describeIndexSnapshot(readOnly: boolean, status: "ready" | "missing" | "incompatible"): ImproveIndexSnapshot {
+function describeIndexSnapshot(readOnly: boolean, status: "ready" | "missing"): ImproveIndexSnapshot {
   if (status === "ready") {
     return {
       status,
       reason: readOnly ? "loaded a non-mutating point-in-time copy of the existing index" : "loaded the prepared index",
     };
   }
-  if (status === "missing") {
-    return {
-      status,
-      reason: readOnly
-        ? "index.db is missing; dry-run uses an empty snapshot and does not create it"
-        : "index.db is missing after index preparation; the selector uses an empty snapshot",
-    };
-  }
   return {
     status,
     reason: readOnly
-      ? "index.db has no entries table; dry-run uses an empty snapshot and does not migrate it"
-      : "index.db has no entries table; the selector uses an empty snapshot",
+      ? "index.db is missing; dry-run uses an empty snapshot and does not create it"
+      : "index.db is missing after index preparation; the selector uses an empty snapshot",
   };
 }
 
@@ -77,6 +69,28 @@ function describeUnavailableSnapshot(error: SqliteReadSnapshotUnavailableError):
   return {
     status: "incompatible",
     reason: `index.db cannot provide a stable non-mutating snapshot (${error.message}); dry-run uses an empty snapshot`,
+  };
+}
+
+/**
+ * A dry-run is explicitly a non-mutating planning operation, so it may report
+ * an unusable derived index as an empty snapshot.  This is deliberately a
+ * typed boundary mapping: readers otherwise receive no incompatible handle,
+ * and we must not turn an arbitrary SQLite error into a successful plan by
+ * matching its text.
+ */
+function isIncompatibleIndexError(error: unknown): error is ConfigError {
+  return error instanceof ConfigError && error.code === "INDEX_SCHEMA_INCOMPATIBLE";
+}
+
+function describeIncompatibleIndexSnapshot(error: ConfigError): ImproveIndexSnapshot {
+  // `INDEX_SCHEMA_INCOMPATIBLE` establishes that this is the derived-index
+  // boundary, and the error's hint preserves whether this binary should
+  // rebuild an older/unknown generation or upgrade for a newer one.
+  const action = error.hint() ?? error.message;
+  return {
+    status: "incompatible",
+    reason: `index.db is incompatible; ${action} Dry-run uses an empty snapshot and does not migrate it.`,
   };
 }
 
@@ -245,12 +259,12 @@ async function collectEligibleRefsFromIndex(
           indexSnapshot: describeUnavailableSnapshot(error),
         };
       }
-      if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
+      if (readOnly && isIncompatibleIndexError(error)) {
         return {
           plannedRefs: [],
           memorySummary: { eligible: 0, derived: 0 },
           strategyFilteredRefs: [],
-          indexSnapshot: describeIndexSnapshot(readOnly, "incompatible"),
+          indexSnapshot: describeIncompatibleIndexSnapshot(error),
         };
       }
       throw error;
@@ -348,12 +362,12 @@ async function collectEligibleRefsFromIndex(
         indexSnapshot: describeUnavailableSnapshot(error),
       };
     }
-    if (error instanceof Error && /no such table:\s*entries/i.test(error.message)) {
+    if (readOnly && isIncompatibleIndexError(error)) {
       return {
         plannedRefs: [],
         memorySummary: { eligible: 0, derived: 0 },
         strategyFilteredRefs: [],
-        indexSnapshot: describeIndexSnapshot(readOnly, "incompatible"),
+        indexSnapshot: describeIncompatibleIndexSnapshot(error),
       };
     }
     throw error;

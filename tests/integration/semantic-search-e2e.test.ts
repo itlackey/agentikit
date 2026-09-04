@@ -471,13 +471,16 @@ describe.skipIf(!SEMANTIC_TESTS)("Semantic search end-to-end (real embeddings)",
       config,
     });
 
-    const testingScore =
-      testResult.hits.find((h) => h.name === "testing-patterns" || h.name.includes("testing"))?.score ?? 0;
-    const deployScoreInTestQuery =
-      testResult.hits.find((h) => h.name === "deploy" || h.name.includes("deploy"))?.score ?? 0;
+    const testingIndex = testResult.hits.findIndex((h) => h.name === "testing-patterns" || h.name.includes("testing"));
+    const deployIndex = testResult.hits.findIndex((h) => h.name === "deploy" || h.name.includes("deploy"));
 
-    // Testing should score higher than deploy when searching for testing
-    expect(testingScore).toBeGreaterThan(deployScoreInTestQuery);
+    // A relaxed body-only query deliberately gives both hits the same displayed
+    // score ceiling. Its quality contract is the retained pre-ceiling ordering:
+    // with real embeddings active, testing must still rank ahead of deploy.
+    expect(testResult.mode).toBe("semantic");
+    expect(testingIndex).toBeGreaterThanOrEqual(0);
+    expect(deployIndex).toBeGreaterThanOrEqual(0);
+    expect(testingIndex).toBeLessThan(deployIndex);
   });
 
   test("semantic search finds results even without exact keyword match", async () => {

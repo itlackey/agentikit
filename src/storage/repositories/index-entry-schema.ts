@@ -12,7 +12,9 @@
  * separate definitions of "current".
  */
 
-export const CANONICAL_INDEX_DB_VERSION = 22;
+// v23 adds an isolated fragment FTS population. v22 is the last shipped
+// generation and is intentionally rebuilt rather than migrated in place.
+export const CANONICAL_INDEX_DB_VERSION = 23;
 
 export const CANONICAL_ENTRY_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS entries (
@@ -34,6 +36,31 @@ export const CANONICAL_ENTRY_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(type);
   CREATE INDEX IF NOT EXISTS idx_entries_file_path ON entries(file_path);
   CREATE INDEX IF NOT EXISTS idx_entries_derived_from ON entries(derived_from);
+
+  -- Keep parent metadata and body fragments in separate FTS populations.
+  -- Combining them changes parent-document IDF and conjunction semantics.
+  CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+    entry_id UNINDEXED,
+    name,
+    description,
+    tags,
+    hints,
+    content,
+    tokenize='porter unicode61'
+  );
+
+  CREATE TABLE IF NOT EXISTS entry_fragments (
+    entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+    safe_markdown TEXT NOT NULL
+  );
+
+  CREATE VIRTUAL TABLE IF NOT EXISTS entry_fragments_fts USING fts5(
+    entry_id UNINDEXED,
+    fragment_id UNINDEXED,
+    fragment_ordinal UNINDEXED,
+    content,
+    tokenize='porter unicode61'
+  );
 `;
 
 interface ColumnFingerprint {
@@ -69,6 +96,22 @@ interface EntrySchemaFingerprint {
   sqliteSequenceValid: boolean;
   columns: ColumnFingerprint[];
   indexes: IndexFingerprint[];
+  searchSurfaces: SearchSurfaceFingerprint;
+}
+
+/**
+ * The logical FTS surfaces that belong to this derived generation.
+ *
+ * SQLite records an FTS5 virtual table itself and its implementation-owned
+ * shadow tables in sqlite_master with type `table`.  Only the named logical
+ * roots below are part of AKM's contract: exact virtual-table DDL proves the
+ * FTS module, columns, UNINDEXED flags, and tokenizer.  Shadow-table layout is
+ * deliberately not fingerprinted because it is SQLite's internal detail.
+ */
+interface SearchSurfaceFingerprint {
+  entriesFtsSql: string | null;
+  fragmentSourceSql: string | null;
+  fragmentsFtsSql: string | null;
 }
 
 /** Minimal read-only statement surface shared by bun:sqlite and AKM's runtime-neutral handle. */
@@ -230,6 +273,14 @@ const CANONICAL_ENTRY_SCHEMA_FINGERPRINT: EntrySchemaFingerprint = {
       ],
     },
   ],
+  searchSurfaces: {
+    entriesFtsSql:
+      "CREATE VIRTUAL TABLE entries_fts USING fts5( entry_id UNINDEXED, name, description, tags, hints, content, tokenize='porter unicode61' )",
+    fragmentSourceSql:
+      "CREATE TABLE entry_fragments ( entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE, safe_markdown TEXT NOT NULL )",
+    fragmentsFtsSql:
+      "CREATE VIRTUAL TABLE entry_fragments_fts USING fts5( entry_id UNINDEXED, fragment_id UNINDEXED, fragment_ordinal UNINDEXED, content, tokenize='porter unicode61' )",
+  },
 };
 
 function sqlString(value: string): string {
@@ -241,11 +292,15 @@ function normalizeSchemaSql(value: string | null | undefined): string | null {
   return value.replace(/\s+/g, " ").trim();
 }
 
-export function readEntrySchemaFingerprint(db: EntrySchemaInspectionDatabase): EntrySchemaFingerprint {
-  const tableRow = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entries'").get() as
+function readNamedTableSql(db: EntrySchemaInspectionDatabase, name: string): string | null {
+  const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ${sqlString(name)}`).get() as
     | { sql: string | null }
     | null
     | undefined;
+  return normalizeSchemaSql(row?.sql);
+}
+
+export function readEntrySchemaFingerprint(db: EntrySchemaInspectionDatabase): EntrySchemaFingerprint {
   const sqliteSequenceTable =
     db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'").get() !=
     null;
@@ -314,11 +369,16 @@ export function readEntrySchemaFingerprint(db: EntrySchemaInspectionDatabase): E
     .sort((left, right) => left.name.localeCompare(right.name));
 
   return {
-    tableSql: normalizeSchemaSql(tableRow?.sql),
+    tableSql: readNamedTableSql(db, "entries"),
     sqliteSequenceTable,
     sqliteSequenceValid,
     columns,
     indexes,
+    searchSurfaces: {
+      entriesFtsSql: readNamedTableSql(db, "entries_fts"),
+      fragmentSourceSql: readNamedTableSql(db, "entry_fragments"),
+      fragmentsFtsSql: readNamedTableSql(db, "entry_fragments_fts"),
+    },
   };
 }
 

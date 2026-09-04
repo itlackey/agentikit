@@ -33,7 +33,12 @@ import { closeDatabase, openExistingDatabase } from "../storage/repositories/ind
 import { deleteEntriesByIds, getEntryCount, upsertEntry } from "../storage/repositories/index-entries-repository";
 import { deriveEntryProvenance, deriveInstallations } from "./installations";
 import { generateEmbeddingsForDb, publishTargetedEmbeddingMeta } from "./materialize-embeddings";
-import type { IndexDocument } from "./passes/metadata";
+import {
+  getMarkdownFragmentContent,
+  hasMarkdownFragmentContent,
+  type IndexDocument,
+  setMarkdownFragmentContent,
+} from "./passes/metadata";
 import { drainDirDocuments } from "./scan/drain-dir";
 import { buildSearchText } from "./search/search-fields";
 import { buildFileContext } from "./walk/file-context";
@@ -167,6 +172,9 @@ export async function indexWrittenAssets(
             let entryWithSize = entry;
             try {
               entryWithSize = { ...entry, fileSize: fs.statSync(file).size };
+              if (hasMarkdownFragmentContent(entry)) {
+                setMarkdownFragmentContent(entryWithSize, getMarkdownFragmentContent(entry));
+              }
             } catch {
               // stat raced a delete — index without the size, like the full walk does.
             }

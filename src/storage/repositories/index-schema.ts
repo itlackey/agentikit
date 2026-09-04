@@ -193,9 +193,10 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
   if (classification.status === "newer") {
     throw new ConfigError(
       `Index database was built by a newer akm (stored generation ${classification.storedVersion ?? "unknown"}; ` +
-        `this binary understands generation ${CANONICAL_INDEX_DB_VERSION}). Refusing to modify it — upgrade akm to ` +
-        "write to this index, or delete index.db to rebuild it from scratch with this binary.",
+        `this binary understands generation ${CANONICAL_INDEX_DB_VERSION}). Refusing to modify it — upgrade akm ` +
+        "to use this index.",
       "INDEX_SCHEMA_INCOMPATIBLE",
+      "Upgrade akm to a version that understands this index generation.",
     );
   }
 
@@ -222,6 +223,8 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
     db.exec("DROP TABLE IF EXISTS graph_extraction_queue");
     db.exec("DROP TABLE IF EXISTS graph_meta");
     db.exec("DROP TABLE IF EXISTS entries_fts_dirty");
+    db.exec("DROP TABLE IF EXISTS entry_fragments_fts");
+    db.exec("DROP TABLE IF EXISTS entry_fragments");
     db.exec("DROP TABLE IF EXISTS entries_fts");
     db.exec("DROP TABLE IF EXISTS embeddings");
     db.exec("DROP TABLE IF EXISTS utility_scores_scoped");
@@ -254,8 +257,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // index.db is derived state, so remove the obsolete table on every open.
   db.exec("DROP TABLE IF EXISTS workflow_documents");
 
-  setMeta(db, "version", String(DB_VERSION));
-
   // BLOB-based embedding storage (always available, no sqlite-vec needed)
   db.exec(`
     CREATE TABLE IF NOT EXISTS embeddings (
@@ -264,22 +265,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
       FOREIGN KEY (id) REFERENCES entries(id)
     );
   `);
-
-  // FTS5 table — multi-column with per-field weighting via bm25()
-  const ftsExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entries_fts'").get();
-  if (!ftsExists) {
-    db.exec(`
-      CREATE VIRTUAL TABLE entries_fts USING fts5(
-        entry_id UNINDEXED,
-        name,
-        description,
-        tags,
-        hints,
-        content,
-        tokenize='porter unicode61'
-      );
-    `);
-  }
 
   // usage_events lives in state.db. utility_scores remains a regenerable
   // index.db cache.
@@ -431,6 +416,11 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // Registry index cache table — caches remote registry index documents so
   // `akm search` does not hit the network on every invocation.
   db.exec(REGISTRY_INDEX_CACHE_DDL);
+
+  // Write the generation stamp only after every required DDL surface exists.
+  // A crash before this point leaves an unversioned generation that the next
+  // writable open safely rebuilds instead of admitting a partial v23 index.
+  setMeta(db, "version", String(DB_VERSION));
 }
 
 /**

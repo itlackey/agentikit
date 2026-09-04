@@ -25,6 +25,7 @@ import { assetPathForName, stashDirFor } from "../../core/asset/asset-placement"
 import { type BundleRef, makeBundleRef, parseBundleRef } from "../../core/asset/asset-ref";
 import { parseFrontmatter } from "../../core/asset/frontmatter";
 import { extractSection, markdownFragmentSlugs } from "../../core/asset/markdown";
+import { fragmentForSelector } from "../../core/asset/markdown-fragments";
 import { displayRef, typeNameFromConceptId } from "../../core/asset/resolve-ref";
 import { META_DIR, type MetaRef, parseMetaRef, readMetaFile } from "../../core/asset/stash-meta";
 import { asNonEmptyString, isWithin } from "../../core/common";
@@ -40,6 +41,7 @@ import { listRelatedPathsForFile } from "../../indexer/graph/graph-boost";
 import { extractGraphForSingleFile } from "../../indexer/graph/graph-extraction";
 import { lookupBundleRef, lookupBundleRefWithResolution } from "../../indexer/indexer";
 import type { StashEntryScope } from "../../indexer/passes/metadata";
+import { projectMarkdownFragmentContent } from "../../indexer/passes/metadata";
 import { ensurePrimaryIndexForRead, resolveReadSources } from "../../indexer/read-preflight";
 import {
   buildEditHint,
@@ -62,6 +64,7 @@ import { resolveSourcesForOrigin } from "../../registry/origin-resolve";
 import { resolveStorageLocations } from "../../storage/locations";
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
 import { TELEMETRY_BUSY_TIMEOUT_MS, withIndexDb } from "../../storage/repositories/index-db";
+import { getIndexedMarkdownFragment } from "../../storage/repositories/index-fts-repository";
 import { computeBodyHash } from "../../storage/repositories/index-llm-cache-repository";
 // Eagerly import source providers to trigger self-registration.
 import "../../sources/providers/index";
@@ -116,9 +119,15 @@ export async function akmShowUnified(input: {
   // and ignore the fragment rather than refusing the whole show.
   warnSensitiveFragmentUnsupported(parseBundleRef(ref));
 
-  // Auto-index when stale so the index is current before lookup.
-  const { primarySource } = resolveReadSources();
-  await ensurePrimaryIndexForRead(primarySource);
+  // An opaque fragment selector is an indexed revision handle. Do not refresh
+  // it away between search and show if disk changed concurrently; the stored
+  // safe substrate below is its source of truth. Friendly heading selectors
+  // intentionally retain the normal source-live read behavior.
+  const parsedRef = parseBundleRef(ref);
+  if (!parsedRef.fragment?.startsWith("akm-fragment-")) {
+    const { primarySource } = resolveReadSources();
+    await ensurePrimaryIndexForRead(primarySource);
+  }
 
   // Try local filesystem (FTS5 index lookup)
   const result = await showLocal(input);
@@ -294,11 +303,14 @@ export async function showLocal(input: {
 
   const fileCtx = buildFileContext(sourceStashDir, assetPath);
   const presentedName = indexedEntry.name;
+  const indexedFragment = parsed.fragment?.startsWith("akm-fragment-")
+    ? withIndexDb((db) => getIndexedMarkdownFragment(db, indexedEntry.itemRef, parsed.fragment!))
+    : undefined;
   const indexedRenderer = rendererForIndexedEntry(indexedEntry, fileCtx);
   let response: ShowResponse;
   try {
     if (indexedRenderer === null) {
-      response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment);
+      response = buildIndexedProjectionResponse(indexedEntry, assetPath, parsed.fragment, indexedFragment?.content);
     } else {
       const match =
         typeof indexedRenderer === "string" ? indexedMatch(indexedEntry, indexedRenderer) : recognizeMatch(fileCtx);
@@ -327,7 +339,7 @@ export async function showLocal(input: {
             `Fragment "#${parsed.fragment}" was ignored: ${makeBundleRef(parsed.bundle, parsed.conceptId)} is not a Markdown document, so heading fragments do not apply. Showing the whole asset.`,
           );
         } else {
-          applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, presentedName);
+          applyMarkdownFragment(response, fileCtx.content(), parsed.fragment, presentedName, indexedFragment?.content);
         }
       }
     }
@@ -604,6 +616,7 @@ function buildIndexedProjectionResponse(
   entry: IndexedEntry,
   assetPath: string,
   fragment: string | undefined,
+  indexedFragmentContent?: string,
 ): ShowResponse {
   const isMarkdown = path.extname(assetPath).toLowerCase() === ".md";
   if (fragment !== undefined && !isMarkdown) {
@@ -615,7 +628,7 @@ function buildIndexedProjectionResponse(
   const parsed = parseFrontmatter(raw);
   const content =
     fragment !== undefined && isMarkdown
-      ? requireMarkdownSection(parsed.content, fragment, entry.name).content
+      ? (indexedFragmentContent ?? requireMarkdownSection(raw, fragment, entry.name).content)
       : parsed.content;
   const description = entry.document?.description ?? asNonEmptyString(parsed.data.description);
   const tags =
@@ -634,8 +647,14 @@ function buildIndexedProjectionResponse(
   };
 }
 
-function applyMarkdownFragment(response: ShowResponse, raw: string, fragment: string, name: string): void {
-  const section = requireMarkdownSection(parseFrontmatter(raw).content, fragment, name).content;
+function applyMarkdownFragment(
+  response: ShowResponse,
+  raw: string,
+  fragment: string,
+  name: string,
+  indexedFragmentContent?: string,
+): void {
+  const section = indexedFragmentContent ?? requireMarkdownSection(raw, fragment, name).content;
   if (response.template !== undefined) response.template = section;
   else if (response.prompt !== undefined) response.prompt = section;
   else response.content = section;
@@ -645,9 +664,14 @@ function requireMarkdownSection(
   content: string,
   fragment: string,
   name: string,
-): NonNullable<ReturnType<typeof extractSection>> {
+): { content: string; startLine: number; endLine: number } {
   const section = extractSection(content, fragment);
   if (section) return section;
+  const indexed = projectMarkdownFragmentContent(content);
+  const safeFragment = indexed ? fragmentForSelector(indexed, fragment) : undefined;
+  if (safeFragment) {
+    return { content: safeFragment.text, startLine: safeFragment.startLine, endLine: safeFragment.endLine };
+  }
   const available = markdownFragmentSlugs(content);
   throw new NotFoundError(
     `Fragment "#${fragment}" not found in ${name}.` +

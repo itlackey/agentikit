@@ -34,11 +34,7 @@ import type { BundleAdapter } from "../../core/adapter/bundle-adapter";
 import type { BundleComponent, IndexDocument } from "../../core/adapter/types";
 import { compareCodePoints } from "../../core/common";
 import { canonicalizeWorkflowName } from "../../core/recognition-util";
-import {
-  resolveUniqueWorkflowSource,
-  WorkflowSourceRejectionError,
-  workflowNameForSourcePath,
-} from "../../workflows/source-files";
+import { resolveWorkflowSourceDomains, workflowNameForSourcePath } from "../../workflows/source-files";
 import { compileWorkflowSource } from "../../workflows/source-ir/compile";
 import { buildMetadataSkipWarning, type StashFile } from "../passes/metadata";
 import { buildFileContext, type FileContext } from "../walk/file-context";
@@ -87,33 +83,51 @@ export function drainDirDocuments(
   const conceptIdByFile = new Map<string, string>();
   const rejectedPaths = new Set<string>();
   const rejectedConceptIds = new Set<string>();
-  const workflowLookups = new Map<string, string>();
+  // A full directory drain may contain both peer workflow formats for one
+  // canonical ref.  Ownership arbitration must happen *before* recognition:
+  // otherwise both documents reach the persistence fold and SQLite's final
+  // row is determined by the walk/readdir order.  Resolve exactly the paths
+  // this drain owns, so a full scan retains only the deterministic `.md`
+  // winner while a targeted one-file reindex deliberately keeps its written
+  // source and therefore marks an existing peer row stale for read fallback.
+  const workflowOwnerPathByCanonicalName = new Map(
+    resolveWorkflowSourceDomains(
+      component.root,
+      adapter.id,
+      fileContexts.map((file) => file.absPath),
+    )
+      .filter((resolution) => resolution.source !== undefined)
+      .map((resolution) => [resolution.canonicalName, path.resolve(resolution.source!.path)]),
+  );
+  const invalidWorkflowOwnerNames = new Set<string>();
+  const orderedFileContexts = [...fileContexts].sort((left, right) => {
+    const leftName = workflowNameForSourcePath(component.root, adapter.id, left.absPath);
+    const rightName = workflowNameForSourcePath(component.root, adapter.id, right.absPath);
+    const leftOwner =
+      leftName !== undefined &&
+      workflowOwnerPathByCanonicalName.get(canonicalizeWorkflowName(leftName)) === path.resolve(left.absPath);
+    const rightOwner =
+      rightName !== undefined &&
+      workflowOwnerPathByCanonicalName.get(canonicalizeWorkflowName(rightName)) === path.resolve(right.absPath);
+    if (leftOwner !== rightOwner) return leftOwner ? -1 : 1;
+    return compareCodePoints(left.absPath, right.absPath);
+  });
 
-  for (const file of fileContexts) {
+  for (const file of orderedFileContexts) {
+    if (rejectedPaths.has(file.absPath)) continue;
+
     const workflowName = workflowNameForSourcePath(component.root, adapter.id, file.absPath);
     if (workflowName !== undefined) {
       const canonicalName = canonicalizeWorkflowName(workflowName);
-      if (!workflowLookups.has(canonicalName)) workflowLookups.set(canonicalName, workflowName);
-    }
-  }
-
-  for (const [canonicalName, workflowName] of [...workflowLookups].sort(([left], [right]) =>
-    compareCodePoints(left, right),
-  )) {
-    try {
-      resolveUniqueWorkflowSource(component.root, adapter.id, workflowName);
-    } catch (error) {
-      if (!(error instanceof WorkflowSourceRejectionError)) throw error;
-      rejectedConceptIds.add(adapter.id === "akm" ? `workflows/${canonicalName}` : canonicalName);
-      for (const relativePath of error.sourcePaths) {
-        rejectedPaths.add(path.join(component.root, relativePath));
+      const ownerPath = workflowOwnerPathByCanonicalName.get(canonicalName);
+      if (
+        ownerPath !== undefined &&
+        ownerPath !== path.resolve(file.absPath) &&
+        !invalidWorkflowOwnerNames.has(canonicalName)
+      ) {
+        continue;
       }
-      warnings.push(error.message);
     }
-  }
-
-  for (const file of fileContexts) {
-    if (rejectedPaths.has(file.absPath)) continue;
 
     const doc = adapter.recognize(component, file);
     if (doc === null) continue;
@@ -128,6 +142,7 @@ export function drainDirDocuments(
     const dropWarning = handleWorkflowDoc(doc, file, component.root);
     if (dropWarning !== null) {
       warnings.push(dropWarning);
+      if (workflowName !== undefined) invalidWorkflowOwnerNames.add(canonicalizeWorkflowName(workflowName));
       continue;
     }
 

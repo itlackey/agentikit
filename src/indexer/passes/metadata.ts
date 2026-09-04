@@ -1212,6 +1212,69 @@ export function projectMarkdownContent(body: string, truncationInfo?: { truncate
   return truncateUnicodeSafe(text, MARKDOWN_CONTENT_MAX_CHARS);
 }
 
+// Fragment text is intentionally not an IndexDocument field. IndexDocument is
+// an adapter/search payload boundary; this is an internal, derived index input
+// that is persisted separately by the entries repository for deterministic FTS
+// rebuilds. The WeakMap follows the already-read document through recognition
+// without making safe body bytes observable through public payloads.
+const markdownFragmentContentByEntry = new WeakMap<IndexDocument, string>();
+const markdownFragmentProjectionEntries = new WeakSet<IndexDocument>();
+
+export function setMarkdownFragmentContent(entry: IndexDocument, content: string | undefined): void {
+  markdownFragmentProjectionEntries.add(entry);
+  if (content) markdownFragmentContentByEntry.set(entry, content);
+}
+
+export function getMarkdownFragmentContent(entry: IndexDocument): string | undefined {
+  return markdownFragmentContentByEntry.get(entry);
+}
+
+export function hasMarkdownFragmentContent(entry: IndexDocument): boolean {
+  return markdownFragmentProjectionEntries.has(entry);
+}
+
+/**
+ * Produce a safe, structure-preserving projection for fragment indexing.
+ * Excluded source lines are retained as blank lines so fragment locations map
+ * exactly to authored line numbers. This must be called from both indexing and
+ * `show`; it deliberately never performs a storage-layer file reread.
+ */
+export function projectMarkdownFragmentContent(raw: string): string | undefined {
+  const lines = raw.split(/\r?\n/);
+  const parsed = parseFrontmatter(raw);
+  const start = parsed.frontmatter ? parsed.bodyStartLine - 1 : 0;
+  const projected = lines.map(() => "");
+  let fence: MarkdownFence | undefined;
+  const htmlComment = { inComment: false };
+  for (let index = start; index < lines.length; index++) {
+    const rawLine = lines[index]!;
+    if (fence) {
+      if (isMarkdownFenceClosing(rawLine, fence)) fence = undefined;
+      continue;
+    }
+    if (!htmlComment.inComment) {
+      const opening = parseMarkdownFenceOpening(rawLine);
+      if (opening) {
+        fence = opening;
+        continue;
+      }
+    }
+    let safe = stripMarkdownHtmlComments(rawLine, htmlComment);
+    const opening = parseMarkdownFenceOpening(safe.trim());
+    if (opening) {
+      fence = opening;
+      continue;
+    }
+    // Reference link destinations and standalone HTML are not retrieval
+    // evidence and can contain credential-bearing URLs.
+    if (/^\s*\[[^\]]+\]:\s*\S+/.test(safe) || /^\s*<[^>]+>\s*$/.test(safe)) continue;
+    safe = stripMarkdownLinkDestinations(safe).replace(/<[^>]+>/g, " ");
+    projected[index] = safe.replace(/[ \t]+$/g, "");
+  }
+  const text = projected.join("\n");
+  return text.trim() ? text : undefined;
+}
+
 // ── Metadata Generation ─────────────────────────────────────────────────────
 
 /**
@@ -1259,7 +1322,10 @@ export function applyPreContributorFields(
     applyProvenanceFrontmatter(entry, parsed.data);
     // Native Markdown has one bounded low-weight body projection. Sensitive
     // types and raw session/checkpoint material never cross this boundary.
-    if (entry.type !== "env" && entry.type !== "session" && !hasSessionMemoryMarker(parsed.data, parsed.content)) {
+    const safeForFragments =
+      entry.type !== "env" && entry.type !== "session" && !hasSessionMemoryMarker(parsed.data, parsed.content);
+    setMarkdownFragmentContent(entry, safeForFragments ? projectMarkdownFragmentContent(content) : undefined);
+    if (safeForFragments) {
       const truncationInfo = { truncated: false };
       const contentProjection = projectMarkdownContent(parsed.content, truncationInfo);
       if (contentProjection) {

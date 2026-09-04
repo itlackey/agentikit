@@ -28,6 +28,8 @@ export interface RankedEntryInput {
   itemRef?: string | null;
   bundleId?: string | null;
   conceptId?: string | null;
+  /** Safe selector returned only for a fragment-supported lexical hit. */
+  fragmentId?: string;
   utilityBoosted?: boolean;
   /**
    * Set by `applyBeliefStateScoreCeiling` when a demoting belief state's
@@ -38,4 +40,11 @@ export interface RankedEntryInput {
    * a result that would otherwise have listed.
    */
   preCeilingScore?: number;
+  /**
+   * Set by the relaxed non-name lexical ceiling before that ceiling reduces a
+   * body-only candidate's raw score. This is ranking evidence only: unlike
+   * `preCeilingScore`, it must survive a later belief-state ceiling so a
+   * compound-demoted relaxed set does not fall back to filename order.
+   */
+  preRelaxedCeilingScore?: number;
 }

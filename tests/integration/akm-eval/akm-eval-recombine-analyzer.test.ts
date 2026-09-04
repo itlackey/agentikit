@@ -12,6 +12,7 @@ import {
   readCurrentRecombineEntries,
 } from "../../../scripts/akm-eval/src/recombine-analyzer";
 import { resolveDataDir } from "../../../scripts/akm-eval/src/sources/paths";
+import { CANONICAL_ENTRY_SCHEMA_SQL } from "../../../src/storage/repositories/index-entry-schema";
 import { DB_VERSION } from "../../../src/storage/repositories/index-schema";
 import fixture from "../../fixtures/akm-eval/recombine-analyzer.json";
 
@@ -453,24 +454,7 @@ function buildDbFixture(): DbFixture {
   index.exec(`
     CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO index_meta (key, value) VALUES ('version', '${DB_VERSION}');
-    CREATE TABLE entries (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      item_ref TEXT NOT NULL UNIQUE,
-      bundle_id TEXT NOT NULL,
-      component_id TEXT NOT NULL,
-      concept_id TEXT NOT NULL,
-      adapter_id TEXT NOT NULL,
-      type TEXT NOT NULL,
-      file_path TEXT NOT NULL,
-      content_hash TEXT,
-      document_json TEXT NOT NULL,
-      search_text TEXT NOT NULL,
-      derived_from TEXT
-    );
-    CREATE INDEX idx_entries_bundle ON entries(bundle_id);
-    CREATE INDEX idx_entries_type ON entries(type);
-    CREATE INDEX idx_entries_file_path ON entries(file_path);
-    CREATE INDEX idx_entries_derived_from ON entries(derived_from);
+    ${CANONICAL_ENTRY_SCHEMA_SQL}
     CREATE TABLE graph_files (
       stash_root TEXT NOT NULL,
       file_path TEXT NOT NULL,

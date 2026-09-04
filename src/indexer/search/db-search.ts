@@ -19,11 +19,12 @@ import path from "node:path";
 import { buildActionFromContributors, defaultActionContributors } from "../../core/action-contributors";
 import { stashDirFor } from "../../core/asset/asset-placement";
 import { displayRef } from "../../core/asset/resolve-ref";
+import { compareCodePoints } from "../../core/common";
 import type { AkmConfig, ImproveConfig } from "../../core/config/config";
 import { classifyPathAccess } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
 import { systemErrorCode } from "../../core/system-error";
-import { defaultRendererRegistry, type RendererRegistry } from "../../core/type-presentation";
+import { allowsFragmentRef, defaultRendererRegistry, type RendererRegistry } from "../../core/type-presentation";
 import { normalizeEmbeddingEndpoint } from "../../llm/embedders/remote";
 import type {
   AkmSearchType,
@@ -307,13 +308,50 @@ export async function searchLocal(input: {
 // ── Database search ─────────────────────────────────────────────────────────
 
 /**
- * Keep one deterministic ranking order before stable path deduplication. Exact
- * names survive the public score ceiling, while raw contributor differences
- * are quantized so utility-recency epsilon cannot reorder visible ties.
+ * Keep public scores in [0, 1] without flattening every boosted result to the
+ * same hard-clamped value. The ranking pipeline deliberately keeps its raw
+ * score for deterministic ordering before stable path deduplication; this
+ * monotone display projection preserves that order and leaves visible
+ * separation for graph, type, and project-context signals.
  */
+function displaySearchScore(score: number): number {
+  return 1 - Math.exp(-Math.max(0, score));
+}
+
+/**
+ * A final deterministic key for genuinely tied candidates.  It deliberately
+ * excludes the asset name, filename, path, durable ref, and SQLite id: callers
+ * such as the memory-pack adapter generate each of those from an opaque source
+ * id, so using one here makes an otherwise equal search depend on that id.
+ *
+ * The normal AKM Markdown adapter keeps an H1 title in `content`; strip that
+ * one synthetic title too, because the adapter may derive it from the opaque
+ * filename.  Identical remaining bodies are semantically indistinguishable at
+ * this ranking stage and intentionally continue to the existing name/path
+ * fallback for repeatable local presentation.
+ */
+function asciiCaseFold(value: string): string {
+  // SQLite's built-in lower() folds ASCII only unless a build opts into ICU.
+  // Keep this key deliberately in that portable shared subset instead of
+  // introducing locale-dependent JavaScript ordering for non-ASCII content.
+  return value.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
+}
+
+/** The portable byte-level title/body rule mirrored in index-fts-repository. */
+export function canonicalContentTieKey(entry: Pick<IndexDocument, "content" | "description">): string {
+  const content = entry.content ?? "";
+  const newline = content.startsWith("# ") ? content.indexOf("\n") : -1;
+  // SQLite uses ltrim(value, char(13) || char(10) || ' ') after an exact '# '
+  // title and trim(value, ' ') otherwise. Keep exactly that deliberately
+  // narrow byte contract; do not use locale or Unicode-whitespace helpers.
+  const body = newline >= 0 ? content.slice(newline + 1).replace(/^[\r\n ]+/, "") : content;
+  const source = (body || entry.description || "").replace(/^ +| +$/g, "");
+  return Buffer.from(asciiCaseFold(source), "utf8").toString("hex");
+}
+
 function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: RankedEntryInput) => number {
   const queryTokens = buildLexicalQueryPlan(query).tokens.map((token) => token.toLowerCase());
-  const displayScore = (score: number): number => Math.round(Math.min(1, Math.max(0, score)) * 10000) / 10000;
+  const displayScore = (score: number): number => Math.round(displaySearchScore(score) * 10000) / 10000;
   const stableRankScore = (score: number): number => Math.round(score * 10000) / 10000;
 
   return (a, b) => {
@@ -327,10 +365,25 @@ function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: Ra
     if (scoreDiff !== 0) return scoreDiff;
     const rawScoreDiff = stableRankScore(b.score) - stableRankScore(a.score);
     if (rawScoreDiff !== 0) return rawScoreDiff;
+    // Ceiling values are intentionally allowed to demote visibility, but not
+    // to erase relevance. Prefer the score before a relaxed body-only ceiling;
+    // a later belief-state ceiling has its own minScore handoff and must not
+    // overwrite this ordering evidence. Belief-only ceilings fall back to
+    // their `preCeilingScore`.
+    const preCeilingRelevance = (item: RankedEntryInput): number =>
+      item.preRelaxedCeilingScore ?? item.preCeilingScore ?? item.score;
+    const ceilingDiff = stableRankScore(preCeilingRelevance(b)) - stableRankScore(preCeilingRelevance(a));
+    if (ceilingDiff !== 0) return ceilingDiff;
     const nameDiff = bNameTier - aNameTier;
     if (nameDiff !== 0) return nameDiff;
     const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);
-    return typeDiff || a.filePath.localeCompare(b.filePath);
+    if (typeDiff !== 0) return typeDiff;
+    // Keep opaque generated IDs out of the final relevance tie-break.  This
+    // runs only after every ranking contributor (including the #940 preserved
+    // pre-ceiling evidence), exact-name, and type comparison has tied.
+    const contentDiff = compareCodePoints(canonicalContentTieKey(a.entry), canonicalContentTieKey(b.entry));
+    if (contentDiff !== 0) return contentDiff;
+    return a.filePath.localeCompare(b.filePath);
   };
 }
 
@@ -435,8 +488,9 @@ async function searchDatabase(
   const tRank0 = Date.now();
 
   // ── Score normalization ──────────────────────────────────────────────
-  // Normalized BM25 + cosine similarity with weighted addition
-  // (FTS 0.7, vector 0.3) for well-differentiated combined scores.
+  // Stable bounded BM25 transform + cosine similarity with weighted addition
+  // (FTS 0.7, vector 0.3). The lexical transform is per-row, so widening the
+  // candidate set cannot alter a pre-existing row's base score.
   const ftsScoreMap = normalizeFtsScores(ftsResults);
 
   // Build embedding score map (cosine similarities already 0-1)
@@ -570,11 +624,11 @@ async function searchDatabase(
   const hits = await Promise.all(
     selected.map((ranked) => {
       const { entry, filePath, score, rankingMode, utilityBoosted } = ranked;
-      // CLAUDE.md locks SearchHit.score in [0,1]. The boost loop above can
-      // exceed 1.0 (this was a pre-existing breach that #207's graph boost
-      // — up to ~1.05 additive contribution — made detectable); clamp here
-      // so the score handed to buildDbHit always satisfies the spec.
-      const finalScore = Math.min(1, Math.max(0, score));
+      // CLAUDE.md locks SearchHit.score in [0,1]. The boost loop deliberately
+      // remains raw for ranking, then takes a monotone bounded projection at
+      // the public boundary so contributors do not collapse into hard-clamped
+      // ties.
+      const finalScore = displaySearchScore(score);
       return buildDbHit({
         entry,
         path: filePath,
@@ -583,6 +637,7 @@ async function searchDatabase(
         query,
         rankingMode,
         lexicalMatch: ranked.lexicalMatch,
+        fragmentId: ranked.fragmentId,
         defaultStashDir: stashDir,
         allSourceDirs,
         sources,
@@ -962,6 +1017,7 @@ export async function buildDbHit(input: {
   query: string;
   rankingMode: "hybrid" | "semantic" | "fts";
   lexicalMatch?: LexicalQueryExecution;
+  fragmentId?: string;
   defaultStashDir: string;
   allSourceDirs: string[];
   sources: SearchSource[];
@@ -1016,7 +1072,11 @@ export async function buildDbHit(input: {
     (source && path.resolve(source.path) === path.resolve(input.defaultStashDir)
       ? (input.bundleId ?? undefined)
       : undefined);
-  const ref = resolveSearchHitRef(input.entry, input, defaultBundleId);
+  const parentRef = resolveSearchHitRef(input.entry, input, defaultBundleId);
+  // Fragments prove lexical relevance, but executable assets must retain the
+  // parent ref consumed by their advertised action (for example workflow run).
+  // The central type-presentation contract opts those types out explicitly.
+  const ref = input.fragmentId && allowsFragmentRef(input.entry.type) ? `${parentRef}#${input.fragmentId}` : parentRef;
 
   const editable = isEditable(absolutePath, input.config, input.sources);
   const estimatedTokens = typeof input.entry.fileSize === "number" ? Math.round(input.entry.fileSize / 4) : undefined;

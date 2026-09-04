@@ -251,12 +251,14 @@ describe("curate command", () => {
     const output = await runCli(stashDir, ["curate", "docker homelab", "--format=json", "--detail=full"]);
     const json = JSON.parse(output) as { items: Array<Record<string, unknown>> };
 
+    // A fragment can win the lexical match, but a skill is instruction-bearing:
+    // its public ref stays on the complete parent so the advertised action does
+    // not invite callers to execute an incomplete instruction set.
     expect(String(json.items[0]?.ref)).toBe("skills/docker-homelab");
-    const familyItems = json.items.filter(
-      (item) =>
-        String(item.ref).endsWith("skills/docker-homelab") ||
-        String(item.ref).includes("knowledge/skills/docker-homelab/references/"),
-    );
+    const familyItems = json.items.filter((item) => {
+      const baseRef = String(item.ref).split("#", 1)[0];
+      return baseRef === "skills/docker-homelab" || baseRef?.includes("knowledge/skills/docker-homelab/references/");
+    });
     expect(familyItems).toHaveLength(1);
     const supportRefs = (json.items[0]?.supportRefs as Array<Record<string, unknown>>).map((support) => ({
       ...support,

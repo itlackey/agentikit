@@ -115,7 +115,15 @@ import {
   getDirIndexState,
   inferZeroRowReason,
 } from "./passes/dir-staleness";
-import { type IndexDocument, isEnrichmentComplete, isWorkflowSkipWarning, type StashFile } from "./passes/metadata";
+import {
+  getMarkdownFragmentContent,
+  hasMarkdownFragmentContent,
+  type IndexDocument,
+  isEnrichmentComplete,
+  isWorkflowSkipWarning,
+  type StashFile,
+  setMarkdownFragmentContent,
+} from "./passes/metadata";
 import { drainDirDocuments } from "./scan/drain-dir";
 import { buildSearchText } from "./search/search-fields";
 import type { SearchSource } from "./search/search-source";
@@ -2149,7 +2157,9 @@ export function createEnrichmentDeadline(
 
 function attachFileSize(entry: IndexDocument, entryPath: string): IndexDocument {
   try {
-    return { ...entry, fileSize: fs.statSync(entryPath).size };
+    const sized = { ...entry, fileSize: fs.statSync(entryPath).size };
+    if (hasMarkdownFragmentContent(entry)) setMarkdownFragmentContent(sized, getMarkdownFragmentContent(entry));
+    return sized;
   } catch {
     return entry;
   }
