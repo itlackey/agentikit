@@ -1,7 +1,8 @@
 # Search ranking and fragment indexing: brief for 0.9.14
 
 **Status:** critically reviewed against `main` and the live milestone on
-2026-09-04; execution is in progress on `release/0.9.14` via PR #939. Written
+2026-09-04; implementation is integrated on `release/0.9.14` via PR #939 and
+final release verification is in progress. Written
 after #929 was implemented, measured, and held out of 0.9.13.
 **0.9.14 scope:** #934, #933, #940, #930, and #937. #929 is resolved by rejection
 after its measured zero-recall/large-precision regression. Semantic fragments
@@ -108,11 +109,11 @@ Live tracker after this review:
 
 | issue | disposition |
 |---|---|
-| #934 | 0.9.14, open — incompatible read generations |
-| #933 | 0.9.14, open — stable lexical scoring prerequisite |
-| #940 / PR #941 | 0.9.14, open — preserve body relevance inside relaxed-score ties; PR #941 superseded by the compound-safe adaptation in PR #939 |
+| #934 | 0.9.14, integrated — incompatible read generations; final release verification pending |
+| #933 | 0.9.14, integrated — stable lexical scoring; final release verification pending |
+| #940 / PR #941 | 0.9.14, integrated — compound-safe relaxed relevance in PR #939; PR #941 closed unmerged as superseded |
 | #930 | 0.9.14, resolved — W1/W2 measured and rejected; W0 retained |
-| #937 | 0.9.14, open — lexical fragment retrieval |
+| #937 | 0.9.14, integrated — paired quality and identity gate passed; final release verification pending |
 | #929 / PR #931 | closed — measured rejection; branch retained |
 | #748 / #935 / #936 | 0.10.0, open — non-blocking follow-through |
 
@@ -238,8 +239,8 @@ keeps the description contributor on strict and prefix matches, keeps the FTS5
 description weight on every path, and removes only that secondary flat boost on
 relaxed candidates.
 
-The reviewed result is integrated at `f6a47bdf`. A same-runtime preliminary
-pair (final artifact-bound gate still pending) measured:
+The reviewed result is integrated at `f6a47bdf`. A same-runtime attribution
+pair measured:
 
 | pack | build | ev@5 | P@5 | R@5 | MRR | nDCG@5 |
 |---|---|---:|---:|---:|---:|---:|
@@ -248,9 +249,9 @@ pair (final artifact-bound gate still pending) measured:
 | LongMemEval | control | .950 | .676667 | .950 | .835 | .863982 |
 | LongMemEval | candidate | .950 | .676667 | .950 | **.916667** | **.925** |
 
-Both sides had `guardTripped=0`. Treat these as attribution evidence only until
-the final corrected evaluator records the pinned Bun version, published control
-version, clean candidate SHA, corpus hashes, and storage-name diagnostic.
+Both sides had `guardTripped=0`. The artifact-bound W0 run later reproduced the
+candidate values with the pinned Bun version, published control version, clean
+candidate SHA, corpus hashes, and storage-name diagnostic; see §4.1.
 
 The identity fix also extends before the final comparator. `searchFts` now
 materializes only entry id plus BM25, finds the Nth score, admits the complete
@@ -619,10 +620,12 @@ falsified union, an uncalibrated weight recommendation, and the real length fix.
 PR #931 are closed with their measured result and the branch retained.
 #748/#935/#936 are on 0.10.0. #937 is the only fragment-indexing deliverable in
 0.9.14. Evaluator PR #16 supplied the saturation disclosure and investigation
-record, but not a release comparator. The hardened paired gate is merged in
-`itlackey/akm-eval` PR #17 at
-`d520c6dec1f34dc3f8d4e4d2675186566b158437`; re-run the control beside every
-candidate measurement at that exact evaluator revision.
+record, but not a release comparator. PR #17 hardened the paired gate; #937
+then exposed that its contamination guard did not recognize AKM's new opaque
+fragment selectors. The narrowly compatible, still fail-closed adapter is
+merged in `itlackey/akm-eval` PR #18 at
+`d8db7e8c90ec83596fd38358177a9a06dd2b4d1b`. Re-run the control beside every
+remaining candidate measurement at that exact evaluator revision.
 
 **Phase 1 — #934: incompatible read generations.** Classify the generation
 before any query. Older/unknown generations take one “no usable index; run
@@ -634,9 +637,8 @@ with absent ones. No known-incompatible handle reaches a query.
 public projection satisfy the invariants from §3.1. The first calibration
 (`a33b569c` through `11fb1f21`) failed the paired corpus gate; attribution and
 the relaxed-description correction are now integrated at `f6a47bdf`. The
-untouched graph-hop canary and focused scoring suite pass, and preliminary
-paired metrics clear the gate. Freeze this only after the artifact-bound
-evaluator reproduces the result.
+untouched graph-hop canary and focused scoring suite pass, and the
+artifact-bound W0 evidence in §4.1 reproduces the accepted calibration.
 
 **Phase 3 — #940: relaxed-ceiling relevance.** Integrated at `f6a47bdf`: the
 relaxed and belief ceilings retain separate pre-clamp evidence; content, not an
@@ -653,12 +655,40 @@ W2 also regressed LoCoMo recall. W0 is retained and #930 is closed as a measured
 rejection. The storage-name bug discovered by the gate is corrected separately
 at release commit `fbd7bab0`.
 
-**Phase 5 — #937: lexical fragments.** In reviewable commits: extract the
-shared fragment model; define fallback selectors and `show` round-trip; add
-regenerable fragment/FTS storage; atomically maintain it; return distinct parent
-assets with one winning fragment; then measure quality, latency, index size, and
-fragment distribution. Bump the index generation and add the prior-release
-fixture in the same change.
+**Phase 5 — #937: lexical fragments (implementation and component gate
+complete).** Integrated at `64272ddd`: one shared splitter supplies graph and
+lexical indexing; v23 stores a safe parent projection plus a metadata-isolated
+fragment FTS population; mutations publish both atomically; one deterministic
+fragment per parent survives before the candidate boundary; and opaque refs
+round-trip through `show` to the indexed bytes. Executable and
+instruction-bearing assets retain their complete parent refs.
+
+The provisional fragment ceiling was calibrated, not assumed. With parent and
+fragment ceilings both at `.80`, LoCoMo exactly matches the pre-fragment control
+on all six metrics while LongMemEval improves. `.82` and `.84` produced the
+same LoCoMo recall gain but failed the frozen no-regression rule on MRR, so the
+release carries no special cross-population fragment bonus.
+
+The clean paired gate at evaluator `d8db7e8c` compared release control
+`5097eb95` with candidate `64272ddd`, using Bun 1.3.13 and the pinned corpus
+bytes. Both packs had zero guard trips and clean forward/reverse storage-name
+permutations; zero-hit and score-saturation disclosure were unchanged.
+
+| pack | build | ev@5 | P@5 | R@5 | MRR | nDCG@5 |
+|---|---|---:|---:|---:|---:|---:|
+| LoCoMo | control | .641 | .257917 | .566667 | .4925 | .493421 |
+| LoCoMo | fragments `.80` | .641 | .257917 | .566667 | .4925 | .493421 |
+| LongMemEval | control | .950 | .676667 | .950 | .916667 | .925 |
+| LongMemEval | fragments `.80` | **1.000** | **.686667** | **1.000** | **.966667** | **.975** |
+
+The frozen structural workload measured 8,378 fragments across 1,397 parents.
+LoCoMo remained one fragment per turn; LongMemEval mean/p50/p95/max was
+`8.852/9/15/25`. Against the same pre-fragment control, cold-index p50 changed
+5.035s → 12.315s (+145%), `index.db` 37.62MB → 66.60MB (+77%), and query
+p50/p95 0.817/1.887ms → 1.456/2.960ms. Canary-cycle p50/p95 changed
+82.76/100.95ms → 96.04/100.68ms. The index/storage cost is material and
+recorded; the absolute interactive and canary latency remains within the
+predeclared release plan, which set no numeric regression budget.
 
 **Phase 6 — release closeout.** Re-mint collapse-detector canaries for the
 test/evaluation installation and add an operator-facing release note explaining
@@ -674,9 +704,13 @@ PR #16 at `160b173a1168e63e47e18e8ebe6e15b7a69a03e9` first added the
 `tiedTopKRate` diagnostic and preserved the saturation investigation. Review
 found that insufficient as a release gate: its historical reference was known
 stale, and it did not bind a paired control/candidate run or directly prove
-storage-name independence. The corrected evaluator is merged as PR #17 at
-`d520c6dec1f34dc3f8d4e4d2675186566b158437`. Pin that exact commit for every
-remaining #930, #937, and final-release comparison.
+storage-name independence. PR #17 supplied those checks. PR #18 extends its AKM
+adapter only for the exact `#akm-fragment-<positive ordinal>-<12 hex>` selector
+of a parent the hermetic backend already added, retrieves its text through
+`akm show`, and keeps arbitrary selectors and unknown parents fail-closed. It is
+merged at `d8db7e8c90ec83596fd38358177a9a06dd2b4d1b`; pin that exact commit for
+#937 and the final-release comparison. #930's frozen artifacts remain correctly
+bound to their earlier PR #17 evaluator commit.
 
 **Use the pre-release command form.** `bin/probe <version>` installs a published
 npm version and cannot test an unshipped checkout. From the pinned `akm-eval`
@@ -852,4 +886,4 @@ the SHA and run URL in the milestone description before release.
 | declared relations not fed into graph (#935) | `scan/doc-to-entry.ts:68` (`links`), `metadata.ts:474`, `:169-172`, `:193`, `lint/base-linter.ts:479` |
 | lexical fragment implementation (#937) | shared splitter, `index-fts-repository.ts`, `show.ts`, index schema |
 | rejected #929 experiment | branch `issue/0.9.13-search` @ `8c61f1f0`, draft PR #931 |
-| retrieval probe | release comparator `itlackey/akm-eval` PR #17 at `d520c6dec1f34dc3f8d4e4d2675186566b158437`; PR #16 is the saturation-disclosure precursor only |
+| retrieval probe | fragment-aware release comparator `itlackey/akm-eval` PR #18 at `d8db7e8c90ec83596fd38358177a9a06dd2b4d1b`; PR #17 hardened the pair and PR #16 is the disclosure precursor |
