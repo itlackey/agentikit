@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import type { IndexDocument } from "../src/indexer/passes/metadata";
 import { recognizeStashEntries } from "../src/indexer/scan/drain-dir";
+import { lexicalNameMatchTier } from "../src/indexer/search/ranking";
 import {
   applyBeliefStateScoreCeiling,
   defaultRankingContributors,
@@ -106,6 +107,67 @@ describe("tag-ranking boost for path-derived scope tokens (SPEC-2)", () => {
     });
     const ctx = makeCtx("projecta");
     expect(tagRanking?.adjust(item, ctx)).toBe(0);
+  });
+});
+
+// ── Storage-name identity is not name evidence (#930) ─────────────────────
+
+describe("exact-name ranking contributor identity isolation (#930)", () => {
+  const exactNameRanking = defaultRankingContributors.find((contributor) => contributor.name === "exact-name-ranking");
+
+  function makeCtx(query: string, queryTokens: string[]): RankingContext {
+    return {
+      db: null as unknown as RankingContext["db"],
+      query,
+      queryLower: query.toLowerCase(),
+      queryTokens,
+      graphContext: null,
+    };
+  }
+
+  function makeItem(name: string): RankedEntryInput {
+    return {
+      id: 1,
+      entry: { name, type: "memory", description: "fixture", filename: `${name}.md` },
+      filePath: `/stash/memories/${name}.md`,
+      score: 1,
+      rankingMode: "fts",
+    };
+  }
+
+  test("does not treat short or infix opaque storage-name fragments as name evidence", () => {
+    // The evaluator projects the same document onto opaque storage filenames.
+    // A query can legitimately contain a numeric token such as "4"; that
+    // token must not award an exact-name boost merely because one projection
+    // happened to receive an opaque name containing the same digit.
+    const opaque = makeItem("z9xq000");
+    expect(exactNameRanking?.adjust(makeItem("z9xq4m"), makeCtx("4", ["4"]))).toBe(0);
+    expect(exactNameRanking?.adjust(opaque, makeCtx("000", ["000"]))).toBe(0);
+    expect(exactNameRanking?.adjust(opaque, makeCtx("xq000", ["xq000"]))).toBe(0);
+  });
+
+  test("shares structural phrase matching with final name tiers", () => {
+    // Exact full names remain the strongest signal. Leading three-character
+    // prefixes are still useful user-authored name evidence, unlike an infix.
+    expect(exactNameRanking?.adjust(makeItem("z9xq000"), makeCtx("z9xq000", ["z9xq000"]))).toBe(2);
+    expect(exactNameRanking?.adjust(makeItem("deployment"), makeCtx("deploy", ["deploy"]))).toBe(1);
+    expect(
+      exactNameRanking?.adjust(
+        makeItem("deployment-production-plan"),
+        makeCtx("deploy production", ["deploy", "production"]),
+      ),
+    ).toBe(1);
+  });
+
+  test("keeps the contributor and final tier on the same structural evidence", () => {
+    const opaque = { name: "z9xq000", type: "memory" } as IndexDocument;
+    const deployment = { name: "deployment", type: "knowledge" } as IndexDocument;
+    const multiToken = { name: "deployment-production-plan", type: "knowledge" } as IndexDocument;
+
+    expect(lexicalNameMatchTier(opaque, ["000"])).toBe(0);
+    expect(lexicalNameMatchTier(opaque, ["xq000"])).toBe(0);
+    expect(lexicalNameMatchTier(deployment, ["deploy"])).toBeGreaterThanOrEqual(2);
+    expect(lexicalNameMatchTier(multiToken, ["deploy", "production"])).toBeGreaterThanOrEqual(2);
   });
 });
 
