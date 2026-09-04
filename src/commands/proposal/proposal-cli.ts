@@ -547,6 +547,7 @@ const proposalDrainCommand = defineJsonCommand({
       deferred: result.deferred,
       skippedByCap: result.skippedByCap,
       staged: result.staged,
+      failed: result.failed,
     });
   },
 });

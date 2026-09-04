@@ -629,6 +629,42 @@ describe("shapeForCommand: unknown command", () => {
   });
 });
 
+// ── #922: every list-returning command aliases its collection as `results` ──
+
+describe("shapeForCommand — `results` collection alias (#922)", () => {
+  // command -> [collection key, minimal valid raw result]
+  const LIST_COMMANDS: Array<[string, string, Record<string, unknown>]> = [
+    ["search", "hits", { hits: [{ type: "skill", name: "x", action: "a" }], registryHits: [] }],
+    ["curate", "items", { items: [{ type: "skill", name: "x" }], query: "q", summary: "s" }],
+    ["registry-search", "hits", { hits: [{ name: "x", installRef: "x" }], assetHits: [] }],
+    ["proposal-list", "proposals", { totalCount: 1, proposals: [{ id: "p1", ref: "lessons/x", status: "pending" }] }],
+    ["list", "sources", { sources: [{ name: "b1" }] }],
+    ["env-list", "envs", { envs: [{ name: "e1" }] }],
+    ["secret-list", "secrets", { secrets: [{ name: "s1" }] }],
+    ["registry-list", "registries", { registries: [{ name: "r1" }] }],
+    ["workflow-list", "runs", { runs: [{ id: "w1" }] }],
+    ["task-history", "rows", { rows: [{ id: "t1" }] }],
+    ["log-list", "events", { events: [{ eventType: "add", ref: "lessons/x", ts: "2024-01-01T00:00:00Z" }] }],
+  ];
+
+  for (const [command, key, raw] of LIST_COMMANDS) {
+    for (const shapeMode of ["human", "agent"] as const) {
+      test(`akm ${command} --shape ${shapeMode} carries \`results\` as the SAME array as \`${key}\``, () => {
+        const out = shapeForCommand(command, raw, "normal", shapeMode) as Record<string, unknown>;
+        expect(Array.isArray(out.results)).toBe(true);
+        // Not merely equal in content — the identical reference, so `results`
+        // can never silently diverge from the semantic key it aliases.
+        expect(out.results).toBe(out[key]);
+      });
+    }
+  }
+
+  test("a command with no registered collection key is untouched", () => {
+    const out = shapeForCommand("info", { something: "untouched" }, "full", "human") as Record<string, unknown>;
+    expect(out).not.toHaveProperty("results");
+  });
+});
+
 // ── #284 GAP-MED 1: shapeProposal* — proposal commands ─────────────────────
 
 describe("shapeProposal* — proposal commands", () => {

@@ -169,6 +169,14 @@ export interface DrainResult {
    * the `triage_deferred` event. Empty outside queue mode.
    */
   staged: string[];
+  /**
+   * Proposals the deterministic reject/promote/preflight loops attempted and
+   * could not complete, with a stable reason code plus the raw error text.
+   * These ids land in none of `promoted`/`rejected`/`deferred`/`staged` — they
+   * stay pending, and this is the only place that fact is recorded anywhere
+   * other than a stderr `warn()` line.
+   */
+  failed: Array<{ id: string; reason: string; detail: string }>;
   /** Stable, secret-free notices emitted while lowering judgment requests. */
   notices?: readonly Readonly<LoweringNotice>[];
 }
@@ -294,6 +302,49 @@ export function classifyProposal(
 
 function deferReasonForSource(source: string): DrainDeferReason {
   return source === "distill" ? "possible-dup" : "mid-band";
+}
+
+/**
+ * Map a thrown error's message to one of `DrainResult.failed`'s stable reason
+ * codes, falling back to `fallback` for anything not specifically recognized.
+ * Recognizes the write-time guards a proposal can trip during promotion
+ * (see repository.ts's `promoteProposalWithLease` / `preflightProposalPromotion`).
+ */
+function categorizeDrainFailure(message: string, fallback: string): string {
+  if (/target (?:changed after|was created after) proposal/.test(message)) return "stale-target";
+  if (/failed validation:/.test(message)) return "validation";
+  return fallback;
+}
+
+function pushDrainFailure(result: DrainResult, id: string, err: unknown, fallbackReason: string): string {
+  const message = err instanceof Error ? err.message : String(err);
+  result.failed.push({ id, reason: categorizeDrainFailure(message, fallbackReason), detail: message });
+  return message;
+}
+
+/**
+ * Mirror repository.ts's `promoteProposalWithLease` stale-target guard so a
+ * dry-run preflight predicts the same refusal a real promote would hit,
+ * without writing anything. `assetPath` is the path `preflightProposalPromotion`
+ * already resolved for this proposal.
+ */
+function assertProposalTargetFresh(proposal: Proposal, assetPath: string): void {
+  const backup = fs.existsSync(assetPath) ? fs.readFileSync(assetPath) : undefined;
+  const currentHash = backup ? createHash("sha256").update(backup).digest("hex") : undefined;
+  if (proposal.beforeHash !== undefined && (!backup || currentHash !== proposal.beforeHash)) {
+    throw new Error(
+      `Proposal target changed after proposal ${proposal.id} was created; refusing to overwrite newer content.`,
+    );
+  }
+  if (
+    proposal.beforeHash === undefined &&
+    backup !== undefined &&
+    proposal.changes.some((change) => change.op === "create")
+  ) {
+    throw new Error(
+      `Proposal target was created after proposal ${proposal.id} was created; refusing to overwrite newer content.`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -753,6 +804,7 @@ export async function drainProposals(
     deferred: classification.deferred,
     skippedByCap: [],
     staged: [],
+    failed: [],
   };
 
   // A configured judgment runner makes every deferred item dispatch-eligible.
@@ -779,7 +831,8 @@ export async function drainProposals(
         });
         result.rejected.push(target.id);
       } catch (err) {
-        warn(`[triage] reject failed for ${target.id}: ${err instanceof Error ? err.message : String(err)}`);
+        const message = pushDrainFailure(result, target.id, err, "reject-error");
+        warn(`[triage] reject failed for ${target.id}: ${message}`);
       }
     }
 
@@ -814,19 +867,21 @@ export async function drainProposals(
           result.promoted.push(id);
           deterministicPromoted += 1;
         } catch (err) {
-          warn(`[triage] promote failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+          const message = pushDrainFailure(result, id, err, "promote-error");
+          warn(`[triage] promote failed for ${id}: ${message}`);
         }
       }
     } else if (opts.applyMode === "promote" && opts.dryRun) {
-      // Exercise the same stamped candidate and lint boundary as real promotion.
-      // Tests that omit config retain the classification-only seam.
+      // Exercise the same stamped candidate, lint, and stale-target boundary as
+      // real promotion so a dry-run's predicted promotions match what a real
+      // run would do. Tests that omit config retain the classification-only seam.
       const byId = new Map(pending.map((proposal) => [proposal.id, proposal]));
       for (const id of withinCap) {
         try {
           if (opts.config) {
             const proposal = byId.get(id);
             if (!proposal) throw new Error(`Proposal ${id} disappeared during drain preflight.`);
-            preflightProposalPromotion(opts.config, proposal, {
+            const preflight = preflightProposalPromotion(opts.config, proposal, {
               ...(opts.target ? { target: opts.target } : {}),
               gateDecision: {
                 outcome: "auto-accepted",
@@ -834,11 +889,13 @@ export async function drainProposals(
                 gate: gateLabel,
               },
             });
+            assertProposalTargetFresh(proposal, preflight.assetPath);
           }
           result.promoted.push(id);
           deterministicPromoted += 1;
         } catch (err) {
-          warn(`[triage] preflight failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+          const message = pushDrainFailure(result, id, err, "promote-error");
+          warn(`[triage] preflight failed for ${id}: ${message}`);
         }
       }
     }

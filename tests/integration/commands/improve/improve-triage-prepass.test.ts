@@ -73,7 +73,7 @@ function triageEnabledConfig(enabled: boolean): AkmConfig {
 }
 
 function emptyDrainResult(): DrainResult {
-  return { promoted: [], rejected: [], deferred: [], skippedByCap: [], staged: [] };
+  return { promoted: [], rejected: [], deferred: [], skippedByCap: [], staged: [], failed: [] };
 }
 
 beforeEach(() => {
