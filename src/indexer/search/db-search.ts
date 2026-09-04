@@ -24,7 +24,7 @@ import type { AkmConfig, ImproveConfig } from "../../core/config/config";
 import { classifyPathAccess } from "../../core/path-access";
 import { getDbPath } from "../../core/paths";
 import { systemErrorCode } from "../../core/system-error";
-import { defaultRendererRegistry, type RendererRegistry } from "../../core/type-presentation";
+import { allowsFragmentRef, defaultRendererRegistry, type RendererRegistry } from "../../core/type-presentation";
 import { normalizeEmbeddingEndpoint } from "../../llm/embedders/remote";
 import type {
   AkmSearchType,
@@ -1073,7 +1073,10 @@ export async function buildDbHit(input: {
       ? (input.bundleId ?? undefined)
       : undefined);
   const parentRef = resolveSearchHitRef(input.entry, input, defaultBundleId);
-  const ref = input.fragmentId ? `${parentRef}#${input.fragmentId}` : parentRef;
+  // Fragments prove lexical relevance, but executable assets must retain the
+  // parent ref consumed by their advertised action (for example workflow run).
+  // The central type-presentation contract opts those types out explicitly.
+  const ref = input.fragmentId && allowsFragmentRef(input.entry.type) ? `${parentRef}#${input.fragmentId}` : parentRef;
 
   const editable = isEditable(absolutePath, input.config, input.sources);
   const estimatedTokens = typeof input.entry.fileSize === "number" ? Math.round(input.entry.fileSize / 4) : undefined;

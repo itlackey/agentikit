@@ -127,14 +127,20 @@ export function splitMarkdownFragmentStats(
       pieces.push(...splitPiece(section, maxChars));
     }
   }
+  // Whether a heading section survived as one fragment is a property of the
+  // complete piece set. Count once before materialization instead of scanning
+  // every piece for every fragment (which made many headed documents O(N²)).
+  const piecesPerHeading = new Map<string, number>();
+  for (const piece of pieces) {
+    if (piece.headingSlug) piecesPerHeading.set(piece.headingSlug, (piecesPerHeading.get(piece.headingSlug) ?? 0) + 1);
+  }
   const fragments = pieces.map((piece, ordinal) => {
     const text = textOf(piece.lines);
     const contentLines = piece.lines.map((line, index) => ({ line, index })).filter(({ line }) => line.trim());
     const first = contentLines[0]?.index ?? 0;
     const last = contentLines.at(-1)?.index ?? 0;
     const digest = hash(text);
-    const unsplitHeading =
-      piece.headingSlug && pieces.filter((candidate) => candidate.headingSlug === piece.headingSlug).length === 1;
+    const unsplitHeading = piece.headingSlug && piecesPerHeading.get(piece.headingSlug) === 1;
     return {
       fragmentId: `${MARKDOWN_FRAGMENT_PREFIX}${ordinal + 1}-${digest.slice(0, 12)}`,
       ordinal,

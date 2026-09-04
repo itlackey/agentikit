@@ -22,7 +22,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { KNOWN_TYPES } from "../../../src/core/recognition-util";
-import { presentationFor, TYPE_PRESENTATION } from "../../../src/core/type-presentation";
+import { allowsFragmentRef, presentationFor, TYPE_PRESENTATION } from "../../../src/core/type-presentation";
 
 // Frozen snapshot of the renderer names the retired `asset-registry.ts`
 // `TYPE_TO_RENDERER` held — the drift-guard oracle `TYPE_PRESENTATION` must
@@ -142,6 +142,17 @@ describe("TYPE_PRESENTATION — action builders reproduce ACTION_BUILDERS verbat
     // The removed `tasks show`/`tasks remove` subcommands must not resurface.
     expect(action).not.toContain("tasks show");
     expect(action).not.toContain("tasks remove");
+  });
+});
+
+describe("TYPE_PRESENTATION — fragment refs follow the parent-action contract", () => {
+  test("executable parent actions never receive an opaque Markdown selector", () => {
+    for (const type of ["workflow", "command", "agent", "script", "task"]) {
+      expect(allowsFragmentRef(type), `${type} must keep its executable parent ref`).toBe(false);
+    }
+    for (const type of ["knowledge", "skill", "memory", "lesson", "fact", "instruction"]) {
+      expect(allowsFragmentRef(type), `${type} can expose a read selector`).toBe(true);
+    }
   });
 });
 

@@ -29,6 +29,18 @@ export function recentShowCount(ref: string): number {
   }
 }
 
+/** Compare search/display selectors by their durable parent asset identity. */
+function traceParentRef(ref: string): string {
+  try {
+    const parsed = parseBundleRef(ref);
+    return makeBundleRef(parsed.bundle, parsed.conceptId);
+  } catch {
+    // Registry result refs are not local bundle refs and cannot have a local
+    // selector. Keep their existing exact comparison behavior.
+    return ref;
+  }
+}
+
 function appendShowTrace(ref: string, type: string, name: string): void {
   appendEvent({ eventType: "show", ref, metadata: { type, name } });
   try {
@@ -40,7 +52,7 @@ function appendShowTrace(ref: string, type: string, name: string): void {
     const matchingSearch = [...recentSearches].reverse().find((event) => {
       if (!event.ts || new Date(event.ts).getTime() < cutoffMs) return false;
       const refs = (event.metadata?.resultRefs as string[] | undefined) ?? [];
-      return refs.includes(ref);
+      return refs.some((candidate) => traceParentRef(candidate) === ref);
     });
     if (!matchingSearch) return;
     const resultRefs = (matchingSearch.metadata?.resultRefs as string[] | undefined) ?? [];
@@ -50,7 +62,7 @@ function appendShowTrace(ref: string, type: string, name: string): void {
       metadata: {
         query: matchingSearch.metadata?.query as string | undefined,
         searchTs: matchingSearch.ts,
-        rankPosition: resultRefs.indexOf(ref),
+        rankPosition: resultRefs.findIndex((candidate) => traceParentRef(candidate) === ref),
       },
     });
   } catch {

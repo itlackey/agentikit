@@ -292,9 +292,10 @@ function runFragmentQuery(
   // data-bound for a pathological all-tied query, just like parent FTS.
   const sql = `
     WITH matches AS MATERIALIZED (
-      SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
-             e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
-             f.fragment_id AS fragmentId, f.fragment_ordinal AS fragmentOrdinal,
+      -- Keep repeated child rows as narrow as parent FTS's scored CTE. The
+      -- document projection can be large; hydrate it only after the one-child
+      -- per-parent collapse and BM25 boundary filtering below.
+      SELECT e.id, f.fragment_id AS fragmentId, f.fragment_ordinal AS fragmentOrdinal,
              bm25(entry_fragments_fts) AS bm25Score
       FROM entry_fragments_fts f JOIN entries e ON e.id = f.entry_id
       WHERE entry_fragments_fts MATCH ? ${filter}
@@ -306,10 +307,13 @@ function runFragmentQuery(
     ), boundary AS (
       SELECT bm25Score FROM parents ORDER BY bm25Score ASC LIMIT 1 OFFSET ?
     )
-    SELECT * FROM parents
+    SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
+           e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
+           parents.fragmentId, parents.bm25Score
+    FROM parents JOIN entries e ON e.id = parents.id
     WHERE NOT EXISTS (SELECT 1 FROM boundary)
-       OR bm25Score <= (SELECT bm25Score FROM boundary)
-    ORDER BY bm25Score ASC, id ASC`;
+       OR parents.bm25Score <= (SELECT bm25Score FROM boundary)
+    ORDER BY parents.bm25Score ASC, parents.id ASC`;
   const rows = db.prepare(sql).all(ftsQuery, ...filterParams, candidateBoundaryOffset) as Array<{
     id: number;
     filePath: string;

@@ -6,6 +6,7 @@ import { akmSearch } from "../src/commands/read/search";
 import { akmShowUnified as akmShow } from "../src/commands/read/show";
 import { akmInit } from "../src/commands/sources/init";
 import { resetConfigCache, saveConfig } from "../src/core/config/config";
+import { readEvents } from "../src/core/events";
 import { getConfigPath } from "../src/core/paths";
 import { akmIndex } from "../src/indexer/indexer";
 import type { SearchHit, SourceSearchHit } from "../src/sources/types";
@@ -361,6 +362,42 @@ Creates a user.
       const shown = await akmShow({ ref: hit.ref });
       expect(shown.content).toBe("NeedleFragmentCase: Proof Appears Here!");
       expect(shown.content).not.toContain("new disk bytes");
+      const selection = readEvents({ type: "select" }).events.at(-1);
+      expect(selection).toMatchObject({
+        ref: "knowledge/fragment-roundtrip",
+        metadata: { query: "NeedleFragmentCase", rankPosition: 0 },
+      });
+    });
+  });
+
+  test("workflow fragment evidence keeps the executable parent ref and action", async () => {
+    const stashDir = createTmpDir("akm-stash-");
+    const body = Array.from({ length: 500 }, () => "workflow background material").join(" ");
+    writeFile(
+      path.join(stashDir, "workflows", "release.md"),
+      [
+        "---",
+        "type: workflow",
+        "description: Executable release workflow",
+        "steps:",
+        "  - id: release",
+        "    unit:",
+        '      exec: { command: ["sh", "-c", "true"] }',
+        "---",
+        "",
+        "## release",
+        "",
+        body,
+        "",
+        "workflowfragmentneedle proves the release path.",
+      ].join("\n"),
+    );
+    await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
+      const hit = (await akmSearch({ query: "workflowfragmentneedle", type: "workflow" })).hits.find(isLocalHit);
+      if (!hit) throw new Error("expected a local workflow hit");
+      expect(hit.ref).toBe("workflows/release");
+      expect(hit.action).toContain("akm workflow run 'workflows/release'");
+      expect(hit.action).not.toContain("#akm-fragment-");
     });
   });
 

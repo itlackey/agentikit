@@ -49,6 +49,12 @@ export interface Presentation {
    * item ref, returns the one-line "what to do with this hit" string.
    */
   action?: (ref: string) => string;
+  /**
+   * Whether a lexical Markdown fragment can replace this type's public ref.
+   * Types whose advertised action consumes the whole parent stay canonical:
+   * a fragment is evidence for ranking, never an executable target.
+   */
+  fragmentRef?: boolean;
 }
 
 /** POSIX-shell single-quote a value — inlined from `output/renderers.ts#shellQuote` (cycle-sensitive; see file header). */
@@ -77,15 +83,31 @@ export const TYPE_PRESENTATION: Record<KnownType, Presentation> = {
     label: "Command",
     renderer: "command-md",
     action: (ref) => `akm show ${ref} -> fill placeholders and dispatch`,
+    fragmentRef: false,
   },
-  agent: { label: "Agent", renderer: "agent-md", action: (ref) => `akm show ${ref} -> dispatch with full prompt` },
+  agent: {
+    label: "Agent",
+    renderer: "agent-md",
+    action: (ref) => `akm show ${ref} -> dispatch with full prompt`,
+    fragmentRef: false,
+  },
   knowledge: {
     label: "Knowledge",
     renderer: "knowledge-md",
     action: (ref) => `akm show ${ref} -> read reference material`,
   },
-  workflow: { label: "Workflow", renderer: "workflow-md", action: (ref) => buildWorkflowAction(ref) },
-  script: { label: "Script", renderer: "script-source", action: (ref) => `akm show ${ref} -> execute the run command` },
+  workflow: {
+    label: "Workflow",
+    renderer: "workflow-md",
+    action: (ref) => buildWorkflowAction(ref),
+    fragmentRef: false,
+  },
+  script: {
+    label: "Script",
+    renderer: "script-source",
+    action: (ref) => `akm show ${ref} -> execute the run command`,
+    fragmentRef: false,
+  },
   memory: { label: "Memory", renderer: "memory-md", action: (ref) => `akm show ${ref} -> recall context` },
   env: {
     label: "Env",
@@ -109,6 +131,7 @@ export const TYPE_PRESENTATION: Record<KnownType, Presentation> = {
     renderer: "task-yaml",
     action: (ref) =>
       `akm show ${ref} -> inspect; akm task run <id> -> run now; edit the file + akm task sync -> unschedule`,
+    fragmentRef: false,
   },
   session: {
     label: "Session",
@@ -145,6 +168,15 @@ const DEFAULT_PRESENTATION: Presentation = { label: "Asset" };
 export function presentationFor(type: string | undefined): Presentation {
   if (type !== undefined && isKnownType(type)) return TYPE_PRESENTATION[type];
   return DEFAULT_PRESENTATION;
+}
+
+/**
+ * A missing declaration means a read-like or foreign type can expose a safe
+ * selector. Built-in executable types opt out explicitly above, alongside the
+ * action that requires their parent canonical ref.
+ */
+export function allowsFragmentRef(type: string): boolean {
+  return presentationFor(type).fragmentRef !== false;
 }
 
 /**

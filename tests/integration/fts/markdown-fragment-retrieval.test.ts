@@ -154,17 +154,21 @@ describe("isolated lexical Markdown fragments (#937)", () => {
       for (let index = 0; index < 40; index++) put(db, `parent-${index}`, `broadneedle parent ${index}`);
       const plan = db
         .prepare(
-          `EXPLAIN QUERY PLAN WITH matches AS (
+          `EXPLAIN QUERY PLAN WITH matches AS MATERIALIZED (
              SELECT e.id, f.fragment_id, f.fragment_ordinal, bm25(entry_fragments_fts) AS bm25Score
              FROM entry_fragments_fts f JOIN entries e ON e.id = f.entry_id
              WHERE entry_fragments_fts MATCH ?
-           ), ranked AS (
+           ), ranked AS MATERIALIZED (
              SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY bm25Score, fragment_ordinal, fragment_id) AS parentRank FROM matches
-           ), parents AS (
+           ), parents AS MATERIALIZED (
              SELECT * FROM ranked WHERE parentRank = 1
            ), boundary AS (
              SELECT bm25Score FROM parents ORDER BY bm25Score LIMIT 1 OFFSET ?
-           ) SELECT * FROM parents WHERE NOT EXISTS (SELECT 1 FROM boundary) OR bm25Score <= (SELECT bm25Score FROM boundary) ORDER BY bm25Score, id`,
+           ) SELECT e.id, e.document_json
+             FROM parents JOIN entries e ON e.id = parents.id
+             WHERE NOT EXISTS (SELECT 1 FROM boundary)
+                OR parents.bm25Score <= (SELECT bm25Score FROM boundary)
+             ORDER BY parents.bm25Score, parents.id`,
         )
         .all("broadneedle", 9) as Array<{ detail: string }>;
       expect(plan.some((row) => /VIRTUAL TABLE|entry_fragments_fts/i.test(row.detail))).toBe(true);
@@ -373,6 +377,16 @@ describe("Markdown fragment substrate", () => {
     expect(fragments.length).toBeGreaterThan(2);
     expect(fragments.every((fragment) => fragment.fragmentId.startsWith("akm-fragment-"))).toBe(true);
     expect(fragments.some((fragment) => fragment.text.includes("Transcript 150"))).toBe(true);
+  });
+
+  test("keeps friendly selectors for many independent headed sections", () => {
+    const count = 1_200;
+    const raw = Array.from({ length: count }, (_, index) => `## Heading ${index}\nproof ${index}`).join("\n\n");
+    const fragments = splitMarkdownFragments(raw);
+    expect(fragments).toHaveLength(count);
+    expect(fragments.map((fragment) => fragment.headingSlug)).toEqual(
+      Array.from({ length: count }, (_, index) => `heading-${index}`),
+    );
   });
 
   test("caps single-line word windows while retaining their source-line range", () => {
