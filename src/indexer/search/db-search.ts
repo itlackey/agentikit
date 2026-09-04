@@ -333,6 +333,15 @@ function buildSearchResultComparator(query: string): (a: RankedEntryInput, b: Ra
     if (scoreDiff !== 0) return scoreDiff;
     const rawScoreDiff = stableRankScore(b.score) - stableRankScore(a.score);
     if (rawScoreDiff !== 0) return rawScoreDiff;
+    // Ceiling values are intentionally allowed to demote visibility, but not
+    // to erase relevance. Prefer the score before a relaxed body-only ceiling;
+    // a later belief-state ceiling has its own minScore handoff and must not
+    // overwrite this ordering evidence. Belief-only ceilings fall back to
+    // their `preCeilingScore`.
+    const preCeilingRelevance = (item: RankedEntryInput): number =>
+      item.preRelaxedCeilingScore ?? item.preCeilingScore ?? item.score;
+    const ceilingDiff = stableRankScore(preCeilingRelevance(b)) - stableRankScore(preCeilingRelevance(a));
+    if (ceilingDiff !== 0) return ceilingDiff;
     const nameDiff = bNameTier - aNameTier;
     if (nameDiff !== 0) return nameDiff;
     const typeDiff = typeBoostFor(b.entry.type) - typeBoostFor(a.entry.type);

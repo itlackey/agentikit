@@ -561,6 +561,66 @@ describe("Issue #14: Deterministic sort on tied scores", () => {
   });
 });
 
+describe("Issue #940: relaxed non-name ceilings preserve body relevance", () => {
+  test("body relevance, not filename, orders relaxed candidates with opaque names", async () => {
+    const stashDir = tmpStash();
+
+    // No name carries a query token, and no document carries every token, so
+    // all three candidates arrive through the relaxed tier. Their filename
+    // order is aaa < mmm < zzz while their body relevance is the reverse.
+    writeFile(
+      path.join(stashDir, "knowledge", "aaa-id.md"),
+      "---\ndescription: A note that mentions kestrel once and nothing more\n---\n",
+    );
+    writeFile(
+      path.join(stashDir, "knowledge", "mmm-id.md"),
+      "---\ndescription: A note about kestrel migration over open water\n---\n",
+    );
+    writeFile(
+      path.join(stashDir, "knowledge", "zzz-id.md"),
+      "---\ndescription: kestrel migration and kestrel migration and kestrel migration again\n---\n",
+    );
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "kestrel migration ecology", source: "local", skipLogging: true });
+      const order = result.hits
+        .filter((hit): hit is SourceSearchHit => hit.type !== "registry")
+        .map((hit) => hit.name)
+        .filter((name) => name.endsWith("-id"));
+
+      expect(order).toEqual(["zzz-id", "mmm-id", "aaa-id"]);
+    });
+  });
+
+  test("a later belief ceiling does not overwrite relaxed body-relevance ordering", async () => {
+    const stashDir = tmpStash();
+    for (const [name, description] of [
+      ["aaa-archived", "kestrel once"],
+      ["mmm-archived", "kestrel migration across open water"],
+      ["zzz-archived", "kestrel migration kestrel migration kestrel migration"],
+    ]) {
+      writeFile(
+        path.join(stashDir, "knowledge", `${name}.md`),
+        `---\nbeliefState: archived\ndescription: ${description}\n---\n`,
+      );
+    }
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "kestrel migration ecology", source: "local", skipLogging: true });
+      const archived = result.hits.filter(
+        (hit): hit is SourceSearchHit => hit.type !== "registry" && hit.name.endsWith("-archived"),
+      );
+
+      // The archived belief ceiling deliberately gives every candidate the
+      // same public score. Their order must still reflect the relaxed
+      // pre-ceiling body relevance, not alphabetical filenames.
+      expect(archived).toHaveLength(3);
+      expect(new Set(archived.map((hit) => hit.score)).size).toBe(1);
+      expect(archived.map((hit) => hit.name)).toEqual(["zzz-archived", "mmm-archived", "aaa-archived"]);
+    });
+  });
+});
+
 // ── Issue #15: "semantic" label for hybrid results ──────────────────────────
 
 describe("Issue #15: Hybrid ranking mode label", () => {
