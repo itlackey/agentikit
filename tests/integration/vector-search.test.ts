@@ -9,7 +9,7 @@
  *  - Hybrid score merging (FTS 0.7 + vec 0.3 weights)
  *  - FTS-only entries surviving in hybrid mode
  *  - NaN/Infinity guard on vector distances
- *  - BM25 normalization edge cases (all identical scores)
+ *  - Stable FTS5 BM25 calibration in the hybrid pipeline
  *  - JS fallback path (BLOB-based cosine similarity, no sqlite-vec)
  *  - Dimension mismatch produces zero similarity
  */
@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import { deriveEntryProvenance } from "../../src/indexer/installations";
 import type { IndexDocument } from "../../src/indexer/passes/metadata";
+import { combineSearchScores, normalizeFtsScores } from "../../src/indexer/search/ranking";
 import { cosineSimilarity } from "../../src/llm/embedder";
 import type { Database } from "../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../src/storage/repositories/index-connection";
@@ -73,6 +74,7 @@ function insertTestEntry(
     searchText?: string;
     type?: string;
     tags?: string[];
+    content?: string;
   },
 ): number {
   const type = opts?.type ?? "script";
@@ -81,6 +83,7 @@ function insertTestEntry(
     type,
     description: opts?.description ?? `Description for ${key}`,
     tags: opts?.tags,
+    content: opts?.content,
   });
   return upsertEntry(
     db,
@@ -387,88 +390,83 @@ describe("NaN/Infinity guard on vector distances", () => {
   });
 });
 
-// ── Test e: BM25 normalization edge cases ──────────────────────────────────
+// ── Test e: stable FTS5 BM25 calibration (#933) ───────────────────────────
 
-describe("BM25 normalization edge cases", () => {
-  test("all identical BM25 scores normalize to 1.0", () => {
-    // Mirrors the normalization logic in searchDatabase():
-    //   const range = bestBm25 - worstBm25;
-    //   const normalized = range !== 0 ? (r.bm25Score - worstBm25) / range : 1.0;
-    //   const ftsScore = 0.3 + normalized * 0.7;
-    const scores = [-5.0, -5.0, -5.0]; // all identical
-    const bestBm25 = scores[0];
-    const worstBm25 = scores[scores.length - 1];
-    const range = bestBm25! - worstBm25!; // 0
+describe("stable FTS5 BM25 calibration (#933)", () => {
+  test("uses real weighted FTS5 values without pinning the leader or rewriting it when candidates expand", () => {
+    const db = openIndexDatabase(tmpDbPath("stable-bm25"));
+    try {
+      const filler = (count: number): string =>
+        Array.from({ length: count }, (_, index) => `filler${index % 31}`).join(" ");
+      insertTestEntry(db, "calibrationmarker", {
+        description: "A short exact-name lexical hit",
+        searchText: "calibrationmarker short exact-name lexical hit",
+        stashDir: "/test/stash",
+      });
+      insertTestEntry(db, "body-match", {
+        content: `${filler(4_000)} calibrationmarker ${filler(4_000)}`,
+        description: "A long body-only lexical hit",
+        searchText: "long body-only lexical hit",
+        stashDir: "/test/stash",
+      });
+      insertTestEntry(db, "weaker-body-match", {
+        content: `${filler(12_000)} calibrationmarker ${filler(12_000)}`,
+        description: "An even longer body-only lexical hit",
+        searchText: "even longer body-only lexical hit",
+        stashDir: "/test/stash",
+      });
+      rebuildFts(db);
 
-    const normalized = scores.map((s) => (range !== 0 ? (s - worstBm25!) / range : 1.0));
+      // searchFts runs the shipped `bm25(entries_fts, 0, 10, 5, 3, 2, 1)`
+      // query. These are actual SQLite FTS5 scores, not synthetic values.
+      const hits = searchFts(db, "calibrationmarker", 10);
+      expect(hits).toHaveLength(3);
+      const [top, second, weakest] = hits;
+      expect(top).toBeDefined();
+      expect(second).toBeDefined();
+      expect(weakest).toBeDefined();
+      if (!top || !second || !weakest) throw new Error("expected calibration hits");
 
-    // All should be 1.0 when range is 0
-    for (const n of normalized) {
-      expect(n).toBe(1.0);
+      const leadersOnly = normalizeFtsScores([top, second]);
+      const expanded = normalizeFtsScores(hits);
+      const topScore = expanded.get(top.id)!.score;
+      const weakScore = expanded.get(weakest.id)!.score;
+
+      expect(top.bm25Score).toBeLessThan(second.bm25Score);
+      expect(second.bm25Score).toBeLessThan(weakest.bm25Score);
+      expect(topScore).toBeGreaterThan(weakScore);
+      expect(topScore).toBeLessThan(1);
+      expect(weakScore).toBeLessThan(0.35);
+      expect(expanded.get(top.id)!.score).toBeCloseTo(leadersOnly.get(top.id)!.score, 12);
+      expect(expanded.get(second.id)!.score).toBeCloseTo(leadersOnly.get(second.id)!.score, 12);
+
+      const lexicalOnly = combineSearchScores({
+        ftsScoreMap: new Map([[top.id, expanded.get(top.id)!]]),
+        embedScoreMap: new Map(),
+        getEntryById: () => undefined,
+      })[0]!;
+      const semanticOnly = combineSearchScores({
+        ftsScoreMap: new Map(),
+        embedScoreMap: new Map([[999, 0.9]]),
+        getEntryById: () => ({
+          entry: top.entry,
+          filePath: top.filePath,
+          itemRef: top.itemRef,
+          bundleId: top.bundleId,
+          conceptId: top.conceptId,
+        }),
+      })[0]!;
+      const hybrid = combineSearchScores({
+        ftsScoreMap: new Map([[top.id, expanded.get(top.id)!]]),
+        embedScoreMap: new Map([[top.id, 0.9]]),
+        getEntryById: () => undefined,
+      })[0]!;
+
+      expect(hybrid.score).toBeGreaterThan(lexicalOnly.score);
+      expect(lexicalOnly.score).toBeGreaterThan(semanticOnly.score);
+    } finally {
+      closeDatabase(db);
     }
-
-    // After scaling to 0.3-1.0 range
-    const scaled = normalized.map((n) => 0.3 + n * 0.7);
-    for (const s of scaled) {
-      expect(s).toBe(1.0);
-    }
-  });
-
-  test("two distinct BM25 scores normalize to 1.0 and 0.3", () => {
-    // Best = -10 (most negative), worst = -2 (least negative)
-    const bestBm25 = -10;
-    const worstBm25 = -2;
-    const range = bestBm25 - worstBm25; // -8
-
-    const bestNormalized = (bestBm25 - worstBm25) / range;
-    expect(bestNormalized).toBe(1.0);
-
-    const worstNormalized = (worstBm25 - worstBm25) / range;
-    expect(worstNormalized).toBeCloseTo(0, 10);
-
-    // After scaling
-    const bestScaled = 0.3 + bestNormalized * 0.7;
-    expect(bestScaled).toBe(1.0);
-
-    const worstScaled = 0.3 + worstNormalized * 0.7;
-    expect(worstScaled).toBe(0.3);
-  });
-
-  test("BM25 normalization with three scores preserves ordering", () => {
-    // best = -15, mid = -10, worst = -5
-    const bestBm25 = -15;
-    const worstBm25 = -5;
-    const range = bestBm25 - worstBm25; // -10
-
-    const bestN = (bestBm25 - worstBm25) / range; // (-15 - -5) / -10 = -10/-10 = 1.0
-    const midN = (-10 - worstBm25) / range; // (-10 - -5) / -10 = -5/-10 = 0.5
-    const worstN = (worstBm25 - worstBm25) / range; // 0 / -10 = -0
-
-    expect(bestN).toBe(1.0);
-    expect(midN).toBe(0.5);
-    expect(worstN).toBeCloseTo(0, 10);
-
-    // Ordering is preserved after scaling
-    const bestS = 0.3 + bestN * 0.7;
-    const midS = 0.3 + midN * 0.7;
-    const worstS = 0.3 + worstN * 0.7;
-
-    expect(bestS).toBeGreaterThan(midS);
-    expect(midS).toBeGreaterThan(worstS);
-  });
-
-  test("single FTS result normalizes to 1.0", () => {
-    // When there's only one result, best = worst, range = 0
-    const scores = [-7.3];
-    const bestBm25 = scores[0];
-    const worstBm25 = scores[0];
-    const range = bestBm25! - worstBm25!; // 0
-
-    const normalized = range !== 0 ? (scores[0]! - worstBm25!) / range : 1.0;
-    expect(normalized).toBe(1.0);
-
-    const scaled = 0.3 + normalized * 0.7;
-    expect(scaled).toBe(1.0);
   });
 });
 
