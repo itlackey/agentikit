@@ -68,12 +68,13 @@ ref.
 ## Mutation and finalization boundary
 
 The canonical entry repository owns each complete synchronous mutation of
-`index.db`: the `entries` row, its weighted `entries_fts` projection, and stale
+`index.db`: the `entries` row, its weighted `entries_fts` projection, its
+separate `entry_fragments` / `entry_fragments_fts` body projection, and stale
 vector invalidation are committed in one SQLite transaction. Entry deletion
-removes FTS, vector, and utility children before the parent row. Callers do not
-maintain a dirty queue or request an incremental FTS rebuild. The full
-`rebuildFts()` operation remains only as an explicit recovery verifier for this
-regenerable database.
+removes FTS, fragment, vector, and utility children before the parent row.
+Callers do not maintain a dirty queue or request an incremental FTS rebuild.
+The full `rebuildFts()` operation remains only as an explicit recovery verifier
+for this regenerable database.
 
 An explicit `akm index --clean` reconciles missing files after the filesystem
 walk and before embedding, utility recomputation, totals, and verification.
@@ -87,7 +88,7 @@ Every current `entries` row carries a canonical fully qualified
 and the absolute `file_path` of the materialized local asset. Search and show
 use those required columns for identity and access rather than reconstructing
 refs from a name or source path. `item_ref` is the sole upsert conflict key;
-`document_json` is the sole stored document projection. The v22 schema does not
+`document_json` is the sole stored document projection. The v23 schema does not
 admit incomplete identity rows or retain an entry-key/path lookup fallback.
 This preserves bundle identity when multiple sources contain the same concept.
 
@@ -134,8 +135,10 @@ skipped unless the caller explicitly requests re-enrichment.
 ## Database Tables
 
 `index.db`'s schema (`ensureSchema()`,
-`src/storage/repositories/index-schema.ts`) creates 15 tables (2 of them
-virtual). Full column-level detail lives in
+`src/storage/repositories/index-schema.ts`) creates 16 unconditional logical
+tables, including two FTS5 virtual tables. When the optional `sqlite-vec`
+extension loads, it also creates `entries_vec`, a third, conditional virtual
+table. Full column-level detail lives in
 [Storage Locations](storage-locations.md#dataindexdb--main-search-index);
 this is a purpose summary:
 
@@ -143,6 +146,8 @@ this is a purpose summary:
 | --- | --- |
 | `entries` | normalized asset records |
 | `entries_fts` (virtual, FTS5) | multi-column full-text index |
+| `entry_fragments` | safe Markdown projection retained per parent entry for fragment resolution |
+| `entry_fragments_fts` (virtual, FTS5) | separate lexical body-fragment index; no copied parent metadata |
 | `embeddings` | stored embedding vectors (JS cosine-similarity fallback) |
 | `entries_vec` (virtual, conditional) | `sqlite-vec` ANN index, created only when the extension loads |
 | `utility_scores` | recomputed utility boost state (global) |
@@ -164,16 +169,16 @@ separate from durable runtime state.
 ## Schema Versioning
 
 `index.db` is ephemeral — fully rebuildable from sources by `akm index`. The
-current generation is exactly v22. `ensureSchema()`
+current generation is exactly v23. `ensureSchema()`
 (`src/storage/repositories/index-schema.ts`) accepts an existing generation
 only when both `index_meta.version` and the complete `entries` fingerprint
 match the canonical contract, including `AUTOINCREMENT`, required columns,
 constraints, indexes, collation, and hidden-column absence. An incompatible
 generation is discarded: AKM drops the entry-dependent derived tables and
-caches, creates the canonical v22 schema, and rebuilds it from current sources
-and durable usage state. In particular, v21 is discarded because it predates
-entry-owned synchronous FTS publication and may contain stale dirty-queue
-state. Current read-only and existing-database openers reject
+caches, creates the canonical v23 schema, and rebuilds it from current sources
+and durable usage state. In particular, v22 is discarded because it predates
+the isolated fragment FTS population; v21 also predates entry-owned synchronous
+FTS publication and may contain stale dirty-queue state. Current read-only and existing-database openers reject
 an incompatible generation instead of serving it. Durable workflow, task,
 proposal, event, and usage state in `state.db` is never touched by this path.
 
