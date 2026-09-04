@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
-import { reduceStepOutcomes, unitSchemaWarning, type UnitOutcome } from "../../src/workflows/exec/step-work";
+import { reduceStepOutcomes, type UnitOutcome, unitSchemaWarning } from "../../src/workflows/exec/step-work";
 import type { IrStepPlanV4 } from "../../src/workflows/ir/schema-v4";
 
 const SCHEMA = {

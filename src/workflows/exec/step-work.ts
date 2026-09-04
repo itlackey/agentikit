@@ -887,9 +887,7 @@ export function unitSchemaWarning(plan: IrStepPlanV4, units: readonly UnitOutcom
     if (errors.length > 0) mismatches.push(`unit "${unit.unitId}": ${errors.join("; ")}`);
   }
   if (mismatches.length === 0) return undefined;
-  return (
-    `Output does not match the unit's declared schema (advisory; the run continued): ` + `${mismatches.join("; ")}.`
-  );
+  return `Output does not match the unit's declared schema (advisory; the run continued): ${mismatches.join("; ")}.`;
 }
 
 /**
