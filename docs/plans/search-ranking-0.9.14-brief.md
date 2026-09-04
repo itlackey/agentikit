@@ -565,7 +565,14 @@ it is implementation evidence, not an accepted calibration.
 **Phase 3 — #940: relaxed-ceiling relevance.** Keep the existing ceiling but
 order tied relaxed results by their pre-clamp relevance. Preserve that signal
 separately from belief-state ceiling evidence and re-probe the reported LoCoMo
-gain before moving the acceptance baseline.
+gain before moving the acceptance baseline. The release diagnostic exposed a
+second identity boundary before the comparator: `searchFts` applies its
+candidate limit before type, graph, project, utility, and belief contributors.
+If the limit cuts through an exact BM25 tie, return the whole boundary-tied set
+and let the one final comparator apply every contributor. Do not replace the
+SQLite row-id fallback with a content sort before `LIMIT`; that can discard a
+type-boosted result before the type contributor sees it. The expansion is
+intentionally data-bound for a dense exact tie and needs a stress measurement.
 
 **Phase 4 — #930: bounded weight experiment.** Run the pre-declared matrix from
 an isolated branch anchored after #940 and before #937. Merge a weight change
@@ -590,10 +597,13 @@ and add no commits after evidence is collected.
 
 **Pin the external harness.** The probe is in `itlackey/akm-eval`, not this
 repository's `scripts/akm-eval`. Record the comparator commit for every result.
-PR #16 at `ddb3624e5feb63deece09b85cf59112ce6e446db` adds
-`tiedTopKRate`, which makes exact score-ceiling saturation visible. Its CI must
-be green and its semantics independently verified before that commit becomes
-the release comparator.
+PR #16 at `ddb3624e5feb63deece09b85cf59112ce6e446db` first added a
+`tiedTopKRate` diagnostic. Review found that implementation insufficient: it
+used the known-stale historical reference as a release verdict, treated guard
+trips as warnings, counted underfilled result sets, and had no direct tests.
+The corrected evaluator work lives on `release/0.9.14-eval-readiness`; pin its
+final reviewed commit, not the original PR head, before collecting release
+evidence.
 
 **Use the pre-release command form.** `bin/probe <version>` installs a published
 npm version and cannot test an unshipped checkout. From the pinned `akm-eval`
@@ -603,26 +613,32 @@ checkout use:
 bin/probe --cmd '["bun","/absolute/path/to/akm/src/cli.ts"]'
 ```
 
-The script grades four metrics per pack: `zeroHitRate`, `evidenceRecallAt5`,
-`precisionAtK`, and `recallAtK`. It does **not** grade MRR/nDCG. PR #16's
-`tiedTopKRate` observes only equality of public scores; it cannot see #940's
-hidden pre-ceiling relevance tie-break, and it currently counts underfilled
-result sets as “top-K.” Treat it as disclosure, not correctness. Before using
-it for release, rename it to state that it measures score saturation, require a
-full K, and add direct tests. Add a separate deterministic identity-permutation
-probe: reindex the same content under permuted opaque document ids, map results
-back, and fail if ranks or retrieval metrics change. It exits nonzero for a
-metric regression, but currently only warns for `guardTripped`; require
-`guardTripped=0` explicitly.
+The corrected paired gate grades `zeroHitRate`, `evidenceRecallAt5`,
+`precisionAtK`, `recallAtK`, MRR, and nDCG for both packs. It requires matching
+evaluator/runtime/corpus context, clean target and evaluator revisions, and
+`guardTripped=0` on both sides. `scoreSaturatedTopKRate` counts only a full K of
+equal finite public scores and remains disclosure, not a verdict, because it
+cannot see #940's hidden pre-ceiling relevance.
+
+The separate storage-name permutation check must isolate the identity surface
+it claims to test. Do **not** replace `MemoryDocument.id`: the AKM evaluator
+materializes that value into a `sourceId` tag and H1, so changing it changes the
+FTS corpus and BM25 itself. Instead, keep caller ids, tags, headings, metadata,
+text, corpus order, evidence, and query order fixed; index twice under forward
+and reverse equal-shape opaque storage-name assignments; map both result sets
+back through the unchanged caller ids; and fail on a rank or per-query metric
+change. Duplicate caller ids must retain the adapter's upsert semantics.
 
 **Establish a paired control every time.** The committed LoCoMo reference no
 longer reproduces even from the same cached 0.9.10 binary: the saturated result
 was partly selecting by filename. Do not grade 0.9.14 against that historical
 JSON. Run published 0.9.13 and the candidate under the same pinned evaluator
 commit, runtime, corpus bytes, environment, and clean data directories; record
-both artifact directories and compare that pair. A control/candidate delta is
-attributable only when repeated runs are deterministic and the control itself
-is recorded.
+both artifact directories, then compare them with the evaluator's paired
+artifact grader. The aggregate verdict must retain both target identities,
+contexts, saturation rates, metric deltas, guard counts, and storage-name
+diagnostic. A control/candidate delta is attributable only when repeated runs
+are deterministic and the control itself is recorded.
 
 **Probe changes independently.** If scoring, weights, and fragments ship in one
 measurement round, no delta is attributable. Probe after #933, after the #930
@@ -646,6 +662,18 @@ collapse-detector loop. #937 changes both query work and indexer work. Measure
 index wall time, index bytes, user-query p50/p95, canary-cycle wall time, and
 fragment-count p50/p95/max. Avoid adding an operator knob unless the measured
 cost requires one.
+
+The first evaluator-shaped structural measurement at #937 commit `2dda2e4b`
+(Bun 1.4.0; 419 LoCoMo turns plus 980 sessions from the first 20 LongMemEval
+questions; 1,397 indexed parents) produced 8,378 fragments. LongMemEval's
+fragment distribution was mean 8.85 and p50/p95/max `9/15/25`; LoCoMo was
+`1/1/1`, so the headingless fallback is doing real work. Against release commit
+`d88437d5`, cold index p50 changed 5.060s → 12.093s, `index.db` 37.60MB →
+66.56MB, and in-process FTS p50/p95 0.913/2.871ms → 3.244/9.832ms. The absolute
+query latency remains small, but the CTE scans and sorts the complete fragment
+match set (observed up to 918 fragments / 407 parents), so record this as a
+deliberate data-bound tradeoff and repeat the measurement on the frozen combined
+candidate. The low-sample canary timing (103.31ms → 94.25ms) is inconclusive.
 
 **Repository and release gates:** run focused tests during each phase, then
 `bun run check`. On the frozen candidate run
