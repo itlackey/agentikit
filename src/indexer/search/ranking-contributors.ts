@@ -7,7 +7,7 @@ import type { Database } from "../../storage/database";
 import type { ScopedUtilityRow, UtilityScoreRow } from "../../storage/repositories/index-entry-types";
 import { computeGraphBoost, type GraphBoostContext } from "../graph/graph-boost";
 import type { ProjectContext } from "../walk/project-context";
-import { canUseFuzzyNamePhrase, lexicalNameTokens, structuralNameTokenMatch } from "./name-match";
+import { lexicalNameTokens, structuralNamePhraseMatch, structuralNameTokenMatch } from "./name-match";
 import type { RankedEntryInput } from "./ranking-types";
 import { attachSearchHitAttribution } from "./search-attribution";
 
@@ -226,14 +226,8 @@ const exactNameRankingContributor: RankingContributor = {
     if (nameBase === ctx.queryLower || nameLower === ctx.queryLower) {
       return 2.0;
     }
-    if (
-      canUseFuzzyNamePhrase(ctx.queryLower) &&
-      canUseFuzzyNamePhrase(nameBase) &&
-      (nameBase.includes(ctx.queryLower) || ctx.queryLower.includes(nameBase))
-    ) {
-      return 1.0;
-    }
     const nameTokens = lexicalNameTokens(nameBase);
+    if (structuralNamePhraseMatch(nameTokens, ctx.queryTokens)) return 1.0;
     const matchCount = ctx.queryTokens.filter((qt) => nameTokens.some((nt) => structuralNameTokenMatch(nt, qt))).length;
     return matchCount > 0 ? Math.min(0.9, matchCount * 0.3) : 0;
   },
