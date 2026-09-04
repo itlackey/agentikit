@@ -201,7 +201,24 @@ function splitBodyIntoChunks(
   maxChars = MAX_CHUNK_BODY_CHARS,
 ): { chunks: string[]; truncationCount: number } {
   const split = splitMarkdownFragmentStats(body, maxChars);
-  return { chunks: split.fragments.map((fragment) => fragment.text), truncationCount: split.hardSplitCount };
+  // Graph extraction keeps its historical cost shape: adjacent safe fragments
+  // share one LLM call whenever they fit. The fragment splitter is still the
+  // sole boundary authority; this is only prompt packing, never a second
+  // parser/chunker. Hard splits stay isolated and telemetry remains the core
+  // split count rather than counting ordinary heading boundaries.
+  const chunks: string[] = [];
+  let current = "";
+  for (const fragment of split.fragments) {
+    const candidate = current ? `${current}\n\n${fragment.text}` : fragment.text;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+    } else {
+      if (current) chunks.push(current);
+      current = fragment.text;
+    }
+  }
+  if (current) chunks.push(current);
+  return { chunks, truncationCount: split.hardSplitCount };
 }
 
 /** Consistency weight for blending chunk-agreement with LLM confidence. */

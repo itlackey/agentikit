@@ -345,10 +345,10 @@ Creates a user.
     const body = Array.from({ length: 500 }, () => "background transcript material").join(" ");
     writeFile(
       path.join(stashDir, "knowledge", "fragment-roundtrip.md"),
-      `---\ndescription: fragment fixture\n---\n\n${body}\n\nneedlefragment proof appears here`,
+      `---\ndescription: fragment fixture\n---\n\n${body}\n\nNeedleFragmentCase: Proof Appears Here!`,
     );
     await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
-      const searched = await akmSearch({ query: "needlefragment", type: "knowledge" });
+      const searched = await akmSearch({ query: "NeedleFragmentCase", type: "knowledge" });
       const hit = searched.hits[0];
       expect(hit && isLocalHit(hit) ? hit.ref : undefined).toMatch(/#akm-fragment-/);
       if (!hit || !isLocalHit(hit)) throw new Error("expected a local fragment hit");
@@ -359,7 +359,7 @@ Creates a user.
         "---\ndescription: changed\n---\nnew disk bytes",
       );
       const shown = await akmShow({ ref: hit.ref });
-      expect(shown.content).toContain("needlefragment proof");
+      expect(shown.content).toBe("NeedleFragmentCase: Proof Appears Here!");
       expect(shown.content).not.toContain("new disk bytes");
     });
   });
