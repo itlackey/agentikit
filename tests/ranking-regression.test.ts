@@ -294,6 +294,7 @@ describe("Type ranking", () => {
         path.join(skillDir, "SKILL.md"),
         `---
 description: ${description}
+tags: [fixture]
 ---
 
 # Widget Rollout Flow
@@ -308,6 +309,7 @@ ${body}
         `---
 type: knowledge
 description: ${description}
+tags: [fixture]
 ---
 
 # Widget Rollout Notes
@@ -376,18 +378,16 @@ describe("Score preservation (not RRF-flattened)", () => {
   test("top result for exact name query has strong differentiation", async () => {
     // Use a query that uniquely targets one asset.
     // Per the locked v1 contract (CLAUDE.md / spec §9), SearchHit.score is
-    // bounded in [0,1]. An exact-name match accumulates large additive
-    // boosts that are clamped at the final emit step, so the top score for
-    // a uniquely-matching exact-name query must reach the ceiling (1.0).
+    // bounded in [0,1]. The final projection is monotone rather than a hard
+    // clamp, so an exact-name match stays strong without erasing headroom for
+    // graph and other contributor signals.
     const hits = await search("mem0 search");
     expect(hits.length).toBeGreaterThanOrEqual(1);
     const topScore = scoreOf(hits[0]!);
-    expect(topScore).toBe(1);
+    expect(topScore).toBeGreaterThan(0.9);
+    expect(topScore).toBeLessThan(1);
 
     // If there are additional results, the top should be at least as high.
-    // Below-ceiling differentiation is asserted by the broader
-    // "scores are monotonically decreasing" case below; here we just
-    // confirm the top hit reaches the maximum.
     if (hits.length >= 2) {
       expect(topScore).toBeGreaterThanOrEqual(scoreOf(hits[1]!));
     }
