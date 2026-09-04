@@ -111,14 +111,13 @@ describe("tag-ranking boost for path-derived scope tokens (SPEC-2)", () => {
 
 // ── SPEC-5: demoting-belief-state final-score ceilings ──────────────────────
 //
-// The additive beliefStateBoost penalties multiply a min-max-normalized FTS
-// base ([0.3, 1.0]), so a demoted incumbent that is the best keyword match
-// stays clamp-pinned at 1.0 above its own correction — the ceilings are what
-// actually guarantee "subsequent search ranks new above old". These unit
-// tests pin the mechanism directly (constants, severity order, no-op states,
-// below-ceiling relative order, and the preCeilingScore handoff to
-// db-search's semantic minScore floor), independent of any bm25 delta in the
-// e2e fixtures.
+// The additive beliefStateBoost penalties multiply the bounded FTS base, so a
+// demoted incumbent can still earn enough independent boosts to outrank its
+// own correction — the ceilings are what actually guarantee "subsequent
+// search ranks new above old". These unit tests pin the mechanism directly
+// (constants, severity order, no-op states, below-ceiling relative order, and
+// the preCeilingScore handoff to db-search's semantic minScore floor),
+// independent of any bm25 delta in the e2e fixtures.
 
 describe("applyBeliefStateScoreCeiling (SPEC-5 demoting-state ceilings)", () => {
   function makeBeliefItem(beliefState: string | undefined, score: number): RankedEntryInput {

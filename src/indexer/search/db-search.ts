@@ -435,8 +435,9 @@ async function searchDatabase(
   const tRank0 = Date.now();
 
   // ── Score normalization ──────────────────────────────────────────────
-  // Normalized BM25 + cosine similarity with weighted addition
-  // (FTS 0.7, vector 0.3) for well-differentiated combined scores.
+  // Stable bounded BM25 transform + cosine similarity with weighted addition
+  // (FTS 0.7, vector 0.3). The lexical transform is per-row, so widening the
+  // candidate set cannot alter a pre-existing row's base score.
   const ftsScoreMap = normalizeFtsScores(ftsResults);
 
   // Build embedding score map (cosine similarities already 0-1)

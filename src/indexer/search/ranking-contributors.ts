@@ -168,13 +168,11 @@ function beliefStateBoost(item: RankedEntryInput): number {
  * stash-conventions-code-spec.md — corrections demotion).
  *
  * Why the additive {@link beliefStateBoost} penalties alone are not enough:
- * keyword base scores are min-max normalized into [0.3, 1.0]
- * (`normalizeFtsScores`), so the spread between the best FTS hit and its
- * runner-up can be as large as 0.7 — and the boost sum then MULTIPLIES the
- * base (`score *= 1 + boostSum`, {@link applyScoreContributors}). A
- * superseded incumbent that is the best keyword match for a query therefore
- * stays clamp-pinned at 1.0 above its own correction no matter what additive
- * penalty it receives — defeating the corrections pattern's point ("so the
+ * keyword base scores have a bounded lexical floor (`normalizeFtsScores`),
+ * while the boost sum then MULTIPLIES the base (`score *= 1 + boostSum`,
+ * {@link applyScoreContributors}). A superseded incumbent can still earn
+ * enough independent boosts to outrank its own correction, so additive
+ * penalties alone cannot guarantee the corrections pattern's point ("so the
  * ranker demotes the stale version instead of letting it outrank your fix").
  *
  * The ceilings guarantee the demotion while keeping flagged entries VISIBLE:

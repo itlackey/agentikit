@@ -68,18 +68,41 @@ export interface RankEntriesOptions {
   salienceRankScores?: Map<number, number> | null;
 }
 
+/**
+ * Lower bounds keep a lexical hit competitive with a vector-only neighbour;
+ * the upper bound deliberately leaves room for the ranking contributors that
+ * run after retrieval (notably the bounded graph boost).  This is a
+ * calibration for the one search pipeline, not a claim that BM25 is
+ * comparable across different queries or FTS tables.
+ */
+const FTS_SCORE_FLOOR = 0.3;
+const FTS_SCORE_CEILING = 0.8;
+
+/**
+ * Convert FTS5's negative BM25 value into the lexical contribution used by
+ * this pipeline.  The transform is fixed and monotone: it depends only on a
+ * row's own BM25 value, so appending weaker candidates cannot rewrite an
+ * existing row's score.  A relevance of one is halfway through the available
+ * lexical range; larger relevance approaches, but never reaches, the ceiling.
+ *
+ * FTS5 produces finite non-positive values in normal operation.  Keeping the
+ * defensive cases here finite makes this boundary safe if a driver or fixture
+ * hands us an invalid value: `-Infinity` is the strongest possible match,
+ * while NaN, +Infinity, and positive scores contribute no lexical evidence.
+ */
+function stableFtsScore(bm25Score: number): number {
+  if (bm25Score === Number.NEGATIVE_INFINITY) return FTS_SCORE_CEILING;
+  if (!Number.isFinite(bm25Score) || bm25Score >= 0) return FTS_SCORE_FLOOR;
+
+  const relevance = -bm25Score;
+  return FTS_SCORE_FLOOR + (FTS_SCORE_CEILING - FTS_SCORE_FLOOR) * (relevance / (1 + relevance));
+}
+
 export function normalizeFtsScores(results: DbSearchResult[]): Map<number, { score: number; result: DbSearchResult }> {
   const ftsScoreMap = new Map<number, { score: number; result: DbSearchResult }>();
-  if (results.length === 0) return ftsScoreMap;
-
-  const bestBm25 = results[0]!.bm25Score;
-  const worstBm25 = results[results.length - 1]!.bm25Score;
-  const range = bestBm25 - worstBm25;
 
   for (const result of results) {
-    const normalized = range !== 0 ? (result.bm25Score - worstBm25) / range : 1.0;
-    const ftsScore = 0.3 + normalized * 0.7;
-    ftsScoreMap.set(result.id, { score: ftsScore, result });
+    ftsScoreMap.set(result.id, { score: stableFtsScore(result.bm25Score), result });
   }
 
   return ftsScoreMap;
@@ -194,9 +217,8 @@ export function applyRankingRules(options: RankEntriesOptions): RankedEntryInput
     applyRelaxedLexicalScoreCeiling(item, queryTokens);
     // SPEC-5: demoting belief states (superseded/contradicted/archived/
     // deprecated) cap the FINAL score. The additive belief penalty inside the
-    // multiplicative boost sum cannot overcome the FTS min-max normalization
-    // spread, so without the ceiling a superseded incumbent that is the best
-    // keyword match outranks its own correction forever.
+    // multiplicative boost sum can still overwhelm an additive belief penalty,
+    // so without the ceiling a superseded incumbent can outrank its correction.
     applyBeliefStateScoreCeiling(item);
   }
 
