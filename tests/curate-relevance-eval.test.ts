@@ -63,7 +63,14 @@ describe("curate relevance improvements", () => {
       expect(theDocker.some((ref) => ref.includes("docker"))).toBe(true);
       expect(howDocker.length).toBeGreaterThan(BASELINE.howDocker.length);
       expect(howDocker.some((ref) => ref.includes("docker"))).toBe(true);
-      expect(dockerHomelab.length).toBeLessThan(BASELINE.dockerHomelab.length);
+      // The lexical candidate pool no longer stops at the first tier that
+      // matches anything at all, so "docker homelab" now surfaces a second,
+      // genuinely distinct Docker asset instead of terminating after the
+      // single strict hit — recall grew without reintroducing the
+      // docker-homelab family redundancy the occupancy check above still
+      // guards against.
+      expect(dockerHomelab.length).toBeGreaterThan(1);
+      expect(familyOccupancy(dockerHomelab, "docker-homelab")).toBe(1);
     } finally {
       storage.cleanup();
     }

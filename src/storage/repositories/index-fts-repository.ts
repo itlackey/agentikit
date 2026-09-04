@@ -74,13 +74,29 @@ export function searchFts(
   // tier is not re-added when a looser tier also matches it.
   const results: DbSearchResult[] = [];
   const seenIds = new Set<number>();
+  // `normalizeFtsScores` (ranking.ts) reads this array's first and last
+  // element as the overall best/worst raw bm25 and interpolates every score
+  // linearly between them — it does not re-derive min/max from the whole
+  // array. Each tier's bm25 values live on their own scale (a thin match
+  // against a strict multi-term AND can score worse, numerically, than a
+  // strong single-term OR hit), so simply appending tiers can hand that
+  // function a "worst" that is actually better than an earlier "best". A
+  // looser tier's scores are nudged just far enough past the worst score
+  // collected so far to guarantee the array stays monotonically non-improving
+  // — preserving both tier precedence and each tier's own internal ordering.
+  let worstBm25SoFar: number | undefined;
 
   const collect = (tierResults: DbSearchResult[]): void => {
+    if (tierResults.length === 0) return;
+    const tierBest = tierResults[0]!.bm25Score;
+    const offset = worstBm25SoFar !== undefined && tierBest < worstBm25SoFar ? worstBm25SoFar - tierBest + 1e-6 : 0;
     for (const result of tierResults) {
       if (results.length >= limit) return;
       if (seenIds.has(result.id)) continue;
       seenIds.add(result.id);
-      results.push(result);
+      const adjusted = offset !== 0 ? { ...result, bm25Score: result.bm25Score + offset } : result;
+      results.push(adjusted);
+      worstBm25SoFar = adjusted.bm25Score;
     }
   };
 

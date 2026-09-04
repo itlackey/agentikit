@@ -154,13 +154,16 @@ describe("Fuzzy prefix fallback in searchFts", () => {
       rebuildFts(db);
 
       // "deploy kube" — "deploy" matches exactly, "kube" needs prefix fallback.
-      // Should find "deploy-kubernetes" because "deploy" AND "kube*" matches.
+      // "deploy-kubernetes" matches "deploy" AND "kube*" and leads from the
+      // stricter prefix tier; "deploy-docker" only shares "deploy" and is
+      // topped up from the looser relaxed-OR tier behind it.
       const results = searchFts(db, "deploy kube", 10);
       expect(results.length).toBeGreaterThanOrEqual(1);
       const names = results.map((r) => r.entry.name);
       expect(names).toContain("deploy-kubernetes");
-      // "deploy-docker" should NOT match since "kube*" doesn't match "docker"
-      expect(names).not.toContain("deploy-docker");
+      expect(names.indexOf("deploy-kubernetes")).toBeLessThan(names.indexOf("deploy-docker"));
+      expect(results.find((r) => r.entry.name === "deploy-kubernetes")?.lexicalMatch).toBe("prefix");
+      expect(results.find((r) => r.entry.name === "deploy-docker")?.lexicalMatch).toBe("relaxed");
     } finally {
       closeDatabase(db);
     }

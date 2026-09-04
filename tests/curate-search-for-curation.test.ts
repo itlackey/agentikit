@@ -27,7 +27,7 @@ async function withIndexedStash<T>(fn: (stashDir: string) => Promise<T>): Promis
 }
 
 describe("searchForCuration", () => {
-  test("falls back when the initial phrase hit is weak", async () => {
+  test("finds both the full-phrase hit and a partial-term match without needing a fallback pass", async () => {
     await withIndexedStash(async (stashDir) => {
       writeFile(
         path.join(stashDir, "commands", "cleanup-audit.md"),
@@ -49,7 +49,12 @@ describe("searchForCuration", () => {
       const refs = result.hits.map((hit) => ("ref" in hit ? hit.ref : `registry:${hit.id}`));
       expect(refs).toContain("scripts/docker-clean.sh");
       expect(refs).toContain("commands/cleanup-audit");
-      expect(refs.indexOf("scripts/docker-clean.sh")).toBeLessThan(refs.indexOf("commands/cleanup-audit"));
+      // "commands/cleanup-audit" contains all three query words together and
+      // leads on its own merits; "scripts/docker-clean.sh" only shares
+      // "docker" and is recovered by the candidate pool's looser tier — the
+      // lexical candidate pool now supplies both directly, so curate's
+      // separate single-token fallback pass never has to run.
+      expect(refs.indexOf("commands/cleanup-audit")).toBeLessThan(refs.indexOf("scripts/docker-clean.sh"));
     });
   });
 

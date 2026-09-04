@@ -121,7 +121,12 @@ describe("progressive lexical query planning (#819)", () => {
     expect(plan.relaxed).toBeUndefined();
   });
 
-  test("uses one strict → prefix → relaxed pipeline without changing strict top-1", () => {
+  // Tiers no longer stand in for one another (searchFts unions them up to
+  // `limit`), but tier precedence still means whichever tier produces the
+  // query's best hit keeps that hit in first place — this pins that per-query
+  // top-1 attribution across normalization, prefix expansion, and relaxed
+  // recovery.
+  test("keeps each query's strict top-1 attributed to the tier it actually matched", () => {
     const db = makeDb();
     try {
       insert(db, "identifier", {
@@ -239,6 +244,59 @@ describe("progressive lexical query planning (#819)", () => {
       expect(results.every((result) => result.lexicalMatch === "exact")).toBe(true);
       const names = results.map((result) => result.entry.name).sort();
       expect(names).toEqual(["borrelia-first", "borrelia-second"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("a document matching more than one tier is deduplicated to a single row", () => {
+    const db = makeDb();
+    try {
+      // Only matches the prefix AND-query, but its prefixed tokens also
+      // satisfy the relaxed OR-query — both tiers run (the exact tier misses
+      // entirely) since one row is far short of the limit.
+      insert(db, "prefix-only-hit", {
+        type: "knowledge",
+        name: "prefix-only-hit",
+        description: "zeltron9 quixor9 secondary reference",
+      });
+
+      const results = searchFts(db, "zeltron quixor", 10);
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.entry.name).toBe("prefix-only-hit");
+      // Collected under the stricter (prefix) tier it first matched, not
+      // overwritten by the looser relaxed pass that finds it again.
+      expect(results[0]?.lexicalMatch).toBe("prefix");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("each row in a mixed-tier pool reports the tier it actually came from", () => {
+    const db = makeDb();
+    try {
+      insert(db, "exact-hit", {
+        type: "knowledge",
+        name: "exact-hit",
+        description: "zeltron quixor primary reference",
+      });
+      insert(db, "prefix-hit", {
+        type: "knowledge",
+        name: "prefix-hit",
+        description: "zeltron9 quixor9 secondary reference",
+      });
+      insert(db, "relaxed-hit", {
+        type: "knowledge",
+        name: "relaxed-hit",
+        description: "zeltron only, tertiary reference with no partner term",
+      });
+
+      const byName = new Map(searchFts(db, "zeltron quixor", 10).map((result) => [result.entry.name, result]));
+
+      expect(byName.get("exact-hit")?.lexicalMatch).toBe("exact");
+      expect(byName.get("prefix-hit")?.lexicalMatch).toBe("prefix");
+      expect(byName.get("relaxed-hit")?.lexicalMatch).toBe("relaxed");
     } finally {
       db.close();
     }
