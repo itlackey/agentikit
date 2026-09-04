@@ -251,7 +251,10 @@ describe("curate command", () => {
     const output = await runCli(stashDir, ["curate", "docker homelab", "--format=json", "--detail=full"]);
     const json = JSON.parse(output) as { items: Array<Record<string, unknown>> };
 
-    expect(String(json.items[0]?.ref)).toMatch(/^skills\/docker-homelab#akm-fragment-/);
+    // A fragment can win the lexical match, but a skill is instruction-bearing:
+    // its public ref stays on the complete parent so the advertised action does
+    // not invite callers to execute an incomplete instruction set.
+    expect(String(json.items[0]?.ref)).toBe("skills/docker-homelab");
     const familyItems = json.items.filter((item) => {
       const baseRef = String(item.ref).split("#", 1)[0];
       return baseRef === "skills/docker-homelab" || baseRef?.includes("knowledge/skills/docker-homelab/references/");
@@ -281,7 +284,7 @@ describe("curate command", () => {
     const json = JSON.parse(output) as { items: Array<Record<string, unknown>> };
 
     expect(json.items.length).toBeGreaterThan(0);
-    expect(String(json.items[0]?.ref)).toMatch(/^skills\/docker-homelab#akm-fragment-/);
+    expect(String(json.items[0]?.ref)).toBe("skills/docker-homelab");
   });
 
   test("docker deploy no longer surfaces release-manager filler", async () => {
