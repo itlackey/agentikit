@@ -171,15 +171,18 @@ separate from durable runtime state.
 `index.db` is ephemeral — fully rebuildable from sources by `akm index`. The
 current generation is exactly v23. `ensureSchema()`
 (`src/storage/repositories/index-schema.ts`) accepts an existing generation
-only when both `index_meta.version` and the complete `entries` fingerprint
-match the canonical contract, including `AUTOINCREMENT`, required columns,
-constraints, indexes, collation, and hidden-column absence. An incompatible
-generation is discarded: AKM drops the entry-dependent derived tables and
-caches, creates the canonical v23 schema, and rebuilds it from current sources
-and durable usage state. In particular, v22 is discarded because it predates
-the isolated fragment FTS population; v21 also predates entry-owned synchronous
-FTS publication and may contain stale dirty-queue state. Current read-only and existing-database openers reject
-an incompatible generation instead of serving it. Durable workflow, task,
+only when `index_meta.version`, the complete `entries` fingerprint, and the
+three logical search surfaces (`entries_fts`, `entry_fragments`, and
+`entry_fragments_fts`) match the canonical contract. The fingerprint includes
+`AUTOINCREMENT`, required columns, constraints, indexes, collation,
+hidden-column absence, and exact regular/virtual-table DDL for the search
+surfaces. An incompatible generation is discarded: AKM drops the
+entry-dependent derived tables and caches, creates the canonical v23 schema,
+and rebuilds it from current sources and durable usage state. In particular,
+v22 is discarded because it predates the isolated fragment FTS population; v21
+also predates entry-owned synchronous FTS publication and may contain stale
+dirty-queue state. Current read-only and existing-database openers reject an
+incompatible generation instead of serving it. Durable workflow, task,
 proposal, event, and usage state in `state.db` is never touched by this path.
 
 Workflow `.md` and `.yml` adapters compile directly to source IR version 1.

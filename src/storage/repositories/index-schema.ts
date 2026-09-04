@@ -257,8 +257,6 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // index.db is derived state, so remove the obsolete table on every open.
   db.exec("DROP TABLE IF EXISTS workflow_documents");
 
-  setMeta(db, "version", String(DB_VERSION));
-
   // BLOB-based embedding storage (always available, no sqlite-vec needed)
   db.exec(`
     CREATE TABLE IF NOT EXISTS embeddings (
@@ -453,6 +451,11 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
   // Registry index cache table — caches remote registry index documents so
   // `akm search` does not hit the network on every invocation.
   db.exec(REGISTRY_INDEX_CACHE_DDL);
+
+  // Write the generation stamp only after every required DDL surface exists.
+  // A crash before this point leaves an unversioned generation that the next
+  // writable open safely rebuilds instead of admitting a partial v23 index.
+  setMeta(db, "version", String(DB_VERSION));
 }
 
 /**

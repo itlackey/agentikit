@@ -631,7 +631,11 @@ remaining candidate measurement at that exact evaluator revision.
 before any query. Older/unknown generations take one “no usable index; run
 `akm index`” path; newer generations take one “upgrade akm” path. Do not advise
 an older binary to rebuild a newer index, and do not conflate unreadable paths
-with absent ones. No known-incompatible handle reaches a query.
+with absent ones. A v23 stamp is canonical only with the exact `entries`,
+`entries_fts`, `entry_fragments`, and `entry_fragments_fts` logical surfaces,
+and is written only after required schema initialization succeeds. A partial or
+impersonating v23 cache is rejected by readers and rebuilt by the managed
+writer. No known-incompatible handle reaches a query.
 
 **Phase 2 — #933: stable lexical scoring.** The fixed monotone mapping and
 public projection satisfy the invariants from §3.1. The first calibration

@@ -11,9 +11,14 @@ import { deriveEntryProvenance } from "../../../src/indexer/installations";
 import { ensureUsageEventsSchema } from "../../../src/indexer/usage/usage-events";
 import type { Database } from "../../../src/storage/database";
 import { openDatabase } from "../../../src/storage/database";
-import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
+import {
+  closeDatabase,
+  openExistingDatabase,
+  openIndexDatabase,
+  openReadonlyExistingDatabase,
+} from "../../../src/storage/repositories/index-connection";
 import { relinkUsageEvents, upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
-import { DB_VERSION } from "../../../src/storage/repositories/index-schema";
+import { DB_VERSION, ensureSchema } from "../../../src/storage/repositories/index-schema";
 
 const CURRENT_ENTRY_COLUMNS: string[] = [
   "id",
@@ -67,6 +72,32 @@ const CANONICAL_ENTRY_INDEXES_DDL = `
   CREATE INDEX idx_entries_type ON entries(type);
   CREATE INDEX idx_entries_file_path ON entries(file_path);
   CREATE INDEX idx_entries_derived_from ON entries(derived_from);
+`;
+
+const CANONICAL_PARENT_FTS_DDL = `
+  CREATE VIRTUAL TABLE entries_fts USING fts5(
+    entry_id UNINDEXED,
+    name,
+    description,
+    tags,
+    hints,
+    content,
+    tokenize='porter unicode61'
+  );
+`;
+
+const CANONICAL_FRAGMENT_SURFACES_DDL = `
+  CREATE TABLE entry_fragments (
+    entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+    safe_markdown TEXT NOT NULL
+  );
+  CREATE VIRTUAL TABLE entry_fragments_fts USING fts5(
+    entry_id UNINDEXED,
+    fragment_id UNINDEXED,
+    fragment_ordinal UNINDEXED,
+    content,
+    tokenize='porter unicode61'
+  );
 `;
 
 function withTempIndex(run: (dbPath: string) => void): void {
@@ -145,6 +176,26 @@ function expectCanonicalGenerationRebuilt(dbPath: string): void {
   }
 }
 
+function expectReadOpenerToRejectPartialGeneration(dbPath: string): void {
+  let existing: Database | undefined;
+  try {
+    expect(() => {
+      existing = openExistingDatabase(dbPath);
+    }).toThrow(/not usable with this akm's derived schema/);
+  } finally {
+    if (existing) closeDatabase(existing);
+  }
+
+  let readonly: Database | undefined;
+  try {
+    expect(() => {
+      readonly = openReadonlyExistingDatabase(dbPath);
+    }).toThrow(/not usable with this akm's derived schema/);
+  } finally {
+    if (readonly) closeDatabase(readonly);
+  }
+}
+
 describe("canonical derived-index entry schema", () => {
   test("a fresh index has one current entries shape and no transitional columns", () => {
     withTempIndex((dbPath) => {
@@ -152,6 +203,27 @@ describe("canonical derived-index entry schema", () => {
       closeDatabase(db);
 
       expect(entryColumns(dbPath)).toEqual(CURRENT_ENTRY_COLUMNS);
+    });
+  });
+
+  test("does not stamp a generation until every required DDL surface succeeds", () => {
+    withTempIndex((dbPath) => {
+      const partial = openDatabase(dbPath);
+      try {
+        // This fails at a later required DDL surface. Before the v23 ordering
+        // fix, the version was already stamped just after entries creation.
+        partial.exec("CREATE VIEW index_dir_state AS SELECT 1 AS placeholder");
+        expect(() => ensureSchema(partial, undefined)).toThrow(/Cannot add a column to a view/);
+      } finally {
+        partial.close();
+      }
+
+      const raw = openDatabase(dbPath, { readonly: true, create: false });
+      try {
+        expect(raw.prepare("SELECT value FROM index_meta WHERE key = 'version'").get()).toBeNull();
+      } finally {
+        raw.close();
+      }
     });
   });
 
@@ -284,6 +356,99 @@ describe("canonical derived-index entry schema", () => {
 
       expect(entryColumns(dbPath)).toEqual(CURRENT_ENTRY_COLUMNS);
     });
+  });
+
+  test("a stamped v23 generation missing or impersonating required FTS surfaces is rejected for reads and rebuilt", () => {
+    const partialSearchSurfaceSchemas = [
+      {
+        name: "missing parent FTS",
+        ddl: CANONICAL_FRAGMENT_SURFACES_DDL,
+      },
+      {
+        name: "ordinary table impersonating parent FTS",
+        ddl: `
+          CREATE TABLE entries_fts (
+            entry_id INTEGER,
+            name TEXT,
+            description TEXT,
+            tags TEXT,
+            hints TEXT,
+            content TEXT
+          );
+          ${CANONICAL_FRAGMENT_SURFACES_DDL}
+        `,
+      },
+      {
+        name: "missing fragment tables",
+        ddl: CANONICAL_PARENT_FTS_DDL,
+      },
+      {
+        name: "fragment source missing its safe Markdown projection",
+        ddl: `
+          ${CANONICAL_PARENT_FTS_DDL}
+          CREATE TABLE entry_fragments (
+            entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE
+          );
+          CREATE VIRTUAL TABLE entry_fragments_fts USING fts5(
+            entry_id UNINDEXED,
+            fragment_id UNINDEXED,
+            fragment_ordinal UNINDEXED,
+            content,
+            tokenize='porter unicode61'
+          );
+        `,
+      },
+      {
+        name: "ordinary table impersonating fragment FTS",
+        ddl: `
+          ${CANONICAL_PARENT_FTS_DDL}
+          CREATE TABLE entry_fragments (
+            entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+            safe_markdown TEXT NOT NULL
+          );
+          CREATE TABLE entry_fragments_fts (
+            entry_id INTEGER,
+            fragment_id TEXT,
+            fragment_ordinal INTEGER,
+            content TEXT
+          );
+        `,
+      },
+    ];
+
+    for (const partial of partialSearchSurfaceSchemas) {
+      withTempIndex((dbPath) => {
+        seedStampedEntriesSchema(dbPath, CANONICAL_ENTRIES_DDL, `${CANONICAL_ENTRY_INDEXES_DDL}\n${partial.ddl}`);
+
+        expectReadOpenerToRejectPartialGeneration(dbPath);
+
+        const rebuilt = openIndexDatabase(dbPath);
+        try {
+          expect(rebuilt.prepare("SELECT value FROM index_meta WHERE key = 'version'").get()).toEqual({
+            value: String(DB_VERSION),
+          });
+          expect(rebuilt.prepare("SELECT sql FROM sqlite_master WHERE name = 'entry_fragments'").get()).toEqual({
+            sql: expect.stringContaining("entry_id INTEGER PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE"),
+          });
+          expect(rebuilt.prepare("SELECT sql FROM sqlite_master WHERE name = 'entry_fragments_fts'").get()).toEqual({
+            sql: expect.stringContaining("CREATE VIRTUAL TABLE entry_fragments_fts USING fts5"),
+          });
+          expect(rebuilt.prepare("SELECT sql FROM sqlite_master WHERE name = 'entries_fts'").get()).toEqual({
+            sql: expect.stringContaining("CREATE VIRTUAL TABLE entries_fts USING fts5"),
+          });
+        } finally {
+          closeDatabase(rebuilt);
+        }
+
+        // The same reader gates that rejected the partial stamp must accept
+        // the fully rebuilt generation without another writable open.
+        const existing = openExistingDatabase(dbPath);
+        closeDatabase(existing);
+        const readonly = openReadonlyExistingDatabase(dbPath);
+        expect(readonly).toBeDefined();
+        if (readonly) closeDatabase(readonly);
+      });
+    }
   });
 
   test("exact column names cannot disguise missing types, NOT NULL constraints, or the primary key", () => {
