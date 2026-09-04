@@ -590,9 +590,11 @@ falsified union, an uncalibrated weight recommendation, and the real length fix.
 **Phase 0 — tracker/evidence triage (complete in this review).** #929 and draft
 PR #931 are closed with their measured result and the branch retained.
 #748/#935/#936 are on 0.10.0. #937 is the only fragment-indexing deliverable in
-0.9.14. The paired 0.9.13 control has been reproduced at evaluator PR #16's
-head; the final comparator SHA remains pending the diagnostic corrections in
-§7. Re-run that control beside every candidate measurement.
+0.9.14. Evaluator PR #16 supplied the saturation disclosure and investigation
+record, but not a release comparator. The hardened paired gate is merged in
+`itlackey/akm-eval` PR #17 at
+`d520c6dec1f34dc3f8d4e4d2675186566b158437`; re-run the control beside every
+candidate measurement at that exact evaluator revision.
 
 **Phase 1 — #934: incompatible read generations.** Classify the generation
 before any query. Older/unknown generations take one “no usable index; run
@@ -640,13 +642,13 @@ and add no commits after evidence is collected.
 
 **Pin the external harness.** The probe is in `itlackey/akm-eval`, not this
 repository's `scripts/akm-eval`. Record the comparator commit for every result.
-PR #16 at `ddb3624e5feb63deece09b85cf59112ce6e446db` first added a
-`tiedTopKRate` diagnostic. Review found that implementation insufficient: it
-used the known-stale historical reference as a release verdict, treated guard
-trips as warnings, counted underfilled result sets, and had no direct tests.
-The corrected evaluator work lives on `release/0.9.14-eval-readiness`; pin its
-final reviewed commit, not the original PR head, before collecting release
-evidence.
+PR #16 at `160b173a1168e63e47e18e8ebe6e15b7a69a03e9` first added the
+`tiedTopKRate` diagnostic and preserved the saturation investigation. Review
+found that insufficient as a release gate: its historical reference was known
+stale, and it did not bind a paired control/candidate run or directly prove
+storage-name independence. The corrected evaluator is merged as PR #17 at
+`d520c6dec1f34dc3f8d4e4d2675186566b158437`. Pin that exact commit for every
+remaining #930, #937, and final-release comparison.
 
 **Use the pre-release command form.** `bin/probe <version>` installs a published
 npm version and cannot test an unshipped checkout. From the pinned `akm-eval`
@@ -822,4 +824,4 @@ the SHA and run URL in the milestone description before release.
 | declared relations not fed into graph (#935) | `scan/doc-to-entry.ts:68` (`links`), `metadata.ts:474`, `:169-172`, `:193`, `lint/base-linter.ts:479` |
 | lexical fragment implementation (#937) | shared splitter, `index-fts-repository.ts`, `show.ts`, index schema |
 | rejected #929 experiment | branch `issue/0.9.13-search` @ `8c61f1f0`, draft PR #931 |
-| retrieval probe | paired attribution audited at `itlackey/akm-eval` PR #16 `ddb3624e`; final comparator pending saturation-test and identity-permutation corrections |
+| retrieval probe | release comparator `itlackey/akm-eval` PR #17 at `d520c6dec1f34dc3f8d4e4d2675186566b158437`; PR #16 is the saturation-disclosure precursor only |
