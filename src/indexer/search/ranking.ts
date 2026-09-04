@@ -77,13 +77,20 @@ export interface RankEntriesOptions {
  */
 const FTS_SCORE_FLOOR = 0.3;
 const FTS_SCORE_CEILING = 0.8;
+// Broad FTS5 queries in the SQLite calibration fixture land around 1e-6.
+// Keep this fixed: it calibrates one score, never the result set.
+const FTS_BM25_REFERENCE = 0.000001;
+// A slow log curve preserves rare-term separation and contributor headroom.
+const FTS_LOG_SHAPE = 3;
 
 /**
  * Convert FTS5's negative BM25 value into the lexical contribution used by
  * this pipeline.  The transform is fixed and monotone: it depends only on a
  * row's own BM25 value, so appending weaker candidates cannot rewrite an
- * existing row's score.  A relevance of one is halfway through the available
- * lexical range; larger relevance approaches, but never reaches, the ceiling.
+ * existing row's score. FTS5 commonly emits relevance near 1e-6 for broad
+ * queries, so first put relevance on a log scale around that observed value.
+ * The shape constant intentionally makes the curve approach its ceiling
+ * slowly: rare-term scores retain separation instead of all reading as 0.8.
  *
  * FTS5 produces finite non-positive values in normal operation.  Keeping the
  * defensive cases here finite makes this boundary safe if a driver or fixture
@@ -95,7 +102,10 @@ function stableFtsScore(bm25Score: number): number {
   if (!Number.isFinite(bm25Score) || bm25Score >= 0) return FTS_SCORE_FLOOR;
 
   const relevance = -bm25Score;
-  return FTS_SCORE_FLOOR + (FTS_SCORE_CEILING - FTS_SCORE_FLOOR) * (relevance / (1 + relevance));
+  const scaledLogRelevance = Math.log1p(relevance / FTS_BM25_REFERENCE);
+  if (!Number.isFinite(scaledLogRelevance)) return FTS_SCORE_CEILING;
+  const normalized = scaledLogRelevance / (scaledLogRelevance + FTS_LOG_SHAPE);
+  return FTS_SCORE_FLOOR + (FTS_SCORE_CEILING - FTS_SCORE_FLOOR) * normalized;
 }
 
 export function normalizeFtsScores(results: DbSearchResult[]): Map<number, { score: number; result: DbSearchResult }> {
