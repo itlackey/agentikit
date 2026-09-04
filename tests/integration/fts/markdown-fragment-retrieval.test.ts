@@ -11,6 +11,7 @@ import {
   projectMarkdownFragmentContent,
   setMarkdownFragmentContent,
 } from "../../../src/indexer/passes/metadata";
+import { applyRankingRules } from "../../../src/indexer/search/ranking";
 import { buildSearchText } from "../../../src/indexer/search/search-fields";
 import type { Database } from "../../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
@@ -260,6 +261,39 @@ describe("isolated lexical Markdown fragments (#937)", () => {
         .prepare("SELECT document_json FROM entries WHERE item_ref = ?")
         .get("fixture//knowledge/structured") as { document_json: string };
       expect(JSON.parse(parent.document_json)).toMatchObject({ toc: entry.toc, parameters: entry.parameters });
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("many matching fragments contribute parent ranking signals exactly once", () => {
+    const db = open();
+    try {
+      const repeated = Array.from({ length: 90 }, () => `contributorneedle ${"filler ".repeat(260)}`).join("\n\n");
+      put(db, "many-fragments", repeated);
+      const result = searchFts(db, "contributorneedle", 5);
+      expect(result).toHaveLength(1);
+      const hit = result[0]!;
+      const ranked = applyRankingRules({
+        db,
+        query: "contributorneedle",
+        graphContext: null,
+        items: [
+          {
+            id: hit.id,
+            entry: { ...hit.entry, quality: "curated" },
+            filePath: hit.filePath,
+            score: 0.5,
+            rankingMode: "fts",
+            lexicalMatch: hit.lexicalMatch,
+          },
+        ],
+      });
+      expect(ranked).toHaveLength(1);
+      // One parent item reaches contributor application regardless of 90
+      // matching children; the fixed curated contribution is therefore not
+      // multiplied by fragment count.
+      expect(ranked[0]!.score).toBeCloseTo(0.635, 6);
     } finally {
       closeDatabase(db);
     }
