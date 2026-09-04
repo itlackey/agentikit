@@ -119,6 +119,33 @@ describe("isolated lexical Markdown fragments (#937)", () => {
     }
   });
 
+  test("keeps every tied distinct fragment parent for downstream ranking", () => {
+    const db = open();
+    try {
+      for (const name of ["fragment-a", "fragment-b", "fragment-c"]) {
+        // The parent projection deliberately does not contain the needle: this
+        // exercises the fragment boundary rather than inheriting parent FTS's
+        // already-covered #940 expansion.
+        const entry: IndexDocument = { name, type: "knowledge", content: "ordinary parent text" };
+        setMarkdownFragmentContent(entry, projectMarkdownFragmentContent("fragmentboundary proof"));
+        upsertEntry(
+          db,
+          `/fixture/knowledge/${name}.md`,
+          entry,
+          buildSearchText(entry),
+          deriveEntryProvenance({ bundleId: "fixture", componentId: "fixture", adapterId: "akm" }, "knowledge", name),
+        );
+      }
+      expect(searchFts(db, "fragmentboundary", 1).map((hit) => hit.entry.name)).toEqual([
+        "fragment-a",
+        "fragment-b",
+        "fragment-c",
+      ]);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
   test("uses a single SQLite parent-window plan under broad monopoly pressure", () => {
     const db = open();
     try {
@@ -133,14 +160,20 @@ describe("isolated lexical Markdown fragments (#937)", () => {
              WHERE entry_fragments_fts MATCH ?
            ), ranked AS (
              SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY bm25Score, fragment_ordinal, fragment_id) AS parentRank FROM matches
-           ) SELECT * FROM ranked WHERE parentRank = 1 ORDER BY bm25Score, id LIMIT ?`,
+           ), parents AS (
+             SELECT * FROM ranked WHERE parentRank = 1
+           ), boundary AS (
+             SELECT bm25Score FROM parents ORDER BY bm25Score LIMIT 1 OFFSET ?
+           ) SELECT * FROM parents WHERE NOT EXISTS (SELECT 1 FROM boundary) OR bm25Score <= (SELECT bm25Score FROM boundary) ORDER BY bm25Score, id`,
         )
-        .all("broadneedle", 10) as Array<{ detail: string }>;
+        .all("broadneedle", 9) as Array<{ detail: string }>;
       expect(plan.some((row) => /VIRTUAL TABLE|entry_fragments_fts/i.test(row.detail))).toBe(true);
       const started = performance.now();
       const hits = searchFts(db, "broadneedle", 10);
       const elapsedMs = performance.now() - started;
-      expect(new Set(hits.map((hit) => hit.id)).size).toBe(10);
+      // The tie-preserving candidate rule may return more than K distinct
+      // parents, but a fragmented monopoly still cannot consume a parent slot.
+      expect(new Set(hits.map((hit) => hit.id)).size).toBeGreaterThanOrEqual(10);
       // CI budget, deliberately roomy; this catches a return to client OFFSET
       // pagination without encoding machine-specific microbenchmarks.
       expect(elapsedMs).toBeLessThan(1000);

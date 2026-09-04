@@ -222,7 +222,7 @@ function runFtsQuery(
   const fragmentResults = hasFragmentFts(db)
     ? runFragmentQuery(db, ftsQuery, lexicalMatch, limit, entryType, excludes)
     : [];
-  return mergeParentAndFragmentResults(results, fragmentResults, limit);
+  return mergeParentAndFragmentResults(results, fragmentResults);
 }
 
 function hasFragmentFts(db: Database): boolean {
@@ -283,25 +283,34 @@ function runFragmentQuery(
         ? `AND e.type NOT IN (${excludes.map(() => "?").join(",")})`
         : "";
   const filterParams = entryType && entryType !== "any" ? [entryType] : excludes;
-  // Select the winning child per parent inside SQLite before the top-K limit.
-  // This has one FTS query and no OFFSET walk: a pathological long document
-  // cannot cause unbounded client work or occupy K result slots. SQLite still
-  // ranks the MATCH set (necessary to prove the best parent child), but only
-  // materializes K distinct parents across the repository boundary.
+  const candidateBoundaryOffset = Math.max(0, limit - 1);
+  // Select the winning child per parent inside SQLite before finding the
+  // candidate boundary. A document with many matching fragments therefore
+  // occupies one parent slot, while a boundary tie retains every parent for
+  // the TypeScript ranker to decide with its non-BM25 contributors. This has
+  // one FTS query and no OFFSET walk; the returned boundary is intentionally
+  // data-bound for a pathological all-tied query, just like parent FTS.
   const sql = `
-    WITH matches AS (
+    WITH matches AS MATERIALIZED (
       SELECT e.id, e.file_path AS filePath, e.document_json AS documentJson, e.search_text AS searchText,
              e.item_ref AS itemRef, e.bundle_id AS bundleId, e.concept_id AS conceptId, e.adapter_id AS adapterId,
              f.fragment_id AS fragmentId, f.fragment_ordinal AS fragmentOrdinal,
              bm25(entry_fragments_fts) AS bm25Score
       FROM entry_fragments_fts f JOIN entries e ON e.id = f.entry_id
       WHERE entry_fragments_fts MATCH ? ${filter}
-    ), ranked AS (
+    ), ranked AS MATERIALIZED (
       SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY bm25Score ASC, fragmentOrdinal ASC, fragmentId ASC) AS parentRank
       FROM matches
+    ), parents AS MATERIALIZED (
+      SELECT * FROM ranked WHERE parentRank = 1
+    ), boundary AS (
+      SELECT bm25Score FROM parents ORDER BY bm25Score ASC LIMIT 1 OFFSET ?
     )
-    SELECT * FROM ranked WHERE parentRank = 1 ORDER BY bm25Score ASC, id ASC LIMIT ?`;
-  const rows = db.prepare(sql).all(ftsQuery, ...filterParams, limit) as Array<{
+    SELECT * FROM parents
+    WHERE NOT EXISTS (SELECT 1 FROM boundary)
+       OR bm25Score <= (SELECT bm25Score FROM boundary)
+    ORDER BY bm25Score ASC, id ASC`;
+  const rows = db.prepare(sql).all(ftsQuery, ...filterParams, candidateBoundaryOffset) as Array<{
     id: number;
     filePath: string;
     documentJson: string;
@@ -327,20 +336,16 @@ function runFragmentQuery(
   return results;
 }
 
-function mergeParentAndFragmentResults(
-  parents: DbSearchResult[],
-  fragments: DbSearchResult[],
-  limit: number,
-): DbSearchResult[] {
+function mergeParentAndFragmentResults(parents: DbSearchResult[], fragments: DbSearchResult[]): DbSearchResult[] {
   const winners = new Map<number, DbSearchResult>();
   for (const parent of parents) winners.set(parent.id, { ...parent, lexicalScore: stableFtsScore(parent.bm25Score) });
   for (const fragment of fragments) {
     const existing = winners.get(fragment.id);
     if (!existing || (fragment.lexicalScore ?? 0) > (existing.lexicalScore ?? 0)) winners.set(fragment.id, fragment);
   }
-  return [...winners.values()]
-    .sort((left, right) => (right.lexicalScore ?? 0) - (left.lexicalScore ?? 0) || left.id - right.id)
-    .slice(0, limit);
+  return [...winners.values()].sort(
+    (left, right) => (right.lexicalScore ?? 0) - (left.lexicalScore ?? 0) || left.id - right.id,
+  );
 }
 
 /**
