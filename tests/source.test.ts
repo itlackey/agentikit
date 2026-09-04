@@ -378,11 +378,16 @@ Creates a user.
       path.join(stashDir, "knowledge", "transcript.md"),
       `${Array.from({ length: 450 }, () => "background transcript").join(" ")}\n\ntranscriptuniquetoken evidence`,
     );
+    writeFile(
+      path.join(stashDir, "knowledge", "oversized-section.md"),
+      `# Oversized\n\n${Array.from({ length: 900 }, () => "section background").join(" ")}\n\noversizedsectiontoken evidence`,
+    );
     await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
       const cases: Array<[string, string]> = [
         ["preambleuniquetoken", "preambleuniquetoken"],
         ["duplicateuniquetoken", "duplicateuniquetoken"],
         ["transcriptuniquetoken", "transcriptuniquetoken"],
+        ["oversizedsectiontoken", "oversizedsectiontoken"],
       ];
       for (const [query, expected] of cases) {
         const hit = (await akmSearch({ query, type: "knowledge" })).hits[0];
