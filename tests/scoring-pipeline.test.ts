@@ -806,6 +806,61 @@ describe("Identity-independent final ranking ties", () => {
   });
 });
 
+// ── Issue #930: lexical-weight experiment guardrails ───────────────────────
+
+describe("Issue #930: production-shaped lexical weighting contracts", () => {
+  test("an exact asset-name lookup beats a competing authored description", async () => {
+    const stashDir = tmpStash();
+    // These are deliberately ordinary on-disk AKM assets, indexed through the
+    // real scanner and searched through the complete ranking pipeline.  #930
+    // may rebalance FTS columns, but it must not turn a direct asset lookup
+    // into a description-only match.
+    writeFile(
+      path.join(stashDir, "knowledge", "release-train.md"),
+      "---\ndescription: Routine operations notes\n---\n\n# Release train\n",
+    );
+    writeFile(
+      path.join(stashDir, "knowledge", "deployment-notes.md"),
+      "---\ndescription: release train release train release train handoff checklist\n---\n\n# Deployment notes\n",
+    );
+
+    await withTestIndex(stashDir, async () => {
+      const result = await akmSearch({ query: "release train", source: "local", limit: 1, skipLogging: true });
+      const hit = result.hits.find((candidate): candidate is SourceSearchHit => candidate.type !== "registry");
+      expect(hit?.name).toBe("release-train");
+    });
+  });
+
+  test("keeps authored and filename-fallback descriptions as distinct indexed provenance", async () => {
+    const stashDir = tmpStash();
+    const authoredPath = path.join(stashDir, "knowledge", "operations-note.md");
+    const fallbackPath = path.join(stashDir, "knowledge", "filename-fallback-marker.md");
+    writeFile(
+      authoredPath,
+      "---\ndescription: authored-provenance-marker for the release operator\n---\n\n# Operations note\n",
+    );
+    // No frontmatter: the scanner must synthesize a lower-confidence filename
+    // description.  It is intentionally not treated as the document opening.
+    writeFile(fallbackPath, "# Different heading\n\nBody text without the marker.\n");
+
+    await withTestIndex(stashDir, async () => {
+      const authored = await akmSearch({ query: "authored-provenance-marker", source: "local", skipLogging: true });
+      const fallback = await akmSearch({ query: "filename fallback marker", source: "local", skipLogging: true });
+      const authoredHit = authored.hits.find(
+        (candidate): candidate is SourceSearchHit => candidate.type !== "registry",
+      );
+      const fallbackHit = fallback.hits.find(
+        (candidate): candidate is SourceSearchHit => candidate.type !== "registry",
+      );
+
+      expect(authoredHit?.name).toBe("operations-note");
+      expect(authoredHit?.description).toBe("authored-provenance-marker for the release operator");
+      expect(fallbackHit?.name).toBe("filename-fallback-marker");
+      expect(fallbackHit?.description).toBe("filename fallback marker");
+    });
+  });
+});
+
 // ── Issue #15: "semantic" label for hybrid results ──────────────────────────
 
 describe("Issue #15: Hybrid ranking mode label", () => {
