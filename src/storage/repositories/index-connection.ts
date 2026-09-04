@@ -134,25 +134,44 @@ export function openExistingDatabase(dbPath?: string): Database {
   if (classifyPathAccess(resolvedPath).access === "absent") {
     throw new Error(`Index database not found at ${resolvedPath}. Run 'akm index' to build it.`);
   }
-  return openManagedDatabase({
+  const db = openManagedDatabase({
     path: resolvedPath,
     init: (db) => {
       loadVecExtension(db);
-      warnIfNonCanonicalIndexGeneration(db, resolvedPath);
     },
     create: false,
   });
+  try {
+    assertCanonicalIndexGeneration(db, resolvedPath);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
-function warnIfNonCanonicalIndexGeneration(db: Database, resolvedPath: string): void {
+/**
+ * Read callers must never receive a known-incompatible derived index.  The
+ * writable opener owns rebuilding an older generation; a reader can only
+ * report the one action that is safe for the direction of the mismatch.
+ */
+function assertCanonicalIndexGeneration(db: Database, resolvedPath: string): void {
   if (isCanonicalIndexGeneration(db)) return;
   const classification = classifyIndexGeneration(db);
-  warnOnce(
-    `index-read-noncanonical:${resolvedPath}`,
-    `Index database at ${resolvedPath} does not match this akm's derived schema (stored generation ` +
-      `${classification.storedVersion ?? "unknown"}; this binary understands ${CANONICAL_INDEX_DB_VERSION}). ` +
-      "Reading it as-is; a query that needs a table or column this generation lacks will fail on its own. " +
-      "Run 'akm index' to rebuild it for this binary.",
+  const stored = classification.storedVersion ?? "unknown";
+  if (classification.status === "newer") {
+    throw new ConfigError(
+      `Index database at ${resolvedPath} was built by a newer akm (stored generation ${stored}; ` +
+        `this binary understands ${CANONICAL_INDEX_DB_VERSION}). Upgrade akm to use this index.`,
+      "INDEX_SCHEMA_INCOMPATIBLE",
+      "Upgrade akm to a version that understands this index generation.",
+    );
+  }
+  throw new ConfigError(
+    `Index database at ${resolvedPath} is not usable with this akm's derived schema (stored generation ${stored}; ` +
+      `this binary understands ${CANONICAL_INDEX_DB_VERSION}). Run 'akm index' to rebuild it.`,
+    "INDEX_SCHEMA_INCOMPATIBLE",
+    "Run `akm index` to rebuild the derived index from the currently materialized sources.",
   );
 }
 
@@ -223,7 +242,7 @@ export function openReadonlyExistingDatabase(
   // connection, so apply just that one.
   try {
     db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
-    warnIfNonCanonicalIndexGeneration(db, resolvedPath);
+    assertCanonicalIndexGeneration(db, resolvedPath);
     return db;
   } catch (error) {
     db.close();

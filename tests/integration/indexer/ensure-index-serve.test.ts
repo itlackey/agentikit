@@ -19,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
+import { ConfigError } from "../../../src/core/errors";
 import { getDbPath } from "../../../src/core/paths";
 import { ensureIndex } from "../../../src/indexer/ensure-index";
 import * as indexerModule from "../../../src/indexer/indexer";
@@ -125,12 +126,15 @@ describe("ensureIndex read-path (background mode)", () => {
     spy.mockRestore();
   });
 
-  test("openExistingDatabase opens a populated pre-current generation instead of refusing it, but ensureIndex still detects it as unusable", () => {
+  test("a populated pre-current generation is rejected before a reader can query it", () => {
     replaceWithPopulatedV17Index();
-    expect(() => {
-      const db = openExistingDatabase(getDbPath());
-      closeDatabase(db);
-    }).not.toThrow();
+    expect(() => openExistingDatabase(getDbPath())).toThrow(ConfigError);
+    try {
+      openExistingDatabase(getDbPath());
+    } catch (error) {
+      expect((error as ConfigError).code).toBe("INDEX_SCHEMA_INCOMPATIBLE");
+      expect((error as Error).message).toContain("Run 'akm index'");
+    }
   });
 
   test("a populated pre-current generation rebuilds from materialized sources before serving", async () => {
