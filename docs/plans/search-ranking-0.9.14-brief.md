@@ -762,6 +762,12 @@ experiment, and after #937.
   touched* when #933 lands.
 - `tests/integration/fuzzy-search.test.ts` — keep the `"deploy kube"` precision
   case unchanged; it is the cheapest tripwire against reintroducing #929.
+- `tests/integration/semantic-search-e2e.test.ts` — for relaxed body-only
+  candidates, assert that the relevant document ranks first rather than that
+  its displayed score is larger. #940 deliberately preserves relevance as a
+  hidden pre-ceiling ordering signal while every candidate clamped at the raw
+  `.65` ceiling displays `.478`; equality at the public score boundary is not a
+  relevance tie.
 - #937's focused suite must cover headingless, preamble, duplicate-heading,
   oversized-section, distinct-parent top-K, fragment round-trip, incremental
   replacement, and parent-level ranking behavior.
