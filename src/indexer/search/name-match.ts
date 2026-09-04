@@ -24,7 +24,17 @@ export function structuralNameTokenMatch(left: string, right: string): boolean {
   );
 }
 
-/** Short phrase containment is fuzzy name evidence and shares the same floor. */
-export function canUseFuzzyNamePhrase(value: string): boolean {
-  return [...value].length >= 3;
+/**
+ * Match a query phrase only across complete, contiguous name tokens. This is
+ * deliberately not raw substring matching: `000` must not become name
+ * evidence merely because an opaque token happens to be `z9xq000`.
+ */
+export function structuralNamePhraseMatch(nameTokens: readonly string[], queryTokens: readonly string[]): boolean {
+  if (queryTokens.length === 0 || queryTokens.length > nameTokens.length) return false;
+  for (let start = 0; start <= nameTokens.length - queryTokens.length; start += 1) {
+    if (queryTokens.every((queryToken, index) => structuralNameTokenMatch(nameTokens[start + index]!, queryToken))) {
+      return true;
+    }
+  }
+  return false;
 }
