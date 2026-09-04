@@ -16,6 +16,10 @@ steps:
 Free preamble prose describing what this workflow does. It is indexed for
 search and shown in `akm show`, but it is never dispatched to a step.
 
+Level-2 (`##`) headings below are step ids and must exactly match one
+declared in `steps:` above — for cross-cutting notes that aren't a step
+(shared context, prerequisites), use a level-3 (`###`) heading instead.
+
 ## first-step
 
 Describe what to do in this step. Refer to run parameters in plain

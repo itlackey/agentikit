@@ -108,7 +108,7 @@ export function renderSyncCommitMessage(
     scope: { mode: string; value?: string };
     plannedRefs: unknown[];
     gateAutoAcceptedCount?: number;
-    triage?: { promoted: number; rejected: number; deferred: number; skippedByCap: number };
+    triage?: { promoted: number; rejected: number; deferred: number; failed: number; skippedByCap: number };
     runId?: string;
   },
   nowMs: number,
@@ -1733,6 +1733,7 @@ function finalizeImproveResult(args: {
             promoted: triageDrain.promoted.length,
             rejected: triageDrain.rejected.length,
             deferred: triageDrain.deferred.length,
+            failed: triageDrain.failed.length,
             skippedByCap: triageDrain.skippedByCap.length,
           },
         }

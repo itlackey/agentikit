@@ -323,6 +323,41 @@ describe("apiKey rejection (#454)", () => {
       "$LOCAL_API_KEY",
     );
   });
+
+  test("setConfigValue accepts a secret:// store reference for engine and embedding apiKey", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    expect(setConfigValue(base, "engines.lab.apiKey", "secret://lab-api-key").engines?.lab?.apiKey).toBe(
+      "secret://lab-api-key",
+    );
+    expect(setConfigValue(base, "embedding.apiKey", "secret://embed-key").embedding?.apiKey).toBe("secret://embed-key");
+  });
+
+  test("setConfigValue whole-engine-object set accepts a secret:// apiKey and still rejects a literal", () => {
+    const base: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "auto" };
+    const withSecretRef = setConfigValue(
+      base,
+      "engines.lab",
+      JSON.stringify({
+        kind: "llm",
+        endpoint: "https://lab.example/v1/chat/completions",
+        model: "x",
+        apiKey: "secret://lab-api-key",
+      }),
+    );
+    expect(withSecretRef.engines?.lab?.apiKey).toBe("secret://lab-api-key");
+    expect(() =>
+      setConfigValue(
+        base,
+        "engines.lab",
+        JSON.stringify({
+          kind: "llm",
+          endpoint: "https://lab.example/v1/chat/completions",
+          model: "x",
+          apiKey: "sk-literal",
+        }),
+      ),
+    ).toThrow(/apiKey cannot be persisted/);
+  });
 });
 
 // ── #455: every nested schema key is settable ───────────────────────────────

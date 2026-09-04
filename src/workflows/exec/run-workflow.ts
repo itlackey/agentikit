@@ -382,6 +382,7 @@ async function acquireRunLease(runId: string, holder: string): Promise<void> {
         `Workflow run ${runId} is already being driven by engine ${row?.engine_lease_holder ?? "(unknown)"} ` +
           `(run lease expires ${row?.engine_lease_until ?? "(unknown)"}). A second \`akm workflow run\` would race it — ` +
           `wait for that invocation to finish or for the lease to expire.`,
+        "RUN_LEASE_HELD",
       );
     }),
   );

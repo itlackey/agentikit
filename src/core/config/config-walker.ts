@@ -28,6 +28,7 @@ import { hasRegistryUrlCredentials, REGISTRY_CREDENTIALS_UNSUPPORTED } from "../
 import { warnOnce } from "../warn";
 import { AkmConfigBaseSchema, type AkmConfigShape, EngineConfigSchema, listTopLevelConfigKeys } from "./config-schema";
 import { deepMergeConfig } from "./deep-merge";
+import { isApiKeyReference } from "./schema/primitives";
 
 type Path = string[];
 
@@ -239,9 +240,12 @@ export function configSet(config: Record<string, unknown>, dotted: string, raw: 
     path[0] === "engines" && path.length === 2
       ? EngineConfigSchema.safeParse(value)
       : symbolicApiKey
-        ? /^\$[A-Za-z_][A-Za-z0-9_]*$|^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(raw)
+        ? isApiKeyReference(raw)
           ? { success: true as const, data: value }
-          : { success: false as const, error: { issues: [{ path: [], message: `apiKey must be $VAR or \${VAR}` }] } }
+          : {
+              success: false as const,
+              error: { issues: [{ path: [], message: "apiKey must be $VAR, ${VAR}, or secret://<name>" }] },
+            }
         : isUnknownKey
           ? { success: true as const, data: value }
           : (schema as z.ZodTypeAny).safeParse(candidate);
@@ -337,7 +341,7 @@ function rejectLiteralApiKeyInWholeObjectSet(path: Path, raw: string, dotted: st
     return; // Malformed JSON — the caller's own parse/coercion reports this.
   }
   if (!isRecord(parsed) || typeof parsed.apiKey !== "string") return;
-  if (/^\$[A-Za-z_][A-Za-z0-9_]*$|^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(parsed.apiKey)) return;
+  if (isApiKeyReference(parsed.apiKey)) return;
   throw new UsageError(
     `apiKey cannot be persisted in config; export ${recipeForApiKey([...path, "apiKey"], `${dotted}.apiKey`)} instead. (key: ${dotted}.apiKey)`,
     "INVALID_FLAG_VALUE",

@@ -931,7 +931,7 @@ export async function resolveWorkflowRunTarget(specifier: string): Promise<strin
 function readWorkflowRunOrPrefix(repo: WorkflowRunsRepository, specifier: string): WorkflowRunRow {
   const run = findRunByIdOrPrefix(repo, specifier);
   if (!run) throw new NotFoundError(`Workflow run "${specifier}" not found.`, "WORKFLOW_NOT_FOUND");
-  return run;
+  return reclaimOrphanedEngineLease(repo, run);
 }
 
 function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowRunRow {
@@ -939,7 +939,25 @@ function readWorkflowRun(repo: WorkflowRunsRepository, runId: string): WorkflowR
   if (!run) {
     throw new NotFoundError(`Workflow run "${runId}" not found.`, "WORKFLOW_NOT_FOUND");
   }
-  return run;
+  return reclaimOrphanedEngineLease(repo, run);
+}
+
+/**
+ * Self-heal a run's engine lease once it has expired — the orphaned-lease
+ * case where an engine crashed without releasing it — mirroring the
+ * maintenance barrier's self-reclaim of a wedged sentinel, applied at the
+ * points a caller actually asks "what is this run's state". Never touches a
+ * live lease: {@link WorkflowRunsRepository.reclaimExpiredEngineLease} is a
+ * compare-and-swap on the exact (holder, until) this call observed, so a
+ * lease renewed or re-acquired between the read and this write is left alone.
+ */
+function reclaimOrphanedEngineLease(repo: WorkflowRunsRepository, run: WorkflowRunRow): WorkflowRunRow {
+  const { engine_lease_holder: holder, engine_lease_until: until } = run;
+  if (!holder || !until) return run;
+  const now = new Date().toISOString();
+  if (until >= now) return run;
+  repo.reclaimExpiredEngineLease(run.id, holder, until, now);
+  return { ...run, engine_lease_holder: null, engine_lease_until: null };
 }
 
 function readWorkflowRunSteps(repo: WorkflowRunsRepository, runId: string): WorkflowRunStepRow[] {
@@ -1066,8 +1084,13 @@ function toWorkflowRunSummary(run: WorkflowRunRow): WorkflowRunSummary {
     executionSupport: plan.support,
     // Surface the engine lease (holder id + expiry — never workflow-authored
     // content) so `workflow run`/`status` show which native execution
-    // invocation currently holds the run lease.
-    ...(run.engine_lease_holder && run.engine_lease_until
+    // invocation currently holds the run lease. Gated on `until` still being
+    // in the future: a crashed engine's lease self-expires, and a run
+    // whose holder is provably gone must stop reading as engine-driven the
+    // instant that happens, not just once something next attempts to acquire
+    // it (`readWorkflowRun`/`readWorkflowRunOrPrefix` also reclaim the DB
+    // columns outright on the same condition).
+    ...(run.engine_lease_holder && run.engine_lease_until && run.engine_lease_until >= new Date().toISOString()
       ? { engineLease: { holder: run.engine_lease_holder, until: run.engine_lease_until } }
       : {}),
     // P3b (spec §4.5): all three optional and conditionally spread, so every
@@ -1094,6 +1117,7 @@ function assertLeaseAllowsSpineAdvance(run: WorkflowRunRow, leaseHolder: string 
     `Workflow run ${run.id} is being driven by engine ${run.engine_lease_holder} ` +
       `(run lease expires ${run.engine_lease_until}). The engine owns the step spine while it runs — ` +
       `wait for it to finish or for the lease to expire before advancing steps manually.`,
+    "RUN_LEASE_HELD",
   );
 }
 

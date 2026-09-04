@@ -461,6 +461,87 @@ describe("drainProposals — dry-run", () => {
   });
 });
 
+describe("drainProposals — failed reporting (#921)", () => {
+  test("a promote failure lands in result.failed, not silently as failed:0", async () => {
+    const stash = makeStashDir();
+    const accepted = seed(stash, "lessons/promote-boom", "extract", VALID_LESSON);
+    const promoteFn = mock(async () => {
+      throw new Error("simulated write failure");
+    });
+
+    const result = await drainProposals(baseOpts(stash), promoteFn, fakeReject());
+
+    expect(result.promoted).toEqual([]);
+    expect(result.failed).toEqual([{ id: accepted.id, reason: "promote-error", detail: "simulated write failure" }]);
+  });
+
+  test("a reject failure lands in result.failed", async () => {
+    const stash = makeStashDir();
+    const empty = seed(stash, "lessons/reject-boom", "extract", EMPTY_LESSON);
+    const rejectFn = mock(() => {
+      throw new Error("simulated reject failure");
+    });
+
+    const result = await drainProposals(baseOpts(stash), fakeAccept(), rejectFn);
+
+    expect(result.rejected).toEqual([]);
+    expect(result.failed).toEqual([{ id: empty.id, reason: "reject-error", detail: "simulated reject failure" }]);
+  });
+
+  test("a stale-target refusal is categorized by its message, not lost as a generic failure", async () => {
+    const stash = makeStashDir();
+    const accepted = seed(stash, "lessons/promote-stale", "extract", VALID_LESSON);
+    const promoteFn = mock(async () => {
+      throw new Error(
+        `Proposal target changed after proposal ${accepted.id} was created; refusing to overwrite newer content.`,
+      );
+    });
+
+    const result = await drainProposals(baseOpts(stash), promoteFn, fakeReject());
+
+    expect(result.failed).toEqual([
+      {
+        id: accepted.id,
+        reason: "stale-target",
+        detail: `Proposal target changed after proposal ${accepted.id} was created; refusing to overwrite newer content.`,
+      },
+    ]);
+  });
+
+  test("dry-run predicts the same stale-target refusal a real promote hits (parity)", async () => {
+    const stash = makeStashDir();
+    const assetPath = path.join(stash, "lessons", "dry-run-stale.md");
+    fs.writeFileSync(assetPath, VALID_LESSON.replace("Prefer rg", "Original: prefer rg"), "utf8");
+    const created = createProposal(stash, {
+      ref: "lessons/dry-run-stale",
+      source: "extract",
+      force: true,
+      sourceRun: "run-x",
+      target: { source: "stash", root: stash },
+      payload: { content: VALID_LESSON, frontmatter: { description: "dry-run-stale fixture" } },
+    });
+    if (isProposalSkipped(created)) throw new Error(`unexpected skip: ${created.message}`);
+    // The target changes again after the proposal is minted — the exact
+    // condition both the dry-run preflight and the real promote must refuse.
+    fs.writeFileSync(assetPath, VALID_LESSON.replace("Prefer rg", "Newer: someone else edited this"), "utf8");
+
+    const dryRunResult = await drainProposals(
+      baseOpts(stash, { dryRun: true, config: makeConfig(stash) }),
+      fakeAccept(),
+      fakeReject(),
+    );
+    expect(dryRunResult.promoted).toEqual([]);
+    expect(dryRunResult.failed).toEqual([expect.objectContaining({ id: created.id, reason: "stale-target" })]);
+
+    // The real run (no promote/reject seams — exercises the actual write path)
+    // must refuse the exact same candidate, so the two never disagree.
+    const realResult = await drainProposals(baseOpts(stash, { config: makeConfig(stash) }));
+    expect(realResult.promoted).toEqual([]);
+    expect(realResult.failed).toEqual([expect.objectContaining({ id: created.id, reason: "stale-target" })]);
+    expect(fs.readFileSync(assetPath, "utf8")).toContain("Newer: someone else edited this");
+  });
+});
+
 // ── Judgment tier (Phase 3) ─────────────────────────────────────────────────
 //
 // The judgment tier adjudicates the *deferred* items. PERSONAL_STASH defers

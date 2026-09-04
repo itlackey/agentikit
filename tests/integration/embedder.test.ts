@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import path from "node:path";
+import { setSecret } from "../../src/commands/env/secret";
 import type { EmbeddingConnectionConfig } from "../../src/core/config/config";
 import { setQuiet } from "../../src/core/warn";
 import {
@@ -12,7 +13,7 @@ import {
 } from "../../src/llm/embedder";
 import { LocalEmbedder } from "../../src/llm/embedders/local";
 import { buildTokenBoundedBatches, estimateTokenCount, RemoteEmbedder } from "../../src/llm/embedders/remote";
-import { withEnv } from "../_helpers/sandbox";
+import { withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 import { overrideSeam } from "../_helpers/seams";
 
 let pipelineImpl: ((task: string, model: string, options?: { dtype?: string }) => Promise<unknown>) | undefined;
@@ -131,6 +132,39 @@ describe("remote embed", () => {
       });
     } finally {
       server.stop(true);
+    }
+  });
+
+  test("resolves a secret:// apiKey from the store at header-building time (#917)", async () => {
+    const storage = withIsolatedAkmStorage();
+    let capturedAuth = "";
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        capturedAuth = request.headers.get("authorization") ?? "";
+        await request.json();
+        return new Response(
+          JSON.stringify({
+            data: [{ embedding: [0.1, 0.2, 0.3] }],
+            model: "test",
+            usage: { prompt_tokens: 1, total_tokens: 1 },
+          }),
+          { headers: { "Content-Type": "application/json", Connection: "close" } },
+        );
+      },
+    });
+    try {
+      setSecret(path.join(storage.stashDir, "secrets", "embed-key"), Buffer.from("store-secret-value"));
+      const config: EmbeddingConnectionConfig = {
+        endpoint: `http://localhost:${server.port}`,
+        model: "test-model",
+        apiKey: "secret://embed-key",
+      };
+      await embed("secret store apiKey header test", config);
+      expect(capturedAuth).toBe("Bearer store-secret-value");
+    } finally {
+      server.stop(true);
+      storage.cleanup();
     }
   });
 

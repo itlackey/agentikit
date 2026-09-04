@@ -91,6 +91,49 @@ export type OutputCommandName = string;
  */
 const SHAPE_SUMMARY_COMMANDS = new Set(["show"]);
 
+// ── `results` collection alias ──────────────────────────────────────────────
+//
+// Every list-returning command names its collection differently (`hits`,
+// `items`, `proposals`, `sources`, ...) — a caller cannot write one accessor
+// across commands without a per-command lookup table, and the wrong guess
+// (`d.get("hits")` against a `curate` response) reads as "no results" rather
+// than "wrong key", with nothing in the envelope to correct it.
+//
+// This maps each list-returning command to the field already holding its
+// collection, and `withResultsAlias` below adds a `results` key pointing at
+// that SAME array (not a copy) to the shaped output — in every `--shape` /
+// `--detail` combination, `human` included, so `--shape agent` needs no
+// separate handling to "guarantee" it. A new list-returning command MUST add
+// an entry here; there is no way to detect a missed one automatically, so the
+// survey deliberately lives in this one place rather than scattered per
+// handler.
+const LIST_RESULT_COLLECTION_KEYS: Readonly<Record<string, string>> = {
+  search: "hits",
+  curate: "items",
+  "registry-search": "hits",
+  "proposal-list": "proposals",
+  list: "sources", // `akm bundle list`
+  "env-list": "envs",
+  "secret-list": "secrets",
+  "registry-list": "registries",
+  "workflow-list": "runs",
+  "task-history": "rows",
+  "log-list": "events", // `akm log list`
+};
+
+function withResultsAlias(command: OutputCommandName, shaped: unknown): unknown {
+  const key = LIST_RESULT_COLLECTION_KEYS[command];
+  if (!key) return shaped;
+  if (shaped === null || typeof shaped !== "object" || Array.isArray(shaped)) return shaped;
+  const obj = shaped as Record<string, unknown>;
+  if ("results" in obj) return shaped;
+  const collection = obj[key];
+  if (!Array.isArray(collection)) return shaped;
+  // Same array reference as `obj[key]`, never a copy, so `results` cannot
+  // silently drift out of sync with the semantic key it aliases.
+  return { ...obj, results: collection };
+}
+
 export function shapeForCommand(
   command: OutputCommandName,
   result: unknown,
@@ -107,7 +150,7 @@ export function shapeForCommand(
   }
   const handler = getOutputShapeHandler(command);
   if (handler) {
-    return handler(result, detail, effectiveShape);
+    return withResultsAlias(command, handler(result, detail, effectiveShape));
   }
   // v1 spec §9 (output-shape registry exhaustive): no silent JSON.stringify
   // fallback. A missing case here is a registration bug — fail loudly so

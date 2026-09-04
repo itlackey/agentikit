@@ -20,6 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import unitPreambleTemplate from "../../assets/prompts/workflow-unit-preamble.md" with { type: "text" };
 import { UsageError } from "../../core/errors";
 import { validateJsonSchemaSubset } from "../../core/json-schema";
+import { parseEmbeddedJsonResponse } from "../../core/parse";
 import { canonicalInputJson, type TaskInputBinding, validateInputs } from "../../execution/input-contract";
 import type { LoweringNotice } from "../../execution/resolved-request";
 import type { WorkflowRunStatus } from "../../sources/types";
@@ -857,6 +858,39 @@ export function validateStepArtifact(plan: IrStepPlanV4, evidence: Record<string
 }
 
 /**
+ * Warn-only check of each successful unit's own promoted value against its
+ * template's declared `schema` (`unit.output`) — the one field a harness that
+ * cannot request structured output drops during lowering (`untranslated-field`,
+ * field `outputSchema`), after which nothing else ever compares the returned
+ * text to it. Unlike {@link validateStepArtifact} this never fails the step:
+ * a harness that DID honor the schema already returned a compliant `result`
+ * (this re-check then finds nothing), and one that could not is exactly the
+ * case this exists to surface — the run continues either way.
+ */
+export function unitSchemaWarning(plan: IrStepPlanV4, units: readonly UnitOutcome[]): string | undefined {
+  const schema = stepTemplate(plan)?.schema;
+  if (!schema) return undefined;
+  const mismatches: string[] = [];
+  for (const unit of units) {
+    if (!unit.ok) continue;
+    const candidate =
+      unit.result !== undefined
+        ? unit.result
+        : unit.text !== undefined
+          ? parseEmbeddedJsonResponse(unit.text)
+          : undefined;
+    if (candidate === undefined) {
+      mismatches.push(`unit "${unit.unitId}" produced no structured output to check`);
+      continue;
+    }
+    const errors = validateJsonSchemaSubset(candidate, schema);
+    if (errors.length > 0) mismatches.push(`unit "${unit.unitId}": ${errors.join("; ")}`);
+  }
+  if (mismatches.length === 0) return undefined;
+  return `Output does not match the unit's declared schema (advisory; the run continued): ${mismatches.join("; ")}.`;
+}
+
+/**
  * Build the summary the completion-criteria gate judges for a step (addendum
  * R2, "typed artifacts, honest gates"): a one-line unit count followed by the
  * promoted step artifact as canonical JSON, clipped at {@link GATE_ARTIFACT_CLIP}
@@ -1042,6 +1076,11 @@ export function reduceStepOutcomes(
       summary = schemaFailure;
       artifactSchemaFailure = true;
     }
+  }
+
+  if (!artifactSchemaFailure) {
+    const schemaWarning = unitSchemaWarning(plan, units);
+    if (schemaWarning !== undefined) summary += ` ${schemaWarning}`;
   }
 
   // P3b §3.4: a composed child workflow that blocked is carried on the

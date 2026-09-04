@@ -29,6 +29,7 @@ import type {
 import { upgradeConfigVersion } from "./config-version-shim";
 import { deepMergeConfig } from "./deep-merge";
 import { migrateLegacySourceShape } from "./legacy-source-shape-shim";
+import { isApiKeyReference, SECRET_STORE_REFERENCE_PATTERN } from "./schema/primitives";
 
 export { stripJsonComments } from "./config-io";
 
@@ -404,7 +405,7 @@ export function sanitizeConfigForWrite(config: AkmConfig): Record<string, unknow
 
   if (config.embedding?.apiKey !== undefined) {
     const apiKey = config.embedding.apiKey;
-    if (isEnvReference(apiKey)) {
+    if (isApiKeyReference(apiKey)) {
       // Preserve reference verbatim — not a secret.
       sanitized.embedding = { ...config.embedding };
     } else {
@@ -419,7 +420,7 @@ export function sanitizeConfigForWrite(config: AkmConfig): Record<string, unknow
   if (config.engines) {
     const engines: Record<string, unknown> = {};
     for (const [name, engine] of Object.entries(config.engines)) {
-      if (engine.kind !== "llm" || engine.apiKey === undefined || isEnvReference(engine.apiKey)) {
+      if (engine.kind !== "llm" || engine.apiKey === undefined || isApiKeyReference(engine.apiKey)) {
         engines[name] = { ...engine };
         continue;
       }
@@ -454,22 +455,21 @@ export function sanitizeConfigForWrite(config: AkmConfig): Record<string, unknow
   return sanitized;
 }
 
-/** Matches the only 0.9 symbolic secret forms: `${VAR}` or `$VAR`. */
-function isEnvReference(value: string): boolean {
-  return /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$|^\$[A-Za-z_][A-Za-z0-9_]*$/.test(value);
-}
-
 export function updateConfig(partial: Partial<AkmConfig>): AkmConfig {
   return mutateConfig((current) => deepMergeConfig(current, partial) as AkmConfig).config;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Looks up a `secret://<name>` reference's stored value, or `null` if it isn't there. Implemented by `resolveSecretFromStore` in `sources/snapshot-fetchers/secret-seam.ts`; passed in rather than imported here to avoid a cycle (that module's dependencies import this one). */
+export type SecretStoreResolver = (ref: string) => string | null;
+
 /**
- * Resolve a single secret value by expanding `${VAR}` / `$VAR` references
- * against `process.env`. Use this at apiKey /
- * authorization-header consumption sites (LLM client, embedder, agent SDK
- * runner) — NOT on the load path. Non-string inputs pass through unchanged.
+ * Resolve a single secret value: expand `${VAR}` / `$VAR` against
+ * `process.env`, or look up `secret://<name>` via `resolveFromStore`. Use this
+ * at apiKey / authorization-header consumption sites (LLM client, embedder,
+ * agent SDK runner) — NOT on the load path. Non-string inputs pass through
+ * unchanged.
  *
  * Returns the input unchanged when no substitution markers are present, so
  * literal API key strings (already-resolved secrets) are zero-cost.
@@ -477,10 +477,25 @@ export function updateConfig(partial: Partial<AkmConfig>): AkmConfig {
  * Other config string values (URLs, endpoints, model names, prompts) are
  * preserved verbatim on read — only fields explicitly routed through this
  * helper are expanded.
+ *
+ * A `secret://<name>` value that fails to resolve throws `ConfigError`
+ * (naming the ref, never the secret) rather than silently sending an unusable
+ * credential.
  */
-export function resolveSecret(value: string | undefined): string | undefined {
+export function resolveSecret(value: string | undefined, resolveFromStore?: SecretStoreResolver): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") return value;
+  const storeRef = SECRET_STORE_REFERENCE_PATTERN.exec(value)?.[1];
+  if (storeRef !== undefined) {
+    const resolved = resolveFromStore?.(storeRef) ?? null;
+    if (resolved === null) {
+      throw new ConfigError(
+        `Secret store reference "${value}" did not resolve to a stored value.`,
+        "SECRET_REFERENCE_UNRESOLVED",
+      );
+    }
+    return resolved;
+  }
   if (!value.includes("$")) return value;
   return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_match, braced, bare) => {
     return process.env[(braced ?? bare) as string] ?? "";

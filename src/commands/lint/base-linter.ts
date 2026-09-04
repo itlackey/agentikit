@@ -147,6 +147,15 @@ function fixMissingUpdated(raw: string, mtime: Date): string {
 
 // ── stale-path helpers ────────────────────────────────────────────────────────
 
+/**
+ * A path segment shaped like a run-time filename template rather than a
+ * literal reference: `<timestamp>`-style angle brackets, `{stamp}`/`${VAR}`
+ * braces, a `YYYYMMDD`/`HHMMSS`-style run of date-format letters, or a glob
+ * character. Such a path never exists under its literal spelling, so
+ * `stale-path` skips it instead of flagging it.
+ */
+const PATH_PLACEHOLDER_PATTERN = /[<{]|[*?]|[YMDHS]{4,}/;
+
 function checkStalePath(body: string): string[] {
   const pathRe = /(?:\/home\/|\/tmp\/|\/var\/|\/root\/|\/opt\/)[^\s"'`)\]>,\n]+/g;
   let match: RegExpExecArray | null;
@@ -154,6 +163,7 @@ function checkStalePath(body: string): string[] {
   // biome-ignore lint/suspicious/noAssignInExpressions: idiomatic regex loop
   while ((match = pathRe.exec(body)) !== null) {
     const candidate = match[0];
+    if (PATH_PLACEHOLDER_PATTERN.test(candidate)) continue;
     if (!fs.existsSync(candidate)) {
       stale.push(candidate);
     }
