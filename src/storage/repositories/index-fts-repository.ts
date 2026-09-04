@@ -103,8 +103,9 @@ function runFtsQuery(
   // The typed and untyped paths differ only by one `type` WHERE clause
   // equality vs. an optional NOT IN exclusion) and their parameter order.
   // Join on integer entry_id directly (no CAST; we store integer). bm25()
-  // per-column weights:
-  // entry_id(0), name(10), description(5), tags(3), hints(2), content(1).
+  // #930 W1 — pre-declared least-aggressive lexical rebalance. Per-column
+  // weights are entry_id(0), name(4), description(3), tags(2), hints(2), and
+  // content(1.5). This arm is measured independently before any release pick.
   let filterClause: string;
   let params: unknown[];
   if (entryType && entryType !== "any") {
@@ -127,7 +128,7 @@ function runFtsQuery(
     WITH scored AS MATERIALIZED (
       -- Keep this materialized set deliberately narrow. document_json can be
       -- large, and only rows admitted through the BM25 boundary need it.
-      SELECT e.id, bm25(entries_fts, 0, 10.0, 5.0, 3.0, 2.0, 1.0) AS bm25Score
+      SELECT e.id, bm25(entries_fts, 0, 4.0, 3.0, 2.0, 2.0, 1.5) AS bm25Score
     FROM entries_fts f
     JOIN entries e ON e.id = f.entry_id
     WHERE entries_fts MATCH ?
