@@ -364,6 +364,35 @@ Creates a user.
     });
   });
 
+  test("search→show covers preamble, duplicate headings, and fallback fragment shapes", async () => {
+    const stashDir = createTmpDir("akm-stash-");
+    writeFile(
+      path.join(stashDir, "knowledge", "preamble.md"),
+      `preambleuniquetoken evidence\n\n# Later\nordinary text`,
+    );
+    writeFile(
+      path.join(stashDir, "knowledge", "duplicate.md"),
+      `# Repeat\nfirst copy\n\n# Repeat\nduplicateuniquetoken evidence`,
+    );
+    writeFile(
+      path.join(stashDir, "knowledge", "transcript.md"),
+      `${Array.from({ length: 450 }, () => "background transcript").join(" ")}\n\ntranscriptuniquetoken evidence`,
+    );
+    await withEnv({ AKM_BUNDLE_DIR: stashDir }, async () => {
+      const cases: Array<[string, string]> = [
+        ["preambleuniquetoken", "preambleuniquetoken"],
+        ["duplicateuniquetoken", "duplicateuniquetoken"],
+        ["transcriptuniquetoken", "transcriptuniquetoken"],
+      ];
+      for (const [query, expected] of cases) {
+        const hit = (await akmSearch({ query, type: "knowledge" })).hits[0];
+        expect(hit && isLocalHit(hit) ? hit.ref : undefined).toMatch(/#akm-fragment-/);
+        if (!hit || !isLocalHit(hit)) throw new Error("expected local fragment hit");
+        expect((await akmShow({ ref: hit.ref })).content).toContain(expected);
+      }
+    });
+  });
+
   test("akmShow lists the available slugs when the fragment does not match", async () => {
     const stashDir = createTmpDir("akm-stash-");
     writeFile(path.join(stashDir, "knowledge", "api-guide.md"), KNOWLEDGE_DOC);
