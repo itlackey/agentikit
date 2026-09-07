@@ -23,7 +23,7 @@ import { UsageError } from "../../core/errors";
 import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
 import { getOutputMode } from "../../output/context";
 import { deliverRendered } from "../../output/html-render";
-import type { ShowDetailLevel } from "../../sources/types";
+import type { FragmentContextMode, ShowDetailLevel } from "../../sources/types";
 import { akmCurate, type CuratePackResult, packCuratedHits } from "./curate";
 import { akmSearch, parseBeliefFilterMode, parseScopeFilterFlags, parseSearchSource } from "./search";
 import { akmShowUnified } from "./show";
@@ -323,6 +323,20 @@ export const showCommand = defineJsonCommand({
       description:
         "Scope filter (repeatable): --filter user=<id> --filter agent=<id> --filter run=<id> --filter channel=<name>. Narrows resolution to assets whose frontmatter scope matches. Same axis as `akm search --filter`.",
     },
+    context: {
+      type: "string",
+      description:
+        "Fragment presentation: exact (default) returns only the selected section; lead returns bounded indexed-safe document lead plus the explicitly labelled selected match.",
+    },
+    "max-tokens": {
+      type: "string",
+      description:
+        "Approximate context budget in tokens (four characters per token). Requires --context lead; mutually exclusive with --max-chars.",
+    },
+    "max-chars": {
+      type: "string",
+      description: "Exact context budget in characters. Requires --context lead; mutually exclusive with --max-tokens.",
+    },
     // Declared as the POSITIVE name with `default: true` — see the
     // `project-context` comment on `searchCommand` above for why a flag NAME
     // must never start with `no-`.
@@ -372,10 +386,22 @@ export const showCommand = defineJsonCommand({
     // commands share one spelling for the scope-narrowing axis).
     const scopeTokens = parseAllFlagValues("--filter");
     const scope = parseScopeFilterFlags(scopeTokens, "--filter");
+    const contextMode = parseFragmentContextMode(typeof args.context === "string" ? args.context : undefined);
+    const maxTokens = parsePositiveIntFlag(args["max-tokens"] ?? undefined, "--max-tokens");
+    const maxChars = parsePositiveIntFlag(args["max-chars"] ?? undefined, "--max-chars");
+    if (maxTokens !== undefined && maxChars !== undefined) {
+      throw new UsageError("--max-tokens and --max-chars are mutually exclusive.", "INVALID_FLAG_VALUE");
+    }
+    const maxContextChars = maxChars ?? (maxTokens !== undefined ? maxTokens * 4 : undefined);
+    if (maxContextChars !== undefined && !Number.isSafeInteger(maxContextChars)) {
+      throw new UsageError("Fragment context budget is too large.", "INVALID_FLAG_VALUE");
+    }
     const skipLogging = args["track-usage"] === false;
     const result = await akmShowUnified({
       ref: args.ref,
       detail: showDetail,
+      contextMode,
+      maxContextChars,
       scope,
       skipLogging,
       eventSource: resolveUsageEventSource(),
@@ -383,3 +409,9 @@ export const showCommand = defineJsonCommand({
     output("show", result);
   },
 });
+
+export function parseFragmentContextMode(raw: string | undefined): FragmentContextMode {
+  const normalized = raw?.trim().toLowerCase() || "exact";
+  if (normalized === "exact" || normalized === "lead") return normalized;
+  throw new UsageError(`Invalid --context value: "${raw}". Expected exact or lead.`, "INVALID_FLAG_VALUE");
+}

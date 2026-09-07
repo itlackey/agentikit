@@ -82,6 +82,21 @@ akm show knowledge/api-guide#authentication
 # → just the "Authentication" section, not the full document
 ```
 
+Search can also return an opaque `#akm-fragment-...` selector for a bounded
+piece of a long document. The exact selector remains the default. For memories
+whose opening context helps interpret a later matching turn, opt into bounded
+lead context:
+
+```sh
+akm show '<ref-from-search>' --context lead --max-tokens 800
+# → indexed-safe document lead, then [Selected matching fragment] and the match
+```
+
+AKM preserves the selected match before lead bytes when the budget is tight and
+reports `contextTruncated` in JSON. The response also distinguishes canonical
+`parentRef` from `selectedRef` and includes fragment position, line bounds,
+neighbors, and separate fragment/parent size estimates.
+
 An unmatched fragment lists the available slugs instead of erroring, so a
 guess that misses still tells you what to try next.
 

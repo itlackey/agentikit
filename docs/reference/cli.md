@@ -439,6 +439,12 @@ availability:
 - **`ref`** -- The asset handle to pass to `akm show` (for example
   `team//scripts/deploy.sh`); present at `brief`, `full`, and `agent` for local
   hits
+- **fragment provenance** -- when `ref` selects an indexed Markdown fragment,
+  `selectedRef` and `parentRef` distinguish the ranked evidence from its parent;
+  one-based `fragmentOrdinal`, `fragmentCount`, source-line bounds, neighbor
+  refs, and separate fragment/parent size estimates are available without
+  changing ranking. `estimatedTokens` describes the fragment for a
+  fragment-qualified hit; `parentEstimatedTokens` describes the whole asset.
 - **`name`** -- The asset's filename or identifier; present at all levels
 - **`origin`** -- The source bundle (e.g. `npm:@scope/pkg`), present only for
   managed source assets; surfaced at `full` only
@@ -535,6 +541,7 @@ akm show commands/release
 akm show workflows/ship-release
 akm show knowledge/guide                 # the whole document
 akm show knowledge/guide#authentication  # just that section
+akm show '<search-result-ref>' --context lead --max-tokens 800
 akm show knowledge/guide#nope            # lists the available fragment slugs
 
 # Bundle .meta/ orientation docs — direct-read, not indexed:
@@ -547,6 +554,14 @@ akm show github:owner/repo//meta    # an installed bundle's .meta/index.md
 akm show memories/retro --filter user=alice
 akm show memories/retro --filter user=alice --filter agent=claude
 ```
+
+| Flag | Values | Default | Description |
+| --- | --- | --- | --- |
+| `--context` | `exact`, `lead` | `exact` | Fragment presentation. `exact` preserves the selected-section behavior. `lead` returns the indexed-safe first fragment followed by `[Selected matching fragment]` and the selected fragment. |
+| `--max-chars` | positive integer | `3200` for `lead` | Hard contextual content budget in characters; requires `--context lead` and is mutually exclusive with `--max-tokens`. |
+| `--max-tokens` | positive integer | _(none)_ | Approximate contextual budget using four characters per token; requires `--context lead` and is mutually exclusive with `--max-chars`. |
+| `--filter` | `<key>=<value>` | _(none)_ | Repeatable scope filter (`user`, `agent`, `run`, `channel`). |
+| `--track-usage`, `--no-track-usage` | flag | `true` | Record or suppress local usage-event and ranking updates for this successful read. |
 
 `meta` is not an asset type — `[<origin>//]meta[:<name>]` direct-reads a
 human-authored orientation doc from a bundle's optional `.meta/` directory
@@ -575,8 +590,27 @@ reduced metadata-first view without `content`/`template`/`prompt`;
 `editable` is `false`, `editHint`; `--shape agent` strips non-action metadata
 (e.g. `origin`, `tags`) down to the action-relevant field set while still
 including `ref`/`path`/`editable`; `--shape summary`
-returns a compact view with only `type`, `name`, `ref`, `description`, `tags`,
-`parameters`, `workflowTitle`, `action`, `run`, `origin`, and `keys`.
+returns a compact view with `type`, `name`, `ref`, `description`, `tags`,
+`parameters`, `workflowTitle`, `action`, `run`, `origin`, and `keys`, plus the
+optional fragment metadata described below.
+
+Opaque fragment shows and `--context lead` keep `ref` as the canonical parent
+identity and add
+`selectedRef`, `parentRef`, one-based `fragmentOrdinal`, `fragmentCount`,
+`startLine`, `endLine`, optional `previousRef`/`nextRef`, and separate
+fragment/parent character and token estimates. Contextual shows also report
+`contextMode`, `contextMaxChars`, and `contextTruncated`. Heading aliases are
+canonicalized in contextual `selectedRef` to the resolved opaque indexed
+selector. Default exact shows through a friendly `#heading` retain their
+source-live body and do not attach indexed-safe provenance that could describe
+a different revision or projection.
+
+`--context lead` is opt-in and accepts only fragment-qualified indexed Markdown
+assets. Both the lead and selected content come from the same line-preserving,
+safe indexed revision used by fragment search, even when the source file changes
+between search and show. The selected block is labelled and kept last. When the
+budget is tight, AKM clips or omits lead content before clipping selected
+evidence; `contextTruncated` reports either case.
 
 Returns type-specific payloads:
 
