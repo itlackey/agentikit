@@ -29,6 +29,7 @@ import { isDataDirUnreadableError } from "../core/errors";
 import { probeLock } from "../core/file-lock";
 import { isPathAbsent } from "../core/path-access";
 import { getDbPath, getIndexRebuildLockPath } from "../core/paths";
+import { formatLockHolderPid } from "../core/run-lock";
 import { warn, warnVerbose } from "../core/warn";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { deleteEntriesByIds, getEntryCount, upsertEntry } from "../storage/repositories/index-entries-repository";
@@ -91,9 +92,14 @@ export async function indexWrittenAssets(
       // rebuild in progress will pick up the change on its own.
       const rebuildProbe = probeLock(getIndexRebuildLockPath());
       if (rebuildProbe.state === "held") {
-        warn(
-          `index rebuild in progress (pid ${rebuildProbe.holderPid}); the next index pass will index ${filePaths.join(", ")}`,
-        );
+        // #9543: name the launcher pid alongside the holder pid when known —
+        // every process listing and task log shows the launcher's pid, not
+        // the bun/node child's.
+        const holderLabel = formatLockHolderPid({
+          pid: rebuildProbe.holderPid,
+          launcherPid: rebuildProbe.launcherPid ?? null,
+        });
+        warn(`index rebuild in progress (pid ${holderLabel}); the next index pass will index ${filePaths.join(", ")}`);
         return true;
       }
 

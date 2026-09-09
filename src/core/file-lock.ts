@@ -33,6 +33,8 @@ export type LockProbeResult =
   | {
       state: "held";
       holderPid: number;
+      /** The holder's launcher pid (#9543), when its lock payload recorded one. */
+      launcherPid?: number;
       ageMs: number;
       rawContent: string;
       identity: LockFileIdentity;
@@ -41,6 +43,8 @@ export type LockProbeResult =
       state: "stale";
       reason: "pid_dead" | "unreadable" | "invalid_pid" | "age_exceeded";
       holderPid?: number;
+      /** The holder's launcher pid (#9543), when its lock payload recorded one. */
+      launcherPid?: number;
       ageMs?: number;
       rawContent?: string;
       identity?: LockFileIdentity;
@@ -243,17 +247,17 @@ export function probeLock(lockPath: string, opts?: LockProbeOptions): LockProbeR
   const { rawContent, identity } = snapshot;
   const ageMs = Date.now() - identity.mtimeMs;
 
-  const holderPid = extractHolderPid(rawContent);
+  const { holderPid, launcherPid } = extractLockIdentity(rawContent);
   if (holderPid === undefined) {
     return { state: "stale", reason: "invalid_pid", ageMs, rawContent, identity };
   }
   if (!isProcessAlive(holderPid)) {
-    return { state: "stale", reason: "pid_dead", holderPid, ageMs, rawContent, identity };
+    return { state: "stale", reason: "pid_dead", holderPid, launcherPid, ageMs, rawContent, identity };
   }
   if (opts?.staleAfterMs !== undefined && ageMs > opts.staleAfterMs) {
-    return { state: "stale", reason: "age_exceeded", holderPid, ageMs, rawContent, identity };
+    return { state: "stale", reason: "age_exceeded", holderPid, launcherPid, ageMs, rawContent, identity };
   }
-  return { state: "held", holderPid, ageMs, rawContent, identity };
+  return { state: "held", holderPid, launcherPid, ageMs, rawContent, identity };
 }
 
 /**
@@ -344,23 +348,30 @@ export function releaseLock(ownership: LockOwnership): void {
 }
 
 /**
- * Extract a PID from a sentinel body. Accepts the two shapes used across
- * the codebase: a bare numeric string (config-io, vault, lockfile) and
- * a JSON object with a `pid` field (improve). Returns undefined when the
- * body is unparseable or yields a non-positive integer.
+ * Extract a holder pid, and (#9543) a launcher pid when the payload recorded
+ * one, from a sentinel body. Accepts the two shapes used across the
+ * codebase: a bare numeric string (config-io, vault, lockfile — never
+ * carries a `launcherPid`) and a JSON object with `pid`/`launcherPid` fields
+ * (`createLockPayload`). `holderPid` is undefined when the body is
+ * unparseable or yields a non-positive integer; `launcherPid` is undefined
+ * whenever the payload has none, independent of whether `holderPid` parsed.
  */
-function extractHolderPid(content: string): number | undefined {
+function extractLockIdentity(content: string): { holderPid?: number; launcherPid?: number } {
   const trimmed = content.trim();
-  if (!trimmed) return undefined;
+  if (!trimmed) return {};
   if (trimmed.startsWith("{")) {
     try {
-      const parsed = JSON.parse(trimmed) as { pid?: unknown };
+      const parsed = JSON.parse(trimmed) as { pid?: unknown; launcherPid?: unknown };
       const pid = typeof parsed.pid === "number" ? parsed.pid : Number.NaN;
-      return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+      const rawLauncherPid = typeof parsed.launcherPid === "number" ? parsed.launcherPid : Number.NaN;
+      return {
+        holderPid: Number.isInteger(pid) && pid > 0 ? pid : undefined,
+        launcherPid: Number.isInteger(rawLauncherPid) && rawLauncherPid > 0 ? rawLauncherPid : undefined,
+      };
     } catch {
-      return undefined;
+      return {};
     }
   }
   const pid = Number.parseInt(trimmed, 10);
-  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  return { holderPid: Number.isInteger(pid) && pid > 0 ? pid : undefined };
 }

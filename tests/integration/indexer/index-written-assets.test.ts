@@ -357,6 +357,31 @@ describe("indexWrittenAssets", () => {
       expect(indexedFileCount(filePath)).toBeGreaterThan(0);
     });
 
+    test("names the launcher pid alongside the holder pid when the lock payload recorded one (#9543)", async () => {
+      const lockPath = getIndexRebuildLockPath();
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+      fs.writeFileSync(
+        lockPath,
+        JSON.stringify({ pid: process.ppid, launcherPid: 4240, startedAt: new Date().toISOString() }),
+        "utf8",
+      );
+      const filePath = writeMemory("launcher-note", "Written while a launcher-tracked rebuild holds the lock.");
+
+      const notices: string[] = [];
+      _setWarnSinkForTests((level, args) => {
+        if (level === "warn") notices.push(args.map(String).join(" "));
+      });
+
+      expect(await indexWrittenAssets(stashDir, [filePath])).toBe(true);
+
+      expect(
+        notices.some((n) =>
+          new RegExp(`index rebuild in progress \\(pid ${process.ppid} \\(launcher 4240\\)\\)`).test(n),
+        ),
+      ).toBe(true);
+      fs.rmSync(lockPath);
+    });
+
     test("a dead-pid rebuild lock does not block the write-path upsert", async () => {
       const lockPath = getIndexRebuildLockPath();
       fs.mkdirSync(path.dirname(lockPath), { recursive: true });
