@@ -235,6 +235,38 @@ describe("RemoteEmbedder.embedBatch: onBatch commit callback", () => {
     );
   });
 
+  test("a throw from onBatch propagates out of embedBatch, not swallowed or misreported as a provider failure", async () => {
+    // Regression for a round-1 review finding: onBatch used to be invoked
+    // from inside the same try/catch that classifies requestBatch's own
+    // provider/network failures, so a persistence failure inside the
+    // caller's onBatch (e.g. materialize-embeddings.ts's db.transaction()
+    // throwing on a real competing-process SQLITE_BUSY lock) was
+    // misclassified as a fabricated "batch-request-failed" skip and then
+    // silently absorbed by concurrentMap's per-item catch — no error ever
+    // reached the caller.
+    await withMockedFetch(
+      async () => {
+        const embedder = new RemoteEmbedder({ endpoint: "http://localhost:1/v1", model: "test-model" });
+        const skips: Array<{ reason: string }> = [];
+        const persistError = new Error("simulated SQLITE_BUSY from a competing process");
+        await expect(
+          embedder.embedBatch(
+            ["solo"],
+            undefined,
+            (skip) => skips.push(skip),
+            () => {
+              throw persistError;
+            },
+          ),
+        ).rejects.toThrow(/simulated SQLITE_BUSY/);
+        // The embedding request itself succeeded — onBatch's own failure
+        // must never be reported as if the batch request had failed.
+        expect(skips).toHaveLength(0);
+      },
+      async () => jsonResponse({ data: [{ embedding: [1, 0], index: 0 }] }),
+    );
+  });
+
   test("every provider batch commits, not just the last one", async () => {
     const config: EmbeddingConnectionConfig = {
       endpoint: "http://localhost:1/v1",
