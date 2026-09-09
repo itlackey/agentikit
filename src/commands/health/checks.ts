@@ -738,7 +738,27 @@ export async function runHealthEngineProbes(
   });
 }
 
-export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
+export interface ActiveImproveStrategyProbeResult {
+  check: HealthCheckResult;
+  /**
+   * #950: process → engine bindings for every enabled process in the active
+   * improve strategy, built once here so `engine-last-used` (via
+   * `health.ts`) consumes a typed map instead of casting the check's
+   * untyped `evidence.engines`. Empty when the strategy itself could not be
+   * resolved (the catch branch below).
+   */
+  processEngines: Readonly<Record<string, string>>;
+}
+
+/**
+ * #950: probes the active improve strategy and returns both its
+ * `HealthCheckResult` and the typed process→engine map, computed once. See
+ * {@link runActiveImproveStrategyProbe} for the plain-`HealthCheckResult`
+ * wrapper existing callers/tests use.
+ */
+export function probeActiveImproveStrategy(
+  deps: DefaultEngineProbeDependencies = {},
+): ActiveImproveStrategyProbeResult {
   const config = deps.loadConfig?.() ?? loadConfig();
   const strategyName = config.defaults?.improveStrategy ?? "default";
   try {
@@ -778,32 +798,43 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
       .map(([process, engine]) => `${process}: "${engine}"`)
       .join(", ");
     return {
-      name: "active-improve-strategy",
-      kind: "deterministic",
-      status: unavailableProcesses.length === 0 ? "pass" : "warn",
-      confidence: "high",
-      message:
-        unavailableProcesses.length === 0
-          ? `Active improve strategy "${plan.strategy.name}" has available process engines${engineList ? ` (${engineList})` : ""}.`
-          : `Active improve strategy "${plan.strategy.name}" has unavailable required credentials for: ${unavailableProcesses.join(", ")}${engineList ? ` (engines: ${engineList})` : ""}.`,
-      evidence: {
-        strategy: plan.strategy.name,
-        unavailableProcesses,
-        engines,
+      check: {
+        name: "active-improve-strategy",
+        kind: "deterministic",
+        status: unavailableProcesses.length === 0 ? "pass" : "warn",
+        confidence: "high",
+        message:
+          unavailableProcesses.length === 0
+            ? `Active improve strategy "${plan.strategy.name}" has available process engines${engineList ? ` (${engineList})` : ""}.`
+            : `Active improve strategy "${plan.strategy.name}" has unavailable required credentials for: ${unavailableProcesses.join(", ")}${engineList ? ` (engines: ${engineList})` : ""}.`,
+        evidence: {
+          strategy: plan.strategy.name,
+          unavailableProcesses,
+          engines,
+        },
       },
+      processEngines: Object.freeze({ ...engines }),
     };
   } catch (error) {
     const explicitlyConfigured =
       config.defaults?.improveStrategy !== undefined || Object.keys(config.improve?.strategies ?? {}).length > 0;
     return {
-      name: "active-improve-strategy",
-      kind: "deterministic",
-      status: explicitlyConfigured ? "warn" : "unknown",
-      confidence: "high",
-      message: `Active improve strategy "${strategyName}" is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-      evidence: { strategy: strategyName, unavailableProcesses: [] },
+      check: {
+        name: "active-improve-strategy",
+        kind: "deterministic",
+        status: explicitlyConfigured ? "warn" : "unknown",
+        confidence: "high",
+        message: `Active improve strategy "${strategyName}" is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        evidence: { strategy: strategyName, unavailableProcesses: [] },
+      },
+      processEngines: {},
     };
   }
+}
+
+/** Plain-`HealthCheckResult` wrapper around {@link probeActiveImproveStrategy} for existing callers/tests. */
+export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
+  return probeActiveImproveStrategy(deps).check;
 }
 
 interface EngineLastUsedEntry {

@@ -25,7 +25,7 @@ import { collectImproveAdvisories } from "./health/advisories";
 import {
   HEALTH_CHECKS,
   type HealthCheckContext,
-  runActiveImproveStrategyProbe,
+  probeActiveImproveStrategy,
   runHealthEngineProbes,
   runPendingStateMigrationsCheck,
   SESSION_EXTRACTION_LEDGER_WINDOW_DAYS,
@@ -723,9 +723,7 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
     // #950: computed once (no IO beyond config/env, same as gatherEgressConfigPhase)
     // so `active-improve-strategy` and `engine-last-used` project the same
     // process→engine map instead of each resolving the strategy independently.
-    const activeImproveStrategy = runActiveImproveStrategyProbe();
-    const activeImproveStrategyEngines =
-      (activeImproveStrategy.evidence?.engines as Record<string, string> | undefined) ?? {};
+    const { check: activeImproveStrategy, processEngines: activeImproveStrategyEngines } = probeActiveImproveStrategy();
 
     // #950: `engine-last-used` reads a fixed lookback window independent of
     // `--since` (mirrors sessionExtractionLedger's independent window above).
