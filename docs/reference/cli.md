@@ -350,8 +350,8 @@ rate-limited request all degrade it to `unknown`, never a false `warn`.
 the active improve strategy, whether it has a recorded `llm_usage` call in
 the last 30 days (independent of `--since`). It `warn`s naming the idle
 engine and its bound process, and stays `unknown` — not a noisy `warn` —
-until at least one improve run has completed in that window, so a fresh
-install is quiet.
+until at least one improve run has been recorded (started) in that window,
+so a fresh install is quiet.
 
 The `session-extraction` advisory is derived from the `extract_sessions_seen`
 ledger for the last 7 days — not `improve_runs`, which the hook-driven `akm

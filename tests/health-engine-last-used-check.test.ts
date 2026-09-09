@@ -77,4 +77,11 @@ describe("engine-last-used check (#950)", () => {
     expect(r.status).toBe("warn");
     expect(r.message).toContain('Engine "local"');
   });
+
+  test("pluralises 'processes' (each individually quoted) when one idle engine binds to more than one process", () => {
+    const r = run({ consolidate: "local", reflect: "local" }, new Map(), 3);
+    expect(r.status).toBe("warn");
+    expect(r.message).toContain('processes "consolidate", "reflect"');
+    expect(r.message).not.toContain('process "consolidate, reflect"');
+  });
 });

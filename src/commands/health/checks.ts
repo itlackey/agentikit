@@ -122,8 +122,8 @@ export interface HealthCheckContext {
   /**
    * #950: count of `improve_runs` rows started within the same lookback
    * window — gates `engine-last-used` to `unknown` (not a noisy `warn`) when
-   * no improve run has completed recently enough for "never used" to be a
-   * meaningful signal, e.g. a fresh install.
+   * no improve run has been recorded (started) recently enough for "never
+   * used" to be a meaningful signal, e.g. a fresh install.
    */
   improveRunsInLookbackWindow: number;
 }
@@ -382,7 +382,7 @@ async function runConfiguredEngineProbe(
       fallbackEngine && !fallback ? "configured fallback LLM connection" : undefined,
       !fallbackCredentialAvailable
         ? fallbackSuppliedByEnvAsset
-          ? `required fallback credential (available via env asset ${fallbackSuppliedByEnvAsset}; run under it: akm env run ${fallbackSuppliedByEnvAsset} -- …)`
+          ? `required fallback credential (available via env asset ${fallbackSuppliedByEnvAsset}; run under it: akm env run ${fallbackSuppliedByEnvAsset} -- ...)`
           : "required fallback credential"
         : undefined,
     ].filter((value): value is string => value !== undefined);
@@ -455,7 +455,7 @@ async function runConfiguredEngineProbe(
           status: "warn",
           confidence: "high",
           message: suppliedByEnvAsset
-            ? `LLM engine "${engineName}" is configured, but its required credential is not available in this shell; env asset ${suppliedByEnvAsset} supplies it — run under it (akm env run ${suppliedByEnvAsset} -- …).`
+            ? `LLM engine "${engineName}" is configured, but its required credential is not available in this shell; env asset ${suppliedByEnvAsset} supplies it — run under it (akm env run ${suppliedByEnvAsset} -- ...).`
             : `LLM engine "${engineName}" is configured, but its required credential is unavailable.`,
           evidence: { ...llmEvidence, suppliedByEnvAsset },
         };
@@ -849,8 +849,9 @@ interface EngineLastUsedEntry {
  * `improveRunsInLookbackWindow`) — no IO here, mirrors `thinking-control`.
  *
  * `unknown` (not a noisy `warn`) both when no engine is bound to an enabled
- * process, AND when no improve run has completed in the lookback window at
- * all — a fresh install has never been given the chance to use its engines.
+ * process, AND when no improve run has been recorded (started) in the
+ * lookback window at all — a fresh install has never been given the chance
+ * to use its engines.
  */
 function projectEngineLastUsedCheck(
   processEngineMap: Readonly<Record<string, string>>,
@@ -899,10 +900,11 @@ function projectEngineLastUsedCheck(
   const message =
     idle.length > 0
       ? idle
-          .map(
-            (entry) =>
-              `Engine "${entry.engine}" is bound to process "${entry.processes.join(", ")}" but has not been used in the last ${lookbackDays} days.`,
-          )
+          .map((entry) => {
+            const quoted = entry.processes.map((process) => `"${process}"`).join(", ");
+            const noun = entry.processes.length === 1 ? "process" : "processes";
+            return `Engine "${entry.engine}" is bound to ${noun} ${quoted} but has not been used in the last ${lookbackDays} days.`;
+          })
           .join(" ")
       : entries
           .map((entry) => {
