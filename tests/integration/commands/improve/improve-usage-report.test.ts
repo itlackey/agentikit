@@ -238,6 +238,80 @@ describe("akm improve report (#944)", () => {
     }
   });
 
+  test("--since surfaces the most recent run's noCalls reason per process, not the oldest", () => {
+    const testEnv = makeEnv(makeStashDir());
+
+    // `improve report --since` on its own initialises and migrates
+    // state.db without making any LLM calls or improve_runs rows.
+    const init = runCli(["improve", "report", "--since", "24h"], testEnv);
+    expect(init.status).toBe(0);
+
+    // Seed two rows directly, both WITH a persisted usageReport, whose
+    // noCalls reason for the same process ("consolidate") differs: the
+    // older run says engine_unavailable, the newer one says no_signal.
+    // `queryImproveRuns` returns rows newest-first, so `--since` must
+    // surface the newer run's reason, not the older run's.
+    const db = new Database(testEnv.stateDbPath);
+    try {
+      const baseResult = {
+        schemaVersion: 2,
+        ok: true,
+        strategy: "default",
+        scope: { mode: "all" },
+        dryRun: false,
+        memorySummary: { eligible: 0, derived: 0 },
+        plannedRefs: [],
+        actions: [],
+      };
+      const insertRun = (id: string, startedAt: string, completedAt: string, reason: string) => {
+        db.prepare(
+          `INSERT INTO improve_runs
+             (id, started_at, completed_at, stash_dir, dry_run, strategy, scope_mode, scope_value, guidance, ok, result_json, metrics_json, metadata_json)
+           VALUES (?, ?, ?, ?, 0, ?, 'all', NULL, NULL, 1, ?, NULL, '{}')`,
+        ).run(
+          id,
+          startedAt,
+          completedAt,
+          "/order-test/stash",
+          "default",
+          JSON.stringify({
+            ...baseResult,
+            usageReport: {
+              byProcessEngineModel: [],
+              noCalls: [{ process: "consolidate", reason }],
+            },
+          }),
+        );
+      };
+      insertRun(
+        "since-order-run-older",
+        new Date(Date.now() - 10 * 60_000).toISOString(),
+        new Date(Date.now() - 9 * 60_000).toISOString(),
+        "engine_unavailable",
+      );
+      insertRun(
+        "since-order-run-newer",
+        new Date(Date.now() - 2 * 60_000).toISOString(),
+        new Date(Date.now() - 1 * 60_000).toISOString(),
+        "no_signal",
+      );
+
+      const since = runCli(["improve", "report", "--since", "24h"], testEnv);
+      expect(since.status).toBe(0);
+      const sinceParsed = JSON.parse(since.stdout) as {
+        usageReport: { noCalls: Array<Record<string, unknown>> };
+      };
+      expect(sinceParsed.usageReport.noCalls).toEqual(
+        expect.arrayContaining([{ process: "consolidate", reason: "no_signal" }]),
+      );
+      expect(sinceParsed.usageReport.noCalls).not.toEqual(
+        expect.arrayContaining([{ process: "consolidate", reason: "engine_unavailable" }]),
+      );
+    } finally {
+      db.close();
+    }
+  });
+
   test("a terminated run (recordTerminatedImproveRun) degrades with an accurate note, not the pre-0.9.15 claim", () => {
     const testEnv = makeEnv(makeStashDir());
 

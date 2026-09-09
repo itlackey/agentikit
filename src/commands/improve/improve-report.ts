@@ -138,7 +138,12 @@ export function runImproveReportQuery(options: { runId?: string; since?: string 
           if (crossTabRow.calls > 0) calledEverByProcess.add(crossTabRow.process);
         }
         for (const noCallRow of usageReport.noCalls) {
-          lastReasonByProcess.set(noCallRow.process, { engine: noCallRow.engine, reason: noCallRow.reason });
+          // `rows` is newest-first (ORDER BY started_at DESC): keep only the
+          // first (most recent) reason seen per process, never overwrite it
+          // with an older run's reason.
+          if (!lastReasonByProcess.has(noCallRow.process)) {
+            lastReasonByProcess.set(noCallRow.process, { engine: noCallRow.engine, reason: noCallRow.reason });
+          }
         }
         if (note) notes.add(note);
       }
