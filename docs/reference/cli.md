@@ -2212,12 +2212,14 @@ akm improve --skip-if-locked           # for high-frequency scheduled runs: skip
 akm improve --require-engines          # for scheduled runs: abort (exit 78) instead of degrading if an engine/credential is unavailable
 akm improve --no-sync                  # skip the end-of-run git commit entirely (default: on for git-backed bundles)
 akm improve --sync --no-push           # commit only, skip the push after it
+akm improve --plan --strategy thorough # preview thorough's resolved engine/model routing; nothing is dispatched
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--task` | Optional extra guidance for this improvement pass |
 | `--dry-run` | Show the schema-v2 result on stdout without creating config, data, state, cache, bundle, log, or result artifacts. Dry-run results are never persisted, including on errors or signals. |
+| `--plan` | Alias for `--dry-run` (#947). Sets the exact same internal flag; no separate code path. Prefer this spelling when the goal is previewing `plan.processes` (resolved process -> engine -> model routing) rather than checking what would be written. |
 | `--bundle` | Select the proposal/write target; when the ref scope is bundle-qualified, it must name the same bundle |
 | `--limit <n>` | Base cap for ordinary assets (highest utility first); configured replay slots are additive |
 | `--timeout-ms <ms>` | Wall-clock budget for the run (default: `7200000` = 2 hours) |
@@ -2289,6 +2291,27 @@ The dry result is a best-effort observation assembled during that invocation,
 not an atomic cross-store snapshot or a reservation. Live execution re-inspects
 mutable inputs, so a later run can differ after index, state, filesystem,
 clock, or session-log changes.
+
+`plan.processes` (#947) is the resolved process -> engine -> model routing
+table: one row per improve process (`reflect`, `distill`, `consolidate`,
+`memoryInference`, `graphExtraction`, `extract`, `validation`, `triage`,
+`proactiveMaintenance`), plus a `triage.judgment` row when the strategy
+configures a judgment engine. Each row carries `enabled`, the resolved
+`engine`/`model` (llm-backed processes only) and `engineKind`, this process's
+own lowering `notices`, and — for reflect/distill/consolidate only —
+`eligibleRefs`, the count of this run's `effectiveRefs` the process would act
+on (`shouldSkipRef`'s allowedTypes/process-disabled check; a count, not a
+per-ref matrix, to keep the envelope bounded). A row that could not resolve an
+engine or credential carries `unavailable: {configKey, reason}` — the same
+data behind `skippedProcesses` above, reshaped per process. This table is
+resolved before any dispatch on every invocation (dry or live), so
+`akm improve --dry-run --strategy <name>` (or `--plan`) previews an ad-hoc
+strategy override without changing config first; `akm health`'s
+`active-improve-strategy` check performs the equivalent resolution but only
+for the configured default strategy (`defaults.improveStrategy`), and reports
+no model or per-process notices. Neither `--dry-run` nor `--plan` probes
+engine reachability over the network — pair with `akm health --probe` (or the
+default probe-on behavior) to check whether a named engine actually answers.
 
 When reinforced facts need promotion, `knowledge` is the higher-authority
 destination than `memory`. The deterministic search ranking also prefers
