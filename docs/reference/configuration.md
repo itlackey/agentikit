@@ -396,21 +396,62 @@ unless a remote `embedding` config is provided.
 `akm improve`'s memory-inference/consolidate passes when they call an
 embedding model: `provider`, `endpoint`, `model`, `apiKey` (symbolic
 reference, same rules as engine `apiKey`), `dimension`, `localModel`,
-`maxTokens`, `batchSize`, `chunkSize`, `contextLength`, and
-`ollamaOptions.num_ctx`.
+`maxInputTokens`, `maxTokens`, `batchSize`, `chunkSize`, `contextLength`,
+`timeoutMs`, `concurrency`, and `ollamaOptions.num_ctx`.
 
-`akm index` keeps a small, fixed number of `/v1/embeddings` requests in
-flight at once (a remote endpoint only; the local transformer path is
-unaffected): `1` for a loopback endpoint (`localhost`, `127.0.0.0/8`, etc. —
-a local model server serves one inference at a time, and parallel requests
-thrash it) and `2` for a remote one. This width is not configurable. The
-actual throughput knob is request SIZE, not request count: `embedding.batchSize`
-(a document-count cap, default 100) together with `embedding.maxTokens` /
-`embedding.contextLength` (an estimated token budget per request, default
-8000) control how many documents land in one request — a batch of 16-32
-documents takes about the same wall time as a single one against a healthy
-endpoint, so growing the batch is where most of the win is, not adding more
-concurrent requests.
+The knobs that bound request/document size and rate, all optional (defaults
+apply when unset), for a remote endpoint (`src/llm/embedders/remote.ts`):
+
+| Key | Default | Bounds |
+| --- | --- | --- |
+| `embedding.maxInputTokens` | `512` | Per-DOCUMENT cap, applied before batching (#956). A document's embedded text is truncated to its head (unicode-safe) at this many estimated tokens instead of ever being skipped for size alone — a document is skipped only when its truncated head is empty. |
+| `embedding.maxTokens` | `8000` (`DEFAULT_TOKEN_BUDGET`) | Per-REQUEST token budget: how many (already-capped) documents' estimated tokens fit in one HTTP request. With the 512-token default document cap, a request carries about 16 documents by default. |
+| `embedding.batchSize` | `100` | Per-REQUEST document-COUNT safety cap, independent of the token budget — guards against many tiny documents packing an oversized request. |
+| `embedding.contextLength` | unset | Ollama's `num_ctx` ONLY, forwarded verbatim as `options.num_ctx` on the native `/api/embed` request. Does **not** feed the request token budget above (#956) — the two used to share this one field, so setting it for the server's context window silently changed request batching too. |
+| `embedding.timeoutMs` | `120000` (120s) | Per-request wall timeout — see below. |
+| `embedding.concurrency` | `1` loopback / `2` remote | In-flight request window — see below. |
+
+`embedding.timeoutMs` (positive integer, default `120000` — 120s) is the
+budget for a request at the FULL token budget (`embedding.maxTokens`); a
+local model server on a large, token-budget-bounded batch legitimately takes
+longer than the prior fixed 30s cut off. A smaller request gets a
+proportionally smaller timeout —
+`clamp(timeoutMs × requestTokens / tokenBudget, 30000, timeoutMs)` — so a
+dead endpoint is still detected in seconds on the common case of small
+documents. Set `embedding.timeoutMs` lower to fail fast against a
+known-fast endpoint, or higher for a slow local server on large batches.
+
+A request TIMEOUT (not a rejection for exceeding the context window) never
+drops its batch immediately: field confirmation showed that once akm
+abandons a timed-out request, the endpoint (e.g. llama-server) keeps
+computing it anyway, so dropping it right away just grows the provider's
+queue while every following batch dies the same way. Instead akm backs off
+(5s, doubling, capped at 60s) and retries the same request once; a second
+timeout splits it in half and retries each half the same way, down to
+individual documents, and a single document that still times out is finally
+skipped (logged at the default `warn` level). After 3 consecutive failures
+at single-document size (timeout or network error), or 3 consecutive
+network errors at any size, the embedding phase stops dispatching further
+requests and reports failure — batches already committed are kept; rerun
+`akm index` once the endpoint is healthy.
+
+`akm index` keeps a small number of `/v1/embeddings` requests in flight at
+once (a remote endpoint only; the local transformer path is unaffected):
+`1` for a loopback endpoint (`localhost`, `127.0.0.0/8`, etc. — a local
+model server serves one inference at a time, and parallel requests thrash
+it) and `2` for a remote one, unless `embedding.concurrency` (positive
+integer, 1-16) overrides it. This default holds for the overwhelming
+majority of setups; set the override only for an endpoint that genuinely
+serves parallel requests — a local server started with a multi-slot flag
+(llama.cpp's `--parallel N`, vLLM) — not to "speed up" an ordinary
+single-slot model server, which the default already protects from
+reload-thrash. Request SIZE remains the first throughput lever regardless:
+`embedding.batchSize` (a document-count cap, default 100) together with
+`embedding.maxTokens` (an estimated token budget per request, default 8000
+— NOT `embedding.contextLength`, see the table above) control how many
+documents land in one request — with the default 512-token
+`embedding.maxInputTokens` document cap, that is about 16-32 documents,
+taking about the same wall time as a single one against a healthy endpoint.
 
 ## Search tuning
 
@@ -673,6 +714,17 @@ embedding calls have since 0.9.13 (#917); resolution order for a single
 `apiKey` field is: an env reference (`$VAR`/`${VAR}`) first, then
 `apiKeyFile`, then `secret://<name>` — though in practice a config sets only
 one of the three per engine.
+
+`embedding.apiKey` accepts the same three forms and resolves `secret://` the
+same way, on every path that sends an embedding request: `akm index`
+(including its `bundle update` post-commit embedding pass and the targeted
+re-embed a write command like `akm remember` triggers), `akm improve`'s
+consolidate pass (memory dedup and similarity clustering), and the
+fingerprint-rename canary `akm index` runs when the embedding config
+changes. All of them build the
+provider request through the same `RemoteEmbedder`/`resolveSecret` boundary,
+so a `secret://` reference resolves identically regardless of which command
+triggered the request (#953).
 
 Use `AKM_SQLITE_JOURNAL_MODE=DELETE` or `TRUNCATE` when WAL is unavailable,
 such as on some NFS/SMB mounts. With the default `WAL` setting, AKM detects a

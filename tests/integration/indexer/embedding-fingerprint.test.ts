@@ -23,6 +23,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { AkmConfig } from "../../../src/core/config/config";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { deriveEntryProvenance, deriveInstallations } from "../../../src/indexer/installations";
 import { generateEmbeddingsForDb } from "../../../src/indexer/materialize-embeddings";
 import { buildSearchText } from "../../../src/indexer/search/search-fields";
@@ -92,6 +93,7 @@ describe("generateEmbeddingsForDb: embedding-fingerprint canary (#955)", () => {
   });
   afterEach(() => {
     storage.cleanup();
+    _setWarnSinkForTests(undefined);
   });
 
   function seedEntries(db: Database, count: number): void {
@@ -158,13 +160,20 @@ describe("generateEmbeddingsForDb: embedding-fingerprint canary (#955)", () => {
 
       mockEmbedder(simpleMock(orthogonalVec));
       const messages: string[] = [];
+      const warnCalls: string[] = [];
+      _setWarnSinkForTests((_level, args) => warnCalls.push(args.map(String).join(" ")));
       const second = await generateEmbeddingsForDb(db, configWithModel("model-b"), (e) => messages.push(e.message));
 
       expect(second.success).toBe(true);
       expect(getEmbeddingCount(db)).toBe(3);
       expect(embeddingBlob(db, 0)).not.toEqual(before);
       expect(getMeta(db, "embeddingFingerprint")).toContain("model-b");
-      expect(messages.some((m) => m.includes("Re-embedding") && m.includes("vectors differ"))).toBe(true);
+      // Once, through onProgress only (#954, field-report follow-up) — never
+      // ALSO through warn(), which used to print the identical "Re-embedding
+      // N entries because ..." sentence a second time in text mode.
+      const rebuildLines = messages.filter((m) => m.includes("Re-embedding") && m.includes("vectors differ"));
+      expect(rebuildLines).toHaveLength(1);
+      expect(warnCalls.some((m) => m.includes("Re-embedding") && m.includes("vectors differ"))).toBe(false);
     } finally {
       closeDatabase(db);
     }

@@ -24,7 +24,7 @@
 import { type LockOwnership, releaseLock } from "../core/file-lock";
 import { tryWithMaintenanceStartBarrier, withMaintenanceStartBarrier } from "../core/maintenance-barrier";
 import { getIndexRebuildLockPath } from "../core/paths";
-import { type RunLockHolder, tryAcquireRunLock } from "../core/run-lock";
+import { formatLockHolderPid, type RunLockHolder, tryAcquireRunLock } from "../core/run-lock";
 import { warn, warnVerbose } from "../core/warn";
 
 export type IndexRebuildLockAcquisition =
@@ -68,11 +68,11 @@ export function tryAcquireIndexRebuildLock(skipIfLocked: boolean | undefined): I
     const result = tryWithMaintenanceStartBarrier(acquire);
     if (!result) {
       warn("[index] maintenance barrier held; skipping (--skip-if-locked)");
-      return { state: "skipped", holder: { pid: null, startedAt: null } };
+      return { state: "skipped", holder: { pid: null, startedAt: null, launcherPid: null } };
     }
     if (result.state === "acquired") return result;
     warn(
-      `[index] another index run holds the lock (PID ${result.holder.pid}, started ${result.holder.startedAt}); ` +
+      `[index] another index run holds the lock (PID ${formatLockHolderPid(result.holder)}, started ${result.holder.startedAt}); ` +
         "skipping (--skip-if-locked)",
     );
     return { state: "skipped", holder: result.holder };
@@ -81,7 +81,7 @@ export function tryAcquireIndexRebuildLock(skipIfLocked: boolean | undefined): I
   const result = withMaintenanceStartBarrier(acquire);
   if (result.state === "acquired") return result;
   warn(
-    `[index] another index run is active (pid ${result.holder.pid}, started ${result.holder.startedAt}); ` +
+    `[index] another index run is active (pid ${formatLockHolderPid(result.holder)}, started ${result.holder.startedAt}); ` +
       "this run will contend with it — pass --skip-if-locked for scheduled runs",
   );
   return { state: "contended", holder: result.holder };

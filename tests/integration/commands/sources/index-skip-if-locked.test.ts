@@ -46,7 +46,12 @@ describe("akm index — skip-if-locked", () => {
     expect(result.code).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.ok).toBe(true);
-    expect(parsed.skipped).toEqual({ reason: "lock-held", pid: process.pid, startedAt: expect.any(String) });
+    expect(parsed.skipped).toEqual({
+      reason: "lock-held",
+      pid: process.pid,
+      launcherPid: null,
+      startedAt: expect.any(String),
+    });
     // The existing owner's sentinel is untouched.
     expect(fs.existsSync(lockPath)).toBe(true);
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid).toBe(process.pid);
@@ -73,7 +78,7 @@ describe("akm index — skip-if-locked", () => {
     const result = await runCliCapture(["index", "--full", "--skip-if-locked", "--format=json"]);
 
     expect(result.code).toBe(0);
-    expect(result.stderr).not.toMatch(/skipping/);
+    expect(result.stderr).not.toMatch(/another index run is active/);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.skipped).toBeUndefined();
     // Released on exit — no sentinel left behind.

@@ -13,21 +13,32 @@
  */
 
 import type { AkmConfig, EmbeddingConnectionConfig } from "../core/config/config";
+import { getConfigPath } from "../core/paths";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
 import { embedBatch } from "../llm/embedder";
 import { DETERMINISTIC_EMBED_MODEL_ID, isDeterministicEmbedEnabled } from "../llm/embedders/deterministic";
 import { DEFAULT_LOCAL_MODEL } from "../llm/embedders/local";
 import {
   buildTokenBoundedBatches,
+  capEmbeddingText,
+  DEFAULT_MAX_INPUT_TOKENS,
   DEFAULT_REMOTE_BATCH_SIZE,
   DEFAULT_TOKEN_BUDGET,
+  describeEmbeddingCredential,
   type EmbeddingBatchCommit,
   type EmbeddingBatchSkip,
+  type EmbeddingSkipHandler,
   estimateTokenCount,
   hasRemoteEndpoint,
+  normalizeEmbeddingEndpoint,
 } from "../llm/embedders/remote";
 import { cosineSimilarity, type EmbeddingVector } from "../llm/embedders/types";
 import type { Database } from "../storage/database";
+import {
+  purgeEmbeddingSalvage,
+  relabelEmbeddingSalvageFingerprint,
+  reuseSalvagedEmbeddings,
+} from "../storage/repositories/embedding-salvage-repository";
 import { getEmbeddableEntryCount } from "../storage/repositories/index-entries-repository";
 import { deleteMeta, getMeta, setMeta } from "../storage/repositories/index-meta-repository";
 import {
@@ -77,8 +88,14 @@ export interface GenerateEmbeddingsOptions {
   forceReembed?: boolean;
 }
 
-/** How often (in stored entries) to emit a progress line during a large embedding run (#954). */
-const PROGRESS_INTERVAL = 500;
+/**
+ * The heartbeat text emitted every 15s while a provider request is in
+ * flight, and by default (not `--verbose`-only) since silence indistinguishable
+ * from a hang was the field report's own symptom (#954).
+ */
+export function formatEmbeddingHeartbeat(storedCount: number, total: number, failedCount: number): string {
+  return `Still generating embeddings: ${storedCount}/${total} stored, ${failedCount} failed; waiting on embedding provider.`;
+}
 
 /**
  * Number of already-embedded entries sampled for the fingerprint-rename
@@ -94,6 +111,24 @@ const CANARY_SAMPLE_SIZE = 8;
  * same-model rename rather than a real model change (#955).
  */
 const CANARY_SIMILARITY_THRESHOLD = 0.999;
+
+/**
+ * Consecutive transport failures after which the embedding pass stops
+ * dispatching further requests and ends the run as a failure rather than
+ * grinding through every remaining batch against a dead endpoint (#954).
+ * Two independent trip conditions
+ * share this threshold — see `onSkip` below: 3 consecutive failures at
+ * single-document size (timeout OR network error — a multi-document
+ * timeout is not by itself evidence the endpoint is dead, since
+ * `RemoteEmbedder.embedBatch` already retries and splits it smaller before
+ * ever reporting it as failed at single-document size), or 3 consecutive
+ * network errors at ANY size (a network error is never retried, so it is
+ * trusted immediately regardless of how large the request was).
+ * `context-window-exceeded` never counts — that reason proves the provider
+ * IS reachable, and split-and-retry already handles it; it resets both
+ * streaks instead.
+ */
+const CIRCUIT_BREAKER_THRESHOLD = 3;
 
 /** One (stored vector, freshly re-embedded vector) pair for the canary decision. */
 export interface EmbeddingCanaryPair {
@@ -167,7 +202,7 @@ function medianOf(values: readonly number[]): number {
  * on what the server (or local model) actually reported plus the observed
  * vector width, so a gateway/transport change that keeps returning the same
  * underlying model can be told apart from a genuine model change without
- * relying on the operator's config string (#955 field-review addendum).
+ * relying on the operator's config string (#955).
  * Returns undefined when nothing was actually observed this call (no vector
  * to measure yet).
  */
@@ -293,11 +328,50 @@ export async function generateEmbeddingsForDb(
   entryIds?: readonly number[],
   opts?: GenerateEmbeddingsOptions,
 ): Promise<EmbeddingGenerationResult> {
+  // Drift guard (#954): refuse an ambient transaction. Every
+  // per-batch `db.transaction()` below is meant to be its own durable commit
+  // (#954) — inside an already-open outer transaction it would nest as an
+  // unobservable SAVEPOINT instead, so an interruption (competing-process
+  // collision, SIGKILL) could lose the whole pass rather than only the batch
+  // in flight. This is an internal contract error (a caller bug), not a
+  // user-facing failure class: callers with their own transaction (e.g. `akm
+  // bundle update`'s unified update transaction) must run the embedding
+  // phase on a separate connection AFTER their own transaction commits — see
+  // `runEmbeddingPass` in `src/indexer/indexer.ts`.
+  if (db.inTransaction) {
+    throw new Error(
+      "generateEmbeddingsForDb was called with an ambient transaction already open on `db`: per-batch commits " +
+        "would become SAVEPOINTs inside it, losing the crash-durability contract per-batch commit exists for. " +
+        "Run the embedding phase on a connection with no open transaction.",
+    );
+  }
   throwIfAborted(signal);
 
   if (config.semanticSearchMode === "off") {
+    // #955: salvage is self-emptying only if every path that skips reuse
+    // also drains it — otherwise a full rebuild performed with semantic
+    // search disabled leaves permanent orphaned rows behind (nothing will
+    // ever consume them, since this path never reaches the reuse step).
+    purgeEmbeddingSalvage(db);
     onProgress({ phase: "embeddings", message: "Semantic search disabled; skipping embeddings." });
     return { success: false, message: "Semantic search is disabled." };
+  }
+
+  // #953 field gap: the actionable outcome is a self-diagnosing run, not a
+  // fix (every RemoteEmbedder path already resolves secret:// through one
+  // boundary — a keyless request can only mean embedding.apiKey was absent
+  // from the config THIS run loaded). One default-level line, before the
+  // first provider request of the phase (the canary probe or the main
+  // pass, whichever runs first below), naming the endpoint/model/credential
+  // SOURCE — never the credential value.
+  if (hasRemoteEndpoint(config.embedding ?? {})) {
+    const endpoint = normalizeEmbeddingEndpoint(config.embedding?.endpoint ?? "");
+    const credential = describeEmbeddingCredential(config.embedding?.apiKey);
+    const configFileSuffix = isVerbose() ? `; config: ${getConfigPath()}` : "";
+    onProgress({
+      phase: "embeddings",
+      message: `[embed] endpoint ${endpoint}, model ${config.embedding?.model ?? "unknown"}; credential: ${credential}${configFileSuffix}`,
+    });
   }
 
   // A targeted call starts from an already-published generation. Preserve its
@@ -320,6 +394,9 @@ export async function generateEmbeddingsForDb(
     // instead of purging again from zero (#955/#956).
     db.transaction(() => {
       purgeEmbeddings(db, { dropVecTable: true });
+      // #955: an explicit forced rebuild must re-embed everything, not
+      // quietly satisfy some of it from stale salvage.
+      purgeEmbeddingSalvage(db);
       deleteMeta(db, "embeddingDim");
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       deleteMeta(db, "embeddingIdentity");
@@ -342,6 +419,9 @@ export async function generateEmbeddingsForDb(
     if (decision.outcome === "rebuild") {
       db.transaction(() => {
         purgeEmbeddings(db, { dropVecTable: true });
+        // #955: the stored vectors AND any leftover salvage both belong to
+        // a different model now — neither is reusable, so both go.
+        purgeEmbeddingSalvage(db);
         deleteMeta(db, "embeddingDim");
         setMeta(db, "embeddingFingerprint", currentFingerprint);
         if (decision.identity) setMeta(db, "embeddingIdentity", decision.identity);
@@ -356,6 +436,11 @@ export async function generateEmbeddingsForDb(
       // immediate write means a crash right after this decision does not
       // re-run the canary needlessly on the next attempt.
       setMeta(db, "embeddingFingerprint", currentFingerprint);
+      // #955: the model did not actually change, only the fingerprint
+      // STRING did (e.g. a gateway rename) — any leftover salvage rows
+      // tagged with the OLD string are still valid vectors. Relabel them so
+      // the reuse step below (and any later pass) can still find them.
+      relabelEmbeddingSalvageFingerprint(db, storedFingerprint, currentFingerprint);
       if (decision.identity) setMeta(db, "embeddingIdentity", decision.identity);
       if (decision.verified) {
         const keptCount = getEmbeddingCount(db);
@@ -369,26 +454,101 @@ export async function generateEmbeddingsForDb(
       // Empty-sample case (decision.verified === false): nothing stored to
       // lose or verify against — adopt the label silently, no purge line.
     }
+  } else {
+    // No rename to verify (either this is the very first
+    // pass ever for this db, or the fingerprint already matches the last
+    // successful one) — still record it NOW rather than deferring to a
+    // fully successful pass, mirroring the rebuild/keep branches above
+    // (#955/#956). Without this, an interrupted FIRST-EVER pass left
+    // `embeddingFingerprint` unset despite a per-batch commit below (#954)
+    // already having durably written real vectors — a later `akm index
+    // --full`'s salvage-before-discard step tags rows by this meta
+    // (`salvageEmbeddingsBeforeDiscard`) and treats an unset fingerprint as
+    // "nothing was ever verified", silently turning genuinely-embedded
+    // vectors into a full re-embed instead of a salvage-and-reuse.
+    setMeta(db, "embeddingFingerprint", currentFingerprint);
   }
 
   try {
     throwIfAborted(signal);
     const allEntries = getAllEntriesForEmbedding(db, targetEntryIds);
-    if (allEntries.length === 0) {
+
+    let vecFailedCount = 0;
+    let vecUnavailableCount = 0;
+
+    // #955: before any provider call, hand back vectors salvaged from a
+    // full rebuild or a generation bump for entries whose search_text is
+    // byte-identical to what was salvaged under the SAME fingerprint — a
+    // fingerprint mismatch or a single-byte content change both correctly
+    // fall through to the provider below instead.
+    const { reusedCount, remaining: candidateEntries } = reuseSalvagedEmbeddings(
+      db,
+      allEntries,
+      currentFingerprint,
+      (entry, embedding) => {
+        const result = upsertEmbedding(db, entry.id, embedding);
+        if (result.vec === "failed") vecFailedCount++;
+        if (result.vec === "unavailable") vecUnavailableCount++;
+        return result.stored;
+      },
+    );
+    if (reusedCount > 0) {
+      onProgress({
+        phase: "embeddings",
+        message: `Reused ${reusedCount} embedding${reusedCount === 1 ? "" : "s"} from the previous generation; embedding ${candidateEntries.length} new.`,
+      });
+    }
+
+    if (candidateEntries.length === 0) {
       onProgress({ phase: "embeddings", message: "Embeddings already up to date." });
       setMeta(db, "embeddingFingerprint", currentFingerprint);
-      return { success: true };
+      if (reusedCount > 0) {
+        const vecGenerationComplete = targetEntryIds === undefined ? isVecFastPathComplete(db) : vecFastPathWasReady;
+        setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0 && vecGenerationComplete);
+      }
+      // A pass that completes (even one that did nothing but reuse) purges
+      // whatever is left — salvage is consumed by the NEXT pass, never kept
+      // around as a second cache.
+      purgeEmbeddingSalvage(db);
+      return reusedCount > 0 ? { success: true, vecInsertFailures: vecFailedCount } : { success: true };
     }
+
+    // Cap each document's embedded text at
+    // embedding.maxInputTokens (default DEFAULT_MAX_INPUT_TOKENS) instead of
+    // ever failing a whole batch over one oversized entry — truncation keeps
+    // the head of the text, unicode-safe. A document is skipped only when its
+    // head is empty (the impossible case: nothing left to embed), never
+    // merely for being long.
+    const maxInputTokens = config.embedding?.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS;
+    let truncatedCount = 0;
+    const texts: string[] = [];
+    const pendingEntries: typeof candidateEntries = [];
+    for (const entry of candidateEntries) {
+      const capped = capEmbeddingText(entry.searchText, maxInputTokens);
+      if (capped.text.length === 0) continue;
+      if (capped.truncated) truncatedCount++;
+      pendingEntries.push(entry);
+      texts.push(capped.text);
+    }
+    if (truncatedCount > 0) {
+      // Through onProgress ONLY, not warn() too — onProgress already reaches
+      // stderr at the default level in every output mode (#954), and the
+      // index CLI's progress handler writes it through info() (log-file
+      // aware), so calling warn() as well printed the identical sentence
+      // twice in text mode.
+      const message = `[embed] ${truncatedCount} entr${truncatedCount === 1 ? "y" : "ies"} truncated to the ${maxInputTokens}-token embedding cap (embedding.maxInputTokens); rerun with a higher cap to embed the full text.`;
+      onProgress({ phase: "embeddings", message });
+    }
+
     if (rebuildReason) {
-      const message = `[embed] Re-embedding ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"} because ${rebuildReason}`;
-      warn(message);
+      // See the truncation notice above: onProgress ONLY.
+      const message = `[embed] Re-embedding ${pendingEntries.length} entr${pendingEntries.length === 1 ? "y" : "ies"} because ${rebuildReason}`;
       onProgress({ phase: "embeddings", message });
     }
     onProgress({
       phase: "embeddings",
-      message: `Generating embeddings for ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"}.`,
+      message: `Generating embeddings for ${pendingEntries.length} entr${pendingEntries.length === 1 ? "y" : "ies"}.`,
     });
-    const texts = allEntries.map((entry) => entry.searchText);
 
     if (isVerbose()) {
       // Mirror RemoteEmbedder's actual token-bounded batching (#874) so this
@@ -398,14 +558,16 @@ export async function generateEmbeddingsForDb(
       // for inference throughput only, never fails/skips), so there's
       // nothing meaningful to report per-batch for them.
       if (hasRemoteEndpoint(config.embedding ?? {})) {
-        const tokenBudget = config.embedding?.maxTokens ?? config.embedding?.contextLength ?? DEFAULT_TOKEN_BUDGET;
+        // Mirrors RemoteEmbedder.embedBatch's own tokenBudget resolution
+        // (#956: contextLength no longer feeds this).
+        const tokenBudget = config.embedding?.maxTokens ?? DEFAULT_TOKEN_BUDGET;
         const maxCount = config.embedding?.batchSize ?? DEFAULT_REMOTE_BATCH_SIZE;
         const batches = buildTokenBoundedBatches(texts, tokenBudget, maxCount);
         const batchNumberByIndex = new Map<number, number>();
         batches.forEach((batch, batchIdx) => {
           for (const i of batch.indices) batchNumberByIndex.set(i, batchIdx + 1);
         });
-        for (const [i, entry] of allEntries.entries()) {
+        for (const [i, entry] of pendingEntries.entries()) {
           const chars = entry.searchText.length;
           const tokens = estimateTokenCount(entry.searchText);
           const batch = batches[batchNumberByIndex.get(i)! - 1];
@@ -415,7 +577,7 @@ export async function generateEmbeddingsForDb(
           warnVerbose(`[embed] ${entry.itemRef} (${chars} chars, est. ${tokens} tokens) → ${label}`);
         }
       } else {
-        for (const entry of allEntries) {
+        for (const entry of pendingEntries) {
           warnVerbose(
             `[embed] ${entry.itemRef} (${entry.searchText.length} chars, est. ${estimateTokenCount(entry.searchText)} tokens)`,
           );
@@ -427,15 +589,12 @@ export async function generateEmbeddingsForDb(
     let storedCount = 0;
     let skippedCount = 0;
     let embedFailedCount = 0;
-    let vecFailedCount = 0;
-    let vecUnavailableCount = 0;
     let storedTokens = 0;
-    let lastProgressBucket = 0;
     try {
       heartbeatTimer = setInterval(() => {
         onProgress({
           phase: "embeddings",
-          message: `Still generating embeddings: ${storedCount}/${allEntries.length} stored; waiting on embedding provider.`,
+          message: formatEmbeddingHeartbeat(storedCount, pendingEntries.length, embedFailedCount),
         });
       }, 15000);
 
@@ -444,6 +603,43 @@ export async function generateEmbeddingsForDb(
       // few bad documents don't discard every other entry's embedding.
       const skips: EmbeddingBatchSkip[] = [];
       const embedStart = Date.now();
+      // Circuit breaker (#954): stop
+      // dispatching further batches once either consecutive-failure streak
+      // below reaches CIRCUIT_BREAKER_THRESHOLD — a dead/hung provider used
+      // to grind through every remaining batch for hours, one 30s (now
+      // configurable, and now backed off/retried/split first — see
+      // RemoteEmbedder.embedBatch) timeout at a time, ending in one
+      // aggregate warning and `ok: true`. Counted per BATCH
+      // (`skip.batchStart`), not per document: a single failed 100-document
+      // batch must not look like 100 consecutive failures.
+      let consecutiveSingleDocFailures = 0;
+      let consecutiveNetworkErrorFailures = 0;
+      let circuitBreakerReason: string | undefined;
+      const onSkip: EmbeddingSkipHandler = (skip) => {
+        skips.push(skip);
+        if (!skip.batchStart) return undefined;
+        if (skip.reason === "context-window-exceeded") {
+          consecutiveSingleDocFailures = 0;
+          consecutiveNetworkErrorFailures = 0;
+          return undefined;
+        }
+        // "batch-request-failed": a timeout only counts once retries have
+        // already narrowed it down to a single document (embedBatch backs
+        // off, retries, and splits a multi-document timeout before ever
+        // reporting it here); a network error counts immediately at any
+        // size — it was never retried, so it is trusted right away.
+        consecutiveSingleDocFailures = skip.batchSize === 1 ? consecutiveSingleDocFailures + 1 : 0;
+        consecutiveNetworkErrorFailures =
+          skip.failureKind === "network-error" ? consecutiveNetworkErrorFailures + 1 : 0;
+        if (
+          consecutiveSingleDocFailures >= CIRCUIT_BREAKER_THRESHOLD ||
+          consecutiveNetworkErrorFailures >= CIRCUIT_BREAKER_THRESHOLD
+        ) {
+          circuitBreakerReason = skip.message;
+          return false;
+        }
+        return undefined;
+      };
       // Commit each provider batch in its own short transaction as it lands,
       // rather than buffering the whole run in memory for one transaction at
       // the very end (#954) — a competing-process lock error or any other
@@ -455,11 +651,37 @@ export async function generateEmbeddingsForDb(
       // is kept; every batch from one run shares the same provider/model.
       let observedModel: string | undefined;
       let observedVectorLen: number | undefined;
-      const onBatch: EmbeddingBatchCommit = (indices, batchEmbeddings, model) => {
+      // Whether the remote provider's endpoint/model/token language is
+      // meaningful for this run — the per-batch diagnostic line below is
+      // remote-only, same gate the credential diagnostic (#953) above uses.
+      const reportPerBatchLine = hasRemoteEndpoint(config.embedding ?? {});
+      const onBatch: EmbeddingBatchCommit = (indices, batchEmbeddings, model, outcome) => {
+        // #954 field-report follow-up: a "retrying" event carries nothing to
+        // commit — the request hasn't settled yet — only the notice that a
+        // back-off is about to be waited out, default-level so a run is
+        // never silently stalled indistinguishably from a hang.
+        if (outcome?.outcome === "retrying") {
+          if (reportPerBatchLine) {
+            onProgress({
+              phase: "embeddings",
+              message: `[embed] batch ${outcome.batchIndex}/${outcome.batchCount}: ${outcome.docCount} docs, ${outcome.requestTokens.toLocaleString()} tokens → retrying after ${(outcome.elapsedMs / 1000).toFixed(1)} s`,
+            });
+          }
+          return;
+        }
         if (model) observedModel = model;
+        // A batch that delivered at least one real embedding proves the
+        // provider is currently answering — reset both circuit-breaker
+        // streaks. (A wholly failed batch's `batchEmbeddings` are all
+        // `undefined`, per commitBatch's skip path, so this never
+        // re-triggers what onSkip just counted moments earlier.)
+        if (batchEmbeddings.some((embedding) => embedding !== undefined)) {
+          consecutiveSingleDocFailures = 0;
+          consecutiveNetworkErrorFailures = 0;
+        }
         db.transaction(() => {
           for (let k = 0; k < indices.length; k++) {
-            const entry = allEntries[indices[k] as number];
+            const entry = pendingEntries[indices[k] as number];
             if (!entry) continue;
             const embedding = batchEmbeddings[k];
             if (!embedding) {
@@ -478,31 +700,37 @@ export async function generateEmbeddingsForDb(
             if (result.vec === "unavailable") vecUnavailableCount++;
           }
         })();
-        const bucket = Math.floor(storedCount / PROGRESS_INTERVAL);
-        if (bucket > lastProgressBucket) {
-          lastProgressBucket = bucket;
+        // Default level, one line per provider batch (#954, field-report
+        // follow-up): oversized documents never made a request
+        // (`reason === "oversized"`), so there is no batch outcome to
+        // report — they are covered by the run's final oversized-skip
+        // count and list instead.
+        if (outcome && outcome.reason !== "oversized" && reportPerBatchLine) {
+          const elapsedSeconds = (outcome.elapsedMs / 1000).toFixed(1);
+          const outcomeLabel =
+            outcome.outcome === "stored"
+              ? `${outcome.docCount} stored (${elapsedSeconds} s)`
+              : `failed: ${outcome.reason}`;
           onProgress({
             phase: "embeddings",
-            message: `Embedded ${storedCount}/${allEntries.length} entries.`,
+            message: `[embed] batch ${outcome.batchIndex}/${outcome.batchCount}: ${outcome.docCount} docs, ${outcome.requestTokens.toLocaleString()} tokens → ${outcomeLabel}`,
           });
         }
+        // Every committed batch, not just every 500 stored entries (#954)
+        // — the prior bucketing left a non-verbose run silent
+        // for the entire embedding phase on anything smaller than 500
+        // entries, indistinguishable from a hang.
+        onProgress({
+          phase: "embeddings",
+          message: `Embedded ${storedCount}/${pendingEntries.length} entries.`,
+        });
       };
-      await embedBatch(texts, config.embedding, signal, (skip) => skips.push(skip), onBatch);
+      await embedBatch(texts, config.embedding, signal, onSkip, onBatch);
       throwIfAborted(signal);
       const elapsedSeconds = Math.max((Date.now() - embedStart) / 1000, 0.001);
       if (skippedCount > 0) {
         warn(
           `[embed] ${skippedCount} embedding${skippedCount === 1 ? "" : "s"} skipped (entry deleted between queue and write)`,
-        );
-      }
-      if (embedFailedCount > 0) {
-        const detail = skips
-          .slice(0, 20)
-          .map((skip) => `  - ${allEntries[skip.index]?.itemRef ?? skip.index} (${skip.reason}): ${skip.message}`)
-          .join("\n");
-        const more = skips.length > 20 ? `\n  ...and ${skips.length - 20} more` : "";
-        warn(
-          `[embed] ${embedFailedCount} embedding${embedFailedCount === 1 ? "" : "s"} could not be generated and ${embedFailedCount === 1 ? "was" : "were"} skipped:\n${detail}${more}`,
         );
       }
       const vecGenerationComplete = targetEntryIds === undefined ? isVecFastPathComplete(db) : vecFastPathWasReady;
@@ -516,13 +744,70 @@ export async function generateEmbeddingsForDb(
       }
       const entriesPerSec = storedCount / elapsedSeconds;
       const tokensPerSec = storedTokens / elapsedSeconds;
+      const totalStored = storedCount + reusedCount;
+      // #954, field-report follow-up: the final line
+      // reports every outcome, not just what was stored — counts come from
+      // the same collected `skips` the circuit breaker already uses,
+      // categorized by `reason`/`failureKind`. "oversized skipped" =
+      // context-window-exceeded (never fit any request, at any size);
+      // "timed out" = a batch-request-failed skip whose last attempt timed
+      // out (retries/splits already exhausted before this counted); "failed"
+      // = every other batch-request-failed skip (a genuine, never-retried
+      // network/HTTP failure).
+      const oversizedSkips = skips.filter((skip) => skip.reason === "context-window-exceeded");
+      const timedOutSkips = skips.filter(
+        (skip) => skip.reason === "batch-request-failed" && skip.failureKind === "timeout",
+      );
+      const failedSkips = skips.filter(
+        (skip) => skip.reason === "batch-request-failed" && skip.failureKind !== "timeout",
+      );
+      const throughputLine =
+        reusedCount > 0
+          ? // #955: report reused and newly-embedded counts separately — the
+            // rate figures below are provider throughput only (reuse is a
+            // plain DB write, not provider work) and would be misleadingly
+            // inflated if reused entries were folded into them.
+            `Stored ${totalStored} embedding${totalStored === 1 ? "" : "s"} (${reusedCount} reused, ${storedCount} newly embedded) in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s)`
+          : `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"} in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s)`;
       onProgress({
         phase: "embeddings",
-        message: `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"} in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s).`,
+        message: `${throughputLine}; ${oversizedSkips.length} oversized skipped, ${timedOutSkips.length} timed out, ${failedSkips.length} failed.`,
       });
+      // Bounded itemRef-level detail for every skip category, not just
+      // oversized — the aggregate counts above say HOW MANY documents timed
+      // out or failed, but give the operator no way to find out WHICH ones
+      // short of rerunning with --verbose and re-reading the whole log.
+      // Default level caps each list (there is nothing actionable about the
+      // 21st identical failure); --verbose prints every one, matching the
+      // per-document mapping lines' own verbosity gate above.
+      const printSkipList = (label: string, skipList: EmbeddingBatchSkip[]): void => {
+        if (skipList.length === 0) return;
+        const limit = isVerbose() ? skipList.length : 20;
+        const listed = skipList
+          .slice(0, limit)
+          .map((skip) => `  - ${pendingEntries[skip.index]?.itemRef ?? skip.index}: ${skip.message}`)
+          .join("\n");
+        const more = skipList.length > limit ? `\n  ...and ${skipList.length - limit} more` : "";
+        onProgress({ phase: "embeddings", message: `[embed] ${label} skipped:\n${listed}${more}` });
+      };
+      printSkipList("oversized documents", oversizedSkips);
+      printSkipList("timed-out documents", timedOutSkips);
+      printSkipList("failed documents", failedSkips);
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       const observedIdentity = deriveObservedEmbeddingIdentity(config.embedding, observedModel, observedVectorLen);
       if (observedIdentity) setMeta(db, "embeddingIdentity", observedIdentity);
+      // Circuit breaker tripped (#954): committed batches are
+      // kept (nothing above discards them), but the pass is not a success —
+      // the provider looks dead, not just occasionally flaky.
+      if (circuitBreakerReason !== undefined) {
+        const message =
+          `embedding provider failed ${CIRCUIT_BREAKER_THRESHOLD} consecutive batches ` +
+          `(last: ${circuitBreakerReason}); stopped after ${storedCount} embedding${storedCount === 1 ? "" : "s"} ` +
+          "were stored — rerun akm index when the endpoint is healthy";
+        warn(`[embed] ${message}`);
+        onProgress({ phase: "embeddings", message });
+        return { success: false, message, vecInsertFailures: vecFailedCount };
+      }
       // Only a total failure (nothing at all embedded, despite having entries
       // to embed) turns into a phase failure. Any partial success — the vast
       // majority of a large bundle embedding fine around a handful of skips —
@@ -536,6 +821,10 @@ export async function generateEmbeddingsForDb(
           message: `All ${embedFailedCount} embedding batch(es) failed: ${firstMessage}`,
         };
       }
+      // A pass that completes without abort or circuit-break purges
+      // whatever salvage is left — consumed by this pass's reuse step
+      // above, or superseded by what it just embedded.
+      purgeEmbeddingSalvage(db);
       return { success: true, vecInsertFailures: vecFailedCount };
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);

@@ -219,7 +219,7 @@ Build or refresh the search index.
 
 ```sh
 akm index            # Incremental (only changed directories)
-akm index --full     # Full rebuild
+akm index --full     # Full rebuild (reuses unchanged embeddings — see below)
 akm index --verbose  # Print phase progress to stderr
 akm index --clean    # Normal index + remove stale entries from the DB
 akm index --clean --dry-run # Report stale entries without deleting
@@ -234,6 +234,18 @@ semantic-search settings, and phase-by-phase progress to stderr while the
 index is being built. Malformed workflow assets are skipped with file-path
 warnings instead of aborting the full run.
 
+**Progress in non-verbose JSON mode (default output format, #954):** even
+without `--verbose`, phase-start messages and the embedding heartbeat
+(`Still generating embeddings: X/N stored, F failed; waiting on embedding
+provider.`) are now written to stderr, and a failed embedding batch logs at
+the default level instead of `--verbose`-only — a long-running index build
+against a slow or unresponsive provider is no longer silent until the whole
+run finishes. Text-mode output keeps its spinner instead (no stderr line
+growth); JSON stdout output is unaffected either way. The high-frequency
+per-batch `Embedded N/M entries.` line stays out of non-verbose stderr (it
+fires after every committed batch) — pass `--verbose` for that level of
+detail.
+
 **`--clean` flag:** After indexing completes, verifies every indexed entry's source
 file still exists on disk. Removes any entries whose file is missing (for local
 bundle sources only; remote entries are skipped). Returns a `clean` block in the
@@ -241,6 +253,18 @@ JSON result with `checked`, `removed`, `removedRefs` arrays, and `dryRun` flag.
 Use `--clean` to resolve the edge case where a deleted file in an unchanged
 directory lingers in the index across incremental runs. With `--dry-run`, reports
 which entries would be removed without modifying the database.
+
+**`--full` no longer re-embeds unchanged content (#955):** a full rebuild
+(and an index-generation bump on first open under a new binary) used to
+delete every embedding unconditionally, forcing a full re-embed of the
+whole corpus even when nothing changed. Vectors about to be discarded are
+now salvaged (keyed by a hash of their content plus the fingerprint they
+were generated under) and handed straight back to unchanged entries at the
+start of the next embedding pass, with zero provider calls for them — a
+progress line reports the split (`Reused N embeddings from the previous
+generation; embedding M new.`). Content that changed even by one byte, or
+a fingerprint that no longer matches, still goes through the provider
+normally. `--reembed` is the way to force a full re-embed regardless.
 
 **`--reembed` flag:** Forces a full purge and re-embed of every entry,
 independent of the embedding-model-rename compatibility check described
@@ -258,8 +282,9 @@ advisory, never the blocking lock #872 removed (see
 the lock, it warns and proceeds anyway, contending with the existing run.
 `--skip-if-locked` changes that only for the invocation that passes it: if
 the lock is already held by a live process, it skips gracefully (exit 0,
-`{ ok: true, skipped: { reason: "lock-held", pid, startedAt } }`) instead of
-contending. `akm index` and `akm curate` are both safe to call frequently —
+`{ ok: true, skipped: { reason: "lock-held", pid, launcherPid, startedAt } }`
+— `launcherPid` is the holder's launcher pid when known, `null` otherwise,
+#956) instead of contending. `akm index` and `akm curate` are both safe to call frequently —
 `curate` never blocks on a rebuild in progress ([read-path indexing stays
 non-blocking](#curate)) — but a hook, cron job, or scheduled task that
 invokes `akm index` directly should pass `--skip-if-locked` so it steps

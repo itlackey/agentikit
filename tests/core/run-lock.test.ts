@@ -5,9 +5,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { releaseLock } from "../../src/core/file-lock";
-import { tryAcquireRunLock } from "../../src/core/run-lock";
-import { type Cleanup, makeSandboxDir } from "../_helpers/sandbox";
+import { createLockPayload, releaseLock } from "../../src/core/file-lock";
+import { formatLockHolderPid, tryAcquireRunLock } from "../../src/core/run-lock";
+import { type Cleanup, makeSandboxDir, withEnvSync } from "../_helpers/sandbox";
 
 let cleanup: Cleanup = () => {};
 let lockPath = "";
@@ -75,5 +75,66 @@ describe("tryAcquireRunLock — shared PID-liveness mechanics (#956)", () => {
     expect(result.state).toBe("held");
     if (result.state !== "held") throw new Error("expected held");
     expect(result.holder.pid).toBe(process.ppid);
+  });
+});
+
+describe("lock identity: launcherPid (#956)", () => {
+  test("createLockPayload has no launcherPid when AKM_LAUNCHER_PID is unset", () => {
+    withEnvSync({ AKM_LAUNCHER_PID: undefined }, () => {
+      const payload = JSON.parse(createLockPayload()) as Record<string, unknown>;
+      expect(payload.launcherPid).toBeUndefined();
+    });
+  });
+
+  test("createLockPayload adds launcherPid when AKM_LAUNCHER_PID is a valid positive integer", () => {
+    withEnvSync({ AKM_LAUNCHER_PID: "4240" }, () => {
+      const payload = JSON.parse(createLockPayload()) as Record<string, unknown>;
+      expect(payload.launcherPid).toBe(4240);
+    });
+  });
+
+  test("createLockPayload ignores a garbage AKM_LAUNCHER_PID rather than trusting it", () => {
+    withEnvSync({ AKM_LAUNCHER_PID: "not-a-pid" }, () => {
+      const payload = JSON.parse(createLockPayload()) as Record<string, unknown>;
+      expect(payload.launcherPid).toBeUndefined();
+    });
+  });
+
+  test("tryAcquireRunLock reports the held launcherPid alongside pid", () => {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: process.pid, launcherPid: 4240, startedAt: new Date().toISOString() }),
+      "utf8",
+    );
+
+    const result = tryAcquireRunLock(lockPath, { label: "test" });
+    expect(result.state).toBe("held");
+    if (result.state !== "held") throw new Error("expected held");
+    expect(result.holder.launcherPid).toBe(4240);
+  });
+
+  test("tryAcquireRunLock reports launcherPid null when the holder's payload carries none", () => {
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }), "utf8");
+
+    const result = tryAcquireRunLock(lockPath, { label: "test" });
+    expect(result.state).toBe("held");
+    if (result.state !== "held") throw new Error("expected held");
+    expect(result.holder.launcherPid).toBeNull();
+  });
+});
+
+describe("formatLockHolderPid (#956)", () => {
+  test("names only the pid when no launcher pid is known", () => {
+    expect(formatLockHolderPid({ pid: 4242, launcherPid: null })).toBe("4242");
+  });
+
+  test("names both pids when the launcher pid is known", () => {
+    expect(formatLockHolderPid({ pid: 4242, launcherPid: 4240 })).toBe("4242 (launcher 4240)");
+  });
+
+  test("reports unknown when the holder pid itself could not be determined", () => {
+    expect(formatLockHolderPid({ pid: null, launcherPid: null })).toBe("unknown");
   });
 });

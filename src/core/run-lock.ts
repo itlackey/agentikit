@@ -38,6 +38,19 @@ import { describeInaccessiblePath } from "./path-access";
 export interface RunLockHolder {
   pid: number | null;
   startedAt: string | null;
+  /** The holder's launcher pid (#956), when its lock payload recorded one — null otherwise. */
+  launcherPid: number | null;
+}
+
+/**
+ * Render a lock holder's pid for a message: `"4242"`, or `"4242 (launcher
+ * 4240)"` when the holder's launcher pid is known (#956) — every process
+ * listing and task log shows the launcher pid, not the bun/node child's, so
+ * naming only the holder pid left an operator unable to connect the two.
+ */
+export function formatLockHolderPid(holder: Pick<RunLockHolder, "pid" | "launcherPid">): string {
+  if (holder.pid === null) return "unknown";
+  return holder.launcherPid !== null ? `${holder.pid} (launcher ${holder.launcherPid})` : String(holder.pid);
 }
 
 export type RunLockAcquireResult =
@@ -61,17 +74,19 @@ export interface TryAcquireRunLockOptions {
   onReclaimed?: (info: RunLockReclaimInfo) => void;
 }
 
-function parseLockPayload(rawContent: string | undefined): { pid?: number; startedAt?: string } | null {
+function parseLockPayload(
+  rawContent: string | undefined,
+): { pid?: number; startedAt?: string; launcherPid?: number } | null {
   if (!rawContent) return null;
   try {
-    return JSON.parse(rawContent) as { pid: number; startedAt: string };
+    return JSON.parse(rawContent) as { pid: number; startedAt: string; launcherPid?: number };
   } catch {
     return null;
   }
 }
 
-function holderOf(lock: { pid?: number; startedAt?: string } | null): RunLockHolder {
-  return { pid: lock?.pid ?? null, startedAt: lock?.startedAt ?? null };
+function holderOf(lock: { pid?: number; startedAt?: string; launcherPid?: number } | null): RunLockHolder {
+  return { pid: lock?.pid ?? null, startedAt: lock?.startedAt ?? null, launcherPid: lock?.launcherPid ?? null };
 }
 
 /**
@@ -100,7 +115,7 @@ export function tryAcquireRunLock(lockPath: string, options: TryAcquireRunLockOp
     if (ownership) return { state: "acquired", ownership };
     // Re-grabbed by another racer in this exact window — no holder detail
     // available without re-probing (which could itself race again).
-    return { state: "held", holder: { pid: null, startedAt: null } };
+    return { state: "held", holder: { pid: null, startedAt: null, launcherPid: null } };
   }
 
   if (probe.state === "inaccessible") {

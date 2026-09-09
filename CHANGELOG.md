@@ -173,8 +173,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   held lock only warns and the run proceeds unlocked, exactly as before.
   `--skip-if-locked` mirrors `akm improve --skip-if-locked`: when the lock is
   already held by a live process it skips gracefully (exit 0, `{ ok: true,
-  skipped: { reason: "lock-held", pid, startedAt } }`) instead of piling up
-  behind the other run. The shipped `index-refresh` scheduled task now passes it.
+  skipped: { reason: "lock-held", pid, launcherPid, startedAt } }` —
+  `launcherPid` is the holder's launcher pid when known, `null` otherwise,
+  #956) instead of piling up behind the other run. The shipped
+  `index-refresh` scheduled task now passes it.
 - **`akm improve` reports which processes it skipped for an unavailable engine,
   instead of dispatching with a doomed credential (#957).** A process whose
   engine was configured but whose credential could not be resolved in this
@@ -201,6 +203,71 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reference — recommended alongside `--skip-if-locked` for scheduled runs, since
   the operator's own shell can pass config validation while a scheduler's
   stripped-down environment cannot.
+- **`embedding.timeoutMs` configures the per-request embedding timeout
+  (#954).** The prior fixed 30s timeout cut off a slow local model server on
+  a large token-budget-bounded batch mid-response. Default 120s, used by both
+  the single-text and batch embedding request paths; it scales down for a
+  smaller-than-budget request (`clamp(timeoutMs × requestTokens /
+  tokenBudget, 30s, timeoutMs)`), so a dead endpoint is detected in seconds
+  on the common case of small documents. A request timeout no longer drops
+  its batch immediately: field confirmation showed the endpoint keeps
+  computing an abandoned request regardless, so akm now backs off (5s,
+  doubling, capped at 60s) and retries the SAME request once before ever
+  splitting or skipping it; a second timeout splits the batch in half (like
+  a context-size rejection) and retries each half the same way, down to
+  individual documents, and a single document that times out twice is
+  finally skipped.
+- **`embedding.concurrency` overrides the fixed in-flight embedding request
+  window (#954).** Bounded 1-16; unset behavior is unchanged (1 for a
+  loopback endpoint, 2 for a remote one). 0.9.15-beta.1 shipped with no
+  config override for this window; the final release adds one after field
+  evidence that a multi-slot local server (llama.cpp `--parallel N`, vLLM)
+  sat idle behind the fixed default. Request size — `embedding.batchSize`
+  and `embedding.maxTokens` — remains the first throughput
+  lever; set this only for an endpoint that genuinely serves parallel
+  requests.
+- **The embedding phase stops after 3 consecutive transport failures instead
+  of grinding through every remaining batch (#954).** A dead or hung
+  provider used to burn hours on a large stash, one request timeout at a
+  time, with no signal until a single aggregate warning at the end and
+  `ok: true`, exit 0. The pass now stops dispatching further requests and
+  reports failure after 3 consecutive failures at single-document size
+  (timeout or network error — a multi-document timeout is retried and split
+  smaller before it can ever count, so it is not by itself evidence the
+  endpoint is dead) or 3 consecutive network errors at any size (never
+  retried, so trusted immediately); a `context-window-exceeded` skip never
+  counts and resets both streaks. The failure message names how many
+  embeddings were stored before it gave up. Batches already committed are
+  kept.
+- **`embedding.maxInputTokens` caps a single document's embedded text
+  instead of letting it fail a whole batch (#956).** llama.cpp rejects a
+  single sequence longer than its physical batch (`--ubatch-size`, default
+  512) with HTTP 500 "input is too large to process," and the only
+  per-entry cap before this was 1,000,000 characters. `akm index` now
+  truncates a document's embedded text to `embedding.maxInputTokens`
+  (default 512, head only, unicode-safe) before batching rather than
+  skipping it; a document is skipped only when its truncated head is empty.
+  `embedding.contextLength` is Ollama's `num_ctx` only now — it used to also
+  silently set the per-request token budget (`embedding.maxTokens`), so
+  setting it for the server's context window changed request batching too.
+  The request budget is `embedding.maxTokens` (default 8000), so a request
+  carries about 16 documents alongside the new per-document cap by default.
+- **`akm index` reports where its embedding credential came from, before the
+  first provider request (#953).** A field report suspected a gateway was
+  receiving unauthenticated embedding requests despite `embedding.apiKey`
+  being set to a `secret://` reference. Auditing and reproducing every path
+  that reaches `RemoteEmbedder` — plain `akm index`, the CLI as a real child
+  process, an `extends`-inherited config with adapter detection persisting
+  mid-run (#945), `akm bundle update`'s post-commit embedding pass, and the
+  `akm remember` write path's targeted re-embed — found every one already
+  resolves `secret://` through the same store lookup, now pinned by
+  integration and contract tests so a future config-flow change cannot drop
+  `apiKey` unnoticed. `akm index` now prints one default-level line before
+  its first provider request naming the endpoint, model, and credential
+  SOURCE — `secret://lab-api-key (store)`, `$LAB_API_KEY (env)`, `literal
+  apiKey`, or `none configured` — never the credential's value, so a field
+  run can compare it directly against what the gateway actually logged.
+  `--verbose` also names the config file the run loaded.
 
 ### Changed
 
@@ -245,7 +312,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so an interruption partway through (a competing indexer collision, a killed
   process, any thrown provider error) discarded every embedding already computed,
   not just the ones still in flight. Each request batch now commits inside its
-  own short transaction as it lands.
+  own short transaction as it lands. This holds on every path that embeds: plain
+  `akm index`, the implicit reindex, the write path (`akm remember`/`import`/
+  `proposal accept`/`source clone`), and `akm bundle update` (see below).
 - **A batch rejected for exceeding the endpoint's context window is split and
   retried instead of skipped outright (#954).** `akm index`'s embedding pass now
   recognizes HTTP 413 and known context-size error bodies and halves the failing
@@ -253,15 +322,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   single document that still fails this way is skipped, as
   `context-window-exceeded`; every other failure (network error, 5xx, malformed
   response) keeps the prior skip-the-whole-batch behavior.
-- **Embedding requests are now dispatched through a small, fixed in-flight window
-  instead of strictly sequentially (#954).** The window is 1 request at a time
-  for a loopback endpoint and 2 for a remote one, and is not configurable — the
-  actual throughput knob is request size, via the existing `embedding.batchSize`
-  (document cap) and `embedding.maxTokens`/`contextLength` (token budget), since
-  a larger batch takes about the same wall time as a single one.
-- **`akm index` reports embedding progress and throughput as it runs (#954).** A
-  progress line is printed every 500 stored entries, and a final line reports
-  throughput (`entries/s`, `tokens/s`) once the embedding pass completes.
+- **Embedding requests are dispatched through a small in-flight window instead of
+  strictly sequentially (#954).** The window defaults to 1 request at a time for
+  a loopback endpoint and 2 for a remote one; the actual throughput knob is
+  request size, via the existing `embedding.batchSize` (document cap) and
+  `embedding.maxTokens` (token budget), since a larger batch
+  takes about the same wall time as a single one. `embedding.concurrency`
+  (see Added, above) overrides this default for a server that genuinely serves
+  parallel requests.
+- **`akm index` reports embedding progress and throughput in more detail as it
+  runs (#954).** A default-level line reports each provider batch as it
+  completes — document count, token count, elapsed time, and outcome
+  (`stored`/`failed: <reason>`/`retrying after <n> s`) — and a final line
+  reports total throughput (`entries/s`, `tokens/s`) plus every outcome: how
+  many embeddings were stored (and reused from a prior generation, when
+  salvage applied — see #955 below), oversized-skipped, timed out, and
+  failed, with the affected refs listed (first 20 by default, all of them
+  under `--verbose`).
 - **A rename of `embedding.model` no longer forces a full re-embed by itself
   (#955).** `akm index` used to purge and rebuild the entire vector index on any
   change to the fingerprint it derives from `embedding.model`, including a pure
@@ -288,6 +365,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The new fingerprint (and the observed identity) are now written in the same
   transaction as the purge, before any vectors are requested; a restart then sees
   a matching fingerprint and only re-embeds the entries still missing a vector.
+- **`akm index --full` and an index-generation bump no longer re-embed
+  unchanged content (#955).** A full rebuild deleted every embedding
+  unconditionally and re-inserted entries under new ids, and the v22→v23
+  generation bump did the same on first open under a new binary — both
+  forced a full re-embed of the whole corpus even when nothing changed, the
+  likely cause of the multi-hour post-upgrade run reported against 0.9.14.
+  Vectors about to be discarded are now copied into a transient
+  `embedding_salvage` table (keyed by a hash of `search_text` plus the
+  fingerprint they were generated under) in the same transaction as the
+  discard — read back in bounded chunks rather than loaded wholesale, so a
+  large corpus does not spike memory, and a run with nothing to reuse costs
+  a single indexed lookup — and handed back to unchanged entries at the
+  start of the next embedding pass with zero provider calls — a progress
+  line reports the split (`Reused N embeddings from the previous
+  generation; embedding M new.`). Content that changed by even one byte, or
+  a fingerprint that no longer matches, still goes through the provider
+  normally. `akm index --reembed` and a canary "rebuild" verdict purge the
+  salvage table along with the stored embeddings; a canary "keep" verdict (a
+  fingerprint-string rename resolving to the same model) relabels it instead
+  so it stays reusable. An interrupted pass leaves the table intact for the
+  next attempt.
 - **A write-path index update (`akm remember`, `akm import`, `akm proposal
   accept`, `akm source clone`, extract session assets) never contends with a full
   rebuild in progress; it skips and lets the rebuild heal the entry instead
@@ -321,6 +419,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `improve` itself now builds (see Added, above), rather than a separate
   re-derivation that could disagree with what a real run in the same environment
   would do.
+- **A failed embedding batch and `akm index`'s progress are visible without
+  `--verbose` (#954).** A failed provider batch used to log only under
+  `--verbose`; it now logs at the default `warn` level, naming the batch size
+  and reason. `akm index`'s `Embedded N/M entries.` line now fires after every
+  committed batch instead of every 500 stored entries, and the heartbeat names
+  the failed count too. In non-verbose JSON/yaml output mode, phase-start
+  messages and the heartbeat now reach stderr (via `info()`); text mode keeps
+  its spinner instead, and `--verbose` is unchanged. A silently grinding,
+  hours-long `akm index` run against a dead provider — with no output until
+  one aggregate warning at the very end — was the field report this fixes.
+  Source-cache hydration (which runs before `index.db` is even opened) now
+  reports its own progress the same way: `Hydrating source i/n: <name>` per
+  source, plus a 15s heartbeat while a sync is in flight.
 
 ### Fixed
 
@@ -400,6 +511,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **An unset or empty `$VAR` referenced by an engine's `apiKey` now warns once,
   naming the variable (#953).** Previously it silently sent an empty
   `Authorization` header instead of surfacing the misconfiguration.
+- **`akm bundle update` now commits its embedding pass durably instead of
+  nesting it inside its own transaction (#954).** Its coordinator called
+  `akm index` for its embedding phase too, INSIDE the same unified
+  `BEGIN IMMEDIATE` that covers content/lock/index/state — so every per-batch
+  commit (above) nested as an unobservable SAVEPOINT, and a SIGKILL mid-run
+  lost every embedding of the run rather than just the one in flight.
+  0.9.15-beta.1 shipped claiming per-batch commits held on this path; the
+  final release makes it true: `generateEmbeddingsForDb` now refuses to run
+  against a connection that already has a transaction open (an internal
+  contract error, not a user-facing one), and `akm bundle update` runs its
+  embedding phase on a fresh connection AFTER its own commit instead. A
+  failing post-commit pass (provider down) still leaves the update itself
+  successful — content, lock, and index generation are already durably
+  committed — with the response's `index.semanticStatus` (new field) the
+  only sign semantic search fell behind (`"blocked"`), exactly like a plain
+  `akm index` run today.
+- **A batch rejected by llama.cpp for exceeding its physical batch size is now
+  recognized as a context-size rejection (#954).** llama.cpp reports this as
+  an HTTP 500 with a body like "input is too large to process. increase the
+  physical batch size", which the existing context-size pattern
+  (`exceed_context_size_error`, "context size", …) did not match, so the
+  whole batch was dropped instead of being split and retried like a 413.
+- **A `kill <launcher-pid>` no longer orphans the running `akm` process
+  (#956).** The published launcher (`scripts/node-runtime/akm`/
+  `akm-migrate`) now forwards SIGTERM/SIGINT/SIGHUP to its bun/node child
+  and exits alongside it, instead of leaving the child running — one field
+  report found 40 orphaned `bun …/dist/cli.js` processes in a single day,
+  some hours old, still hammering the embedding endpoint and holding the
+  rebuild lock. Every command also polls for reparenting (a launcher that
+  dies without delivering a signal — SIGKILL, an out-of-memory kill) and
+  re-raises SIGTERM on itself the moment it notices, reusing the same abort
+  path a real signal already takes. Lock messages ("another index run is
+  active...", "akm improve is already running...") and `akm index
+  --skip-if-locked`'s JSON result now name the launcher pid alongside the
+  pid that actually holds the lock — `pid 4242 (launcher 4240)` — since
+  every process listing and task log shows the launcher pid, not the
+  child's.
+- **An index run interrupted before its first embedding pass ever completes
+  could force an unnecessary full re-embed on the next `akm index --full`
+  (#956).** A fingerprint-rename rebuild already wrote `embeddingFingerprint`
+  immediately, before any provider call, so an interruption right after that
+  decision still left a consistent record — but the common
+  first-pass/unchanged-fingerprint path deferred that write to a fully
+  successful run. A per-batch commit is durable the instant it lands
+  regardless, so an interrupted first-ever pass left real, already-embedded
+  vectors with no recorded fingerprint to tag them by, and a later full
+  rebuild's salvage-before-discard step (#955, above) treated the missing
+  fingerprint as "nothing was ever verified" and re-embedded everything
+  instead of reusing them. A plain `akm index` resume after an interruption
+  now embeds only the entries still missing a vector, with no purge and no
+  canary.
 
 ## [0.9.14] - 2026-09-04
 

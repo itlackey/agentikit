@@ -211,6 +211,10 @@
           "type": "string",
           "minLength": 1
         },
+        "maxInputTokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
         "maxTokens": {
           "type": "integer",
           "exclusiveMinimum": 0
@@ -236,6 +240,15 @@
             }
           },
           "additionalProperties": true
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "concurrency": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 16
         }
       },
       "additionalProperties": true
@@ -1902,6 +1915,10 @@
               "type": "string",
               "minLength": 1
             },
+            "maxInputTokens": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
             "maxTokens": {
               "type": "integer",
               "exclusiveMinimum": 0
@@ -1927,6 +1944,15 @@
                 }
               },
               "additionalProperties": true
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "concurrency": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 16
             }
           },
           "additionalProperties": true
@@ -3471,6 +3497,10 @@
           "type": "string",
           "minLength": 1
         },
+        "maxInputTokens": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
         "maxTokens": {
           "type": "integer",
           "exclusiveMinimum": 0
@@ -3496,6 +3526,15 @@
             }
           },
           "additionalProperties": true
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "concurrency": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 16
         }
       },
       "additionalProperties": true

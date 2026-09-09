@@ -58,6 +58,9 @@ import {
 } from "../read/knowledge";
 import { assembleInfo } from "./info";
 
+/** Matches the high-frequency per-committed-batch progress line (#954), excluded from non-verbose JSON-mode stderr. */
+const EMBEDDED_BATCH_PROGRESS_PATTERN = /^Embedded \d+\/\d+ entries\.$/;
+
 export const indexCommand = defineCommand({
   meta: { name: "index", description: "Build search index (incremental by default; --full forces full reindex)" },
   args: {
@@ -114,6 +117,10 @@ export const indexCommand = defineCommand({
           skipped: {
             reason: "lock-held",
             pid: lockAcquisition.holder.pid,
+            // #956: the launcher pid (when known) alongside the pid that
+            // actually holds the lock — every process listing and task log
+            // shows the launcher pid, not the bun/node child's.
+            launcherPid: lockAcquisition.holder.launcherPid,
             startedAt: lockAcquisition.holder.startedAt,
           },
         });
@@ -156,6 +163,16 @@ export const indexCommand = defineCommand({
             } else if (spin) {
               spin.stop(`${progressPrefix}${message}`);
               spin.start(`${progressPrefix}${message}`);
+            } else if (!EMBEDDED_BATCH_PROGRESS_PATTERN.test(message)) {
+              // Non-verbose, non-text (JSON/yaml/etc) mode: silence used to be
+              // total until the run finished (#954) — a stalled
+              // run looked identical to "nothing written". Phase-start
+              // messages and the embedding heartbeat now reach stderr here
+              // too; the high-frequency per-batch `Embedded N/M entries.`
+              // line (emitted after every committed batch)
+              // is deliberately excluded — that would be spam, not a
+              // heartbeat.
+              info(`[index:${phase}] ${progressPrefix}${message}`);
             }
           },
           signal: controller.signal,

@@ -109,7 +109,14 @@ describe("generateEmbeddingsForDb: per-batch commit survives an eventual failure
           onBatch?: EmbeddingBatchCommit,
         ) => {
           onBatch?.([0], [[0.1, 0.2, 0.3]]);
-          onSkip?.({ index: 1, reason: "batch-request-failed", message: "synthetic failure" });
+          onSkip?.({
+            index: 1,
+            reason: "batch-request-failed",
+            message: "synthetic failure",
+            batchStart: true,
+            batchSize: 1,
+            failureKind: "network-error",
+          });
           onBatch?.([1], [undefined]);
           onBatch?.([2], [[0.7, 0.8, 0.9]]);
           // Deliberately wrong/unused return value: the materializer must
@@ -128,6 +135,49 @@ describe("generateEmbeddingsForDb: per-batch commit survives an eventual failure
 
       expect(result.success).toBe(true);
       expect(getEmbeddingCount(db)).toBe(2);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("emits an Embedded N/M progress event after EVERY committed batch, not just every 500 (#954)", async () => {
+    const db = openIndexDatabase();
+    try {
+      seedEntries(db, 3);
+
+      overrideSeam(_setEmbedderForTests, {
+        embedBatch: async (
+          _texts: string[],
+          _config?: AkmConfig["embedding"],
+          _signal?: AbortSignal,
+          _onSkip?: (skip: EmbeddingBatchSkip) => void,
+          onBatch?: EmbeddingBatchCommit,
+        ) => {
+          onBatch?.([0], [[0.1, 0.2, 0.3]]);
+          onBatch?.([1], [[0.4, 0.5, 0.6]]);
+          onBatch?.([2], [[0.7, 0.8, 0.9]]);
+          return [undefined, undefined, undefined];
+        },
+      });
+
+      const config = {
+        semanticSearchMode: "auto",
+        embedding: { endpoint: "http://localhost:1", model: "test-model" },
+      } as AkmConfig;
+
+      const progressMessages: string[] = [];
+      const result = await generateEmbeddingsForDb(db, config, (event) => {
+        if (event.phase === "embeddings" && /^Embedded \d+\/\d+ entries\.$/.test(event.message)) {
+          progressMessages.push(event.message);
+        }
+      });
+
+      expect(result.success).toBe(true);
+      // One progress event per committed batch (3 batches of 1), not
+      // bucketed by 500 stored entries — the old bucketing never fired at
+      // all for a run this small, leaving a non-verbose caller silent for
+      // the whole embedding phase.
+      expect(progressMessages).toEqual(["Embedded 1/3 entries.", "Embedded 2/3 entries.", "Embedded 3/3 entries."]);
     } finally {
       closeDatabase(db);
     }

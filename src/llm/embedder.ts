@@ -32,7 +32,7 @@ import {
   isTransformersAvailable as isTransformersAvailableReal,
   LocalEmbedder,
 } from "./embedders/local";
-import type { EmbeddingBatchCommit, EmbeddingBatchSkip } from "./embedders/remote";
+import type { EmbeddingBatchCommit, EmbeddingSkipHandler } from "./embedders/remote";
 import { hasRemoteEndpoint, RemoteEmbedder } from "./embedders/remote";
 import type { EmbeddingCheckResult, EmbeddingVector } from "./embedders/types";
 
@@ -40,7 +40,7 @@ import type { EmbeddingCheckResult, EmbeddingVector } from "./embedders/types";
 
 export { clearEmbeddingCache } from "./embedders/cache";
 export { _setTransformersLoaderForTests, DEFAULT_LOCAL_MODEL } from "./embedders/local";
-export type { EmbeddingBatchCommit, EmbeddingBatchSkip } from "./embedders/remote";
+export type { EmbeddingBatchCommit, EmbeddingBatchSkip, EmbeddingSkipHandler } from "./embedders/remote";
 export type { EmbeddingCheckResult, EmbeddingVector } from "./embedders/types";
 
 // ── Test seam ────────────────────────────────────────────────────────────────
@@ -177,7 +177,7 @@ export async function embedBatch(
   texts: string[],
   embeddingConfig?: EmbeddingConnectionConfig,
   signal?: AbortSignal,
-  onSkip?: (skip: EmbeddingBatchSkip) => void,
+  onSkip?: EmbeddingSkipHandler,
   onBatch?: EmbeddingBatchCommit,
 ): Promise<(EmbeddingVector | undefined)[]> {
   if (embedderOverrides?.embedBatch) {

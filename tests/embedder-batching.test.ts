@@ -3,9 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #954: per-provider-batch commit, a fixed bounded in-flight window (1 for a
- * loopback endpoint, 2 for a remote one — no config override, per the
- * 2026-09-09 field-review addendum to the brief), and context-size
+ * #954: per-provider-batch commit, a bounded in-flight window (default 1 for
+ * a loopback endpoint, 2 for a remote one; overridable via
+ * `embedding.concurrency` per #954), and context-size
  * split-and-retry for RemoteEmbedder.embedBatch.
  *
  * All network I/O here is mocked via `withMockedFetch` (no real socket
@@ -17,9 +17,28 @@
 
 import { describe, expect, test } from "bun:test";
 import type { EmbeddingConnectionConfig } from "../src/core/config/config";
-import { isContextExceededResponse, RemoteEmbedder, resolveEmbeddingConcurrency } from "../src/llm/embedders/remote";
+import { EmbeddingConnectionConfigSchema } from "../src/core/config/schema/embedding";
+import { _setWarnSinkForTests } from "../src/core/warn";
+import {
+  _setEmbeddingTimeoutBackoffForTests,
+  DEFAULT_EMBEDDING_TIMEOUT_MS,
+  describeEmbeddingCredential,
+  embeddingTimeoutRetryBackoffMs,
+  isContextExceededResponse,
+  RemoteEmbedder,
+  resolveEmbeddingConcurrency,
+  resolveEmbeddingTimeoutMs,
+} from "../src/llm/embedders/remote";
 import type { EmbeddingVector } from "../src/llm/embedders/types";
 import { withMockedFetch } from "./_helpers/sandbox";
+import { overrideSeam } from "./_helpers/seams";
+
+/** A fetch mock that hangs until its request's abort signal fires, then rejects like real `fetch` does. */
+function hungFetch(_url: string, init?: RequestInit): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+  });
+}
 
 describe("isContextExceededResponse", () => {
   test("HTTP 413 is always a context-size rejection, regardless of body", () => {
@@ -40,20 +59,225 @@ describe("isContextExceededResponse", () => {
     expect(isContextExceededResponse(503, "service unavailable")).toBe(false);
     expect(isContextExceededResponse(400, "")).toBe(false);
   });
+
+  test("recognises llama.cpp's physical-batch rejection (#954)", () => {
+    // The exact message llama.cpp returns (HTTP 500) when a batch exceeds
+    // its configured physical batch size.
+    expect(isContextExceededResponse(500, "input is too large to process. increase the physical batch size")).toBe(
+      true,
+    );
+    expect(isContextExceededResponse(500, "ubatch size exceeded")).toBe(true);
+    expect(isContextExceededResponse(500, "INPUT IS TOO LARGE TO PROCESS")).toBe(true);
+  });
+});
+
+describe("RemoteEmbedder.embedBatch: failed-batch visibility (#954, field-report follow-up)", () => {
+  test("a failed provider batch is reported via onSkip/onBatch, not warn() — the materializer's per-batch line is the single default-level report, not a second one here", async () => {
+    // Regression guard for a round-2 review finding: this used to ALSO
+    // warn() the identical "batch of N document(s) failed and was skipped"
+    // sentence, duplicating the default-level per-batch line
+    // materialize-embeddings.ts's onBatch now prints for the same event —
+    // the same class of double-print bug fixed for the truncation/re-embed-
+    // reason lines (#954).
+    const calls: Array<{ level: string; message: string }> = [];
+    _setWarnSinkForTests((level, args) => {
+      calls.push({ level, message: args.map(String).join(" ") });
+    });
+    try {
+      const skips: Array<{ reason: string; message: string }> = [];
+      const committed: Array<{ outcome?: string; reason?: string }> = [];
+      await withMockedFetch(
+        async () => {
+          const embedder = new RemoteEmbedder({ endpoint: "http://localhost:9", model: "test" });
+          await embedder.embedBatch(
+            ["doc one", "doc two"],
+            undefined,
+            (skip) => skips.push(skip),
+            (_indices, _embeddings, _model, outcome) =>
+              committed.push({ outcome: outcome?.outcome, reason: outcome?.reason }),
+          );
+        },
+        () => new Response("synthetic upstream failure", { status: 500 }),
+      );
+      expect(calls.some((c) => c.message.includes("document(s) failed and was skipped"))).toBe(false);
+      expect(skips).toHaveLength(2);
+      expect(skips[0]?.reason).toBe("batch-request-failed");
+      expect(committed).toHaveLength(1);
+      expect(committed[0]?.outcome).toBe("failed");
+      expect(committed[0]?.reason).toContain("synthetic upstream failure");
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
+  });
+});
+
+describe("resolveEmbeddingTimeoutMs (#954)", () => {
+  test("defaults to 120s when embedding.timeoutMs is unset", () => {
+    expect(resolveEmbeddingTimeoutMs({})).toBe(DEFAULT_EMBEDDING_TIMEOUT_MS);
+    expect(DEFAULT_EMBEDDING_TIMEOUT_MS).toBe(120_000);
+  });
+
+  test("uses the configured value when set", () => {
+    expect(resolveEmbeddingTimeoutMs({ timeoutMs: 5_000 })).toBe(5_000);
+  });
+
+  test("the configured value reaches fetchWithTimeout for embed()", async () => {
+    await withMockedFetch(async () => {
+      const embedder = new RemoteEmbedder({ endpoint: "http://localhost:9", model: "test", timeoutMs: 30 });
+      await expect(embedder.embed("hello")).rejects.toThrow(/timed out after 30ms/);
+    }, hungFetch);
+  });
+
+  test("the configured value reaches fetchWithTimeout for embedBatch()/requestBatch()", async () => {
+    await withMockedFetch(async () => {
+      const embedder = new RemoteEmbedder({ endpoint: "http://localhost:9", model: "test", timeoutMs: 30 });
+      const skips: Array<{ message: string }> = [];
+      const results = await embedder.embedBatch(["doc one"], undefined, (skip) => skips.push(skip));
+      expect(results).toEqual([undefined]);
+      expect(skips[0]?.message).toContain("timed out after 30ms");
+    }, hungFetch);
+  });
+});
+
+describe("embeddingTimeoutRetryBackoffMs: grows with timeoutAttempt (#954, field-report follow-up)", () => {
+  test("doubles per attempt off the 5s/60s default, floored at half the jittered value", () => {
+    // backoffDelay's formula is baseMs * 2^attempt * (0.5 + random*0.5), so
+    // the minimum possible value at one attempt is baseMs * 2^attempt * 0.5
+    // — a strict, deterministic lower bound regardless of jitter.
+    expect(embeddingTimeoutRetryBackoffMs(0)).toBeGreaterThanOrEqual(2_500);
+    expect(embeddingTimeoutRetryBackoffMs(0)).toBeLessThan(5_000);
+    expect(embeddingTimeoutRetryBackoffMs(1)).toBeGreaterThanOrEqual(5_000);
+    expect(embeddingTimeoutRetryBackoffMs(1)).toBeLessThan(10_000);
+    expect(embeddingTimeoutRetryBackoffMs(2)).toBeGreaterThanOrEqual(10_000);
+    expect(embeddingTimeoutRetryBackoffMs(2)).toBeLessThan(20_000);
+  });
+
+  test("caps at 60s regardless of how deep the attempt count goes", () => {
+    expect(embeddingTimeoutRetryBackoffMs(10)).toBe(60_000);
+  });
+
+  test("omitting timeoutAttempt behaves as attempt 0 (the original single-retry call site)", () => {
+    expect(embeddingTimeoutRetryBackoffMs()).toBeGreaterThanOrEqual(2_500);
+    expect(embeddingTimeoutRetryBackoffMs()).toBeLessThan(5_000);
+  });
+
+  test("the test-only base/max override lets a test shrink real wait time without changing the shape", () => {
+    overrideSeam(_setEmbeddingTimeoutBackoffForTests, { baseMs: 100, maxMs: 1_000 });
+    expect(embeddingTimeoutRetryBackoffMs(0)).toBeGreaterThanOrEqual(50);
+    expect(embeddingTimeoutRetryBackoffMs(0)).toBeLessThan(100);
+    expect(embeddingTimeoutRetryBackoffMs(1)).toBeGreaterThanOrEqual(100);
+    expect(embeddingTimeoutRetryBackoffMs(1)).toBeLessThan(200);
+    expect(embeddingTimeoutRetryBackoffMs(20)).toBe(1_000);
+  });
 });
 
 describe("resolveEmbeddingConcurrency", () => {
-  test("is fixed at 1 for a loopback endpoint — no config override exists", () => {
+  test("defaults to 1 for a loopback endpoint when embedding.concurrency is unset (#954)", () => {
     expect(resolveEmbeddingConcurrency({ endpoint: "http://localhost:8080" })).toBe(1);
     expect(resolveEmbeddingConcurrency({ endpoint: "http://127.0.0.1:8080" })).toBe(1);
   });
 
-  test("is fixed at 1 when no endpoint is configured (fails safe as local)", () => {
+  test("defaults to 1 when no endpoint is configured (fails safe as local)", () => {
     expect(resolveEmbeddingConcurrency({})).toBe(1);
   });
 
-  test("is fixed at 2 for a remote endpoint", () => {
+  test("defaults to 2 for a remote endpoint", () => {
     expect(resolveEmbeddingConcurrency({ endpoint: "https://api.example.com/v1" })).toBe(2);
+  });
+
+  test("embedding.concurrency overrides the default in either direction (#954)", () => {
+    expect(resolveEmbeddingConcurrency({ endpoint: "http://localhost:8080", concurrency: 8 })).toBe(8);
+    expect(resolveEmbeddingConcurrency({ endpoint: "https://api.example.com/v1", concurrency: 1 })).toBe(1);
+  });
+});
+
+describe("RemoteEmbedder.embedBatch: contextLength no longer affects the request token budget (#956)", () => {
+  test("a batch is split by config.maxTokens, not config.contextLength", async () => {
+    const requestSizes: number[] = [];
+    await withMockedFetch(
+      async () => {
+        // contextLength set very low (would force single-document batches if
+        // it still fed the token budget) and maxTokens left unset, so the
+        // DEFAULT_TOKEN_BUDGET (8000 tokens) is what actually governs
+        // batching. Five short documents easily fit one 8000-token request.
+        const embedder = new RemoteEmbedder({
+          endpoint: "http://localhost:1/v1",
+          model: "test-model",
+          contextLength: 8,
+        });
+        const results = await embedder.embedBatch(["a", "bb", "ccc", "dddd", "eeeee"]);
+        expect(results.every((r) => r !== undefined)).toBe(true);
+      },
+      async (_url, init) => {
+        const body = JSON.parse(init?.body as string) as { input: string[] };
+        requestSizes.push(body.input.length);
+        const data = body.input.map((_t, i) => ({ embedding: [1, 0], index: i }));
+        return jsonResponse({ data });
+      },
+    );
+    // All 5 documents in a single request — proof contextLength: 8 did NOT
+    // shrink the token budget down to single-document batches.
+    expect(requestSizes).toEqual([5]);
+  });
+
+  test("config.maxTokens still governs the budget as before, even alongside a large contextLength", async () => {
+    const requestSizes: number[] = [];
+    await withMockedFetch(
+      async () => {
+        // contextLength set huge so it would rescue this document from the
+        // oversized path if it still fed the token budget at all — proof
+        // maxTokens alone decides this, unaffected by contextLength either way.
+        const embedder = new RemoteEmbedder({
+          endpoint: "http://localhost:1/v1",
+          model: "test-model",
+          maxTokens: 10,
+          contextLength: 1_000_000,
+        });
+        const skips: Array<{ reason: string }> = [];
+        const results = await embedder.embedBatch(["x".repeat(200)], undefined, (skip) => skips.push(skip));
+        expect(results).toEqual([undefined]);
+        expect(skips[0]?.reason).toBe("context-window-exceeded");
+      },
+      async (_url, init) => {
+        const body = JSON.parse(init?.body as string) as { input: string[] };
+        requestSizes.push(body.input.length);
+        return jsonResponse({ data: [{ embedding: [1, 0], index: 0 }] });
+      },
+    );
+    // No provider request at all — the oversized pre-flight skip never dispatches one.
+    expect(requestSizes).toEqual([]);
+  });
+
+  test("contextLength still reaches Ollama's num_ctx (unchanged — #956 only touches the token budget)", async () => {
+    let sentOptions: unknown;
+    await withMockedFetch(
+      async () => {
+        const embedder = new RemoteEmbedder({
+          endpoint: "http://localhost:11434/api/embed",
+          model: "test-model",
+          contextLength: 4096,
+        });
+        await embedder.embed("hello");
+      },
+      async (_url, init) => {
+        const body = JSON.parse(init?.body as string) as { options?: unknown };
+        sentOptions = body.options;
+        return jsonResponse({ data: [{ embedding: [1, 0] }] });
+      },
+    );
+    expect(sentOptions).toEqual({ num_ctx: 4096 });
+  });
+});
+
+describe("EmbeddingConnectionConfigSchema: embedding.concurrency bounds (#954)", () => {
+  test("accepts 1 and 16", () => {
+    expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 1 }).success).toBe(true);
+    expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 16 }).success).toBe(true);
+  });
+
+  test("rejects 0 and 17", () => {
+    expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 0 }).success).toBe(false);
+    expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 17 }).success).toBe(false);
   });
 });
 
@@ -132,7 +356,7 @@ describe("RemoteEmbedder.embedBatch: context-size split-and-retry", () => {
   });
 });
 
-describe("RemoteEmbedder.embedBatch: bounded concurrency (fixed 1 loopback / 2 remote, no config override)", () => {
+describe("RemoteEmbedder.embedBatch: bounded concurrency (default 1 loopback / 2 remote, unset override)", () => {
   test("a remote endpoint dispatches at most 2 requests at once and preserves result-to-index placement", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
@@ -376,5 +600,29 @@ describe("RemoteEmbedder.embedBatch: surfaces the response model id (#955)", () 
       },
       async () => jsonResponse({ model: "should-not-be-called", data: [] }),
     );
+  });
+});
+
+describe("describeEmbeddingCredential (#953)", () => {
+  test("undefined/empty apiKey reports 'none configured'", () => {
+    expect(describeEmbeddingCredential(undefined)).toBe("none configured");
+    expect(describeEmbeddingCredential("")).toBe("none configured");
+  });
+
+  test("a secret:// reference names the reference and its source, never a resolved value", () => {
+    expect(describeEmbeddingCredential("secret://lab-api-key")).toBe("secret://lab-api-key (store)");
+  });
+
+  test("a $VAR-style reference names the reference and its source", () => {
+    expect(describeEmbeddingCredential("$LAB_API_KEY")).toBe("$LAB_API_KEY (env)");
+    const braced = "$" + "{LAB_API_KEY}";
+    expect(describeEmbeddingCredential(braced)).toBe(`${braced} (env)`);
+  });
+
+  test("a literal key reports only 'literal apiKey' — the value itself is never included", () => {
+    const literal = "sk-super-secret-value-do-not-log";
+    const description = describeEmbeddingCredential(literal);
+    expect(description).toBe("literal apiKey");
+    expect(description).not.toContain(literal);
   });
 });
