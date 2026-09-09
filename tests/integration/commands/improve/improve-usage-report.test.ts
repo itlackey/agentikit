@@ -237,4 +237,55 @@ describe("akm improve report (#944)", () => {
       db.close();
     }
   });
+
+  test("a terminated run (recordTerminatedImproveRun) degrades with an accurate note, not the pre-0.9.15 claim", () => {
+    const testEnv = makeEnv(makeStashDir());
+
+    // A live run first, so state.db exists and is migrated (same pattern as
+    // the pre-0.9.15 legacy-row test above).
+    const live = runCli(["improve", "--json-to-stdout"], testEnv);
+    expect(live.status).toBe(0);
+
+    // Seed a row shaped exactly like recordTerminatedImproveRun's envelope
+    // (improve-result-file.ts): current, but never reached
+    // finalizeImproveResult, so it also has no persisted usageReport.
+    const db = new Database(testEnv.stateDbPath);
+    try {
+      const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+      const completedAt = new Date().toISOString();
+      const terminatedId = "terminated-run";
+      const terminatedResult = {
+        schemaVersion: 2,
+        ok: false,
+        strategy: "default",
+        scope: { mode: "all" },
+        dryRun: false,
+        memorySummary: { eligible: 0, derived: 0 },
+        actions: [],
+        plannedRefs: [],
+        terminated: { reason: "SIGTERM", at: completedAt },
+      };
+      db.prepare(
+        `INSERT INTO improve_runs
+           (id, started_at, completed_at, stash_dir, dry_run, strategy, scope_mode, scope_value, guidance, ok, result_json, metrics_json, metadata_json)
+         VALUES (?, ?, ?, ?, 0, ?, 'all', NULL, NULL, 0, ?, NULL, ?)`,
+      ).run(
+        terminatedId,
+        startedAt,
+        completedAt,
+        "/legacy/stash",
+        "default",
+        JSON.stringify(terminatedResult),
+        JSON.stringify({ terminated: { reason: "SIGTERM", at: completedAt } }),
+      );
+
+      const report = runCli(["improve", "report", "--run", terminatedId], testEnv);
+      expect(report.status).toBe(0);
+      const parsed = JSON.parse(report.stdout) as Record<string, unknown>;
+      expect(parsed.notes).toEqual(["run terminated before completion; no usage report was recorded"]);
+      expect((parsed.notes as string[])[0]).not.toContain("before 0.9.15");
+    } finally {
+      db.close();
+    }
+  });
 });

@@ -7,11 +7,13 @@
  * `improve_runs` rows and returns the same `usageReport` shape
  * `finalizeImproveResult` persists on a live run (`improve-usage-report.ts`),
  * so the command and the end-of-run stderr table stay byte-identical in
- * structure. A pre-#944 row (no persisted `usageReport`) degrades rather than
+ * structure. A row with no persisted `usageReport` degrades rather than
  * errors, per AGENTS.md's "reader must tolerate data older releases wrote":
  * its cross-tab is recomputed from the run's own `llm_usage` events and a
- * `notes` entry says eligibility reasons could not be recovered — the
- * `noCalls` half is never fabricated for these rows.
+ * `notes` entry explains why — either the row predates #944, or (per
+ * `recordTerminatedImproveRun` in improve-result-file.ts) the run was
+ * terminated before it ever reached `finalizeImproveResult`. The `noCalls`
+ * half is never fabricated for either case.
  */
 
 import { NotFoundError, UsageError } from "../../core/errors";
@@ -30,6 +32,7 @@ import type { LlmUsageCrossTabRow } from "../health/types";
 import type { UsageReportNoCallRow } from "./improve-usage-report";
 
 const PRE_USAGE_REPORT_NOTE = "eligibility reasons unavailable for runs recorded before 0.9.15";
+const TERMINATED_RUN_NOTE = "run terminated before completion; no usage report was recorded";
 
 export interface ImproveReportUsage {
   byProcessEngineModel: LlmUsageCrossTabRow[];
@@ -62,7 +65,7 @@ interface ReportableRunRow {
   result_json: string;
 }
 
-/** One row's usage report — persisted (common case) or recomputed (pre-#944 row / undecodable row). */
+/** One row's usage report — persisted (common case) or recomputed (pre-#944 row / terminated run / undecodable row). */
 function usageReportForRow(row: ReportableRunRow): {
   usageReport: ImproveReportUsage;
   strategy?: string;
@@ -82,7 +85,7 @@ function usageReportForRow(row: ReportableRunRow): {
     return {
       usageReport: { byProcessEngineModel: crossTabFromEvents(row.started_at, row.completed_at), noCalls: [] },
       strategy: decoded.strategy,
-      note: PRE_USAGE_REPORT_NOTE,
+      note: decoded.envelope.terminated ? TERMINATED_RUN_NOTE : PRE_USAGE_REPORT_NOTE,
     };
   } catch {
     // A row whose result_json this build cannot decode still has real
