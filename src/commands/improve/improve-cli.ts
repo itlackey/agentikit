@@ -128,6 +128,30 @@ function runImproveReportCli(args: { run?: string; since?: string }): void {
   output("improve-report", { ok: true, ...result });
 }
 
+/**
+ * `--run`/`--since` only mean anything with the "report" scope, which
+ * intercepts before this point in the `run` handler below. citty is
+ * non-strict, so passing either with a real scope (or no scope at all) used
+ * to be silently ignored — the flag's value was read nowhere else, and the
+ * run proceeded as an ordinary improve run with no error, discarding the
+ * operator's intent. Reject explicitly instead, matching the precedent
+ * `rejectRetiredCanaryScope`/`rejectRetiredImproveTargetFlag` set for other
+ * flag misuse on this command.
+ */
+function rejectReportOnlyFlags(args: { run?: string; since?: string }): void {
+  const flag =
+    getStringArg(args, "run") !== undefined
+      ? "--run"
+      : getStringArg(args, "since") !== undefined
+        ? "--since"
+        : undefined;
+  if (flag === undefined) return;
+  throw new UsageError(
+    `\`${flag}\` only applies to \`akm improve report\`. Use \`akm improve report ${flag} <value>\` instead.`,
+    "INVALID_FLAG_VALUE",
+  );
+}
+
 export const improveCommand = defineCommand({
   meta: {
     name: "improve",
@@ -215,6 +239,7 @@ export const improveCommand = defineCommand({
         runImproveReportCli(args);
         return;
       }
+      rejectReportOnlyFlags(args);
       rejectRetiredImproveTargetFlag();
       // D7 — `--format` used to be rejected here outright. It is a global flag on
       // a command that does emit an envelope through `output()` (always on
