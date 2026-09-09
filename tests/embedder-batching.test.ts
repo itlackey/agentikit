@@ -289,3 +289,56 @@ describe("RemoteEmbedder.embedBatch: onBatch commit callback", () => {
     );
   });
 });
+
+describe("RemoteEmbedder.embedBatch: surfaces the response model id (#955)", () => {
+  test("passes the response body's `model` field to onBatch as its 3rd argument", async () => {
+    await withMockedFetch(
+      async () => {
+        const embedder = new RemoteEmbedder({ endpoint: "http://localhost:1/v1", model: "configured-name" });
+        const models: (string | undefined)[] = [];
+        await embedder.embedBatch(["a", "b"], undefined, undefined, (_indices, _embeddings, model) =>
+          models.push(model),
+        );
+        // A gateway can answer with a different id than the configured
+        // string (e.g. a bare model id behind a provider/model prefix) —
+        // the embedding-fingerprint canary (#955) relies on seeing that
+        // reported id, not the request's own `model` field echoed back.
+        expect(models).toEqual(["server-reported-id"]);
+      },
+      async () =>
+        jsonResponse({
+          model: "server-reported-id",
+          data: [
+            { embedding: [1, 0], index: 0 },
+            { embedding: [0, 1], index: 1 },
+          ],
+        }),
+    );
+  });
+
+  test("passes undefined to onBatch when the provider's response omits `model`", async () => {
+    await withMockedFetch(
+      async () => {
+        const embedder = new RemoteEmbedder({ endpoint: "http://localhost:1/v1", model: "configured-name" });
+        const models: (string | undefined)[] = [];
+        await embedder.embedBatch(["a"], undefined, undefined, (_indices, _embeddings, model) => models.push(model));
+        expect(models).toEqual([undefined]);
+      },
+      async () => jsonResponse({ data: [{ embedding: [1, 0], index: 0 }] }),
+    );
+  });
+
+  test("an oversized pre-flight skip commits with no model (no request was ever made)", async () => {
+    await withMockedFetch(
+      async () => {
+        const embedder = new RemoteEmbedder({ endpoint: "http://localhost:1/v1", model: "test-model", maxTokens: 1 });
+        const models: (string | undefined)[] = [];
+        await embedder.embedBatch(["x".repeat(200)], undefined, undefined, (_indices, _embeddings, model) =>
+          models.push(model),
+        );
+        expect(models).toEqual([undefined]);
+      },
+      async () => jsonResponse({ model: "should-not-be-called", data: [] }),
+    );
+  });
+});
