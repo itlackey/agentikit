@@ -13,7 +13,7 @@ import { getStringArg } from "../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output, outputWithExitCode } from "../cli/shared";
 import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
-import { NotFoundError, TransientError, UsageError } from "../core/errors";
+import { NotFoundError, TransientError, type TransientErrorCode, UsageError } from "../core/errors";
 import { warn } from "../core/warn";
 import { akmIndex } from "../indexer/indexer";
 import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
@@ -189,7 +189,7 @@ const workflowCreateCommand = defineJsonCommand({
  * exhaustion). Every other error — a bad flag, an unresolvable target —
  * still fails loudly.
  */
-const WORKFLOW_RUN_SKIP_REASONS: Partial<Record<string, "lock-held" | "state-db-contended">> = {
+const WORKFLOW_RUN_SKIP_REASONS: Partial<Record<TransientErrorCode, "lock-held" | "state-db-contended">> = {
   RUN_LEASE_HELD: "lock-held",
   STATE_DB_CONTENDED: "state-db-contended",
 };
@@ -216,7 +216,7 @@ const workflowRunCommand = defineJsonCommand({
       type: "boolean",
       description:
         "If another akm process already holds this run's engine lease, or state.db is busy with another " +
-        "writer, skip gracefully (exit 0) instead of failing (exit 2). Use for high-frequency scheduled runs " +
+        "writer, skip gracefully (exit 0) instead of failing (exit 75). Use for high-frequency scheduled runs " +
         "so they don't pile up failures while a longer-running invocation is in progress.",
       default: false,
     },
