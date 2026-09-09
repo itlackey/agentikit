@@ -68,7 +68,13 @@ import type {
   ImprovePreparationResult,
   ImproveScope,
 } from "./improve-run-types";
-import { type ResolvedImprovePlan, resolveImprovePlan, resolveImproveStrategy } from "./improve-strategies";
+import {
+  projectResolvedProcessRouting,
+  type ResolvedImprovePlan,
+  resolveImprovePlan,
+  resolveImproveStrategy,
+  shouldSkipRef,
+} from "./improve-strategies";
 import { improveLockPath, releaseImproveLock, tryAcquireImproveLock } from "./locks";
 // The cycle loop / post-loop / maintenance stages live in ./loop-stages.
 import { runImproveLoopStage, runImprovePostLoopStage } from "./loop-stages";
@@ -977,6 +983,19 @@ function buildResultExecutionPlan(
     removed: strategyFilteredRefs.length,
     reason: "all enabled per-ref processes refuse the asset type",
   };
+  // #947 — per-process resolved engine/model/notices, plus how many of this
+  // run's effective refs each ref-scoped process (reflect/distill/consolidate)
+  // would act on. Counts only (not a per-ref matrix) to bound result_json size.
+  const REF_SCOPED_PROCESSES = new Set(["reflect", "distill", "consolidate"]);
+  const processes = projectResolvedProcessRouting(resolvedPlan).map((row) => {
+    if (!REF_SCOPED_PROCESSES.has(row.process)) return row;
+    const eligibleRefs = preparation.loopRefs.filter(
+      (entry) =>
+        !shouldSkipRef(entry.ref, row.process as "reflect" | "distill" | "consolidate", resolvedPlan.strategy.config)
+          .skip,
+    ).length;
+    return { ...row, eligibleRefs };
+  });
   const proactive = preparation.planning.proactive
     ? {
         ...preparation.planning.proactive,
@@ -1017,6 +1036,7 @@ function buildResultExecutionPlan(
     effectiveLimit,
     replayBudget: preparation.planning.replayBudget,
     gates: [profileGate, ...preparation.planning.gates],
+    processes,
     ...(proactive ? { proactive } : {}),
     consolidation,
     stageConfig: {

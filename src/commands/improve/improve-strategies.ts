@@ -141,6 +141,76 @@ export interface ResolvedImprovePlan {
   engineUnavailable: readonly EngineUnavailableProcess[];
 }
 
+/**
+ * One row of the resolved process -> engine -> model routing table (#947).
+ * Sourced entirely from data {@link resolveImprovePlan} already computes
+ * before any dispatch — this is a pure projection, not new resolution. The
+ * `eligibleRefs` count (reflect/distill/consolidate only) is folded in by the
+ * caller (`buildResultExecutionPlan`, improve.ts), which is the only site
+ * with the run's effective ref list in scope.
+ */
+export interface ProcessRoutingRow {
+  process: EngineUnavailableProcessName;
+  enabled: boolean;
+  /** Resolved engine name, when this process resolved a runner. */
+  engine?: string;
+  /** Resolved model, for an llm-kind runner only. */
+  model?: string;
+  /** Kind of the resolved runner. Always "llm" for the main process table; the triage.judgment row can be "llm" | "agent" | "sdk". */
+  engineKind?: RunnerSpec["kind"];
+  /** This process's own lowering notices (not the run's deduped flat pool). */
+  notices: readonly Readonly<LoweringNotice>[];
+  /** Set when the strategy enabled this process but its engine/credential could not be resolved. */
+  unavailable?: { configKey: string; reason: string };
+  /** Count of this run's effective refs the process would act on (`shouldSkipRef`). reflect/distill/consolidate only. */
+  eligibleRefs?: number;
+}
+
+/**
+ * Project a resolved improve plan into one routing row per
+ * {@link IMPROVE_PROCESS_ENGINE_CAPABILITIES} name, plus a `"triage.judgment"`
+ * pseudo-row when the strategy configures a judgment engine. Pure — no I/O,
+ * no re-resolution. Shared by `improve --dry-run`'s `plan.processes` (#947)
+ * and `akm health`'s post-run reporting (#944); health's own
+ * `active-improve-strategy` check keeps its existing `engines` shape.
+ */
+export function projectResolvedProcessRouting(plan: ResolvedImprovePlan): ProcessRoutingRow[] {
+  const unavailableByProcess = new Map(plan.engineUnavailable.map((item) => [item.process, item]));
+  const rows: ProcessRoutingRow[] = [];
+  for (const processName of Object.keys(IMPROVE_PROCESS_ENGINE_CAPABILITIES) as ImproveProcessName[]) {
+    const process = plan.processes[processName];
+    const unavailable = unavailableByProcess.get(processName);
+    rows.push({
+      process: processName,
+      enabled: process.enabled,
+      ...(process.runner
+        ? { engine: process.runner.engine, model: process.runner.connection.model, engineKind: process.runner.kind }
+        : {}),
+      notices: process.notices ?? [],
+      ...(unavailable ? { unavailable: { configKey: unavailable.configKey, reason: unavailable.reason } } : {}),
+    });
+  }
+  if (plan.strategy.config.processes?.triage?.judgment?.enabled === true) {
+    const judgmentUnavailable = unavailableByProcess.get("triage.judgment");
+    rows.push({
+      process: "triage.judgment",
+      enabled: plan.triageJudgment !== null,
+      ...(plan.triageJudgment
+        ? {
+            engine: plan.triageJudgment.engine,
+            engineKind: plan.triageJudgment.kind,
+            ...(plan.triageJudgment.kind === "llm" ? { model: plan.triageJudgment.connection.model } : {}),
+          }
+        : {}),
+      notices: plan.triageJudgmentNotices ?? [],
+      ...(judgmentUnavailable
+        ? { unavailable: { configKey: judgmentUnavailable.configKey, reason: judgmentUnavailable.reason } }
+        : {}),
+    });
+  }
+  return rows;
+}
+
 function cloneAndFreeze<T>(value: T): Readonly<T> {
   const clone = structuredClone(value);
   const freeze = (item: unknown): void => {

@@ -129,6 +129,12 @@ export const improveCommand = defineCommand({
     },
     task: { type: "string", description: "Add extra guidance for this improvement pass" },
     "dry-run": { type: "boolean", description: "Show planned actions without writing", default: false },
+    plan: {
+      type: "boolean",
+      description:
+        "Alias for --dry-run (#947). Sets the exact same internal flag; use it when previewing resolved process -> engine -> model routing (plan.processes) rather than checking what would write.",
+      default: false,
+    },
     bundle: { type: "string", description: "Override the write target for accepted proposals" },
     limit: { type: "string", description: "Maximum number of assets to process (highest utility first)" },
     "timeout-ms": {
@@ -186,7 +192,9 @@ export const improveCommand = defineCommand({
       const jsonToStdout = args["json-to-stdout"];
       const targetArg = getStringArg(args, "bundle");
       const taskArg = getStringArg(args, "task");
-      const dryRun = args["dry-run"];
+      // #947 — `--plan` is a zero-logic discoverability alias for `--dry-run`;
+      // it must never fork the computation, only set the same flag.
+      const dryRun = args["dry-run"] || args.plan;
       const limitRaw = parsePositiveIntFlag(args.limit ?? undefined);
       const timeoutMs = parsePositiveIntFlag(args["timeout-ms"], "--timeout-ms");
       const requireFeedbackSignal = args["require-feedback-signal"];
