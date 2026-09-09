@@ -60,8 +60,9 @@ const workflowStatusCommand = defineJsonCommand({
       return;
     }
     let runs: Awaited<ReturnType<typeof listWorkflowRuns>>["runs"];
+    let scopeKey: Awaited<ReturnType<typeof listWorkflowRuns>>["scopeKey"];
     try {
-      ({ runs } = await listWorkflowRuns({ workflowRef: target, allScopes }));
+      ({ runs, scopeKey } = await listWorkflowRuns({ workflowRef: target, allScopes }));
     } catch (error) {
       if (!target.includes(":") && !target.includes("/")) {
         throw new NotFoundError(`Workflow run "${target}" not found.`, "WORKFLOW_NOT_FOUND");
@@ -69,7 +70,21 @@ const workflowStatusCommand = defineJsonCommand({
       throw error;
     }
     const mostRecent = runs[0];
-    if (!mostRecent) throw new NotFoundError(`No workflow runs found for ${target}`, "WORKFLOW_NOT_FOUND");
+    if (!mostRecent) {
+      // #942: name the scope actually searched and point at `--all-scopes`
+      // rather than a bare "not found" — the ref-fallthrough lookup is
+      // scope-local by default, so "no runs" here means "none in THIS
+      // scope", not "none anywhere". Already searching every scope (or no
+      // real scope was filtered on) has nothing more specific to suggest.
+      if (!allScopes && scopeKey !== null) {
+        throw new NotFoundError(
+          `No workflow runs found for ${target} in scope ${scopeKey}.`,
+          "WORKFLOW_NOT_FOUND",
+          `Run 'akm workflow status ${target} --all-scopes' to search every scope.`,
+        );
+      }
+      throw new NotFoundError(`No workflow runs found for ${target}`, "WORKFLOW_NOT_FOUND");
+    }
     const result = await getWorkflowStatus(mostRecent.id, { includeUnits });
     output("workflow-status", result);
   },
