@@ -102,22 +102,55 @@ export interface EmbeddingCanaryPair {
   fresh: EmbeddingVector | undefined;
 }
 
+/** The single similarity computation behind the canary verdict (#955/#956). */
+export interface EmbeddingCompatibilityDecision {
+  outcome: "keep" | "rebuild" | "unverifiable";
+  /** Median cosine similarity across the VERIFIED samples. Undefined when none could be computed. */
+  medianSimilarity: number | undefined;
+  /** Count of samples whose re-embed actually succeeded (`fresh !== undefined`). */
+  verifiedSamples: number;
+}
+
 /**
  * Pure decision: do stored vectors remain valid against freshly re-embedded
- * canary samples? An empty sample means nothing is stored to lose or verify
- * against, so there is nothing to decide — keep. Otherwise the MEDIAN
- * pairwise cosine similarity must clear {@link CANARY_SIMILARITY_THRESHOLD};
- * the median (not the minimum or mean) tolerates one stale or lightly-edited
- * sample without either discarding a real match or being fooled by it. A
- * missing `fresh` vector (that sample's re-embed failed or was skipped) and
- * a dimension mismatch both count as zero similarity via
- * {@link cosineSimilarity}'s own dimension-mismatch guard — no separate
- * special case needed.
+ * canary samples? The ONE place that computes the canary's similarity
+ * numbers — callers must use this result rather than recomputing it (#956).
+ *
+ * An empty sample means nothing is stored to lose or verify against, so
+ * there is nothing to decide — keep.
+ *
+ * A sample whose re-embed FAILED (`fresh === undefined`, e.g. a provider
+ * sub-batch that was skipped) is EXCLUDED from the similarity computation
+ * entirely, not scored as zero: a partial provider failure is not evidence
+ * of a different model (#956). A dimension mismatch on a successful
+ * re-embed still counts as zero similarity via {@link cosineSimilarity}'s
+ * own dimension-mismatch guard — that IS evidence. When half or fewer of
+ * the sampled entries re-embedded successfully, the sample is too thin to
+ * trust either verdict — the outcome is `unverifiable`, the same outcome a
+ * total canary failure already produces.
+ *
+ * Otherwise the MEDIAN pairwise cosine similarity of the verified samples
+ * must clear {@link CANARY_SIMILARITY_THRESHOLD}; the median (not the
+ * minimum or mean) tolerates one stale or lightly-edited sample without
+ * either discarding a real match or being fooled by it.
  */
-export function decideEmbeddingCompatibility(pairs: readonly EmbeddingCanaryPair[]): "keep" | "rebuild" {
-  if (pairs.length === 0) return "keep";
-  const similarities = pairs.map((pair) => (pair.fresh ? cosineSimilarity(pair.stored, pair.fresh) : 0));
-  return medianOf(similarities) >= CANARY_SIMILARITY_THRESHOLD ? "keep" : "rebuild";
+export function decideEmbeddingCompatibility(pairs: readonly EmbeddingCanaryPair[]): EmbeddingCompatibilityDecision {
+  if (pairs.length === 0) return { outcome: "keep", medianSimilarity: undefined, verifiedSamples: 0 };
+
+  const verified = pairs.filter(
+    (pair): pair is { stored: EmbeddingVector; fresh: EmbeddingVector } => pair.fresh !== undefined,
+  );
+  if (verified.length * 2 <= pairs.length) {
+    return { outcome: "unverifiable", medianSimilarity: undefined, verifiedSamples: verified.length };
+  }
+
+  const similarities = verified.map((pair) => cosineSimilarity(pair.stored, pair.fresh));
+  const medianSimilarity = medianOf(similarities);
+  return {
+    outcome: medianSimilarity >= CANARY_SIMILARITY_THRESHOLD ? "keep" : "rebuild",
+    medianSimilarity,
+    verifiedSamples: verified.length,
+  };
 }
 
 function medianOf(values: readonly number[]): number {
@@ -204,20 +237,6 @@ async function runEmbeddingCanary(
     };
   }
 
-  if (canaryVectors.every((vector) => vector === undefined)) {
-    // RemoteEmbedder skips a failing request rather than throwing (#874), so
-    // an unreachable/failing endpoint surfaces here as an all-`undefined`
-    // result, not a caught exception. Without this check the code below
-    // would compare every sample against `undefined`, score 0 similarity for
-    // all of them, and misread total provider failure as "vectors differ" —
-    // purging a healthy index because the server happened to be down.
-    const message = skips[0]?.message ?? "embedding provider returned no vectors for the canary sample";
-    return {
-      outcome: "unverifiable",
-      message: `could not verify embedding compatibility (${message}); keeping existing vectors — rerun akm index when the endpoint is reachable`,
-    };
-  }
-
   const observedVectorLen = canaryVectors.find((vector): vector is EmbeddingVector => vector !== undefined)?.length;
   const observedIdentity = deriveObservedEmbeddingIdentity(config.embedding, observedModel, observedVectorLen);
   const storedIdentity = getMeta(db, "embeddingIdentity");
@@ -229,16 +248,34 @@ async function runEmbeddingCanary(
   }
 
   const pairs: EmbeddingCanaryPair[] = samples.map((sample, i) => ({ stored: sample.vector, fresh: canaryVectors[i] }));
-  const similarities = pairs.map((pair) => (pair.fresh ? cosineSimilarity(pair.stored, pair.fresh) : 0));
-  const medianSimilarity = medianOf(similarities);
+  const decision = decideEmbeddingCompatibility(pairs);
 
-  if (decideEmbeddingCompatibility(pairs) === "keep") {
-    return { outcome: "keep", verified: true, identity: observedIdentity, viaIdentityMatch: false, medianSimilarity };
+  if (decision.outcome === "unverifiable") {
+    // Covers both a total provider failure (RemoteEmbedder skips a failing
+    // request rather than throwing, #874, so an unreachable endpoint
+    // surfaces here as an all-`undefined` canary result, not a caught
+    // exception) and a partial one thin enough that neither verdict can be
+    // trusted (#956) — same message path either way.
+    const message = skips[0]?.message ?? "embedding provider returned no vectors for the canary sample";
+    return {
+      outcome: "unverifiable",
+      message: `could not verify embedding compatibility (${message}); keeping existing vectors — rerun akm index when the endpoint is reachable`,
+    };
+  }
+
+  if (decision.outcome === "keep") {
+    return {
+      outcome: "keep",
+      verified: true,
+      identity: observedIdentity,
+      viaIdentityMatch: false,
+      medianSimilarity: decision.medianSimilarity,
+    };
   }
   return {
     outcome: "rebuild",
     identity: observedIdentity,
-    reason: `vectors differ (median similarity ${medianSimilarity.toFixed(2)})`,
+    reason: `vectors differ (median similarity ${decision.medianSimilarity?.toFixed(3)})`,
   };
 }
 
