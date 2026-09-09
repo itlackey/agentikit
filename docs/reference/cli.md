@@ -252,7 +252,7 @@ regardless of what it would have decided.
 **`--skip-if-locked` flag:** Every explicit `akm index` run acquires an
 opt-in, PID-liveness-only rebuild lock and releases it on exit — this is
 advisory, never the blocking lock #872 removed (see
-[Locks](../architecture/internals/indexing.md#locks)). A human-typed
+[Locks](https://github.com/itlackey/akm/blob/main/docs/architecture/internals/indexing.md#locks)). A human-typed
 `akm index` with no flag is never gated by it: if another run already holds
 the lock, it warns and proceeds anyway, contending with the existing run.
 `--skip-if-locked` changes that only for the invocation that passes it: if
