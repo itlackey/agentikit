@@ -293,6 +293,23 @@ export async function generateEmbeddingsForDb(
   entryIds?: readonly number[],
   opts?: GenerateEmbeddingsOptions,
 ): Promise<EmbeddingGenerationResult> {
+  // #9541 decision 1 (drift guard): refuse an ambient transaction. Every
+  // per-batch `db.transaction()` below is meant to be its own durable commit
+  // (#954) — inside an already-open outer transaction it would nest as an
+  // unobservable SAVEPOINT instead, so an interruption (competing-process
+  // collision, SIGKILL) could lose the whole pass rather than only the batch
+  // in flight. This is an internal contract error (a caller bug), not a
+  // user-facing failure class: callers with their own transaction (e.g. `akm
+  // bundle update`'s unified update transaction) must run the embedding
+  // phase on a separate connection AFTER their own transaction commits — see
+  // `runEmbeddingPass` in `src/indexer/indexer.ts`.
+  if (db.inTransaction) {
+    throw new Error(
+      "generateEmbeddingsForDb was called with an ambient transaction already open on `db`: per-batch commits " +
+        "would become SAVEPOINTs inside it, losing the crash-durability contract per-batch commit exists for. " +
+        "Run the embedding phase on a connection with no open transaction.",
+    );
+  }
   throwIfAborted(signal);
 
   if (config.semanticSearchMode === "off") {
