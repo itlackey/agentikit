@@ -4,6 +4,403 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.15] - 2026-09-09
+
+### Added
+
+- **`akm workflow list`/`status --all-scopes` (#942).** Workflow runs are
+  partitioned by `scope_key`, a hash of the working directory a run was started
+  from, so a scheduled task and a human shell working in different directories
+  can each believe a ref has no active run and start one, while `akm workflow
+  list` from either scope shows only its own. `--all-scopes` searches every scope
+  instead of only the current one, and both commands' JSON envelope now carries a
+  top-level `scopeKey` naming the scope that was searched (`null` under
+  `--all-scopes`), so an empty result is no longer indistinguishable from
+  "nothing anywhere." Default output is unchanged.
+- **`akm health`'s `task-fail-rate` advisory names the dominant command-task
+  failure reason (#943).** Evidence now always includes
+  `agentFailureReasonCounts`, a breakdown of `detail.reason` values (`timeout`,
+  `non_zero_exit`, `spawn_failed`, …) across command-task failures in the window,
+  and when the check is already `warn` and one reason covers at least half of
+  those failures the message names it, e.g. `(timeout-dominant: 9/12 command-task
+  failures)`. Investigating the reported issue found the underlying propagation
+  was already correct on this branch — a command dispatch that times out, is
+  killed, or returns a non-zero/`ok:false` result was already recorded `failed`
+  with its reason, and `akm task run` already exited non-zero for it — so that
+  contract is now pinned by a regression test instead of left implicit.
+- **Every real `improve` run persists a `usageReport` field summarizing LLM usage
+  by process, engine, and model (#944).** `usageReport: {byProcessEngineModel,
+  noCalls}` folds a new process x engine x model cross-tab of the run's
+  `llm_usage` events together with the resolved process routing table (#947); it
+  is omitted from the result when both halves would be empty, matching the
+  envelope's existing convention. `noCalls` lists every LLM-backed process the
+  active strategy enabled but that made zero calls, each with a `reason` drawn
+  from the existing skip-reason vocabulary (`"engine_unavailable"`,
+  `"autonomy_gated"`, `"strategy_filtered_all_passes"`, a reflect/distill
+  dominant skip reason, or `"no_signal"`) — never a fabricated category. The same
+  table is printed to stderr after every real run.
+- **`akm improve report [--run <id>] [--since <window>]` reads a run's LLM usage
+  back without hand-written SQLite against `state.db` (#944).** With no flags it
+  shows the most recent real run; `--run <id>` targets one specific
+  `improve_runs` row; `--since <window>` sums `usageReport` across every real run
+  started in the window. `"report"` is a reserved `improve` scope value matching
+  zero real assets, so it dispatches to the report before any lock, log, or index
+  side effect. A run recorded before 0.9.15 (or one whose result cannot be
+  decoded) has no persisted `usageReport`: the command recomputes the cross-tab
+  from that run's own `llm_usage` events and adds a `notes` entry explaining the
+  degradation instead of erroring or fabricating eligibility reasons.
+  `--run`/`--since` only mean anything with this scope, so passing either with
+  any other scope (or none) is now rejected instead of being silently ignored.
+- **The health `llm_usage` aggregate (`akm health --since <window>`'s `llmUsage`
+  field) now tracks a `failures` count alongside calls and token totals (#944).**
+  Every existing breakdown (`byStage`, `byProcess`, `byEngine`, and the window
+  total) gains this count for free from the same aggregator; a call whose
+  `llm_usage` event records an error outcome increments it.
+- **A config file can inherit a shared base via `extends` (#945).** Setting
+  `extends: <path|bundle//path>` deep-merges a base config underneath the local
+  file — local keys always win. The base resolves without the search index: a
+  filesystem path relative to the declaring file (`~` expanding), or an
+  already-synced bundle-relative file (`bundle//<path>`, resolved against that
+  bundle's content root, needing no asset type). It runs through its own version
+  and legacy-shape shims independently and may itself set `extends` (chained); a
+  cycle is a `ConfigError` naming the ref. A fleet of instances can now keep one
+  shared `engines`/`improve.strategies` block instead of hand-syncing it across
+  hosts.
+- **`akm config get --show-source` and `akm config diff` inspect an effective,
+  `extends`-merged config (#945).** `config get <key> --show-source` wraps the
+  value as `{ value, source }`, reporting whether it came from `local`,
+  `extends:<ref>`, or `default`. `config diff <path|bundle//path>` prints sorted
+  `{ path, local, other }` rows for every leaf that differs between this
+  instance's effective config and another config file or bundle-relative file
+  (loaded through the same loader, so its own `extends` is honoured too),
+  redacting secrets on both sides first. Both are additive: `config get`'s
+  default bare-value shape is unchanged, and `config set`/`unset` still edit only
+  the local file.
+- **A model-map column can borrow its model from a configured engine (#946).** A
+  `models.json` profile may now set `"engine": "<name>"` instead of a literal
+  `model` string, e.g. `"fast": { "opencode": { "engine": "local-fast" } }`, to
+  reuse `engines.local-fast`'s own `model` (and, for an `llm`-kind engine, its
+  `temperature`/`maxTokens`/`enableThinking`/etc. as `inference` defaults) rather
+  than hand-typing the value a second time. `model` and `engine` are mutually
+  exclusive on one profile; a reference to a missing engine, or one with no
+  usable model, fails with the same "a usable model is required after overlay"
+  error, now checked at `akm health` as well as at dispatch. Engine selection
+  itself is unchanged: `engine` is only an indirection for the model/inference
+  *value* of one column, never an override of which engine
+  `--engine`/`defaults.engine` actually dispatches to.
+- **`akm models list` shows the effective model-alias table (#946).** It prints
+  every resolved (alias, column) pair with its `model`, `source` (`default` vs
+  `user`), and `via` (`literal` vs `engine`, naming the engine when applicable),
+  so an operator can see at a glance which mappings a local `models.json`
+  overrides and which fall through to AKM's installed defaults.
+- **`akm improve --dry-run` reports the resolved process -> engine -> model
+  routing before anything runs, in a new `plan.processes` field (#947).** One row
+  per improve process (`reflect`, `distill`, `consolidate`, `memoryInference`,
+  `graphExtraction`, `extract`, `validation`, `triage`, `proactiveMaintenance`),
+  plus a `triage.judgment` row when configured: `enabled`, the resolved
+  `engine`/`model` for llm-backed processes, this process's own lowering
+  `notices`, an `unavailable: {configKey, reason}` when the engine or its
+  credential could not be resolved, and — for reflect/distill/consolidate —
+  `eligibleRefs`, the count of this run's effective refs the process would act
+  on. None of this is new resolution: the plan already computes it,
+  dispatch-free, before every invocation (dry or live); this only projects it
+  into the result. `--strategy` overrides are honored for free, unlike `akm
+  health`'s `active-improve-strategy` check, which still reads the configured
+  default strategy (`defaults.improveStrategy`) and reports no model.
+- **`--plan` is a new alias for `--dry-run`, for previewing `plan.processes`
+  (#947).** It sets the exact same internal flag — no separate code path, no
+  additional network reachability probe; pair with `akm health --probe` to check
+  whether a named engine actually answers.
+- **`akm workflow run --skip-if-locked` (#948).** Extends `improve
+  --skip-if-locked`'s skip-gracefully-instead-of-failing semantics to `workflow
+  run`: when another engine invocation already holds the run's lease
+  (`RUN_LEASE_HELD`) or `state.db` is contended (`STATE_DB_CONTENDED`), the flag
+  turns the failure into one warn line plus `{ ok: true, skipped: { reason:
+  "lock-held" | "state-db-contended" } }` at exit 0 instead of exit 75. Every
+  other failure — a bad flag, an unresolvable target — still fails loudly
+  regardless of the flag. Use it on high-frequency scheduled workflow runs so
+  they don't pile up failures while a longer-running invocation is in progress.
+  Not extended to `task run`.
+- **`akm health` reports engines whose thinking-off control was ignored (#949).**
+  A new advisory, `thinking-control`, warns per configured LLM engine with
+  `enableThinking: false` when the report window's recorded usage shows reasoning
+  tokens anyway. It is passive — it re-reads the existing `llm_usage` window
+  aggregate rather than issuing a completion of its own, so a cold local model is
+  never woken just to run `akm health`. `unknown` when no engine sets
+  `enableThinking: false`, or when a configured one made no calls in the window.
+- **`akm health` reports version drift, idle-but-bound engines, and which env
+  asset supplies a missing credential (#950).** Three new checks close a
+  fleet-awareness gap where `akm health` could pass on a stale host running
+  behind its peers, or on an engine that is configured and reachable but has not
+  actually been invoked in weeks. The new `cli-version` advisory compares the
+  installed akm-cli version against the latest GitHub release (the same source
+  `akm upgrade` already trusts) and warns when a newer release exists; it is
+  gated behind `--probe`/`--no-probe` like the engine-reachability checks, and
+  degrades to `unknown` (never a false warn) when offline or rate-limited. The
+  new `engine-last-used` advisory folds `llm_usage` events over a fixed 30-day
+  lookback — independent of `--since` — against the active improve strategy's
+  process-to-engine bindings, and warns when a bound engine has no recorded use
+  in that window; it stays `unknown` rather than warning until at least one
+  improve run has been recorded (started) in the same window, so a fresh install
+  is not noisy. Finally, when `default-llm-engine` or `configured-engines`
+  reports a required credential missing from the shell, the warn now names the
+  env asset (never the variable name) that supplies the same key when one exists
+  — for example `env asset env/lab supplies it — run under it (akm env run
+  env/lab -- ...)` — instead of a bare "unavailable" that hides the real remedy
+  for an operator whose normal workflow is `akm env run env/lab -- akm improve`.
+- **`akm task list` is an alias for `akm search --type task` (#951).** 0.9.0
+  removed the `task list` command as a redundant second implementation of task
+  listing; this reintroduces only the spelling, not the logic. It delegates to
+  the same `akmSearch`/`parseSearchSource` path `akm search --type task` uses,
+  passing the query, `--limit`, and `--from` flags through unchanged and
+  returning the exact same envelope, including the `results` alias. `task show`
+  and `task remove` stay retired.
+- **`akm info` exposes `dataDir`, `configDir`, `cacheDir`, and `stateDir`
+  (#951).** These are akm's resolved data/config/cache/state directories, so a
+  script can read `akm info --format json | jq -r .dataDir` instead of hardcoding
+  a path that differs between a host install and a container.
+- **`akm index --reembed` forces a full re-embed (#955).** Bypasses the
+  compatibility check above entirely and purges + regenerates every stored
+  embedding, for the rare case where the check's verdict should not be trusted. A
+  targeted post-write embedding pass (after `akm remember`, `akm improve`, etc.)
+  never forces a rebuild on its own.
+- **`akm index --skip-if-locked` lets a scheduled or opportunistic run step aside
+  instead of contending with one already in progress (#956).** Every explicit
+  `akm index` run now acquires an opt-in, PID-liveness-only rebuild lock (no
+  age-based stale reclaim — the same #872 lesson `akm improve`'s lock already
+  applies) and releases it on exit. This is **not** the blocking index-rebuild
+  lock #872 removed: a plain `akm index` with no flag is never gated by it — a
+  held lock only warns and the run proceeds unlocked, exactly as before.
+  `--skip-if-locked` mirrors `akm improve --skip-if-locked`: when the lock is
+  already held by a live process it skips gracefully (exit 0, `{ ok: true,
+  skipped: { reason: "lock-held", pid, startedAt } }`) instead of piling up
+  behind the other run. The shipped `index-refresh` scheduled task now passes it.
+- **`akm improve` reports which processes it skipped for an unavailable engine,
+  instead of dispatching with a doomed credential (#957).** A process whose
+  engine was configured but whose credential could not be resolved in this
+  process's own environment (a scheduler that strips `env/user.env` from the task
+  environment, for example) used to keep its runner and proceed to an
+  unauthenticated dispatch, with no run-level signal beyond a stderr warning. The
+  plan builder now folds a resolved-but-uncredentialed engine (including the
+  triage judgment engine) into the same `engineUnavailable` handling as "no
+  engine selected," and the result carries a new `skippedProcesses: [{process,
+  configKey, reason}]` field (omitted when nothing was skipped) naming which
+  engine and which credential reference — never its value — is missing. `ok` and
+  the exit code are unchanged, matching the `extract`/`skipReasons` contract
+  (#912): a scheduler must not start failing because one LLM process's credential
+  is temporarily missing while others still run. `--dry-run`/`--plan` never
+  dispatches, so a preview no longer aborts when every enabled process is
+  credential-unavailable either: it reports the affected processes in
+  `skippedProcesses` and shows them as unavailable (with their structurally
+  resolved engine and model) in `plan.processes`, the same as a run that does
+  dispatch.
+- **`--require-engines` opts a run out of that degrade-and-continue behavior, and
+  is now set on all six shipped scheduled improve task templates (#957).** It
+  aborts (exit 78) right after the plan resolves, before any lock, log, or index
+  side effect, listing every unavailable process and its unresolved credential
+  reference — recommended alongside `--skip-if-locked` for scheduled runs, since
+  the operator's own shell can pass config validation while a scheduler's
+  stripped-down environment cannot.
+
+### Changed
+
+- **BREAKING: `RUN_LEASE_HELD` now exits 75, not 2 (#948).** A held workflow
+  run-lease refusal — `akm workflow run` or `akm workflow complete` racing
+  another engine invocation on the same run — was a `UsageError` (exit 2), which
+  schedulers and cron wrappers read as "fix the command line" rather than "try
+  again shortly." It is now a `TransientError` (exit 75, sysexits `EX_TEMPFAIL`);
+  the message, hint, and `RUN_LEASE_HELD` code are unchanged. A script or
+  scheduler that special-cased exit 2 to detect a held lease must switch to exit
+  75, or check the JSON envelope's `code` field instead.
+- **Thinking-control wire forms no longer depend on `provider` (#949).**
+  `chat_template_kwargs.enable_thinking` was previously sent only when `provider:
+  "vllm"` was set; every other provider (including none) got a bare top-level
+  `enable_thinking` that nothing was observed to honor. AKM now sends both wire
+  forms whenever `enableThinking` resolves to a value, regardless of `provider`.
+  An engine relying on `provider: "vllm"` purely for this side effect keeps
+  working identically. An engine configured with `provider: "openai"`, another
+  provider name, or no `provider` at all now also receives
+  `chat_template_kwargs`, which it did not before — this is what lets the same
+  engine block turn thinking off consistently behind a direct vhost, freellmapi,
+  or Bifrost, without a gateway silently dropping the one wire form it happened
+  to send.
+- **`akm health --no-probe` now also skips the version-drift check (#950).**
+  `--probe`/`--no-probe` previously gated only LLM engine reachability; it now
+  also gates the `cli-version` advisory's GitHub release lookup, so an offline or
+  air-gapped host's existing `--no-probe` habit suppresses both network calls.
+  This is the second deliberate network exception in `akm health`, alongside the
+  pre-existing `plugin-version` advisory's `git ls-remote`.
+- **The direct-LLM reflect path sizes its asset-content budget from the target
+  engine's `contextLength` instead of a flat 12,000-character cap (#952).** The
+  flat cap only exists to keep the prompt under OS `ARG_MAX` when passed as CLI
+  argv to an agent or SDK runner; the direct-LLM HTTP path never touches argv, so
+  agent and SDK runners are unaffected. The budget reserves half of the usable
+  window for the model's response, since a reflect rewrite returns a body roughly
+  the size of the input. Configure `engines.<name>.contextLength` to raise the
+  budget for a given engine; unconfigured engines keep today's effective
+  ~12,000-character behavior.
+- **`akm index` commits embeddings per provider batch instead of buffering the
+  whole run for one final write (#954).** Earlier releases wrote every generated
+  vector in a single `db.transaction()` after the entire embedding pass finished,
+  so an interruption partway through (a competing indexer collision, a killed
+  process, any thrown provider error) discarded every embedding already computed,
+  not just the ones still in flight. Each request batch now commits inside its
+  own short transaction as it lands.
+- **A batch rejected for exceeding the endpoint's context window is split and
+  retried instead of skipped outright (#954).** `akm index`'s embedding pass now
+  recognizes HTTP 413 and known context-size error bodies and halves the failing
+  batch, retrying each half recursively down to individual documents. Only a
+  single document that still fails this way is skipped, as
+  `context-window-exceeded`; every other failure (network error, 5xx, malformed
+  response) keeps the prior skip-the-whole-batch behavior.
+- **Embedding requests are now dispatched through a small, fixed in-flight window
+  instead of strictly sequentially (#954).** The window is 1 request at a time
+  for a loopback endpoint and 2 for a remote one, and is not configurable — the
+  actual throughput knob is request size, via the existing `embedding.batchSize`
+  (document cap) and `embedding.maxTokens`/`contextLength` (token budget), since
+  a larger batch takes about the same wall time as a single one.
+- **`akm index` reports embedding progress and throughput as it runs (#954).** A
+  progress line is printed every 500 stored entries, and a final line reports
+  throughput (`entries/s`, `tokens/s`) once the embedding pass completes.
+- **A rename of `embedding.model` no longer forces a full re-embed by itself
+  (#955).** `akm index` used to purge and rebuild the entire vector index on any
+  change to the fingerprint it derives from `embedding.model`, including a pure
+  config rename that still resolves to the same underlying model (for example a
+  gateway prefixing `provider/model` onto an unchanged server). On a mismatch,
+  `akm index` now re-embeds a small sample of already-stored entries and keeps
+  the index when either the endpoint's reported model identity matches what it
+  reported last time, or the median cosine similarity between stored and freshly
+  re-embedded vectors is at least 0.999; otherwise it purges and rebuilds as
+  before, logging why. A genuine dimension change bypasses this check entirely
+  and still rebuilds unconditionally.
+- **A canary that cannot reach the embedding endpoint leaves the index untouched
+  instead of purging it (#955).** When the fingerprint-rename canary's re-embed
+  attempt fails outright, `akm index` keeps the existing vectors and the old
+  fingerprint and reports the run as `unverifiable`, rather than destroying a
+  working index because the server happened to be down. The next `akm index` run
+  retries the canary once the endpoint is reachable again.
+- **A purge now writes the new fingerprint before any embedding request, so an
+  interrupted rebuild resumes instead of restarting from zero (#955).**
+  Previously the fingerprint was only written at the very end of a successful
+  embedding pass, so an interruption partway through a fingerprint-triggered
+  rebuild left the old fingerprint in place — the next `akm index` saw the same
+  mismatch and purged again, discarding whatever had already been re-embedded.
+  The new fingerprint (and the observed identity) are now written in the same
+  transaction as the purge, before any vectors are requested; a restart then sees
+  a matching fingerprint and only re-embeds the entries still missing a vector.
+- **A write-path index update (`akm remember`, `akm import`, `akm proposal
+  accept`, `akm source clone`, extract session assets) never contends with a full
+  rebuild in progress; it skips and lets the rebuild heal the entry instead
+  (#956).** These commands make a just-written asset searchable immediately via a
+  targeted index upsert that opens `index.db` under a 5-second busy timeout — far
+  shorter than a full rebuild's single transaction. It now checks the new rebuild
+  lock first: a live holder means the upsert and embedding are skipped outright
+  (one log line naming the pid and the file that will be indexed by the next
+  pass), and every caller — including `akm proposal accept`, which used to report
+  a spurious "index finalization failed" — treats the skip as success, since the
+  file write itself already completed. A rebuild lock left by a dead process is
+  not treated as held here — reclaiming it stays `akm index`'s job.
+- **A blocked `akm remember` (and other synchronous asset-mutation-lease writers)
+  now prints a wait notice instead of hanging silently for up to ten minutes
+  (#956).** The sync lease boundary (`withAssetMutationLeaseSync`) had no
+  progress feedback at all; a contended lease looked identical to a hang until it
+  either acquired or timed out. It now logs `waiting for <holder purpose> (pid N,
+  started T) — Ns` every 15 seconds, naming who actually holds the lease — the
+  same cadence the async path's `onWait` hook already had, but wired to an actual
+  warning since nothing called that hook. The 10-minute wait bound is unchanged;
+  this only makes an existing wait visible.
+- **`akm health`'s `active-improve-strategy` check fails, not warns, when the
+  active strategy's LLM-backed work would be a total no-op (#957).** Previously
+  this check stayed `warn` regardless of how many of the strategy's enabled
+  processes were unavailable, so a nightly `improve` job that could not run a
+  single LLM-backed process still reported the same severity as one with a single
+  missing credential and several working ones. It now escalates to `fail`
+  specifically when every enabled `capability: "llm"` process in the strategy is
+  unavailable; a partial failure with at least one working process stays `warn`.
+  The check is also a direct projection of the same credential-aware plan
+  `improve` itself now builds (see Added, above), rather than a separate
+  re-derivation that could disagree with what a real run in the same environment
+  would do.
+
+### Fixed
+
+- **Starting a workflow ref that already has an active run in a different scope
+  now warns instead of silently duplicating it (#942).** `akm workflow run
+  <ref>`'s per-scope concurrency guard is unchanged by design — two unrelated
+  projects sharing one `state.db` can still run the same-named workflow
+  independently — but before starting a new run it now also checks for an active
+  run of the same ref in any OTHER scope and, if one exists, warns with that
+  run's id, scope, and start time, plus the same `akm workflow run <id>` / `akm
+  workflow abandon <id>` remedy. The existing "already active" guard errors now
+  also name the blocking run's scope, not just its id. `akm workflow
+  status`/`resume`/`abandon <run-id>` already worked from any scope (#919) and
+  are unchanged.
+- **`akm workflow status <ref>` names the scope it searched when nothing is found
+  there (#942).** When the ref lookup finds no runs in the current scope and
+  `--all-scopes` was not passed, the not-found error now names the scope that was
+  searched and suggests retrying with `--all-scopes`, instead of a bare "no runs
+  found."
+- **Concurrent akm commands writing `state.db` no longer crash with a bare
+  "database is locked" (#948).** An unrelated `akm improve` run, `akm workflow
+  run`, or scheduled task writing `state.db` at the same time used to exhaust the
+  write retry window and throw the raw SQLite driver error, surfacing as
+  `{"ok":false,"error":"database is locked"}` at exit 70 (internal/unclassified)
+  instead of a retryable failure. On exhaustion the error is now reclassified
+  into a `TransientError` with a dedicated `STATE_DB_CONTENDED` code (exit 75),
+  modelled on `RUN_LEASE_HELD`'s precedent (#924), with the original driver text
+  preserved as `cause`; a genuinely unrelated error (real corruption, a
+  body-thrown failure) is never reclassified and still surfaces as itself. The
+  improve run's own `improve_runs` ledger writes, previously bare
+  single-statement writes with no retry, now go through the same retry path.
+- **`akm show env/<name>` lists key names in plain-text output (#951).** The
+  plain-text `show` renderer never read the response's `keys` field, so the
+  default (non-`--format json`) output for an env asset gave no way to audit
+  which keys a script depends on; `--format json` already carried them correctly.
+- **The cron scheduler backend truncates its raw per-task log instead of
+  appending forever (#951).** The crontab entry installed for each task
+  redirected stdout/stderr with `>>` (append), so the log file grew without
+  bound; it is only a bootstrap safety net, since akm's own per-run log already
+  separates runs and keeps history in `logs.db`, so the redirect now truncates
+  (`>`) and the file holds exactly the latest run's raw output. An
+  already-installed `>>` row still parses correctly. `launchd`'s equivalent log
+  path is OS-managed append-only with no truncate mode, so it is left unchanged —
+  a wrapper-script rewrite is not justified by evidence that was Linux-only.
+- **Removed the false `akm curate --rerank` / "curate reranks by intent" claims
+  from the docs and the `curate` command's own description (#951).** `akm curate`
+  never implemented reranking; a rerank engine kind is deferred to its own issue,
+  and the referenced Discord health-report embed script is outside this
+  repository.
+- **Reflect no longer treats feedback lines as verified facts to insert into the
+  rewrite (#952).** A harness run against the reflect prompt on two model quants
+  showed the model inventing whole new sections — fabricated incident dates,
+  ports, disk layouts — whenever a feedback line asserted a claim the source
+  asset never made. Feedback is now framed as a signal to investigate, not a fact
+  to insert, and missing information gets a `TODO: verify …` placeholder instead
+  of an invented answer.
+- **A leaked content-truncation marker can no longer end up in a proposal body
+  (#952).** Asset content over the active budget is capped with a marker the
+  model is told never to echo back; when a model echoes it anyway, the proposal
+  is now deferred for human review (`reflect-truncation-leak`) instead of
+  shipping silently. As a second layer, `proposal accept` — including drain
+  promotion — now rejects any reflect-sourced proposal whose body still contains
+  the marker, since a truncated body silently replacing a full asset is data
+  loss; re-run reflect on the ref to clear it.
+- **`secret://<name>` engine credentials now resolve on the `akm improve` /
+  agent-dispatch and health-probe paths (#953).** 0.9.13's #917 CHANGELOG entry
+  claimed engine credentials could resolve from the secret store, but that was
+  only ever true for direct LLM calls (`llm/client.ts`) and, after a same-week
+  follow-up fix, embedding calls — `engine-resolution.ts`, the sole path `akm
+  improve`, workflow LLM steps, and `akm health`'s engine probes use, still threw
+  `Engine "<name>" has an invalid symbolic apiKey reference.` for any `secret://`
+  value and aborted the run. `secret://<name>` now resolves through the same
+  store lookup as those other call sites, deferred to actual dispatch so frozen
+  plans stay secret-free, and `akm health`'s credential check now probes the
+  store instead of reporting a `secret://`-backed engine as available
+  unconditionally.
+- **An unset or empty `$VAR` referenced by an engine's `apiKey` now warns once,
+  naming the variable (#953).** Previously it silently sent an empty
+  `Authorization` header instead of surfacing the misconfiguration.
+
 ## [0.9.14] - 2026-09-04
 
 ### Added
