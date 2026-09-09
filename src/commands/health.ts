@@ -16,6 +16,7 @@ import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import { probeLlmEndpoint } from "../llm/client";
 import type { Database } from "../storage/database";
 import { getExtractOutcomeCountsSince } from "../storage/repositories/extract-sessions-repository";
+import { queryImproveRuns } from "../storage/repositories/improve-runs-repository";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
 import { getAllEntries } from "../storage/repositories/index-entries-repository";
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
@@ -24,11 +25,13 @@ import { collectImproveAdvisories } from "./health/advisories";
 import {
   HEALTH_CHECKS,
   type HealthCheckContext,
+  runActiveImproveStrategyProbe,
   runHealthEngineProbes,
   runPendingStateMigrationsCheck,
   SESSION_EXTRACTION_LEDGER_WINDOW_DAYS,
 } from "./health/checks";
 import { collectDataDirUsageAdvisory } from "./health/data-dir-usage";
+import { engineLastUsedSince, readLastEngineUsage } from "./health/engine-usage";
 import {
   buildImproveSkipSummary,
   computeWallTimeStats,
@@ -63,6 +66,7 @@ import {
   type WindowResult,
   type WindowSpec,
 } from "./health/types";
+import { collectVersionDriftAdvisory } from "./health/version-drift";
 import { buildWindowMetrics, computeDeltas, partitionLogBackedRows, resolveWindowCompare } from "./health/windows";
 
 export interface AkmHealthOptions {
@@ -701,6 +705,10 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
     // Network probes overlap the local database phases below; awaited where consumed.
     const engineProbesPromise = runHealthEngineProbes({ probeReachable: options.probe ? probeLlmEndpoint : undefined });
     engineProbesPromise.catch(() => undefined);
+    // #950: same best-effort, --probe-gated discipline as engineProbesPromise
+    // above — started here, alongside it, and awaited later.
+    const versionDriftPromise = collectVersionDriftAdvisory(Boolean(options.probe), { cliVersion: pkgVersion });
+    versionDriftPromise.catch(() => undefined);
     const taskHistory = gatherTaskHistoryPhase(db, logsDb, since, stateDbPath, now);
     const { tableNames, missingTables, probe } = taskHistory;
 
@@ -712,7 +720,21 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
 
     const sessionExtractionLedger = gatherSessionExtractionLedgerPhase(db, now);
 
+    // #950: computed once (no IO beyond config/env, same as gatherEgressConfigPhase)
+    // so `active-improve-strategy` and `engine-last-used` project the same
+    // process→engine map instead of each resolving the strategy independently.
+    const activeImproveStrategy = runActiveImproveStrategyProbe();
+    const activeImproveStrategyEngines =
+      (activeImproveStrategy.evidence?.engines as Record<string, string> | undefined) ?? {};
+
+    // #950: `engine-last-used` reads a fixed lookback window independent of
+    // `--since` (mirrors sessionExtractionLedger's independent window above).
+    const engineLastUsedSinceIso = engineLastUsedSince(now);
+    const engineLastUsed = readLastEngineUsage(stateDbPath, now);
+    const improveRunsInLookbackWindow = queryImproveRuns(db, engineLastUsedSinceIso).length;
+
     const engineProbes = await engineProbesPromise;
+    const versionDrift = await versionDriftPromise;
 
     // Read once, shared by the `thinking-control` check (#949) and the
     // `metrics.llmUsage` report field below — same window, same aggregate.
@@ -742,6 +764,11 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
       engineProbes,
       thinkingOffEngines,
       llmUsage,
+      versionDrift,
+      activeImproveStrategy,
+      activeImproveStrategyEngines,
+      engineLastUsed,
+      improveRunsInLookbackWindow,
     };
     for (const check of HEALTH_CHECKS) {
       const result = check.run(checkContext);

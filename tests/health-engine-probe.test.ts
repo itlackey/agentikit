@@ -297,6 +297,42 @@ describe("health engine probes", () => {
     expect(JSON.stringify(improve)).not.toContain("PRIVATE_IMPROVE_TOKEN");
   });
 
+  test("#950: names the env asset that supplies an unavailable required credential, never the variable name", async () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: { improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" } },
+      defaults: { llmEngine: "improve" },
+    };
+    const improve = await runDefaultLlmEngineProbe({
+      loadConfig: () => config,
+      env: {},
+      listEnvAssets: () => [{ ref: "env/lab", path: "/stash/env/lab.env", keys: ["PRIVATE_IMPROVE_TOKEN"] }],
+    });
+    expect(improve.status).toBe("warn");
+    expect(improve.message).toContain("env/lab");
+    expect(improve.message).toContain("akm env run env/lab");
+    expect(improve.evidence?.suppliedByEnvAsset).toBe("env/lab");
+    expect(JSON.stringify(improve)).not.toContain("PRIVATE_IMPROVE_TOKEN");
+  });
+
+  test("#950: no matching env asset keeps the generic unavailable message and a null suppliedByEnvAsset", async () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: { improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" } },
+      defaults: { llmEngine: "improve" },
+    };
+    const improve = await runDefaultLlmEngineProbe({
+      loadConfig: () => config,
+      env: {},
+      listEnvAssets: () => [{ ref: "env/other", path: "/stash/env/other.env", keys: ["SOME_OTHER_VAR"] }],
+    });
+    expect(improve.status).toBe("warn");
+    expect(improve.message).toContain("required credential is unavailable");
+    expect(improve.evidence?.suppliedByEnvAsset).toBeNull();
+  });
+
   test("warns when an enabled active improve process lacks its required credential", () => {
     const config: AkmConfig = {
       configVersion: "0.9.0",
