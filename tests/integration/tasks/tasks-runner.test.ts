@@ -1237,6 +1237,54 @@ describe("runTask — prompt target", () => {
     expect(errorRows.some((row) => row.line.includes("non_zero_exit"))).toBe(true);
     expect(errorRows.filter((row) => row.stream === "stderr").map((row) => row.line)).toContain("boom");
   });
+
+  // #943: reproduces the issue's report verbatim — a command task authored
+  // with its own `timeout:` field whose dispatched agent times out. Static
+  // reading found every ok:false branch (including reason:"timeout" from
+  // sdk-runner.ts/spawn.ts) already unconditionally mapped to status:"failed"
+  // with detail.reason preserved; this pins that so the mapping can't regress
+  // silently, and reproduces the exact scenario (timeout: 50) rather than only
+  // the pre-existing non_zero_exit case above.
+  test("agent timeout surfaces as failed status with reason timeout", async () => {
+    writeTask("timed-out", promptTask("content", { engine: "opencode", timeout: 50 }));
+
+    process.env.AKM_CONFIG_DIR = configDir;
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "config.json"),
+      JSON.stringify({
+        configVersion: "0.9.0",
+        engines: { opencode: { kind: "agent", platform: "opencode" } },
+        defaults: { engine: "opencode" },
+      }),
+    );
+
+    const fakeRunAgent: FakeRunAgent = async () => {
+      return {
+        ok: false,
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: 60,
+        reason: "timeout",
+        error: 'agent CLI "opencode" timed out after 50ms',
+      };
+    };
+
+    const result = await runTask("timed-out", {
+      bundleDir,
+      logDir,
+      runAgentImpl: fakeRunAgent,
+      now: () => new Date("2025-01-01T00:00:00Z"),
+    });
+    expect(result.status).toBe("failed");
+    expect(result.detail?.reason).toBe("timeout");
+    expect(exitCodeForStatus(result.status)).toBe(1);
+
+    const historyRows = readTaskHistory({ id: "timed-out" });
+    expect(historyRows[0]?.status).toBe("failed");
+    expect(historyRows[0]?.detail?.reason).toBe("timeout");
+  });
 });
 
 // P4 (docs/plans/specs/p4-deletions-closeout.md §3.2.7, row B-22, F-A2.17)
