@@ -502,7 +502,7 @@ across hosts drifts silently. `extends` fixes this: put the shared block in
 one file, and have each host's local config extend it.
 
 ```jsonc
-// bundles/fleet/shared-config.json — versioned with the bundle, shared by every host
+// bundles/fleet/scripts/shared-config.json — versioned with the bundle, shared by every host
 {
   "configVersion": "0.9.0",
   "engines": {
@@ -516,7 +516,7 @@ one file, and have each host's local config extend it.
 // ~/.config/akm/config.json — this host's local file, under 20 lines
 {
   "configVersion": "0.9.0",
-  "extends": "fleet//shared-config.json",
+  "extends": "fleet//scripts/shared-config.json",
   "bundles": {
     "fleet": { "git": "https://github.com/example/fleet-bundle.git" },
     "stash": { "path": "~/akm-stash", "writable": true }
@@ -532,10 +532,12 @@ one file, and have each host's local config extend it.
   config file that declares them; a leading `~` expands.
 - A `bundle//conceptId` asset ref, resolved the same way a stash asset ref
   resolves anywhere else in akm — through the bundle's configured `path`, not
-  the search index — so it never needs `akm index` to have run. Only a
-  filesystem bundle (`bundles.<id>.path`) can host an `extends` source; sync
-  a `git`/`website` bundle with `akm bundle add`/`akm sync` first so the file
-  is materialized locally, then point `extends` at it.
+  the search index — so it never needs `akm index` to have run. `conceptId`
+  must be type-qualified as `<stashDir>/<name>` like any other asset ref
+  (e.g. `scripts/shared-config.json`, not a bare `shared-config.json`). Only
+  a filesystem bundle (`bundles.<id>.path`) can host an `extends` source;
+  sync a `git`/`website` bundle with `akm bundle add`/`akm sync` first so the
+  file is materialized locally, then point `extends` at it.
 
 There is no `extends: <url>` form: config load is synchronous and runs on
 every invocation, and akm deliberately does not fetch network resources at
@@ -568,7 +570,7 @@ directly.
 
 ```sh
 akm config diff ~/other-host/config.json
-akm config diff fleet//shared-config.json
+akm config diff fleet//scripts/shared-config.json
 ```
 
 ## Environment
