@@ -38,12 +38,6 @@ export const EmbeddingConnectionConfigSchema = z
     localModel: z.string().min(1).optional(),
     maxTokens: positiveInt.optional(),
     batchSize: positiveInt.optional(),
-    // In-flight request window for RemoteEmbedder.embedBatch. Unset resolves
-    // via resolveEmbeddingConcurrency (src/llm/embedders/remote.ts): 1 for a
-    // loopback endpoint (a local model server serves one inference at a time;
-    // parallel requests thrash it), 2 for a remote one — the same
-    // lowest-common-denominator rule as getDefaultLlmConcurrency.
-    concurrency: positiveInt.optional(),
     chunkSize: positiveInt.optional(),
     contextLength: positiveInt.optional(),
     ollamaOptions: EmbeddingOllamaOptionsSchema.optional(),

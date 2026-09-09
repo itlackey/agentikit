@@ -215,10 +215,6 @@
           "type": "integer",
           "exclusiveMinimum": 0
         },
-        "concurrency": {
-          "type": "integer",
-          "exclusiveMinimum": 0
-        },
         "chunkSize": {
           "type": "integer",
           "exclusiveMinimum": 0
@@ -1906,10 +1902,6 @@
               "type": "integer",
               "exclusiveMinimum": 0
             },
-            "concurrency": {
-              "type": "integer",
-              "exclusiveMinimum": 0
-            },
             "chunkSize": {
               "type": "integer",
               "exclusiveMinimum": 0
@@ -3476,10 +3468,6 @@
           "exclusiveMinimum": 0
         },
         "batchSize": {
-          "type": "integer",
-          "exclusiveMinimum": 0
-        },
-        "concurrency": {
           "type": "integer",
           "exclusiveMinimum": 0
         },

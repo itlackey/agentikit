@@ -3,8 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #954: per-provider-batch commit, bounded in-flight concurrency, and
- * context-size split-and-retry for RemoteEmbedder.embedBatch.
+ * #954: per-provider-batch commit, a fixed bounded in-flight window (1 for a
+ * loopback endpoint, 2 for a remote one — no config override, per the
+ * 2026-09-09 field-review addendum to the brief), and context-size
+ * split-and-retry for RemoteEmbedder.embedBatch.
  *
  * All network I/O here is mocked via `withMockedFetch` (no real socket
  * opened), so this stays a pure unit test rather than an integration test —
@@ -41,21 +43,16 @@ describe("isContextExceededResponse", () => {
 });
 
 describe("resolveEmbeddingConcurrency", () => {
-  test("an explicit config.concurrency always wins", () => {
-    expect(resolveEmbeddingConcurrency({ endpoint: "http://localhost:1234", concurrency: 7 })).toBe(7);
-    expect(resolveEmbeddingConcurrency({ endpoint: "https://api.example.com", concurrency: 1 })).toBe(1);
-  });
-
-  test("defaults to 1 for a loopback endpoint", () => {
+  test("is fixed at 1 for a loopback endpoint — no config override exists", () => {
     expect(resolveEmbeddingConcurrency({ endpoint: "http://localhost:8080" })).toBe(1);
     expect(resolveEmbeddingConcurrency({ endpoint: "http://127.0.0.1:8080" })).toBe(1);
   });
 
-  test("defaults to 1 when no endpoint is configured (fails safe as local)", () => {
+  test("is fixed at 1 when no endpoint is configured (fails safe as local)", () => {
     expect(resolveEmbeddingConcurrency({})).toBe(1);
   });
 
-  test("defaults to 2 for a remote endpoint", () => {
+  test("is fixed at 2 for a remote endpoint", () => {
     expect(resolveEmbeddingConcurrency({ endpoint: "https://api.example.com/v1" })).toBe(2);
   });
 });
@@ -135,22 +132,23 @@ describe("RemoteEmbedder.embedBatch: context-size split-and-retry", () => {
   });
 });
 
-describe("RemoteEmbedder.embedBatch: bounded concurrency", () => {
-  test("dispatches at most `concurrency` requests at once and preserves result-to-index placement", async () => {
+describe("RemoteEmbedder.embedBatch: bounded concurrency (fixed 1 loopback / 2 remote, no config override)", () => {
+  test("a remote endpoint dispatches at most 2 requests at once and preserves result-to-index placement", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
     // Each text gets a distinct, already-unit-length raw vector (a point on
     // the unit circle) so l2Normalize is a no-op and the returned vector
     // stays a reliable fingerprint of WHICH text the server answered for,
-    // independent of completion order under concurrency.
+    // independent of completion order under concurrency. Fetch is fully
+    // mocked, so this non-loopback hostname never actually resolves — it
+    // only needs to classify as "remote" for resolveEmbeddingConcurrency.
     const texts = ["a", "bb", "ccc", "dddd", "eeeee", "ffffff"];
     const results = await withMockedFetch(
       async () => {
         const embedder = new RemoteEmbedder({
-          endpoint: "http://localhost:1/v1",
+          endpoint: "https://embed.example.com/v1",
           model: "test-model",
           batchSize: 1,
-          concurrency: 3,
         });
         return embedder.embedBatch(texts);
       },
@@ -173,8 +171,32 @@ describe("RemoteEmbedder.embedBatch: bounded concurrency", () => {
       expect((vec as EmbeddingVector)[0]).toBeCloseTo(Math.cos(i), 5);
       expect((vec as EmbeddingVector)[1]).toBeCloseTo(Math.sin(i), 5);
     });
-    expect(maxInFlight).toBeGreaterThan(1); // genuine overlap happened
-    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBe(2); // fixed remote width — genuine overlap happened, never more than 2
+  });
+
+  test("a loopback endpoint never overlaps requests (fixed width 1)", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    await withMockedFetch(
+      async () => {
+        const embedder = new RemoteEmbedder({
+          endpoint: "http://localhost:1/v1",
+          model: "test-model",
+          batchSize: 1,
+        });
+        return embedder.embedBatch(["a", "b", "c", "d"]);
+      },
+      async (_url, init) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        const body = JSON.parse(init?.body as string) as { input: string[] };
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        inFlight--;
+        const data = body.input.map(() => ({ embedding: [1, 0], index: 0 }));
+        return jsonResponse({ data });
+      },
+    );
+    expect(maxInFlight).toBe(1);
   });
 
   test("caller abort propagates as a rejection even through the pool", async () => {
@@ -213,7 +235,7 @@ describe("RemoteEmbedder.embedBatch: onBatch commit callback", () => {
     );
   });
 
-  test("an explicit EmbeddingConnectionConfig with no concurrency override still commits every batch", async () => {
+  test("every provider batch commits, not just the last one", async () => {
     const config: EmbeddingConnectionConfig = {
       endpoint: "http://localhost:1/v1",
       model: "test-model",
