@@ -3,6 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
+import path from "node:path";
+import { setSecret } from "../src/commands/env/secret";
 import * as healthChecks from "../src/commands/health/checks";
 import {
   HEALTH_CHECKS,
@@ -12,6 +14,7 @@ import {
 } from "../src/commands/health/checks";
 import type { AkmConfig } from "../src/core/config/config";
 import { validateConfigShape } from "../src/core/config/config-schema";
+import { withIsolatedAkmStorage } from "./_helpers/sandbox";
 
 const llm = {
   kind: "llm" as const,
@@ -295,6 +298,32 @@ describe("health engine probes", () => {
     expect(improve.status).toBe("warn");
     expect(improve.message).toContain("required credential is unavailable");
     expect(JSON.stringify(improve)).not.toContain("PRIVATE_IMPROVE_TOKEN");
+  });
+
+  test("a secret:// engine reports available only when the store resolves it (#953)", async () => {
+    const storage = withIsolatedAkmStorage();
+    try {
+      const config: AkmConfig = {
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: {
+          agent: { kind: "agent", platform: "claude" },
+          improve: { ...llm, apiKey: "secret://953-health-probe-key" },
+        },
+        defaults: { engine: "agent", llmEngine: "improve" },
+      };
+
+      const unavailable = await runDefaultLlmEngineProbe({ loadConfig: () => config, env: {} });
+      expect(unavailable.status).toBe("warn");
+      expect(unavailable.message).toContain("required credential is unavailable");
+
+      setSecret(path.join(storage.stashDir, "secrets", "953-health-probe-key"), Buffer.from("health-probe-secret"));
+      const available = await runDefaultLlmEngineProbe({ loadConfig: () => config, env: {} });
+      expect(available.status).not.toBe("warn");
+      expect(JSON.stringify(available)).not.toContain("health-probe-secret");
+    } finally {
+      storage.cleanup();
+    }
   });
 
   test("warns when an enabled active improve process lacks its required credential", () => {

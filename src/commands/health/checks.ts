@@ -9,7 +9,11 @@ import { EXTRACT_INFRASTRUCTURE_SKIP_REASONS } from "../../core/improve-types";
 import { listPendingStateMigrations } from "../../core/state-db";
 import type { WhichFn } from "../../integrations/agent/detect";
 import { withEngineFallback } from "../../integrations/agent/engine-fallback";
-import { lookupApiKeyFileValue, resolveEngine } from "../../integrations/agent/engine-resolution";
+import {
+  type CredentialDescriptor,
+  isLlmCredentialAvailable,
+  resolveEngine,
+} from "../../integrations/agent/engine-resolution";
 import { executionEngineDefinitionsFromConfig } from "../../integrations/agent/execution-definitions";
 import {
   type LoadedModelMap,
@@ -173,17 +177,19 @@ export interface HealthEngineProbeResults {
   readonly configuredEngines: HealthCheckResult;
 }
 
+/**
+ * Delegates to {@link isLlmCredentialAvailable} (#953) so `akm health` and the
+ * improve-strategy probe (#957 builds on this same helper) share one
+ * non-throwing "is a credential present" check with the real dispatch
+ * boundary — env value, file-backed (#905), or secret-store-backed (#953).
+ */
 function credentialAvailable(
-  credential: { names: readonly string[]; required: boolean } | undefined,
+  credential: CredentialDescriptor | undefined,
   env: NodeJS.ProcessEnv,
   apiKeyFile?: string,
+  apiKeySecretRef?: string,
 ): boolean {
-  if (credential?.required) return credential.names.some((name) => Boolean(env[name]?.trim()));
-  // #905: an engine with no env descriptor may still require a file-backed
-  // credential — probe it too, rather than reporting an unreadable/empty
-  // apiKeyFile as available just because it carries no env var names.
-  if (apiKeyFile !== undefined) return lookupApiKeyFileValue(apiKeyFile) !== undefined;
-  return true;
+  return isLlmCredentialAvailable({ credential, apiKeyFile, apiKeySecretRef }, env);
 }
 
 async function runConfiguredEngineProbe(
@@ -235,6 +241,7 @@ async function runConfiguredEngineProbe(
     let fallback: Extract<RunnerSpec, { kind: "llm" }> | undefined;
     let fallbackCredential: Extract<RunnerSpec, { kind: "llm" }>["credential"];
     let fallbackApiKeyFile: string | undefined;
+    let fallbackApiKeySecretRef: string | undefined;
     let sdkRunner: Extract<RunnerSpec, { kind: "sdk" }> | undefined;
     const resolve = deps.resolveEngine ?? resolveEngine;
     try {
@@ -247,6 +254,7 @@ async function runConfiguredEngineProbe(
       fallback = { kind: "llm", engine: fallbackEngine, connection: sdkRunner.fallbackConnection };
       fallbackCredential = sdkRunner.fallbackCredential;
       fallbackApiKeyFile = sdkRunner.fallbackApiKeyFile;
+      fallbackApiKeySecretRef = sdkRunner.fallbackApiKeySecretRef;
     } else if (fallbackEngine) {
       try {
         const resolved = resolve(fallbackEngine, config);
@@ -254,6 +262,7 @@ async function runConfiguredEngineProbe(
           fallback = resolved;
           fallbackCredential = resolved.credential;
           fallbackApiKeyFile = resolved.apiKeyFile;
+          fallbackApiKeySecretRef = resolved.apiKeySecretRef;
         }
       } catch {
         fallback = undefined;
@@ -261,7 +270,12 @@ async function runConfiguredEngineProbe(
     }
     const configuredModel = configuredEngine.model;
     const effectiveModel = sdkRunner?.profile.model ?? configuredModel ?? fallback?.connection.model;
-    const fallbackCredentialAvailable = credentialAvailable(fallbackCredential, env, fallbackApiKeyFile);
+    const fallbackCredentialAvailable = credentialAvailable(
+      fallbackCredential,
+      env,
+      fallbackApiKeyFile,
+      fallbackApiKeySecretRef,
+    );
     const missing = [
       !packageAvailable ? "@opencode-ai/sdk package" : undefined,
       !binaryAvailable ? `${binary} binary` : undefined,
@@ -315,7 +329,12 @@ async function runConfiguredEngineProbe(
   try {
     const runner = (deps.resolveEngine ?? resolveEngine)(engineName, config);
     if (runner.kind === "llm") {
-      const requiredCredentialAvailable = credentialAvailable(runner.credential, env, runner.apiKeyFile);
+      const requiredCredentialAvailable = credentialAvailable(
+        runner.credential,
+        env,
+        runner.apiKeyFile,
+        runner.apiKeySecretRef,
+      );
       const llmEvidence = {
         engine: engineName,
         platform: null,
@@ -536,7 +555,14 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
     const env = deps.env ?? process.env;
     const unavailableProcesses = Object.entries(plan.processes).flatMap(([name, process]) => {
       if (!process.enabled || !process.runner) return [];
-      return credentialAvailable(process.runner.credential, env, process.runner.apiKeyFile) ? [] : [name];
+      return credentialAvailable(
+        process.runner.credential,
+        env,
+        process.runner.apiKeyFile,
+        process.runner.apiKeySecretRef,
+      )
+        ? []
+        : [name];
     });
     if (plan.triageJudgment) {
       const judgmentCredential =
@@ -551,7 +577,13 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
           : plan.triageJudgment.kind === "sdk"
             ? plan.triageJudgment.fallbackApiKeyFile
             : undefined;
-      if (!credentialAvailable(judgmentCredential, env, judgmentApiKeyFile)) {
+      const judgmentApiKeySecretRef =
+        plan.triageJudgment.kind === "llm"
+          ? plan.triageJudgment.apiKeySecretRef
+          : plan.triageJudgment.kind === "sdk"
+            ? plan.triageJudgment.fallbackApiKeySecretRef
+            : undefined;
+      if (!credentialAvailable(judgmentCredential, env, judgmentApiKeyFile, judgmentApiKeySecretRef)) {
         unavailableProcesses.push("triage.judgment");
       }
     }
