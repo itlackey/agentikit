@@ -17,7 +17,7 @@
  */
 
 import { NotFoundError, UsageError } from "../../core/errors";
-import { readEvents } from "../../core/events";
+import { type EventsContext, readEvents } from "../../core/events";
 import { decodeImproveResult } from "../../core/improve-result";
 import { withStateDb } from "../../core/state-db";
 import { LLM_USAGE_EVENT } from "../../llm/usage-persist";
@@ -49,10 +49,20 @@ export interface ImproveReportResult {
   notes?: string[];
 }
 
-/** Recompute the cross-tab from this run's own `llm_usage` events (a pre-#944 row has no persisted one). */
-function crossTabFromEvents(startedAt: string, completedAt: string | null): LlmUsageCrossTabRow[] {
+/**
+ * Recompute the cross-tab from this run's own `llm_usage` events (a pre-#944
+ * row has no persisted one). `eventsCtx` threads the state.db connection
+ * `runImproveReportQuery` already holds via `withStateDb`, so a `--since`
+ * window with several pre-0.9.15 or undecodable rows reads through that one
+ * open connection instead of each row opening and closing its own.
+ */
+function crossTabFromEvents(
+  startedAt: string,
+  completedAt: string | null,
+  eventsCtx?: EventsContext,
+): LlmUsageCrossTabRow[] {
   const until = completedAt ?? new Date().toISOString();
-  const events = readEvents({ since: startedAt, type: LLM_USAGE_EVENT }).events.filter(
+  const events = readEvents({ since: startedAt, type: LLM_USAGE_EVENT }, eventsCtx).events.filter(
     (event) => new Date(event.ts ?? startedAt).getTime() < new Date(until).getTime(),
   );
   return summarizeLlmUsageCrossTab(events);
@@ -66,7 +76,10 @@ interface ReportableRunRow {
 }
 
 /** One row's usage report — persisted (common case) or recomputed (pre-#944 row / terminated run / undecodable row). */
-function usageReportForRow(row: ReportableRunRow): {
+function usageReportForRow(
+  row: ReportableRunRow,
+  eventsCtx?: EventsContext,
+): {
   usageReport: ImproveReportUsage;
   strategy?: string;
   note?: string;
@@ -83,7 +96,10 @@ function usageReportForRow(row: ReportableRunRow): {
       };
     }
     return {
-      usageReport: { byProcessEngineModel: crossTabFromEvents(row.started_at, row.completed_at), noCalls: [] },
+      usageReport: {
+        byProcessEngineModel: crossTabFromEvents(row.started_at, row.completed_at, eventsCtx),
+        noCalls: [],
+      },
       strategy: decoded.strategy,
       note: decoded.envelope.terminated ? TERMINATED_RUN_NOTE : PRE_USAGE_REPORT_NOTE,
     };
@@ -92,7 +108,10 @@ function usageReportForRow(row: ReportableRunRow): {
     // llm_usage events on state.db — degrade to the recomputed cross-tab
     // rather than excluding the run entirely.
     return {
-      usageReport: { byProcessEngineModel: crossTabFromEvents(row.started_at, row.completed_at), noCalls: [] },
+      usageReport: {
+        byProcessEngineModel: crossTabFromEvents(row.started_at, row.completed_at, eventsCtx),
+        noCalls: [],
+      },
       note: PRE_USAGE_REPORT_NOTE,
     };
   }
@@ -124,6 +143,10 @@ export function runImproveReportQuery(options: { runId?: string; since?: string 
     throw new UsageError("akm improve report: --run and --since are mutually exclusive.", "INVALID_FLAG_VALUE");
   }
   return withStateDb((db) => {
+    // Thread this already-open connection into every reader below, so a
+    // `--since` window with several pre-0.9.15 or undecodable rows reads
+    // through it instead of each row opening and closing its own.
+    const eventsCtx: EventsContext = { db };
     if (options.since !== undefined) {
       const sinceIso = parseHealthSince(options.since);
       const rows = queryImproveRuns(db, sinceIso);
@@ -132,7 +155,7 @@ export function runImproveReportQuery(options: { runId?: string; since?: string 
       const lastReasonByProcess = new Map<string, { engine?: string; reason: string }>();
       const notes = new Set<string>();
       for (const row of rows) {
-        const { usageReport, note } = usageReportForRow(row);
+        const { usageReport, note } = usageReportForRow(row, eventsCtx);
         for (const crossTabRow of usageReport.byProcessEngineModel) {
           mergeCrossTabRow(merged, crossTabRow);
           if (crossTabRow.calls > 0) calledEverByProcess.add(crossTabRow.process);
@@ -168,7 +191,7 @@ export function runImproveReportQuery(options: { runId?: string; since?: string 
         "IMPROVE_RUN_NOT_FOUND",
       );
     }
-    const { usageReport, strategy, note } = usageReportForRow(row);
+    const { usageReport, strategy, note } = usageReportForRow(row, eventsCtx);
     return {
       mode: "run",
       runId: row.id,
