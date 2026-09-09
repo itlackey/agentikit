@@ -20,15 +20,18 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { AkmConfig } from "../../../src/core/config/config";
+import type { AkmConfig, EmbeddingConnectionConfig } from "../../../src/core/config/config";
 import { resetVerbose, setVerbose } from "../../../src/core/warn";
 import { deriveEntryProvenance, deriveInstallations } from "../../../src/indexer/installations";
 import { generateEmbeddingsForDb } from "../../../src/indexer/materialize-embeddings";
 import { buildSearchText } from "../../../src/indexer/search/search-fields";
+import { _setEmbedderForTests } from "../../../src/llm/embedder";
+import type { EmbeddingBatchCommit, EmbeddingSkipHandler } from "../../../src/llm/embedders/remote";
 import type { Database } from "../../../src/storage/database";
 import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositories/index-connection";
 import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
+import { overrideSeam } from "../../_helpers/seams";
 
 describe("generateEmbeddingsForDb: per-batch progress and final outcome line (#954)", () => {
   let storage: IsolatedAkmStorage;
@@ -96,7 +99,7 @@ describe("generateEmbeddingsForDb: per-batch progress and final outcome line (#9
     }
   });
 
-  test("a failed batch's line names the reason, without a stored count", async () => {
+  test("a failed batch's line names the reason, without a stored count, and lists the failed documents by itemRef", async () => {
     const db = openIndexDatabase();
     try {
       seedEntries(db, 2);
@@ -122,6 +125,87 @@ describe("generateEmbeddingsForDb: per-batch progress and final outcome line (#9
       expect(perBatchLine).toBeDefined();
       expect(perBatchLine).toMatch(/^\[embed\] batch 1\/1: 2 docs, [\d,]+ tokens → failed: /);
       expect(perBatchLine).toContain("Embedding batch request failed (500)");
+
+      const finalLine = messages.find((m) => m.startsWith("Stored "));
+      expect(finalLine).toContain("0 oversized skipped, 0 timed out, 2 failed.");
+
+      // Round-2 review finding: the aggregate "2 failed" count alone gives
+      // no way to learn WHICH documents failed — restore itemRef-level
+      // detail for genuine (non-oversized) skips too, the same way the
+      // oversized list already works.
+      const failedList = messages.find((m) => m.startsWith("[embed] failed documents skipped:"));
+      expect(failedList).toBeDefined();
+      const lines = (failedList as string).split("\n").filter((l) => l.startsWith("  - "));
+      expect(lines).toHaveLength(2);
+      expect(lines.every((l) => l.includes("entry-") && l.includes("Embedding batch request failed (500)"))).toBe(true);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("timed-out documents are listed by itemRef too, not just counted", async () => {
+    const db = openIndexDatabase();
+    try {
+      seedEntries(db, 2);
+      const config: AkmConfig = {
+        semanticSearchMode: "auto",
+        embedding: { endpoint: "http://localhost:1", model: "mock", dimension: 3 },
+      } as AkmConfig;
+
+      // A genuine "timed out" skip only happens once retries/splits have
+      // already narrowed a request down to a single document and it STILL
+      // times out (real coverage of that retry chain lives in
+      // embedder-batching.test.ts at the RemoteEmbedder level) —
+      // reproducing it here through real timers would be slow and flaky.
+      // The fake embedder seam drives the exact onSkip/onBatch shape
+      // RemoteEmbedder produces for that event, so this test stays about
+      // the materializer's rendering of it, not the retry chain itself.
+      const fakeEmbedBatch = async (
+        texts: string[],
+        _embeddingConfig: EmbeddingConnectionConfig | undefined,
+        _signal: AbortSignal | undefined,
+        onSkip?: EmbeddingSkipHandler,
+        onBatch?: EmbeddingBatchCommit,
+      ) => {
+        texts.forEach((_text, k) => {
+          onSkip?.({
+            index: k,
+            reason: "batch-request-failed",
+            message: "Embedding batch request failed (0): request timed out",
+            batchStart: k === 0,
+            batchSize: texts.length,
+            failureKind: "timeout",
+          });
+        });
+        onBatch?.(
+          texts.map((_t, i) => i),
+          texts.map(() => undefined),
+          undefined,
+          {
+            batchIndex: 1,
+            batchCount: 1,
+            docCount: texts.length,
+            requestTokens: 10,
+            elapsedMs: 100,
+            outcome: "failed",
+            reason: "request timed out",
+          },
+        );
+        return texts.map(() => undefined);
+      };
+      overrideSeam(_setEmbedderForTests, { embedBatch: fakeEmbedBatch });
+
+      const messages: string[] = [];
+      await generateEmbeddingsForDb(db, config, (e) => messages.push(e.message));
+
+      const finalLine = messages.find((m) => m.startsWith("Stored "));
+      expect(finalLine).toContain("0 oversized skipped, 2 timed out, 0 failed.");
+
+      const timedOutList = messages.find((m) => m.startsWith("[embed] timed-out documents skipped:"));
+      expect(timedOutList).toBeDefined();
+      const lines = (timedOutList as string).split("\n").filter((l) => l.startsWith("  - "));
+      expect(lines).toHaveLength(2);
+      expect(lines.every((l) => l.includes("entry-"))).toBe(true);
     } finally {
       closeDatabase(db);
     }

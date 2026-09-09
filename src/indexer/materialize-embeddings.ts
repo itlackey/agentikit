@@ -755,12 +755,12 @@ export async function generateEmbeddingsForDb(
       // = every other batch-request-failed skip (a genuine, never-retried
       // network/HTTP failure).
       const oversizedSkips = skips.filter((skip) => skip.reason === "context-window-exceeded");
-      const timedOutCount = skips.filter(
+      const timedOutSkips = skips.filter(
         (skip) => skip.reason === "batch-request-failed" && skip.failureKind === "timeout",
-      ).length;
-      const failedCount = skips.filter(
+      );
+      const failedSkips = skips.filter(
         (skip) => skip.reason === "batch-request-failed" && skip.failureKind !== "timeout",
-      ).length;
+      );
       const throughputLine =
         reusedCount > 0
           ? // #955: report reused and newly-embedded counts separately — the
@@ -771,21 +771,28 @@ export async function generateEmbeddingsForDb(
           : `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"} in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s)`;
       onProgress({
         phase: "embeddings",
-        message: `${throughputLine}; ${oversizedSkips.length} oversized skipped, ${timedOutCount} timed out, ${failedCount} failed.`,
+        message: `${throughputLine}; ${oversizedSkips.length} oversized skipped, ${timedOutSkips.length} timed out, ${failedSkips.length} failed.`,
       });
-      if (oversizedSkips.length > 0) {
-        // Default level caps the list (there is nothing actionable about
-        // the 21st identical truncation-cap candidate); --verbose prints
-        // every one, matching the per-document mapping lines' own verbosity
-        // gate above.
-        const limit = isVerbose() ? oversizedSkips.length : 20;
-        const listed = oversizedSkips
+      // Bounded itemRef-level detail for every skip category, not just
+      // oversized — the aggregate counts above say HOW MANY documents timed
+      // out or failed, but give the operator no way to find out WHICH ones
+      // short of rerunning with --verbose and re-reading the whole log.
+      // Default level caps each list (there is nothing actionable about the
+      // 21st identical failure); --verbose prints every one, matching the
+      // per-document mapping lines' own verbosity gate above.
+      const printSkipList = (label: string, skipList: EmbeddingBatchSkip[]): void => {
+        if (skipList.length === 0) return;
+        const limit = isVerbose() ? skipList.length : 20;
+        const listed = skipList
           .slice(0, limit)
           .map((skip) => `  - ${pendingEntries[skip.index]?.itemRef ?? skip.index}: ${skip.message}`)
           .join("\n");
-        const more = oversizedSkips.length > limit ? `\n  ...and ${oversizedSkips.length - limit} more` : "";
-        onProgress({ phase: "embeddings", message: `[embed] oversized documents skipped:\n${listed}${more}` });
-      }
+        const more = skipList.length > limit ? `\n  ...and ${skipList.length - limit} more` : "";
+        onProgress({ phase: "embeddings", message: `[embed] ${label} skipped:\n${listed}${more}` });
+      };
+      printSkipList("oversized documents", oversizedSkips);
+      printSkipList("timed-out documents", timedOutSkips);
+      printSkipList("failed documents", failedSkips);
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       const observedIdentity = deriveObservedEmbeddingIdentity(config.embedding, observedModel, observedVectorLen);
       if (observedIdentity) setMeta(db, "embeddingIdentity", observedIdentity);
