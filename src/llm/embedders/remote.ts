@@ -61,8 +61,19 @@ export interface EmbeddingBatchSkip {
  * commit each batch to durable storage as it lands rather than buffering the
  * whole run in memory for one final write — completion order is irrelevant
  * to a caller that commits per call, so this fires under concurrency too.
+ *
+ * `model`, when the provider's response body carried one, is the server-
+ * reported model id for that request (#955) — undefined for a skipped
+ * batch, a local/deterministic run, or a provider that omits the field.
+ * The embedding-fingerprint canary uses it to tell a same-model config
+ * rename (e.g. a gateway prefixing `provider/model`) apart from a genuine
+ * model change without guessing from the config string alone.
  */
-export type EmbeddingBatchCommit = (indices: number[], embeddings: (EmbeddingVector | undefined)[]) => void;
+export type EmbeddingBatchCommit = (
+  indices: number[],
+  embeddings: (EmbeddingVector | undefined)[],
+  model?: string,
+) => void;
 
 /**
  * Distinguishes a batch rejected because it exceeded the endpoint's context
@@ -276,10 +287,10 @@ export class RemoteEmbedder implements Embedder {
     // fabricated "batch-request-failed" skip (#954). Checked (and rethrown)
     // once the pool drains, the same way `signal?.aborted` is today.
     let firstOnBatchError: unknown;
-    const commitBatch = (indices: number[], embeddings: (EmbeddingVector | undefined)[]): void => {
+    const commitBatch = (indices: number[], embeddings: (EmbeddingVector | undefined)[], model?: string): void => {
       if (!onBatch) return;
       try {
-        onBatch(indices, embeddings);
+        onBatch(indices, embeddings, model);
       } catch (err) {
         if (firstOnBatchError === undefined) firstOnBatchError = err;
       }
@@ -294,12 +305,14 @@ export class RemoteEmbedder implements Embedder {
     const requestAndCommit = async (indices: number[]): Promise<void> => {
       const batch = indices.map((i) => texts[i] as string);
       let batchEmbeddings: (EmbeddingVector | undefined)[];
+      let responseModel: string | undefined;
       try {
-        const embeddings = await this.requestBatch(batch, headers, ollamaOpts, signal);
+        const { vectors, model } = await this.requestBatch(batch, headers, ollamaOpts, signal);
         for (let k = 0; k < indices.length; k++) {
-          results[indices[k] as number] = embeddings[k];
+          results[indices[k] as number] = vectors[k];
         }
         batchEmbeddings = indices.map((i) => results[i]);
+        responseModel = model;
       } catch (err) {
         // A caller abort must still propagate — it is not a "this batch
         // failed" condition, it means stop entirely.
@@ -319,7 +332,7 @@ export class RemoteEmbedder implements Embedder {
         }
         batchEmbeddings = indices.map(() => undefined);
       }
-      commitBatch(indices, batchEmbeddings);
+      commitBatch(indices, batchEmbeddings, responseModel);
     };
 
     const runProviderBatch = async (textBatch: TextBatch): Promise<void> => {
@@ -353,13 +366,19 @@ export class RemoteEmbedder implements Embedder {
     return results;
   }
 
-  /** Send one batch request and return its embeddings in input order. Throws on any failure. */
+  /**
+   * Send one batch request and return its embeddings in input order, plus the
+   * server-reported `model` id when the response body carried one (#955) —
+   * used by the embedding-fingerprint canary to verify a config-string
+   * rename against what the endpoint actually served, not just re-assert the
+   * configured string. Throws on any failure.
+   */
   private async requestBatch(
     batch: string[],
     headers: Record<string, string>,
     ollamaOpts: { num_ctx?: number } | undefined,
     signal?: AbortSignal,
-  ): Promise<EmbeddingVector[]> {
+  ): Promise<{ vectors: EmbeddingVector[]; model?: string }> {
     const body: { input: string[]; model: string; dimensions?: number; options?: { num_ctx?: number } } = {
       input: batch,
       model: this.model,
@@ -400,6 +419,7 @@ export class RemoteEmbedder implements Embedder {
 
     const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal })) as {
       data: Array<{ embedding: number[]; index: number }>;
+      model?: string;
     };
 
     if (!json.data || json.data.length !== batch.length) {
@@ -418,7 +438,7 @@ export class RemoteEmbedder implements Embedder {
       }
       results.push(l2Normalize(d.embedding));
     }
-    return results;
+    return { vectors: results, model: typeof json.model === "string" && json.model ? json.model : undefined };
   }
 
   private buildHeaders(): Record<string, string> {

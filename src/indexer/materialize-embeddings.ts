@@ -26,15 +26,18 @@ import {
   estimateTokenCount,
   hasRemoteEndpoint,
 } from "../llm/embedders/remote";
+import { cosineSimilarity, type EmbeddingVector } from "../llm/embedders/types";
 import type { Database } from "../storage/database";
 import { getEmbeddableEntryCount } from "../storage/repositories/index-entries-repository";
 import { deleteMeta, getMeta, setMeta } from "../storage/repositories/index-meta-repository";
 import {
+  type EmbeddingCanarySample,
   getAllEntriesForEmbedding,
   getEmbeddingCount,
   isVecFastPathComplete,
   isVecFastPathReady,
   purgeEmbeddings,
+  sampleEmbeddedEntriesForCanary,
   setVecFastPathReady,
   upsertEmbedding,
 } from "../storage/repositories/index-vec-repository";
@@ -65,8 +68,164 @@ export interface EmbeddingGenerationResult {
   vecInsertFailures?: number;
 }
 
+export interface GenerateEmbeddingsOptions {
+  /**
+   * Force a full purge + re-embed (`akm index --reembed`), bypassing the
+   * fingerprint-rename canary entirely — an explicit operator override for
+   * when the canary's own verdict should not be trusted (#955).
+   */
+  forceReembed?: boolean;
+}
+
 /** How often (in stored entries) to emit a progress line during a large embedding run (#954). */
 const PROGRESS_INTERVAL = 500;
+
+/**
+ * Number of already-embedded entries sampled for the fingerprint-rename
+ * canary (#955) — small and cheap even against a slow local server; a
+ * handful of chunks is a strong compatibility signal (a different model
+ * cannot plausibly land near-identical vectors by chance).
+ */
+const CANARY_SAMPLE_SIZE = 8;
+
+/**
+ * Minimum median cosine similarity between stored and freshly re-embedded
+ * canary vectors for a fingerprint-string change to be treated as a
+ * same-model rename rather than a real model change (#955).
+ */
+const CANARY_SIMILARITY_THRESHOLD = 0.999;
+
+/** One (stored vector, freshly re-embedded vector) pair for the canary decision. */
+export interface EmbeddingCanaryPair {
+  stored: EmbeddingVector;
+  /** Undefined when the canary re-embed failed or skipped this specific sample. */
+  fresh: EmbeddingVector | undefined;
+}
+
+/**
+ * Pure decision: do stored vectors remain valid against freshly re-embedded
+ * canary samples? An empty sample means nothing is stored to lose or verify
+ * against, so there is nothing to decide — keep. Otherwise the MEDIAN
+ * pairwise cosine similarity must clear {@link CANARY_SIMILARITY_THRESHOLD};
+ * the median (not the minimum or mean) tolerates one stale or lightly-edited
+ * sample without either discarding a real match or being fooled by it. A
+ * missing `fresh` vector (that sample's re-embed failed or was skipped) and
+ * a dimension mismatch both count as zero similarity via
+ * {@link cosineSimilarity}'s own dimension-mismatch guard — no separate
+ * special case needed.
+ */
+export function decideEmbeddingCompatibility(pairs: readonly EmbeddingCanaryPair[]): "keep" | "rebuild" {
+  if (pairs.length === 0) return "keep";
+  const similarities = pairs.map((pair) => (pair.fresh ? cosineSimilarity(pair.stored, pair.fresh) : 0));
+  return medianOf(similarities) >= CANARY_SIMILARITY_THRESHOLD ? "keep" : "rebuild";
+}
+
+function medianOf(values: readonly number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2
+    : (sorted[mid] as number);
+}
+
+/**
+ * Identity of the embedding vectors actually observed on a run — as opposed
+ * to {@link deriveSemanticProviderFingerprint}'s CONFIG-derived string. Keys
+ * on what the server (or local model) actually reported plus the observed
+ * vector width, so a gateway/transport change that keeps returning the same
+ * underlying model can be told apart from a genuine model change without
+ * relying on the operator's config string (#955 field-review addendum).
+ * Returns undefined when nothing was actually observed this call (no vector
+ * to measure yet).
+ */
+function deriveObservedEmbeddingIdentity(
+  embedding: EmbeddingConnectionConfig | undefined,
+  observedModel: string | undefined,
+  observedVectorLen: number | undefined,
+): string | undefined {
+  if (isDeterministicEmbedEnabled()) {
+    return `deterministic:${DETERMINISTIC_EMBED_MODEL_ID}`;
+  }
+  if (observedVectorLen === undefined) return undefined;
+  if (embedding?.endpoint) {
+    return `remote:${observedModel ?? embedding.model ?? "unknown"}|${observedVectorLen}`;
+  }
+  return `local:${embedding?.localModel ?? DEFAULT_LOCAL_MODEL}|${observedVectorLen}`;
+}
+
+type CanaryDecision =
+  | {
+      outcome: "keep";
+      /** False for the empty-sample case: nothing was actually verified. */
+      verified: boolean;
+      identity?: string;
+      viaIdentityMatch: boolean;
+      medianSimilarity?: number;
+    }
+  | { outcome: "rebuild"; identity?: string; reason: string }
+  | { outcome: "unverifiable"; message: string };
+
+/**
+ * Run the fingerprint-rename canary: re-embed a small sample of already-
+ * stored entries with the CURRENT config and decide whether the stored
+ * index survives. Goes through the standard {@link embedBatch} facade (not a
+ * direct `RemoteEmbedder`) so every embedder branch — remote, local,
+ * deterministic, and test overrides via `_setEmbedderForTests` — is
+ * exercised identically to the main embedding pass.
+ */
+async function runEmbeddingCanary(
+  db: Database,
+  config: AkmConfig,
+  signal: AbortSignal | undefined,
+): Promise<CanaryDecision> {
+  const samples: EmbeddingCanarySample[] = sampleEmbeddedEntriesForCanary(db, CANARY_SAMPLE_SIZE);
+  if (samples.length === 0) {
+    return { outcome: "keep", verified: false, viaIdentityMatch: false };
+  }
+
+  let observedModel: string | undefined;
+  let canaryVectors: (EmbeddingVector | undefined)[];
+  try {
+    canaryVectors = await embedBatch(
+      samples.map((sample) => sample.searchText),
+      config.embedding,
+      signal,
+      undefined,
+      (_indices, _embeddings, model) => {
+        if (model) observedModel = model;
+      },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      outcome: "unverifiable",
+      message: `could not verify embedding compatibility (${message}); keeping existing vectors — rerun akm index when the endpoint is reachable`,
+    };
+  }
+
+  const observedVectorLen = canaryVectors.find((vector): vector is EmbeddingVector => vector !== undefined)?.length;
+  const observedIdentity = deriveObservedEmbeddingIdentity(config.embedding, observedModel, observedVectorLen);
+  const storedIdentity = getMeta(db, "embeddingIdentity");
+
+  if (storedIdentity && observedIdentity && storedIdentity === observedIdentity) {
+    // The server reports the same model identity as last time — no need to
+    // even look at the cosines; the config string alone was misleading.
+    return { outcome: "keep", verified: true, identity: observedIdentity, viaIdentityMatch: true };
+  }
+
+  const pairs: EmbeddingCanaryPair[] = samples.map((sample, i) => ({ stored: sample.vector, fresh: canaryVectors[i] }));
+  const similarities = pairs.map((pair) => (pair.fresh ? cosineSimilarity(pair.stored, pair.fresh) : 0));
+  const medianSimilarity = medianOf(similarities);
+
+  if (decideEmbeddingCompatibility(pairs) === "keep") {
+    return { outcome: "keep", verified: true, identity: observedIdentity, viaIdentityMatch: false, medianSimilarity };
+  }
+  return {
+    outcome: "rebuild",
+    identity: observedIdentity,
+    reason: `vectors differ (median similarity ${medianSimilarity.toFixed(2)})`,
+  };
+}
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
@@ -80,6 +239,7 @@ export async function generateEmbeddingsForDb(
   onProgress: (event: EmbeddingProgressEvent) => void,
   signal?: AbortSignal,
   entryIds?: readonly number[],
+  opts?: GenerateEmbeddingsOptions,
 ): Promise<EmbeddingGenerationResult> {
   throwIfAborted(signal);
 
@@ -96,12 +256,67 @@ export async function generateEmbeddingsForDb(
   const currentFingerprint = deriveSemanticProviderFingerprint(config.embedding);
   const storedFingerprint = getMeta(db, "embeddingFingerprint");
   let targetEntryIds = entryIds;
-  if (storedFingerprint && storedFingerprint !== currentFingerprint) {
-    purgeEmbeddings(db, { dropVecTable: true });
-    deleteMeta(db, "embeddingDim");
-    // A provider/model change invalidates the entire vector generation, even
-    // when a targeted write happened to discover it first.
+  /** Set only on an actual rebuild, so the up-front "Re-embedding N entries" line names why. */
+  let rebuildReason: string | undefined;
+
+  if (opts?.forceReembed) {
+    // `akm index --reembed`: an explicit operator override, skips the canary
+    // entirely. The new fingerprint (and identity, now stale/unknown until
+    // the next successful pass observes it) is written in the SAME
+    // transaction as the purge, before any embedding request — a restart
+    // then sees a matching fingerprint and only heals what is still missing
+    // instead of purging again from zero (#955/#956).
+    db.transaction(() => {
+      purgeEmbeddings(db, { dropVecTable: true });
+      deleteMeta(db, "embeddingDim");
+      setMeta(db, "embeddingFingerprint", currentFingerprint);
+      deleteMeta(db, "embeddingIdentity");
+    })();
     targetEntryIds = undefined;
+    rebuildReason = "forced by --reembed";
+  } else if (storedFingerprint && storedFingerprint !== currentFingerprint) {
+    const decision = await runEmbeddingCanary(db, config, signal);
+
+    if (decision.outcome === "unverifiable") {
+      // Destroying a good index because the server happens to be down right
+      // now is worse than leaving a rename unverified until the next run —
+      // keep the vectors AND the old fingerprint so the next `akm index`
+      // retries the canary instead of silently treating this as resolved.
+      warn(`[embed] ${decision.message}`);
+      onProgress({ phase: "embeddings", message: decision.message });
+      return { success: false, message: decision.message };
+    }
+
+    if (decision.outcome === "rebuild") {
+      db.transaction(() => {
+        purgeEmbeddings(db, { dropVecTable: true });
+        deleteMeta(db, "embeddingDim");
+        setMeta(db, "embeddingFingerprint", currentFingerprint);
+        if (decision.identity) setMeta(db, "embeddingIdentity", decision.identity);
+        else deleteMeta(db, "embeddingIdentity");
+      })();
+      targetEntryIds = undefined;
+      rebuildReason = decision.reason;
+    } else {
+      // Keep: adopt the new fingerprint (and identity, when observed)
+      // immediately rather than deferring to end-of-run — nothing was
+      // purged, so there is nothing an interruption could lose, and an
+      // immediate write means a crash right after this decision does not
+      // re-run the canary needlessly on the next attempt.
+      setMeta(db, "embeddingFingerprint", currentFingerprint);
+      if (decision.identity) setMeta(db, "embeddingIdentity", decision.identity);
+      if (decision.verified) {
+        const keptCount = getEmbeddingCount(db);
+        const detail = decision.viaIdentityMatch
+          ? "server-reported model unchanged"
+          : `stored vectors are compatible (median similarity ${decision.medianSimilarity?.toFixed(3)})`;
+        const message = `[embed] embedding model renamed (${storedFingerprint} → ${currentFingerprint}); ${detail}, keeping ${keptCount} embedding${keptCount === 1 ? "" : "s"}.`;
+        warn(message);
+        onProgress({ phase: "embeddings", message });
+      }
+      // Empty-sample case (decision.verified === false): nothing stored to
+      // lose or verify against — adopt the label silently, no purge line.
+    }
   }
 
   try {
@@ -111,6 +326,11 @@ export async function generateEmbeddingsForDb(
       onProgress({ phase: "embeddings", message: "Embeddings already up to date." });
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       return { success: true };
+    }
+    if (rebuildReason) {
+      const message = `[embed] Re-embedding ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"} because ${rebuildReason}`;
+      warn(message);
+      onProgress({ phase: "embeddings", message });
     }
     onProgress({
       phase: "embeddings",
@@ -177,7 +397,14 @@ export async function generateEmbeddingsForDb(
       // the very end (#954) — a competing-process lock error or any other
       // interruption partway through now keeps whatever already committed
       // instead of losing the entire pass.
-      const onBatch: EmbeddingBatchCommit = (indices, batchEmbeddings) => {
+      // Tracks what this run actually observed, so a successful pass can
+      // record `embeddingIdentity` from real data rather than the config
+      // string alone (#955) — only the first non-empty batch's vector width
+      // is kept; every batch from one run shares the same provider/model.
+      let observedModel: string | undefined;
+      let observedVectorLen: number | undefined;
+      const onBatch: EmbeddingBatchCommit = (indices, batchEmbeddings, model) => {
+        if (model) observedModel = model;
         db.transaction(() => {
           for (let k = 0; k < indices.length; k++) {
             const entry = allEntries[indices[k] as number];
@@ -187,6 +414,7 @@ export async function generateEmbeddingsForDb(
               embedFailedCount++;
               continue;
             }
+            if (observedVectorLen === undefined) observedVectorLen = embedding.length;
             const result = upsertEmbedding(db, entry.id, embedding);
             if (result.stored) {
               storedCount++;
@@ -241,6 +469,8 @@ export async function generateEmbeddingsForDb(
         message: `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"} in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s).`,
       });
       setMeta(db, "embeddingFingerprint", currentFingerprint);
+      const observedIdentity = deriveObservedEmbeddingIdentity(config.embedding, observedModel, observedVectorLen);
+      if (observedIdentity) setMeta(db, "embeddingIdentity", observedIdentity);
       // Only a total failure (nothing at all embedded, despite having entries
       // to embed) turns into a phase failure. Any partial success — the vast
       // majority of a large bundle embedding fine around a handful of skips —
