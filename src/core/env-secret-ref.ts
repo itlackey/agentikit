@@ -25,19 +25,11 @@ import { isWithin } from "./common";
 import { loadConfig } from "./config/config";
 import { NotFoundError, UsageError } from "./errors";
 import { resolveMutationTarget } from "./mutation-target";
+import { sensitiveMarkerPath } from "./sensitive-marker-path";
 import { formatRefForMessage, type ResolvedWriteTarget, withWriteTargetMutation } from "./write-source";
 
+export { sensitiveMarkerPath } from "./sensitive-marker-path";
 export type { IndexSearchSource };
-
-/**
- * Path to the sibling marker file that suppresses listing for a sensitive
- * env/secret asset. Moved here from `commands/env/marker-path.ts` (#950),
- * alongside `listEnvsRecursive` below, so this core module does not import
- * upward from the commands layer.
- */
-export function sensitiveMarkerPath(assetPath: string, type: "env" | "secret"): string {
-  return type === "env" ? assetPath.replace(/\.env$/, ".sensitive") : `${assetPath}.sensitive`;
-}
 
 /**
  * Walk each stash's env files and return one entry per `.env` file, using the
