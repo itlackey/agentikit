@@ -157,7 +157,7 @@ export const curateCommand = defineJsonCommand({
   meta: {
     name: "curate",
     description:
-      "Pick the assets worth loading for a task. Unlike `akm search`, this reranks by intent, attaches a preview and run details per hit, adds related support refs, and summarizes the set — the usual starting point for an agent.",
+      "Pick the assets worth loading for a task. Unlike `akm search`, this attaches a preview and run details per hit, adds related support refs, and summarizes the set — the usual starting point for an agent.",
   },
   args: {
     // Optional in citty so run() is invoked when omitted; we re-validate

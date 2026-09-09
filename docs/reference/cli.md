@@ -195,7 +195,7 @@ The setup wizard configures AKM in two steps:
 
 **Step 1 — Small model connection** (for background processing)
 Configures the OpenAI-compatible endpoint and model used for `akm index`
-metadata enhancement, `akm remember --enrich`, and `akm curate --rerank`. Supports Ollama,
+metadata enhancement and `akm remember --enrich`. Supports Ollama,
 OpenAI, LM Studio, or any custom endpoint. Skipping disables enrichment features.
 
 **Step 2 — Agent connection** (for agentic commands)
@@ -496,9 +496,9 @@ ranking.
 
 ### curate
 
-Pick the assets worth loading for a task. Unlike `akm search`, curate reranks by
-intent, attaches a preview and run details per hit, adds related support refs,
-and summarizes the set — the usual starting point for an agent.
+Pick the assets worth loading for a task. Unlike `akm search`, curate attaches
+a preview and run details per hit, adds related support refs, and summarizes
+the set — the usual starting point for an agent.
 
 ```sh
 akm curate "plan a release"
