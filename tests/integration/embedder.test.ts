@@ -810,11 +810,12 @@ describe("RemoteEmbedder.embedBatch against a real server: timeout back-off retr
   }, 30_000);
 });
 
-describe("RemoteEmbedder.embedBatch against a real server: fixed bounded concurrency (#954)", () => {
-  // The in-flight window is FIXED (1 loopback / 2 remote) — there is no
-  // config override (2026-09-09 field-review addendum to the brief). The
-  // real-server case that matters is loopback, since a test server binds to
-  // localhost; the 2-wide remote case is covered against a mocked fetch in
+describe("RemoteEmbedder.embedBatch against a real server: bounded concurrency (#954)", () => {
+  // The in-flight window defaults to 1 loopback / 2 remote when
+  // `embedding.concurrency` is unset; #9541 decision 4 lets that config key
+  // override the default in either direction. The real-server case that
+  // matters is loopback, since a test server binds to localhost; the 2-wide
+  // remote default is covered against a mocked fetch in
   // tests/embedder-batching.test.ts (a real, unresolvable "remote" hostname
   // would make this test flaky/offline-dependent for no added coverage).
   test("a loopback endpoint never overlaps requests against a real server", async () => {

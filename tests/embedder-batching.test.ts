@@ -3,9 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #954: per-provider-batch commit, a fixed bounded in-flight window (1 for a
- * loopback endpoint, 2 for a remote one — no config override, per the
- * 2026-09-09 field-review addendum to the brief), and context-size
+ * #954: per-provider-batch commit, a bounded in-flight window (default 1 for
+ * a loopback endpoint, 2 for a remote one; overridable via
+ * `embedding.concurrency` per #9541 decision 4), and context-size
  * split-and-retry for RemoteEmbedder.embedBatch.
  *
  * All network I/O here is mocked via `withMockedFetch` (no real socket
@@ -225,7 +225,7 @@ describe("RemoteEmbedder.embedBatch: context-size split-and-retry", () => {
   });
 });
 
-describe("RemoteEmbedder.embedBatch: bounded concurrency (fixed 1 loopback / 2 remote, no config override)", () => {
+describe("RemoteEmbedder.embedBatch: bounded concurrency (default 1 loopback / 2 remote, unset override)", () => {
   test("a remote endpoint dispatches at most 2 requests at once and preserves result-to-index placement", async () => {
     let inFlight = 0;
     let maxInFlight = 0;

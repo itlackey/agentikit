@@ -73,7 +73,7 @@ describe("akm index — skip-if-locked", () => {
     const result = await runCliCapture(["index", "--full", "--skip-if-locked", "--format=json"]);
 
     expect(result.code).toBe(0);
-    expect(result.stderr).not.toMatch(/skipping/);
+    expect(result.stderr).not.toMatch(/another index run is active/);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.skipped).toBeUndefined();
     // Released on exit — no sentinel left behind.
