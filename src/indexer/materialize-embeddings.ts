@@ -651,7 +651,24 @@ export async function generateEmbeddingsForDb(
       // is kept; every batch from one run shares the same provider/model.
       let observedModel: string | undefined;
       let observedVectorLen: number | undefined;
-      const onBatch: EmbeddingBatchCommit = (indices, batchEmbeddings, model) => {
+      // Whether the remote provider's endpoint/model/token language is
+      // meaningful for this run — the per-batch diagnostic line below is
+      // remote-only, same gate the credential diagnostic (#953) above uses.
+      const reportPerBatchLine = hasRemoteEndpoint(config.embedding ?? {});
+      const onBatch: EmbeddingBatchCommit = (indices, batchEmbeddings, model, outcome) => {
+        // #954 field-report follow-up: a "retrying" event carries nothing to
+        // commit — the request hasn't settled yet — only the notice that a
+        // back-off is about to be waited out, default-level so a run is
+        // never silently stalled indistinguishably from a hang.
+        if (outcome?.outcome === "retrying") {
+          if (reportPerBatchLine) {
+            onProgress({
+              phase: "embeddings",
+              message: `[embed] batch ${outcome.batchIndex}/${outcome.batchCount}: ${outcome.docCount} docs, ${outcome.requestTokens.toLocaleString()} tokens → retrying after ${(outcome.elapsedMs / 1000).toFixed(1)} s`,
+            });
+          }
+          return;
+        }
         if (model) observedModel = model;
         // A batch that delivered at least one real embedding proves the
         // provider is currently answering — reset both circuit-breaker
@@ -683,6 +700,22 @@ export async function generateEmbeddingsForDb(
             if (result.vec === "unavailable") vecUnavailableCount++;
           }
         })();
+        // Default level, one line per provider batch (#954 field-report
+        // follow-up, brief 9541 addendum 2): oversized documents never made
+        // a request (`reason === "oversized"`), so there is no batch
+        // outcome to report — they are covered by the run's final
+        // oversized-skip count and list instead.
+        if (outcome && outcome.reason !== "oversized" && reportPerBatchLine) {
+          const elapsedSeconds = (outcome.elapsedMs / 1000).toFixed(1);
+          const outcomeLabel =
+            outcome.outcome === "stored"
+              ? `${outcome.docCount} stored (${elapsedSeconds} s)`
+              : `failed: ${outcome.reason}`;
+          onProgress({
+            phase: "embeddings",
+            message: `[embed] batch ${outcome.batchIndex}/${outcome.batchCount}: ${outcome.docCount} docs, ${outcome.requestTokens.toLocaleString()} tokens → ${outcomeLabel}`,
+          });
+        }
         // Every committed batch, not just every 500 stored entries (#9541
         // decision 5) — the prior bucketing left a non-verbose run silent
         // for the entire embedding phase on anything smaller than 500
@@ -700,16 +733,6 @@ export async function generateEmbeddingsForDb(
           `[embed] ${skippedCount} embedding${skippedCount === 1 ? "" : "s"} skipped (entry deleted between queue and write)`,
         );
       }
-      if (embedFailedCount > 0) {
-        const detail = skips
-          .slice(0, 20)
-          .map((skip) => `  - ${pendingEntries[skip.index]?.itemRef ?? skip.index} (${skip.reason}): ${skip.message}`)
-          .join("\n");
-        const more = skips.length > 20 ? `\n  ...and ${skips.length - 20} more` : "";
-        warn(
-          `[embed] ${embedFailedCount} embedding${embedFailedCount === 1 ? "" : "s"} could not be generated and ${embedFailedCount === 1 ? "was" : "were"} skipped:\n${detail}${more}`,
-        );
-      }
       const vecGenerationComplete = targetEntryIds === undefined ? isVecFastPathComplete(db) : vecFastPathWasReady;
       setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0 && vecGenerationComplete);
       if (vecFailedCount > 0) {
@@ -722,17 +745,47 @@ export async function generateEmbeddingsForDb(
       const entriesPerSec = storedCount / elapsedSeconds;
       const tokensPerSec = storedTokens / elapsedSeconds;
       const totalStored = storedCount + reusedCount;
-      // #9542: report reused and newly-embedded counts separately — the
-      // rate figures below are provider throughput only (reuse is a plain DB
-      // write, not provider work) and would be misleadingly inflated if
-      // reused entries were folded into them.
+      // #954 field-report follow-up (brief 9541 addendum 2): the final line
+      // reports every outcome, not just what was stored — counts come from
+      // the same collected `skips` the circuit breaker already uses,
+      // categorized by `reason`/`failureKind`. "oversized skipped" =
+      // context-window-exceeded (never fit any request, at any size);
+      // "timed out" = a batch-request-failed skip whose last attempt timed
+      // out (retries/splits already exhausted before this counted); "failed"
+      // = every other batch-request-failed skip (a genuine, never-retried
+      // network/HTTP failure).
+      const oversizedSkips = skips.filter((skip) => skip.reason === "context-window-exceeded");
+      const timedOutCount = skips.filter(
+        (skip) => skip.reason === "batch-request-failed" && skip.failureKind === "timeout",
+      ).length;
+      const failedCount = skips.filter(
+        (skip) => skip.reason === "batch-request-failed" && skip.failureKind !== "timeout",
+      ).length;
+      const throughputLine =
+        reusedCount > 0
+          ? // #9542: report reused and newly-embedded counts separately — the
+            // rate figures below are provider throughput only (reuse is a
+            // plain DB write, not provider work) and would be misleadingly
+            // inflated if reused entries were folded into them.
+            `Stored ${totalStored} embedding${totalStored === 1 ? "" : "s"} (${reusedCount} reused, ${storedCount} newly embedded) in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s)`
+          : `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"} in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s)`;
       onProgress({
         phase: "embeddings",
-        message:
-          reusedCount > 0
-            ? `Stored ${totalStored} embedding${totalStored === 1 ? "" : "s"} (${reusedCount} reused, ${storedCount} newly embedded) in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s).`
-            : `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"} in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s).`,
+        message: `${throughputLine}; ${oversizedSkips.length} oversized skipped, ${timedOutCount} timed out, ${failedCount} failed.`,
       });
+      if (oversizedSkips.length > 0) {
+        // Default level caps the list (there is nothing actionable about
+        // the 21st identical truncation-cap candidate); --verbose prints
+        // every one, matching the per-document mapping lines' own verbosity
+        // gate above.
+        const limit = isVerbose() ? oversizedSkips.length : 20;
+        const listed = oversizedSkips
+          .slice(0, limit)
+          .map((skip) => `  - ${pendingEntries[skip.index]?.itemRef ?? skip.index}: ${skip.message}`)
+          .join("\n");
+        const more = oversizedSkips.length > limit ? `\n  ...and ${oversizedSkips.length - limit} more` : "";
+        onProgress({ phase: "embeddings", message: `[embed] oversized documents skipped:\n${listed}${more}` });
+      }
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       const observedIdentity = deriveObservedEmbeddingIdentity(config.embedding, observedModel, observedVectorLen);
       if (observedIdentity) setMeta(db, "embeddingIdentity", observedIdentity);

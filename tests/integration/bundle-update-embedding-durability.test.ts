@@ -22,7 +22,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import fs from "node:fs";
 import path from "node:path";
 import { akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { saveConfig } from "../../src/core/config/config";
@@ -34,6 +33,7 @@ import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
 import { closeDatabase, openReadonlyExistingDatabase } from "../../src/storage/repositories/index-connection";
 import { getEmbeddingCount } from "../../src/storage/repositories/index-vec-repository";
 import { seedLockEntries } from "../_helpers/lockfile";
+import { writeMarkdownFiles } from "../_helpers/markdown-fixtures";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 function makeDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -42,16 +42,6 @@ function makeDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T) =>
     resolve = r;
   });
   return { promise, resolve };
-}
-
-function writeMarkdownFiles(contentDir: string, fileCount: number, marker: string): void {
-  fs.mkdirSync(path.join(contentDir, "knowledge"), { recursive: true });
-  for (let i = 0; i < fileCount; i++) {
-    fs.writeFileSync(
-      path.join(contentDir, "knowledge", `entry-${i}.md`),
-      `---\ndescription: ${marker} entry ${i}\n---\n\nContent for ${marker} entry ${i}.\n`,
-    );
-  }
 }
 
 describe("akm bundle update: post-commit embedding pass durability (#9541)", () => {

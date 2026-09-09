@@ -205,13 +205,50 @@ export interface EmbeddingBatchSkip {
 export type EmbeddingSkipHandler = (skip: EmbeddingBatchSkip) => unknown;
 
 /**
+ * Batch/doc/token/timing/outcome metadata for the default-level per-batch
+ * progress line (#954 field-report follow-up, brief 9541 addendum 2) —
+ * `[embed] batch 3/1483: 16 docs, 5,900 tokens → 16 stored (0.8 s)`. Only
+ * `RemoteEmbedder.embedBatch` produces this (token-bounded batching against
+ * an HTTP provider is the thing being reported on); local/deterministic
+ * embedding never populates it, and the materializer prints the line only
+ * when it is present.
+ */
+export interface EmbeddingBatchOutcome {
+  /** 1-based ordinal of the top-level planned batch (`buildTokenBoundedBatches`) this event descends from. */
+  batchIndex: number;
+  /** Total number of top-level planned batches for this `embedBatch` call. */
+  batchCount: number;
+  /** Documents covered by THIS specific event — may be smaller than the planned batch after a context-size or timeout split. */
+  docCount: number;
+  /** Estimated token count of THIS specific event's request. */
+  requestTokens: number;
+  /** Milliseconds: request latency for "stored"/"failed", the back-off delay about to be waited for "retrying". */
+  elapsedMs: number;
+  /**
+   * "stored": the request succeeded and its embeddings are in `embeddings`.
+   * "failed": the request/document is being given up on (skipped) —
+   * `embeddings` are all `undefined`.
+   * "retrying": a request timeout is about to back off and retry the SAME
+   * request once (#9541 addendum) — nothing has failed or succeeded yet;
+   * `embeddings` are all `undefined` and there is nothing to commit.
+   */
+  outcome: "stored" | "failed" | "retrying";
+  /** Present for "failed" (the failure reason) and "retrying" (why it is retrying). Absent for "stored". */
+  reason?: string;
+}
+
+/**
  * Fired once per provider request (success OR skip-with-undefined-slots),
- * before the next request starts (#954). `indices` are positions into the
- * `texts` array passed to `embedBatch`; `embeddings` is the same length,
- * `undefined` at any index that failed or was skipped. Lets the caller
- * commit each batch to durable storage as it lands rather than buffering the
- * whole run in memory for one final write — completion order is irrelevant
- * to a caller that commits per call, so this fires under concurrency too.
+ * before the next request starts (#954), and once more before a timeout
+ * retry's back-off delay (`outcome.outcome === "retrying"`, #954 field-report
+ * follow-up) — that call carries nothing to commit, only the notice.
+ * `indices` are positions into the `texts` array passed to `embedBatch`;
+ * `embeddings` is the same length, `undefined` at any index that failed,
+ * was skipped, or (for a "retrying" event) has not been requested yet.
+ * Lets the caller commit each batch to durable storage as it lands rather
+ * than buffering the whole run in memory for one final write — completion
+ * order is irrelevant to a caller that commits per call, so this fires
+ * under concurrency too.
  *
  * `model`, when the provider's response body carried one, is the server-
  * reported model id for that request (#955) — undefined for a skipped
@@ -219,11 +256,18 @@ export type EmbeddingSkipHandler = (skip: EmbeddingBatchSkip) => unknown;
  * The embedding-fingerprint canary uses it to tell a same-model config
  * rename (e.g. a gateway prefixing `provider/model`) apart from a genuine
  * model change without guessing from the config string alone.
+ *
+ * `outcome` (#954 field-report follow-up) is the extended event data the
+ * default-level per-batch progress line needs — see
+ * {@link EmbeddingBatchOutcome}. Optional so every existing caller/fake that
+ * only ever passed `indices`/`embeddings`/`model` remains valid; a caller
+ * that omits it simply gets no per-batch line.
  */
 export type EmbeddingBatchCommit = (
   indices: number[],
   embeddings: (EmbeddingVector | undefined)[],
   model?: string,
+  outcome?: EmbeddingBatchOutcome,
 ) => void;
 
 /**
@@ -507,7 +551,12 @@ export class RemoteEmbedder implements Embedder {
     // fabricated "batch-request-failed" skip (#954). Checked (and rethrown)
     // once the pool drains, the same way `signal?.aborted` is today.
     let firstOnBatchError: unknown;
-    const commitBatch = (indices: number[], embeddings: (EmbeddingVector | undefined)[], model?: string): void => {
+    const commitBatch = (
+      indices: number[],
+      embeddings: (EmbeddingVector | undefined)[],
+      model?: string,
+      outcome?: EmbeddingBatchOutcome,
+    ): void => {
       if (!onBatch) return;
       // Once persistence has failed once, an already in-flight batch that
       // finishes afterward has nowhere safe to land — its result is
@@ -515,7 +564,7 @@ export class RemoteEmbedder implements Embedder {
       // again (see the dispatch-stop comment above).
       if (firstOnBatchError !== undefined) return;
       try {
-        onBatch(indices, embeddings, model);
+        onBatch(indices, embeddings, model, outcome);
       } catch (err) {
         firstOnBatchError = err;
         stopDispatch(err);
@@ -544,7 +593,12 @@ export class RemoteEmbedder implements Embedder {
     // at the same ~5s delay — a server still draining a whole run of
     // abandoned requests needs more room the deeper the chain goes, not the
     // same fixed pause every time.
-    const requestAndCommit = async (indices: number[], isTimeoutRetry = false, timeoutAttempt = 0): Promise<void> => {
+    const requestAndCommit = async (
+      indices: number[],
+      batchIndex: number,
+      isTimeoutRetry = false,
+      timeoutAttempt = 0,
+    ): Promise<void> => {
       // A concurrent batch may have tripped the circuit breaker (or failed
       // onBatch) while this call was queued behind a split or a backoff —
       // never let a deeper recursive call make a request that can no longer
@@ -555,8 +609,11 @@ export class RemoteEmbedder implements Embedder {
       const batch = indices.map((i) => texts[i] as string);
       const requestTokens = batch.reduce((sum, text) => sum + estimateTokenCount(text), 0);
       const requestTimeoutMs = scaleEmbeddingTimeoutMs(configuredTimeoutMs, requestTokens, tokenBudget);
+      const requestStart = Date.now();
       let batchEmbeddings: (EmbeddingVector | undefined)[];
       let responseModel: string | undefined;
+      let outcome: "stored" | "failed";
+      let failureReason: string | undefined;
       try {
         const { vectors, model } = await this.requestBatch(batch, headers, ollamaOpts, requestTimeoutMs, signal);
         for (let k = 0; k < indices.length; k++) {
@@ -564,14 +621,15 @@ export class RemoteEmbedder implements Embedder {
         }
         batchEmbeddings = indices.map((i) => results[i]);
         responseModel = model;
+        outcome = "stored";
       } catch (err) {
         // A caller abort must still propagate — it is not a "this batch
         // failed" condition, it means stop entirely.
         if (signal?.aborted) throw err;
         if (err instanceof ContextExceededError && indices.length > 1) {
           const mid = Math.ceil(indices.length / 2);
-          await requestAndCommit(indices.slice(0, mid));
-          await requestAndCommit(indices.slice(mid));
+          await requestAndCommit(indices.slice(0, mid), batchIndex, false, timeoutAttempt);
+          await requestAndCommit(indices.slice(mid), batchIndex, false, timeoutAttempt);
           return;
         }
         const timedOut = isEmbeddingTimeoutError(err);
@@ -586,9 +644,29 @@ export class RemoteEmbedder implements Embedder {
           warnVerbose(
             `[embed] batch of ${batch.length} document(s) timed out after ${requestTimeoutMs}ms; retrying once after a ${Math.round(backoffMs)}ms backoff`,
           );
+          // Default-level notice (#954 field-report follow-up), not just the
+          // verbose line above — a run silently waiting out a multi-minute
+          // back-off looked identical to a hang otherwise. Nothing has
+          // failed or succeeded yet, so there is nothing to persist:
+          // `embeddings` are all `undefined` and the materializer's onBatch
+          // must not touch storage for this event.
+          commitBatch(
+            indices,
+            indices.map(() => undefined),
+            undefined,
+            {
+              batchIndex,
+              batchCount: textBatches.length,
+              docCount: indices.length,
+              requestTokens,
+              elapsedMs: backoffMs,
+              outcome: "retrying",
+              reason: "timed out",
+            },
+          );
           await abortableDelay(backoffMs, signal, "embedding interrupted during retry backoff");
           if (!dispatchAbort.signal.aborted) {
-            return requestAndCommit(indices, true, timeoutAttempt);
+            return requestAndCommit(indices, batchIndex, true, timeoutAttempt);
           }
           // Dispatch was stopped (by another batch's circuit-breaker trip)
           // while this one was backing off — fall through and skip below
@@ -600,8 +678,8 @@ export class RemoteEmbedder implements Embedder {
           // Each half's OWN first-timeout backoff (#954 follow-up) starts
           // one attempt further down the chain than this size's did.
           const mid = Math.ceil(indices.length / 2);
-          await requestAndCommit(indices.slice(0, mid), false, timeoutAttempt + 1);
-          await requestAndCommit(indices.slice(mid), false, timeoutAttempt + 1);
+          await requestAndCommit(indices.slice(0, mid), batchIndex, false, timeoutAttempt + 1);
+          await requestAndCommit(indices.slice(mid), batchIndex, false, timeoutAttempt + 1);
           return;
         }
 
@@ -637,11 +715,21 @@ export class RemoteEmbedder implements Embedder {
         // a policy decision, not a persistence failure.
         if (stopRequested) stopDispatch();
         batchEmbeddings = indices.map(() => undefined);
+        outcome = "failed";
+        failureReason = message;
       }
-      commitBatch(indices, batchEmbeddings, responseModel);
+      commitBatch(indices, batchEmbeddings, responseModel, {
+        batchIndex,
+        batchCount: textBatches.length,
+        docCount: indices.length,
+        requestTokens,
+        elapsedMs: Date.now() - requestStart,
+        outcome,
+        reason: failureReason,
+      });
     };
 
-    const runProviderBatch = async (textBatch: TextBatch): Promise<void> => {
+    const runProviderBatch = async (textBatch: TextBatch, batchIndex: number): Promise<void> => {
       if (textBatch.oversized) {
         const idx = textBatch.indices[0] as number;
         const estTokens = estimateTokenCount(texts[idx] as string);
@@ -652,10 +740,21 @@ export class RemoteEmbedder implements Embedder {
           batchStart: true,
           batchSize: 1,
         });
-        commitBatch([idx], [undefined]);
+        // Never made a request — excluded from the default-level per-batch
+        // line (there is no request outcome to report), but still counted
+        // in the run's oversized-skip total via `onSkip` above.
+        commitBatch([idx], [undefined], undefined, {
+          batchIndex,
+          batchCount: textBatches.length,
+          docCount: 1,
+          requestTokens: estTokens,
+          elapsedMs: 0,
+          outcome: "failed",
+          reason: "oversized",
+        });
         return;
       }
-      await requestAndCommit(textBatch.indices);
+      await requestAndCommit(textBatch.indices, batchIndex);
     };
 
     const concurrency = resolveEmbeddingConcurrency(this.config);
@@ -663,8 +762,13 @@ export class RemoteEmbedder implements Embedder {
     // requestAndCommit only throws to signal a caller abort), so abort must
     // be re-checked once the pool has drained rather than relying on the
     // throw itself to escape. Dispatch is gated on `dispatchAbort`, not the
-    // caller's `signal` directly — see the comment above.
-    await concurrentMap(textBatches, runProviderBatch, concurrency, { signal: dispatchAbort.signal });
+    // caller's `signal` directly — see the comment above. `batchIndex` is
+    // 1-based (matches the human-readable "batch N/Total" line) and comes
+    // from `concurrentMap`'s own 0-based item index, not a separately
+    // tracked counter, so it stays correct under concurrency.
+    await concurrentMap(textBatches, (textBatch, i) => runProviderBatch(textBatch, i + 1), concurrency, {
+      signal: dispatchAbort.signal,
+    });
     if (callerAbortListener) signal?.removeEventListener("abort", callerAbortListener);
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error("embedding interrupted");
