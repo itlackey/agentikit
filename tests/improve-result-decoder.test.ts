@@ -43,6 +43,17 @@ describe("decodeImproveResult", () => {
       { name: "limit", removed: 1, reason: "deferred" },
     ],
     effectiveRefs: [{ ref: "skills/a", lane: "proactive", reason: "scope-type" }],
+    processes: [
+      { process: "reflect", enabled: true, engine: "default", model: "base", engineKind: "llm", notices: [] },
+      { process: "distill", enabled: false, notices: [] },
+      { process: "consolidate", enabled: false, notices: [] },
+      { process: "memoryInference", enabled: false, notices: [] },
+      { process: "graphExtraction", enabled: false, notices: [] },
+      { process: "extract", enabled: false, notices: [] },
+      { process: "validation", enabled: false, notices: [] },
+      { process: "triage", enabled: false, notices: [] },
+      { process: "proactiveMaintenance", enabled: false, notices: [] },
+    ],
     proactive: {
       configured: { dueDays: 30, maxPerRun: 10 },
       effective: { dueDays: 30, maxPerRun: 10 },

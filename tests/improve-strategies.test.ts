@@ -3,7 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
-import { resolveImprovePlan, resolveImproveStrategy } from "../src/commands/improve/improve-strategies";
+import {
+  type ImproveProcessName,
+  projectResolvedProcessRouting,
+  resolveImprovePlan,
+  resolveImproveStrategy,
+} from "../src/commands/improve/improve-strategies";
 import type { AkmConfig } from "../src/core/config/config";
 import { ConfigError } from "../src/core/errors";
 import { withEnvSync } from "./_helpers/sandbox";
@@ -472,5 +477,103 @@ describe("resolveImprovePlan", () => {
         },
       }),
     ).toThrow("cannot receive llm overrides");
+  });
+});
+
+describe("projectResolvedProcessRouting (#947)", () => {
+  const llm = { kind: "llm" as const, endpoint: "https://example.test/v1/chat/completions", model: "base" };
+
+  test("one row per IMPROVE_PROCESS_ENGINE_CAPABILITIES name, engine/model only for resolved llm processes", () => {
+    const plan = resolveImprovePlan("quick", {
+      configVersion: "0.9.0",
+      semanticSearchMode: "auto",
+      engines: { default: llm, validation: { ...llm, model: "repair" } },
+      defaults: { llmEngine: "default" },
+      improve: { strategies: { quick: { processes: { validation: { enabled: true, engine: "validation" } } } } },
+    });
+
+    const rows = projectResolvedProcessRouting(plan);
+    const expectedProcesses: ImproveProcessName[] = [
+      "reflect",
+      "distill",
+      "consolidate",
+      "memoryInference",
+      "graphExtraction",
+      "extract",
+      "validation",
+      "triage",
+      "proactiveMaintenance",
+    ];
+    expect(rows.map((row) => row.process).sort()).toEqual(expectedProcesses.sort());
+
+    const reflect = rows.find((row) => row.process === "reflect");
+    expect(reflect).toMatchObject({ enabled: true, engine: "default", model: "base", engineKind: "llm" });
+    expect(reflect?.notices).toEqual([]);
+
+    const validation = rows.find((row) => row.process === "validation");
+    expect(validation).toMatchObject({ enabled: true, engine: "validation", model: "repair" });
+
+    const distill = rows.find((row) => row.process === "distill");
+    expect(distill).toMatchObject({ enabled: false });
+    expect(distill?.engine).toBeUndefined();
+
+    // No credential-related unavailability and no triage.judgment configured.
+    expect(rows.every((row) => row.unavailable === undefined)).toBe(true);
+    expect(rows.some((row) => row.process === "triage.judgment")).toBe(false);
+  });
+
+  test("unresolved engines land in `unavailable` naming the configKey and reason", () => {
+    const plan = resolveImprovePlan("default", {
+      configVersion: "0.9.0",
+      semanticSearchMode: "auto",
+      engines: { "only-agent": { kind: "agent", platform: "claude", bin: "/bin/true" } },
+      defaults: { engine: "only-agent" },
+      experimental: { improveAutonomy: true },
+      improve: {
+        strategies: {
+          default: { processes: { proactiveMaintenance: { enabled: true } } },
+        },
+      },
+    } as AkmConfig);
+
+    const rows = projectResolvedProcessRouting(plan);
+    const reflect = rows.find((row) => row.process === "reflect");
+    expect(reflect?.enabled).toBe(false);
+    expect(reflect?.engine).toBeUndefined();
+    expect(reflect?.unavailable?.configKey).toBe("improve.strategies.default.processes.reflect.engine");
+    expect(reflect?.unavailable?.reason).toContain("Set defaults.llmEngine or improve.strategies.default.processes");
+  });
+
+  test("includes a triage.judgment row only when judgment is configured, with its own engineKind", () => {
+    const withoutJudgment = projectResolvedProcessRouting(
+      resolveImprovePlan("no-judgment", {
+        configVersion: "0.9.0",
+        semanticSearchMode: "auto",
+        engines: { default: llm },
+        defaults: { llmEngine: "default" },
+        improve: { strategies: { "no-judgment": { processes: { triage: { enabled: true } } } } },
+      }),
+    );
+    expect(withoutJudgment.some((row) => row.process === "triage.judgment")).toBe(false);
+
+    const withJudgment = projectResolvedProcessRouting(
+      resolveImprovePlan("reflect-distill", {
+        configVersion: "0.9.0",
+        semanticSearchMode: "auto",
+        engines: {
+          default: llm,
+          reviewer: { kind: "agent", platform: "pi", model: "review" },
+        },
+        defaults: { llmEngine: "default" },
+        improve: {
+          strategies: {
+            "reflect-distill": { processes: { triage: { judgment: { engine: "reviewer", timeoutMs: null } } } },
+          },
+        },
+      }),
+    );
+    const judgmentRow = withJudgment.find((row) => row.process === "triage.judgment");
+    expect(judgmentRow).toMatchObject({ enabled: true, engine: "reviewer", engineKind: "agent" });
+    expect(judgmentRow?.model).toBeUndefined();
   });
 });

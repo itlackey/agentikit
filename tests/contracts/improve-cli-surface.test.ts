@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { improveCommand } from "../../src/commands/improve/improve-cli";
 import { CLI_DOC_PATH, extractSection, readDoc } from "./contract-helpers";
 
 // Pins the current documented improvement command surface.
@@ -33,6 +34,15 @@ describe("current improvement CLI documentation contract", () => {
     const section = extractSection(cli, "### improve");
     expect(section).toContain("--require-engines");
     expect(section).toContain("skippedProcesses");
+  });
+
+  test("improve registers --plan as a zero-logic --dry-run alias and documents plan.processes (#947)", () => {
+    const args = improveCommand.args as Record<string, { type?: string; default?: unknown }>;
+    expect(args.plan).toMatchObject({ type: "boolean", default: false });
+
+    const section = extractSection(cli, "### improve");
+    expect(section).toContain("--plan");
+    expect(section).toContain("plan.processes");
   });
 
   test("proposal documents the complete current lifecycle grammar", () => {

@@ -17,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { computeSafeChunkSize } from "../../../../src/commands/improve/consolidate/chunking";
 import { akmImprove } from "../../../../src/commands/improve/improve";
+import type { ImproveProcessName } from "../../../../src/commands/improve/improve-strategies";
 import { upsertAssetSalience } from "../../../../src/commands/improve/salience";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { saveConfig } from "../../../../src/core/config/config";
@@ -378,6 +379,82 @@ describe("#800 effective dry-run planner", () => {
     expect(result.plan?.effectiveRefs.every((entry) => entry.lane === "proactive")).toBe(true);
     expect(result.plan?.gates.some((gate) => gate.name === "limit" && gate.removed === 1)).toBe(true);
     expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual(result.plannedRefs);
+  });
+
+  test("plan.processes reports resolved engine/model per process, honors a --strategy override, and counts eligibleRefs (#947)", async () => {
+    const { stashDir } = isolatedStorage();
+    const config = withImproveAutonomy(
+      withTestImproveLlm({
+        semanticSearchMode: "off",
+        engines: {
+          "consolidate-engine-a": {
+            kind: "llm",
+            endpoint: "http://127.0.0.1:1/v1/chat/completions",
+            model: "model-a",
+          },
+          "consolidate-engine-b": {
+            kind: "llm",
+            endpoint: "http://127.0.0.1:1/v1/chat/completions",
+            model: "model-b",
+          },
+        },
+        improve: {
+          strategies: {
+            default: {
+              processes: {
+                reflect: { enabled: true, limit: 4 },
+                distill: { enabled: false },
+                consolidate: { enabled: true, engine: "consolidate-engine-a" },
+                memoryInference: { enabled: false },
+                graphExtraction: { enabled: false },
+                extract: { enabled: false },
+                validation: { enabled: false },
+                triage: { enabled: false },
+                proactiveMaintenance: { enabled: false },
+              },
+            },
+            alt: { processes: { consolidate: { engine: "consolidate-engine-b" } } },
+          },
+        },
+      } as AkmConfig),
+    );
+    await indexSkills(stashDir, 3, config);
+
+    const defaultRun = await akmImprove({ scope: "skill", stashDir, config, dryRun: true });
+    const altRun = await akmImprove({ scope: "skill", stashDir, config, dryRun: true, strategy: "alt" });
+
+    // Acceptance criterion (#947): changing processes.consolidate.engine and
+    // re-planning shows the new engine, and neither plan dispatches anything.
+    const consolidateDefault = defaultRun.plan?.processes.find((row) => row.process === "consolidate");
+    const consolidateAlt = altRun.plan?.processes.find((row) => row.process === "consolidate");
+    expect(consolidateDefault).toMatchObject({ enabled: true, engine: "consolidate-engine-a", model: "model-a" });
+    expect(consolidateAlt).toMatchObject({ enabled: true, engine: "consolidate-engine-b", model: "model-b" });
+    expect(defaultRun.plan?.dispatch).toBe(false);
+    expect(altRun.plan?.dispatch).toBe(false);
+    expect(defaultRun.plan?.mode).toBe("estimate");
+
+    const reflectRow = defaultRun.plan?.processes.find((row) => row.process === "reflect");
+    expect(reflectRow).toMatchObject({ enabled: true, engine: "test-improve-llm", model: "test-model" });
+    expect(Array.isArray(reflectRow?.notices)).toBe(true);
+    expect(reflectRow?.eligibleRefs).toBe(defaultRun.plan?.effectiveRefs.length);
+
+    const distillRow = defaultRun.plan?.processes.find((row) => row.process === "distill");
+    expect(distillRow?.enabled).toBe(false);
+    expect(distillRow?.eligibleRefs).toBe(0);
+
+    // One row per IMPROVE_PROCESS_ENGINE_CAPABILITIES name — no row lost or duplicated.
+    const expectedProcesses: ImproveProcessName[] = [
+      "reflect",
+      "distill",
+      "consolidate",
+      "memoryInference",
+      "graphExtraction",
+      "extract",
+      "validation",
+      "triage",
+      "proactiveMaintenance",
+    ];
+    expect(defaultRun.plan?.processes.map((row) => row.process).sort()).toEqual(expectedProcesses.sort());
   });
 
   test("proactive dry-run reports due population, selected refs, and differs from default", async () => {
