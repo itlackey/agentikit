@@ -21,6 +21,7 @@ import { EmbeddingConnectionConfigSchema } from "../src/core/config/schema/embed
 import { _setWarnSinkForTests } from "../src/core/warn";
 import {
   DEFAULT_EMBEDDING_TIMEOUT_MS,
+  describeEmbeddingCredential,
   isContextExceededResponse,
   RemoteEmbedder,
   resolveEmbeddingConcurrency,
@@ -547,5 +548,29 @@ describe("RemoteEmbedder.embedBatch: surfaces the response model id (#955)", () 
       },
       async () => jsonResponse({ model: "should-not-be-called", data: [] }),
     );
+  });
+});
+
+describe("describeEmbeddingCredential (#953)", () => {
+  test("undefined/empty apiKey reports 'none configured'", () => {
+    expect(describeEmbeddingCredential(undefined)).toBe("none configured");
+    expect(describeEmbeddingCredential("")).toBe("none configured");
+  });
+
+  test("a secret:// reference names the reference and its source, never a resolved value", () => {
+    expect(describeEmbeddingCredential("secret://lab-api-key")).toBe("secret://lab-api-key (store)");
+  });
+
+  test("a $VAR-style reference names the reference and its source", () => {
+    expect(describeEmbeddingCredential("$LAB_API_KEY")).toBe("$LAB_API_KEY (env)");
+    const braced = "$" + "{LAB_API_KEY}";
+    expect(describeEmbeddingCredential(braced)).toBe(`${braced} (env)`);
+  });
+
+  test("a literal key reports only 'literal apiKey' — the value itself is never included", () => {
+    const literal = "sk-super-secret-value-do-not-log";
+    const description = describeEmbeddingCredential(literal);
+    expect(description).toBe("literal apiKey");
+    expect(description).not.toContain(literal);
   });
 });

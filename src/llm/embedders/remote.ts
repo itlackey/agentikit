@@ -12,6 +12,7 @@
 import { abortableDelay, backoffDelay, fetchWithTimeout, isHttpUrl, readBodyWithByteCap } from "../../core/common";
 import { concurrentMap } from "../../core/concurrent";
 import { type EmbeddingConnectionConfig, resolveSecret } from "../../core/config/config";
+import { ENV_REFERENCE_PATTERN, SECRET_STORE_REFERENCE_PATTERN } from "../../core/config/schema/primitives";
 import { defaultConcurrencyForEndpoint } from "../../core/loopback";
 import { redactErrorBody, redactSensitiveText } from "../../core/redaction";
 import { warn, warnVerbose } from "../../core/warn";
@@ -824,4 +825,21 @@ function resolveOllamaOptions(config: EmbeddingConnectionConfig): { num_ctx?: nu
 /** Check whether an EmbeddingConnectionConfig has a valid remote endpoint. */
 export function hasRemoteEndpoint(config: EmbeddingConnectionConfig): boolean {
   return isHttpUrl(config.endpoint);
+}
+
+/**
+ * Describe WHERE an `embedding.apiKey` came from, never its value — the
+ * actionable outcome of the #953 field gap: `resolveSecret` throws on an
+ * unresolvable `secret://` reference, so a keyless request can only mean
+ * `embedding.apiKey` was absent from the config the run actually loaded (a
+ * different config root, scope, or a config edited after the run started).
+ * A default-level progress line naming the credential's SOURCE (this
+ * helper), printed once before the first provider request, lets a field run
+ * self-diagnose that without ever surfacing the secret itself.
+ */
+export function describeEmbeddingCredential(apiKey: string | undefined): string {
+  if (!apiKey) return "none configured";
+  if (SECRET_STORE_REFERENCE_PATTERN.test(apiKey)) return `${apiKey} (store)`;
+  if (ENV_REFERENCE_PATTERN.test(apiKey)) return `${apiKey} (env)`;
+  return "literal apiKey";
 }

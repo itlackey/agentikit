@@ -13,6 +13,7 @@
  */
 
 import type { AkmConfig, EmbeddingConnectionConfig } from "../core/config/config";
+import { getConfigPath } from "../core/paths";
 import { isVerbose, warn, warnVerbose } from "../core/warn";
 import { embedBatch } from "../llm/embedder";
 import { DETERMINISTIC_EMBED_MODEL_ID, isDeterministicEmbedEnabled } from "../llm/embedders/deterministic";
@@ -23,11 +24,13 @@ import {
   DEFAULT_MAX_INPUT_TOKENS,
   DEFAULT_REMOTE_BATCH_SIZE,
   DEFAULT_TOKEN_BUDGET,
+  describeEmbeddingCredential,
   type EmbeddingBatchCommit,
   type EmbeddingBatchSkip,
   type EmbeddingSkipHandler,
   estimateTokenCount,
   hasRemoteEndpoint,
+  normalizeEmbeddingEndpoint,
 } from "../llm/embedders/remote";
 import { cosineSimilarity, type EmbeddingVector } from "../llm/embedders/types";
 import type { Database } from "../storage/database";
@@ -352,6 +355,23 @@ export async function generateEmbeddingsForDb(
     purgeEmbeddingSalvage(db);
     onProgress({ phase: "embeddings", message: "Semantic search disabled; skipping embeddings." });
     return { success: false, message: "Semantic search is disabled." };
+  }
+
+  // #953 field gap: the actionable outcome is a self-diagnosing run, not a
+  // fix (every RemoteEmbedder path already resolves secret:// through one
+  // boundary — a keyless request can only mean embedding.apiKey was absent
+  // from the config THIS run loaded). One default-level line, before the
+  // first provider request of the phase (the canary probe or the main
+  // pass, whichever runs first below), naming the endpoint/model/credential
+  // SOURCE — never the credential value.
+  if (hasRemoteEndpoint(config.embedding ?? {})) {
+    const endpoint = normalizeEmbeddingEndpoint(config.embedding?.endpoint ?? "");
+    const credential = describeEmbeddingCredential(config.embedding?.apiKey);
+    const configFileSuffix = isVerbose() ? `; config: ${getConfigPath()}` : "";
+    onProgress({
+      phase: "embeddings",
+      message: `[embed] endpoint ${endpoint}, model ${config.embedding?.model ?? "unknown"}; credential: ${credential}${configFileSuffix}`,
+    });
   }
 
   // A targeted call starts from an already-published generation. Preserve its
