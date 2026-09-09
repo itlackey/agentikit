@@ -119,6 +119,7 @@ const LIST_RESULT_COLLECTION_KEYS: Readonly<Record<string, string>> = {
   "workflow-list": "runs",
   "task-history": "rows",
   "log-list": "events", // `akm log list`
+  "config-diff": "rows", // `akm config diff`
 };
 
 function withResultsAlias(command: OutputCommandName, shaped: unknown): unknown {

@@ -14,8 +14,16 @@
  * rewritten at this boundary.
  */
 import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
-import { resolveStashDir } from "../core/common";
-import { type AkmConfig, DEFAULT_CONFIG, loadConfig, mutateConfig } from "../core/config/config";
+import { isRecord, resolveStashDir } from "../core/common";
+import {
+  type AkmConfig,
+  DEFAULT_CONFIG,
+  getConfigValueSource,
+  loadConfig,
+  mutateConfig,
+  parseAndValidateConfigText,
+  resolveConfigRefSource,
+} from "../core/config/config";
 import { configGet, configSet, configUnset, unknownKeyHint } from "../core/config/config-walker";
 import { getCacheDir, getConfigPath, getDbPath, getDefaultStashDir } from "../core/paths";
 import { formatRegistryUrl } from "../core/registry-url";
@@ -61,6 +69,81 @@ function isRegistryUrlPath(path: string[]): boolean {
 }
 
 export { unknownKeyHint };
+
+// ── `akm config diff` (#945) ────────────────────────────────────────────────
+
+export interface ConfigDiffRow {
+  path: string;
+  local: unknown;
+  other: unknown;
+}
+
+/**
+ * Flatten a (redacted) config object down to `{dottedPath: leafValue}`
+ * entries. A plain object descends; an array or scalar is a leaf — matching
+ * `deepMergeConfig`'s own "objects merge, arrays replace wholesale" rule, so
+ * an array difference reports as one row rather than per-index noise.
+ */
+function flattenConfigLeaves(value: unknown, prefix: string[], out: Map<string, unknown>): void {
+  if (isRecord(value) && Object.keys(value).length > 0) {
+    for (const [key, child] of Object.entries(value)) flattenConfigLeaves(child, [...prefix, key], out);
+    return;
+  }
+  out.set(prefix.join("."), value);
+}
+
+/** JSON-value structural equality, order-independent for object keys (unlike `JSON.stringify` comparison). */
+function deepEqualJsonValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => deepEqualJsonValue(v, b[i]));
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const aKeys = Object.keys(a);
+    return aKeys.length === Object.keys(b).length && aKeys.every((k) => k in b && deepEqualJsonValue(a[k], b[k]));
+  }
+  return false;
+}
+
+/**
+ * Diff two (already redacted) effective config objects into sorted
+ * `{path, local, other}` rows for every leaf that differs — including a leaf
+ * present on only one side (the other's value reads `undefined`).
+ */
+function diffConfigs(local: unknown, other: unknown): ConfigDiffRow[] {
+  const localLeaves = new Map<string, unknown>();
+  const otherLeaves = new Map<string, unknown>();
+  flattenConfigLeaves(local, [], localLeaves);
+  flattenConfigLeaves(other, [], otherLeaves);
+  const paths = new Set([...localLeaves.keys(), ...otherLeaves.keys()]);
+  const rows: ConfigDiffRow[] = [];
+  for (const path of paths) {
+    const localValue = localLeaves.get(path);
+    const otherValue = otherLeaves.get(path);
+    if (!deepEqualJsonValue(localValue, otherValue)) rows.push({ path, local: localValue, other: otherValue });
+  }
+  rows.sort((a, b) => a.path.localeCompare(b.path));
+  return rows;
+}
+
+/**
+ * `akm config diff <path|bundle//conceptId>`: the current effective config
+ * (this instance's `extends` already applied) against another config file or
+ * bundle asset (loaded through the same loader, its own `extends` honoured),
+ * secrets redacted on both sides before comparison so a differing secret
+ * never round-trips into the diff.
+ */
+export function akmConfigDiff(ref: string): { rows: ConfigDiffRow[] } {
+  const current = loadConfig();
+  const { text, resolvedPath } = resolveConfigRefSource(
+    ref,
+    current as unknown as Record<string, unknown>,
+    getConfigPath(),
+  );
+  const other = parseAndValidateConfigText(text, resolvedPath);
+  const rows = diffConfigs(redactConfigValue(current), redactConfigValue(other));
+  return { rows };
+}
 
 // ── `akm config` command surface ────────────────────────────────────────────
 // Extracted verbatim from src/cli.ts (WS6). The `main.subCommands.config` key
@@ -113,9 +196,17 @@ export const configCommand = defineGroupCommand({
       meta: { name: "get", description: "Get a configuration value by key" },
       args: {
         key: { type: "positional", required: true, description: "Config key (for example: embedding, defaultBundle)" },
+        "show-source": {
+          type: "boolean",
+          description:
+            'Wrap the value as { value, source }, where source is "local", "extends:<ref>" (the nearest ' +
+            'extends chain member that sets it), or "default".',
+          default: false,
+        },
       },
       run({ args }) {
-        output("config", getConfigValue(loadConfig(), args.key));
+        const value = getConfigValue(loadConfig(), args.key);
+        output("config", args["show-source"] ? { value, source: getConfigValueSource(args.key) } : value);
       },
     }),
     set: defineJsonCommand({
@@ -168,6 +259,22 @@ export const configCommand = defineGroupCommand({
         if (!args.silent) {
           output("config", listConfig(updated));
         }
+      },
+    }),
+    diff: defineJsonCommand({
+      meta: {
+        name: "diff",
+        description: "Show effective-config differences against another config file or bundle asset, secrets redacted",
+      },
+      args: {
+        ref: {
+          type: "positional",
+          required: true,
+          description: "Other config: a file path or bundle//conceptId asset ref",
+        },
+      },
+      run({ args }) {
+        output("config-diff", akmConfigDiff(args.ref));
       },
     }),
   },

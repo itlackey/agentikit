@@ -712,6 +712,7 @@ describe("shapeForCommand — `results` collection alias (#922)", () => {
     ["workflow-list", "runs", { runs: [{ id: "w1" }] }],
     ["task-history", "rows", { rows: [{ id: "t1" }] }],
     ["log-list", "events", { events: [{ eventType: "add", ref: "lessons/x", ts: "2024-01-01T00:00:00Z" }] }],
+    ["config-diff", "rows", { rows: [{ path: "semanticSearchMode", local: "off", other: "auto" }] }],
   ];
 
   for (const [command, key, raw] of LIST_COMMANDS) {

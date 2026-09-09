@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   DEFAULT_CONFIG,
+  getConfigValueSource,
   getImproveProcessConfig,
   type ImproveProfileConfig,
   loadConfig,
@@ -19,6 +20,7 @@ import { getCacheDir, getConfigDir, getConfigPath } from "../src/core/paths";
 import { _resetWarnOnceForTests, _setWarnSinkForTests } from "../src/core/warn";
 import {
   type Cleanup,
+  mockHomedir,
   sandboxHome,
   sandboxXdgCacheHome,
   sandboxXdgConfigHome,
@@ -915,6 +917,204 @@ describe("0.9 config shape parsing", () => {
       expect(config.engines?.cloud?.apiKey).toBe("sk-secret");
     });
     expect(warnings.some((w) => w.includes("engines.<name>.apiKey"))).toBe(true);
+  });
+});
+
+// ── `extends` inheritance (#945) ────────────────────────────────────────────
+
+describe("extends inheritance (#945)", () => {
+  test("merges a base config from a relative path, local wins", () => {
+    const dir = path.dirname(getConfigPath());
+    fs.mkdirSync(path.join(dir, "shared"), { recursive: true });
+    writeRawConfig(
+      path.join(dir, "shared", "shared.json"),
+      JSON.stringify({
+        configVersion: "0.9.0",
+        engines: {
+          fast: { kind: "llm", endpoint: "https://api.example.test/v1/chat/completions", model: "base-model" },
+        },
+        output: { format: "text", detail: "full" },
+      }),
+    );
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        configVersion: "0.9.0",
+        extends: "./shared/shared.json",
+        output: { detail: "brief" },
+      }),
+    );
+
+    const config = loadConfig();
+    expect(config.engines?.fast?.model).toBe("base-model");
+    // Local wins: output.detail overridden, output.format inherited.
+    expect(config.output).toEqual({ format: "text", detail: "brief" });
+  });
+
+  test("expands ~ in a filesystem extends path", () => {
+    const home = mockHomedir();
+    try {
+      fs.mkdirSync(path.join(home.dir, "fleet"), { recursive: true });
+      fs.writeFileSync(
+        path.join(home.dir, "fleet", "shared.json"),
+        JSON.stringify({ configVersion: "0.9.0", semanticSearchMode: "auto" }),
+      );
+      writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: "~/fleet/shared.json" }));
+
+      expect(loadConfig().semanticSearchMode).toBe("auto");
+    } finally {
+      home.cleanup();
+    }
+  });
+
+  test("supports a chain (A extends B extends C)", () => {
+    const dir = path.dirname(getConfigPath());
+    writeRawConfig(path.join(dir, "c.json"), JSON.stringify({ configVersion: "0.9.0", archiveRetentionDays: 30 }));
+    writeRawConfig(
+      path.join(dir, "b.json"),
+      JSON.stringify({ configVersion: "0.9.0", extends: "./c.json", semanticSearchMode: "auto" }),
+    );
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: "./b.json" }));
+
+    const config = loadConfig();
+    expect(config.archiveRetentionDays).toBe(30);
+    expect(config.semanticSearchMode).toBe("auto");
+  });
+
+  test("throws ConfigError on a two-hop cycle", () => {
+    const dir = path.dirname(getConfigPath());
+    writeRawConfig(path.join(dir, "b.json"), JSON.stringify({ configVersion: "0.9.0", extends: getConfigPath() }));
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: path.join(dir, "b.json") }));
+
+    expect(() => loadConfig()).toThrow(ConfigError);
+    expect(() => loadConfig()).toThrow(/cycle/i);
+  });
+
+  test("throws ConfigError when extends resolves to a self-loop", () => {
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: getConfigPath() }));
+    expect(() => loadConfig()).toThrow(ConfigError);
+    expect(() => loadConfig()).toThrow(/cycle/i);
+  });
+
+  test("throws ConfigError on a missing extends file, naming the ref", () => {
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: "./does-not-exist.json" }));
+    expect(() => loadConfig()).toThrow(ConfigError);
+    expect(() => loadConfig()).toThrow(/does-not-exist\.json/);
+  });
+
+  test("throws ConfigError when extends is not a non-empty string", () => {
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: "" }));
+    expect(() => loadConfig()).toThrow(ConfigError);
+  });
+
+  test("the base config runs through its own independent version-shim pass", () => {
+    // The synthetic "0.0.1" -> "0.9.0" shim moves a root `defaultEngine` under
+    // `defaults.llmEngine` (config-version-shim.ts). Writing the BASE at that
+    // old version proves the base gets its own shim pass, independent of the
+    // (current-version) local file that extends it.
+    const dir = path.dirname(getConfigPath());
+    writeRawConfig(
+      path.join(dir, "old-base.json"),
+      JSON.stringify({
+        configVersion: "0.0.1",
+        defaultEngine: "legacy",
+        engines: { legacy: { kind: "llm", endpoint: "https://api.example.test/v1/chat/completions", model: "m" } },
+      }),
+    );
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: "./old-base.json" }));
+
+    const config = loadConfig();
+    expect(config.defaults?.llmEngine).toBe("legacy");
+    expect((config as unknown as Record<string, unknown>).defaultEngine).toBeUndefined();
+  });
+
+  test("extends by a filesystem bundle asset ref (bundle//conceptId), no index involved", () => {
+    const fleetDir = makeTmpDir();
+    try {
+      fs.mkdirSync(path.join(fleetDir, "scripts"), { recursive: true });
+      fs.writeFileSync(
+        path.join(fleetDir, "scripts", "shared-config.json"),
+        JSON.stringify({ configVersion: "0.9.0", archiveRetentionDays: 14 }),
+      );
+      writeRawConfig(
+        getConfigPath(),
+        JSON.stringify({
+          configVersion: "0.9.0",
+          bundles: { fleet: { path: fleetDir } },
+          extends: "fleet//scripts/shared-config.json",
+        }),
+      );
+
+      const config = loadConfig();
+      expect(config.archiveRetentionDays).toBe(14);
+    } finally {
+      cleanup(fleetDir);
+    }
+  });
+
+  test("extends bundle ref against a non-filesystem bundle is a ConfigError naming the bundle", () => {
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({
+        configVersion: "0.9.0",
+        bundles: { fleet: { git: "https://example.test/fleet.git" } },
+        extends: "fleet//scripts/shared-config.json",
+      }),
+    );
+    expect(() => loadConfig()).toThrow(ConfigError);
+    expect(() => loadConfig()).toThrow(/fleet/);
+  });
+
+  test("config get extends returns the locally configured ref (not silently dropped)", () => {
+    // Deliberate deviation from a literal "strip extends before validation"
+    // reading: `mutateConfig` (config set/unset) reads the EFFECTIVE config as
+    // `current` and writes a mutated copy of the SAME object back to the local
+    // file (pre-existing behavior — see DEFAULT_CONFIG baking into config.json
+    // on any write). Stripping `extends` from the effective object would mean
+    // any `config set` after adopting `extends` silently deletes the
+    // directive from disk. Keeping it lets it round-trip.
+    const dir = path.dirname(getConfigPath());
+    writeRawConfig(path.join(dir, "base.json"), JSON.stringify({ configVersion: "0.9.0", archiveRetentionDays: 7 }));
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: "./base.json" }));
+
+    const config = loadConfig();
+    expect(config.archiveRetentionDays).toBe(7);
+    expect((config as unknown as Record<string, unknown>).extends).toBe("./base.json");
+  });
+});
+
+describe("getConfigValueSource (#945)", () => {
+  test("reports 'default' when no config.json exists", () => {
+    expect(getConfigValueSource("semanticSearchMode")).toBe("default");
+  });
+
+  test("reports 'local' for a key set in the local file", () => {
+    writeCurrentConfig({ semanticSearchMode: "auto" });
+    expect(getConfigValueSource("semanticSearchMode")).toBe("local");
+  });
+
+  test("reports 'extends:<ref>' for a key that only the base sets", () => {
+    const dir = path.dirname(getConfigPath());
+    writeRawConfig(path.join(dir, "base.json"), JSON.stringify({ configVersion: "0.9.0", archiveRetentionDays: 30 }));
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: "./base.json" }));
+
+    expect(getConfigValueSource("archiveRetentionDays")).toBe("extends:./base.json");
+  });
+
+  test("reports 'default' for a key neither the local file nor any base sets", () => {
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0" }));
+    expect(getConfigValueSource("archiveRetentionDays")).toBe("default");
+  });
+
+  test("prefers 'local' over an inherited value for the same key", () => {
+    const dir = path.dirname(getConfigPath());
+    writeRawConfig(path.join(dir, "base.json"), JSON.stringify({ configVersion: "0.9.0", archiveRetentionDays: 30 }));
+    writeRawConfig(
+      getConfigPath(),
+      JSON.stringify({ configVersion: "0.9.0", extends: "./base.json", archiveRetentionDays: 5 }),
+    );
+
+    expect(getConfigValueSource("archiveRetentionDays")).toBe("local");
   });
 });
 

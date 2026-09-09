@@ -3,7 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { assetPathForName, stashDirFor } from "../asset/asset-placement";
+import { type BundleRef, isBundleSlug, parseBundleRef } from "../asset/asset-ref";
+import { typeNameFromConceptId } from "../asset/resolve-ref";
+import { isRecord } from "../common";
 import { ConfigError } from "../errors";
 import { liftLegacyEngineExtraParams } from "../extra-params";
 import { formatRegistryLabel, hasRegistryUrlCredentials } from "../registry-url";
@@ -16,7 +21,7 @@ import {
   writeConfigAtomic,
 } from "./config-io";
 import { AkmConfigSchema, CURRENT_CONFIG_VERSION } from "./config-schema";
-import { bundlesToSourceEntries } from "./config-sources";
+import { bundleContentRoot, bundlesToSourceEntries } from "./config-sources";
 import type {
   AkmConfig,
   ImproveProcessConfig,
@@ -201,26 +206,32 @@ export function acquireConfigReadFence(): { config: AkmConfig; release: () => vo
 }
 
 /**
- * Parse raw config text and validate via Zod.
- * ({@link AkmConfigSchema}). Returns the merged-with-defaults AkmConfig.
- *
- * The schema accepts only the current config version. A known older version
- * is auto-upgraded in memory first (see `./config-version-shim`); anything
- * else — including anything newer — is rejected before the canonical shape
- * is validated.
+ * Run the per-file config pipeline every raw config object goes through
+ * before it is either validated (the local/top-level file) or merged in as
+ * an `extends` base: JSONC parse already done by the caller, then version
+ * shim, then legacy `stashDir`/`sources[]`/`installed[]` shim, then the
+ * legacy `extraParams` lift (#852). Shared by {@link parseAndValidateConfigText}
+ * (the local file) and {@link resolveExtendsChain} (each base in the chain) so
+ * a fleet-shared base config can carry its own old `configVersion` / legacy
+ * shape independently of the file that extends it.
  */
-export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
+function runConfigFilePipeline(text: string, sourcePath?: string): Record<string, unknown> {
   const versioned = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
   const parsedRaw = migrateLegacySourceShape(versioned, sourcePath);
+  return liftExtraParamsOrThrow(parsedRaw, sourcePath);
+}
 
-  // #852 (following #815): a config still using legacy `extraParams` keys —
-  // e.g. `reasoning_effort`, a documented 0.9.1 workaround — needs to be
-  // rewritten onto the first-class engine field they now shadow. This used
-  // to happen silently, in memory, on every load; that ran forever and never
-  // converged. The lift itself is now `akm migrate apply`'s job (see
-  // scripts/akm-migrate/migrate/config-extra-params.ts) and persists to disk, so a
-  // config that has not been migrated yet fails closed here instead of
-  // silently drifting from what's on disk.
+/**
+ * #852 (following #815): a config still using legacy `extraParams` keys —
+ * e.g. `reasoning_effort`, a documented 0.9.1 workaround — needs to be
+ * rewritten onto the first-class engine field they now shadow. This used
+ * to happen silently, in memory, on every load; that ran forever and never
+ * converged. The lift itself is now `akm migrate apply`'s job (see
+ * scripts/akm-migrate/migrate/config-extra-params.ts) and persists to disk, so a
+ * config that has not been migrated yet fails closed here instead of
+ * silently drifting from what's on disk.
+ */
+function liftExtraParamsOrThrow(parsedRaw: Record<string, unknown>, sourcePath?: string): Record<string, unknown> {
   const where = sourcePath ? ` at ${sourcePath}` : "";
   const { config: liftedConfig, lifted, conflicts } = liftLegacyEngineExtraParams(parsedRaw);
   if (conflicts.length > 0) {
@@ -241,7 +252,27 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
       `Config${where} uses deprecated extraParams keys with first-class equivalents — auto-lifted in memory:\n  - ${lifted.join("\n  - ")}\n\nRun \`akm migrate apply\` to rewrite the config file and silence this warning.`,
     );
   }
-  const parsed = AkmConfigSchema.safeParse(liftedConfig);
+  return liftedConfig;
+}
+
+/**
+ * Parse raw config text and validate via Zod.
+ * ({@link AkmConfigSchema}). Returns the merged-with-defaults AkmConfig.
+ *
+ * The schema accepts only the current config version. A known older version
+ * is auto-upgraded in memory first (see `./config-version-shim`); anything
+ * else — including anything newer — is rejected before the canonical shape
+ * is validated. When the config sets `extends` (#945), its resolved chain is
+ * deep-merged underneath before validation — see {@link resolveExtendsChain}.
+ */
+export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
+  const versioned = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
+  const parsedRaw = migrateLegacySourceShape(versioned, sourcePath);
+  const liftedConfig = liftExtraParamsOrThrow(parsedRaw, sourcePath);
+  const withExtends = resolveExtendsChain(liftedConfig, sourcePath);
+
+  const where = sourcePath ? ` at ${sourcePath}` : "";
+  const parsed = AkmConfigSchema.safeParse(withExtends);
   if (!parsed.success) {
     const lines = parsed.error.issues.map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`).join("\n");
     throw new ConfigError(`Invalid config${where}:\n${lines}`, "INVALID_CONFIG_FILE");
@@ -257,6 +288,229 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
   }
   return finalResult.data;
 }
+
+// ── `extends` inheritance (#945) ────────────────────────────────────────────
+
+/** One layer of an `extends` chain, from the local file (`ref: undefined`) outward to the chain's root. */
+interface ConfigLayer {
+  /** The `extends` value that led here; `undefined` for the local/topmost layer. */
+  ref: string | undefined;
+  /** This layer's raw config, already through {@link runConfigFilePipeline}. */
+  raw: Record<string, unknown>;
+}
+
+/**
+ * Walk an `extends` chain starting at `localRaw` (already through
+ * {@link runConfigFilePipeline}), returning every layer from the local file
+ * outward to the chain's root, local first. A chain is allowed (a base may
+ * itself set `extends`); a cycle (a resolved source repeating) throws
+ * {@link ConfigError} instead of recursing forever.
+ */
+function collectExtendsLayers(localRaw: Record<string, unknown>, configPath: string | undefined): ConfigLayer[] {
+  const layers: ConfigLayer[] = [{ ref: undefined, raw: localRaw }];
+  const visited = new Set<string>(configPath ? [path.resolve(configPath)] : []);
+  let current = localRaw;
+  let currentPath = configPath;
+  while (true) {
+    const ref = current.extends;
+    if (ref === undefined) return layers;
+    if (typeof ref !== "string" || !ref.trim()) {
+      throw new ConfigError(
+        `Invalid "extends"${currentPath ? ` at ${currentPath}` : ""}: expected a non-empty string (a file path or bundle//conceptId ref), got ${JSON.stringify(ref)}.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    const { text, resolvedPath } = resolveConfigRefSource(ref, current, currentPath);
+    if (visited.has(resolvedPath)) {
+      throw new ConfigError(
+        `Config "extends" cycle detected: "${ref}"${currentPath ? ` (from ${currentPath})` : ""} resolves back to an already-visited config at ${resolvedPath}.`,
+        "INVALID_CONFIG_FILE",
+      );
+    }
+    visited.add(resolvedPath);
+    const baseRaw = runConfigFilePipeline(text, resolvedPath);
+    layers.push({ ref, raw: baseRaw });
+    current = baseRaw;
+    currentPath = resolvedPath;
+  }
+}
+
+/**
+ * Deep-merge an `extends` chain into its effective raw shape: each layer's
+ * own fields win over its base's (`deepMergeConfig` "local wins" semantics),
+ * reduced root-to-local so the local file's fields win overall. `DEFAULT_CONFIG`
+ * is NOT applied here — the caller still layers it outermost, unchanged.
+ *
+ * The merged result's `extends` field, if any, is always the LOCAL file's own
+ * literal value (never a base's) — `deepMergeConfig`'s local-wins semantics
+ * already guarantee this at every level, since a layer only has `extends` set
+ * when it itself declares one. Keeping it (rather than stripping it) lets
+ * `akm config set`/`unset` round-trip the directive: both read the effective
+ * config as `current` and write a mutated copy of it back to the SAME local
+ * file (pre-existing behavior — see `DEFAULT_CONFIG` baking into `config.json`
+ * on any write), so stripping `extends` here would silently delete it from
+ * disk on the very next `config set`.
+ */
+function resolveExtendsChain(
+  localRaw: Record<string, unknown>,
+  configPath: string | undefined,
+): Record<string, unknown> {
+  const layers = collectExtendsLayers(localRaw, configPath);
+  let merged: Record<string, unknown> = {};
+  for (let i = layers.length - 1; i >= 0; i--) {
+    merged = deepMergeConfig(merged, layers[i]!.raw);
+  }
+  return merged;
+}
+
+/** `~` expands to the home directory, mirroring `apiKeyFile`'s resolution (engine-resolution.ts). */
+function expandExtendsHomePath(p: string): string {
+  return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
+}
+
+/** True when `ref`'s segment before the first `//` is a legal bundle slug — the `bundle//conceptId` shape, not a filesystem path. */
+function looksLikeBundleAssetRef(ref: string): boolean {
+  const boundary = ref.indexOf("//");
+  return boundary > 0 && isBundleSlug(ref.slice(0, boundary));
+}
+
+/**
+ * Resolve an `extends` value (or a `config diff <ref>` CLI argument — same
+ * grammar) to its config text and the absolute path it was read from. Either
+ * a filesystem path (relative to the directory of `fromConfigPath`; `~`
+ * expands) or a `bundle//conceptId` asset ref, resolved against `context`'s
+ * `bundles` map WITHOUT the index (`bundles[<bundle>].path` ->
+ * `bundleContentRoot` -> `stashDirFor(type)` + `assetPathForName`, per
+ * AGENTS.md's "show is local-index only"). No URL form and no fetch/sync —
+ * the source must already exist locally; a missing file/bundle throws
+ * {@link ConfigError} naming the ref.
+ */
+function resolveConfigRefSource(
+  ref: string,
+  context: Record<string, unknown>,
+  fromConfigPath: string | undefined,
+): { text: string; resolvedPath: string } {
+  return looksLikeBundleAssetRef(ref)
+    ? resolveConfigBundleRefSource(ref, context)
+    : resolveConfigFileRefSource(ref, fromConfigPath);
+}
+
+function resolveConfigFileRefSource(
+  ref: string,
+  fromConfigPath: string | undefined,
+): { text: string; resolvedPath: string } {
+  const expanded = expandExtendsHomePath(ref);
+  let resolvedPath: string;
+  if (path.isAbsolute(expanded)) {
+    resolvedPath = expanded;
+  } else if (fromConfigPath) {
+    resolvedPath = path.resolve(path.dirname(fromConfigPath), expanded);
+  } else {
+    throw new ConfigError(
+      `extends "${ref}" is a relative path, but the current config has no known file location to resolve it against.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const text = readConfigText(resolvedPath);
+  if (text === undefined) {
+    throw new ConfigError(
+      `extends "${ref}" resolves to ${resolvedPath}, which does not exist. Create the file first, or point "extends" at an existing config.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  return { text, resolvedPath };
+}
+
+function resolveConfigBundleRefSource(
+  ref: string,
+  context: Record<string, unknown>,
+): { text: string; resolvedPath: string } {
+  let parsedRef: BundleRef;
+  try {
+    parsedRef = parseBundleRef(ref);
+  } catch (err) {
+    throw new ConfigError(
+      `Invalid "extends" bundle ref "${ref}": ${err instanceof Error ? err.message : String(err)}`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const bundleId = parsedRef.bundle;
+  if (!bundleId) {
+    throw new ConfigError(
+      `"extends" bundle ref "${ref}" must be fully qualified as bundle//conceptId.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const bundles = isRecord(context.bundles) ? context.bundles : undefined;
+  const bundleEntry = bundles?.[bundleId];
+  const bundlePath =
+    isRecord(bundleEntry) && typeof bundleEntry.path === "string" && bundleEntry.path.length > 0
+      ? bundleEntry.path
+      : undefined;
+  if (!bundlePath || !isRecord(bundleEntry)) {
+    throw new ConfigError(
+      `extends "${ref}" names bundle "${bundleId}", which is not a configured filesystem bundle (bundles.${bundleId}.path). Only a filesystem bundle can host an "extends" source.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const components = isRecord(bundleEntry.components) ? Object.values(bundleEntry.components) : [];
+  const componentRoot =
+    isRecord(components[0]) && typeof components[0].root === "string" ? components[0].root : undefined;
+  const bundleRoot = bundleContentRoot(bundlePath, componentRoot);
+
+  const parts = typeNameFromConceptId(parsedRef.conceptId);
+  if (!parts) {
+    throw new ConfigError(
+      `extends "${ref}": conceptId "${parsedRef.conceptId}" does not name a recognized asset type.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  const typeRoot = path.join(bundleRoot, stashDirFor(parts.type) as string);
+  const resolvedPath = assetPathForName(parts.type, typeRoot, parts.name);
+  const text = readConfigText(resolvedPath);
+  if (text === undefined) {
+    throw new ConfigError(
+      `extends "${ref}" resolves to ${resolvedPath}, which does not exist locally. Sync the bundle first, or point "extends" at an existing file.`,
+      "INVALID_CONFIG_FILE",
+    );
+  }
+  return { text, resolvedPath };
+}
+
+/**
+ * `akm config get --show-source` (#945): which raw layer the dotted path's
+ * value comes from — `"local"` when the local file's own raw JSON sets it,
+ * `"extends:<ref>"` for the nearest chain member that sets it (the ref by
+ * which that member is reached), or `"default"` when no layer sets it
+ * (`DEFAULT_CONFIG` or schema default supplies it). Computed lazily by
+ * re-walking the raw layers on each call — no merge-time bookkeeping.
+ */
+export function getConfigValueSource(dotted: string): string {
+  const configPath = getConfigPath();
+  const text = readConfigText(configPath);
+  if (text === undefined) return "default";
+  const liftedConfig = runConfigFilePipeline(text, configPath);
+  const segments = dotted.split(".").filter((s) => s.length > 0);
+  for (const layer of collectExtendsLayers(liftedConfig, configPath)) {
+    if (hasRawPath(layer.raw, segments)) {
+      return layer.ref === undefined ? "local" : `extends:${layer.ref}`;
+    }
+  }
+  return "default";
+}
+
+function hasRawPath(raw: unknown, segments: string[]): boolean {
+  let cursor: unknown = raw;
+  for (const segment of segments) {
+    if (!isRecord(cursor) || !(segment in cursor)) return false;
+    cursor = cursor[segment];
+  }
+  return true;
+}
+
+// Exposed for `akm config diff` (config-cli.ts): the `<path|bundle//ref>`
+// argument shares the exact same resolution grammar as `extends`.
+export { resolveConfigRefSource };
 
 /**
  * The configured stash sources as an ordered {@link SourceConfigEntry} list.

@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { main } from "../../src/cli";
 import { commandCommand } from "../../src/commands/command/command-cli";
+import { configCommand } from "../../src/commands/config-cli";
 import { taskCommand } from "../../src/commands/tasks/tasks-cli";
 import { workflowCommand } from "../../src/commands/workflow-cli";
 
@@ -57,5 +58,22 @@ describe("canonical workflow CLI surface", () => {
     const plan = (workflowCommand as unknown as DynamicCommand).subCommands?.plan;
     expect(plan?.args?.ref).toMatchObject({ type: "positional", required: true });
     expect(plan?.args?.format).toMatchObject({ type: "string" });
+  });
+});
+
+// #945: `akm config diff <ref>` (new verb) and `akm config get --show-source`
+// (new flag on an existing Stable verb) — contract extended in the same
+// commit that registers them, per this file's own header comment.
+describe("canonical config CLI surface", () => {
+  test("registers config diff <ref> and config get --show-source", () => {
+    const top = main.subCommands as unknown as Record<string, DynamicCommand>;
+    expect(top.config).toBe(configCommand as unknown as DynamicCommand);
+
+    const diff = (configCommand as unknown as DynamicCommand).subCommands?.diff;
+    expect(diff?.args?.ref).toMatchObject({ type: "positional", required: true });
+
+    const get = (configCommand as unknown as DynamicCommand).subCommands?.get;
+    expect(get?.args?.key).toMatchObject({ type: "positional", required: true });
+    expect(get?.args?.["show-source"]).toMatchObject({ type: "boolean", default: false });
   });
 });

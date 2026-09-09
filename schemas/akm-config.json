@@ -9,6 +9,10 @@
       "type": "string",
       "const": "0.9.0"
     },
+    "extends": {
+      "type": "string",
+      "minLength": 1
+    },
     "engines": {
       "type": "object",
       "additionalProperties": {
@@ -1695,6 +1699,10 @@
         "configVersion": {
           "type": "string",
           "const": "0.9.0"
+        },
+        "extends": {
+          "type": "string",
+          "minLength": 1
         },
         "engines": {
           "type": "object",
