@@ -434,6 +434,19 @@ export async function generateEmbeddingsForDb(
       // Empty-sample case (decision.verified === false): nothing stored to
       // lose or verify against — adopt the label silently, no purge line.
     }
+  } else {
+    // #9543 decision 3: no rename to verify (either this is the very first
+    // pass ever for this db, or the fingerprint already matches the last
+    // successful one) — still record it NOW rather than deferring to a
+    // fully successful pass, mirroring the rebuild/keep branches above
+    // (#955/#956). Without this, an interrupted FIRST-EVER pass left
+    // `embeddingFingerprint` unset despite a per-batch commit below (#954)
+    // already having durably written real vectors — a later `akm index
+    // --full`'s salvage-before-discard step tags rows by this meta
+    // (`salvageEmbeddingsBeforeDiscard`) and treats an unset fingerprint as
+    // "nothing was ever verified", silently turning genuinely-embedded
+    // vectors into a full re-embed instead of a salvage-and-reuse.
+    setMeta(db, "embeddingFingerprint", currentFingerprint);
   }
 
   try {
