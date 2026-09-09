@@ -505,7 +505,7 @@ export function resolveSecret(value: string | undefined, resolveFromStore?: Secr
       // that enforces auth on inference (e.g. Bifrost) failed every call with
       // an opaque 401 instead of a diagnosable warning naming the variable.
       warnOnce(
-        `resolve-secret:empty-env:${name}`,
+        `config:empty-env-var:${name}`,
         `Environment variable ${name} referenced by a $VAR apiKey is unset or empty; the request will be sent without a valid credential.`,
       );
     }
