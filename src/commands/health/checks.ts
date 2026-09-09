@@ -276,7 +276,10 @@ function credentialAvailable(
  * Best-effort: any failure walking env assets (unreadable stash, bad config)
  * degrades to `null`, never a crash. `deps.listEnvAssets` is expected to
  * already be normalised (see {@link withMemoizedEnvAssets}) by the time this
- * runs, so the walk happens at most once per probe run.
+ * runs, so the walk happens at most once per probe run — every caller of
+ * this function passes deps that have already gone through
+ * {@link withMemoizedEnvAssets}, so there is no separate default to fall
+ * back to here.
  */
 function findSuppliedByEnvAsset(
   credential: { names: readonly string[] } | undefined,
@@ -284,7 +287,8 @@ function findSuppliedByEnvAsset(
 ): string | null {
   if (!credential || credential.names.length === 0) return null;
   try {
-    const envs = (deps.listEnvAssets ?? (() => listEnvsRecursive(listKeys, (deps.loadConfig ?? loadConfig)())))();
+    const envs = deps.listEnvAssets?.();
+    if (!envs) return null;
     for (const envAsset of envs) {
       if (credential.names.some((name) => envAsset.keys.includes(name))) return envAsset.ref;
     }

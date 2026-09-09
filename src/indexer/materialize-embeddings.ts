@@ -114,7 +114,7 @@ export interface EmbeddingCompatibilityDecision {
 /**
  * Pure decision: do stored vectors remain valid against freshly re-embedded
  * canary samples? The ONE place that computes the canary's similarity
- * numbers — callers must use this result rather than recomputing it (#956).
+ * numbers — callers must use this result rather than recomputing it (#955).
  *
  * An empty sample means nothing is stored to lose or verify against, so
  * there is nothing to decide — keep.
@@ -122,7 +122,7 @@ export interface EmbeddingCompatibilityDecision {
  * A sample whose re-embed FAILED (`fresh === undefined`, e.g. a provider
  * sub-batch that was skipped) is EXCLUDED from the similarity computation
  * entirely, not scored as zero: a partial provider failure is not evidence
- * of a different model (#956). A dimension mismatch on a successful
+ * of a different model (#955). A dimension mismatch on a successful
  * re-embed still counts as zero similarity via {@link cosineSimilarity}'s
  * own dimension-mismatch guard — that IS evidence. When half or fewer of
  * the sampled entries re-embedded successfully, the sample is too thin to
@@ -255,7 +255,7 @@ async function runEmbeddingCanary(
     // request rather than throwing, #874, so an unreachable endpoint
     // surfaces here as an all-`undefined` canary result, not a caught
     // exception) and a partial one thin enough that neither verdict can be
-    // trusted (#956) — same message path either way.
+    // trusted (#955) — same message path either way.
     const message = skips[0]?.message ?? "embedding provider returned no vectors for the canary sample";
     return {
       outcome: "unverifiable",
