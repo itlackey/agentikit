@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { randomUUID } from "node:crypto";
-import { NotFoundError, UsageError } from "../../core/errors";
+import { NotFoundError, TransientError, UsageError } from "../../core/errors";
 import { isSqliteContentionError, openStateDatabase, withImmediateTransaction } from "../../core/state-db";
 import { borrowScopedStateDb, withStateDbScope } from "../../core/state-db-scope";
 import { sleepSync } from "../../runtime";
@@ -875,7 +875,7 @@ export class WorkflowRunsRepository {
       if (!isLeaseContentionSqliteError(error)) throw error;
       const row = this.tryReadLeaseColumns(runId);
       if (row?.engine_lease_holder && row.engine_lease_until && row.engine_lease_until >= now) {
-        throw new UsageError(
+        throw new TransientError(
           `Workflow run ${runId} is already being driven by engine ${row.engine_lease_holder} ` +
             `(run lease expires ${row.engine_lease_until}). A second \`akm workflow run\` would race it — ` +
             `wait for that invocation to finish or for the lease to expire.`,

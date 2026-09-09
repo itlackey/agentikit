@@ -218,6 +218,7 @@ enumeration of the whole `proposal` noun group.
   | `2` | Usage / bad input |
   | `4` | Health warning (`akm health` only) |
   | `70` | Internal / unclassified |
+  | `75` | Transient — retry shortly (`TransientError`, sysexits `EX_TEMPFAIL`); another akm process holds a lock or is writing `state.db` right now |
   | `78` | Configuration error |
 
   **From 0.9.12**, every success envelope produced by the passthrough stamp

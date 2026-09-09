@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { parseBundleRef } from "../../core/asset/asset-ref";
 import { loadConfig } from "../../core/config/config";
-import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
+import { ConfigError, NotFoundError, TransientError, UsageError } from "../../core/errors";
 import { appendEvent } from "../../core/events";
 import { warn } from "../../core/warn";
 import type {
@@ -1113,7 +1113,9 @@ function assertLeaseAllowsSpineAdvance(run: WorkflowRunRow, leaseHolder: string 
   if (!run.engine_lease_holder || !run.engine_lease_until) return;
   if (leaseHolder === run.engine_lease_holder) return;
   if (run.engine_lease_until < new Date().toISOString()) return; // expired ⇒ claimable, not live
-  throw new UsageError(
+  // #948 addendum: moved off UsageError (exit 75, not exit 2) — a held lease
+  // is ordinary contention, not a bad command line.
+  throw new TransientError(
     `Workflow run ${run.id} is being driven by engine ${run.engine_lease_holder} ` +
       `(run lease expires ${run.engine_lease_until}). The engine owns the step spine while it runs — ` +
       `wait for it to finish or for the lease to expire before advancing steps manually.`,

@@ -117,6 +117,7 @@ Every command exits with one of the following codes:
 | 2 | Usage / bad input | `UsageError` |
 | 4 | Health warning (`akm health` only) | — |
 | 70 | Internal / unclassified error | unexpected throw |
+| 75 | Transient — retry shortly (sysexits `EX_TEMPFAIL`); another akm process holds a lock or is writing `state.db` right now, not a bad command line | `TransientError` |
 | 78 | Configuration error | `ConfigError` |
 
 Failures classified by akm emit a JSON error envelope on **stderr** before
@@ -721,7 +722,7 @@ The old `--params <json>` bag is removed.
 | `--max-retries <n>` | When a step fails, reopen the same run and retry the failed step up to this many additional times. Range: 0 through 100; default 0. Gate rejection and interruption are not retried. |
 | `--timeout <duration>` | Abort the whole invocation after `N`, `Nms`, `Ns`, or `Nm`; bare `N` is milliseconds. The active step remains resumable. |
 | `--new` | Start a fresh run even when one is already active for this ref, instead of resuming it. The existing active run is left untouched — it is never abandoned automatically. A workflow ref only: passing a run id with `--new` is a usage error (exit 2). Parameter flags are allowed together with `--new`, since it is starting a new run. |
-| `--skip-if-locked` | If another akm process already holds this run's engine lease (`RUN_LEASE_HELD`), or `state.db` is busy with another writer (`STATE_DB_CONTENDED`), skip gracefully (exit 0) instead of failing (exit 2). The envelope reports `{ skipped: { reason: "lock-held" \| "state-db-contended", message } }`. Every other failure (a bad flag, an unresolvable target) still fails loudly regardless of this flag. Use for high-frequency scheduled runs so they don't pile up failures while a longer-running invocation is in progress — same family as `improve --skip-if-locked`. |
+| `--skip-if-locked` | If another akm process already holds this run's engine lease (`RUN_LEASE_HELD`), or `state.db` is busy with another writer (`STATE_DB_CONTENDED`), skip gracefully (exit 0) instead of failing (exit 75, `TransientError`). The envelope reports `{ skipped: { reason: "lock-held" \| "state-db-contended", message } }`. Every other failure (a bad flag, an unresolvable target) still fails loudly regardless of this flag. Use for high-frequency scheduled runs so they don't pile up failures while a longer-running invocation is in progress — same family as `improve --skip-if-locked`. |
 
 **Resuming an active run is announced, not silent.** Passing a ref that
 already has an active run in the current scope resumes that run rather than

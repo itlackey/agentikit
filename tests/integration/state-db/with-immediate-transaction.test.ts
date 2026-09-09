@@ -18,7 +18,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import path from "node:path";
-import { UsageError } from "../../../src/core/errors";
+import { TransientError } from "../../../src/core/errors";
 import { openStateDatabase, withImmediateTransaction } from "../../../src/core/state-db";
 import type { Database } from "../../../src/storage/database";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
@@ -175,8 +175,8 @@ describe("withImmediateTransaction", () => {
 
     expect(beginAttempts).toBe(5);
     expect(bodyCalls).toBe(0);
-    expect(caught).toBeInstanceOf(UsageError);
-    expect((caught as UsageError).code).toBe("STATE_DB_CONTENDED");
+    expect(caught).toBeInstanceOf(TransientError);
+    expect((caught as TransientError).code).toBe("STATE_DB_CONTENDED");
     expect((caught as Error).message).toBe(
       "akm's state database is busy (another akm process is writing it); retry shortly.",
     );
@@ -205,7 +205,7 @@ describe("withImmediateTransaction", () => {
       caught = err;
     }
 
-    expect(caught).not.toBeInstanceOf(UsageError);
+    expect(caught).not.toBeInstanceOf(TransientError);
     expect((caught as Error).message).toBe("disk full");
   });
 });

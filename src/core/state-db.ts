@@ -70,11 +70,12 @@
  * writers racing the BEGIN statement back-to-back. If every attempt is still
  * contention-shaped ({@link isSqliteContentionError} — SQLITE_BUSY/LOCKED, the
  * matching message text, or the phantom-BEGIN marker), the exhaustion throw is
- * reclassified into `UsageError("STATE_DB_CONTENDED")` instead of surfacing
- * the raw driver text: another akm process (an unrelated `improve`, `workflow
- * run`, or task run — not necessarily contending for the same row) is
- * writing state.db right now. A genuinely unrelated error (real corruption, a
- * body-thrown failure) is never reclassified and rethrows exactly as raised.
+ * reclassified into `TransientError("STATE_DB_CONTENDED")` (exit 75, #948
+ * addendum) instead of surfacing the raw driver text: another akm process (an
+ * unrelated `improve`, `workflow run`, or task run — not necessarily
+ * contending for the same row) is writing state.db right now. A genuinely
+ * unrelated error (real corruption, a body-thrown failure) is never
+ * reclassified and rethrows exactly as raised.
  *
  * @module state-db
  */
@@ -87,7 +88,7 @@ import { type Database, openDatabase, type SqlValue } from "../storage/database"
 import { assertMigrationLedger, type MigrationLedgerState } from "../storage/engines/sqlite-migrations";
 import { openManagedDatabase, withManagedDb } from "../storage/managed-db";
 import { pkgVersion } from "../version";
-import { UsageError } from "./errors";
+import { TransientError } from "./errors";
 import { acquireMaintenanceActivitySync } from "./maintenance-barrier";
 import { getDataDir } from "./paths";
 import { runMigrations, STATE_MIGRATIONS } from "./state/migrations";
@@ -745,17 +746,18 @@ function sleepSyncMs(ms: number): void {
  */
 /**
  * Reclassify an exhausted-retry BEGIN failure that is still contention-shaped
- * (#948) into a `UsageError("STATE_DB_CONTENDED")`, mirroring the RUN_LEASE_HELD
- * precedent (`WorkflowRunsRepository.acquireEngineLease`): the driver text is
- * accurate but unhelpful (`{"ok":false,"error":"database is locked"}`, exit
- * 70/INTERNAL) — this instead reads as a retryable usage signal (exit 2) with
- * the original error preserved as `cause` for `--verbose`/debugging. A
- * genuinely unrelated error (not contention-shaped) is rethrown exactly as
- * raised, never reclassified.
+ * (#948) into a `TransientError("STATE_DB_CONTENDED")`, mirroring the
+ * RUN_LEASE_HELD precedent (`WorkflowRunsRepository.acquireEngineLease`): the
+ * driver text is accurate but unhelpful (`{"ok":false,"error":"database is
+ * locked"}`, exit 70/INTERNAL) — this instead reads as a retryable-shortly
+ * signal (exit 75, sysexits EX_TEMPFAIL — #948 addendum) with the original
+ * error preserved as `cause` for `--verbose`/debugging. A genuinely unrelated
+ * error (not contention-shaped) is rethrown exactly as raised, never
+ * reclassified.
  */
 function throwBeginFailure(err: unknown): never {
   if (isSqliteContentionError(err)) {
-    const contended = new UsageError(
+    const contended = new TransientError(
       "akm's state database is busy (another akm process is writing it); retry shortly.",
       "STATE_DB_CONTENDED",
     );

@@ -8,12 +8,14 @@
  * real CLI in-process (`runCliCapture`), same as
  * tests/integration/commands/workflow-plan.test.ts.
  *
- * A held engine lease (the existing RUN_LEASE_HELD UsageError,
+ * A held engine lease (the existing RUN_LEASE_HELD error, now a
+ * TransientError per the #948 addendum — exit 75, sysexits EX_TEMPFAIL, not
+ * exit 2 — so a cron wrapper retries instead of alerting;
  * workflow-runs-repository.ts's single-driver invariant, #924) is the
  * deterministic way to reproduce a `--skip-if-locked`-eligible failure at the
  * CLI boundary without racing real concurrent processes:
  *   - WITHOUT the flag: `akm workflow run <id>` fails exactly as today —
- *     exit 2, RUN_LEASE_HELD, naming the holder.
+ *     exit 75, RUN_LEASE_HELD, naming the holder.
  *   - WITH the flag: the same failure is caught at the command boundary and
  *     turned into one warn line plus `{ ok: true, skipped: { reason:
  *     "lock-held", ... } }` at exit 0.
@@ -65,14 +67,14 @@ async function plantLease(runId: string, holder: string, until: string): Promise
 }
 
 describe("akm workflow run <id> against a held engine lease", () => {
-  test("without --skip-if-locked: fails exactly as today — exit 2, RUN_LEASE_HELD, naming the holder", async () => {
+  test("without --skip-if-locked: fails exactly as today — exit 75, RUN_LEASE_HELD, naming the holder", async () => {
     writeWorkflow("skip-lock-baseline");
     const started = await startWorkflowRun("workflows/skip-lock-baseline", {});
     const runId = started.run.id;
     await plantLease(runId, "other-engine", isoIn(90_000));
 
     const result = await runCliCapture(["workflow", "run", runId]);
-    expect(result.code).toBe(2);
+    expect(result.code).toBe(75);
     const envelope = JSON.parse(result.stderr.trim()) as { ok: boolean; code: string; error: string };
     expect(envelope.ok).toBe(false);
     expect(envelope.code).toBe("RUN_LEASE_HELD");

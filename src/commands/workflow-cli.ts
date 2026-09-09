@@ -13,7 +13,7 @@ import { getStringArg } from "../cli/parse-args";
 import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output, outputWithExitCode } from "../cli/shared";
 import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
-import { NotFoundError, UsageError } from "../core/errors";
+import { NotFoundError, TransientError, UsageError } from "../core/errors";
 import { warn } from "../core/warn";
 import { akmIndex } from "../indexer/indexer";
 import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
@@ -165,12 +165,13 @@ const workflowCreateCommand = defineJsonCommand({
 
 /**
  * `--skip-if-locked` (#948) eligibility: only these two named, retryable
- * `UsageError` codes turn a `workflow run` failure into a graceful skip —
- * `RUN_LEASE_HELD` (another engine invocation is driving THIS run,
- * `workflow-runs-repository.ts`'s single-driver lease) and
- * `STATE_DB_CONTENDED` (an unrelated akm process is writing state.db right
- * now, `core/state-db.ts`'s BEGIN IMMEDIATE retry exhaustion). Every other
- * UsageError — a bad flag, an unresolvable target — still fails loudly.
+ * `TransientError` codes (#948 addendum — moved off UsageError, exit 75) turn
+ * a `workflow run` failure into a graceful skip — `RUN_LEASE_HELD` (another
+ * engine invocation is driving THIS run, `workflow-runs-repository.ts`'s
+ * single-driver lease) and `STATE_DB_CONTENDED` (an unrelated akm process is
+ * writing state.db right now, `core/state-db.ts`'s BEGIN IMMEDIATE retry
+ * exhaustion). Every other error — a bad flag, an unresolvable target —
+ * still fails loudly.
  */
 const WORKFLOW_RUN_SKIP_REASONS: Partial<Record<string, "lock-held" | "state-db-contended">> = {
   RUN_LEASE_HELD: "lock-held",
@@ -241,9 +242,10 @@ const workflowRunCommand = defineJsonCommand({
       } catch (err) {
         // #948: `--skip-if-locked` extends improve's "another run already
         // holds this" skip semantics to `workflow run`. Only these two named,
-        // retryable UsageError codes are eligible — a bad flag or malformed
-        // input still fails loudly even with the flag set.
-        if (skipIfLocked && err instanceof UsageError && WORKFLOW_RUN_SKIP_REASONS[err.code]) {
+        // retryable TransientError codes are eligible (#948 addendum — moved
+        // off UsageError) — a bad flag or malformed input still fails loudly
+        // even with the flag set.
+        if (skipIfLocked && err instanceof TransientError && WORKFLOW_RUN_SKIP_REASONS[err.code]) {
           const reason = WORKFLOW_RUN_SKIP_REASONS[err.code];
           warn(`[workflow] ${err.message} skipping (--skip-if-locked)`);
           output("workflow-run", { ok: true, target: args.target, skipped: { reason, message: err.message } });
