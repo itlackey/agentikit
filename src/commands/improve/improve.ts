@@ -34,7 +34,7 @@ import { akmIndex } from "../../indexer/indexer";
 import { collectPendingMemories } from "../../indexer/passes/memory-inference";
 import { resolveEntryContentDir, resolveSourceEntries } from "../../indexer/search/search-source";
 import { collectEngineCredentialValues } from "../../integrations/agent/engine-resolution";
-import { installLlmUsagePersistence } from "../../llm/usage-persist";
+import { installLlmUsagePersistence, LLM_USAGE_EVENT } from "../../llm/usage-persist";
 import {
   isGitBackedStash,
   listGitChangedPaths,
@@ -44,6 +44,7 @@ import {
 import { closeDatabase, openExistingDatabase } from "../../storage/repositories/index-connection";
 import { getEntryCount } from "../../storage/repositories/index-entries-repository";
 import { openSqliteReadSnapshot, SqliteReadSnapshotUnavailableError } from "../../storage/sqlite-read-snapshot";
+import { summarizeLlmUsageCrossTab } from "../health/llm-usage";
 import { type DrainResult, drainProposals } from "../proposal/drain";
 import { resolveDrainPolicy } from "../proposal/drain-policies";
 import type { EligibilitySource } from "../proposal/proposal-types";
@@ -75,6 +76,7 @@ import {
   resolveImproveStrategy,
   shouldSkipRef,
 } from "./improve-strategies";
+import { buildImproveUsageReport } from "./improve-usage-report";
 import { improveLockPath, releaseImproveLock, tryAcquireImproveLock } from "./locks";
 // The cycle loop / post-loop / maintenance stages live in ./loop-stages.
 import { runImproveLoopStage, runImprovePostLoopStage } from "./loop-stages";
@@ -1655,6 +1657,22 @@ function finalizeImproveResult(args: {
   // the unbounded row list never reaches result_json. Reflect skip counters
   // below still read `finalActions` (reflect skips are not folded).
   const { actions: persistedActions, aggregate: distillSkippedAggregate } = foldDistillSkipped(finalActions);
+  // #944 — this run's LLM call/token accounting, split by process x engine x
+  // model, plus which enabled processes made zero calls and why. `llm_usage`
+  // events carry no runId column, so bound the read to this run's own wall
+  // clock — the same per-run event-scoping technique `health/windows.ts`
+  // already uses for wall time. `until` is "now" (assembly happens at
+  // teardown, after every LLM call this run will make has already emitted
+  // its event).
+  const usageEvents = readEvents({ since: new Date(startMs).toISOString(), type: LLM_USAGE_EVENT }, eventsCtx).events;
+  const usageReport = buildImproveUsageReport({
+    resolvedPlan,
+    byProcessEngineModel: summarizeLlmUsageCrossTab(usageEvents),
+    strategyFilteredRefsCount: strategyFilteredRefs.length,
+    loopRefs: preparation.loopRefs,
+    persistedActions,
+    distillSkippedAggregate,
+  });
   const notices = collectImproveNotices({
     resolvedPlan: args.run.resolvedPlan,
     actions: finalActions,
@@ -1711,6 +1729,7 @@ function finalizeImproveResult(args: {
       : {}),
     ...(strategyFilteredRefs.length > 0 ? { strategyFilteredRefs } : {}),
     ...(resolvedPlan.engineUnavailable.length > 0 ? { skippedProcesses: resolvedPlan.engineUnavailable } : {}),
+    ...(usageReport ? { usageReport } : {}),
     actions: persistedActions,
     ...(distillSkippedAggregate ? { distillSkipped: distillSkippedAggregate } : {}),
     ...(preparation.validationFailures.length > 0 ? { validationFailures: preparation.validationFailures } : {}),

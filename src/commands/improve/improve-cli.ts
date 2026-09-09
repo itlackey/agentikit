@@ -17,6 +17,7 @@ import { clearLogFile, setLogFile, warn } from "../../core/warn";
 import { resolveWriteTarget } from "../../core/write-source";
 import { collectEngineCredentialValues } from "../../integrations/agent/engine-resolution";
 import { akmImprove } from "./improve";
+import { runImproveReportQuery } from "./improve-report";
 import {
   buildImproveRunId,
   recordImproveRunResult,
@@ -25,6 +26,7 @@ import {
 } from "./improve-result-file";
 import { runImproveSession } from "./improve-session";
 import { type ResolvedImprovePlan, resolveImprovePlan } from "./improve-strategies";
+import { formatUsageReportTable } from "./improve-usage-report";
 
 let akmImproveForRun: typeof akmImprove = akmImprove;
 
@@ -111,6 +113,21 @@ function assertRequiredEnginesAvailable(plan: ResolvedImprovePlan): void {
   );
 }
 
+/**
+ * `akm improve report` (#944): a scope value that dispatches to the per-run
+ * LLM usage/routing report instead of a real improve run — "report" is not,
+ * and will never be, a real asset type (`DEFAULT_ALLOWED_TYPES` in
+ * improve-strategies.ts), so this already matched zero assets before this
+ * flag existed, matching the precedent `rejectRetiredCanaryScope` set for
+ * intercepting a special scope word ahead of any lock/log/index side effect.
+ */
+function runImproveReportCli(args: { run?: string; since?: string }): void {
+  const runIdArg = getStringArg(args, "run");
+  const sinceArg = getStringArg(args, "since");
+  const result = runImproveReportQuery({ runId: runIdArg, since: sinceArg });
+  output("improve-report", { ok: true, ...result });
+}
+
 export const improveCommand = defineCommand({
   meta: {
     name: "improve",
@@ -164,6 +181,16 @@ export const improveCommand = defineCommand({
         "Abort before any indexing, lock, or log side effect (exit 78) if the active strategy would enable a process whose engine or credential cannot be resolved in this process's environment. Without this flag, improve degrades gracefully instead: it skips the affected processes and reports them in the result's skippedProcesses. Recommended alongside --skip-if-locked for scheduled runs.",
       default: false,
     },
+    run: {
+      type: "string",
+      description:
+        'Only with the "report" scope (`akm improve report --run <id>`): show the LLM usage/routing report for one specific improve_runs row instead of the most recent run. Mutually exclusive with --since.',
+    },
+    since: {
+      type: "string",
+      description:
+        'Only with the "report" scope (`akm improve report --since <window>`): aggregate the LLM usage/routing report over every real run started since <window> (a duration like "24h"/"7d", or an ISO timestamp) instead of showing one run. Mutually exclusive with --run.',
+    },
     strategy: {
       type: "string",
       description:
@@ -182,6 +209,12 @@ export const improveCommand = defineCommand({
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
+      // #944 — dispatch before any lock/log/index side effect, same
+      // interception point as rejectRetiredCanaryScope below.
+      if (getStringArg(args, "scope") === "report") {
+        runImproveReportCli(args);
+        return;
+      }
       rejectRetiredImproveTargetFlag();
       // D7 — `--format` used to be rejected here outright. It is a global flag on
       // a command that does emit an envelope through `output()` (always on
@@ -340,8 +373,9 @@ export const improveCommand = defineCommand({
       // `improve_runs` table of state.db (migration 003) and emit NOTHING
       // on stdout. The verbose JSON would otherwise scroll earlier progress
       // logs out of the terminal buffer. The existing `[improve] ...`
-      // progress log lines on stderr remain the canonical console UX —
-      // do NOT add any new console output here.
+      // progress log lines on stderr remain the canonical console UX — the
+      // usage-report table below (#944) follows that same convention
+      // (stderr, `[improve]`-prefixed), it is not new stdout noise.
       //
       // Pre-0.8.0 wrote `<stash>/.akm/runs/<run-id>/improve-result.json`;
       // those files are no longer authored. Query recent runs with:
@@ -365,6 +399,14 @@ export const improveCommand = defineCommand({
         process.stderr.write(
           `warning: no writable bundle directory resolved; improve result not persisted to state.db (use --json-to-stdout to capture)\n`,
         );
+      }
+
+      // #944 — same table `akm improve report` renders, appended to every
+      // real (non-dry-run) run so an operator sees the routing/cost split
+      // without a separate command. Omitted when the run made no LLM calls
+      // and skipped no enabled process (nothing to report).
+      if (improveResult.usageReport) {
+        process.stderr.write(`${formatUsageReportTable(improveResult.usageReport)}\n`);
       }
 
       if (jsonToStdout) output("improve", improveResult);

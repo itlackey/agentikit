@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import type { LlmUsageCrossTabRow } from "../commands/health/types";
 import type { EngineUnavailableProcess, ProcessRoutingRow } from "../commands/improve/improve-strategies";
 import type { EligibilitySource, Proposal } from "../commands/proposal/proposal-types";
 import type { LoweringNotice } from "../execution/resolved-request";
@@ -962,4 +963,24 @@ export interface AkmImproveResult {
   writtenPaths?: string[];
   /** Present only when a started run was persisted after abnormal termination. */
   terminated?: { reason: string; at: string; errorMessage?: string };
+  /**
+   * #944 — this run's LLM call/token/failure accounting, split by process x
+   * engine x model, plus which strategy-enabled processes made zero calls and
+   * why. `byProcessEngineModel` is `summarizeLlmUsageCrossTab` over this run's
+   * own `llm_usage` events (bounded to `[startedAt, completedAt)`, the same
+   * per-run event-scoping technique `health/windows.ts` already uses for wall
+   * time — events carry no `runId` column). `noCalls` covers every process the
+   * active strategy enabled (including one disabled for `engineUnavailable`)
+   * that ended the run with zero attributed calls; `reason` is drawn from the
+   * existing `improve_skipped` reason vocabulary
+   * (`"engine_unavailable"`/`"strategy_filtered_all_passes"`/`"autonomy_gated"`,
+   * a reflect/distill `skippedByReason` dominant key, or `"no_signal"` as the
+   * fallback) — never a fabricated category. Omitted entirely when both
+   * arrays would be empty (e.g. a dry run, or a run that made no LLM calls
+   * and enabled no LLM-backed process).
+   */
+  usageReport?: {
+    byProcessEngineModel: readonly Readonly<LlmUsageCrossTabRow>[];
+    noCalls: readonly Readonly<{ process: string; engine?: string; reason: string }>[];
+  };
 }

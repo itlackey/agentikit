@@ -59,6 +59,7 @@ const COMMON_FIELDS = [
   "sync",
   "writtenPaths",
   "terminated",
+  "usageReport",
 ] as const;
 
 const V2_FIELDS = new Set<string>([...COMMON_FIELDS, "strategy", "strategyFilteredRefs"]);
@@ -479,6 +480,7 @@ function validateCommon(value: Record<string, unknown>): void {
     "terminated",
     "plan",
     "deadUrlCoverage",
+    "usageReport",
   ] as const) {
     if (value[field] !== undefined && !isRecord(value[field])) fail(`${field} must be an object`);
   }

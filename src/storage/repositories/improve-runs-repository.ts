@@ -221,6 +221,33 @@ export function queryImproveRuns(db: Database, since: string, until?: string): I
   return (until ? db.prepare(sql).all(since, until) : db.prepare(sql).all(since)) as ImproveRunSummaryRow[];
 }
 
+const IMPROVE_RUN_ROW_COLUMNS =
+  "id, started_at, completed_at, stash_dir, dry_run, strategy, scope_mode, scope_value, guidance, ok, result_json, metrics_json, metadata_json";
+
+/**
+ * Look up a single `improve_runs` row by its id (#944 — `akm improve report --run <id>`).
+ * `id` is the PRIMARY KEY, so at most one row matches. Returns `undefined`
+ * for an unknown id rather than throwing — the caller decides how to report
+ * "no such run".
+ */
+export function getImproveRunById(db: Database, id: string): ImproveRunRow | undefined {
+  return db.prepare(`SELECT ${IMPROVE_RUN_ROW_COLUMNS} FROM improve_runs WHERE id = ?`).get(id) as
+    | ImproveRunRow
+    | undefined;
+}
+
+/**
+ * Look up the most recent real (non-dry-run) `improve_runs` row (#944 —
+ * `akm improve report`'s default target, and `--last`). Same `dry_run = 0`
+ * filter as {@link queryImproveRuns} so a dry-run preview never becomes the
+ * implicit "last run" a report reads.
+ */
+export function getLatestImproveRun(db: Database): ImproveRunRow | undefined {
+  return db
+    .prepare(`SELECT ${IMPROVE_RUN_ROW_COLUMNS} FROM improve_runs WHERE dry_run = 0 ORDER BY started_at DESC LIMIT 1`)
+    .get() as ImproveRunRow | undefined;
+}
+
 /**
  * Delete improve_runs rows older than `retentionDays` (default: 90). Mirrors
  * {@link purgeOldEvents} — same default, same return shape (number of rows

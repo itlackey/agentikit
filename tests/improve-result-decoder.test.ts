@@ -334,6 +334,43 @@ describe("decodeImproveResult", () => {
     ).toThrow(/skippedProcesses/);
   });
 
+  test("decodes usageReport (#944) and still decodes old envelopes without it", () => {
+    const usageReport = {
+      byProcessEngineModel: [
+        {
+          process: "reflect",
+          engine: "default",
+          model: "gpt",
+          calls: 3,
+          failures: 1,
+          promptTokens: 100,
+          completionTokens: 50,
+          totalTokens: 150,
+          reasoningTokens: 0,
+          totalDurationMs: 900,
+        },
+      ],
+      noCalls: [{ process: "consolidate", engine: "default", reason: "no_signal" }],
+    };
+    const decoded = decodeImproveResult({
+      schemaVersion: 2,
+      strategy: "default",
+      ...common,
+      usageReport,
+    });
+    expect(decoded.envelope.usageReport).toEqual(usageReport);
+
+    // Runs recorded before #944 have no usageReport field at all.
+    const withoutIt = decodeImproveResult({ schemaVersion: 2, strategy: "default", ...common });
+    expect(withoutIt.envelope.usageReport).toBeUndefined();
+
+    // The exact-field gate only shallow-validates usageReport is an object;
+    // reject a wrong-typed value outright.
+    expect(() =>
+      decodeImproveResult({ schemaVersion: 2, strategy: "default", ...common, usageReport: "not an object" }),
+    ).toThrow(/usageReport/);
+  });
+
   test("accepts deadUrlCoverage with exact non-negative integer fields, rejects malformed ones (#892)", () => {
     const decoded = decodeImproveResult({
       schemaVersion: 2,

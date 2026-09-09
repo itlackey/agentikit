@@ -148,7 +148,8 @@ export type NotFoundErrorCode =
   | "WORKFLOW_NOT_FOUND"
   | "PROPOSAL_NOT_FOUND"
   | "DANGEROUS_ENV_KEY"
-  | "FILE_NOT_FOUND";
+  | "FILE_NOT_FOUND"
+  | "IMPROVE_RUN_NOT_FOUND";
 
 /**
  * Default hint for each ConfigError code. Keep these short, actionable, and
@@ -261,6 +262,8 @@ const NOT_FOUND_HINTS: Partial<Record<NotFoundErrorCode, string>> = {
   // for a mistyped id, which points at the wrong thing entirely.
   PROPOSAL_NOT_FOUND: "Run `akm proposal list` to see pending proposals and their ids.",
   FILE_NOT_FOUND: "Check the path exists and is readable.",
+  IMPROVE_RUN_NOT_FOUND:
+    'Run `akm improve` first, or check the run id with `sqlite3 "$AKM_DATA_DIR/state.db" "SELECT id, started_at FROM improve_runs ORDER BY started_at DESC LIMIT 10"`.',
 };
 
 /**
