@@ -26,6 +26,7 @@ import {
   resolveConfigRefSource,
 } from "../core/config/config";
 import { configGet, configSet, configUnset, unknownKeyHint } from "../core/config/config-walker";
+import { UsageError } from "../core/errors";
 import { getCacheDir, getConfigPath, getDbPath, getDefaultStashDir } from "../core/paths";
 import { formatRegistryUrl } from "../core/registry-url";
 
@@ -242,6 +243,18 @@ export const configCommand = defineGroupCommand({
         },
       },
       run({ args }) {
+        // A key only an `extends` base supplies has nothing local to remove:
+        // `unsetConfigValue` would silently no-op and the value comes right
+        // back on the next load. Refuse before mutating rather than pretend
+        // it worked.
+        const source = getConfigValueSource(args.key);
+        if (source.startsWith("extends:")) {
+          throw new UsageError(
+            `Config key "${args.key}" is inherited from ${source} and cannot be unset here.`,
+            "TARGET_NOT_UPDATABLE",
+            `Override it locally with "akm config set ${args.key} <value>", or edit the base file directly.`,
+          );
+        }
         const result = mutateConfig((current) => unsetConfigValue(current, args.key), { absentNoop: true });
         const updated = result.config;
         if (!args.silent) {

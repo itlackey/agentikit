@@ -128,6 +128,60 @@ describe("config get --show-source", () => {
   });
 });
 
+// ── `config unset` refuses an extends-inherited key (#945) ──────────────────
+
+describe("config unset against an extends-inherited key", () => {
+  test("rejects unsetting a key only the extends base supplies", async () => {
+    const env = freshEnv();
+
+    const result = await withEnv(env, async () => {
+      const configDir = path.join(env.XDG_CONFIG_HOME as string, "akm");
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(configDir, "base.json"),
+        JSON.stringify({ configVersion: "0.9.0", archiveRetentionDays: 21 }),
+      );
+      writeSandboxConfig({ configVersion: "0.9.0", extends: "./base.json" });
+
+      return runCliCapture(["config", "unset", "archiveRetentionDays"]);
+    });
+
+    expect(result.code).toBe(2);
+    const error = JSON.parse(result.stderr) as { ok: boolean; error: string; code?: string };
+    expect(error.ok).toBe(false);
+    expect(error.error).toContain("archiveRetentionDays");
+    expect(error.error).toContain("extends:./base.json");
+
+    // The value is unchanged: unset never silently no-oped, and the local
+    // file was never touched.
+    const after = await withEnv(env, () => runCliCapture(["config", "get", "archiveRetentionDays"]));
+    expect(JSON.parse(after.stdout)).toBe(21);
+  });
+
+  test("still unsets a key the local file itself sets, even with extends active", async () => {
+    const env = freshEnv();
+
+    const outputs = await withEnv(env, async () => {
+      const configDir = path.join(env.XDG_CONFIG_HOME as string, "akm");
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(configDir, "base.json"),
+        JSON.stringify({ configVersion: "0.9.0", archiveRetentionDays: 21 }),
+      );
+      writeSandboxConfig({ configVersion: "0.9.0", extends: "./base.json", semanticSearchMode: "auto" });
+
+      const unset = await runCliCapture(["config", "unset", "semanticSearchMode"]);
+      const after = await runCliCapture(["config", "get", "semanticSearchMode"]);
+      return { unset, after };
+    });
+
+    expect(outputs.unset.code).toBe(0);
+    expect(outputs.after.code).toBe(0);
+    // semanticSearchMode falls back to its schema default once no layer sets it.
+    expect(JSON.parse(outputs.after.stdout)).toBe("off");
+  });
+});
+
 // ── `config diff` (#945) ─────────────────────────────────────────────────────
 
 describe("config diff", () => {
