@@ -70,4 +70,18 @@ describe("canonical workflow CLI surface", () => {
     expect(run?.args?.target).toMatchObject({ type: "positional", required: true });
     expect(run?.args?.["skip-if-locked"]).toMatchObject({ type: "boolean", default: false });
   });
+
+  // #942: `--all-scopes` on `list` and `status` (the ref fallthrough path) —
+  // the contract must be extended in the same commit that registers a flag.
+  test("registers workflow list/status --all-scopes as a boolean flag defaulting to false", () => {
+    const top = main.subCommands as unknown as Record<string, DynamicCommand>;
+    expect(top.workflow).toBe(workflowCommand as unknown as DynamicCommand);
+
+    const list = (workflowCommand as unknown as DynamicCommand).subCommands?.list;
+    expect(list?.args?.["all-scopes"]).toMatchObject({ type: "boolean", default: false });
+
+    const status = (workflowCommand as unknown as DynamicCommand).subCommands?.status;
+    expect(status?.args?.target).toMatchObject({ type: "positional", required: true });
+    expect(status?.args?.["all-scopes"]).toMatchObject({ type: "boolean", default: false });
+  });
 });

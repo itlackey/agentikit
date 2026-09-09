@@ -42,10 +42,17 @@ const workflowStatusCommand = defineJsonCommand({
         "diagnostic text). Diagnostics only — step evidence stays deterministic and is unaffected.",
       default: false,
     },
+    "all-scopes": {
+      type: "boolean",
+      description:
+        "When resolving a workflow ref (not a run id), search every scope instead of only the current one (#942).",
+      default: false,
+    },
   },
   async run({ args }) {
     const target = args.target;
     const includeUnits = args.units === true;
+    const allScopes = args["all-scopes"] === true;
     const resolvedRunId = await resolveWorkflowRunTarget(target);
     if (resolvedRunId !== undefined) {
       const result = await getWorkflowStatus(resolvedRunId, { includeUnits });
@@ -54,7 +61,7 @@ const workflowStatusCommand = defineJsonCommand({
     }
     let runs: Awaited<ReturnType<typeof listWorkflowRuns>>["runs"];
     try {
-      ({ runs } = await listWorkflowRuns({ workflowRef: target }));
+      ({ runs } = await listWorkflowRuns({ workflowRef: target, allScopes }));
     } catch (error) {
       if (!target.includes(":") && !target.includes("/")) {
         throw new NotFoundError(`Workflow run "${target}" not found.`, "WORKFLOW_NOT_FOUND");
@@ -81,12 +88,21 @@ const workflowListCommand = defineJsonCommand({
       description: "Also include child workflow runs (hidden by default, P3b)",
       default: false,
     },
+    "all-scopes": {
+      type: "boolean",
+      description:
+        "Search every scope instead of only the current one (#942). The envelope's top-level `scopeKey` is " +
+        "`null` with this flag, otherwise the scope that was searched — so an empty `runs: []` is never " +
+        'indistinguishable from "nothing anywhere".',
+      default: false,
+    },
   },
   async run({ args }) {
     const result = await listWorkflowRuns({
       workflowRef: args.ref,
       activeOnly: args.active,
       includeChildren: args.children,
+      allScopes: args["all-scopes"],
     });
     output("workflow-list", result);
   },

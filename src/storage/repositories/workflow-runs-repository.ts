@@ -302,7 +302,8 @@ export interface PublishChildWorkflowRunInput {
 
 /** Filter object for {@link WorkflowRunsRepository.listRuns}. */
 export interface ListRunsFilter {
-  scopeKey: string;
+  /** `null` (#942, `akm workflow list --all-scopes`) omits the scope predicate — every scope. */
+  scopeKey: string | null;
   workflowRef?: string;
   workflowRefs?: readonly string[];
   /**
@@ -411,6 +412,12 @@ export class WorkflowRunsRepository {
    * operator to `akm workflow abandon` a child a parent is actively driving.
    * For any database with no child rows the result is byte-identical, same
    * as the other three B-N10 sites below.
+   *
+   * `scopeKey: null` (#942) omits the scope predicate entirely — "an active
+   * run of these refs in ANY scope" — rather than binding SQL `NULL` (which
+   * would never match a real `scope_key` value). Used by the cross-scope
+   * start warning; the scope-local uniqueness guard itself always passes a
+   * real scope key here, unchanged.
    */
   findActiveRunForScope(
     workflowRefs: string | readonly string[],
@@ -418,11 +425,13 @@ export class WorkflowRunsRepository {
   ): { id: string; current_step_id: string | null } | undefined {
     const refs = typeof workflowRefs === "string" ? [workflowRefs] : [...workflowRefs];
     if (refs.length === 0) return undefined;
+    const scopeFilter = scopeKey === null ? "" : " AND scope_key = ?";
+    const params = scopeKey === null ? refs : [...refs, scopeKey];
     return this.db
       .prepare(
-        `SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+        `SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")})${scopeFilter} AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
       )
-      .get(...refs, scopeKey) as { id: string; current_step_id: string | null } | undefined;
+      .get(...params) as { id: string; current_step_id: string | null } | undefined;
   }
 
   getRunById(runId: string): WorkflowRunRow | undefined {
@@ -439,6 +448,11 @@ export class WorkflowRunsRepository {
    * to directly through this path — a parent-driven child would then have
    * TWO drivers. For any database with no child rows the result is
    * byte-identical.
+   *
+   * `scopeKey: null` (#942) omits the scope predicate — "an active run of
+   * these refs in ANY scope" — used by `startWorkflowRun`'s cross-scope
+   * warning (never by the resume-lookup itself, which always passes the
+   * caller's real scope).
    */
   getActiveRunRowForScope(
     workflowRefs: string | readonly string[],
@@ -446,12 +460,14 @@ export class WorkflowRunsRepository {
   ): WorkflowRunRow | undefined {
     const refs = typeof workflowRefs === "string" ? [workflowRefs] : [...workflowRefs];
     if (refs.length === 0) return undefined;
+    const scopeFilter = scopeKey === null ? "" : " AND scope_key = ?";
+    const params = scopeKey === null ? refs : [...refs, scopeKey];
     return (
       (this.db
         .prepare(
-          `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+          `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")})${scopeFilter} AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
         )
-        .get(...refs, scopeKey) as WorkflowRunRow | undefined) ?? undefined
+        .get(...params) as WorkflowRunRow | undefined) ?? undefined
     );
   }
 
@@ -481,8 +497,13 @@ export class WorkflowRunsRepository {
   listRuns(filter: ListRunsFilter): WorkflowRunRow[] {
     const filters: string[] = [];
     const params: string[] = [];
-    filters.push("scope_key = ?");
-    params.push(filter.scopeKey);
+    // `scopeKey: null` (#942) is "every scope" — the predicate is omitted
+    // rather than bound as SQL NULL (which would match nothing, since a real
+    // `scope_key` column value is never NULL for a fresh run).
+    if (filter.scopeKey !== null) {
+      filters.push("scope_key = ?");
+      params.push(filter.scopeKey);
+    }
     if (filter.workflowRef) {
       filters.push("workflow_ref = ?");
       params.push(filter.workflowRef);
@@ -677,7 +698,7 @@ export class WorkflowRunsRepository {
         if (existing) {
           throw new UsageError(
             `Workflow ${input.run.workflowRef} already has an active run in this scope ` +
-              `(id=${existing.id}, step=${existing.current_step_id ?? "—"}). ` +
+              `(id=${existing.id}, scope=${input.run.scopeKey}, step=${existing.current_step_id ?? "—"}). ` +
               `Use 'akm workflow run ${input.run.workflowRef}' to resume it or ` +
               `'akm workflow abandon ${existing.id}' to give up on it.`,
             "RESOURCE_ALREADY_EXISTS",
