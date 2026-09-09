@@ -43,6 +43,7 @@ import { infoFormatters } from "./text/info";
 import { lintFormatters } from "./text/lint";
 import { listFormatters } from "./text/list";
 import { migrateFormatters } from "./text/migrate";
+import { modelsFormatters } from "./text/models";
 import { proposalProducerFormatters } from "./text/proposal/producer";
 import { proposalFormatters } from "./text/proposal/proposal";
 import { getTextFormatterHandler, registerTextFormatters, type TextFormatterEntry } from "./text/registry";
@@ -90,6 +91,7 @@ const BUILT_IN_TEXT_FORMATTERS: TextFormatterEntry[] = [
   ...registryCommandFormatters,
   ...envFormatters,
   ...migrateFormatters,
+  ...modelsFormatters,
 ];
 
 registerTextFormatters(BUILT_IN_TEXT_FORMATTERS);
