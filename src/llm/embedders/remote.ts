@@ -253,7 +253,13 @@ export class RemoteEmbedder implements Embedder {
    * written by index regardless of dispatch order. A throw from `onBatch`
    * itself (e.g. the caller's own commit failing) is never mistaken for a
    * provider/network failure; it is captured and rethrown once every batch
-   * has been dispatched, alongside the `signal.aborted` check.
+   * has been dispatched, alongside the `signal.aborted` check. The FIRST
+   * `onBatch` throw also stops the pool from dispatching any further
+   * provider request (#954 gap fix) — a persistence failure means every
+   * later batch's result can never be committed either, so there is no
+   * point paying for more HTTP requests; a batch already in flight when this
+   * happens is left to finish (never network-aborted) but its result is
+   * discarded rather than committed.
    *
    * A batch rejected specifically for exceeding the endpoint's context window
    * (HTTP 413, or a recognised context-size error body — see
@@ -278,6 +284,29 @@ export class RemoteEmbedder implements Embedder {
     const maxCount = this.config.batchSize ?? DEFAULT_REMOTE_BATCH_SIZE;
     const textBatches = buildTokenBoundedBatches(texts, tokenBudget, maxCount);
 
+    // Stops the pool from claiming any FURTHER provider batch once the
+    // caller's onBatch has failed once (the materializer's transaction
+    // failed, so a subsequent commit would just fail again) — dispatching
+    // real HTTP requests whose results can never be persisted is pure waste.
+    // Deliberately a SEPARATE controller from the caller's own `signal`,
+    // chained one-way to it: aborting this one must never cancel an
+    // in-flight request's own network call (it is left to finish and its
+    // result is discarded, not persisted), and a genuine caller abort must
+    // still surface below as the caller's own abort reason, not this
+    // internal one.
+    const dispatchAbort = new AbortController();
+    const stopDispatch = (reason?: unknown): void => {
+      if (!dispatchAbort.signal.aborted) dispatchAbort.abort(reason);
+    };
+    let callerAbortListener: (() => void) | undefined;
+    if (signal) {
+      if (signal.aborted) stopDispatch(signal.reason);
+      else {
+        callerAbortListener = () => stopDispatch(signal.reason);
+        signal.addEventListener("abort", callerAbortListener, { once: true });
+      }
+    }
+
     // First error thrown BY the caller's onBatch callback (e.g. a real
     // competing-process SQLITE_BUSY from the materializer's db.transaction())
     // rather than by requestBatch itself. Captured here instead of being left
@@ -289,10 +318,16 @@ export class RemoteEmbedder implements Embedder {
     let firstOnBatchError: unknown;
     const commitBatch = (indices: number[], embeddings: (EmbeddingVector | undefined)[], model?: string): void => {
       if (!onBatch) return;
+      // Once persistence has failed once, an already in-flight batch that
+      // finishes afterward has nowhere safe to land — its result is
+      // discarded rather than retried into a transaction that will fail
+      // again (see the dispatch-stop comment above).
+      if (firstOnBatchError !== undefined) return;
       try {
         onBatch(indices, embeddings, model);
       } catch (err) {
-        if (firstOnBatchError === undefined) firstOnBatchError = err;
+        firstOnBatchError = err;
+        stopDispatch(err);
       }
     };
 
@@ -354,8 +389,10 @@ export class RemoteEmbedder implements Embedder {
     // concurrentMap swallows a thrown fn (per-item, results discarded here —
     // requestAndCommit only throws to signal a caller abort), so abort must
     // be re-checked once the pool has drained rather than relying on the
-    // throw itself to escape.
-    await concurrentMap(textBatches, runProviderBatch, concurrency, { signal });
+    // throw itself to escape. Dispatch is gated on `dispatchAbort`, not the
+    // caller's `signal` directly — see the comment above.
+    await concurrentMap(textBatches, runProviderBatch, concurrency, { signal: dispatchAbort.signal });
+    if (callerAbortListener) signal?.removeEventListener("abort", callerAbortListener);
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error("embedding interrupted");
     }

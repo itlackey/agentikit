@@ -290,6 +290,42 @@ describe("RemoteEmbedder.embedBatch: onBatch commit callback", () => {
   });
 });
 
+describe("RemoteEmbedder.embedBatch: stops dispatching after the first onBatch failure (#954 gap fix)", () => {
+  test("no further provider request is made once onBatch throws, with several batches queued", async () => {
+    let requestCount = 0;
+    let onBatchCalls = 0;
+    const persistError = new Error("simulated persistence failure");
+    await withMockedFetch(
+      async () => {
+        // Loopback => fixed concurrency 1, so only ONE provider batch is ever
+        // in flight — a completely deterministic way to prove the pool never
+        // claims a next batch once dispatch has stopped, with no reliance on
+        // fetch resolution order under concurrency 2.
+        const embedder = new RemoteEmbedder({
+          endpoint: "http://localhost:1/v1",
+          model: "test-model",
+          batchSize: 1,
+        });
+        await expect(
+          embedder.embedBatch(["a", "b", "c", "d"], undefined, undefined, () => {
+            onBatchCalls++;
+            throw persistError;
+          }),
+        ).rejects.toThrow(/simulated persistence failure/);
+      },
+      async () => {
+        requestCount++;
+        return jsonResponse({ data: [{ embedding: [1, 0], index: 0 }] });
+      },
+    );
+    // 4 texts, batchSize 1 => 4 possible provider batches queued. Only the
+    // very first is ever requested; the pool must not claim (and therefore
+    // never dispatches HTTP requests for) batches 2-4 once onBatch fails.
+    expect(requestCount).toBe(1);
+    expect(onBatchCalls).toBe(1);
+  });
+});
+
 describe("RemoteEmbedder.embedBatch: surfaces the response model id (#955)", () => {
   test("passes the response body's `model` field to onBatch as its 3rd argument", async () => {
     await withMockedFetch(
