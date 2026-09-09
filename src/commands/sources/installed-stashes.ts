@@ -678,10 +678,11 @@ function closeUnifiedUpdateTransaction(transaction: UnifiedUpdateTransaction, co
  * `akmIndex()` for its embedding phase too, INSIDE this same unified
  * `BEGIN IMMEDIATE` — so every per-batch commit the materializer opened
  * nested as an unobservable SAVEPOINT, and a SIGKILL mid-run lost every
- * embedding of the run rather than just the one in flight. Decision 1's
- * drift guard now rejects that outright, so `akmIndex`'s own embedding phase
- * is skipped for a deferred update transaction and this runs instead, once
- * content/lock/index/state are already durably committed.
+ * embedding of the run rather than just the one in flight. The
+ * ambient-transaction drift guard (#954) now rejects that outright, so
+ * `akmIndex`'s own embedding phase is skipped for a deferred update
+ * transaction and this runs instead, once content/lock/index/state are
+ * already durably committed.
  *
  * A failing pass (provider down, timeout) does NOT fail the update: the
  * bundle content and index are already committed successfully, exactly like
