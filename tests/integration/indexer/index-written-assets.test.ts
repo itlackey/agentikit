@@ -334,7 +334,7 @@ describe("indexWrittenAssets", () => {
       return lockPath;
     }
 
-    test("skips the inline upsert while a rebuild holds the lock, warns once, and never opens index.db", async () => {
+    test("skips the inline upsert while a rebuild holds the lock, warns once, reports success, and never opens index.db", async () => {
       const lockPath = plantHeldRebuildLock();
       const filePath = writeMemory("busy-rebuild-note", "Written while a rebuild holds the lock.");
 
@@ -343,7 +343,10 @@ describe("indexWrittenAssets", () => {
         if (level === "warn") notices.push(args.map(String).join(" "));
       });
 
-      expect(await indexWrittenAssets(stashDir, [filePath])).toBe(false);
+      // A live rebuild owns bringing the index to the expected state; the
+      // skip is fail-open success (#956 fix), not a failure — a caller that
+      // gates on this boolean (acceptProposal, source clone) must not fail.
+      expect(await indexWrittenAssets(stashDir, [filePath])).toBe(true);
 
       expect(notices.some((n) => /index rebuild in progress \(pid \d+\)/.test(n) && n.includes(filePath))).toBe(true);
       expect(indexedFileCount(filePath)).toBe(0);

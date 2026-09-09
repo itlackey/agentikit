@@ -64,6 +64,13 @@ export const WRITE_PATH_INDEX_BUSY_TIMEOUT_MS = 5_000;
  * An absent or empty index is skipped on purpose — bootstrap belongs to the
  * first read (`ensureIndex`) or an explicit `akm index`, which also cover
  * embeddings and the other passes this fast path skips.
+ *
+ * A live rebuild holding the rebuild lock is the SAME kind of skip, not a
+ * failure (#956 fix): a live `akm index` run owns bringing the index to the
+ * expected state on its own, so this call returns `true` on that skip
+ * exactly like the absent-index and empty-index cases above. Callers that
+ * gate their own success on this boolean (`acceptProposal`, `source clone`)
+ * must never fail or warn just because a concurrent rebuild is in progress.
  */
 export async function indexWrittenAssets(
   stashDir: string,
@@ -87,7 +94,7 @@ export async function indexWrittenAssets(
         warn(
           `index rebuild in progress (pid ${rebuildProbe.holderPid}); the next index pass will index ${filePaths.join(", ")}`,
         );
-        return false;
+        return true;
       }
 
       const dbPath = getDbPath();
