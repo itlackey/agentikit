@@ -36,9 +36,32 @@ export const EmbeddingConnectionConfigSchema = z
     // `akm index` when ensureSchema rejects it (§24.2 "Semantic" gate).
     dimension: positiveInt.max(4096).optional(),
     localModel: z.string().min(1).optional(),
+    /**
+     * Per-document token cap applied BEFORE batching (default 512,
+     * `DEFAULT_MAX_INPUT_TOKENS` in `src/llm/embedders/remote.ts`, #9543
+     * decision 2). The materializer truncates a document's embedded text to
+     * this cap (head only, unicode-safe) instead of skipping it outright, so
+     * one oversized entry can no longer fail a whole batch. Distinct from
+     * `maxTokens` below, which bounds a whole HTTP REQUEST (many documents);
+     * this bounds one DOCUMENT.
+     */
+    maxInputTokens: positiveInt.optional(),
+    /**
+     * Client-side per-request token budget — how many documents' estimated
+     * tokens fit in one HTTP request (default `DEFAULT_TOKEN_BUDGET` = 8000
+     * in `src/llm/embedders/remote.ts`). With the 512-token `maxInputTokens`
+     * cap above, a request carries about 16 documents by default.
+     */
     maxTokens: positiveInt.optional(),
     batchSize: positiveInt.optional(),
     chunkSize: positiveInt.optional(),
+    /**
+     * Ollama's `num_ctx` ONLY (#9543 decision 2) — sent verbatim as
+     * `options.num_ctx` on the native `/api/embed` request. It no longer also
+     * feeds the client-side request token budget (`maxTokens` above): the two
+     * used to share this one field, so setting it for the server's context
+     * window silently changed request batching too.
+     */
     contextLength: positiveInt.optional(),
     ollamaOptions: EmbeddingOllamaOptionsSchema.optional(),
     /**

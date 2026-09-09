@@ -19,6 +19,8 @@ import { DETERMINISTIC_EMBED_MODEL_ID, isDeterministicEmbedEnabled } from "../ll
 import { DEFAULT_LOCAL_MODEL } from "../llm/embedders/local";
 import {
   buildTokenBoundedBatches,
+  capEmbeddingText,
+  DEFAULT_MAX_INPUT_TOKENS,
   DEFAULT_REMOTE_BATCH_SIZE,
   DEFAULT_TOKEN_BUDGET,
   type EmbeddingBatchCommit,
@@ -446,7 +448,7 @@ export async function generateEmbeddingsForDb(
     // byte-identical to what was salvaged under the SAME fingerprint — a
     // fingerprint mismatch or a single-byte content change both correctly
     // fall through to the provider below instead.
-    const { reusedCount, remaining: pendingEntries } = reuseSalvagedEmbeddings(
+    const { reusedCount, remaining: candidateEntries } = reuseSalvagedEmbeddings(
       db,
       allEntries,
       currentFingerprint,
@@ -460,11 +462,11 @@ export async function generateEmbeddingsForDb(
     if (reusedCount > 0) {
       onProgress({
         phase: "embeddings",
-        message: `Reused ${reusedCount} embedding${reusedCount === 1 ? "" : "s"} from the previous generation; embedding ${pendingEntries.length} new.`,
+        message: `Reused ${reusedCount} embedding${reusedCount === 1 ? "" : "s"} from the previous generation; embedding ${candidateEntries.length} new.`,
       });
     }
 
-    if (pendingEntries.length === 0) {
+    if (candidateEntries.length === 0) {
       onProgress({ phase: "embeddings", message: "Embeddings already up to date." });
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       if (reusedCount > 0) {
@@ -477,6 +479,30 @@ export async function generateEmbeddingsForDb(
       purgeEmbeddingSalvage(db);
       return reusedCount > 0 ? { success: true, vecInsertFailures: vecFailedCount } : { success: true };
     }
+
+    // #9543 decision 2: cap each document's embedded text at
+    // embedding.maxInputTokens (default DEFAULT_MAX_INPUT_TOKENS) instead of
+    // ever failing a whole batch over one oversized entry — truncation keeps
+    // the head of the text, unicode-safe. A document is skipped only when its
+    // head is empty (the impossible case: nothing left to embed), never
+    // merely for being long.
+    const maxInputTokens = config.embedding?.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS;
+    let truncatedCount = 0;
+    const texts: string[] = [];
+    const pendingEntries: typeof candidateEntries = [];
+    for (const entry of candidateEntries) {
+      const capped = capEmbeddingText(entry.searchText, maxInputTokens);
+      if (capped.text.length === 0) continue;
+      if (capped.truncated) truncatedCount++;
+      pendingEntries.push(entry);
+      texts.push(capped.text);
+    }
+    if (truncatedCount > 0) {
+      const message = `[embed] ${truncatedCount} entr${truncatedCount === 1 ? "y" : "ies"} truncated to the ${maxInputTokens}-token embedding cap (embedding.maxInputTokens); rerun with a higher cap to embed the full text.`;
+      warn(message);
+      onProgress({ phase: "embeddings", message });
+    }
+
     if (rebuildReason) {
       const message = `[embed] Re-embedding ${pendingEntries.length} entr${pendingEntries.length === 1 ? "y" : "ies"} because ${rebuildReason}`;
       warn(message);
@@ -486,7 +512,6 @@ export async function generateEmbeddingsForDb(
       phase: "embeddings",
       message: `Generating embeddings for ${pendingEntries.length} entr${pendingEntries.length === 1 ? "y" : "ies"}.`,
     });
-    const texts = pendingEntries.map((entry) => entry.searchText);
 
     if (isVerbose()) {
       // Mirror RemoteEmbedder's actual token-bounded batching (#874) so this
@@ -496,7 +521,9 @@ export async function generateEmbeddingsForDb(
       // for inference throughput only, never fails/skips), so there's
       // nothing meaningful to report per-batch for them.
       if (hasRemoteEndpoint(config.embedding ?? {})) {
-        const tokenBudget = config.embedding?.maxTokens ?? config.embedding?.contextLength ?? DEFAULT_TOKEN_BUDGET;
+        // Mirrors RemoteEmbedder.embedBatch's own tokenBudget resolution
+        // (#9543 decision 2: contextLength no longer feeds this).
+        const tokenBudget = config.embedding?.maxTokens ?? DEFAULT_TOKEN_BUDGET;
         const maxCount = config.embedding?.batchSize ?? DEFAULT_REMOTE_BATCH_SIZE;
         const batches = buildTokenBoundedBatches(texts, tokenBudget, maxCount);
         const batchNumberByIndex = new Map<number, number>();

@@ -138,6 +138,84 @@ describe("resolveEmbeddingConcurrency", () => {
   });
 });
 
+describe("RemoteEmbedder.embedBatch: contextLength no longer affects the request token budget (#9543 decision 2)", () => {
+  test("a batch is split by config.maxTokens, not config.contextLength", async () => {
+    const requestSizes: number[] = [];
+    await withMockedFetch(
+      async () => {
+        // contextLength set very low (would force single-document batches if
+        // it still fed the token budget) and maxTokens left unset, so the
+        // DEFAULT_TOKEN_BUDGET (8000 tokens) is what actually governs
+        // batching. Five short documents easily fit one 8000-token request.
+        const embedder = new RemoteEmbedder({
+          endpoint: "http://localhost:1/v1",
+          model: "test-model",
+          contextLength: 8,
+        });
+        const results = await embedder.embedBatch(["a", "bb", "ccc", "dddd", "eeeee"]);
+        expect(results.every((r) => r !== undefined)).toBe(true);
+      },
+      async (_url, init) => {
+        const body = JSON.parse(init?.body as string) as { input: string[] };
+        requestSizes.push(body.input.length);
+        const data = body.input.map((_t, i) => ({ embedding: [1, 0], index: i }));
+        return jsonResponse({ data });
+      },
+    );
+    // All 5 documents in a single request — proof contextLength: 8 did NOT
+    // shrink the token budget down to single-document batches.
+    expect(requestSizes).toEqual([5]);
+  });
+
+  test("config.maxTokens still governs the budget as before, even alongside a large contextLength", async () => {
+    const requestSizes: number[] = [];
+    await withMockedFetch(
+      async () => {
+        // contextLength set huge so it would rescue this document from the
+        // oversized path if it still fed the token budget at all — proof
+        // maxTokens alone decides this, unaffected by contextLength either way.
+        const embedder = new RemoteEmbedder({
+          endpoint: "http://localhost:1/v1",
+          model: "test-model",
+          maxTokens: 10,
+          contextLength: 1_000_000,
+        });
+        const skips: Array<{ reason: string }> = [];
+        const results = await embedder.embedBatch(["x".repeat(200)], undefined, (skip) => skips.push(skip));
+        expect(results).toEqual([undefined]);
+        expect(skips[0]?.reason).toBe("context-window-exceeded");
+      },
+      async (_url, init) => {
+        const body = JSON.parse(init?.body as string) as { input: string[] };
+        requestSizes.push(body.input.length);
+        return jsonResponse({ data: [{ embedding: [1, 0], index: 0 }] });
+      },
+    );
+    // No provider request at all — the oversized pre-flight skip never dispatches one.
+    expect(requestSizes).toEqual([]);
+  });
+
+  test("contextLength still reaches Ollama's num_ctx (unchanged — #9543 decision 2 only touches the token budget)", async () => {
+    let sentOptions: unknown;
+    await withMockedFetch(
+      async () => {
+        const embedder = new RemoteEmbedder({
+          endpoint: "http://localhost:11434/api/embed",
+          model: "test-model",
+          contextLength: 4096,
+        });
+        await embedder.embed("hello");
+      },
+      async (_url, init) => {
+        const body = JSON.parse(init?.body as string) as { options?: unknown };
+        sentOptions = body.options;
+        return jsonResponse({ data: [{ embedding: [1, 0] }] });
+      },
+    );
+    expect(sentOptions).toEqual({ num_ctx: 4096 });
+  });
+});
+
 describe("EmbeddingConnectionConfigSchema: embedding.concurrency bounds (#9541 decision 4)", () => {
   test("accepts 1 and 16", () => {
     expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 1 }).success).toBe(true);

@@ -29,7 +29,8 @@ export const DEFAULT_REMOTE_BATCH_SIZE = 100;
 
 /**
  * Conservative default token budget per HTTP request when the config gives
- * no better number (`maxTokens` or `contextLength`). #874's measurements:
+ * no better number (`maxTokens` — see #9543 decision 2 for why `contextLength`
+ * no longer feeds this). #874's measurements:
  * a batch of 100 small docs (~400 KB, ~100K tokens) took 14.8s against a
  * healthy local endpoint — half the 30s request timeout — and a single
  * 128 KB (~24K token) document alone was rejected by the endpoint as
@@ -41,6 +42,38 @@ export const DEFAULT_TOKEN_BUDGET = 8000;
 /** Cheap token estimator: 4 chars ≈ 1 token. Used in verbose logging and error messages. */
 export function estimateTokenCount(text: string): number {
   return Math.round(text.length / 4);
+}
+
+/**
+ * Default per-document embedding cap (`embedding.maxInputTokens`, #9543
+ * decision 2) — the materializer truncates a document's embedded text to
+ * this cap (head only) instead of skipping it outright, so one oversized
+ * entry can no longer fail a whole batch. Fragments are not embedded at all
+ * (only the entry's own search text is), so this is the only lever on how
+ * much of a large document contributes to its vector.
+ */
+export const DEFAULT_MAX_INPUT_TOKENS = 512;
+
+/**
+ * Truncate `text` to at most `maxTokens` (estimated via
+ * {@link estimateTokenCount}, the same 4-chars≈1-token rule the batching
+ * budget uses), keeping only its head. The cut never splits a UTF-16
+ * surrogate pair. Text already at or under the cap is returned unchanged
+ * (`truncated: false`) — including empty text, which is never itself
+ * "truncated".
+ */
+export function capEmbeddingText(text: string, maxTokens: number): { text: string; truncated: boolean } {
+  if (estimateTokenCount(text) <= maxTokens) return { text, truncated: false };
+  const charBudget = Math.max(0, maxTokens * 4);
+  let cut = Math.min(charBudget, text.length);
+  if (cut > 0 && cut < text.length) {
+    const code = text.charCodeAt(cut);
+    // A low surrogate (0xDC00-0xDFFF) at the cut point means its high
+    // surrogate is the character just before it — back off one position so
+    // the pair stays together rather than yielding a lone surrogate.
+    if (code >= 0xdc00 && code <= 0xdfff) cut -= 1;
+  }
+  return { text: text.slice(0, cut), truncated: true };
 }
 
 /**
@@ -229,10 +262,11 @@ export function isContextExceededResponse(status: number, body: string): boolean
  * evidence that a multi-slot local server (llama.cpp `--parallel N`, vLLM)
  * genuinely serves parallel requests and was left idle by the fixed default.
  * Request SIZE remains the first throughput lever regardless:
- * `embedding.batchSize` (document cap) and `embedding.maxTokens`/
- * `contextLength` (token budget) reach a larger batch per request, which is
- * where most of the win is for a single-slot server — a 32-input batch takes
- * about the same wall time as one input against a healthy endpoint.
+ * `embedding.batchSize` (document cap) and `embedding.maxTokens` (request
+ * token budget — see #9543 decision 2; `contextLength` no longer feeds it)
+ * reach a larger batch per request, which is where most of the win is for a
+ * single-slot server — a 32-input batch takes about the same wall time as
+ * one input against a healthy endpoint.
  */
 export function resolveEmbeddingConcurrency(config: EmbeddingConnectionConfig): number {
   if (typeof config.concurrency === "number") return config.concurrency;
@@ -417,7 +451,12 @@ export class RemoteEmbedder implements Embedder {
     const headers = this.buildHeaders();
     const ollamaOpts = resolveOllamaOptions(this.config);
 
-    const tokenBudget = this.config.maxTokens ?? this.config.contextLength ?? DEFAULT_TOKEN_BUDGET;
+    // #9543 decision 2: `contextLength` is Ollama's `num_ctx` ONLY (see
+    // resolveOllamaOptions below) — it used to double as this client-side
+    // request budget too, so a config author setting it for one purpose
+    // silently changed the other. `maxTokens` is the sole knob for the
+    // request budget now; unset falls back to DEFAULT_TOKEN_BUDGET.
+    const tokenBudget = this.config.maxTokens ?? DEFAULT_TOKEN_BUDGET;
     const maxCount = this.config.batchSize ?? DEFAULT_REMOTE_BATCH_SIZE;
     const textBatches = buildTokenBoundedBatches(texts, tokenBudget, maxCount);
     const configuredTimeoutMs = resolveEmbeddingTimeoutMs(this.config);
