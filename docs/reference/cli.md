@@ -653,6 +653,7 @@ akm workflow resume <run-id>
 akm workflow abandon <run-id>
 akm workflow list --active
 akm workflow list --children               # also list child workflow runs
+akm workflow list --all-scopes             # include runs started from a different working directory
 akm workflow plan workflows/ship-release    # compile+freeze preview, zero writes
 ```
 
@@ -665,8 +666,8 @@ Subcommands:
 | --- | --- |
 | `create <name>` | Validate and write a Markdown workflow under `workflows/`. `--path <dir>` places it in a subdirectory; `--from <file>` imports content; `--force` (requires `--from` or `--reset`) overwrites; `--print` prints the template that would be written instead of writing it |
 | `run <run-id\|ref>` | Stable canonical start/resume/execute command. A ref starts a run or resumes the active run in the current scope (announced as `resumed: true`, see below); a run id continues that exact active run. `--new` starts a fresh run even when one is already active. Executes until completion, failure, verification rejection, interruption, or an explicit limit |
-| `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only). Renders a `children:` tree when the run composes child workflows |
-| `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`). Child workflow runs are excluded unless `--children` is passed |
+| `status <run-id\|ref>` | Show the full run state, including all step statuses. `--units` also lists per-unit rows from the run journal (diagnostics only). Renders a `children:` tree when the run composes child workflows. `--all-scopes` widens the ref-fallthrough lookup (only reached when the target does not resolve to a run id) to every scope instead of just the current one |
+| `list` | List workflow runs (optionally filtered by `--ref`; `--active` shows only `status=active` runs, excluding `blocked`/`failed`/`completed`). Child workflow runs are excluded unless `--children` is passed. `--all-scopes` searches every scope instead of only the current one (#942) |
 | `resume <run-id>` | Flip a `blocked` or `failed` run back to `active`. Completed runs cannot be resumed |
 | `abandon <run-id>` | Mark a run failed so it stops counting as active (`resume` can reopen it) |
 | `plan <ref>` | **Evolving.** Compile and freeze a workflow WITHOUT publishing a run: the canonical step graph, per-step frozen target kinds, task/child expansion, input bindings, source read set, and lowering notices — zero durable writes. Returns the full JSON envelope by default, like every other command; pass `--format text` for a human-readable summary |
@@ -766,9 +767,10 @@ ancestor when present, otherwise the nearest git root, otherwise the bundle root
 when the cwd is inside it, otherwise the cwd itself. In practice this means:
 
 - `workflow run workflows/<name>` resumes the active run for the current project/worktree/directory (announced with `resumed: true`), or starts one when none is active. `--new` always starts a fresh run.
-- `workflow status workflows/<name>` resolves the most-recently-updated run in the current scope only.
-- `workflow list` shows runs for the current scope only.
-- Direct run-id commands like `workflow status <run-id>` still work even if the run was started from another directory.
+- `workflow status workflows/<name>` resolves the most-recently-updated run in the current scope only, unless `--all-scopes` is passed.
+- `workflow list` shows runs for the current scope only, unless `--all-scopes` is passed. Its envelope always carries a top-level `scopeKey` naming the scope that was searched (`null` under `--all-scopes`), so an empty `runs: []` is never indistinguishable from "nothing anywhere".
+- Direct run-id commands like `workflow status <run-id>`, `workflow resume <run-id>`, and `workflow abandon <run-id>` still work even if the run was started from another directory.
+- Starting a ref by name (`workflow run workflows/<name>`) never collides across scopes — each scope can hold its own active run of the same ref — but if an active run of that ref exists in a *different* scope, the started run's envelope carries a `warnings[]` entry naming that run's id, scope, and start time, with the `akm workflow run <id>` / `akm workflow abandon <id>` remedy, so a stray run in another scope does not go unnoticed (#942).
 
 #### workflow create
 
@@ -809,13 +811,16 @@ affect the in-flight run.
 akm workflow status <run-id>
 akm workflow status workflows/ship-release
 akm workflow status <run-id> --units    # also list per-unit rows from the run journal
+akm workflow status workflows/ship-release --all-scopes  # resolve across every scope, not just the current one
 ```
 
 Accepts a run id, a unique 8+ character run-id prefix, or a workflow ref.
 When given a workflow ref, resolves to the most-recently-updated run for that
-ref in the current working scope. `--units` adds per-unit rows (unit id,
-status, failure reason, and any result/error diagnostic text) from the run
-journal — diagnostics only; step evidence stays deterministic and is
+ref in the current working scope, unless `--all-scopes` is passed (only
+relevant when the target does not resolve to a run id; a run id is always
+scope-agnostic, `--all-scopes` or not, #942). `--units` adds per-unit rows
+(unit id, status, failure reason, and any result/error diagnostic text) from
+the run journal — diagnostics only; step evidence stays deterministic and is
 unaffected.
 
 #### workflow plan

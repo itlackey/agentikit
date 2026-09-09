@@ -57,9 +57,9 @@ enumeration of the whole `proposal` noun group.
 | `akm search` | Stable | |
 | `akm curate` | Stable | |
 | `akm show` | Stable | |
-| `akm workflow status` | Stable | |
+| `akm workflow status` | Stable | `--all-scopes` added in 0.9.15 (#942), additive. |
 | `akm workflow plan` | Evolving | New in 0.9.2; secret-free provenance output; envelope shape may change. |
-| `akm workflow list` | Stable | |
+| `akm workflow list` | Stable | `--all-scopes` and a top-level `scopeKey` envelope field added in 0.9.15 (#942), both additive. |
 | `akm workflow create` | Stable | |
 | `akm workflow resume` | Stable | |
 | `akm workflow abandon` | Stable | |
