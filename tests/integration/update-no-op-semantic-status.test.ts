@@ -5,12 +5,28 @@
 /**
  * `akm bundle update --all` with nothing configured (or nothing to update)
  * never runs an embedding pass, so `readCurrentIndexSummary`'s fallback used
- * to fabricate a verification (`ok: true, entryCount: 0, embeddingCount: 0,
- * vecAvailable: false`) for a run that verified nothing (#954, field-report
- * follow-up). `buildUpdateResponse` now falls back to the only two facts it
- * actually knows: "disabled" when semantic search is off, "pending"
- * otherwise. This drives the real `akmUpdate` coordinator (a real
- * `index.db`, hence tests/integration/ per the ORG-03..06 rule).
+ * to build a `stubIndexVerification` (`ok: true, entryCount: 0,
+ * embeddingCount: 0, vecAvailable: false`) for a run that verified nothing
+ * (#954, field-report follow-up). `UpdateIndexSummary.verification` is now
+ * optional and `stubIndexVerification` is gone; `buildUpdateResponse` derives
+ * `index.semanticStatus` directly from `finalConfig.semanticSearchMode`
+ * instead of reading it off a fabricated verification object.
+ *
+ * This is a hygiene/simplification fix, not a behavior fix, and these two
+ * tests are accordingly pinning-not-regression tests: `stubIndexVerification`
+ * computed `semanticStatus` with the exact same
+ * `semanticSearchMode === "off" ? "disabled" : "pending"` ternary that
+ * `buildUpdateResponse`'s fallback uses now, so `result.index.semanticStatus`
+ * below was already correct before this change — a do-nothing revert to
+ * `stubIndexVerification` would pass both assertions unchanged. What the fix
+ * actually removes is the OTHER fabricated fields
+ * (`entryCount`/`embeddingCount`/`vecAvailable`/`ok`/`message`); none of
+ * those ever reached `UpdateResponse` (`buildUpdateResponse` only ever read
+ * `.semanticStatus` off `verification`), so there is no independently
+ * observable behavior difference for a test to pin beyond the
+ * already-unchanged `semanticStatus` contract asserted here. This drives the
+ * real `akmUpdate` coordinator (a real `index.db`, hence tests/integration/
+ * per the ORG-03..06 rule).
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
