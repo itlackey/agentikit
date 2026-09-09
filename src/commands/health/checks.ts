@@ -1151,9 +1151,11 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
   },
   {
     // #949: registered last — order is load-bearing (see the HEALTH_CHECKS
-    // doc comment above). Advisory-only: an endpoint ignoring the thinking-off
-    // control is a cost/latency surprise, not a correctness failure, so it
-    // never gates overall status or exit code.
+    // doc comment above). Advisory channel, but `kind: "deterministic"`
+    // (same as the pre-existing task-fail-rate advisory) — a warn here DOES
+    // flip AkmHealthResult.status to "warn" and akm health's exit code to
+    // EXIT_HEALTH_WARN, because the overall-status computation ORs
+    // deterministic warns across both hardChecks and advisories.
     name: "thinking-control",
     channel: "advisory",
     run: (ctx) => projectThinkingControlCheck(ctx.thinkingOffEngines, ctx.llmUsage, ctx.since),

@@ -97,10 +97,16 @@ front of a local model (freellmapi, Bifrost, etc.) can drop one form
 independent of what sits behind it — so AKM sends **both** wire forms
 whenever `enableThinking` is set: `chat_template_kwargs.enable_thinking` and
 the top-level `enable_thinking`. `reasoningEffort` is always sent as the
-top-level `reasoning_effort`. Known backend support: llama.cpp honors
-`chat_template_kwargs.enable_thinking` on every build, and `reasoning_effort`
-only from build ≥ b10644; vLLM honors `chat_template_kwargs.enable_thinking`.
-Both are AKM-owned and cannot be set through `extraParams`. If a response
+top-level `reasoning_effort`. Known backend support: llama.cpp direct (no
+gateway in front of it) honors both `chat_template_kwargs.enable_thinking`
+on every build and `reasoning_effort` from build ≥ b10644; vLLM honors
+`chat_template_kwargs.enable_thinking`. The Bifrost gateway silently drops
+`chat_template_kwargs` and passes `reasoning_effort` through, so behind
+Bifrost (or a similar gateway) also set `reasoningEffort: "none"` rather
+than relying on `enableThinking` alone. A strict hosted API returns 400 on
+unrecognized keys, which is why AKM sends neither wire form unless
+`enableThinking` is explicitly set. Both are AKM-owned and cannot be set
+through `extraParams`. If a response
 reports reasoning tokens despite `enableThinking: false`, AKM emits a runtime
 warning so an ineffective control is visible, and `akm health`'s
 `thinking-control` advisory (see the architecture health-advisories doc)
