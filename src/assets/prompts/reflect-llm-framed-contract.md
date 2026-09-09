@@ -10,4 +10,4 @@ The first begin marker and final end marker delimit the body; marker lines betwe
 
 The frontmatter patch must be a one-line JSON object with exactly `description` and `when_to_use`. Keep a field `null` when it should not change. Supply a non-empty string only when adding or correcting that field; AKM merges those values through its existing sanitizer.
 
-Never include the truncation marker (the literal text `... [truncated — focus on the visible portion]`) or any other text from outside the fenced asset content shown to you, anywhere in the body.
+Never include the truncation marker (the literal text `{{TRUNCATION_MARKER}}`) or any other text from outside the fenced asset content shown to you, anywhere in the body.

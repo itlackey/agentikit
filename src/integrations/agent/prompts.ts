@@ -255,10 +255,14 @@ export function reflectLlmResponseContract(mode: ReflectLlmOutputMode, targetSco
           ? "The response has exactly the required fields `content`, `confidence`, and `frontmatterPatch`; do not echo `ref` or arbitrary `frontmatter`."
           : "The response has exactly the required fields `ref`, `content`, `confidence`, and `frontmatterPatch`; `ref` must identify the selected asset.",
       )
+      .replaceAll("{{TRUNCATION_MARKER}}", REFLECT_TRUNCATION_MARKER)
       .trim();
   }
   const refLine = targetScoped ? "" : "AKM_REFLECT_REF: <selected asset ref>\n";
-  return reflectLlmFramedContract.replace("{{REF_LINE}}", refLine).trim();
+  return reflectLlmFramedContract
+    .replace("{{REF_LINE}}", refLine)
+    .replaceAll("{{TRUNCATION_MARKER}}", REFLECT_TRUNCATION_MARKER)
+    .trim();
 }
 
 export function buildReflectOutputRepairPrompt(mode: ReflectLlmOutputMode, targetScoped: boolean): string {
