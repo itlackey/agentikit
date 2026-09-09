@@ -1932,13 +1932,20 @@ async function runReflectRefineIterations(args: {
     // prompt" is measured directly (not guessed): build the same prompt with
     // the content cap forced to zero and use its length as the overhead, so
     // feedback/standards/schema-hints/prior-draft size is accounted for
-    // exactly, per this call. Never drops below the flat floor.
+    // exactly, per this call. A reflect rewrite returns a body roughly the
+    // size of the input, so the budget only spends HALF of the usable window
+    // on input content and reserves the other half for the model's own
+    // output — otherwise a full-context request leaves no room for a
+    // response. Never drops below the flat floor.
     const contentBudgetChars =
       runnerIsLlm(runnerSpec) && assetContent?.trim()
         ? Math.max(
             REFLECT_CONTENT_CAP,
-            (runnerSpec.connection.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS) * CHARS_PER_TOKEN -
-              buildReflectPrompt({ ...promptInput, contentBudgetChars: 0 }).prompt.length,
+            Math.floor(
+              ((runnerSpec.connection.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS) * CHARS_PER_TOKEN -
+                buildReflectPrompt({ ...promptInput, contentBudgetChars: 0 }).prompt.length) /
+                2,
+            ),
           )
         : undefined;
     const { prompt } = buildReflectPrompt({

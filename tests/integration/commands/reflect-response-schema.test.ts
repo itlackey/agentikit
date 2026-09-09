@@ -957,7 +957,10 @@ describe("akmReflect — content budget is context-aware on the direct-LLM path"
     const config = reflectLlmConfig({
       ...fakeLlmConnection(),
       supportsJsonSchema: false,
-      contextLength: 200_000,
+      // Comfortably large: even after halving the usable window to reserve
+      // room for the response (see the next test), this must still fit the
+      // asset body with margin to spare.
+      contextLength: 400_000,
     });
     let capturedPrompt = "";
     const result = await akmReflect({
@@ -978,6 +981,37 @@ describe("akmReflect — content budget is context-aware on the direct-LLM path"
     expect(capturedPrompt).toContain("Current asset content (verbatim):");
     // The tail sentinel only survives in the prompt if the content was not sliced off.
     expect(capturedPrompt).toContain(TAIL_SENTINEL);
+  });
+
+  test("the content budget reserves half the usable window for the response, so a contextLength whose FULL window would fit the asset still truncates", async () => {
+    const stash = makeStashDir();
+    // Chosen so that contextLength * 3 chars/token comfortably exceeds the
+    // asset body on its own (the un-halved, pre-#952-fix budget would have
+    // sent the whole thing) but HALF of that usable window does not — pinning
+    // that the reflect rewrite's own output gets a reserved half rather than
+    // the request consuming the entire context window on input alone.
+    const config = reflectLlmConfig({
+      ...fakeLlmConnection(),
+      supportsJsonSchema: false,
+      contextLength: 16_000,
+    });
+    let capturedPrompt = "";
+    const result = await akmReflect({
+      ref: "knowledge/large-asset-half-window",
+      stashDir: stash,
+      config,
+      assetContent: `---\ndescription: Large reference doc\n---\n\n${bigBody}`,
+      chat: async (_config, messages) => {
+        capturedPrompt = messages[0]?.content ?? "";
+        return `AKM_REFLECT_CONFIDENCE: 0.9\n${EMPTY_FRAMED_PATCH_LINE}\nAKM_REFLECT_CONTENT_BEGIN\nRewritten.\nAKM_REFLECT_CONTENT_END`;
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(capturedPrompt).toContain(TRUNCATED_CONTENT_FENCE);
+    // The tail sentinel must be gone — it fell past the halved budget even
+    // though the full (unhalved) window would have had room for it.
+    expect(capturedPrompt).not.toContain(TAIL_SENTINEL);
   });
 
   test("an unconfigured contextLength still truncates around the flat 12k floor", async () => {
