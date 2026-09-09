@@ -19,9 +19,10 @@ import { akmReflect } from "../../../../src/commands/improve/reflect";
 import { listProposals } from "../../../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { ConfigError } from "../../../../src/core/errors";
-import { readEvents } from "../../../../src/core/events";
+import { appendEvent, readEvents } from "../../../../src/core/events";
 import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess";
 import { _setWarnSinkForTests } from "../../../../src/core/warn";
+import { REFLECT_TRUNCATION_MARKER } from "../../../../src/integrations/agent/prompts";
 import { durableItemRef } from "../../../_helpers/durable-ref";
 import { quietQualityGateConfig } from "../../../_helpers/factories";
 import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
@@ -800,5 +801,83 @@ describe("Reflect positive control — markdown assets still flow through", () =
     expect(content).toContain("description: Control");
     expect(content).toContain("## Verification steps");
     expect(listProposals(stash).length).toBe(1);
+  });
+});
+
+// ── 6. Feedback framing — feedback is a signal, not ground truth (#952) ────────
+
+describe("Reflect feedback-framing guard — feedback is a signal to investigate, not a fact to insert", () => {
+  test("a feedback line is preceded in the prompt by the 'not a fact to insert' caveat", async () => {
+    const stash = makeStashDir();
+    const itemRef = durableItemRef(stash, "knowledge", "storage-guide");
+    // Harness-observed failure mode (#952): a feedback line asserting a claim
+    // the source content never made ("...the storage section does not say
+    // which physical disk backs /data...") led both quants to fabricate a new
+    // section inventing a disk layout and incident. The caveat must reach the
+    // agent immediately ahead of the feedback line that could trigger this.
+    appendEvent({
+      eventType: "feedback",
+      ref: itemRef,
+      metadata: {
+        signal: "negative",
+        note: "the storage section does not say which physical disk backs /data",
+      },
+    });
+    const payload = JSON.stringify({
+      ref: "knowledge/storage-guide",
+      content: "---\ndescription: Storage guide\n---\n\nUnchanged body.",
+    });
+    let prompt = "";
+    const spawn: SpawnFn = (cmd, opts) => {
+      prompt = cmd.at(-1) ?? "";
+      return fakeSpawn(payload, "", 0)(cmd, opts);
+    };
+
+    const result = await akmReflect({
+      ref: "knowledge/storage-guide",
+      itemRef,
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      assetContent: "---\ndescription: Storage guide\n---\n\nExisting body about storage.",
+      runAgentOptions: { spawn },
+    });
+
+    expect(result.ok).toBe(true);
+    const caveatIndex = prompt.indexOf("It is a signal to investigate, not a fact to insert.");
+    const feedbackIndex = prompt.indexOf("the storage section does not say which physical disk backs /data");
+    expect(caveatIndex).toBeGreaterThan(-1);
+    expect(feedbackIndex).toBeGreaterThan(-1);
+    expect(caveatIndex).toBeLessThan(feedbackIndex);
+  });
+});
+
+// ── 7. Truncation-marker leak guard (#952) ──────────────────────────────────
+
+describe("Reflect truncation-marker leak guard — a leaked cap notice is flagged for review, not queued silently", () => {
+  test("a proposed body echoing the truncation marker is deferred with reflect-truncation-leak, not discarded", async () => {
+    const stash = makeStashDir();
+    // Deliberately tiny source so the body-size ratio guard cannot also fire
+    // (source body stays under REFLECT_SIZE_GUARD_MIN_BYTES) — isolates the
+    // truncation-marker rail from the size-ratio rail.
+    const sourceContent = "---\ndescription: Short doc under the size-guard floor\n---\n\nShort body.\n";
+    const leakedBody = `Rewritten body.\n${REFLECT_TRUNCATION_MARKER}`;
+    const payload = JSON.stringify({ ref: "knowledge/leak-marker", content: leakedBody });
+
+    const result = await akmReflect({
+      ref: "knowledge/leak-marker",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      assetContent: sourceContent,
+      runAgentOptions: { spawn: fakeSpawn(payload, "", 0) },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const proposals = listProposals(stash);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-truncation-leak" });
+    // Not discarded: the marker text itself is preserved in the queued
+    // proposal so a reviewer can see exactly what leaked.
+    expect(proposals[0]?.payload.content).toContain(REFLECT_TRUNCATION_MARKER);
   });
 });
