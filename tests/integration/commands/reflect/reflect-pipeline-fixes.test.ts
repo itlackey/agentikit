@@ -883,6 +883,42 @@ describe("Reflect truncation-marker leak guard — a leaked cap notice is flagge
     expect(proposals[0]?.payload.content).toContain(REFLECT_TRUNCATION_MARKER);
   });
 
+  // #952 review round 2: `createProposal`'s mint-time canonical-structure gate
+  // (repository.ts, `hasCanonicalProposalValidator`) only runs for ref types
+  // with a canonical validator — lesson/task/workflow — which the case above
+  // (a `knowledge/...` ref) never exercises. Before the fix, that mint-time
+  // gate ran the FULL `defaultProposalValidators` list, including the
+  // blocking `reflect-truncation-marker` validator, so a leaking `lessons/...`
+  // reflect proposal threw `invalid_canonical_structure` at CREATION time
+  // instead of being minted and deferred like the knowledge-ref case above —
+  // directly contradicting decision B / the addendum ("creation still defers
+  // with reflect-truncation-leak"). This locks in the fix: mint-time
+  // structural validation must stay canonical-structure-only.
+  test("a lessons/... ref whose body leaks the truncation marker is still minted and deferred, not rejected at creation", async () => {
+    const stash = makeStashDir();
+    // Deliberately tiny source, same as the knowledge-ref case above, so the
+    // body-size ratio guard cannot also fire.
+    const sourceContent =
+      "---\ndescription: Short lesson under the size-guard floor\nwhen_to_use: Testing the mint-time canonical gate\n---\n\nShort body.\n";
+    const leakedBody = `Rewritten lesson body.\n${REFLECT_TRUNCATION_MARKER}`;
+    const payload = JSON.stringify({ ref: "lessons/leak-marker", content: leakedBody });
+
+    const result = await akmReflect({
+      ref: "lessons/leak-marker",
+      stashDir: stash,
+      config: quietQualityGateConfig(),
+      assetContent: sourceContent,
+      runAgentOptions: { spawn: fakeSpawn(payload, "", 0) },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const proposals = listProposals(stash);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]?.gateDecision).toMatchObject({ outcome: "deferred", reason: "reflect-truncation-leak" });
+    expect(proposals[0]?.payload.content).toContain(REFLECT_TRUNCATION_MARKER);
+  });
+
   // #952 Addendum (dev-team field review, 2026-09-09): the creation-time defer
   // above is the FIRST layer. This is the second: a reflect proposal whose
   // body still contains the marker when it reaches `proposal accept` (e.g. a
