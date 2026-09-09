@@ -715,6 +715,16 @@ embedding calls have since 0.9.13 (#917); resolution order for a single
 `apiKeyFile`, then `secret://<name>` — though in practice a config sets only
 one of the three per engine.
 
+`embedding.apiKey` accepts the same three forms and resolves `secret://` the
+same way, on every path that sends an embedding request: `akm index`
+(including its `bundle update` post-commit embedding pass and the targeted
+re-embed a write command like `akm remember` triggers), `akm improve`'s
+memory-inference/consolidate passes, and the fingerprint-rename canary
+`akm index` runs when the embedding config changes. All of them build the
+provider request through the same `RemoteEmbedder`/`resolveSecret` boundary,
+so a `secret://` reference resolves identically regardless of which command
+triggered the request (#9544).
+
 Use `AKM_SQLITE_JOURNAL_MODE=DELETE` or `TRUNCATE` when WAL is unavailable,
 such as on some NFS/SMB mounts. With the default `WAL` setting, AKM detects a
 network filesystem for the data directory and falls back to `DELETE`.
