@@ -16,7 +16,7 @@ import { DURATION_UNITS, parseDuration, parseSinceToIso } from "../core/time";
 import { probeLlmEndpoint } from "../llm/client";
 import type { Database } from "../storage/database";
 import { getExtractOutcomeCountsSince } from "../storage/repositories/extract-sessions-repository";
-import { queryImproveRuns } from "../storage/repositories/improve-runs-repository";
+import { countImproveRunsSince } from "../storage/repositories/improve-runs-repository";
 import { closeDatabase, openReadonlyExistingDatabase } from "../storage/repositories/index-connection";
 import { getAllEntries } from "../storage/repositories/index-entries-repository";
 import { queryTaskHistory } from "../storage/repositories/task-history-repository";
@@ -729,7 +729,7 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
     // `--since` (mirrors sessionExtractionLedger's independent window above).
     const engineLastUsedSinceIso = engineLastUsedSince(now);
     const engineLastUsed = readLastEngineUsage(stateDbPath, now);
-    const improveRunsInLookbackWindow = queryImproveRuns(db, engineLastUsedSinceIso).length;
+    const improveRunsInLookbackWindow = countImproveRunsSince(db, engineLastUsedSinceIso);
 
     const engineProbes = await engineProbesPromise;
     const versionDrift = await versionDriftPromise;
