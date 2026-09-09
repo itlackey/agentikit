@@ -34,7 +34,15 @@ const nodeEntry = fileURLToPath(new URL("./scripts/akm-migrate-node.js", import.
   const command = process.versions.bun ? process.execPath : useBun ? "bun" : process.execPath;
   const entry = process.versions.bun || useBun ? bunEntry : nodeEntry;
   const result = await new Promise((resolve) => {
-    const child = spawn(command, [entry, ...process.argv.slice(2)], { stdio: "inherit", env });
+    const child = spawn(command, [entry, ...process.argv.slice(2)], {
+      stdio: "inherit",
+      env,
+      // #9543: own process group on POSIX so the launcher's forward below is
+      // the SOLE delivery path to the child instead of a redundant second
+      // copy landing on top of a group-wide broadcast the child already got
+      // directly — see the matching comment in scripts/node-runtime/akm.
+      detached: process.platform !== "win32",
+    });
     let childExited = false;
     child.once("exit", () => {
       childExited = true;

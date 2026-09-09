@@ -93,4 +93,74 @@ describe("launcher signal forwarding (#9543 decision 1)", () => {
       sandbox.cleanup();
     }
   }, 15000);
+
+  test("SIGINT to the whole foreground-style process group does not skip the child's graceful shutdown", async () => {
+    // Reproduces the terminal scenario directly: the launcher is spawned as
+    // the leader of its OWN new process group (`detached: true` from here,
+    // standing in for a shell putting the launcher in the terminal's
+    // foreground group) and, per the #9543 fix, spawns ITS OWN child into a
+    // separate process group in turn. A negative-pid kill targets the whole
+    // group — mechanically what a terminal's Ctrl-C does — and lands only on
+    // the launcher's group. Before the fix, the child shared that group and
+    // got the raw broadcast directly AND the launcher's forwarded copy
+    // microseconds later; the child's `process.once(SIGINT, ...)` handler had
+    // already unregistered for the first copy, so the second fell through to
+    // the runtime's default disposition and killed it before its (here,
+    // deliberately async) graceful-shutdown cleanup — releasing a lock,
+    // finishing in-flight work — ever completed.
+    const sandbox = makeSandboxDir("akm-launcher-signal-group-");
+    try {
+      const dist = path.join(sandbox.dir, "package", "dist");
+      const launcher = path.join(dist, "akm");
+      const readyFile = path.join(sandbox.dir, "ready.txt");
+      const startedFile = path.join(sandbox.dir, "started.txt");
+      const doneFile = path.join(sandbox.dir, "done.txt");
+      fs.mkdirSync(dist, { recursive: true });
+      fs.copyFileSync(path.resolve("scripts/node-runtime/akm"), launcher);
+      // A fake child entry whose SIGINT handler mimics a real graceful
+      // shutdown with async cleanup: it records that shutdown started, waits
+      // (standing in for e.g. releasing the rebuild lock), THEN writes a
+      // completion marker before exiting. A second signal landing on top
+      // would kill it via the runtime's default disposition between the two
+      // markers — so `started.txt` existing without `done.txt` means the
+      // graceful shutdown got cut short.
+      fs.writeFileSync(
+        path.join(dist, "cli.js"),
+        [
+          'import fs from "node:fs";',
+          `fs.writeFileSync(${JSON.stringify(readyFile)}, String(process.pid));`,
+          'process.once("SIGINT", () => {',
+          `  fs.writeFileSync(${JSON.stringify(startedFile)}, "1");`,
+          "  setTimeout(() => {",
+          `    fs.writeFileSync(${JSON.stringify(doneFile)}, "1");`,
+          "    process.exit(0);",
+          "  }, 300);",
+          "});",
+          "await new Promise(() => {});",
+        ].join("\n"),
+      );
+
+      const launcherProc = spawn(process.execPath, [launcher, "sentinel"], {
+        stdio: ["ignore", "ignore", "ignore"],
+        env: process.env,
+        detached: true,
+      });
+
+      await waitFor(() => fs.existsSync(readyFile));
+      // A negative pid targets the whole process group the launcher leads —
+      // the same mechanism a terminal uses for Ctrl-C.
+      process.kill(-(launcherProc.pid as number), "SIGINT");
+
+      const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        launcherProc.once("exit", (code, signal) => resolve({ code, signal }));
+      });
+      expect(exit.code).toBe(0);
+      expect(exit.signal).toBeNull();
+
+      await waitFor(() => fs.existsSync(startedFile));
+      await waitFor(() => fs.existsSync(doneFile));
+    } finally {
+      sandbox.cleanup();
+    }
+  }, 15000);
 });
