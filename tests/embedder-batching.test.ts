@@ -55,6 +55,16 @@ describe("isContextExceededResponse", () => {
     expect(isContextExceededResponse(503, "service unavailable")).toBe(false);
     expect(isContextExceededResponse(400, "")).toBe(false);
   });
+
+  test("recognises llama.cpp's physical-batch rejection (#9541 decision 8)", () => {
+    // The exact message llama.cpp returns (HTTP 500) when a batch exceeds
+    // its configured physical batch size.
+    expect(isContextExceededResponse(500, "input is too large to process. increase the physical batch size")).toBe(
+      true,
+    );
+    expect(isContextExceededResponse(500, "ubatch size exceeded")).toBe(true);
+    expect(isContextExceededResponse(500, "INPUT IS TOO LARGE TO PROCESS")).toBe(true);
+  });
 });
 
 describe("RemoteEmbedder.embedBatch: failed-batch visibility (#9541 decision 5)", () => {

@@ -202,9 +202,11 @@ serves parallel slots, not as a blanket "go faster" knob. A caller abort
 
 **Context-size split-and-retry** — a batch rejected specifically for
 exceeding the endpoint's context window (HTTP 413, or a recognised
-context-size error body such as `exceed_context_size_error`) is split in half
-and retried recursively rather than discarded whole, down to individual
-documents; a single document that still fails this way becomes a
+context-size error body such as `exceed_context_size_error`, or llama.cpp's
+own physical-batch rejection — `input is too large to process`, `physical
+batch size`, `ubatch`, #9541) is split in half and retried recursively
+rather than discarded whole, down to individual documents; a single
+document that still fails this way becomes a
 `context-window-exceeded` skip. Any other failure (network error, 5xx,
 malformed response) keeps skipping the whole batch as a `batch-request-failed`
 skip — a genuinely broken batch does not get retried into a storm of smaller

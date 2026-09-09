@@ -129,8 +129,16 @@ export class ContextExceededError extends Error {
   }
 }
 
-/** Patterns providers use to report a request too large for the model's context window. */
-const CONTEXT_EXCEEDED_PATTERN = /exceed_context_size_error|context size|context length|too many tokens/i;
+/**
+ * Patterns providers use to report a request too large for the model's
+ * context window. `input is too large to process`/`physical batch size`/
+ * `ubatch` (#9541 decision 8) cover llama.cpp's own physical-batch
+ * rejection (HTTP 500, e.g. "input is too large to process. increase the
+ * physical batch size"), which was previously an unrecognized generic
+ * failure — the whole batch was dropped instead of split and retried.
+ */
+const CONTEXT_EXCEEDED_PATTERN =
+  /exceed_context_size_error|context size|context length|too many tokens|input is too large to process|physical batch size|ubatch/i;
 
 /**
  * True when an HTTP failure means "this request's input is too large for the
