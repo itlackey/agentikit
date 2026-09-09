@@ -92,7 +92,12 @@ live holder as a reason to skip the run entirely and exit 0. This is
 distinct from `ensureIndex()`'s implicit inline reindex (the read path's
 bootstrap when the index is otherwise unusable): that path never consults
 this lock, since a caller reaching it has no usable index to serve either
-way and must proceed.
+way and must proceed. The lock's "held" message names the pid that actually
+holds it (the bun/node process) and, when the published launcher is
+involved, the launcher pid alongside it — `pid 4242 (launcher 4240)`
+(`createLockPayload`, `src/core/file-lock.ts`; `AKM_LAUNCHER_PID`, #9543) —
+since every process listing and task log shows the launcher pid, not the
+child's.
 
 The write path's targeted index upsert (`indexWrittenAssets`, used by
 `remember`/`import`/`proposal accept`/`source clone`/extract session assets
@@ -192,16 +197,38 @@ skipped unless the caller explicitly requests re-enrichment.
 
 Once entries are upserted, `generateEmbeddingsForDb`
 (`src/indexer/materialize-embeddings.ts`) generates and stores vectors for
-every entry that does not already have one.
+every entry that does not already have one. **Fragments are lexical only and
+are never embedded** — the FTS index (`entry_fragments`/`entry_fragments_fts`)
+carries fragment-level text for keyword/BM25 matching, but every entry vector
+comes from that entry's own (capped, see below) search text, not from any of
+its fragments. In practice this means the embedding phase issues roughly one
+embedder input per entry, not per fragment.
+
+**Per-document cap** (`embedding.maxInputTokens`, default 512, #9543 decision
+2) — before batching, each pending document's search text is truncated to
+this many estimated tokens (head only, unicode-safe) if it exceeds the cap;
+a document is skipped only when its capped head is empty. This replaces
+"one oversized document fails its whole batch" with "one oversized document
+is embedded on its head" — llama.cpp rejects a single sequence longer than
+its physical batch (`--ubatch-size`, default 512) with HTTP 500 ("input is
+too large to process"), and the cap's default matches that common local
+default. The materializer logs once per run how many entries were
+truncated.
 
 **Request batching** — `RemoteEmbedder.embedBatch` (`src/llm/embedders/remote.ts`)
-groups texts into provider requests bounded by an estimated token budget
-(`embedding.maxTokens`/`embedding.contextLength`, default 8000 tokens) and a
+groups (already-capped) texts into provider requests bounded by an estimated
+token budget (`embedding.maxTokens`, default 8000 tokens) and a
 document-count safety cap (`embedding.batchSize`, default 100) — the token
 budget is what actually keeps a request inside the endpoint's context window
 and the per-request timeout; the count cap only guards against many tiny
-documents packing an oversized request. A single document whose own estimate
-exceeds the token budget is isolated and skipped before ever going over HTTP.
+documents packing an oversized request. With the 512-token per-document cap
+above, a request carries about 16 documents by default. A single document
+whose own estimate still exceeds the token budget (only possible when
+`maxInputTokens` is configured larger than `maxTokens`) is isolated and
+skipped before ever going over HTTP. `embedding.contextLength` does NOT feed
+this budget (#9543 decision 2) — it is Ollama's `num_ctx` only, forwarded
+verbatim as `options.num_ctx` on the native `/api/embed` request (see the
+embedding knobs table in `docs/reference/configuration.md`).
 
 **Timeout** — each request is bounded by `embedding.timeoutMs` (positive
 integer, default 120_000 — 120s, #9541 decision 3), used by both
@@ -338,7 +365,14 @@ A kept index adopts the new fingerprint (and identity) immediately; a purge
 writes them in the SAME transaction as the purge, before any embedding
 request, so an interruption partway through a rebuild resumes on the next
 run (only the still-missing entries get re-embedded) instead of purging
-again from zero. A canary that cannot reach the endpoint at all leaves the
+again from zero. The very first embedding pass for a db (no stored
+fingerprint to compare against — the canary never runs at all) writes
+`embeddingFingerprint` just as eagerly, before any provider call, for the
+same reason (#9543 decision 3): a per-batch commit is durable the instant
+it lands, and a later `akm index --full`'s salvage-before-discard step
+(#9542) tags salvaged rows by this meta — an unset fingerprint would make it
+a no-op even though real vectors were genuinely embedded. A canary that
+cannot reach the endpoint at all leaves the
 existing vectors and the OLD fingerprint untouched and reports failure, so
 a down server does not destroy a working index — the next `akm index`
 retries. `akm index --reembed` bypasses the canary entirely and forces a

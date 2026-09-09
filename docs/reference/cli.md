@@ -282,8 +282,9 @@ advisory, never the blocking lock #872 removed (see
 the lock, it warns and proceeds anyway, contending with the existing run.
 `--skip-if-locked` changes that only for the invocation that passes it: if
 the lock is already held by a live process, it skips gracefully (exit 0,
-`{ ok: true, skipped: { reason: "lock-held", pid, startedAt } }`) instead of
-contending. `akm index` and `akm curate` are both safe to call frequently —
+`{ ok: true, skipped: { reason: "lock-held", pid, launcherPid, startedAt } }`
+— `launcherPid` is the holder's launcher pid when known, `null` otherwise,
+#9543) instead of contending. `akm index` and `akm curate` are both safe to call frequently —
 `curate` never blocks on a rebuild in progress ([read-path indexing stays
 non-blocking](#curate)) — but a hook, cron job, or scheduled task that
 invokes `akm index` directly should pass `--skip-if-locked` so it steps
