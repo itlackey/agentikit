@@ -93,7 +93,16 @@ function installSemanticTestEmbedder(): void {
     text.includes("fuel-delivery") || text.includes("gasoline") ? [0, 1, 0, 0] : [1, 0, 0, 0];
   overrideSeam(_setEmbedderForTests, {
     embed: async (text) => vectorFor(text),
-    embedBatch: async (texts) => texts.map(vectorFor),
+    embedBatch: async (texts, _config, _signal, _onSkip, onBatch) => {
+      const embeddings = texts.map(vectorFor);
+      // The materializer commits per onBatch call (#954); a fake standing in
+      // for a whole provider must still fire it, or its writes never land.
+      onBatch?.(
+        texts.map((_t, i) => i),
+        embeddings,
+      );
+      return embeddings;
+    },
   });
 }
 
@@ -165,7 +174,16 @@ describe("indexWrittenAssets", () => {
     const vector = Array.from({ length: 384 }, (_, index) => (index === 0 ? 1 : 0));
     overrideSeam(_setEmbedderForTests, {
       embed: async () => vector,
-      embedBatch: async (texts) => texts.map(() => vector),
+      embedBatch: async (texts, _config, _signal, _onSkip, onBatch) => {
+        const embeddings = texts.map(() => vector);
+        // The materializer commits per onBatch call (#954); a fake standing
+        // in for a whole provider must still fire it, or its writes never land.
+        onBatch?.(
+          texts.map((_t, i) => i),
+          embeddings,
+        );
+        return embeddings;
+      },
     });
     writeSandboxConfig({ semanticSearchMode: "auto" });
     writeMemory("second-existing-memory", "A second entry establishes the degraded generation.");

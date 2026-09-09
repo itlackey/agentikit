@@ -21,6 +21,7 @@ import {
   buildTokenBoundedBatches,
   DEFAULT_REMOTE_BATCH_SIZE,
   DEFAULT_TOKEN_BUDGET,
+  type EmbeddingBatchCommit,
   type EmbeddingBatchSkip,
   estimateTokenCount,
   hasRemoteEndpoint,
@@ -63,6 +64,9 @@ export interface EmbeddingGenerationResult {
   /** Number of sqlite-vec writes that degraded to the complete BLOB fallback. */
   vecInsertFailures?: number;
 }
+
+/** How often (in stored entries) to emit a progress line during a large embedding run (#954). */
+const PROGRESS_INTERVAL = 500;
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
@@ -148,11 +152,18 @@ export async function generateEmbeddingsForDb(
     }
 
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let storedCount = 0;
+    let skippedCount = 0;
+    let embedFailedCount = 0;
+    let vecFailedCount = 0;
+    let vecUnavailableCount = 0;
+    let storedTokens = 0;
+    let lastProgressBucket = 0;
     try {
       heartbeatTimer = setInterval(() => {
         onProgress({
           phase: "embeddings",
-          message: `Still generating embeddings for ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"}; waiting on embedding provider.`,
+          message: `Still generating embeddings: ${storedCount}/${allEntries.length} stored; waiting on embedding provider.`,
         });
       }, 15000);
 
@@ -160,27 +171,45 @@ export async function generateEmbeddingsForDb(
       // not thrown (#874) — collect what couldn't be embedded and why, so a
       // few bad documents don't discard every other entry's embedding.
       const skips: EmbeddingBatchSkip[] = [];
-      const embeddings = await embedBatch(texts, config.embedding, signal, (skip) => skips.push(skip));
-      throwIfAborted(signal);
-      let storedCount = 0;
-      let skippedCount = 0;
-      let embedFailedCount = 0;
-      let vecFailedCount = 0;
-      let vecUnavailableCount = 0;
-      db.transaction(() => {
-        for (const [i, entry] of allEntries.entries()) {
-          const embedding = embeddings[i];
-          if (!embedding) {
-            embedFailedCount++;
-            continue;
+      const embedStart = Date.now();
+      // Commit each provider batch in its own short transaction as it lands,
+      // rather than buffering the whole run in memory for one transaction at
+      // the very end (#954) — a competing-process lock error or any other
+      // interruption partway through now keeps whatever already committed
+      // instead of losing the entire pass.
+      const onBatch: EmbeddingBatchCommit = (indices, batchEmbeddings) => {
+        db.transaction(() => {
+          for (let k = 0; k < indices.length; k++) {
+            const entry = allEntries[indices[k] as number];
+            if (!entry) continue;
+            const embedding = batchEmbeddings[k];
+            if (!embedding) {
+              embedFailedCount++;
+              continue;
+            }
+            const result = upsertEmbedding(db, entry.id, embedding);
+            if (result.stored) {
+              storedCount++;
+              storedTokens += estimateTokenCount(entry.searchText);
+            } else {
+              skippedCount++;
+            }
+            if (result.vec === "failed") vecFailedCount++;
+            if (result.vec === "unavailable") vecUnavailableCount++;
           }
-          const result = upsertEmbedding(db, entry.id, embedding);
-          if (result.stored) storedCount++;
-          else skippedCount++;
-          if (result.vec === "failed") vecFailedCount++;
-          if (result.vec === "unavailable") vecUnavailableCount++;
+        })();
+        const bucket = Math.floor(storedCount / PROGRESS_INTERVAL);
+        if (bucket > lastProgressBucket) {
+          lastProgressBucket = bucket;
+          onProgress({
+            phase: "embeddings",
+            message: `Embedded ${storedCount}/${allEntries.length} entries.`,
+          });
         }
-      })();
+      };
+      await embedBatch(texts, config.embedding, signal, (skip) => skips.push(skip), onBatch);
+      throwIfAborted(signal);
+      const elapsedSeconds = Math.max((Date.now() - embedStart) / 1000, 0.001);
       if (skippedCount > 0) {
         warn(
           `[embed] ${skippedCount} embedding${skippedCount === 1 ? "" : "s"} skipped (entry deleted between queue and write)`,
@@ -205,9 +234,11 @@ export async function generateEmbeddingsForDb(
             "Rebuild with 'akm index --full' after resolving the vec table (often a vector-dimension mismatch).",
         );
       }
+      const entriesPerSec = storedCount / elapsedSeconds;
+      const tokensPerSec = storedTokens / elapsedSeconds;
       onProgress({
         phase: "embeddings",
-        message: `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"}.`,
+        message: `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"} in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s).`,
       });
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       // Only a total failure (nothing at all embedded, despite having entries
