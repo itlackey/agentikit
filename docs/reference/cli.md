@@ -234,6 +234,18 @@ semantic-search settings, and phase-by-phase progress to stderr while the
 index is being built. Malformed workflow assets are skipped with file-path
 warnings instead of aborting the full run.
 
+**Progress in non-verbose JSON mode (default output format, #9541):** even
+without `--verbose`, phase-start messages and the embedding heartbeat
+(`Still generating embeddings: X/N stored, F failed; waiting on embedding
+provider.`) are now written to stderr, and a failed embedding batch logs at
+the default level instead of `--verbose`-only — a long-running index build
+against a slow or unresponsive provider is no longer silent until the whole
+run finishes. Text-mode output keeps its spinner instead (no stderr line
+growth); JSON stdout output is unaffected either way. The high-frequency
+per-batch `Embedded N/M entries.` line stays out of non-verbose stderr (it
+fires after every committed batch) — pass `--verbose` for that level of
+detail.
+
 **`--clean` flag:** After indexing completes, verifies every indexed entry's source
 file still exists on disk. Removes any entries whose file is missing (for local
 bundle sources only; remote entries are skipped). Returns a `clean` block in the

@@ -107,6 +107,26 @@ warn just because a rebuild happens to be running concurrently. It never
 tries to acquire or reclaim the lock itself; reclaiming a dead-PID sentinel
 stays `akm index`'s job.
 
+**Embedding phase and transactions** (#9541 decisions 1-2) —
+`generateEmbeddingsForDb` (`src/indexer/materialize-embeddings.ts`) refuses
+to run against a connection that already has a transaction open: its
+per-batch `db.transaction()` calls are only a durable commit when `db` has
+no ambient transaction, since one nested inside another SQLite transaction
+runs as an unobservable SAVEPOINT instead. `akm bundle update`'s coordinator
+(`src/commands/sources/installed-stashes.ts`) opens `index.db` under one
+outer `BEGIN IMMEDIATE` spanning content, lock, canonical entries, FTS, and
+state — but no longer runs the embedding phase inside it. `akmIndex` skips
+its embedding phase entirely when called with a borrowed update transaction
+and finalize records semantic state as `"pending"`, never `"ready"`; after
+the coordinator's own commit, it calls the shared `runEmbeddingPass`
+(`src/indexer/indexer.ts`) directly on a fresh, non-transactional
+connection. A failing post-commit pass (provider down) still leaves the
+update itself successful — content, lock, and index generation are already
+durably committed — with only the reported `semanticStatus: "blocked"`
+(surfaced on `akm bundle update`'s own JSON response, `index.semanticStatus`)
+showing that semantic search fell behind, exactly like a plain `akm index`
+run whose embedding phase fails.
+
 ## Mutation and finalization boundary
 
 The canonical entry repository owns each complete synchronous mutation of
@@ -179,9 +199,17 @@ groups texts into provider requests bounded by an estimated token budget
 (`embedding.maxTokens`/`embedding.contextLength`, default 8000 tokens) and a
 document-count safety cap (`embedding.batchSize`, default 100) — the token
 budget is what actually keeps a request inside the endpoint's context window
-and the 30s request timeout; the count cap only guards against many tiny
+and the per-request timeout; the count cap only guards against many tiny
 documents packing an oversized request. A single document whose own estimate
 exceeds the token budget is isolated and skipped before ever going over HTTP.
+
+**Timeout** — each request is bounded by `embedding.timeoutMs` (positive
+integer, default 120_000 — 120s, #9541 decision 3), used by both
+`RemoteEmbedder.embed` and `requestBatch`. The prior fixed 30s cut off
+exactly the field-report case: a local model server on a large
+token-budget-bounded batch legitimately took longer than that, the timeout
+fired mid-response with no retry, and every batch it hit was silently
+dropped for the rest of an hours-long run.
 
 **Concurrency** — provider batches are dispatched through a bounded pool
 (`concurrentMap`) instead of strictly sequentially. Default width (unset
@@ -298,8 +326,21 @@ the canary to meaningfully compare.
 ## Progress Reporting
 
 - text mode: shows a spinner with processed-versus-total source counts
-- `--verbose`: prints phase progress to stderr
-- structured output (`json`, `yaml`, `jsonl`): emits clean machine-readable output without spinner noise
+- `--verbose`: prints every phase progress message to stderr, including the
+  high-frequency per-batch `Embedded N/M entries.` line
+- non-verbose structured output (`json`, `yaml`, `jsonl`, #9541 decision 5):
+  emits clean machine-readable output on stdout, but phase-start messages
+  and the embedding heartbeat (`Still generating embeddings: X/N stored, F
+  failed; waiting on embedding provider.`) now reach stderr via `info()` too
+  — a stalled run used to print nothing at all until the whole run finished,
+  indistinguishable from "no database open, nothing written" (field
+  report). The per-batch `Embedded N/M entries.` line is deliberately
+  excluded here (that would be spam, not a heartbeat).
+- source-cache hydration (`ensureSourceCaches`, `src/indexer/search/search-source.ts`,
+  #9541 decision 6) — which runs BEFORE `index.db` is even opened — reports
+  `Hydrating source i/n: <name>` per source about to sync, plus a 15s
+  heartbeat while that source's sync is in flight, through the same
+  progress channel.
 
 ## Database Tables
 

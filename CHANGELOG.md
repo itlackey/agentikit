@@ -201,6 +201,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reference — recommended alongside `--skip-if-locked` for scheduled runs, since
   the operator's own shell can pass config validation while a scheduler's
   stripped-down environment cannot.
+- **`embedding.timeoutMs` configures the per-request embedding timeout
+  (#9541).** The prior fixed 30s timeout cut off a slow local model server on
+  a large token-budget-bounded batch mid-response, with no retry — every batch
+  that hit it was silently dropped for the rest of an hours-long run. Default
+  120s, used by both the single-text and batch embedding request paths.
+- **`embedding.concurrency` overrides the fixed in-flight embedding request
+  window (#9541).** Reverses the earlier "no config override" call in this
+  same release's own #954 entry above, after field evidence that a
+  multi-slot local server (llama.cpp `--parallel N`, vLLM) sat idle behind
+  the fixed default. Bounded 1-16; unset behavior is unchanged (1 for a
+  loopback endpoint, 2 for a remote one). Request size — `embedding.batchSize`
+  and `embedding.maxTokens`/`contextLength` — remains the first throughput
+  lever; set this only for an endpoint that genuinely serves parallel
+  requests.
+- **The embedding phase stops after 3 consecutive transport failures instead
+  of grinding through every remaining batch (#9541).** A dead or hung
+  provider used to burn hours on a large stash, one request timeout at a
+  time, with no signal until a single aggregate warning at the end and
+  `ok: true`, exit 0. After 3 consecutive `batch-request-failed` batches
+  (never a `context-window-exceeded` one, which proves the provider is
+  reachable and resets the count) the pass stops dispatching further
+  requests and reports failure, naming how many embeddings were stored
+  before it gave up. Batches already committed are kept.
 
 ### Changed
 
@@ -245,7 +268,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   so an interruption partway through (a competing indexer collision, a killed
   process, any thrown provider error) discarded every embedding already computed,
   not just the ones still in flight. Each request batch now commits inside its
-  own short transaction as it lands.
+  own short transaction as it lands. This holds on every path that embeds: plain
+  `akm index`, the implicit reindex, the write path (`akm remember`/`import`/
+  `proposal accept`/`source clone`), and — as of #9541, below — `akm bundle
+  update`, whose coordinator previously ran the embedding phase inside its own
+  outer transaction, turning every per-batch commit into an unobservable
+  SAVEPOINT.
 - **A batch rejected for exceeding the endpoint's context window is split and
   retried instead of skipped outright (#954).** `akm index`'s embedding pass now
   recognizes HTTP 413 and known context-size error bodies and halves the failing
@@ -253,15 +281,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   single document that still fails this way is skipped, as
   `context-window-exceeded`; every other failure (network error, 5xx, malformed
   response) keeps the prior skip-the-whole-batch behavior.
-- **Embedding requests are now dispatched through a small, fixed in-flight window
-  instead of strictly sequentially (#954).** The window is 1 request at a time
-  for a loopback endpoint and 2 for a remote one, and is not configurable — the
-  actual throughput knob is request size, via the existing `embedding.batchSize`
-  (document cap) and `embedding.maxTokens`/`contextLength` (token budget), since
-  a larger batch takes about the same wall time as a single one.
+- **Embedding requests are dispatched through a small in-flight window instead of
+  strictly sequentially (#954).** The window defaults to 1 request at a time for
+  a loopback endpoint and 2 for a remote one; the actual throughput knob is
+  request size, via the existing `embedding.batchSize` (document cap) and
+  `embedding.maxTokens`/`contextLength` (token budget), since a larger batch
+  takes about the same wall time as a single one. `embedding.concurrency`
+  (#9541, below) overrides this default for a server that genuinely serves
+  parallel requests.
 - **`akm index` reports embedding progress and throughput as it runs (#954).** A
-  progress line is printed every 500 stored entries, and a final line reports
-  throughput (`entries/s`, `tokens/s`) once the embedding pass completes.
+  progress line is printed every 500 stored entries (after every committed batch
+  as of #9541, below), and a final line reports throughput (`entries/s`,
+  `tokens/s`) once the embedding pass completes.
 - **A rename of `embedding.model` no longer forces a full re-embed by itself
   (#955).** `akm index` used to purge and rebuild the entire vector index on any
   change to the fingerprint it derives from `embedding.model`, including a pure
@@ -321,6 +352,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `improve` itself now builds (see Added, above), rather than a separate
   re-derivation that could disagree with what a real run in the same environment
   would do.
+- **A failed embedding batch and `akm index`'s progress are visible without
+  `--verbose` (#9541).** A failed provider batch used to log only under
+  `--verbose`; it now logs at the default `warn` level, naming the batch size
+  and reason. `akm index`'s `Embedded N/M entries.` line now fires after every
+  committed batch instead of every 500 stored entries, and the heartbeat names
+  the failed count too. In non-verbose JSON/yaml output mode, phase-start
+  messages and the heartbeat now reach stderr (via `info()`); text mode keeps
+  its spinner instead, and `--verbose` is unchanged. A silently grinding,
+  hours-long `akm index` run against a dead provider — with no output until
+  one aggregate warning at the very end — was the field report this fixes.
+  Source-cache hydration (which runs before `index.db` is even opened) now
+  reports its own progress the same way: `Hydrating source i/n: <name>` per
+  source, plus a 15s heartbeat while a sync is in flight.
 
 ### Fixed
 
@@ -400,6 +444,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **An unset or empty `$VAR` referenced by an engine's `apiKey` now warns once,
   naming the variable (#953).** Previously it silently sent an empty
   `Authorization` header instead of surfacing the misconfiguration.
+- **`akm bundle update` now commits its embedding pass durably instead of
+  nesting it inside its own transaction (#9541).** Its coordinator called
+  `akm index` for its embedding phase too, INSIDE the same unified
+  `BEGIN IMMEDIATE` that covers content/lock/index/state — so every per-batch
+  commit #954 (above) added nested as an unobservable SAVEPOINT, and a
+  SIGKILL mid-run lost every embedding of the run rather than just the one in
+  flight, contrary to what #954's own 0.9.15-beta.1 entry claimed for this
+  path. `generateEmbeddingsForDb` now refuses to run against a connection
+  that already has a transaction open (an internal contract error, not a
+  user-facing one), and `akm bundle update` runs its embedding phase on a
+  fresh connection AFTER its own commit instead. A failing post-commit pass
+  (provider down) still leaves the update itself successful — content, lock,
+  and index generation are already durably committed — with the response's
+  `index.semanticStatus` (new field) the only sign semantic search fell
+  behind (`"blocked"`), exactly like a plain `akm index` run today.
+- **A batch rejected by llama.cpp for exceeding its physical batch size is now
+  recognized as a context-size rejection (#9541).** llama.cpp reports this as
+  an HTTP 500 with a body like "input is too large to process. increase the
+  physical batch size", which the existing context-size pattern
+  (`exceed_context_size_error`, "context size", …) did not match, so the
+  whole batch was dropped instead of being split and retried like a 413.
 
 ## [0.9.14] - 2026-09-04
 
