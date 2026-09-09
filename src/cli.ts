@@ -333,8 +333,9 @@ const healthCommand = defineCommand({
     probe: {
       type: "boolean",
       default: true,
-      description: "Probe default-llm-engine / configured-engines reachability (on by default).",
-      negativeDescription: "Skip the reachability probes (for an offline or air-gapped host).",
+      description:
+        "Probe default-llm-engine / configured-engines reachability and check for a newer akm release (on by default).",
+      negativeDescription: "Skip the reachability probes and the update check (for an offline or air-gapped host).",
     },
   },
   async run({ args }) {
