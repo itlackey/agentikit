@@ -15,8 +15,10 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import path from "node:path";
 import { akmReflect } from "../../../../src/commands/improve/reflect";
-import { listProposals } from "../../../../src/commands/proposal/repository";
+import { akmProposalAccept } from "../../../../src/commands/proposal/proposal";
+import { createProposal, isProposalSkipped, listProposals } from "../../../../src/commands/proposal/repository";
 import type { AkmConfig } from "../../../../src/core/config/config";
 import { ConfigError } from "../../../../src/core/errors";
 import { appendEvent, readEvents } from "../../../../src/core/events";
@@ -24,7 +26,7 @@ import type { SpawnedSubprocess, SpawnFn } from "../../../../src/core/subprocess
 import { _setWarnSinkForTests } from "../../../../src/core/warn";
 import { REFLECT_TRUNCATION_MARKER } from "../../../../src/integrations/agent/prompts";
 import { durableItemRef } from "../../../_helpers/durable-ref";
-import { quietQualityGateConfig } from "../../../_helpers/factories";
+import { makeConfig, quietQualityGateConfig } from "../../../_helpers/factories";
 import { type IsolatedAkmStorage, mutateScopedEnv, withEnv, withIsolatedAkmStorage } from "../../../_helpers/sandbox";
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
@@ -879,5 +881,42 @@ describe("Reflect truncation-marker leak guard — a leaked cap notice is flagge
     // Not discarded: the marker text itself is preserved in the queued
     // proposal so a reviewer can see exactly what leaked.
     expect(proposals[0]?.payload.content).toContain(REFLECT_TRUNCATION_MARKER);
+  });
+
+  // #952 Addendum (dev-team field review, 2026-09-09): the creation-time defer
+  // above is the FIRST layer. This is the second: a reflect proposal whose
+  // body still contains the marker when it reaches `proposal accept` (e.g. a
+  // deferred proposal a human accepts anyway, or any future reflect path that
+  // mints a proposal without going through sanitizeReflectPayload) must be
+  // REJECTED, not promoted onto disk — a truncated body silently overwriting
+  // a full asset is data loss. Exercises the same drain/promote codepath
+  // `akm proposal accept` and drain's default `promoteFn` both use.
+  test("a reflect proposal whose body still contains the marker is REJECTED at proposal accept, not promoted", async () => {
+    const stash = makeStashDir();
+    const config = makeConfig(stash);
+
+    // Bypass sanitizeReflectPayload (the creation-time defer path exercised
+    // above) by minting the proposal directly through the repository, the
+    // same way a defense-in-depth scenario would reach `proposal accept`
+    // with the marker already embedded.
+    const created = createProposal(stash, {
+      ref: "knowledge/leak-marker-accept",
+      source: "reflect",
+      force: true,
+      target: { source: "stash", root: path.resolve(stash) },
+      payload: {
+        content: `---\ndescription: Leaked marker doc\n---\n\nRewritten body.\n${REFLECT_TRUNCATION_MARKER}`,
+      },
+    });
+    if (isProposalSkipped(created)) throw new Error("unexpected skip");
+
+    await expect(akmProposalAccept({ stashDir: stash, id: created.id, config })).rejects.toThrow(
+      "reflect-truncation-marker-leak",
+    );
+
+    // Never promoted: still pending, nothing written to disk.
+    const stillPending = listProposals(stash, { status: "pending" }).find((p) => p.id === created.id);
+    expect(stillPending).toBeDefined();
+    expect(stillPending?.status).toBe("pending");
   });
 });
