@@ -303,7 +303,7 @@ describe("decodeImproveResult", () => {
         process: "reflect" as const,
         configKey: "improve.strategies.default.processes.reflect.engine",
         reason:
-          'requires a credential that is not available in this process\'s environment (engine "default": $LAB_API_KEY is not set in this environment).',
+          'requires a credential that is not available in this process\'s environment (engine "default": $LAB_API_KEY is not set in this environment)',
       },
     ];
     const decoded = decodeImproveResult({

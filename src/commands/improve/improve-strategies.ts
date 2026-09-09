@@ -169,7 +169,7 @@ export function resolveImprovePlan(
 
 /** Describe why a resolved-but-uncredentialed runner belongs in `engineUnavailable` (#957). */
 function credentialUnavailableReason(engineName: string, status: { reason: string }): string {
-  return `requires a credential that is not available in this process's environment (engine "${engineName}": ${status.reason}).`;
+  return `requires a credential that is not available in this process's environment (engine "${engineName}": ${status.reason})`;
 }
 
 function buildImprovePlan(
