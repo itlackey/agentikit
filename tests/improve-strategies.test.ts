@@ -353,6 +353,63 @@ describe("resolveImprovePlan", () => {
     }
   });
 
+  test("a resolved but uncredentialed process lands in engineUnavailable naming the engine, not the variable (#957)", () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        ready: { kind: "llm", endpoint: "https://example.test/v1/chat/completions", model: "ready-model" },
+        private: {
+          kind: "llm",
+          endpoint: "https://example.test/v1/chat/completions",
+          model: "private-model",
+          apiKey: "$PRIVATE_957_TOKEN",
+        },
+      },
+      defaults: { llmEngine: "ready", improveStrategy: "credential-test" },
+      improve: {
+        strategies: {
+          "credential-test": { processes: { reflect: { enabled: true, engine: "private" } } },
+        },
+      },
+    };
+
+    const plan = resolveImprovePlan("credential-test", config, { env: {} });
+
+    expect(plan.processes.reflect.enabled).toBe(false);
+    expect(plan.processes.reflect.runner).toBeNull();
+    const unavailable = plan.engineUnavailable.find((item) => item.process === "reflect");
+    expect(unavailable).toBeDefined();
+    expect(unavailable?.configKey).toBe("improve.strategies.credential-test.processes.reflect.engine");
+    expect(unavailable?.reason).toContain('engine "private"');
+    expect(unavailable?.reason).toContain("$PRIVATE_957_TOKEN");
+    // Other processes on the credentialed "ready" fallback still run.
+    expect(plan.processes.distill.enabled).toBe(true);
+    expect(plan.processes.distill.runner?.engine).toBe("ready");
+  });
+
+  test("throws the existing all-unavailable ConfigError when credential unavailability alone disables every process (#957)", () => {
+    expect(() =>
+      resolveImprovePlan(
+        "default",
+        {
+          configVersion: "0.9.0",
+          semanticSearchMode: "off",
+          engines: {
+            private: {
+              kind: "llm",
+              endpoint: "https://example.test/v1/chat/completions",
+              model: "private-model",
+              apiKey: "$PRIVATE_ALL_957_TOKEN",
+            },
+          },
+          defaults: { llmEngine: "private" },
+        } as AkmConfig,
+        { env: {} },
+      ),
+    ).toThrow("No improve process can run");
+  });
+
   test("does not require a validation engine when repair is disabled", () => {
     const plan = resolveImprovePlan(
       "default",

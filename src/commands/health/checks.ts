@@ -4,6 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import { type AkmConfig, type LlmConnectionConfig, loadConfig } from "../../core/config/config";
+import { IMPROVE_PROCESS_ENGINE_CAPABILITIES } from "../../core/config/engine-semantics";
 import { ConfigError } from "../../core/errors";
 import { EXTRACT_INFRASTRUCTURE_SKIP_REASONS } from "../../core/improve-types";
 import { listPendingStateMigrations } from "../../core/state-db";
@@ -27,7 +28,7 @@ import {
 } from "../../integrations/agent/model-map";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { ExtractOutcomeCount } from "../../storage/repositories/extract-sessions-repository";
-import { resolveImprovePlan } from "../improve/improve-strategies";
+import { type ImproveProcessName, resolveImprovePlan } from "../improve/improve-strategies";
 import { ACTIVE_RUN_WARN_MS, type HealthCheckResult, type ImproveHealthMetrics, TASK_FAIL_RATE_WARN } from "./types";
 
 /**
@@ -550,43 +551,15 @@ export async function runHealthEngineProbes(
 export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
   const config = deps.loadConfig?.() ?? loadConfig();
   const strategyName = config.defaults?.improveStrategy ?? "default";
+  const env = deps.env ?? process.env;
   try {
-    const plan = resolveImprovePlan(strategyName, config);
-    const env = deps.env ?? process.env;
-    const unavailableProcesses = Object.entries(plan.processes).flatMap(([name, process]) => {
-      if (!process.enabled || !process.runner) return [];
-      return credentialAvailable(
-        process.runner.credential,
-        env,
-        process.runner.apiKeyFile,
-        process.runner.apiKeySecretRef,
-      )
-        ? []
-        : [name];
-    });
-    if (plan.triageJudgment) {
-      const judgmentCredential =
-        plan.triageJudgment.kind === "llm"
-          ? plan.triageJudgment.credential
-          : plan.triageJudgment.kind === "sdk"
-            ? plan.triageJudgment.fallbackCredential
-            : undefined;
-      const judgmentApiKeyFile =
-        plan.triageJudgment.kind === "llm"
-          ? plan.triageJudgment.apiKeyFile
-          : plan.triageJudgment.kind === "sdk"
-            ? plan.triageJudgment.fallbackApiKeyFile
-            : undefined;
-      const judgmentApiKeySecretRef =
-        plan.triageJudgment.kind === "llm"
-          ? plan.triageJudgment.apiKeySecretRef
-          : plan.triageJudgment.kind === "sdk"
-            ? plan.triageJudgment.fallbackApiKeySecretRef
-            : undefined;
-      if (!credentialAvailable(judgmentCredential, env, judgmentApiKeyFile, judgmentApiKeySecretRef)) {
-        unavailableProcesses.push("triage.judgment");
-      }
-    }
+    // #957: credential availability (including the triage-judgment engine) is
+    // now derived once, inside `buildImprovePlan` itself — the same
+    // `plan.engineUnavailable` the real `improve` run reads to skip processes
+    // and populate `AkmImproveResult.skippedProcesses`. This check is a pure
+    // projection of that list rather than its own re-derivation.
+    const plan = resolveImprovePlan(strategyName, config, { env });
+    const unavailableProcesses = plan.engineUnavailable.map((item) => item.process);
     // #913: name the engine each process actually resolved to, so a
     // strategy-level `engine` pin that shadows `defaults.llmEngine` is
     // visible on `akm health` instead of requiring config archaeology.
@@ -599,15 +572,33 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([process, engine]) => `${process}: "${engine}"`)
       .join(", ");
+    // #957: fail only when the strategy's LLM-backed work would be a total
+    // no-op — every process the strategy actually enabled among the
+    // `capability: "llm"` set (see IMPROVE_PROCESS_ENGINE_CAPABILITIES) ended
+    // up unavailable. A partial failure (some processes still have a working
+    // engine) stays a `warn`, matching #914's "a credential warn stays a warn"
+    // policy for the general per-engine probes; this is the strategy-scoped
+    // "is the whole run a no-op" question instead.
+    const llmProcessNames = (Object.keys(IMPROVE_PROCESS_ENGINE_CAPABILITIES) as ImproveProcessName[]).filter(
+      (name) => IMPROVE_PROCESS_ENGINE_CAPABILITIES[name] === "llm",
+    );
+    const requiredLlmProcessNames = llmProcessNames.filter(
+      (name) => plan.processes[name].enabled || plan.engineUnavailable.some((item) => item.process === name),
+    );
+    const availableLlmProcessNames = llmProcessNames.filter((name) => plan.processes[name].enabled);
+    const allRequiredUnavailable = requiredLlmProcessNames.length > 0 && availableLlmProcessNames.length === 0;
+    const status = unavailableProcesses.length === 0 ? "pass" : allRequiredUnavailable ? "fail" : "warn";
     return {
       name: "active-improve-strategy",
       kind: "deterministic",
-      status: unavailableProcesses.length === 0 ? "pass" : "warn",
+      status,
       confidence: "high",
       message:
         unavailableProcesses.length === 0
           ? `Active improve strategy "${plan.strategy.name}" has available process engines${engineList ? ` (${engineList})` : ""}.`
-          : `Active improve strategy "${plan.strategy.name}" has unavailable required credentials for: ${unavailableProcesses.join(", ")}${engineList ? ` (engines: ${engineList})` : ""}.`,
+          : allRequiredUnavailable
+            ? `Active improve strategy "${plan.strategy.name}" cannot run any LLM-backed process; the nightly run would be a no-op: ${unavailableProcesses.join(", ")}${engineList ? ` (engines: ${engineList})` : ""}.`
+            : `Active improve strategy "${plan.strategy.name}" has unavailable required credentials for: ${unavailableProcesses.join(", ")}${engineList ? ` (engines: ${engineList})` : ""}.`,
       evidence: {
         strategy: plan.strategy.name,
         unavailableProcesses,

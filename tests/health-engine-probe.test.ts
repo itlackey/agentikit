@@ -435,6 +435,35 @@ describe("health engine probes", () => {
     expect(result.evidence).toMatchObject({ engines: { extract: "lab" } });
     expect(result.message).toContain('extract: "lab"');
   });
+
+  test("fails when every enabled LLM-backed process of the active strategy is unavailable (#957)", () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      // No credentialed fallback engine anywhere — every default-strategy
+      // process that needs an LLM engine resolves to "private", whose
+      // credential is not in `env`. proactiveMaintenance stays enabled (it
+      // has no engine capability) so the plan does not hit the separate
+      // ALL-disabled ConfigError guard.
+      engines: { private: { ...llm, apiKey: "$PRIVATE_ALL_UNAVAILABLE_TOKEN" } },
+      defaults: { llmEngine: "private" },
+      improve: {
+        strategies: {
+          default: { processes: { proactiveMaintenance: { enabled: true } } },
+        },
+      },
+    };
+
+    const result = healthChecks.runActiveImproveStrategyProbe({ loadConfig: () => config, env: {} });
+
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("no-op");
+    expect(result.evidence).toMatchObject({
+      strategy: "default",
+      unavailableProcesses: expect.arrayContaining(["reflect", "distill", "consolidate", "validation"]),
+    });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_ALL_UNAVAILABLE_TOKEN");
+  });
 });
 
 describe("health engine reachability probe (#914)", () => {

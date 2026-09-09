@@ -293,24 +293,62 @@ export function resolveLlmCredentialValue(
   return apiKeySecretRef !== undefined ? resolveSecret(apiKeySecretRef, resolveSecretFromStore) : undefined;
 }
 
+/** Non-throwing credential-presence result: available, or unavailable with the unresolved reference named (#957). */
+export type LlmCredentialAvailability = { available: true } | { available: false; reference: string; reason: string };
+
 /**
- * Non-throwing credential-presence check for `akm health` and the
- * improve-strategy probe (#953): an env value is present, or a file-backed
- * credential is readable and non-empty, or a secret-store reference resolves.
- * Never reads env/disk/store speculatively beyond what's needed to answer
- * "is something here", and never throws on a broken/missing source — that is
- * reported by {@link resolveLlmCredentialValue} at the real dispatch.
+ * Non-throwing credential-presence check for `akm health`, the
+ * improve-strategy probe (#953), and improve's own plan builder (#957): an env
+ * value is present, or a file-backed credential is readable and non-empty, or
+ * a secret-store reference resolves. Never reads env/disk/store speculatively
+ * beyond what's needed to answer "is something here", and never throws on a
+ * broken/missing source — that is reported by {@link resolveLlmCredentialValue}
+ * at the real dispatch.
+ *
+ * On failure, `reference` and `reason` name WHICH env var / file / secret
+ * reference is missing (never its value) — the operator's own shell often
+ * passes the same check a scheduler's stripped-down environment fails, so the
+ * caller needs to say which reference is the problem. Callers that must never
+ * name the reference (`akm health`'s evidence/message) use only `.available`.
+ */
+export function describeLlmCredentialAvailability(
+  resolved: Pick<ResolvedLlmUse, "credential" | "apiKeyFile" | "apiKeySecretRef">,
+  env: NodeJS.ProcessEnv = process.env,
+): LlmCredentialAvailability {
+  if (resolved.credential?.required) {
+    if (resolved.credential.names.some((name) => Boolean(env[name]?.trim()))) return { available: true };
+    const reference = `$${resolved.credential.names[0]}`;
+    return { available: false, reference, reason: `${reference} is not set in this environment` };
+  }
+  if (resolved.apiKeyFile !== undefined) {
+    if (lookupApiKeyFileValue(resolved.apiKeyFile) !== undefined) return { available: true };
+    return {
+      available: false,
+      reference: resolved.apiKeyFile,
+      reason: `apiKeyFile ${resolved.apiKeyFile} is missing or empty`,
+    };
+  }
+  if (resolved.apiKeySecretRef !== undefined) {
+    if (lookupApiKeySecretRefValue(resolved.apiKeySecretRef) !== undefined) return { available: true };
+    return {
+      available: false,
+      reference: resolved.apiKeySecretRef,
+      reason: `${resolved.apiKeySecretRef} did not resolve from the secret store`,
+    };
+  }
+  return { available: true };
+}
+
+/**
+ * Thin boolean wrapper over {@link describeLlmCredentialAvailability} for
+ * callers (`akm health`'s engine-reachability probes) that only need a
+ * yes/no answer and never surface the reference.
  */
 export function isLlmCredentialAvailable(
   resolved: Pick<ResolvedLlmUse, "credential" | "apiKeyFile" | "apiKeySecretRef">,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  if (resolved.credential?.required) {
-    return resolved.credential.names.some((name) => Boolean(env[name]?.trim()));
-  }
-  if (resolved.apiKeyFile !== undefined) return lookupApiKeyFileValue(resolved.apiKeyFile) !== undefined;
-  if (resolved.apiKeySecretRef !== undefined) return lookupApiKeySecretRefValue(resolved.apiKeySecretRef) !== undefined;
-  return true;
+  return describeLlmCredentialAvailability(resolved, env).available;
 }
 
 /** Collect materialized engine credentials for output and persistence redaction. */
