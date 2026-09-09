@@ -184,19 +184,34 @@ async function runEmbeddingCanary(
   }
 
   let observedModel: string | undefined;
+  const skips: EmbeddingBatchSkip[] = [];
   let canaryVectors: (EmbeddingVector | undefined)[];
   try {
     canaryVectors = await embedBatch(
       samples.map((sample) => sample.searchText),
       config.embedding,
       signal,
-      undefined,
+      (skip) => skips.push(skip),
       (_indices, _embeddings, model) => {
         if (model) observedModel = model;
       },
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    return {
+      outcome: "unverifiable",
+      message: `could not verify embedding compatibility (${message}); keeping existing vectors — rerun akm index when the endpoint is reachable`,
+    };
+  }
+
+  if (canaryVectors.every((vector) => vector === undefined)) {
+    // RemoteEmbedder skips a failing request rather than throwing (#874), so
+    // an unreachable/failing endpoint surfaces here as an all-`undefined`
+    // result, not a caught exception. Without this check the code below
+    // would compare every sample against `undefined`, score 0 similarity for
+    // all of them, and misread total provider failure as "vectors differ" —
+    // purging a healthy index because the server happened to be down.
+    const message = skips[0]?.message ?? "embedding provider returned no vectors for the canary sample";
     return {
       outcome: "unverifiable",
       message: `could not verify embedding compatibility (${message}); keeping existing vectors — rerun akm index when the endpoint is reachable`,

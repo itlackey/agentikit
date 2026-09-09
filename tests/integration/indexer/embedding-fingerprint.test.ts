@@ -8,14 +8,17 @@
  * serves byte-identical vectors (the trigger: a gateway rename from
  * `qwen3-embedding-0.6b` to `embed/qwen3-embedding-0.6b`). These tests drive
  * `generateEmbeddingsForDb` directly against a real index.db (hence
- * tests/integration/, per the ORG-03..06 classification rule) with a fake
- * embedder (via `_setEmbedderForTests`) that plays the canary probe and the
- * main embedding pass, and assert: a same-model rename with compatible
+ * tests/integration/, per the ORG-03..06 classification rule), mostly with a
+ * fake embedder (via `_setEmbedderForTests`) that plays the canary probe and
+ * the main embedding pass, and assert: a same-model rename with compatible
  * vectors keeps the stored rows; an incompatible rename purges and rebuilds;
  * `--reembed` forces a rebuild regardless; an interrupted rebuild resumes
  * instead of purging again; an unreachable canary keeps the old vectors and
  * fingerprint; and the server-reported model identity (not just the config
- * string) decides compatibility.
+ * string) decides compatibility. Test (h) instead drives the real
+ * `RemoteEmbedder` (HTTP mocked via `withMockedFetch`) to pin the same
+ * unreachable-endpoint outcome against its actual skip-and-continue failure
+ * semantics, not a mock that throws.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -31,8 +34,8 @@ import { closeDatabase, openIndexDatabase } from "../../../src/storage/repositor
 import { upsertEntry } from "../../../src/storage/repositories/index-entries-repository";
 import { getMeta } from "../../../src/storage/repositories/index-meta-repository";
 import { getEmbeddingCount } from "../../../src/storage/repositories/index-vec-repository";
-import { type IsolatedAkmStorage, withIsolatedAkmStorage } from "../../_helpers/sandbox";
-import { overrideSeam } from "../../_helpers/seams";
+import { type IsolatedAkmStorage, withIsolatedAkmStorage, withMockedFetch } from "../../_helpers/sandbox";
+import { overrideSeam, withSeam } from "../../_helpers/seams";
 
 type EmbedBatchMock = (
   texts: string[],
@@ -335,6 +338,46 @@ describe("generateEmbeddingsForDb: embedding-fingerprint canary (#955)", () => {
       expect(getEmbeddingCount(db)).toBe(3);
       expect(getMeta(db, "embeddingIdentity")).toBe("remote:server-model-y|3");
       expect(messages.some((m) => m.includes("stored vectors are compatible"))).toBe(true);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+
+  test("(h) a REAL RemoteEmbedder failing every canary request keeps existing vectors, not a spurious purge", async () => {
+    // Unlike every other test in this file, this one does NOT mock
+    // `embedBatch` itself for the second pass — it lets `generateEmbeddingsForDb`
+    // reach the real `RemoteEmbedder` and mocks only the HTTP layer via
+    // `withMockedFetch`. `RemoteEmbedder.embedBatch` SKIPS a failing request
+    // (onSkip + `undefined` slots) rather than throwing (#874) — a mock
+    // embedder function that throws on failure (as test (e) uses) cannot
+    // reproduce that shape and would give false confidence that this path is
+    // covered.
+    const db = openIndexDatabase();
+    try {
+      seedEntries(db, 3);
+
+      await withSeam(_setEmbedderForTests, { embedBatch: simpleMock(stableVec) }, async () => {
+        const first = await generateEmbeddingsForDb(db, configWithModel("model-a"), () => {});
+        expect(first.success).toBe(true);
+      });
+      expect(getEmbeddingCount(db)).toBe(3);
+      const before = embeddingBlob(db, 0);
+      const fingerprintBefore = getMeta(db, "embeddingFingerprint");
+
+      const result = await withMockedFetch(
+        () => generateEmbeddingsForDb(db, configWithModel("model-b"), () => {}),
+        async () => new Response("synthetic upstream failure", { status: 500 }),
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain("could not verify embedding compatibility");
+      expect(result.message).toContain("keeping existing vectors");
+      expect(getEmbeddingCount(db)).toBe(3);
+      expect(embeddingBlob(db, 0)).toEqual(before);
+      // The mismatch is left unresolved so the next `akm index` retries it —
+      // NOT purged as "vectors differ" the way an unhandled all-undefined
+      // canary result used to be misread.
+      expect(getMeta(db, "embeddingFingerprint")).toBe(fingerprintBefore);
     } finally {
       closeDatabase(db);
     }
