@@ -17,9 +17,22 @@
 
 import { describe, expect, test } from "bun:test";
 import type { EmbeddingConnectionConfig } from "../src/core/config/config";
-import { isContextExceededResponse, RemoteEmbedder, resolveEmbeddingConcurrency } from "../src/llm/embedders/remote";
+import {
+  DEFAULT_EMBEDDING_TIMEOUT_MS,
+  isContextExceededResponse,
+  RemoteEmbedder,
+  resolveEmbeddingConcurrency,
+  resolveEmbeddingTimeoutMs,
+} from "../src/llm/embedders/remote";
 import type { EmbeddingVector } from "../src/llm/embedders/types";
 import { withMockedFetch } from "./_helpers/sandbox";
+
+/** A fetch mock that hangs until its request's abort signal fires, then rejects like real `fetch` does. */
+function hungFetch(_url: string, init?: RequestInit): Promise<Response> {
+  return new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+  });
+}
 
 describe("isContextExceededResponse", () => {
   test("HTTP 413 is always a context-size rejection, regardless of body", () => {
@@ -39,6 +52,34 @@ describe("isContextExceededResponse", () => {
     expect(isContextExceededResponse(500, "synthetic upstream failure")).toBe(false);
     expect(isContextExceededResponse(503, "service unavailable")).toBe(false);
     expect(isContextExceededResponse(400, "")).toBe(false);
+  });
+});
+
+describe("resolveEmbeddingTimeoutMs (#9541)", () => {
+  test("defaults to 120s when embedding.timeoutMs is unset", () => {
+    expect(resolveEmbeddingTimeoutMs({})).toBe(DEFAULT_EMBEDDING_TIMEOUT_MS);
+    expect(DEFAULT_EMBEDDING_TIMEOUT_MS).toBe(120_000);
+  });
+
+  test("uses the configured value when set", () => {
+    expect(resolveEmbeddingTimeoutMs({ timeoutMs: 5_000 })).toBe(5_000);
+  });
+
+  test("the configured value reaches fetchWithTimeout for embed()", async () => {
+    await withMockedFetch(async () => {
+      const embedder = new RemoteEmbedder({ endpoint: "http://localhost:9", model: "test", timeoutMs: 30 });
+      await expect(embedder.embed("hello")).rejects.toThrow(/timed out after 30ms/);
+    }, hungFetch);
+  });
+
+  test("the configured value reaches fetchWithTimeout for embedBatch()/requestBatch()", async () => {
+    await withMockedFetch(async () => {
+      const embedder = new RemoteEmbedder({ endpoint: "http://localhost:9", model: "test", timeoutMs: 30 });
+      const skips: Array<{ message: string }> = [];
+      const results = await embedder.embedBatch(["doc one"], undefined, (skip) => skips.push(skip));
+      expect(results).toEqual([undefined]);
+      expect(skips[0]?.message).toContain("timed out after 30ms");
+    }, hungFetch);
   });
 });
 

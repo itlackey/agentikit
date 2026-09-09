@@ -43,6 +43,22 @@ export function estimateTokenCount(text: string): number {
   return Math.round(text.length / 4);
 }
 
+/**
+ * Default per-request timeout when `embedding.timeoutMs` is unset (#9541
+ * decision 3). The prior fixed 30s cut off exactly the field-report case: a
+ * local model server on an 8000-token (`DEFAULT_TOKEN_BUDGET`) batch
+ * legitimately takes longer than that, and the timeout fired mid-response
+ * with no retry — every batch it hit was silently dropped for the rest of
+ * an hours-long run. 120s comfortably covers a slow local batch while still
+ * bounding a genuinely dead endpoint to a few minutes, not forever.
+ */
+export const DEFAULT_EMBEDDING_TIMEOUT_MS = 120_000;
+
+/** Resolve the effective per-request timeout: `embedding.timeoutMs` when set, else the default above. */
+export function resolveEmbeddingTimeoutMs(config: EmbeddingConnectionConfig): number {
+  return config.timeoutMs ?? DEFAULT_EMBEDDING_TIMEOUT_MS;
+}
+
 /** Why a document was skipped rather than embedded. */
 export type EmbeddingSkipReason = "context-window-exceeded" | "batch-request-failed";
 
@@ -190,6 +206,7 @@ export class RemoteEmbedder implements Embedder {
     if (ollamaOpts) {
       body.options = ollamaOpts;
     }
+    const timeoutMs = resolveEmbeddingTimeoutMs(this.config);
 
     // `signal` MUST go through fetchWithTimeout's dedicated 4th parameter, not
     // the RequestInit: fetchWithTimeout replaces `opts.signal` with its own
@@ -202,19 +219,21 @@ export class RemoteEmbedder implements Embedder {
         headers,
         body: JSON.stringify(body),
       },
-      30_000,
+      timeoutMs,
       signal,
     );
 
     if (!response.ok) {
-      const errBody = await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal }).catch((err) => {
-        if (signal?.aborted) throw err;
-        return "";
-      });
+      const errBody = await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: timeoutMs, signal }).catch(
+        (err) => {
+          if (signal?.aborted) throw err;
+          return "";
+        },
+      );
       throw new Error(`Embedding request failed (${response.status}): ${this.safeErrorBody(errBody)}`);
     }
 
-    const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal })) as {
+    const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: timeoutMs, signal })) as {
       data: Array<{ embedding: number[] }>;
     };
 
@@ -423,6 +442,7 @@ export class RemoteEmbedder implements Embedder {
     if (ollamaOpts) {
       body.options = ollamaOpts;
     }
+    const timeoutMs = resolveEmbeddingTimeoutMs(this.config);
 
     // See embed(): `signal` goes through the 4th parameter, not the
     // RequestInit, or fetchWithTimeout drops it.
@@ -433,12 +453,12 @@ export class RemoteEmbedder implements Embedder {
         headers,
         body: JSON.stringify(body),
       },
-      30_000,
+      timeoutMs,
       signal,
     );
 
     if (!response.ok) {
-      const respBody = await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal }).catch(
+      const respBody = await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: timeoutMs, signal }).catch(
         (err) => {
           if (signal?.aborted) throw err;
           return "";
@@ -451,7 +471,7 @@ export class RemoteEmbedder implements Embedder {
       throw new Error(message);
     }
 
-    const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal })) as {
+    const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: timeoutMs, signal })) as {
       data: Array<{ embedding: number[]; index: number }>;
       model?: string;
     };

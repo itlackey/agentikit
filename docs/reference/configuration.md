@@ -396,8 +396,16 @@ unless a remote `embedding` config is provided.
 `akm improve`'s memory-inference/consolidate passes when they call an
 embedding model: `provider`, `endpoint`, `model`, `apiKey` (symbolic
 reference, same rules as engine `apiKey`), `dimension`, `localModel`,
-`maxTokens`, `batchSize`, `chunkSize`, `contextLength`, and
+`maxTokens`, `batchSize`, `chunkSize`, `contextLength`, `timeoutMs`, and
 `ollamaOptions.num_ctx`.
+
+`embedding.timeoutMs` (positive integer, default `120000` — 120s) bounds
+each remote embedding request. A local model server on a large,
+token-budget-bounded batch (`embedding.maxTokens`/`embedding.contextLength`)
+legitimately takes longer than the prior fixed 30s cut off; that timeout
+fired mid-response with no retry, silently dropping every batch it hit for
+the rest of a run. Set it lower to fail fast against a known-fast endpoint,
+or higher for a slow local server on large batches.
 
 `akm index` keeps a small, fixed number of `/v1/embeddings` requests in
 flight at once (a remote endpoint only; the local transformer path is

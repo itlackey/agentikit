@@ -41,5 +41,13 @@ export const EmbeddingConnectionConfigSchema = z
     chunkSize: positiveInt.optional(),
     contextLength: positiveInt.optional(),
     ollamaOptions: EmbeddingOllamaOptionsSchema.optional(),
+    /**
+     * Per-request timeout in milliseconds for a remote embedding request
+     * (default 120_000, `DEFAULT_EMBEDDING_TIMEOUT_MS` in
+     * `src/llm/embedders/remote.ts`). The prior fixed 30s cut off a slow
+     * local model server on a large token-bounded batch mid-response, with
+     * no retry — every batch that hit it was silently dropped (#9541).
+     */
+    timeoutMs: positiveInt.optional(),
   })
   .passthrough();

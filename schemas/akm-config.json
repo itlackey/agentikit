@@ -236,6 +236,10 @@
             }
           },
           "additionalProperties": true
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0
         }
       },
       "additionalProperties": true
@@ -1927,6 +1931,10 @@
                 }
               },
               "additionalProperties": true
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "exclusiveMinimum": 0
             }
           },
           "additionalProperties": true
@@ -3496,6 +3504,10 @@
             }
           },
           "additionalProperties": true
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "exclusiveMinimum": 0
         }
       },
       "additionalProperties": true
