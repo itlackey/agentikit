@@ -15,7 +15,7 @@ import { type EmbeddingConnectionConfig, resolveSecret } from "../../core/config
 import { ENV_REFERENCE_PATTERN, SECRET_STORE_REFERENCE_PATTERN } from "../../core/config/schema/primitives";
 import { defaultConcurrencyForEndpoint } from "../../core/loopback";
 import { redactErrorBody, redactSensitiveText } from "../../core/redaction";
-import { warn, warnVerbose } from "../../core/warn";
+import { warnVerbose } from "../../core/warn";
 import { resolveSecretFromStore } from "../../sources/snapshot-fetchers/secret-seam";
 import type { Embedder, EmbeddingVector } from "./types";
 
@@ -688,12 +688,16 @@ export class RemoteEmbedder implements Embedder {
           err instanceof ContextExceededError ? "context-window-exceeded" : "batch-request-failed";
         const failureKind: EmbeddingFailureKind | undefined =
           reason === "batch-request-failed" ? (timedOut ? "timeout" : "network-error") : undefined;
-        // Default-level, not verbose-only (#9541 decision 5): a silently
-        // grinding hours-long run against a dead provider was the field
-        // report's own symptom — a failed batch has to be visible without
-        // --verbose. Per-entry batch-mapping detail stays verbose-only
+        // Default-level visibility for a failed batch (not verbose-only) is
+        // still guaranteed here — just not via warn(). The `commitBatch` call
+        // below carries `outcome: "failed"` and this `message` as `reason`
+        // through `onBatch`, and materialize-embeddings.ts's per-batch line
+        // (also default-level) prints it from there. A warn() call here used
+        // to print the identical event a second time on stderr — the same
+        // class of double-print bug fixed for the truncation/re-embed-reason
+        // lines in materialize-embeddings.ts (#954, field-report follow-up).
+        // Per-entry batch-mapping detail stays verbose-only
         // (materialize-embeddings.ts).
-        warn(`[embed] batch of ${batch.length} document(s) failed and was skipped: ${message}`);
         let stopRequested = false;
         for (const [k, idx] of indices.entries()) {
           if (

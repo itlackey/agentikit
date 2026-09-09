@@ -71,23 +71,40 @@ describe("isContextExceededResponse", () => {
   });
 });
 
-describe("RemoteEmbedder.embedBatch: failed-batch visibility (#9541 decision 5)", () => {
-  test("a failed provider batch logs at warn (default) level, naming the batch size and reason", async () => {
+describe("RemoteEmbedder.embedBatch: failed-batch visibility (#954, field-report follow-up)", () => {
+  test("a failed provider batch is reported via onSkip/onBatch, not warn() — the materializer's per-batch line is the single default-level report, not a second one here", async () => {
+    // Regression guard for a round-2 review finding: this used to ALSO
+    // warn() the identical "batch of N document(s) failed and was skipped"
+    // sentence, duplicating the default-level per-batch line
+    // materialize-embeddings.ts's onBatch now prints for the same event —
+    // the same class of double-print bug fixed for the truncation/re-embed-
+    // reason lines (#954).
     const calls: Array<{ level: string; message: string }> = [];
     _setWarnSinkForTests((level, args) => {
       calls.push({ level, message: args.map(String).join(" ") });
     });
     try {
+      const skips: Array<{ reason: string; message: string }> = [];
+      const committed: Array<{ outcome?: string; reason?: string }> = [];
       await withMockedFetch(
         async () => {
           const embedder = new RemoteEmbedder({ endpoint: "http://localhost:9", model: "test" });
-          await embedder.embedBatch(["doc one", "doc two"]);
+          await embedder.embedBatch(
+            ["doc one", "doc two"],
+            undefined,
+            (skip) => skips.push(skip),
+            (_indices, _embeddings, _model, outcome) =>
+              committed.push({ outcome: outcome?.outcome, reason: outcome?.reason }),
+          );
         },
         () => new Response("synthetic upstream failure", { status: 500 }),
       );
-      const warnCall = calls.find((c) => c.message.includes("document(s) failed and was skipped"));
-      expect(warnCall?.level).toBe("warn");
-      expect(warnCall?.message).toContain("batch of 2 document(s) failed and was skipped");
+      expect(calls.some((c) => c.message.includes("document(s) failed and was skipped"))).toBe(false);
+      expect(skips).toHaveLength(2);
+      expect(skips[0]?.reason).toBe("batch-request-failed");
+      expect(committed).toHaveLength(1);
+      expect(committed[0]?.outcome).toBe("failed");
+      expect(committed[0]?.reason).toContain("synthetic upstream failure");
     } finally {
       _setWarnSinkForTests(undefined);
     }
