@@ -202,7 +202,7 @@ function medianOf(values: readonly number[]): number {
  * on what the server (or local model) actually reported plus the observed
  * vector width, so a gateway/transport change that keeps returning the same
  * underlying model can be told apart from a genuine model change without
- * relying on the operator's config string (#955 field-review addendum).
+ * relying on the operator's config string (#955).
  * Returns undefined when nothing was actually observed this call (no vector
  * to measure yet).
  */

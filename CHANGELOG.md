@@ -223,7 +223,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   config override for this window; the final release adds one after field
   evidence that a multi-slot local server (llama.cpp `--parallel N`, vLLM)
   sat idle behind the fixed default. Request size — `embedding.batchSize`
-  and `embedding.maxTokens`/`contextLength` — remains the first throughput
+  and `embedding.maxTokens` — remains the first throughput
   lever; set this only for an endpoint that genuinely serves parallel
   requests.
 - **The embedding phase stops after 3 consecutive transport failures instead
@@ -326,7 +326,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   strictly sequentially (#954).** The window defaults to 1 request at a time for
   a loopback endpoint and 2 for a remote one; the actual throughput knob is
   request size, via the existing `embedding.batchSize` (document cap) and
-  `embedding.maxTokens`/`contextLength` (token budget), since a larger batch
+  `embedding.maxTokens` (token budget), since a larger batch
   takes about the same wall time as a single one. `embedding.concurrency`
   (see Added, above) overrides this default for a server that genuinely serves
   parallel requests.

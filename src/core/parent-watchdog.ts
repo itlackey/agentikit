@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Parent-death watchdog (#956 addendum).
+ * Parent-death watchdog (#956).
  *
  * The published launcher (`scripts/node-runtime/akm`) now forwards SIGTERM to
  * its child, so a `kill <launcher-pid>` no longer orphans it — but a launcher

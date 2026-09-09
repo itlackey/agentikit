@@ -1165,7 +1165,7 @@ async function runCli(): Promise<void> {
 // sets `AKM_STANDALONE_ENTRY=1` before importing this file. The test harness
 // sets neither, so importing cli.ts under Bun stays inert as before.
 if (import.meta.main || process.env.AKM_NODE_ENTRY === "1" || process.env.AKM_STANDALONE_ENTRY === "1") {
-  // #956 addendum: a launcher that dies WITHOUT delivering a signal
+  // #956: a launcher that dies WITHOUT delivering a signal
   // (SIGKILL, an OOM kill, a supervisor that force-removes the process)
   // still reparents this process to init with nothing to catch — the field
   // evidence was 40 orphaned `bun …/dist/cli.js` processes in one day, some
