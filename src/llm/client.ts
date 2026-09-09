@@ -424,13 +424,18 @@ async function chatCompletionAttemptOnce(
           },
         }
       : {};
+  // #949: which of these two wire forms a backend honors is a fact about the
+  // backend (and any gateway in front of it), not about akm's own `provider`
+  // label — a llama.cpp build honors chat_template_kwargs, a bare
+  // `enable_thinking` is honored by nothing observed, and a gateway
+  // (freellmapi, Bifrost) can drop either one depending on how it was built.
+  // Send both whenever thinking is explicitly resolved so the same engine
+  // block keeps working across a direct vhost or any gateway in front of it.
   const resolvedEnableThinking = options?.enableThinking ?? config.enableThinking;
   const thinkingParams =
     resolvedEnableThinking === undefined
       ? {}
-      : config.provider === "vllm"
-        ? { chat_template_kwargs: { enable_thinking: resolvedEnableThinking } }
-        : { enable_thinking: resolvedEnableThinking };
+      : { chat_template_kwargs: { enable_thinking: resolvedEnableThinking }, enable_thinking: resolvedEnableThinking };
   const reasoningEffortParams =
     config.reasoningEffort === undefined ? {} : { reasoning_effort: config.reasoningEffort };
 
