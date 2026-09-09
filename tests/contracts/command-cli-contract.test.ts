@@ -43,6 +43,19 @@ describe("canonical index CLI surface", () => {
       default: false,
     });
   });
+
+  // #956: the contract must be extended in the SAME commit that registers a
+  // new flag. `akm index --skip-if-locked` mirrors `akm improve
+  // --skip-if-locked` — a scheduled/opportunistic run steps aside (exit 0)
+  // instead of contending with a rebuild already in progress.
+  test("registers index --skip-if-locked as a boolean flag defaulting to false", () => {
+    const top = main.subCommands as unknown as Record<string, DynamicCommand>;
+    expect(top.index).toBe(indexCommand as unknown as DynamicCommand);
+    expect((indexCommand as unknown as DynamicCommand).args?.["skip-if-locked"]).toMatchObject({
+      type: "boolean",
+      default: false,
+    });
+  });
 });
 
 describe("canonical task CLI surface", () => {
