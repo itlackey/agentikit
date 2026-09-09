@@ -189,9 +189,13 @@ export async function embedBatch(
   // Deterministic mode (env-gated, test/bench only): model-free, stable.
   if (isDeterministicEmbedEnabled()) {
     const embeddings = texts.map((t) => deterministicEmbed(t));
-    embeddings.forEach((embedding, i) => {
-      onBatch?.([i], [embedding]);
-    });
+    // One onBatch commit for the whole call, like the local/remote batched
+    // paths — firing once per text opened one materializer transaction per
+    // entry in deterministic (test/bench) mode.
+    onBatch?.(
+      embeddings.map((_embedding, i) => i),
+      embeddings,
+    );
     return embeddings;
   }
 
