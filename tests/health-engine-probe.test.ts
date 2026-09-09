@@ -333,6 +333,31 @@ describe("health engine probes", () => {
     expect(improve.evidence?.suppliedByEnvAsset).toBeNull();
   });
 
+  test("#950: SDK engine names the env asset that supplies its missing fallback credential", async () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        sdk: { kind: "agent", platform: "opencode-sdk", llmEngine: "improve" },
+        improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" },
+      },
+      defaults: { engine: "sdk" },
+    };
+    const result = await runDefaultEngineProbe({
+      loadConfig: () => config,
+      resolvePackage: () => "/sdk/package.json",
+      spawnSync: (() => ({ status: 0 })) as never,
+      env: {},
+      listEnvAssets: () => [{ ref: "env/lab", path: "/stash/env/lab.env", keys: ["PRIVATE_IMPROVE_TOKEN"] }],
+    });
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain('SDK engine "sdk" is incomplete: missing');
+    expect(result.message).toContain("env/lab");
+    expect(result.message).toContain("akm env run env/lab");
+    expect(result.evidence).toMatchObject({ suppliedByEnvAsset: "env/lab" });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_IMPROVE_TOKEN");
+  });
+
   test("warns when an enabled active improve process lacks its required credential", () => {
     const config: AkmConfig = {
       configVersion: "0.9.0",
