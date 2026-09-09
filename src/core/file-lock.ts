@@ -184,9 +184,34 @@ export function tryAcquireLockSync(lockPath: string, payload: string): LockOwner
   return withLockOperationMutex(lockPath, () => tryAcquireLockRaw(lockPath, payload));
 }
 
-/** Build a PID-bearing payload with a unique token for one acquisition attempt. */
+/**
+ * Best-effort launcher pid from `AKM_LAUNCHER_PID` (set by
+ * `scripts/node-runtime/akm`/`akm-migrate`, #9543) — undefined when unset,
+ * empty, or not a positive integer (never trust an ambient env var blindly
+ * into a lock message).
+ */
+function launcherPidFromEnv(): number | undefined {
+  const raw = process.env.AKM_LAUNCHER_PID;
+  if (!raw) return undefined;
+  const pid = Number.parseInt(raw, 10);
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/**
+ * Build a PID-bearing payload with a unique token for one acquisition attempt.
+ * Adds `launcherPid` (#9543) whenever this process is running under the
+ * published launcher, so a lock's holder can be identified by the pid every
+ * process listing and task log actually shows (the launcher's) as well as
+ * the pid that holds the lock (the bun/node child).
+ */
 export function createLockPayload(metadata: Record<string, unknown> = {}): string {
-  return JSON.stringify({ ...metadata, pid: process.pid, lockId: randomUUID() });
+  const launcherPid = launcherPidFromEnv();
+  return JSON.stringify({
+    ...metadata,
+    pid: process.pid,
+    ...(launcherPid !== undefined ? { launcherPid } : {}),
+    lockId: randomUUID(),
+  });
 }
 
 /**

@@ -117,6 +117,10 @@ export const indexCommand = defineCommand({
           skipped: {
             reason: "lock-held",
             pid: lockAcquisition.holder.pid,
+            // #9543: the launcher pid (when known) alongside the pid that
+            // actually holds the lock — every process listing and task log
+            // shows the launcher pid, not the bun/node child's.
+            launcherPid: lockAcquisition.holder.launcherPid,
             startedAt: lockAcquisition.holder.startedAt,
           },
         });

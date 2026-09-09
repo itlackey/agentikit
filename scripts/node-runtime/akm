@@ -117,6 +117,10 @@ if (contextIndex !== -1) {
 if (contextValid) {
   process.env.AKM_LAUNCHER_NODE = process.execPath;
   process.env.AKM_LAUNCHER_PATH = fileURLToPath(import.meta.url);
+  // #9543: lets the child (and its lock payloads) name the launcher pid
+  // alongside its own, and lets the child's parent-death watchdog tell a
+  // real launcher-managed run apart from a direct `bun src/cli.ts` run.
+  process.env.AKM_LAUNCHER_PID = String(process.pid);
 
   if (!process.versions.bun) {
     const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
@@ -146,6 +150,30 @@ if (contextValid) {
     const runtime = useBun ? "Bun" : "Node.js";
     const result = await new Promise((resolve) => {
       const child = spawn(command, [entry, ...process.argv.slice(2)], { stdio: "inherit", env: process.env });
+      // #9543: a `kill <launcher-pid>` (a scheduler timeout, a supervisor, an
+      // operator) used to end only this wrapper, orphaning the bun child —
+      // it kept running (and holding locks) for as long as its own work took.
+      // Forward the same signal so the child dies with its parent. Never
+      // forward once the child has already exited: in a terminal, SIGINT
+      // reaches both processes' foreground group directly, so the child is
+      // usually already exiting on its own by the time this handler runs —
+      // forwarding to a dead/replaced pid would be at best a no-op and at
+      // worst a double signal to whatever the terminal doesn't cover.
+      let childExited = false;
+      child.once("exit", () => {
+        childExited = true;
+      });
+      const forwardSignal = (signal) => {
+        if (childExited) return;
+        try {
+          child.kill(signal);
+        } catch {
+          // Child exited in the race between the check above and here.
+        }
+      };
+      for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+        process.on(signal, () => forwardSignal(signal));
+      }
       child.once("error", (error) => resolve({ error }));
       child.once("exit", (code, signal) => resolve({ code, signal }));
     });

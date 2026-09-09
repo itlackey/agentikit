@@ -7,7 +7,7 @@ import { ConfigError } from "../../core/errors";
 import { appendEvent, type EventsContext } from "../../core/events";
 import { type LockOwnership, releaseLock } from "../../core/file-lock";
 import { tryWithMaintenanceStartBarrier, withMaintenanceStartBarrier } from "../../core/maintenance-barrier";
-import { tryAcquireRunLock } from "../../core/run-lock";
+import { formatLockHolderPid, tryAcquireRunLock } from "../../core/run-lock";
 import { warn } from "../../core/warn";
 
 export type ImproveLockAcquisition = { state: "acquired"; ownership: LockOwnership } | { state: "skipped" };
@@ -74,7 +74,8 @@ function tryAcquireImproveLockUnlocked(
     return { state: "acquired", ownership: result.ownership };
   }
 
-  const { pid, startedAt } = result.holder;
+  const { startedAt } = result.holder;
+  const pid = formatLockHolderPid(result.holder);
   if (skipIfLocked) {
     warn(
       `[improve] another improve run holds the lock (PID ${pid}, started ${startedAt}); skipping (--skip-if-locked)`,

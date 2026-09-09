@@ -46,7 +46,12 @@ describe("akm index — skip-if-locked", () => {
     expect(result.code).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.ok).toBe(true);
-    expect(parsed.skipped).toEqual({ reason: "lock-held", pid: process.pid, startedAt: expect.any(String) });
+    expect(parsed.skipped).toEqual({
+      reason: "lock-held",
+      pid: process.pid,
+      launcherPid: null,
+      startedAt: expect.any(String),
+    });
     // The existing owner's sentinel is untouched.
     expect(fs.existsSync(lockPath)).toBe(true);
     expect(JSON.parse(fs.readFileSync(lockPath, "utf8")).pid).toBe(process.pid);
