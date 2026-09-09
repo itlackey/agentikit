@@ -263,7 +263,7 @@ const NOT_FOUND_HINTS: Partial<Record<NotFoundErrorCode, string>> = {
   PROPOSAL_NOT_FOUND: "Run `akm proposal list` to see pending proposals and their ids.",
   FILE_NOT_FOUND: "Check the path exists and is readable.",
   IMPROVE_RUN_NOT_FOUND:
-    'Run `akm improve` first, or check the run id with `sqlite3 "$AKM_DATA_DIR/state.db" "SELECT id, started_at FROM improve_runs ORDER BY started_at DESC LIMIT 10"`.',
+    "Run `akm improve` first, or `akm improve report --since 30d` to see recent run ids in `runIds`.",
 };
 
 /**
