@@ -58,4 +58,16 @@ describe("canonical workflow CLI surface", () => {
     expect(plan?.args?.ref).toMatchObject({ type: "positional", required: true });
     expect(plan?.args?.format).toMatchObject({ type: "string" });
   });
+
+  // #948: extends improve's --skip-if-locked skip-gracefully semantics to
+  // `workflow run` (RUN_LEASE_HELD / STATE_DB_CONTENDED). The contract must
+  // be extended in the same commit that registers a new flag.
+  test("registers workflow run --skip-if-locked as a boolean flag defaulting to false", () => {
+    const top = main.subCommands as unknown as Record<string, DynamicCommand>;
+    expect(top.workflow).toBe(workflowCommand as unknown as DynamicCommand);
+
+    const run = (workflowCommand as unknown as DynamicCommand).subCommands?.run;
+    expect(run?.args?.target).toMatchObject({ type: "positional", required: true });
+    expect(run?.args?.["skip-if-locked"]).toMatchObject({ type: "boolean", default: false });
+  });
 });

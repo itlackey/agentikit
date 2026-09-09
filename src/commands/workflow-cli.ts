@@ -14,6 +14,7 @@ import { defineGroupCommand, defineJsonCommand, EXIT_CODES, output, outputWithEx
 import { armAbortDeadline } from "../core/abort-deadline";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "../core/asset/asset-create";
 import { NotFoundError, UsageError } from "../core/errors";
+import { warn } from "../core/warn";
 import { akmIndex } from "../indexer/indexer";
 import { assertWorkflowMarkdownName, createWorkflowAsset, getWorkflowTemplate } from "../workflows/authoring/authoring";
 import type { WorkflowParameterFlag } from "../workflows/ir/params";
@@ -162,6 +163,20 @@ const workflowCreateCommand = defineJsonCommand({
   },
 });
 
+/**
+ * `--skip-if-locked` (#948) eligibility: only these two named, retryable
+ * `UsageError` codes turn a `workflow run` failure into a graceful skip —
+ * `RUN_LEASE_HELD` (another engine invocation is driving THIS run,
+ * `workflow-runs-repository.ts`'s single-driver lease) and
+ * `STATE_DB_CONTENDED` (an unrelated akm process is writing state.db right
+ * now, `core/state-db.ts`'s BEGIN IMMEDIATE retry exhaustion). Every other
+ * UsageError — a bad flag, an unresolvable target — still fails loudly.
+ */
+const WORKFLOW_RUN_SKIP_REASONS: Partial<Record<string, "lock-held" | "state-db-contended">> = {
+  RUN_LEASE_HELD: "lock-held",
+  STATE_DB_CONTENDED: "state-db-contended",
+};
+
 const workflowRunCommand = defineJsonCommand({
   meta: {
     name: "run",
@@ -180,6 +195,14 @@ const workflowRunCommand = defineJsonCommand({
         "(never abandons it). A workflow ref only — passing a run id with --new is a usage error.",
       default: false,
     },
+    "skip-if-locked": {
+      type: "boolean",
+      description:
+        "If another akm process already holds this run's engine lease, or state.db is busy with another " +
+        "writer, skip gracefully (exit 0) instead of failing (exit 2). Use for high-frequency scheduled runs " +
+        "so they don't pile up failures while a longer-running invocation is in progress.",
+      default: false,
+    },
   },
   async run({ args, rawArgs }) {
     const { runWorkflowSteps } = await import("../workflows/exec/run-workflow.js");
@@ -187,6 +210,7 @@ const workflowRunCommand = defineJsonCommand({
     const maxSteps = parseIntegerFlag(getStringArg(args, "max-steps"), "--max-steps", 1);
     const maxRetries = parseIntegerFlag(getStringArg(args, "max-retries"), "--max-retries", 0);
     const timeoutMs = parseWorkflowTimeout(getStringArg(args, "timeout"));
+    const skipIfLocked = args["skip-if-locked"];
     const controller = new AbortController();
     let signalExitCode: number | undefined;
     const interrupt = (signal: "SIGINT" | "SIGTERM") => {
@@ -204,14 +228,29 @@ const workflowRunCommand = defineJsonCommand({
       reason: `Workflow run timed out after ${timeoutMs}ms.`,
     });
     try {
-      const result = await runWorkflowSteps({
-        target: args.target,
-        parameterFlags,
-        ...(maxSteps !== undefined ? { maxSteps } : {}),
-        ...(maxRetries !== undefined ? { maxRetries } : {}),
-        newRun: args.new,
-        signal: controller.signal,
-      });
+      let result: Awaited<ReturnType<typeof runWorkflowSteps>>;
+      try {
+        result = await runWorkflowSteps({
+          target: args.target,
+          parameterFlags,
+          ...(maxSteps !== undefined ? { maxSteps } : {}),
+          ...(maxRetries !== undefined ? { maxRetries } : {}),
+          newRun: args.new,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        // #948: `--skip-if-locked` extends improve's "another run already
+        // holds this" skip semantics to `workflow run`. Only these two named,
+        // retryable UsageError codes are eligible — a bad flag or malformed
+        // input still fails loudly even with the flag set.
+        if (skipIfLocked && err instanceof UsageError && WORKFLOW_RUN_SKIP_REASONS[err.code]) {
+          const reason = WORKFLOW_RUN_SKIP_REASONS[err.code];
+          warn(`[workflow] ${err.message} skipping (--skip-if-locked)`);
+          output("workflow-run", { ok: true, target: args.target, skipped: { reason, message: err.message } });
+          return;
+        }
+        throw err;
+      }
       // The abort is observed between steps, so a deadline landing in the run's
       // final bookkeeping fires on a run that then finishes. Reporting that as
       // timed out would send an operator to resume a run with nothing left to
@@ -246,7 +285,17 @@ const WORKFLOW_RUN_VALUE_FLAGS = new Set([
   "shape",
   "output",
 ]);
-const WORKFLOW_RUN_BOOLEAN_FLAGS = new Set(["quiet", "verbose", "help", "no-quiet", "no-verbose", "new", "no-new"]);
+const WORKFLOW_RUN_BOOLEAN_FLAGS = new Set([
+  "quiet",
+  "verbose",
+  "help",
+  "no-quiet",
+  "no-verbose",
+  "new",
+  "no-new",
+  "skip-if-locked",
+  "no-skip-if-locked",
+]);
 
 export function parseWorkflowParameterFlags(rawArgs: readonly string[], target: string): WorkflowParameterFlag[] {
   const flags: WorkflowParameterFlag[] = [];
