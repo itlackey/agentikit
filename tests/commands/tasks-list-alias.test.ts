@@ -73,4 +73,17 @@ describe("akm task list", () => {
     const json = JSON.parse(list.stdout) as { hits: unknown[] };
     expect(json.hits.length).toBeLessThanOrEqual(1);
   });
+
+  test("rejects the retired --source flag with the same message as search --type task", async () => {
+    const list = await runCliCapture(["task", "list", "--source", "registry", "--format", "json"]);
+    resetConfigCache();
+    const search = await runCliCapture(["search", "--type", "task", "--source", "registry", "--format", "json"]);
+
+    expect(list.code).toBe(2);
+    expect(search.code).toBe(2);
+    expect(list.stderr).toContain(
+      "`--source` was renamed to `--from` in 0.9. Use `--from local|registry|all` instead.",
+    );
+    expect(JSON.parse(list.stderr)).toEqual(JSON.parse(search.stderr));
+  });
 });

@@ -44,6 +44,7 @@ import { resolveUsageEventSource } from "../../indexer/usage/usage-events";
 import { getOutputMode } from "../../output/context";
 import { TASK_RUN_BOOLEAN_FLAGS, TASK_RUN_VALUE_FLAGS } from "../../tasks/task-run-reserved-flags";
 import { akmSearch, parseSearchSource } from "../read/search";
+import { rejectRetiredSourceFlag } from "../read/search-cli";
 import { akmTaskExplain } from "./explain";
 import {
   akmTasksAdd,
@@ -534,6 +535,11 @@ const tasksPruneCommand = defineJsonCommand({
  * second, redundant IMPLEMENTATION of task listing, not because the
  * spelling itself was off-limits; this reuses `search`'s exact envelope
  * (its `results` alias comes along for free) instead of adding a second one.
+ * `query`/`--limit`/`--from` are handled identically to `searchCommand.run()`
+ * for the same inputs, including the retired `--source` guard (`../read/
+ * search-cli.ts`'s `rejectRetiredSourceFlag`, reused rather than copied) so
+ * `akm task list --source x` fails with the same actionable rename message
+ * as `akm search --type task --source x` instead of citty's silent absorb.
  */
 const tasksListCommand = defineJsonCommand({
   meta: { name: "list", description: "List task assets (alias for `akm search --type task`)" },
@@ -548,6 +554,7 @@ const tasksListCommand = defineJsonCommand({
     from: { type: "string", description: "Search source (local|registry|all)", default: "local" },
   },
   async run({ args }) {
+    rejectRetiredSourceFlag();
     const query = (args.query ?? "").trim();
     const limit = parsePositiveIntFlag(args.limit ?? undefined);
     const source = parseSearchSource(args.from);
