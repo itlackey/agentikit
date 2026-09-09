@@ -9,7 +9,7 @@ import { getStringArg, parsePositiveIntFlag } from "../../cli/parse-args";
 import { GLOBAL_OUTPUT_ARGS, output, runWithJsonErrors } from "../../cli/shared";
 import { isFullRefInput, parseRefInput } from "../../core/asset/resolve-ref";
 import { loadConfig } from "../../core/config/config";
-import { UsageError } from "../../core/errors";
+import { ConfigError, UsageError } from "../../core/errors";
 import { resolveMutationTarget } from "../../core/mutation-target";
 import { getCacheDir } from "../../core/paths";
 import { redactSensitiveText } from "../../core/redaction";
@@ -24,7 +24,7 @@ import {
   type TerminationReason,
 } from "./improve-result-file";
 import { runImproveSession } from "./improve-session";
-import { resolveImprovePlan } from "./improve-strategies";
+import { type ResolvedImprovePlan, resolveImprovePlan } from "./improve-strategies";
 
 let akmImproveForRun: typeof akmImprove = akmImprove;
 
@@ -91,6 +91,26 @@ function rejectRetiredImproveTargetFlag(): void {
   );
 }
 
+/**
+ * `--require-engines` (#957): abort before any lock, log, or index side
+ * effect when the resolved plan already knows a process the active strategy
+ * would enable cannot run. Without this flag improve degrades gracefully —
+ * it skips the affected processes and reports them in `skippedProcesses` —
+ * which is right for an interactive run but wrong for a scheduled one that
+ * would rather fail loudly than burn its budget re-indexing and then skip
+ * everything. Names the unresolved credential reference per process (not
+ * just the process name) so an operator whose own shell passes config
+ * validation can see exactly what the scheduler's environment is missing.
+ */
+function assertRequiredEnginesAvailable(plan: ResolvedImprovePlan): void {
+  if (plan.engineUnavailable.length === 0) return;
+  const lines = plan.engineUnavailable.map((item) => `  - ${item.process} (${item.configKey}): ${item.reason}`);
+  throw new ConfigError(
+    `--require-engines: ${plan.engineUnavailable.length} improve process${plan.engineUnavailable.length === 1 ? "" : "es"} cannot run because ${plan.engineUnavailable.length === 1 ? "its" : "their"} engine is unavailable:\n${lines.join("\n")}`,
+    "LLM_NOT_CONFIGURED",
+  );
+}
+
 export const improveCommand = defineCommand({
   meta: {
     name: "improve",
@@ -130,6 +150,12 @@ export const improveCommand = defineCommand({
       type: "boolean",
       description:
         "If another improve run already holds the lock, skip gracefully (exit 0) instead of failing with 'already running' (exit 78). Use for high-frequency scheduled runs so they don't pile up failures while a longer run is in progress.",
+      default: false,
+    },
+    "require-engines": {
+      type: "boolean",
+      description:
+        "Abort before any indexing, lock, or log side effect (exit 78) if the active strategy would enable a process whose engine or credential cannot be resolved in this process's environment. Without this flag, improve degrades gracefully instead: it skips the affected processes and reports them in the result's skippedProcesses. Recommended alongside --skip-if-locked for scheduled runs.",
       default: false,
     },
     strategy: {
@@ -178,6 +204,7 @@ export const improveCommand = defineCommand({
       // Resolve every enabled model-backed process before logging, signal
       // lifecycle setup, or any filesystem/database side effect.
       const resolvedPlan = resolveImprovePlan(strategyArg, effectiveConfig);
+      if (args["require-engines"]) assertRequiredEnginesAvailable(resolvedPlan);
       const selectedStrategyName = resolvedPlan.strategy.name;
       const sensitiveValues = collectEngineCredentialValues(effectiveConfig);
       // Only set the keys the user actually passed (citty leaves the flag

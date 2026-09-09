@@ -29,6 +29,12 @@ describe("current improvement CLI documentation contract", () => {
     expect(extractSection(cli, "### agent")).not.toContain("profiles.agent");
   });
 
+  test("improve documents --require-engines and the skippedProcesses result field (#957)", () => {
+    const section = extractSection(cli, "### improve");
+    expect(section).toContain("--require-engines");
+    expect(section).toContain("skippedProcesses");
+  });
+
   test("proposal documents the complete current lifecycle grammar", () => {
     const section = extractSection(cli, "### proposal");
     for (const verb of ["extract", "new", "list", "show", "diff", "accept", "reject", "revert"]) {

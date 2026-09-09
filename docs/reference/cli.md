@@ -2209,6 +2209,7 @@ akm improve memory
 akm improve skills/code-review
 akm improve workflows/release-checklist --task "reduce duplication"
 akm improve --skip-if-locked           # for high-frequency scheduled runs: skip (exit 0) if a run is already in progress
+akm improve --require-engines          # for scheduled runs: abort (exit 78) instead of degrading if an engine/credential is unavailable
 akm improve --no-sync                  # skip the end-of-run git commit entirely (default: on for git-backed bundles)
 akm improve --sync --no-push           # commit only, skip the push after it
 ```
@@ -2224,6 +2225,7 @@ akm improve --sync --no-push           # commit only, skip the push after it
 | `--strategy <name>` | Override the active improve strategy (a built-in or entry under `improve.strategies`) |
 | `--json-to-stdout` | Also emit the full persisted JSON result on stdout for a live run. Without this flag, stdout stays empty. Dry-runs always emit their result and are never persisted. |
 | `--skip-if-locked` | If another improve run already holds the lock, skip gracefully (exit 0) instead of failing with "already running" (exit 78). Use for high-frequency scheduled runs so they don't pile up failures while a longer run is in progress. |
+| `--require-engines` | Abort (exit 78, before any indexing, lock, or log side effect) if the active strategy would enable a process whose engine or credential cannot be resolved in this process's environment. Without this flag, improve degrades gracefully: it skips the affected processes and reports them in the result's `skippedProcesses`. Recommended alongside `--skip-if-locked` for scheduled runs, since the operator's own shell can pass config validation while a scheduler's stripped-down environment (see #953) cannot. |
 | `--sync` / `--no-sync` | Commit (and optionally push) the git-backed primary bundle when the run finishes. Default: on for git-backed bundles (per profile config). |
 | `--push` / `--no-push` | Push after the end-of-run sync commit when writable with a remote configured. `--no-push` commits only, skipping the push. Default: per profile config (`true`). `sync.push` stays outside the autonomy gate — this is a per-run opt-out, not a default change. |
 
@@ -2260,6 +2262,17 @@ threshold auto-accepts anything.
 Selection behavior defaults to recent feedback signals first, with a
 zero-feedback retrieval fallback for high-traffic refs. Use
 `--require-feedback-signal` to disable retrieval fallback for the run.
+
+When the active strategy enables a process (or the triage judgment engine)
+whose engine or credential cannot be resolved in this process's environment,
+the run does not silently do nothing for it: the process is skipped, and the
+result carries `skippedProcesses` — an array of `{process, configKey, reason}`
+entries (omitted entirely when nothing was skipped). `ok` and the exit code
+are unchanged either way, matching `extract`'s `skipReasons` contract:
+consumers that need to know branch on `skippedProcesses` (or pass
+`--require-engines` to abort instead of degrading). `reason` names which
+engine and which credential reference (an env var, `apiKeyFile` path, or
+`secret://` reference — never its value) is missing.
 
 For dry runs, `plannedRefs` is the effective post-limit work set, not every
 ref in the requested scope. The `plan` object preserves both views: raw scope
