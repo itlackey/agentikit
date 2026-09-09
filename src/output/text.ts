@@ -38,6 +38,7 @@ import { eventsFormatters } from "./text/events";
 import { feedbackFormatters } from "./text/feedback";
 import { healthFormatters } from "./text/health";
 import { importFormatters } from "./text/import";
+import { improveReportFormatters } from "./text/improve-report";
 import { indexFormatters } from "./text/index";
 import { infoFormatters } from "./text/info";
 import { lintFormatters } from "./text/lint";
@@ -82,6 +83,7 @@ const BUILT_IN_TEXT_FORMATTERS: TextFormatterEntry[] = [
   ...proposalProducerFormatters,
   ...infoFormatters,
   ...healthFormatters,
+  ...improveReportFormatters,
   ...lintFormatters,
   ...configFormatters,
   ...feedbackFormatters,

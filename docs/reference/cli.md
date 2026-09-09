@@ -2292,14 +2292,22 @@ akm improve memory
 akm improve skills/code-review
 akm improve workflows/release-checklist --task "reduce duplication"
 akm improve --skip-if-locked           # for high-frequency scheduled runs: skip (exit 0) if a run is already in progress
+akm improve --require-engines          # for scheduled runs: abort (exit 78) instead of degrading if an engine/credential is unavailable
 akm improve --no-sync                  # skip the end-of-run git commit entirely (default: on for git-backed bundles)
 akm improve --sync --no-push           # commit only, skip the push after it
+akm improve --plan --strategy thorough # preview thorough's resolved engine/model routing; nothing is dispatched
+akm improve report                     # LLM usage/routing report for the most recent real run
+akm improve report --run <id>          # ...for one specific improve_runs id
+akm improve report --since 7d          # ...aggregated over every real run started in the last 7 days
 ```
 
 | Flag | Description |
 | --- | --- |
+| `--run <id>` | `report` scope only (#944): show the usage report for one specific `improve_runs` row instead of the most recent real run. Mutually exclusive with `--since`. Rejected with any other scope, or no scope. |
+| `--since <window>` | `report` scope only (#944): aggregate the usage report over every real (non-dry-run) run started since `<window>` (a duration like `24h`/`7d`, or an ISO timestamp) instead of one run. Mutually exclusive with `--run`. Rejected with any other scope, or no scope. |
 | `--task` | Optional extra guidance for this improvement pass |
 | `--dry-run` | Show the schema-v2 result on stdout without creating config, data, state, cache, bundle, log, or result artifacts. Dry-run results are never persisted, including on errors or signals. |
+| `--plan` | Alias for `--dry-run` (#947). Sets the exact same internal flag; no separate code path. Prefer this spelling when the goal is previewing `plan.processes` (resolved process -> engine -> model routing) rather than checking what would be written. |
 | `--bundle` | Select the proposal/write target; when the ref scope is bundle-qualified, it must name the same bundle |
 | `--limit <n>` | Base cap for ordinary assets (highest utility first); configured replay slots are additive |
 | `--timeout-ms <ms>` | Wall-clock budget for the run (default: `7200000` = 2 hours) |
@@ -2307,6 +2315,7 @@ akm improve --sync --no-push           # commit only, skip the push after it
 | `--strategy <name>` | Override the active improve strategy (a built-in or entry under `improve.strategies`) |
 | `--json-to-stdout` | Also emit the full persisted JSON result on stdout for a live run. Without this flag, stdout stays empty. Dry-runs always emit their result and are never persisted. |
 | `--skip-if-locked` | If another improve run already holds the lock, skip gracefully (exit 0) instead of failing with "already running" (exit 78). Use for high-frequency scheduled runs so they don't pile up failures while a longer run is in progress. |
+| `--require-engines` | Abort (exit 78, before any indexing, lock, or log side effect) if the active strategy would enable a process whose engine or credential cannot be resolved in this process's environment. Without this flag, improve degrades gracefully: it skips the affected processes and reports them in the result's `skippedProcesses`. Recommended alongside `--skip-if-locked` for scheduled runs, since the operator's own shell can pass config validation while a scheduler's stripped-down environment (see #953) cannot. |
 | `--sync` / `--no-sync` | Commit (and optionally push) the git-backed primary bundle when the run finishes. Default: on for git-backed bundles (per profile config). |
 | `--push` / `--no-push` | Push after the end-of-run sync commit when writable with a remote configured. `--no-push` commits only, skipping the push. Default: per profile config (`true`). `sync.push` stays outside the autonomy gate — this is a per-run opt-out, not a default change. |
 
@@ -2344,6 +2353,24 @@ Selection behavior defaults to recent feedback signals first, with a
 zero-feedback retrieval fallback for high-traffic refs. Use
 `--require-feedback-signal` to disable retrieval fallback for the run.
 
+When the active strategy enables a process (or the triage judgment engine)
+whose engine or credential cannot be resolved in this process's environment,
+the run does not silently do nothing for it: the process is skipped, and the
+result carries `skippedProcesses` — an array of `{process, configKey, reason}`
+entries (omitted entirely when nothing was skipped). When the process resolved
+a real engine whose credential just isn't reachable here (as opposed to never
+resolving an engine at all), the entry also carries the structurally resolved
+`engine`/`model`/`contextLength` it would have used — never the credential
+itself. `ok` and the exit code are unchanged either way, matching `extract`'s
+`skipReasons` contract: consumers that need to know branch on
+`skippedProcesses` (or pass `--require-engines` to abort instead of
+degrading). `reason` names which engine and which credential reference (an env
+var, `apiKeyFile` path, or `secret://` reference — never its value) is
+missing. A `--dry-run`/`--plan` preview never dispatches, so it never aborts
+on an unavailable credential either — even a strategy left with every process
+disabled this way still returns its plan, with the affected processes in
+`skippedProcesses`.
+
 For dry runs, `plannedRefs` is the effective post-limit work set, not every
 ref in the requested scope. The `plan` object preserves both views: raw scope
 size and per-gate removals, configured and effective caps, final ranked refs
@@ -2360,10 +2387,74 @@ not an atomic cross-store snapshot or a reservation. Live execution re-inspects
 mutable inputs, so a later run can differ after index, state, filesystem,
 clock, or session-log changes.
 
+`plan.processes` (#947) is the resolved process -> engine -> model routing
+table: one row per improve process (`reflect`, `distill`, `consolidate`,
+`memoryInference`, `graphExtraction`, `extract`, `validation`, `triage`,
+`proactiveMaintenance`), plus a `triage.judgment` row when the strategy
+configures a judgment engine. Each row carries `enabled`, the resolved
+`engine`/`model` (llm-backed processes only) and `engineKind`, this process's
+own lowering `notices`, and — for reflect/distill/consolidate only —
+`eligibleRefs`, the count of this run's `effectiveRefs` the process would act
+on (`shouldSkipRef`'s allowedTypes/process-disabled check; a count, not a
+per-ref matrix, to keep the envelope bounded). A row that could not resolve an
+engine or credential carries `unavailable: {configKey, reason}` — the same
+data behind `skippedProcesses` above, reshaped per process. When the process
+resolved a real engine whose credential just isn't reachable here, the row
+still carries that engine's `engine`/`model`/`engineKind` alongside
+`unavailable`, rather than omitting them the way a never-configured process
+does — so a preview can show what would have run. This table is
+resolved before any dispatch on every invocation (dry or live), so
+`akm improve --dry-run --strategy <name>` (or `--plan`) previews an ad-hoc
+strategy override without changing config first; `akm health`'s
+`active-improve-strategy` check performs the equivalent resolution but only
+for the configured default strategy (`defaults.improveStrategy`), and reports
+no model or per-process notices. Neither `--dry-run` nor `--plan` probes
+engine reachability over the network — pair with `akm health --probe` (or the
+default probe-on behavior) to check whether a named engine actually answers.
+
 When reinforced facts need promotion, `knowledge` is the higher-authority
 destination than `memory`. The deterministic search ranking also prefers
 `knowledge` over `memory` hits, including inferred `.derived` memories, when
 the evidence is otherwise comparable.
+
+#### improve report
+
+`akm improve report` (#944) answers "which engine did each LLM-backed process
+use this run, how much did it cost, and which enabled processes made zero
+calls (and why)" without hand-written SQLite against `state.db`. It is a
+`scope` value, not a subcommand — `report` is not, and will never be, a real
+asset type, so it is intercepted before any lock/log/index side effect (same
+precedent as the retired `canary` scope).
+
+Every real (non-dry-run) `akm improve` invocation persists a `usageReport`
+field on the result (`result_json` in `improve_runs`, and in the
+`--json-to-stdout` / dry-run JSON): `{ byProcessEngineModel, noCalls }`.
+`byProcessEngineModel` is a cross-tab of this run's own `llm_usage` events
+(#576) — one row per distinct `(process, engine, model)` triple, each with
+`calls`, `failures`, `promptTokens`, `completionTokens`, `totalTokens`,
+`reasoningTokens`, and `totalDurationMs`. `noCalls` lists every LLM-backed
+process (`reflect`, `distill`, `consolidate`, `memoryInference`,
+`graphExtraction`, `extract`, `validation` — not `triage`/`proactiveMaintenance`,
+which never make an attributable LLM call themselves) the active strategy
+enabled but that ended the run with zero calls, each with a `reason` drawn
+from the existing skip-reason vocabulary: `"engine_unavailable"` (also in
+`skippedProcesses`), `"autonomy_gated"`, `"strategy_filtered_all_passes"`, a
+reflect/distill dominant skip reason (e.g. `"no_new_signal"`, `"cooldown"`),
+or `"no_signal"` as the fallback — never a fabricated category. The field is
+omitted entirely when both would be empty. The same table is printed to
+stderr (`[improve] usage report ...`) after every real run, independent of
+`--json-to-stdout`.
+
+`akm improve report` reads that field back: with no flags, the most recent
+real run; `--run <id>`, one specific run; `--since <window>`, summed across
+every real run in the window (`byProcessEngineModel` rows merged by
+`(process, engine, model)`; `noCalls` lists a process only if it made zero
+calls across every included run). A run recorded before 0.9.15 has no
+persisted `usageReport` — the command recomputes `byProcessEngineModel` from
+that run's own `llm_usage` events instead of erroring, sets `noCalls` to `[]`
+(eligibility reasons are not reconstructable after the fact), and adds a
+`notes` entry saying so rather than fabricating precision the old row can't
+support.
 
 ### proposal
 

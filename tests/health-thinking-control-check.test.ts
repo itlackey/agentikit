@@ -20,6 +20,7 @@ function stageAggregate(overrides: Partial<LlmUsageStageAggregate> = {}): LlmUsa
     completionTokens: 0,
     totalTokens: 0,
     reasoningTokens: 0,
+    failures: 0,
     ...overrides,
   };
 }
@@ -33,6 +34,7 @@ function usageAggregate(byEngine: Record<string, LlmUsageStageAggregate>): LlmUs
       completionTokens: acc.completionTokens + entry.completionTokens,
       totalTokens: acc.totalTokens + entry.totalTokens,
       reasoningTokens: acc.reasoningTokens + entry.reasoningTokens,
+      failures: acc.failures + entry.failures,
     }),
     stageAggregate(),
   );

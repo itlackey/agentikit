@@ -659,6 +659,21 @@ not itself a secret. Setting both `apiKey` and `apiKeyFile` on the same
 engine is rejected. A missing, unreadable, or empty file fails the call
 closed, naming the engine and path but never the file's content.
 
+`engines.<name>.apiKey` also accepts `secret://<name>`, a reference into
+AKM's own secret store (`akm secret set <name> --from-file <file>`), for a
+launch context where the credential's environment variable is deliberately
+not sourced into the process — a scheduled task's crontab preamble, or a
+container entrypoint that keeps the user's env out on purpose — and a
+file-backed credential is not an option. Like `apiKeyFile`, only the
+reference is kept in `config.json`; the store lookup happens at dispatch
+time, and an unresolved reference fails the call closed, naming the
+reference but never the value. `akm improve`, workflow LLM steps, and `akm
+health`'s engine probes all resolve `secret://` the same way direct LLM and
+embedding calls have since 0.9.13 (#917); resolution order for a single
+`apiKey` field is: an env reference (`$VAR`/`${VAR}`) first, then
+`apiKeyFile`, then `secret://<name>` — though in practice a config sets only
+one of the three per engine.
+
 Use `AKM_SQLITE_JOURNAL_MODE=DELETE` or `TRUNCATE` when WAL is unavailable,
 such as on some NFS/SMB mounts. With the default `WAL` setting, AKM detects a
 network filesystem for the data directory and falls back to `DELETE`.
