@@ -295,6 +295,31 @@ describe("versioned installed/user model-map contract", () => {
     });
   });
 
+  test("a profile setting both engine and inference: user inference fields win, engine fills the gaps (#946)", () => {
+    const installed = parseModelMapLayer(installedText, "installed models.json");
+    const user = parseModelMapLayer(
+      JSON.stringify({
+        version: 1,
+        aliases: { fast: { opencode: { engine: "local-fast", inference: { temperature: 0.9 } } } },
+      }),
+      "user models.json",
+    );
+    const engines = {
+      "local-fast": {
+        kind: "llm" as const,
+        provider: "krang",
+        endpoint: "http://localhost:1234/v1/chat/completions",
+        model: "krang/qwen3.5-9b",
+        temperature: 0.2,
+        enableThinking: true,
+      },
+    };
+    expect(mergeModelMapLayers(installed, user, engines).aliases.fast?.opencode).toEqual({
+      model: "krang/qwen3.5-9b",
+      inference: { temperature: 0.9, enableThinking: true },
+    });
+  });
+
   test("user overlay can switch a column from literal to engine-backed, and back", () => {
     const installed = parseModelMapLayer(
       JSON.stringify({ version: 1, aliases: { fast: { opencode: "literal-default" } } }),

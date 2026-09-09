@@ -35,7 +35,7 @@ interface ModelsListRow {
  */
 function modelsListRows(): ModelsListRow[] {
   const config = loadConfig();
-  const layers = loadModelMapLayers({ engines: config.engines });
+  const layers = loadModelMapLayers();
   const rawProfiles = mergedModelMapProfiles(layers.installed, layers.user);
   const defaultsOnly = mergeModelMapLayers(layers.installed, undefined, config.engines);
   const resolved = mergeModelMapLayers(layers.installed, layers.user, config.engines);
