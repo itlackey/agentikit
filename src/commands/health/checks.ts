@@ -623,9 +623,20 @@ export function runModelMapProbe(options: RunModelMapProbeDependencies = {}): He
     };
   }
 
+  // Load config OUTSIDE the models.json try/catch below: a broken
+  // config.json must surface as a config problem reported by the config
+  // checks, never get misreported as a models.json warning carrying the
+  // config error's own text. When config fails to load, validate the model
+  // map shape-only (no `engine` resolution), matching pre-#946 behavior.
+  let engines: AkmConfig["engines"] | undefined;
   try {
-    const config = options.loadConfig?.() ?? loadConfig();
-    const loaded = loadModelMap({ ...options, installedText, engines: config.engines });
+    engines = (options.loadConfig?.() ?? loadConfig()).engines;
+  } catch {
+    engines = undefined;
+  }
+
+  try {
+    const loaded = loadModelMap({ ...options, installedText, engines });
     return {
       name: "model-map-files",
       kind: "deterministic",
