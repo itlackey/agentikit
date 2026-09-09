@@ -12,7 +12,7 @@
 import { fetchWithTimeout, isHttpUrl, readBodyWithByteCap } from "../../core/common";
 import { concurrentMap } from "../../core/concurrent";
 import { type EmbeddingConnectionConfig, resolveSecret } from "../../core/config/config";
-import { isLoopbackEndpoint } from "../../core/loopback";
+import { defaultConcurrencyForEndpoint } from "../../core/loopback";
 import { redactErrorBody, redactSensitiveText } from "../../core/redaction";
 import { warnVerbose } from "../../core/warn";
 import { resolveSecretFromStore } from "../../sources/snapshot-fetchers/secret-seam";
@@ -106,20 +106,17 @@ export function isContextExceededResponse(status: number, body: string): boolean
 
 /**
  * Resolve the effective in-flight request window for `RemoteEmbedder.embedBatch`.
- * FIXED — no config override (owner ruling 2026-09-09): 1 for a loopback
- * endpoint (a local model server serves one inference at a time; concurrent
- * requests thrash it), 2 for a remote one, mirroring
- * `getDefaultLlmConcurrency`'s (src/indexer/indexer.ts) lowest-common-
- * denominator rule without importing from src/indexer, which already depends
- * on this module transitively through materialize-embeddings.ts. The actual
- * throughput knob is request SIZE, not request count: `embedding.batchSize`
- * (document cap) and `embedding.maxTokens`/`contextLength` (token budget)
- * reach a larger batch per request, which is where most of the win is — a
- * 32-input batch takes about the same wall time as one input against a
- * healthy endpoint.
+ * FIXED — no config override: 1 for a loopback endpoint, 2 for a remote one,
+ * via the shared `defaultConcurrencyForEndpoint` (`src/core/loopback.ts`),
+ * the same lowest-common-denominator rule `getDefaultLlmConcurrency`
+ * (`src/indexer/indexer.ts`) uses. The actual throughput knob is request
+ * SIZE, not request count: `embedding.batchSize` (document cap) and
+ * `embedding.maxTokens`/`contextLength` (token budget) reach a larger batch
+ * per request, which is where most of the win is — a 32-input batch takes
+ * about the same wall time as one input against a healthy endpoint.
  */
 export function resolveEmbeddingConcurrency(config: EmbeddingConnectionConfig): number {
-  return isLoopbackEndpoint(config.endpoint) ? 1 : 2;
+  return defaultConcurrencyForEndpoint(config.endpoint);
 }
 
 interface TextBatch {

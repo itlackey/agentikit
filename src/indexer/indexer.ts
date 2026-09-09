@@ -12,7 +12,7 @@ import { isHttpUrl, toErrorMessage } from "../core/common";
 import { concurrentMap } from "../core/concurrent";
 import type { AkmConfig, LlmConnectionConfig } from "../core/config/config";
 import { ConfigError } from "../core/errors";
-import { isLoopbackEndpoint } from "../core/loopback";
+import { defaultConcurrencyForEndpoint } from "../core/loopback";
 import { classifyPathAccess, describeInaccessiblePath } from "../core/path-access";
 import { getDbPath } from "../core/paths";
 import { SCRIPT_EXTENSIONS } from "../core/recognition-util";
@@ -286,19 +286,17 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 export function getDefaultLlmConcurrency(llmConfig?: LlmConnectionConfig): number {
   if (typeof llmConfig?.concurrency === "number") return llmConfig.concurrency;
-  // Local model servers stay at 1 (single loaded model; parallel requests
-  // trigger reload thrash); an absent or unparseable endpoint fails safe as
-  // local. ONE classifier decides what "local" means (`core/loopback.ts`,
-  // shared with the workflow engine's frozen concurrency default).
-  if (isLoopbackEndpoint(llmConfig?.endpoint)) return 1;
-  // Remote endpoints default to a modest 2-wide pool (owner ruling 2026-07-21):
-  // enough to overlap request latency without hammering rate-limited APIs.
-  // The explicit-override branch above only fires for
-  // callers that put `concurrency` on the connection themselves —
-  // `engines.<name>.concurrency` is a valid schema field but `resolveLlmEngineUse`
-  // does NOT copy it into the resolved connection, so on the enrichment path the
-  // auto-derived 1/2 is what runs (see docs/architecture/internals/indexing.md).
-  return 2;
+  // ONE classifier decides the local-vs-remote default (`core/loopback.ts`'s
+  // `defaultConcurrencyForEndpoint`), shared with the embedding pool
+  // (`resolveEmbeddingConcurrency`, `src/llm/embedders/remote.ts`) and the
+  // workflow engine's frozen concurrency default.
+  //
+  // The explicit-override branch above only fires for callers that put
+  // `concurrency` on the connection themselves — `engines.<name>.concurrency`
+  // is a valid schema field but `resolveLlmEngineUse` does NOT copy it into
+  // the resolved connection, so on the enrichment path the auto-derived 1/2
+  // is what runs (see docs/architecture/internals/indexing.md).
+  return defaultConcurrencyForEndpoint(llmConfig?.endpoint);
 }
 
 // ── Phase functions ──────────────────────────────────────────────────────────

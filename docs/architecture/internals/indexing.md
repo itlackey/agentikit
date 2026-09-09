@@ -182,13 +182,14 @@ exceeds the token budget is isolated and skipped before ever going over HTTP.
 **Concurrency** — provider batches are dispatched through a bounded pool
 (`concurrentMap`) instead of strictly sequentially. Its width is FIXED, no
 config override — `resolveEmbeddingConcurrency` (`src/llm/embedders/remote.ts`)
-derives it using the same loopback classification as `getDefaultLlmConcurrency`
-above: **1** for a loopback endpoint (a local model server serves one
-inference at a time; parallel requests thrash it) and **2** for a remote one
-(owner ruling 2026-09-09: request COUNT is not the throughput knob here —
-request SIZE is; see Request batching above). A caller abort
-(`signal.aborted`) still propagates once the pool drains, even though
-`concurrentMap` itself swallows per-item throws.
+derives it via the same shared `defaultConcurrencyForEndpoint` classifier
+(`src/core/loopback.ts`) that `getDefaultLlmConcurrency` above uses: **1**
+for a loopback endpoint (a local model server serves one inference at a
+time; parallel requests thrash it) and **2** for a remote one — request
+COUNT is not the throughput knob here, request SIZE is (see Request
+batching above). A caller abort (`signal.aborted`) still propagates once
+the pool drains, even though `concurrentMap` itself swallows per-item
+throws.
 
 **Context-size split-and-retry** — a batch rejected specifically for
 exceeding the endpoint's context window (HTTP 413, or a recognised
