@@ -188,9 +188,11 @@ export function tryAcquireLockSync(lockPath: string, payload: string): LockOwner
  * Best-effort launcher pid from `AKM_LAUNCHER_PID` (set by
  * `scripts/node-runtime/akm`/`akm-migrate`, #9543) — undefined when unset,
  * empty, or not a positive integer (never trust an ambient env var blindly
- * into a lock message).
+ * into a lock message). Also the gate the parent-death watchdog
+ * (`core/parent-watchdog.ts`) uses to stay inert outside a launcher-managed
+ * run.
  */
-function launcherPidFromEnv(): number | undefined {
+export function launcherPidFromEnv(): number | undefined {
   const raw = process.env.AKM_LAUNCHER_PID;
   if (!raw) return undefined;
   const pid = Number.parseInt(raw, 10);

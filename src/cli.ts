@@ -117,6 +117,8 @@ import { taskCommand } from "./commands/tasks/tasks-cli";
 import { workflowCommand } from "./commands/workflow-cli";
 import { DEFAULT_CONFIG, loadConfig } from "./core/config/config";
 import { UsageError, type UsageErrorCode } from "./core/errors";
+import { launcherPidFromEnv } from "./core/file-lock";
+import { startParentDeathWatchdog } from "./core/parent-watchdog";
 import { getConfigPath } from "./core/paths";
 import { DURATION_UNITS, parseDuration } from "./core/time";
 import { plainize } from "./core/tty";
@@ -1163,5 +1165,33 @@ async function runCli(): Promise<void> {
 // sets `AKM_STANDALONE_ENTRY=1` before importing this file. The test harness
 // sets neither, so importing cli.ts under Bun stays inert as before.
 if (import.meta.main || process.env.AKM_NODE_ENTRY === "1" || process.env.AKM_STANDALONE_ENTRY === "1") {
-  await runCli();
+  // #9543 addendum: a launcher that dies WITHOUT delivering a signal
+  // (SIGKILL, an OOM kill, a supervisor that force-removes the process)
+  // still reparents this process to init with nothing to catch — the field
+  // evidence was 40 orphaned `bun …/dist/cli.js` processes in one day, some
+  // from a curate hook killing its own launcher on timeout. Active for
+  // EVERY command (not only `index`), since a hook-invoked `curate`/`search`
+  // child is orphaned the same way. Inert when there is no launcher
+  // (AKM_LAUNCHER_PID unset — a direct `bun src/cli.ts` run, or any test
+  // harness that imports this module without setting it): only a real
+  // launcher-managed run has a parent worth watching.
+  const parentWatchdog = launcherPidFromEnv()
+    ? startParentDeathWatchdog({
+        initialPpid: process.ppid,
+        onOrphaned: () => {
+          // Reuses the exact shutdown path a real SIGTERM already takes:
+          // `akm index`'s own AbortController listens for it
+          // (commands/sources/stash-cli.ts), and every other command falls
+          // through to Node/Bun's default terminate-via-process.exit(),
+          // which still runs registered `exit` handlers (lock release,
+          // etc.) — no second, parallel abort path to keep in sync.
+          process.kill(process.pid, "SIGTERM");
+        },
+      })
+    : undefined;
+  try {
+    await runCli();
+  } finally {
+    parentWatchdog?.stop();
+  }
 }

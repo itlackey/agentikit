@@ -814,6 +814,64 @@ describe("runTask — command target", () => {
     expect(log).toContain("exit_code=143");
   });
 
+  test("a SIGTERM to the task runner itself terminates the whole child process group (#9543)", async () => {
+    // The runner's own process previously had no way to end its detached,
+    // own-process-group child (spawned by runManagedSubprocess for the
+    // group-kill guarantee) when the RUNNER received a signal — only a
+    // timeout tied into that ladder. A launcher-forwarded SIGTERM (#9543
+    // decision 1) or a supervisor signalling `akm task run` directly used to
+    // leave the child running as an orphan.
+    writeTask("signaled", shellTask("hang-forever"));
+
+    const signals: string[] = [];
+    let spawned = false;
+    const spawnFn: SpawnFn = () => {
+      spawned = true;
+      let resolveExit: (code: number) => void = () => {};
+      const exited = new Promise<number>((resolve) => {
+        resolveExit = resolve;
+      });
+      const proc: SpawnedSubprocess = {
+        exitCode: null,
+        exited,
+        stdout: emptyReadableStream(),
+        stderr: emptyReadableStream(),
+        stdin: null,
+        kill(signal?: number | string) {
+          signals.push(String(signal));
+          // Mirrors a real child's exit: stops scheduleKillLadder's SIGKILL
+          // follow-up timer (it no-ops once exitCode is set) rather than
+          // leaving a dangling real 5s timer behind this test.
+          proc.exitCode = 143;
+          resolveExit(143);
+        },
+      };
+      return proc;
+    };
+
+    const promise = runTask("signaled", { bundleDir, logDir, spawnFn });
+    for (let i = 0; i < 1000 && !spawned; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(spawned).toBe(true);
+
+    // Invoke ONLY runNativeTask's own listener directly, rather than
+    // `process.emit("SIGTERM")`: the test-isolation preload
+    // (tests/_preload.ts) also holds a real SIGTERM listener that calls
+    // `process.exit()` to guard against an orphaned/hung worker, and emit()
+    // would run every registered listener including that one — killing this
+    // test process instead of exercising runNativeTask's handler.
+    const ourListener = process.listeners("SIGTERM").at(-1) as (() => void) | undefined;
+    if (!ourListener) throw new Error("runNativeTask did not register a SIGTERM listener");
+    ourListener();
+
+    const result = await promise;
+
+    expect(signals).toEqual(["SIGTERM"]);
+    expect(result.status).toBe("failed");
+    expect(result.detail?.exitCode).toBe(143);
+  });
+
   test("redacts a webhook URL from both the log file and logs.db rows", async () => {
     const webhookUrl = "https://discord.com/api/webhooks/123456789012345678/abcDEF-123_token";
     writeTask(
