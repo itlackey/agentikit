@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import type { SemanticSearchRuntimeStatus } from "../indexer/walk/index-context";
 import type { InstalledBundle, InstallKind } from "../registry/types";
 import type { ProgramExecCore } from "../workflows/program/schema";
 
@@ -425,6 +426,16 @@ export interface UpdateResponse {
     directoriesSkipped: number;
     /** False when the run preserved LKG rows because at least one source scan was incomplete. */
     scanComplete?: boolean;
+    /**
+     * Semantic-search state after this update's embedding pass (#9541). A
+     * managed/plain-source update runs the embedding phase AFTER its atomic
+     * content/lock/index/state commit, on its own connection — a failing
+     * pass (provider down) still reports the update `processed`/successful,
+     * with this field the only sign semantic search fell behind
+     * (`"blocked"`), exactly like a plain `akm index` whose embedding phase
+     * failed.
+     */
+    semanticStatus?: "disabled" | SemanticSearchRuntimeStatus;
   };
 }
 

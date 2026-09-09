@@ -463,23 +463,69 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
   ctx.timing.tLlmEnd = Date.now();
 }
 
+/** Result of the shared embedding pass — see {@link runEmbeddingPass}. */
+export interface EmbeddingPassResult {
+  embeddingResult: EmbeddingGenerationResult;
+  verification: IndexVerification;
+}
+
+/**
+ * The ONE embedding-phase implementation (#9541 decision 2): generate and
+ * store vectors for every entry missing one, then compute the `hasEmbeddings`
+ * fact and the semantic-search verification off the result. `akmIndex`'s own
+ * (non-deferred) run calls this from {@link runEmbeddingPhase} below; `akm
+ * bundle update`'s coordinator calls it directly on its own connection AFTER
+ * its unified update transaction commits, since decision 1's drift guard
+ * (and the whole point of per-batch commit, #954) requires `db` to have no
+ * ambient transaction open.
+ */
+export async function runEmbeddingPass(params: {
+  db: Database;
+  config: AkmConfig;
+  onProgress: (event: IndexProgressEvent) => void;
+  signal?: AbortSignal;
+  reembed?: boolean;
+}): Promise<EmbeddingPassResult> {
+  const { db, config, onProgress, signal, reembed } = params;
+  const embeddingResult = await generateEmbeddingsForDb(db, config, onProgress, signal, undefined, {
+    forceReembed: reembed,
+  });
+  setMeta(db, "hasEmbeddings", embeddingResult.success ? "1" : "0");
+  const semanticEntryCount = getEmbeddableEntryCount(db);
+  onProgress({ phase: "finalize", message: "Verifying semantic search state." });
+  const verification = verifyIndexState(db, config, semanticEntryCount, embeddingResult);
+  onProgress({ phase: "verify", message: verification.message });
+  return { embeddingResult, verification };
+}
+
 /**
  * Embedding phase: generate and store vector embeddings for all unembedded
- * entries. Writes `ctx.embeddingResult` for the finalize phase.
+ * entries. Writes `ctx.embeddingResult` and `ctx.verification` for the
+ * finalize phase / caller.
  */
 async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
-  const { db, config, signal, onProgress, reembed } = ctx;
+  const { db, config, signal, onProgress, reembed, deferredUpdateTransaction } = ctx;
 
   throwIfAborted(signal);
+
+  if (deferredUpdateTransaction) {
+    // `akm bundle update`'s deferred pass (#9541 decision 2): the embedding
+    // phase runs AFTER the coordinator's own commit, on its own connection,
+    // via the coordinator's direct `runEmbeddingPass` call — never here,
+    // inside the borrowed transaction (decision 1's drift guard would reject
+    // it anyway). `runFinalizePhase` records semantic state as "pending".
+    ctx.timing.tEmbedEnd = Date.now();
+    return;
+  }
 
   // Forward the signal. Without it generateEmbeddingsForDb's abort machinery was
   // inert — its throwIfAborted checks and the signal it threads into embedBatch
   // (which RemoteEmbedder passes to every fetch and LocalEmbedder honours between
   // chunks) never saw a controller. Ctrl-C and the improve budget abort could not
   // stop the embedding phase, the longest phase of an index run.
-  ctx.embeddingResult = await generateEmbeddingsForDb(db, config, onProgress, signal, undefined, {
-    forceReembed: reembed,
-  });
+  const { embeddingResult, verification } = await runEmbeddingPass({ db, config, onProgress, signal, reembed });
+  ctx.embeddingResult = embeddingResult;
+  ctx.verification = verification;
   ctx.timing.tEmbedEnd = Date.now();
 }
 
@@ -488,11 +534,8 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
  * usage events, recompute utility scores, update index metadata, and emit the
  * verify event.
  */
-async function runFinalizePhase(
-  ctx: IndexRunContext,
-  deferredUpdateTransaction?: DeferredUpdateIndexTransaction,
-): Promise<void> {
-  const { db, config, sources, sourceDirs, stashDir, signal, onProgress } = ctx;
+async function runFinalizePhase(ctx: IndexRunContext): Promise<void> {
+  const { db, config, sources, sourceDirs, stashDir, signal, onProgress, deferredUpdateTransaction } = ctx;
   ctx.timing.tFinalizeStart = Date.now();
 
   // `upsertEntry` and every canonical delete own their FTS projection. This is
@@ -537,26 +580,41 @@ async function runFinalizePhase(
   // An incomplete run preserves the prior freshness watermark. Advancing it
   // could make a recovered source look unchanged even though this run never
   // persisted its files.
-  const embeddingResult = ctx.embeddingResult ?? { success: false };
   if (ctx.scanComplete) {
     setMeta(db, "builtAt", new Date().toISOString());
     setMeta(db, "stashDir", stashDir);
     setMeta(db, "stashDirs", JSON.stringify(sourceDirs));
     setMeta(db, "sourceOwners", JSON.stringify(sourceOwners(sources)));
   }
-  setMeta(db, "hasEmbeddings", embeddingResult.success ? "1" : "0");
 
   warnIfVecMissing(db);
 
   const totalEntries = getEntryCount(db);
-  const semanticEntryCount = getEmbeddableEntryCount(db);
-  onProgress({ phase: "finalize", message: "Verifying semantic search state." });
-  const verification = verifyIndexState(db, config, semanticEntryCount, embeddingResult);
 
-  onProgress({ phase: "verify", message: verification.message });
+  if (deferredUpdateTransaction) {
+    // #9541 decision 2: the embedding phase was skipped for this borrowed
+    // transaction — record semantic state as pending, never ready, until the
+    // coordinator's own post-commit `runEmbeddingPass` call reports the
+    // truth on a fresh connection.
+    setMeta(db, "hasEmbeddings", "0");
+    const semanticEntryCount = getEmbeddableEntryCount(db);
+    const message = "Semantic index update deferred until after the source-update commit.";
+    onProgress({ phase: "verify", message });
+    ctx.verification = {
+      ok: true,
+      message,
+      semanticSearchEnabled: config.semanticSearchMode === "auto",
+      semanticSearchMode: config.semanticSearchMode,
+      semanticStatus: config.semanticSearchMode === "off" ? "disabled" : "pending",
+      embeddingProvider: getEmbeddingProvider(config.embedding),
+      entryCount: semanticEntryCount,
+      embeddingCount: getEmbeddingCount(db),
+      vecAvailable: isVecAvailable(db),
+    };
+  }
+  // Non-deferred: ctx.verification was already populated by runEmbeddingPhase
+  // (via the shared runEmbeddingPass).
 
-  // Store verification result and totalEntries on ctx for the caller to use
-  ctx.verification = verification;
   ctx.totalEntries = totalEntries;
   ctx.timing.tFinalizeEnd = Date.now();
 
@@ -779,6 +837,7 @@ interface CreateIndexRunContextOptions {
   onProgress: (event: IndexProgressEvent) => void;
   signal: AbortSignal | undefined;
   t0: number;
+  deferredUpdateTransaction?: DeferredUpdateIndexTransaction;
 }
 
 function createIndexRunContext(options: CreateIndexRunContextOptions): IndexRunContext {
@@ -911,6 +970,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
         onProgress,
         signal,
         t0,
+        deferredUpdateTransaction: options.deferredUpdateTransaction,
       });
       indexRunContext = ctx;
 
@@ -954,7 +1014,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       cleanEnd = Date.now();
 
       await runEmbeddingPhase(ctx);
-      await runFinalizePhase(ctx, options.deferredUpdateTransaction);
+      await runFinalizePhase(ctx);
       // ────────────────────────────────────────────────────────────────────────
 
       // runFinalizePhase always populates these before returning.
