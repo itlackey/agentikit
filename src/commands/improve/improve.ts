@@ -1611,7 +1611,7 @@ function finalizeImproveResult(args: {
     triageDrain,
     eventsCtx,
   } = args;
-  const { selectedStrategy, scope, options, primaryStashDir, startMs } = args.run;
+  const { selectedStrategy, scope, options, primaryStashDir, startMs, resolvedPlan } = args.run;
   const {
     preparation,
     consolidation,
@@ -1689,6 +1689,7 @@ function finalizeImproveResult(args: {
         }
       : {}),
     ...(strategyFilteredRefs.length > 0 ? { strategyFilteredRefs } : {}),
+    ...(resolvedPlan.engineUnavailable.length > 0 ? { skippedProcesses: resolvedPlan.engineUnavailable } : {}),
     actions: persistedActions,
     ...(distillSkippedAggregate ? { distillSkipped: distillSkippedAggregate } : {}),
     ...(preparation.validationFailures.length > 0 ? { validationFailures: preparation.validationFailures } : {}),

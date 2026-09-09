@@ -297,6 +297,32 @@ describe("decodeImproveResult", () => {
     expect(() => decodeImproveResult("not json")).toThrow(/not valid JSON/);
   });
 
+  test("decodes skippedProcesses (#957) and still decodes old envelopes without it", () => {
+    const skippedProcesses = [
+      {
+        process: "reflect" as const,
+        configKey: "improve.strategies.default.processes.reflect.engine",
+        reason:
+          'requires a credential that is not available in this process\'s environment (engine "default": $LAB_API_KEY is not set in this environment).',
+      },
+    ];
+    const decoded = decodeImproveResult({
+      schemaVersion: 2,
+      strategy: "default",
+      ...common,
+      skippedProcesses,
+    });
+    expect(decoded.envelope.skippedProcesses).toEqual(skippedProcesses);
+
+    // Old envelopes (persisted before #957) have no skippedProcesses field at all.
+    const withoutIt = decodeImproveResult({ schemaVersion: 2, strategy: "default", ...common });
+    expect(withoutIt.envelope.skippedProcesses).toBeUndefined();
+
+    expect(() =>
+      decodeImproveResult({ schemaVersion: 2, strategy: "default", ...common, skippedProcesses: {} }),
+    ).toThrow(/skippedProcesses/);
+  });
+
   test("accepts deadUrlCoverage with exact non-negative integer fields, rejects malformed ones (#892)", () => {
     const decoded = decodeImproveResult({
       schemaVersion: 2,

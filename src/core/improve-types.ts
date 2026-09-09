@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import type { EngineUnavailableProcess } from "../commands/improve/improve-strategies";
 import type { EligibilitySource, Proposal } from "../commands/proposal/proposal-types";
 import type { LoweringNotice } from "../execution/resolved-request";
 import type { GraphExtractionResult } from "../indexer/graph/graph-extraction";
@@ -797,6 +798,26 @@ export interface AkmImproveResult {
    * for stashes whose profile accepts every indexed type).
    */
   strategyFilteredRefs?: ImproveEligibleRef[];
+  /**
+   * #957 — processes the active strategy enabled but whose engine could not
+   * be resolved (no engine selected) or whose credential could not be
+   * resolved in this process's own environment (the scheduler-vs-shell
+   * mismatch #957 exists for). Sourced verbatim from
+   * `ResolvedImprovePlan.engineUnavailable`; omitted entirely when nothing
+   * was skipped this way.
+   *
+   * Like `AkmExtractResult.skipReasons` (#912, see that field's doc comment):
+   * `ok` still means the run completed, not that it did work, and the exit
+   * code follows `ok` — a scheduler must not start failing because one LLM
+   * process's credential is temporarily missing while others still run.
+   * Consumers that need to know branch on this field's presence/length
+   * (or `akm improve --require-engines`, which aborts up front instead of
+   * degrading). A credential-unavailable `reason` names the engine and WHICH
+   * env var / apiKeyFile path / secret reference is missing — never its
+   * value — so an operator whose own shell passes config validation can see
+   * why the scheduler's stripped-down environment does not.
+   */
+  skippedProcesses?: readonly Readonly<EngineUnavailableProcess>[];
   actions?: ImproveActionResult[];
   /**
    * C1 (13-bus-factor) — bounded aggregate of the per-ref `distill-skipped`
