@@ -927,6 +927,11 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       force: full,
       materialize: options.hydrateSources !== false,
       secrets: storeSecretResolver,
+      // Same progress channel as every other phase (#9541 decision 6) — a
+      // stalled clone/fetch here runs BEFORE index.db is even opened, so
+      // without this it looked identical to "no database open, nothing
+      // written".
+      onProgress: (message) => onProgress({ phase: "preflight", message }),
     });
     const sourceCacheEnd = Date.now();
     const allSourceEntries = resolveSourceEntries(stashDir, config);
