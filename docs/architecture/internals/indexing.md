@@ -126,6 +126,57 @@ eligible run.
 default. Entries with `quality: "curated"` or `quality: "enriched"` are
 skipped unless the caller explicitly requests re-enrichment.
 
+## Embedding Phase
+
+Once entries are upserted, `generateEmbeddingsForDb`
+(`src/indexer/materialize-embeddings.ts`) generates and stores vectors for
+every entry that does not already have one.
+
+**Request batching** — `RemoteEmbedder.embedBatch` (`src/llm/embedders/remote.ts`)
+groups texts into provider requests bounded by an estimated token budget
+(`embedding.maxTokens`/`embedding.contextLength`, default 8000 tokens) and a
+document-count safety cap (`embedding.batchSize`, default 100) — the token
+budget is what actually keeps a request inside the endpoint's context window
+and the 30s request timeout; the count cap only guards against many tiny
+documents packing an oversized request. A single document whose own estimate
+exceeds the token budget is isolated and skipped before ever going over HTTP.
+
+**Concurrency** — provider batches are dispatched through a bounded pool
+(`concurrentMap`) instead of strictly sequentially. Its width is FIXED, no
+config override — `resolveEmbeddingConcurrency` (`src/llm/embedders/remote.ts`)
+derives it using the same loopback classification as `getDefaultLlmConcurrency`
+above: **1** for a loopback endpoint (a local model server serves one
+inference at a time; parallel requests thrash it) and **2** for a remote one
+(owner ruling 2026-09-09: request COUNT is not the throughput knob here —
+request SIZE is; see Request batching above). A caller abort
+(`signal.aborted`) still propagates once the pool drains, even though
+`concurrentMap` itself swallows per-item throws.
+
+**Context-size split-and-retry** — a batch rejected specifically for
+exceeding the endpoint's context window (HTTP 413, or a recognised
+context-size error body such as `exceed_context_size_error`) is split in half
+and retried recursively rather than discarded whole, down to individual
+documents; a single document that still fails this way becomes a
+`context-window-exceeded` skip. Any other failure (network error, 5xx,
+malformed response) keeps skipping the whole batch as a `batch-request-failed`
+skip — a genuinely broken batch does not get retried into a storm of smaller
+requests against a down endpoint.
+
+**Per-batch commit** — each provider (or local-embedder) batch is written to
+`index.db` inside its own short `db.transaction()` as it completes, via an
+`onBatch` callback threaded through both `RemoteEmbedder` and `LocalEmbedder`.
+Earlier releases buffered every vector in memory and wrote them all in one
+transaction at the very end of the whole run — an interruption (a competing
+indexer collision, a killed process, any thrown error) discarded everything
+already computed. Per-batch commit keeps whatever landed before the
+interruption and keeps the exclusive-write window short enough for
+`akm remember`/`akm improve` to interleave on the same stash.
+
+**Progress and throughput** — a progress line (`Embedded N/M entries.`) is
+emitted every 500 stored entries, and the heartbeat (every 15s while waiting
+on the provider) carries the live stored count. The final line reports
+throughput: `Stored N embeddings in Xs (Y.Y entries/s, ~Z tokens/s).`
+
 ## Progress Reporting
 
 - text mode: shows a spinner with processed-versus-total source counts
