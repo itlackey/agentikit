@@ -69,6 +69,12 @@ function tableHasColumn(db: Database, table: string, column: string): boolean {
  * inside the same transaction as the discard that follows it, so the copy
  * and the delete commit or roll back together.
  *
+ * Streams `entries JOIN embeddings` in id-ordered pages of
+ * {@link SQLITE_CHUNK_SIZE} instead of loading every row into memory before
+ * hashing anything — a full rebuild of a large stash otherwise held the
+ * entire corpus's search text and vectors in memory at once just to copy
+ * them aside (#954, field-report follow-up).
+ *
  * A no-op (returns 0) when there is no stored `embeddingFingerprint` to tag
  * rows with (nothing was ever verified against a provider, so there is
  * nothing worth reusing later) or the generation being discarded predates
@@ -81,21 +87,32 @@ export function salvageEmbeddingsBeforeDiscard(db: Database): number {
   if (!tableExists(db, "entries") || !tableExists(db, "embeddings")) return 0;
   if (!tableHasColumn(db, "entries", "search_text")) return 0;
 
-  const rows = db
-    .prepare(
-      "SELECT e.search_text AS searchText, em.embedding AS embedding FROM entries e JOIN embeddings em ON em.id = e.id",
-    )
-    .all() as Array<{ searchText: string; embedding: Uint8Array }>;
-  if (rows.length === 0) return 0;
-
+  const page = db.prepare(
+    "SELECT e.id AS id, e.search_text AS searchText, em.embedding AS embedding " +
+      "FROM entries e JOIN embeddings em ON em.id = e.id WHERE e.id > ? ORDER BY e.id LIMIT ?",
+  );
   const insert = db.prepare(
     "INSERT OR REPLACE INTO embedding_salvage (content_hash, fingerprint, embedding, salvaged_at) VALUES (?, ?, ?, ?)",
   );
   const salvagedAt = new Date().toISOString();
-  for (const row of rows) {
-    insert.run(hashEmbeddableText(row.searchText), fingerprint, row.embedding, salvagedAt);
+
+  let lastId = 0;
+  let total = 0;
+  for (;;) {
+    const rows = page.all(lastId, SQLITE_CHUNK_SIZE) as Array<{
+      id: number;
+      searchText: string;
+      embedding: Uint8Array;
+    }>;
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      insert.run(hashEmbeddableText(row.searchText), fingerprint, row.embedding, salvagedAt);
+    }
+    total += rows.length;
+    lastId = rows[rows.length - 1]?.id ?? lastId;
+    if (rows.length < SQLITE_CHUNK_SIZE) break;
   }
-  return rows.length;
+  return total;
 }
 
 /**
@@ -133,6 +150,13 @@ export interface SalvageReuseResult<T> {
  * `writeReused` in chunks of {@link SQLITE_CHUNK_SIZE}, each its own
  * transaction, mirroring the main pass's per-batch commit (#954) so an
  * interruption partway through the reuse step keeps whatever already wrote.
+ *
+ * The steady state of every ordinary run is an EMPTY salvage table (nothing
+ * was just discarded), so this checks that first with one indexed lookup —
+ * `SELECT 1 ... LIMIT 1` — before hashing a single pending entry. Hashing
+ * every entry up front to look up a table that is empty 100% of the time
+ * outside a rebuild was pure wasted work on the common path (#954,
+ * field-report follow-up).
  */
 export function reuseSalvagedEmbeddings<T extends { searchText: string }>(
   db: Database,
@@ -141,6 +165,11 @@ export function reuseSalvagedEmbeddings<T extends { searchText: string }>(
   writeReused: (entry: T, embedding: EmbeddingVector) => boolean,
 ): SalvageReuseResult<T> {
   if (entries.length === 0) return { reusedCount: 0, remaining: [] };
+
+  const anySalvageForFingerprint = db
+    .prepare("SELECT 1 FROM embedding_salvage WHERE fingerprint = ? LIMIT 1")
+    .get(fingerprint);
+  if (!anySalvageForFingerprint) return { reusedCount: 0, remaining: [...entries] };
 
   const hashes = entries.map((entry) => hashEmbeddableText(entry.searchText));
   const salvageByHash = new Map<string, Uint8Array>();
