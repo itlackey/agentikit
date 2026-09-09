@@ -4,7 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import { NotFoundError, UsageError } from "../../core/errors";
-import { openStateDatabase, withImmediateTransaction } from "../../core/state-db";
+import { isSqliteContentionError, openStateDatabase, withImmediateTransaction } from "../../core/state-db";
 import { borrowScopedStateDb, withStateDbScope } from "../../core/state-db-scope";
 import { sleepSync } from "../../runtime";
 import type { WorkflowRunStatus, WorkflowRunStepStatus } from "../../sources/types";
@@ -327,23 +327,20 @@ export interface ListRunsFilter {
 /**
  * Whether `error` is one of the specific SQLite conditions a run-lease
  * statement can throw under real cross-process contention on the same row:
- * `SQLITE_BUSY`/`SQLITE_LOCKED` (both drivers), or the message text a
- * transient contention blip has been observed producing, "database is
- * locked", "disk I/O error", or "database disk image is malformed".
- * Matching on this set alone is never sufficient to call something lease
- * contention — see {@link WorkflowRunsRepository.acquireEngineLease}, which
- * additionally requires a fresh read confirming a live lease before
- * substituting the lease-held message for the original error.
+ * the shared {@link isSqliteContentionError} classifier (SQLITE_BUSY/LOCKED,
+ * "database is locked", "database table is locked", the phantom-BEGIN
+ * marker) plus two corruption-shaped message texts a transient contention
+ * blip has been observed producing on this specific race, "disk I/O error"
+ * and "database disk image is malformed". Matching on this set alone is
+ * never sufficient to call something lease contention — see
+ * {@link WorkflowRunsRepository.acquireEngineLease}, which additionally
+ * requires a fresh read confirming a live lease before substituting the
+ * lease-held message for the original error.
  */
 function isLeaseContentionSqliteError(error: unknown): boolean {
-  const code = (error as { code?: unknown } | undefined)?.code;
-  if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
+  if (isSqliteContentionError(error)) return true;
   const message = error instanceof Error ? error.message : String(error);
-  return (
-    message.includes("database is locked") ||
-    message.includes("disk I/O error") ||
-    message.includes("database disk image is malformed")
-  );
+  return message.includes("disk I/O error") || message.includes("database disk image is malformed");
 }
 
 const LEASE_RETRY_ATTEMPTS = 4;

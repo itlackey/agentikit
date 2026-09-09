@@ -138,7 +138,15 @@ export type UsageErrorCode =
   // complete` racing the engine). Distinct from every other UsageError code:
   // a caller branching on `code` can retry this one once the named expiry
   // passes, which is never true of a bad flag or malformed input.
-  | "RUN_LEASE_HELD";
+  | "RUN_LEASE_HELD"
+  // #948: `withImmediateTransaction`/`beginImmediateTransaction`
+  // (src/core/state-db.ts) exhausted every BEGIN IMMEDIATE retry attempt and
+  // the failure is still contention-shaped (`isSqliteContentionError`) —
+  // another akm process is writing state.db right now, not a genuine
+  // corruption/unrelated failure. Modeled on RUN_LEASE_HELD: a caller
+  // branching on `code` can retry shortly, which is never true of a bad flag
+  // or malformed input. The original driver error survives as `cause`.
+  | "STATE_DB_CONTENDED";
 
 /** Stable, machine-readable codes for NotFoundError. */
 export type NotFoundErrorCode =
@@ -249,6 +257,8 @@ const USAGE_HINTS: Partial<Record<UsageErrorCode, string>> = {
     "Check each `outputs:` entry's `from:` against the step artifact it names, and its `schema:` against the value that step actually promotes.",
   RUN_LEASE_HELD:
     "Wait for the named engine invocation to finish or for the lease to expire, then retry. `akm workflow status <id>` shows the current lease.",
+  STATE_DB_CONTENDED:
+    "Another akm process is writing state.db right now. Wait a few seconds and retry; commands that support --skip-if-locked can skip instead of failing.",
 };
 
 /** Default hint for each NotFoundError code. */
