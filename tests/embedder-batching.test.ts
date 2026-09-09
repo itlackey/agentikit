@@ -17,6 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { EmbeddingConnectionConfig } from "../src/core/config/config";
+import { EmbeddingConnectionConfigSchema } from "../src/core/config/schema/embedding";
 import {
   DEFAULT_EMBEDDING_TIMEOUT_MS,
   isContextExceededResponse,
@@ -84,17 +85,34 @@ describe("resolveEmbeddingTimeoutMs (#9541)", () => {
 });
 
 describe("resolveEmbeddingConcurrency", () => {
-  test("is fixed at 1 for a loopback endpoint — no config override exists", () => {
+  test("defaults to 1 for a loopback endpoint when embedding.concurrency is unset (#9541)", () => {
     expect(resolveEmbeddingConcurrency({ endpoint: "http://localhost:8080" })).toBe(1);
     expect(resolveEmbeddingConcurrency({ endpoint: "http://127.0.0.1:8080" })).toBe(1);
   });
 
-  test("is fixed at 1 when no endpoint is configured (fails safe as local)", () => {
+  test("defaults to 1 when no endpoint is configured (fails safe as local)", () => {
     expect(resolveEmbeddingConcurrency({})).toBe(1);
   });
 
-  test("is fixed at 2 for a remote endpoint", () => {
+  test("defaults to 2 for a remote endpoint", () => {
     expect(resolveEmbeddingConcurrency({ endpoint: "https://api.example.com/v1" })).toBe(2);
+  });
+
+  test("embedding.concurrency overrides the default in either direction (#9541 decision 4)", () => {
+    expect(resolveEmbeddingConcurrency({ endpoint: "http://localhost:8080", concurrency: 8 })).toBe(8);
+    expect(resolveEmbeddingConcurrency({ endpoint: "https://api.example.com/v1", concurrency: 1 })).toBe(1);
+  });
+});
+
+describe("EmbeddingConnectionConfigSchema: embedding.concurrency bounds (#9541 decision 4)", () => {
+  test("accepts 1 and 16", () => {
+    expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 1 }).success).toBe(true);
+    expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 16 }).success).toBe(true);
+  });
+
+  test("rejects 0 and 17", () => {
+    expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 0 }).success).toBe(false);
+    expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 17 }).success).toBe(false);
   });
 });
 

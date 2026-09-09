@@ -49,5 +49,16 @@ export const EmbeddingConnectionConfigSchema = z
      * no retry — every batch that hit it was silently dropped (#9541).
      */
     timeoutMs: positiveInt.optional(),
+    /**
+     * Overrides the fixed in-flight request window (#9541 decision 4,
+     * reversing 0.9.15's earlier "no config override" ruling after field
+     * evidence from multi-slot local servers). Bounded 1-16. Unset keeps
+     * today's default: 1 for a loopback endpoint, 2 for a remote one
+     * (`resolveEmbeddingConcurrency`, `src/llm/embedders/remote.ts`). Set it
+     * only for an endpoint that genuinely serves parallel requests (llama.cpp
+     * `--parallel N`, vLLM) — request SIZE (`batchSize`, `maxTokens`/
+     * `contextLength`) remains the first throughput lever.
+     */
+    concurrency: positiveInt.max(16).optional(),
   })
   .passthrough();

@@ -396,8 +396,8 @@ unless a remote `embedding` config is provided.
 `akm improve`'s memory-inference/consolidate passes when they call an
 embedding model: `provider`, `endpoint`, `model`, `apiKey` (symbolic
 reference, same rules as engine `apiKey`), `dimension`, `localModel`,
-`maxTokens`, `batchSize`, `chunkSize`, `contextLength`, `timeoutMs`, and
-`ollamaOptions.num_ctx`.
+`maxTokens`, `batchSize`, `chunkSize`, `contextLength`, `timeoutMs`,
+`concurrency`, and `ollamaOptions.num_ctx`.
 
 `embedding.timeoutMs` (positive integer, default `120000` — 120s) bounds
 each remote embedding request. A local model server on a large,
@@ -407,18 +407,22 @@ fired mid-response with no retry, silently dropping every batch it hit for
 the rest of a run. Set it lower to fail fast against a known-fast endpoint,
 or higher for a slow local server on large batches.
 
-`akm index` keeps a small, fixed number of `/v1/embeddings` requests in
-flight at once (a remote endpoint only; the local transformer path is
-unaffected): `1` for a loopback endpoint (`localhost`, `127.0.0.0/8`, etc. —
-a local model server serves one inference at a time, and parallel requests
-thrash it) and `2` for a remote one. This width is not configurable. The
-actual throughput knob is request SIZE, not request count: `embedding.batchSize`
-(a document-count cap, default 100) together with `embedding.maxTokens` /
-`embedding.contextLength` (an estimated token budget per request, default
-8000) control how many documents land in one request — a batch of 16-32
-documents takes about the same wall time as a single one against a healthy
-endpoint, so growing the batch is where most of the win is, not adding more
-concurrent requests.
+`akm index` keeps a small number of `/v1/embeddings` requests in flight at
+once (a remote endpoint only; the local transformer path is unaffected):
+`1` for a loopback endpoint (`localhost`, `127.0.0.0/8`, etc. — a local
+model server serves one inference at a time, and parallel requests thrash
+it) and `2` for a remote one, unless `embedding.concurrency` (positive
+integer, 1-16) overrides it. This default holds for the overwhelming
+majority of setups; set the override only for an endpoint that genuinely
+serves parallel requests — a local server started with a multi-slot flag
+(llama.cpp's `--parallel N`, vLLM) — not to "speed up" an ordinary
+single-slot model server, which the default already protects from
+reload-thrash. Request SIZE remains the first throughput lever regardless:
+`embedding.batchSize` (a document-count cap, default 100) together with
+`embedding.maxTokens` / `embedding.contextLength` (an estimated token
+budget per request, default 8000) control how many documents land in one
+request — a batch of 16-32 documents takes about the same wall time as a
+single one against a healthy endpoint.
 
 ## Search tuning
 

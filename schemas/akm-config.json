@@ -240,6 +240,11 @@
         "timeoutMs": {
           "type": "integer",
           "exclusiveMinimum": 0
+        },
+        "concurrency": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 16
         }
       },
       "additionalProperties": true
@@ -1935,6 +1940,11 @@
             "timeoutMs": {
               "type": "integer",
               "exclusiveMinimum": 0
+            },
+            "concurrency": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 16
             }
           },
           "additionalProperties": true
@@ -3508,6 +3518,11 @@
         "timeoutMs": {
           "type": "integer",
           "exclusiveMinimum": 0
+        },
+        "concurrency": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 16
         }
       },
       "additionalProperties": true

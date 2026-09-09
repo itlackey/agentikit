@@ -184,16 +184,21 @@ documents packing an oversized request. A single document whose own estimate
 exceeds the token budget is isolated and skipped before ever going over HTTP.
 
 **Concurrency** — provider batches are dispatched through a bounded pool
-(`concurrentMap`) instead of strictly sequentially. Its width is FIXED, no
-config override — `resolveEmbeddingConcurrency` (`src/llm/embedders/remote.ts`)
-derives it via the same shared `defaultConcurrencyForEndpoint` classifier
-(`src/core/loopback.ts`) that `getDefaultLlmConcurrency` above uses: **1**
-for a loopback endpoint (a local model server serves one inference at a
-time; parallel requests thrash it) and **2** for a remote one — request
-COUNT is not the throughput knob here, request SIZE is (see Request
-batching above). A caller abort (`signal.aborted`) still propagates once
-the pool drains, even though `concurrentMap` itself swallows per-item
-throws.
+(`concurrentMap`) instead of strictly sequentially. Default width (unset
+`embedding.concurrency`) — `resolveEmbeddingConcurrency`
+(`src/llm/embedders/remote.ts`) derives it via the same shared
+`defaultConcurrencyForEndpoint` classifier (`src/core/loopback.ts`) that
+`getDefaultLlmConcurrency` above uses: **1** for a loopback endpoint (a
+local model server serves one inference at a time; parallel requests
+thrash it) and **2** for a remote one. `embedding.concurrency` (positive
+integer, 1-16, #9541) overrides this default — an owner decision made after
+field evidence that a multi-slot local server (llama.cpp `--parallel N`,
+vLLM) genuinely serves parallel requests and sat idle under the fixed
+default. Request SIZE remains the first throughput lever regardless (see
+Request batching above); the override exists for a server that actually
+serves parallel slots, not as a blanket "go faster" knob. A caller abort
+(`signal.aborted`) still propagates once the pool drains, even though
+`concurrentMap` itself swallows per-item throws.
 
 **Context-size split-and-retry** — a batch rejected specifically for
 exceeding the endpoint's context window (HTTP 413, or a recognised

@@ -122,16 +122,24 @@ export function isContextExceededResponse(status: number, body: string): boolean
 
 /**
  * Resolve the effective in-flight request window for `RemoteEmbedder.embedBatch`.
- * FIXED — no config override: 1 for a loopback endpoint, 2 for a remote one,
- * via the shared `defaultConcurrencyForEndpoint` (`src/core/loopback.ts`),
- * the same lowest-common-denominator rule `getDefaultLlmConcurrency`
- * (`src/indexer/indexer.ts`) uses. The actual throughput knob is request
- * SIZE, not request count: `embedding.batchSize` (document cap) and
- * `embedding.maxTokens`/`contextLength` (token budget) reach a larger batch
- * per request, which is where most of the win is — a 32-input batch takes
+ * Default (unset `embedding.concurrency`): 1 for a loopback endpoint, 2 for a
+ * remote one, via the shared `defaultConcurrencyForEndpoint`
+ * (`src/core/loopback.ts`), the same lowest-common-denominator rule
+ * `getDefaultLlmConcurrency` (`src/indexer/indexer.ts`) uses.
+ *
+ * `embedding.concurrency` (#9541 decision 4) overrides this default in
+ * either direction, bounded 1-16 at the config schema — an owner-decided
+ * reversal of 0.9.15's earlier "no config override" ruling, made after field
+ * evidence that a multi-slot local server (llama.cpp `--parallel N`, vLLM)
+ * genuinely serves parallel requests and was left idle by the fixed default.
+ * Request SIZE remains the first throughput lever regardless:
+ * `embedding.batchSize` (document cap) and `embedding.maxTokens`/
+ * `contextLength` (token budget) reach a larger batch per request, which is
+ * where most of the win is for a single-slot server — a 32-input batch takes
  * about the same wall time as one input against a healthy endpoint.
  */
 export function resolveEmbeddingConcurrency(config: EmbeddingConnectionConfig): number {
+  if (typeof config.concurrency === "number") return config.concurrency;
   return defaultConcurrencyForEndpoint(config.endpoint);
 }
 
