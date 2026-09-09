@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { assetPathForName, stashDirFor } from "../asset/asset-placement";
 import { type BundleRef, isBundleSlug, parseBundleRef } from "../asset/asset-ref";
 import { typeNameFromConceptId } from "../asset/resolve-ref";
@@ -598,26 +599,6 @@ export interface ConfigMutationResult {
 }
 
 /**
- * True when `a` and `b` are structurally identical config values — order-
- * independent for plain objects (matching `deepMergeConfig`'s notion of
- * "object"), order-dependent for arrays. Used by
- * {@link pruneUnchangedInheritedFields} to tell "the mutation actually
- * touched this" apart from "this only differs because it came from
- * `extends`/`DEFAULT_CONFIG`, not from anything the local file set".
- */
-function deepEqualConfigValue(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((v, i) => deepEqualConfigValue(v, b[i]));
-  }
-  if (isPlainObject(a) && isPlainObject(b)) {
-    const keys = Object.keys(a);
-    return keys.length === Object.keys(b).length && keys.every((k) => k in b && deepEqualConfigValue(a[k], b[k]));
-  }
-  return false;
-}
-
-/**
  * #945 review finding: `mutateConfig` used to write the entire extends-merged
  * *effective* config (`next`) back to the local file on every `config
  * set`/`unset`, duplicating every inherited `engines`/`improve.strategies`
@@ -651,7 +632,7 @@ function pruneUnchangedInheritedFields(before: unknown, after: unknown, localRaw
       if (prunedHasContent || localHasKey) result[key] = pruned;
       continue;
     }
-    if (localHasKey || !deepEqualConfigValue(afterValue, beforeValue)) {
+    if (localHasKey || !isDeepStrictEqual(afterValue, beforeValue)) {
       result[key] = afterValue;
     }
   }

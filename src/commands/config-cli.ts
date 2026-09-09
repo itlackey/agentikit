@@ -13,6 +13,7 @@
  * settings use their canonical engine/strategy paths; retired aliases are not
  * rewritten at this boundary.
  */
+import { isDeepStrictEqual } from "node:util";
 import { defineGroupCommand, defineJsonCommand, output } from "../cli/shared";
 import { isRecord, resolveStashDir } from "../core/common";
 import {
@@ -92,19 +93,6 @@ function flattenConfigLeaves(value: unknown, prefix: string[], out: Map<string, 
   out.set(prefix.join("."), value);
 }
 
-/** JSON-value structural equality, order-independent for object keys (unlike `JSON.stringify` comparison). */
-function deepEqualJsonValue(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((v, i) => deepEqualJsonValue(v, b[i]));
-  }
-  if (isRecord(a) && isRecord(b)) {
-    const aKeys = Object.keys(a);
-    return aKeys.length === Object.keys(b).length && aKeys.every((k) => k in b && deepEqualJsonValue(a[k], b[k]));
-  }
-  return false;
-}
-
 /**
  * Diff two (already redacted) effective config objects into sorted
  * `{path, local, other}` rows for every leaf that differs — including a leaf
@@ -120,7 +108,7 @@ function diffConfigs(local: unknown, other: unknown): ConfigDiffRow[] {
   for (const path of paths) {
     const localValue = localLeaves.get(path);
     const otherValue = otherLeaves.get(path);
-    if (!deepEqualJsonValue(localValue, otherValue)) rows.push({ path, local: localValue, other: otherValue });
+    if (!isDeepStrictEqual(localValue, otherValue)) rows.push({ path, local: localValue, other: otherValue });
   }
   rows.sort((a, b) => a.path.localeCompare(b.path));
   return rows;
