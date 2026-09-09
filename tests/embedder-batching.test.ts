@@ -20,8 +20,10 @@ import type { EmbeddingConnectionConfig } from "../src/core/config/config";
 import { EmbeddingConnectionConfigSchema } from "../src/core/config/schema/embedding";
 import { _setWarnSinkForTests } from "../src/core/warn";
 import {
+  _setEmbeddingTimeoutBackoffForTests,
   DEFAULT_EMBEDDING_TIMEOUT_MS,
   describeEmbeddingCredential,
+  embeddingTimeoutRetryBackoffMs,
   isContextExceededResponse,
   RemoteEmbedder,
   resolveEmbeddingConcurrency,
@@ -29,6 +31,7 @@ import {
 } from "../src/llm/embedders/remote";
 import type { EmbeddingVector } from "../src/llm/embedders/types";
 import { withMockedFetch } from "./_helpers/sandbox";
+import { overrideSeam } from "./_helpers/seams";
 
 /** A fetch mock that hangs until its request's abort signal fires, then rejects like real `fetch` does. */
 function hungFetch(_url: string, init?: RequestInit): Promise<Response> {
@@ -116,6 +119,38 @@ describe("resolveEmbeddingTimeoutMs (#9541)", () => {
       expect(results).toEqual([undefined]);
       expect(skips[0]?.message).toContain("timed out after 30ms");
     }, hungFetch);
+  });
+});
+
+describe("embeddingTimeoutRetryBackoffMs: grows with timeoutAttempt (#954, field-report follow-up)", () => {
+  test("doubles per attempt off the 5s/60s default, floored at half the jittered value", () => {
+    // backoffDelay's formula is baseMs * 2^attempt * (0.5 + random*0.5), so
+    // the minimum possible value at one attempt is baseMs * 2^attempt * 0.5
+    // — a strict, deterministic lower bound regardless of jitter.
+    expect(embeddingTimeoutRetryBackoffMs(0)).toBeGreaterThanOrEqual(2_500);
+    expect(embeddingTimeoutRetryBackoffMs(0)).toBeLessThan(5_000);
+    expect(embeddingTimeoutRetryBackoffMs(1)).toBeGreaterThanOrEqual(5_000);
+    expect(embeddingTimeoutRetryBackoffMs(1)).toBeLessThan(10_000);
+    expect(embeddingTimeoutRetryBackoffMs(2)).toBeGreaterThanOrEqual(10_000);
+    expect(embeddingTimeoutRetryBackoffMs(2)).toBeLessThan(20_000);
+  });
+
+  test("caps at 60s regardless of how deep the attempt count goes", () => {
+    expect(embeddingTimeoutRetryBackoffMs(10)).toBe(60_000);
+  });
+
+  test("omitting timeoutAttempt behaves as attempt 0 (the original single-retry call site)", () => {
+    expect(embeddingTimeoutRetryBackoffMs()).toBeGreaterThanOrEqual(2_500);
+    expect(embeddingTimeoutRetryBackoffMs()).toBeLessThan(5_000);
+  });
+
+  test("the test-only base/max override lets a test shrink real wait time without changing the shape", () => {
+    overrideSeam(_setEmbeddingTimeoutBackoffForTests, { baseMs: 100, maxMs: 1_000 });
+    expect(embeddingTimeoutRetryBackoffMs(0)).toBeGreaterThanOrEqual(50);
+    expect(embeddingTimeoutRetryBackoffMs(0)).toBeLessThan(100);
+    expect(embeddingTimeoutRetryBackoffMs(1)).toBeGreaterThanOrEqual(100);
+    expect(embeddingTimeoutRetryBackoffMs(1)).toBeLessThan(200);
+    expect(embeddingTimeoutRetryBackoffMs(20)).toBe(1_000);
   });
 });
 

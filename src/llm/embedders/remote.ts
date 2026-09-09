@@ -126,20 +126,33 @@ export function isEmbeddingTimeoutError(err: unknown): boolean {
   return err.message.startsWith("Request timed out after ");
 }
 
+/** TEST-ONLY seam: override the backoff base/max so retry-backoff tests run fast without waiting real seconds. */
+let embeddingTimeoutBackoffOverrideForTests: { baseMs: number; maxMs: number } | undefined;
+
+/** TEST-ONLY. Pass undefined to restore the real 5s/60s backoff. */
+export function _setEmbeddingTimeoutBackoffForTests(config?: { baseMs: number; maxMs: number }): void {
+  embeddingTimeoutBackoffOverrideForTests = config;
+}
+
 /**
  * Backoff before the addendum's single same-size retry on a request timeout
  * (#9541 addendum, refining decision 7) — reuses the same jittered
  * exponential formula {@link backoffDelay} uses for the rest of the
  * codebase's retry paths, at a base matching the addendum's "5s, doubling,
- * capped at 60s" and always at `attempt` 0: this design retries a given
- * request size exactly once before splitting it (a fresh, smaller request)
- * or skipping it, so the formula's doubling never actually triggers within
- * one request size — each new size after a split gets its own fresh
- * attempt-0 backoff, long enough for the provider to drain the request it
- * abandoned.
+ * capped at 60s".
+ *
+ * `timeoutAttempt` (#954, field-report follow-up) is how many times the
+ * SAME-SIZE-retry-then-split chain has already split before reaching this
+ * size — 0 at the top level. The first-timeout backoff for each successive,
+ * smaller size after a split grows with it (5s, then doubling, capped at
+ * 60s) instead of every split resetting to a flat ~5s: the field evidence
+ * was that an abandoned request keeps computing server-side, so a server
+ * already draining a whole chain of abandoned requests needs progressively
+ * more room, not the same fixed pause at every size.
  */
-export function embeddingTimeoutRetryBackoffMs(): number {
-  return backoffDelay(0, 5_000, 60_000);
+export function embeddingTimeoutRetryBackoffMs(timeoutAttempt = 0): number {
+  const { baseMs, maxMs } = embeddingTimeoutBackoffOverrideForTests ?? { baseMs: 5_000, maxMs: 60_000 };
+  return backoffDelay(timeoutAttempt, baseMs, maxMs);
 }
 
 /** Why a document was skipped rather than embedded. */
@@ -521,7 +534,17 @@ export class RemoteEmbedder implements Embedder {
     // (after the addendum's one same-size backoff-and-retry) — a second
     // timeout at that point splits or terminally skips rather than backing
     // off again.
-    const requestAndCommit = async (indices: number[], isTimeoutRetry = false): Promise<void> => {
+    //
+    // `timeoutAttempt` (#954, field-report follow-up) counts how many splits
+    // down the timeout-retry chain this call is: 0 at the top level, then
+    // +1 each time a second timeout at one size splits into two smaller
+    // requests. It is the `attempt` fed to {@link embeddingTimeoutRetryBackoffMs}
+    // so each successive size's first-timeout backoff is longer than the
+    // last (5s, doubling, capped at 60s) instead of every split restarting
+    // at the same ~5s delay — a server still draining a whole run of
+    // abandoned requests needs more room the deeper the chain goes, not the
+    // same fixed pause every time.
+    const requestAndCommit = async (indices: number[], isTimeoutRetry = false, timeoutAttempt = 0): Promise<void> => {
       // A concurrent batch may have tripped the circuit breaker (or failed
       // onBatch) while this call was queued behind a split or a backoff —
       // never let a deeper recursive call make a request that can no longer
@@ -555,14 +578,17 @@ export class RemoteEmbedder implements Embedder {
         if (timedOut && !isTimeoutRetry) {
           // First timeout at this size: back off so the provider can drain
           // the abandoned request, then retry the SAME request once before
-          // ever splitting or skipping (#9541 addendum).
-          const backoffMs = embeddingTimeoutRetryBackoffMs();
+          // ever splitting or skipping (#9541 addendum). The backoff grows
+          // with `timeoutAttempt` (#954 follow-up), not a flat ~5s every
+          // time, so a chain of splits down to smaller and smaller requests
+          // gives the provider proportionally more room to drain each time.
+          const backoffMs = embeddingTimeoutRetryBackoffMs(timeoutAttempt);
           warnVerbose(
             `[embed] batch of ${batch.length} document(s) timed out after ${requestTimeoutMs}ms; retrying once after a ${Math.round(backoffMs)}ms backoff`,
           );
           await abortableDelay(backoffMs, signal, "embedding interrupted during retry backoff");
           if (!dispatchAbort.signal.aborted) {
-            return requestAndCommit(indices, true);
+            return requestAndCommit(indices, true, timeoutAttempt);
           }
           // Dispatch was stopped (by another batch's circuit-breaker trip)
           // while this one was backing off — fall through and skip below
@@ -571,9 +597,11 @@ export class RemoteEmbedder implements Embedder {
           // Timed out again on the retry: split rather than skip outright —
           // the provider may still fit it once it is smaller (#9541
           // addendum), the same treatment a context-size rejection gets.
+          // Each half's OWN first-timeout backoff (#954 follow-up) starts
+          // one attempt further down the chain than this size's did.
           const mid = Math.ceil(indices.length / 2);
-          await requestAndCommit(indices.slice(0, mid));
-          await requestAndCommit(indices.slice(mid));
+          await requestAndCommit(indices.slice(0, mid), false, timeoutAttempt + 1);
+          await requestAndCommit(indices.slice(mid), false, timeoutAttempt + 1);
           return;
         }
 

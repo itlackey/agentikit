@@ -31,7 +31,9 @@ import path from "node:path";
 import { resetConfigCache } from "../../src/core/config/config";
 import { akmIndex } from "../../src/indexer/indexer";
 import { clearEmbeddingCache } from "../../src/llm/embedders/cache";
+import { _setEmbeddingTimeoutBackoffForTests } from "../../src/llm/embedders/remote";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
+import { overrideSeam } from "../_helpers/seams";
 
 let storage: IsolatedAkmStorage;
 let server: ReturnType<typeof Bun.serve> | undefined;
@@ -113,6 +115,13 @@ test("stops after exactly 3 consecutive single-document timeouts against a dead 
 }, 60_000);
 
 test("a dead endpoint splits a multi-document batch down to singles before any failure counts, tripping after exactly 3 single-document failures", async () => {
+  // #954 field-report follow-up: the backoff base/max is overridden small
+  // here so the test stays fast — the growing-delay behavior under test is
+  // proportional to `embeddingTimeoutRetryBackoffMs`'s attempt/base/max
+  // inputs, not to any specific real-world duration.
+  const BACKOFF_BASE_MS = 200;
+  overrideSeam(_setEmbeddingTimeoutBackoffForTests, { baseMs: BACKOFF_BASE_MS, maxMs: 5_000 });
+
   let requestCount = 0;
   const requestSizes: number[] = [];
   const requestTimestamps: number[] = [];
@@ -158,14 +167,23 @@ test("a dead endpoint splits a multi-document batch down to singles before any f
   // retries have narrowed it down to one document.
   expect(requestSizes).toEqual([3, 3, 2, 2, 1, 1, 1, 1, 1, 1]);
   expect(requestCount).toBe(10);
-  // Request-timing log proving every retry (odd/even pair) actually waited
-  // out a back-off rather than firing immediately — the addendum's
-  // "doubling" formula only ever runs its attempt-0 term in this design
-  // (each split starts a fresh single-retry request), so every gap is
-  // independently at least the same proven-backoff floor.
-  for (let i = 0; i < requestTimestamps.length; i += 2) {
+  // Request-timing log proving the back-off DELAYS GROW down the split
+  // chain (#954 field-report follow-up) rather than every retry using the
+  // same flat ~5s floor: `timeoutAttempt` is 0 for the top-level size-3
+  // retry, 1 for each size-2/size-1 branch a first split produces, and 2 for
+  // the two single-document branches a second split produces off the size-2
+  // half — so the five retry pairs below, in dispatch order, back off at
+  // attempts [0, 1, 2, 2, 1]. `backoffDelay`'s floor at one attempt is
+  // `baseMs * 2^attempt * 0.5`, strictly increasing per attempt and never
+  // reduced by jitter, so asserting each pair against its own attempt's
+  // floor proves genuine growth rather than a single shared threshold.
+  const expectedAttemptByRetryPair = [0, 1, 2, 2, 1];
+  expect(requestTimestamps.length).toBe(expectedAttemptByRetryPair.length * 2);
+  for (const [pairIndex, attempt] of expectedAttemptByRetryPair.entries()) {
+    const i = pairIndex * 2;
     const gap = (requestTimestamps[i + 1] as number) - (requestTimestamps[i] as number);
-    expect(gap).toBeGreaterThanOrEqual(MIN_PROVEN_BACKOFF_MS);
+    const floor = BACKOFF_BASE_MS * 2 ** attempt * 0.5;
+    expect(gap).toBeGreaterThanOrEqual(floor);
   }
   expect(result.verification.ok).toBe(false);
   expect(result.verification.semanticStatus).toBe("blocked");
