@@ -82,10 +82,24 @@ function eligibleRef(ref: string): ImproveEligibleRef {
   return { ref, reason: "scope-type" };
 }
 
-describe("deriveNoCallReason (#944)", () => {
-  test("autonomy_gated wins when the process's lane was downgraded", () => {
+describe("deriveNoCallReason (#944, single decision point per #953/#957/#947/#944 batch review)", () => {
+  test("engine_unavailable wins outright, even over an also-gated lane", () => {
     const reason = deriveNoCallReason({
-      process: "memoryInference",
+      row: {
+        process: "memoryInference",
+        enabled: false,
+        unavailable: { configKey: "improve.strategies.default.processes.memoryInference.engine", reason: "no engine" },
+      },
+      autonomyGated: [{ lane: "memoryInference", configKey: "experimental.improveAutonomy", reason: "writes memory" }],
+      strategyFilteredRefsCount: 5,
+      eligibleRefs: 0,
+    });
+    expect(reason).toBe("engine_unavailable");
+  });
+
+  test("autonomy_gated wins for a disabled, resolvable process whose lane was downgraded", () => {
+    const reason = deriveNoCallReason({
+      row: { process: "memoryInference", enabled: false, unavailable: undefined },
       autonomyGated: [{ lane: "memoryInference", configKey: "experimental.improveAutonomy", reason: "writes memory" }],
       strategyFilteredRefsCount: 5,
       eligibleRefs: 0,
@@ -93,9 +107,18 @@ describe("deriveNoCallReason (#944)", () => {
     expect(reason).toBe("autonomy_gated");
   });
 
+  test("a disabled, resolvable process with no gated lane returns undefined — never fabricated", () => {
+    const reason = deriveNoCallReason({
+      row: { process: "extract", enabled: false, unavailable: undefined },
+      autonomyGated: [],
+      strategyFilteredRefsCount: 0,
+    });
+    expect(reason).toBeUndefined();
+  });
+
   test("strategy_filtered_all_passes when the process has zero eligible refs and the strategy filtered some", () => {
     const reason = deriveNoCallReason({
-      process: "reflect",
+      row: { process: "reflect", enabled: true, unavailable: undefined },
       autonomyGated: [],
       strategyFilteredRefsCount: 3,
       eligibleRefs: 0,
@@ -105,7 +128,7 @@ describe("deriveNoCallReason (#944)", () => {
 
   test("zero eligible refs but nothing strategy-filtered falls through to no_signal", () => {
     const reason = deriveNoCallReason({
-      process: "reflect",
+      row: { process: "reflect", enabled: true, unavailable: undefined },
       autonomyGated: [],
       strategyFilteredRefsCount: 0,
       eligibleRefs: 0,
@@ -115,7 +138,7 @@ describe("deriveNoCallReason (#944)", () => {
 
   test("the dominant skip-reason count wins over no_signal", () => {
     const reason = deriveNoCallReason({
-      process: "reflect",
+      row: { process: "reflect", enabled: true, unavailable: undefined },
       autonomyGated: [],
       strategyFilteredRefsCount: 0,
       eligibleRefs: 4,
@@ -125,7 +148,11 @@ describe("deriveNoCallReason (#944)", () => {
   });
 
   test("no signal at all falls back to no_signal — never a fabricated category like limit_reached", () => {
-    const reason = deriveNoCallReason({ process: "consolidate", autonomyGated: [], strategyFilteredRefsCount: 0 });
+    const reason = deriveNoCallReason({
+      row: { process: "consolidate", enabled: true, unavailable: undefined },
+      autonomyGated: [],
+      strategyFilteredRefsCount: 0,
+    });
     expect(reason).toBe("no_signal");
   });
 });
@@ -144,7 +171,7 @@ describe("buildImproveUsageReport (#944)", () => {
     expect(report?.byProcessEngineModel).toHaveLength(1);
   });
 
-  test("engine_unavailable is folded in directly for a disabled+unavailable process, bypassing deriveNoCallReason", () => {
+  test("engine_unavailable reaches noCalls through the single deriveNoCallReason decision point", () => {
     const plan = buildPlan({
       overrides: { validation: { enabled: false, runner: null } },
       engineUnavailable: [

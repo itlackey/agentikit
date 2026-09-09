@@ -18,6 +18,7 @@ import type { LlmUsageCrossTabRow } from "../health/types";
 import type { AutonomyLane, GatedLane } from "./autonomy-gate";
 import {
   type ImproveProcessName,
+  type ProcessRoutingRow,
   projectResolvedProcessRouting,
   type ResolvedImprovePlan,
   shouldSkipRef,
@@ -70,12 +71,18 @@ function dominantReason(counts: Record<string, number>): string | undefined {
 }
 
 /**
- * Why an enabled process made zero LLM calls this run, in the priority order
- * the brief specifies: autonomy gate, then strategy pre-filter, then the
- * process's own dominant skip reason, else the `"no_signal"` fallback.
- * `"engine_unavailable"` is NOT handled here — it is folded in directly by
- * {@link buildImproveUsageReport} from `ResolvedImprovePlan.engineUnavailable`,
- * since those processes are disabled, not merely call-less.
+ * The single decision point for why an LLM-backed process made zero LLM
+ * calls this run — every case `buildImproveUsageReport` needs to report,
+ * decided in one place instead of split between this function and its
+ * caller. Priority order: `"engine_unavailable"` (the row's engine or
+ * credential could not be resolved) beats everything else, including a
+ * process that also happens to be autonomy-gated; then, for a disabled row
+ * that IS resolvable, `"autonomy_gated"` when its lane was gated, else
+ * `undefined` (a `false`-in-config process never reached the routing table
+ * in the first place, so a disabled-and-not-gated row has no other
+ * explanation to report); for an enabled row, `"strategy_filtered_all_passes"`
+ * when every ref got filtered out, then the process's own dominant skip
+ * reason, else the `"no_signal"` fallback.
  *
  * Reuses the SAME reason strings already emitted elsewhere
  * (`improve_skipped` events, reflect's `AkmReflectFailure.reason`, distill's
@@ -83,16 +90,19 @@ function dominantReason(counts: Record<string, number>): string | undefined {
  * per the brief, never a fabricated category like `"limit_reached"`.
  */
 export function deriveNoCallReason(args: {
-  process: ImproveProcessName;
+  row: Pick<ProcessRoutingRow, "enabled" | "unavailable"> & { process: ImproveProcessName };
   autonomyGated: readonly GatedLane[];
   strategyFilteredRefsCount: number;
   /** Refs this process would act on post strategy-filter (reflect/distill/consolidate only). */
   eligibleRefs?: number;
   /** Per-reason skip counts for this process (reflect: cooldown/skip reasons; distill: `distillSkipped.byReason`). */
   skipReasonCounts?: Record<string, number>;
-}): string {
-  const lane = AUTONOMY_LANE_BY_PROCESS[args.process];
-  if (lane && args.autonomyGated.some((gated) => gated.lane === lane)) return "autonomy_gated";
+}): string | undefined {
+  const { row } = args;
+  if (row.unavailable) return "engine_unavailable";
+  const lane = AUTONOMY_LANE_BY_PROCESS[row.process];
+  const laneGated = lane !== undefined && args.autonomyGated.some((gated) => gated.lane === lane);
+  if (!row.enabled) return laneGated ? "autonomy_gated" : undefined;
   if (args.eligibleRefs === 0 && args.strategyFilteredRefsCount > 0) return "strategy_filtered_all_passes";
   const dominant = args.skipReasonCounts ? dominantReason(args.skipReasonCounts) : undefined;
   if (dominant) return dominant;
@@ -144,27 +154,6 @@ export function buildImproveUsageReport(args: {
 
   const noCalls: UsageReportNoCallRow[] = [];
   for (const row of routing) {
-    if (!row.enabled) {
-      if (row.unavailable) {
-        noCalls.push({
-          process: row.process,
-          ...(row.engine ? { engine: row.engine } : {}),
-          reason: "engine_unavailable",
-        });
-        continue;
-      }
-      // Structurally disabled without an unavailable-engine reason: the only
-      // other way an LLM-backed process ends up here is the autonomy gate
-      // (memoryInference — see AUTONOMY_LANE_BY_PROCESS). A process disabled
-      // by its own strategy config (`enabled: false`) never made the routing
-      // table's cut in the first place, so this branch is narrow by
-      // construction.
-      const lane = AUTONOMY_LANE_BY_PROCESS[row.process];
-      if (lane && args.resolvedPlan.autonomyGated.some((gated) => gated.lane === lane)) {
-        noCalls.push({ process: row.process, ...(row.engine ? { engine: row.engine } : {}), reason: "autonomy_gated" });
-      }
-      continue;
-    }
     if (calledProcesses.has(row.process)) continue;
     const eligibleRefs = REF_SCOPED_PROCESSES.has(row.process)
       ? args.loopRefs.filter(
@@ -176,22 +165,20 @@ export function buildImproveUsageReport(args: {
             ).skip,
         ).length
       : undefined;
-    noCalls.push({
-      process: row.process,
-      ...(row.engine ? { engine: row.engine } : {}),
-      reason: deriveNoCallReason({
-        process: row.process,
-        autonomyGated: args.resolvedPlan.autonomyGated,
-        strategyFilteredRefsCount: args.strategyFilteredRefsCount,
-        eligibleRefs,
-        skipReasonCounts:
-          row.process === "reflect"
-            ? reflectSkipCounts
-            : row.process === "distill"
-              ? args.distillSkippedAggregate?.byReason
-              : undefined,
-      }),
+    const reason = deriveNoCallReason({
+      row,
+      autonomyGated: args.resolvedPlan.autonomyGated,
+      strategyFilteredRefsCount: args.strategyFilteredRefsCount,
+      eligibleRefs,
+      skipReasonCounts:
+        row.process === "reflect"
+          ? reflectSkipCounts
+          : row.process === "distill"
+            ? args.distillSkippedAggregate?.byReason
+            : undefined,
     });
+    if (reason === undefined) continue;
+    noCalls.push({ process: row.process, ...(row.engine ? { engine: row.engine } : {}), reason });
   }
 
   if (args.byProcessEngineModel.length === 0 && noCalls.length === 0) return undefined;
