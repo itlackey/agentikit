@@ -122,6 +122,17 @@ export interface EngineUnavailableProcess {
   process: EngineUnavailableProcessName;
   configKey: string;
   reason: string;
+  /**
+   * Structurally resolved routing metadata for the credential-unavailable case only
+   * (a working engine whose secret isn't reachable here) — never set for the
+   * no-engine-configured case, where these values were never resolved. `runner`
+   * stays `null` on the process itself so dispatch can never see a credential-less
+   * runner; a dry-run preview reads these instead when it needs to show what
+   * resolution decided without materializing the credential (#800/#957).
+   */
+  engine?: string;
+  model?: string;
+  contextLength?: number;
 }
 
 /** Complete immutable process behavior for one improve invocation. */
@@ -185,7 +196,16 @@ export function projectResolvedProcessRouting(plan: ResolvedImprovePlan): Proces
       enabled: process.enabled,
       ...(process.runner
         ? { engine: process.runner.engine, model: process.runner.connection.model, engineKind: process.runner.kind }
-        : {}),
+        : // #800/#957 round 3 — a credential-unavailable process never carries a
+          // runner, but its structurally resolved engine/model is still worth
+          // showing in the routing table (dry-run preview, health probe).
+          unavailable?.engine
+          ? {
+              engine: unavailable.engine,
+              ...(unavailable.model ? { model: unavailable.model } : {}),
+              engineKind: "llm",
+            }
+          : {}),
       notices: process.notices ?? [],
       ...(unavailable ? { unavailable: { configKey: unavailable.configKey, reason: unavailable.reason } } : {}),
     });
@@ -296,6 +316,11 @@ function buildImprovePlan(
     // "no engine" branch below — set here so the shared push/continue block
     // can tell the two apart in its reason text.
     let credentialUnavailableMessage: string | undefined;
+    // #800/#957 round 3 — the structurally resolved engine/model/contextLength
+    // for the credential-unavailable case only, so a dry-run preview can read
+    // what resolution decided (e.g. the consolidation chunk-size estimate)
+    // without the runner ever carrying a credential-less connection forward.
+    let credentialUnavailableRouting: { engine: string; model?: string; contextLength?: number } | undefined;
     if (!skipsRepairEngine) {
       const resolved = resolveImproveLlmExecution({
         config,
@@ -309,6 +334,13 @@ function buildImprovePlan(
         const credentialStatus = describeLlmCredentialAvailability(runner, env);
         if (!credentialStatus.available) {
           credentialUnavailableMessage = credentialUnavailableReason(runner.engine, credentialStatus);
+          credentialUnavailableRouting = {
+            engine: runner.engine,
+            ...(runner.connection.model !== undefined ? { model: runner.connection.model } : {}),
+            ...(runner.connection.contextLength !== undefined
+              ? { contextLength: runner.connection.contextLength }
+              : {}),
+          };
           runner = null;
           notices = [];
         }
@@ -323,6 +355,7 @@ function buildImprovePlan(
         reason:
           credentialUnavailableMessage ??
           `requires an LLM engine that is not configured. Set defaults.llmEngine or ${configKey}`,
+        ...credentialUnavailableRouting,
       });
       processes[processName] = Object.freeze({
         enabled: false,

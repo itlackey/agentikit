@@ -545,8 +545,12 @@ function resolveImproveRunSetup(options: AkmImproveOptions) {
   const configuredImproveProfile = resolveImproveStrategy(options.strategy, _earlyConfig).config;
   const resolvedPlan =
     options.resolvedPlan ??
+    // #800/#957 round 3 — same dry-run exemption as improve-cli.ts's own
+    // resolveImprovePlan call: a dry run never dispatches, so a strategy left
+    // fully disabled by an unreachable credential must not abort here either.
     resolveImprovePlan(options.strategy, _earlyConfig, {
       repairValidationFailures: options.repairValidationFailures,
+      allowAllDisabled: options.dryRun,
     });
   const selectedStrategy = resolvedPlan.strategy;
   const improveSensitiveValues = collectEngineCredentialValues(_earlyConfig);

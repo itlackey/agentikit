@@ -244,7 +244,11 @@ export const improveCommand = defineCommand({
           : resolveWriteTarget(effectiveConfig, targetArg);
       // Resolve every enabled model-backed process before logging, signal
       // lifecycle setup, or any filesystem/database side effect.
-      const resolvedPlan = resolveImprovePlan(strategyArg, effectiveConfig);
+      // #800/#957 round 3 — `--dry-run`/`--plan` never dispatches, so the
+      // "no improve process can run" guard must not throw when every process
+      // is disabled purely by an unreachable credential; a live run keeps
+      // throwing (allowAllDisabled unset).
+      const resolvedPlan = resolveImprovePlan(strategyArg, effectiveConfig, { allowAllDisabled: Boolean(dryRun) });
       if (args["require-engines"]) assertRequiredEnginesAvailable(resolvedPlan);
       const selectedStrategyName = resolvedPlan.strategy.name;
       const sensitiveValues = collectEngineCredentialValues(effectiveConfig);

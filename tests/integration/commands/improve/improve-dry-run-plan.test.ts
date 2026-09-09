@@ -53,6 +53,7 @@ function plannerConfig(args?: {
   consolidate?: Record<string, unknown>;
   extract?: Record<string, unknown>;
   triage?: Record<string, unknown>;
+  reflect?: Record<string, unknown>;
 }): AkmConfig {
   return withTestImproveLlm({
     semanticSearchMode: "off",
@@ -60,7 +61,7 @@ function plannerConfig(args?: {
       strategies: {
         default: {
           processes: {
-            reflect: { enabled: true, limit: 4 },
+            reflect: { enabled: true, limit: 4, ...(args?.reflect ?? {}) },
             distill: { enabled: false },
             consolidate: { enabled: false, ...(args?.consolidate ?? {}) },
             memoryInference: { enabled: false },
@@ -1068,20 +1069,23 @@ describe("#800 effective dry-run planner", () => {
     });
   });
 
-  // #957 regression, tracked in https://github.com/itlackey/akm/issues/958:
-  // once the shared "planner" engine's credential is unavailable, BOTH the
-  // base strategy's enabled "reflect" process and this test's "consolidate"
-  // override lose their runner (folded into `engineUnavailable`), which trips
-  // the "no improve process can run" guard even on a dry run that never
-  // dispatches. Verified this is pre-existing (fails identically at 17197c4c,
-  // the pre-#947 base commit, and passes before #957 at 61f6946) — not
-  // introduced by this change. Skipped per AGENTS.md's green-by-default rule
-  // rather than bundling a fix to #957's credential-unavailable semantics
-  // into an unrelated change; see #958 for the fix.
-  test.skip("consolidation preview reads frozen context length without materializing a required credential", async () => {
+  // #800/#957 — once the shared "planner" engine's credential is unavailable,
+  // the enabled "consolidate" override loses its runner (folded into
+  // `engineUnavailable`), which used to trip the "no improve process can run"
+  // guard even on a dry run that never dispatches (#958). `--dry-run`/`--plan`
+  // now passes `allowAllDisabled` so the guard returns the plan instead of
+  // throwing, and the credential-unavailable process carries its structurally
+  // resolved engine/model/contextLength on its `engineUnavailable` entry so
+  // this preview can still show them without ever materializing the
+  // credential. "reflect" is disabled here so exactly one process
+  // (consolidate) is unavailable.
+  test("consolidation preview reads frozen context length without materializing a required credential", async () => {
     const { stashDir } = isolatedStorage();
     const credentialName = "AKM_800_CONSOLIDATION_PLAN_KEY";
-    const config = plannerConfig({ consolidate: { enabled: true, minPoolSize: 2, maxChunkSize: 50 } });
+    const config = plannerConfig({
+      reflect: { enabled: false },
+      consolidate: { enabled: true, minPoolSize: 2, maxChunkSize: 50 },
+    });
     config.engines = {
       planner: {
         kind: "llm",
@@ -1109,8 +1113,24 @@ describe("#800 effective dry-run planner", () => {
     );
 
     expect(networkCalls).toBe(0);
+    // The credential is unavailable, so this dry run now reports consolidate
+    // as skipped rather than reporting it as runnable.
+    expect(result.plan?.consolidation.wouldRun).toBe(false);
+    expect(result.skippedProcesses).toHaveLength(1);
+    expect(result.skippedProcesses?.[0]?.process).toBe("consolidate");
+    expect(result.skippedProcesses?.[0]?.reason).toContain(`$${credentialName}`);
+    // The preview still reads the resolved context length without
+    // materializing the credential.
     expect(result.plan?.consolidation.effective.chunkSize).toBe(computeSafeChunkSize(8_000, 500, 50));
-    expect(result.plan?.consolidation.wouldRun).toBe(true);
+    const consolidateRow = result.plan?.processes.find((row) => row.process === "consolidate");
+    expect(consolidateRow).toMatchObject({
+      process: "consolidate",
+      enabled: false,
+      engine: "planner",
+      model: "planner",
+    });
+    expect(consolidateRow?.unavailable).toBeDefined();
+    expect(decodeImproveResult(JSON.stringify(result)).envelope.plannedRefs).toEqual(result.plannedRefs);
   });
 
   test("extract preview evaluates the same min-new-sessions gate without dispatch", async () => {

@@ -2274,12 +2274,19 @@ When the active strategy enables a process (or the triage judgment engine)
 whose engine or credential cannot be resolved in this process's environment,
 the run does not silently do nothing for it: the process is skipped, and the
 result carries `skippedProcesses` — an array of `{process, configKey, reason}`
-entries (omitted entirely when nothing was skipped). `ok` and the exit code
-are unchanged either way, matching `extract`'s `skipReasons` contract:
-consumers that need to know branch on `skippedProcesses` (or pass
-`--require-engines` to abort instead of degrading). `reason` names which
-engine and which credential reference (an env var, `apiKeyFile` path, or
-`secret://` reference — never its value) is missing.
+entries (omitted entirely when nothing was skipped). When the process resolved
+a real engine whose credential just isn't reachable here (as opposed to never
+resolving an engine at all), the entry also carries the structurally resolved
+`engine`/`model`/`contextLength` it would have used — never the credential
+itself. `ok` and the exit code are unchanged either way, matching `extract`'s
+`skipReasons` contract: consumers that need to know branch on
+`skippedProcesses` (or pass `--require-engines` to abort instead of
+degrading). `reason` names which engine and which credential reference (an env
+var, `apiKeyFile` path, or `secret://` reference — never its value) is
+missing. A `--dry-run`/`--plan` preview never dispatches, so it never aborts
+on an unavailable credential either — even a strategy left with every process
+disabled this way still returns its plan, with the affected processes in
+`skippedProcesses`.
 
 For dry runs, `plannedRefs` is the effective post-limit work set, not every
 ref in the requested scope. The `plan` object preserves both views: raw scope
@@ -2308,7 +2315,11 @@ own lowering `notices`, and — for reflect/distill/consolidate only —
 on (`shouldSkipRef`'s allowedTypes/process-disabled check; a count, not a
 per-ref matrix, to keep the envelope bounded). A row that could not resolve an
 engine or credential carries `unavailable: {configKey, reason}` — the same
-data behind `skippedProcesses` above, reshaped per process. This table is
+data behind `skippedProcesses` above, reshaped per process. When the process
+resolved a real engine whose credential just isn't reachable here, the row
+still carries that engine's `engine`/`model`/`engineKind` alongside
+`unavailable`, rather than omitting them the way a never-configured process
+does — so a preview can show what would have run. This table is
 resolved before any dispatch on every invocation (dry or live), so
 `akm improve --dry-run --strategy <name>` (or `--plan`) previews an ad-hoc
 strategy override without changing config first; `akm health`'s

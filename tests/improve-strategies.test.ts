@@ -388,6 +388,12 @@ describe("resolveImprovePlan", () => {
     expect(unavailable?.configKey).toBe("improve.strategies.credential-test.processes.reflect.engine");
     expect(unavailable?.reason).toContain('engine "private"');
     expect(unavailable?.reason).toContain("$PRIVATE_957_TOKEN");
+    // #800/#957 round 3 — the structurally resolved engine/model still show up
+    // on the engineUnavailable entry even though `runner` stays null; no
+    // contextLength was configured on "private", so it stays unset.
+    expect(unavailable?.engine).toBe("private");
+    expect(unavailable?.model).toBe("private-model");
+    expect(unavailable?.contextLength).toBeUndefined();
     // Other processes on the credentialed "ready" fallback still run.
     expect(plan.processes.distill.enabled).toBe(true);
     expect(plan.processes.distill.runner?.engine).toBe("ready");
@@ -575,5 +581,33 @@ describe("projectResolvedProcessRouting (#947)", () => {
     const judgmentRow = withJudgment.find((row) => row.process === "triage.judgment");
     expect(judgmentRow).toMatchObject({ enabled: true, engine: "reviewer", engineKind: "agent" });
     expect(judgmentRow?.model).toBeUndefined();
+  });
+
+  test("a credential-unavailable process still reports its resolved engine/model, unlike an unconfigured one (#800/#957 round 3)", () => {
+    const plan = resolveImprovePlan(
+      "credential-test",
+      {
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: {
+          private: {
+            kind: "llm",
+            endpoint: "https://example.test/v1/chat/completions",
+            model: "private-model",
+            apiKey: "$PRIVATE_ROUTING_957_TOKEN",
+          },
+        },
+        defaults: { llmEngine: "private" },
+        improve: {
+          strategies: { "credential-test": { processes: { reflect: { enabled: true } } } },
+        },
+      } as AkmConfig,
+      { env: {}, allowAllDisabled: true },
+    );
+
+    const rows = projectResolvedProcessRouting(plan);
+    const reflect = rows.find((row) => row.process === "reflect");
+    expect(reflect).toMatchObject({ enabled: false, engine: "private", model: "private-model", engineKind: "llm" });
+    expect(reflect?.unavailable?.reason).toContain("$PRIVATE_ROUTING_957_TOKEN");
   });
 });
