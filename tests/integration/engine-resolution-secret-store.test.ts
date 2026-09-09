@@ -12,6 +12,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { setSecret } from "../../src/commands/env/secret";
 import {
@@ -21,7 +23,7 @@ import {
   resolveLlmEngineUse,
 } from "../../src/integrations/agent/engine-resolution";
 import { materializeLlmRunnerConnection } from "../../src/integrations/agent/runner";
-import { withIsolatedAkmStorage } from "../_helpers/sandbox";
+import { withEnv, withIsolatedAkmStorage } from "../_helpers/sandbox";
 
 const config = {
   configVersion: "0.9.0" as const,
@@ -71,6 +73,35 @@ describe("engine-resolution secret-store credential (#953)", () => {
       expect(runner.apiKeySecretRef).toBe("secret://lab-api-key");
       expect(materializeLlmRunnerConnection(runner).apiKey).toBe("dispatch-store-secret");
     } finally {
+      storage.cleanup();
+    }
+  });
+
+  // #953 addendum — the tests above resolve the store under the sandboxed
+  // stash but never pin that this resolution is independent of the
+  // operator's home directory. A scheduled/OpenPalm-style invocation runs
+  // with `$HOME` pointed somewhere the akm config/stash/secrets do NOT
+  // live (a service account home, a container's default `/root`, etc.),
+  // while `AKM_BUNDLE_DIR`/`XDG_*_HOME` still name the real stash — exactly
+  // what `withIsolatedAkmStorage` already sets up. This proves `secret://`
+  // resolution never falls back to `$HOME` for anything.
+  test("secret:// resolves and dispatches with $HOME pointed at a foreign, akm-less directory (scheduled/OpenPalm context, #953)", async () => {
+    const storage = withIsolatedAkmStorage();
+    const foreignHome = fs.mkdtempSync(path.join(os.tmpdir(), "akm-openpalm-home-"));
+    try {
+      setSecret(path.join(storage.stashDir, "secrets", "lab-api-key"), Buffer.from("openpalm-store-secret"));
+      await withEnv({ HOME: foreignHome }, () => {
+        const resolved = resolveLlmEngineUse(config, [{ engine: "lab" }]);
+        expect(resolved.apiKeySecretRef).toBe("secret://lab-api-key");
+        expect(resolved.credential).toBeUndefined();
+        expect(materializeLlmConnection(resolved).apiKey).toBe("openpalm-store-secret");
+
+        const runner = resolveEngine("lab", config);
+        if (runner.kind !== "llm") throw new Error("fixture must lower to llm");
+        expect(materializeLlmRunnerConnection(runner).apiKey).toBe("openpalm-store-secret");
+      });
+    } finally {
+      fs.rmSync(foreignHome, { recursive: true, force: true });
       storage.cleanup();
     }
   });
