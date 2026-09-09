@@ -433,41 +433,21 @@ export async function akmRemove(input: { target: string; stashDir?: string }): P
 
 type UpdateIndexSummary = Pick<
   Awaited<ReturnType<typeof akmIndex>>,
-  "mode" | "totalEntries" | "directoriesScanned" | "directoriesSkipped" | "verification"
-> & { scanComplete?: boolean };
+  "mode" | "totalEntries" | "directoriesScanned" | "directoriesSkipped"
+> & { scanComplete?: boolean; verification?: Awaited<ReturnType<typeof akmIndex>>["verification"] };
 
 /**
- * Best-effort semantic verification for {@link readCurrentIndexSummary}'s
- * no-index-generation-ran fallback — not derived from a real
- * `runEmbeddingPass` call, just enough shape for `buildUpdateResponse` to
- * read `.semanticStatus` off it like every other caller's real `IndexResponse`.
+ * Read the current index generation without creating or hydrating anything.
+ * This path never ran an embedding pass (#9541 follow-up), so it has no
+ * `verification` to report — {@link buildUpdateResponse} falls back to the
+ * two facts it can actually know (whether semantic search is configured on
+ * at all) rather than fabricating verification numbers (`entryCount: 0`,
+ * `ok: true`) for a run that never verified anything.
  */
-function stubIndexVerification(config: AkmConfig): UpdateIndexSummary["verification"] {
-  return {
-    ok: true,
-    message: "No index changes were made by this update.",
-    semanticSearchEnabled: config.semanticSearchMode === "auto",
-    semanticSearchMode: config.semanticSearchMode,
-    semanticStatus: config.semanticSearchMode === "off" ? "disabled" : "pending",
-    embeddingProvider: config.embedding?.endpoint ? "remote" : "local",
-    entryCount: 0,
-    embeddingCount: 0,
-    vecAvailable: false,
-  };
-}
-
-/** Read the current index generation without creating or hydrating anything. */
 function readCurrentIndexSummary(): UpdateIndexSummary {
-  const config = loadConfig();
   const db = openReadonlyExistingDatabase(getDbPath());
   if (!db) {
-    return {
-      mode: "incremental",
-      totalEntries: 0,
-      directoriesScanned: 0,
-      directoriesSkipped: 0,
-      verification: stubIndexVerification(config),
-    };
+    return { mode: "incremental", totalEntries: 0, directoriesScanned: 0, directoriesSkipped: 0 };
   }
   try {
     return {
@@ -475,7 +455,6 @@ function readCurrentIndexSummary(): UpdateIndexSummary {
       totalEntries: getAllEntries(db).length,
       directoriesScanned: 0,
       directoriesSkipped: 0,
-      verification: stubIndexVerification(config),
     };
   } finally {
     closeDatabase(db);
@@ -513,7 +492,13 @@ function buildUpdateResponse(
       directoriesScanned: index.directoriesScanned,
       directoriesSkipped: index.directoriesSkipped,
       ...(index.scanComplete !== undefined ? { scanComplete: index.scanComplete } : {}),
-      semanticStatus: index.verification.semanticStatus,
+      // A real embedding pass (`akmIndex`/`runEmbeddingPass`) reports its own
+      // verified `semanticStatus`. When no pass ran this update (the
+      // no-op/nothing-configured fallback) the only two facts known without
+      // fabricating a verification are whether semantic search is off at all
+      // or, if not, that its state is simply unverified this run.
+      semanticStatus:
+        index.verification?.semanticStatus ?? (finalConfig.semanticSearchMode === "off" ? "disabled" : "pending"),
     },
   };
 }
