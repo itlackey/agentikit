@@ -5,6 +5,7 @@ import {
   type CronExec,
   type CronExecResult,
   cronBlockBody,
+  extractCronInvocation,
   extractInstalledTarget,
   listBlocks,
   removeBlock,
@@ -101,6 +102,19 @@ describe("cron backend helpers", () => {
     expect(extractInstalledTarget(cronBlockBody(withTarget, false))).toBe("team-stash");
     const primary = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log", contextPath());
     expect(extractInstalledTarget(primary)).toBeUndefined();
+  });
+
+  // #951: `extractCronInvocation` must parse a freshly built `>` (truncate)
+  // row and the identical row with `>` replaced by `>>` (the append form
+  // every pre-change row on disk still has) into the same invocation — a
+  // rolling upgrade reads both shapes side by side, and the parse must not
+  // depend on which redirect operator wrote the row.
+  test("extractCronInvocation parses a truncating `>` row the same as the pre-change `>>` row", () => {
+    const line = buildCronLine(TASK, ["/usr/local/bin/akm"], "/var/log/akm", contextPath());
+    expect(line).toContain(" > ");
+    const legacyAppendLine = line.replace(" > ", " >> ");
+    expect(legacyAppendLine).toContain(" >> ");
+    expect(extractCronInvocation(legacyAppendLine)).toEqual(extractCronInvocation(line));
   });
 
   test("buildCronLine quotes paths containing spaces", () => {
