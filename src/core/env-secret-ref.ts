@@ -15,10 +15,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { sensitiveMarkerPath } from "../commands/env/marker-path";
 import { type SearchSource as IndexSearchSource, resolveSourceEntries } from "../indexer/search/search-source";
 import { resolveSourcesForOrigin } from "../registry/origin-resolve";
 import { assertFlatAssetName, combineCreatePath, normalizeCreateSubPath } from "./asset/asset-create";
-import { assetPathForName } from "./asset/asset-placement";
+import { assetPathForName, deriveCanonicalAssetName } from "./asset/asset-placement";
 import type { AssetRef } from "./asset/resolve-ref";
 import { displayRef, isFullRefInput, parseRefInput } from "./asset/resolve-ref";
 import { isWithin } from "./common";
@@ -28,6 +29,47 @@ import { resolveMutationTarget } from "./mutation-target";
 import { formatRefForMessage, type ResolvedWriteTarget, withWriteTargetMutation } from "./write-source";
 
 export type { IndexSearchSource };
+
+/**
+ * Walk each stash's env files and return one entry per `.env` file, using the
+ * env asset spec's canonical-name logic (e.g. `env/team/prod.env` →
+ * `env/team/prod`, `env/team/.env` → `env/team/default`). Moved here from
+ * `commands/env/env-cli.ts` (#950) so `commands/health` can reuse it to name
+ * which env asset supplies a credential's variable — pure move, `akm env
+ * list`'s behaviour is unchanged. `listKeysFn` stays injected (rather than a
+ * static import of `commands/env/env.ts`) so this core module never depends
+ * upward on the commands layer.
+ */
+export function listEnvsRecursive(
+  listKeysFn: (envPath: string) => { keys: string[] },
+): Array<{ ref: string; path: string; keys: string[] }> {
+  const result: Array<{ ref: string; path: string; keys: string[] }> = [];
+  for (const source of resolveSourceEntries(undefined, loadConfig())) {
+    const root = path.join(source.path, "env");
+    if (!fs.existsSync(root)) continue;
+
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!entry.isFile()) continue;
+        if (entry.name !== ".env" && !entry.name.endsWith(".env")) continue;
+        const canonical = deriveCanonicalAssetName("env", root, full);
+        if (!canonical) continue;
+        // Skip sensitive envs: a sibling .sensitive marker file suppresses listing.
+        const markerPath = sensitiveMarkerPath(full, "env");
+        if (fs.existsSync(markerPath)) continue;
+        const { keys } = listKeysFn(full);
+        result.push({ ref: makeEnvRef(canonical, source), path: full, keys });
+      }
+    };
+    walk(root);
+  }
+  return result;
+}
 
 /**
  * The `vault` asset type was removed in 0.9.0. The env/secret input path no
