@@ -532,10 +532,10 @@ export async function generateEmbeddingsForDb(
     }
     if (truncatedCount > 0) {
       // Through onProgress ONLY, not warn() too — onProgress already reaches
-      // stderr at the default level in every output mode (#9541 decision 5),
-      // and the index CLI's progress handler writes it through info() (log-
-      // file aware), so calling warn() as well printed the identical
-      // sentence twice in text mode.
+      // stderr at the default level in every output mode (#954), and the
+      // index CLI's progress handler writes it through info() (log-file
+      // aware), so calling warn() as well printed the identical sentence
+      // twice in text mode.
       const message = `[embed] ${truncatedCount} entr${truncatedCount === 1 ? "y" : "ies"} truncated to the ${maxInputTokens}-token embedding cap (embedding.maxInputTokens); rerun with a higher cap to embed the full text.`;
       onProgress({ phase: "embeddings", message });
     }
@@ -700,11 +700,11 @@ export async function generateEmbeddingsForDb(
             if (result.vec === "unavailable") vecUnavailableCount++;
           }
         })();
-        // Default level, one line per provider batch (#954 field-report
-        // follow-up, brief 9541 addendum 2): oversized documents never made
-        // a request (`reason === "oversized"`), so there is no batch
-        // outcome to report — they are covered by the run's final
-        // oversized-skip count and list instead.
+        // Default level, one line per provider batch (#954, field-report
+        // follow-up): oversized documents never made a request
+        // (`reason === "oversized"`), so there is no batch outcome to
+        // report — they are covered by the run's final oversized-skip
+        // count and list instead.
         if (outcome && outcome.reason !== "oversized" && reportPerBatchLine) {
           const elapsedSeconds = (outcome.elapsedMs / 1000).toFixed(1);
           const outcomeLabel =
@@ -745,7 +745,7 @@ export async function generateEmbeddingsForDb(
       const entriesPerSec = storedCount / elapsedSeconds;
       const tokensPerSec = storedTokens / elapsedSeconds;
       const totalStored = storedCount + reusedCount;
-      // #954 field-report follow-up (brief 9541 addendum 2): the final line
+      // #954, field-report follow-up: the final line
       // reports every outcome, not just what was stored — counts come from
       // the same collected `skips` the circuit breaker already uses,
       // categorized by `reason`/`failureKind`. "oversized skipped" =
@@ -763,7 +763,7 @@ export async function generateEmbeddingsForDb(
       ).length;
       const throughputLine =
         reusedCount > 0
-          ? // #9542: report reused and newly-embedded counts separately — the
+          ? // #955: report reused and newly-embedded counts separately — the
             // rate figures below are provider throughput only (reuse is a
             // plain DB write, not provider work) and would be misleadingly
             // inflated if reused entries were folded into them.

@@ -3,8 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #954 field-report follow-up (brief 9541 addendum 2) — the output shape
- * "implemented fully":
+ * #954, field-report follow-up — the output shape "implemented fully":
  *
  *  - one default-level line per provider batch, from the materializer's
  *    onBatch (not the embedder): `[embed] batch N/Total: D docs, T tokens →

@@ -268,7 +268,7 @@ describe("lock release on process.exit (SIGTERM-leak regression, #improve.lock)"
   });
 });
 
-describe("probeLock: launcherPid (#9543)", () => {
+describe("probeLock: launcherPid (#956)", () => {
   let dir: string;
   let cleanup: Cleanup;
   beforeEach(() => {

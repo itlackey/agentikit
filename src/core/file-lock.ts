@@ -33,7 +33,7 @@ export type LockProbeResult =
   | {
       state: "held";
       holderPid: number;
-      /** The holder's launcher pid (#9543), when its lock payload recorded one. */
+      /** The holder's launcher pid (#956), when its lock payload recorded one. */
       launcherPid?: number;
       ageMs: number;
       rawContent: string;
@@ -43,7 +43,7 @@ export type LockProbeResult =
       state: "stale";
       reason: "pid_dead" | "unreadable" | "invalid_pid" | "age_exceeded";
       holderPid?: number;
-      /** The holder's launcher pid (#9543), when its lock payload recorded one. */
+      /** The holder's launcher pid (#956), when its lock payload recorded one. */
       launcherPid?: number;
       ageMs?: number;
       rawContent?: string;
@@ -348,7 +348,7 @@ export function releaseLock(ownership: LockOwnership): void {
 }
 
 /**
- * Extract a holder pid, and (#9543) a launcher pid when the payload recorded
+ * Extract a holder pid, and (#956) a launcher pid when the payload recorded
  * one, from a sentinel body. Accepts the two shapes used across the
  * codebase: a bare numeric string (config-io, vault, lockfile — never
  * carries a `launcherPid`) and a JSON object with `pid`/`launcherPid` fields

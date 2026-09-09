@@ -438,7 +438,7 @@ type UpdateIndexSummary = Pick<
 
 /**
  * Read the current index generation without creating or hydrating anything.
- * This path never ran an embedding pass (#9541 follow-up), so it has no
+ * This path never ran an embedding pass (#954, field-report follow-up), so it has no
  * `verification` to report — {@link buildUpdateResponse} falls back to the
  * two facts it can actually know (whether semantic search is configured on
  * at all) rather than fabricating verification numbers (`entryCount: 0`,

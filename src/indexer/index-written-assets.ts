@@ -92,7 +92,7 @@ export async function indexWrittenAssets(
       // rebuild in progress will pick up the change on its own.
       const rebuildProbe = probeLock(getIndexRebuildLockPath());
       if (rebuildProbe.state === "held") {
-        // #9543: name the launcher pid alongside the holder pid when known —
+        // #956: name the launcher pid alongside the holder pid when known —
         // every process listing and task log shows the launcher's pid, not
         // the bun/node child's.
         const holderLabel = formatLockHolderPid({

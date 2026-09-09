@@ -206,7 +206,7 @@ export type EmbeddingSkipHandler = (skip: EmbeddingBatchSkip) => unknown;
 
 /**
  * Batch/doc/token/timing/outcome metadata for the default-level per-batch
- * progress line (#954 field-report follow-up, brief 9541 addendum 2) —
+ * progress line (#954, field-report follow-up) —
  * `[embed] batch 3/1483: 16 docs, 5,900 tokens → 16 stored (0.8 s)`. Only
  * `RemoteEmbedder.embedBatch` produces this (token-bounded batching against
  * an HTTP provider is the thing being reported on); local/deterministic
@@ -229,7 +229,7 @@ export interface EmbeddingBatchOutcome {
    * "failed": the request/document is being given up on (skipped) —
    * `embeddings` are all `undefined`.
    * "retrying": a request timeout is about to back off and retry the SAME
-   * request once (#9541 addendum) — nothing has failed or succeeded yet;
+   * request once (#954) — nothing has failed or succeeded yet;
    * `embeddings` are all `undefined` and there is nothing to commit.
    */
   outcome: "stored" | "failed" | "retrying";
@@ -636,10 +636,10 @@ export class RemoteEmbedder implements Embedder {
         if (timedOut && !isTimeoutRetry) {
           // First timeout at this size: back off so the provider can drain
           // the abandoned request, then retry the SAME request once before
-          // ever splitting or skipping (#9541 addendum). The backoff grows
-          // with `timeoutAttempt` (#954 follow-up), not a flat ~5s every
-          // time, so a chain of splits down to smaller and smaller requests
-          // gives the provider proportionally more room to drain each time.
+          // ever splitting or skipping (#954). The backoff grows with
+          // `timeoutAttempt`, not a flat ~5s every time, so a chain of
+          // splits down to smaller and smaller requests gives the provider
+          // proportionally more room to drain each time.
           const backoffMs = embeddingTimeoutRetryBackoffMs(timeoutAttempt);
           warnVerbose(
             `[embed] batch of ${batch.length} document(s) timed out after ${requestTimeoutMs}ms; retrying once after a ${Math.round(backoffMs)}ms backoff`,

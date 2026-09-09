@@ -357,7 +357,7 @@ describe("indexWrittenAssets", () => {
       expect(indexedFileCount(filePath)).toBeGreaterThan(0);
     });
 
-    test("names the launcher pid alongside the holder pid when the lock payload recorded one (#9543)", async () => {
+    test("names the launcher pid alongside the holder pid when the lock payload recorded one (#956)", async () => {
       const lockPath = getIndexRebuildLockPath();
       fs.mkdirSync(path.dirname(lockPath), { recursive: true });
       fs.writeFileSync(
