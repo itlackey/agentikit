@@ -1081,6 +1081,45 @@ describe("extends inheritance (#945)", () => {
     expect(config.archiveRetentionDays).toBe(7);
     expect((config as unknown as Record<string, unknown>).extends).toBe("./base.json");
   });
+
+  test("config set on an unrelated key after adopting extends does not duplicate the base's fields into the local file", () => {
+    // Round-1 review finding: mutateConfig used to write the entire
+    // extends-merged EFFECTIVE config back to the local file on any
+    // `config set`/`unset`, baking every inherited field (engines,
+    // improve.strategies, ...) into the local file on the very next
+    // ordinary write — defeating the whole point of `extends`.
+    const dir = path.dirname(getConfigPath());
+    writeRawConfig(
+      path.join(dir, "base.json"),
+      JSON.stringify({
+        configVersion: "0.9.0",
+        engines: {
+          fast: { kind: "llm", endpoint: "https://api.example.test/v1/chat/completions", model: "base-model" },
+        },
+        improve: { strategies: { nightly: { engine: "fast" } } },
+        archiveRetentionDays: 30,
+      }),
+    );
+    writeRawConfig(getConfigPath(), JSON.stringify({ configVersion: "0.9.0", extends: "./base.json" }));
+
+    // `akm config set output.detail full` — an unrelated key. `updateConfig`
+    // goes through `mutateConfig` the same way `config set`'s CLI handler does.
+    updateConfig({ output: { detail: "full" } });
+
+    const raw = JSON.parse(fs.readFileSync(getConfigPath(), "utf8"));
+    expect(raw.extends).toBe("./base.json");
+    expect(raw.output).toEqual({ detail: "full" });
+    // The base's fields must NOT have been duplicated into the local file.
+    expect(raw.engines).toBeUndefined();
+    expect(raw.improve).toBeUndefined();
+    expect(raw.archiveRetentionDays).toBeUndefined();
+
+    // The effective (loaded) config is unaffected: still inherited.
+    const config = loadConfig();
+    expect(config.engines?.fast?.model).toBe("base-model");
+    expect(config.archiveRetentionDays).toBe(30);
+    expect(config.output).toEqual({ format: "json", detail: "full" });
+  });
 });
 
 describe("getConfigValueSource (#945)", () => {

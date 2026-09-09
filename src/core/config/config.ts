@@ -32,7 +32,7 @@ import type {
   SourceConfigEntry,
 } from "./config-types";
 import { upgradeConfigVersion } from "./config-version-shim";
-import { deepMergeConfig } from "./deep-merge";
+import { deepMergeConfig, isPlainObject } from "./deep-merge";
 import { migrateLegacySourceShape } from "./legacy-source-shape-shim";
 import { isApiKeyReference, SECRET_STORE_REFERENCE_PATTERN } from "./schema/primitives";
 
@@ -256,20 +256,17 @@ function liftExtraParamsOrThrow(parsedRaw: Record<string, unknown>, sourcePath?:
 }
 
 /**
- * Parse raw config text and validate via Zod.
- * ({@link AkmConfigSchema}). Returns the merged-with-defaults AkmConfig.
+ * Resolve a local file's `extends` chain and validate the merged result
+ * (deep-merged under `DEFAULT_CONFIG`) via Zod ({@link AkmConfigSchema}).
+ * `liftedLocalRaw` must already be through {@link runConfigFilePipeline}.
  *
- * The schema accepts only the current config version. A known older version
- * is auto-upgraded in memory first (see `./config-version-shim`); anything
- * else — including anything newer — is rejected before the canonical shape
- * is validated. When the config sets `extends` (#945), its resolved chain is
- * deep-merged underneath before validation — see {@link resolveExtendsChain}.
+ * Split out of {@link parseAndValidateConfigText} so `mutateConfig` (#945
+ * finding: baking extends-inherited fields into the local file on every
+ * write) can build the same effective config from a `localRaw` it also
+ * keeps around, instead of only getting the final merged `AkmConfig` back.
  */
-export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
-  const versioned = upgradeConfigVersion(parseConfigText(text, sourcePath), sourcePath);
-  const parsedRaw = migrateLegacySourceShape(versioned, sourcePath);
-  const liftedConfig = liftExtraParamsOrThrow(parsedRaw, sourcePath);
-  const withExtends = resolveExtendsChain(liftedConfig, sourcePath);
+function buildEffectiveConfig(liftedLocalRaw: Record<string, unknown>, sourcePath?: string): AkmConfig {
+  const withExtends = resolveExtendsChain(liftedLocalRaw, sourcePath);
 
   const where = sourcePath ? ` at ${sourcePath}` : "";
   const parsed = AkmConfigSchema.safeParse(withExtends);
@@ -287,6 +284,21 @@ export function parseAndValidateConfigText(text: string, sourcePath?: string): A
     );
   }
   return finalResult.data;
+}
+
+/**
+ * Parse raw config text and validate via Zod.
+ * ({@link AkmConfigSchema}). Returns the merged-with-defaults AkmConfig.
+ *
+ * The schema accepts only the current config version. A known older version
+ * is auto-upgraded in memory first (see `./config-version-shim`); anything
+ * else — including anything newer — is rejected before the canonical shape
+ * is validated. When the config sets `extends` (#945), its resolved chain is
+ * deep-merged underneath before validation — see {@link resolveExtendsChain}.
+ */
+export function parseAndValidateConfigText(text: string, sourcePath?: string): AkmConfig {
+  const liftedConfig = runConfigFilePipeline(text, sourcePath);
+  return buildEffectiveConfig(liftedConfig, sourcePath);
 }
 
 // ── `extends` inheritance (#945) ────────────────────────────────────────────
@@ -345,11 +357,14 @@ function collectExtendsLayers(localRaw: Record<string, unknown>, configPath: str
  * literal value (never a base's) — `deepMergeConfig`'s local-wins semantics
  * already guarantee this at every level, since a layer only has `extends` set
  * when it itself declares one. Keeping it (rather than stripping it) lets
- * `akm config set`/`unset` round-trip the directive: both read the effective
- * config as `current` and write a mutated copy of it back to the SAME local
- * file (pre-existing behavior — see `DEFAULT_CONFIG` baking into `config.json`
- * on any write), so stripping `extends` here would silently delete it from
- * disk on the very next `config set`.
+ * `akm config set`/`unset` round-trip the directive: `mutateConfig` reads the
+ * effective config as `current` for the mutation, but writes back only the
+ * fields `pruneUnchangedInheritedFields` finds changed-or-already-local (#945
+ * finding — the effective object used to be baked into the local file
+ * verbatim, duplicating every inherited field into it). That pruning keys off
+ * which fields are present in `current`/`next`, so `extends` has to still be
+ * one of them or it would silently vanish from disk on the very next
+ * `config set`.
  */
 function resolveExtendsChain(
   localRaw: Record<string, unknown>,
@@ -583,6 +598,83 @@ export interface ConfigMutationResult {
 }
 
 /**
+ * True when `a` and `b` are structurally identical config values — order-
+ * independent for plain objects (matching `deepMergeConfig`'s notion of
+ * "object"), order-dependent for arrays. Used by
+ * {@link pruneUnchangedInheritedFields} to tell "the mutation actually
+ * touched this" apart from "this only differs because it came from
+ * `extends`/`DEFAULT_CONFIG`, not from anything the local file set".
+ */
+function deepEqualConfigValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => deepEqualConfigValue(v, b[i]));
+  }
+  if (isPlainObject(a) && isPlainObject(b)) {
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length && keys.every((k) => k in b && deepEqualConfigValue(a[k], b[k]));
+  }
+  return false;
+}
+
+/**
+ * #945 review finding: `mutateConfig` used to write the entire extends-merged
+ * *effective* config (`next`) back to the local file on every `config
+ * set`/`unset`, duplicating every inherited `engines`/`improve.strategies`
+ * field into the local file on the very first ordinary write after adopting
+ * `extends` — defeating the feature (shared config, ≤20-line local files)
+ * and silently freezing the local copy against future upstream changes.
+ *
+ * Reduces `after` (the mutated effective config) down to only what the
+ * mutation actually changed relative to `before` (the effective config
+ * *before* the mutation), plus whatever `localRaw` — the local file's own
+ * raw content, pre-`extends`-merge — already had explicitly. Everything
+ * else that only came along for the ride from `extends`/`DEFAULT_CONFIG` is
+ * left out, so it keeps being read from the base on the next load instead
+ * of being frozen as a local literal.
+ */
+function pruneUnchangedInheritedFields(before: unknown, after: unknown, localRaw: unknown): unknown {
+  if (!isPlainObject(after) || !isPlainObject(before)) return after;
+  const localRecord = isPlainObject(localRaw) ? localRaw : undefined;
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(after)) {
+    const afterValue = after[key];
+    const beforeValue = before[key];
+    const localHasKey = localRecord ? Object.hasOwn(localRecord, key) : false;
+    if (isPlainObject(afterValue) && isPlainObject(beforeValue)) {
+      const pruned = pruneUnchangedInheritedFields(
+        beforeValue,
+        afterValue,
+        localHasKey ? localRecord?.[key] : undefined,
+      );
+      const prunedHasContent = isPlainObject(pruned) ? Object.keys(pruned).length > 0 : pruned !== undefined;
+      if (prunedHasContent || localHasKey) result[key] = pruned;
+      continue;
+    }
+    if (localHasKey || !deepEqualConfigValue(afterValue, beforeValue)) {
+      result[key] = afterValue;
+    }
+  }
+  return result;
+}
+
+/**
+ * What to persist for a `mutateConfig`/`mutateConfigWithPrecommit` write:
+ * the full effective `next` when the local file has no `extends` (unchanged
+ * pre-#945 behavior), otherwise only the changed-or-already-local fields
+ * (#945 finding above).
+ */
+function configWriteBody(
+  localRaw: Record<string, unknown> | undefined,
+  current: AkmConfig,
+  next: AkmConfig,
+): AkmConfig {
+  const usesExtends = typeof localRaw?.extends === "string" && localRaw.extends.trim().length > 0;
+  if (!usesExtends) return next;
+  return pruneUnchangedInheritedFields(current, next, localRaw) as unknown as AkmConfig;
+}
+
+/**
  * Mutate config under one fail-closed lock spanning read, merge, validation,
  * ordinary backup, and atomic write.
  */
@@ -597,14 +689,15 @@ export function mutateConfig(
     if (text === undefined && options?.absentNoop) {
       return { config: { ...DEFAULT_CONFIG }, written: false };
     }
+    const localRaw = text === undefined ? undefined : runConfigFilePipeline(text, configPath);
     const current =
-      text === undefined ? ({ ...DEFAULT_CONFIG } as AkmConfig) : parseAndValidateConfigText(text, configPath);
+      localRaw === undefined ? ({ ...DEFAULT_CONFIG } as AkmConfig) : buildEffectiveConfig(localRaw, configPath);
     const mutated = mutate(current);
     if (mutated === current) return { config: current, written: false };
     const next = validateCompleteConfig({ ...mutated, configVersion: CURRENT_CONFIG_VERSION });
     if (text !== undefined) backupExistingConfig(configPath);
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    writeConfigAtomic(configPath, sanitizeConfigForWrite(next));
+    writeConfigAtomic(configPath, sanitizeConfigForWrite(configWriteBody(localRaw, current, next)));
     return { config: next, written: true };
   });
 }
@@ -623,15 +716,16 @@ export async function mutateConfigWithPrecommit<T>(
   const release = acquireConfigLock();
   try {
     const text = readConfigText(configPath);
+    const localRaw = text === undefined ? undefined : runConfigFilePipeline(text, configPath);
     const current =
-      text === undefined ? ({ ...DEFAULT_CONFIG } as AkmConfig) : parseAndValidateConfigText(text, configPath);
+      localRaw === undefined ? ({ ...DEFAULT_CONFIG } as AkmConfig) : buildEffectiveConfig(localRaw, configPath);
     const mutated = mutate(current);
     const next = validateCompleteConfig({ ...mutated, configVersion: CURRENT_CONFIG_VERSION });
     if (text !== undefined) backupExistingConfig(configPath);
     const precommitResult = await precommit(next);
     if (mutated === current) return { config: current, written: false, precommit: precommitResult };
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    writeConfigAtomic(configPath, sanitizeConfigForWrite(next));
+    writeConfigAtomic(configPath, sanitizeConfigForWrite(configWriteBody(localRaw, current, next)));
     return { config: next, written: true, precommit: precommitResult };
   } finally {
     release();
