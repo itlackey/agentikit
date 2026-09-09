@@ -95,6 +95,43 @@ describe("models.json health diagnostics", () => {
   test("is registered as an ordered hard health check", () => {
     expect(HEALTH_CHECKS.find((check) => check.name === "model-map-files")?.channel).toBe("hard");
   });
+
+  test("catches a broken engine reference against real config.engines (#946)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-model-health-engine-"));
+    const env = { XDG_CONFIG_HOME: root } as NodeJS.ProcessEnv;
+    const target = path.join(root, "akm", "models.json");
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, JSON.stringify({ version: 1, aliases: { fast: { opencode: { engine: "typo" } } } }));
+      const config: AkmConfig = { configVersion: "0.9.0", semanticSearchMode: "off", engines: {} };
+      const result = runModelMapProbe({ env, loadConfig: () => config });
+      expect(result.status).toBe("warn");
+      expect(result.message).toMatch(/unknown engine "typo"/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("validates an engine-backed models.json as healthy when the engine is real", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-model-health-engine-ok-"));
+    const env = { XDG_CONFIG_HOME: root } as NodeJS.ProcessEnv;
+    const target = path.join(root, "akm", "models.json");
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(
+        target,
+        JSON.stringify({ version: 1, aliases: { fast: { opencode: { engine: "local-fast" } } } }),
+      );
+      const config: AkmConfig = {
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: { "local-fast": { kind: "agent", platform: "opencode", model: "krang/qwen3.5-9b" } },
+      };
+      expect(runModelMapProbe({ env, loadConfig: () => config }).status).toBe("pass");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("selected model alias health diagnostics", () => {
@@ -176,6 +213,24 @@ describe("selected model alias health diagnostics", () => {
     });
     expect(JSON.stringify(result)).not.toContain(sentinel);
     expect(JSON.stringify(result)).not.toContain("$.version");
+  });
+
+  test("resolves a selected alias through an engine-backed models.json column (#946)", () => {
+    const engineBackedInstalledText = JSON.stringify({
+      version: 1,
+      aliases: { balanced: { opencode: { engine: "local-fast" } } },
+    });
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        "local-fast": { kind: "agent", platform: "opencode", model: "krang/qwen3.5-9b" },
+        opencode: { kind: "agent", platform: "opencode", model: "balanced" },
+      },
+    };
+    expect(
+      runSelectedModelAliasesProbe({ loadConfig: () => config, installedText: engineBackedInstalledText }),
+    ).toMatchObject({ status: "pass", evidence: { missing: [] } });
   });
 
   test("is ordered between model-map-files and default-llm-engine", () => {

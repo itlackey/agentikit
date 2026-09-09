@@ -596,12 +596,18 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
   }
 }
 
+export interface RunModelMapProbeDependencies extends LoadModelMapOptions {
+  loadConfig?: () => AkmConfig;
+}
+
 /**
  * Validate the immutable installed model map and optional user overlay.
  * Installed corruption is a package defect (fail); a bad optional user file
- * is operator-fixable configuration (warn); absence is the normal state.
+ * (including an `engine`-backed profile referencing a missing/broken engine,
+ * once resolved against real `config.engines` — #946) is operator-fixable
+ * configuration (warn); absence is the normal state.
  */
-export function runModelMapProbe(options: LoadModelMapOptions = {}): HealthCheckResult {
+export function runModelMapProbe(options: RunModelMapProbeDependencies = {}): HealthCheckResult {
   let installedText: string;
   try {
     installedText = readInstalledModelMapText(options);
@@ -618,7 +624,8 @@ export function runModelMapProbe(options: LoadModelMapOptions = {}): HealthCheck
   }
 
   try {
-    const loaded = loadModelMap({ ...options, installedText });
+    const config = options.loadConfig?.() ?? loadConfig();
+    const loaded = loadModelMap({ ...options, installedText, engines: config.engines });
     return {
       name: "model-map-files",
       kind: "deterministic",
@@ -680,7 +687,11 @@ export function runSelectedModelAliasesProbe(deps: SelectedModelAliasesProbeDepe
 
   let modelMap: LoadedModelMap;
   try {
-    modelMap = (deps.loadModelMap ?? loadModelMap)({ env: deps.env, installedText: deps.installedText });
+    modelMap = (deps.loadModelMap ?? loadModelMap)({
+      env: deps.env,
+      installedText: deps.installedText,
+      engines: config.engines,
+    });
   } catch {
     return {
       name: "selected-model-aliases",
