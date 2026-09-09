@@ -67,7 +67,30 @@ export interface EmbeddingBatchSkip {
   index: number;
   reason: EmbeddingSkipReason;
   message: string;
+  /**
+   * True on the FIRST skip event of a failed provider batch (#9541). One
+   * failing request skips every document it covered — one `onSkip` call per
+   * document, all sharing this batch's outcome and `reason`/`message` — so a
+   * caller implementing a consecutive-failure policy (the circuit breaker,
+   * `src/indexer/materialize-embeddings.ts`) must count BATCHES, not
+   * documents: a 100-document batch failing once must not look like 100
+   * consecutive failures.
+   */
+  batchStart: boolean;
 }
+
+/**
+ * Report one skipped document. Return the literal value `false` to stop
+ * `RemoteEmbedder` from dispatching any FURTHER provider batch (#9541
+ * decision 7) — used by the materializer's circuit breaker after too many
+ * consecutive transport failures. Any other return value (including
+ * `undefined`/`void`, and deliberately typed `unknown` rather than
+ * `boolean | void` so an ordinary `(skip) => skips.push(skip)` callback
+ * stays valid) keeps dispatching normally. A caller should never return
+ * `false` for a `context-window-exceeded` skip: it is not a transport
+ * failure, and split-and-retry already handles it.
+ */
+export type EmbeddingSkipHandler = (skip: EmbeddingBatchSkip) => unknown;
 
 /**
  * Fired once per provider request (success OR skip-with-undefined-slots),
@@ -296,7 +319,7 @@ export class RemoteEmbedder implements Embedder {
   async embedBatch(
     texts: string[],
     signal?: AbortSignal,
-    onSkip?: (skip: EmbeddingBatchSkip) => void,
+    onSkip?: EmbeddingSkipHandler,
     onBatch?: EmbeddingBatchCommit,
   ): Promise<(EmbeddingVector | undefined)[]> {
     if (texts.length === 0) return [];
@@ -391,9 +414,16 @@ export class RemoteEmbedder implements Embedder {
         // --verbose. Per-entry batch-mapping detail stays verbose-only
         // (materialize-embeddings.ts).
         warn(`[embed] batch of ${batch.length} document(s) failed and was skipped: ${message}`);
-        for (const idx of indices) {
-          onSkip?.({ index: idx, reason, message });
+        let stopRequested = false;
+        for (const [k, idx] of indices.entries()) {
+          if (onSkip?.({ index: idx, reason, message, batchStart: k === 0 }) === false) stopRequested = true;
         }
+        // #9541 decision 7: the caller's circuit breaker asked to stop —
+        // gate further dispatch through the SAME dispatchAbort controller
+        // the onBatch-throw path above uses, but resolve this call normally
+        // (never reject) with whatever results already landed, since this is
+        // a policy decision, not a persistence failure.
+        if (stopRequested) stopDispatch();
         batchEmbeddings = indices.map(() => undefined);
       }
       commitBatch(indices, batchEmbeddings, responseModel);
@@ -407,6 +437,7 @@ export class RemoteEmbedder implements Embedder {
           index: idx,
           reason: "context-window-exceeded",
           message: `Document estimated at ${estTokens} tokens exceeds the ${tokenBudget}-token embedding budget; skipped.`,
+          batchStart: true,
         });
         commitBatch([idx], [undefined]);
         return;

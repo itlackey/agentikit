@@ -210,6 +210,23 @@ malformed response) keeps skipping the whole batch as a `batch-request-failed`
 skip — a genuinely broken batch does not get retried into a storm of smaller
 requests against a down endpoint.
 
+**Circuit breaker** (#9541 decision 7) — after 3 consecutive
+`batch-request-failed` batches (never `context-window-exceeded`, which
+proves the provider IS reachable and resets the streak instead), the
+embedding phase stops dispatching further provider requests and ends the
+pass as a failure: `embedding provider failed 3 consecutive batches (last:
+<reason>); stopped after <N> embeddings were stored — rerun akm index when
+the endpoint is healthy`. Every batch already committed is kept; a genuine
+caller abort (Ctrl-C, the improve budget) is a separate code path and stays
+distinguishable. Mechanically, the materializer's `onSkip` callback (policy
+lives with the caller, not the embedder) returns `false` on the batch that
+trips the threshold; `RemoteEmbedder.embedBatch` honors that through its
+existing dispatch-abort controller — the same one an `onBatch` persistence
+failure already used to stop further dispatch — with a distinct reason, and
+resolves normally with whatever results already landed rather than
+rejecting. This is what turns an hours-long grind against a dead provider
+(the field report's own symptom) into a fast, visible failure instead.
+
 **Per-batch commit** — each provider (or local-embedder) batch is written to
 `index.db` inside its own short `db.transaction()` as it completes, via an
 `onBatch` callback threaded through both `RemoteEmbedder` and `LocalEmbedder`.

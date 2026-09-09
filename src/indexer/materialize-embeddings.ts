@@ -23,6 +23,7 @@ import {
   DEFAULT_TOKEN_BUDGET,
   type EmbeddingBatchCommit,
   type EmbeddingBatchSkip,
+  type EmbeddingSkipHandler,
   estimateTokenCount,
   hasRemoteEndpoint,
 } from "../llm/embedders/remote";
@@ -100,6 +101,14 @@ const CANARY_SAMPLE_SIZE = 8;
  * same-model rename rather than a real model change (#955).
  */
 const CANARY_SIMILARITY_THRESHOLD = 0.999;
+
+/**
+ * Consecutive `batch-request-failed` batches (never `context-window-exceeded`)
+ * after which the embedding pass stops dispatching further requests and ends
+ * the run as a failure rather than grinding through every remaining batch
+ * against a dead endpoint (#9541 decision 7).
+ */
+const CIRCUIT_BREAKER_THRESHOLD = 3;
 
 /** One (stored vector, freshly re-embedded vector) pair for the canary decision. */
 export interface EmbeddingCanaryPair {
@@ -466,6 +475,32 @@ export async function generateEmbeddingsForDb(
       // few bad documents don't discard every other entry's embedding.
       const skips: EmbeddingBatchSkip[] = [];
       const embedStart = Date.now();
+      // Circuit breaker (#9541 decision 7): stop dispatching further batches
+      // after CIRCUIT_BREAKER_THRESHOLD consecutive `batch-request-failed`
+      // batches (never `context-window-exceeded` — that reason proves the
+      // provider IS reachable, and split-and-retry already handles it; it
+      // resets the streak instead) — a dead/hung provider used to grind
+      // through every remaining batch for hours, one 30s (now configurable)
+      // timeout at a time, ending in one aggregate warning and `ok: true`.
+      // Counted per BATCH (`skip.batchStart`), not per document: a single
+      // failed 100-document batch must not look like 100 consecutive
+      // failures.
+      let consecutiveTransportFailures = 0;
+      let circuitBreakerReason: string | undefined;
+      const onSkip: EmbeddingSkipHandler = (skip) => {
+        skips.push(skip);
+        if (!skip.batchStart) return undefined;
+        if (skip.reason === "context-window-exceeded") {
+          consecutiveTransportFailures = 0;
+          return undefined;
+        }
+        consecutiveTransportFailures++;
+        if (consecutiveTransportFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+          circuitBreakerReason = skip.message;
+          return false;
+        }
+        return undefined;
+      };
       // Commit each provider batch in its own short transaction as it lands,
       // rather than buffering the whole run in memory for one transaction at
       // the very end (#954) — a competing-process lock error or any other
@@ -479,6 +514,12 @@ export async function generateEmbeddingsForDb(
       let observedVectorLen: number | undefined;
       const onBatch: EmbeddingBatchCommit = (indices, batchEmbeddings, model) => {
         if (model) observedModel = model;
+        // A batch that delivered at least one real embedding proves the
+        // provider is currently answering — reset the circuit breaker's
+        // streak. (A wholly failed batch's `batchEmbeddings` are all
+        // `undefined`, per commitBatch's skip path, so this never
+        // re-triggers what onSkip just counted moments earlier.)
+        if (batchEmbeddings.some((embedding) => embedding !== undefined)) consecutiveTransportFailures = 0;
         db.transaction(() => {
           for (let k = 0; k < indices.length; k++) {
             const entry = allEntries[indices[k] as number];
@@ -509,7 +550,7 @@ export async function generateEmbeddingsForDb(
           message: `Embedded ${storedCount}/${allEntries.length} entries.`,
         });
       };
-      await embedBatch(texts, config.embedding, signal, (skip) => skips.push(skip), onBatch);
+      await embedBatch(texts, config.embedding, signal, onSkip, onBatch);
       throwIfAborted(signal);
       const elapsedSeconds = Math.max((Date.now() - embedStart) / 1000, 0.001);
       if (skippedCount > 0) {
@@ -545,6 +586,18 @@ export async function generateEmbeddingsForDb(
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       const observedIdentity = deriveObservedEmbeddingIdentity(config.embedding, observedModel, observedVectorLen);
       if (observedIdentity) setMeta(db, "embeddingIdentity", observedIdentity);
+      // Circuit breaker tripped (#9541 decision 7): committed batches are
+      // kept (nothing above discards them), but the pass is not a success —
+      // the provider looks dead, not just occasionally flaky.
+      if (circuitBreakerReason !== undefined) {
+        const message =
+          `embedding provider failed ${CIRCUIT_BREAKER_THRESHOLD} consecutive batches ` +
+          `(last: ${circuitBreakerReason}); stopped after ${storedCount} embedding${storedCount === 1 ? "" : "s"} ` +
+          "were stored — rerun akm index when the endpoint is healthy";
+        warn(`[embed] ${message}`);
+        onProgress({ phase: "embeddings", message });
+        return { success: false, message, vecInsertFailures: vecFailedCount };
+      }
       // Only a total failure (nothing at all embedded, despite having entries
       // to embed) turns into a phase failure. Any partial success — the vast
       // majority of a large bundle embedding fine around a handful of skips —
