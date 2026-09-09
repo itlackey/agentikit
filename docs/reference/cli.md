@@ -222,6 +222,7 @@ akm index --full     # Full rebuild
 akm index --verbose  # Print phase progress to stderr
 akm index --clean    # Normal index + remove stale entries from the DB
 akm index --clean --dry-run # Report stale entries without deleting
+akm index --reembed  # Force re-embedding of every entry
 ```
 
 Returns stats: `totalEntries`, `generatedMetadata`, `directoriesScanned`,
@@ -238,6 +239,14 @@ JSON result with `checked`, `removed`, `removedRefs` arrays, and `dryRun` flag.
 Use `--clean` to resolve the edge case where a deleted file in an unchanged
 directory lingers in the index across incremental runs. With `--dry-run`, reports
 which entries would be removed without modifying the database.
+
+**`--reembed` flag:** Forces a full purge and re-embed of every entry,
+independent of the embedding-model-rename compatibility check described
+below. Ordinary indexing already tells a config-only rename of
+`embedding.model` (e.g. a gateway that changes how it names the same model)
+apart from a genuine model change, and keeps the stored vectors when they
+are still compatible; `--reembed` skips that check and forces a rebuild
+regardless of what it would have decided.
 
 `akm index` always rebuilds the search index and keeps metadata in the index.
 When a selected named LLM engine (`defaults.llmEngine` or an indexing-pass

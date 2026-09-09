@@ -177,6 +177,38 @@ emitted every 500 stored entries, and the heartbeat (every 15s while waiting
 on the provider) carries the live stored count. The final line reports
 throughput: `Stored N embeddings in Xs (Y.Y entries/s, ~Z tokens/s).`
 
+**Fingerprint verification (canary)** — a stored provider fingerprint
+(`index_meta.embeddingFingerprint`, `{model, dimension}` derived from
+`embedding.*`) that no longer matches the current config does NOT purge
+unconditionally (#955). `generateEmbeddingsForDb` re-embeds a small sample
+(up to 8) of already-stored entries with the current config and compares:
+
+- the server-reported model identity (`index_meta.embeddingIdentity`,
+  `remote:<model id the endpoint returned>|<vector width>` for a remote
+  config, `local:<localModel>|<vector width>` for a local one) against what
+  the canary observes this run — an exact match keeps the index without
+  even looking at the vectors, since a config-only rename that still hits
+  the same server-reported model cannot have changed the vectors;
+- otherwise, the MEDIAN cosine similarity between each sampled stored
+  vector and its freshly re-embedded counterpart — a rename that still
+  resolves to the same underlying model lands its similarities at ~1.0,
+  while a genuinely different model does not get there by chance. A median
+  ≥ 0.999 keeps the index.
+
+A kept index adopts the new fingerprint (and identity) immediately; a purge
+writes them in the SAME transaction as the purge, before any embedding
+request, so an interruption partway through a rebuild resumes on the next
+run (only the still-missing entries get re-embedded) instead of purging
+again from zero. A canary that cannot reach the endpoint at all leaves the
+existing vectors and the OLD fingerprint untouched and reports failure, so
+a down server does not destroy a working index — the next `akm index`
+retries. `akm index --reembed` bypasses the canary entirely and forces a
+purge + full re-embed. A genuine dimension change is unaffected: it is
+caught earlier and unconditionally by `ensureSchema`
+(`src/storage/repositories/index-schema.ts`), independent of this
+fingerprint mechanism, since a change in vector width leaves nothing for
+the canary to meaningfully compare.
+
 ## Progress Reporting
 
 - text mode: shows a spinner with processed-versus-total source counts
