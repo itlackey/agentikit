@@ -45,6 +45,20 @@ describe("current improvement CLI documentation contract", () => {
     expect(section).toContain("plan.processes");
   });
 
+  test("improve registers --run/--since and documents the report scope + usageReport field (#944)", () => {
+    const args = improveCommand.args as Record<string, { type?: string }>;
+    expect(args.run).toMatchObject({ type: "string" });
+    expect(args.since).toMatchObject({ type: "string" });
+
+    const section = extractSection(cli, "### improve");
+    expect(section).toContain("improve report");
+    expect(section).toContain("--run <id>");
+    expect(section).toContain("--since <window>");
+    expect(section).toContain("usageReport");
+    expect(section).toContain("byProcessEngineModel");
+    expect(section).toContain("noCalls");
+  });
+
   test("proposal documents the complete current lifecycle grammar", () => {
     const section = extractSection(cli, "### proposal");
     for (const verb of ["extract", "new", "list", "show", "diff", "accept", "reject", "revert"]) {

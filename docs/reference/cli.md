@@ -2213,10 +2213,15 @@ akm improve --require-engines          # for scheduled runs: abort (exit 78) ins
 akm improve --no-sync                  # skip the end-of-run git commit entirely (default: on for git-backed bundles)
 akm improve --sync --no-push           # commit only, skip the push after it
 akm improve --plan --strategy thorough # preview thorough's resolved engine/model routing; nothing is dispatched
+akm improve report                     # LLM usage/routing report for the most recent real run
+akm improve report --run <id>          # ...for one specific improve_runs id
+akm improve report --since 7d          # ...aggregated over every real run started in the last 7 days
 ```
 
 | Flag | Description |
 | --- | --- |
+| `--run <id>` | `report` scope only (#944): show the usage report for one specific `improve_runs` row instead of the most recent real run. Mutually exclusive with `--since`. |
+| `--since <window>` | `report` scope only (#944): aggregate the usage report over every real (non-dry-run) run started since `<window>` (a duration like `24h`/`7d`, or an ISO timestamp) instead of one run. Mutually exclusive with `--run`. |
 | `--task` | Optional extra guidance for this improvement pass |
 | `--dry-run` | Show the schema-v2 result on stdout without creating config, data, state, cache, bundle, log, or result artifacts. Dry-run results are never persisted, including on errors or signals. |
 | `--plan` | Alias for `--dry-run` (#947). Sets the exact same internal flag; no separate code path. Prefer this spelling when the goal is previewing `plan.processes` (resolved process -> engine -> model routing) rather than checking what would be written. |
@@ -2317,6 +2322,45 @@ When reinforced facts need promotion, `knowledge` is the higher-authority
 destination than `memory`. The deterministic search ranking also prefers
 `knowledge` over `memory` hits, including inferred `.derived` memories, when
 the evidence is otherwise comparable.
+
+#### improve report
+
+`akm improve report` (#944) answers "which engine did each LLM-backed process
+use this run, how much did it cost, and which enabled processes made zero
+calls (and why)" without hand-written SQLite against `state.db`. It is a
+`scope` value, not a subcommand — `report` is not, and will never be, a real
+asset type, so it is intercepted before any lock/log/index side effect (same
+precedent as the retired `canary` scope).
+
+Every real (non-dry-run) `akm improve` invocation persists a `usageReport`
+field on the result (`result_json` in `improve_runs`, and in the
+`--json-to-stdout` / dry-run JSON): `{ byProcessEngineModel, noCalls }`.
+`byProcessEngineModel` is a cross-tab of this run's own `llm_usage` events
+(#576) — one row per distinct `(process, engine, model)` triple, each with
+`calls`, `failures`, `promptTokens`, `completionTokens`, `totalTokens`,
+`reasoningTokens`, and `totalDurationMs`. `noCalls` lists every LLM-backed
+process (`reflect`, `distill`, `consolidate`, `memoryInference`,
+`graphExtraction`, `extract`, `validation` — not `triage`/`proactiveMaintenance`,
+which never make an attributable LLM call themselves) the active strategy
+enabled but that ended the run with zero calls, each with a `reason` drawn
+from the existing skip-reason vocabulary: `"engine_unavailable"` (also in
+`skippedProcesses`), `"autonomy_gated"`, `"strategy_filtered_all_passes"`, a
+reflect/distill dominant skip reason (e.g. `"no_new_signal"`, `"cooldown"`),
+or `"no_signal"` as the fallback — never a fabricated category. The field is
+omitted entirely when both would be empty. The same table is printed to
+stderr (`[improve] usage report ...`) after every real run, independent of
+`--json-to-stdout`.
+
+`akm improve report` reads that field back: with no flags, the most recent
+real run; `--run <id>`, one specific run; `--since <window>`, summed across
+every real run in the window (`byProcessEngineModel` rows merged by
+`(process, engine, model)`; `noCalls` lists a process only if it made zero
+calls across every included run). A run recorded before 0.9.15 has no
+persisted `usageReport` — the command recomputes `byProcessEngineModel` from
+that run's own `llm_usage` events instead of erroring, sets `noCalls` to `[]`
+(eligibility reasons are not reconstructable after the fact), and adds a
+`notes` entry saying so rather than fabricating precision the old row can't
+support.
 
 ### proposal
 
