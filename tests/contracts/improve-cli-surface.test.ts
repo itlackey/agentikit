@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { improveCommand } from "../../src/commands/improve/improve-cli";
 import { CLI_DOC_PATH, extractSection, readDoc } from "./contract-helpers";
 
 // Pins the current documented improvement command surface.
@@ -27,6 +28,35 @@ describe("current improvement CLI documentation contract", () => {
     expect(extractSection(cli, "#### proposal new")).toContain("`--engine`");
     expect(extractSection(cli, "### improve")).toContain("`--strategy <name>`");
     expect(extractSection(cli, "### agent")).not.toContain("profiles.agent");
+  });
+
+  test("improve documents --require-engines and the skippedProcesses result field (#957)", () => {
+    const section = extractSection(cli, "### improve");
+    expect(section).toContain("--require-engines");
+    expect(section).toContain("skippedProcesses");
+  });
+
+  test("improve registers --plan as a zero-logic --dry-run alias and documents plan.processes (#947)", () => {
+    const args = improveCommand.args as Record<string, { type?: string; default?: unknown }>;
+    expect(args.plan).toMatchObject({ type: "boolean", default: false });
+
+    const section = extractSection(cli, "### improve");
+    expect(section).toContain("--plan");
+    expect(section).toContain("plan.processes");
+  });
+
+  test("improve registers --run/--since and documents the report scope + usageReport field (#944)", () => {
+    const args = improveCommand.args as Record<string, { type?: string }>;
+    expect(args.run).toMatchObject({ type: "string" });
+    expect(args.since).toMatchObject({ type: "string" });
+
+    const section = extractSection(cli, "### improve");
+    expect(section).toContain("improve report");
+    expect(section).toContain("--run <id>");
+    expect(section).toContain("--since <window>");
+    expect(section).toContain("usageReport");
+    expect(section).toContain("byProcessEngineModel");
+    expect(section).toContain("noCalls");
   });
 
   test("proposal documents the complete current lifecycle grammar", () => {
