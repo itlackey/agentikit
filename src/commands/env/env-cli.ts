@@ -30,12 +30,12 @@ import {
   makeEnvRef,
   resolveEnvPath,
   resolveEnvWriteTarget,
+  sensitiveMarkerPath,
   withEnvSecretWrite,
 } from "../../core/env-secret-ref";
 import { ConfigError, NotFoundError, UsageError } from "../../core/errors";
 import { readStdin } from "../../runtime";
 import { buildChildEnv } from "./child-env";
-import { sensitiveMarkerPath } from "./marker-path";
 
 const envListCommand = defineJsonCommand({
   meta: { name: "list", description: "List all env files across all bundles with their key names (no values)" },
