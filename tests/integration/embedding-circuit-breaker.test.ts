@@ -3,13 +3,19 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9541 decision 7: a slow or dead embedding provider used to grind through
- * every remaining batch, one (now-configurable, previously fixed 30s)
- * timeout at a time, for however many batches the run had — hours, on the
- * reporting install's 24,041-entry stash. After 3 consecutive
- * `batch-request-failed` batches (never a `context-window-exceeded` one —
- * that proves the provider IS reachable), the embedding phase stops
- * dispatching further requests instead.
+ * #9541 decision 7, refined by the 2026-09-09 owner addendum: a slow or dead
+ * embedding provider used to grind through every remaining batch, one
+ * (now-configurable, previously fixed 30s) timeout at a time, for however
+ * many batches the run had — hours, on the reporting install's 24,041-entry
+ * stash. A request timeout no longer drops its batch outright: it backs off
+ * and retries the SAME request once, and only a SECOND timeout splits it (or,
+ * for a single document, finally skips it) — the field evidence was that
+ * akm abandoning a timed-out request does not stop llama-server from still
+ * computing it, so dropping it immediately just let the provider's queue
+ * grow while every following batch died the same way. After 3 consecutive
+ * failures at single-document size (timeout or network error) — or 3
+ * consecutive network errors at any size — the embedding phase stops
+ * dispatching further requests.
  *
  * A real Bun.serve server whose fetch handler never resolves removes any
  * timing race between the client's timeout and a server that merely
@@ -49,12 +55,17 @@ function writeMemory(name: string): void {
   );
 }
 
-test("stops after exactly 3 consecutive transport failures against a dead endpoint and reports it, with endpoint guidance", async () => {
+/** Minimum gap (ms) between a document's two requests that only a real back-off (not an immediate retry) can produce. */
+const MIN_PROVEN_BACKOFF_MS = 2_000;
+
+test("stops after exactly 3 consecutive single-document timeouts against a dead endpoint and reports it, with endpoint guidance", async () => {
   let requestCount = 0;
+  const requestTimestamps: number[] = [];
   server = Bun.serve({
     port: 0,
     fetch() {
       requestCount++;
+      requestTimestamps.push(Date.now());
       // Never resolves: the client's own embedding.timeoutMs is the only
       // way each request can ever settle (see module docstring).
       return new Promise<Response>(() => {});
@@ -72,16 +83,26 @@ test("stops after exactly 3 consecutive transport failures against a dead endpoi
       model: "test-model",
       dimension: 4,
       batchSize: 1,
-      timeoutMs: 500,
+      timeoutMs: 300,
     },
   });
   resetConfigCache();
 
   const result = await akmIndex({ stashDir: storage.stashDir, full: true });
 
-  // Circuit breaker trips after exactly 3 requests — the other 2 documents'
-  // batches are never dispatched at all.
-  expect(requestCount).toBe(3);
+  // Each single-document batch is already at single-document size, so it
+  // gets the addendum's one same-size retry (never a split) before it
+  // finally counts as a failure: 2 requests per document, 3 documents to
+  // trip the breaker (the other 2 documents' batches are never dispatched
+  // at all) = 6 requests, not the pre-addendum 3.
+  expect(requestCount).toBe(6);
+  // Request-timing log proving each retry actually waited out a back-off
+  // rather than firing immediately: the 2nd request of every pair lands at
+  // least MIN_PROVEN_BACKOFF_MS after the 1st.
+  for (let i = 0; i < requestTimestamps.length; i += 2) {
+    const gap = (requestTimestamps[i + 1] as number) - (requestTimestamps[i] as number);
+    expect(gap).toBeGreaterThanOrEqual(MIN_PROVEN_BACKOFF_MS);
+  }
   expect(result.verification.ok).toBe(false);
   expect(result.verification.semanticStatus).toBe("blocked");
   expect(result.verification.message).toContain("embedding provider failed 3 consecutive batches");
@@ -89,4 +110,66 @@ test("stops after exactly 3 consecutive transport failures against a dead endpoi
   // verifyIndexState's guidance for a remote provider names the endpoint as
   // the thing to check.
   expect(result.verification.guidance).toContain("embedding endpoint");
-});
+}, 60_000);
+
+test("a dead endpoint splits a multi-document batch down to singles before any failure counts, tripping after exactly 3 single-document failures", async () => {
+  let requestCount = 0;
+  const requestSizes: number[] = [];
+  const requestTimestamps: number[] = [];
+  server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      requestCount++;
+      requestTimestamps.push(Date.now());
+      const body = (await request.json().catch(() => ({ input: [] }))) as { input?: string[] };
+      requestSizes.push(body.input?.length ?? 0);
+      // Never resolves: same rationale as the single-document test above.
+      return new Promise<Response>(() => {});
+    },
+  });
+
+  for (let i = 0; i < 3; i++) writeMemory(`entry-${i}.md`);
+
+  writeSandboxConfig({
+    semanticSearchMode: "auto",
+    bundles: { stash: { path: storage.stashDir, writable: true } },
+    defaultBundle: "stash",
+    embedding: {
+      endpoint: `http://localhost:${server.port}`,
+      model: "test-model",
+      dimension: 4,
+      // No batchSize override: all 3 tiny documents land in ONE provider
+      // batch, so this exercises the addendum's actual split-down-to-
+      // singles recursion rather than starting pre-split like the test
+      // above.
+      timeoutMs: 300,
+    },
+  });
+  resetConfigCache();
+
+  const result = await akmIndex({ stashDir: storage.stashDir, full: true });
+
+  // Sequence: size 3 (retry, still times out) -> split into size 2 + size 1.
+  // Size 2 (retry, still times out) -> split into size 1 + size 1: two
+  // single-document failures (#1, #2). Back up to the outer size-1 half:
+  // its own retry-then-timeout is the 3rd single-document failure, which
+  // trips the breaker — no batch above single-document size ever counts
+  // toward the breaker by itself (context-size logic aside), only once
+  // retries have narrowed it down to one document.
+  expect(requestSizes).toEqual([3, 3, 2, 2, 1, 1, 1, 1, 1, 1]);
+  expect(requestCount).toBe(10);
+  // Request-timing log proving every retry (odd/even pair) actually waited
+  // out a back-off rather than firing immediately — the addendum's
+  // "doubling" formula only ever runs its attempt-0 term in this design
+  // (each split starts a fresh single-retry request), so every gap is
+  // independently at least the same proven-backoff floor.
+  for (let i = 0; i < requestTimestamps.length; i += 2) {
+    const gap = (requestTimestamps[i + 1] as number) - (requestTimestamps[i] as number);
+    expect(gap).toBeGreaterThanOrEqual(MIN_PROVEN_BACKOFF_MS);
+  }
+  expect(result.verification.ok).toBe(false);
+  expect(result.verification.semanticStatus).toBe("blocked");
+  expect(result.verification.message).toContain("embedding provider failed 3 consecutive batches");
+  expect(result.verification.message).toContain("stopped after 0 embeddings were stored");
+  expect(result.verification.guidance).toContain("embedding endpoint");
+}, 60_000);

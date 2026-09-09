@@ -755,6 +755,61 @@ describe("RemoteEmbedder.embedBatch against a real server: context-size split (#
   });
 });
 
+describe("RemoteEmbedder.embedBatch against a real server: timeout back-off retry (#9541 addendum)", () => {
+  // Refines decisions 3 and 7: a request timeout never drops its batch
+  // outright any more — it backs off (so the server can drain the abandoned
+  // request) and retries the SAME request once before ever splitting or
+  // skipping. This is the addendum's first required test: a first request
+  // that outlives the client's timeout, followed by a normal response,
+  // must produce exactly one retry and no skipped documents.
+  test("a first request that outlives the timeout retries once after a back-off and succeeds, with nothing skipped", async () => {
+    const timeoutMs = 300;
+    let requestCount = 0;
+    const requestTimestamps: number[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        requestCount++;
+        requestTimestamps.push(Date.now());
+        const thisRequest = requestCount;
+        const body = (await request.json()) as { input: string[] };
+        if (thisRequest === 1) {
+          // Sleeps 3x the client's timeout: the client has already given up
+          // and moved on well before this responds, exercising exactly the
+          // field-report mechanism (akm abandons the request, the server
+          // keeps computing it).
+          await new Promise((resolve) => setTimeout(resolve, timeoutMs * 3));
+        }
+        const data = body.input.map((_t, i) => ({ embedding: [1, 0], index: i }));
+        return new Response(JSON.stringify({ data, model: "test", usage: {} }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    });
+    try {
+      const embedder = new RemoteEmbedder({
+        endpoint: `http://localhost:${server.port}`,
+        model: "test-model",
+        timeoutMs,
+      });
+      const skips: unknown[] = [];
+      const results = await embedder.embedBatch(["doc-a", "doc-b"], undefined, (skip) => skips.push(skip));
+
+      expect(results.every((r) => r !== undefined)).toBe(true);
+      expect(skips).toHaveLength(0);
+      // Exactly one retry: the sleeping first request, then a successful second.
+      expect(requestCount).toBe(2);
+      // Request-timing log proving a real back-off elapsed between the
+      // client giving up on request 1 (at `timeoutMs`) and request 2 being
+      // dispatched, rather than an immediate retry.
+      const gapAfterClientTimeout = (requestTimestamps[1] as number) - ((requestTimestamps[0] as number) + timeoutMs);
+      expect(gapAfterClientTimeout).toBeGreaterThanOrEqual(1_500);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+});
+
 describe("RemoteEmbedder.embedBatch against a real server: fixed bounded concurrency (#954)", () => {
   // The in-flight window is FIXED (1 loopback / 2 remote) — there is no
   // config override (2026-09-09 field-review addendum to the brief). The

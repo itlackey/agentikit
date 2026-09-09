@@ -209,7 +209,12 @@ integer, default 120_000 — 120s, #9541 decision 3), used by both
 exactly the field-report case: a local model server on a large
 token-budget-bounded batch legitimately took longer than that, the timeout
 fired mid-response with no retry, and every batch it hit was silently
-dropped for the rest of an hours-long run.
+dropped for the rest of an hours-long run. `embedding.timeoutMs` is the
+budget for a request at the FULL token budget; a smaller request gets a
+proportionally smaller timeout, `clamp(timeoutMs × requestTokens /
+tokenBudget, 30_000, timeoutMs)` (2026-09-09 owner addendum), so a dead
+endpoint is detected in seconds on the common case of small documents
+instead of always waiting out the full configured budget.
 
 **Concurrency** — provider batches are dispatched through a bounded pool
 (`concurrentMap`) instead of strictly sequentially. Default width (unset
@@ -235,27 +240,47 @@ own physical-batch rejection — `input is too large to process`, `physical
 batch size`, `ubatch`, #9541) is split in half and retried recursively
 rather than discarded whole, down to individual documents; a single
 document that still fails this way becomes a
-`context-window-exceeded` skip. Any other failure (network error, 5xx,
-malformed response) keeps skipping the whole batch as a `batch-request-failed`
-skip — a genuinely broken batch does not get retried into a storm of smaller
-requests against a down endpoint.
+`context-window-exceeded` skip.
 
-**Circuit breaker** (#9541 decision 7) — after 3 consecutive
-`batch-request-failed` batches (never `context-window-exceeded`, which
-proves the provider IS reachable and resets the streak instead), the
+**Timeout back-off-and-retry** (2026-09-09 owner addendum, refining
+decisions 3 and 7) — a request TIMEOUT never drops its batch outright: field
+confirmation showed that once akm abandons a timed-out request the endpoint
+(e.g. llama-server) keeps computing it anyway, so dropping it immediately
+just grows the provider's queue while every following batch dies the same
+way. Instead, on a timeout, `RemoteEmbedder.embedBatch` backs off (5s,
+doubling, capped at 60s — in practice always the formula's first term, since
+a given request size is only ever retried once before it splits or is
+skipped) so the provider can drain the abandoned request, then retries the
+SAME request once. A second timeout on that retry splits the batch in half
+(like a context-size rejection) and retries each half the same way, down to
+single documents; a single document that times out twice is finally skipped
+with a default-level `warn`. Any other failure (network error, a
+non-timeout HTTP failure, malformed response) still skips the whole batch
+immediately at any size, as before — a genuinely broken batch does not get
+retried into a storm of smaller requests against a down endpoint.
+
+**Circuit breaker** (#9541 decision 7, refined by the addendum) — the
 embedding phase stops dispatching further provider requests and ends the
-pass as a failure: `embedding provider failed 3 consecutive batches (last:
-<reason>); stopped after <N> embeddings were stored — rerun akm index when
-the endpoint is healthy`. Every batch already committed is kept; a genuine
-caller abort (Ctrl-C, the improve budget) is a separate code path and stays
-distinguishable. Mechanically, the materializer's `onSkip` callback (policy
-lives with the caller, not the embedder) returns `false` on the batch that
-trips the threshold; `RemoteEmbedder.embedBatch` honors that through its
-existing dispatch-abort controller — the same one an `onBatch` persistence
-failure already used to stop further dispatch — with a distinct reason, and
-resolves normally with whatever results already landed rather than
-rejecting. This is what turns an hours-long grind against a dead provider
-(the field report's own symptom) into a fast, visible failure instead.
+pass as a failure once either of two consecutive-failure streaks reaches 3:
+failures at single-document size (timeout OR network error — a
+multi-document timeout is not by itself evidence the endpoint is dead,
+since it is retried and split smaller before ever being reported as failed
+at single-document size), or network errors at ANY size (never retried, so
+trusted immediately regardless of size). `context-window-exceeded` never
+counts — it proves the provider IS reachable — and resets both streaks
+instead. The pass ends with: `embedding provider failed 3 consecutive
+batches (last: <reason>); stopped after <N> embeddings were stored — rerun
+akm index when the endpoint is healthy`. Every batch already committed is
+kept; a genuine caller abort (Ctrl-C, the improve budget) is a separate code
+path and stays distinguishable. Mechanically, the materializer's `onSkip`
+callback (policy lives with the caller, not the embedder) returns `false`
+on the batch that trips a threshold; `RemoteEmbedder.embedBatch` honors
+that through its existing dispatch-abort controller — the same one an
+`onBatch` persistence failure already used to stop further dispatch — with
+a distinct reason, and resolves normally with whatever results already
+landed rather than rejecting. This is what turns an hours-long grind
+against a dead provider (the field report's own symptom) into a fast,
+visible failure instead.
 
 **Per-batch commit** — each provider (or local-embedder) batch is written to
 `index.db` inside its own short `db.transaction()` as it completes, via an

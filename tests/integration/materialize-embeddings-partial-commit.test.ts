@@ -109,7 +109,14 @@ describe("generateEmbeddingsForDb: per-batch commit survives an eventual failure
           onBatch?: EmbeddingBatchCommit,
         ) => {
           onBatch?.([0], [[0.1, 0.2, 0.3]]);
-          onSkip?.({ index: 1, reason: "batch-request-failed", message: "synthetic failure", batchStart: true });
+          onSkip?.({
+            index: 1,
+            reason: "batch-request-failed",
+            message: "synthetic failure",
+            batchStart: true,
+            batchSize: 1,
+            failureKind: "network-error",
+          });
           onBatch?.([1], [undefined]);
           onBatch?.([2], [[0.7, 0.8, 0.9]]);
           // Deliberately wrong/unused return value: the materializer must

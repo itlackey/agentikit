@@ -103,10 +103,20 @@ const CANARY_SAMPLE_SIZE = 8;
 const CANARY_SIMILARITY_THRESHOLD = 0.999;
 
 /**
- * Consecutive `batch-request-failed` batches (never `context-window-exceeded`)
- * after which the embedding pass stops dispatching further requests and ends
- * the run as a failure rather than grinding through every remaining batch
- * against a dead endpoint (#9541 decision 7).
+ * Consecutive transport failures after which the embedding pass stops
+ * dispatching further requests and ends the run as a failure rather than
+ * grinding through every remaining batch against a dead endpoint (#9541
+ * decision 7, refined by the addendum). Two independent trip conditions
+ * share this threshold — see `onSkip` below: 3 consecutive failures at
+ * single-document size (timeout OR network error — a multi-document
+ * timeout is not by itself evidence the endpoint is dead, since
+ * `RemoteEmbedder.embedBatch` already retries and splits it smaller before
+ * ever reporting it as failed at single-document size), or 3 consecutive
+ * network errors at ANY size (a network error is never retried, so it is
+ * trusted immediately regardless of how large the request was).
+ * `context-window-exceeded` never counts — that reason proves the provider
+ * IS reachable, and split-and-retry already handles it; it resets both
+ * streaks instead.
  */
 const CIRCUIT_BREAKER_THRESHOLD = 3;
 
@@ -475,27 +485,38 @@ export async function generateEmbeddingsForDb(
       // few bad documents don't discard every other entry's embedding.
       const skips: EmbeddingBatchSkip[] = [];
       const embedStart = Date.now();
-      // Circuit breaker (#9541 decision 7): stop dispatching further batches
-      // after CIRCUIT_BREAKER_THRESHOLD consecutive `batch-request-failed`
-      // batches (never `context-window-exceeded` — that reason proves the
-      // provider IS reachable, and split-and-retry already handles it; it
-      // resets the streak instead) — a dead/hung provider used to grind
-      // through every remaining batch for hours, one 30s (now configurable)
-      // timeout at a time, ending in one aggregate warning and `ok: true`.
-      // Counted per BATCH (`skip.batchStart`), not per document: a single
-      // failed 100-document batch must not look like 100 consecutive
-      // failures.
-      let consecutiveTransportFailures = 0;
+      // Circuit breaker (#9541 decision 7, refined by the addendum): stop
+      // dispatching further batches once either consecutive-failure streak
+      // below reaches CIRCUIT_BREAKER_THRESHOLD — a dead/hung provider used
+      // to grind through every remaining batch for hours, one 30s (now
+      // configurable, and now backed off/retried/split first — see
+      // RemoteEmbedder.embedBatch) timeout at a time, ending in one
+      // aggregate warning and `ok: true`. Counted per BATCH
+      // (`skip.batchStart`), not per document: a single failed 100-document
+      // batch must not look like 100 consecutive failures.
+      let consecutiveSingleDocFailures = 0;
+      let consecutiveNetworkErrorFailures = 0;
       let circuitBreakerReason: string | undefined;
       const onSkip: EmbeddingSkipHandler = (skip) => {
         skips.push(skip);
         if (!skip.batchStart) return undefined;
         if (skip.reason === "context-window-exceeded") {
-          consecutiveTransportFailures = 0;
+          consecutiveSingleDocFailures = 0;
+          consecutiveNetworkErrorFailures = 0;
           return undefined;
         }
-        consecutiveTransportFailures++;
-        if (consecutiveTransportFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+        // "batch-request-failed": a timeout only counts once retries have
+        // already narrowed it down to a single document (embedBatch backs
+        // off, retries, and splits a multi-document timeout before ever
+        // reporting it here); a network error counts immediately at any
+        // size — it was never retried, so it is trusted right away.
+        consecutiveSingleDocFailures = skip.batchSize === 1 ? consecutiveSingleDocFailures + 1 : 0;
+        consecutiveNetworkErrorFailures =
+          skip.failureKind === "network-error" ? consecutiveNetworkErrorFailures + 1 : 0;
+        if (
+          consecutiveSingleDocFailures >= CIRCUIT_BREAKER_THRESHOLD ||
+          consecutiveNetworkErrorFailures >= CIRCUIT_BREAKER_THRESHOLD
+        ) {
           circuitBreakerReason = skip.message;
           return false;
         }
@@ -515,11 +536,14 @@ export async function generateEmbeddingsForDb(
       const onBatch: EmbeddingBatchCommit = (indices, batchEmbeddings, model) => {
         if (model) observedModel = model;
         // A batch that delivered at least one real embedding proves the
-        // provider is currently answering — reset the circuit breaker's
-        // streak. (A wholly failed batch's `batchEmbeddings` are all
+        // provider is currently answering — reset both circuit-breaker
+        // streaks. (A wholly failed batch's `batchEmbeddings` are all
         // `undefined`, per commitBatch's skip path, so this never
         // re-triggers what onSkip just counted moments earlier.)
-        if (batchEmbeddings.some((embedding) => embedding !== undefined)) consecutiveTransportFailures = 0;
+        if (batchEmbeddings.some((embedding) => embedding !== undefined)) {
+          consecutiveSingleDocFailures = 0;
+          consecutiveNetworkErrorFailures = 0;
+        }
         db.transaction(() => {
           for (let k = 0; k < indices.length; k++) {
             const entry = allEntries[indices[k] as number];

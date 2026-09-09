@@ -184,7 +184,14 @@ describe("akm bundle update: post-commit embedding pass durability (#9541)", () 
     _setEmbedderForTests({
       embedBatch: async (texts, _config, _signal, onSkip) => {
         for (let i = 0; i < texts.length; i++) {
-          onSkip?.({ index: i, reason: "batch-request-failed", message: "mock provider is down", batchStart: i === 0 });
+          onSkip?.({
+            index: i,
+            reason: "batch-request-failed",
+            message: "mock provider is down",
+            batchStart: i === 0,
+            batchSize: texts.length,
+            failureKind: "network-error",
+          });
         }
         return texts.map(() => undefined);
       },

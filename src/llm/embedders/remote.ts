@@ -9,12 +9,12 @@
  * vectors so the scoring pipeline's L2-to-cosine conversion is correct.
  */
 
-import { fetchWithTimeout, isHttpUrl, readBodyWithByteCap } from "../../core/common";
+import { abortableDelay, backoffDelay, fetchWithTimeout, isHttpUrl, readBodyWithByteCap } from "../../core/common";
 import { concurrentMap } from "../../core/concurrent";
 import { type EmbeddingConnectionConfig, resolveSecret } from "../../core/config/config";
 import { defaultConcurrencyForEndpoint } from "../../core/loopback";
 import { redactErrorBody, redactSensitiveText } from "../../core/redaction";
-import { warn } from "../../core/warn";
+import { warn, warnVerbose } from "../../core/warn";
 import { resolveSecretFromStore } from "../../sources/snapshot-fetchers/secret-seam";
 import type { Embedder, EmbeddingVector } from "./types";
 
@@ -59,8 +59,69 @@ export function resolveEmbeddingTimeoutMs(config: EmbeddingConnectionConfig): nu
   return config.timeoutMs ?? DEFAULT_EMBEDDING_TIMEOUT_MS;
 }
 
+/**
+ * Scale the per-request timeout down for a smaller-than-budget request
+ * (#9541 addendum, refining decision 3): `embedding.timeoutMs` /
+ * {@link resolveEmbeddingTimeoutMs} is the budget for a request at the FULL
+ * token budget; a batch using only a fraction of it gets a proportionally
+ * smaller timeout, floored at 30s and never above the configured
+ * `timeoutMs` itself, so a dead server is detected in seconds on the common
+ * case of small documents instead of always waiting out the full configured
+ * budget.
+ */
+export function scaleEmbeddingTimeoutMs(timeoutMs: number, requestTokens: number, tokenBudget: number): number {
+  const scaled = tokenBudget > 0 ? timeoutMs * (requestTokens / tokenBudget) : timeoutMs;
+  return Math.min(Math.max(scaled, 30_000), timeoutMs);
+}
+
+/**
+ * True when `err` is a request- or body-read timeout (#9541 addendum) —
+ * `fetchWithTimeout`'s connection/header timeout ("Request timed out
+ * after...") or `readBodyWithByteCap`'s body-phase `BodyReadTimeoutError`.
+ * Only this failure mode gets the addendum's back-off-and-retry treatment:
+ * the field evidence was specifically that a timed-out request keeps
+ * computing server-side, so abandoning it immediately (the pre-addendum
+ * behavior) just grows the provider's queue further. A genuine network/HTTP
+ * failure (connection refused, malformed response, a real error response)
+ * has no such still-in-flight hazard and keeps the original
+ * skip-immediately behavior.
+ */
+export function isEmbeddingTimeoutError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === "BodyReadTimeoutError") return true;
+  return err.message.startsWith("Request timed out after ");
+}
+
+/**
+ * Backoff before the addendum's single same-size retry on a request timeout
+ * (#9541 addendum, refining decision 7) — reuses the same jittered
+ * exponential formula {@link backoffDelay} uses for the rest of the
+ * codebase's retry paths, at a base matching the addendum's "5s, doubling,
+ * capped at 60s" and always at `attempt` 0: this design retries a given
+ * request size exactly once before splitting it (a fresh, smaller request)
+ * or skipping it, so the formula's doubling never actually triggers within
+ * one request size — each new size after a split gets its own fresh
+ * attempt-0 backoff, long enough for the provider to drain the request it
+ * abandoned.
+ */
+export function embeddingTimeoutRetryBackoffMs(): number {
+  return backoffDelay(0, 5_000, 60_000);
+}
+
 /** Why a document was skipped rather than embedded. */
 export type EmbeddingSkipReason = "context-window-exceeded" | "batch-request-failed";
+
+/**
+ * Only meaningful when `reason === "batch-request-failed"` (#9541 addendum,
+ * refining decision 7): whether the failed request timed out or failed some
+ * other way (network error, malformed response, a non-timeout HTTP
+ * failure). The materializer's circuit breaker treats a run of network
+ * errors as fatal at ANY request size, but only trusts a run of timeouts
+ * once retries have already narrowed them down to single documents — a
+ * multi-document timeout might still succeed once split smaller, so it is
+ * not by itself evidence the endpoint is dead.
+ */
+export type EmbeddingFailureKind = "timeout" | "network-error";
 
 export interface EmbeddingBatchSkip {
   /** Index into the `texts` array passed to `embedBatch`. */
@@ -77,6 +138,10 @@ export interface EmbeddingBatchSkip {
    * consecutive failures.
    */
   batchStart: boolean;
+  /** Number of documents covered by the failed request (#9541 addendum). */
+  batchSize: number;
+  /** See {@link EmbeddingFailureKind}. Undefined for a `context-window-exceeded` skip. */
+  failureKind?: EmbeddingFailureKind;
 }
 
 /**
@@ -321,8 +386,25 @@ export class RemoteEmbedder implements Embedder {
    * {@link isContextExceededResponse}) is split in half and retried
    * recursively rather than skipped outright, down to individual documents; a
    * single document that still fails this way becomes a genuine
-   * `context-window-exceeded` skip. Every other failure (network error, 5xx,
-   * malformed response) keeps the original skip-the-whole-batch behavior.
+   * `context-window-exceeded` skip.
+   *
+   * A request TIMEOUT (see {@link isEmbeddingTimeoutError}) never drops the
+   * batch outright (#9541 addendum, refining decision 7): the field evidence
+   * was that akm abandoning a timed-out request does not stop the server
+   * from still computing it, so immediately skipping (or immediately
+   * splitting, the pre-addendum behavior) just let the provider's queue grow
+   * while every following batch died the same way. Instead, on a timeout,
+   * this backs off ({@link embeddingTimeoutRetryBackoffMs}) and retries the
+   * SAME request once; a second timeout splits it in half (like a
+   * context-size rejection) and retries each half the same way, down to
+   * single documents — a single document that times out twice is finally
+   * skipped. Every other failure (network error, malformed response, a
+   * non-timeout HTTP failure) keeps the original skip-the-whole-batch-
+   * immediately behavior, at any size. The per-request timeout itself also
+   * scales down with the request's estimated size via
+   * {@link scaleEmbeddingTimeoutMs}, so a dead server is detected in seconds
+   * on a small batch rather than always waiting out the full configured
+   * `embedding.timeoutMs`.
    */
   async embedBatch(
     texts: string[],
@@ -338,6 +420,7 @@ export class RemoteEmbedder implements Embedder {
     const tokenBudget = this.config.maxTokens ?? this.config.contextLength ?? DEFAULT_TOKEN_BUDGET;
     const maxCount = this.config.batchSize ?? DEFAULT_REMOTE_BATCH_SIZE;
     const textBatches = buildTokenBoundedBatches(texts, tokenBudget, maxCount);
+    const configuredTimeoutMs = resolveEmbeddingTimeoutMs(this.config);
 
     // Stops the pool from claiming any FURTHER provider batch once the
     // caller's onBatch has failed once (the materializer's transaction
@@ -387,17 +470,32 @@ export class RemoteEmbedder implements Embedder {
     };
 
     // Requests a single provider batch (by index list), recursing on a
-    // context-size rejection. Never throws except to propagate a genuine
-    // caller abort — every other outcome (success or a non-abort failure)
-    // resolves normally after reporting via onSkip/onBatch. `onBatch` fires
-    // only once this try/catch has already settled success vs. failure, so a
-    // throw from it is never caught and reclassified by this block.
-    const requestAndCommit = async (indices: number[]): Promise<void> => {
+    // context-size rejection OR a repeated timeout (#9541 addendum). Never
+    // throws except to propagate a genuine caller abort — every other
+    // outcome (success or a non-abort failure) resolves normally after
+    // reporting via onSkip/onBatch. `onBatch` fires only once this
+    // try/catch has already settled success vs. failure, so a throw from it
+    // is never caught and reclassified by this block.
+    //
+    // `isTimeoutRetry` marks the SECOND attempt at this exact `indices`
+    // (after the addendum's one same-size backoff-and-retry) — a second
+    // timeout at that point splits or terminally skips rather than backing
+    // off again.
+    const requestAndCommit = async (indices: number[], isTimeoutRetry = false): Promise<void> => {
+      // A concurrent batch may have tripped the circuit breaker (or failed
+      // onBatch) while this call was queued behind a split or a backoff —
+      // never let a deeper recursive call make a request that can no longer
+      // be reported, mirroring how the pool below never claims a
+      // not-yet-started textBatch once dispatch has stopped.
+      if (dispatchAbort.signal.aborted) return;
+
       const batch = indices.map((i) => texts[i] as string);
+      const requestTokens = batch.reduce((sum, text) => sum + estimateTokenCount(text), 0);
+      const requestTimeoutMs = scaleEmbeddingTimeoutMs(configuredTimeoutMs, requestTokens, tokenBudget);
       let batchEmbeddings: (EmbeddingVector | undefined)[];
       let responseModel: string | undefined;
       try {
-        const { vectors, model } = await this.requestBatch(batch, headers, ollamaOpts, signal);
+        const { vectors, model } = await this.requestBatch(batch, headers, ollamaOpts, requestTimeoutMs, signal);
         for (let k = 0; k < indices.length; k++) {
           results[indices[k] as number] = vectors[k];
         }
@@ -413,9 +511,37 @@ export class RemoteEmbedder implements Embedder {
           await requestAndCommit(indices.slice(mid));
           return;
         }
+        const timedOut = isEmbeddingTimeoutError(err);
+        if (timedOut && !isTimeoutRetry) {
+          // First timeout at this size: back off so the provider can drain
+          // the abandoned request, then retry the SAME request once before
+          // ever splitting or skipping (#9541 addendum).
+          const backoffMs = embeddingTimeoutRetryBackoffMs();
+          warnVerbose(
+            `[embed] batch of ${batch.length} document(s) timed out after ${requestTimeoutMs}ms; retrying once after a ${Math.round(backoffMs)}ms backoff`,
+          );
+          await abortableDelay(backoffMs, signal, "embedding interrupted during retry backoff");
+          if (!dispatchAbort.signal.aborted) {
+            return requestAndCommit(indices, true);
+          }
+          // Dispatch was stopped (by another batch's circuit-breaker trip)
+          // while this one was backing off — fall through and skip below
+          // instead of issuing a request that can no longer be reported.
+        } else if (timedOut && indices.length > 1) {
+          // Timed out again on the retry: split rather than skip outright —
+          // the provider may still fit it once it is smaller (#9541
+          // addendum), the same treatment a context-size rejection gets.
+          const mid = Math.ceil(indices.length / 2);
+          await requestAndCommit(indices.slice(0, mid));
+          await requestAndCommit(indices.slice(mid));
+          return;
+        }
+
         const message = err instanceof Error ? err.message : String(err);
         const reason: EmbeddingSkipReason =
           err instanceof ContextExceededError ? "context-window-exceeded" : "batch-request-failed";
+        const failureKind: EmbeddingFailureKind | undefined =
+          reason === "batch-request-failed" ? (timedOut ? "timeout" : "network-error") : undefined;
         // Default-level, not verbose-only (#9541 decision 5): a silently
         // grinding hours-long run against a dead provider was the field
         // report's own symptom — a failed batch has to be visible without
@@ -424,7 +550,17 @@ export class RemoteEmbedder implements Embedder {
         warn(`[embed] batch of ${batch.length} document(s) failed and was skipped: ${message}`);
         let stopRequested = false;
         for (const [k, idx] of indices.entries()) {
-          if (onSkip?.({ index: idx, reason, message, batchStart: k === 0 }) === false) stopRequested = true;
+          if (
+            onSkip?.({
+              index: idx,
+              reason,
+              message,
+              batchStart: k === 0,
+              batchSize: indices.length,
+              failureKind,
+            }) === false
+          )
+            stopRequested = true;
         }
         // #9541 decision 7: the caller's circuit breaker asked to stop —
         // gate further dispatch through the SAME dispatchAbort controller
@@ -446,6 +582,7 @@ export class RemoteEmbedder implements Embedder {
           reason: "context-window-exceeded",
           message: `Document estimated at ${estTokens} tokens exceeds the ${tokenBudget}-token embedding budget; skipped.`,
           batchStart: true,
+          batchSize: 1,
         });
         commitBatch([idx], [undefined]);
         return;
@@ -477,11 +614,18 @@ export class RemoteEmbedder implements Embedder {
    * used by the embedding-fingerprint canary to verify a config-string
    * rename against what the endpoint actually served, not just re-assert the
    * configured string. Throws on any failure.
+   *
+   * `timeoutMs` is the caller's ALREADY-SCALED per-request timeout (#9541
+   * addendum — see {@link scaleEmbeddingTimeoutMs}), not re-resolved here:
+   * `embedBatch` computes it per request from that request's own size so a
+   * split-down retry gets a smaller, size-appropriate timeout rather than
+   * always the full configured `embedding.timeoutMs`.
    */
   private async requestBatch(
     batch: string[],
     headers: Record<string, string>,
     ollamaOpts: { num_ctx?: number } | undefined,
+    timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<{ vectors: EmbeddingVector[]; model?: string }> {
     const body: { input: string[]; model: string; dimensions?: number; options?: { num_ctx?: number } } = {
@@ -494,7 +638,6 @@ export class RemoteEmbedder implements Embedder {
     if (ollamaOpts) {
       body.options = ollamaOpts;
     }
-    const timeoutMs = resolveEmbeddingTimeoutMs(this.config);
 
     // See embed(): `signal` goes through the 4th parameter, not the
     // RequestInit, or fetchWithTimeout drops it.

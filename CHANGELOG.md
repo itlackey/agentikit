@@ -203,9 +203,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stripped-down environment cannot.
 - **`embedding.timeoutMs` configures the per-request embedding timeout
   (#9541).** The prior fixed 30s timeout cut off a slow local model server on
-  a large token-budget-bounded batch mid-response, with no retry — every batch
-  that hit it was silently dropped for the rest of an hours-long run. Default
-  120s, used by both the single-text and batch embedding request paths.
+  a large token-budget-bounded batch mid-response. Default 120s, used by both
+  the single-text and batch embedding request paths; it scales down for a
+  smaller-than-budget request (`clamp(timeoutMs × requestTokens /
+  tokenBudget, 30s, timeoutMs)`), so a dead endpoint is detected in seconds
+  on the common case of small documents. A request timeout no longer drops
+  its batch immediately: field confirmation showed the endpoint keeps
+  computing an abandoned request regardless, so akm now backs off (5s,
+  doubling, capped at 60s) and retries the SAME request once before ever
+  splitting or skipping it; a second timeout splits the batch in half (like
+  a context-size rejection) and retries each half the same way, down to
+  individual documents, and a single document that times out twice is
+  finally skipped.
 - **`embedding.concurrency` overrides the fixed in-flight embedding request
   window (#9541).** Reverses the earlier "no config override" call in this
   same release's own #954 entry above, after field evidence that a
@@ -219,11 +228,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of grinding through every remaining batch (#9541).** A dead or hung
   provider used to burn hours on a large stash, one request timeout at a
   time, with no signal until a single aggregate warning at the end and
-  `ok: true`, exit 0. After 3 consecutive `batch-request-failed` batches
-  (never a `context-window-exceeded` one, which proves the provider is
-  reachable and resets the count) the pass stops dispatching further
-  requests and reports failure, naming how many embeddings were stored
-  before it gave up. Batches already committed are kept.
+  `ok: true`, exit 0. The pass now stops dispatching further requests and
+  reports failure after 3 consecutive failures at single-document size
+  (timeout or network error — a multi-document timeout is retried and split
+  smaller before it can ever count, so it is not by itself evidence the
+  endpoint is dead) or 3 consecutive network errors at any size (never
+  retried, so trusted immediately); a `context-window-exceeded` skip never
+  counts and resets both streaks. The failure message names how many
+  embeddings were stored before it gave up. Batches already committed are
+  kept.
 
 ### Changed
 

@@ -399,13 +399,29 @@ reference, same rules as engine `apiKey`), `dimension`, `localModel`,
 `maxTokens`, `batchSize`, `chunkSize`, `contextLength`, `timeoutMs`,
 `concurrency`, and `ollamaOptions.num_ctx`.
 
-`embedding.timeoutMs` (positive integer, default `120000` — 120s) bounds
-each remote embedding request. A local model server on a large,
-token-budget-bounded batch (`embedding.maxTokens`/`embedding.contextLength`)
-legitimately takes longer than the prior fixed 30s cut off; that timeout
-fired mid-response with no retry, silently dropping every batch it hit for
-the rest of a run. Set it lower to fail fast against a known-fast endpoint,
-or higher for a slow local server on large batches.
+`embedding.timeoutMs` (positive integer, default `120000` — 120s) is the
+budget for a request at the FULL token budget; a local model server on a
+large, token-budget-bounded batch (`embedding.maxTokens`/
+`embedding.contextLength`) legitimately takes longer than the prior fixed
+30s cut off. A smaller request gets a proportionally smaller timeout —
+`clamp(timeoutMs × requestTokens / tokenBudget, 30000, timeoutMs)` — so a
+dead endpoint is still detected in seconds on the common case of small
+documents. Set `embedding.timeoutMs` lower to fail fast against a
+known-fast endpoint, or higher for a slow local server on large batches.
+
+A request TIMEOUT (not a rejection for exceeding the context window) never
+drops its batch immediately: field confirmation showed that once akm
+abandons a timed-out request, the endpoint (e.g. llama-server) keeps
+computing it anyway, so dropping it right away just grows the provider's
+queue while every following batch dies the same way. Instead akm backs off
+(5s, doubling, capped at 60s) and retries the same request once; a second
+timeout splits it in half and retries each half the same way, down to
+individual documents, and a single document that still times out is finally
+skipped (logged at the default `warn` level). After 3 consecutive failures
+at single-document size (timeout or network error), or 3 consecutive
+network errors at any size, the embedding phase stops dispatching further
+requests and reports failure — batches already committed are kept; rerun
+`akm index` once the endpoint is healthy.
 
 `akm index` keeps a small number of `/v1/embeddings` requests in flight at
 once (a remote endpoint only; the local transformer path is unaffected):
