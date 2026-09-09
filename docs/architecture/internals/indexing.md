@@ -403,10 +403,17 @@ embedding cache, and has zero steady-state cost.
   stored `embeddingFingerprint` to tag rows with, or the generation being
   discarded predates the `search_text` column or has no `embeddings` table
   at all — an older generation than that has nothing worth salvaging.
+  `salvageEmbeddingsBeforeDiscard` scans `entries JOIN embeddings` in
+  id-ordered chunks rather than loading every row into memory at once, so a
+  large stash's discard does not spike memory.
 - *Reuse step* — at the start of the SAME `generateEmbeddingsForDb` pass
   described above, before any provider call and after the fingerprint/
-  canary decision: for every entry still missing an embedding,
-  `reuseSalvagedEmbeddings` hashes its `search_text` and looks up a salvage
+  canary decision: `reuseSalvagedEmbeddings` first checks whether the
+  salvage table has ANY row under the current fingerprint with a single
+  indexed lookup — the steady state (nothing salvaged, or a fingerprint
+  that no longer matches) costs exactly that lookup and hashes nothing. When
+  it finds a candidate, for every entry still missing an embedding it hashes
+  its `search_text` and looks up a salvage
   row tagged with the CURRENT fingerprint, writing a match back via
   `upsertEmbedding` (so `entries_vec` stays in step) in chunks of 500, each
   its own transaction — mirroring the provider path's per-batch commit.
