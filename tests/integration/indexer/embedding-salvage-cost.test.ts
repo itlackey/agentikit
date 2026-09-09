@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * Salvage cost must be bounded (#954, field-report follow-up):
+ * Salvage cost must be bounded (#955, field-report follow-up):
  *
  *  - `salvageEmbeddingsBeforeDiscard` streams `entries JOIN embeddings` in
  *    id-ordered pages instead of loading every row into memory before
@@ -41,7 +41,7 @@ function stableVec(i: number): EmbeddingVector {
   return [1 + i, 2 + i, 3 + i];
 }
 
-describe("embedding salvage cost is bounded (#954)", () => {
+describe("embedding salvage cost is bounded (#955)", () => {
   let storage: IsolatedAkmStorage;
 
   beforeEach(() => {

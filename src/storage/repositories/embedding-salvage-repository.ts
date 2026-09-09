@@ -73,7 +73,7 @@ function tableHasColumn(db: Database, table: string, column: string): boolean {
  * {@link SQLITE_CHUNK_SIZE} instead of loading every row into memory before
  * hashing anything — a full rebuild of a large stash otherwise held the
  * entire corpus's search text and vectors in memory at once just to copy
- * them aside (#954, field-report follow-up).
+ * them aside (#955, field-report follow-up).
  *
  * A no-op (returns 0) when there is no stored `embeddingFingerprint` to tag
  * rows with (nothing was ever verified against a provider, so there is
@@ -148,14 +148,14 @@ export interface SalvageReuseResult<T> {
  * fingerprints, and never when `search_text` differs by even one byte (the
  * hash is exact-match only, by design). Matches are written via
  * `writeReused` in chunks of {@link SQLITE_CHUNK_SIZE}, each its own
- * transaction, mirroring the main pass's per-batch commit (#954) so an
+ * transaction, mirroring the main pass's per-batch commit (#955) so an
  * interruption partway through the reuse step keeps whatever already wrote.
  *
  * The steady state of every ordinary run is an EMPTY salvage table (nothing
  * was just discarded), so this checks that first with one indexed lookup —
  * `SELECT 1 ... LIMIT 1` — before hashing a single pending entry. Hashing
  * every entry up front to look up a table that is empty 100% of the time
- * outside a rebuild was pure wasted work on the common path (#954,
+ * outside a rebuild was pure wasted work on the common path (#955,
  * field-report follow-up).
  */
 export function reuseSalvagedEmbeddings<T extends { searchText: string }>(
