@@ -523,3 +523,36 @@ describe("embedding salvage: exempt from deleteAllEntries (#9542)", () => {
     }
   });
 });
+
+// ── semanticSearchMode "off" must drain salvage, not orphan it (#9542) ─────
+//
+// Salvage is supposed to be zero-steady-state / self-emptying: a full
+// rebuild performed with semantic search disabled never reaches the reuse
+// step (generateEmbeddingsForDb returns before it), so nothing will ever
+// consume rows a prior rebuild salvaged. Without an explicit purge on this
+// path they would sit in embedding_salvage forever.
+
+describe('embedding salvage: purged when semanticSearchMode is "off" (#9542)', () => {
+  let storage: IsolatedAkmStorage;
+
+  beforeEach(() => {
+    storage = withIsolatedAkmStorage();
+  });
+  afterEach(() => storage.cleanup());
+
+  test("a disabled-semantic-search pass purges leftover salvage instead of leaving it orphaned", async () => {
+    const db = openIndexDatabase();
+    try {
+      db.prepare(
+        "INSERT INTO embedding_salvage (content_hash, fingerprint, embedding, salvaged_at) VALUES (?, ?, ?, ?)",
+      ).run("deadbeef", "local:test", Buffer.from(new Float32Array([1, 2, 3]).buffer), new Date().toISOString());
+      expect(salvageRowCount(db)).toBe(1);
+
+      const result = await generateEmbeddingsForDb(db, { semanticSearchMode: "off" } as AkmConfig, () => {});
+      expect(result.success).toBe(false);
+      expect(salvageRowCount(db)).toBe(0);
+    } finally {
+      closeDatabase(db);
+    }
+  });
+});

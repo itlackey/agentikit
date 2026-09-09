@@ -343,6 +343,11 @@ export async function generateEmbeddingsForDb(
   throwIfAborted(signal);
 
   if (config.semanticSearchMode === "off") {
+    // #9542: salvage is self-emptying only if every path that skips reuse
+    // also drains it — otherwise a full rebuild performed with semantic
+    // search disabled leaves permanent orphaned rows behind (nothing will
+    // ever consume them, since this path never reaches the reuse step).
+    purgeEmbeddingSalvage(db);
     onProgress({ phase: "embeddings", message: "Semantic search disabled; skipping embeddings." });
     return { success: false, message: "Semantic search is disabled." };
   }
