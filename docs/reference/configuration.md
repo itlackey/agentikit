@@ -719,8 +719,9 @@ one of the three per engine.
 same way, on every path that sends an embedding request: `akm index`
 (including its `bundle update` post-commit embedding pass and the targeted
 re-embed a write command like `akm remember` triggers), `akm improve`'s
-memory-inference/consolidate passes, and the fingerprint-rename canary
-`akm index` runs when the embedding config changes. All of them build the
+consolidate pass (memory dedup and similarity clustering), and the
+fingerprint-rename canary `akm index` runs when the embedding config
+changes. All of them build the
 provider request through the same `RemoteEmbedder`/`resolveSecret` boundary,
 so a `secret://` reference resolves identically regardless of which command
 triggered the request (#9544).
