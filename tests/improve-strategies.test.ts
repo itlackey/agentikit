@@ -410,6 +410,34 @@ describe("resolveImprovePlan", () => {
     ).toThrow("No improve process can run");
   });
 
+  test("allowAllDisabled returns the plan instead of throwing when credential unavailability alone disables every process (#957 round 2)", () => {
+    const plan = resolveImprovePlan(
+      "default",
+      {
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: {
+          private: {
+            kind: "llm",
+            endpoint: "https://example.test/v1/chat/completions",
+            model: "private-model",
+            apiKey: "$PRIVATE_ALL_957_ALLOW_TOKEN",
+          },
+        },
+        defaults: { llmEngine: "private" },
+      } as AkmConfig,
+      { env: {}, allowAllDisabled: true },
+    );
+
+    expect(Object.values(plan.processes).some((process) => process.enabled)).toBe(false);
+    const disabledNames = plan.engineUnavailable.map((item) => item.process).sort();
+    expect(disabledNames).toEqual(["consolidate", "distill", "graphExtraction", "reflect", "validation"]);
+    for (const item of plan.engineUnavailable) {
+      expect(item.reason).toContain('engine "private"');
+      expect(item.reason).toContain("PRIVATE_ALL_957_ALLOW_TOKEN");
+    }
+  });
+
   test("does not require a validation engine when repair is disabled", () => {
     const plan = resolveImprovePlan(
       "default",

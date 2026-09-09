@@ -464,6 +464,36 @@ describe("health engine probes", () => {
     });
     expect(JSON.stringify(result)).not.toContain("PRIVATE_ALL_UNAVAILABLE_TOKEN");
   });
+
+  test("fails for the shipped default strategy with no non-LLM process enabled and every LLM engine credential-unavailable (#957 round 2)", () => {
+    // Reproduces the issue's exact scenario: the *unmodified* default
+    // strategy (proactiveMaintenance and triage left disabled, as shipped —
+    // no `improve.strategies` override at all) with every capability:"llm"
+    // process pointed at a credential-unavailable engine. This used to trip
+    // buildImprovePlan's ALL-disabled ConfigError guard (every process ends
+    // up disabled, not just the LLM-backed ones), which made
+    // `resolveImprovePlan` throw and fall into the probe's catch block —
+    // regressing this exact case from `warn` to `unknown`/`warn` with a
+    // misleading "engine that is not configured" message instead of the
+    // accurate credential-unavailable `fail`.
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: { private: { ...llm, apiKey: "$PRIVATE_DEFAULT_STRATEGY_TOKEN" } },
+      defaults: { llmEngine: "private" },
+    };
+
+    const result = healthChecks.runActiveImproveStrategyProbe({ loadConfig: () => config, env: {} });
+
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("no-op");
+    expect(result.message).not.toContain("is unavailable:");
+    expect(result.evidence).toMatchObject({
+      strategy: "default",
+      unavailableProcesses: expect.arrayContaining(["reflect", "distill", "consolidate", "graphExtraction"]),
+    });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_DEFAULT_STRATEGY_TOKEN");
+  });
 });
 
 describe("health engine reachability probe (#914)", () => {

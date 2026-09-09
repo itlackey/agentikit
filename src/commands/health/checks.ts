@@ -558,7 +558,17 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
     // `plan.engineUnavailable` the real `improve` run reads to skip processes
     // and populate `AkmImproveResult.skippedProcesses`. This check is a pure
     // projection of that list rather than its own re-derivation.
-    const plan = resolveImprovePlan(strategyName, config, { env });
+    //
+    // `allowAllDisabled: true` because a strategy left with every process
+    // disabled purely by credential unavailability must still come back as
+    // an inspectable plan here, not a thrown ConfigError — the
+    // `allRequiredUnavailable`/`fail` logic below needs `plan.engineUnavailable`
+    // to run this check's fail path instead of falling into the generic
+    // catch block's warn/unknown fallback (round 2 finding on #957). A
+    // strategy with no engine configured at all still throws (see
+    // `allowAllDisabled`'s doc comment) and keeps hitting that catch block,
+    // unchanged from before this fix.
+    const plan = resolveImprovePlan(strategyName, config, { env, allowAllDisabled: true });
     const unavailableProcesses = plan.engineUnavailable.map((item) => item.process);
     // #913: name the engine each process actually resolved to, so a
     // strategy-level `engine` pin that shadows `defaults.llmEngine` is

@@ -156,7 +156,28 @@ function cloneAndFreeze<T>(value: T): Readonly<T> {
 export function resolveImprovePlan(
   name: string | undefined,
   config: AkmConfig,
-  options: { repairValidationFailures?: boolean; env?: NodeJS.ProcessEnv } = {},
+  options: {
+    repairValidationFailures?: boolean;
+    env?: NodeJS.ProcessEnv;
+    /**
+     * Skip the "no improve process can run" throw below when every process
+     * ends up disabled purely because its (otherwise-resolved) engine's
+     * credential is unavailable in this environment, and return the plan
+     * (with `engineUnavailable` populated) instead of throwing. A strategy
+     * where at least one process never resolved an engine at all still
+     * throws even with this set — that is the guard's original, pre-#957
+     * condition (a genuinely unconfigured install), not the "credential
+     * exists but isn't reachable from here" case this option exists for.
+     * Callers that only inspect the plan structurally —
+     * `runActiveImproveStrategyProbe` (#957) — need the credential-only case
+     * to be inspectable rather than thrown, so the same total-no-op
+     * detection the real run uses can also drive the health check's `fail`
+     * status. Callers that act on the plan (`improve-cli.ts`, `improve.ts`)
+     * leave this unset so a totally unusable strategy still aborts as it
+     * always has.
+     */
+    allowAllDisabled?: boolean;
+  } = {},
 ): ResolvedImprovePlan {
   const selected = resolveImproveStrategy(name, config);
   // D8 — gate autonomy BEFORE the plan is built, so every downstream consumer
@@ -175,11 +196,20 @@ function credentialUnavailableReason(engineName: string, status: { reason: strin
 function buildImprovePlan(
   strategy: SelectedStrategy,
   config: AkmConfig,
-  options: { repairValidationFailures?: boolean; env?: NodeJS.ProcessEnv },
+  options: { repairValidationFailures?: boolean; env?: NodeJS.ProcessEnv; allowAllDisabled?: boolean },
 ): Omit<ResolvedImprovePlan, "autonomyGated"> {
   const env = options.env ?? process.env;
   const processes = {} as Record<ImproveProcessName, ResolvedImproveProcess>;
   const engineUnavailable: EngineUnavailableProcess[] = [];
+  // #957 round 2 — distinguishes "credential unavailable" (a working engine
+  // whose secret isn't in this environment) from "no engine selected at all"
+  // among the pushes below, so `allowAllDisabled` can bypass the ConfigError
+  // only for the former. The latter is the guard's original, pre-#957
+  // condition and must keep hard-aborting for every caller, including a
+  // health probe with `allowAllDisabled` set — a totally unconfigured
+  // install is not the credential-in-the-wrong-environment case this option
+  // exists for.
+  let anyEngineNotConfigured = false;
   for (const processName of Object.keys(IMPROVE_PROCESS_ENGINE_CAPABILITIES) as ImproveProcessName[]) {
     const sourceProcessConfig = strategy.config.processes?.[processName] ?? {};
     const enabled = sourceProcessConfig.enabled === true;
@@ -216,6 +246,7 @@ function buildImprovePlan(
     }
     if (!runner && !skipsRepairEngine) {
       const configKey = `improve.strategies.${strategy.name}.processes.${processName}.engine`;
+      if (!credentialUnavailableMessage) anyEngineNotConfigured = true;
       engineUnavailable.push({
         process: processName,
         configKey,
@@ -239,7 +270,11 @@ function buildImprovePlan(
     });
   }
 
-  if (engineUnavailable.length > 0 && !Object.values(processes).some((process) => process.enabled)) {
+  if (
+    engineUnavailable.length > 0 &&
+    !Object.values(processes).some((process) => process.enabled) &&
+    (!options.allowAllDisabled || anyEngineNotConfigured)
+  ) {
     const names = engineUnavailable.map((item) => `"${item.process}"`).join(", ");
     throw new ConfigError(
       `No improve process can run: ${names} ${engineUnavailable.length === 1 ? "requires" : "require"} an LLM engine that is not configured. Set defaults.llmEngine, or the per-process engine key named for each.`,
