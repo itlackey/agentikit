@@ -195,7 +195,7 @@ The setup wizard configures AKM in two steps:
 
 **Step 1 — Small model connection** (for background processing)
 Configures the OpenAI-compatible endpoint and model used for `akm index`
-metadata enhancement, `akm remember --enrich`, and `akm curate --rerank`. Supports Ollama,
+metadata enhancement and `akm remember --enrich`. Supports Ollama,
 OpenAI, LM Studio, or any custom endpoint. Skipping disables enrichment features.
 
 **Step 2 — Agent connection** (for agentic commands)
@@ -261,6 +261,10 @@ Returns a JSON object with:
 | `version` | Current akm version |
 | `bundleDir` | Primary bundle directory — same resolution `akm bundle list` uses |
 | `defaultBundle` | Name of the primary bundle from config, or `null` when none is configured |
+| `dataDir` | Resolved data directory (`getDataDir()`) |
+| `configDir` | Resolved config directory (`getConfigDir()`) |
+| `cacheDir` | Resolved cache directory (`getCacheDir()`) |
+| `stateDir` | Resolved state directory (`getStateDir()`) |
 | `assetTypes` | List of recognized asset types |
 | `searchModes` | Active search modes (`fts`, optionally `semantic` and `hybrid`) |
 | `semanticSearch` | Semantic search status: `mode`, `status`, and optional `reason`/`message` |
@@ -276,6 +280,10 @@ Returns a JSON object with:
 - `"disabled"` — semantic search is turned off in config
 
 Use `akm info` to verify that semantic search is working after setup.
+
+Scripts that need akm's resolved paths (for example a health check that
+differs between a host install and a container) can read them with
+`akm info --format json | jq -r .dataDir` instead of hardcoding a path.
 
 ### health
 
@@ -488,9 +496,9 @@ ranking.
 
 ### curate
 
-Pick the assets worth loading for a task. Unlike `akm search`, curate reranks by
-intent, attaches a preview and run details per hit, adds related support refs,
-and summarizes the set — the usual starting point for an agent.
+Pick the assets worth loading for a task. Unlike `akm search`, curate attaches
+a preview and run details per hit, adds related support refs, and summarizes
+the set — the usual starting point for an agent.
 
 ```sh
 akm curate "plan a release"
@@ -2566,13 +2574,14 @@ shell commands. It manages on-disk task definitions under
 (cron / launchd / schtasks). Task source v4 YAML (`version: 4`) is the only
 executable source contract this release accepts; `akm task add` writes v4 —
 see the canonical [Tasks reference](tasks.md). The
-group is `add | run | explain | validate | sync | doctor | history | prune`
-— there is no `list` or `remove`; use `akm search --type task` /
-`akm show tasks/<id>` to inspect, and edit the file + `akm task sync` to
-change or remove a schedule.
+group is `add | run | explain | validate | list | sync | doctor | history | prune`
+— there is no `show` or `remove`; use `akm show tasks/<id>` to inspect one
+task, and edit the file + `akm task sync` to change or remove a schedule.
+`task list` is a delegating alias for `akm search --type task` — both
+spellings return the identical envelope.
 
 ```sh
-akm search --type task                      # List tasks (cross-bundle)
+akm task list                                # List tasks (cross-bundle) — alias for `search --type task`
 akm show tasks/<id>                          # Inspect one task
 akm task add <id> --schedule "@daily" \     # Register a new task and install it
   --command "akm improve --strategy default"
@@ -2596,6 +2605,13 @@ akm task prune --id ghost,stale --yes       # Remove only the named orphan ids
 scheduler), `--force` (overwrite an existing task with the same id), and
 `--rebind` (explicitly permit scheduler creation from a local invocation that
 would otherwise be considered ineligible).
+
+`akm task list [<query>] [--limit <n>] [--from local|registry|all]` is a
+pure alias for `akm search --type task` with the query, `--limit`, and
+`--from` flags passed through — same envelope, same `results` alias, no
+second implementation. 0.9.0 removed `task list` as a redundant
+implementation of task listing (see the 0.9.0 CHANGELOG entry); this
+reintroduces only the spelling, not the logic.
 
 `akm task explain <ref> [input flags]` prints a task's declared `inputs:`,
 the values that would actually be supplied (with provenance), the resolved

@@ -34,8 +34,14 @@ import { akmShowUnified } from "./show";
  * rejected — the command then runs against the DEFAULT `--from` value
  * (local) instead of the source the caller named, with exit 0 and no error.
  * Reject it explicitly instead.
+ *
+ * Exported so `akm task list` (`../tasks/tasks-cli.ts`, #951) — a pure
+ * delegating alias for `akm search --type task` — applies the identical
+ * guard rather than a second copy of it; a task-list-scoped `--source` must
+ * fail exactly like `search`'s does, not fall through to citty's silent
+ * unknown-flag absorption.
  */
-function rejectRetiredSourceFlag(): void {
+export function rejectRetiredSourceFlag(): void {
   if (!getParsedInvocation().hasFlag("--source")) return;
   throw new UsageError(
     "`--source` was renamed to `--from` in 0.9. Use `--from local|registry|all` instead.",
@@ -157,7 +163,7 @@ export const curateCommand = defineJsonCommand({
   meta: {
     name: "curate",
     description:
-      "Pick the assets worth loading for a task. Unlike `akm search`, this reranks by intent, attaches a preview and run details per hit, adds related support refs, and summarizes the set — the usual starting point for an agent.",
+      "Pick the assets worth loading for a task. Unlike `akm search`, this attaches a preview and run details per hit, adds related support refs, and summarizes the set — the usual starting point for an agent.",
   },
   args: {
     // Optional in citty so run() is invoked when omitted; we re-validate

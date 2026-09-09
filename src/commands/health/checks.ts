@@ -62,6 +62,13 @@ export interface HealthCheckContext {
    * task_id meets the row-count floor.
    */
   worstTaskFailRate: { taskId: string; rate: number; rows: number } | null;
+  /**
+   * #943: `detail.reason` breakdown across the window's command-task
+   * failures (see `HealthMetrics.agentFailureReasonCounts`'s doc comment).
+   * Always present in `task-fail-rate`'s evidence; drives the
+   * "<reason>-dominant" message suffix when the check is warn/fail.
+   */
+  agentFailureReasonCounts: Record<string, number>;
   sessionExtraction: ImproveHealthMetrics["sessionExtraction"];
   /**
    * #914: `extract_sessions_seen` outcome counts for the rolling 7-day
@@ -763,6 +770,26 @@ export function runPendingStateMigrationsCheck(
 }
 
 /**
+ * #943: name the dominant `detail.reason` behind `task-fail-rate`'s warning
+ * when one reason accounts for at least half of the window's command-task
+ * failures — e.g. "(timeout-dominant: 9/12 command-task failures)" — so an
+ * operator sees the shape of the failure from data instead of grepping task
+ * logs. Ties break on reason name for determinism. `undefined` when there are
+ * no counted failures or no single reason reaches the 50% floor.
+ */
+export function dominantAgentFailureReason(
+  counts: Record<string, number>,
+): { reason: string; count: number; total: number } | undefined {
+  const entries = Object.entries(counts);
+  const total = entries.reduce((sum, [, count]) => sum + count, 0);
+  if (total === 0) return undefined;
+  const [reason, count] = entries.reduce((best, entry) =>
+    entry[1] > best[1] || (entry[1] === best[1] && entry[0] < best[0]) ? entry : best,
+  );
+  return count / total >= 0.5 ? { reason, count, total } : undefined;
+}
+
+/**
  * The ordered health-check registry. ORDER IS LOAD-BEARING: `akmHealth`
  * iterates this array and appends to hardChecks/advisories in sequence, so the
  * declaration order below is exactly the emission order (hard checks first in
@@ -904,6 +931,15 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
       const worstWarn = worst !== null && worst.rate >= TASK_FAIL_RATE_WARN;
       const warn = aggregateWarn || worstWarn;
 
+      // #943: name the dominant command-task failure reason (timeout,
+      // non_zero_exit, spawn_failed, …) when the check is already warning, so
+      // "timeout-dominant" is visible without grepping task logs.
+      const agentFailureReasonCounts = ctx.agentFailureReasonCounts ?? {};
+      const dominant = warn ? dominantAgentFailureReason(agentFailureReasonCounts) : undefined;
+      const dominantSuffix = dominant
+        ? ` (${dominant.reason}-dominant: ${dominant.count}/${dominant.total} command-task failures)`
+        : "";
+
       let message: string;
       if (ctx.taskRowCount === 0) {
         message = `No cron tasks ran since ${ctx.since} — no task-fail-rate signal.`;
@@ -916,7 +952,7 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
           const worstPctStr = `${(worst.rate * 100).toFixed(1)}%`;
           parts.push(`task "${worst.taskId}" fails ${worstPctStr} of its ${worst.rows} run(s) ≥ ${thresholdPct}`);
         }
-        message = `Cron task fail rate warning: ${parts.join("; ")} — inspect failed runs (ok=false) for early-exit/harness errors.`;
+        message = `Cron task fail rate warning: ${parts.join("; ")}${dominantSuffix} — inspect failed runs (ok=false) for early-exit/harness errors.`;
       } else {
         message = `Cron task fail rate ${pctStr} across ${ctx.taskRowCount} task(s) since ${ctx.since} (below ${thresholdPct} threshold).`;
       }
@@ -932,6 +968,9 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
           taskRowCount: ctx.taskRowCount,
           threshold: TASK_FAIL_RATE_WARN,
           worstTaskFailRate: worst,
+          // #943: always present (even pass/empty) so scripts reading evidence
+          // never need to branch on check status to find the breakdown.
+          agentFailureReasonCounts,
         },
       };
     },

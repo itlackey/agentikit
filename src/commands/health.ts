@@ -32,6 +32,7 @@ import { collectDataDirUsageAdvisory } from "./health/data-dir-usage";
 import {
   buildImproveSkipSummary,
   computeWallTimeStats,
+  countAgentFailureReasons,
   isAgentTaskHistoryRow,
   roundRate,
   summarizeImproveCompleted,
@@ -163,6 +164,7 @@ interface TaskHistoryPhase {
   taskFailRate: number;
   worstTaskFailRate: { taskId: string; rate: number; rows: number } | null;
   agentFailureRate: number;
+  agentFailureReasonCounts: Record<string, number>;
 }
 
 /**
@@ -263,6 +265,7 @@ function gatherTaskHistoryPhase(
     taskFailRate,
     worstTaskFailRate: computeWorstTaskFailRate(taskRows),
     agentFailureRate,
+    agentFailureReasonCounts: countAgentFailureReasons(agentFailures),
   };
 }
 
@@ -611,6 +614,7 @@ function degradedStateDbReport(hardCheck: HealthCheckResult, options: AkmHealthO
     metrics: {
       taskFailRate: 0,
       agentFailureRate: 0,
+      agentFailureReasonCounts: {},
       stuckActiveRuns: 0,
       logBackingRate: 0,
       // `null`, not 0: the round-trip probe did not run, which is not the same
@@ -726,6 +730,7 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
       stuckActiveRuns: taskHistory.stuckActiveRuns,
       stuckActiveTasks: taskHistory.stuckActiveTasks,
       worstTaskFailRate: taskHistory.worstTaskFailRate,
+      agentFailureReasonCounts: taskHistory.agentFailureReasonCounts,
       sessionExtraction: improveSummary.sessionExtraction,
       sessionExtractionLedger,
       autoAccept: improveSummary.autoAccept,
@@ -740,6 +745,7 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
     const metrics: HealthMetrics = {
       taskFailRate: roundRate(taskHistory.taskFailRate),
       agentFailureRate: roundRate(taskHistory.agentFailureRate),
+      agentFailureReasonCounts: taskHistory.agentFailureReasonCounts,
       stuckActiveRuns: taskHistory.stuckActiveRuns,
       logBackingRate: roundRate(taskHistory.logBackingRate),
       probeRoundTripMs: probe.durationMs,

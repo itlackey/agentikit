@@ -10,6 +10,14 @@
 export interface HealthMetrics {
   taskFailRate: number;
   agentFailureRate: number;
+  /**
+   * #943: reason-value breakdown behind {@link agentFailureRate} — how many
+   * command-task failures in the window carry each `detail.reason` value
+   * (`timeout`, `non_zero_exit`, `spawn_failed`, …; see `AgentFailureReason`
+   * in `src/integrations/agent/spawn.ts`). Lets a health consumer see
+   * "timeout-dominant" from data instead of grepping task logs.
+   */
+  agentFailureReasonCounts: Record<string, number>;
   stuckActiveRuns: number;
   logBackingRate: number;
   probeRoundTripMs: number | null;
