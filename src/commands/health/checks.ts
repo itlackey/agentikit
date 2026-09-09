@@ -4,6 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import { type AkmConfig, type LlmConnectionConfig, loadConfig } from "../../core/config/config";
+import { listEnvsRecursive } from "../../core/env-secret-ref";
 import { ConfigError } from "../../core/errors";
 import { EXTRACT_INFRASTRUCTURE_SKIP_REASONS } from "../../core/improve-types";
 import { listPendingStateMigrations } from "../../core/state-db";
@@ -23,8 +24,17 @@ import {
 } from "../../integrations/agent/model-map";
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { ExtractOutcomeCount } from "../../storage/repositories/extract-sessions-repository";
+import { listKeys } from "../env/env";
 import { resolveImprovePlan } from "../improve/improve-strategies";
-import { ACTIVE_RUN_WARN_MS, type HealthCheckResult, type ImproveHealthMetrics, TASK_FAIL_RATE_WARN } from "./types";
+import type { EngineLastUsed } from "./engine-usage";
+import { ENGINE_LAST_USED_LOOKBACK_DAYS } from "./engine-usage";
+import {
+  ACTIVE_RUN_WARN_MS,
+  type HealthCheckResult,
+  type ImproveHealthMetrics,
+  type LlmUsageAggregate,
+  TASK_FAIL_RATE_WARN,
+} from "./types";
 
 /**
  * Pre-computed inputs shared by the health-check registry. `akmHealth` runs the
@@ -81,6 +91,48 @@ export interface HealthCheckContext {
   autoAccept: ImproveHealthMetrics["autoAccept"];
   /** Engine availability collected once and shared by its three registry projections. */
   engineProbes: HealthEngineProbeResults;
+  /**
+   * #949: names of configured `kind: "llm"` engines with `enableThinking:
+   * false`, resolved once from config. Feeds `thinking-control`, which never
+   * re-loads config itself (checks are pure projections of this context).
+   */
+  thinkingOffEngines: string[];
+  /**
+   * #949: the same window `llm_usage` aggregate `health.ts` reports as
+   * `metrics.llmUsage`, threaded through here so `thinking-control` can read
+   * each thinking-off engine's `reasoningTokens` without a second read or a
+   * live probe.
+   */
+  llmUsage: LlmUsageAggregate;
+  /**
+   * #950: the `cli-version` advisory, computed once in `health.ts` alongside
+   * the engine-reachability probe (same `--probe`/`--no-probe` gate, same
+   * best-effort network discipline) so the check registry stays a pure
+   * projection — no check performs its own network IO except the engine
+   * probes, which precompute into {@link engineProbes} the same way.
+   */
+  versionDrift: HealthCheckResult;
+  /**
+   * #950: the active improve strategy's probe result, computed once so both
+   * `active-improve-strategy` and `engine-last-used` project it instead of
+   * each calling {@link runActiveImproveStrategyProbe} independently.
+   */
+  activeImproveStrategy: HealthCheckResult;
+  /**
+   * #950: process → engine bindings for every enabled process in the active
+   * improve strategy (the same map `runActiveImproveStrategyProbe` already
+   * builds as `evidence.engines`), extracted once for `engine-last-used`.
+   */
+  activeImproveStrategyEngines: Readonly<Record<string, string>>;
+  /** #950: most recent `llm_usage` call per engine within `ENGINE_LAST_USED_LOOKBACK_DAYS`. */
+  engineLastUsed: ReadonlyMap<string, EngineLastUsed>;
+  /**
+   * #950: count of `improve_runs` rows started within the same lookback
+   * window — gates `engine-last-used` to `unknown` (not a noisy `warn`) when
+   * no improve run has been recorded (started) recently enough for "never
+   * used" to be a meaningful signal, e.g. a fresh install.
+   */
+  improveRunsInLookbackWindow: number;
 }
 
 /** Which array a check's result is collected into. */
@@ -116,6 +168,18 @@ export interface DefaultEngineProbeDependencies {
    * does not opt in (the whole test suite included) offline.
    */
   probeReachable?: ReachabilityProbe;
+  /**
+   * #950: injectable seam for listing env/ assets (ref + key NAMES only,
+   * never values), so a missing-in-shell credential's warn can name which
+   * env asset supplies the same variable. Defaults to
+   * `listEnvsRecursive(listKeys, deps.loadConfig ?? loadConfig)` — honouring
+   * an injected `deps.loadConfig` rather than always re-reading the real
+   * config/sources. Whichever seam is in play is memoised once per probe run
+   * (see `withMemoizedEnvAssets`), so it walks env/ at most once even when a
+   * run probes several engines. Tests inject a fixed list to keep a probe
+   * pure and config-free.
+   */
+  listEnvAssets?: () => Array<{ ref: string; path: string; keys: string[] }>;
 }
 
 export interface ReachabilityResult {
@@ -191,6 +255,53 @@ function credentialAvailable(
   // apiKeyFile as available just because it carries no env var names.
   if (apiKeyFile !== undefined) return lookupApiKeyFileValue(apiKeyFile) !== undefined;
   return true;
+}
+
+/**
+ * #950: when a required `$VAR`-style credential is missing from the shell,
+ * find the env asset (if any) whose key names include one of
+ * `credential.names` — so the warn can say "run under env/lab" instead of a
+ * bare "unavailable". Returns the asset's ref, or `null` when no credential,
+ * no candidate names, or no matching env asset. Never returns or logs the
+ * variable name itself (only ref/path/keys ever leave `listEnvsRecursive`,
+ * and only the ref is read here) — `tests/health-engine-probe.test.ts` pins
+ * that a credential's env-var name never appears in health's JSON output.
+ * Best-effort: any failure walking env assets (unreadable stash, bad config)
+ * degrades to `null`, never a crash. `deps.listEnvAssets` is expected to
+ * already be normalised (see {@link withMemoizedEnvAssets}) by the time this
+ * runs, so the walk happens at most once per probe run.
+ */
+function findSuppliedByEnvAsset(
+  credential: { names: readonly string[] } | undefined,
+  deps: DefaultEngineProbeDependencies,
+): string | null {
+  if (!credential || credential.names.length === 0) return null;
+  try {
+    const envs = (deps.listEnvAssets ?? (() => listEnvsRecursive(listKeys, (deps.loadConfig ?? loadConfig)())))();
+    for (const envAsset of envs) {
+      if (credential.names.some((name) => envAsset.keys.includes(name))) return envAsset.ref;
+    }
+  } catch {
+    // Best-effort — env-asset discovery must never break a health probe.
+  }
+  return null;
+}
+
+/**
+ * #950: normalise `deps.listEnvAssets` once per probe run so
+ * {@link findSuppliedByEnvAsset}'s env-asset walk happens at most once even
+ * when a run probes several engines with missing credentials — the walk is
+ * real IO (or config-injected IO in tests) with no reason to repeat per
+ * engine. Wraps whatever seam is already present (test-injected or the
+ * config-honouring default) in a memoising closure; called once by each of
+ * the four probe entry points that share {@link runConfiguredEngineProbe}
+ * (`runDefaultEngineProbe`, `runDefaultLlmEngineProbe`,
+ * `runConfiguredEnginesProbe`, `runHealthEngineProbes`).
+ */
+function withMemoizedEnvAssets(deps: DefaultEngineProbeDependencies): DefaultEngineProbeDependencies {
+  const listEnvAssets = deps.listEnvAssets ?? (() => listEnvsRecursive(listKeys, (deps.loadConfig ?? loadConfig)()));
+  let cached: ReturnType<typeof listEnvAssets> | undefined;
+  return { ...deps, listEnvAssets: () => (cached ??= listEnvAssets()) };
 }
 
 async function runConfiguredEngineProbe(
@@ -269,11 +380,18 @@ async function runConfiguredEngineProbe(
     const configuredModel = configuredEngine.model;
     const effectiveModel = sdkRunner?.profile.model ?? configuredModel ?? fallback?.connection.model;
     const fallbackCredentialAvailable = credentialAvailable(fallbackCredential, env, fallbackApiKeyFile);
+    const fallbackSuppliedByEnvAsset = !fallbackCredentialAvailable
+      ? findSuppliedByEnvAsset(fallbackCredential, deps)
+      : null;
     const missing = [
       !packageAvailable ? "@opencode-ai/sdk package" : undefined,
       !binaryAvailable ? `${binary} binary` : undefined,
       fallbackEngine && !fallback ? "configured fallback LLM connection" : undefined,
-      !fallbackCredentialAvailable ? "required fallback credential" : undefined,
+      !fallbackCredentialAvailable
+        ? fallbackSuppliedByEnvAsset
+          ? `required fallback credential (available via env asset ${fallbackSuppliedByEnvAsset}; run under it: akm env run ${fallbackSuppliedByEnvAsset} -- ...)`
+          : "required fallback credential"
+        : undefined,
     ].filter((value): value is string => value !== undefined);
     const sdkEvidence = {
       engine: engineName,
@@ -290,6 +408,7 @@ async function runConfiguredEngineProbe(
       fallbackEndpoint: fallback?.connection.endpoint ?? null,
       fallbackModel: fallback?.connection.model ?? null,
       requiredCredentialAvailable: fallbackCredentialAvailable,
+      suppliedByEnvAsset: fallbackSuppliedByEnvAsset,
     };
     if (missing.length > 0) {
       return {
@@ -332,13 +451,20 @@ async function runConfiguredEngineProbe(
         requiredCredentialAvailable,
       };
       if (!requiredCredentialAvailable) {
+        // #950: a missing-in-shell credential is common when the operator's
+        // real workflow is `akm env run env/lab -- akm improve` — name the env
+        // asset that supplies it (never the variable name) so the warn is
+        // actionable instead of looking like a broken engine.
+        const suppliedByEnvAsset = findSuppliedByEnvAsset(runner.credential, deps);
         return {
           name: checkName,
           kind: "deterministic",
           status: "warn",
           confidence: "high",
-          message: `LLM engine "${engineName}" is configured, but its required credential is unavailable.`,
-          evidence: llmEvidence,
+          message: suppliedByEnvAsset
+            ? `LLM engine "${engineName}" is configured, but its required credential is not available in this shell; env asset ${suppliedByEnvAsset} supplies it — run under it (akm env run ${suppliedByEnvAsset} -- ...).`
+            : `LLM engine "${engineName}" is configured, but its required credential is unavailable.`,
+          evidence: { ...llmEvidence, suppliedByEnvAsset },
         };
       }
       const reach = await probeConnectionReachable(runner.connection, deps, reachabilityCache);
@@ -432,6 +558,76 @@ function unconfiguredEngineProbe(name: "default-engine" | "default-llm-engine"):
   };
 }
 
+interface ThinkingControlEngineStatus {
+  engine: string;
+  status: "pass" | "warn" | "unknown";
+  calls: number;
+  reasoningTokens: number;
+}
+
+/**
+ * #949: `enableThinking: false` is a request an engine's endpoint (or a
+ * gateway in front of it) can silently ignore — `chatCompletionAttemptOnce`
+ * (src/llm/client.ts) already warns to stderr whenever a response reports
+ * reasoning tokens despite it. This makes that same signal visible in
+ * `akm health` as a structured finding, purely by re-reading the window's
+ * `llm_usage` aggregate already threaded into the context: no extra
+ * completion call, no live probe — a cold local model must not be woken just
+ * to run `akm health`.
+ */
+function projectThinkingControlCheck(
+  thinkingOffEngines: readonly string[],
+  llmUsage: LlmUsageAggregate,
+  since: string,
+): HealthCheckResult {
+  if (thinkingOffEngines.length === 0) {
+    return {
+      name: "thinking-control",
+      kind: "deterministic",
+      status: "unknown",
+      confidence: "high",
+      message: "No configured engine sets enableThinking: false — nothing to verify.",
+      evidence: { engines: [] },
+    };
+  }
+
+  const engines: ThinkingControlEngineStatus[] = [...thinkingOffEngines].sort().map((engine) => {
+    const usage = llmUsage.byEngine[engine];
+    const calls = usage?.calls ?? 0;
+    const reasoningTokens = usage?.reasoningTokens ?? 0;
+    const status: ThinkingControlEngineStatus["status"] =
+      calls === 0 ? "unknown" : reasoningTokens > 0 ? "warn" : "pass";
+    return { engine, status, calls, reasoningTokens };
+  });
+
+  const warning = engines.filter((e) => e.status === "warn");
+  const status: HealthCheckResult["status"] =
+    warning.length > 0 ? "warn" : engines.every((e) => e.status === "unknown") ? "unknown" : "pass";
+
+  let message: string;
+  if (warning.length > 0) {
+    message = warning
+      .map(
+        (e) =>
+          `LLM engine "${e.engine}" returned ${e.reasoningTokens} reasoning tokens since ${since} despite enableThinking: false — the endpoint (or a gateway in front of it) is not honouring the thinking-off control.`,
+      )
+      .join(" ");
+  } else if (status === "unknown") {
+    message = `No calls were recorded for the engine(s) configured with enableThinking: false (${engines.map((e) => e.engine).join(", ")}) in the report window.`;
+  } else {
+    message = `${engines.length} engine(s) configured with enableThinking: false (${engines.map((e) => e.engine).join(", ")}) returned no reasoning tokens in the report window.`;
+  }
+
+  return {
+    name: "thinking-control",
+    kind: "deterministic",
+    status,
+    confidence: "high",
+    message,
+    evidence: { engines },
+  };
+}
+
 function configuredEnginesProjection(
   engineNames: readonly string[],
   availability: ReadonlyMap<string, HealthCheckResult>,
@@ -470,14 +666,26 @@ export async function runDefaultEngineProbe(deps: DefaultEngineProbeDependencies
   // opencode binary DOES have a working default, and reporting otherwise would
   // contradict what `workflow run` / `task run` actually do.
   const { config } = withEngineFallback(deps.loadConfig?.() ?? loadConfig(), deps.which);
-  return runConfiguredEngineProbe("default-engine", config.defaults?.engine, config, deps, new Map());
+  return runConfiguredEngineProbe(
+    "default-engine",
+    config.defaults?.engine,
+    config,
+    withMemoizedEnvAssets(deps),
+    new Map(),
+  );
 }
 
 export async function runDefaultLlmEngineProbe(deps: DefaultEngineProbeDependencies = {}): Promise<HealthCheckResult> {
   const config = deps.loadConfig?.() ?? loadConfig();
   const engineName = config.defaults?.llmEngine;
   if (!engineName) return unconfiguredEngineProbe("default-llm-engine");
-  const result = await runConfiguredEngineProbe("configured-engine", engineName, config, deps, new Map());
+  const result = await runConfiguredEngineProbe(
+    "configured-engine",
+    engineName,
+    config,
+    withMemoizedEnvAssets(deps),
+    new Map(),
+  );
   return projectSelectedEngineProbe(new Map([[engineName, result]]), engineName, "default-llm-engine");
 }
 
@@ -486,11 +694,12 @@ export async function runConfiguredEnginesProbe(deps: DefaultEngineProbeDependen
   const config = deps.loadConfig?.() ?? loadConfig();
   const engineNames = Object.keys(config.engines ?? {}).sort();
   const cache: ReachabilityCache = new Map();
+  const runDeps = withMemoizedEnvAssets(deps);
   const availability = new Map(
     await Promise.all(
       engineNames.map(
         async (engine) =>
-          [engine, await runConfiguredEngineProbe("configured-engine", engine, config, deps, cache)] as const,
+          [engine, await runConfiguredEngineProbe("configured-engine", engine, config, runDeps, cache)] as const,
       ),
     ),
   );
@@ -515,11 +724,12 @@ export async function runHealthEngineProbes(
     .filter((name): name is string => name !== undefined)
     .sort();
   const cache: ReachabilityCache = new Map();
+  const runDeps = withMemoizedEnvAssets(deps);
   const availability = new Map(
     await Promise.all(
       probeNames.map(
         async (engine) =>
-          [engine, await runConfiguredEngineProbe("configured-engine", engine, effective, deps, cache)] as const,
+          [engine, await runConfiguredEngineProbe("configured-engine", engine, effective, runDeps, cache)] as const,
       ),
     ),
   );
@@ -535,7 +745,27 @@ export async function runHealthEngineProbes(
   });
 }
 
-export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
+export interface ActiveImproveStrategyProbeResult {
+  check: HealthCheckResult;
+  /**
+   * #950: process → engine bindings for every enabled process in the active
+   * improve strategy, built once here so `engine-last-used` (via
+   * `health.ts`) consumes a typed map instead of casting the check's
+   * untyped `evidence.engines`. Empty when the strategy itself could not be
+   * resolved (the catch branch below).
+   */
+  processEngines: Readonly<Record<string, string>>;
+}
+
+/**
+ * #950: probes the active improve strategy and returns both its
+ * `HealthCheckResult` and the typed process→engine map, computed once. See
+ * {@link runActiveImproveStrategyProbe} for the plain-`HealthCheckResult`
+ * wrapper existing callers/tests use.
+ */
+export function probeActiveImproveStrategy(
+  deps: DefaultEngineProbeDependencies = {},
+): ActiveImproveStrategyProbeResult {
   const config = deps.loadConfig?.() ?? loadConfig();
   const strategyName = config.defaults?.improveStrategy ?? "default";
   try {
@@ -575,32 +805,129 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
       .map(([process, engine]) => `${process}: "${engine}"`)
       .join(", ");
     return {
-      name: "active-improve-strategy",
-      kind: "deterministic",
-      status: unavailableProcesses.length === 0 ? "pass" : "warn",
-      confidence: "high",
-      message:
-        unavailableProcesses.length === 0
-          ? `Active improve strategy "${plan.strategy.name}" has available process engines${engineList ? ` (${engineList})` : ""}.`
-          : `Active improve strategy "${plan.strategy.name}" has unavailable required credentials for: ${unavailableProcesses.join(", ")}${engineList ? ` (engines: ${engineList})` : ""}.`,
-      evidence: {
-        strategy: plan.strategy.name,
-        unavailableProcesses,
-        engines,
+      check: {
+        name: "active-improve-strategy",
+        kind: "deterministic",
+        status: unavailableProcesses.length === 0 ? "pass" : "warn",
+        confidence: "high",
+        message:
+          unavailableProcesses.length === 0
+            ? `Active improve strategy "${plan.strategy.name}" has available process engines${engineList ? ` (${engineList})` : ""}.`
+            : `Active improve strategy "${plan.strategy.name}" has unavailable required credentials for: ${unavailableProcesses.join(", ")}${engineList ? ` (engines: ${engineList})` : ""}.`,
+        evidence: {
+          strategy: plan.strategy.name,
+          unavailableProcesses,
+          engines,
+        },
       },
+      processEngines: Object.freeze({ ...engines }),
     };
   } catch (error) {
     const explicitlyConfigured =
       config.defaults?.improveStrategy !== undefined || Object.keys(config.improve?.strategies ?? {}).length > 0;
     return {
-      name: "active-improve-strategy",
-      kind: "deterministic",
-      status: explicitlyConfigured ? "warn" : "unknown",
-      confidence: "high",
-      message: `Active improve strategy "${strategyName}" is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-      evidence: { strategy: strategyName, unavailableProcesses: [] },
+      check: {
+        name: "active-improve-strategy",
+        kind: "deterministic",
+        status: explicitlyConfigured ? "warn" : "unknown",
+        confidence: "high",
+        message: `Active improve strategy "${strategyName}" is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        evidence: { strategy: strategyName, unavailableProcesses: [] },
+      },
+      processEngines: {},
     };
   }
+}
+
+/** Plain-`HealthCheckResult` wrapper around {@link probeActiveImproveStrategy} for existing callers/tests. */
+export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependencies = {}): HealthCheckResult {
+  return probeActiveImproveStrategy(deps).check;
+}
+
+interface EngineLastUsedEntry {
+  engine: string;
+  processes: string[];
+  lastUsedAt: string | null;
+}
+
+/**
+ * #950: the `engine-last-used` advisory. Pure projection of context computed
+ * once in `health.ts` (`activeImproveStrategyEngines`, `engineLastUsed`,
+ * `improveRunsInLookbackWindow`) — no IO here, mirrors `thinking-control`.
+ *
+ * `unknown` (not a noisy `warn`) both when no engine is bound to an enabled
+ * process, AND when no improve run has been recorded (started) in the
+ * lookback window at all — a fresh install has never been given the chance
+ * to use its engines.
+ */
+function projectEngineLastUsedCheck(
+  processEngineMap: Readonly<Record<string, string>>,
+  lastUsed: ReadonlyMap<string, EngineLastUsed>,
+  improveRunsInLookbackWindow: number,
+  lookbackDays: number,
+): HealthCheckResult {
+  const engineProcesses = new Map<string, string[]>();
+  for (const [process, engine] of Object.entries(processEngineMap)) {
+    const processes = engineProcesses.get(engine) ?? [];
+    processes.push(process);
+    engineProcesses.set(engine, processes);
+  }
+  const engines = [...engineProcesses.keys()].sort();
+
+  if (engines.length === 0) {
+    return {
+      name: "engine-last-used",
+      kind: "deterministic",
+      status: "unknown",
+      confidence: "high",
+      message: "No engine is bound to an enabled improve process.",
+      evidence: { engines: [] },
+    };
+  }
+  if (improveRunsInLookbackWindow === 0) {
+    return {
+      name: "engine-last-used",
+      kind: "deterministic",
+      status: "unknown",
+      confidence: "high",
+      message: `No improve runs in the last ${lookbackDays} days.`,
+      evidence: {
+        engines: engines.map((engine) => ({ engine, processes: (engineProcesses.get(engine) ?? []).sort() })),
+      },
+    };
+  }
+
+  const entries: EngineLastUsedEntry[] = engines.map((engine) => ({
+    engine,
+    processes: (engineProcesses.get(engine) ?? []).sort(),
+    lastUsedAt: lastUsed.get(engine)?.lastUsedAt ?? null,
+  }));
+  const idle = entries.filter((entry) => entry.lastUsedAt === null);
+  const status: HealthCheckResult["status"] = idle.length > 0 ? "warn" : "pass";
+  const message =
+    idle.length > 0
+      ? idle
+          .map((entry) => {
+            const quoted = entry.processes.map((process) => `"${process}"`).join(", ");
+            const noun = entry.processes.length === 1 ? "process" : "processes";
+            return `Engine "${entry.engine}" is bound to ${noun} ${quoted} but has not been used in the last ${lookbackDays} days.`;
+          })
+          .join(" ")
+      : entries
+          .map((entry) => {
+            const process = lastUsed.get(entry.engine)?.process ?? entry.processes.join(", ");
+            return `Engine "${entry.engine}" last used by "${process}" at ${entry.lastUsedAt}.`;
+          })
+          .join(" ");
+
+  return {
+    name: "engine-last-used",
+    kind: "deterministic",
+    status,
+    confidence: "high",
+    message,
+    evidence: { engines: entries },
+  };
 }
 
 export interface RunModelMapProbeDependencies extends LoadModelMapOptions {
@@ -930,7 +1257,10 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
   {
     name: "active-improve-strategy",
     channel: "hard",
-    run: () => runActiveImproveStrategyProbe(),
+    // #950: projects the context field instead of recomputing, so
+    // `engine-last-used` below can reuse the same process→engine map without
+    // a second `runActiveImproveStrategyProbe()` call.
+    run: (ctx) => ctx.activeImproveStrategy,
   },
   {
     // C2 (13-bus-factor): the cron task-failure rate was computed and rendered
@@ -1120,5 +1450,37 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
         evidence: { promoted: aa.promoted, validationFailed: aa.validationFailed },
       };
     },
+  },
+  {
+    // #949: advisory channel, but `kind: "deterministic"` (same as the
+    // pre-existing task-fail-rate advisory) — a warn here DOES flip
+    // AkmHealthResult.status to "warn" and akm health's exit code to
+    // EXIT_HEALTH_WARN, because the overall-status computation ORs
+    // deterministic warns across both hardChecks and advisories.
+    name: "thinking-control",
+    channel: "advisory",
+    run: (ctx) => projectThinkingControlCheck(ctx.thinkingOffEngines, ctx.llmUsage, ctx.since),
+  },
+  {
+    // #950: best-effort "installed vs latest release" advisory, gated behind
+    // the same --probe/--no-probe flag as engine reachability. Computed once
+    // in health.ts (network IO), projected here like engineProbes.
+    name: "cli-version",
+    channel: "advisory",
+    run: (ctx) => ctx.versionDrift,
+  },
+  {
+    // #950: registered last — order is load-bearing (see the HEALTH_CHECKS
+    // doc comment above). Advisory channel, `kind: "deterministic"` — same
+    // exit-code-gating rationale as thinking-control above.
+    name: "engine-last-used",
+    channel: "advisory",
+    run: (ctx) =>
+      projectEngineLastUsedCheck(
+        ctx.activeImproveStrategyEngines,
+        ctx.engineLastUsed,
+        ctx.improveRunsInLookbackWindow,
+        ENGINE_LAST_USED_LOOKBACK_DAYS,
+      ),
   },
 ];

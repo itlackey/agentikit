@@ -3,6 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import * as healthChecks from "../src/commands/health/checks";
 import {
   HEALTH_CHECKS,
@@ -295,6 +298,115 @@ describe("health engine probes", () => {
     expect(improve.status).toBe("warn");
     expect(improve.message).toContain("required credential is unavailable");
     expect(JSON.stringify(improve)).not.toContain("PRIVATE_IMPROVE_TOKEN");
+  });
+
+  test("#950: names the env asset that supplies an unavailable required credential, never the variable name", async () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: { improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" } },
+      defaults: { llmEngine: "improve" },
+    };
+    const improve = await runDefaultLlmEngineProbe({
+      loadConfig: () => config,
+      env: {},
+      listEnvAssets: () => [{ ref: "env/lab", path: "/stash/env/lab.env", keys: ["PRIVATE_IMPROVE_TOKEN"] }],
+    });
+    expect(improve.status).toBe("warn");
+    expect(improve.message).toContain("env/lab");
+    expect(improve.message).toContain("akm env run env/lab");
+    expect(improve.evidence?.suppliedByEnvAsset).toBe("env/lab");
+    expect(JSON.stringify(improve)).not.toContain("PRIVATE_IMPROVE_TOKEN");
+  });
+
+  test("#950: no matching env asset keeps the generic unavailable message and a null suppliedByEnvAsset", async () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: { improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" } },
+      defaults: { llmEngine: "improve" },
+    };
+    const improve = await runDefaultLlmEngineProbe({
+      loadConfig: () => config,
+      env: {},
+      listEnvAssets: () => [{ ref: "env/other", path: "/stash/env/other.env", keys: ["SOME_OTHER_VAR"] }],
+    });
+    expect(improve.status).toBe("warn");
+    expect(improve.message).toContain("required credential is unavailable");
+    expect(improve.evidence?.suppliedByEnvAsset).toBeNull();
+  });
+
+  test("#950: SDK engine names the env asset that supplies its missing fallback credential", async () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        sdk: { kind: "agent", platform: "opencode-sdk", llmEngine: "improve" },
+        improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" },
+      },
+      defaults: { engine: "sdk" },
+    };
+    const result = await runDefaultEngineProbe({
+      loadConfig: () => config,
+      resolvePackage: () => "/sdk/package.json",
+      spawnSync: (() => ({ status: 0 })) as never,
+      env: {},
+      listEnvAssets: () => [{ ref: "env/lab", path: "/stash/env/lab.env", keys: ["PRIVATE_IMPROVE_TOKEN"] }],
+    });
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain('SDK engine "sdk" is incomplete: missing');
+    expect(result.message).toContain("env/lab");
+    expect(result.message).toContain("akm env run env/lab");
+    expect(result.evidence).toMatchObject({ suppliedByEnvAsset: "env/lab" });
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_IMPROVE_TOKEN");
+  });
+
+  test("#950: walks env assets at most once per probe run across multiple engines with missing credentials", async () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" },
+        distill: { ...llm, endpoint: "https://example.test/v2/chat/completions", apiKey: "$PRIVATE_DISTILL_TOKEN" },
+      },
+    };
+    let calls = 0;
+    const result = await runConfiguredEnginesProbe({
+      loadConfig: () => config,
+      env: {},
+      listEnvAssets: () => {
+        calls += 1;
+        return [];
+      },
+    });
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain("2 of 2");
+    expect(calls).toBe(1);
+  });
+
+  test("#950: the default listEnvAssets seam honours the injected loadConfig, not the real one", async () => {
+    const labStashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-health-lab-"));
+    fs.mkdirSync(path.join(labStashDir, "env"), { recursive: true });
+    fs.writeFileSync(path.join(labStashDir, "env", "lab.env"), "PRIVATE_IMPROVE_TOKEN=secret\n", "utf8");
+    try {
+      const config: AkmConfig = {
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: { improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" } },
+        defaults: { llmEngine: "improve" },
+        bundles: { lab: { path: labStashDir } },
+        defaultBundle: "lab",
+      };
+      // No listEnvAssets seam injected: this exercises the default seam,
+      // which must walk the *injected* config's bundles, not the real
+      // (sandboxed, unrelated) HOME/XDG config `loadConfig()` would read.
+      const result = await runDefaultLlmEngineProbe({ loadConfig: () => config, env: {} });
+      expect(result.status).toBe("warn");
+      expect(result.evidence?.suppliedByEnvAsset).toBe("env/lab");
+      expect(JSON.stringify(result)).not.toContain("PRIVATE_IMPROVE_TOKEN");
+    } finally {
+      fs.rmSync(labStashDir, { recursive: true, force: true });
+    }
   });
 
   test("warns when an enabled active improve process lacks its required credential", () => {

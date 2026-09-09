@@ -39,6 +39,9 @@ changes.
 | `enrichment-lane-minting` | Enrichment lanes minted new assets above threshold (5% warn / higher = fail). | Adjudicated against the ratified minting rules; act only if the share keeps climbing post-shutdown. |
 | `improve-churn-ratio` | Accepted proposals rewrote the same few refs (ratio > 1.5) instead of covering the corpus. | Expected while coverage is low; watch the trend, do not retune on a single window. |
 | `collapse-churn-detector` | R5 detector fired collapse/churn alerts (or `unknown` = no cycle rows yet). | Inspect recent collapse/churn cycle rows and the detector's advisory output before acting. |
+| `thinking-control` | (#949) For every configured `kind: "llm"` engine with `enableThinking: false`, checks the window's recorded `llm_usage` for reasoning tokens. Passive: never issues its own completion. `unknown` when no engine sets `enableThinking: false`, or when a configured one made no calls in the window. | A `warn` names the engine that returned reasoning tokens — its endpoint, or a gateway in front of it, is not honoring the thinking-off control. Check the gateway/endpoint config; behind a gateway that drops `chat_template_kwargs` (Bifrost), set `reasoningEffort: "none"` on the engine, which such gateways pass through. |
+| `cli-version` | (#950) Compares the installed akm-cli version against the latest GitHub release (the same source `akm upgrade` trusts). `--probe`-gated: `unknown` "not probed" with `--no-probe`; offline/rate-limited also degrades to `unknown`, never a false `warn`. | Run `akm upgrade` when a newer release is reported. An `unknown` result carries no staleness claim either way — check manually if it matters. |
+| `engine-last-used` | (#950) For every engine bound to an enabled process in the active improve strategy, checks `llm_usage` for a call in the last 30 days (independent of `--since`). `unknown` when no engine is bound, or when no improve run has been recorded (started) in that window at all (a fresh install). | A `warn` names the idle engine and the process it is bound to. Configured, reachable, and credentialed is not the same as actually used — investigate why the bound process is not invoking it (disabled downstream, misrouted, or genuinely unused). |
 
 > Adjudicated states (`outcome-proxy-dead`, `enrichment-lane-minting`)
 > are the before/after instrument for the 12-D1 minting shutdown — do not "fix" them by retuning.
@@ -76,6 +79,25 @@ credential-only verdict and notes that reachability was not probed.
 Engine evidence names the endpoint and model of the probed connection so an
 operator can tell which connection was checked; it never includes credential
 values or provider output.
+
+(#950) When a required `$VAR`-style credential is unavailable in the health
+process's own shell, `default-llm-engine` and `configured-engines` also check
+whether any `env/` asset defines a key by the same name. When one does, the
+`warn` message and `evidence.suppliedByEnvAsset` name the env asset's ref
+(e.g. `env/lab`) and point at `akm env run env/lab -- ...` — never the
+variable name itself, which stays out of both the message and evidence (see
+`tests/health-engine-probe.test.ts`). This is the common case where the
+operator's real workflow already supplies the credential under an `env run`
+wrapper; the check still `warn`s (the credential genuinely is unavailable in
+*this* invocation's shell), just with an actionable next step instead of a
+bare "unavailable".
+
+`akm health` makes at most two network calls, both best-effort and silent on
+failure: `plugin-version`'s `git ls-remote` (unconditional, predates
+`--probe`) and `cli-version`'s GitHub-release lookup (gated behind
+`--probe`/`--no-probe`, same flag as engine reachability). See
+`src/commands/health/plugin-staleness.ts` and
+`src/commands/health/version-drift.ts` for the discipline each follows.
 
 The salience Gini guardrails are calibrated against distribution shape, not a
 top-ranked quantile: near-uniform `0.49/0.51` scores produce about `0.01`, a

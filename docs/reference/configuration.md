@@ -92,14 +92,21 @@ LLM endpoints must be complete `http://` or `https://` chat-completions URLs
 ending in `/chat/completions`, without userinfo, query, or fragment. API keys
 are symbolic only: `$VAR` or `${VAR}`. AKM resolves them only at dispatch.
 
-An LLM engine may set `reasoningEffort` to a non-empty provider-supported
-value such as `"none"`, `"low"`, or `"high"`. AKM sends it as the top-level
-OpenAI-compatible `reasoning_effort` parameter alongside the existing
-`enableThinking` control, because providers do not all honor the same thinking
-switch. `reasoning_effort` is AKM-owned and cannot be set through
-`extraParams`. If a response reports reasoning tokens despite
-`enableThinking: false`, AKM emits a runtime warning so an ineffective provider
-control is visible.
+An LLM engine may set `enableThinking: false` to turn thinking off and
+`reasoningEffort` to a value such as `"none"`, `"low"`, or `"high"`. AKM sends
+**both** wire forms — `chat_template_kwargs.enable_thinking` and top-level
+`enable_thinking` — whenever `enableThinking` resolves, from engine config
+or a calling process (improve's `consolidate`/`reflect` and the distill
+quality gate always request `enableThinking: false` for a machine-readable
+payload); `reasoningEffort` is always sent as top-level `reasoning_effort`
+when set. Backend support: llama.cpp direct honors both forms
+(`reasoning_effort` from build ≥ b10644); vLLM honors
+`chat_template_kwargs`; Bifrost drops `chat_template_kwargs` and passes
+`reasoning_effort` through, so also set `reasoningEffort: "none"` behind it; a
+strict hosted API may 400 on unrecognized keys. Both fields are AKM-owned, not
+settable via `extraParams`. A response with reasoning tokens despite
+`enableThinking: false` triggers a runtime warning and the `akm health`
+`thinking-control` advisory.
 
 An agent engine may set `bin`, `args`, `workspace`, `model`, and `timeoutMs`.
 Only `platform: "opencode-sdk"` may set `llmEngine`; it names

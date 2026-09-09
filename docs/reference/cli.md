@@ -307,14 +307,15 @@ akm health --report --window-compare 7d --format html
 | `--window-compare` | Compare the current window against the prior window of the same duration (e.g. `24h`, `7d`). With `--report`, overrides the default trend window. |
 | `--group-by` | Group rows by `run` (one row per `improve_runs` entry). Omit for the default summary. |
 | `--windows` | Explicit comparison window(s) as `name=...,since=ISO,until=ISO` (repeatable, up to 4). Mutually exclusive with `--window-compare`. |
-| `--no-probe` | Skip the `default-llm-engine` / `configured-engines` reachability probes (for an offline or air-gapped host). |
+| `--no-probe` | Skip the `default-llm-engine` / `configured-engines` reachability probes and the `cli-version` update check (for an offline or air-gapped host). |
 
 The command reads `state.db`, verifies that the required tables exist, performs a
 write-read probe against the events stream, inspects `task_history`, checks the
 default agent engine, and summarizes recent `improve_*` events. Unless
 `--no-probe` is given, it also sends a bounded (3s timeout) reachability probe
 to the `default-llm-engine` and every `configured-engines` LLM connection (and
-an SDK engine's LLM fallback), one probe per distinct endpoint.
+an SDK engine's LLM fallback), one probe per distinct endpoint, and checks the
+installed akm-cli version against the latest GitHub release (`cli-version`).
 
 Primary result fields:
 
@@ -322,7 +323,7 @@ Primary result fields:
 | --- | --- |
 | `status` | Overall health verdict: `pass`, `warn`, or `fail` |
 | `hardChecks` | Deterministic checks such as `state-db-schema`, `state-db-round-trip`, `state-db-migrations`, `task-log-backing`, `active-runs`, `default-engine`, `model-map-files`, `default-llm-engine`, `configured-engines`, and `active-improve-strategy` |
-| `advisories` | Non-fatal warnings including `semantic-search-runtime` and `session-extraction` (akmExtract pipeline health) |
+| `advisories` | Non-fatal warnings including `semantic-search-runtime`, `session-extraction` (akmExtract pipeline health), `cli-version` (installed vs latest release), `thinking-control` (an `enableThinking: false` engine whose recorded usage still shows reasoning tokens), and `engine-last-used` (an engine bound to an enabled improve process with no recorded use in 30 days) |
 | `metrics` | Aggregate task/runtime metrics: `taskFailRate`, `agentFailureRate`, `stuckActiveRuns`, `logBackingRate`, `probeRoundTripMs` |
 | `improve` | Recent improve-loop counts derived from `improve_invoked`, `improve_skipped`, and `improve_completed` events |
 
@@ -342,9 +343,24 @@ holds a pending historical-destructive migration and something other than
 `default-llm-engine` and `configured-engines` probe reachability (not just
 configuration) for a `kind: "llm"` engine — an unreachable endpoint is a hard
 `fail` for `default-llm-engine` and a `warn` for any other engine. `--no-probe`
-skips this. `active-improve-strategy` names the resolved engine per process
+skips this. When a required credential is missing from the shell but an
+`env/` asset defines the same variable name, the warn names that asset's ref
+(never the variable name) and points at `akm env run <ref> -- ...`.
+`active-improve-strategy` names the resolved engine per process
 in its evidence and message, so a strategy-level `engine` pin that shadows
 `defaults.llmEngine` is visible without config archaeology.
+
+`cli-version` compares the installed akm-cli version against the latest
+GitHub release — the same source `akm upgrade` trusts — and `warn`s with the
+upgrade command when a newer release exists. `--no-probe`, offline, or a
+rate-limited request all degrade it to `unknown`, never a false `warn`.
+
+`engine-last-used` checks, for every engine bound to an enabled process in
+the active improve strategy, whether it has a recorded `llm_usage` call in
+the last 30 days (independent of `--since`). It `warn`s naming the idle
+engine and its bound process, and stays `unknown` — not a noisy `warn` —
+until at least one improve run has been recorded (started) in that window,
+so a fresh install is quiet.
 
 The `session-extraction` advisory is derived from the `extract_sessions_seen`
 ledger for the last 7 days — not `improve_runs`, which the hook-driven `akm
