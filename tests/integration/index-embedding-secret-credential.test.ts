@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #953 (#953 field gap) — `akm index`'s embedding requests must carry the
+ * #953 — `akm index`'s embedding requests must carry the
  * `secret://` store-resolved credential, the same way `akm improve`'s
  * consolidate path already does (see the last describe block below, the
  * known-good control).
@@ -13,8 +13,8 @@
  * every embedding request with NO Authorization header at all — silently,
  * not as a resolution error. This suite reproduces the standalone `akm
  * index` materializer path in-process AND as a real CLI child process
- * (since the field failure was specifically the CLI), plus every variant
- * the fixer brief names: an `extends`-inherited apiKey with adapter
+ * (since the field failure was specifically the CLI), plus every other path
+ * that reaches `RemoteEmbedder`: an `extends`-inherited apiKey with adapter
  * detection persisting mid-run (#945); `akm bundle update`'s post-commit
  * embedding pass (`runPostCommitEmbeddingPass`, reached via `akmUpdate`);
  * the `remember` write path (`indexWrittenAssets`, which calls
@@ -23,9 +23,9 @@
  *
  * Every request the mock server sees is asserted to carry the resolved
  * `Authorization` header — none of the variants below reproduced a keyless
- * request against the code as it stands (see the #953 changelog fragment /
- * final report for what was actually found); this suite pins that as a
- * regression guard.
+ * request against the code as it stands (see the #953 entry in the 0.9.15
+ * "Added" section of CHANGELOG.md for what was actually found); this suite
+ * pins that as a regression guard.
  *
  * Integration-classified (ORG-03/04/05/06): drives a real `akm index` run
  * against a real index.db and a real HTTP mock server, and one variant

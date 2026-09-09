@@ -3,16 +3,16 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #953 (#953 field gap) — a field run reported `akm index`'s embedding
+ * #953 — a field run reported `akm index`'s embedding
  * requests reaching the provider with no `Authorization` header at all, even
  * though `embedding.apiKey` was set to a `secret://` reference. The
  * reproduction in tests/integration/index-embedding-secret-credential.test.ts
  * did not reproduce the gap against the code as it stands (every candidate
  * path — plain `akm index`, the CLI child process, and an `extends`-inherited
  * apiKey with mid-run adapter persistence — already threads the credential
- * through correctly). This contract test guards the one seam the fixer brief
- * named as the actual risk: every `new RemoteEmbedder(...)` construction
- * site in `src/` must pass its config straight through by reference — a bare
+ * through correctly). This contract test guards the one seam identified as
+ * the actual risk (#953): every `new RemoteEmbedder(...)` construction site
+ * in `src/` must pass its config straight through by reference — a bare
  * identifier, never a hand-rebuilt object literal — so a future edit cannot
  * silently drop `apiKey` (or any other field) while threading a config from
  * `loadConfig()`'s effective view down to the HTTP client.
