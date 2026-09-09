@@ -721,3 +721,75 @@ describe("local embedder batching — Tensor return shape (WS-3a blocker fix)", 
     expect(callCount).toBe(1);
   });
 });
+
+describe("RemoteEmbedder.embedBatch against a real server: context-size split (#954)", () => {
+  test("a server that 413s any batch with more than one input makes every document embed individually", async () => {
+    const requestSizes: number[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        const body = (await request.json()) as { input: string[] };
+        requestSizes.push(body.input.length);
+        if (body.input.length > 1) {
+          return new Response(JSON.stringify({ error: "exceed_context_size_error" }), {
+            status: 413,
+            headers: { "Content-Type": "application/json", Connection: "close" },
+          });
+        }
+        return new Response(JSON.stringify({ data: [{ embedding: [1, 0, 0], index: 0 }], model: "test", usage: {} }), {
+          headers: { "Content-Type": "application/json", Connection: "close" },
+        });
+      },
+    });
+    try {
+      const embedder = new RemoteEmbedder({ endpoint: `http://localhost:${server.port}`, model: "test-model" });
+      const texts = ["doc-a", "doc-b", "doc-c", "doc-d"];
+      const results = await embedder.embedBatch(texts);
+      expect(results).toHaveLength(4);
+      expect(results.every((r) => r !== undefined)).toBe(true);
+      // Every request that ultimately succeeded carried exactly one document.
+      expect(requestSizes.filter((size) => size === 1)).toHaveLength(4);
+    } finally {
+      server.stop(true);
+    }
+  });
+});
+
+describe("RemoteEmbedder.embedBatch against a real server: fixed bounded concurrency (#954)", () => {
+  // The in-flight window is FIXED (1 loopback / 2 remote) — there is no
+  // config override (2026-09-09 field-review addendum to the brief). The
+  // real-server case that matters is loopback, since a test server binds to
+  // localhost; the 2-wide remote case is covered against a mocked fetch in
+  // tests/embedder-batching.test.ts (a real, unresolvable "remote" hostname
+  // would make this test flaky/offline-dependent for no added coverage).
+  test("a loopback endpoint never overlaps requests against a real server", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        const body = (await request.json()) as { input: string[] };
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        inFlight--;
+        const data = body.input.map(() => ({ embedding: [1, 0], index: 0 }));
+        return new Response(JSON.stringify({ data, model: "test", usage: {} }), {
+          headers: { "Content-Type": "application/json", Connection: "close" },
+        });
+      },
+    });
+    try {
+      const embedder = new RemoteEmbedder({
+        endpoint: `http://localhost:${server.port}`,
+        model: "test-model",
+        batchSize: 1,
+      });
+      const texts = Array.from({ length: 4 }, (_, i) => `doc-${i}`);
+      await embedder.embedBatch(texts);
+      expect(maxInFlight).toBe(1);
+    } finally {
+      server.stop(true);
+    }
+  });
+});

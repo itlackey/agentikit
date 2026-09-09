@@ -10,7 +10,9 @@
  */
 
 import { fetchWithTimeout, isHttpUrl, readBodyWithByteCap } from "../../core/common";
+import { concurrentMap } from "../../core/concurrent";
 import { type EmbeddingConnectionConfig, resolveSecret } from "../../core/config/config";
+import { defaultConcurrencyForEndpoint } from "../../core/loopback";
 import { redactErrorBody, redactSensitiveText } from "../../core/redaction";
 import { warnVerbose } from "../../core/warn";
 import { resolveSecretFromStore } from "../../sources/snapshot-fetchers/secret-seam";
@@ -49,6 +51,72 @@ export interface EmbeddingBatchSkip {
   index: number;
   reason: EmbeddingSkipReason;
   message: string;
+}
+
+/**
+ * Fired once per provider request (success OR skip-with-undefined-slots),
+ * before the next request starts (#954). `indices` are positions into the
+ * `texts` array passed to `embedBatch`; `embeddings` is the same length,
+ * `undefined` at any index that failed or was skipped. Lets the caller
+ * commit each batch to durable storage as it lands rather than buffering the
+ * whole run in memory for one final write — completion order is irrelevant
+ * to a caller that commits per call, so this fires under concurrency too.
+ *
+ * `model`, when the provider's response body carried one, is the server-
+ * reported model id for that request (#955) — undefined for a skipped
+ * batch, a local/deterministic run, or a provider that omits the field.
+ * The embedding-fingerprint canary uses it to tell a same-model config
+ * rename (e.g. a gateway prefixing `provider/model`) apart from a genuine
+ * model change without guessing from the config string alone.
+ */
+export type EmbeddingBatchCommit = (
+  indices: number[],
+  embeddings: (EmbeddingVector | undefined)[],
+  model?: string,
+) => void;
+
+/**
+ * Distinguishes a batch rejected because it exceeded the endpoint's context
+ * window from every other failure mode (network error, 5xx, malformed
+ * response). Only this error class triggers the split-in-half retry in
+ * {@link RemoteEmbedder.embedBatch} (#954) — anything else keeps the
+ * original skip-the-whole-batch behavior pinned by
+ * tests/integration/embedding-batch-partial-failure.test.ts.
+ */
+export class ContextExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ContextExceededError";
+  }
+}
+
+/** Patterns providers use to report a request too large for the model's context window. */
+const CONTEXT_EXCEEDED_PATTERN = /exceed_context_size_error|context size|context length|too many tokens/i;
+
+/**
+ * True when an HTTP failure means "this request's input is too large for the
+ * endpoint's context window" rather than some other failure. HTTP 413
+ * (Payload Too Large) is always treated this way regardless of body; other
+ * status codes are checked against known provider error-body phrasing.
+ */
+export function isContextExceededResponse(status: number, body: string): boolean {
+  if (status === 413) return true;
+  return CONTEXT_EXCEEDED_PATTERN.test(body);
+}
+
+/**
+ * Resolve the effective in-flight request window for `RemoteEmbedder.embedBatch`.
+ * FIXED — no config override: 1 for a loopback endpoint, 2 for a remote one,
+ * via the shared `defaultConcurrencyForEndpoint` (`src/core/loopback.ts`),
+ * the same lowest-common-denominator rule `getDefaultLlmConcurrency`
+ * (`src/indexer/indexer.ts`) uses. The actual throughput knob is request
+ * SIZE, not request count: `embedding.batchSize` (document cap) and
+ * `embedding.maxTokens`/`contextLength` (token budget) reach a larger batch
+ * per request, which is where most of the win is — a 32-input batch takes
+ * about the same wall time as one input against a healthy endpoint.
+ */
+export function resolveEmbeddingConcurrency(config: EmbeddingConnectionConfig): number {
+  return defaultConcurrencyForEndpoint(config.endpoint);
 }
 
 interface TextBatch {
@@ -171,11 +239,38 @@ export class RemoteEmbedder implements Embedder {
    * `onSkip` (index into `texts` + a named reason) rather than silently
    * dropped; the returned array holds `undefined` at every skipped index.
    * A caller abort (`signal.aborted`) still propagates as a rejection.
+   *
+   * Provider batches are dispatched through a bounded pool sized by
+   * `resolveEmbeddingConcurrency` (#954) instead of strictly sequentially, so
+   * request latency overlaps. `onBatch`, when given, fires once per provider
+   * batch (success or skip) as it completes, only after that batch's own
+   * outcome has already been classified — pass it to commit each batch's
+   * rows durably as they land rather than buffering the whole call.
+   * Completion order does not matter to `results` placement, which is always
+   * written by index regardless of dispatch order. A throw from `onBatch`
+   * itself (e.g. the caller's own commit failing) is never mistaken for a
+   * provider/network failure; it is captured and rethrown once every batch
+   * has been dispatched, alongside the `signal.aborted` check. The FIRST
+   * `onBatch` throw also stops the pool from dispatching any further
+   * provider request (#954 gap fix) — a persistence failure means every
+   * later batch's result can never be committed either, so there is no
+   * point paying for more HTTP requests; a batch already in flight when this
+   * happens is left to finish (never network-aborted) but its result is
+   * discarded rather than committed.
+   *
+   * A batch rejected specifically for exceeding the endpoint's context window
+   * (HTTP 413, or a recognised context-size error body — see
+   * {@link isContextExceededResponse}) is split in half and retried
+   * recursively rather than skipped outright, down to individual documents; a
+   * single document that still fails this way becomes a genuine
+   * `context-window-exceeded` skip. Every other failure (network error, 5xx,
+   * malformed response) keeps the original skip-the-whole-batch behavior.
    */
   async embedBatch(
     texts: string[],
     signal?: AbortSignal,
     onSkip?: (skip: EmbeddingBatchSkip) => void,
+    onBatch?: EmbeddingBatchCommit,
   ): Promise<(EmbeddingVector | undefined)[]> {
     if (texts.length === 0) return [];
     const results: (EmbeddingVector | undefined)[] = new Array(texts.length).fill(undefined);
@@ -184,9 +279,95 @@ export class RemoteEmbedder implements Embedder {
 
     const tokenBudget = this.config.maxTokens ?? this.config.contextLength ?? DEFAULT_TOKEN_BUDGET;
     const maxCount = this.config.batchSize ?? DEFAULT_REMOTE_BATCH_SIZE;
-    const batches = buildTokenBoundedBatches(texts, tokenBudget, maxCount);
+    const textBatches = buildTokenBoundedBatches(texts, tokenBudget, maxCount);
 
-    for (const textBatch of batches) {
+    // Stops the pool from claiming any FURTHER provider batch once the
+    // caller's onBatch has failed once (the materializer's transaction
+    // failed, so a subsequent commit would just fail again) — dispatching
+    // real HTTP requests whose results can never be persisted is pure waste.
+    // Deliberately a SEPARATE controller from the caller's own `signal`,
+    // chained one-way to it: aborting this one must never cancel an
+    // in-flight request's own network call (it is left to finish and its
+    // result is discarded, not persisted), and a genuine caller abort must
+    // still surface below as the caller's own abort reason, not this
+    // internal one.
+    const dispatchAbort = new AbortController();
+    const stopDispatch = (reason?: unknown): void => {
+      if (!dispatchAbort.signal.aborted) dispatchAbort.abort(reason);
+    };
+    let callerAbortListener: (() => void) | undefined;
+    if (signal) {
+      if (signal.aborted) stopDispatch(signal.reason);
+      else {
+        callerAbortListener = () => stopDispatch(signal.reason);
+        signal.addEventListener("abort", callerAbortListener, { once: true });
+      }
+    }
+
+    // First error thrown BY the caller's onBatch callback (e.g. a real
+    // competing-process SQLITE_BUSY from the materializer's db.transaction())
+    // rather than by requestBatch itself. Captured here instead of being left
+    // to reach requestAndCommit's try/catch below, which exists solely to
+    // classify requestBatch's own provider/network failures — a persistence
+    // failure must never be caught by that block and misreported as a
+    // fabricated "batch-request-failed" skip (#954). Checked (and rethrown)
+    // once the pool drains, the same way `signal?.aborted` is today.
+    let firstOnBatchError: unknown;
+    const commitBatch = (indices: number[], embeddings: (EmbeddingVector | undefined)[], model?: string): void => {
+      if (!onBatch) return;
+      // Once persistence has failed once, an already in-flight batch that
+      // finishes afterward has nowhere safe to land — its result is
+      // discarded rather than retried into a transaction that will fail
+      // again (see the dispatch-stop comment above).
+      if (firstOnBatchError !== undefined) return;
+      try {
+        onBatch(indices, embeddings, model);
+      } catch (err) {
+        firstOnBatchError = err;
+        stopDispatch(err);
+      }
+    };
+
+    // Requests a single provider batch (by index list), recursing on a
+    // context-size rejection. Never throws except to propagate a genuine
+    // caller abort — every other outcome (success or a non-abort failure)
+    // resolves normally after reporting via onSkip/onBatch. `onBatch` fires
+    // only once this try/catch has already settled success vs. failure, so a
+    // throw from it is never caught and reclassified by this block.
+    const requestAndCommit = async (indices: number[]): Promise<void> => {
+      const batch = indices.map((i) => texts[i] as string);
+      let batchEmbeddings: (EmbeddingVector | undefined)[];
+      let responseModel: string | undefined;
+      try {
+        const { vectors, model } = await this.requestBatch(batch, headers, ollamaOpts, signal);
+        for (let k = 0; k < indices.length; k++) {
+          results[indices[k] as number] = vectors[k];
+        }
+        batchEmbeddings = indices.map((i) => results[i]);
+        responseModel = model;
+      } catch (err) {
+        // A caller abort must still propagate — it is not a "this batch
+        // failed" condition, it means stop entirely.
+        if (signal?.aborted) throw err;
+        if (err instanceof ContextExceededError && indices.length > 1) {
+          const mid = Math.ceil(indices.length / 2);
+          await requestAndCommit(indices.slice(0, mid));
+          await requestAndCommit(indices.slice(mid));
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        const reason: EmbeddingSkipReason =
+          err instanceof ContextExceededError ? "context-window-exceeded" : "batch-request-failed";
+        warnVerbose(`[embed] batch of ${batch.length} document(s) failed and was skipped: ${message}`);
+        for (const idx of indices) {
+          onSkip?.({ index: idx, reason, message });
+        }
+        batchEmbeddings = indices.map(() => undefined);
+      }
+      commitBatch(indices, batchEmbeddings, responseModel);
+    };
+
+    const runProviderBatch = async (textBatch: TextBatch): Promise<void> => {
       if (textBatch.oversized) {
         const idx = textBatch.indices[0] as number;
         const estTokens = estimateTokenCount(texts[idx] as string);
@@ -195,37 +376,43 @@ export class RemoteEmbedder implements Embedder {
           reason: "context-window-exceeded",
           message: `Document estimated at ${estTokens} tokens exceeds the ${tokenBudget}-token embedding budget; skipped.`,
         });
-        continue;
+        commitBatch([idx], [undefined]);
+        return;
       }
+      await requestAndCommit(textBatch.indices);
+    };
 
-      const batch = textBatch.indices.map((i) => texts[i] as string);
-      try {
-        const embeddings = await this.requestBatch(batch, headers, ollamaOpts, signal);
-        for (let k = 0; k < textBatch.indices.length; k++) {
-          results[textBatch.indices[k] as number] = embeddings[k];
-        }
-      } catch (err) {
-        // A caller abort must still propagate — it is not a "this batch
-        // failed" condition, it means stop entirely.
-        if (signal?.aborted) throw err;
-        const message = err instanceof Error ? err.message : String(err);
-        warnVerbose(`[embed] batch of ${batch.length} document(s) failed and was skipped: ${message}`);
-        for (const idx of textBatch.indices) {
-          onSkip?.({ index: idx, reason: "batch-request-failed", message });
-        }
-      }
+    const concurrency = resolveEmbeddingConcurrency(this.config);
+    // concurrentMap swallows a thrown fn (per-item, results discarded here —
+    // requestAndCommit only throws to signal a caller abort), so abort must
+    // be re-checked once the pool has drained rather than relying on the
+    // throw itself to escape. Dispatch is gated on `dispatchAbort`, not the
+    // caller's `signal` directly — see the comment above.
+    await concurrentMap(textBatches, runProviderBatch, concurrency, { signal: dispatchAbort.signal });
+    if (callerAbortListener) signal?.removeEventListener("abort", callerAbortListener);
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error("embedding interrupted");
+    }
+    if (firstOnBatchError !== undefined) {
+      throw firstOnBatchError instanceof Error ? firstOnBatchError : new Error(String(firstOnBatchError));
     }
 
     return results;
   }
 
-  /** Send one batch request and return its embeddings in input order. Throws on any failure. */
+  /**
+   * Send one batch request and return its embeddings in input order, plus the
+   * server-reported `model` id when the response body carried one (#955) —
+   * used by the embedding-fingerprint canary to verify a config-string
+   * rename against what the endpoint actually served, not just re-assert the
+   * configured string. Throws on any failure.
+   */
   private async requestBatch(
     batch: string[],
     headers: Record<string, string>,
     ollamaOpts: { num_ctx?: number } | undefined,
     signal?: AbortSignal,
-  ): Promise<EmbeddingVector[]> {
+  ): Promise<{ vectors: EmbeddingVector[]; model?: string }> {
     const body: { input: string[]; model: string; dimensions?: number; options?: { num_ctx?: number } } = {
       input: batch,
       model: this.model,
@@ -257,11 +444,16 @@ export class RemoteEmbedder implements Embedder {
           return "";
         },
       );
-      throw new Error(`Embedding batch request failed (${response.status}): ${this.safeErrorBody(respBody)}`);
+      const message = `Embedding batch request failed (${response.status}): ${this.safeErrorBody(respBody)}`;
+      if (isContextExceededResponse(response.status, respBody)) {
+        throw new ContextExceededError(message);
+      }
+      throw new Error(message);
     }
 
     const json = JSON.parse(await readBodyWithByteCap(response, undefined, { bodyTimeoutMs: 30_000, signal })) as {
       data: Array<{ embedding: number[]; index: number }>;
+      model?: string;
     };
 
     if (!json.data || json.data.length !== batch.length) {
@@ -280,7 +472,7 @@ export class RemoteEmbedder implements Embedder {
       }
       results.push(l2Normalize(d.embedding));
     }
-    return results;
+    return { vectors: results, model: typeof json.model === "string" && json.model ? json.model : undefined };
   }
 
   private buildHeaders(): Record<string, string> {

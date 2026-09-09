@@ -399,6 +399,19 @@ reference, same rules as engine `apiKey`), `dimension`, `localModel`,
 `maxTokens`, `batchSize`, `chunkSize`, `contextLength`, and
 `ollamaOptions.num_ctx`.
 
+`akm index` keeps a small, fixed number of `/v1/embeddings` requests in
+flight at once (a remote endpoint only; the local transformer path is
+unaffected): `1` for a loopback endpoint (`localhost`, `127.0.0.0/8`, etc. —
+a local model server serves one inference at a time, and parallel requests
+thrash it) and `2` for a remote one. This width is not configurable. The
+actual throughput knob is request SIZE, not request count: `embedding.batchSize`
+(a document-count cap, default 100) together with `embedding.maxTokens` /
+`embedding.contextLength` (an estimated token budget per request, default
+8000) control how many documents land in one request — a batch of 16-32
+documents takes about the same wall time as a single one against a healthy
+endpoint, so growing the batch is where most of the win is, not adding more
+concurrent requests.
+
 ## Search tuning
 
 `search` tunes ranking, not behavior an ordinary user needs to touch:

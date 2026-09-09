@@ -7,6 +7,7 @@ import { main } from "../../src/cli";
 import { commandCommand } from "../../src/commands/command/command-cli";
 import { configCommand } from "../../src/commands/config-cli";
 import { modelsCommand } from "../../src/commands/models-cli";
+import { indexCommand } from "../../src/commands/sources/stash-cli";
 import { taskCommand } from "../../src/commands/tasks/tasks-cli";
 import { workflowCommand } from "../../src/commands/workflow-cli";
 
@@ -32,6 +33,33 @@ describe("canonical command CLI surface", () => {
 // new verb. `akm task explain` (B-N4) is read-only introspection — a `ref`
 // positional plus the global `format` flag (GLOBAL_OUTPUT_ARGS,
 // src/cli/shared.ts), like every defineJsonCommand leaf.
+// #955: the contract must be extended in the SAME commit that registers a
+// new flag. `akm index --reembed` forces a full purge + re-embed, bypassing
+// the embedding-fingerprint-rename canary.
+describe("canonical index CLI surface", () => {
+  test("registers index --reembed as a boolean flag defaulting to false", () => {
+    const top = main.subCommands as unknown as Record<string, DynamicCommand>;
+    expect(top.index).toBe(indexCommand as unknown as DynamicCommand);
+    expect((indexCommand as unknown as DynamicCommand).args?.reembed).toMatchObject({
+      type: "boolean",
+      default: false,
+    });
+  });
+
+  // #956: the contract must be extended in the SAME commit that registers a
+  // new flag. `akm index --skip-if-locked` mirrors `akm improve
+  // --skip-if-locked` — a scheduled/opportunistic run steps aside (exit 0)
+  // instead of contending with a rebuild already in progress.
+  test("registers index --skip-if-locked as a boolean flag defaulting to false", () => {
+    const top = main.subCommands as unknown as Record<string, DynamicCommand>;
+    expect(top.index).toBe(indexCommand as unknown as DynamicCommand);
+    expect((indexCommand as unknown as DynamicCommand).args?.["skip-if-locked"]).toMatchObject({
+      type: "boolean",
+      default: false,
+    });
+  });
+});
+
 describe("canonical task CLI surface", () => {
   test("registers task explain <ref> with a format flag", () => {
     const top = main.subCommands as unknown as Record<string, DynamicCommand>;

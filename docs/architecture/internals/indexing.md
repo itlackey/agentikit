@@ -65,6 +65,48 @@ or maintain alternate result collections.
 Full rebuilds preserve usage history and then re-link it to rebuilt entries by
 ref.
 
+## Locks
+
+`akm index` takes no blocking lock. #872 deliberately removed the index
+rebuild's earlier 12-hour age-based-stale lease: the index is a fully
+regenerable cache, so two concurrent rebuilds only waste work rather than
+corrupt anything, and a live-but-wedged holder passed that lease's
+PID-liveness check forever — only the age clock could ever free it, and that
+cost one real install a half-day indexing outage. The `index.db.write.lock`
+lease that remains (`src/indexer/index-writer-lock.ts`) is unrelated to
+indexing since that removal; it only serializes actual asset-content
+mutations (`remember`, `import`, `source update`, proposal apply) so two
+writers cannot both pass a git exact-path preflight before either commits.
+
+#956 added a second, opt-in, advisory-only sentinel:
+`<dataDir>/index.rebuild.lock` (`getIndexRebuildLockPath()`), acquired and
+released by every explicit `akm index` command run
+(`src/indexer/index-rebuild-lock.ts`, built on the same PID-liveness-only
+mechanics in `src/core/run-lock.ts` that `akm improve`'s whole-run lock
+uses — no age-based stale reclaim, per the #872 lesson). It changes nothing
+by default: a plain `akm index` that finds the lock already held just warns
+and proceeds, contending with the other run exactly as before this lock
+existed. Only `akm index --skip-if-locked` (intended for scheduled/
+opportunistic callers — the shipped `index-refresh` task passes it) treats a
+live holder as a reason to skip the run entirely and exit 0. This is
+distinct from `ensureIndex()`'s implicit inline reindex (the read path's
+bootstrap when the index is otherwise unusable): that path never consults
+this lock, since a caller reaching it has no usable index to serve either
+way and must proceed.
+
+The write path's targeted index upsert (`indexWrittenAssets`, used by
+`remember`/`import`/`proposal accept`/`source clone`/extract session assets
+to make a just-written asset searchable immediately) probes this same
+rebuild lock before doing any work: a live holder means it skips the
+upsert/embedding entirely with one log line and returns success right away
+— the file write itself already succeeded, and the in-progress rebuild will
+pick up the change on its own. This is a fail-open skip like every other
+branch of `indexWrittenAssets`, not a failure: a caller that gates its own
+result on this boolean (`proposal accept`, `source clone`) must not fail or
+warn just because a rebuild happens to be running concurrently. It never
+tries to acquire or reclaim the lock itself; reclaiming a dead-PID sentinel
+stays `akm index`'s job.
+
 ## Mutation and finalization boundary
 
 The canonical entry repository owns each complete synchronous mutation of
@@ -125,6 +167,98 @@ eligible run.
 **Eligibility** — only entries with `quality: "generated"` are enriched by
 default. Entries with `quality: "curated"` or `quality: "enriched"` are
 skipped unless the caller explicitly requests re-enrichment.
+
+## Embedding Phase
+
+Once entries are upserted, `generateEmbeddingsForDb`
+(`src/indexer/materialize-embeddings.ts`) generates and stores vectors for
+every entry that does not already have one.
+
+**Request batching** — `RemoteEmbedder.embedBatch` (`src/llm/embedders/remote.ts`)
+groups texts into provider requests bounded by an estimated token budget
+(`embedding.maxTokens`/`embedding.contextLength`, default 8000 tokens) and a
+document-count safety cap (`embedding.batchSize`, default 100) — the token
+budget is what actually keeps a request inside the endpoint's context window
+and the 30s request timeout; the count cap only guards against many tiny
+documents packing an oversized request. A single document whose own estimate
+exceeds the token budget is isolated and skipped before ever going over HTTP.
+
+**Concurrency** — provider batches are dispatched through a bounded pool
+(`concurrentMap`) instead of strictly sequentially. Its width is FIXED, no
+config override — `resolveEmbeddingConcurrency` (`src/llm/embedders/remote.ts`)
+derives it via the same shared `defaultConcurrencyForEndpoint` classifier
+(`src/core/loopback.ts`) that `getDefaultLlmConcurrency` above uses: **1**
+for a loopback endpoint (a local model server serves one inference at a
+time; parallel requests thrash it) and **2** for a remote one — request
+COUNT is not the throughput knob here, request SIZE is (see Request
+batching above). A caller abort (`signal.aborted`) still propagates once
+the pool drains, even though `concurrentMap` itself swallows per-item
+throws.
+
+**Context-size split-and-retry** — a batch rejected specifically for
+exceeding the endpoint's context window (HTTP 413, or a recognised
+context-size error body such as `exceed_context_size_error`) is split in half
+and retried recursively rather than discarded whole, down to individual
+documents; a single document that still fails this way becomes a
+`context-window-exceeded` skip. Any other failure (network error, 5xx,
+malformed response) keeps skipping the whole batch as a `batch-request-failed`
+skip — a genuinely broken batch does not get retried into a storm of smaller
+requests against a down endpoint.
+
+**Per-batch commit** — each provider (or local-embedder) batch is written to
+`index.db` inside its own short `db.transaction()` as it completes, via an
+`onBatch` callback threaded through both `RemoteEmbedder` and `LocalEmbedder`.
+Earlier releases buffered every vector in memory and wrote them all in one
+transaction at the very end of the whole run — an interruption (a competing
+indexer collision, a killed process, any thrown error) discarded everything
+already computed. Per-batch commit keeps whatever landed before the
+interruption and keeps the exclusive-write window short enough for
+`akm remember`/`akm improve` to interleave on the same stash.
+
+**Progress and throughput** — a progress line (`Embedded N/M entries.`) is
+emitted every 500 stored entries, and the heartbeat (every 15s while waiting
+on the provider) carries the live stored count. The final line reports
+throughput: `Stored N embeddings in Xs (Y.Y entries/s, ~Z tokens/s).`
+
+**Fingerprint verification (canary)** — a stored provider fingerprint
+(`index_meta.embeddingFingerprint`, `{model, dimension}` derived from
+`embedding.*`) that no longer matches the current config does NOT purge
+unconditionally (#955). `generateEmbeddingsForDb` re-embeds a small sample
+(up to 8) of already-stored entries with the current config and compares:
+
+- the server-reported model identity (`index_meta.embeddingIdentity`,
+  `remote:<model id the endpoint returned>|<vector width>` for a remote
+  config, `local:<localModel>|<vector width>` for a local one) against what
+  the canary observes this run — an exact match keeps the index without
+  even looking at the vectors, since a config-only rename that still hits
+  the same server-reported model cannot have changed the vectors;
+- otherwise, the MEDIAN cosine similarity between each sampled stored
+  vector and its freshly re-embedded counterpart — a rename that still
+  resolves to the same underlying model lands its similarities at ~1.0,
+  while a genuinely different model does not get there by chance. A median
+  ≥ 0.999 keeps the index.
+
+A sample whose re-embed FAILED (the provider skipped or errored on that
+specific text) is excluded from the median rather than scored as zero
+similarity: a partial provider failure is not evidence of a different
+model. A dimension mismatch on a successful re-embed still counts as zero
+(that IS evidence). If half or fewer of the sampled entries re-embedded
+successfully, the run is `unverifiable` — the same outcome as a canary
+that cannot reach the endpoint at all, below.
+
+A kept index adopts the new fingerprint (and identity) immediately; a purge
+writes them in the SAME transaction as the purge, before any embedding
+request, so an interruption partway through a rebuild resumes on the next
+run (only the still-missing entries get re-embedded) instead of purging
+again from zero. A canary that cannot reach the endpoint at all leaves the
+existing vectors and the OLD fingerprint untouched and reports failure, so
+a down server does not destroy a working index — the next `akm index`
+retries. `akm index --reembed` bypasses the canary entirely and forces a
+purge + full re-embed. A genuine dimension change is unaffected: it is
+caught earlier and unconditionally by `ensureSchema`
+(`src/storage/repositories/index-schema.ts`), independent of this
+fingerprint mechanism, since a change in vector width leaves nothing for
+the canary to meaningfully compare.
 
 ## Progress Reporting
 
@@ -249,6 +383,6 @@ Utility scores are rebuilt from `usage_events`.
 When semantic search is enabled:
 
 - semantic readiness is tracked in `semantic-status.json`
-- provider fingerprints include endpoint/model/dimension for remote configs
+- provider fingerprints include model/dimension for remote configs, deliberately EXCLUDING the endpoint — moving the same model+dimension to a different host does not force a rebuild
 - fingerprint changes force semantic status back to pending until a rebuild
 - `sqlite-vec` is optional; JS vector fallback still supports embeddings
