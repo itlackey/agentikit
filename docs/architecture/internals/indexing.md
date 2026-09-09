@@ -95,13 +95,17 @@ this lock, since a caller reaching it has no usable index to serve either
 way and must proceed.
 
 The write path's targeted index upsert (`indexWrittenAssets`, used by
-`remember`/`import`/extract session assets to make a just-written asset
-searchable immediately) probes this same rebuild lock before doing any
-work: a live holder means it skips the upsert/embedding entirely with one
-log line and returns success right away — the file write itself already
-succeeded, and the in-progress rebuild will pick up the change on its own.
-It never tries to acquire or reclaim the lock itself; reclaiming a
-dead-PID sentinel stays `akm index`'s job.
+`remember`/`import`/`proposal accept`/`source clone`/extract session assets
+to make a just-written asset searchable immediately) probes this same
+rebuild lock before doing any work: a live holder means it skips the
+upsert/embedding entirely with one log line and returns success right away
+— the file write itself already succeeded, and the in-progress rebuild will
+pick up the change on its own. This is a fail-open skip like every other
+branch of `indexWrittenAssets`, not a failure: a caller that gates its own
+result on this boolean (`proposal accept`, `source clone`) must not fail or
+warn just because a rebuild happens to be running concurrently. It never
+tries to acquire or reclaim the lock itself; reclaiming a dead-PID sentinel
+stays `akm index`'s job.
 
 ## Mutation and finalization boundary
 
@@ -233,6 +237,14 @@ unconditionally (#955). `generateEmbeddingsForDb` re-embeds a small sample
   resolves to the same underlying model lands its similarities at ~1.0,
   while a genuinely different model does not get there by chance. A median
   ≥ 0.999 keeps the index.
+
+A sample whose re-embed FAILED (the provider skipped or errored on that
+specific text) is excluded from the median rather than scored as zero
+similarity: a partial provider failure is not evidence of a different
+model. A dimension mismatch on a successful re-embed still counts as zero
+(that IS evidence). If half or fewer of the sampled entries re-embedded
+successfully, the run is `unverifiable` — the same outcome as a canary
+that cannot reach the endpoint at all, below.
 
 A kept index adopts the new fingerprint (and identity) immediately; a purge
 writes them in the SAME transaction as the purge, before any embedding
@@ -371,6 +383,6 @@ Utility scores are rebuilt from `usage_events`.
 When semantic search is enabled:
 
 - semantic readiness is tracked in `semantic-status.json`
-- provider fingerprints include endpoint/model/dimension for remote configs
+- provider fingerprints include model/dimension for remote configs, deliberately EXCLUDING the endpoint — moving the same model+dimension to a different host does not force a rebuild
 - fingerprint changes force semantic status back to pending until a rebuild
 - `sqlite-vec` is optional; JS vector fallback still supports embeddings
