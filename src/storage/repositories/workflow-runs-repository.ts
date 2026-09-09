@@ -413,25 +413,44 @@ export class WorkflowRunsRepository {
    * For any database with no child rows the result is byte-identical, same
    * as the other three B-N10 sites below.
    *
-   * `scopeKey: null` (#942) omits the scope predicate entirely — "an active
-   * run of these refs in ANY scope" — rather than binding SQL `NULL` (which
-   * would never match a real `scope_key` value). Used by the cross-scope
-   * start warning; the scope-local uniqueness guard itself always passes a
-   * real scope key here, unchanged.
+   * Always scope-local: `scopeKey` is a real scope, never "every scope" — see
+   * {@link findActiveRunOutsideScope} for the cross-scope warning's query.
    */
   findActiveRunForScope(
     workflowRefs: string | readonly string[],
-    scopeKey: string | null,
+    scopeKey: string,
   ): { id: string; current_step_id: string | null } | undefined {
     const refs = typeof workflowRefs === "string" ? [workflowRefs] : [...workflowRefs];
     if (refs.length === 0) return undefined;
-    const scopeFilter = scopeKey === null ? "" : " AND scope_key = ?";
-    const params = scopeKey === null ? refs : [...refs, scopeKey];
     return this.db
       .prepare(
-        `SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")})${scopeFilter} AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+        `SELECT id, current_step_id FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
       )
-      .get(...params) as { id: string; current_step_id: string | null } | undefined;
+      .get(...refs, scopeKey) as { id: string; current_step_id: string | null } | undefined;
+  }
+
+  /**
+   * The cross-scope start warning's query (#942): the most recently active
+   * run of these refs OUTSIDE `scopeKey` — i.e. `scope_key IS NULL OR
+   * scope_key != scopeKey`, not merely "the most recent active run of these
+   * refs anywhere". A same-scope active row must never win the `LIMIT 1` and
+   * mask a DIFFERENT scope's run: with `--new`/`--force`, the caller's own
+   * active run could otherwise sort first (most recently updated) and hide a
+   * third scope's run entirely, so `startWorkflowRun` silently warned about
+   * nothing while a genuinely stale run in another scope went unreported.
+   * `findActiveRunForScope` deliberately stays scope-local and is never used
+   * for this purpose.
+   */
+  findActiveRunOutsideScope(workflowRefs: string | readonly string[], scopeKey: string): WorkflowRunRow | undefined {
+    const refs = typeof workflowRefs === "string" ? [workflowRefs] : [...workflowRefs];
+    if (refs.length === 0) return undefined;
+    return (
+      (this.db
+        .prepare(
+          `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND (scope_key IS NULL OR scope_key != ?) AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+        )
+        .get(...refs, scopeKey) as WorkflowRunRow | undefined) ?? undefined
+    );
   }
 
   getRunById(runId: string): WorkflowRunRow | undefined {
@@ -449,25 +468,18 @@ export class WorkflowRunsRepository {
    * TWO drivers. For any database with no child rows the result is
    * byte-identical.
    *
-   * `scopeKey: null` (#942) omits the scope predicate — "an active run of
-   * these refs in ANY scope" — used by `startWorkflowRun`'s cross-scope
-   * warning (never by the resume-lookup itself, which always passes the
-   * caller's real scope).
+   * Always scope-local: `scopeKey` is a real scope, never "every scope" — see
+   * {@link findActiveRunOutsideScope} for the cross-scope warning's query.
    */
-  getActiveRunRowForScope(
-    workflowRefs: string | readonly string[],
-    scopeKey: string | null,
-  ): WorkflowRunRow | undefined {
+  getActiveRunRowForScope(workflowRefs: string | readonly string[], scopeKey: string): WorkflowRunRow | undefined {
     const refs = typeof workflowRefs === "string" ? [workflowRefs] : [...workflowRefs];
     if (refs.length === 0) return undefined;
-    const scopeFilter = scopeKey === null ? "" : " AND scope_key = ?";
-    const params = scopeKey === null ? refs : [...refs, scopeKey];
     return (
       (this.db
         .prepare(
-          `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")})${scopeFilter} AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
+          `SELECT * FROM workflow_runs WHERE workflow_ref IN (${refs.map(() => "?").join(", ")}) AND scope_key = ? AND status = 'active' AND parent_run_id IS NULL ORDER BY updated_at DESC, created_at DESC LIMIT 1`,
         )
-        .get(...params) as WorkflowRunRow | undefined) ?? undefined
+        .get(...refs, scopeKey) as WorkflowRunRow | undefined) ?? undefined
     );
   }
 
@@ -694,6 +706,13 @@ export class WorkflowRunsRepository {
     this.immediateTransaction((db) => {
       input.revalidateSources();
       if (!input.force) {
+        // The uniqueness guard must never silently skip its scope predicate
+        // (#942) — every real caller (`startWorkflowRun`) stamps a concrete
+        // scope key, so a null one here means the caller is misusing this
+        // top-level guard, not that scoping should be waived.
+        if (input.run.scopeKey === null) {
+          throw new Error("publishWorkflowRunV4: run.scopeKey must not be null for the scope uniqueness guard.");
+        }
         const existing = this.findActiveRunForScope(input.workflowRefs, input.run.scopeKey);
         if (existing) {
           throw new UsageError(

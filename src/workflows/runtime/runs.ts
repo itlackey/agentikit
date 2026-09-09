@@ -355,18 +355,18 @@ export async function startWorkflowRun(
     // stays scope-local (a documented, deliberate per-project partition —
     // see storage-locations.md); this only warns, once, so the operator can
     // resume or abandon the other run instead of silently accumulating a
-    // second one. `scopeKey: null` searches every scope; a hit in the
-    // CALLER's own scope is not "another scope" and never warns (that case
-    // either resumed above already, or is about to hit the guard's own
-    // RESOURCE_ALREADY_EXISTS below).
-    const crossScopeActive = repo.getActiveRunRowForScope(workflowRefs, null);
-    const crossScopeWarning =
-      crossScopeActive && crossScopeActive.scope_key !== scopeKey
-        ? `Workflow ${asset.ref} already has an active run in another scope ` +
-          `(id ${crossScopeActive.id}, started ${crossScopeActive.created_at}, scope ${crossScopeActive.scope_key}); ` +
-          `starting a separate run here. Resume it from anywhere with "akm workflow run ${crossScopeActive.id}" ` +
-          `or free it with "akm workflow abandon ${crossScopeActive.id}".`
-        : undefined;
+    // second one. `findActiveRunOutsideScope` excludes the caller's own
+    // scope IN SQL (never merely post-filtered) so the caller's own active
+    // run can never sort first under `LIMIT 1` and mask a genuinely different
+    // scope's run — the failure mode a same-scope-inclusive query plus a
+    // post-filter has with `--new`/`--force`.
+    const crossScopeActive = repo.findActiveRunOutsideScope(workflowRefs, scopeKey);
+    const crossScopeWarning = crossScopeActive
+      ? `Workflow ${asset.ref} already has an active run in another scope ` +
+        `(id ${crossScopeActive.id}, started ${crossScopeActive.created_at}, scope ${crossScopeActive.scope_key ?? "unknown"}); ` +
+        `starting a separate run here. Resume it from anywhere with "akm workflow run ${crossScopeActive.id}" ` +
+        `or free it with "akm workflow abandon ${crossScopeActive.id}".`
+      : undefined;
 
     repo.publishWorkflowRunV4({
       workflowRefs,

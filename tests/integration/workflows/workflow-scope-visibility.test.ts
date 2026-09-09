@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withWorkflowRunsRepo } from "../../../src/storage/repositories/workflow-runs-repository";
 import { getCurrentWorkflowScopeKey } from "../../../src/workflows/authoring/scope-key";
 import type { UnitDispatcher } from "../../../src/workflows/exec/native-executor";
 import { runWorkflowSteps } from "../../../src/workflows/exec/run-workflow";
@@ -130,5 +131,65 @@ describe("#942 — active runs are visible across scopes", () => {
     // And from scope B against the ORIGINAL scope-A run too.
     const abandonedA = await withCwd(os.tmpdir(), () => abandonWorkflowRun(runIdA));
     expect(abandonedA.run.status).toBe("failed");
+  });
+
+  test("repository: an own-scope active run does not mask a DIFFERENT scope's run under findActiveRunOutsideScope", async () => {
+    // Regression pin (coordinator review of the initial #942 implementation):
+    // `getActiveRunRowForScope(refs, null)` plus a `scope_key !== callerScope`
+    // post-filter picks the single most-recently-updated active run across
+    // EVERY scope, then discards it if it happens to be the caller's own —
+    // so when the caller's own scope's run is the most recently updated one,
+    // the whole query returns nothing, silently hiding a genuinely different
+    // scope's active run (the exact failure the reviewer demonstrated with
+    // `--new`/`--force`, where the caller's own active run wins the
+    // `LIMIT 1`). `findActiveRunOutsideScope` excludes the caller's scope IN
+    // SQL, so it cannot be masked this way regardless of timestamp order.
+    const ref = "workflows/repo-level-scope-test";
+    const scopeA = "scope-a-repo-test";
+    const scopeB = "scope-b-repo-test";
+
+    await withWorkflowRunsRepo(async (repo) => {
+      // Scope B's run is seeded (and updated) FIRST, scope A's own run SECOND
+      // — so scope A's row sorts first under `ORDER BY updated_at DESC`,
+      // which is exactly the ordering that hid it under the old query.
+      repo.insertRun({
+        id: "run-scope-b",
+        workflowRef: ref,
+        scopeKey: scopeB,
+        workflowEntryId: null,
+        workflowTitle: "Repo-level scope test",
+        paramsJson: "{}",
+        currentStepId: "step-1",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        agentHarness: null,
+        agentSessionId: null,
+        checkinArmedAt: null,
+      });
+      repo.insertRun({
+        id: "run-scope-a",
+        workflowRef: ref,
+        scopeKey: scopeA,
+        workflowEntryId: null,
+        workflowTitle: "Repo-level scope test",
+        paramsJson: "{}",
+        currentStepId: "step-1",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        updatedAt: "2026-01-02T00:00:00.000Z",
+        agentHarness: null,
+        agentSessionId: null,
+        checkinArmedAt: null,
+      });
+
+      // The scope-local guard still finds the caller's own run.
+      expect(repo.getActiveRunRowForScope([ref], scopeA)?.id).toBe("run-scope-a");
+
+      // The cross-scope query, called AS the scope-A caller, must still
+      // surface scope B's run — never masked by scope A's own, more
+      // recently updated, row.
+      const outsideA = repo.findActiveRunOutsideScope([ref], scopeA);
+      expect(outsideA?.id).toBe("run-scope-b");
+      expect(outsideA?.scope_key).toBe(scopeB);
+    });
   });
 });
