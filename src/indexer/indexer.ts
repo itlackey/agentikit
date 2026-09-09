@@ -57,6 +57,7 @@ import { resolveSourcesForOrigin } from "../registry/origin-resolve";
  * See the index-consistency ADR (2026-06) for the full analysis.
  */
 import type { Database } from "../storage/database";
+import { salvageEmbeddingsBeforeDiscard } from "../storage/repositories/embedding-salvage-repository";
 import {
   closeDatabase,
   openExistingDatabase,
@@ -1762,6 +1763,14 @@ function persistDirRecords(
     // transaction so delete and re-insert are atomic — a concurrent reader
     // never observes an empty database between the two operations.
     if (fullDelete) {
+      // #9542: copy every (search_text hash, embedding) pair about to be
+      // discarded wholesale into `embedding_salvage`, tagged with the
+      // fingerprint the discarded vectors were generated under, BEFORE the
+      // wipe below — inside the SAME transaction so the copy and the
+      // discard commit or roll back together. The embedding phase later in
+      // this run hands salvaged vectors back to unchanged content instead
+      // of re-embedding the whole corpus.
+      salvageEmbeddingsBeforeDiscard(db);
       // Entries and every child materialization share one deletion authority.
       // Usage events live in state.db and survive so finalize can relink them
       // to the replacement generation's row ids.

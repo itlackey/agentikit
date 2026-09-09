@@ -29,6 +29,11 @@ import {
 } from "../llm/embedders/remote";
 import { cosineSimilarity, type EmbeddingVector } from "../llm/embedders/types";
 import type { Database } from "../storage/database";
+import {
+  purgeEmbeddingSalvage,
+  relabelEmbeddingSalvageFingerprint,
+  reuseSalvagedEmbeddings,
+} from "../storage/repositories/embedding-salvage-repository";
 import { getEmbeddableEntryCount } from "../storage/repositories/index-entries-repository";
 import { deleteMeta, getMeta, setMeta } from "../storage/repositories/index-meta-repository";
 import {
@@ -362,6 +367,9 @@ export async function generateEmbeddingsForDb(
     // instead of purging again from zero (#955/#956).
     db.transaction(() => {
       purgeEmbeddings(db, { dropVecTable: true });
+      // #9542: an explicit forced rebuild must re-embed everything, not
+      // quietly satisfy some of it from stale salvage.
+      purgeEmbeddingSalvage(db);
       deleteMeta(db, "embeddingDim");
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       deleteMeta(db, "embeddingIdentity");
@@ -384,6 +392,9 @@ export async function generateEmbeddingsForDb(
     if (decision.outcome === "rebuild") {
       db.transaction(() => {
         purgeEmbeddings(db, { dropVecTable: true });
+        // #9542: the stored vectors AND any leftover salvage both belong to
+        // a different model now — neither is reusable, so both go.
+        purgeEmbeddingSalvage(db);
         deleteMeta(db, "embeddingDim");
         setMeta(db, "embeddingFingerprint", currentFingerprint);
         if (decision.identity) setMeta(db, "embeddingIdentity", decision.identity);
@@ -398,6 +409,11 @@ export async function generateEmbeddingsForDb(
       // immediate write means a crash right after this decision does not
       // re-run the canary needlessly on the next attempt.
       setMeta(db, "embeddingFingerprint", currentFingerprint);
+      // #9542: the model did not actually change, only the fingerprint
+      // STRING did (e.g. a gateway rename) — any leftover salvage rows
+      // tagged with the OLD string are still valid vectors. Relabel them so
+      // the reuse step below (and any later pass) can still find them.
+      relabelEmbeddingSalvageFingerprint(db, storedFingerprint, currentFingerprint);
       if (decision.identity) setMeta(db, "embeddingIdentity", decision.identity);
       if (decision.verified) {
         const keptCount = getEmbeddingCount(db);
@@ -416,21 +432,56 @@ export async function generateEmbeddingsForDb(
   try {
     throwIfAborted(signal);
     const allEntries = getAllEntriesForEmbedding(db, targetEntryIds);
-    if (allEntries.length === 0) {
+
+    let vecFailedCount = 0;
+    let vecUnavailableCount = 0;
+
+    // #9542: before any provider call, hand back vectors salvaged from a
+    // full rebuild or a generation bump for entries whose search_text is
+    // byte-identical to what was salvaged under the SAME fingerprint — a
+    // fingerprint mismatch or a single-byte content change both correctly
+    // fall through to the provider below instead.
+    const { reusedCount, remaining: pendingEntries } = reuseSalvagedEmbeddings(
+      db,
+      allEntries,
+      currentFingerprint,
+      (entry, embedding) => {
+        const result = upsertEmbedding(db, entry.id, embedding);
+        if (result.vec === "failed") vecFailedCount++;
+        if (result.vec === "unavailable") vecUnavailableCount++;
+        return result.stored;
+      },
+    );
+    if (reusedCount > 0) {
+      onProgress({
+        phase: "embeddings",
+        message: `Reused ${reusedCount} embedding${reusedCount === 1 ? "" : "s"} from the previous generation; embedding ${pendingEntries.length} new.`,
+      });
+    }
+
+    if (pendingEntries.length === 0) {
       onProgress({ phase: "embeddings", message: "Embeddings already up to date." });
       setMeta(db, "embeddingFingerprint", currentFingerprint);
-      return { success: true };
+      if (reusedCount > 0) {
+        const vecGenerationComplete = targetEntryIds === undefined ? isVecFastPathComplete(db) : vecFastPathWasReady;
+        setVecFastPathReady(db, vecFailedCount === 0 && vecUnavailableCount === 0 && vecGenerationComplete);
+      }
+      // A pass that completes (even one that did nothing but reuse) purges
+      // whatever is left — salvage is consumed by the NEXT pass, never kept
+      // around as a second cache.
+      purgeEmbeddingSalvage(db);
+      return reusedCount > 0 ? { success: true, vecInsertFailures: vecFailedCount } : { success: true };
     }
     if (rebuildReason) {
-      const message = `[embed] Re-embedding ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"} because ${rebuildReason}`;
+      const message = `[embed] Re-embedding ${pendingEntries.length} entr${pendingEntries.length === 1 ? "y" : "ies"} because ${rebuildReason}`;
       warn(message);
       onProgress({ phase: "embeddings", message });
     }
     onProgress({
       phase: "embeddings",
-      message: `Generating embeddings for ${allEntries.length} entr${allEntries.length === 1 ? "y" : "ies"}.`,
+      message: `Generating embeddings for ${pendingEntries.length} entr${pendingEntries.length === 1 ? "y" : "ies"}.`,
     });
-    const texts = allEntries.map((entry) => entry.searchText);
+    const texts = pendingEntries.map((entry) => entry.searchText);
 
     if (isVerbose()) {
       // Mirror RemoteEmbedder's actual token-bounded batching (#874) so this
@@ -447,7 +498,7 @@ export async function generateEmbeddingsForDb(
         batches.forEach((batch, batchIdx) => {
           for (const i of batch.indices) batchNumberByIndex.set(i, batchIdx + 1);
         });
-        for (const [i, entry] of allEntries.entries()) {
+        for (const [i, entry] of pendingEntries.entries()) {
           const chars = entry.searchText.length;
           const tokens = estimateTokenCount(entry.searchText);
           const batch = batches[batchNumberByIndex.get(i)! - 1];
@@ -457,7 +508,7 @@ export async function generateEmbeddingsForDb(
           warnVerbose(`[embed] ${entry.itemRef} (${chars} chars, est. ${tokens} tokens) → ${label}`);
         }
       } else {
-        for (const entry of allEntries) {
+        for (const entry of pendingEntries) {
           warnVerbose(
             `[embed] ${entry.itemRef} (${entry.searchText.length} chars, est. ${estimateTokenCount(entry.searchText)} tokens)`,
           );
@@ -469,14 +520,12 @@ export async function generateEmbeddingsForDb(
     let storedCount = 0;
     let skippedCount = 0;
     let embedFailedCount = 0;
-    let vecFailedCount = 0;
-    let vecUnavailableCount = 0;
     let storedTokens = 0;
     try {
       heartbeatTimer = setInterval(() => {
         onProgress({
           phase: "embeddings",
-          message: formatEmbeddingHeartbeat(storedCount, allEntries.length, embedFailedCount),
+          message: formatEmbeddingHeartbeat(storedCount, pendingEntries.length, embedFailedCount),
         });
       }, 15000);
 
@@ -546,7 +595,7 @@ export async function generateEmbeddingsForDb(
         }
         db.transaction(() => {
           for (let k = 0; k < indices.length; k++) {
-            const entry = allEntries[indices[k] as number];
+            const entry = pendingEntries[indices[k] as number];
             if (!entry) continue;
             const embedding = batchEmbeddings[k];
             if (!embedding) {
@@ -571,7 +620,7 @@ export async function generateEmbeddingsForDb(
         // entries, indistinguishable from a hang.
         onProgress({
           phase: "embeddings",
-          message: `Embedded ${storedCount}/${allEntries.length} entries.`,
+          message: `Embedded ${storedCount}/${pendingEntries.length} entries.`,
         });
       };
       await embedBatch(texts, config.embedding, signal, onSkip, onBatch);
@@ -585,7 +634,7 @@ export async function generateEmbeddingsForDb(
       if (embedFailedCount > 0) {
         const detail = skips
           .slice(0, 20)
-          .map((skip) => `  - ${allEntries[skip.index]?.itemRef ?? skip.index} (${skip.reason}): ${skip.message}`)
+          .map((skip) => `  - ${pendingEntries[skip.index]?.itemRef ?? skip.index} (${skip.reason}): ${skip.message}`)
           .join("\n");
         const more = skips.length > 20 ? `\n  ...and ${skips.length - 20} more` : "";
         warn(
@@ -603,9 +652,17 @@ export async function generateEmbeddingsForDb(
       }
       const entriesPerSec = storedCount / elapsedSeconds;
       const tokensPerSec = storedTokens / elapsedSeconds;
+      const totalStored = storedCount + reusedCount;
+      // #9542: report reused and newly-embedded counts separately — the
+      // rate figures below are provider throughput only (reuse is a plain DB
+      // write, not provider work) and would be misleadingly inflated if
+      // reused entries were folded into them.
       onProgress({
         phase: "embeddings",
-        message: `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"} in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s).`,
+        message:
+          reusedCount > 0
+            ? `Stored ${totalStored} embedding${totalStored === 1 ? "" : "s"} (${reusedCount} reused, ${storedCount} newly embedded) in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s).`
+            : `Stored ${storedCount} embedding${storedCount === 1 ? "" : "s"} in ${elapsedSeconds.toFixed(1)}s (${entriesPerSec.toFixed(1)} entries/s, ~${Math.round(tokensPerSec)} tokens/s).`,
       });
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       const observedIdentity = deriveObservedEmbeddingIdentity(config.embedding, observedModel, observedVectorLen);
@@ -635,6 +692,10 @@ export async function generateEmbeddingsForDb(
           message: `All ${embedFailedCount} embedding batch(es) failed: ${firstMessage}`,
         };
       }
+      // A pass that completes without abort or circuit-break purges
+      // whatever salvage is left — consumed by this pass's reuse step
+      // above, or superseded by what it just embedded.
+      purgeEmbeddingSalvage(db);
       return { success: true, vecInsertFailures: vecFailedCount };
     } finally {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
