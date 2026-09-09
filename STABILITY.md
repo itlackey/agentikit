@@ -57,9 +57,9 @@ enumeration of the whole `proposal` noun group.
 | `akm search` | Stable | |
 | `akm curate` | Stable | |
 | `akm show` | Stable | |
-| `akm workflow status` | Stable | |
+| `akm workflow status` | Stable | `--all-scopes` added in 0.9.15 (#942), additive. |
 | `akm workflow plan` | Evolving | New in 0.9.2; secret-free provenance output; envelope shape may change. |
-| `akm workflow list` | Stable | |
+| `akm workflow list` | Stable | `--all-scopes` and a top-level `scopeKey` envelope field added in 0.9.15 (#942), both additive. |
 | `akm workflow create` | Stable | |
 | `akm workflow resume` | Stable | |
 | `akm workflow abandon` | Stable | |
@@ -219,6 +219,7 @@ enumeration of the whole `proposal` noun group.
   | `2` | Usage / bad input |
   | `4` | Health warning (`akm health` only) |
   | `70` | Internal / unclassified |
+  | `75` | Transient — retry shortly (`TransientError`, sysexits `EX_TEMPFAIL`); another akm process holds a lock or is writing `state.db` right now |
   | `78` | Configuration error |
 
   **From 0.9.12**, every success envelope produced by the passthrough stamp
