@@ -14,7 +14,7 @@ import { concurrentMap } from "../../core/concurrent";
 import { type EmbeddingConnectionConfig, resolveSecret } from "../../core/config/config";
 import { defaultConcurrencyForEndpoint } from "../../core/loopback";
 import { redactErrorBody, redactSensitiveText } from "../../core/redaction";
-import { warnVerbose } from "../../core/warn";
+import { warn } from "../../core/warn";
 import { resolveSecretFromStore } from "../../sources/snapshot-fetchers/secret-seam";
 import type { Embedder, EmbeddingVector } from "./types";
 
@@ -385,7 +385,12 @@ export class RemoteEmbedder implements Embedder {
         const message = err instanceof Error ? err.message : String(err);
         const reason: EmbeddingSkipReason =
           err instanceof ContextExceededError ? "context-window-exceeded" : "batch-request-failed";
-        warnVerbose(`[embed] batch of ${batch.length} document(s) failed and was skipped: ${message}`);
+        // Default-level, not verbose-only (#9541 decision 5): a silently
+        // grinding hours-long run against a dead provider was the field
+        // report's own symptom — a failed batch has to be visible without
+        // --verbose. Per-entry batch-mapping detail stays verbose-only
+        // (materialize-embeddings.ts).
+        warn(`[embed] batch of ${batch.length} document(s) failed and was skipped: ${message}`);
         for (const idx of indices) {
           onSkip?.({ index: idx, reason, message });
         }

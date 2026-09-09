@@ -77,8 +77,14 @@ export interface GenerateEmbeddingsOptions {
   forceReembed?: boolean;
 }
 
-/** How often (in stored entries) to emit a progress line during a large embedding run (#954). */
-const PROGRESS_INTERVAL = 500;
+/**
+ * The heartbeat text emitted every 15s while a provider request is in
+ * flight, and by default (not `--verbose`-only) since silence indistinguishable
+ * from a hang was the field report's own symptom (#9541 decision 5).
+ */
+export function formatEmbeddingHeartbeat(storedCount: number, total: number, failedCount: number): string {
+  return `Still generating embeddings: ${storedCount}/${total} stored, ${failedCount} failed; waiting on embedding provider.`;
+}
 
 /**
  * Number of already-embedded entries sampled for the fingerprint-rename
@@ -447,12 +453,11 @@ export async function generateEmbeddingsForDb(
     let vecFailedCount = 0;
     let vecUnavailableCount = 0;
     let storedTokens = 0;
-    let lastProgressBucket = 0;
     try {
       heartbeatTimer = setInterval(() => {
         onProgress({
           phase: "embeddings",
-          message: `Still generating embeddings: ${storedCount}/${allEntries.length} stored; waiting on embedding provider.`,
+          message: formatEmbeddingHeartbeat(storedCount, allEntries.length, embedFailedCount),
         });
       }, 15000);
 
@@ -495,14 +500,14 @@ export async function generateEmbeddingsForDb(
             if (result.vec === "unavailable") vecUnavailableCount++;
           }
         })();
-        const bucket = Math.floor(storedCount / PROGRESS_INTERVAL);
-        if (bucket > lastProgressBucket) {
-          lastProgressBucket = bucket;
-          onProgress({
-            phase: "embeddings",
-            message: `Embedded ${storedCount}/${allEntries.length} entries.`,
-          });
-        }
+        // Every committed batch, not just every 500 stored entries (#9541
+        // decision 5) — the prior bucketing left a non-verbose run silent
+        // for the entire embedding phase on anything smaller than 500
+        // entries, indistinguishable from a hang.
+        onProgress({
+          phase: "embeddings",
+          message: `Embedded ${storedCount}/${allEntries.length} entries.`,
+        });
       };
       await embedBatch(texts, config.embedding, signal, (skip) => skips.push(skip), onBatch);
       throwIfAborted(signal);

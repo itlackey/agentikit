@@ -221,9 +221,20 @@ interruption and keeps the exclusive-write window short enough for
 `akm remember`/`akm improve` to interleave on the same stash.
 
 **Progress and throughput** — a progress line (`Embedded N/M entries.`) is
-emitted every 500 stored entries, and the heartbeat (every 15s while waiting
-on the provider) carries the live stored count. The final line reports
-throughput: `Stored N embeddings in Xs (Y.Y entries/s, ~Z tokens/s).`
+emitted after EVERY committed batch (#9541 — the earlier 500-stored-entries
+bucketing left a non-verbose run silent for its entire embedding phase on
+any run smaller than 500 entries), and the heartbeat (every 15s while
+waiting on the provider) names both the live stored AND failed counts:
+`Still generating embeddings: X/N stored, F failed; waiting on embedding
+provider.` The final line reports throughput: `Stored N embeddings in Xs
+(Y.Y entries/s, ~Z tokens/s).` A failed provider batch itself logs at the
+default `warn` level, not `--verbose`-only, naming the batch size and
+reason — a silently grinding, hours-long run against a dead provider with
+one aggregate warning at the very end was the field report's own symptom.
+In the `akm index` CLI, phase-start messages and the heartbeat reach stderr
+in non-verbose JSON/yaml output mode too (via `info()`); text mode keeps
+its spinner instead, and `--verbose` gets everything, including the
+high-frequency per-batch line JSON mode deliberately omits.
 
 **Fingerprint verification (canary)** — a stored provider fingerprint
 (`index_meta.embeddingFingerprint`, `{model, dimension}` derived from

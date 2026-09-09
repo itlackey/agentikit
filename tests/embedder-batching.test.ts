@@ -18,6 +18,7 @@
 import { describe, expect, test } from "bun:test";
 import type { EmbeddingConnectionConfig } from "../src/core/config/config";
 import { EmbeddingConnectionConfigSchema } from "../src/core/config/schema/embedding";
+import { _setWarnSinkForTests } from "../src/core/warn";
 import {
   DEFAULT_EMBEDDING_TIMEOUT_MS,
   isContextExceededResponse,
@@ -53,6 +54,29 @@ describe("isContextExceededResponse", () => {
     expect(isContextExceededResponse(500, "synthetic upstream failure")).toBe(false);
     expect(isContextExceededResponse(503, "service unavailable")).toBe(false);
     expect(isContextExceededResponse(400, "")).toBe(false);
+  });
+});
+
+describe("RemoteEmbedder.embedBatch: failed-batch visibility (#9541 decision 5)", () => {
+  test("a failed provider batch logs at warn (default) level, naming the batch size and reason", async () => {
+    const calls: Array<{ level: string; message: string }> = [];
+    _setWarnSinkForTests((level, args) => {
+      calls.push({ level, message: args.map(String).join(" ") });
+    });
+    try {
+      await withMockedFetch(
+        async () => {
+          const embedder = new RemoteEmbedder({ endpoint: "http://localhost:9", model: "test" });
+          await embedder.embedBatch(["doc one", "doc two"]);
+        },
+        () => new Response("synthetic upstream failure", { status: 500 }),
+      );
+      const warnCall = calls.find((c) => c.message.includes("document(s) failed and was skipped"));
+      expect(warnCall?.level).toBe("warn");
+      expect(warnCall?.message).toContain("batch of 2 document(s) failed and was skipped");
+    } finally {
+      _setWarnSinkForTests(undefined);
+    }
   });
 });
 
