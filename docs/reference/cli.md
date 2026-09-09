@@ -1638,13 +1638,21 @@ See [configuration.md](configuration.md) for details.
 ### models
 
 Manage the installed and operator-owned model intent map. Bare `akm models`
-is a usage error; use the explicit copy operation when you want an editable
-full map.
+is a usage error; use `list` to inspect the effective table or `copy-defaults`
+when you want an editable full map.
 
 ```sh
+akm models list
 akm models copy-defaults
 akm models copy-defaults --overwrite
 ```
+
+`list` shows the fully resolved alias table — one row per (alias, column)
+pair with its `model`, optional `inference`, `source` (`default`: unchanged
+from the installed file; `user`: touched by the user overlay), and `via`
+(`literal`: a model string; `engine`: borrowed from a configured
+`engines.<name>` connection, in which case the row also names that `engine`).
+Read-only; it never writes `models.json`.
 
 `copy-defaults` validates the packaged version-1 `models.json`, then stages and
 syncs it beside the normal AKM configuration target. Creation uses an atomic
@@ -1655,7 +1663,8 @@ filesystems do not offer a conditional rename that locks the previously
 observed inode. Symlinks and other non-regular targets observed during checks
 are refused. See
 [Model-map files](configuration.md#model-map-files) for schema, overlay, and
-resolution semantics.
+resolution semantics — including the `engine` field (0.9.15) that lets a
+column borrow its model from a configured engine instead of a literal string.
 
 ### help
 
@@ -2109,8 +2118,13 @@ akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [-
 
 When `<agent-ref>` is provided, akm resolves the bundle agent's persona,
 `modelHint`, and requested `toolPolicy`. The `--model` flag wins over any model
-specified in the asset. The requested tool policy never grants access by
-itself: authorization runs before lowering, credentials, or provider dispatch.
+specified in the asset. An alias resolves per the selected `--engine`'s
+model-map column (see [Model-map files](configuration.md#model-map-files)),
+which — as of 0.9.15 — may itself be an `engine`-backed indirection, so
+`--engine local-fast --model fast` can resolve to `local-fast`'s own
+`engines.local-fast.model` instead of a hardcoded per-platform literal. The
+requested tool policy never grants access by itself: authorization runs before
+lowering, credentials, or provider dispatch.
 The current CLI has no built-in allow-all authorizer, so a nonempty request is
 rejected rather than silently weakened.
 Selecting a persona or model without `--prompt` or `--prompt-stdin` is also

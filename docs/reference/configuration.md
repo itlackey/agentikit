@@ -150,19 +150,54 @@ the same version-1 schema as the installed file:
 ```
 
 Each engine mapping is either a non-empty exact model string or a structured
-profile with the documented fields `model` and `inference`. A user profile may
-omit `model` when the installed layer already supplies it, as the partial
-Claude override above does. After overlay, every alias/engine entry must have a
-usable model. Unknown profile fields are rejected; JSON-safe fields inside
-`inference` are preserved for engine adapters to lower optimistically.
+profile with the documented fields `model`, `inference`, and `engine`. A user
+profile may omit `model` when the installed layer already supplies it, as the
+partial Claude override above does. After overlay, every alias/engine entry
+must have a usable model. Unknown profile fields are rejected; JSON-safe
+fields inside `inference` are preserved for engine adapters to lower
+optimistically.
+
+A profile's `engine` field (0.9.15, #946) borrows a column's `model` (and, for
+an `llm`-kind engine, its inference defaults) from a configured
+`engines.<name>` connection instead of hand-typing a literal model a second
+time:
+
+```json
+{
+  "version": 1,
+  "aliases": {
+    "fast": {
+      "opencode": { "engine": "local-fast" }
+    }
+  }
+}
+```
+
+With `engines.local-fast` configured (agent-kind or llm-kind), this column
+resolves to that engine's own `model` string. `model` and `engine` are
+mutually exclusive on the same profile — `engine` is an indirection for the
+model value, never an engine-selection override; which engine `akm agent`
+dispatches to is still decided entirely by `--engine`/`defaults.engine` (see
+[Engine selection](#engines)). The referenced engine's `model` must itself be
+literal, not another alias, and akm copies it verbatim: it does not translate
+between an engine's connection and an agent platform's own provider registry,
+so the value must already be meaningful for the column's platform (e.g. a
+`kind: "agent", platform: "opencode"` engine's `model` should already be a
+string opencode itself understands, such as `krang/qwen3.5-9b`). Run
+`akm models list` to see, for every alias/column, the resolved model and
+whether it came from the installed defaults, the user overlay, and a literal
+value or an `engine` reference.
 
 The user file overlays the installed file by alias, engine, and nested object
 field. Objects merge recursively. Arrays, scalars, and explicit `null` replace
-the lower value; omitted fields preserve it. Alias and engine keys are
-case-normalized, and case-colliding definitions are rejected. Unknown model
-inputs still pass through byte-for-byte as exact identifiers. Once a name is a
-known merged alias, selecting an engine with no mapping is an actionable
-configuration error rather than silently sending the alias as a model ID.
+the lower value; omitted fields preserve it. A layer setting a literal `model`
+clears any `engine` inherited from a farther layer, and vice versa — the
+nearer layer's choice of literal-vs-engine always wins outright rather than
+merging. Alias and engine keys are case-normalized, and case-colliding
+definitions are rejected. Unknown model inputs still pass through
+byte-for-byte as exact identifiers. Once a name is a known merged alias,
+selecting an engine with no mapping is an actionable configuration error
+rather than silently sending the alias as a model ID.
 
 The common execution cascade reads these files for current direct command and
 non-interactive agent calls, task source v4 runs, and improve/proposal/index
