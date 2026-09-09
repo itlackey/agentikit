@@ -268,22 +268,28 @@ function gatherTaskHistoryPhase(
 
 interface EgressConfigPhase {
   egressConfigView: EgressConfigView | undefined;
+  /** #949: configured `kind: "llm"` engine names with `enableThinking: false`. */
+  thinkingOffEngines: string[];
 }
 
 /**
- * Config fields the surfaces advisory needs. Best-effort: an unloadable
- * config leaves the field undefined and the caller falls back to a generic
- * message.
+ * Config fields the surfaces advisory and (#949) the `thinking-control`
+ * check need. Best-effort: an unloadable config leaves both fields at their
+ * empty fallback and the callers degrade to their generic/unknown states.
  */
 function gatherEgressConfigPhase(): EgressConfigPhase {
   let egressConfigView: EgressConfigView | undefined;
+  let thinkingOffEngines: string[] = [];
   try {
     const config = loadConfig();
     egressConfigView = config as EgressConfigView;
+    thinkingOffEngines = Object.entries(config.engines ?? {})
+      .filter(([, engine]) => engine.kind === "llm" && engine.enableThinking === false)
+      .map(([name]) => name);
   } catch {
-    // fall through with undefined
+    // fall through with undefined/empty
   }
-  return { egressConfigView };
+  return { egressConfigView, thinkingOffEngines };
 }
 
 interface ImproveSummaryPhase {
@@ -698,7 +704,7 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
     const taskHistory = gatherTaskHistoryPhase(db, logsDb, since, stateDbPath, now);
     const { tableNames, missingTables, probe } = taskHistory;
 
-    const { egressConfigView } = gatherEgressConfigPhase();
+    const { egressConfigView, thinkingOffEngines } = gatherEgressConfigPhase();
 
     const { improveSummary } = gatherImproveSummaryPhase(db, stateDbPath, since, now);
 
@@ -707,6 +713,10 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
     const sessionExtractionLedger = gatherSessionExtractionLedgerPhase(db, now);
 
     const engineProbes = await engineProbesPromise;
+
+    // Read once, shared by the `thinking-control` check (#949) and the
+    // `metrics.llmUsage` report field below — same window, same aggregate.
+    const llmUsage = readLlmUsageAggregate(stateDbPath, since);
 
     // Run the ordered health-check registry. Each check projects the shared
     // context computed above into one HealthCheckResult; `channel` routes it to
@@ -730,6 +740,8 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
       sessionExtractionLedger,
       autoAccept: improveSummary.autoAccept,
       engineProbes,
+      thinkingOffEngines,
+      llmUsage,
     };
     for (const check of HEALTH_CHECKS) {
       const result = check.run(checkContext);
@@ -743,7 +755,7 @@ export async function akmHealth(options: AkmHealthOptions = {}): Promise<AkmHeal
       stuckActiveRuns: taskHistory.stuckActiveRuns,
       logBackingRate: roundRate(taskHistory.logBackingRate),
       probeRoundTripMs: probe.durationMs,
-      llmUsage: readLlmUsageAggregate(stateDbPath, since),
+      llmUsage,
     };
 
     const hardFailure = hardChecks.some((check) => check.status === "fail");

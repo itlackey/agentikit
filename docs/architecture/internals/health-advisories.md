@@ -39,6 +39,7 @@ changes.
 | `enrichment-lane-minting` | Enrichment lanes minted new assets above threshold (5% warn / higher = fail). | Adjudicated against the ratified minting rules; act only if the share keeps climbing post-shutdown. |
 | `improve-churn-ratio` | Accepted proposals rewrote the same few refs (ratio > 1.5) instead of covering the corpus. | Expected while coverage is low; watch the trend, do not retune on a single window. |
 | `collapse-churn-detector` | R5 detector fired collapse/churn alerts (or `unknown` = no cycle rows yet). | Inspect recent collapse/churn cycle rows and the detector's advisory output before acting. |
+| `thinking-control` | (#949) For every configured `kind: "llm"` engine with `enableThinking: false`, checks the window's recorded `llm_usage` for reasoning tokens. Passive: never issues its own completion. `unknown` when no engine sets `enableThinking: false`, or when a configured one made no calls in the window. | A `warn` names the engine that returned reasoning tokens — its endpoint, or a gateway in front of it, is not honoring the thinking-off control. Check the gateway/endpoint config, or add a per-engine escape hatch if the extra wire field is rejected outright. |
 
 > Adjudicated states (`outcome-proxy-dead`, `enrichment-lane-minting`)
 > are the before/after instrument for the 12-D1 minting shutdown — do not "fix" them by retuning.

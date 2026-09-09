@@ -24,7 +24,13 @@ import {
 import type { RunnerSpec } from "../../integrations/agent/runner";
 import type { ExtractOutcomeCount } from "../../storage/repositories/extract-sessions-repository";
 import { resolveImprovePlan } from "../improve/improve-strategies";
-import { ACTIVE_RUN_WARN_MS, type HealthCheckResult, type ImproveHealthMetrics, TASK_FAIL_RATE_WARN } from "./types";
+import {
+  ACTIVE_RUN_WARN_MS,
+  type HealthCheckResult,
+  type ImproveHealthMetrics,
+  type LlmUsageAggregate,
+  TASK_FAIL_RATE_WARN,
+} from "./types";
 
 /**
  * Pre-computed inputs shared by the health-check registry. `akmHealth` runs the
@@ -74,6 +80,19 @@ export interface HealthCheckContext {
   autoAccept: ImproveHealthMetrics["autoAccept"];
   /** Engine availability collected once and shared by its three registry projections. */
   engineProbes: HealthEngineProbeResults;
+  /**
+   * #949: names of configured `kind: "llm"` engines with `enableThinking:
+   * false`, resolved once from config. Feeds `thinking-control`, which never
+   * re-loads config itself (checks are pure projections of this context).
+   */
+  thinkingOffEngines: string[];
+  /**
+   * #949: the same window `llm_usage` aggregate `health.ts` reports as
+   * `metrics.llmUsage`, threaded through here so `thinking-control` can read
+   * each thinking-off engine's `reasoningTokens` without a second read or a
+   * live probe.
+   */
+  llmUsage: LlmUsageAggregate;
 }
 
 /** Which array a check's result is collected into. */
@@ -422,6 +441,75 @@ function unconfiguredEngineProbe(name: "default-engine" | "default-llm-engine"):
     confidence: "high",
     message:
       name === "default-llm-engine" ? "No default LLM engine is configured." : "No default engine is configured.",
+  };
+}
+
+interface ThinkingControlEngineStatus {
+  engine: string;
+  status: "pass" | "warn" | "unknown";
+  calls: number;
+  reasoningTokens: number;
+}
+
+/**
+ * #949: `enableThinking: false` is a request an engine's endpoint (or a
+ * gateway in front of it) can silently ignore — `chatCompletionAttemptOnce`
+ * (src/llm/client.ts) already warns to stderr whenever a response reports
+ * reasoning tokens despite it. This makes that same signal visible in
+ * `akm health` as a structured finding, purely by re-reading the window's
+ * `llm_usage` aggregate already threaded into the context: no extra
+ * completion call, no live probe — a cold local model must not be woken just
+ * to run `akm health`.
+ */
+function projectThinkingControlCheck(
+  thinkingOffEngines: readonly string[],
+  llmUsage: LlmUsageAggregate,
+): HealthCheckResult {
+  if (thinkingOffEngines.length === 0) {
+    return {
+      name: "thinking-control",
+      kind: "deterministic",
+      status: "unknown",
+      confidence: "high",
+      message: "No configured engine sets enableThinking: false — nothing to verify.",
+      evidence: { engines: [] },
+    };
+  }
+
+  const engines: ThinkingControlEngineStatus[] = [...thinkingOffEngines].sort().map((engine) => {
+    const usage = llmUsage.byEngine[engine];
+    const calls = usage?.calls ?? 0;
+    const reasoningTokens = usage?.reasoningTokens ?? 0;
+    const status: ThinkingControlEngineStatus["status"] =
+      calls === 0 ? "unknown" : reasoningTokens > 0 ? "warn" : "pass";
+    return { engine, status, calls, reasoningTokens };
+  });
+
+  const warning = engines.filter((e) => e.status === "warn");
+  const status: HealthCheckResult["status"] =
+    warning.length > 0 ? "warn" : engines.every((e) => e.status === "unknown") ? "unknown" : "pass";
+
+  let message: string;
+  if (warning.length > 0) {
+    message = warning
+      .map(
+        (e) =>
+          `LLM engine "${e.engine}" returned ${e.reasoningTokens} reasoning tokens despite enableThinking: false — the endpoint (or a gateway in front of it) is not honouring the thinking-off control.`,
+      )
+      .join(" ");
+  } else if (status === "unknown") {
+    message = `No calls were recorded for the engine(s) configured with enableThinking: false (${engines.map((e) => e.engine).join(", ")}) in the report window.`;
+  } else {
+    message = `${engines.length} engine(s) configured with enableThinking: false (${engines.map((e) => e.engine).join(", ")}) returned no reasoning tokens in the report window.`;
+  }
+
+  return {
+    name: "thinking-control",
+    kind: "deterministic",
+    status,
+    confidence: "high",
+    message,
+    evidence: { engines },
   };
 }
 
@@ -1059,5 +1147,14 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
         evidence: { promoted: aa.promoted, validationFailed: aa.validationFailed },
       };
     },
+  },
+  {
+    // #949: registered last — order is load-bearing (see the HEALTH_CHECKS
+    // doc comment above). Advisory-only: an endpoint ignoring the thinking-off
+    // control is a cost/latency surprise, not a correctness failure, so it
+    // never gates overall status or exit code.
+    name: "thinking-control",
+    channel: "advisory",
+    run: (ctx) => projectThinkingControlCheck(ctx.thinkingOffEngines, ctx.llmUsage),
   },
 ];

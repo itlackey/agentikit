@@ -89,14 +89,22 @@ LLM endpoints must be complete `http://` or `https://` chat-completions URLs
 ending in `/chat/completions`, without userinfo, query, or fragment. API keys
 are symbolic only: `$VAR` or `${VAR}`. AKM resolves them only at dispatch.
 
-An LLM engine may set `reasoningEffort` to a non-empty provider-supported
-value such as `"none"`, `"low"`, or `"high"`. AKM sends it as the top-level
-OpenAI-compatible `reasoning_effort` parameter alongside the existing
-`enableThinking` control, because providers do not all honor the same thinking
-switch. `reasoning_effort` is AKM-owned and cannot be set through
-`extraParams`. If a response reports reasoning tokens despite
-`enableThinking: false`, AKM emits a runtime warning so an ineffective provider
-control is visible.
+An LLM engine may set `enableThinking: false` to turn thinking off and
+`reasoningEffort` to a non-empty provider-supported value such as `"none"`,
+`"low"`, or `"high"`. Which of these wire forms a backend honors is a fact
+about the backend, not about AKM's `provider` field, and a gateway placed in
+front of a local model (freellmapi, Bifrost, etc.) can drop one form
+independent of what sits behind it — so AKM sends **both** wire forms
+whenever `enableThinking` is set: `chat_template_kwargs.enable_thinking` and
+the top-level `enable_thinking`. `reasoningEffort` is always sent as the
+top-level `reasoning_effort`. Known backend support: llama.cpp honors
+`chat_template_kwargs.enable_thinking` on every build, and `reasoning_effort`
+only from build ≥ b10644; vLLM honors `chat_template_kwargs.enable_thinking`.
+Both are AKM-owned and cannot be set through `extraParams`. If a response
+reports reasoning tokens despite `enableThinking: false`, AKM emits a runtime
+warning so an ineffective control is visible, and `akm health`'s
+`thinking-control` advisory (see the architecture health-advisories doc)
+surfaces the same signal from recorded LLM usage.
 
 An agent engine may set `bin`, `args`, `workspace`, `model`, and `timeoutMs`.
 Only `platform: "opencode-sdk"` may set `llmEngine`; it names
