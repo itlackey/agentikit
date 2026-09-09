@@ -464,6 +464,7 @@ interface ThinkingControlEngineStatus {
 function projectThinkingControlCheck(
   thinkingOffEngines: readonly string[],
   llmUsage: LlmUsageAggregate,
+  since: string,
 ): HealthCheckResult {
   if (thinkingOffEngines.length === 0) {
     return {
@@ -494,7 +495,7 @@ function projectThinkingControlCheck(
     message = warning
       .map(
         (e) =>
-          `LLM engine "${e.engine}" returned ${e.reasoningTokens} reasoning tokens despite enableThinking: false — the endpoint (or a gateway in front of it) is not honouring the thinking-off control.`,
+          `LLM engine "${e.engine}" returned ${e.reasoningTokens} reasoning tokens since ${since} despite enableThinking: false — the endpoint (or a gateway in front of it) is not honouring the thinking-off control.`,
       )
       .join(" ");
   } else if (status === "unknown") {
@@ -1155,6 +1156,6 @@ export const HEALTH_CHECKS: readonly HealthCheck[] = [
     // never gates overall status or exit code.
     name: "thinking-control",
     channel: "advisory",
-    run: (ctx) => projectThinkingControlCheck(ctx.thinkingOffEngines, ctx.llmUsage),
+    run: (ctx) => projectThinkingControlCheck(ctx.thinkingOffEngines, ctx.llmUsage, ctx.since),
   },
 ];

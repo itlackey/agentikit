@@ -39,9 +39,9 @@ function usageAggregate(byEngine: Record<string, LlmUsageStageAggregate>): LlmUs
   return { ...totals, byStage: {}, byProcess: {}, byEngine };
 }
 
-function run(thinkingOffEngines: string[], llmUsage: LlmUsageAggregate) {
+function run(thinkingOffEngines: string[], llmUsage: LlmUsageAggregate, since = "2024-01-01T00:00:00.000Z") {
   if (!check) throw new Error("thinking-control check not registered");
-  return check.run({ thinkingOffEngines, llmUsage } as unknown as HealthCheckContext);
+  return check.run({ thinkingOffEngines, llmUsage, since } as unknown as HealthCheckContext);
 }
 
 describe("thinking-control check (#949)", () => {
@@ -76,6 +76,7 @@ describe("thinking-control check (#949)", () => {
     expect(r.status).toBe("warn");
     expect(r.message).toContain('LLM engine "local"');
     expect(r.message).toContain("17 reasoning tokens");
+    expect(r.message).toContain("since 2024-01-01T00:00:00.000Z");
     expect(r.message).toContain("enableThinking: false");
     expect(r.message.toLowerCase()).toContain("gateway");
   });
