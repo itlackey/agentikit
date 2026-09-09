@@ -26,8 +26,9 @@ import path from "node:path";
 import { akmAdapter } from "../core/adapter/adapters/akm-adapter";
 import { loadConfig } from "../core/config/config";
 import { isDataDirUnreadableError } from "../core/errors";
+import { probeLock } from "../core/file-lock";
 import { isPathAbsent } from "../core/path-access";
-import { getDbPath } from "../core/paths";
+import { getDbPath, getIndexRebuildLockPath } from "../core/paths";
 import { warn, warnVerbose } from "../core/warn";
 import { closeDatabase, openExistingDatabase } from "../storage/repositories/index-connection";
 import { deleteEntriesByIds, getEntryCount, upsertEntry } from "../storage/repositories/index-entries-repository";
@@ -74,6 +75,21 @@ export async function indexWrittenAssets(
 ): Promise<boolean> {
   try {
     return await (async () => {
+      // #956: a live `akm index` rebuild holds index.db under one long
+      // transaction (persistDirRecords), which this fast path's own 5s
+      // busy_timeout would just contend with pointlessly. Interactive
+      // commands (remember, import, extract session assets) must never wait
+      // on it — skip the inline upsert/embedding entirely; the write itself
+      // (file + commit) has already succeeded by the time this runs, and the
+      // rebuild in progress will pick up the change on its own.
+      const rebuildProbe = probeLock(getIndexRebuildLockPath());
+      if (rebuildProbe.state === "held") {
+        warn(
+          `index rebuild in progress (pid ${rebuildProbe.holderPid}); the next index pass will index ${filePaths.join(", ")}`,
+        );
+        return false;
+      }
+
       const dbPath = getDbPath();
       // `true` here means "the index is in the state the caller expects" — and
       // `acceptProposal` advances its journal to `index-finalized` on the

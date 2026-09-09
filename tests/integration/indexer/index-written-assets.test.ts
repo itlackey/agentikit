@@ -13,7 +13,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { akmSearch } from "../../../src/commands/read/search";
-import { getDbPath } from "../../../src/core/paths";
+import { getDbPath, getIndexRebuildLockPath } from "../../../src/core/paths";
+import { _setWarnSinkForTests } from "../../../src/core/warn";
 import { indexWrittenAssets } from "../../../src/indexer/index-written-assets";
 import { akmIndex } from "../../../src/indexer/indexer";
 import { _setEmbedderForTests } from "../../../src/llm/embedder";
@@ -319,6 +320,52 @@ describe("indexWrittenAssets", () => {
     } finally {
       closeDatabase(db);
     }
+  });
+
+  describe("rebuild lock (#956)", () => {
+    afterEach(() => {
+      _setWarnSinkForTests(undefined);
+    });
+
+    function plantHeldRebuildLock(): string {
+      const lockPath = getIndexRebuildLockPath();
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }), "utf8");
+      return lockPath;
+    }
+
+    test("skips the inline upsert while a rebuild holds the lock, warns once, and never opens index.db", async () => {
+      const lockPath = plantHeldRebuildLock();
+      const filePath = writeMemory("busy-rebuild-note", "Written while a rebuild holds the lock.");
+
+      const notices: string[] = [];
+      _setWarnSinkForTests((level, args) => {
+        if (level === "warn") notices.push(args.map(String).join(" "));
+      });
+
+      expect(await indexWrittenAssets(stashDir, [filePath])).toBe(false);
+
+      expect(notices.some((n) => /index rebuild in progress \(pid \d+\)/.test(n) && n.includes(filePath))).toBe(true);
+      expect(indexedFileCount(filePath)).toBe(0);
+      fs.rmSync(lockPath);
+      // Once the rebuild finishes and releases its lock, the same write-path
+      // upsert heals the missing entry.
+      expect(await indexWrittenAssets(stashDir, [filePath])).toBe(true);
+      expect(indexedFileCount(filePath)).toBeGreaterThan(0);
+    });
+
+    test("a dead-pid rebuild lock does not block the write-path upsert", async () => {
+      const lockPath = getIndexRebuildLockPath();
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 999_999, startedAt: new Date(0).toISOString() }), "utf8");
+
+      const filePath = writeMemory("dead-lock-note", "A stale rebuild lock must not block this.");
+      expect(await indexWrittenAssets(stashDir, [filePath])).toBe(true);
+      expect(indexedFileCount(filePath)).toBeGreaterThan(0);
+      // The write path only probes — reclaiming a stale lock stays `akm
+      // index`'s job, not every writer's.
+      expect(fs.existsSync(lockPath)).toBe(true);
+    });
   });
 
   test("removes stale metadata when a rewritten file is no longer indexable", async () => {
