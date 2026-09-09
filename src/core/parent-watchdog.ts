@@ -20,10 +20,17 @@
  * reparented, usually to pid 1) — polling it is the standard orphan-detection
  * trick when no direct death notification exists. This module owns only the
  * poll/compare mechanics; the caller's `onOrphaned` decides what "stop"
- * means. `src/cli.ts` wires it to `process.kill(process.pid, "SIGTERM")` so
- * every command reuses the exact same shutdown path a real SIGTERM already
- * takes (`akm index`'s own AbortController, `exit` handlers for lock
- * release elsewhere) instead of a second, parallel one.
+ * means. `src/cli.ts` wires it to `process.kill(process.pid, "SIGTERM")`,
+ * reusing the same self-signal every command already has rather than a
+ * second, parallel abort path. Only `akm index`/`improve` register their own
+ * SIGTERM listener (the index command's AbortController in
+ * `commands/sources/stash-cli.ts`) and get a graceful, in-process shutdown
+ * from it. Every other command has no listener of its own, so the runtime's
+ * default disposition terminates it directly — `exit` handlers (lock
+ * release included) do NOT run — and any lock it held is cleared later by
+ * the next acquirer's dead-pid stale-reclaim (`file-lock.ts`), not by
+ * in-process release. Either way the orphaned process stops, which is this
+ * watchdog's actual job.
  */
 
 /** Pure comparison seam: true once the observed ppid differs from the one seen at startup. */

@@ -163,4 +163,54 @@ describe("launcher signal forwarding (#9543 decision 1)", () => {
       sandbox.cleanup();
     }
   }, 15000);
+
+  test("launcher exits with the forwarded signal, not code 0, when the child has no handler of its own", async () => {
+    // Round-2 regression: the forwarding listeners were originally
+    // registered with `process.on`, which (per Node/Bun) suppresses a
+    // signal's default process-terminating disposition for as long as ANY
+    // listener stays registered for it — including at the
+    // `process.kill(process.pid, result.signal)` re-raise this launcher
+    // does after the child exits. That swallowed the re-raise and made the
+    // launcher always report a clean exit 0, even though the child actually
+    // died from the forwarded signal. This fixture's child registers NO
+    // signal handler of its own (the ordinary case: search, curate,
+    // remember, health, etc. none install a SIGTERM listener), so it dies
+    // directly from the forwarded SIGTERM's default disposition, and the
+    // launcher must reflect that back rather than falling through to 0.
+    const sandbox = makeSandboxDir("akm-launcher-signal-nohandler-");
+    try {
+      const dist = path.join(sandbox.dir, "package", "dist");
+      const launcher = path.join(dist, "akm");
+      const readyFile = path.join(sandbox.dir, "ready.txt");
+      fs.mkdirSync(dist, { recursive: true });
+      fs.copyFileSync(path.resolve("scripts/node-runtime/akm"), launcher);
+      fs.writeFileSync(
+        path.join(dist, "cli.js"),
+        [
+          'import fs from "node:fs";',
+          `fs.writeFileSync(${JSON.stringify(readyFile)}, String(process.pid));`,
+          "await new Promise(() => {});",
+        ].join("\n"),
+      );
+
+      const launcherProc = spawn(process.execPath, [launcher, "sentinel"], {
+        stdio: ["ignore", "ignore", "ignore"],
+        env: process.env,
+      });
+
+      await waitFor(() => fs.existsSync(readyFile));
+      launcherProc.kill("SIGTERM");
+
+      const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        launcherProc.once("exit", (code, signal) => resolve({ code, signal }));
+      });
+
+      // Before the `.once` fix this was `{ code: 0, signal: null }` — a
+      // false clean exit — even though the child was actually killed by the
+      // forwarded SIGTERM.
+      expect(exit.signal).toBe("SIGTERM");
+    } finally {
+      sandbox.cleanup();
+    }
+  }, 15000);
 });

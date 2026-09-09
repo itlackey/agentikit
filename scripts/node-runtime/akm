@@ -188,8 +188,16 @@ if (contextValid) {
           // Child exited in the race between the check above and here.
         }
       };
+      // `.once`, not `.on`: Node/Bun suppress a signal's default
+      // (process-terminating) disposition for as long as ANY listener stays
+      // registered for it. A persistent `.on` listener would still be
+      // registered when the `process.kill(process.pid, result.signal)`
+      // re-raise below runs at shutdown, swallowing it and leaving this
+      // launcher exiting 0 instead of reflecting the child's signal. `.once`
+      // consumes only the externally-delivered signal that triggers the
+      // forward, so the re-raise correctly falls through to the OS default.
       for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-        process.on(signal, () => forwardSignal(signal));
+        process.once(signal, () => forwardSignal(signal));
       }
       child.once("error", (error) => resolve({ error }));
       child.once("exit", (code, signal) => resolve({ code, signal }));

@@ -55,8 +55,14 @@ const nodeEntry = fileURLToPath(new URL("./scripts/akm-migrate-node.js", import.
         // Child exited in the race between the check above and here.
       }
     };
+    // `.once`, not `.on`: see the matching comment in
+    // scripts/node-runtime/akm — a persistent `.on` listener would still be
+    // registered when the `process.kill(process.pid, result.signal)`
+    // re-raise below runs, suppressing the OS default disposition and
+    // leaving this launcher exiting 0 instead of reflecting the child's
+    // signal.
     for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-      process.on(signal, () => forwardSignal(signal));
+      process.once(signal, () => forwardSignal(signal));
     }
     child.once("error", (error) => resolve({ error }));
     child.once("exit", (code, signal) => resolve({ code, signal }));

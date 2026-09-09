@@ -1179,12 +1179,17 @@ if (import.meta.main || process.env.AKM_NODE_ENTRY === "1" || process.env.AKM_ST
     ? startParentDeathWatchdog({
         initialPpid: process.ppid,
         onOrphaned: () => {
-          // Reuses the exact shutdown path a real SIGTERM already takes:
-          // `akm index`'s own AbortController listens for it
-          // (commands/sources/stash-cli.ts), and every other command falls
-          // through to Node/Bun's default terminate-via-process.exit(),
-          // which still runs registered `exit` handlers (lock release,
-          // etc.) — no second, parallel abort path to keep in sync.
+          // Self-delivers the same signal a real SIGTERM would be. `akm
+          // index`'s own AbortController listens for it
+          // (commands/sources/stash-cli.ts) and gets a graceful, in-process
+          // shutdown. Every other command has no SIGTERM listener of its
+          // own, so this self-signal terminates it directly via the
+          // runtime's default disposition WITHOUT running `exit` handlers
+          // (lock release included) — it stops the orphaned process, which
+          // is the goal here, but any lock it held is left for the next
+          // acquirer's dead-pid stale-reclaim (file-lock.ts) to clear, not
+          // released in-process. No second, parallel abort path to keep in
+          // sync either way.
           process.kill(process.pid, "SIGTERM");
         },
       })
