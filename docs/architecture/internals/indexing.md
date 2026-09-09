@@ -65,6 +65,44 @@ or maintain alternate result collections.
 Full rebuilds preserve usage history and then re-link it to rebuilt entries by
 ref.
 
+## Locks
+
+`akm index` takes no blocking lock. #872 deliberately removed the index
+rebuild's earlier 12-hour age-based-stale lease: the index is a fully
+regenerable cache, so two concurrent rebuilds only waste work rather than
+corrupt anything, and a live-but-wedged holder passed that lease's
+PID-liveness check forever — only the age clock could ever free it, and that
+cost one real install a half-day indexing outage. The `index.db.write.lock`
+lease that remains (`src/indexer/index-writer-lock.ts`) is unrelated to
+indexing since that removal; it only serializes actual asset-content
+mutations (`remember`, `import`, `source update`, proposal apply) so two
+writers cannot both pass a git exact-path preflight before either commits.
+
+#956 added a second, opt-in, advisory-only sentinel:
+`<dataDir>/index.rebuild.lock` (`getIndexRebuildLockPath()`), acquired and
+released by every explicit `akm index` command run
+(`src/indexer/index-rebuild-lock.ts`, built on the same PID-liveness-only
+mechanics in `src/core/run-lock.ts` that `akm improve`'s whole-run lock
+uses — no age-based stale reclaim, per the #872 lesson). It changes nothing
+by default: a plain `akm index` that finds the lock already held just warns
+and proceeds, contending with the other run exactly as before this lock
+existed. Only `akm index --skip-if-locked` (intended for scheduled/
+opportunistic callers — the shipped `index-refresh` task passes it) treats a
+live holder as a reason to skip the run entirely and exit 0. This is
+distinct from `ensureIndex()`'s implicit inline reindex (the read path's
+bootstrap when the index is otherwise unusable): that path never consults
+this lock, since a caller reaching it has no usable index to serve either
+way and must proceed.
+
+The write path's targeted index upsert (`indexWrittenAssets`, used by
+`remember`/`import`/extract session assets to make a just-written asset
+searchable immediately) probes this same rebuild lock before doing any
+work: a live holder means it skips the upsert/embedding entirely with one
+log line and returns success right away — the file write itself already
+succeeded, and the in-progress rebuild will pick up the change on its own.
+It never tries to acquire or reclaim the lock itself; reclaiming a
+dead-PID sentinel stays `akm index`'s job.
+
 ## Mutation and finalization boundary
 
 The canonical entry repository owns each complete synchronous mutation of

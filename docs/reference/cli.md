@@ -223,6 +223,7 @@ akm index --verbose  # Print phase progress to stderr
 akm index --clean    # Normal index + remove stale entries from the DB
 akm index --clean --dry-run # Report stale entries without deleting
 akm index --reembed  # Force re-embedding of every entry
+akm index --skip-if-locked  # for scheduled/opportunistic runs: skip (exit 0) if a run is already in progress
 ```
 
 Returns stats: `totalEntries`, `generatedMetadata`, `directoriesScanned`,
@@ -247,6 +248,22 @@ below. Ordinary indexing already tells a config-only rename of
 apart from a genuine model change, and keeps the stored vectors when they
 are still compatible; `--reembed` skips that check and forces a rebuild
 regardless of what it would have decided.
+
+**`--skip-if-locked` flag:** Every explicit `akm index` run acquires an
+opt-in, PID-liveness-only rebuild lock and releases it on exit — this is
+advisory, never the blocking lock #872 removed (see
+[Locks](../architecture/internals/indexing.md#locks)). A human-typed
+`akm index` with no flag is never gated by it: if another run already holds
+the lock, it warns and proceeds anyway, contending with the existing run.
+`--skip-if-locked` changes that only for the invocation that passes it: if
+the lock is already held by a live process, it skips gracefully (exit 0,
+`{ ok: true, skipped: { reason: "lock-held", pid, startedAt } }`) instead of
+contending. `akm index` and `akm curate` are both safe to call frequently —
+`curate` never blocks on a rebuild in progress ([read-path indexing stays
+non-blocking](#curate)) — but a hook, cron job, or scheduled task that
+invokes `akm index` directly should pass `--skip-if-locked` so it steps
+aside instead of piling up behind a longer rebuild (the shipped
+`index-refresh` task does this).
 
 `akm index` always rebuilds the search index and keeps metadata in the index.
 When a selected named LLM engine (`defaults.llmEngine` or an indexing-pass
@@ -530,6 +547,10 @@ only for read-only items. Their `followUp` remains `akm show <ref>` rather than
 being replaced by clone guidance.
 Use `--type workflow` when you want curated step-by-step procedures instead of
 individual scripts, skills, or docs.
+`akm curate` is safe to call frequently, including from a hook that fires on
+every prompt: it only ever reads the index as it currently stands (the same
+non-blocking `ensureIndex()` path `search` uses) and never waits on or
+contends with a full `akm index` rebuild in progress.
 Use `--no-track-usage` when this inspection must not update local usage or
 ranking signals.
 
