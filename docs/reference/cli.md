@@ -219,7 +219,7 @@ Build or refresh the search index.
 
 ```sh
 akm index            # Incremental (only changed directories)
-akm index --full     # Full rebuild
+akm index --full     # Full rebuild (reuses unchanged embeddings — see below)
 akm index --verbose  # Print phase progress to stderr
 akm index --clean    # Normal index + remove stale entries from the DB
 akm index --clean --dry-run # Report stale entries without deleting
@@ -253,6 +253,18 @@ JSON result with `checked`, `removed`, `removedRefs` arrays, and `dryRun` flag.
 Use `--clean` to resolve the edge case where a deleted file in an unchanged
 directory lingers in the index across incremental runs. With `--dry-run`, reports
 which entries would be removed without modifying the database.
+
+**`--full` no longer re-embeds unchanged content (#9542):** a full rebuild
+(and an index-generation bump on first open under a new binary) used to
+delete every embedding unconditionally, forcing a full re-embed of the
+whole corpus even when nothing changed. Vectors about to be discarded are
+now salvaged (keyed by a hash of their content plus the fingerprint they
+were generated under) and handed straight back to unchanged entries at the
+start of the next embedding pass, with zero provider calls for them — a
+progress line reports the split (`Reused N embeddings from the previous
+generation; embedding M new.`). Content that changed even by one byte, or
+a fingerprint that no longer matches, still goes through the provider
+normally. `--reembed` is the way to force a full re-embed regardless.
 
 **`--reembed` flag:** Forces a full purge and re-embed of every entry,
 independent of the embedding-model-rename compatibility check described

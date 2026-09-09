@@ -348,6 +348,54 @@ caught earlier and unconditionally by `ensureSchema`
 fingerprint mechanism, since a change in vector width leaves nothing for
 the canary to meaningfully compare.
 
+**Embedding reuse across rebuilds** (#9542) — `akm index --full` (any
+non-incremental run) and an index-generation bump both used to delete every
+embedding unconditionally and re-insert entries under new ids, forcing a
+full re-embed of the whole corpus even when no content changed — the
+0.9.14 v22→v23 bump's own multi-hour post-upgrade run. `embedding_salvage`
+(`src/storage/repositories/embedding-salvage-repository.ts`) is a
+transient, self-emptying table that eliminates this: it is NOT a second
+embedding cache, and has zero steady-state cost.
+
+- *Salvage points* — vectors are copied aside only at the two moments they
+  would otherwise be discarded wholesale, each inside the SAME transaction
+  as the discard so the copy and the delete commit or roll back together:
+  the full-rebuild wipe in `persistDirRecords`
+  (`src/indexer/indexer.ts`, before `deleteAllEntries`) and the
+  generation-rebuild drop in `rebuildIncompatibleIndexGeneration`
+  (`index-schema.ts`, before `DROP TABLE embeddings`). Each salvage row is
+  `(sha256(search_text), the stored embeddingFingerprint, the embedding
+  BLOB, salvaged_at)`. Salvaging is skipped (a no-op) when there is no
+  stored `embeddingFingerprint` to tag rows with, or the generation being
+  discarded predates the `search_text` column or has no `embeddings` table
+  at all — an older generation than that has nothing worth salvaging.
+- *Reuse step* — at the start of the SAME `generateEmbeddingsForDb` pass
+  described above, before any provider call and after the fingerprint/
+  canary decision: for every entry still missing an embedding,
+  `reuseSalvagedEmbeddings` hashes its `search_text` and looks up a salvage
+  row tagged with the CURRENT fingerprint, writing a match back via
+  `upsertEmbedding` (so `entries_vec` stays in step) in chunks of 500, each
+  its own transaction — mirroring the provider path's per-batch commit.
+  Only the remainder goes to the provider. A progress line reports the
+  split: `Reused N embeddings from the previous generation; embedding M
+  new.`, and the final throughput line reports reused and newly-embedded
+  counts separately.
+- *Never reuse across fingerprints, ever on a byte-different search_text* —
+  the salvage lookup filters on the fingerprint column exactly, and the
+  content hash is an exact match on the full `search_text` string; a single
+  edited character produces a different hash and falls through to the
+  provider like any other new content.
+- *Lifecycle* — a pass that completes without abort or circuit-break
+  purges the whole salvage table (whatever it did not consume is superseded
+  or no longer relevant); an interrupted pass leaves the table untouched
+  for the next attempt. `akm index --reembed` and a canary "rebuild"
+  verdict purge salvage together with the stored embeddings, since those
+  vectors belong to a different model. A canary "keep" verdict (a
+  fingerprint-string rename that resolves to the same model) instead
+  relabels any leftover salvage rows to the new fingerprint string via
+  `relabelEmbeddingSalvageFingerprint`, so they remain reusable rather than
+  silently going stale.
+
 ## Progress Reporting
 
 - text mode: shows a spinner with processed-versus-total source counts
@@ -370,7 +418,7 @@ the canary to meaningfully compare.
 ## Database Tables
 
 `index.db`'s schema (`ensureSchema()`,
-`src/storage/repositories/index-schema.ts`) creates 16 unconditional logical
+`src/storage/repositories/index-schema.ts`) creates 17 unconditional logical
 tables, including two FTS5 virtual tables. When the optional `sqlite-vec`
 extension loads, it also creates `entries_vec`, a third, conditional virtual
 table. Full column-level detail lives in
@@ -384,6 +432,7 @@ this is a purpose summary:
 | `entry_fragments` | safe Markdown projection retained per parent entry for fragment resolution |
 | `entry_fragments_fts` (virtual, FTS5) | separate lexical body-fragment index; no copied parent metadata |
 | `embeddings` | stored embedding vectors (JS cosine-similarity fallback) |
+| `embedding_salvage` | transient, self-emptying: vectors salvaged from a discard, reused by the next embedding pass (#9542) |
 | `entries_vec` (virtual, conditional) | `sqlite-vec` ANN index, created only when the extension loads |
 | `utility_scores` | recomputed utility boost state (global) |
 | `utility_scores_scoped` | same EMA per `(entry, project-anchor)` pair |
