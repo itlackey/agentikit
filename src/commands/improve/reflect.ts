@@ -64,7 +64,10 @@ import {
   buildReflectPrompt,
   extractDraftConfidence,
   parseAgentProposalPayload,
+  REFLECT_CONTENT_CAP,
+  REFLECT_TRUNCATION_MARKER,
   type ReflectLlmOutputMode,
+  type ReflectPromptInput,
   type RejectedProposalContext,
 } from "../../integrations/agent/prompts";
 import { type RunnerSpec, runnerIsLlm, runnerSupportsFileWrite } from "../../integrations/agent/runner";
@@ -83,6 +86,7 @@ import {
   recordGateDecision,
 } from "../proposal/repository";
 import { checkReflectSize, isValidDescription } from "../proposal/validators/proposal-quality-validators";
+import { CHARS_PER_TOKEN, DEFAULT_CONTEXT_LENGTH_TOKENS } from "./consolidate/chunking";
 import { deriveLessonRef } from "./distill";
 import { runReflectQualityJudge } from "./distill/quality-gate";
 import { findAssetFilePath } from "./eligibility";
@@ -512,6 +516,8 @@ export interface ReflectSanitizeResult {
   /** When set, the proposal must be rejected with this reason / error. */
   reject?: { reason: AgentFailureReason; error: string };
   sizeGuardRatio?: { code: "EXCESSIVE_SHRINKAGE" | "EXCESSIVE_EXPANSION"; ratio: number };
+  /** #952 — the model echoed REFLECT_TRUNCATION_MARKER into its rewrite. */
+  truncationMarkerLeaked?: boolean;
 }
 
 /**
@@ -750,6 +756,20 @@ export function sanitizeReflectPayload(
     sizeGuardRatio = { code: sizeOutcome.code, ratio: sizeOutcome.ratio };
   }
 
+  // Truncation-marker leak (#952) — a model that saw a capped/truncated
+  // asset sometimes echoes the "[truncated ...]" notice verbatim into its
+  // rewrite instead of proposing real content for the missing tail. The
+  // body-length ratio check above does not reliably catch this (a leaked
+  // marker can still fall inside the 50%-250% band). Flag and defer to
+  // human review — same "degrade with a warning" rung as the size guard,
+  // not a new hard reject.
+  const truncationMarkerLeaked = cleanedBody.includes(REFLECT_TRUNCATION_MARKER);
+  if (truncationMarkerLeaked) {
+    warnings.push(
+      `Proposed body for ref ${targetRef} contains the truncation-notice text the model was shown for a capped source asset ("${REFLECT_TRUNCATION_MARKER}"). The model likely echoed the notice instead of writing real content. Flagged for review.`,
+    );
+  }
+
   // Reassemble final content: merged frontmatter + cleaned body.
   // When there is no frontmatter at all (no source fm and no LLM fm), emit body
   // only so we don't add a stray `---` to e.g. a script asset that bypassed the
@@ -764,6 +784,7 @@ export function sanitizeReflectPayload(
     ...(hasFrontmatter ? { frontmatter: mergedFm } : {}),
     warnings,
     ...(sizeGuardRatio ? { sizeGuardRatio } : {}),
+    ...(truncationMarkerLeaked ? { truncationMarkerLeaked } : {}),
   };
 }
 
@@ -1299,7 +1320,9 @@ async function finalizeReflectProposal(args: {
 
   // 7c. Judge the exact sanitized content that can be persisted. Fail closed
   // on cancellation, transport failure, malformed output, or an invalid score.
-  if (qualityGateEnabled && !sanitizeOutcome.sizeGuardRatio) {
+  // Skipped when the size guard or the truncation-marker leak already fired —
+  // that content is deferred to human review regardless of what the judge says.
+  if (qualityGateEnabled && !sanitizeOutcome.sizeGuardRatio && !sanitizeOutcome.truncationMarkerLeaked) {
     const judgeResult = await runReflectQualityJudge(
       config,
       payload.content,
@@ -1352,6 +1375,7 @@ async function finalizeReflectProposal(args: {
     outputTelemetry,
     qualityGateSkippedNoJudge,
     sizeGuardRatio: sanitizeOutcome.sizeGuardRatio,
+    truncationMarkerLeaked: sanitizeOutcome.truncationMarkerLeaked,
   });
 }
 
@@ -1370,6 +1394,7 @@ function createReflectProposal(args: {
   outputTelemetry?: ReflectLlmTelemetry;
   qualityGateSkippedNoJudge: boolean;
   sizeGuardRatio?: { code: "EXCESSIVE_SHRINKAGE" | "EXCESSIVE_EXPANSION"; ratio: number };
+  truncationMarkerLeaked?: boolean;
   emitReflectFailed: (
     reason: AgentFailureReason,
     subreason: string,
@@ -1387,6 +1412,7 @@ function createReflectProposal(args: {
     outputTelemetry,
     qualityGateSkippedNoJudge,
     sizeGuardRatio,
+    truncationMarkerLeaked,
   } = args;
   // 8. Create the proposal. The proposal queue is the ONLY thing reflect
   // writes — promotion to a real asset is gated by `akm proposal accept`.
@@ -1457,6 +1483,7 @@ function createReflectProposal(args: {
   const reviewReasons: string[] = [];
   if (qualityGateSkippedNoJudge) reviewReasons.push("no-judge-configured");
   if (sizeGuardRatio) reviewReasons.push("reflect-size-ratio");
+  if (truncationMarkerLeaked) reviewReasons.push("reflect-truncation-leak");
   if (reviewReasons.length > 0) {
     proposal =
       recordGateDecision(
@@ -1482,6 +1509,7 @@ function createReflectProposal(args: {
         engine: engineName,
         ...(qualityGateSkippedNoJudge ? { qualityGateSkippedNoJudge: true } : {}),
         ...(sizeGuardRatio ? { sizeGuardRatio: sizeGuardRatio.code, sizeGuardRatioValue: sizeGuardRatio.ratio } : {}),
+        ...(truncationMarkerLeaked ? { truncationMarkerLeaked: true } : {}),
         ...(outputTelemetry ?? {}),
       },
     },
@@ -1876,7 +1904,7 @@ async function runReflectRefineIterations(args: {
       lastDraftPath = iterDraftPath;
     }
 
-    const { prompt } = buildReflectPrompt({
+    const promptInput: ReflectPromptInput = {
       ...(options.ref ? { ref: options.ref } : {}),
       ...(parsedRef?.type ? { type: parsedRef.type } : {}),
       ...(parsedRef?.name ? { name: parsedRef.name } : {}),
@@ -1896,6 +1924,33 @@ async function runReflectRefineIterations(args: {
       // on long bodies (e.g. knowledge/systems/KOKORO_USAGE_GUIDE 8.4KB).
       ...(iterDraftPath ? { draftFilePath: iterDraftPath } : {}),
       ...(outputMode ? { outputMode } : {}),
+    };
+    // #952 — the flat REFLECT_CONTENT_CAP (12 000 chars) exists only to avoid
+    // E2BIG when the prompt travels through CLI argv (agent/SDK runners). The
+    // direct-LLM HTTP path never touches argv, so it can use the resolved
+    // engine's own context window instead. The reserve for "the rest of the
+    // prompt" is measured directly (not guessed): build the same prompt with
+    // the content cap forced to zero and use its length as the overhead, so
+    // feedback/standards/schema-hints/prior-draft size is accounted for
+    // exactly, per this call. A reflect rewrite returns a body roughly the
+    // size of the input, so the budget only spends HALF of the usable window
+    // on input content and reserves the other half for the model's own
+    // output — otherwise a full-context request leaves no room for a
+    // response. Never drops below the flat floor.
+    const contentBudgetChars =
+      runnerIsLlm(runnerSpec) && assetContent?.trim()
+        ? Math.max(
+            REFLECT_CONTENT_CAP,
+            Math.floor(
+              ((runnerSpec.connection.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS) * CHARS_PER_TOKEN -
+                buildReflectPrompt({ ...promptInput, contentBudgetChars: 0 }).prompt.length) /
+                2,
+            ),
+          )
+        : undefined;
+    const { prompt } = buildReflectPrompt({
+      ...promptInput,
+      ...(contentBudgetChars !== undefined ? { contentBudgetChars } : {}),
     });
     let iterResult: AgentRunResult;
     if (runnerIsLlm(runnerSpec)) {
