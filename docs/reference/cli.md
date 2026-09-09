@@ -261,6 +261,10 @@ Returns a JSON object with:
 | `version` | Current akm version |
 | `bundleDir` | Primary bundle directory — same resolution `akm bundle list` uses |
 | `defaultBundle` | Name of the primary bundle from config, or `null` when none is configured |
+| `dataDir` | Resolved data directory (`getDataDir()`) |
+| `configDir` | Resolved config directory (`getConfigDir()`) |
+| `cacheDir` | Resolved cache directory (`getCacheDir()`) |
+| `stateDir` | Resolved state directory (`getStateDir()`) |
 | `assetTypes` | List of recognized asset types |
 | `searchModes` | Active search modes (`fts`, optionally `semantic` and `hybrid`) |
 | `semanticSearch` | Semantic search status: `mode`, `status`, and optional `reason`/`message` |
@@ -276,6 +280,10 @@ Returns a JSON object with:
 - `"disabled"` — semantic search is turned off in config
 
 Use `akm info` to verify that semantic search is working after setup.
+
+Scripts that need akm's resolved paths (for example a health check that
+differs between a host install and a container) can read them with
+`akm info --format json | jq -r .dataDir` instead of hardcoding a path.
 
 ### health
 

@@ -537,6 +537,15 @@ export interface InfoResponse {
   bundleDir: string;
   /** Name of the primary bundle from config, or `null` when none is configured (R-057). */
   defaultBundle: string | null;
+  /**
+   * Resolved XDG-style directories (#951), so a script can read akm's paths
+   * with `akm info --format json | jq -r .dataDir` instead of hardcoding
+   * `~/.local/share/akm` vs. a container's `/opt/akm/data` and drifting.
+   */
+  dataDir: string;
+  configDir: string;
+  cacheDir: string;
+  stateDir: string;
   assetTypes: string[];
   searchModes: string[];
   semanticSearch: {
