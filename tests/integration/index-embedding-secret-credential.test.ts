@@ -13,10 +13,13 @@
  * every embedding request with NO Authorization header at all — silently,
  * not as a resolution error. This suite reproduces the standalone `akm
  * index` materializer path in-process AND as a real CLI child process
- * (since the field failure was specifically the CLI), plus the variants the
- * issue names as candidates: an `extends`-inherited apiKey with adapter
- * detection persisting mid-run (#945), and the improve consolidate path as
- * the known-good control.
+ * (since the field failure was specifically the CLI), plus every variant
+ * brief decision 1 names: an `extends`-inherited apiKey with adapter
+ * detection persisting mid-run (#945); `akm bundle update`'s post-commit
+ * embedding pass (`runPostCommitEmbeddingPass`, reached via `akmUpdate`);
+ * the `remember` write path (`indexWrittenAssets`, which calls
+ * `generateEmbeddingsForDb` at its own fresh `loadConfig()`); and the
+ * improve consolidate path as the known-good control.
  *
  * Every request the mock server sees is asserted to carry the resolved
  * `Authorization` header — none of the variants below reproduced a keyless
@@ -29,13 +32,18 @@
  * spawns a real child process.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { setSecret } from "../../src/commands/env/secret";
+import { akmUpdate } from "../../src/commands/sources/installed-stashes";
 import { resetConfigCache } from "../../src/core/config/config";
+import { getRegistryCacheDir } from "../../src/core/paths";
+import { indexWrittenAssets } from "../../src/indexer/index-written-assets";
 import { akmIndex } from "../../src/indexer/indexer";
 import { clearEmbeddingCache } from "../../src/llm/embedders/cache";
+import * as syncFromRefModule from "../../src/sources/providers/sync-from-ref";
+import { seedLockEntries } from "../_helpers/lockfile";
 import { type IsolatedAkmStorage, withIsolatedAkmStorage, writeSandboxConfig } from "../_helpers/sandbox";
 
 /** Absolute path to the repo's CLI entrypoint, for the child-process variant. */
@@ -199,6 +207,158 @@ describe("akm index embedding requests carry the secret:// credential (#9544)", 
     // `embedding` block just because a run happened to touch config.json.
     const localRaw = JSON.parse(fs.readFileSync(path.join(xdgConfigHome, "akm", "config.json"), "utf8"));
     expect(localRaw.embedding).toBeUndefined();
+  });
+});
+
+describe("akm bundle update: post-commit embedding pass carries the secret:// credential (#9544)", () => {
+  let storage: IsolatedAkmStorage;
+  let server: ReturnType<typeof Bun.serve> | undefined;
+
+  beforeEach(() => {
+    storage = withIsolatedAkmStorage();
+    clearEmbeddingCache();
+  });
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+    storage.cleanup();
+    resetConfigCache();
+  });
+
+  /** Write `count` markdown files under `contentDir/knowledge/` so the bundle has something to embed. */
+  function writeMarkdownFiles(contentDir: string, count: number, marker: string): void {
+    const dir = path.join(contentDir, "knowledge");
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 0; i < count; i++) {
+      fs.writeFileSync(
+        path.join(dir, `entry-${i}.md`),
+        `---\ndescription: ${marker} entry ${i}\n---\n\nContent for ${marker} entry ${i}.\n`,
+        "utf8",
+      );
+    }
+  }
+
+  test("runPostCommitEmbeddingPass (reached via akmUpdate) sends Bearer <store value> on every embedding request", async () => {
+    setSecret(path.join(storage.stashDir, "secrets", "lab-api-key"), Buffer.from("bundle-update-store-secret-value"));
+
+    const capture = createAuthCapturingEmbeddingServer();
+    server = capture.server;
+
+    const id = "credential-probe";
+    const cacheDir = path.join(getRegistryCacheDir(), `${id}-cache`);
+    const contentDir = path.join(cacheDir, "content");
+    writeMarkdownFiles(contentDir, 2, "seed");
+
+    writeSandboxConfig({
+      semanticSearchMode: "auto",
+      bundles: {
+        [id]: { npm: id, components: { main: { root: ".", adapter: "akm", writable: false } } },
+      },
+      embedding: { endpoint: capture.url, model: "mock", dimension: 8, apiKey: "secret://lab-api-key" },
+    });
+    resetConfigCache();
+    seedLockEntries([
+      {
+        id,
+        source: "npm",
+        ref: `npm:${id}`,
+        resolvedVersion: "1.0.0",
+        localRoot: contentDir,
+        installedAt: "2026-08-18T00:00:00.000Z",
+      },
+    ]);
+
+    // Establish the index first — the post-commit pass under test only runs
+    // as part of `akmUpdate`, not this seed run.
+    await akmIndex({ stashDir: storage.stashDir, hydrateSources: false, persistDetectedAdapters: false });
+    // Isolate the assertion below to requests made by the update's post-commit
+    // pass, not the seed run above (which the real fix also credentials, but
+    // that path is already covered by the in-process akmIndex variant).
+    capture.authHeaders.length = 0;
+
+    const syncSpy = spyOn(syncFromRefModule, "syncFromRef").mockImplementation(async (_ref, options) => {
+      const cacheRootDir = options?.cacheRootDir;
+      if (!cacheRootDir) throw new Error("update did not provide an isolated cacheRootDir");
+      const updatedCacheDir = path.join(cacheRootDir, `${id}-cache`);
+      const updatedContentDir = path.join(updatedCacheDir, "content");
+      writeMarkdownFiles(updatedContentDir, 2, "updated");
+      return {
+        id,
+        source: "npm",
+        ref: `npm:${id}`,
+        artifactUrl: `https://registry.example/${id}.tgz`,
+        resolvedVersion: "2.0.0",
+        contentDir: updatedContentDir,
+        cacheDir: updatedCacheDir,
+        extractedDir: updatedContentDir,
+        syncedAt: "2026-08-19T00:00:00.000Z",
+        writable: false,
+      };
+    });
+
+    try {
+      const result = await akmUpdate({ target: id, stashDir: storage.stashDir });
+
+      expect(result.index.semanticStatus).toBeDefined();
+      expect(["ready-vec", "ready-js"]).toContain(result.index.semanticStatus as string);
+      expectEveryRequestCarriedCredential(capture.authHeaders, "Bearer bundle-update-store-secret-value");
+    } finally {
+      syncSpy.mockRestore();
+    }
+  });
+});
+
+describe("akm remember write path: indexWrittenAssets carries the secret:// credential (#9544)", () => {
+  let storage: IsolatedAkmStorage;
+  let server: ReturnType<typeof Bun.serve> | undefined;
+
+  beforeEach(() => {
+    storage = withIsolatedAkmStorage();
+    clearEmbeddingCache();
+  });
+  afterEach(() => {
+    server?.stop(true);
+    server = undefined;
+    storage.cleanup();
+    resetConfigCache();
+  });
+
+  test("generateEmbeddingsForDb, called at indexWrittenAssets's own fresh loadConfig(), sends Bearer <store value>", async () => {
+    setSecret(path.join(storage.stashDir, "secrets", "lab-api-key"), Buffer.from("remember-store-secret-value"));
+
+    const capture = createAuthCapturingEmbeddingServer();
+    server = capture.server;
+
+    fs.writeFileSync(
+      path.join(storage.stashDir, "memories", "seed-memory.md"),
+      "---\ndescription: seed-memory\n---\n\nSeed memory so the index is non-empty before the write-path call.\n",
+      "utf8",
+    );
+
+    writeSandboxConfig({
+      semanticSearchMode: "auto",
+      bundles: { stash: { path: storage.stashDir, writable: true } },
+      defaultBundle: "stash",
+      embedding: { endpoint: capture.url, model: "mock", dimension: 8, apiKey: "secret://lab-api-key" },
+    });
+    resetConfigCache();
+
+    // Establish the index via a normal full run first (already covered by the
+    // in-process akmIndex variant above) — the assertion below isolates the
+    // write path's OWN fresh `loadConfig()` call inside `indexWrittenAssets`,
+    // reached via `generateEmbeddingsForDb`, not this seed run.
+    await akmIndex({ stashDir: storage.stashDir, full: true });
+    capture.authHeaders.length = 0;
+
+    const filePath = path.join(storage.stashDir, "memories", "remembered-entry.md");
+    fs.writeFileSync(
+      filePath,
+      "---\ndescription: remembered-entry\n---\n\nA newly remembered entry to embed via the write path.\n",
+      "utf8",
+    );
+
+    expect(await indexWrittenAssets(storage.stashDir, [filePath])).toBe(true);
+    expectEveryRequestCarriedCredential(capture.authHeaders, "Bearer remember-store-secret-value");
   });
 });
 
