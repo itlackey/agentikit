@@ -104,6 +104,11 @@ export interface IndexRunContext {
   full: boolean;
   /** Whether the explicit post-index missing-file clean pass owns disappearance reporting. */
   clean: boolean;
+  /**
+   * Whether `akm index --reembed` was passed: force a full purge + re-embed
+   * of every entry, bypassing the fingerprint-rename canary entirely (#955).
+   */
+  reembed: boolean;
   /** Primary stash directory. */
   stashDir: string;
   /** Progress emitter (always defined; may be a no-op). */

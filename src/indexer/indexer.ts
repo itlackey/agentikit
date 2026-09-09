@@ -229,6 +229,12 @@ interface IndexOptions {
    * without actually deleting them.
    */
   dryRun?: boolean;
+  /**
+   * When true (`akm index --reembed`), force a full purge + re-embed of
+   * every entry regardless of the embedding-fingerprint canary (#955) — an
+   * explicit operator override for when its verdict should not be trusted.
+   */
+  reembed?: boolean;
   onProgress?: (event: IndexProgressEvent) => void;
   signal?: AbortSignal;
   /**
@@ -464,7 +470,7 @@ async function runWalkPhase(ctx: IndexRunContext): Promise<void> {
  * entries. Writes `ctx.embeddingResult` for the finalize phase.
  */
 async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
-  const { db, config, signal, onProgress } = ctx;
+  const { db, config, signal, onProgress, reembed } = ctx;
 
   throwIfAborted(signal);
 
@@ -473,7 +479,9 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
   // (which RemoteEmbedder passes to every fetch and LocalEmbedder honours between
   // chunks) never saw a controller. Ctrl-C and the improve budget abort could not
   // stop the embedding phase, the longest phase of an index run.
-  ctx.embeddingResult = await generateEmbeddingsForDb(db, config, onProgress, signal);
+  ctx.embeddingResult = await generateEmbeddingsForDb(db, config, onProgress, signal, undefined, {
+    forceReembed: reembed,
+  });
   ctx.timing.tEmbedEnd = Date.now();
 }
 
@@ -768,6 +776,7 @@ interface CreateIndexRunContextOptions {
   sourceDirs: string[];
   full: boolean;
   clean: boolean;
+  reembed: boolean;
   stashDir: string;
   onProgress: (event: IndexProgressEvent) => void;
   signal: AbortSignal | undefined;
@@ -834,6 +843,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
     const full = options?.full === true;
     const clean = options?.clean === true;
     const dryRun = options?.dryRun === true;
+    const reembed = options?.reembed === true;
 
     // Load config and resolve all stash sources
     const { loadConfig, mutateConfig } = await import("../core/config/config.js");
@@ -898,6 +908,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
         sourceDirs: allSourceDirs,
         full,
         clean,
+        reembed,
         stashDir,
         onProgress,
         signal,

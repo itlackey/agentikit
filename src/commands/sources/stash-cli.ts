@@ -77,6 +77,11 @@ export const indexCommand = defineCommand({
       description: "When combined with --clean, report stale entries without deleting them.",
       default: false,
     },
+    reembed: {
+      type: "boolean",
+      description: "Force re-embedding of every entry, bypassing the embedding-model-rename compatibility check.",
+      default: false,
+    },
   },
   async run({ args }) {
     await runWithJsonErrors(async () => {
@@ -118,6 +123,7 @@ export const indexCommand = defineCommand({
           full: args.full,
           clean: args.clean,
           dryRun: args["dry-run"],
+          reembed: args.reembed,
           onProgress: ({ phase, message, processed, total }) => {
             latestMessage = message;
             const progressPrefix = processed !== undefined && total !== undefined ? `[${processed}/${total}] ` : "";
