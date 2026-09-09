@@ -3,6 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import * as healthChecks from "../src/commands/health/checks";
 import {
   HEALTH_CHECKS,
@@ -356,6 +359,54 @@ describe("health engine probes", () => {
     expect(result.message).toContain("akm env run env/lab");
     expect(result.evidence).toMatchObject({ suppliedByEnvAsset: "env/lab" });
     expect(JSON.stringify(result)).not.toContain("PRIVATE_IMPROVE_TOKEN");
+  });
+
+  test("#950: walks env assets at most once per probe run across multiple engines with missing credentials", async () => {
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: {
+        improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" },
+        distill: { ...llm, endpoint: "https://example.test/v2/chat/completions", apiKey: "$PRIVATE_DISTILL_TOKEN" },
+      },
+    };
+    let calls = 0;
+    const result = await runConfiguredEnginesProbe({
+      loadConfig: () => config,
+      env: {},
+      listEnvAssets: () => {
+        calls += 1;
+        return [];
+      },
+    });
+    expect(result.status).toBe("warn");
+    expect(result.message).toContain("2 of 2");
+    expect(calls).toBe(1);
+  });
+
+  test("#950: the default listEnvAssets seam honours the injected loadConfig, not the real one", async () => {
+    const labStashDir = fs.mkdtempSync(path.join(os.tmpdir(), "akm-health-lab-"));
+    fs.mkdirSync(path.join(labStashDir, "env"), { recursive: true });
+    fs.writeFileSync(path.join(labStashDir, "env", "lab.env"), "PRIVATE_IMPROVE_TOKEN=secret\n", "utf8");
+    try {
+      const config: AkmConfig = {
+        configVersion: "0.9.0",
+        semanticSearchMode: "off",
+        engines: { improve: { ...llm, apiKey: "$PRIVATE_IMPROVE_TOKEN" } },
+        defaults: { llmEngine: "improve" },
+        bundles: { lab: { path: labStashDir } },
+        defaultBundle: "lab",
+      };
+      // No listEnvAssets seam injected: this exercises the default seam,
+      // which must walk the *injected* config's bundles, not the real
+      // (sandboxed, unrelated) HOME/XDG config `loadConfig()` would read.
+      const result = await runDefaultLlmEngineProbe({ loadConfig: () => config, env: {} });
+      expect(result.status).toBe("warn");
+      expect(result.evidence?.suppliedByEnvAsset).toBe("env/lab");
+      expect(JSON.stringify(result)).not.toContain("PRIVATE_IMPROVE_TOKEN");
+    } finally {
+      fs.rmSync(labStashDir, { recursive: true, force: true });
+    }
   });
 
   test("warns when an enabled active improve process lacks its required credential", () => {

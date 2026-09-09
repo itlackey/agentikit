@@ -165,8 +165,12 @@ export interface DefaultEngineProbeDependencies {
    * #950: injectable seam for listing env/ assets (ref + key NAMES only,
    * never values), so a missing-in-shell credential's warn can name which
    * env asset supplies the same variable. Defaults to
-   * `listEnvsRecursive(listKeys)` against the real config/sources. Tests
-   * inject a fixed list so this stays a pure, config-free probe.
+   * `listEnvsRecursive(listKeys, deps.loadConfig ?? loadConfig)` — honouring
+   * an injected `deps.loadConfig` rather than always re-reading the real
+   * config/sources. Whichever seam is in play is memoised once per probe run
+   * (see `withMemoizedEnvAssets`), so it walks env/ at most once even when a
+   * run probes several engines. Tests inject a fixed list to keep a probe
+   * pure and config-free.
    */
   listEnvAssets?: () => Array<{ ref: string; path: string; keys: string[] }>;
 }
@@ -256,7 +260,9 @@ function credentialAvailable(
  * and only the ref is read here) — `tests/health-engine-probe.test.ts` pins
  * that a credential's env-var name never appears in health's JSON output.
  * Best-effort: any failure walking env assets (unreadable stash, bad config)
- * degrades to `null`, never a crash.
+ * degrades to `null`, never a crash. `deps.listEnvAssets` is expected to
+ * already be normalised (see {@link withMemoizedEnvAssets}) by the time this
+ * runs, so the walk happens at most once per probe run.
  */
 function findSuppliedByEnvAsset(
   credential: { names: readonly string[] } | undefined,
@@ -264,7 +270,7 @@ function findSuppliedByEnvAsset(
 ): string | null {
   if (!credential || credential.names.length === 0) return null;
   try {
-    const envs = (deps.listEnvAssets ?? (() => listEnvsRecursive(listKeys)))();
+    const envs = (deps.listEnvAssets ?? (() => listEnvsRecursive(listKeys, (deps.loadConfig ?? loadConfig)())))();
     for (const envAsset of envs) {
       if (credential.names.some((name) => envAsset.keys.includes(name))) return envAsset.ref;
     }
@@ -272,6 +278,23 @@ function findSuppliedByEnvAsset(
     // Best-effort — env-asset discovery must never break a health probe.
   }
   return null;
+}
+
+/**
+ * #950: normalise `deps.listEnvAssets` once per probe run so
+ * {@link findSuppliedByEnvAsset}'s env-asset walk happens at most once even
+ * when a run probes several engines with missing credentials — the walk is
+ * real IO (or config-injected IO in tests) with no reason to repeat per
+ * engine. Wraps whatever seam is already present (test-injected or the
+ * config-honouring default) in a memoising closure; called once by each of
+ * the four probe entry points that share {@link runConfiguredEngineProbe}
+ * (`runDefaultEngineProbe`, `runDefaultLlmEngineProbe`,
+ * `runConfiguredEnginesProbe`, `runHealthEngineProbes`).
+ */
+function withMemoizedEnvAssets(deps: DefaultEngineProbeDependencies): DefaultEngineProbeDependencies {
+  const listEnvAssets = deps.listEnvAssets ?? (() => listEnvsRecursive(listKeys, (deps.loadConfig ?? loadConfig)()));
+  let cached: ReturnType<typeof listEnvAssets> | undefined;
+  return { ...deps, listEnvAssets: () => (cached ??= listEnvAssets()) };
 }
 
 async function runConfiguredEngineProbe(
@@ -636,14 +659,26 @@ export async function runDefaultEngineProbe(deps: DefaultEngineProbeDependencies
   // opencode binary DOES have a working default, and reporting otherwise would
   // contradict what `workflow run` / `task run` actually do.
   const { config } = withEngineFallback(deps.loadConfig?.() ?? loadConfig(), deps.which);
-  return runConfiguredEngineProbe("default-engine", config.defaults?.engine, config, deps, new Map());
+  return runConfiguredEngineProbe(
+    "default-engine",
+    config.defaults?.engine,
+    config,
+    withMemoizedEnvAssets(deps),
+    new Map(),
+  );
 }
 
 export async function runDefaultLlmEngineProbe(deps: DefaultEngineProbeDependencies = {}): Promise<HealthCheckResult> {
   const config = deps.loadConfig?.() ?? loadConfig();
   const engineName = config.defaults?.llmEngine;
   if (!engineName) return unconfiguredEngineProbe("default-llm-engine");
-  const result = await runConfiguredEngineProbe("configured-engine", engineName, config, deps, new Map());
+  const result = await runConfiguredEngineProbe(
+    "configured-engine",
+    engineName,
+    config,
+    withMemoizedEnvAssets(deps),
+    new Map(),
+  );
   return projectSelectedEngineProbe(new Map([[engineName, result]]), engineName, "default-llm-engine");
 }
 
@@ -652,11 +687,12 @@ export async function runConfiguredEnginesProbe(deps: DefaultEngineProbeDependen
   const config = deps.loadConfig?.() ?? loadConfig();
   const engineNames = Object.keys(config.engines ?? {}).sort();
   const cache: ReachabilityCache = new Map();
+  const runDeps = withMemoizedEnvAssets(deps);
   const availability = new Map(
     await Promise.all(
       engineNames.map(
         async (engine) =>
-          [engine, await runConfiguredEngineProbe("configured-engine", engine, config, deps, cache)] as const,
+          [engine, await runConfiguredEngineProbe("configured-engine", engine, config, runDeps, cache)] as const,
       ),
     ),
   );
@@ -681,11 +717,12 @@ export async function runHealthEngineProbes(
     .filter((name): name is string => name !== undefined)
     .sort();
   const cache: ReachabilityCache = new Map();
+  const runDeps = withMemoizedEnvAssets(deps);
   const availability = new Map(
     await Promise.all(
       probeNames.map(
         async (engine) =>
-          [engine, await runConfiguredEngineProbe("configured-engine", engine, effective, deps, cache)] as const,
+          [engine, await runConfiguredEngineProbe("configured-engine", engine, effective, runDeps, cache)] as const,
       ),
     ),
   );
