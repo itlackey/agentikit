@@ -3,7 +3,10 @@
 AKM reads one user configuration file: `$XDG_CONFIG_HOME/akm/config.json`
 (normally `~/.config/akm/config.json` on Linux and macOS, or
 `%APPDATA%\akm\config.json` on Windows). Set `AKM_CONFIG_DIR` to override the
-directory. Project `.akm/config.json` files are not merged.
+directory. Project `.akm/config.json` files are not merged. A config file may
+optionally extend one other config via `extends` (see "Sharing configuration
+across installs" below) — this is a single, explicit, user-opted-in key, not
+automatic project-config discovery.
 
 ## Version 0.9
 
@@ -147,19 +150,54 @@ the same version-1 schema as the installed file:
 ```
 
 Each engine mapping is either a non-empty exact model string or a structured
-profile with the documented fields `model` and `inference`. A user profile may
-omit `model` when the installed layer already supplies it, as the partial
-Claude override above does. After overlay, every alias/engine entry must have a
-usable model. Unknown profile fields are rejected; JSON-safe fields inside
-`inference` are preserved for engine adapters to lower optimistically.
+profile with the documented fields `model`, `inference`, and `engine`. A user
+profile may omit `model` when the installed layer already supplies it, as the
+partial Claude override above does. After overlay, every alias/engine entry
+must have a usable model. Unknown profile fields are rejected; JSON-safe
+fields inside `inference` are preserved for engine adapters to lower
+optimistically.
+
+A profile's `engine` field (0.9.15, #946) borrows a column's `model` (and, for
+an `llm`-kind engine, its inference defaults) from a configured
+`engines.<name>` connection instead of hand-typing a literal model a second
+time:
+
+```json
+{
+  "version": 1,
+  "aliases": {
+    "fast": {
+      "opencode": { "engine": "local-fast" }
+    }
+  }
+}
+```
+
+With `engines.local-fast` configured (agent-kind or llm-kind), this column
+resolves to that engine's own `model` string. `model` and `engine` are
+mutually exclusive on the same profile — `engine` is an indirection for the
+model value, never an engine-selection override; which engine `akm agent`
+dispatches to is still decided entirely by `--engine`/`defaults.engine` (see
+[Engine selection](#engines)). The referenced engine's `model` must itself be
+literal, not another alias, and akm copies it verbatim: it does not translate
+between an engine's connection and an agent platform's own provider registry,
+so the value must already be meaningful for the column's platform (e.g. a
+`kind: "agent", platform: "opencode"` engine's `model` should already be a
+string opencode itself understands, such as `krang/qwen3.5-9b`). Run
+`akm models list` to see, for every alias/column, the resolved model and
+whether it came from the installed defaults, the user overlay, and a literal
+value or an `engine` reference.
 
 The user file overlays the installed file by alias, engine, and nested object
 field. Objects merge recursively. Arrays, scalars, and explicit `null` replace
-the lower value; omitted fields preserve it. Alias and engine keys are
-case-normalized, and case-colliding definitions are rejected. Unknown model
-inputs still pass through byte-for-byte as exact identifiers. Once a name is a
-known merged alias, selecting an engine with no mapping is an actionable
-configuration error rather than silently sending the alias as a model ID.
+the lower value; omitted fields preserve it. A layer setting a literal `model`
+clears any `engine` inherited from a farther layer, and vice versa — the
+nearer layer's choice of literal-vs-engine always wins outright rather than
+merging. Alias and engine keys are case-normalized, and case-colliding
+definitions are rejected. Unknown model inputs still pass through
+byte-for-byte as exact identifiers. Once a name is a known merged alias,
+selecting an engine with no mapping is an actionable configuration error
+rather than silently sending the alias as a model ID.
 
 The common execution cascade reads these files for current direct command and
 non-interactive agent calls, task source v4 runs, and improve/proposal/index
@@ -483,6 +521,94 @@ Object values passed to `config set` deep-merge with their current value.
 Arrays replace, `null` is only valid for nullable fields, and `config unset` is
 the only deletion operation. `configVersion` cannot be set or unset with the
 generic walker.
+
+`config get <key> --show-source` wraps the (redacted) value as
+`{ value, source }`, where `source` is `"local"` when the local file's own
+JSON sets the key, `"extends:<ref>"` for the nearest `extends` chain member
+that sets it, or `"default"` when neither does. It is opt-in — plain
+`config get` keeps its Stable, script-safe bare-value shape.
+
+### Sharing configuration across installs
+
+Five hosts running the same fleet often carry an identical `engines` map and
+`improve.strategies` block, differing only in credential delivery (`apiKey`
+vs `apiKeyFile`), bundle paths, and cron offsets. Hand-syncing that block
+across hosts drifts silently. `extends` fixes this: put the shared block in
+one file, and have each host's local config extend it.
+
+```jsonc
+// bundles/fleet/config/shared.json — versioned with the bundle, shared by every host
+{
+  "configVersion": "0.9.0",
+  "engines": {
+    "fast": { "kind": "llm", "endpoint": "https://api.example.test/v1/chat/completions", "model": "qwen3" }
+  },
+  "improve": { "strategies": { "nightly": { "engine": "fast" } } }
+}
+```
+
+```jsonc
+// ~/.config/akm/config.json — this host's local file, under 20 lines
+{
+  "configVersion": "0.9.0",
+  "extends": "fleet//config/shared.json",
+  "bundles": {
+    "fleet": { "git": "https://github.com/example/fleet-bundle.git" },
+    "stash": { "path": "~/akm-stash", "writable": true }
+  },
+  "defaultBundle": "stash",
+  "engines": { "fast": { "apiKeyFile": "/run/secrets/fast-api-key" } }
+}
+```
+
+`extends` accepts either form:
+
+- A filesystem path — relative paths resolve against the directory of the
+  config file that declares them; a leading `~` expands.
+- A `bundle//<path>` ref — a plain file path *relative to that bundle's
+  content root* (e.g. `config/shared.json`), resolved through the bundle's
+  configured `path`, not the search index — so it never needs `akm index` to
+  have run. This is not an asset ref: the path after `//` needs no asset type
+  (`scripts/`, `knowledge/`, …) and the shared file is never indexed; it can
+  live anywhere under the bundle. An empty, absolute, or content-root-escaping
+  path is rejected. Only a filesystem bundle (`bundles.<id>.path`) can host an
+  `extends` source; sync a `git`/`website` bundle with `akm bundle
+  add`/`akm sync` first so the file is materialized locally, then point
+  `extends` at it.
+
+There is no `extends: <url>` form: config load is synchronous and runs on
+every invocation, and akm deliberately does not fetch network resources at
+load time (the same reason `registries` is never fetched until a
+registry-touching command runs). A URL-backed shared config should be synced
+as a `git`/`website` bundle and referenced as `extends: bundle//<path>`
+once materialized, reusing the sync machinery akm already has instead of a
+second one inside config load.
+
+The base config runs through the exact same load pipeline as the local
+file — its own version shim, its own legacy-shape shim — so it can carry an
+older `configVersion` independently, and it may itself set `extends`
+(chained). Cycle detection (`ConfigError`, "extends cycle detected") stops A
+extends B extends A instead of recursing forever. Merge order is
+`DEFAULT_CONFIG` (outermost) → the resolved `extends` chain → the local
+file's own keys (local always wins) — the same `deepMergeConfig` "override
+wins" semantics `config set` already uses. A referenced file/bundle that does
+not already exist locally is a load-time `ConfigError` naming the ref — akm
+never fetches or syncs one on your behalf.
+
+`akm config diff <path|bundle//path>` compares this host's EFFECTIVE
+config (its own `extends` already applied) against another config file or
+bundle-relative file (loaded through the same loader, so ITS `extends` is
+honoured too), printing sorted `{ path, local, other }` rows for every leaf
+that differs. Both sides are redacted the same way `config get`/`list` are
+before comparison, so a differing secret never round-trips into the diff
+output. Cross-host comparison (`ssh host2 akm config diff ...` in a loop) is
+left to the operator; akm has no concept of a networked fleet to compare
+against directly.
+
+```sh
+akm config diff ~/other-host/config.json
+akm config diff fleet//config/shared.json
+```
 
 ## Environment
 

@@ -1615,27 +1615,34 @@ error (exit 2), the canonical bare-group behavior — name a subcommand.
 ```sh
 akm config list                     # List current config
 akm config get output.format        # Read one key
+akm config get output.format --show-source  # Read one key, with where it came from
 akm config set output.detail full   # Set one key
 akm config set output.detail full --silent  # Set without the post-write config dump on stdout
 akm config unset llm                # Remove an optional key
 akm config path                     # Print path to config file
 akm config path --all               # Print all config-related paths
+akm config diff other-host/config.json  # Effective-config differences, secrets redacted
 ```
 
 Subcommands:
 
 | Subcommand | Description |
 | --- | --- |
-| `get <key>` | Read one config key |
+| `get <key>` | Read one config key (the effective, post-`extends` value). `--show-source` wraps it as `{ value, source }`, where `source` is `local`, `extends:<ref>`, or `default`. |
 | `list` | List current configuration |
 | `set <key> <value>` | Set one config key; prints the resulting config with `ok: true` |
 | `unset <key>` | Unset an optional key, or a whole `embedding`/engine section; prints the resulting config with `ok: true` |
 | `path` | Show paths to config, bundle, cache, and index. `--all` prints every path; without it, just the config path. Load-bearing: `config path` is the one subcommand the CLI still allows to run when the on-disk config itself fails to load, so you always have a way to locate a broken config. |
+| `diff <path\|bundle//path>` | Compare this instance's effective config (its own `extends` already applied) against another config file or bundle-relative file (loaded through the same loader — its `extends` honoured too); prints sorted `{ path, local, other }` rows for every differing leaf, secrets redacted on both sides. |
 
 `set` and `unset` accept `--silent` to suppress the post-write config dump
 entirely — nothing is printed on stdout, and the exit code is the status (the
 write still happens and errors still print) — use it from hooks and CI
 scripts.
+
+See [configuration.md](configuration.md)'s "Sharing configuration across
+installs" for the `extends` config key that `diff` and `get --show-source`
+work with.
 
 > **Removed in 0.9.0:** `akm config enable`/`akm config disable`. Use
 > `akm registry add|remove` to toggle a registry, the general mechanism.
@@ -1647,13 +1654,21 @@ See [configuration.md](configuration.md) for details.
 ### models
 
 Manage the installed and operator-owned model intent map. Bare `akm models`
-is a usage error; use the explicit copy operation when you want an editable
-full map.
+is a usage error; use `list` to inspect the effective table or `copy-defaults`
+when you want an editable full map.
 
 ```sh
+akm models list
 akm models copy-defaults
 akm models copy-defaults --overwrite
 ```
+
+`list` shows the fully resolved alias table — one row per (alias, column)
+pair with its `model`, optional `inference`, `source` (`default`: unchanged
+from the installed file; `user`: touched by the user overlay), and `via`
+(`literal`: a model string; `engine`: borrowed from a configured
+`engines.<name>` connection, in which case the row also names that `engine`).
+Read-only; it never writes `models.json`.
 
 `copy-defaults` validates the packaged version-1 `models.json`, then stages and
 syncs it beside the normal AKM configuration target. Creation uses an atomic
@@ -1664,7 +1679,8 @@ filesystems do not offer a conditional rename that locks the previously
 observed inode. Symlinks and other non-regular targets observed during checks
 are refused. See
 [Model-map files](configuration.md#model-map-files) for schema, overlay, and
-resolution semantics.
+resolution semantics — including the `engine` field (0.9.15) that lets a
+column borrow its model from a configured engine instead of a literal string.
 
 ### help
 
@@ -2118,8 +2134,13 @@ akm agent [<agent-ref>] [--engine <name>] [--prompt <text>] [--model <model>] [-
 
 When `<agent-ref>` is provided, akm resolves the bundle agent's persona,
 `modelHint`, and requested `toolPolicy`. The `--model` flag wins over any model
-specified in the asset. The requested tool policy never grants access by
-itself: authorization runs before lowering, credentials, or provider dispatch.
+specified in the asset. An alias resolves per the selected `--engine`'s
+model-map column (see [Model-map files](configuration.md#model-map-files)),
+which — as of 0.9.15 — may itself be an `engine`-backed indirection, so
+`--engine local-fast --model fast` can resolve to `local-fast`'s own
+`engines.local-fast.model` instead of a hardcoded per-platform literal. The
+requested tool policy never grants access by itself: authorization runs before
+lowering, credentials, or provider dispatch.
 The current CLI has no built-in allow-all authorizer, so a nonempty request is
 rejected rather than silently weakened.
 Selecting a persona or model without `--prompt` or `--prompt-stdin` is also

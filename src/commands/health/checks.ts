@@ -603,12 +603,18 @@ export function runActiveImproveStrategyProbe(deps: DefaultEngineProbeDependenci
   }
 }
 
+export interface RunModelMapProbeDependencies extends LoadModelMapOptions {
+  loadConfig?: () => AkmConfig;
+}
+
 /**
  * Validate the immutable installed model map and optional user overlay.
  * Installed corruption is a package defect (fail); a bad optional user file
- * is operator-fixable configuration (warn); absence is the normal state.
+ * (including an `engine`-backed profile referencing a missing/broken engine,
+ * once resolved against real `config.engines` — #946) is operator-fixable
+ * configuration (warn); absence is the normal state.
  */
-export function runModelMapProbe(options: LoadModelMapOptions = {}): HealthCheckResult {
+export function runModelMapProbe(options: RunModelMapProbeDependencies = {}): HealthCheckResult {
   let installedText: string;
   try {
     installedText = readInstalledModelMapText(options);
@@ -624,8 +630,20 @@ export function runModelMapProbe(options: LoadModelMapOptions = {}): HealthCheck
     };
   }
 
+  // Load config OUTSIDE the models.json try/catch below: a broken
+  // config.json must surface as a config problem reported by the config
+  // checks, never get misreported as a models.json warning carrying the
+  // config error's own text. When config fails to load, validate the model
+  // map shape-only (no `engine` resolution), matching pre-#946 behavior.
+  let engines: AkmConfig["engines"] | undefined;
   try {
-    const loaded = loadModelMap({ ...options, installedText });
+    engines = (options.loadConfig?.() ?? loadConfig()).engines;
+  } catch {
+    engines = undefined;
+  }
+
+  try {
+    const loaded = loadModelMap({ ...options, installedText, engines });
     return {
       name: "model-map-files",
       kind: "deterministic",
@@ -687,7 +705,11 @@ export function runSelectedModelAliasesProbe(deps: SelectedModelAliasesProbeDepe
 
   let modelMap: LoadedModelMap;
   try {
-    modelMap = (deps.loadModelMap ?? loadModelMap)({ env: deps.env, installedText: deps.installedText });
+    modelMap = (deps.loadModelMap ?? loadModelMap)({
+      env: deps.env,
+      installedText: deps.installedText,
+      engines: config.engines,
+    });
   } catch {
     return {
       name: "selected-model-aliases",

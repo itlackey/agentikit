@@ -49,6 +49,7 @@ const PASSTHROUGH_COMMANDS = [
   "clone",
   "command-dry-run",
   "config",
+  "config-diff",
   "env-create",
   "env-export",
   "env-remove",
