@@ -132,8 +132,8 @@ own deadline, and the SDK/CLI runner races each phase against it internally.
 Either way, a dispatch that times out is recorded as `status: failed` with
 `detail.reason: "timeout"` in `task_history` — not a silent `completed` — and
 `akm task run` exits non-zero for it; see [health-advisories.md's
-`task-fail-rate` row](../architecture/internals/health-advisories.md) for how
-`akm health` surfaces a timeout-dominant failure pattern.
+`task-fail-rate` row](https://github.com/itlackey/akm/blob/main/docs/architecture/internals/health-advisories.md)
+for how `akm health` surfaces a timeout-dominant failure pattern.
 
 ## Scheduling
 
