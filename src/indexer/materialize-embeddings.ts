@@ -511,14 +511,18 @@ export async function generateEmbeddingsForDb(
       texts.push(capped.text);
     }
     if (truncatedCount > 0) {
+      // Through onProgress ONLY, not warn() too — onProgress already reaches
+      // stderr at the default level in every output mode (#9541 decision 5),
+      // and the index CLI's progress handler writes it through info() (log-
+      // file aware), so calling warn() as well printed the identical
+      // sentence twice in text mode.
       const message = `[embed] ${truncatedCount} entr${truncatedCount === 1 ? "y" : "ies"} truncated to the ${maxInputTokens}-token embedding cap (embedding.maxInputTokens); rerun with a higher cap to embed the full text.`;
-      warn(message);
       onProgress({ phase: "embeddings", message });
     }
 
     if (rebuildReason) {
+      // See the truncation notice above: onProgress ONLY.
       const message = `[embed] Re-embedding ${pendingEntries.length} entr${pendingEntries.length === 1 ? "y" : "ies"} because ${rebuildReason}`;
-      warn(message);
       onProgress({ phase: "embeddings", message });
     }
     onProgress({

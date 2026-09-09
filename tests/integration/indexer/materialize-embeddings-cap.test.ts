@@ -94,7 +94,7 @@ describe("generateEmbeddingsForDb: per-document embedding cap (#9543 decision 2)
     }
   });
 
-  test("logs how many entries were truncated, once per run", async () => {
+  test("reports how many entries were truncated, once per run, through onProgress only (#954)", async () => {
     const db = openIndexDatabase();
     try {
       seedOneEntry(db, "x".repeat(8000));
@@ -115,10 +115,17 @@ describe("generateEmbeddingsForDb: per-document embedding cap (#9543 decision 2)
         },
       });
 
-      await generateEmbeddingsForDb(db, configFor(), () => {});
+      const progressMessages: string[] = [];
+      await generateEmbeddingsForDb(db, configFor(), (event) => progressMessages.push(event.message));
 
-      const truncationLine = warnCalls.find((line) => line.includes("truncated to the"));
-      expect(truncationLine).toContain("1 entry truncated to the 512-token embedding cap");
+      // Once, through onProgress (which the index CLI's handler writes to
+      // stderr AND the log file via info()) — never ALSO through warn(),
+      // which used to print the identical sentence a second time in text
+      // mode (#954, field-report follow-up).
+      const truncationLines = progressMessages.filter((line) => line.includes("truncated to the"));
+      expect(truncationLines).toHaveLength(1);
+      expect(truncationLines[0]).toContain("1 entry truncated to the 512-token embedding cap");
+      expect(warnCalls.some((line) => line.includes("truncated to the"))).toBe(false);
     } finally {
       closeDatabase(db);
     }
