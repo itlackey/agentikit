@@ -75,9 +75,10 @@ enumeration of the whole `proposal` noun group.
 | `akm migrate apply` | Internal | Forwards to the standalone `akm-migrate` tool; renders its result through the normal `--format` pipeline (not exempt — see below). Listed (not hidden) in `--help`/completions. |
 | `akm config path` | Stable | |
 | `akm config list` | Stable | |
-| `akm config get` | Stable | |
+| `akm config get` | Stable | Default bare-value shape unchanged; `--show-source` (0.9.15, opt-in) wraps it as `{ value, source }`. |
 | `akm config set` | Stable | |
 | `akm config unset` | Stable | |
+| `akm config diff` | Evolving | New in 0.9.15; compares effective (post-`extends`) configs, secrets redacted. |
 | `akm feedback` | Stable | |
 | `akm log` | Evolving | |
 | `akm agent` | Evolving | |

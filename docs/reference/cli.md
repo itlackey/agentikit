@@ -1599,27 +1599,34 @@ error (exit 2), the canonical bare-group behavior — name a subcommand.
 ```sh
 akm config list                     # List current config
 akm config get output.format        # Read one key
+akm config get output.format --show-source  # Read one key, with where it came from
 akm config set output.detail full   # Set one key
 akm config set output.detail full --silent  # Set without the post-write config dump on stdout
 akm config unset llm                # Remove an optional key
 akm config path                     # Print path to config file
 akm config path --all               # Print all config-related paths
+akm config diff other-host/config.json  # Effective-config differences, secrets redacted
 ```
 
 Subcommands:
 
 | Subcommand | Description |
 | --- | --- |
-| `get <key>` | Read one config key |
+| `get <key>` | Read one config key (the effective, post-`extends` value). `--show-source` wraps it as `{ value, source }`, where `source` is `local`, `extends:<ref>`, or `default`. |
 | `list` | List current configuration |
 | `set <key> <value>` | Set one config key; prints the resulting config with `ok: true` |
 | `unset <key>` | Unset an optional key, or a whole `embedding`/engine section; prints the resulting config with `ok: true` |
 | `path` | Show paths to config, bundle, cache, and index. `--all` prints every path; without it, just the config path. Load-bearing: `config path` is the one subcommand the CLI still allows to run when the on-disk config itself fails to load, so you always have a way to locate a broken config. |
+| `diff <path\|bundle//conceptId>` | Compare this instance's effective config (its own `extends` already applied) against another config file or bundle asset (loaded through the same loader — its `extends` honoured too); prints sorted `{ path, local, other }` rows for every differing leaf, secrets redacted on both sides. |
 
 `set` and `unset` accept `--silent` to suppress the post-write config dump
 entirely — nothing is printed on stdout, and the exit code is the status (the
 write still happens and errors still print) — use it from hooks and CI
 scripts.
+
+See [configuration.md](configuration.md)'s "Sharing configuration across
+installs" for the `extends` config key that `diff` and `get --show-source`
+work with.
 
 > **Removed in 0.9.0:** `akm config enable`/`akm config disable`. Use
 > `akm registry add|remove` to toggle a registry, the general mechanism.
