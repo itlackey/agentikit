@@ -1028,12 +1028,12 @@ describe("extends inheritance (#945)", () => {
     expect((config as unknown as Record<string, unknown>).defaultEngine).toBeUndefined();
   });
 
-  test("extends by a filesystem bundle asset ref (bundle//conceptId), no index involved", () => {
+  test("extends by a filesystem bundle asset ref (bundle//<path>), no index involved", () => {
     const fleetDir = makeTmpDir();
     try {
-      fs.mkdirSync(path.join(fleetDir, "scripts"), { recursive: true });
+      fs.mkdirSync(path.join(fleetDir, "config"), { recursive: true });
       fs.writeFileSync(
-        path.join(fleetDir, "scripts", "shared-config.json"),
+        path.join(fleetDir, "config", "shared.json"),
         JSON.stringify({ configVersion: "0.9.0", archiveRetentionDays: 14 }),
       );
       writeRawConfig(
@@ -1041,7 +1041,7 @@ describe("extends inheritance (#945)", () => {
         JSON.stringify({
           configVersion: "0.9.0",
           bundles: { fleet: { path: fleetDir } },
-          extends: "fleet//scripts/shared-config.json",
+          extends: "fleet//config/shared.json",
         }),
       );
 
@@ -1058,11 +1058,47 @@ describe("extends inheritance (#945)", () => {
       JSON.stringify({
         configVersion: "0.9.0",
         bundles: { fleet: { git: "https://example.test/fleet.git" } },
-        extends: "fleet//scripts/shared-config.json",
+        extends: "fleet//config/shared.json",
       }),
     );
     expect(() => loadConfig()).toThrow(ConfigError);
     expect(() => loadConfig()).toThrow(/fleet/);
+  });
+
+  test("rejects an absolute path after bundle//", () => {
+    const fleetDir = makeTmpDir();
+    try {
+      writeRawConfig(
+        getConfigPath(),
+        JSON.stringify({
+          configVersion: "0.9.0",
+          bundles: { fleet: { path: fleetDir } },
+          extends: "fleet///etc/passwd",
+        }),
+      );
+      expect(() => loadConfig()).toThrow(ConfigError);
+      expect(() => loadConfig()).toThrow(/absolute/);
+    } finally {
+      cleanup(fleetDir);
+    }
+  });
+
+  test("rejects a bundle//<path> that escapes the bundle's content root", () => {
+    const fleetDir = makeTmpDir();
+    try {
+      writeRawConfig(
+        getConfigPath(),
+        JSON.stringify({
+          configVersion: "0.9.0",
+          bundles: { fleet: { path: path.join(fleetDir, "content") } },
+          extends: "fleet//../outside.json",
+        }),
+      );
+      expect(() => loadConfig()).toThrow(ConfigError);
+      expect(() => loadConfig()).toThrow(/escapes/);
+    } finally {
+      cleanup(fleetDir);
+    }
   });
 
   test("config get extends returns the locally configured ref (not silently dropped)", () => {

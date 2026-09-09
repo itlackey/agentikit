@@ -115,11 +115,11 @@ function diffConfigs(local: unknown, other: unknown): ConfigDiffRow[] {
 }
 
 /**
- * `akm config diff <path|bundle//conceptId>`: the current effective config
+ * `akm config diff <path|bundle//path>`: the current effective config
  * (this instance's `extends` already applied) against another config file or
- * bundle asset (loaded through the same loader, its own `extends` honoured),
- * secrets redacted on both sides before comparison so a differing secret
- * never round-trips into the diff.
+ * bundle-relative file (loaded through the same loader, its own `extends`
+ * honoured), secrets redacted on both sides before comparison so a differing
+ * secret never round-trips into the diff.
  */
 export function akmConfigDiff(ref: string): { rows: ConfigDiffRow[] } {
   const current = loadConfig();
@@ -252,13 +252,14 @@ export const configCommand = defineGroupCommand({
     diff: defineJsonCommand({
       meta: {
         name: "diff",
-        description: "Show effective-config differences against another config file or bundle asset, secrets redacted",
+        description:
+          "Show effective-config differences against another config file or bundle-relative file, secrets redacted",
       },
       args: {
         ref: {
           type: "positional",
           required: true,
-          description: "Other config: a file path or bundle//conceptId asset ref",
+          description: "Other config: a file path or bundle//path (relative to the bundle's content root)",
         },
       },
       run({ args }) {

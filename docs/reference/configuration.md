@@ -537,7 +537,7 @@ across hosts drifts silently. `extends` fixes this: put the shared block in
 one file, and have each host's local config extend it.
 
 ```jsonc
-// bundles/fleet/scripts/shared-config.json — versioned with the bundle, shared by every host
+// bundles/fleet/config/shared.json — versioned with the bundle, shared by every host
 {
   "configVersion": "0.9.0",
   "engines": {
@@ -551,7 +551,7 @@ one file, and have each host's local config extend it.
 // ~/.config/akm/config.json — this host's local file, under 20 lines
 {
   "configVersion": "0.9.0",
-  "extends": "fleet//scripts/shared-config.json",
+  "extends": "fleet//config/shared.json",
   "bundles": {
     "fleet": { "git": "https://github.com/example/fleet-bundle.git" },
     "stash": { "path": "~/akm-stash", "writable": true }
@@ -565,20 +565,22 @@ one file, and have each host's local config extend it.
 
 - A filesystem path — relative paths resolve against the directory of the
   config file that declares them; a leading `~` expands.
-- A `bundle//conceptId` asset ref, resolved the same way a stash asset ref
-  resolves anywhere else in akm — through the bundle's configured `path`, not
-  the search index — so it never needs `akm index` to have run. `conceptId`
-  must be type-qualified as `<stashDir>/<name>` like any other asset ref
-  (e.g. `scripts/shared-config.json`, not a bare `shared-config.json`). Only
-  a filesystem bundle (`bundles.<id>.path`) can host an `extends` source;
-  sync a `git`/`website` bundle with `akm bundle add`/`akm sync` first so the
-  file is materialized locally, then point `extends` at it.
+- A `bundle//<path>` ref — a plain file path *relative to that bundle's
+  content root* (e.g. `config/shared.json`), resolved through the bundle's
+  configured `path`, not the search index — so it never needs `akm index` to
+  have run. This is not an asset ref: the path after `//` needs no asset type
+  (`scripts/`, `knowledge/`, …) and the shared file is never indexed; it can
+  live anywhere under the bundle. An empty, absolute, or content-root-escaping
+  path is rejected. Only a filesystem bundle (`bundles.<id>.path`) can host an
+  `extends` source; sync a `git`/`website` bundle with `akm bundle
+  add`/`akm sync` first so the file is materialized locally, then point
+  `extends` at it.
 
 There is no `extends: <url>` form: config load is synchronous and runs on
 every invocation, and akm deliberately does not fetch network resources at
 load time (the same reason `registries` is never fetched until a
 registry-touching command runs). A URL-backed shared config should be synced
-as a `git`/`website` bundle and referenced as `extends: bundle//conceptId`
+as a `git`/`website` bundle and referenced as `extends: bundle//<path>`
 once materialized, reusing the sync machinery akm already has instead of a
 second one inside config load.
 
@@ -593,19 +595,19 @@ wins" semantics `config set` already uses. A referenced file/bundle that does
 not already exist locally is a load-time `ConfigError` naming the ref — akm
 never fetches or syncs one on your behalf.
 
-`akm config diff <path|bundle//conceptId>` compares this host's EFFECTIVE
+`akm config diff <path|bundle//path>` compares this host's EFFECTIVE
 config (its own `extends` already applied) against another config file or
-bundle asset (loaded through the same loader, so ITS `extends` is honoured
-too), printing sorted `{ path, local, other }` rows for every leaf that
-differs. Both sides are redacted the same way `config get`/`list` are before
-comparison, so a differing secret never round-trips into the diff output.
-Cross-host comparison (`ssh host2 akm config diff ...` in a loop) is left to
-the operator; akm has no concept of a networked fleet to compare against
-directly.
+bundle-relative file (loaded through the same loader, so ITS `extends` is
+honoured too), printing sorted `{ path, local, other }` rows for every leaf
+that differs. Both sides are redacted the same way `config get`/`list` are
+before comparison, so a differing secret never round-trips into the diff
+output. Cross-host comparison (`ssh host2 akm config diff ...` in a loop) is
+left to the operator; akm has no concept of a networked fleet to compare
+against directly.
 
 ```sh
 akm config diff ~/other-host/config.json
-akm config diff fleet//scripts/shared-config.json
+akm config diff fleet//config/shared.json
 ```
 
 ## Environment

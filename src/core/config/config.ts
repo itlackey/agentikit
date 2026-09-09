@@ -6,9 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { assetPathForName, stashDirFor } from "../asset/asset-placement";
-import { type BundleRef, isBundleSlug, parseBundleRef } from "../asset/asset-ref";
-import { typeNameFromConceptId } from "../asset/resolve-ref";
+import { isBundleSlug } from "../asset/asset-ref";
 import { isRecord } from "../common";
 import { ConfigError } from "../errors";
 import { liftLegacyEngineExtraParams } from "../extra-params";
@@ -22,9 +20,10 @@ import {
   writeConfigAtomic,
 } from "./config-io";
 import { AkmConfigSchema, CURRENT_CONFIG_VERSION } from "./config-schema";
-import { bundleContentRoot, bundlesToSourceEntries } from "./config-sources";
+import { bundleComponentConfig, bundleContentRoot, bundlesToSourceEntries } from "./config-sources";
 import type {
   AkmConfig,
+  BundleConfigEntry,
   ImproveProcessConfig,
   ImproveProfileConfig,
   IndexConfig,
@@ -329,7 +328,7 @@ function collectExtendsLayers(localRaw: Record<string, unknown>, configPath: str
     if (ref === undefined) return layers;
     if (typeof ref !== "string" || !ref.trim()) {
       throw new ConfigError(
-        `Invalid "extends"${currentPath ? ` at ${currentPath}` : ""}: expected a non-empty string (a file path or bundle//conceptId ref), got ${JSON.stringify(ref)}.`,
+        `Invalid "extends"${currentPath ? ` at ${currentPath}` : ""}: expected a non-empty string (a file path or bundle//path ref), got ${JSON.stringify(ref)}.`,
         "INVALID_CONFIG_FILE",
       );
     }
@@ -384,7 +383,7 @@ function expandExtendsHomePath(p: string): string {
   return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p;
 }
 
-/** True when `ref`'s segment before the first `//` is a legal bundle slug — the `bundle//conceptId` shape, not a filesystem path. */
+/** True when `ref`'s segment before the first `//` is a legal bundle slug — the `bundle//<path>` shape, not a plain filesystem path. */
 function looksLikeBundleAssetRef(ref: string): boolean {
   const boundary = ref.indexOf("//");
   return boundary > 0 && isBundleSlug(ref.slice(0, boundary));
@@ -394,12 +393,13 @@ function looksLikeBundleAssetRef(ref: string): boolean {
  * Resolve an `extends` value (or a `config diff <ref>` CLI argument — same
  * grammar) to its config text and the absolute path it was read from. Either
  * a filesystem path (relative to the directory of `fromConfigPath`; `~`
- * expands) or a `bundle//conceptId` asset ref, resolved against `context`'s
- * `bundles` map WITHOUT the index (`bundles[<bundle>].path` ->
- * `bundleContentRoot` -> `stashDirFor(type)` + `assetPathForName`, per
- * AGENTS.md's "show is local-index only"). No URL form and no fetch/sync —
- * the source must already exist locally; a missing file/bundle throws
- * {@link ConfigError} naming the ref.
+ * expands) or a `bundle//<path>` ref, where the part after `//` is a plain
+ * file path *relative to that bundle's content root* — NOT an asset
+ * conceptId. It needs no asset type (`scripts/`, `knowledge/`, …) and is
+ * never indexed; a shared config file just lives wherever the bundle puts
+ * it. No URL form and no fetch/sync — the source must already exist locally;
+ * a missing file/bundle throws {@link ConfigError} naming the ref, as does an
+ * empty, absolute, or content-root-escaping path after `//`.
  */
 function resolveConfigRefSource(
   ref: string,
@@ -441,19 +441,22 @@ function resolveConfigBundleRefSource(
   ref: string,
   context: Record<string, unknown>,
 ): { text: string; resolvedPath: string } {
-  let parsedRef: BundleRef;
-  try {
-    parsedRef = parseBundleRef(ref);
-  } catch (err) {
-    throw new ConfigError(
-      `Invalid "extends" bundle ref "${ref}": ${err instanceof Error ? err.message : String(err)}`,
-      "INVALID_CONFIG_FILE",
-    );
+  // Split by hand rather than through `parseBundleRef`: the part after `//`
+  // is a plain file path here, not an asset conceptId, so it must not be run
+  // through conceptId validation (which, for instance, rejects every `..`
+  // segment outright — stricter than the "must not escape the content root"
+  // rule this function enforces itself below via `path.resolve`).
+  // `looksLikeBundleAssetRef` already confirmed `ref` has this `bundle//`
+  // shape with a legal bundle slug before routing here.
+  const boundary = ref.indexOf("//");
+  const bundleId = ref.slice(0, boundary);
+  const relativePath = ref.slice(boundary + 2);
+  if (!relativePath) {
+    throw new ConfigError(`extends "${ref}" is missing a path after "${bundleId}//".`, "INVALID_CONFIG_FILE");
   }
-  const bundleId = parsedRef.bundle;
-  if (!bundleId) {
+  if (path.isAbsolute(relativePath)) {
     throw new ConfigError(
-      `"extends" bundle ref "${ref}" must be fully qualified as bundle//conceptId.`,
+      `extends "${ref}" must be a path relative to bundle "${bundleId}"'s content root, not absolute.`,
       "INVALID_CONFIG_FILE",
     );
   }
@@ -469,20 +472,23 @@ function resolveConfigBundleRefSource(
       "INVALID_CONFIG_FILE",
     );
   }
-  const components = isRecord(bundleEntry.components) ? Object.values(bundleEntry.components) : [];
-  const componentRoot =
-    isRecord(components[0]) && typeof components[0].root === "string" ? components[0].root : undefined;
-  const bundleRoot = bundleContentRoot(bundlePath, componentRoot);
-
-  const parts = typeNameFromConceptId(parsedRef.conceptId);
-  if (!parts) {
+  let componentRoot: string | undefined;
+  try {
+    componentRoot = bundleComponentConfig(bundleEntry as BundleConfigEntry)?.root;
+  } catch (err) {
     throw new ConfigError(
-      `extends "${ref}": conceptId "${parsedRef.conceptId}" does not name a recognized asset type.`,
+      `extends "${ref}" names bundle "${bundleId}": ${err instanceof Error ? err.message : String(err)}`,
       "INVALID_CONFIG_FILE",
     );
   }
-  const typeRoot = path.join(bundleRoot, stashDirFor(parts.type) as string);
-  const resolvedPath = assetPathForName(parts.type, typeRoot, parts.name);
+  const bundleRoot = bundleContentRoot(bundlePath, componentRoot);
+
+  const resolvedPath = path.resolve(bundleRoot, relativePath);
+  const relativeToRoot = path.relative(bundleRoot, resolvedPath);
+  if (relativeToRoot === ".." || relativeToRoot.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToRoot)) {
+    throw new ConfigError(`extends "${ref}" escapes bundle "${bundleId}"'s content root.`, "INVALID_CONFIG_FILE");
+  }
+
   const text = readConfigText(resolvedPath);
   if (text === undefined) {
     throw new ConfigError(
