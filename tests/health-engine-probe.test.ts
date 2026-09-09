@@ -494,6 +494,50 @@ describe("health engine probes", () => {
     });
     expect(JSON.stringify(result)).not.toContain("PRIVATE_DEFAULT_STRATEGY_TOKEN");
   });
+
+  test("fails when only LLM-backed processes are enabled and nothing else — every one named in unavailableProcesses (#957 addendum)", () => {
+    // Unlike the #957 (proactiveMaintenance stays enabled) and #957 round 2
+    // (relies on memoryInference silently disappearing via the autonomy gate)
+    // cases above, this pins the strategy explicitly: every LLM-backed
+    // process this strategy could enable is enabled and shares the single
+    // credential-unavailable "private" engine; every non-LLM-backed process
+    // (proactiveMaintenance, triage) and the autonomy-gated memoryInference
+    // lane are explicitly off, so nothing is left to keep the check at warn.
+    const config: AkmConfig = {
+      configVersion: "0.9.0",
+      semanticSearchMode: "off",
+      engines: { private: { ...llm, apiKey: "$PRIVATE_ONLY_LLM_TOKEN" } },
+      defaults: { llmEngine: "private" },
+      improve: {
+        strategies: {
+          default: {
+            processes: {
+              reflect: { enabled: true },
+              distill: { enabled: true },
+              consolidate: { enabled: true },
+              graphExtraction: { enabled: true },
+              validation: { enabled: true },
+              memoryInference: { enabled: false },
+              extract: { enabled: false },
+              proactiveMaintenance: { enabled: false },
+              triage: { enabled: false },
+            },
+          },
+        },
+      },
+    };
+
+    const result = healthChecks.runActiveImproveStrategyProbe({ loadConfig: () => config, env: {} });
+
+    expect(result.status).toBe("fail");
+    expect(result.message).toContain("no-op");
+    const evidence = result.evidence as { strategy: string; unavailableProcesses: string[] };
+    expect(evidence.strategy).toBe("default");
+    expect([...evidence.unavailableProcesses].sort()).toEqual(
+      ["consolidate", "distill", "graphExtraction", "reflect", "validation"].sort(),
+    );
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_ONLY_LLM_TOKEN");
+  });
 });
 
 describe("health engine reachability probe (#914)", () => {
