@@ -86,7 +86,7 @@ import {
   recordGateDecision,
 } from "../proposal/repository";
 import { checkReflectSize, isValidDescription } from "../proposal/validators/proposal-quality-validators";
-import { DEFAULT_CONTEXT_LENGTH_TOKENS } from "./consolidate/chunking";
+import { CHARS_PER_TOKEN, DEFAULT_CONTEXT_LENGTH_TOKENS } from "./consolidate/chunking";
 import { deriveLessonRef } from "./distill";
 import { runReflectQualityJudge } from "./distill/quality-gate";
 import { findAssetFilePath } from "./eligibility";
@@ -1842,14 +1842,6 @@ async function resolveReflectSource(
 }
 
 /**
- * Conservative chars-per-token estimate for #952's context-aware reflect
- * content budget (change C) — mirrors `consolidate/chunking.ts`'s own
- * `CHARS_PER_TOKEN` convention (English text runs ~4 chars/token; 3 stays
- * conservative so the computed budget never overshoots the real window).
- */
-const REFLECT_CHARS_PER_TOKEN = 3;
-
-/**
  * Run the agent with the optional Self-Refine loop (R-1 / #372): up to
  * `maxRefineIters` invocations, each injecting the prior draft as self-critique
  * context and exiting early on a no-op refinement. Synthesizes per-iteration
@@ -1945,7 +1937,7 @@ async function runReflectRefineIterations(args: {
       runnerIsLlm(runnerSpec) && assetContent?.trim()
         ? Math.max(
             REFLECT_CONTENT_CAP,
-            (runnerSpec.connection.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS) * REFLECT_CHARS_PER_TOKEN -
+            (runnerSpec.connection.contextLength ?? DEFAULT_CONTEXT_LENGTH_TOKENS) * CHARS_PER_TOKEN -
               buildReflectPrompt({ ...promptInput, contentBudgetChars: 0 }).prompt.length,
           )
         : undefined;
