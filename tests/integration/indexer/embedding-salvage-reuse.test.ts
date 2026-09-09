@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9542: a full rebuild or an index-generation bump used to re-embed the
+ * #955: a full rebuild or an index-generation bump used to re-embed the
  * whole corpus even when no content changed, because `deleteAllEntries` /
  * `rebuildIncompatibleIndexGeneration` discard `embeddings` unconditionally
  * and the two tables share no key once the old rows are gone. Embedding
@@ -81,7 +81,7 @@ function entriesVecCount(db: Database): number {
 
 // ── Scenarios driven through the real akmIndex end-to-end path ─────────────
 
-describe("embedding salvage across full rebuilds (#9542, akmIndex end-to-end)", () => {
+describe("embedding salvage across full rebuilds (#955, akmIndex end-to-end)", () => {
   let stashDir = "";
   let cleanup: Cleanup = () => {};
   let providerCalls = 0;
@@ -218,7 +218,7 @@ describe("embedding salvage across full rebuilds (#9542, akmIndex end-to-end)", 
 // live embeddings (for the canary to sample) and leftover salvage rows (as a
 // full rebuild would leave behind).
 
-describe("embedding salvage: canary interactions (#9542, generateEmbeddingsForDb direct)", () => {
+describe("embedding salvage: canary interactions (#955, generateEmbeddingsForDb direct)", () => {
   // Each test opens `openIndexDatabase()` with no explicit path — it resolves
   // against AKM_DATA_DIR/XDG_DATA_HOME, which `tests/_preload.ts` otherwise
   // points at ONE per-process sandbox shared by every test in this file.
@@ -487,7 +487,7 @@ describe("embedding salvage: canary interactions (#9542, generateEmbeddingsForDb
 
 // ── Storage-layer contract: salvage must never be swept by deleteAllEntries ─
 
-describe("embedding salvage: exempt from deleteAllEntries (#9542)", () => {
+describe("embedding salvage: exempt from deleteAllEntries (#955)", () => {
   let storage: IsolatedAkmStorage;
 
   beforeEach(() => {
@@ -524,7 +524,7 @@ describe("embedding salvage: exempt from deleteAllEntries (#9542)", () => {
   });
 });
 
-// ── semanticSearchMode "off" must drain salvage, not orphan it (#9542) ─────
+// ── semanticSearchMode "off" must drain salvage, not orphan it (#955) ─────
 //
 // Salvage is supposed to be zero-steady-state / self-emptying: a full
 // rebuild performed with semantic search disabled never reaches the reuse
@@ -532,7 +532,7 @@ describe("embedding salvage: exempt from deleteAllEntries (#9542)", () => {
 // consume rows a prior rebuild salvaged. Without an explicit purge on this
 // path they would sit in embedding_salvage forever.
 
-describe('embedding salvage: purged when semanticSearchMode is "off" (#9542)', () => {
+describe('embedding salvage: purged when semanticSearchMode is "off" (#955)', () => {
   let storage: IsolatedAkmStorage;
 
   beforeEach(() => {

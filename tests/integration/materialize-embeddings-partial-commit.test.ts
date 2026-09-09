@@ -140,7 +140,7 @@ describe("generateEmbeddingsForDb: per-batch commit survives an eventual failure
     }
   });
 
-  test("emits an Embedded N/M progress event after EVERY committed batch, not just every 500 (#9541)", async () => {
+  test("emits an Embedded N/M progress event after EVERY committed batch, not just every 500 (#954)", async () => {
     const db = openIndexDatabase();
     try {
       seedEntries(db, 3);

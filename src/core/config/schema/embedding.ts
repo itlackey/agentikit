@@ -38,8 +38,8 @@ export const EmbeddingConnectionConfigSchema = z
     localModel: z.string().min(1).optional(),
     /**
      * Per-document token cap applied BEFORE batching (default 512,
-     * `DEFAULT_MAX_INPUT_TOKENS` in `src/llm/embedders/remote.ts`, #9543
-     * decision 2). The materializer truncates a document's embedded text to
+     * `DEFAULT_MAX_INPUT_TOKENS` in `src/llm/embedders/remote.ts`, #956).
+     * The materializer truncates a document's embedded text to
      * this cap (head only, unicode-safe) instead of skipping it outright, so
      * one oversized entry can no longer fail a whole batch. Distinct from
      * `maxTokens` below, which bounds a whole HTTP REQUEST (many documents);
@@ -56,7 +56,7 @@ export const EmbeddingConnectionConfigSchema = z
     batchSize: positiveInt.optional(),
     chunkSize: positiveInt.optional(),
     /**
-     * Ollama's `num_ctx` ONLY (#9543 decision 2) — sent verbatim as
+     * Ollama's `num_ctx` ONLY (#956) — sent verbatim as
      * `options.num_ctx` on the native `/api/embed` request. It no longer also
      * feeds the client-side request token budget (`maxTokens` above): the two
      * used to share this one field, so setting it for the server's context
@@ -69,12 +69,11 @@ export const EmbeddingConnectionConfigSchema = z
      * (default 120_000, `DEFAULT_EMBEDDING_TIMEOUT_MS` in
      * `src/llm/embedders/remote.ts`). The prior fixed 30s cut off a slow
      * local model server on a large token-bounded batch mid-response, with
-     * no retry — every batch that hit it was silently dropped (#9541).
+     * no retry — every batch that hit it was silently dropped (#954).
      */
     timeoutMs: positiveInt.optional(),
     /**
-     * Overrides the fixed in-flight request window (#9541 decision 4,
-     * reversing 0.9.15's earlier "no config override" ruling after field
+     * Overrides the fixed in-flight request window (#954, added after field
      * evidence from multi-slot local servers). Bounded 1-16. Unset keeps
      * today's default: 1 for a loopback endpoint, 2 for a remote one
      * (`resolveEmbeddingConcurrency`, `src/llm/embedders/remote.ts`). Set it

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * `index.db` embedding salvage (#9542) — a transient, self-emptying table
+ * `index.db` embedding salvage (#955) — a transient, self-emptying table
  * that lets a full rebuild or an index-generation bump reuse vectors instead
  * of re-embedding a corpus whose content did not change.
  *

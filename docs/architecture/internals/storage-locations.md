@@ -210,7 +210,7 @@ Used by JS cosine-similarity fallback when `sqlite-vec` is absent.
 
 Created only when `sqlite-vec` is loadable. Columns: `id INTEGER PRIMARY KEY`, `embedding FLOAT[<dim>]`. Dropped and recreated if embedding dimension changes.
 
-#### Table: `embedding_salvage` (#9542)
+#### Table: `embedding_salvage` (#955)
 
 | Column | Type | Notes |
 |---|---|---|

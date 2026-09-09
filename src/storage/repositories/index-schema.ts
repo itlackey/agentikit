@@ -218,7 +218,7 @@ function rebuildIncompatibleIndexGeneration(db: Database): void {
   }
 
   db.transaction(() => {
-    // #9542: copy embeddings about to be discarded wholesale into
+    // #955: copy embeddings about to be discarded wholesale into
     // `embedding_salvage` (keyed by content hash + the fingerprint they were
     // generated under) BEFORE dropping `embeddings`, in the same transaction
     // as the drop, so the copy and the discard commit or roll back together.
@@ -258,7 +258,7 @@ export function ensureSchema(db: Database, embeddingDim: number | undefined): vo
     );
   `);
 
-  // #9542: created before the generation-rebuild check below so a discard
+  // #955: created before the generation-rebuild check below so a discard
   // has somewhere to copy vectors to. Additive-only — it carries no bearing
   // on the `entries` generation fingerprint (`hasCanonicalEntrySchema`), so
   // adding it does not require a `CANONICAL_INDEX_DB_VERSION` bump.

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9541 decision 5: the default `akm index` output format is JSON, and a
+ * #954: the default `akm index` output format is JSON, and a
  * non-verbose JSON run used to print NOTHING to stderr until the very end —
  * a stalled run looked identical to "no database open, nothing written"
  * (field report). Phase-start messages and the embedding heartbeat now reach

@@ -61,7 +61,7 @@
  *     `uses:`/`with:`, `timeout:`, optional `schedule:`) — static files
  *     proving akm doesn't tighten its schema in a way that breaks a real
  *     consumer.
- *   - a v22 derived index carrying a LIVE embedding (#9542, `index-v22-with-
+ *   - a v22 derived index carrying a LIVE embedding (#955, `index-v22-with-
  *     embedding.sql`) — the v22->v23 generation rebuild
  *     (`rebuildIncompatibleIndexGeneration`, `index-schema.ts`) salvages the
  *     vector into `embedding_salvage` before dropping `embeddings`, and the
@@ -147,7 +147,7 @@ describe("previous-release corpus — upgrade must not break reads", () => {
     }
   });
 
-  test("#9542: a v22 embedding survives the v23 generation bump via salvage and is reused with zero provider calls", async () => {
+  test("#955: a v22 embedding survives the v23 generation bump via salvage and is reused with zero provider calls", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "akm-v22-embedding-"));
     try {
       const dbPath = path.join(root, "index.db");

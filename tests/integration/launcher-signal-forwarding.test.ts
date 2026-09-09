@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9543 decision 1: the published launcher (`scripts/node-runtime/akm`) used
+ * #956: the published launcher (`scripts/node-runtime/akm`) used
  * to `spawn` its Bun/Node child with no signal handling at all — a
  * `kill <launcher-pid>` (a scheduler timeout, a supervisor, an operator) left
  * the child running as an orphan, still holding whatever lock it had. This
@@ -57,7 +57,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void
   }
 }
 
-describe("launcher signal forwarding (#9543 decision 1)", () => {
+describe("launcher signal forwarding (#956)", () => {
   test("SIGTERM to the launcher forwards to the child, which the launcher then exits alongside", async () => {
     const sandbox = makeSandboxDir("akm-launcher-signal-");
     try {
@@ -98,7 +98,7 @@ describe("launcher signal forwarding (#9543 decision 1)", () => {
     // Reproduces the terminal scenario directly: the launcher is spawned as
     // the leader of its OWN new process group (`detached: true` from here,
     // standing in for a shell putting the launcher in the terminal's
-    // foreground group) and, per the #9543 fix, spawns ITS OWN child into a
+    // foreground group) and, per the #956 fix, spawns ITS OWN child into a
     // separate process group in turn. A negative-pid kill targets the whole
     // group — mechanically what a terminal's Ctrl-C does — and lands only on
     // the launcher's group. Before the fix, the child shared that group and

@@ -38,13 +38,13 @@ import { describeInaccessiblePath } from "./path-access";
 export interface RunLockHolder {
   pid: number | null;
   startedAt: string | null;
-  /** The holder's launcher pid (#9543), when its lock payload recorded one — null otherwise. */
+  /** The holder's launcher pid (#956), when its lock payload recorded one — null otherwise. */
   launcherPid: number | null;
 }
 
 /**
  * Render a lock holder's pid for a message: `"4242"`, or `"4242 (launcher
- * 4240)"` when the holder's launcher pid is known (#9543) — every process
+ * 4240)"` when the holder's launcher pid is known (#956) — every process
  * listing and task log shows the launcher pid, not the bun/node child's, so
  * naming only the holder pid left an operator unable to connect the two.
  */

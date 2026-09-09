@@ -605,7 +605,7 @@ export interface ConfigMutationResult {
    * when the mutate callback was a no-op) — the same shape `loadConfig()`
    * returns, `extends` chain already merged in, every field intact
    * including secrets/credentials (`embedding.apiKey`, `engines.<name>.apiKey`,
-   * ...). #9544 field gap: this is NOT the pruned write body — pruning
+   * ...). #953 field gap: this is NOT the pruned write body — pruning
    * (`configWriteBody`/`pruneUnchangedInheritedFields`, #945) only decides
    * what gets written to the local config FILE when it uses `extends`; a
    * caller that keeps using this returned `config` for the rest of its run

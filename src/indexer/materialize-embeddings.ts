@@ -91,7 +91,7 @@ export interface GenerateEmbeddingsOptions {
 /**
  * The heartbeat text emitted every 15s while a provider request is in
  * flight, and by default (not `--verbose`-only) since silence indistinguishable
- * from a hang was the field report's own symptom (#9541 decision 5).
+ * from a hang was the field report's own symptom (#954).
  */
 export function formatEmbeddingHeartbeat(storedCount: number, total: number, failedCount: number): string {
   return `Still generating embeddings: ${storedCount}/${total} stored, ${failedCount} failed; waiting on embedding provider.`;
@@ -115,8 +115,8 @@ const CANARY_SIMILARITY_THRESHOLD = 0.999;
 /**
  * Consecutive transport failures after which the embedding pass stops
  * dispatching further requests and ends the run as a failure rather than
- * grinding through every remaining batch against a dead endpoint (#9541
- * decision 7, refined by the addendum). Two independent trip conditions
+ * grinding through every remaining batch against a dead endpoint (#954).
+ * Two independent trip conditions
  * share this threshold — see `onSkip` below: 3 consecutive failures at
  * single-document size (timeout OR network error — a multi-document
  * timeout is not by itself evidence the endpoint is dead, since
@@ -328,7 +328,7 @@ export async function generateEmbeddingsForDb(
   entryIds?: readonly number[],
   opts?: GenerateEmbeddingsOptions,
 ): Promise<EmbeddingGenerationResult> {
-  // #9541 decision 1 (drift guard): refuse an ambient transaction. Every
+  // Drift guard (#954): refuse an ambient transaction. Every
   // per-batch `db.transaction()` below is meant to be its own durable commit
   // (#954) — inside an already-open outer transaction it would nest as an
   // unobservable SAVEPOINT instead, so an interruption (competing-process
@@ -348,7 +348,7 @@ export async function generateEmbeddingsForDb(
   throwIfAborted(signal);
 
   if (config.semanticSearchMode === "off") {
-    // #9542: salvage is self-emptying only if every path that skips reuse
+    // #955: salvage is self-emptying only if every path that skips reuse
     // also drains it — otherwise a full rebuild performed with semantic
     // search disabled leaves permanent orphaned rows behind (nothing will
     // ever consume them, since this path never reaches the reuse step).
@@ -394,7 +394,7 @@ export async function generateEmbeddingsForDb(
     // instead of purging again from zero (#955/#956).
     db.transaction(() => {
       purgeEmbeddings(db, { dropVecTable: true });
-      // #9542: an explicit forced rebuild must re-embed everything, not
+      // #955: an explicit forced rebuild must re-embed everything, not
       // quietly satisfy some of it from stale salvage.
       purgeEmbeddingSalvage(db);
       deleteMeta(db, "embeddingDim");
@@ -419,7 +419,7 @@ export async function generateEmbeddingsForDb(
     if (decision.outcome === "rebuild") {
       db.transaction(() => {
         purgeEmbeddings(db, { dropVecTable: true });
-        // #9542: the stored vectors AND any leftover salvage both belong to
+        // #955: the stored vectors AND any leftover salvage both belong to
         // a different model now — neither is reusable, so both go.
         purgeEmbeddingSalvage(db);
         deleteMeta(db, "embeddingDim");
@@ -436,7 +436,7 @@ export async function generateEmbeddingsForDb(
       // immediate write means a crash right after this decision does not
       // re-run the canary needlessly on the next attempt.
       setMeta(db, "embeddingFingerprint", currentFingerprint);
-      // #9542: the model did not actually change, only the fingerprint
+      // #955: the model did not actually change, only the fingerprint
       // STRING did (e.g. a gateway rename) — any leftover salvage rows
       // tagged with the OLD string are still valid vectors. Relabel them so
       // the reuse step below (and any later pass) can still find them.
@@ -455,7 +455,7 @@ export async function generateEmbeddingsForDb(
       // lose or verify against — adopt the label silently, no purge line.
     }
   } else {
-    // #9543 decision 3: no rename to verify (either this is the very first
+    // No rename to verify (either this is the very first
     // pass ever for this db, or the fingerprint already matches the last
     // successful one) — still record it NOW rather than deferring to a
     // fully successful pass, mirroring the rebuild/keep branches above
@@ -476,7 +476,7 @@ export async function generateEmbeddingsForDb(
     let vecFailedCount = 0;
     let vecUnavailableCount = 0;
 
-    // #9542: before any provider call, hand back vectors salvaged from a
+    // #955: before any provider call, hand back vectors salvaged from a
     // full rebuild or a generation bump for entries whose search_text is
     // byte-identical to what was salvaged under the SAME fingerprint — a
     // fingerprint mismatch or a single-byte content change both correctly
@@ -513,7 +513,7 @@ export async function generateEmbeddingsForDb(
       return reusedCount > 0 ? { success: true, vecInsertFailures: vecFailedCount } : { success: true };
     }
 
-    // #9543 decision 2: cap each document's embedded text at
+    // Cap each document's embedded text at
     // embedding.maxInputTokens (default DEFAULT_MAX_INPUT_TOKENS) instead of
     // ever failing a whole batch over one oversized entry — truncation keeps
     // the head of the text, unicode-safe. A document is skipped only when its
@@ -559,7 +559,7 @@ export async function generateEmbeddingsForDb(
       // nothing meaningful to report per-batch for them.
       if (hasRemoteEndpoint(config.embedding ?? {})) {
         // Mirrors RemoteEmbedder.embedBatch's own tokenBudget resolution
-        // (#9543 decision 2: contextLength no longer feeds this).
+        // (#956: contextLength no longer feeds this).
         const tokenBudget = config.embedding?.maxTokens ?? DEFAULT_TOKEN_BUDGET;
         const maxCount = config.embedding?.batchSize ?? DEFAULT_REMOTE_BATCH_SIZE;
         const batches = buildTokenBoundedBatches(texts, tokenBudget, maxCount);
@@ -603,7 +603,7 @@ export async function generateEmbeddingsForDb(
       // few bad documents don't discard every other entry's embedding.
       const skips: EmbeddingBatchSkip[] = [];
       const embedStart = Date.now();
-      // Circuit breaker (#9541 decision 7, refined by the addendum): stop
+      // Circuit breaker (#954): stop
       // dispatching further batches once either consecutive-failure streak
       // below reaches CIRCUIT_BREAKER_THRESHOLD — a dead/hung provider used
       // to grind through every remaining batch for hours, one 30s (now
@@ -716,8 +716,8 @@ export async function generateEmbeddingsForDb(
             message: `[embed] batch ${outcome.batchIndex}/${outcome.batchCount}: ${outcome.docCount} docs, ${outcome.requestTokens.toLocaleString()} tokens → ${outcomeLabel}`,
           });
         }
-        // Every committed batch, not just every 500 stored entries (#9541
-        // decision 5) — the prior bucketing left a non-verbose run silent
+        // Every committed batch, not just every 500 stored entries (#954)
+        // — the prior bucketing left a non-verbose run silent
         // for the entire embedding phase on anything smaller than 500
         // entries, indistinguishable from a hang.
         onProgress({
@@ -796,7 +796,7 @@ export async function generateEmbeddingsForDb(
       setMeta(db, "embeddingFingerprint", currentFingerprint);
       const observedIdentity = deriveObservedEmbeddingIdentity(config.embedding, observedModel, observedVectorLen);
       if (observedIdentity) setMeta(db, "embeddingIdentity", observedIdentity);
-      // Circuit breaker tripped (#9541 decision 7): committed batches are
+      // Circuit breaker tripped (#954): committed batches are
       // kept (nothing above discards them), but the pass is not a success —
       // the provider looks dead, not just occasionally flaky.
       if (circuitBreakerReason !== undefined) {

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9543 decision 3: an index run interrupted mid-embedding-phase must be
+ * #956: an index run interrupted mid-embedding-phase must be
  * RESUMABLE, not restarted. Two end-to-end scenarios, both driven through
  * the real `akmIndex()` entry point (not `generateEmbeddingsForDb` directly)
  * against a real index.db, with a fake embedder that partially commits then
@@ -15,7 +15,7 @@
  *    fingerprint never changed, so that whole branch of
  *    `generateEmbeddingsForDb` never runs);
  *  - a subsequent `akm index --full` reuses the already-embedded entries via
- *    salvage (#9542 — the full rebuild's own salvage-before-discard step)
+ *    salvage (#955 — the full rebuild's own salvage-before-discard step)
  *    and sends a provider request only for the entries that were never
  *    embedded at all because the interruption landed before they were
  *    reached.
@@ -124,7 +124,7 @@ async function writeFiveAndInterruptAfterThree(): Promise<void> {
   }
 }
 
-describe("index resumability after an interrupted embedding phase (#9543 decision 3)", () => {
+describe("index resumability after an interrupted embedding phase (#956)", () => {
   test("a plain `akm index` (no --full) resume embeds only the remaining entries — no purge, no canary", async () => {
     await writeFiveAndInterruptAfterThree();
 
@@ -192,7 +192,7 @@ describe("index resumability after an interrupted embedding phase (#9543 decisio
     expect(full.verification.ok).toBe(true);
 
     // The 3 already-embedded entries are salvaged across the full rebuild's
-    // purge-and-recreate (#9542) — only the 2 the interrupted pass never
+    // purge-and-recreate (#955) — only the 2 the interrupted pass never
     // reached go to the provider.
     expect(calls).toBe(1);
     expect(lastTextCount).toBe(2);

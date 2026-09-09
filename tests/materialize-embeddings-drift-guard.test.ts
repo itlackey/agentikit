@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9541 decision 1: `generateEmbeddingsForDb` must refuse to run against a
+ * #954: `generateEmbeddingsForDb` must refuse to run against a
  * connection that already has an ambient transaction open. Before this guard,
  * `akm bundle update`'s coordinator ran the whole embedding phase inside its
  * own outer `BEGIN IMMEDIATE`, so every per-batch `db.transaction()` the
@@ -20,7 +20,7 @@ import type { AkmConfig } from "../src/core/config/config";
 import { generateEmbeddingsForDb } from "../src/indexer/materialize-embeddings";
 import type { Database } from "../src/storage/database";
 
-describe("generateEmbeddingsForDb: ambient-transaction drift guard (#9541)", () => {
+describe("generateEmbeddingsForDb: ambient-transaction drift guard (#954)", () => {
   test("throws immediately when db.inTransaction is already true", async () => {
     const fakeDb = { inTransaction: true } as unknown as Database;
     const config: AkmConfig = { semanticSearchMode: "auto" };

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9541 decision 2: `akm bundle update`'s coordinator used to call `akmIndex`
+ * #954: `akm bundle update`'s coordinator used to call `akmIndex`
  * for its embedding phase too, INSIDE the same unified `BEGIN IMMEDIATE` that
  * covers content/lock/index/state — so every per-batch commit the
  * materializer opened nested as an unobservable SAVEPOINT (#954's own
@@ -44,7 +44,7 @@ function makeDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T) =>
   return { promise, resolve };
 }
 
-describe("akm bundle update: post-commit embedding pass durability (#9541)", () => {
+describe("akm bundle update: post-commit embedding pass durability (#954)", () => {
   let storage: IsolatedAkmStorage;
 
   beforeEach(() => {

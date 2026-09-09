@@ -5,7 +5,7 @@
 /**
  * #954: per-provider-batch commit, a bounded in-flight window (default 1 for
  * a loopback endpoint, 2 for a remote one; overridable via
- * `embedding.concurrency` per #9541 decision 4), and context-size
+ * `embedding.concurrency` per #954), and context-size
  * split-and-retry for RemoteEmbedder.embedBatch.
  *
  * All network I/O here is mocked via `withMockedFetch` (no real socket
@@ -60,7 +60,7 @@ describe("isContextExceededResponse", () => {
     expect(isContextExceededResponse(400, "")).toBe(false);
   });
 
-  test("recognises llama.cpp's physical-batch rejection (#9541 decision 8)", () => {
+  test("recognises llama.cpp's physical-batch rejection (#954)", () => {
     // The exact message llama.cpp returns (HTTP 500) when a batch exceeds
     // its configured physical batch size.
     expect(isContextExceededResponse(500, "input is too large to process. increase the physical batch size")).toBe(
@@ -111,7 +111,7 @@ describe("RemoteEmbedder.embedBatch: failed-batch visibility (#954, field-report
   });
 });
 
-describe("resolveEmbeddingTimeoutMs (#9541)", () => {
+describe("resolveEmbeddingTimeoutMs (#954)", () => {
   test("defaults to 120s when embedding.timeoutMs is unset", () => {
     expect(resolveEmbeddingTimeoutMs({})).toBe(DEFAULT_EMBEDDING_TIMEOUT_MS);
     expect(DEFAULT_EMBEDDING_TIMEOUT_MS).toBe(120_000);
@@ -172,7 +172,7 @@ describe("embeddingTimeoutRetryBackoffMs: grows with timeoutAttempt (#954, field
 });
 
 describe("resolveEmbeddingConcurrency", () => {
-  test("defaults to 1 for a loopback endpoint when embedding.concurrency is unset (#9541)", () => {
+  test("defaults to 1 for a loopback endpoint when embedding.concurrency is unset (#954)", () => {
     expect(resolveEmbeddingConcurrency({ endpoint: "http://localhost:8080" })).toBe(1);
     expect(resolveEmbeddingConcurrency({ endpoint: "http://127.0.0.1:8080" })).toBe(1);
   });
@@ -185,13 +185,13 @@ describe("resolveEmbeddingConcurrency", () => {
     expect(resolveEmbeddingConcurrency({ endpoint: "https://api.example.com/v1" })).toBe(2);
   });
 
-  test("embedding.concurrency overrides the default in either direction (#9541 decision 4)", () => {
+  test("embedding.concurrency overrides the default in either direction (#954)", () => {
     expect(resolveEmbeddingConcurrency({ endpoint: "http://localhost:8080", concurrency: 8 })).toBe(8);
     expect(resolveEmbeddingConcurrency({ endpoint: "https://api.example.com/v1", concurrency: 1 })).toBe(1);
   });
 });
 
-describe("RemoteEmbedder.embedBatch: contextLength no longer affects the request token budget (#9543 decision 2)", () => {
+describe("RemoteEmbedder.embedBatch: contextLength no longer affects the request token budget (#956)", () => {
   test("a batch is split by config.maxTokens, not config.contextLength", async () => {
     const requestSizes: number[] = [];
     await withMockedFetch(
@@ -248,7 +248,7 @@ describe("RemoteEmbedder.embedBatch: contextLength no longer affects the request
     expect(requestSizes).toEqual([]);
   });
 
-  test("contextLength still reaches Ollama's num_ctx (unchanged — #9543 decision 2 only touches the token budget)", async () => {
+  test("contextLength still reaches Ollama's num_ctx (unchanged — #956 only touches the token budget)", async () => {
     let sentOptions: unknown;
     await withMockedFetch(
       async () => {
@@ -269,7 +269,7 @@ describe("RemoteEmbedder.embedBatch: contextLength no longer affects the request
   });
 });
 
-describe("EmbeddingConnectionConfigSchema: embedding.concurrency bounds (#9541 decision 4)", () => {
+describe("EmbeddingConnectionConfigSchema: embedding.concurrency bounds (#954)", () => {
   test("accepts 1 and 16", () => {
     expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 1 }).success).toBe(true);
     expect(EmbeddingConnectionConfigSchema.safeParse({ concurrency: 16 }).success).toBe(true);

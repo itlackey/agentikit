@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9544 (#953 field gap) — `akm index`'s embedding requests must carry the
+ * #953 (#953 field gap) — `akm index`'s embedding requests must carry the
  * `secret://` store-resolved credential, the same way `akm improve`'s
  * consolidate path already does (see the last describe block below, the
  * known-good control).
@@ -14,7 +14,7 @@
  * not as a resolution error. This suite reproduces the standalone `akm
  * index` materializer path in-process AND as a real CLI child process
  * (since the field failure was specifically the CLI), plus every variant
- * brief decision 1 names: an `extends`-inherited apiKey with adapter
+ * the fixer brief names: an `extends`-inherited apiKey with adapter
  * detection persisting mid-run (#945); `akm bundle update`'s post-commit
  * embedding pass (`runPostCommitEmbeddingPass`, reached via `akmUpdate`);
  * the `remember` write path (`indexWrittenAssets`, which calls
@@ -23,7 +23,7 @@
  *
  * Every request the mock server sees is asserted to carry the resolved
  * `Authorization` header — none of the variants below reproduced a keyless
- * request against the code as it stands (see the #9544 changelog fragment /
+ * request against the code as it stands (see the #953 changelog fragment /
  * final report for what was actually found); this suite pins that as a
  * regression guard.
  *
@@ -77,7 +77,7 @@ function expectEveryRequestCarriedCredential(authHeaders: (string | null)[], exp
   }
 }
 
-describe("akm index embedding requests carry the secret:// credential (#9544)", () => {
+describe("akm index embedding requests carry the secret:// credential (#953)", () => {
   let storage: IsolatedAkmStorage;
   let server: ReturnType<typeof Bun.serve> | undefined;
 
@@ -210,7 +210,7 @@ describe("akm index embedding requests carry the secret:// credential (#9544)", 
   });
 });
 
-describe("akm bundle update: post-commit embedding pass carries the secret:// credential (#9544)", () => {
+describe("akm bundle update: post-commit embedding pass carries the secret:// credential (#953)", () => {
   let storage: IsolatedAkmStorage;
   let server: ReturnType<typeof Bun.serve> | undefined;
 
@@ -308,7 +308,7 @@ describe("akm bundle update: post-commit embedding pass carries the secret:// cr
   });
 });
 
-describe("akm remember write path: indexWrittenAssets carries the secret:// credential (#9544)", () => {
+describe("akm remember write path: indexWrittenAssets carries the secret:// credential (#953)", () => {
   let storage: IsolatedAkmStorage;
   let server: ReturnType<typeof Bun.serve> | undefined;
 
@@ -362,7 +362,7 @@ describe("akm remember write path: indexWrittenAssets carries the secret:// cred
   });
 });
 
-describe("known-good control: improve consolidate's embedding path (#9544)", () => {
+describe("known-good control: improve consolidate's embedding path (#953)", () => {
   let storage: IsolatedAkmStorage;
   let server: ReturnType<typeof Bun.serve> | undefined;
 

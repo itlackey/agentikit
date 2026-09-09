@@ -178,9 +178,9 @@ export async function runNativeTask(input: {
 
   let exitCode: number | null = null;
 
-  // #9543: the task runner's OWN process (`akm task run`, launched by cron /
-  // launchd / schtasks, or forwarded a SIGTERM by the published launcher on
-  // #9543 decision 1) had no way to end its detached, own-process-group
+  // #956: the task runner's OWN process (`akm task run`, launched by cron /
+  // launchd / schtasks, or forwarded a SIGTERM by the published launcher)
+  // had no way to end its detached, own-process-group
   // child (spawned by `runManagedSubprocess` for the group-kill guarantee
   // above) — a timeout or SIGTERM to the direct child would reap the whole
   // group, but nothing tied THIS process's own termination to that same
@@ -212,7 +212,7 @@ export async function runNativeTask(input: {
     // reaps the whole command tree (no orphans), and a SIGTERM→SIGKILL ladder
     // so a child that ignores SIGTERM can't wedge the run forever. `signal`
     // ties that same ladder to a termination signal received by this
-    // process itself (#9543), not only to the timeout.
+    // process itself (#956), not only to the timeout.
     const result = await runManagedSubprocess(cmd, {
       capture: true,
       cwd: task.cwd,

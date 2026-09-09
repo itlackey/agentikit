@@ -202,7 +202,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the operator's own shell can pass config validation while a scheduler's
   stripped-down environment cannot.
 - **`embedding.timeoutMs` configures the per-request embedding timeout
-  (#9541).** The prior fixed 30s timeout cut off a slow local model server on
+  (#954).** The prior fixed 30s timeout cut off a slow local model server on
   a large token-budget-bounded batch mid-response. Default 120s, used by both
   the single-text and batch embedding request paths; it scales down for a
   smaller-than-budget request (`clamp(timeoutMs × requestTokens /
@@ -216,7 +216,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   individual documents, and a single document that times out twice is
   finally skipped.
 - **`embedding.concurrency` overrides the fixed in-flight embedding request
-  window (#9541).** Reverses the earlier "no config override" call in this
+  window (#954).** Reverses the earlier "no config override" call in this
   same release's own #954 entry above, after field evidence that a
   multi-slot local server (llama.cpp `--parallel N`, vLLM) sat idle behind
   the fixed default. Bounded 1-16; unset behavior is unchanged (1 for a
@@ -225,7 +225,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lever; set this only for an endpoint that genuinely serves parallel
   requests.
 - **The embedding phase stops after 3 consecutive transport failures instead
-  of grinding through every remaining batch (#9541).** A dead or hung
+  of grinding through every remaining batch (#954).** A dead or hung
   provider used to burn hours on a large stash, one request timeout at a
   time, with no signal until a single aggregate warning at the end and
   `ok: true`, exit 0. The pass now stops dispatching further requests and
@@ -283,7 +283,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not just the ones still in flight. Each request batch now commits inside its
   own short transaction as it lands. This holds on every path that embeds: plain
   `akm index`, the implicit reindex, the write path (`akm remember`/`import`/
-  `proposal accept`/`source clone`), and — as of #9541, below — `akm bundle
+  `proposal accept`/`source clone`), and — as of #954, below — `akm bundle
   update`, whose coordinator previously ran the embedding phase inside its own
   outer transaction, turning every per-batch commit into an unobservable
   SAVEPOINT.
@@ -300,11 +300,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   request size, via the existing `embedding.batchSize` (document cap) and
   `embedding.maxTokens`/`contextLength` (token budget), since a larger batch
   takes about the same wall time as a single one. `embedding.concurrency`
-  (#9541, below) overrides this default for a server that genuinely serves
+  (#954, below) overrides this default for a server that genuinely serves
   parallel requests.
 - **`akm index` reports embedding progress and throughput as it runs (#954).** A
   progress line is printed every 500 stored entries (after every committed batch
-  as of #9541, below), and a final line reports throughput (`entries/s`,
+  as of #954, below), and a final line reports throughput (`entries/s`,
   `tokens/s`) once the embedding pass completes.
 - **A rename of `embedding.model` no longer forces a full re-embed by itself
   (#955).** `akm index` used to purge and rebuild the entire vector index on any
@@ -366,7 +366,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   re-derivation that could disagree with what a real run in the same environment
   would do.
 - **A failed embedding batch and `akm index`'s progress are visible without
-  `--verbose` (#9541).** A failed provider batch used to log only under
+  `--verbose` (#954).** A failed provider batch used to log only under
   `--verbose`; it now logs at the default `warn` level, naming the batch size
   and reason. `akm index`'s `Embedded N/M entries.` line now fires after every
   committed batch instead of every 500 stored entries, and the heartbeat names
@@ -458,7 +458,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   naming the variable (#953).** Previously it silently sent an empty
   `Authorization` header instead of surfacing the misconfiguration.
 - **`akm bundle update` now commits its embedding pass durably instead of
-  nesting it inside its own transaction (#9541).** Its coordinator called
+  nesting it inside its own transaction (#954).** Its coordinator called
   `akm index` for its embedding phase too, INSIDE the same unified
   `BEGIN IMMEDIATE` that covers content/lock/index/state — so every per-batch
   commit #954 (above) added nested as an unobservable SAVEPOINT, and a
@@ -473,7 +473,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `index.semanticStatus` (new field) the only sign semantic search fell
   behind (`"blocked"`), exactly like a plain `akm index` run today.
 - **A batch rejected by llama.cpp for exceeding its physical batch size is now
-  recognized as a context-size rejection (#9541).** llama.cpp reports this as
+  recognized as a context-size rejection (#954).** llama.cpp reports this as
   an HTTP 500 with a body like "input is too large to process. increase the
   physical batch size", which the existing context-size pattern
   (`exceed_context_size_error`, "context size", …) did not match, so the

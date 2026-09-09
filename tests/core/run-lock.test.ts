@@ -78,7 +78,7 @@ describe("tryAcquireRunLock — shared PID-liveness mechanics (#956)", () => {
   });
 });
 
-describe("lock identity: launcherPid (#9543)", () => {
+describe("lock identity: launcherPid (#956)", () => {
   test("createLockPayload has no launcherPid when AKM_LAUNCHER_PID is unset", () => {
     withEnvSync({ AKM_LAUNCHER_PID: undefined }, () => {
       const payload = JSON.parse(createLockPayload()) as Record<string, unknown>;
@@ -125,7 +125,7 @@ describe("lock identity: launcherPid (#9543)", () => {
   });
 });
 
-describe("formatLockHolderPid (#9543)", () => {
+describe("formatLockHolderPid (#956)", () => {
   test("names only the pid when no launcher pid is known", () => {
     expect(formatLockHolderPid({ pid: 4242, launcherPid: null })).toBe("4242");
   });

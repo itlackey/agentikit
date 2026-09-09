@@ -610,7 +610,7 @@ describe("ensureSourceCaches", () => {
     }
   });
 
-  test("reports 'Hydrating source i/n' progress per source before its sync resolves (#9541 decision 6)", async () => {
+  test("reports 'Hydrating source i/n' progress per source before its sync resolves (#954)", async () => {
     const delayed = () => new Promise<void>((resolve) => setTimeout(resolve, 20));
     const npmSyncSpy = spyOn(NpmSourceProvider.prototype, "sync").mockImplementation(delayed);
     const gitSpy = spyOn(gitProvider, "ensureGitMirror").mockImplementation(delayed);

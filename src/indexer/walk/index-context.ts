@@ -130,7 +130,7 @@ export interface IndexRunContext {
   /**
    * Borrowed source-update coordinator transaction, when this run is `akm
    * bundle update`'s deferred embedding phase. When set, the embedding phase
-   * is SKIPPED entirely (#9541 decision 2/decision 1's drift guard would
+   * is SKIPPED entirely (#954; the ambient-transaction drift guard would
    * reject calling it here anyway) and finalize records semantic state as
    * `"pending"`, never `"ready"` — the coordinator runs the shared
    * `runEmbeddingPass` itself on its own connection AFTER its own commit.

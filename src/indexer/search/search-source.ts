@@ -304,8 +304,8 @@ export async function ensureSourceCaches(
     secrets?: import("../../sources/provider").SecretResolver;
     /**
      * One event per source about to sync (`Hydrating source i/n: <name>`),
-     * plus a 15s heartbeat while that source's sync is in flight (#9541
-     * decision 6) — before this, a stalled clone/fetch here (this runs
+     * plus a 15s heartbeat while that source's sync is in flight (#954)
+     * — before this, a stalled clone/fetch here (this runs
      * BEFORE `index.db` is even opened) had no progress output at all and
      * looked identical to "no database open, nothing written".
      */

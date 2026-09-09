@@ -404,10 +404,10 @@ apply when unset), for a remote endpoint (`src/llm/embedders/remote.ts`):
 
 | Key | Default | Bounds |
 | --- | --- | --- |
-| `embedding.maxInputTokens` | `512` | Per-DOCUMENT cap, applied before batching (#9543). A document's embedded text is truncated to its head (unicode-safe) at this many estimated tokens instead of ever being skipped for size alone — a document is skipped only when its truncated head is empty. |
+| `embedding.maxInputTokens` | `512` | Per-DOCUMENT cap, applied before batching (#956). A document's embedded text is truncated to its head (unicode-safe) at this many estimated tokens instead of ever being skipped for size alone — a document is skipped only when its truncated head is empty. |
 | `embedding.maxTokens` | `8000` (`DEFAULT_TOKEN_BUDGET`) | Per-REQUEST token budget: how many (already-capped) documents' estimated tokens fit in one HTTP request. With the 512-token default document cap, a request carries about 16 documents by default. |
 | `embedding.batchSize` | `100` | Per-REQUEST document-COUNT safety cap, independent of the token budget — guards against many tiny documents packing an oversized request. |
-| `embedding.contextLength` | unset | Ollama's `num_ctx` ONLY, forwarded verbatim as `options.num_ctx` on the native `/api/embed` request. Does **not** feed the request token budget above (#9543 decision 2) — the two used to share this one field, so setting it for the server's context window silently changed request batching too. |
+| `embedding.contextLength` | unset | Ollama's `num_ctx` ONLY, forwarded verbatim as `options.num_ctx` on the native `/api/embed` request. Does **not** feed the request token budget above (#956) — the two used to share this one field, so setting it for the server's context window silently changed request batching too. |
 | `embedding.timeoutMs` | `120000` (120s) | Per-request wall timeout — see below. |
 | `embedding.concurrency` | `1` loopback / `2` remote | In-flight request window — see below. |
 
@@ -724,7 +724,7 @@ fingerprint-rename canary `akm index` runs when the embedding config
 changes. All of them build the
 provider request through the same `RemoteEmbedder`/`resolveSecret` boundary,
 so a `secret://` reference resolves identically regardless of which command
-triggered the request (#9544).
+triggered the request (#953).
 
 Use `AKM_SQLITE_JOURNAL_MODE=DELETE` or `TRUNCATE` when WAL is unavailable,
 such as on some NFS/SMB mounts. With the default `WAL` setting, AKM detects a

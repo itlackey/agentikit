@@ -234,7 +234,7 @@ semantic-search settings, and phase-by-phase progress to stderr while the
 index is being built. Malformed workflow assets are skipped with file-path
 warnings instead of aborting the full run.
 
-**Progress in non-verbose JSON mode (default output format, #9541):** even
+**Progress in non-verbose JSON mode (default output format, #954):** even
 without `--verbose`, phase-start messages and the embedding heartbeat
 (`Still generating embeddings: X/N stored, F failed; waiting on embedding
 provider.`) are now written to stderr, and a failed embedding batch logs at
@@ -254,7 +254,7 @@ Use `--clean` to resolve the edge case where a deleted file in an unchanged
 directory lingers in the index across incremental runs. With `--dry-run`, reports
 which entries would be removed without modifying the database.
 
-**`--full` no longer re-embeds unchanged content (#9542):** a full rebuild
+**`--full` no longer re-embeds unchanged content (#955):** a full rebuild
 (and an index-generation bump on first open under a new binary) used to
 delete every embedding unconditionally, forcing a full re-embed of the
 whole corpus even when nothing changed. Vectors about to be discarded are
@@ -284,7 +284,7 @@ the lock, it warns and proceeds anyway, contending with the existing run.
 the lock is already held by a live process, it skips gracefully (exit 0,
 `{ ok: true, skipped: { reason: "lock-held", pid, launcherPid, startedAt } }`
 — `launcherPid` is the holder's launcher pid when known, `null` otherwise,
-#9543) instead of contending. `akm index` and `akm curate` are both safe to call frequently —
+#956) instead of contending. `akm index` and `akm curate` are both safe to call frequently —
 `curate` never blocks on a rebuild in progress ([read-path indexing stays
 non-blocking](#curate)) — but a hook, cron job, or scheduled task that
 invokes `akm index` directly should pass `--skip-if-locked` so it steps

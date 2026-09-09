@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9542: `hashEmbeddableText` is the ONE hash function embedding-salvage
+ * #955: `hashEmbeddableText` is the ONE hash function embedding-salvage
  * writes (at a discard) and reuse lookups (at the next embedding pass) must
  * agree on — a stable, deterministic sha256 keyed on the exact search_text
  * bytes, so a single-byte content change never falsely reuses a stale
@@ -14,7 +14,7 @@
 import { describe, expect, test } from "bun:test";
 import { hashEmbeddableText } from "../src/storage/repositories/embedding-salvage-repository";
 
-describe("hashEmbeddableText (#9542)", () => {
+describe("hashEmbeddableText (#955)", () => {
   test("is deterministic: the same text always hashes the same way", () => {
     const a = hashEmbeddableText("alpha bravo charlie");
     const b = hashEmbeddableText("alpha bravo charlie");

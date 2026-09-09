@@ -117,7 +117,7 @@ if (contextIndex !== -1) {
 if (contextValid) {
   process.env.AKM_LAUNCHER_NODE = process.execPath;
   process.env.AKM_LAUNCHER_PATH = fileURLToPath(import.meta.url);
-  // #9543: lets the child (and its lock payloads) name the launcher pid
+  // #956: lets the child (and its lock payloads) name the launcher pid
   // alongside its own, and lets the child's parent-death watchdog tell a
   // real launcher-managed run apart from a direct `bun src/cli.ts` run.
   process.env.AKM_LAUNCHER_PID = String(process.pid);
@@ -152,7 +152,7 @@ if (contextValid) {
       const child = spawn(command, [entry, ...process.argv.slice(2)], {
         stdio: "inherit",
         env: process.env,
-        // #9543: give the child its OWN process group on POSIX (`setsid()` —
+        // #956: give the child its OWN process group on POSIX (`setsid()` —
         // does not touch its inherited stdio; see `spawnsOwnProcessGroup` in
         // src/core/subprocess.ts for the Windows caveat that rules this out
         // there). Without this, a spawned child shares the launcher's

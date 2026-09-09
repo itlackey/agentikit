@@ -95,7 +95,7 @@ this lock, since a caller reaching it has no usable index to serve either
 way and must proceed. The lock's "held" message names the pid that actually
 holds it (the bun/node process) and, when the published launcher is
 involved, the launcher pid alongside it — `pid 4242 (launcher 4240)`
-(`createLockPayload`, `src/core/file-lock.ts`; `AKM_LAUNCHER_PID`, #9543) —
+(`createLockPayload`, `src/core/file-lock.ts`; `AKM_LAUNCHER_PID`, #956) —
 since every process listing and task log shows the launcher pid, not the
 child's.
 
@@ -112,7 +112,7 @@ warn just because a rebuild happens to be running concurrently. It never
 tries to acquire or reclaim the lock itself; reclaiming a dead-PID sentinel
 stays `akm index`'s job.
 
-**Embedding phase and transactions** (#9541 decisions 1-2) —
+**Embedding phase and transactions** (#954) —
 `generateEmbeddingsForDb` (`src/indexer/materialize-embeddings.ts`) refuses
 to run against a connection that already has a transaction open: its
 per-batch `db.transaction()` calls are only a durable commit when `db` has
@@ -204,8 +204,8 @@ comes from that entry's own (capped, see below) search text, not from any of
 its fragments. In practice this means the embedding phase issues roughly one
 embedder input per entry, not per fragment.
 
-**Per-document cap** (`embedding.maxInputTokens`, default 512, #9543 decision
-2) — before batching, each pending document's search text is truncated to
+**Per-document cap** (`embedding.maxInputTokens`, default 512, #956) —
+before batching, each pending document's search text is truncated to
 this many estimated tokens (head only, unicode-safe) if it exceeds the cap;
 a document is skipped only when its capped head is empty. This replaces
 "one oversized document fails its whole batch" with "one oversized document
@@ -226,12 +226,12 @@ above, a request carries about 16 documents by default. A single document
 whose own estimate still exceeds the token budget (only possible when
 `maxInputTokens` is configured larger than `maxTokens`) is isolated and
 skipped before ever going over HTTP. `embedding.contextLength` does NOT feed
-this budget (#9543 decision 2) — it is Ollama's `num_ctx` only, forwarded
+this budget (#956) — it is Ollama's `num_ctx` only, forwarded
 verbatim as `options.num_ctx` on the native `/api/embed` request (see the
 embedding knobs table in `docs/reference/configuration.md`).
 
 **Timeout** — each request is bounded by `embedding.timeoutMs` (positive
-integer, default 120_000 — 120s, #9541 decision 3), used by both
+integer, default 120_000 — 120s, #954), used by both
 `RemoteEmbedder.embed` and `requestBatch`. The prior fixed 30s cut off
 exactly the field-report case: a local model server on a large
 token-budget-bounded batch legitimately took longer than that, the timeout
@@ -239,7 +239,7 @@ fired mid-response with no retry, and every batch it hit was silently
 dropped for the rest of an hours-long run. `embedding.timeoutMs` is the
 budget for a request at the FULL token budget; a smaller request gets a
 proportionally smaller timeout, `clamp(timeoutMs × requestTokens /
-tokenBudget, 30_000, timeoutMs)` (2026-09-09 owner addendum), so a dead
+tokenBudget, 30_000, timeoutMs)` (2026-09-09 field-review follow-up), so a dead
 endpoint is detected in seconds on the common case of small documents
 instead of always waiting out the full configured budget.
 
@@ -251,7 +251,7 @@ instead of always waiting out the full configured budget.
 `getDefaultLlmConcurrency` above uses: **1** for a loopback endpoint (a
 local model server serves one inference at a time; parallel requests
 thrash it) and **2** for a remote one. `embedding.concurrency` (positive
-integer, 1-16, #9541) overrides this default — an owner decision made after
+integer, 1-16, #954) overrides this default — added after
 field evidence that a multi-slot local server (llama.cpp `--parallel N`,
 vLLM) genuinely serves parallel requests and sat idle under the fixed
 default. Request SIZE remains the first throughput lever regardless (see
@@ -264,13 +264,13 @@ serves parallel slots, not as a blanket "go faster" knob. A caller abort
 exceeding the endpoint's context window (HTTP 413, or a recognised
 context-size error body such as `exceed_context_size_error`, or llama.cpp's
 own physical-batch rejection — `input is too large to process`, `physical
-batch size`, `ubatch`, #9541) is split in half and retried recursively
+batch size`, `ubatch`, #954) is split in half and retried recursively
 rather than discarded whole, down to individual documents; a single
 document that still fails this way becomes a
 `context-window-exceeded` skip.
 
-**Timeout back-off-and-retry** (2026-09-09 owner addendum, refining
-decisions 3 and 7) — a request TIMEOUT never drops its batch outright: field
+**Timeout back-off-and-retry** (#954, 2026-09-09 field-review follow-up)
+— a request TIMEOUT never drops its batch outright: field
 confirmation showed that once akm abandons a timed-out request the endpoint
 (e.g. llama-server) keeps computing it anyway, so dropping it immediately
 just grows the provider's queue while every following batch dies the same
@@ -286,7 +286,7 @@ non-timeout HTTP failure, malformed response) still skips the whole batch
 immediately at any size, as before — a genuinely broken batch does not get
 retried into a storm of smaller requests against a down endpoint.
 
-**Circuit breaker** (#9541 decision 7, refined by the addendum) — the
+**Circuit breaker** (#954) — the
 embedding phase stops dispatching further provider requests and ends the
 pass as a failure once either of two consecutive-failure streaks reaches 3:
 failures at single-document size (timeout OR network error — a
@@ -320,7 +320,7 @@ interruption and keeps the exclusive-write window short enough for
 `akm remember`/`akm improve` to interleave on the same stash.
 
 **Progress and throughput** — a progress line (`Embedded N/M entries.`) is
-emitted after EVERY committed batch (#9541 — the earlier 500-stored-entries
+emitted after EVERY committed batch (#954 — the earlier 500-stored-entries
 bucketing left a non-verbose run silent for its entire embedding phase on
 any run smaller than 500 entries), and the heartbeat (every 15s while
 waiting on the provider) names both the live stored AND failed counts:
@@ -368,9 +368,9 @@ run (only the still-missing entries get re-embedded) instead of purging
 again from zero. The very first embedding pass for a db (no stored
 fingerprint to compare against — the canary never runs at all) writes
 `embeddingFingerprint` just as eagerly, before any provider call, for the
-same reason (#9543 decision 3): a per-batch commit is durable the instant
+same reason (#956): a per-batch commit is durable the instant
 it lands, and a later `akm index --full`'s salvage-before-discard step
-(#9542) tags salvaged rows by this meta — an unset fingerprint would make it
+(#955) tags salvaged rows by this meta — an unset fingerprint would make it
 a no-op even though real vectors were genuinely embedded. A canary that
 cannot reach the endpoint at all leaves the
 existing vectors and the OLD fingerprint untouched and reports failure, so
@@ -382,7 +382,7 @@ caught earlier and unconditionally by `ensureSchema`
 fingerprint mechanism, since a change in vector width leaves nothing for
 the canary to meaningfully compare.
 
-**Embedding reuse across rebuilds** (#9542) — `akm index --full` (any
+**Embedding reuse across rebuilds** (#955) — `akm index --full` (any
 non-incremental run) and an index-generation bump both used to delete every
 embedding unconditionally and re-insert entries under new ids, forcing a
 full re-embed of the whole corpus even when no content changed — the
@@ -435,7 +435,7 @@ embedding cache, and has zero steady-state cost.
 - text mode: shows a spinner with processed-versus-total source counts
 - `--verbose`: prints every phase progress message to stderr, including the
   high-frequency per-batch `Embedded N/M entries.` line
-- non-verbose structured output (`json`, `yaml`, `jsonl`, #9541 decision 5):
+- non-verbose structured output (`json`, `yaml`, `jsonl`, #954):
   emits clean machine-readable output on stdout, but phase-start messages
   and the embedding heartbeat (`Still generating embeddings: X/N stored, F
   failed; waiting on embedding provider.`) now reach stderr via `info()` too
@@ -444,7 +444,7 @@ embedding cache, and has zero steady-state cost.
   report). The per-batch `Embedded N/M entries.` line is deliberately
   excluded here (that would be spam, not a heartbeat).
 - source-cache hydration (`ensureSourceCaches`, `src/indexer/search/search-source.ts`,
-  #9541 decision 6) — which runs BEFORE `index.db` is even opened — reports
+  #954) — which runs BEFORE `index.db` is even opened — reports
   `Hydrating source i/n: <name>` per source about to sync, plus a 15s
   heartbeat while that source's sync is in flight, through the same
   progress channel.
@@ -466,7 +466,7 @@ this is a purpose summary:
 | `entry_fragments` | safe Markdown projection retained per parent entry for fragment resolution |
 | `entry_fragments_fts` (virtual, FTS5) | separate lexical body-fragment index; no copied parent metadata |
 | `embeddings` | stored embedding vectors (JS cosine-similarity fallback) |
-| `embedding_salvage` | transient, self-emptying: vectors salvaged from a discard, reused by the next embedding pass (#9542) |
+| `embedding_salvage` | transient, self-emptying: vectors salvaged from a discard, reused by the next embedding pass (#955) |
 | `entries_vec` (virtual, conditional) | `sqlite-vec` ANN index, created only when the extension loads |
 | `utility_scores` | recomputed utility boost state (global) |
 | `utility_scores_scoped` | same EMA per `(entry, project-anchor)` pair |

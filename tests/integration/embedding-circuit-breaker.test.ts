@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9541 decision 7, refined by the 2026-09-09 owner addendum: a slow or dead
+ * #954 (refined by the 2026-09-09 owner field-review addendum): a slow or dead
  * embedding provider used to grind through every remaining batch, one
  * (now-configurable, previously fixed 30s) timeout at a time, for however
  * many batches the run had — hours, on the reporting install's 24,041-entry
@@ -93,10 +93,10 @@ test("stops after exactly 3 consecutive single-document timeouts against a dead 
   const result = await akmIndex({ stashDir: storage.stashDir, full: true });
 
   // Each single-document batch is already at single-document size, so it
-  // gets the addendum's one same-size retry (never a split) before it
+  // gets the one same-size retry (never a split) before it
   // finally counts as a failure: 2 requests per document, 3 documents to
   // trip the breaker (the other 2 documents' batches are never dispatched
-  // at all) = 6 requests, not the pre-addendum 3.
+  // at all) = 6 requests, not the pre-retry-backoff 3.
   expect(requestCount).toBe(6);
   // Request-timing log proving each retry actually waited out a back-off
   // rather than firing immediately: the 2nd request of every pair lands at
@@ -148,7 +148,7 @@ test("a dead endpoint splits a multi-document batch down to singles before any f
       model: "test-model",
       dimension: 4,
       // No batchSize override: all 3 tiny documents land in ONE provider
-      // batch, so this exercises the addendum's actual split-down-to-
+      // batch, so this exercises the actual split-down-to-
       // singles recursion rather than starting pre-split like the test
       // above.
       timeoutMs: 300,

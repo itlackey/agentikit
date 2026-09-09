@@ -755,11 +755,11 @@ describe("RemoteEmbedder.embedBatch against a real server: context-size split (#
   });
 });
 
-describe("RemoteEmbedder.embedBatch against a real server: timeout back-off retry (#9541 addendum)", () => {
-  // Refines decisions 3 and 7: a request timeout never drops its batch
+describe("RemoteEmbedder.embedBatch against a real server: timeout back-off retry (#954)", () => {
+  // A request timeout never drops its batch
   // outright any more — it backs off (so the server can drain the abandoned
   // request) and retries the SAME request once before ever splitting or
-  // skipping. This is the addendum's first required test: a first request
+  // skipping. This test covers the first required case: a first request
   // that outlives the client's timeout, followed by a normal response,
   // must produce exactly one retry and no skipped documents.
   test("a first request that outlives the timeout retries once after a back-off and succeeds, with nothing skipped", async () => {
@@ -812,7 +812,7 @@ describe("RemoteEmbedder.embedBatch against a real server: timeout back-off retr
 
 describe("RemoteEmbedder.embedBatch against a real server: bounded concurrency (#954)", () => {
   // The in-flight window defaults to 1 loopback / 2 remote when
-  // `embedding.concurrency` is unset; #9541 decision 4 lets that config key
+  // `embedding.concurrency` is unset; #954 lets that config key
   // override the default in either direction. The real-server case that
   // matters is loopback, since a test server binds to localhost; the 2-wide
   // remote default is covered against a mocked fetch in

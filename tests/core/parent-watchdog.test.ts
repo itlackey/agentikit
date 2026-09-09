@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9543 addendum: the parent-death watchdog polls `process.ppid` (injected
+ * #956: the parent-death watchdog polls `process.ppid` (injected
  * here) and fires once when it changes. Both the ppid reader and the
  * `setInterval` driver are injected so this stays a pure, timer-free unit
  * test — no real 2s wait, no real process reparenting.
@@ -44,7 +44,7 @@ describe("isReparented", () => {
   });
 });
 
-describe("startParentDeathWatchdog (#9543 addendum)", () => {
+describe("startParentDeathWatchdog (#956)", () => {
   test("does not fire while the ppid stays the same", () => {
     const driver = fakeIntervalDriver();
     let fired = 0;

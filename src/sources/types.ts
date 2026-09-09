@@ -427,7 +427,7 @@ export interface UpdateResponse {
     /** False when the run preserved LKG rows because at least one source scan was incomplete. */
     scanComplete?: boolean;
     /**
-     * Semantic-search state after this update's embedding pass (#9541). A
+     * Semantic-search state after this update's embedding pass (#954). A
      * managed/plain-source update runs the embedding phase AFTER its atomic
      * content/lock/index/state commit, on its own connection — a failing
      * pass (provider down) still reports the update `processed`/successful,

@@ -1,5 +1,5 @@
 -- Real-shaped v22 derived index with a live embedding present, used by
--- #9542: a generation bump must salvage the embedding across the v22->v23
+-- #955: a generation bump must salvage the embedding across the v22->v23
 -- rebuild rather than silently discarding it and forcing a re-embed.
 CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO index_meta VALUES ('version', '22');

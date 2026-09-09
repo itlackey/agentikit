@@ -814,12 +814,12 @@ describe("runTask — command target", () => {
     expect(log).toContain("exit_code=143");
   });
 
-  test("a SIGTERM to the task runner itself terminates the whole child process group (#9543)", async () => {
+  test("a SIGTERM to the task runner itself terminates the whole child process group (#956)", async () => {
     // The runner's own process previously had no way to end its detached,
     // own-process-group child (spawned by runManagedSubprocess for the
     // group-kill guarantee) when the RUNNER received a signal — only a
-    // timeout tied into that ladder. A launcher-forwarded SIGTERM (#9543
-    // decision 1) or a supervisor signalling `akm task run` directly used to
+    // timeout tied into that ladder. A launcher-forwarded SIGTERM (#956)
+    // or a supervisor signalling `akm task run` directly used to
     // leave the child running as an orphan.
     writeTask("signaled", shellTask("hang-forever"));
 

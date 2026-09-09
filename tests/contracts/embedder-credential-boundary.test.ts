@@ -3,14 +3,14 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9544 (#953 field gap) — a field run reported `akm index`'s embedding
+ * #953 (#953 field gap) — a field run reported `akm index`'s embedding
  * requests reaching the provider with no `Authorization` header at all, even
  * though `embedding.apiKey` was set to a `secret://` reference. The
  * reproduction in tests/integration/index-embedding-secret-credential.test.ts
  * did not reproduce the gap against the code as it stands (every candidate
  * path — plain `akm index`, the CLI child process, and an `extends`-inherited
  * apiKey with mid-run adapter persistence — already threads the credential
- * through correctly). This contract test guards the one seam decision 2
+ * through correctly). This contract test guards the one seam the fixer brief
  * named as the actual risk: every `new RemoteEmbedder(...)` construction
  * site in `src/` must pass its config straight through by reference — a bare
  * identifier, never a hand-rebuilt object literal — so a future edit cannot
@@ -137,7 +137,7 @@ function stripCommentsAndStrings(src: string): string {
 /** A bare identifier — the only shape a construction-site argument is allowed to take. */
 const BARE_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
-describe("RemoteEmbedder credential boundary (#9544)", () => {
+describe("RemoteEmbedder credential boundary (#953)", () => {
   test("every `new RemoteEmbedder(...)` construction site passes its config by bare reference, never a rebuilt object literal", () => {
     const violations: string[] = [];
     let constructionSitesFound = 0;
@@ -165,7 +165,7 @@ describe("RemoteEmbedder credential boundary (#9544)", () => {
           violations.push(
             `${relative}:${line}: new RemoteEmbedder(${rawArg}) does not pass its config by bare reference — ` +
               "a hand-rebuilt object literal here risks silently dropping apiKey (or another field) before it " +
-              "reaches the HTTP client (#9544). Pass the EmbeddingConnectionConfig parameter straight through.",
+              "reaches the HTTP client (#953). Pass the EmbeddingConnectionConfig parameter straight through.",
           );
         }
       }

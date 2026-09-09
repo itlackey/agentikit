@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9543 decision 2: `generateEmbeddingsForDb` truncates a document's embedded
+ * #956: `generateEmbeddingsForDb` truncates a document's embedded
  * text to `embedding.maxInputTokens` (default 512, `DEFAULT_MAX_INPUT_TOKENS`)
  * BEFORE batching, instead of ever skipping a whole batch over one oversized
  * entry. Drives the real materializer against a real index.db (hence
@@ -35,7 +35,7 @@ function configFor(overrides: NonNullable<AkmConfig["embedding"]> = {}): AkmConf
   } as AkmConfig;
 }
 
-describe("generateEmbeddingsForDb: per-document embedding cap (#9543 decision 2)", () => {
+describe("generateEmbeddingsForDb: per-document embedding cap (#956)", () => {
   let storage: IsolatedAkmStorage;
 
   beforeEach(() => {

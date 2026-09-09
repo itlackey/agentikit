@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9543 addendum: `akm index` must abort promptly on SIGTERM/SIGINT — cancel
+ * #956: `akm index` must abort promptly on SIGTERM/SIGINT — cancel
  * the in-flight embedding request through the AbortSignal, dispatch no
  * further batch, release the rebuild lock, and exit within about a second of
  * the signal. This spawns the REAL CLI process (not the in-process
@@ -50,9 +50,9 @@ async function waitUntil(predicate: () => boolean, timeoutMs: number, descriptio
   }
 }
 
-describe("akm index — SIGTERM promptness (#9543 addendum)", () => {
+describe("akm index — SIGTERM promptness (#956)", () => {
   test("cancels the in-flight request, dispatches no further batch, releases the lock, and exits promptly", async () => {
-    // batchSize: 1 with a loopback endpoint (fixed concurrency 1, #9541) means
+    // batchSize: 1 with a loopback endpoint (fixed concurrency 1, #954) means
     // one document per request, strictly sequential — three documents give a
     // run that kept going after the signal two more chances to prove it.
     for (let i = 0; i < 3; i++) writeMemory(`note-${i}`);
@@ -97,7 +97,7 @@ describe("akm index — SIGTERM promptness (#9543 addendum)", () => {
 
       // Interrupted, not a clean success.
       expect(exitCode).not.toBe(0);
-      // "~1s" per the addendum; generous enough to absorb CI scheduling
+      // "~1s" per #956; generous enough to absorb CI scheduling
       // jitter while still catching a run that ignores the signal outright
       // (which would instead run until the mock server's request never
       // returns, i.e. hang past this bound).

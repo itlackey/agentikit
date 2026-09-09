@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /**
- * #9541 decision 5: the embedding heartbeat now names the failed count too,
+ * #954: the embedding heartbeat now names the failed count too,
  * and is visible by default (not --verbose-only). A pure formatter is the
  * fast, timer-free way to pin its exact text — the real 15s `setInterval`
  * that calls it is exercised end-to-end elsewhere, not re-derived here.
@@ -12,7 +12,7 @@
 import { describe, expect, test } from "bun:test";
 import { formatEmbeddingHeartbeat } from "../src/indexer/materialize-embeddings";
 
-describe("formatEmbeddingHeartbeat (#9541)", () => {
+describe("formatEmbeddingHeartbeat (#954)", () => {
   test("names stored, total, and failed counts", () => {
     expect(formatEmbeddingHeartbeat(12, 100, 0)).toBe(
       "Still generating embeddings: 12/100 stored, 0 failed; waiting on embedding provider.",

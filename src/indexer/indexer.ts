@@ -471,14 +471,14 @@ export interface EmbeddingPassResult {
 }
 
 /**
- * The ONE embedding-phase implementation (#9541 decision 2): generate and
+ * The ONE embedding-phase implementation (#954): generate and
  * store vectors for every entry missing one, then compute the `hasEmbeddings`
  * fact and the semantic-search verification off the result. `akmIndex`'s own
  * (non-deferred) run calls this from {@link runEmbeddingPhase} below; `akm
  * bundle update`'s coordinator calls it directly on its own connection AFTER
- * its unified update transaction commits, since decision 1's drift guard
- * (and the whole point of per-batch commit, #954) requires `db` to have no
- * ambient transaction open.
+ * its unified update transaction commits, since the ambient-transaction drift
+ * guard (and the whole point of per-batch commit, #954) requires `db` to have
+ * no ambient transaction open.
  */
 export async function runEmbeddingPass(params: {
   db: Database;
@@ -510,11 +510,12 @@ async function runEmbeddingPhase(ctx: IndexRunContext): Promise<void> {
   throwIfAborted(signal);
 
   if (deferredUpdateTransaction) {
-    // `akm bundle update`'s deferred pass (#9541 decision 2): the embedding
+    // `akm bundle update`'s deferred pass (#954): the embedding
     // phase runs AFTER the coordinator's own commit, on its own connection,
     // via the coordinator's direct `runEmbeddingPass` call — never here,
-    // inside the borrowed transaction (decision 1's drift guard would reject
-    // it anyway). `runFinalizePhase` records semantic state as "pending".
+    // inside the borrowed transaction (the ambient-transaction drift guard
+    // would reject it anyway). `runFinalizePhase` records semantic state as
+    // "pending".
     ctx.timing.tEmbedEnd = Date.now();
     return;
   }
@@ -593,7 +594,7 @@ async function runFinalizePhase(ctx: IndexRunContext): Promise<void> {
   const totalEntries = getEntryCount(db);
 
   if (deferredUpdateTransaction) {
-    // #9541 decision 2: the embedding phase was skipped for this borrowed
+    // #954: the embedding phase was skipped for this borrowed
     // transaction — record semantic state as pending, never ready, until the
     // coordinator's own post-commit `runEmbeddingPass` call reports the
     // truth on a fresh connection.
@@ -928,7 +929,7 @@ async function akmIndexReal(options: IndexOptions): Promise<IndexResponse> {
       force: full,
       materialize: options.hydrateSources !== false,
       secrets: storeSecretResolver,
-      // Same progress channel as every other phase (#9541 decision 6) — a
+      // Same progress channel as every other phase (#954) — a
       // stalled clone/fetch here runs BEFORE index.db is even opened, so
       // without this it looked identical to "no database open, nothing
       // written".
@@ -1763,7 +1764,7 @@ function persistDirRecords(
     // transaction so delete and re-insert are atomic — a concurrent reader
     // never observes an empty database between the two operations.
     if (fullDelete) {
-      // #9542: copy every (search_text hash, embedding) pair about to be
+      // #955: copy every (search_text hash, embedding) pair about to be
       // discarded wholesale into `embedding_salvage`, tagged with the
       // fingerprint the discarded vectors were generated under, BEFORE the
       // wipe below — inside the SAME transaction so the copy and the

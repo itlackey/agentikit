@@ -674,7 +674,7 @@ function closeUnifiedUpdateTransaction(transaction: UnifiedUpdateTransaction, co
 
 /**
  * Run the embedding phase AFTER the coordinator's atomic commit, on its own
- * fresh connection (#9541 decision 2). Before this, `akmUpdate` called
+ * fresh connection (#954). Before this, `akmUpdate` called
  * `akmIndex()` for its embedding phase too, INSIDE this same unified
  * `BEGIN IMMEDIATE` — so every per-batch commit the materializer opened
  * nested as an unobservable SAVEPOINT, and a SIGKILL mid-run lost every
